@@ -1,0 +1,4 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,034020,두산에너빌리티,power_grid,,85200.0,5.06,164489000000.0,10.5,5.0,0,0,0,0,15.5,,,,점수기반선정,,,,power_grid,us_weak_power_grid,yahoo,risk_off
+2,015760,한국전력,power_grid,,37850.0,2.02,20717000000.0,10.5,0.0,0,0,0,0,10.5,,,,점수기반선정,,,,power_grid,us_weak_power_grid,yahoo,risk_off
+3,204320,HL만도,auto,,48600.0,6.35,16995000000.0,8.8,0.0,0,0,0,0,8.75,,,,점수기반선정,,,,consumer_discretionary,us_weak_consumer_discretionary,yahoo,risk_off

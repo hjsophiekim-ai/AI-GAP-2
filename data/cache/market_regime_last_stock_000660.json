@@ -1,0 +1,16 @@
+{
+  "symbol": "000660",
+  "name": "SK하이닉스",
+  "current_price": 2368000.0,
+  "open": 2450000.0,
+  "high": 2497000.0,
+  "low": 2292000.0,
+  "prev_close": 2425000.0,
+  "change_rate": -2.35,
+  "volume": 3759950,
+  "trade_value": 8985211678000.0,
+  "source": "kis",
+  "timestamp": "2026-07-06T15:16:51",
+  "success": true,
+  "error": null
+}

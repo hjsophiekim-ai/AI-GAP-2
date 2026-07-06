@@ -1,0 +1,16 @@
+{
+  "symbol": "042700",
+  "name": "한미반도체",
+  "current_price": 226000.0,
+  "open": 233500.0,
+  "high": 234500.0,
+  "low": 217500.0,
+  "prev_close": 232500.0,
+  "change_rate": -2.8,
+  "volume": 594755,
+  "trade_value": 133782064250.0,
+  "source": "kis",
+  "timestamp": "2026-07-06T15:17:11",
+  "success": true,
+  "error": null
+}

@@ -1,0 +1,78 @@
+﻿symbol,name,current_price,change_rate,volume,trade_value,date,is_etf,is_etn,is_preferred,is_spac,is_reit,excluded_reason
+266390,KODEX 경기소비재,16415.0,-0.42,22576,5095000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+411420,KODEX 미국나스닥AI테크액티브,28830.0,-0.67,81465,21325000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+156080,KODEX MSCI Korea,63435.0,1.3,16630,5218000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+520098,미래에셋 레버리지 반도체 ETN,45000.0,-2.42,19425,6363000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+481190,SOL 미국테크TOP10,17660.0,-0.48,270809,96154000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+496120,ACE 코리아밸류업,40030.0,1.41,17175,7232000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+485690,RISE 미국AI밸류체인TOP3Plus,23955.0,0.36,12068,5823000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+325010,KODEX 성장주,51995.0,-0.32,20532,11164000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+292500,SOL KRX300,59270.0,0.52,10148,5621000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+273130,KODEX 종합채권(AA-이상)액티브,110185.0,0.05,28064,16498000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+530118,삼성 코스닥 150 TR ETN,11365.0,-1.47,55588,33076000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+570082,한투 인버스2X코스닥150선물 ETN,2125.0,7.59,280747,175497000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+760024,키움 인버스 2X K방산 TOP5 ETN,6315.0,-6.03,13341,8564000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+495750,HANARO 코리아밸류업,38495.0,2.26,11931,7752000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+253150,PLUS 200선물레버리지,336630.0,1.33,60990,40871000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+139240,TIGER 200 철강소재,10115.0,0.55,20331,13861000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+483420,ACE 애플밸류체인액티브,26590.0,-0.37,29318,20130000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+305050,ACE 코스피,85015.0,0.82,13257,9260000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+495040,PLUS 코리아밸류업,38130.0,1.18,15859,11190000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+472160,TIGER 미국테크TOP10 INDXX(H),18015.0,-0.47,131571,93288000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+227560,TIGER 200 생활소비재,12600.0,-0.4,10365,7394000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+465660,TIGER 일본반도체FACTSET,32430.0,-4.34,57279,41205000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+700034,하나 레버리지 K방산TOP10 ETN,18685.0,4.91,16829,12434000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+002795,아모레퍼시픽홀딩스우,10620.0,-2.12,6978,5365000000.0,20260706,False,False,True,False,False,etf_etn_or_type
+491830,TIGER 미국AI반도체팹리스,24845.0,0.14,55476,42877000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+456250,KODEX 유럽명품TOP10 STOXX,10015.0,-0.74,17310,14057000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+421320,PLUS 우주항공,31405.0,2.33,133802,113198000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+310960,TIGER 200TR,76810.0,0.89,104373,90180000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+452250,ACE 미국30년국채선물레버리지(합성 H),5100.0,0.1,6874,6527000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+337160,KODEX 200ESG,57670.0,0.52,87566,83192000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+580044,KB 인버스 2X KOSDAQ 150 선물 ETN,2105.0,7.02,246536,235657000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+465610,ACE 미국빅테크TOP7 Plus레버리지(합성),44980.0,-1.36,12297,12071000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+760023,키움 레버리지 K방산 TOP5 ETN,24715.0,5.37,33995,34210000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+157500,TIGER 증권,16900.0,5.39,1423436,1434435000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+102970,KODEX 증권,24130.0,5.37,2042632,2060329000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+332940,HANARO MSCI Korea TR,59125.0,1.97,7257,7346000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+494670,TIGER 조선TOP10,25725.0,2.37,822874,840984000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+580032,KB 레버리지 구리 선물 ETN(H),23565.0,-0.11,4906,5041000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+381170,TIGER 미국테크TOP10 INDXX,32570.0,-0.44,796245,818720000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+494210,SOL 미국500타겟데일리커버드콜액티브,11925.0,-0.13,4816,5140000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+760007,키움 코스피 200 TR ETN,40180.0,0.45,63170,67655000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+261250,KODEX 미국달러선물레버리지,19410.0,-0.03,39209,42215000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+437350,RISE 미국단기투자등급회사채액티브,13495.0,-0.07,19973,21730000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+479620,SOL 미국AI반도체칩메이커,30310.0,0.56,62926,69516000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+450910,SOL 코스닥150,14480.0,-2.88,39363,43635000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+570118,한투 인버스2X천연가스선물 ETN B,10055.0,4.69,30707,34277000000.0,20260706,True,True,False,False,False,etf_etn_or_type
+379790,RISE 유로스탁스50(H),17735.0,0.74,6126,6847000000.0,20260706,True,False,False,False,False,etf_etn_or_type
+003610,방림,5380.0,5.08,282363,21124000000.0,20260706,False,False,False,False,False,price_below_10k
+003680,한성기업,4635.0,9.57,65241,5321000000.0,20260706,False,False,False,False,False,price_below_10k
+002700,신일전자,1299.0,11.31,15687798,2475167000000.0,20260706,False,False,False,False,False,price_below_10k
+005880,대한해운,1948.0,4.79,4165351,1543780000000.0,20260706,False,False,False,False,False,price_below_10k
+002820,SUN&L,2130.0,2.4,27214,10549000000.0,20260706,False,False,False,False,False,price_below_10k
+100220,비상교육,5260.0,0.19,19552,10940000000.0,20260706,False,False,False,False,False,price_below_10k
+012170,아센디오,978.0,26.52,1350589,762275000000.0,20260706,False,False,False,False,False,price_below_10k
+002870,신풍,937.0,4.11,81294,52712000000.0,20260706,False,False,False,False,False,price_below_10k
+015260,에이엔피,355.0,9.23,1201446,783660000000.0,20260706,False,False,False,False,False,price_below_10k
+006660,삼성공조,9720.0,3.18,74857,49558000000.0,20260706,False,False,False,False,False,price_below_10k
+002220,한일철강,4435.0,4.11,158823,109363000000.0,20260706,False,False,False,False,False,price_below_10k
+072130,유엔젤,5430.0,-0.55,87570,67620000000.0,20260706,False,False,False,False,False,price_below_10k
+085310,엔케이,8770.0,-0.11,11664,9077000000.0,20260706,False,False,False,False,False,price_below_10k
+047400,유니온머티리얼,1028.0,7.08,98549,80743000000.0,20260706,False,False,False,False,False,price_below_10k
+009190,대양금속,2045.0,12.18,1532786,1289824000000.0,20260706,False,False,False,False,False,price_below_10k
+001290,상상인증권,843.0,6.71,393001,334444000000.0,20260706,False,False,False,False,False,price_below_10k
+058860,KTis,2575.0,1.38,51987,46144000000.0,20260706,False,False,False,False,False,price_below_10k
+133820,화인베스틸,1027.0,0.0,41486,37983000000.0,20260706,False,False,False,False,False,price_below_10k
+027970,한국제지,540.0,2.27,33863,37356000000.0,20260706,False,False,False,False,False,price_below_10k
+100910,KIWOOM KRX100,20870.0,0.63,23383,9727000000.0,20260706,False,False,False,False,False,change_rate_below_5
+484870,엠앤씨솔루션,35500.0,29.56,65765,53310000000.0,20260706,False,False,False,False,False,change_rate_above_15
+153270,KIWOOM 코스피100,102670.0,1.56,6253,5329000000.0,20260706,False,False,False,False,False,change_rate_below_5
+495060,TIME 코리아밸류업액티브,36790.0,0.11,270724,249241000000.0,20260706,False,False,False,False,False,change_rate_below_5
+085620,미래에셋생명,20150.0,-1.71,295315,278303000000.0,20260706,False,False,False,False,False,change_rate_below_5
+486240,DAISHIN343 AI반도체&인프라액티브,33545.0,-2.78,7247,7058000000.0,20260706,False,False,False,False,False,change_rate_below_5
+478150,TIME 글로벌우주테크&방산액티브,23745.0,0.27,96416,106416000000.0,20260706,False,False,False,False,False,change_rate_below_5
+003300,한일홀딩스,16790.0,1.27,26038,7090000000.0,20260706,False,False,False,False,False,change_rate_below_5
+005680,삼영전자,14550.0,-8.2,91368,82180000000.0,20260706,False,False,False,False,False,change_rate_below_5
+001260,남광토건,11420.0,22.53,960152,919503000000.0,20260706,False,False,False,False,False,change_rate_above_15
+031430,신세계인터내셔날,13000.0,2.93,38494,39875000000.0,20260706,False,False,False,False,False,change_rate_below_5

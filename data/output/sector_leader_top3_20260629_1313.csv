@@ -1,0 +1,4 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,005380,현대차,auto,,493500.0,2.71,250368000000.0,8.8,15.0,5,0,0,0,28.75,,,,섹터1위(auto) | 미국섹터매칭(consumer_discretionary),,,,consumer_discretionary,us_moderate_consumer_discretionary+risk_off_penalty,yahoo,risk_off
+2,034020,두산에너빌리티,power_grid,,85100.0,4.93,151808000000.0,10.5,5.0,5,0,0,0,20.5,,,,미국섹터매칭(power_grid),,,,power_grid,us_moderate_power_grid+risk_off_penalty,yahoo,risk_off
+3,103590,일진전기,power_grid,,71700.0,8.8,13326000000.0,10.5,0.0,5,0,0,0,15.5,,,,미국섹터매칭(power_grid),,,,power_grid,us_moderate_power_grid+risk_off_penalty,yahoo,risk_off

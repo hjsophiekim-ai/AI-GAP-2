@@ -1,0 +1,572 @@
+# config/kr_sector_map.yaml
+# 한국 주식 섹터 매핑 정의
+# 우선순위: symbol_overrides > kr_name_patterns > kr_keywords (업종/테마)
+
+sector_definitions:
+
+  semiconductor:
+    label_kr: "반도체"
+    kr_keywords:
+      - "반도체"
+      - "HBM"
+      - "메모리"
+      - "낸드"
+      - "파운드리"
+      - "후공정"
+      - "반도체장비"
+      - "반도체소재"
+      - "웨이퍼"
+      - "포토레지스트"
+      - "식각"
+      - "증착"
+      - "CMP"
+      - "테스트소켓"
+      - "칩"
+      - "DRAM"
+      - "NAND"
+      - "패키징"
+    kr_name_patterns:
+      - "SK하이닉스"
+      - "삼성전자"
+      - "한미반도체"
+      - "이오테크닉스"
+      - "ISC"
+      - "리노공업"
+      - "HPSP"
+      - "주성엔지니어링"
+      - "원익IPS"
+      - "하나마이크론"
+      - "심텍"
+      - "동진쎄미켐"
+      - "솔브레인"
+      - "피에스케이"
+      - "테스나"
+      - "티씨케이"
+      - "유진테크"
+      - "디아이티"
+      - "가온칩스"
+      - "DB하이텍"
+      - "네패스"
+      - "SFA반도체"
+      - "코미코"
+      - "와이씨"
+      - "한양반도체"
+    us_sector_key: "semiconductor"
+    us_sector_key_alt: []
+
+  ai_data_center:
+    label_kr: "AI/데이터센터"
+    kr_keywords:
+      - "AI"
+      - "인공지능"
+      - "클라우드"
+      - "데이터센터"
+      - "서버"
+      - "소프트웨어"
+      - "플랫폼"
+      - "광모듈"
+      - "냉각"
+      - "전력기기"
+      - "통신장비"
+      - "GPU"
+      - "NPU"
+    kr_name_patterns:
+      - "네이버"
+      - "카카오"
+      - "케이아이엔엑스"
+      - "가온전선"
+      - "오이솔루션"
+      - "파이버프로"
+      - "이노와이어리스"
+      - "쏠리드"
+      - "에이스테크"
+    us_sector_key: "ai_data_center"
+    us_sector_key_alt: ["semiconductor"]
+
+  power_grid:
+    label_kr: "전력/에너지인프라"
+    kr_keywords:
+      - "전력기기"
+      - "변압기"
+      - "전선"
+      - "전력망"
+      - "원전"
+      - "전력"
+      - "중전기"
+      - "배전"
+      - "송전"
+      - "차단기"
+      - "개폐기"
+      - "초전도"
+      - "전력반도체"
+    kr_name_patterns:
+      - "HD현대일렉트릭"
+      - "LS ELECTRIC"
+      - "LS일렉트릭"
+      - "효성중공업"
+      - "일진전기"
+      - "대한전선"
+      - "LS"
+      - "두산에너빌리티"
+      - "제룡전기"
+      - "광명전기"
+      - "서전기전"
+      - "비엠티"
+      - "전력기술"
+      - "동아일렉콤"
+      - "부스타"
+    us_sector_key: "power_grid_energy"
+    us_sector_key_alt: []
+
+  shipbuilding:
+    label_kr: "조선/해양"
+    kr_keywords:
+      - "조선"
+      - "해양"
+      - "LNG선"
+      - "컨테이너선"
+      - "탱커"
+      - "드릴십"
+      - "FPSO"
+      - "선박"
+      - "선박엔진"
+      - "선박기자재"
+    kr_name_patterns:
+      - "HD한국조선해양"
+      - "한화오션"
+      - "삼성중공업"
+      - "HD현대중공업"
+      - "HD현대미포"
+      - "현대미포조선"
+      - "케이조선"
+      - "대우조선해양"
+      - "한국카본"
+      - "동성화인텍"
+      - "에이치엘비생명과학"
+    us_sector_key: "industrials"
+    us_sector_key_alt: []
+
+  defense:
+    label_kr: "방산/항공우주"
+    kr_keywords:
+      - "방산"
+      - "방위산업"
+      - "항공"
+      - "우주"
+      - "미사일"
+      - "레이더"
+      - "위성"
+      - "군수"
+      - "함정"
+      - "탄약"
+      - "무기체계"
+      - "드론"
+      - "K방산"
+    kr_name_patterns:
+      - "한화에어로스페이스"
+      - "LIG넥스원"
+      - "한국항공우주"
+      - "KAI"
+      - "현대로템"
+      - "한화시스템"
+      - "빅텍"
+      - "휴니드"
+      - "풍산"
+      - "한화"
+      - "퍼스텍"
+      - "한일단조"
+      - "스페코"
+      - "이엔에프테크놀로지"
+    us_sector_key: "defense_aerospace"
+    us_sector_key_alt: []
+
+  robotics:
+    label_kr: "로봇/자동화"
+    kr_keywords:
+      - "로봇"
+      - "자동화"
+      - "스마트팩토리"
+      - "감속기"
+      - "협동로봇"
+      - "산업용로봇"
+      - "액추에이터"
+      - "로보틱스"
+      - "로봇부품"
+      - "AMR"
+    kr_name_patterns:
+      - "레인보우로보틱스"
+      - "두산로보틱스"
+      - "로보스타"
+      - "에스피지"
+      - "하이젠알앤엠"
+      - "현대위아"
+      - "에스비비테크"
+      - "티로보틱스"
+      - "로보티즈"
+      - "뉴로메카"
+      - "삼익THK"
+    us_sector_key: "robotics_automation"
+    us_sector_key_alt: []
+
+  battery_ev:
+    label_kr: "2차전지/전기차"
+    kr_keywords:
+      - "2차전지"
+      - "배터리"
+      - "양극재"
+      - "음극재"
+      - "전해액"
+      - "전기차"
+      - "리튬"
+      - "이차전지"
+      - "ESS"
+      - "분리막"
+      - "동박"
+      - "전해질"
+      - "실리콘음극재"
+    kr_name_patterns:
+      - "LG에너지솔루션"
+      - "삼성SDI"
+      - "SK이노베이션"
+      - "에코프로비엠"
+      - "포스코퓨처엠"
+      - "엘앤에프"
+      - "에코프로"
+      - "씨아이에스"
+      - "피엔티"
+      - "필에너지"
+      - "천보"
+      - "동화기업"
+      - "솔루스첨단소재"
+      - "SK아이이테크놀로지"
+      - "더블유씨피"
+      - "원통형"
+    us_sector_key: "battery_ev"
+    us_sector_key_alt: []
+
+  auto:
+    label_kr: "자동차/부품"
+    kr_keywords:
+      - "자동차"
+      - "차량"
+      - "부품"
+      - "모터"
+      - "변속기"
+      - "샤시"
+      - "타이어"
+      - "완성차"
+    kr_name_patterns:
+      - "현대차"
+      - "기아"
+      - "현대모비스"
+      - "만도"
+      - "한온시스템"
+      - "현대위아"
+      - "HL만도"
+      - "에스엘"
+      - "세방전지"
+      - "한국타이어앤테크놀로지"
+      - "금호타이어"
+    us_sector_key: "consumer_discretionary"
+    us_sector_key_alt: []
+
+  bio_healthcare:
+    label_kr: "바이오/헬스케어"
+    kr_keywords:
+      - "바이오"
+      - "제약"
+      - "의료기기"
+      - "헬스케어"
+      - "신약"
+      - "항체"
+      - "유전"
+      - "임상"
+      - "진단키트"
+      - "의약품"
+      - "CMO"
+      - "CDMO"
+      - "바이오시밀러"
+      - "항암"
+    kr_name_patterns:
+      - "삼성바이오로직스"
+      - "셀트리온"
+      - "유한양행"
+      - "한미약품"
+      - "SK바이오사이언스"
+      - "HK이노엔"
+      - "에스티팜"
+      - "보령"
+      - "종근당"
+      - "대웅제약"
+      - "휴젤"
+      - "클래시스"
+    us_sector_key: "healthcare_bio"
+    us_sector_key_alt: []
+
+  finance:
+    label_kr: "금융"
+    kr_keywords:
+      - "금융"
+      - "은행"
+      - "보험"
+      - "증권"
+      - "투자"
+      - "캐피탈"
+      - "저축은행"
+      - "카드"
+      - "지주"
+    kr_name_patterns:
+      - "KB금융"
+      - "신한지주"
+      - "하나금융지주"
+      - "삼성생명"
+      - "삼성화재"
+      - "메리츠금융지주"
+      - "DB손해보험"
+      - "미래에셋증권"
+      - "키움증권"
+      - "한국금융지주"
+      - "우리금융지주"
+      - "기업은행"
+    us_sector_key: "financials"
+    us_sector_key_alt: []
+
+  cosmetics_consumer:
+    label_kr: "화장품/소비재"
+    kr_keywords:
+      - "화장품"
+      - "뷰티"
+      - "코스메틱"
+      - "스킨케어"
+      - "소비재"
+      - "생활용품"
+      - "식음료"
+      - "음식료"
+      - "의류"
+      - "패션"
+      - "명품"
+    kr_name_patterns:
+      - "아모레퍼시픽"
+      - "LG생활건강"
+      - "코스맥스"
+      - "한국콜마"
+      - "브이티"
+      - "실리콘투"
+      - "파마리서치"
+      - "에이피알"
+      - "애경산업"
+    us_sector_key: "consumer_discretionary"
+    us_sector_key_alt: []
+
+  entertainment_game:
+    label_kr: "엔터/게임"
+    kr_keywords:
+      - "엔터"
+      - "엔터테인먼트"
+      - "게임"
+      - "K-pop"
+      - "아이돌"
+      - "콘텐츠"
+      - "미디어"
+      - "OTT"
+      - "드라마"
+      - "영화"
+      - "webtoon"
+      - "웹툰"
+    kr_name_patterns:
+      - "하이브"
+      - "SM엔터테인먼트"
+      - "JYP엔터테인먼트"
+      - "YG엔터테인먼트"
+      - "카카오엔터테인먼트"
+      - "넥슨"
+      - "크래프톤"
+      - "엔씨소프트"
+      - "넷마블"
+      - "카카오게임즈"
+    us_sector_key: "consumer_discretionary"
+    us_sector_key_alt: []
+
+  construction_machinery:
+    label_kr: "건설/기계"
+    kr_keywords:
+      - "건설"
+      - "건축"
+      - "인프라"
+      - "기계"
+      - "플랜트"
+      - "중공업"
+      - "굴삭기"
+      - "지게차"
+      - "크레인"
+      - "산업기계"
+    kr_name_patterns:
+      - "두산밥캣"
+      - "현대건설기계"
+      - "현대건설"
+      - "GS건설"
+      - "DL이앤씨"
+      - "삼성물산"
+      - "대우건설"
+      - "HD현대인프라코어"
+      - "포스코인터내셔널"
+    us_sector_key: "industrials"
+    us_sector_key_alt: []
+
+  materials_copper:
+    label_kr: "구리/비철금속/소재"
+    kr_keywords:
+      - "구리"
+      - "비철금속"
+      - "소재"
+      - "원자재"
+      - "전선"
+      - "동"
+      - "알루미늄"
+      - "니켈"
+      - "아연"
+      - "철강"
+      - "스틸"
+      - "합금"
+    kr_name_patterns:
+      - "풍산"
+      - "고려아연"
+      - "대한전선"
+      - "이구산업"
+      - "포스코홀딩스"
+      - "현대제철"
+      - "POSCO"
+      - "KG스틸"
+      - "세아제강"
+    us_sector_key: "materials_copper"
+    us_sector_key_alt: []
+
+  holding_company:
+    label_kr: "지주/그룹"
+    kr_keywords:
+      - "홀딩스"
+      - "holdings"
+      - "그룹"
+      - "지주"
+    kr_name_patterns:
+      - "SK홀딩스"
+      - "삼성물산"
+      - "LG"
+      - "롯데지주"
+      - "한화"
+      - "두산"
+      - "코오롱"
+      - "효성"
+      - "OCI홀딩스"
+      - "GS"
+    us_sector_key: ""
+    us_sector_key_alt: []
+
+  unknown:
+    label_kr: "기타"
+    kr_keywords: []
+    kr_name_patterns: []
+    us_sector_key: ""
+    us_sector_key_alt: []
+
+# 종목코드 직접 매핑 (가장 높은 우선순위)
+symbol_overrides:
+  "000660": "semiconductor"      # SK하이닉스
+  "005930": "semiconductor"      # 삼성전자
+  "042700": "semiconductor"      # 한미반도체
+  "039030": "semiconductor"      # 이오테크닉스
+  "337930": "semiconductor"      # 브이원텍
+  "079550": "semiconductor"      # LIG넥스원 — 방산으로 재매핑 필요 시 아래 참조
+  "012450": "defense"            # 한화에어로스페이스
+  "079550": "defense"            # LIG넥스원
+  "047810": "defense"            # 한국항공우주
+  "064350": "defense"            # 현대로템
+  "272210": "defense"            # 한화시스템
+  "267250": "shipbuilding"       # HD현대중공업
+  "009540": "shipbuilding"       # HD한국조선해양
+  "010140": "shipbuilding"       # 삼성중공업
+  "329180": "shipbuilding"       # HD현대중공업 (코드확인)
+  "042660": "shipbuilding"       # 한화오션
+  "051910": "battery_ev"         # LG화학
+  "006400": "battery_ev"         # 삼성SDI
+  "373220": "battery_ev"         # LG에너지솔루션
+  "086520": "battery_ev"         # 에코프로
+  "247540": "battery_ev"         # 에코프로비엠
+  "003670": "battery_ev"         # 포스코퓨처엠
+  "066970": "battery_ev"         # 엘앤에프
+  "005380": "auto"               # 현대차
+  "000270": "auto"               # 기아
+  "012330": "auto"               # 현대모비스
+  "161390": "auto"               # 한국타이어앤테크놀로지
+  "207940": "bio_healthcare"     # 삼성바이오로직스
+  "068270": "bio_healthcare"     # 셀트리온
+  "000100": "bio_healthcare"     # 유한양행
+  "128940": "bio_healthcare"     # 한미약품
+  "105560": "finance"            # KB금융
+  "055550": "finance"            # 신한지주
+  "086790": "finance"            # 하나금융지주
+  "032830": "finance"            # 삼성생명
+  "000810": "finance"            # 삼성화재
+  "285130": "cosmetics_consumer" # SK바이오사이언스
+  "002790": "cosmetics_consumer" # 아모레G
+  "090430": "cosmetics_consumer" # 아모레퍼시픽
+  "051900": "cosmetics_consumer" # LG생활건강
+  "192820": "cosmetics_consumer" # 코스맥스
+  "009420": "construction_machinery" # 한국카본
+  "000720": "construction_machinery" # 현대건설
+  "006360": "construction_machinery" # GS건설
+  "069960": "entertainment_game"  # 하이브
+  "041510": "entertainment_game"  # SM엔터테인먼트
+  "035420": "ai_data_center"      # NAVER
+  "035720": "ai_data_center"      # 카카오
+  "078935": "power_grid"          # GS EPS
+  "010120": "power_grid"          # LS ELECTRIC
+  "028260": "power_grid"          # 삼성물산 (에너지사업 포함이나 holding으로 분류)
+  "103140": "materials_copper"    # 풍산
+  "010130": "materials_copper"    # 고려아연
+  "001440": "materials_copper"    # 대한전선
+  "010060": "holding_company"     # OCI
+  "034730": "holding_company"     # SK
+  "003550": "holding_company"     # LG
+  "023530": "holding_company"     # 롯데쇼핑
+  "086280": "semiconductor"       # 현대글로비스 — 실제로는 물류/홀딩스
+  "000990": "power_grid"          # DB하이텍 — 반도체지만 전력소자 포함
+
+# 서브테마 매핑 (섹터 내 세부 분류)
+subtheme_definitions:
+  hbm:
+    label_kr: "HBM"
+    keywords: ["HBM", "고대역폭메모리"]
+    symbols: ["000660", "005930"]
+  ai_chip:
+    label_kr: "AI칩"
+    keywords: ["NPU", "GPU", "온디바이스AI"]
+    symbols: []
+  electric_transformer:
+    label_kr: "변압기"
+    keywords: ["변압기", "GIS", "개폐기"]
+    symbols: []
+  electric_cable:
+    label_kr: "전선"
+    keywords: ["전선", "케이블", "동선"]
+    symbols: ["001440"]
+  nuclear:
+    label_kr: "원전"
+    keywords: ["원전", "원자력", "SMR", "핵연료"]
+    symbols: []
+  cathodic:
+    label_kr: "양극재"
+    keywords: ["양극재", "NCM", "NCMA", "LFP"]
+    symbols: ["247540", "003670", "066970"]
+  k_pop:
+    label_kr: "K-POP"
+    keywords: ["아이돌", "K-pop", "음원"]
+    symbols: ["069960", "041510"]
+  combat_drone:
+    label_kr: "드론/무인기"
+    keywords: ["드론", "무인기", "UAM", "UAV"]
+    symbols: []
+  copper_wire:
+    label_kr: "구리/전선"
+    keywords: ["구리", "전선", "동"]
+    symbols: ["103140", "010130"]

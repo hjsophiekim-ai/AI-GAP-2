@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-06-29",
+  "weights": {
+    "micron_premarket": 0.30,
+    "kospilab":         0.20,
+    "tech_position":    0.25,
+    "volume_momentum":  0.10,
+    "semiconductor":    0.10,
+    "currency_risk":    0.05
+  },
+  "constraints": {
+    "micron_premarket_min": 0.15,
+    "micron_premarket_max": 0.50,
+    "tech_position_min":    0.10,
+    "tech_position_max":    0.45,
+    "max_change_per_round": 0.03
+  },
+  "flag_thresholds": {
+    "STRONG_BUY":  85,
+    "BUY":         70,
+    "WAIT_BUY":    55,
+    "NEUTRAL":     45,
+    "TAKE_PROFIT": 30,
+    "SELL":        15
+  }
+}

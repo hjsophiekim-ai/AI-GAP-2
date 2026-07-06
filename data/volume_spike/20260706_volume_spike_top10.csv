@@ -1,0 +1,4 @@
+﻿rank,symbol,name,current_price,change_rate,change_rate_score,trade_value,final_score,is_etf,is_etn,is_preferred,is_spac,is_reit
+1,042660,한화오션,115500.0,8.04,8.0,1667061000000.0,21.0,False,False,False,False,False
+2,272210,한화시스템,83100.0,10.07,8.0,611162000000.0,21.0,False,False,False,False,False
+3,036530,SNT홀딩스,52900.0,4.34,2.0,11977000000.0,15.0,False,False,False,False,False

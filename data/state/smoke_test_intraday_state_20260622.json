@@ -1,0 +1,104 @@
+{
+  "date": "20260622",
+  "total_entries_today": 2,
+  "breakout_entries_today": 0,
+  "total_budget": 3000000.0,
+  "symbols": {
+    "005930": {
+      "symbol": "005930",
+      "name": "삼성전자",
+      "rank": 1,
+      "allocated_budget": 1367647.0,
+      "allocated_weight": 0.4559,
+      "entries_count": 2,
+      "position_quantity": 0,
+      "avg_buy_price": 9960.0,
+      "current_price": 9960.0,
+      "highest_price_after_entry": 9960.0,
+      "first_take_profit_done": false,
+      "second_take_profit_done": false,
+      "last_buy_at": "2026-06-22T12:50:57.076166",
+      "last_sell_at": "2026-06-22T12:50:57.079444",
+      "cooldown_until": "2026-06-22T12:51:57.079449",
+      "status": "COOLING_DOWN",
+      "last_buy_flag": true,
+      "last_sell_flag": "",
+      "last_reason": "standard_buy",
+      "realized_pnl": 62746.0,
+      "order_history": [
+        {
+          "action": "buy",
+          "price": 9960.0,
+          "qty": 137,
+          "at": "2026-06-22T12:34:16.721059"
+        },
+        {
+          "action": "sell",
+          "type": "full_tp",
+          "price": 10189,
+          "qty": 137,
+          "at": "2026-06-22T12:34:16.725681"
+        },
+        {
+          "action": "buy",
+          "price": 9960.0,
+          "qty": 137,
+          "at": "2026-06-22T12:50:57.076166"
+        },
+        {
+          "action": "sell",
+          "type": "full_tp",
+          "price": 10189,
+          "qty": 137,
+          "at": "2026-06-22T12:50:57.079444"
+        }
+      ]
+    },
+    "000660": {
+      "symbol": "000660",
+      "name": "SK하이닉스",
+      "rank": 2,
+      "allocated_budget": 930000.0,
+      "allocated_weight": 0.31,
+      "entries_count": 0,
+      "position_quantity": 0,
+      "avg_buy_price": 0.0,
+      "current_price": 14970.0,
+      "highest_price_after_entry": 0.0,
+      "first_take_profit_done": false,
+      "second_take_profit_done": false,
+      "last_buy_at": "",
+      "last_sell_at": "",
+      "cooldown_until": "",
+      "status": "WAITING_ENTRY",
+      "last_buy_flag": false,
+      "last_sell_flag": "",
+      "last_reason": "ema_reverse",
+      "realized_pnl": 0.0,
+      "order_history": []
+    },
+    "035720": {
+      "symbol": "035720",
+      "name": "카카오",
+      "rank": 3,
+      "allocated_budget": 702353.0,
+      "allocated_weight": 0.2341,
+      "entries_count": 0,
+      "position_quantity": 0,
+      "avg_buy_price": 0.0,
+      "current_price": 4990.0,
+      "highest_price_after_entry": 0.0,
+      "first_take_profit_done": false,
+      "second_take_profit_done": false,
+      "last_buy_at": "",
+      "last_sell_at": "",
+      "cooldown_until": "",
+      "status": "WAITING_ENTRY",
+      "last_buy_flag": false,
+      "last_sell_flag": "",
+      "last_reason": "below_vwap",
+      "realized_pnl": 0.0,
+      "order_history": []
+    }
+  }
+}

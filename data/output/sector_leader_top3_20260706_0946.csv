@@ -1,0 +1,4 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,042660,한화오션,shipbuilding,,120800.0,13.0,301192000000.0,20.3,25.0,10,10,0,5,60.3,,,,섹터1위(shipbuilding) | 거래량급증중복 | 미국섹터매칭(industrials),,,,industrials,us_moderate_industrials,yahoo,risk_on
+2,000660,SK하이닉스,semiconductor,hbm,2487000.0,2.56,2519268000000.0,22.8,20.0,10,0,0,0,52.75,,,,섹터1위(semiconductor) | 거래대금섹터1위 | 미국섹터매칭(semiconductor),,,,semiconductor,us_moderate_semiconductor,yahoo,risk_on
+3,005930,삼성전자,semiconductor,hbm,324000.0,4.68,2457993000000.0,22.8,5.0,10,0,0,0,37.75,,,,거래대금섹터1위 | 미국섹터매칭(semiconductor),,,,semiconductor,us_moderate_semiconductor,yahoo,risk_on

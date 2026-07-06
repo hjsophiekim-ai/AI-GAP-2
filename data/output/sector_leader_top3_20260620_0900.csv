@@ -1,0 +1,4 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,000660,SK하이닉스,semiconductor,hbm,200000.0,5.0,500000000000.0,24.5,20.0,20,0,0,0,64.5,,,,섹터1위(semiconductor) | 거래대금섹터1위 | 미국섹터매칭(semiconductor),,,,semiconductor,us_strong_semiconductor,yahoo,risk_on
+2,012450,한화에어로스페이스,defense,,350000.0,4.5,300000000000.0,14.0,20.0,10,0,0,0,44.0,,,,섹터1위(defense) | 미국섹터매칭(defense),,,,defense,us_moderate_defense,yahoo,risk_on
+3,005490,POSCO홀딩스,materials_copper,,500000.0,3.0,100000000000.0,8.8,20.0,0,0,0,0,28.75,,,,섹터1위(materials_copper),,,,materials_copper,us_weak_materials_copper,yahoo,risk_on

@@ -1,0 +1,4 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,000660,SK하이닉스,semiconductor,hbm,2901000.0,4.96,8300416000000.0,22.8,20.0,10,0,0,0,52.75,,,,섹터1위(semiconductor) | 거래대금섹터1위 | 미국섹터매칭(semiconductor),,,,semiconductor,us_moderate_semiconductor,yahoo,risk_on
+2,066570,LG전자,holding_company,,228500.0,8.04,1008978000000.0,13.3,20.0,0,0,0,0,33.3,,,,섹터1위(holding_company),,,,,no_us_mapping,yahoo,risk_on
+3,064400,LG씨엔에스,holding_company,,89400.0,4.2,553564000000.0,13.3,5.0,0,0,0,0,18.3,,,,점수기반선정,,,,,no_us_mapping,yahoo,risk_on

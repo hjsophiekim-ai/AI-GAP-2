@@ -1,0 +1,9 @@
+{
+  "value": 29535.0,
+  "change_rate": 0.72,
+  "source": "yfinance",
+  "timestamp": "2026-07-06T15:17:26",
+  "success": true,
+  "error": null,
+  "optional": true
+}

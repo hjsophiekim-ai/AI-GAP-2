@@ -1,0 +1,4 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,042660,한화오션,shipbuilding,,115000.0,7.58,532634000000.0,13.3,25.0,10,10,0,0,58.3,,,,섹터1위(shipbuilding) | 거래량급증중복 | 미국섹터매칭(industrials),,,,industrials,us_moderate_industrials,yahoo,risk_on
+2,000270,기아,auto,,160400.0,5.53,58541000000.0,15.1,0.0,10,0,0,0,25.05,,,,미국섹터매칭(consumer_discretionary),,,,consumer_discretionary,us_moderate_consumer_discretionary,yahoo,risk_on
+3,012330,현대모비스,auto,,510000.0,3.24,100585000000.0,15.1,0.0,10,0,0,0,25.05,,,,미국섹터매칭(consumer_discretionary),,,,consumer_discretionary,us_moderate_consumer_discretionary,yahoo,risk_on

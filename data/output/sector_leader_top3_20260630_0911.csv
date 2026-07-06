@@ -1,0 +1,4 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,005930,삼성전자,semiconductor,hbm,329500.0,2.01,1309830000000.0,22.8,5.0,10,0,0,0,37.75,,,,거래대금섹터1위 | 미국섹터매칭(semiconductor),,,,semiconductor,us_moderate_semiconductor,yahoo,risk_on
+2,066570,LG전자,holding_company,,201500.0,2.44,215756000000.0,5.2,20.0,0,0,0,0,25.25,,,,섹터1위(holding_company),,,,,no_us_mapping,yahoo,risk_on
+3,000990,DB하이텍,power_grid,,148000.0,3.06,6919000000.0,13.3,0.0,10,0,0,0,23.3,,,,미국섹터매칭(power_grid),,,,power_grid,us_moderate_power_grid,yahoo,risk_on

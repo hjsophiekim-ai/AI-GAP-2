@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-06-29",
+  "weights": {
+    "micron_premarket_aftermarket": 0.45,
+    "kospilab_expected_price": 0.25,
+    "sox_index": 0.10,
+    "nvda": 0.07,
+    "qqq_nasdaq_futures": 0.05,
+    "usd_krw": 0.03,
+    "hynix_momentum_volume": 0.05
+  },
+  "constraints": {
+    "micron_min": 0.30,
+    "micron_max": 0.60,
+    "kospilab_min": 0.15,
+    "kospilab_max": 0.35,
+    "max_change_per_round": 0.03
+  }
+}

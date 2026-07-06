@@ -1,0 +1,70 @@
+{
+  "initial_regime": "D",
+  "initial_confidence": 99.7,
+  "initial_at": "2026-07-06T12:33:22",
+  "history": [
+    {
+      "timestamp": "2026-07-06T12:33:22",
+      "now_hm": "09:30",
+      "regime": "D",
+      "confidence": 99.7,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-06T12:33:41",
+      "now_hm": "09:35",
+      "regime": "D",
+      "confidence": 99.7,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-06T12:47:10",
+      "now_hm": "12:46",
+      "regime": "E",
+      "confidence": 67.2,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-06T14:09:46",
+      "now_hm": "14:09",
+      "regime": "D",
+      "confidence": 88.6,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-06T14:15:13",
+      "now_hm": "14:14",
+      "regime": "D",
+      "confidence": 91.0,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-06T14:24:21",
+      "now_hm": "14:23",
+      "regime": "D",
+      "confidence": 88.6,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-06T14:54:57",
+      "now_hm": "14:54",
+      "regime": "D",
+      "confidence": 91.5,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-06T15:09:35",
+      "now_hm": "15:09",
+      "regime": "C",
+      "confidence": 83.0,
+      "policy_name": "policy_gap_support"
+    },
+    {
+      "timestamp": "2026-07-06T15:17:30",
+      "now_hm": "15:16",
+      "regime": "D",
+      "confidence": 84.0,
+      "policy_name": "policy_no_trade"
+    }
+  ]
+}

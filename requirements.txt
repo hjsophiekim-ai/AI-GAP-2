@@ -1,0 +1,16 @@
+streamlit
+streamlit-autorefresh
+pandas
+numpy
+requests
+beautifulsoup4
+lxml
+PyYAML
+python-dotenv
+plotly
+scikit-learn
+joblib
+openpyxl
+sqlalchemy
+yfinance
+pandas_market_calendars

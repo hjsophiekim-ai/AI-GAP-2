@@ -1,0 +1,63 @@
+# Market Regime Router 설정
+# 시장 유형(A~F) 판단 시각 및 신뢰도 기준.
+
+market_regime:
+  enabled: true
+
+  # ── 시간 구간 (전부 코드 수정 없이 조정 가능) ──────────────────────────
+  data_collection_start_time: "08:50"
+  data_collection_end_time: "09:25"
+  observe_end_time: "09:20"        # 이 시각 이전: 관찰만, 신규매수 절대 금지
+  confirm_time: "09:20"            # 이 시각 이후 최초 1회: 유형 확정 + 09:20 기준가 캐시
+  entry_start_time: "09:25"        # 신규매수 가능 시작
+  entry_end_time: "09:45"          # 신규매수 가능 종료
+  first_take_profit_window_start: "10:20"
+  first_take_profit_window_end: "10:50"
+  force_exit_time: "11:10"         # 전량 시간청산
+  no_new_entry_after: "11:10"
+
+  # ── 신뢰도 기준 ────────────────────────────────────────────────────────
+  confidence_threshold: 60         # 미만이면 F(NO_TRADE)로 강등
+
+  # ── 감시 대상 반도체 대형주 ──────────────────────────────────────────
+  semiconductor_universe:
+    - { symbol: "000660", name: "SK하이닉스" }
+    - { symbol: "005930", name: "삼성전자" }
+    - { symbol: "042700", name: "한미반도체" }
+
+  # ── 데이터 소스 우선순위 ────────────────────────────────────────────
+  data_source_priority: ["kis", "naver", "existing", "cache"]
+
+  # ── 점수 가중치 (regime_features.py 기본값과 동일, 여기서 override 가능) ─
+  scoring:
+    us_ai_score:
+      nasdaq_weight: 0.30
+      sox_weight: 0.25
+      micron_weight: 0.20
+      nvidia_weight: 0.15
+      amd_weight: 0.05
+      broadcom_weight: 0.05
+    korea_open_score:
+      gap_weight: 0.45
+      breadth_weight: 0.25
+      hold_open_weight: 0.30
+    leader_sector_score:
+      top5_sector_weight: 0.45
+      top10_theme_weight: 0.35
+
+  # ── 유형별 설명 (UI 표기용) ────────────────────────────────────────
+  regime_labels:
+    A: "강세 주도장"
+    B: "급락 후 반도체 반등장"
+    C: "지수 약세·테마 강세장"
+    D: "갭상승 실패장"
+    E: "급락 지속장"
+    F: "보합/혼조장"
+
+  regime_policy_map:
+    A: "policy_leader_top3"
+    B: "policy_semiconductor_rebound"
+    C: "policy_gap_support"
+    D: "policy_no_trade"
+    E: "policy_inverse"
+    F: "policy_no_trade"

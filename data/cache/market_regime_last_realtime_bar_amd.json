@@ -1,0 +1,16 @@
+{
+  "symbol": "AMD",
+  "latest_price": 517.8200073242188,
+  "latest_change_pct": -4.83,
+  "latest_bar_1m": null,
+  "latest_bar_3m": null,
+  "latest_bar_5m": null,
+  "volume": null,
+  "timestamp": "2026-07-06T15:17:22",
+  "source": "yahoo",
+  "bar_source": "none",
+  "freshness_seconds": 0.0,
+  "is_stale": false,
+  "success": true,
+  "data_gap_reason": "MARKET_CLOSED"
+}

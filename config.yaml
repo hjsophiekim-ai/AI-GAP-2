@@ -1,0 +1,272 @@
+mode: "mock"  # dry_run | mock | real  (기본값: mock — 실전은 UI에서 실전모드 활성화 필요)
+
+trading:
+  total_budget: 10000000
+  max_positions: 15
+  max_shares_per_stock: 2
+  min_gap_rate: 1.0
+  max_gap_rate: 20.0
+  min_trade_value: 300000000
+  buy_start_time: "09:05"
+  buy_end_time: "09:10"
+  first_take_profit_rate: 3.0
+  second_take_profit_rate: 5.0
+  stop_loss_rate: -1.5
+  bulk_sell_1150_time: "11:50"
+  force_sell_time: "13:00"
+  emergency_sell_time: "15:10"
+  order_type: "limit"
+  allow_market_order: false
+  min_price: 1000
+
+filters:
+  exclude_etf: true
+  exclude_etn: true
+  exclude_preferred_stock: true
+  exclude_spac: true
+  exclude_reit: true
+  exclude_warning_stock: true
+  exclude_halt: true
+  min_price: 1000
+  max_spread_rate: 1.0
+
+data_source:
+  pre_market_primary: "naver"
+  regular_market_primary: "kis"
+  secondary: "naver"
+  use_naver_gap_tab: true
+  use_naver_volume_tab: true
+  refresh_before_market_open: true
+  refresh_after_market_open: true
+  market_open_time: "09:00"
+
+naver:
+  sise_url: "https://finance.naver.com/sise/"
+
+kis:
+  real:
+    enabled: false                               # 기본 비활성화 — UI 실전모드 버튼으로 override
+    app_key_env: "KIS_REAL_APP_KEY"
+    app_secret_env: "KIS_REAL_APP_SECRET"
+    account_no_env: "KIS_ACCOUNT_NO"             # .env의 실제 키 이름
+    account_product_code_env: "KIS_ACCOUNT_PRODUCT_CODE"
+    product_code_env: "KIS_ACCOUNT_PRODUCT_CODE" # 하위 호환용
+    base_url: "https://openapi.koreainvestment.com:9443"
+
+  mock:
+    enabled: true
+    app_key_env: "KIS_MOCK_APP_KEY"
+    app_secret_env: "KIS_MOCK_APP_SECRET"
+    account_no_env: "KIS_MOCK_ACCOUNT_NO"
+    account_product_code_env: "KIS_MOCK_ACCOUNT_PRODUCT_CODE"
+    product_code_env: "KIS_MOCK_ACCOUNT_PRODUCT_CODE"
+    base_url: "https://openapivts.koreainvestment.com:29443"
+
+dart:
+  enabled: true
+  api_key_env: "DART_API_KEY"
+  lookback_days: 7
+  use_disclosure_score: true
+  disclosure_score_weight: 0.10
+  max_positive_bonus: 10
+  max_negative_penalty: -20
+  exclude_severe_risk_disclosure: true
+
+ml:
+  use_model: true
+  fallback_to_rule_score: true
+  model_path: "models/gap_model.pkl"
+  feature_importance_path: "models/feature_importance.csv"
+  min_training_rows: 500
+  ml_weight: 0.6
+  rule_weight: 0.4
+
+safety:
+  # ── 실전투자 활성화 플래그 (기본값: 모두 false = 안전) ─────────────────────
+  enable_real_trading: false    # 전체 실전투자 마스터 스위치
+  enable_real_buy: false        # 실전 매수 허용
+  enable_real_sell: false       # 실전 매도 허용
+
+  # ── 확인 문구 ──────────────────────────────────────────────────────────────
+  require_real_order_confirm_text: true
+  real_order_confirm_text: "REAL_ORDER_CONFIRMED"
+
+  # ── 주문 한도 ──────────────────────────────────────────────────────────────
+  max_order_amount: 5000000       # 건당 최대 주문금액 (원)
+  max_daily_order_amount: 30000000 # 일일 최대 주문금액 (원)
+  max_position_amount_per_symbol: 10000000 # 종목당 최대 보유금액 (원)
+  max_daily_loss_rate: -5.0
+
+  # ── 하위 호환 (기존 키 유지) ───────────────────────────────────────────────
+  require_real_confirm: true
+  real_confirm_text: "REAL_ORDER_CONFIRMED"
+  max_real_order_amount: 5000000
+  max_real_daily_budget: 30000000
+
+hynix_auto_trade:
+  # SK하이닉스 예측 기반 자동매매(제안+승인) 임계값 — 코드 수정 없이 조정 가능.
+  max_daily_buy_pct: 0.20        # 일일 최대 매수금액 = 총자산의 20%
+  max_symbol_pct: 0.70           # 종목당 최대 비중 = 총자산의 70%
+  min_cash_ratio_for_buy: 0.20   # 현금비중이 이 값 미만이면 신규매수 금지
+  daily_loss_limit_pct: -3.0     # 당일 누적 손익이 이 값 이하면 신규매수 중단
+
+volume_spike:
+  enabled: true
+  source_url: "https://finance.naver.com/sise/sise_quant_high.naver"
+  target_top_n: 10
+  min_price: 20000                # 현재가 20,000원 이하 제외
+  min_change_rate: 3.0            # 상승률 3% 미만 제외 (하드, fallback 복구 금지)
+  max_change_rate: 18.0           # 상승률 18% 초과 제외 (하드, fallback 복구 금지)
+  min_trading_value: 3000000000   # 거래대금 30억 이상 1차 통과
+  fallback_min_trading_value: 1000000000  # fallback1: 거래대금 10억 이상 (5~15% 조건 유지)
+  fallback_min_price: 10000               # fallback2: Top10 부족 시 1만원 이상으로 가격 완화
+  exclude_etf: true
+  exclude_etn: true
+  exclude_preferred: true
+  exclude_spac: true
+  exclude_reit: true
+  exclude_suspended: true
+  quality_stock_preference: true
+  max_candidates_to_score: 80
+
+strategy:
+  mode: "volume_spike"  # gap | volume_spike | sector_leader_top3
+
+sector_leader_top3:
+  enabled: true
+  use_us_sector_match: true
+  nxt_max_pages: 5
+  nxt_max_stocks: 100
+  volume_spike_max_pages: 3
+  volume_spike_max_stocks: 80
+  exclude_etf: true
+  exclude_etn: true
+  exclude_preferred: true
+  exclude_spac: true
+  exclude_reit: true
+  exclude_suspended: true
+  min_price: 20000
+  min_trading_value: 2000000000
+  min_change_rate: 2.0
+  max_change_rate: 15.0
+  max_same_sector: 2
+  max_sector_rank: 5          # 섹터 거래대금 순위 5위 초과 섹터 종목은 Top3 대상 제외
+  target_top_n: 3
+  scoring:
+    sector_strength_score_max: 35
+    sector_leader_score_max: 25
+    us_sector_match_score_max: 20
+    volume_spike_confirm_score_max: 10
+    ma_bonus_max: 10
+    risk_penalty_max: 30
+
+us_sector_strength:
+  enabled: true
+  primary_source: "yahoo"
+  fallback_sources: ["cache"]
+  cache_enabled: true
+  cache_max_age_hours: 24
+  strong_threshold: 70
+  moderate_threshold: 50
+  request_timeout_seconds: 8
+
+intraday_auto_trade:
+  enabled: true
+  strategy_name: "top3_timed_buy_3pct_takeprofit"   # 기본 전략
+  target_symbols_source: "sector_leader_top3"
+
+  # ── top3_timed_buy_3pct_takeprofit 전략 설정 ─────────────────────────────
+  buy_mode: "timed_top3"
+  sell_mode: "take_profit_monitor"
+  buy_window_start: "09:10"
+  buy_window_end: "09:30"
+  buy_schedule:
+    rank1: "09:12"
+    rank2: "09:16"
+    rank3: "09:20"
+  budget_allocation:
+    rank1: 0.45
+    rank2: 0.35
+    rank3: 0.20
+  use_market_order: true
+  check_interval_seconds: 10
+  take_profit_pct: 3.0
+  stop_loss_enabled: true
+  stop_loss_pct: -1.2
+  trailing_stop_enabled: false
+  force_exit_enabled: true
+  force_exit_time: "15:10"
+  max_buy_per_symbol_per_day: 1
+  max_sell_per_symbol_per_day: 1
+  max_total_buy_symbols: 3
+  minimum_safety_filter_enabled: true
+  min_change_rate_at_buy: -1.0
+  max_drop_from_intraday_high_pct: 5.0
+  exclude_etf: true
+  exclude_etn: true
+  exclude_preferred: true
+  exclude_spac: true
+  exclude_reit: true
+  exclude_suspended: true
+
+  # ── 기존 master_pullback_top3_multi_entry 전략용 설정 (하위 호환) ─────────
+  total_budget: 10000000
+  max_position_count: 3
+  buy_start_time: "09:10"
+  buy_end_time: "14:40"
+  max_total_entries_per_day: 3
+  max_entries_per_symbol: 2
+  cooldown_minutes: 10
+  allow_breakout_entry_if_no_pullback: true
+  buy_conditions:
+    min_pullback_pct: -3.8
+    max_pullback_pct: -1.2
+    min_volume_ratio: 1.15
+    min_rsi: 42
+    max_rsi: 72
+    crash_threshold_pct: -5.0
+  relaxed_buy_conditions:
+    activate_after_minutes: 60
+    min_pullback_pct: -0.8
+    min_volume_ratio: 1.0
+  sell_conditions:
+    stop_loss_pct: -1.2
+    half_take_profit_pct: 1.8
+    full_take_profit_pct: 3.2
+    trailing_stop_pct: -1.8
+  state_file: "data/state/intraday_auto_trade_state_YYYYMMDD.json"
+  log_file: "data/logs/intraday_auto_trades_YYYYMMDD.csv"
+
+logging:
+  save_csv: true
+  save_db: false
+  level: "INFO"
+  log_dir: "logs"
+
+candidate_quality_filters:
+  enabled: true
+  speed_mode: true
+  relaxed_mode: true
+  target_min_candidates: 10
+  target_top_n: 15
+
+  min_price: 1000
+  absolute_min_trading_value: 300000000
+  min_trading_value_general: 700000000
+  min_trading_value_0920: 1000000000
+
+  healthy_gap_min: 1.0
+  healthy_gap_max: 9.0
+  caution_gap_max: 15.0
+  hard_exclude_gap_rate: 20.0
+  caution_gap_rate: 7.0
+  max_open_gap_rate: 12.0
+
+  max_3d_return: 25.0
+  max_5d_return: 35.0
+  max_intraday_drop_from_high: 4.0
+  max_ma20_extension_rate: 15.0
+
+  max_same_theme_in_top15: 5
+  max_same_subtheme_in_top15: 4
+  max_candidates_for_heavy_filters: 30

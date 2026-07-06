@@ -1,0 +1,11 @@
+{
+  "symbol": "AMD",
+  "close": 517.8200073242188,
+  "change_rate": -4.263422080760768,
+  "volume": 28142500,
+  "session_date": "2026-07-02",
+  "source": "yahoo",
+  "success": true,
+  "error": null,
+  "timestamp": "2026-07-06T15:17:24"
+}
