@@ -1,11 +1,11 @@
 {
   "symbol": "^SOX",
-  "close": 12626.2197265625,
-  "change_rate": -5.44480855630116,
+  "close": 12900.1416015625,
+  "change_rate": 2.16946862110862,
   "volume": 0,
-  "session_date": "2026-07-02",
+  "session_date": "2026-07-06",
   "source": "yahoo",
   "success": true,
   "error": null,
-  "timestamp": "2026-07-06T15:17:24"
+  "timestamp": "2026-07-07T07:41:34"
 }

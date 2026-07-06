@@ -112,11 +112,68 @@ def _direction_from_probs(p_down: float, p_sideways: float, p_up: float) -> str:
     return "SIDEWAYS"
 
 
-def _expected_regime(direction: str, down_pressure: float, market_collapse_score: float, current_regime: str) -> str:
-    if direction == "DOWN":
+_HORIZON_REVERSION_WEIGHT = {"30m": 0.10, "1h": 0.35, "3h": 0.60}
+
+
+def _apply_recovery_adjustment(
+    down_pressure: float, horizon: str,
+    recovery_info: Optional[dict], score_deltas: Optional[dict],
+) -> tuple[float, list[str]]:
+    """
+    "위험 국면은 계속된다"는 관성 편향을 줄이기 위해, recovery_score와
+    위험점수의 5분/15분 변화 방향(절대값이 아니라 추세)을 down_pressure에 반영한다.
+
+    30분 예측에는 약하게(현재 상태 비중 유지), 3시간 예측에는 강하게 적용한다 —
+    "3시간 예측은 current_regime보다 변화율을 더 본다"는 원칙을 구현한 것이다.
+    """
+    reasons: list[str] = []
+    reversion_w = _HORIZON_REVERSION_WEIGHT.get(horizon, 0.0)
+    if reversion_w <= 0:
+        return down_pressure, reasons
+
+    adjustment = 0.0
+    recovery_score = (recovery_info or {}).get("recovery_score")
+    if recovery_score is not None and recovery_score > 50.0:
+        adjustment -= (recovery_score - 50.0) * reversion_w
+        if recovery_score >= 65.0:
+            reasons.append(f"회복 신호(recovery_score {recovery_score:.0f}) 반영 — 위험 지속 가정 완화")
+
+    momentum = (score_deltas or {}).get("regime_transition_momentum")
+    if momentum is not None:
+        # momentum > 0 = 최근 15분간 위험점수 완화 중 -> down_pressure 추가 완화
+        adjustment -= momentum * reversion_w * 0.6
+        if abs(momentum) >= 8.0:
+            trend = "완화" if momentum > 0 else "악화"
+            reasons.append(f"최근 위험점수 {trend} 추세(모멘텀 {momentum:+.1f}) 반영")
+
+    adjusted = max(0.0, min(100.0, down_pressure + adjustment))
+    return round(adjusted, 2), reasons
+
+
+def _expected_regime(
+    direction: str, down_pressure: float, market_collapse_score: float, current_regime: str,
+    recovery_score: Optional[float] = None, collapse_declining: bool = False,
+) -> str:
+    """
+    direction(3분류)이 아니라 down_pressure 자체를 구간화해서 판단한다.
+    기존 "DOWN->D/E, UP->A, SIDEWAYS->현재유지" 3갈래 매핑은 D/E에서 C로
+    완화되는 경로를 표현할 수 없었다(항상 현재 regime을 그대로 반복) — 이를
+    보완해 "위험이 옅어지는 중간 구간"에서는 C(또는 B)로 완화될 수 있게 한다.
+    """
+    if down_pressure >= 70.0:
         return "E" if market_collapse_score >= 80 else "D"
-    if direction == "UP":
+    if down_pressure >= 55.0:
+        # 여전히 위험 구간이지만 회복 신호가 강하고(recovery_score>=75) collapse_score가
+        # 실제로 하락 중이면(15분 전보다 뚜렷히 낮아짐) 완화 가능성을 반영한다.
+        if recovery_score is not None and recovery_score >= 75.0 and collapse_declining and current_regime in ("D", "E"):
+            return "C"
+        return "D"
+    if down_pressure <= 20.0:
         return "A"
+    if down_pressure <= 35.0:
+        return "B" if current_regime in ("D", "E") else "A"
+    if current_regime in ("D", "E") and down_pressure < 50.0:
+        return "C"
     return current_regime or "F"
 
 
@@ -125,6 +182,8 @@ def predict_market_direction(
     snapshot: dict,
     regime_result: Optional[dict] = None,
     ref_0920: Optional[dict] = None,
+    recovery_info: Optional[dict] = None,
+    score_deltas: Optional[dict] = None,
 ) -> dict:
     """
     향후 30분/1시간/3시간 국내증시(및 반도체) 방향을 확률로 예측한다.
@@ -136,11 +195,16 @@ def predict_market_direction(
     regime_result : MarketRegimeRouter.determine_regime() 결과 (선택 — 있으면
                     market_collapse_score/현재 regime을 재사용)
     ref_0920 : 09:20 기준 스냅샷 (theme_rotation_score 계산에 사용)
+    recovery_info : regime_features.compute_recovery_score() 결과 (선택) —
+                    "위험 지속" 관성 편향을 줄이기 위한 회복 신호.
+    score_deltas : regime_router가 계산한 위험/회복 점수의 5분/15분 변화량
+                   + regime_transition_momentum (선택).
 
     Returns
     -------
     dict: horizon, direction, probability_up/sideways/down, expected_regime,
-          confidence_score, key_reasons, risk_flags, components
+          confidence_score, key_reasons, risk_flags, components, recovery_score,
+          down_pressure_score_raw
     """
     if horizon not in _HORIZON_WEIGHTS:
         raise ValueError(f"지원하지 않는 horizon: {horizon} (30m/1h/3h만 가능)")
@@ -154,22 +218,37 @@ def predict_market_direction(
 
     components = _build_components(snapshot, ref_0920)
     weights = _HORIZON_WEIGHTS[horizon]
-    down_pressure, used = _weighted_pressure(components, weights)
+    down_pressure_raw, used = _weighted_pressure(components, weights)
+    down_pressure, recovery_reasons = _apply_recovery_adjustment(
+        down_pressure_raw, horizon, recovery_info, score_deltas,
+    )
+
+    collapse_delta_15m = (score_deltas or {}).get("market_collapse_score_delta_15m")
+    collapse_declining = collapse_delta_15m is not None and collapse_delta_15m <= -10.0
+    recovery_score = (recovery_info or {}).get("recovery_score")
 
     p_down, p_sideways, p_up = _pressure_to_probabilities(down_pressure)
     direction = _direction_from_probs(p_down, p_sideways, p_up)
-    expected_regime = _expected_regime(direction, down_pressure, market_collapse_score, current_regime)
+    expected_regime = _expected_regime(
+        direction, down_pressure, market_collapse_score, current_regime,
+        recovery_score=recovery_score, collapse_declining=collapse_declining,
+    )
 
-    # 신뢰도: 데이터 완결성(가중치 커버리지) x 판단의 뚜렷함(중립 50에서 얼마나 떨어졌는지)
+    # 신뢰도: 데이터 완결성(가중치 커버리지) x 판단의 뚜렷함(중립 50에서 얼마나 떨어졌는지).
+    # 예측 방향과 recovery_score가 정면 충돌하면(예: DOWN인데 recovery_score 높음) 감점한다.
     coverage = (sum(used.values()) and len(used) / len(weights)) or 0.0
     decisiveness = min(1.0, abs(down_pressure - 50.0) / 40.0)
-    confidence_score = round(max(10.0, min(95.0, 40.0 * coverage + 55.0 * decisiveness + 5.0)), 1)
+    confidence_score = 40.0 * coverage + 55.0 * decisiveness + 5.0
+    if recovery_score is not None and direction == "DOWN" and recovery_score >= 70.0:
+        confidence_score -= 15.0
+    confidence_score = round(max(10.0, min(95.0, confidence_score)), 1)
 
     ranked = sorted(used.items(), key=lambda kv: abs(kv[1] - 50.0) * weights.get(kv[0], 0), reverse=True)
     key_reasons = [
         f"{_COMPONENT_LABELS.get(k, k)} ({v:.0f}점)"
         for k, v in ranked[:4] if abs(v - 50.0) >= 8.0
     ]
+    key_reasons.extend(recovery_reasons)
     if not key_reasons:
         key_reasons = ["뚜렷한 우세 신호 없음 — 중립적 흐름"]
 
@@ -187,6 +266,8 @@ def predict_market_direction(
         "confidence_score": confidence_score,
         "key_reasons": key_reasons,
         "risk_flags": risk_flags,
+        "recovery_score": recovery_score,
+        "down_pressure_score_raw": down_pressure_raw,
         "down_pressure_score": down_pressure,
         "components": used,
         "computed_at": datetime.now().isoformat(timespec="seconds"),
@@ -198,9 +279,18 @@ def predict_market_direction(
     return result
 
 
-def predict_all_horizons(snapshot: dict, regime_result: Optional[dict] = None, ref_0920: Optional[dict] = None) -> dict:
+def predict_all_horizons(
+    snapshot: dict,
+    regime_result: Optional[dict] = None,
+    ref_0920: Optional[dict] = None,
+    recovery_info: Optional[dict] = None,
+    score_deltas: Optional[dict] = None,
+) -> dict:
     """30분/1시간/3시간 예측을 한번에 계산해 {horizon: result} 로 반환한다."""
-    return {h: predict_market_direction(h, snapshot, regime_result, ref_0920) for h in HORIZONS}
+    return {
+        h: predict_market_direction(h, snapshot, regime_result, ref_0920, recovery_info, score_deltas)
+        for h in HORIZONS
+    }
 
 
 # ---------------------------------------------------------------------------

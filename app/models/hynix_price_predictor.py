@@ -5,18 +5,19 @@
 추가 필드(result["price_prediction"])로만 덧붙인다.
 
 6단계 파이프라인:
-  1) 미국 AI/반도체 점수 (MU/NVDA/AMD/AVGO/SOX/QQQ)
+  1) 미국 AI/반도체 점수 (MU/NVDA/AMD/AVGO/SOX/QQQ, MU 상대강도 포함)
   2) 국내 수급/선물/환율 점수 (KOSPI200/USD-KRW/외국인·기관 순매수)
   3) 국내 반도체 섹터 점수 (하이닉스 자체 VWAP 위치 + KOSPI200 대비 상대강도)
   4) SK하이닉스 자체 모멘텀 점수 (RSI/MACD/이평선/거래량 — 일봉 기준)
+  4.5) 회복(recovery) 점수 — "위험은 계속된다"는 관성 편향을 줄이기 위한 반등 신호
   5) 가격 예측 엔진 (horizon별 가중합 → 기대수익률 → 현재가 anchor 가격 변환)
-  6) 신뢰도/데이터품질 보정 + sanity clip
+  6) 신뢰도/데이터품질 보정 + sanity clip + rolling bias 보정
 
 규칙 기반(rule-based)으로 설계했으며, 추후 ML 모델로 교체 가능하도록
 HynixPricePredictor 클래스로 분리했다. 어떤 이유로도 예외를 던지지 않는다
 (모든 실패는 결과 dict의 missing_data_warning/message로 표현).
 
-수익 보장 문구는 절대 포함하지 않는다 — 모든 결과는 확률적 추정치다.
+수익 보장/확정 예측 문구는 절대 포함하지 않는다 — 모든 결과는 확률적 추정치다.
 """
 
 from __future__ import annotations
@@ -34,14 +35,16 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 from app.models.hynix_predictor import _resolve_price_anchor, _round_krx
+from app.models import model_calibration
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = ROOT / "logs" / "hynix_prediction"
 
-MODEL_VERSION = "rule_based_multi_horizon_v1"
+MODEL_VERSION = "rule_based_multi_horizon_v2_recovery_aware"
 HORIZONS = ("30m", "1h", "3h", "close", "tomorrow_open")
 
-# horizon별 4단계 신호 가중치 (각 horizon 합계 = 1.0)
+# horizon별 4단계 신호 가중치 (각 horizon 합계 = 1.0). tomorrow_open은 별도
+# 전용 산식(_compute_tomorrow_open_signal)을 쓰므로 여기 값은 참고용 폴백이다.
 HORIZON_WEIGHTS = {
     "30m":           {"hynix_self": 0.45, "domestic_sector": 0.25, "domestic_flow": 0.15, "us_ai_semi": 0.15},
     "1h":            {"hynix_self": 0.35, "domestic_sector": 0.25, "domestic_flow": 0.20, "us_ai_semi": 0.20},
@@ -54,12 +57,16 @@ HORIZON_RETURN_SCALE = {"30m": 0.8, "1h": 1.3, "3h": 2.2, "close": 3.0, "tomorro
 # 비현실적 가격(예: "250만원인데 100만원 매수") 방지용 sanity clip 상한(%)
 HORIZON_CLIP_PCT = {"30m": 1.5, "1h": 3.0, "3h": 5.0, "close": 7.0, "tomorrow_open": 7.0}
 # 방향 확률 계산 시 "횡보"로 간주하는 기대수익률 구간(%)
-HORIZON_SIDEWAYS_PCT = {"30m": 0.3, "1h": 0.5, "3h": 0.8, "close": 0.6, "tomorrow_open": 1.0}
+HORIZON_SIDEWAYS_PCT = {"30m": 0.3, "1h": 0.5, "3h": 0.8, "close": 1.0, "tomorrow_open": 1.2}
+# "위험은 계속된다"는 관성 편향을 줄이기 위해 recovery_score를 반영하는 비중(horizon별).
+# 3시간/종가/내일시가일수록 회복 신호를 더 크게 반영한다.
+HORIZON_RECOVERY_INFLUENCE = {"30m": 0.05, "1h": 0.15, "3h": 0.30, "close": 0.35, "tomorrow_open": 0.30}
+# market_collapse_score/semiconductor_collapse_score가 70을 넘는 극단적 급락 구간에서
+# 추가로 반영하는 하락 페널티의 horizon별 최대치(%)
+HORIZON_COLLAPSE_PENALTY_SCALE = {"30m": 0.3, "1h": 0.5, "3h": 0.8, "close": 1.0, "tomorrow_open": 1.0}
+HORIZON_RELIABILITY_CAP = {"30m": 85.0, "1h": 78.0, "3h": 68.0, "close": 60.0, "tomorrow_open": 55.0}
 
-_RESULT_KEY = {
-    "30m": "30m", "1h": "1h", "3h": "3h",
-    "close": "close_today", "tomorrow_open": "open_tomorrow",
-}
+_RESULT_KEY = {"30m": "30m", "1h": "1h", "3h": "3h", "close": "close_today", "tomorrow_open": "open_tomorrow"}
 
 
 def _weighted_norm(components: dict) -> tuple:
@@ -75,12 +82,46 @@ def _weighted_norm(components: dict) -> tuple:
     return signal, round(weight_sum, 4)
 
 
+def _norm01(value: Optional[float], scale: float) -> Optional[float]:
+    """value(-scale..+scale) -> 0~100 점수(0=strong negative, 50=neutral, 100=strong positive)."""
+    if value is None:
+        return None
+    return max(0.0, min(100.0, 50.0 + (value / scale) * 50.0))
+
+
 def _mu_effective_return(micron_features: dict) -> Optional[float]:
     for key in ("micron_regular_return", "micron_aftermarket_return", "micron_premarket_return"):
         value = micron_features.get(key)
         if value is not None:
             return float(value)
     return None
+
+
+def _mu_data_status(mu: dict) -> str:
+    if not mu.get("current_price"):
+        return "MISSING"
+    gap = mu.get("data_gap_reason", "NORMAL")
+    if gap in ("US_HOLIDAY", "WEEKEND", "EARLY_CLOSE_OR_CLOSED"):
+        return "LAST_SESSION"
+    if mu.get("is_stale"):
+        return "DELAYED"
+    return "REALTIME"
+
+
+def _tomorrow_state(now_hm: Optional[str] = None) -> str:
+    """
+    INTRADAY_PRELIMINARY(장중, 단정 금지) / CLOSING_BASED(장마감 후) /
+    US_SESSION_UPDATED(다음날 08:50 이전, 미국장 실결과 반영 중) /
+    PREOPEN_FINAL(다음날 08:50~09:00, 한국장 개장 직전 최종판단).
+    """
+    now_hm = now_hm or datetime.now().strftime("%H:%M")
+    if now_hm < "08:50":
+        return "US_SESSION_UPDATED"
+    if now_hm < "09:00":
+        return "PREOPEN_FINAL"
+    if now_hm < "15:30":
+        return "INTRADAY_PRELIMINARY"
+    return "CLOSING_BASED"
 
 
 class HynixPricePredictor:
@@ -103,9 +144,8 @@ class HynixPricePredictor:
         sox_ret = index.get("sox_return")
         qqq_ret = index.get("qqq_return")
 
-        mu_relative_strength_vs_sox = None
-        if mu_ret is not None and sox_ret is not None:
-            mu_relative_strength_vs_sox = round(mu_ret - sox_ret, 3)
+        mu_relative_strength_vs_sox = round(mu_ret - sox_ret, 3) if (mu_ret is not None and sox_ret is not None) else None
+        mu_relative_strength_vs_qqq = round(mu_ret - qqq_ret, 3) if (mu_ret is not None and qqq_ret is not None) else None
 
         signal, used_weight = _weighted_norm({
             "mu": (mu_ret, 3.0, 0.35),
@@ -118,6 +158,8 @@ class HynixPricePredictor:
         return {
             "signal": signal, "used_weight": used_weight,
             "mu_return": mu_ret, "mu_relative_strength_vs_sox": mu_relative_strength_vs_sox,
+            "mu_relative_strength_vs_qqq": mu_relative_strength_vs_qqq,
+            "mu_data_status": _mu_data_status(mu),
             "sox_return": sox_ret, "nvda_return": nvda_ret, "amd_return": amd_ret,
             "avgo_return": avgo_ret, "qqq_return": qqq_ret,
             "sources": {
@@ -141,9 +183,7 @@ class HynixPricePredictor:
         institution_net = investor.get("institution_net_buy")
 
         flow_values = [v for v in (foreign_net, institution_net) if v is not None]
-        flow_signal = None
-        if flow_values:
-            flow_signal = math.tanh(sum(flow_values) / len(flow_values) / 1_500_000.0)
+        flow_signal = math.tanh(sum(flow_values) / len(flow_values) / 1_500_000.0) if flow_values else None
 
         futures_proxy_ret = kospi200_ret if kospi200_ret is not None else kospi_ret
         signal, used_weight = _weighted_norm({
@@ -157,7 +197,7 @@ class HynixPricePredictor:
             "kospi200_futures_note": "실제 지수선물 시세 없음 — KOSPI200 현물지수를 근사치로 사용",
             "usdkrw_change": usdkrw_change,
             "foreign_net_buy": foreign_net, "institution_net_buy": institution_net,
-            "is_proxy": False,
+            "is_proxy": bool(investor.get("is_proxy", False)),
             "sources": {
                 "domestic_index": domestic_index.get("source"), "index": index.get("source"),
                 "investor_flow": investor.get("source"),
@@ -211,7 +251,8 @@ class HynixPricePredictor:
         })
         return {
             "signal": signal, "used_weight": used_weight,
-            "vwap": round(vwap, 1) if vwap else None, "vwap_position_pct": round(vwap_position_pct, 3) if vwap_position_pct is not None else None,
+            "vwap": round(vwap, 1) if vwap else None,
+            "vwap_position_pct": round(vwap_position_pct, 3) if vwap_position_pct is not None else None,
             "relative_strength_vs_kospi200": relative_strength_vs_kospi200,
             "note": "삼성전자/한미반도체 개별 실시간 수집 대신, 하이닉스 자체 VWAP 위치 + "
                     "KOSPI200 대비 상대강도를 국내 반도체 섹터 위치의 근사치로 사용함(추가 수집 지연 방지).",
@@ -247,6 +288,83 @@ class HynixPricePredictor:
         }
 
     # ------------------------------------------------------------------
+    # Stage 4.5: 회복(recovery) 점수 — "위험 지속" 관성 편향을 줄이기 위한 반등 신호.
+    # 삼성전자/한미반도체/체결강도는 이 파이프라인에 수집되지 않아 unavailable로 둔다.
+    # ------------------------------------------------------------------
+    def _stage_recovery(self, market_data: dict, tech_indicators: dict, sector_stage: dict) -> dict:
+        components: dict = {}
+
+        components["hynix_vwap_reclaim_score"] = _norm01(sector_stage.get("vwap_position_pct"), 1.0)
+
+        vol_change = tech_indicators.get("volume_change_pct")
+        components["volume_confirmation_score"] = _norm01(vol_change, 30.0)
+
+        rsi = tech_indicators.get("rsi_14")
+        return_3d = tech_indicators.get("return_3d_pct")
+        if rsi is not None and return_3d is not None:
+            if rsi < 45.0 and return_3d > 0:
+                components["rsi_rebound_score"] = 70.0
+            elif rsi < 30.0:
+                components["rsi_rebound_score"] = 55.0
+            else:
+                components["rsi_rebound_score"] = 50.0
+        else:
+            components["rsi_rebound_score"] = None
+
+        domestic_index = market_data.get("domestic_index", {}) or {}
+        kospi200_ret = domestic_index.get("kospi200_return")
+        components["futures_rebound_score"] = _norm01(kospi200_ret, 1.0)
+
+        investor = market_data.get("investor_flow", {}) or {}
+        foreign_net = investor.get("foreign_net_buy")
+        components["foreign_flow_score"] = _norm01(foreign_net, 500_000.0)
+
+        # 이 파이프라인에는 삼성전자/한미반도체 개별 수집이 없어 항상 unavailable.
+        components["samsung_confirmation_score"] = None
+        components["hanmi_confirmation_score"] = None
+
+        weights = {
+            "hynix_vwap_reclaim_score": 0.30, "volume_confirmation_score": 0.15,
+            "rsi_rebound_score": 0.20, "futures_rebound_score": 0.20, "foreign_flow_score": 0.15,
+        }
+        weighted, total_w = 0.0, 0.0
+        for k, w in weights.items():
+            v = components.get(k)
+            if v is None:
+                continue
+            weighted += v * w
+            total_w += w
+        score = round(weighted / total_w, 2) if total_w > 0 else 50.0
+        return {
+            "recovery_score": score, "components": components,
+            "unavailable": [k for k, v in components.items() if v is None],
+        }
+
+    # ------------------------------------------------------------------
+    # 내일 시가 전용 산식 (spec: us_ai*0.30 + mu_rel*0.20 + close_location*0.15
+    #                       + foreign_flow*0.15 + fx*0.10 + tomorrow_market*0.10)
+    # ------------------------------------------------------------------
+    def _compute_tomorrow_open_signal(
+        self, stage_us: dict, stage_flow: dict, stage_sector: dict,
+        tomorrow_market_prediction_factor: Optional[float],
+    ) -> float:
+        us_ai_factor = stage_us.get("signal") or 0.0
+        mu_rel = stage_us.get("mu_relative_strength_vs_sox")
+        mu_relative_strength_factor = max(-1.0, min(1.0, mu_rel / 3.0)) if mu_rel is not None else 0.0
+        vwap_pos = stage_sector.get("vwap_position_pct")
+        today_close_location_factor = max(-1.0, min(1.0, (vwap_pos or 0.0) / 1.0))
+        foreign_net = stage_flow.get("foreign_net_buy")
+        foreign_flow_factor = math.tanh(foreign_net / 1_500_000.0) if foreign_net is not None else 0.0
+        usdkrw_change = stage_flow.get("usdkrw_change")
+        fx_factor = max(-1.0, min(1.0, -usdkrw_change / 1.0)) if usdkrw_change is not None else 0.0
+        tmp_factor = tomorrow_market_prediction_factor if tomorrow_market_prediction_factor is not None else 0.0
+
+        return (
+            us_ai_factor * 0.30 + mu_relative_strength_factor * 0.20 + today_close_location_factor * 0.15
+            + foreign_flow_factor * 0.15 + fx_factor * 0.10 + tmp_factor * 0.10
+        )
+
+    # ------------------------------------------------------------------
     # Stage 5/6: 가격 예측 + 신뢰도/데이터품질 보정
     # ------------------------------------------------------------------
     def predict(
@@ -256,7 +374,21 @@ class HynixPricePredictor:
         hynix_prev_close: Optional[float] = None,
         tech_indicators: Optional[dict] = None,
         micron_features: Optional[dict] = None,
+        now_hm: Optional[str] = None,
+        market_collapse_score: Optional[float] = None,
+        semiconductor_collapse_score: Optional[float] = None,
+        tomorrow_market_prediction_factor: Optional[float] = None,
     ) -> dict:
+        """
+        Parameters
+        ----------
+        market_collapse_score, semiconductor_collapse_score : Market Regime
+            Router에서 계산된 값(선택). 넘기면 collapse_penalty에 반영된다 —
+            이 파이프라인은 독립적으로 실행 가능해야 하므로 넘기지 않아도
+            정상 동작하며, 이 경우 collapse_penalty는 0으로 처리된다.
+        tomorrow_market_prediction_factor : market_prediction.predict_tomorrow_market()의
+            방향 신호(-1..1로 환산, 선택) — 내일 시가 산식의 10% 비중 항목.
+        """
         tech_indicators = tech_indicators or {}
         micron_features = micron_features or {}
         market_data = market_data or {}
@@ -265,6 +397,7 @@ class HynixPricePredictor:
         stage_flow = self._stage_domestic_flow(market_data)
         stage_sector = self._stage_domestic_sector(market_data, hynix_current_price, hynix_prev_close, tech_indicators)
         stage_self = self._stage_hynix_self(tech_indicators)
+        stage_recovery = self._stage_recovery(market_data, tech_indicators, stage_sector)
         stage_results = {
             "us_ai_semi": stage_us, "domestic_flow": stage_flow,
             "domestic_sector": stage_sector, "hynix_self": stage_self,
@@ -281,6 +414,7 @@ class HynixPricePredictor:
         mu_is_stale = bool(market_data.get("mu", {}).get("is_stale"))
         hynix_source = market_data.get("hynix", {}).get("source")
         investor_source = market_data.get("investor_flow", {}).get("source")
+        recovery_score = stage_recovery.get("recovery_score")
 
         data_quality_score, missing_warnings = _compute_data_quality(
             stage_results, holiday_mode, mu_is_stale, hynix_source, investor_source,
@@ -288,6 +422,7 @@ class HynixPricePredictor:
 
         base_price, base_source = _resolve_price_anchor(hynix_current_price, hynix_prev_close)
         extreme_event = _is_extreme_event(stage_us)
+        tomorrow_state = _tomorrow_state(now_hm)
 
         result = {
             "model_version": MODEL_VERSION,
@@ -301,7 +436,14 @@ class HynixPricePredictor:
             "missing_data_warning": missing_warnings,
             "stage_scores": {name: sr.get("signal") for name, sr in stage_results.items()},
             "stage_details": stage_results,
-            "key_reasons": _build_key_reasons(stage_results),
+            "recovery_score": recovery_score,
+            "recovery_score_components": stage_recovery.get("components"),
+            "recovery_score_unavailable": stage_recovery.get("unavailable"),
+            "mu_data_status": stage_us.get("mu_data_status"),
+            "mu_relative_strength_vs_sox": stage_us.get("mu_relative_strength_vs_sox"),
+            "mu_relative_strength_vs_qqq": stage_us.get("mu_relative_strength_vs_qqq"),
+            "tomorrow_open_state": tomorrow_state,
+            "key_reasons": _build_key_reasons(stage_results, stage_recovery),
             "data_sources_used": {
                 "mu": stage_us["sources"].get("mu"), "nvda": stage_us["sources"].get("nvda"),
                 "amd": stage_us["sources"].get("amd"), "avgo": stage_us["sources"].get("avgo"),
@@ -316,32 +458,68 @@ class HynixPricePredictor:
         if base_price <= 0:
             result["message"] = "가격 기준점(current_price/prev_close)이 없어 다중 horizon 가격 예측을 생성할 수 없습니다."
             for horizon in HORIZONS:
-                key = _RESULT_KEY[horizon]
-                result[f"predicted_price_{key}" if horizon not in ("close", "tomorrow_open") else (
-                    "predicted_close_today" if horizon == "close" else "predicted_open_tomorrow"
-                )] = None
+                price_key = "predicted_close_today" if horizon == "close" else (
+                    "predicted_open_tomorrow" if horizon == "tomorrow_open" else f"predicted_price_{horizon}"
+                )
+                result[price_key] = None
             _log_price_prediction(result)
             return result
 
         for horizon in HORIZONS:
-            weights = HORIZON_WEIGHTS[horizon]
-            composite, weight_sum = 0.0, 0.0
-            for stage_name, w in weights.items():
-                sig = stage_results[stage_name].get("signal")
-                if sig is None:
-                    continue
-                composite += sig * w
-                weight_sum += w
-            composite_signal = composite / weight_sum if weight_sum > 1e-9 else 0.0
+            if horizon == "tomorrow_open":
+                composite_signal = self._compute_tomorrow_open_signal(
+                    stage_us, stage_flow, stage_sector, tomorrow_market_prediction_factor,
+                )
+            else:
+                weights = HORIZON_WEIGHTS[horizon]
+                composite, weight_sum = 0.0, 0.0
+                for stage_name, w in weights.items():
+                    sig = stage_results[stage_name].get("signal")
+                    if sig is None:
+                        continue
+                    composite += sig * w
+                    weight_sum += w
+                composite_signal = composite / weight_sum if weight_sum > 1e-9 else 0.0
+
+            # ── 관성 편향 완화: recovery_score가 높을수록(특히 장기 horizon일수록)
+            # 하락 방향으로 쏠린 composite_signal을 완화 방향으로 당긴다.
+            recovery_adjustment = 0.0
+            if recovery_score is not None and recovery_score > 50.0:
+                recovery_adjustment = (recovery_score - 50.0) / 50.0 * HORIZON_RECOVERY_INFLUENCE[horizon]
+                composite_signal += recovery_adjustment
 
             raw_return = composite_signal * HORIZON_RETURN_SCALE[horizon]
+
+            # ── collapse_penalty: 시장 전체/반도체 섹터가 극단적 급락(>=70)이면
+            # 추가 하락 페널티(market_collapse_score/semiconductor_collapse_score를
+            # 넘겨받았을 때만 적용 — 넘기지 않으면 0).
+            collapse_penalty = _compute_collapse_penalty(
+                market_collapse_score, semiconductor_collapse_score, horizon,
+            )
+            raw_return -= collapse_penalty
+
+            # ── rolling bias 보정: 최근 백테스트에서 확인된 이 horizon의 평균 오차를
+            # 표본 수에 비례해(20건 미만 30%, 20~49건 70%, 50건 이상 100%) ±0.8% 이내로 반영.
+            bias_correction = model_calibration.get_hynix_bias_correction(horizon, market_collapse_score)
+            raw_return += bias_correction
+
             clip = HORIZON_CLIP_PCT[horizon] * (1.4 if extreme_event and horizon in ("close", "tomorrow_open") else 1.0)
             clipped_return = max(-clip, min(clip, raw_return))
             clip_applied = abs(raw_return - clipped_return) > 1e-9
 
             price = _round_krx(base_price * (1 + clipped_return / 100))
             p_up, p_side, p_down = _direction_probabilities(clipped_return, HORIZON_SIDEWAYS_PCT[horizon])
-            horizon_confidence = _horizon_confidence(weights, stage_results, holiday_mode, mu_is_stale, hynix_source)
+            direction = "UP" if clipped_return > 0 else ("DOWN" if clipped_return < 0 else "SIDEWAYS")
+            # 가격 방향과 확률 방향은 동일한 clipped_return에서 파생되므로 항상 일치한다
+            # (설계상 보장) — 명세의 "방향확률과 단일가격 방향 일관성" 요구를 만족한다.
+            direction_price_consistent = not ((direction == "UP" and p_down > p_up) or (direction == "DOWN" and p_up > p_down))
+
+            horizon_confidence = _compute_confidence(
+                horizon=horizon, data_quality_score=data_quality_score, stage_results=stage_results,
+                holiday_mode=holiday_mode, mu_is_stale=mu_is_stale, hynix_source=hynix_source,
+                investor_is_proxy=stage_flow.get("is_proxy", False), recovery_score=recovery_score,
+                predicted_direction=direction, tomorrow_state=tomorrow_state if horizon == "tomorrow_open" else None,
+            )
 
             price_key = "predicted_close_today" if horizon == "close" else (
                 "predicted_open_tomorrow" if horizon == "tomorrow_open" else f"predicted_price_{horizon}"
@@ -354,6 +532,11 @@ class HynixPricePredictor:
             result[f"probability_down_{suffix}"] = p_down
             result[f"confidence_{suffix}"] = horizon_confidence
             result[f"clip_applied_{suffix}"] = clip_applied
+            result[f"direction_{suffix}"] = direction
+            result[f"direction_price_consistent_{suffix}"] = direction_price_consistent
+            result[f"recovery_adjustment_pct_{suffix}"] = round(recovery_adjustment * HORIZON_RETURN_SCALE[horizon], 3)
+            result[f"collapse_penalty_pct_{suffix}"] = round(collapse_penalty, 3)
+            result[f"rolling_bias_correction_pct_{suffix}"] = round(bias_correction, 3)
 
         # 사용자 요구 명세의 별칭 필드(내일 확률은 "_tomorrow"로도 노출)
         result["probability_up_tomorrow"] = result["probability_up_tomorrow_open"]
@@ -364,6 +547,17 @@ class HynixPricePredictor:
         result["message"] = f"데이터 품질 {data_quality_score:.0f}/100 — 다중 horizon 예측 완료"
         _log_price_prediction(result)
         return result
+
+
+def _compute_collapse_penalty(market_collapse_score, semiconductor_collapse_score, horizon: str) -> float:
+    scores = [s for s in (market_collapse_score, semiconductor_collapse_score) if s is not None]
+    if not scores:
+        return 0.0
+    worst = max(scores)
+    if worst < 70.0:
+        return 0.0
+    intensity = min(1.0, (worst - 70.0) / 30.0)
+    return round(intensity * HORIZON_COLLAPSE_PENALTY_SCALE.get(horizon, 0.0), 4)
 
 
 def _is_extreme_event(stage_us: dict) -> bool:
@@ -394,19 +588,73 @@ def _direction_probabilities(expected_return_pct: Optional[float], sideways_pct:
     return round(p_up / total2 * 100, 1), round(p_side / total2 * 100, 1), round(p_down / total2 * 100, 1)
 
 
-def _horizon_confidence(weights: dict, stage_results: dict, holiday_mode: bool, mu_is_stale: bool, hynix_source) -> float:
-    score = 0.0
-    for stage_name, w in weights.items():
-        completeness = stage_results[stage_name].get("used_weight") or 0.0
-        score += w * completeness
-    conf = score * 100.0
+def _compute_signal_consistency(stage_results: dict) -> float:
+    """4단계 신호의 방향(부호)이 서로 얼마나 일치하는지(0~100)."""
+    signals = [sr.get("signal") for sr in stage_results.values() if sr.get("signal") is not None]
+    if len(signals) < 2:
+        return 50.0
+    positive = sum(1 for s in signals if s > 0.05)
+    negative = sum(1 for s in signals if s < -0.05)
+    agreement = max(positive, negative) / len(signals)
+    return round(agreement * 100.0, 1)
+
+
+def _compute_recent_backtest_accuracy_score(horizon: str) -> float:
+    """model_calibration에 쌓인 표본 수를 신뢰도 점수로 변환(표본 없으면 중립 50)."""
+    info = model_calibration.get_hynix_bias_info(horizon)
+    n = info.get("sample_count", 0)
+    if n <= 0:
+        return 50.0
+    return round(min(90.0, 50.0 + n * 0.8), 1)
+
+
+def _compute_freshness_score(holiday_mode: bool, mu_is_stale: bool, hynix_source) -> float:
+    score = 95.0
     if mu_is_stale:
-        conf *= 0.90
+        score -= 25.0
     if hynix_source not in ("KIS", "kis"):
-        conf *= 0.95
+        score -= 10.0
     if holiday_mode:
-        conf = min(conf, 85.0)
-    return round(max(0.0, min(100.0, conf)), 1)
+        score -= 10.0
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def _compute_confidence(
+    horizon: str, data_quality_score: float, stage_results: dict, holiday_mode: bool,
+    mu_is_stale: bool, hynix_source, investor_is_proxy: bool,
+    recovery_score: Optional[float], predicted_direction: str, tomorrow_state: Optional[str],
+) -> float:
+    """
+    confidence = data_quality*0.30 + signal_consistency*0.25 + horizon_reliability*0.15
+                 + recent_backtest_accuracy*0.15 + freshness*0.15, 이후 상한 캡 적용.
+    """
+    signal_consistency = _compute_signal_consistency(stage_results)
+    horizon_reliability = HORIZON_RELIABILITY_CAP[horizon]
+    backtest_accuracy = _compute_recent_backtest_accuracy_score(horizon)
+    freshness = _compute_freshness_score(holiday_mode, mu_is_stale, hynix_source)
+
+    confidence = (
+        data_quality_score * 0.30 + signal_consistency * 0.25 + horizon_reliability * 0.15
+        + backtest_accuracy * 0.15 + freshness * 0.15
+    )
+
+    core_missing = sum(1 for sr in stage_results.values() if (sr.get("used_weight") or 0.0) < 0.3)
+    if core_missing >= 3:
+        confidence = min(confidence, 60.0)
+    if investor_is_proxy:
+        confidence = min(confidence, 75.0)
+    mu_source = stage_results["us_ai_semi"]["sources"].get("mu")
+    if horizon == "tomorrow_open" and mu_source == "yahoo":
+        confidence = min(confidence, 60.0)
+    if holiday_mode:
+        confidence = min(confidence, 85.0)
+    if tomorrow_state == "INTRADAY_PRELIMINARY":
+        confidence = min(confidence, 65.0)
+    if recovery_score is not None:
+        if (predicted_direction == "DOWN" and recovery_score >= 70.0) or (predicted_direction == "UP" and recovery_score <= 30.0):
+            confidence -= 10.0
+
+    return round(max(0.0, min(100.0, confidence)), 1)
 
 
 def _compute_data_quality(stage_results: dict, holiday_mode: bool, mu_is_stale: bool, hynix_source, investor_source) -> tuple:
@@ -438,7 +686,7 @@ def _compute_data_quality(stage_results: dict, holiday_mode: bool, mu_is_stale: 
     return round(max(0.0, min(100.0, base)), 1), warnings
 
 
-def _build_key_reasons(stage_results: dict) -> list:
+def _build_key_reasons(stage_results: dict, stage_recovery: Optional[dict] = None) -> list:
     candidates: list[tuple] = []
     us = stage_results["us_ai_semi"]
     if us.get("mu_return") is not None:
@@ -468,6 +716,10 @@ def _build_key_reasons(stage_results: dict) -> list:
         candidates.append((abs(selfd["rsi_14"] - 50) * 0.5, f"RSI(14) {selfd['rsi_14']:.1f}"))
     if selfd.get("return_3d_pct") is not None:
         candidates.append((abs(selfd["return_3d_pct"]) * 0.5, f"최근 3일 수익률 {selfd['return_3d_pct']:+.2f}%"))
+    if stage_recovery and stage_recovery.get("recovery_score") is not None:
+        rs = stage_recovery["recovery_score"]
+        if rs >= 60.0 or rs <= 40.0:
+            candidates.append((abs(rs - 50) * 0.6, f"회복(recovery) 점수 {rs:.0f}/100"))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     return [text for _, text in candidates[:5]]
@@ -494,6 +746,8 @@ def _log_price_prediction(result: dict) -> None:
             "confidence_close": result.get("confidence_close"),
             "confidence_tomorrow_open": result.get("confidence_tomorrow_open"),
             "data_quality_score": result.get("data_quality_score"),
+            "recovery_score": result.get("recovery_score"),
+            "tomorrow_open_state": result.get("tomorrow_open_state"),
             "holiday_mode": result.get("holiday_mode"),
             "model_version": result.get("model_version"),
             "actual_price_30m": None, "actual_price_1h": None, "actual_price_3h": None,
@@ -511,6 +765,10 @@ def predict_hynix_multi_horizon(
     hynix_prev_close: Optional[float] = None,
     tech_indicators: Optional[dict] = None,
     micron_features: Optional[dict] = None,
+    now_hm: Optional[str] = None,
+    market_collapse_score: Optional[float] = None,
+    semiconductor_collapse_score: Optional[float] = None,
+    tomorrow_market_prediction_factor: Optional[float] = None,
 ) -> dict:
     """모듈 수준 진입점 — HynixPricePredictor().predict()의 얇은 래퍼."""
     return HynixPricePredictor().predict(
@@ -519,4 +777,8 @@ def predict_hynix_multi_horizon(
         hynix_prev_close=hynix_prev_close,
         tech_indicators=tech_indicators,
         micron_features=micron_features,
+        now_hm=now_hm,
+        market_collapse_score=market_collapse_score,
+        semiconductor_collapse_score=semiconductor_collapse_score,
+        tomorrow_market_prediction_factor=tomorrow_market_prediction_factor,
     )

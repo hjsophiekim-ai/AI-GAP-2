@@ -1,51 +1,51 @@
 {
   "AMD": {
-    "price": 517.8200073242188,
-    "return_pct": -4.83,
+    "price": 552.0499877929688,
+    "return_pct": 6.23,
     "source": "yfinance",
-    "updated_at": "2026-07-06T15:19:23.020914"
+    "updated_at": "2026-07-07T07:59:42.901617"
   },
-  "cached_at": "2026-07-06T15:19:25.121437",
+  "cached_at": "2026-07-07T07:59:45.453102",
   "MU": {
-    "price": 975.5599975585938,
-    "return_pct": -4.37,
+    "price": 984.75,
+    "return_pct": 0.79,
     "source": "yfinance",
-    "updated_at": "2026-07-06T14:56:12.539081"
+    "updated_at": "2026-07-07T07:38:44.294063"
   },
   "NQ=F": {
-    "price": 29773.0,
-    "return_pct": 0.18,
+    "price": 29920.25,
+    "return_pct": 0.68,
     "source": "yfinance",
-    "updated_at": "2026-07-06T15:19:24.124913"
+    "updated_at": "2026-07-07T07:59:44.176136"
   },
   "SOXX": {
-    "price": 566.3200073242188,
-    "return_pct": -5.6,
+    "price": 581.510009765625,
+    "return_pct": 2.15,
     "source": "yfinance",
-    "updated_at": "2026-07-06T15:19:24.777025"
+    "updated_at": "2026-07-07T07:59:45.012779"
   },
   "USDKRW": {
-    "price": 1532.8800048828125,
-    "return_pct": 0.18,
+    "price": 1529.81005859375,
+    "return_pct": -0.02,
     "source": "yfinance",
-    "updated_at": "2026-07-06T15:19:25.120740"
+    "updated_at": "2026-07-07T07:59:45.452400"
   },
   "QQQ": {
     "price": 402.0,
     "return_pct": 0.49999999999998934,
     "source": "yfinance",
-    "updated_at": "2026-07-06T14:56:21.957290"
+    "updated_at": "2026-07-07T07:38:53.015253"
   },
   "NVDA": {
-    "price": 194.8300018310547,
-    "return_pct": -1.12,
+    "price": 195.5500030517578,
+    "return_pct": 0.59,
     "source": "yfinance",
-    "updated_at": "2026-07-06T15:19:22.321422"
+    "updated_at": "2026-07-07T07:59:42.091858"
   },
   "AVGO": {
-    "price": 360.45001220703125,
-    "return_pct": -2.32,
+    "price": 373.8999938964844,
+    "return_pct": 3.36,
     "source": "yfinance",
-    "updated_at": "2026-07-06T15:19:23.798391"
+    "updated_at": "2026-07-07T07:59:43.729091"
   }
 }

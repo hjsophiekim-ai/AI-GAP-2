@@ -30,11 +30,13 @@ from app.market import regime_features as rf
 from app.market.regime_rules import decide_regime, RegimeDecision
 from app.market import market_prediction as mp
 from app.market import market_alert as ma
+from app.market import tick_history
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _STATE_DIR = _ROOT / "data" / "state"
 _LOG_DIR = _ROOT / "logs" / "market_regime"
 _PREDICTION_LOG_DIR = _ROOT / "logs" / "market_prediction"
+_FEATURE_SNAPSHOT_LOG_DIR = _ROOT / "logs" / "feature_snapshots"
 
 CONFIRM_TIME = "09:20"
 REEVALUATION_INTERVAL_MINUTES = 5
@@ -171,6 +173,49 @@ def should_reevaluate(last_run_iso: Optional[str], now: datetime = None, interva
     return (now - last_run).total_seconds() >= interval_minutes * 60
 
 
+def _regime_transition_momentum(score_deltas: dict) -> Optional[float]:
+    """양수=완화(회복) 방향 모멘텀, 음수=악화 방향 모멘텀. 델타 데이터가 전혀 없으면 None."""
+    parts = []
+    mc15 = score_deltas.get("market_collapse_score_delta_15m")
+    if mc15 is not None:
+        parts.append(-mc15)
+    sc15 = score_deltas.get("semiconductor_collapse_score_delta_15m")
+    if sc15 is not None:
+        parts.append(-sc15)
+    rec15 = score_deltas.get("recovery_score_delta_15m")
+    if rec15 is not None:
+        parts.append(rec15)
+    if not parts:
+        return None
+    return round(sum(parts) / len(parts), 2)
+
+
+def _compute_score_deltas(scores: dict, recovery_info: dict, date_str: str) -> dict:
+    """
+    market_collapse_score/semiconductor_collapse_score/risk_off_score/recovery_score의
+    5분/15분 변화량을 계산한다. "절대값이 아니라 변화 방향/추세를 본다"는 원칙을
+    구현하기 위한 전용 시계열(logs와 별개, data/state/market_ticks/score_ticks_*.jsonl)이다.
+    """
+    score_ticks_before = tick_history.load_score_ticks(date_str)
+    current_tick = tick_history.append_score_tick({
+        "market_collapse_score": scores.get("market_collapse_score"),
+        "semiconductor_collapse_score": scores.get("semiconductor_collapse_score"),
+        "risk_off_score": scores.get("risk_off_score"),
+        "recovery_score": recovery_info.get("recovery_score"),
+    }, date_str)
+
+    deltas = {}
+    for field in ("market_collapse_score", "semiconductor_collapse_score", "risk_off_score", "recovery_score"):
+        for minutes, suffix in ((5, "5m"), (15, "15m")):
+            if field == "risk_off_score" and suffix == "15m":
+                continue  # 명세상 risk_off_score는 5분 델타만 사용
+            deltas[f"{field}_delta_{suffix}"] = tick_history.compute_delta(
+                current_tick.get(field), score_ticks_before, field, minutes,
+            )
+    deltas["regime_transition_momentum"] = _regime_transition_momentum(deltas)
+    return deltas
+
+
 def _save_prediction_log(entry: dict, date_str: str) -> None:
     try:
         _PREDICTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -200,6 +245,7 @@ class MarketRegimeRouter:
         scores = rf.compute_all_scores(snapshot, ref_0920)
         scores.update(rf.compute_prediction_scores(snapshot, ref_0920))
         flags = rf.compute_flags(snapshot, ref_0920)
+        recovery_info = rf.compute_recovery_score(snapshot, ref_0920)
 
         holiday_mode = rf.is_holiday_mode(snapshot)
         data_gap_reason = rf.classify_data_gap_reason(snapshot)
@@ -286,8 +332,15 @@ class MarketRegimeRouter:
         current_regime = decision.regime
         regime_change_risk = _regime_change_risk(initial_regime, current_regime)
 
+        # ── 위험/회복 점수의 5분/15분 변화(관성 편향 완화용) ────────────────────
+        score_deltas = _compute_score_deltas(scores, recovery_info, date_str)
+        self._append_feature_snapshot(result_partial={
+            "current_regime": current_regime, "scores": scores, "recovery_info": recovery_info,
+            "snapshot": snapshot, "data_quality_score": data_quality_score,
+        }, date_str=date_str)
+
         # ── 향후 30분/1시간/3시간 + 내일장 예측 ──────────────────────────────
-        predictions = mp.predict_all_horizons(snapshot, result, ref_0920)
+        predictions = mp.predict_all_horizons(snapshot, result, ref_0920, recovery_info, score_deltas)
         tomorrow_prediction = mp.predict_tomorrow_market(
             snapshot, regime_history=regime_history_state.get("history"), now_hm=now_hm, ref_0920=ref_0920,
         )
@@ -315,6 +368,10 @@ class MarketRegimeRouter:
             "semiconductor_collapse_score": scores.get("semiconductor_collapse_score"),
             "recovery_probability": recovery_probability,
             "trend_continuation_probability": trend_continuation_probability,
+            "recovery_score": recovery_info.get("recovery_score"),
+            "recovery_score_components": recovery_info.get("components"),
+            "recovery_score_unavailable": recovery_info.get("unavailable"),
+            "score_deltas": score_deltas,
             "predictions": predictions,
             "tomorrow_prediction": tomorrow_prediction,
             "alert_level": alert.alert_level,
@@ -336,8 +393,14 @@ class MarketRegimeRouter:
         return result
 
     def _save_prediction_entry(self, result: dict, date_str: str) -> None:
-        """logs/market_prediction/YYYYMMDD.jsonl 에 5분 재평가 시계열 한 줄을 남긴다."""
+        """logs/market_prediction/YYYYMMDD.jsonl 에 5분 재평가 시계열 한 줄을 남긴다.
+
+        confidence_score/probability_up/down/sideways(horizon별)와 data_quality_score,
+        recovery_score를 함께 남겨야 이후 백테스트에서 신뢰도/데이터품질 구간별 분석이
+        가능하다(과거 백테스트 리포트에서 확인된 로그 스키마 공백 보완).
+        """
         scores = result.get("scores", {})
+        predictions = result.get("predictions", {}) or {}
         entry = {
             "timestamp": result.get("determined_at"),
             "initial_regime": result.get("initial_regime"),
@@ -353,11 +416,68 @@ class MarketRegimeRouter:
             "fx_risk_score": scores.get("fx_risk_score"),
             "breadth_deterioration_score": scores.get("breadth_deterioration_score"),
             "theme_rotation_score": scores.get("theme_rotation_score"),
-            "key_reasons": result.get("predictions", {}).get("30m", {}).get("key_reasons"),
+            "recovery_score": result.get("recovery_score"),
+            "score_deltas": result.get("score_deltas"),
+            "data_quality_score": result.get("data_quality_score"),
+            "holiday_mode": result.get("holiday_mode"),
+            "key_reasons": predictions.get("30m", {}).get("key_reasons"),
             "alert_level": result.get("alert_level"),
             "action_recommendation": result.get("action_recommendation"),
         }
+        for horizon in ("30m", "1h", "3h"):
+            p = predictions.get(horizon, {})
+            entry[f"confidence_{horizon}"] = p.get("confidence_score")
+            entry[f"probability_up_{horizon}"] = p.get("probability_up")
+            entry[f"probability_down_{horizon}"] = p.get("probability_down")
+            entry[f"probability_sideways_{horizon}"] = p.get("probability_sideways")
         _save_prediction_log(entry, date_str)
+
+    def _append_feature_snapshot(self, result_partial: dict, date_str: str) -> None:
+        """logs/feature_snapshots/YYYYMMDD.jsonl 에 매 tick 핵심 feature를 남긴다.
+
+        market_prediction 로그(예측 결과)와 달리, 이 로그는 "그 순간의 원시
+        feature 값"을 남겨 이후 5분/15분/30분/60분 등 임의 구간 회고 분석에
+        쓴다(예측 정확도와 무관하게 feature 자체의 변화를 추적하기 위함).
+        """
+        try:
+            snapshot = result_partial["snapshot"]
+            scores = result_partial["scores"]
+            recovery_info = result_partial["recovery_info"]
+            domestic = snapshot.get("domestic", {})
+            overseas = snapshot.get("overseas", {})
+            hynix = domestic.get("hynix", {}) or {}
+            samsung = domestic.get("samsung", {}) or {}
+
+            hynix_price = hynix.get("current_price")
+            hynix_vwap = hynix.get("vwap")
+            if hynix_price and hynix_vwap:
+                hynix_vwap_state = "ABOVE" if hynix_price >= hynix_vwap else "BELOW"
+            else:
+                hynix_vwap_state = "UNKNOWN"
+
+            record = {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "current_regime": result_partial.get("current_regime"),
+                "market_collapse_score": scores.get("market_collapse_score"),
+                "semiconductor_collapse_score": scores.get("semiconductor_collapse_score"),
+                "recovery_score": recovery_info.get("recovery_score"),
+                "futures_pressure_score": scores.get("futures_pressure_score"),
+                "foreign_flow_reversal_score": scores.get("foreign_flow_reversal_score"),
+                "fx_risk_score": scores.get("fx_risk_score"),
+                "breadth_score": scores.get("breadth_deterioration_score"),
+                "hynix_vwap_state": hynix_vwap_state,
+                "hynix_price": hynix_price,
+                "samsung_price": samsung.get("current_price"),
+                "kospi200_futures": (domestic.get("kospi200_futures") or {}).get("value"),
+                "usdkrw": (overseas.get("usdkrw") or {}).get("value"),
+                "data_quality_score": result_partial.get("data_quality_score"),
+            }
+            _FEATURE_SNAPSHOT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            path = _FEATURE_SNAPSHOT_LOG_DIR / f"{date_str}.jsonl"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception as exc:
+            logger.debug("[RegimeRouter] feature_snapshot 로그 저장 실패(무해): %s", exc)
 
     def _save_log(self, result: dict, snapshot: dict, date_str: str) -> None:
         try:

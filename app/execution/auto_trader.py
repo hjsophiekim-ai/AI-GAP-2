@@ -347,6 +347,56 @@ class AutoTrader:
 
         return False, False, ""
 
+    def _auto_buy_recovery_gate(self, regime_result: Optional[dict]) -> tuple[bool, str]:
+        """
+        AUTO 매수 전용 추가 안전장치 — recovery_score를 반영한 참고 허용 조건.
+
+        예측 정확도가 개선되더라도 자동매매는 보수적으로 연결한다는 원칙에 따라,
+        아래 조건을 모두 만족해야 AUTO 매수를 허용한다. 수동승인(MANUAL_APPROVAL)
+        경로와 기존 보유종목 자동손절/방어청산(run_exit_check)에는 영향을 주지 않는다.
+
+        current_regime이 D/E이면 recovery_score와 무관하게 AUTO는 항상 금지한다
+        (recovery_score>=75이어도 수동승인 후보 표시까지만 허용 — 명세 9절).
+
+        Returns
+        -------
+        (manual_only, reason) — manual_only=True면 AUTO 매수 금지.
+        """
+        if not regime_result:
+            return False, ""
+
+        current_regime = regime_result.get("regime") or regime_result.get("current_regime")
+        recovery_score = regime_result.get("recovery_score")
+        market_collapse = regime_result.get("market_collapse_score")
+        semi_collapse = regime_result.get("semiconductor_collapse_score")
+        data_quality = regime_result.get("data_quality_score")
+        pred_30m = (regime_result.get("predictions") or {}).get("30m") or {}
+        confidence_30m = pred_30m.get("confidence_score")
+        prob_up_30m = pred_30m.get("probability_up")
+
+        if current_regime in ("D", "E"):
+            if recovery_score is not None and recovery_score >= 75.0:
+                return True, (
+                    f"현재 {current_regime}타입이나 recovery_score {recovery_score:.0f} — "
+                    "AUTO 매수는 금지하고 수동승인(MANUAL_APPROVAL) 후보만 허용합니다"
+                )
+            return True, f"현재 {current_regime}타입(위험 국면) — AUTO 매수 참고 허용 조건 미충족"
+
+        # 값이 없으면(None) 통과가 아니라 실패로 처리한다 — 데이터 부족 시
+        # 예측값보다 경고/보수적 차단을 우선한다는 원칙.
+        checks = [
+            (data_quality is not None and data_quality >= 75.0, f"data_quality_score {data_quality}"),
+            (confidence_30m is not None and confidence_30m >= 65.0, f"confidence_30m {confidence_30m}"),
+            (prob_up_30m is not None and prob_up_30m >= 65.0, f"probability_up_30m {prob_up_30m}"),
+            (recovery_score is not None and recovery_score >= 60.0, f"recovery_score {recovery_score}"),
+            (market_collapse is not None and market_collapse < 70.0, f"market_collapse_score {market_collapse}"),
+            (semi_collapse is not None and semi_collapse < 70.0, f"semiconductor_collapse_score {semi_collapse}"),
+        ]
+        failed = [label for ok, label in checks if not ok]
+        if failed:
+            return True, "AUTO 매수 참고 허용 조건 미충족: " + ", ".join(failed)
+        return False, ""
+
     def buy_now(self, candidate, quantity: int = None, source: str = "manual", regime_result: Optional[dict] = None):
         """수동/자동 매수 공통 실행부. 즉시 1건 매수 + Position Guard 등록."""
         blocked, manual_only, gate_reason = self._execution_safety_gate(regime_result, candidate)
@@ -356,6 +406,11 @@ class AutoTrader:
         if manual_only and source == "auto":
             logger.warning("[AutoTrader] 자동매수 차단, 수동승인 필요(%s): %s", candidate.symbol, gate_reason)
             return None
+        if source == "auto":
+            recovery_manual_only, recovery_reason = self._auto_buy_recovery_gate(regime_result)
+            if recovery_manual_only:
+                logger.warning("[AutoTrader] AUTO 매수 차단(recovery gate, %s): %s", candidate.symbol, recovery_reason)
+                return None
 
         qty = quantity if quantity is not None else self._calc_quantity(candidate.entry_price)
         if qty <= 0:

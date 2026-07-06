@@ -65,6 +65,13 @@
       "regime": "D",
       "confidence": 84.0,
       "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-06T15:47:49",
+      "now_hm": "15:47",
+      "regime": "C",
+      "confidence": 81.5,
+      "policy_name": "policy_gap_support"
     }
   ]
 }

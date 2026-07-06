@@ -208,11 +208,45 @@ if regime_result:
             f"⚠️ 시장유형이 {regime_result['initial_regime']} → {regime_result['current_regime']}(으)로 전환되었습니다."
         )
 
+    # ── 회복(recovery) 신호 + 위험점수 변화 추세 ───────────────────────────
+    st.markdown("##### 회복(recovery) 신호 — \"위험 지속\" 관성 편향 완화")
+    _recovery_score = regime_result.get("recovery_score")
+    _score_deltas = regime_result.get("score_deltas", {}) or {}
+    rc1, rc2, rc3, rc4 = st.columns(4)
+    rc1.metric("회복 점수", f"{_recovery_score:.0f}/100" if _recovery_score is not None else "—")
+    _mc5 = _score_deltas.get("market_collapse_score_delta_5m")
+    _mc15 = _score_deltas.get("market_collapse_score_delta_15m")
+    rc2.metric("시장붕괴점수 5분 변화", f"{_mc5:+.1f}" if _mc5 is not None else "—")
+    rc3.metric("시장붕괴점수 15분 변화", f"{_mc15:+.1f}" if _mc15 is not None else "—")
+    _momentum = _score_deltas.get("regime_transition_momentum")
+    rc4.metric("전환 모멘텀", f"{_momentum:+.1f}" if _momentum is not None else "—",
+               help="양수=완화(회복) 방향, 음수=악화 방향")
+
+    _cur_regime = regime_result.get("current_regime", regime_result.get("regime"))
+    if _cur_regime in ("D", "E") and _recovery_score is not None and _recovery_score >= 65 and _mc15 is not None and _mc15 <= -10:
+        st.info(
+            f"ℹ️ 현재 {_cur_regime}타입이나 recovery_score {_recovery_score:.0f}, "
+            f"시장붕괴점수가 15분간 {_mc15:+.1f} 변화로 완화되는 중입니다 — "
+            "1시간 이내 C 또는 SIDEWAYS로 완화될 가능성을 함께 참고하세요."
+        )
+    elif _cur_regime in ("D", "E") and _recovery_score is not None and _recovery_score < 40:
+        st.caption("현재 회복 신호가 뚜렷하지 않아 위험 국면이 이어질 가능성에 무게를 두고 있습니다.")
+
     # ── 30분/1시간/3시간 예측 ─────────────────────────────────────────────
     st.markdown("##### 향후 방향 예측")
     predictions = regime_result.get("predictions", {}) or {}
     pcols = st.columns(3)
     _dir_icon = {"UP": "🟢 UP", "DOWN": "🔴 DOWN", "SIDEWAYS": "🟡 SIDEWAYS"}
+
+    def _confidence_tier(v: float) -> str:
+        if v >= 75:
+            return "HIGH"
+        if v >= 55:
+            return "MEDIUM"
+        if v >= 40:
+            return "LOW"
+        return "WATCH_ONLY"
+
     for col, horizon, label in zip(pcols, ("30m", "1h", "3h"), ("30분 후", "1시간 후", "3시간 후")):
         pred = predictions.get(horizon, {})
         with col:
@@ -222,7 +256,8 @@ if regime_result:
                 f"하락 {pred.get('probability_down', 0):.0f}% · 보합 {pred.get('probability_sideways', 0):.0f}% · "
                 f"상승 {pred.get('probability_up', 0):.0f}%"
             )
-            st.caption(f"예상유형: {pred.get('expected_regime', '-')} · 신뢰도 {pred.get('confidence_score', 0):.0f}")
+            _conf = pred.get("confidence_score", 0) or 0
+            st.caption(f"예상유형: {pred.get('expected_regime', '-')} · 신뢰도 {_conf:.0f} ({_confidence_tier(_conf)})")
             for reason in pred.get("key_reasons", [])[:3]:
                 st.caption(f"· {reason}")
 

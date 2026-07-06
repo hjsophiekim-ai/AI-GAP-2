@@ -751,4 +751,133 @@ def compute_prediction_scores(snapshot: dict, ref_0920: Optional[dict] = None) -
         "semiconductor_collapse_score": compute_semiconductor_collapse_score(snapshot),
     }
 
-    return flags
+
+# ---------------------------------------------------------------------------
+# recovery_score — "위험 지속" 관성 편향을 줄이기 위한 회복/반등 신호 종합 점수.
+#
+# 0~100, 높을수록 회복 가능성이 큼. 이 저장소에 데이터 소스가 없는 항목
+# (프로그램매매 순매수, 체결강도, 매수/매도 호가 불균형)은 None으로 두고
+# 가중평균에서 제외(재정규화)한다 — 없는 데이터를 임의로 채우지 않는다.
+# ---------------------------------------------------------------------------
+
+def _vwap_reclaim_score(stock: dict, price_delta_5m: Optional[float]) -> Optional[float]:
+    """VWAP 대비 현재 위치(레벨) + 최근 5분 가격 모멘텀을 합쳐 '재돌파' 정도를 추정."""
+    price = stock.get("current_price")
+    vwap = stock.get("vwap")
+    if not price or not vwap or vwap <= 0:
+        return None
+    position_pct = (price - vwap) / vwap * 100
+    level_score = _norm(position_pct, 1.0)
+    if price_delta_5m is not None and vwap:
+        momentum_score = _norm(price_delta_5m, max(vwap * 0.003, 1.0))
+        return round(level_score * 0.7 + momentum_score * 0.3, 2)
+    return round(level_score, 2)
+
+
+def _vwap_level_score(stock: dict) -> Optional[float]:
+    price = stock.get("current_price")
+    vwap = stock.get("vwap")
+    if not price or not vwap or vwap <= 0:
+        return None
+    return round(_norm((price - vwap) / vwap * 100, 1.0), 2)
+
+
+_RECOVERY_WEIGHTS = {
+    "index_low_recovery_score": 12.0, "futures_rebound_score": 14.0,
+    "foreign_selling_slowdown_score": 12.0, "program_buy_reversal_score": 6.0,
+    "fx_stabilization_score": 10.0, "breadth_recovery_score": 10.0,
+    "sector_breadth_recovery_score": 8.0, "trading_value_reinflow_score": 6.0,
+    "hynix_vwap_reclaim_score": 12.0, "samsung_confirmation_score": 5.0,
+    "hanmi_confirmation_score": 3.0, "order_strength_recovery_score": 1.0,
+    "orderbook_imbalance_recovery_score": 1.0,
+}
+
+
+def compute_recovery_score(snapshot: dict, ref_0920: Optional[dict] = None) -> dict:
+    """
+    회복/반등 신호 종합 점수(0~100)를 계산한다.
+
+    Returns
+    -------
+    dict: recovery_score, components(dict, 값 없으면 None), unavailable(list),
+          coverage(0~1, 실제 반영된 가중치 비율)
+    """
+    domestic = snapshot.get("domestic", {})
+    deltas = snapshot.get("deltas", {})
+    d5 = deltas.get("5m", {}) or {}
+    d15 = deltas.get("15m", {}) or {}
+
+    components: dict = {}
+
+    parts = []
+    if d5.get("kospi_change_rate") is not None:
+        parts.append(_norm(d5["kospi_change_rate"], 0.3))
+    if d15.get("kospi_change_rate") is not None:
+        parts.append(_norm(d15["kospi_change_rate"], 0.6))
+    components["index_low_recovery_score"] = round(sum(parts) / len(parts), 2) if parts else None
+
+    parts = []
+    if d5.get("kospi200_futures_change_rate") is not None:
+        parts.append(_norm(d5["kospi200_futures_change_rate"], 0.3))
+    if d15.get("kospi200_futures_change_rate") is not None:
+        parts.append(_norm(d15["kospi200_futures_change_rate"], 0.6))
+    components["futures_rebound_score"] = round(sum(parts) / len(parts), 2) if parts else None
+
+    parts = []
+    if d5.get("foreign_net_buy_proxy") is not None:
+        parts.append(_norm(d5["foreign_net_buy_proxy"], 1_000_000.0))
+    if d15.get("foreign_net_buy_proxy") is not None:
+        parts.append(_norm(d15["foreign_net_buy_proxy"], 2_000_000.0))
+    components["foreign_selling_slowdown_score"] = round(sum(parts) / len(parts), 2) if parts else None
+
+    # 프로그램매매 순매수: 이 저장소에 연동된 무료 데이터 소스가 없어 항상 unavailable.
+    components["program_buy_reversal_score"] = None
+
+    parts = []
+    if d5.get("usdkrw_value") is not None:
+        parts.append(_norm(-d5["usdkrw_value"], 1.0))
+    if d15.get("usdkrw_value") is not None:
+        parts.append(_norm(-d15["usdkrw_value"], 2.0))
+    components["fx_stabilization_score"] = round(sum(parts) / len(parts), 2) if parts else None
+
+    parts = []
+    if d5.get("advancers") is not None:
+        parts.append(_norm(d5["advancers"], 50.0))
+    if d5.get("decliners") is not None:
+        parts.append(_norm(-d5["decliners"], 50.0))
+    components["breadth_recovery_score"] = round(sum(parts) / len(parts), 2) if parts else None
+
+    # 주도섹터 내 상승비율(델타 이력이 없어 레벨 값 그대로 사용)
+    components["sector_breadth_recovery_score"] = compute_leader_sector_rising_ratio(snapshot)
+
+    tv_delta = d5.get("leader_sector_tv_sum")
+    components["trading_value_reinflow_score"] = (
+        round(_norm(tv_delta, 5_000_000_000.0), 2) if tv_delta is not None else None
+    )
+
+    components["hynix_vwap_reclaim_score"] = _vwap_reclaim_score(
+        domestic.get("hynix", {}) or {}, d5.get("hynix_price")
+    )
+    components["samsung_confirmation_score"] = _vwap_level_score(domestic.get("samsung", {}) or {})
+    components["hanmi_confirmation_score"] = _vwap_level_score(domestic.get("hanmi", {}) or {})
+
+    # 체결강도/호가 불균형: 이 저장소에 연동된 데이터 소스가 없어 항상 unavailable.
+    components["order_strength_recovery_score"] = None
+    components["orderbook_imbalance_recovery_score"] = None
+
+    weighted, total_w = 0.0, 0.0
+    for key, w in _RECOVERY_WEIGHTS.items():
+        v = components.get(key)
+        if v is None:
+            continue
+        weighted += v * w
+        total_w += w
+    score = round(weighted / total_w, 2) if total_w > 0 else 50.0
+    max_w = sum(_RECOVERY_WEIGHTS.values())
+
+    return {
+        "recovery_score": score,
+        "components": components,
+        "unavailable": [k for k, v in components.items() if v is None],
+        "coverage": round(total_w / max_w, 2) if max_w else 0.0,
+    }

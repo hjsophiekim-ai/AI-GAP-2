@@ -735,6 +735,29 @@ if _price_pred:
             + ("미국장 휴장/주말 모드" if _price_pred.get("holiday_mode") else "정상 거래일")
         )
 
+        def _confidence_tier(v: float) -> str:
+            if v >= 75:
+                return "HIGH"
+            if v >= 55:
+                return "MEDIUM"
+            if v >= 40:
+                return "LOW"
+            return "WATCH_ONLY"
+
+        _rec_score = _price_pred.get("recovery_score")
+        _rc1, _rc2, _rc3 = st.columns(3)
+        with _rc1:
+            st.metric("회복(recovery) 점수", f"{_rec_score:.0f}/100" if _rec_score is not None else "—")
+        with _rc2:
+            st.metric("MU 데이터 상태", _price_pred.get("mu_data_status", "—"))
+        with _rc3:
+            st.metric("내일예측 상태", _price_pred.get("tomorrow_open_state", "—"))
+        if _rec_score is not None and _rec_score >= 65:
+            st.info(
+                f"ℹ️ 회복 신호가 반영되었습니다(recovery_score {_rec_score:.0f}) — "
+                "위험 국면이라도 반등/완화 가능성을 예측에 함께 고려합니다."
+            )
+
         _horizon_specs = [
             ("30분 후", "predicted_price_30m", "confidence_30m", "expected_return_pct_30m"),
             ("1시간 후", "predicted_price_1h", "confidence_1h", "expected_return_pct_1h"),
@@ -743,14 +766,18 @@ if _price_pred:
             ("내일 시가", "predicted_open_tomorrow", "confidence_tomorrow_open", "expected_return_pct_tomorrow_open"),
         ]
         _hcols = st.columns(5)
-        for _col, (_label, _pkey, _ckey, _rkey) in zip(_hcols, _horizon_specs):
+        _horizon_suffix = ["30m", "1h", "3h", "close", "tomorrow_open"]
+        for _col, (_label, _pkey, _ckey, _rkey), _suf in zip(_hcols, _horizon_specs, _horizon_suffix):
             with _col:
                 _pv = _price_pred.get(_pkey)
                 _rv = _price_pred.get(_rkey)
                 _cv = _price_pred.get(_ckey, 0.0) or 0.0
                 st.metric(_label, f"{_pv:,.0f}원" if _pv else "—",
                           delta=f"{_rv:+.2f}%" if _rv is not None else None)
-                st.caption(f"신뢰도 {_cv:.0f}/100")
+                st.caption(f"신뢰도 {_cv:.0f}/100 ({_confidence_tier(_cv)})")
+                _bias = _price_pred.get(f"rolling_bias_correction_pct_{_suf}")
+                if _bias:
+                    st.caption(f"↳ 하락편향 보정 {_bias:+.2f}%p 적용")
 
         st.markdown("#### 내일 시가 방향 확률")
         _tp1, _tp2, _tp3 = st.columns(3)

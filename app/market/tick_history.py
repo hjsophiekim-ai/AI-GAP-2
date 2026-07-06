@@ -134,6 +134,46 @@ def find_tick_near(ticks: list[dict], minutes_ago: int, now: datetime = None, to
     return best
 
 
+def _score_tick_path(date_str: str = None) -> Path:
+    return _TICK_DIR / f"score_ticks_{date_str or _today()}.jsonl"
+
+
+def append_score_tick(scores: dict, date_str: str = None) -> dict:
+    """regime_router가 계산한 위험/회복 점수(market_collapse_score 등)를 별도
+    시계열로 남긴다. append_tick()의 원본 snapshot 델타 계산과는 무관하게,
+    "점수 자체의 5분/15분 변화"(관성 편향 완화용)를 계산하기 위한 전용 이력이다.
+    """
+    summary = {"timestamp": datetime.now().isoformat(timespec="seconds"), **scores}
+    try:
+        _TICK_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_score_tick_path(date_str), "a", encoding="utf-8") as f:
+            f.write(json.dumps(summary, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:
+        logger.warning("[TickHistory] score tick 저장 실패: %s", exc)
+    return summary
+
+
+def load_score_ticks(date_str: str = None) -> list[dict]:
+    path = _score_tick_path(date_str)
+    if not path.exists():
+        return []
+    ticks = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ticks.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception as exc:
+        logger.debug("[TickHistory] score tick 로드 실패: %s", exc)
+        return []
+    return ticks
+
+
 def compute_delta(current_value: Optional[float], ticks: list[dict], field: str, minutes_ago: int, now: datetime = None) -> Optional[float]:
     """current_value - (minutes_ago분 전 field 값). 과거 tick이 없으면 None."""
     if current_value is None:
