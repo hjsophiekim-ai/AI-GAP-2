@@ -1,0 +1,28 @@
+# SK하이닉스 ML 예측 모델 학습/앙상블 설정.
+# 수익 보장이 아니라 참고용 통계 모델임을 항상 UI/로그에 함께 표시한다.
+
+training:
+  lookback_days: 365
+  recent_30d_weight: 3.0
+  recent_90d_weight: 2.0
+  older_weight: 1.0
+  use_exponential_decay: true
+  decay_half_life_days: 60
+  train_test_split: walk_forward
+  min_samples: 500
+
+ensemble:
+  default_ml_weight: 0.5
+  default_rule_weight: 0.5
+  min_ml_confidence: 60
+  min_backtest_direction_accuracy: 0.55
+  max_ml_weight: 0.7
+  max_rule_weight: 0.8
+
+auto_trade_ml_gate:
+  min_recent_3m_direction_accuracy: 0.60
+  max_30m_mape_pct: 0.8
+  min_data_quality_score: 75
+  min_ensemble_confidence: 65
+  min_recovery_score: 60
+  max_collapse_score: 70

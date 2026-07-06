@@ -817,6 +817,147 @@ else:
 st.divider()
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ML(1년치 학습) 예측 + Rule/ML 앙상블 (신규)
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.subheader("ML 학습 예측 + Rule/ML 앙상블")
+st.caption(
+    "SK하이닉스/KOSPI 등 과거 1년치 데이터로 학습한 통계 모델(ML)과 기존 규칙 기반(Rule) 예측을 "
+    "함께 보여줍니다. ML은 수익을 보장하지 않으며, 백테스트 성과가 기준에 못 미치면 자동으로 "
+    "Rule 비중이 커집니다."
+)
+
+ml_c1, ml_c2, ml_c3, ml_c4 = st.columns(4)
+with ml_c1:
+    do_collect = st.button("과거 데이터 수집", use_container_width=True,
+                            help="SK하이닉스/KOSPI/MU 등 최근 1년치 데이터를 수집합니다(몇 분 소요될 수 있습니다).")
+with ml_c2:
+    do_train = st.button("모델 학습", use_container_width=True,
+                          help="수집된 캐시로 horizon별 ML 모델을 학습합니다.")
+with ml_c3:
+    do_backtest = st.button("백테스트 실행", use_container_width=True,
+                             help="학습된 모델을 과거 데이터로 검증합니다.")
+with ml_c4:
+    show_report = st.button("모델 성과 리포트 보기", use_container_width=True)
+
+if do_collect:
+    with st.spinner("과거 1년치 데이터 수집 중... (수 분 소요 가능)"):
+        try:
+            from app.ml.historical_data_loader import collect_all_historical
+            summary = collect_all_historical(lookback_days=365)
+            st.success("데이터 수집 완료")
+            st.json({k: {"source": v.get("source"), "days": v.get("days"), "error": v.get("error")}
+                     for k, v in summary.items() if isinstance(v, dict) and "source" in v})
+        except Exception as exc:
+            st.error(f"데이터 수집 실패: {exc}")
+
+if do_train:
+    with st.spinner("모델 학습 중..."):
+        try:
+            from app.ml.historical_data_loader import load_all_from_cache
+            from app.ml.hynix_ml_trainer import load_training_config, train_all_models
+            hist = load_all_from_cache()
+            train_results = train_all_models(hist, training_cfg=load_training_config())
+            st.success("모델 학습 완료")
+            for horizon, info in train_results["horizons"].items():
+                if info.get("error"):
+                    st.warning(f"[{horizon}] {info['error']}")
+                else:
+                    st.write(
+                        f"[{horizon}] backend={info.get('backend')} n={info.get('n_samples')} "
+                        f"below_min_samples={info.get('below_min_samples')} "
+                        f"MAE={info.get('regressor_metrics', {}).get('mae')} "
+                        f"방향적중률={info.get('direction_metrics', {}).get('accuracy')}"
+                    )
+        except Exception as exc:
+            st.error(f"모델 학습 실패: {exc}")
+
+if do_backtest:
+    with st.spinner("백테스트 실행 중..."):
+        try:
+            import subprocess
+            proc = subprocess.run(
+                [sys.executable, str(_ROOT / "scripts" / "backtest_hynix_ml.py")],
+                capture_output=True, text=True, timeout=300,
+            )
+            if proc.returncode == 0:
+                st.success("백테스트 완료 — reports/hynix_ml_backtest_summary.md 생성됨")
+            else:
+                st.error(f"백테스트 실패: {proc.stderr[-500:]}")
+        except Exception as exc:
+            st.error(f"백테스트 실행 실패: {exc}")
+
+if show_report:
+    report_path = _ROOT / "reports" / "hynix_ml_backtest_summary.md"
+    if report_path.exists():
+        st.markdown(report_path.read_text(encoding="utf-8"))
+    else:
+        st.info("아직 백테스트 리포트가 없습니다 — '백테스트 실행' 버튼을 먼저 눌러주세요.")
+
+st.markdown("#### 학습 현황")
+try:
+    from app.ml import model_registry as _registry
+    _has_models = _registry.has_trained_models()
+except Exception:
+    _has_models = False
+
+lc1, lc2, lc3 = st.columns(3)
+with lc1:
+    st.metric("ML 모델 사용 여부", "학습됨" if _has_models else "미학습")
+with lc2:
+    st.metric("학습 데이터 기간(설계값)", "최근 1년")
+with lc3:
+    st.metric("최근 3개월 가중치 강화", "적용(3.0배)")
+
+if not _has_models:
+    st.warning("⚠️ 학습된 ML 모델이 없습니다 — 위 '과거 데이터 수집' -> '모델 학습' 버튼을 순서대로 눌러주세요. 지금은 Rule 예측만 사용됩니다.")
+
+_engine_result = st.session_state.get("engine_result", {}) or {}
+_ensemble = _engine_result.get("ensemble_prediction")
+_ml_pred = _engine_result.get("ml_prediction")
+
+if _ensemble:
+    st.markdown("#### Horizon별 Rule / ML / Ensemble 비교")
+    _horizon_labels = [("30m", "30분 후"), ("1h", "1시간 후"), ("3h", "3시간 후"),
+                        ("close", "오늘 종가"), ("next_open", "내일 시가")]
+    for hkey, hlabel in _horizon_labels:
+        h = _ensemble["horizons"].get(hkey, {})
+        with st.expander(f"{hlabel} — 최종선택 {h.get('final_price'):,}원" if h.get("final_price") else f"{hlabel} — 데이터 부족"):
+            rc1, rc2, rc3 = st.columns(3)
+            with rc1:
+                st.metric("Rule 예측가", f"{h.get('rule_price'):,}원" if h.get("rule_price") else "—",
+                          delta=f"{h.get('rule_return_pct'):+.2f}%" if h.get("rule_return_pct") is not None else None)
+            with rc2:
+                st.metric("ML 예측가", f"{h.get('ml_price'):,}원" if h.get("ml_price") else "미학습/데이터부족",
+                          delta=f"{h.get('ml_return_pct'):+.2f}%" if h.get("ml_return_pct") is not None else None)
+            with rc3:
+                st.metric("Ensemble 최종값", f"{h.get('final_price'):,}원" if h.get("final_price") else "—",
+                          delta=f"{h.get('ensemble_return_pct'):+.2f}%" if h.get("ensemble_return_pct") is not None else None)
+            st.caption(
+                f"비중: ML {h.get('ml_weight', 0)*100:.0f}% / Rule {h.get('rule_weight', 0)*100:.0f}% "
+                f"— {h.get('weight_reason', '—')}"
+            )
+            if h.get("ml_available"):
+                st.caption(f"ML 모델 신뢰도: {h.get('ml_confidence')}/100"
+                           + (" (표본 부족)" if h.get("ml_below_min_samples") else ""))
+            else:
+                st.caption("ML 예측 없음 — Rule 100% 사용 중")
+
+    if _ml_pred and any(v.get("available") for v in _ml_pred.get("horizons", {}).values()):
+        with st.expander("Feature 중요도 Top 10 (horizon별)"):
+            for hkey, hlabel in _horizon_labels:
+                fi = (_ml_pred.get("horizons", {}).get(hkey) or {}).get("feature_importance") or {}
+                if not fi:
+                    continue
+                top10 = sorted(fi.items(), key=lambda kv: kv[1], reverse=True)[:10]
+                st.markdown(f"**{hlabel}**")
+                st.dataframe(pd.DataFrame(top10, columns=["feature", "importance"]), use_container_width=True, hide_index=True)
+else:
+    st.info("'자동 예측 실행'을 누르면 ML/Ensemble 비교도 함께 표시됩니다(모델 미학습 시 Rule만 표시).")
+
+st.divider()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 기술적 지표 표시
 # ─────────────────────────────────────────────────────────────────────────────
 

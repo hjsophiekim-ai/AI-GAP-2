@@ -9,6 +9,27 @@
       "regime": "C",
       "confidence": 66.0,
       "policy_name": "policy_gap_support"
+    },
+    {
+      "timestamp": "2026-07-07T08:02:38",
+      "now_hm": "08:02",
+      "regime": "E",
+      "confidence": 65.3,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-07T08:38:03",
+      "now_hm": "08:37",
+      "regime": "F",
+      "confidence": 58.8,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-07T08:45:36",
+      "now_hm": "08:45",
+      "regime": "F",
+      "confidence": 57.2,
+      "policy_name": "policy_no_trade"
     }
   ]
 }

@@ -1,0 +1,2 @@
+﻿rank,symbol,name,sector,subtheme,current_price,change_rate,trading_value,sector_strength_score,sector_leader_score,us_sector_match_score,volume_spike_confirm_score,ma_bonus,risk_penalty,final_score,hard_excluded,eligible,selected,selected_reason,sector_rank,warning_reason,excluded_reason,matched_us_sector,us_sector_reason,us_data_source,market_regime
+1,066970,엘앤에프,battery_ev,cathodic,108100.0,4.55,9104000000.0,5.2,5.0,10,0,0,0,20.25,,,,미국섹터매칭(battery_ev),,,,battery_ev,us_moderate_battery_ev,yahoo,risk_on

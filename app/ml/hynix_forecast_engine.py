@@ -76,6 +76,8 @@ def run_forecast(market_data: dict) -> dict:
         "swing": None,
         "explanation": None,
         "price_prediction": None,
+        "ml_prediction": None,
+        "ensemble_prediction": None,
         "errors": list(market_data.get("errors", [])),
         "diagnostics": _build_diagnostics(market_data),
     }
@@ -165,6 +167,35 @@ def run_forecast(market_data: dict) -> dict:
         result["price_prediction"] = None
         result["errors"].append(f"Multi-horizon price prediction failed: {exc}")
         log.exception("multi-horizon price prediction failed")
+
+    # ML(1년치 학습) 예측 + 룰/ML 앙상블 — 완전히 추가적(additive)이며 실패해도
+    # 기존 파이프라인(price_prediction 포함)에는 영향을 주지 않는다. 학습된
+    # 모델이 아직 없으면(scripts/train_hynix_models.py 실행 전) ml_prediction은
+    # available=False로 채워지고 ensemble은 Rule 100%로 자동 대체된다.
+    result["ml_prediction"] = None
+    result["ensemble_prediction"] = None
+    if result.get("price_prediction") is not None:
+        try:
+            from app.ml.historical_data_loader import load_all_from_cache
+            from app.ml.hynix_ml_predictor import predict_all_horizons_ml
+            from app.ml.ensemble_predictor import build_ensemble_result
+            from app.market import us_market_data as umd
+
+            historical_cache = load_all_from_cache()
+            ml_result = predict_all_horizons_ml(historical_cache)
+            try:
+                us_status = umd.get_us_market_status()
+                holiday_mode = bool(us_status.get("is_us_holiday") or us_status.get("is_us_weekend"))
+            except Exception:
+                holiday_mode = False
+
+            result["ml_prediction"] = ml_result
+            result["ensemble_prediction"] = build_ensemble_result(
+                result["price_prediction"], ml_result, holiday_mode=holiday_mode,
+            )
+        except Exception as exc:
+            result["errors"].append(f"ML/ensemble prediction failed: {exc}")
+            log.exception("ML/ensemble prediction failed")
 
     try:
         from app.models.hynix_swing_flag import evaluate_swing_flag
