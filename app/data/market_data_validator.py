@@ -16,9 +16,14 @@ class DataValidationError(ValueError):
 
 # ── 유효 가격 범위 상수 ───────────────────────────────────────────────────────
 
-MU_PRICE_MIN: float = 20.0        # USD
-MU_PRICE_MAX: float = 500.0       # USD — 이 이상이면 단위 오류 의심
-MU_PRICE_HARD_MAX: float = 1000.0  # 이 이상이면 즉시 무효
+MU_PRICE_MIN: float = 20.0         # USD
+MU_PRICE_MAX: float = 2000.0       # USD — 이 이상이면 단위 오류 의심
+MU_PRICE_HARD_MAX: float = 5000.0  # 이 이상이면 즉시 무효
+# 참고: 이전에는 500/1000을 상한으로 썼으나, 이 저장소가 다루는 시뮬레이션
+# 시점(2026년)에는 MU 실제가가 이미 900~1000USD대에 도달해 있어 그 값을
+# 그대로 "단위 오류"로 오판해 /10으로 잘못 보정하는 실제 버그가 있었다
+# (예: 984.75 -> 98.475로 잘못 축소). 상한을 넉넉히 올려 이 구간의 정상
+# 가격은 그대로 통과시키고, 진짜 10배 이상 벌어진 값만 보정 대상으로 삼는다.
 
 HYNIX_PRICE_MIN: int = 50_000     # KRW
 HYNIX_PRICE_MAX: int = 5_000_000  # KRW

@@ -1,7 +1,7 @@
 {
   "symbol": "005930",
   "name": "삼성전자",
-  "current_price": 318000.0,
+  "current_price": 291500.0,
   "open": null,
   "high": null,
   "low": null,
@@ -10,7 +10,7 @@
   "volume": null,
   "trade_value": null,
   "source": "naver",
-  "timestamp": "2026-07-07T08:45:25",
+  "timestamp": "2026-07-07T11:46:29",
   "success": true,
   "error": null
 }

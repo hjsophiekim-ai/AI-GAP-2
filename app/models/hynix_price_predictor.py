@@ -68,6 +68,17 @@ HORIZON_RELIABILITY_CAP = {"30m": 85.0, "1h": 78.0, "3h": 68.0, "close": 60.0, "
 
 _RESULT_KEY = {"30m": "30m", "1h": "1h", "3h": "3h", "close": "close_today", "tomorrow_open": "open_tomorrow"}
 
+# MU 장외(프리마켓/애프터마켓) 데이터를 하이닉스 예측에 얼마나 강하게 반영할지.
+# 내일 시가는 MU 장외 score가 핵심 입력값이어야 하므로 25~35% 비중을 명시적으로 배정한다.
+MU_EXTENDED_HOURS_TOMORROW_WEIGHT = 0.30
+# 08:30~09:00 KST(한국장 개장 직전)에는 MU 장외 score를 사실상 핵심값으로 격상한다.
+MU_EXTENDED_HOURS_PREOPEN_WEIGHT = 0.50
+MU_EXTENDED_HOURS_PREOPEN_WINDOW = ("08:30", "09:00")
+# 장중(30m/1h/3h/close) horizon에서 MU 장외 신호를 반영하는 비중(관성 편향 완화와 동일한
+# 축을 공유 — 3시간/종가일수록 크게 반영).
+MU_EXTENDED_HOURS_INFLUENCE = {"30m": 0.05, "1h": 0.10, "3h": 0.20, "close": 0.20, "tomorrow_open": 0.0}
+MU_LOG_DIR = ROOT / "logs" / "mu_extended_hours"
+
 
 def _weighted_norm(components: dict) -> tuple:
     """components: {name: (value, scale, weight)} -> (signal(-1..1)|None, used_weight(0..1))."""
@@ -155,6 +166,7 @@ class HynixPricePredictor:
             "avgo": (avgo_ret, 3.0, 0.10),
             "qqq": (qqq_ret, 2.0, 0.10),
         })
+        mu_ext = mu.get("extended_hours") or {}
         return {
             "signal": signal, "used_weight": used_weight,
             "mu_return": mu_ret, "mu_relative_strength_vs_sox": mu_relative_strength_vs_sox,
@@ -162,6 +174,7 @@ class HynixPricePredictor:
             "mu_data_status": _mu_data_status(mu),
             "sox_return": sox_ret, "nvda_return": nvda_ret, "amd_return": amd_ret,
             "avgo_return": avgo_ret, "qqq_return": qqq_ret,
+            "mu_extended_hours": mu_ext,
             "sources": {
                 "mu": mu.get("source"), "nvda": nvda.get("source"), "amd": amd.get("source"),
                 "avgo": avgo.get("source"), "index": index.get("source"),
@@ -346,8 +359,18 @@ class HynixPricePredictor:
     # ------------------------------------------------------------------
     def _compute_tomorrow_open_signal(
         self, stage_us: dict, stage_flow: dict, stage_sector: dict,
-        tomorrow_market_prediction_factor: Optional[float],
-    ) -> float:
+        tomorrow_market_prediction_factor: Optional[float], now_hm: Optional[str] = None,
+    ) -> tuple:
+        """
+        내일 시가 산식. MU 장외(프리마켓/애프터마켓) score를 별도 항목으로 분리해
+        25~35% 비중을 명시 배정한다(기존에는 us_ai_factor에 뭉쳐 있어 장외 흐름의
+        영향력이 희석됐음). 08:30~09:00 KST(개장 직전)에는 이 비중을 추가로
+        격상해 MU 장외 score를 사실상 핵심값으로 사용한다.
+
+        Returns
+        -------
+        (composite_signal, weight_info: dict) — weight_info는 로깅/UI 표시용.
+        """
         us_ai_factor = stage_us.get("signal") or 0.0
         mu_rel = stage_us.get("mu_relative_strength_vs_sox")
         mu_relative_strength_factor = max(-1.0, min(1.0, mu_rel / 3.0)) if mu_rel is not None else 0.0
@@ -359,10 +382,41 @@ class HynixPricePredictor:
         fx_factor = max(-1.0, min(1.0, -usdkrw_change / 1.0)) if usdkrw_change is not None else 0.0
         tmp_factor = tomorrow_market_prediction_factor if tomorrow_market_prediction_factor is not None else 0.0
 
-        return (
-            us_ai_factor * 0.30 + mu_relative_strength_factor * 0.20 + today_close_location_factor * 0.15
-            + foreign_flow_factor * 0.15 + fx_factor * 0.10 + tmp_factor * 0.10
+        mu_ext = stage_us.get("mu_extended_hours") or {}
+        mu_ext_score = mu_ext.get("mu_extended_hours_score")
+        mu_extended_hours_factor = max(-1.0, min(1.0, (mu_ext_score - 50.0) / 50.0)) if mu_ext_score is not None else None
+
+        now_hm = now_hm or datetime.now().strftime("%H:%M")
+        is_preopen_window = MU_EXTENDED_HOURS_PREOPEN_WINDOW[0] <= now_hm < MU_EXTENDED_HOURS_PREOPEN_WINDOW[1]
+        mu_weight = MU_EXTENDED_HOURS_PREOPEN_WEIGHT if is_preopen_window else MU_EXTENDED_HOURS_TOMORROW_WEIGHT
+
+        if mu_extended_hours_factor is None:
+            # MU 장외 데이터가 전혀 없으면 그 비중을 us_ai_factor로 재배분한다(임의로 0 처리하지 않음).
+            weights = {"us_ai": 0.30 + mu_weight, "mu_rel": 0.20, "close_loc": 0.15,
+                       "foreign_flow": 0.10, "fx": 0.10, "tmp": 0.05}
+            composite = (
+                us_ai_factor * weights["us_ai"] + mu_relative_strength_factor * weights["mu_rel"]
+                + today_close_location_factor * weights["close_loc"] + foreign_flow_factor * weights["foreign_flow"]
+                + fx_factor * weights["fx"] + tmp_factor * weights["tmp"]
+            )
+            weight_info = {**weights, "mu_extended_hours": 0.0, "mu_extended_hours_unavailable": True, "preopen_window": is_preopen_window}
+            return composite, weight_info
+
+        remaining = 1.0 - mu_weight
+        # 남은 비중을 기존 배분 비율(us_ai:mu_rel:close_loc:foreign:fx:tmp = 20:10:15:10:10:5=70)로 재분배.
+        base_total = 0.20 + 0.10 + 0.15 + 0.10 + 0.10 + 0.05
+        scale = remaining / base_total
+        weights = {
+            "us_ai": 0.20 * scale, "mu_rel": 0.10 * scale, "close_loc": 0.15 * scale,
+            "foreign_flow": 0.10 * scale, "fx": 0.10 * scale, "tmp": 0.05 * scale,
+        }
+        composite = (
+            mu_extended_hours_factor * mu_weight + us_ai_factor * weights["us_ai"]
+            + mu_relative_strength_factor * weights["mu_rel"] + today_close_location_factor * weights["close_loc"]
+            + foreign_flow_factor * weights["foreign_flow"] + fx_factor * weights["fx"] + tmp_factor * weights["tmp"]
         )
+        weight_info = {**weights, "mu_extended_hours": mu_weight, "mu_extended_hours_unavailable": False, "preopen_window": is_preopen_window}
+        return composite, weight_info
 
     # ------------------------------------------------------------------
     # Stage 5/6: 가격 예측 + 신뢰도/데이터품질 보정
@@ -416,6 +470,18 @@ class HynixPricePredictor:
         investor_source = market_data.get("investor_flow", {}).get("source")
         recovery_score = stage_recovery.get("recovery_score")
 
+        mu_ext = market_data.get("mu", {}).get("extended_hours") or {}
+        mu_ext_score = mu_ext.get("mu_extended_hours_score")
+        mu_ext_source = mu_ext.get("data_source")
+        mu_ext_freshness = mu_ext.get("freshness_seconds")
+        mu_ext_is_delayed = bool(mu_ext.get("is_delayed"))
+        mu_ext_available = mu_ext_score is not None
+        # 자동매매 참고 가능 여부 — Yahoo/Naver(최후 보조)만으로는 내일시가/오전
+        # 판단에 ML/자동매수 참고를 허용하지 않는다(명세 7절).
+        mu_extended_hours_auto_trade_usable = mu_ext_available and not mu_ext_is_delayed and (
+            mu_ext_freshness is None or mu_ext_freshness <= 300
+        )
+
         data_quality_score, missing_warnings = _compute_data_quality(
             stage_results, holiday_mode, mu_is_stale, hynix_source, investor_source,
         )
@@ -442,6 +508,14 @@ class HynixPricePredictor:
             "mu_data_status": stage_us.get("mu_data_status"),
             "mu_relative_strength_vs_sox": stage_us.get("mu_relative_strength_vs_sox"),
             "mu_relative_strength_vs_qqq": stage_us.get("mu_relative_strength_vs_qqq"),
+            "mu_extended_hours_score": mu_ext_score,
+            "mu_extended_hours_session_type": mu_ext.get("session_type"),
+            "mu_extended_hours_data_source": mu_ext_source,
+            "mu_extended_hours_is_realtime": mu_ext.get("is_realtime"),
+            "mu_extended_hours_is_delayed": mu_ext_is_delayed,
+            "mu_extended_hours_freshness_seconds": mu_ext_freshness,
+            "mu_extended_hours_auto_trade_usable": mu_extended_hours_auto_trade_usable,
+            "mu_extended_hours_confidence_penalty_reason": mu_ext.get("confidence_penalty_reason", []),
             "tomorrow_open_state": tomorrow_state,
             "key_reasons": _build_key_reasons(stage_results, stage_recovery),
             "data_sources_used": {
@@ -466,9 +540,10 @@ class HynixPricePredictor:
             return result
 
         for horizon in HORIZONS:
+            mu_ext_weight_info = None
             if horizon == "tomorrow_open":
-                composite_signal = self._compute_tomorrow_open_signal(
-                    stage_us, stage_flow, stage_sector, tomorrow_market_prediction_factor,
+                composite_signal, mu_ext_weight_info = self._compute_tomorrow_open_signal(
+                    stage_us, stage_flow, stage_sector, tomorrow_market_prediction_factor, now_hm,
                 )
             else:
                 weights = HORIZON_WEIGHTS[horizon]
@@ -477,9 +552,24 @@ class HynixPricePredictor:
                     sig = stage_results[stage_name].get("signal")
                     if sig is None:
                         continue
+                    # MU 장외가 stale/delayed이면 us_ai_semi 신호의 기여도를 줄인다
+                    # ("장중 하이닉스 예측에서는 MU 장외가 stale이면 가중치 축소").
+                    if stage_name == "us_ai_semi" and mu_ext_available and (mu_ext_is_delayed or (mu_ext_freshness or 0) > 300):
+                        w = w * 0.6
                     composite += sig * w
                     weight_sum += w
                 composite_signal = composite / weight_sum if weight_sum > 1e-9 else 0.0
+
+            # ── MU 장외 score를 관성 편향 완화와 동일한 방식으로 반영한다.
+            # 강하면(>=65) 하락 편향을 보정(상향), 약하면(<=35) domestic_sector류 신호를 감점.
+            mu_ext_adjustment = 0.0
+            if mu_ext_score is not None and horizon != "tomorrow_open":
+                influence = MU_EXTENDED_HOURS_INFLUENCE[horizon]
+                if mu_ext_score >= 65.0:
+                    mu_ext_adjustment = (mu_ext_score - 50.0) / 50.0 * influence
+                elif mu_ext_score <= 35.0:
+                    mu_ext_adjustment = (mu_ext_score - 50.0) / 50.0 * influence  # 음수 -> 감점 방향
+                composite_signal += mu_ext_adjustment
 
             # ── 관성 편향 완화: recovery_score가 높을수록(특히 장기 horizon일수록)
             # 하락 방향으로 쏠린 composite_signal을 완화 방향으로 당긴다.
@@ -521,6 +611,15 @@ class HynixPricePredictor:
                 predicted_direction=direction, tomorrow_state=tomorrow_state if horizon == "tomorrow_open" else None,
             )
 
+            # ── MU 장외 데이터 상태에 따른 confidence 상한(명세 7절) — 내일시가/장
+            # 개장전 판단일수록 강하게 적용하되, 장중 horizon에도 동일 원칙을 적용한다.
+            if not mu_ext_available:
+                horizon_confidence = min(horizon_confidence, 55.0)
+            elif mu_ext_freshness is not None and mu_ext_freshness > 300:
+                horizon_confidence = min(horizon_confidence, 60.0)
+            elif mu_ext_is_delayed and horizon in ("tomorrow_open",):
+                horizon_confidence = min(horizon_confidence, 60.0)
+
             price_key = "predicted_close_today" if horizon == "close" else (
                 "predicted_open_tomorrow" if horizon == "tomorrow_open" else f"predicted_price_{horizon}"
             )
@@ -537,6 +636,10 @@ class HynixPricePredictor:
             result[f"recovery_adjustment_pct_{suffix}"] = round(recovery_adjustment * HORIZON_RETURN_SCALE[horizon], 3)
             result[f"collapse_penalty_pct_{suffix}"] = round(collapse_penalty, 3)
             result[f"rolling_bias_correction_pct_{suffix}"] = round(bias_correction, 3)
+            result[f"mu_extended_hours_adjustment_pct_{suffix}"] = round(mu_ext_adjustment * HORIZON_RETURN_SCALE[horizon], 3)
+            if mu_ext_weight_info is not None:
+                result[f"mu_extended_hours_weight_{suffix}"] = mu_ext_weight_info.get("mu_extended_hours")
+                _log_mu_reflected_weight(mu_ext, mu_ext_weight_info.get("mu_extended_hours"))
 
         # 사용자 요구 명세의 별칭 필드(내일 확률은 "_tomorrow"로도 노출)
         result["probability_up_tomorrow"] = result["probability_up_tomorrow_open"]
@@ -723,6 +826,29 @@ def _build_key_reasons(stage_results: dict, stage_recovery: Optional[dict] = Non
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     return [text for _, text in candidates[:5]]
+
+
+def _log_mu_reflected_weight(mu_ext: dict, reflected_weight: Optional[float]) -> None:
+    """MU 장외 데이터가 실제로 하이닉스 내일시가 예측에 반영된 비중을
+    logs/mu_extended_hours/YYYYMMDD.jsonl에 추가 기록한다(수집시점 로그와
+    별개 — collect_mu_extended_hours()가 남기는 항목은 reflected_weight=None).
+    """
+    if not mu_ext:
+        return
+    try:
+        MU_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        path = MU_LOG_DIR / f"{datetime.now().strftime('%Y%m%d')}.jsonl"
+        record = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"), "session_type": mu_ext.get("session_type"),
+            "price": mu_ext.get("current_price"), "bar_1m": mu_ext.get("bar_1m"), "bar_3m": mu_ext.get("bar_3m"),
+            "slope_3m": mu_ext.get("slope_3m"), "slope_15m": mu_ext.get("slope_15m"),
+            "score": mu_ext.get("mu_extended_hours_score"), "source": mu_ext.get("data_source"),
+            "freshness": mu_ext.get("freshness_seconds"), "reflected_hynix_prediction_weight": reflected_weight,
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:
+        logger.debug("[HynixPricePredictor] MU 반영비중 로그 실패(무해): %s", exc)
 
 
 def _log_price_prediction(result: dict) -> None:

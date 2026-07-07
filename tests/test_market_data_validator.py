@@ -44,8 +44,10 @@ class TestValidateMuPrice:
         assert ok is False
         assert "소수점" in msg or "환산" in msg
 
-    def test_above_500_invalid(self):
-        ok, msg = validate_mu_price(501.0)
+    def test_above_max_invalid(self):
+        # MU_PRICE_MAX는 2026년 시뮬레이션 시점의 실제 MU 가격대(900~1000USD대)를
+        # "단위 오류"로 오판해 잘못 보정하지 않도록 넉넉히 넓혀져 있다(과거 500).
+        ok, msg = validate_mu_price(MU_PRICE_MAX + 1)
         assert ok is False
 
     def test_below_20_invalid(self):
@@ -92,7 +94,7 @@ class TestParseMuPriceStr:
 
     def test_comma_in_string(self):
         result = parse_mu_price_str("1,100.50")
-        # 1100.50 / 10 = 110.05 → 유효 범위
+        # 1100.50은 넓어진 유효 범위(20~2000) 내이므로 그대로(보정 없이) 통과한다.
         assert result is not None
         assert MU_PRICE_MIN <= result <= MU_PRICE_MAX
 

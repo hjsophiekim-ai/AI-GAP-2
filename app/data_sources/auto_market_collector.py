@@ -141,6 +141,34 @@ def _write_json_cache(path: Path, payload: dict) -> None:
 
 
 def collect_mu_data(mode: Optional[str] = None) -> dict:
+    """
+    기존 MU 1분/3분봉 + 현재가 수집(_collect_mu_data_core)에 세션 구분
+    장외(프리마켓/애프터마켓) 데이터와 mu_extended_hours_score를 추가로
+    병합한다(완전히 추가적 — 기존 필드/동작은 그대로 유지).
+
+    확장 수집이 실패해도 기존 result는 그대로 반환된다(항상 예외 없음).
+    """
+    result = _collect_mu_data_core(mode)
+    try:
+        from app.data_sources.mu_extended_hours_collector import collect_mu_extended_hours
+
+        extended = collect_mu_extended_hours(mode=mode)
+        result["extended_hours"] = extended
+        result["session_type"] = extended.get("session_type")
+        result["mu_extended_hours_score"] = extended.get("mu_extended_hours_score")
+        result["is_extended_hours_realtime"] = extended.get("is_realtime")
+        result["is_extended_hours_delayed"] = extended.get("is_delayed")
+    except Exception as exc:
+        logger.debug("[AutoMarketCollector] MU 장외 확장 수집 실패(무해, 기존 결과 유지): %s", exc)
+        result["extended_hours"] = None
+        result["session_type"] = None
+        result["mu_extended_hours_score"] = None
+        result["is_extended_hours_realtime"] = None
+        result["is_extended_hours_delayed"] = None
+    return result
+
+
+def _collect_mu_data_core(mode: Optional[str] = None) -> dict:
     """Collect MU one-minute and three-minute bars.
 
     Priority: KIS overseas minute -> Alpaca/Polygon/yfinance 1m(다중소스) ->

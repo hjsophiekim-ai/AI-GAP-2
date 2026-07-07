@@ -39,15 +39,18 @@ def _base_snapshot() -> dict:
             "hynix": {
                 "symbol": "000660", "current_price": 200000.0, "open": 200000.0, "high": 200000.0,
                 "low": 200000.0, "prev_close": 200000.0, "change_rate": 0.0, "trade_value": 1e9, "success": True,
+                "vwap": 200000.0,
             },
             "samsung": {
                 "symbol": "005930", "current_price": 70000.0, "open": 70000.0, "high": 70000.0,
                 "low": 70000.0, "prev_close": 70000.0, "change_rate": 0.0, "trade_value": 1e9, "success": True,
+                "vwap": 70000.0,
             },
             "hanmi": {
                 "symbol": "042700", "current_price": 100000.0, "open": 100000.0, "high": 100000.0,
                 "low": 100000.0, "prev_close": 100000.0, "change_rate": 0.0, "trade_value": 1e8, "success": True,
             },
+            "investor_flow_market": {"success": True, "is_proxy": False, "program_net_buy": 0},
         },
         "overseas": {
             "nasdaq": {"change_rate": 0.0, "success": True}, "sp500": {"change_rate": 0.0, "success": True},
@@ -61,6 +64,10 @@ def _base_snapshot() -> dict:
                 "session": "closed", "source": "test", "timestamp": "", "confidence": 0.9,
             },
             "us_realtime_bars": {}, "us_last_session": {}, "holiday_mode_inputs": {},
+        },
+        "deltas": {
+            "5m": {"kospi200_futures_change_rate": 0.0, "usdkrw_value": 0.0},
+            "15m": {"kospi200_futures_change_rate": 0.0, "usdkrw_value": 0.0},
         },
         "meta": {"data_quality_ratio": 1.0, "log": []},
     }

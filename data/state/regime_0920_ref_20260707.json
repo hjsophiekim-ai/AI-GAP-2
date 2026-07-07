@@ -1,0 +1,12 @@
+{
+  "kospi_value": 7735.66,
+  "kosdaq_value": 848.23,
+  "hynix_low": 2237000.0,
+  "samsung_low": 296500.0,
+  "leader_sectors_0920": [
+    "entertainment_game",
+    "construction_machinery",
+    "cosmetics_consumer"
+  ],
+  "captured_at": "2026-07-07T09:53:39"
+}

@@ -758,6 +758,56 @@ if _price_pred:
                 "위험 국면이라도 반등/완화 가능성을 예측에 함께 고려합니다."
             )
 
+        st.markdown("#### MU(마이크론) 장외 흐름")
+        _mu_score = _price_pred.get("mu_extended_hours_score")
+        _mu_session = _price_pred.get("mu_extended_hours_session_type") or "—"
+        _mu_source = _price_pred.get("mu_extended_hours_data_source") or "—"
+        _mu_realtime = _price_pred.get("mu_extended_hours_is_realtime")
+        _mu_delayed = _price_pred.get("mu_extended_hours_is_delayed")
+        _mu_fresh = _price_pred.get("mu_extended_hours_freshness_seconds")
+        _mu_auto_ok = _price_pred.get("mu_extended_hours_auto_trade_usable")
+        _mu_w_tomorrow = _price_pred.get("mu_extended_hours_weight_tomorrow_open")
+
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        with mc1:
+            st.metric("MU 세션", _mu_session)
+        with mc2:
+            st.metric("MU 장외 score", f"{_mu_score:.0f}/100" if _mu_score is not None else "—")
+        with mc3:
+            st.metric("데이터 소스", f"{_mu_source.upper()}" if isinstance(_mu_source, str) else _mu_source)
+        with mc4:
+            st.metric("실시간 여부", "실시간" if _mu_realtime else ("지연" if _mu_delayed else "—"))
+        with mc5:
+            st.metric("내일시가 반영비중", f"{_mu_w_tomorrow*100:.0f}%" if _mu_w_tomorrow is not None else "—")
+
+        if _mu_delayed:
+            st.warning("⚠️ MU 장외 데이터가 Yahoo/Naver 등 최후 보조 소스입니다 — **지연 데이터, 자동매매 참고에는 사용하지 않습니다.**")
+        if _mu_fresh is not None and _mu_fresh > 300:
+            st.caption(f"⏱️ 마지막 MU 데이터가 {_mu_fresh:.0f}초 전 — 5분 초과 지연으로 신뢰도 상한이 적용됩니다.")
+        if _mu_score is None:
+            st.caption("MU 장외 데이터 없음 — 신뢰도 상한(55점)이 적용되며 자동매매 참고에 사용되지 않습니다.")
+        st.caption(f"자동매매 참고 가능 여부: {'✅ 가능' if _mu_auto_ok else '🚫 불가'}")
+
+        _mu_reasons = _price_pred.get("mu_extended_hours_confidence_penalty_reason") or []
+        if _mu_reasons:
+            with st.expander("MU 장외 데이터 신뢰도 감점 사유"):
+                for _r in _mu_reasons:
+                    st.caption(f"· {_r}")
+
+        with st.expander("MU 1분봉/3분봉 상태 · 장외 기울기 상세"):
+            _mu_ext_detail = (st.session_state.get("market_data", {}) or {}).get("mu", {}).get("extended_hours") or {}
+            bd1, bd2, bd3, bd4 = st.columns(4)
+            with bd1:
+                st.metric("1분봉 상태", _mu_ext_detail.get("bar_1m", "—"))
+            with bd2:
+                st.metric("3분봉 상태", _mu_ext_detail.get("bar_3m", "—"))
+            with bd3:
+                _s3 = _mu_ext_detail.get("slope_3m")
+                st.metric("장외 3분 기울기", f"{_s3:+.2f}%" if _s3 is not None else "—")
+            with bd4:
+                _s15 = _mu_ext_detail.get("slope_15m")
+                st.metric("장외 15분 기울기", f"{_s15:+.2f}%" if _s15 is not None else "—")
+
         _horizon_specs = [
             ("30분 후", "predicted_price_30m", "confidence_30m", "expected_return_pct_30m"),
             ("1시간 후", "predicted_price_1h", "confidence_1h", "expected_return_pct_1h"),

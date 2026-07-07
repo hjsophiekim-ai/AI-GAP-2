@@ -1,7 +1,7 @@
 {
-  "initial_regime": null,
-  "initial_confidence": null,
-  "initial_at": null,
+  "initial_regime": "B",
+  "initial_confidence": 86.1,
+  "initial_at": "2026-07-07T09:53:39",
   "history": [
     {
       "timestamp": "2026-07-07T07:41:39",
@@ -30,6 +30,69 @@
       "regime": "F",
       "confidence": 57.2,
       "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-07T09:06:03",
+      "now_hm": "09:05",
+      "regime": "E",
+      "confidence": 62.8,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-07T09:12:22",
+      "now_hm": "09:12",
+      "regime": "E",
+      "confidence": 66.3,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-07T09:53:39",
+      "now_hm": "09:53",
+      "regime": "B",
+      "confidence": 86.1,
+      "policy_name": "policy_semiconductor_rebound"
+    },
+    {
+      "timestamp": "2026-07-07T09:55:37",
+      "now_hm": "09:55",
+      "regime": "B",
+      "confidence": 72.3,
+      "policy_name": "policy_semiconductor_rebound"
+    },
+    {
+      "timestamp": "2026-07-07T09:58:36",
+      "now_hm": "09:58",
+      "regime": "E",
+      "confidence": 80.3,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-07T10:40:51",
+      "now_hm": "10:40",
+      "regime": "E",
+      "confidence": 79.5,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-07T10:41:02",
+      "now_hm": "10:40",
+      "regime": "E",
+      "confidence": 79.5,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-07T11:33:31",
+      "now_hm": "11:33",
+      "regime": "E",
+      "confidence": 79.5,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-07T11:46:43",
+      "now_hm": "11:46",
+      "regime": "E",
+      "confidence": 64.6,
+      "policy_name": "policy_inverse"
     }
   ]
 }

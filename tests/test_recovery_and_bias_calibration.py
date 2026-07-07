@@ -52,17 +52,39 @@ def _hynix_market_data(**overrides) -> dict:
     return data
 
 
-# 1. recovery_score가 높으면 D 유지 예측이 완화된다 (D -> C).
-def test_high_recovery_score_softens_d_persistence():
-    regime = _expected_regime_call(down_pressure=60.0, recovery_score=80.0, collapse_declining=True, current_regime="D")
+# 1. recovery_score가 높아도, VWAP 회복/선물 반등/데이터품질 등 다른 근거가
+#    함께 확인돼야만 D -> C로 완화된다(가드 전부 충족 시).
+def test_high_recovery_score_softens_d_persistence_when_corroborated():
+    guard_context = {
+        "market_collapse_delta_15m": -8.0,
+        "hynix_vwap_recovered": True,
+        "futures_recovered": True,
+        "data_quality_score": 80.0,
+    }
+    regime, applied = mp._expected_regime(
+        direction="DOWN", down_pressure=60.0, market_collapse_score=70.0,
+        current_regime="D", recovery_score=80.0, collapse_declining=True,
+        guard_context=guard_context,
+    )
     assert regime == "C"
+    assert "D_TO_C_PASS" in applied
+
+
+# 1b. recovery_score만 높고 VWAP/선물반등/데이터품질 등 근거가 전혀 없으면
+#     D는 완화되지 않는다 — recovery_score 단독으로는 완화 근거가 되지
+#     않는다는 회귀 확인(사용자가 보고한 "recovery_score는 낮았는데도 완화됐다"류
+#     오판을 막기 위한 다중조건 가드의 핵심 취지).
+def test_high_recovery_score_alone_does_not_soften_d_without_corroboration():
+    regime = _expected_regime_call(down_pressure=60.0, recovery_score=80.0, collapse_declining=True, current_regime="D")
+    assert regime == "D"
 
 
 def _expected_regime_call(down_pressure, recovery_score, collapse_declining, current_regime):
-    return mp._expected_regime(
+    regime, _applied = mp._expected_regime(
         direction="DOWN", down_pressure=down_pressure, market_collapse_score=70.0,
         current_regime=current_regime, recovery_score=recovery_score, collapse_declining=collapse_declining,
     )
+    return regime
 
 
 # 2. collapse_score가 하락 중(완화)이면 3시간 DOWN 확률이 낮아진다.
@@ -209,15 +231,34 @@ def test_tomorrow_state_classification():
     assert _tomorrow_state("16:00") == "CLOSING_BASED"
 
 
-# 11. C->D뿐 아니라 D->C 회복 전환도 감지한다 (down_pressure가 35~55 구간으로 내려오면 C).
-def test_d_to_c_recovery_transition_detected():
-    regime = mp._expected_regime(
+# 11. down_pressure가 35~55 구간(raw_regime=C)으로 내려와도, D->C 완화는
+#     recovery_score/VWAP회복/데이터품질 등 가드 근거가 없으면 차단된다 —
+#     down_pressure 하나만으로 즉시 완화되던 기존 동작은 "근거 없는 낙관적
+#     완화"였으므로 이번 수정으로 막는다.
+def test_d_to_c_recovery_transition_requires_guard_evidence():
+    regime, applied = mp._expected_regime(
         direction="SIDEWAYS", down_pressure=42.0, market_collapse_score=60.0,
         current_regime="D", recovery_score=None, collapse_declining=False,
     )
-    assert regime == "C"
-    # 기존 C->D 전환(고위험)도 여전히 정상 동작해야 한다(회귀 확인).
-    regime_cd = mp._expected_regime(
+    assert regime == "D"
+    assert "D_RELAXATION_BLOCKED" in applied
+
+    # 가드 근거가 모두 확인되면 그제서야 C로 완화된다.
+    regime_ok, applied_ok = mp._expected_regime(
+        direction="SIDEWAYS", down_pressure=42.0, market_collapse_score=50.0,
+        current_regime="D", recovery_score=65.0, collapse_declining=False,
+        guard_context={
+            "market_collapse_delta_15m": -6.0,
+            "samsung_vwap_recovered": True,
+            "breadth_recovering": True,
+            "data_quality_score": 70.0,
+        },
+    )
+    assert regime_ok == "C"
+    assert "D_TO_C_PASS" in applied_ok
+
+    # 기존 C->D/E 전환(고위험 악화)은 가드 없이 즉시 반영되어야 한다(회귀 확인).
+    regime_cd, _ = mp._expected_regime(
         direction="DOWN", down_pressure=75.0, market_collapse_score=85.0,
         current_regime="C", recovery_score=None, collapse_declining=False,
     )

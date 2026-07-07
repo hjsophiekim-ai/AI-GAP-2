@@ -300,14 +300,15 @@ def test_market_prediction_log_written_as_jsonl(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 9. 내일장 예측 상태 구분 (preliminary/closing_based/us_session_updated)
+# 9. 내일장 예측 상태 구분 (US_SESSION_UPDATED/PREOPEN_FINAL/INTRADAY_PRELIMINARY/CLOSING_BASED)
 # ---------------------------------------------------------------------------
 
 def test_tomorrow_prediction_state_transitions():
     snap = _base_snapshot()
-    assert mp.predict_tomorrow_market(snap, now_hm="08:00")["state"] == "us_session_updated"
-    assert mp.predict_tomorrow_market(snap, now_hm="10:30")["state"] == "preliminary"
-    assert mp.predict_tomorrow_market(snap, now_hm="16:00")["state"] == "closing_based"
+    assert mp.predict_tomorrow_market(snap, now_hm="08:00")["state"] == "US_SESSION_UPDATED"
+    assert mp.predict_tomorrow_market(snap, now_hm="08:55")["state"] == "PREOPEN_FINAL"
+    assert mp.predict_tomorrow_market(snap, now_hm="10:30")["state"] == "INTRADAY_PRELIMINARY"
+    assert mp.predict_tomorrow_market(snap, now_hm="16:00")["state"] == "CLOSING_BASED"
 
 
 # ---------------------------------------------------------------------------

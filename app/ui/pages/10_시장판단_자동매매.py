@@ -232,11 +232,17 @@ if regime_result:
     elif _cur_regime in ("D", "E") and _recovery_score is not None and _recovery_score < 40:
         st.caption("현재 회복 신호가 뚜렷하지 않아 위험 국면이 이어질 가능성에 무게를 두고 있습니다.")
 
-    # ── 30분/1시간/3시간 예측 ─────────────────────────────────────────────
-    st.markdown("##### 향후 방향 예측")
-    predictions = regime_result.get("predictions", {}) or {}
-    pcols = st.columns(3)
-    _dir_icon = {"UP": "🟢 UP", "DOWN": "🔴 DOWN", "SIDEWAYS": "🟡 SIDEWAYS"}
+    # ── §4/§10: 전체시장/반도체/주도테마는 서로 다른 질문이다 ───────────────
+    st.warning(
+        "⚠️ 전체시장·반도체 예측과 주도테마 예측은 다릅니다. "
+        "일부 테마가 유지되어도 전체 시장이나 반도체가 회복된 것은 아닙니다."
+    )
+
+    _dir_icon = {
+        "UP": "🟢 UP", "DOWN": "🔴 DOWN", "SIDEWAYS": "🟡 SIDEWAYS", "UNCERTAIN": "⚪ UNCERTAIN",
+        "STRONG_UP": "🟢 강한 UP", "WEAK_UP": "🟢 약한 UP(잠정)",
+        "STRONG_DOWN": "🔴 강한 DOWN", "WEAK_DOWN": "🔴 약한 DOWN(잠정)",
+    }
 
     def _confidence_tier(v: float) -> str:
         if v >= 75:
@@ -247,6 +253,10 @@ if regime_result:
             return "LOW"
         return "WATCH_ONLY"
 
+    # ── 30분/1시간/3시간 전체 시장(overall_market) 예측 ──────────────────
+    st.markdown("##### 전체 시장(overall_market) 방향 예측")
+    predictions = regime_result.get("predictions", {}) or {}
+    pcols = st.columns(3)
     for col, horizon, label in zip(pcols, ("30m", "1h", "3h"), ("30분 후", "1시간 후", "3시간 후")):
         pred = predictions.get(horizon, {})
         with col:
@@ -254,20 +264,66 @@ if regime_result:
             st.markdown(f"### {_dir_icon.get(pred.get('direction'), pred.get('direction', '-'))}")
             st.caption(
                 f"하락 {pred.get('probability_down', 0):.0f}% · 보합 {pred.get('probability_sideways', 0):.0f}% · "
-                f"상승 {pred.get('probability_up', 0):.0f}%"
+                f"상승 {pred.get('probability_up', 0):.0f}% (1위-2위 차이 {pred.get('direction_margin', 0):.0f}pp)"
             )
             _conf = pred.get("confidence_score", 0) or 0
             st.caption(f"예상유형: {pred.get('expected_regime', '-')} · 신뢰도 {_conf:.0f} ({_confidence_tier(_conf)})")
+            if pred.get("guard_rules_applied"):
+                st.caption(f"가드: {', '.join(pred['guard_rules_applied'])}")
             for reason in pred.get("key_reasons", [])[:3]:
                 st.caption(f"· {reason}")
+
+    # ── 반도체(semiconductor) 예측 — 전체 시장과 분리된 축 ────────────────
+    st.markdown("##### 반도체(semiconductor) 방향 예측 — 전체 시장과 별개 판단")
+    semi_predictions = regime_result.get("semiconductor_prediction", {}) or {}
+    scols = st.columns(3)
+    for col, horizon, label in zip(scols, ("30m", "1h", "3h"), ("30분 후", "1시간 후", "3시간 후")):
+        spred = semi_predictions.get(horizon, {})
+        with col:
+            st.markdown(f"**{label}**")
+            st.markdown(f"### {_dir_icon.get(spred.get('direction'), spred.get('direction', '-'))}")
+            st.caption(
+                f"하락 {spred.get('probability_down', 0):.0f}% · 보합 {spred.get('probability_sideways', 0):.0f}% · "
+                f"상승 {spred.get('probability_up', 0):.0f}%"
+            )
+            _sconf = spred.get("confidence_score", 0) or 0
+            st.caption(
+                f"반도체붕괴점수 {spred.get('semiconductor_collapse_score', 0):.0f} · "
+                f"신뢰도 {_sconf:.0f} ({_confidence_tier(_sconf)})"
+            )
+            if spred.get("all_semi_stocks_below_vwap"):
+                st.caption("🔴 하이닉스/삼성전자/한미반도체 모두 VWAP 이탈")
+            for note in spred.get("guard_notes", [])[:2]:
+                st.caption(f"· {note}")
+    if any((semi_predictions.get(h) or {}).get("mu_data_status") in ("DELAYED", "MISSING") for h in ("30m", "1h", "3h")):
+        st.caption("⚠️ MU(마이크론) 데이터가 지연/누락 상태라 반도체 예측 신뢰도가 상한 적용되었습니다.")
+
+    # ── 주도테마(leading_theme) 유지 상태 — 방향 예측이 아님 ──────────────
+    st.markdown("##### 주도테마(leading_theme) 유지 상태 — 방향/확률 예측 아님")
+    theme_pred = regime_result.get("leading_theme_prediction", {}) or {}
+    thc1, thc2, thc3 = st.columns(3)
+    thc1.metric("현재 주도섹터", ", ".join(theme_pred.get("leading_sectors") or []) or "-")
+    _theme_status = theme_pred.get("status", "-")
+    thc2.metric(
+        "주도테마 유지 여부",
+        "🟢 유지(STABLE)" if theme_pred.get("leading_theme_maintained")
+        else ("⚪ 판단불가(UNKNOWN)" if _theme_status == "UNKNOWN" else "🟡 회전/이탈"),
+    )
+    thc3.metric("theme_rotation_score", f"{theme_pred.get('theme_rotation_score', 50):.0f}/100")
+    st.caption(theme_pred.get("disclaimer", ""))
 
     # ── 내일장 예측 ────────────────────────────────────────────────────────
     st.markdown("##### 내일장 예측")
     tomorrow = regime_result.get("tomorrow_prediction", {}) or {}
-    _state_label = {"preliminary": "장중(잠정)", "closing_based": "장마감 기준", "us_session_updated": "미국장 반영(개장전)"}
+    _state_label = {
+        "INTRADAY_PRELIMINARY": "장중(잠정)", "CLOSING_BASED": "장마감 기준",
+        "US_SESSION_UPDATED": "미국장 반영(개장전)", "PREOPEN_FINAL": "개장직전 최종판단",
+    }
+    _gap_label = {"GAP_DOWN": "하락 출발 예상", "GAP_UP": "상승 출발 예상",
+                  "FLAT_OR_UNCERTAIN": "보합/불확실(장중 잠정)", "FLAT": "보합 예상"}
     tc1, tc2, tc3, tc4 = st.columns(4)
-    tc1.metric("내일 방향", _dir_icon.get(tomorrow.get("tomorrow_direction"), "-"))
-    tc2.metric("예상 시가갭", tomorrow.get("expected_open_gap", "-"))
+    tc1.metric("내일 방향", _dir_icon.get(tomorrow.get("tomorrow_direction"), tomorrow.get("tomorrow_direction", "-")))
+    tc2.metric("예상 시가갭", _gap_label.get(tomorrow.get("expected_open_gap"), tomorrow.get("expected_open_gap", "-")))
     tc3.metric("반도체 다음날 편향", tomorrow.get("semiconductor_next_day_bias", "-"))
     tc4.metric("위험수준", tomorrow.get("risk_level", "-"))
     st.caption(
@@ -277,6 +333,8 @@ if regime_result:
         f"하락 {tomorrow.get('probability_down', 0):.0f}% / 보합 {tomorrow.get('probability_sideways', 0):.0f}% / "
         f"상승 {tomorrow.get('probability_up', 0):.0f}%"
     )
+    if tomorrow.get("disclaimer"):
+        st.info(f"ℹ️ {tomorrow['disclaimer']}")
     for reason in tomorrow.get("key_reasons", [])[:5]:
         st.caption(f"· {reason}")
 
@@ -313,9 +371,15 @@ if regime_result:
     vc3.metric("한미반도체 VWAP 상태", _vwap_status(domestic.get("hanmi", {})))
 
     bc1, bc2, bc3 = st.columns(3)
-    bc1.metric("상승/하락 종목수", f"{domestic.get('advancers', 0)} / {domestic.get('decliners', 0)}")
-    theme_score = scores.get("theme_rotation_score", 50.0)
-    bc2.metric("주도섹터 유지/붕괴", "🔴 붕괴 진행" if theme_score >= 65 else ("🟡 일부 이탈" if theme_score >= 40 else "🟢 유지"))
+    _adv, _dec = domestic.get("advancers", 0), domestic.get("decliners", 0)
+    bc1.metric("상승/하락 종목수", f"{_adv} / {_dec}")
+    if not _adv and not _dec:
+        bc1.caption("⚠️ 0/0 — breadth 데이터 없음(data_quality_score 상한 70 적용됨)")
+    _theme_pred_for_bc = regime_result.get("leading_theme_prediction", {}) or {}
+    if _theme_pred_for_bc.get("status") == "UNKNOWN":
+        bc2.metric("주도섹터 유지/붕괴", "⚪ 판단불가(UNKNOWN)")
+    else:
+        bc2.metric("주도섹터 유지/붕괴", "🟢 유지" if _theme_pred_for_bc.get("leading_theme_maintained") else "🟡 회전/이탈")
     leader_sectors_now = domestic.get("sector_change_rates", {})
     top_sector = max(leader_sectors_now, key=leader_sectors_now.get) if leader_sectors_now else "-"
     bc3.metric("현재 주도섹터 1위", top_sector)

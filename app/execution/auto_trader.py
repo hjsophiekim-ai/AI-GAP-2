@@ -341,6 +341,13 @@ class AutoTrader:
         if is_semiconductor and semi_collapse is not None and semi_collapse >= semi_limit:
             return True, False, f"실행단계 안전장치: semiconductor_collapse_score {semi_collapse:.0f} >= {semi_limit:.0f} — 반도체 매수 금지"
 
+        # §5/§9: 하이닉스/삼성전자/한미반도체 대장주가 모두 VWAP 이탈 상태면
+        # semiconductor_collapse_score가 아직 hard_block 임계값에 못 미쳐도
+        # 반도체 신규매수는 금지한다 — 주도테마가 유지되더라도 이 조건이 우선한다.
+        semi_pred_1h = ((regime_result.get("semiconductor_prediction") or {}).get("1h") or {})
+        if is_semiconductor and semi_pred_1h.get("all_semi_stocks_below_vwap"):
+            return True, False, "실행단계 안전장치: 하이닉스/삼성전자/한미반도체 대장주 모두 VWAP 이탈 — 반도체 매수 금지"
+
         manual_only_limit = self.trading_cfg.get("predicted_down_1h_manual_only", DEFAULT_PREDICTED_DOWN_1H_MANUAL_ONLY)
         if predicted_down_1h is not None and predicted_down_1h >= manual_only_limit:
             return False, True, f"1시간 후 하락확률 {predicted_down_1h:.0f}% >= {manual_only_limit:.0f} — 신규 수동승인만 허용"

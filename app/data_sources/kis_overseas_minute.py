@@ -341,6 +341,67 @@ def fetch_mu_3min_bars(
     return ohlcv
 
 
+def fetch_mu_5min_bars(
+    mode: str = "real",
+    source_df: Optional[pd.DataFrame] = None,
+) -> Optional[pd.DataFrame]:
+    """5분봉 생성 — 1분봉을 resample해서 생성(3분봉과 동일 패턴)."""
+    if source_df is None:
+        source_df = fetch_mu_1min_bars(mode=mode)
+    if source_df is None or source_df.empty:
+        return None
+
+    df = source_df.copy().set_index("datetime")
+    ohlcv = (
+        df[["open", "high", "low", "close", "volume"]]
+        .resample("5min")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna(subset=["close"])
+        .reset_index()
+    )
+    ohlcv["session"] = ohlcv["datetime"].apply(classify_session)
+    return ohlcv
+
+
+def classify_current_session_type(now: Optional[datetime] = None) -> str:
+    """
+    "지금 이 순간" MU의 세션 상태를 대문자 enum으로 반환한다.
+
+    classify_session()은 개별 분봉 timestamp를 premarket/regular/aftermarket/
+    unknown(소문자)으로 분류하는 것과 달리, 이 함수는 미국 시장 휴장/주말
+    여부까지 반영해 "지금 거래가 전혀 없는 상태(CLOSED)"까지 구분한다.
+
+    Returns
+    -------
+    "PREMARKET" | "REGULAR" | "AFTERHOURS" | "CLOSED"
+    """
+    now = now or datetime.now()
+    try:
+        from app.market.us_market_data import get_us_market_status
+
+        us_status = get_us_market_status(now)
+        if us_status.get("is_us_holiday") or us_status.get("is_us_weekend"):
+            return "CLOSED"
+    except Exception:
+        pass
+
+    session = classify_session(now)
+    return {"premarket": "PREMARKET", "regular": "REGULAR", "aftermarket": "AFTERHOURS"}.get(session, "CLOSED")
+
+
+def to_dual_timezone(ts: datetime) -> dict:
+    """KST(naive, 이 모듈의 timestamp 기준) datetime을 US/Eastern + Asia/Seoul
+    타임존 문자열로 함께 반환한다."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        kst = ts.replace(tzinfo=ZoneInfo("Asia/Seoul")) if ts.tzinfo is None else ts.astimezone(ZoneInfo("Asia/Seoul"))
+        eastern = kst.astimezone(ZoneInfo("US/Eastern"))
+        return {"asia_seoul": kst.isoformat(), "us_eastern": eastern.isoformat()}
+    except Exception:
+        return {"asia_seoul": ts.isoformat(), "us_eastern": None}
+
+
 def build_session_summary(df_1min: pd.DataFrame) -> pd.DataFrame:
     """
     세션별 OHLCV 요약 생성.

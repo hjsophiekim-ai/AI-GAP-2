@@ -391,13 +391,69 @@ def compute_data_freshness_score(snapshot: dict) -> float:
     return round(sum(scores) / len(scores), 2) if scores else 50.0
 
 
+CORE_DATA_ITEMS = (
+    "kospi200_futures_delta", "foreign_futures_real", "program_trading", "breadth",
+    "usdkrw_delta", "hynix_vwap", "samsung_vwap", "mu_realtime", "nasdaq_futures_or_qqq",
+)
+
+
+def compute_core_data_gaps(snapshot: dict) -> list:
+    """
+    "이 정도는 있어야 판단을 믿을 수 있다"고 보는 9개 핵심 데이터 중 실제로
+    비어 있는 항목 목록을 반환한다. data_quality_score의 하드캡과 판단
+    가드(예: D/E 완화 가드)가 공통으로 이 목록을 참조한다.
+    """
+    gaps: list[str] = []
+    domestic = snapshot.get("domestic", {}) or {}
+    overseas = snapshot.get("overseas", {}) or {}
+    deltas = snapshot.get("deltas", {}) or {}
+    d5 = deltas.get("5m", {}) or {}
+    d15 = deltas.get("15m", {}) or {}
+
+    if d5.get("kospi200_futures_change_rate") is None and d15.get("kospi200_futures_change_rate") is None:
+        gaps.append("kospi200_futures_delta")
+
+    flow = domestic.get("investor_flow_market", {}) or {}
+    if not flow.get("success") or flow.get("is_proxy", True):
+        gaps.append("foreign_futures_real")
+    if flow.get("program_net_buy") is None:
+        gaps.append("program_trading")
+
+    adv, dec = domestic.get("advancers"), domestic.get("decliners")
+    if not adv and not dec:
+        gaps.append("breadth")
+
+    if d5.get("usdkrw_value") is None and d15.get("usdkrw_value") is None:
+        gaps.append("usdkrw_delta")
+
+    if not (domestic.get("hynix", {}) or {}).get("vwap"):
+        gaps.append("hynix_vwap")
+    if not (domestic.get("samsung", {}) or {}).get("vwap"):
+        gaps.append("samsung_vwap")
+
+    mu = overseas.get("micron", {}) or {}
+    mu_bars = (overseas.get("us_realtime_bars", {}) or {}).get("micron", {}) or {}
+    if not mu.get("success") and not mu_bars.get("success"):
+        gaps.append("mu_realtime")
+
+    nq = overseas.get("us_futures", {}) or {}
+    qqq_bars = (overseas.get("us_realtime_bars", {}) or {}).get("qqq", {}) or {}
+    if not nq.get("success") and not qqq_bars.get("success"):
+        gaps.append("nasdaq_futures_or_qqq")
+
+    return gaps
+
+
 def compute_data_quality_score(snapshot: dict) -> float:
     """
-    전체 데이터 품질 점수(0~100) = 수집 성공비율(70%) + 신선도(30%).
+    전체 데이터 품질 점수(0~100) = 수집 성공비율(70%) + 신선도(30%), 이후
+    핵심 데이터 공백에 대한 하드캡을 적용한다.
 
     일반 개장일에 데이터가 오래되면(API_FAILURE) 크게 감점하고,
     미국 휴장으로 인한 공백(US_HOLIDAY/WEEKEND/EARLY_CLOSE)은 과도하게
-    감점하지 않는다(holiday_adjusted 처리).
+    감점하지 않는다(holiday_adjusted 처리) — 다만 아래 하드캡은 휴장 여부와
+    무관하게 "핵심 데이터가 실제로 있는가"만 보고 항상 적용된다(휴장이라고
+    해서 상승/하락종목수가 0/0인 것까지 정당화되지는 않기 때문).
     """
     meta = snapshot.get("meta", {}) or {}
     base_ratio = float(meta.get("data_quality_ratio", 1.0)) * 100.0
@@ -410,6 +466,29 @@ def compute_data_quality_score(snapshot: dict) -> float:
         score *= 0.7  # 일반 개장일 데이터 오류 → 크게 감점
     elif gap_reason in ("US_HOLIDAY", "WEEKEND", "EARLY_CLOSE"):
         score = max(score, 75.0)  # 휴장으로 인한 공백은 과도하게 낮추지 않음
+
+    score = round(max(0.0, min(100.0, score)), 2)
+
+    # ── 핵심 데이터 하드캡(휴장 floor보다 항상 우선) ──────────────────────────
+    domestic = snapshot.get("domestic", {}) or {}
+    deltas = snapshot.get("deltas", {}) or {}
+    d5 = deltas.get("5m", {}) or {}
+    d15 = deltas.get("15m", {}) or {}
+
+    adv, dec = domestic.get("advancers"), domestic.get("decliners")
+    if not adv and not dec:
+        score = min(score, 70.0)
+    if d5.get("kospi200_futures_change_rate") is None and d15.get("kospi200_futures_change_rate") is None:
+        score = min(score, 80.0)
+    flow = domestic.get("investor_flow_market", {}) or {}
+    if not flow.get("success") or flow.get("is_proxy", True):
+        score = min(score, 75.0)
+
+    gap_count = len(compute_core_data_gaps(snapshot))
+    if gap_count >= 5:
+        score = min(score, 55.0)
+    elif gap_count >= 3:
+        score = min(score, 65.0)
 
     return round(max(0.0, min(100.0, score)), 2)
 
@@ -666,17 +745,53 @@ def compute_theme_rotation_score(snapshot: dict, ref_0920: Optional[dict] = None
     return round(max(0.0, min(100.0, score)), 2)
 
 
-def compute_news_shock_score(snapshot: dict) -> float:
-    """뉴스 모멘텀(부정 키워드) 점수를 0~100 충격 점수로 변환. 수집 실패 시 0(중립/unknown)."""
+def classify_theme_rotation_status(snapshot: dict, ref_0920: Optional[dict] = None) -> str:
+    """
+    UI/가드 판단용 — theme_rotation_score가 "정상 계산된 안정"(STABLE)인지
+    "계산 근거 자체가 없는 UNKNOWN"인지 구분한다. compute_theme_rotation_score()는
+    두 경우 모두 50.0(중립)을 반환해 숫자만으로는 구분이 안 되므로, UNKNOWN을
+    "예측을 C/UP으로 완화하는 근거"로 쓰지 않도록 이 함수로 별도 확인해야 한다.
+    """
+    current_leaders = _leader_sectors(snapshot)
+    ref_leaders = (ref_0920 or {}).get("leader_sectors_0920") or []
+    if not ref_leaders or not current_leaders:
+        return "UNKNOWN"
+    return "STABLE"
+
+
+def compute_news_shock_score(snapshot: dict) -> Optional[float]:
+    """
+    뉴스 모멘텀 점수를 다른 컴포넌트와 동일한 스케일(0~100, 50=중립, 높을수록
+    하락압력/부정)로 정규화한다. 수집 실패/미연동이면 None(UNKNOWN)을 반환한다
+    — 과거에는 실패 시 0.0을 반환했는데, 이 스케일에서 0.0은 "매우 긍정적
+    뉴스"와 동일한 값이라 실패/미수집이 마치 강한 긍정 신호처럼 취급되는
+    버그가 있었다. None을 반환하면 _weighted_pressure()/key_reasons 랭킹에서
+    자동으로 제외되어(다른 None 컴포넌트와 동일하게 처리) 이런 오판을 막는다.
+    """
     news = snapshot.get("domestic", {}).get("news_shock", {}) or {}
     if not news.get("success"):
-        return 0.0
+        return None
     raw = news.get("score")
     if raw is None:
-        return 0.0
-    # raw: 0(매우 부정) ~ 5(중립) ~ 10(매우 긍정) — 중립 대비 부정 편차만 충격으로 환산
-    shock = max(0.0, (5.0 - float(raw))) * 20.0
-    return round(max(0.0, min(100.0, shock)), 2)
+        return None
+    # raw: 0(매우 부정) ~ 5(중립) ~ 10(매우 긍정) -> 50(중립) 기준 스케일로 환산.
+    score = 50.0 - (float(raw) - 5.0) * 10.0
+    return round(max(0.0, min(100.0, score)), 2)
+
+
+def classify_news_status(snapshot: dict) -> str:
+    """UI 표시용 — "뉴스 데이터 없음"/"뉴스 수집 실패"/"부정 뉴스 감지 없음" 구분."""
+    news = snapshot.get("domestic", {}).get("news_shock", {}) or {}
+    if not news:
+        return "NO_DATA"
+    if not news.get("success"):
+        return "COLLECTION_FAILED"
+    raw = news.get("score")
+    if raw is None:
+        return "NO_DATA"
+    if raw <= 3.0:
+        return "NEGATIVE_DETECTED"
+    return "NO_NEGATIVE_DETECTED"
 
 
 def compute_market_collapse_score(snapshot: dict, ref_0920: Optional[dict] = None) -> float:

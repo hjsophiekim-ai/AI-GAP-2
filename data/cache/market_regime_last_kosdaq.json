@@ -1,6 +1,6 @@
 {
-  "value": 847.07,
-  "change_rate": -0.0,
+  "value": 831.18,
+  "change_rate": -1.88,
   "change_amount": null,
   "high": null,
   "low": null,
@@ -8,7 +8,7 @@
   "decliners": null,
   "unchanged": null,
   "source": "naver",
-  "timestamp": "2026-07-07T08:45:22",
+  "timestamp": "2026-07-07T11:46:26",
   "success": true,
   "error": null
 }

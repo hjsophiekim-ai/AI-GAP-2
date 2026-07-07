@@ -340,7 +340,14 @@ class MarketRegimeRouter:
         }, date_str=date_str)
 
         # ── 향후 30분/1시간/3시간 + 내일장 예측 ──────────────────────────────
+        # §4: overall_market(전체 시장)/semiconductor(반도체)/leading_theme(주도테마)를
+        # 서로 다른 축으로 분리해서 계산한다 — "주도테마가 유지되니 전체 시장/반도체도
+        # 괜찮다"는 식의 혼동을 구조적으로 막기 위함이다.
         predictions = mp.predict_all_horizons(snapshot, result, ref_0920, recovery_info, score_deltas)
+        semiconductor_prediction = mp.predict_semiconductor_all_horizons(
+            snapshot, result, recovery_info, mu_data_status=mu_data_status, mu_data_source=mu_data_source,
+        )
+        leading_theme_prediction = mp.predict_leading_theme_status(snapshot, ref_0920)
         tomorrow_prediction = mp.predict_tomorrow_market(
             snapshot, regime_history=regime_history_state.get("history"), now_hm=now_hm, ref_0920=ref_0920,
         )
@@ -373,6 +380,8 @@ class MarketRegimeRouter:
             "recovery_score_unavailable": recovery_info.get("unavailable"),
             "score_deltas": score_deltas,
             "predictions": predictions,
+            "semiconductor_prediction": semiconductor_prediction,
+            "leading_theme_prediction": leading_theme_prediction,
             "tomorrow_prediction": tomorrow_prediction,
             "alert_level": alert.alert_level,
             "alert_reasons": alert.reasons,
