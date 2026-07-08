@@ -1,8 +1,8 @@
 {
-  "value": 100.84500122070312,
-  "change_rate": -0.11,
+  "value": 101.125,
+  "change_rate": 0.23,
   "source": "yfinance",
-  "timestamp": "2026-07-07T11:46:38",
+  "timestamp": "2026-07-08T09:56:57",
   "success": true,
   "error": null,
   "optional": true

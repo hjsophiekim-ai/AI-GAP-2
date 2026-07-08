@@ -1,0 +1,12 @@
+{
+  "kospi_value": 7702.1,
+  "kosdaq_value": 820.31,
+  "hynix_low": 2090000.0,
+  "samsung_low": 283000.0,
+  "leader_sectors_0920": [
+    "bio_healthcare",
+    "semiconductor",
+    "finance"
+  ],
+  "captured_at": "2026-07-08T09:49:36"
+}

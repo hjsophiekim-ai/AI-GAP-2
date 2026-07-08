@@ -1,11 +1,11 @@
 {
   "symbol": "NVDA",
-  "close": 195.5500030517578,
-  "change_rate": 0.36955356666652833,
-  "volume": 96954806,
-  "session_date": "2026-07-06",
+  "close": 196.92999267578125,
+  "change_rate": 0.7056965494693367,
+  "volume": 122966441,
+  "session_date": "2026-07-07",
   "source": "yahoo",
   "success": true,
   "error": null,
-  "timestamp": "2026-07-07T11:46:36"
+  "timestamp": "2026-07-08T09:56:56"
 }

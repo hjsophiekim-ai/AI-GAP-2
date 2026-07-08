@@ -13,7 +13,7 @@ os.chdir(PROJECT_ROOT)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-if __name__ == "__main__":
+def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="AI-GAP Streamlit UI launcher")
@@ -29,3 +29,7 @@ if __name__ == "__main__":
     print(f"[run_app] Starting Streamlit on port {args.port} ...")
     print(f"[run_app] Command: {' '.join(cmd)}")
     subprocess.run(cmd)
+
+
+if __name__ == "__main__":
+    main()

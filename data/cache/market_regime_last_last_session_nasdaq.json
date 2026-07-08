@@ -1,11 +1,11 @@
 {
   "symbol": "^IXIC",
-  "close": 26121.16015625,
-  "change_rate": 1.116765070151373,
-  "volume": 6943295000,
-  "session_date": "2026-07-06",
+  "close": 25818.689453125,
+  "change_rate": -1.1579527912072003,
+  "volume": 7215704000,
+  "session_date": "2026-07-07",
   "source": "yahoo",
   "success": true,
   "error": null,
-  "timestamp": "2026-07-07T11:46:37"
+  "timestamp": "2026-07-08T09:56:56"
 }

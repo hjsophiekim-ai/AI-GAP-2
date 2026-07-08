@@ -1,0 +1,35 @@
+{
+  "initial_regime": "B",
+  "initial_confidence": 62.3,
+  "initial_at": "2026-07-08T09:49:36",
+  "history": [
+    {
+      "timestamp": "2026-07-08T08:14:49",
+      "now_hm": "08:14",
+      "regime": "F",
+      "confidence": 50.0,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-08T09:09:54",
+      "now_hm": "09:09",
+      "regime": "E",
+      "confidence": 81.3,
+      "policy_name": "policy_inverse"
+    },
+    {
+      "timestamp": "2026-07-08T09:49:36",
+      "now_hm": "09:49",
+      "regime": "B",
+      "confidence": 62.3,
+      "policy_name": "policy_semiconductor_rebound"
+    },
+    {
+      "timestamp": "2026-07-08T09:57:02",
+      "now_hm": "09:56",
+      "regime": "C",
+      "confidence": 62.8,
+      "policy_name": "policy_gap_support"
+    }
+  ]
+}
