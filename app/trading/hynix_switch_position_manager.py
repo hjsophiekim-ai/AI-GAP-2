@@ -147,47 +147,57 @@ def _buy_new(broker, symbol: str, current_price: float, cash_amount: float, reas
 
 
 def sync_position_from_broker(state: dict, broker) -> dict:
-    """브로커의 실제 보유종목을 조회해 state를 그 결과로 동기화한다(불일치 시 브로커가 항상 우선).
-
-    real 모드에서는 state 파일을 신뢰하지 않고 매 사이클 이 함수로 실제 계좌를 우선 반영해야 한다.
-    000660/0197X0을 동시에 보유 중이면 state["position_conflict"]=True로 표시하고 신규매수를 막는다.
+    """[하위호환용] 브로커를 직접 조회해 state를 동기화한다. 신규 코드는 엔진에서
+    `HynixPositionManager.sync()` 후 `apply_position_manager_to_state()`를 사용할 것.
     """
-    try:
-        positions = broker.get_positions()
-    except Exception as exc:
-        logger.warning("[SwitchPositionManager] 브로커 포지션 조회 실패, 기존 state 유지: %s", exc)
+    from app.trading.hynix_position_common import HynixPositionManager
+
+    pm = HynixPositionManager(broker, mode=state.get("mode", "mock"))
+    pm.sync(force=True)
+    return apply_position_manager_to_state(state, pm)
+
+
+def apply_position_manager_to_state(state: dict, position_manager) -> dict:
+    """HynixPositionManager.sync() 결과(브로커 조회값)를 state(캐시)에 반영한다.
+
+    브로커가 항상 우선한다 — 심볼이 같으면 수량/평단만 갱신하고 entry_time 등
+    우리 쪽에서만 관리하는 필드는 보존하며, 심볼이 다르면 완전히 새로 시작한다.
+    """
+    pos_info = position_manager.current_position
+    state["position_conflict"] = bool(pos_info.get("conflict"))
+    if state["position_conflict"]:
+        state["critical_alert"] = position_manager.conflict_error
+        logger.error("[SwitchPositionManager] %s", position_manager.conflict_error)
         return state
 
-    detected = get_hynix_auto_position(positions)
-    state["position_conflict"] = detected["current_position"] == POSITION_CONFLICT
-    if detected["current_position"] == POSITION_CONFLICT:
-        state["critical_alert"] = detected["error"]
-        logger.error("[SwitchPositionManager] %s", detected["error"])
-        return state
-
-    broker_pos = detected.get("position")
-    broker_symbol = getattr(broker_pos, "symbol", None) if broker_pos is not None and not isinstance(broker_pos, dict) else (broker_pos.get("symbol") if broker_pos else None)
+    broker_symbol = pos_info.get("symbol")
     existing = state.get("position") or {}
     state_symbol = existing.get("symbol")
 
     if broker_symbol == state_symbol:
-        return state  # 이미 일치 — 그대로 둠(entry_price/entry_time 등 우리 쪽 기록 보존)
-
-    logger.warning(
-        "[SwitchPositionManager] state 포지션(%s)과 실제 브로커 포지션(%s) 불일치 — 브로커 기준으로 동기화",
-        state_symbol, broker_symbol,
-    )
-    if broker_pos is None:
-        state["position"] = _empty_position()
+        if broker_symbol is not None:
+            existing["quantity"] = pos_info.get("quantity")
+            existing["avg_price"] = pos_info.get("avg_price")
+            state["position"] = existing
     else:
-        qty = broker_pos.get("quantity") if isinstance(broker_pos, dict) else getattr(broker_pos, "quantity", 0)
-        avg_price = broker_pos.get("avg_price") if isinstance(broker_pos, dict) else getattr(broker_pos, "avg_price", None)
-        state["position"] = {
-            **_empty_position(),
-            "symbol": broker_symbol, "name": _SYMBOL_NAME.get(broker_symbol, broker_symbol),
-            "quantity": qty, "avg_price": avg_price, "entry_price": avg_price,
-            "entry_time": datetime.now().isoformat(),
-        }
+        logger.warning(
+            "[SwitchPositionManager] state 포지션(%s)과 실제 브로커 포지션(%s) 불일치 — 브로커 기준으로 동기화",
+            state_symbol, broker_symbol,
+        )
+        if broker_symbol is None:
+            state["position"] = _empty_position()
+        else:
+            state["position"] = {
+                **_empty_position(),
+                "symbol": broker_symbol, "name": _SYMBOL_NAME.get(broker_symbol, broker_symbol),
+                "quantity": pos_info.get("quantity"), "avg_price": pos_info.get("avg_price"),
+                "entry_price": pos_info.get("avg_price"),
+                "entry_time": datetime.now().isoformat(),
+            }
+
+    # 거래횟수는 브로커가 자체 카운터를 지원하면(예: DryRunBroker) 그 값을 항상 우선한다(로그 집계 아님).
+    if hasattr(position_manager.broker, "get_executed_order_count"):
+        state["daily_trade_count"] = position_manager.trade_count
     return state
 
 

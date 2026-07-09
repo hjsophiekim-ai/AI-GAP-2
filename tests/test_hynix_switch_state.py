@@ -93,6 +93,8 @@ def test_active_mode_pointer_roundtrip(tmp_path, monkeypatch):
 
 def test_reset_mock_state_clears_position_and_sets_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+    import app.trading.dry_run_broker as dry_run_broker_module
+    monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)  # 실제 data/orders/ 삭제 방지
 
     dirty_state = default_state("mock")
     dirty_state["position"]["symbol"] = "000660"

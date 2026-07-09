@@ -32,9 +32,33 @@ _TRADE_LOG_COLUMNS = [
 ]
 
 
+def _header_matches(path: Path, columns: list[str]) -> bool:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            first_line = f.readline().strip()
+        existing = first_line.split(",") if first_line else []
+        return existing == columns
+    except Exception:
+        return True  # 읽기 실패 시 굳이 아카이빙하지 않고 그냥 append 시도(무해)
+
+
+def _archive_if_schema_drifted(path: Path, columns: list[str]) -> None:
+    """스키마(컬럼 목록)가 바뀌었는데 그날 파일이 이미 존재하면, 예전 형식 데이터를 조용히
+    깨뜨리지 않도록 옛 파일을 타임스탬프를 붙여 보존하고 새 스키마로 다시 시작한다."""
+    if not path.exists() or _header_matches(path, columns):
+        return
+    backup = path.with_name(f"{path.stem}.schema_{datetime.now().strftime('%H%M%S')}{path.suffix}")
+    try:
+        path.rename(backup)
+        logger.warning("[HynixSwitchLogger] %s 스키마 변경 감지, 기존 파일을 %s로 보존하고 새로 시작", path.name, backup.name)
+    except Exception as exc:
+        logger.debug("[HynixSwitchLogger] 스키마 드리프트 아카이빙 실패(%s): %s", path, exc)
+
+
 def _append_csv(path: Path, columns: list[str], record: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        _archive_if_schema_drifted(path, columns)
         is_new = not path.exists()
         with path.open("a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=columns)

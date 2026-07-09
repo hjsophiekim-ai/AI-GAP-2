@@ -21,11 +21,10 @@ from typing import Optional
 
 from app.logger import logger
 from app.trading.dynamic_exit_engine import DynamicExitEngine
-from app.services.hynix_switch_state import load_state, save_state_atomic, _empty_position
+from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.trading.hynix_switch_position_manager import _sell_all_or_ratio, _SYMBOL_NAME
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
-from app.trading.hynix_position_common import get_hynix_auto_position, POSITION_CONFLICT
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _EXIT_LOG_PATH = ROOT / "data" / "logs" / "exit_engine_log.csv"
@@ -118,8 +117,55 @@ def _append_exit_log(row: dict) -> None:
         logger.debug("[DynamicExitWatcher] exit_engine_log 기록 실패: %s", exc)
 
 
+_broker_cache: dict = {}  # mode -> (broker, created_at_monotonic)
+_position_manager_cache: dict = {}  # mode -> HynixPositionManager
+_BROKER_CACHE_TTL_SECONDS = 30.0  # real 모드에서 매초 새 KIS 클라이언트/토큰을 만들지 않기 위한 재사용
+
+
+def _get_cached_broker(mode: str, mock_budget_krw: float):
+    import time
+
+    entry = _broker_cache.get(mode)
+    now_mono = time.monotonic()
+    if entry is not None and (now_mono - entry[1]) < _BROKER_CACHE_TTL_SECONDS:
+        return entry[0]
+
+    if mode == "mock":
+        from app.trading.dry_run_broker import DryRunBroker
+
+        broker = DryRunBroker(initial_balance=mock_budget_krw)
+    else:
+        from app.config import get_config
+        from app.trading.broker_factory import create_broker
+
+        broker = create_broker(
+            get_config(), mode="real",
+            runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
+        )
+    _broker_cache[mode] = (broker, now_mono)
+    _position_manager_cache.pop(mode, None)  # 브로커가 바뀌었으니 매니저도 새로 만든다
+    return broker
+
+
+def _get_position_manager(broker, mode: str):
+    from app.trading.hynix_position_common import HynixPositionManager
+
+    pm = _position_manager_cache.get(mode)
+    if pm is None or pm.broker is not broker:
+        pm = HynixPositionManager(broker, mode=mode)
+        _position_manager_cache[mode] = pm
+    return pm
+
+
 def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = None) -> Optional[dict]:
-    """1회 감시 실행(테스트 및 스레드 루프에서 공용으로 사용하는 순수 함수)."""
+    """1회 감시 실행(테스트 및 스레드 루프에서 공용으로 사용하는 순수 함수).
+
+    Broker → PositionManager → State(캐시) 순서로만 데이터가 흐른다. 이 함수는
+    보유 포지션 판정을 위해 state를 직접 신뢰하지 않고, 매 틱 PositionManager를
+    통해 브로커를 확인(mock은 항상 새로고침, real은 5초 TTL 캐시)한 뒤에만 판단한다.
+    """
+    from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
+
     now = now or datetime.now()
     engine = engine or _engine
     state = load_state()
@@ -127,17 +173,22 @@ def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = N
     if not state.get("auto_trade_on") or state.get("stopped"):
         return None
 
-    position = state.get("position") or {}
-    # UI/엔진과 동일한 공용 포지션 판정 로직을 사용(000660/0197X0 어느 쪽이든 동일하게 인식).
-    detected = get_hynix_auto_position([position] if position.get("symbol") else [])
-    if detected["current_position"] == POSITION_CONFLICT:
-        logger.error("[DynamicExitWatcher] %s", detected.get("error"))
-        return None
-    symbol = position.get("symbol")
-    if not symbol or (position.get("quantity") or 0) <= 0:
+    mode = state.get("mode", "mock")
+    try:
+        broker = _get_cached_broker(mode, state.get("mock_budget_krw", 10_000_000.0))
+        position_manager = _get_position_manager(broker, mode)
+        position_manager.sync()  # mock은 항상 새로고침, real은 내부 TTL(5초) 적용
+        apply_position_manager_to_state(state, position_manager)
+    except Exception as exc:
+        logger.warning("[DynamicExitWatcher] PositionManager 동기화 실패, 이번 틱은 스킵: %s", exc)
         return None
 
-    mode = state.get("mode", "mock")
+    position = state.get("position") or {}
+    symbol = position.get("symbol")
+    if not symbol or (position.get("quantity") or 0) <= 0:
+        save_state_atomic(state)
+        return None
+
     current_price = _fetch_current_price(symbol, mode)
     if not current_price:
         return None
@@ -149,35 +200,19 @@ def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = N
     state["position"] = position
     state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
 
-    order_result = None
     if decision["action"] in ("SELL_ALL", "SELL_PARTIAL"):
-        try:
-            from app.trading.broker_factory import create_broker
-            from app.config import get_config
-
-            broker = create_broker(
-                get_config(), mode=mode, runtime_real_mode=(mode == "real"),
-                runtime_enable_real_buy=(mode == "real"), runtime_enable_real_sell=(mode == "real"),
-            )
-        except Exception as exc:
-            logger.error("[DynamicExitWatcher] 브로커 생성 실패: %s", exc)
-            save_state_atomic(state)
-            return decision
-
         orders: list = []
         order_result = _sell_all_or_ratio(broker, position, current_price, decision["ratio"], decision["reason"], orders)
         if order_result.get("success"):
             sold_qty = order_result.get("sold_quantity", 0)
             realized = (current_price - (position.get("entry_price") or current_price)) * sold_qty
             state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
-            state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
             state["last_sell_price"] = current_price
             state["last_trade_time"] = now.isoformat()
-            if decision["action"] == "SELL_ALL" or order_result.get("remaining_quantity", 0) <= 0:
-                state["position"] = _empty_position()
-            else:
-                position["quantity"] = order_result.get("remaining_quantity")
-                state["position"] = position
+
+            # 매도 직후 "추정된 결과"가 아니라 브로커를 다시 조회해 확정한다(SoT 원칙).
+            position_manager.sync(force=True)
+            apply_position_manager_to_state(state, position_manager)
 
         _append_exit_log({
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"), "symbol": symbol,

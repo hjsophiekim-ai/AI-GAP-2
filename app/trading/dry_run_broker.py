@@ -195,6 +195,10 @@ class DryRunBroker(BrokerBase):
     def get_buyable_cash(self) -> float:
         return self._balance
 
+    def get_executed_order_count(self) -> int:
+        """오늘 실제로 체결(성공)된 매수+매도 주문 수. 로그 파일이 아니라 브로커 자체 카운터 기준."""
+        return self._buy_counter + self._sell_counter
+
     # ------------------------------------------------------------------
     # State management
     # ------------------------------------------------------------------

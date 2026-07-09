@@ -134,6 +134,8 @@ def test_mock_cash_resets_to_budget_on_new_day(tmp_path, monkeypatch):
 
 def test_reset_mock_state_helper_sets_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+    import app.trading.dry_run_broker as dry_run_broker_module
+    monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)  # 실제 data/orders/ 삭제 방지
 
     reset = state_module.reset_mock_state(budget_krw=7_000_000)
 
@@ -176,16 +178,17 @@ def test_conflict_positions_flag_and_block(monkeypatch):
 # ── 9) Dynamic Exit AI가 0197X0 보유 포지션을 감지하는지 ───────────────────────
 
 def test_dynamic_exit_watcher_detects_inverse_position(tmp_path, monkeypatch):
+    """Broker가 실제로 0197X0을 보유 중이라고 응답해야만 Dynamic Exit AI가 이를 인식해야 한다
+    (state를 직접 조작하는 것만으로는 인식되면 안 됨 — Broker가 유일한 Source of Truth)."""
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
 
     state = state_module.load_state(mode="mock")
     state["mode"] = "mock"
     state["auto_trade_on"] = True
+    # entry_price/entry_time 등 "우리쪽 부가 기록"만 미리 넣어둔다(브로커가 모르는 정보).
     state["position"] = {
-        **state["position"], "symbol": INVERSE_SYMBOL, "name": INVERSE_NAME, "quantity": 100,
-        "avg_price": 5_000.0, "entry_price": 5_000.0,
+        **state["position"], "entry_price": 5_000.0,
         "entry_time": datetime.now().isoformat(),
-        "highest_price": 5_000.0, "lowest_price": 5_000.0,
     }
     state_module.save_state_atomic(state)
 
@@ -194,11 +197,36 @@ def test_dynamic_exit_watcher_detects_inverse_position(tmp_path, monkeypatch):
     monkeypatch.setattr(watcher, "_load_minute_df", lambda symbol: None)
     monkeypatch.setattr(watcher, "_EXIT_LOG_PATH", tmp_path / "exit_engine_log.csv")
 
-    import app.trading.broker_factory as broker_factory_module
-    fake_broker = DummyBroker(sell_success=True)
-    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: fake_broker)
+    # Broker가 실제로 0197X0 100주를 들고 있다고 응답 — 이것만이 신뢰되어야 한다.
+    inverse_position = Position(symbol=INVERSE_SYMBOL, name=INVERSE_NAME, quantity=100, avg_price=5_000.0, current_price=5_155.0)
+    fake_broker = DummyBroker(sell_success=True, positions=[inverse_position])
+    monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: fake_broker)
 
     decision = watcher.tick(now=datetime.now())
 
     assert decision is not None
     assert decision["action"] == "SELL_ALL"
+    assert len(fake_broker.sell_calls) == 1 and fake_broker.sell_calls[0][0] == INVERSE_SYMBOL
+
+
+def test_dynamic_exit_watcher_ignores_stale_state_without_broker_position(tmp_path, monkeypatch):
+    """state 파일에 포지션이 남아 있어도 Broker가 무보유라고 응답하면 감시하지 않아야 한다."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["position"] = {
+        **state["position"], "symbol": INVERSE_SYMBOL, "name": INVERSE_NAME, "quantity": 100,
+        "avg_price": 5_000.0, "entry_price": 5_000.0, "entry_time": datetime.now().isoformat(),
+    }
+    state_module.save_state_atomic(state)
+
+    fake_broker = DummyBroker(positions=[])  # 브로커는 무보유
+    monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: fake_broker)
+
+    decision = watcher.tick(now=datetime.now())
+
+    assert decision is None
+    reloaded = state_module.load_state(mode="mock")
+    assert reloaded["position"]["symbol"] is None  # 브로커 기준으로 정정되어야 함

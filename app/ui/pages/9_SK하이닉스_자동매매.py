@@ -295,7 +295,13 @@ else:
     enh = cycle_result.get("enhanced_result", {})
     decision = cycle_result.get("decision", {})
     state_now = cycle_result.get("state", {})
-    position = state_now.get("position") or {}
+    # 보유종목/거래횟수는 Broker가 유일한 source of truth다 — position_manager(브로커 sync
+    # 직후 결과)만 신뢰하고, state는 entry_time 등 우리쪽 부가 기록을 위한 캐시로만 참고한다.
+    pm_cache = cycle_result.get("position_manager") or {}
+    position = pm_cache.get("position") or {}
+    position_entry_time = (state_now.get("position") or {}).get("entry_time")
+    if pm_cache.get("position_conflict"):
+        st.error("🔴 000660과 0197X0을 동시에 보유 중입니다 — 포지션 동기화 필요, 신규매수가 차단됩니다.")
 
     now_badge_cols = st.columns(4)
     with now_badge_cols[0]:
@@ -307,9 +313,9 @@ else:
     with now_badge_cols[3]:
         st.metric("15:15 강제청산 완료", "예" if state_now.get("liquidation_done") else "아니오")
 
-    if position.get("entry_time"):
+    if position_entry_time and position.get("symbol"):
         try:
-            held_minutes = (datetime.fromisoformat(cycle_result["computed_at"]) - datetime.fromisoformat(position["entry_time"])).total_seconds() / 60
+            held_minutes = (datetime.fromisoformat(cycle_result["computed_at"]) - datetime.fromisoformat(position_entry_time)).total_seconds() / 60
             st.caption(f"현재 포지션 보유 시간: {held_minutes:.0f}분")
         except Exception:
             pass
@@ -350,7 +356,7 @@ else:
 
     t1, t2, t3, t4 = st.columns(4)
     with t1:
-        st.metric("오늘 거래 횟수", state_now.get("daily_trade_count", 0))
+        st.metric("오늘 거래 횟수", pm_cache.get("trade_count", 0))
     with t2:
         st.metric("오늘 실현손익", f"{state_now.get('realized_pnl_today_krw', 0):,.0f}원")
     with t3:

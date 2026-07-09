@@ -24,8 +24,9 @@ from app.trading.hynix_switch_risk_gate import (
 )
 from app.trading.hynix_switch_position_manager import (
     run_liquidation_if_needed, run_tp_sl_if_needed, run_switch_or_entry, _current_price, _ACTION_TO_SYMBOL,
-    sync_position_from_broker,
+    apply_position_manager_to_state,
 )
+from app.trading.hynix_position_common import HynixPositionManager
 from app.trading.hynix_pullback_entry import detect_pullback
 
 _PULLBACK_MORNING_WINDOW_END = "10:00"
@@ -182,6 +183,7 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
     real_gate_ok = True
 
     auto_trade_on = bool(state.get("auto_trade_on"))
+    position_manager = None
     if auto_trade_on:
         try:
             if mode == "real":
@@ -206,7 +208,11 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
                 broker = DryRunBroker(initial_balance=float(state.get("mock_budget_krw", 10_000_000.0)))
 
             if broker is not None:
-                sync_position_from_broker(state, broker)
+                # Broker가 유일한 Source of Truth — position_manager.sync()로 실제 포지션을
+                # 먼저 확정하고, state는 그 결과를 담는 캐시로만 갱신한다.
+                position_manager = HynixPositionManager(broker, mode=mode)
+                position_manager.sync(force=True)
+                apply_position_manager_to_state(state, position_manager)
                 if state.get("position_conflict"):
                     warnings.append(state.get("critical_alert") or "000660/0197X0 동시 보유 감지 — 신규매수 금지")
         except Exception as exc:
@@ -308,6 +314,17 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
             if forced_info["window"] not in fired_windows:
                 fired_windows.append(forced_info["window"])
                 state["fired_windows"] = fired_windows
+
+        # 이번 사이클에 주문을 실행했다면, "확정된 것으로 추정한 상태"가 아니라 브로커에
+        # 실제로 무엇이 체결됐는지 다시 확인하고 그 결과로 state(캐시)를 갱신한다.
+        # (buy()/sell() → broker.positions 갱신 → get_positions() → position_manager.sync() → state 캐시)
+        if orders_this_cycle and position_manager is not None:
+            try:
+                position_manager.sync(force=True)
+                apply_position_manager_to_state(state, position_manager)
+            except Exception as exc:
+                logger.error("[HynixSwitchEngine] 주문 후 포지션 재확인 실패: %s", exc)
+                warnings.append(f"주문 후 포지션 재확인 실패: {exc}")
 
     # ── 미실현손익/당일수익률 갱신 ────────────────────────────────────────────
     position = state.get("position") or {}
@@ -420,6 +437,9 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
         "forced_info": forced_info,
         "orders_this_cycle": orders_this_cycle,
         "state": state,
+        # UI/Dynamic Exit AI는 이 필드(브로커 sync 직후 결과)를 읽어야 한다.
+        # state["position"]/state["daily_trade_count"]는 이 값을 그대로 옮겨 담은 캐시일 뿐이다.
+        "position_manager": position_manager.to_cache_dict() if position_manager is not None else None,
         "warnings": warnings + (enhanced_result.get("warnings") or []),
     }
 
