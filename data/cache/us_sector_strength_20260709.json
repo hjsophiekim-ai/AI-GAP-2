@@ -1,0 +1,34 @@
+{
+  "market_regime": "risk_on",
+  "data_source_used": "yahoo",
+  "us_sector_data_status": "ok",
+  "successful_etf_count": 6,
+  "failed_etfs": [],
+  "strong_sectors": [
+    "semiconductor",
+    "ai_data_center"
+  ],
+  "moderate_sectors": [
+    "industrials"
+  ],
+  "sector_scores": {
+    "semiconductor": 93.3,
+    "ai_data_center": 70.0,
+    "industrials": 58.3,
+    "financials": 48.3,
+    "healthcare_bio": 43.3
+  },
+  "sector_etf_changes": {
+    "SPY": 0.3,
+    "QQQ": 0.6,
+    "SMH": 3.0,
+    "SOXX": 2.8,
+    "XLK": 1.5,
+    "XLI": 0.8,
+    "XLF": 0.2,
+    "XLV": -0.1
+  },
+  "spy_change": 0.3,
+  "qqq_change": 0.6,
+  "collected_at": "2026-07-09T11:03:30"
+}

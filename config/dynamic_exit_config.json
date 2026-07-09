@@ -1,0 +1,23 @@
+{
+  "market_profiles": {
+    "LOW_VOLATILITY": {"tp_pct": 2.0, "sl_pct": 1.0, "trailing_pct": 1.0, "uses_trailing": false},
+    "NORMAL": {"tp_pct": 3.0, "sl_pct": 1.5, "trailing_pct": 1.0, "uses_trailing": false},
+    "HIGH_VOLATILITY": {"tp_pct": 4.5, "sl_pct": 2.2, "trailing_pct": 2.0, "uses_trailing": false},
+    "TREND_UP": {"tp_pct": 6.0, "sl_pct": 2.5, "trailing_pct": 2.0, "uses_trailing": true},
+    "TREND_DOWN": {"tp_pct": 2.5, "sl_pct": 1.2, "trailing_pct": 1.0, "uses_trailing": false},
+    "PANIC": {"tp_pct": 2.0, "sl_pct": 0.8, "trailing_pct": 1.0, "uses_trailing": false},
+    "SHORT_SQUEEZE": {"tp_pct": 6.0, "sl_pct": 2.5, "trailing_pct": 3.0, "uses_trailing": true}
+  },
+  "fallback": {"tp_pct": 3.0, "sl_pct": 1.5},
+  "profit_lock_steps": [[1.0, 0.0], [2.0, 1.0], [3.0, 2.0], [4.0, 3.0], [5.0, 4.0]],
+  "time_stop": {"stagnant_minutes": 20, "stagnant_band_pct": 0.5, "max_minutes": 30, "trend_max_minutes": 60},
+  "panic_detection": {"return_3m_pct": -1.5, "relative_volume": 2.0},
+  "short_squeeze_detection": {"return_3m_pct": 1.5, "relative_volume": 2.0, "prior_oversold_rsi": 35},
+  "trend_detection": {"trend_score_up": 65, "trend_score_down": 35},
+  "volatility_detection": {"high": 65, "low": 35},
+  "exit_score_weights": {
+    "atr": 0.10, "macd": 0.15, "rsi": 0.10, "vwap": 0.10, "bollinger": 0.10,
+    "williams": 0.10, "stochastic": 0.10, "volume": 0.10, "profit_lock": 0.10, "trailing": 0.15
+  },
+  "exit_score_thresholds": {"sell_all": 90, "sell_partial": 70, "hold": 40}
+}

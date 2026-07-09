@@ -3,49 +3,49 @@
     "price": 517.405029296875,
     "return_pct": 0.98,
     "source": "yfinance",
-    "updated_at": "2026-07-09T07:44:08.255882"
+    "updated_at": "2026-07-09T11:14:18.327129"
   },
-  "cached_at": "2026-07-09T07:44:10.203257",
+  "cached_at": "2026-07-09T11:14:20.779772",
   "MU": {
-    "price": 984.75,
-    "return_pct": 0.79,
+    "price": 948.7999877929688,
+    "return_pct": 3.71,
     "source": "yfinance",
-    "updated_at": "2026-07-07T11:28:18.487875"
+    "updated_at": "2026-07-09T11:02:38.452285"
   },
   "NQ=F": {
-    "price": 29416.5,
-    "return_pct": -0.18,
+    "price": 29456.5,
+    "return_pct": -0.05,
     "source": "yfinance",
-    "updated_at": "2026-07-09T07:44:09.237498"
+    "updated_at": "2026-07-09T11:14:19.476075"
   },
   "SOXX": {
     "price": 562.030029296875,
     "return_pct": 3.2,
     "source": "yfinance",
-    "updated_at": "2026-07-09T07:44:09.872498"
+    "updated_at": "2026-07-09T11:14:20.373404"
   },
   "USDKRW": {
-    "price": 1506.47998046875,
-    "return_pct": -0.56,
+    "price": 1504.780029296875,
+    "return_pct": -0.04,
     "source": "yfinance",
-    "updated_at": "2026-07-09T07:44:10.203007"
+    "updated_at": "2026-07-09T11:14:20.779235"
   },
   "QQQ": {
     "price": 402.0,
     "return_pct": 0.49999999999998934,
     "source": "yfinance",
-    "updated_at": "2026-07-07T11:28:37.545001"
+    "updated_at": "2026-07-09T11:02:55.078908"
   },
   "NVDA": {
     "price": 204.1199951171875,
     "return_pct": 4.2,
     "source": "yfinance",
-    "updated_at": "2026-07-09T07:44:07.606992"
+    "updated_at": "2026-07-09T11:14:14.106377"
   },
   "AVGO": {
     "price": 388.69000244140625,
     "return_pct": 5.66,
     "source": "yfinance",
-    "updated_at": "2026-07-09T07:44:08.898132"
+    "updated_at": "2026-07-09T11:14:19.098170"
   }
 }

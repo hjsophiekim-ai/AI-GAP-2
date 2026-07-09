@@ -1,0 +1,46 @@
+{
+  "weights": {
+    "base_prediction": 0.45,
+    "existing_micron": 0.20,
+    "hynix_technical": 0.25,
+    "intraday_momentum": 0.10
+  },
+  "decision_thresholds": {
+    "strong_buy_enhanced_min": 75,
+    "strong_buy_inverse_max": 40,
+    "buy_enhanced_min": 60,
+    "buy_inverse_max": 50,
+    "hold_min": 45,
+    "hold_max": 59,
+    "inverse_buy_min": 50,
+    "inverse_strong_buy_min": 70,
+    "conflict_enhanced_min": 65,
+    "conflict_inverse_min": 55,
+    "min_score_gap_for_forced_trade": 5
+  },
+  "schedule": {
+    "watch_only_start": "09:00",
+    "watch_only_end": "09:10",
+    "forced_trade_windows": [["09:10", "10:00"], ["10:30", "11:00"], ["13:30", "14:30"]],
+    "entry_cutoff_time": "14:50",
+    "liquidation_prep_time": "15:05",
+    "liquidation_mode_time": "15:10",
+    "liquidation_time": "15:15",
+    "no_new_order_time": "15:20"
+  },
+  "risk": {
+    "take_profit_1_pct": 1.2,
+    "take_profit_1_ratio": 0.5,
+    "take_profit_2_pct": 2.0,
+    "take_profit_2_ratio": 1.0,
+    "stop_loss_1_pct": -0.8,
+    "stop_loss_1_ratio": 0.5,
+    "stop_loss_2_pct": -1.5,
+    "stop_loss_2_ratio": 1.0,
+    "daily_loss_limit_pct": -2.5
+  },
+  "sizing": {
+    "normal_trade_cash_pct": 0.20,
+    "forced_trade_cash_pct": 0.08
+  }
+}

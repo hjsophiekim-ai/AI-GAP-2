@@ -22,6 +22,13 @@ from app.logger import logger
 HYNIX_SYMBOL = "000660"
 HYNIX_NAME = "SK하이닉스"
 
+# 0197X0(SOL SK하이닉스선물단일종목인버스2X)도 이 서비스의 자동매매 유니버스에 포함된다.
+# 실제 매수 판단은 predict_hynix_signal(하이닉스 전용)만 하지만, 보유종목 인식/충돌감지는
+# 하이닉스와 인버스를 모두 인식해야 한다(app.trading.hynix_position_common 공용 로직 사용).
+from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME  # noqa: E402
+
+TRADE_SYMBOLS = [HYNIX_SYMBOL, INVERSE_SYMBOL]
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _LOG_DIR = _ROOT / "data" / "logs"
 _STATE_DIR = _ROOT / "data" / "state"
@@ -61,6 +68,7 @@ def generate_trade_proposal(mode: str = "mock") -> dict:
     from app.trading.hynix_risk_guard import check_risk_guards
     from app.trading.hynix_position_sizer import PositionSizingContext, calculate_position_size
     from app.trading.broker_factory import create_broker
+    from app.trading.hynix_position_common import get_hynix_auto_position, POSITION_CONFLICT, POSITION_HYNIX
     from app.config import get_config
 
     cfg = get_config()
@@ -99,7 +107,13 @@ def generate_trade_proposal(mode: str = "mock") -> dict:
         return proposal
 
     cash = broker.get_buyable_cash()
-    hynix_position = next((p for p in positions if p.symbol == HYNIX_SYMBOL), None)
+    detected = get_hynix_auto_position(positions)
+    if detected["current_position"] == POSITION_CONFLICT:
+        proposal = _blocked_proposal(detected["error"])
+        proposal["signal"] = signal
+        _log_decision(proposal, mode=mode)
+        return proposal
+    hynix_position = detected["position"] if detected["current_position"] == POSITION_HYNIX else None
     current_position_value = hynix_position.market_value if hynix_position else 0.0
     total_equity = cash + sum(p.market_value for p in positions)
 
