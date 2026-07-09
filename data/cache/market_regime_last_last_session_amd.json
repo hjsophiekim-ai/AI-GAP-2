@@ -1,11 +1,11 @@
 {
   "symbol": "AMD",
-  "close": 516.1099853515625,
-  "change_rate": -6.510280452154374,
-  "volume": 29007561,
-  "session_date": "2026-07-07",
+  "close": 517.4099731445312,
+  "change_rate": 0.2518819301826194,
+  "volume": 23719700,
+  "session_date": "2026-07-08",
   "source": "yahoo",
   "success": true,
   "error": null,
-  "timestamp": "2026-07-08T09:56:56"
+  "timestamp": "2026-07-09T15:04:47"
 }

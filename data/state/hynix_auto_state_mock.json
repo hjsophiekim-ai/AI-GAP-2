@@ -40,7 +40,7 @@
   "critical_alert": null,
   "auto_trade_on": true,
   "weight_auto_apply_enabled": false,
-  "daily_report_generated_date": null,
+  "daily_report_generated_date": "20260709",
   "stopped": false,
   "stopped_reason": null,
   "last_order_cycle_bucket": "202607091130",

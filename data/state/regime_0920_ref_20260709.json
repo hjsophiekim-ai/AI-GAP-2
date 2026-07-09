@@ -1,0 +1,12 @@
+{
+  "kospi_value": 7236.54,
+  "kosdaq_value": 793.08,
+  "hynix_low": 2091000.0,
+  "samsung_low": 267500.0,
+  "leader_sectors_0920": [
+    "semiconductor",
+    "power_grid",
+    "defense"
+  ],
+  "captured_at": "2026-07-09T13:20:18"
+}

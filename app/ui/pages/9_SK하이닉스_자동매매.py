@@ -552,6 +552,59 @@ else:
 
     st.caption(f"판단 사유: {_dyn_decision.get('reason', '—')}")
 
+st.divider()
+st.subheader("🛡️ 손절 실행 방식")
+
+from app.trading.hynix_stop_loss_control import (
+    STOP_LOSS_MODE_AUTO,
+    STOP_LOSS_MODES,
+    STOP_LOSS_MODE_LABELS,
+    execute_manual_stop_loss,
+)
+from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
+from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
+
+_current_stop_mode = switch_state.get("stop_loss_mode", STOP_LOSS_MODE_AUTO)
+_stop_mode_choice = st.radio(
+    "손절 방식",
+    STOP_LOSS_MODES,
+    index=STOP_LOSS_MODES.index(_current_stop_mode) if _current_stop_mode in STOP_LOSS_MODES else 0,
+    format_func=lambda m: STOP_LOSS_MODE_LABELS.get(m, m),
+    key="hynix_stop_loss_mode_radio",
+    horizontal=True,
+)
+if _stop_mode_choice != _current_stop_mode:
+    switch_state["stop_loss_mode"] = _stop_mode_choice
+    save_state_atomic(switch_state)
+    st.success(f"손절 방식이 '{STOP_LOSS_MODE_LABELS[_stop_mode_choice]}'로 변경되었습니다.")
+    st.rerun()
+
+_pending_alert = switch_state.get("pending_manual_stop_loss_alert")
+if _pending_alert:
+    st.warning(
+        f"⚠️ 손절/청산 조건 도달 — 자동매도가 실행되지 않았습니다. "
+        f"[{_pending_alert.get('symbol')}] {_pending_alert.get('action', '—')} — "
+        f"{_pending_alert.get('reason', '—')} (감지시각: {_pending_alert.get('detected_at', '—')})"
+    )
+
+st.caption("아래 버튼은 손절 방식과 무관하게 언제든 즉시 전량 청산을 실행합니다(현재 모드의 실제 계좌/브로커 기준).")
+mb1, mb2, mb3 = st.columns(3)
+with mb1:
+    if st.button("하이닉스 전량 수동손절", key="hynix_manual_sl_hynix", use_container_width=True):
+        _sl_result = execute_manual_stop_loss(switch_state.get("mode", "mock"), symbol_filter=HYNIX_SYMBOL)
+        (st.success if _sl_result["success"] else st.warning)(_sl_result["message"])
+        st.json(_sl_result["results"])
+with mb2:
+    if st.button("인버스 전량 수동손절", key="hynix_manual_sl_inverse", use_container_width=True):
+        _sl_result = execute_manual_stop_loss(switch_state.get("mode", "mock"), symbol_filter=INVERSE_SYMBOL)
+        (st.success if _sl_result["success"] else st.warning)(_sl_result["message"])
+        st.json(_sl_result["results"])
+with mb3:
+    if st.button("자동매매 대상 전량 청산", key="hynix_manual_sl_all", use_container_width=True):
+        _sl_result = execute_manual_stop_loss(switch_state.get("mode", "mock"), symbol_filter=None)
+        (st.success if _sl_result["success"] else st.warning)(_sl_result["message"])
+        st.json(_sl_result["results"])
+
 st.markdown("**AI 청산 파라미터 추천 (자동 반영 없음)**")
 if st.button("청산 파라미터 추천 새로고침", key="hynix_exit_recommend_refresh"):
     st.session_state["hynix_exit_recommendation"] = recommend_exit_parameters()

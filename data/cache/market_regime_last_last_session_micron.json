@@ -1,11 +1,11 @@
 {
   "symbol": "MU",
-  "close": 938.3800048828125,
-  "change_rate": -4.708808846629855,
-  "volume": 51785317,
-  "session_date": "2026-07-07",
+  "close": 948.7999877929688,
+  "change_rate": 1.1104225213598329,
+  "volume": 42626500,
+  "session_date": "2026-07-08",
   "source": "yahoo",
   "success": true,
   "error": null,
-  "timestamp": "2026-07-08T09:56:55"
+  "timestamp": "2026-07-09T15:04:46"
 }

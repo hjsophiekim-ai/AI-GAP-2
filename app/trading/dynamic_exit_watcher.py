@@ -201,26 +201,70 @@ def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = N
     state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
 
     if decision["action"] in ("SELL_ALL", "SELL_PARTIAL"):
-        orders: list = []
-        order_result = _sell_all_or_ratio(broker, position, current_price, decision["ratio"], decision["reason"], orders)
-        if order_result.get("success"):
-            sold_qty = order_result.get("sold_quantity", 0)
-            realized = (current_price - (position.get("entry_price") or current_price)) * sold_qty
-            state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
-            state["last_sell_price"] = current_price
-            state["last_trade_time"] = now.isoformat()
+        from app.trading.hynix_stop_loss_control import (
+            STOP_LOSS_MODE_AUTO, check_auto_stop_loss_safety, verify_order_confirmed, log_stop_loss_event,
+        )
 
-            # 매도 직후 "추정된 결과"가 아니라 브로커를 다시 조회해 확정한다(SoT 원칙).
-            position_manager.sync(force=True)
-            apply_position_manager_to_state(state, position_manager)
+        stop_loss_mode = state.get("stop_loss_mode", STOP_LOSS_MODE_AUTO)
+        order_sent = False
+        order_confirmed = False
+        block_reason = None
 
-        _append_exit_log({
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"), "symbol": symbol,
-            "entry_price": position.get("entry_price"), "current_price": current_price,
-            "profit_pct": decision["snapshot"].get("profit_pct"), "market_type": decision["market_type"],
-            "tp": decision["tp_pct"], "sl": decision["sl_pct"], "trailing_stop": decision["trailing_armed"],
-            "profit_lock": decision.get("profit_lock_floor_pct"), "exit_score": decision["exit_score"],
-            "action": decision["action"], "reason": decision["reason"],
+        if stop_loss_mode != STOP_LOSS_MODE_AUTO:
+            block_reason = f"손절모드={stop_loss_mode} — 자동매도 없이 알림만"
+            state["pending_manual_stop_loss_alert"] = {
+                "symbol": symbol, "name": position.get("name"), "action": decision["action"],
+                "reason": decision["reason"], "current_price": current_price,
+                "detected_at": now.isoformat(),
+            }
+        elif mode == "real":
+            safety = check_auto_stop_loss_safety(state, mode, position_manager, symbol, now)
+            if not safety["ok"]:
+                block_reason = "real 자동손절 안전조건 미충족: " + "; ".join(safety["failed_checks"])
+                state["pending_manual_stop_loss_alert"] = {
+                    "symbol": symbol, "name": position.get("name"), "action": decision["action"],
+                    "reason": block_reason, "current_price": current_price, "detected_at": now.isoformat(),
+                }
+
+        if block_reason is None:
+            orders: list = []
+            order_result = _sell_all_or_ratio(broker, position, current_price, decision["ratio"], decision["reason"], orders)
+            order_sent = bool(order_result.get("success"))
+            if order_sent:
+                sold_qty = order_result.get("sold_quantity", 0)
+                realized = (current_price - (position.get("entry_price") or current_price)) * sold_qty
+                state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
+                state["last_sell_price"] = current_price
+                state["last_trade_time"] = now.isoformat()
+                state["last_stop_loss_signature"] = f"{symbol}:{now.strftime('%Y%m%d%H%M')}"
+                state["pending_manual_stop_loss_alert"] = None
+
+                # 매도 직후 "추정된 결과"가 아니라 브로커를 다시 조회해 확정한다(SoT 원칙).
+                order_confirmed = verify_order_confirmed(position_manager, symbol, expect_cleared=(decision["action"] == "SELL_ALL"))
+                apply_position_manager_to_state(state, position_manager)
+
+            _append_exit_log({
+                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"), "symbol": symbol,
+                "entry_price": position.get("entry_price"), "current_price": current_price,
+                "profit_pct": decision["snapshot"].get("profit_pct"), "market_type": decision["market_type"],
+                "tp": decision["tp_pct"], "sl": decision["sl_pct"], "trailing_stop": decision["trailing_armed"],
+                "profit_lock": decision.get("profit_lock_floor_pct"), "exit_score": decision["exit_score"],
+                "action": decision["action"], "reason": decision["reason"],
+            })
+
+        entry_price = position.get("entry_price")
+        sl_pct = decision.get("sl_pct")
+        tp_pct = decision.get("tp_pct")
+        log_stop_loss_event({
+            "mode": mode, "symbol": symbol, "name": position.get("name"),
+            "entry_price": entry_price, "current_price": current_price,
+            "stop_loss_price": (entry_price * (1 - sl_pct / 100)) if (entry_price and sl_pct is not None) else "",
+            "stop_loss_pct": sl_pct,
+            "take_profit_price": (entry_price * (1 + tp_pct / 100)) if (entry_price and tp_pct is not None) else "",
+            "take_profit_pct": tp_pct,
+            "stop_mode": stop_loss_mode, "action": decision["action"],
+            "order_sent": order_sent, "order_confirmed": order_confirmed,
+            "reason": block_reason or decision["reason"],
         })
 
     save_state_atomic(state)

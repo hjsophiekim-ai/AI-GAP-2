@@ -1,0 +1,28 @@
+{
+  "initial_regime": "D",
+  "initial_confidence": 93.2,
+  "initial_at": "2026-07-09T13:20:18",
+  "history": [
+    {
+      "timestamp": "2026-07-09T13:20:18",
+      "now_hm": "13:19",
+      "regime": "D",
+      "confidence": 93.2,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-09T14:22:24",
+      "now_hm": "14:21",
+      "regime": "D",
+      "confidence": 93.2,
+      "policy_name": "policy_no_trade"
+    },
+    {
+      "timestamp": "2026-07-09T15:04:52",
+      "now_hm": "15:04",
+      "regime": "D",
+      "confidence": 93.2,
+      "policy_name": "policy_no_trade"
+    }
+  ]
+}

@@ -110,6 +110,9 @@ def default_state(mode: str = "mock") -> dict:
         "last_trade_time": None,
         "last_action": None,
         "last_order_id": None,
+        "stop_loss_mode": "AUTO",  # AUTO | ALERT_ONLY | BATCH_MANUAL
+        "last_stop_loss_signature": None,
+        "pending_manual_stop_loss_alert": None,
     }
 
 

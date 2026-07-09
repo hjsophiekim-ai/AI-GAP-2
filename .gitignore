@@ -12,6 +12,7 @@ data/predictions/
 data/selected/
 models/*.pkl
 data/historical/
+data/state/*.tmp
 __pycache__/
 *.pyc
 *.pyo
