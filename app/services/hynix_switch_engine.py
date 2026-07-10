@@ -208,8 +208,237 @@ def _daily_pnl_pct(state: dict, total_equity: Optional[float]) -> Optional[float
     return (total_equity / baseline - 1.0) * 100.0
 
 
+def _run_active_strategy_entry(
+    state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
+    now: datetime, orders_this_cycle: list,
+) -> dict:
+    """ACTIVE STRATEGY(거래모드 기반 조기진입/Scale-in/빠른전환) — mock 전용 opt-in.
+
+    state["active_strategy_enabled"]가 True이고 mode=="mock"일 때만 호출부에서
+    호출된다(real 모드에서는 절대 호출되지 않음 — 호출부에서 이미 mode=="mock"을
+    확인). 기존 ENHANCED_LEGACY 진입 로직(run_switch_or_entry)을 이번 사이클만
+    대체하며, 같은 브로커/포지션 파이프라인(_buy_new/_sell_all_or_ratio → 실행
+    원장)을 그대로 사용하되 signal_source="ACTIVE_STRATEGY_MOCK"으로 구분 기록한다.
+    """
+    from app.trading.hynix_switch_position_manager import _buy_new, _sell_all_or_ratio
+    from app.trading.hynix_active_strategy_engine import (
+        decide_active_strategy_action, default_active_strategy_state,
+        register_position_opened, register_position_closed,
+        ACTION_ENTER_HYNIX, ACTION_ENTER_INVERSE, ACTION_SCALE_OUT_PARTIAL, ACTION_EXIT_ALL, ACTION_SWITCH,
+    )
+    from app.trading.hynix_trading_mode import DEFAULT_MODE
+
+    shadow = state.get("last_cycle_ai_result") or {}
+    cyc = shadow.get("cycle") or {}
+    prob = shadow.get("probability") or {}
+    turning_point = cyc.get("turning_point") or {}
+    momentum = cyc.get("momentum") or {}
+
+    mode_name = state.get("trading_mode", DEFAULT_MODE)
+    strategy_state = state.get("active_strategy_state") or default_active_strategy_state(mode_name)
+
+    position = state.get("position") or {}
+    position_state = {
+        "symbol": position.get("symbol"), "quantity": position.get("quantity") or 0,
+        "entry_price": position.get("entry_price"),
+    }
+
+    # expected_move_pct — 전용 예측 필드가 아직 없어 momentum의 최근 3분 속도를 근사치로
+    # 사용한다(정밀한 값이 아니라 "과도한 진입/완화를 막는 최소 안전장치" 목적).
+    raw_vel = momentum.get("raw_velocity_3")
+    expected_move_pct = round(abs(raw_vel) * 2.0, 3) if raw_vel is not None else 0.25
+
+    decision_result = decide_active_strategy_action(
+        mode=mode_name, now=now,
+        buy_probability=prob.get("buy_probability", 0.0), inverse_probability=prob.get("sell_probability", 0.0),
+        hold_probability=prob.get("hold_probability", 100.0),
+        model_confidence=turning_point.get("confidence", 50.0), expected_move_pct=expected_move_pct,
+        down_turn_probability_3m=turning_point.get("down_turn_probability_3m"),
+        up_turn_probability_3m=turning_point.get("up_turn_probability_3m"),
+        momentum_inflection_or_acceleration=momentum.get("momentum_acceleration_up"),
+        cycle_phase=cyc.get("cycle_phase"), order_flow_confidence=None,
+        atr_pct=None, consecutive_stop_losses=strategy_state.get("consecutive_stop_losses", 0),
+        recent_pnl_pct=state.get("realized_pnl_today_pct"), daily_return_pct=state.get("realized_pnl_today_pct"),
+        position_state=position_state, strategy_state=strategy_state,
+        data_ok=bool(hynix_price and inverse_price), position_conflict=bool(state.get("position_conflict")),
+    )
+    state["active_strategy_state"] = decision_result["state"]
+    action = decision_result["action"]
+    acted = False
+    message = decision_result.get("blocking_reason") or "; ".join(decision_result.get("reasons", [])) or "HOLD"
+
+    if action in (ACTION_ENTER_HYNIX, ACTION_ENTER_INVERSE):
+        symbol = decision_result["recommended_symbol"]
+        price = _current_price(symbol, hynix_price, inverse_price)
+        pct = decision_result["recommended_position_pct"]
+        if price and pct > 0:
+            try:
+                full_cash = float(broker.get_buyable_cash())
+            except Exception:
+                full_cash = 0.0
+            cash_amount = full_cash * (pct / 100.0)
+            buy_result = _buy_new(
+                broker, symbol, price, cash_amount, f"Active Strategy({mode_name}) 진입 {pct:.0f}%",
+                orders_this_cycle, mode="mock", signal_source="ACTIVE_STRATEGY_MOCK",
+            )
+            if buy_result.get("success"):
+                acted = True
+                qty = buy_result.get("bought_quantity", 0)
+                state["position"] = {
+                    "symbol": symbol, "name": symbol, "quantity": qty, "avg_price": price,
+                    "entry_price": price, "entry_time": now.isoformat(), "partial_tp1_done": False, "partial_sl1_done": False,
+                }
+                state["active_strategy_state"] = register_position_opened(state["active_strategy_state"], symbol, price, pct, now)
+                message = f"Active Strategy 진입: {symbol} {pct:.0f}%({qty}주)"
+
+    elif action in (ACTION_SCALE_OUT_PARTIAL, ACTION_EXIT_ALL, ACTION_SWITCH) and position_state.get("symbol"):
+        symbol = position_state["symbol"]
+        price = _current_price(symbol, hynix_price, inverse_price)
+        ratio = 1.0 if action in (ACTION_EXIT_ALL, ACTION_SWITCH) else max(0.01, min(1.0, decision_result["recommended_position_pct"] / 100.0))
+        if price:
+            sell_result = _sell_all_or_ratio(
+                broker, position, price, ratio, f"Active Strategy({mode_name}) {action}", orders_this_cycle,
+                mode="mock", exit_reason_type="active_strategy", signal_source="ACTIVE_STRATEGY_MOCK",
+            )
+            if sell_result.get("success"):
+                acted = True
+                remaining = sell_result.get("remaining_quantity", 0)
+                if remaining <= 0:
+                    state["position"] = {
+                        "symbol": None, "quantity": 0, "avg_price": None, "entry_price": None,
+                        "entry_time": None, "name": None, "partial_tp1_done": False, "partial_sl1_done": False,
+                    }
+                    state["active_strategy_state"] = register_position_closed(state["active_strategy_state"], was_stop_loss=False, now=now)
+                else:
+                    state["position"]["quantity"] = remaining
+                message = f"Active Strategy 청산/축소: {symbol} {action} (비중 {ratio*100:.0f}%)"
+
+    return {"acted": acted, "message": message, "action": action, "decision": decision_result}
+
+
+def _run_shadow_cycle_ai_and_decision_v2(
+    state: dict, enhanced_result: dict, decision: dict, df_1min, hynix_price, inverse_price, now: datetime,
+) -> Optional[dict]:
+    """SHADOW MODE — Cycle Detector AI + Prediction AI V2(BUY/SELL/HOLD 확률+Adaptive
+    Threshold)를 기존 enhanced_score 기반 실제 주문 흐름과 나란히 계산·기록만 한다.
+
+    이 함수의 결과는 어떤 이유로도 `decision`/실제 주문 실행에 영향을 주지 않는다 —
+    명세(Cycle Detector 17절)가 요구하는 최소 5거래일 Shadow Mode 검증을 위한 것이며,
+    실제 주문 연결은 별도의 명시적 승인 이후에만 이루어진다. 실패해도 예외를 삼키고
+    None을 반환한다(호출부 로직에 영향 없음).
+    """
+    try:
+        from app.trading.hynix_cycle_detector import (
+            HynixCycleDetector, default_cycle_state, log_cycle_ai_prediction,
+        )
+        from app.models.hynix_decision_v2 import (
+            compute_buy_sell_hold_probability, decide_final_action_v2, adaptive_threshold_update,
+            default_threshold_state,
+        )
+        from app.models.micron_proxy_prediction import compute_effective_micron_score_from_market_data
+
+        market_data = enhanced_result.get("market_data") or {}
+        micron_proxy = compute_effective_micron_score_from_market_data(market_data, now=now)
+        effective_micron_score = micron_proxy.get("effective_micron_score")
+        korea_score = micron_proxy.get("korea_semiconductor_confirmation_score")
+
+        gap_pct = None
+        session_high = session_low = None
+        prior_close = enhanced_result.get("hynix_prev_close")
+        if df_1min is not None and not df_1min.empty:
+            session_high = float(df_1min["high"].max())
+            session_low = float(df_1min["low"].min())
+            if prior_close:
+                gap_pct = (float(df_1min["open"].iloc[0]) / prior_close - 1.0) * 100.0
+
+        position = state.get("position") or {}
+        position_state = {
+            "symbol": position.get("symbol"),
+            "position_pct": 100.0 if (position.get("quantity") or 0) > 0 else 0.0,
+        }
+
+        cycle_state = state.get("cycle_ai_state") or default_cycle_state()
+        cycle_result = HynixCycleDetector().run(
+            df_1min, now, position_state=position_state, state=cycle_state,
+            gap_pct=gap_pct, session_high=session_high, session_low=session_low, prior_close=prior_close,
+            inverse_pressure_score=decision.get("inverse_pressure_score"),
+            korea_semiconductor_confirmation_score=korea_score, effective_micron_score=effective_micron_score,
+        )
+        state["cycle_ai_state"] = cycle_result["state"]
+
+        threshold_state = state.get("decision_v2_threshold_state") or default_threshold_state()
+        probability = compute_buy_sell_hold_probability(
+            cycle_result["turning_point"], enhanced_score=decision.get("enhanced_score"),
+            effective_micron_score=effective_micron_score,
+        )
+        decision_v2 = decide_final_action_v2(probability, threshold_state)
+        state["decision_v2_threshold_state"] = adaptive_threshold_update(
+            threshold_state, decision_v2["final_action_v2"], now,
+        )
+
+        # 우선순위 스택(Cycle Phase → Turning Point → Momentum → Entry Timing → Enhanced →
+        # Effective Micron): Cycle Detector가 HOLD가 아닌 액션을 냈으면 그것을 combined 액션으로,
+        # 아니면 확률 기반 decision_v2의 액션을 combined 액션으로 삼는다(로그/UI 비교용일 뿐,
+        # 실제 주문에는 반영되지 않음).
+        combined_action = cycle_result["action"] if cycle_result["action"] != "HOLD" else decision_v2["final_action_v2"]
+
+        shadow_result = {
+            "cycle": cycle_result, "probability": probability, "decision_v2": decision_v2,
+            "combined_shadow_action": combined_action, "effective_micron_score": effective_micron_score,
+            "korea_semiconductor_confirmation_score": korea_score,
+        }
+        state["last_cycle_ai_result"] = shadow_result
+
+        reasons = (cycle_result.get("reasons") or [])[:3]
+        log_cycle_ai_prediction({
+            "timestamp": now.isoformat(timespec="seconds"), "hynix_price": hynix_price, "inverse_price": inverse_price,
+            "cycle_phase": cycle_result.get("cycle_phase"), "previous_cycle_phase": cycle_result.get("previous_cycle_phase"),
+            "phase_duration_seconds": cycle_result.get("phase_duration_seconds"),
+            "momentum_velocity": (cycle_result.get("momentum") or {}).get("raw_velocity_3"),
+            "momentum_acceleration_up": (cycle_result.get("momentum") or {}).get("momentum_acceleration_up"),
+            "momentum_acceleration_down": (cycle_result.get("momentum") or {}).get("momentum_acceleration_down"),
+            "early_reversal_score": (cycle_result.get("state", {}) or {}).get("early_reversal_score"),
+            "up_turn_3m": (cycle_result.get("turning_point") or {}).get("up_turn_probability_3m"),
+            "up_turn_5m": (cycle_result.get("turning_point") or {}).get("up_turn_probability_5m"),
+            "up_turn_10m": (cycle_result.get("turning_point") or {}).get("up_turn_probability_10m"),
+            "down_turn_3m": (cycle_result.get("turning_point") or {}).get("down_turn_probability_3m"),
+            "down_turn_5m": (cycle_result.get("turning_point") or {}).get("down_turn_probability_5m"),
+            "down_turn_10m": (cycle_result.get("turning_point") or {}).get("down_turn_probability_10m"),
+            "cycle_confidence": cycle_result.get("cycle_confidence"),
+            "cycle_entry_score": max((cycle_result.get("entry_scores") or {}).values(), default=None),
+            "enhanced_score": decision.get("enhanced_score"), "effective_micron_score": effective_micron_score,
+            "recommended_symbol": cycle_result.get("recommended_symbol"),
+            "recommended_position_pct": cycle_result.get("recommended_position_pct"),
+            "final_action": combined_action, "order_sent": False, "order_executed": False,
+            "reason_top1": reasons[0] if len(reasons) > 0 else "",
+            "reason_top2": reasons[1] if len(reasons) > 1 else "",
+            "reason_top3": reasons[2] if len(reasons) > 2 else "",
+        })
+        return shadow_result
+    except Exception as exc:
+        logger.debug("[HynixSwitchEngine] Shadow Cycle AI/Decision V2 계산 실패(무해, 실거래에 영향 없음): %s", exc)
+        return None
+
+
 def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
-    """1회 실행 사이클. mode가 None이면 state에 저장된 mode를 사용.
+    """1회 실행 사이클의 공개 진입점 — mode별 state 락으로 감싼 얇은 wrapper.
+
+    백그라운드 3분 사이클 스레드, Dynamic Exit Watcher(1초 주기), Streamlit 수동 실행이
+    모두 같은 mode의 state를 동시에 load→수정→save할 수 있어(lost update 위험 — 실제로
+    2026-07-10 부분손절 손익 1건이 이렇게 누락된 사고가 있었다), 이 함수 호출 전체를
+    mode별 락(app.services.hynix_switch_state.with_state_lock)으로 직렬화한다.
+    """
+    from app.services.hynix_switch_state import with_state_lock
+
+    resolved_mode = mode
+    if resolved_mode is None:
+        resolved_mode = load_state(mode=None).get("mode", "mock")
+    with with_state_lock(resolved_mode):
+        return _update_hynix_auto_trade_loop_locked(mode=mode, now=now)
+
+
+def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
+    """1회 실행 사이클의 실제 구현(반드시 with_state_lock(mode) 안에서만 호출).
 
     `now`는 테스트에서 시각을 주입하기 위한 선택 인자이며, 운영 시에는 항상 현재시각이 쓰인다.
     """
@@ -265,6 +494,11 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
     hynix_price = enhanced_result.get("hynix_current_price")
     inverse_price = enhanced_result.get("inverse_current_price")
     df_1min = (enhanced_result.get("market_data") or {}).get("hynix_minute", {}).get("df_1min")
+
+    # ── SHADOW MODE: Cycle Detector AI + Prediction AI V2(BUY/SELL/HOLD 확률) ──
+    # 아래 호출은 `decision`/실제 주문에 절대 영향을 주지 않는다 — 계산·로그·state 저장만
+    # 수행하며, 예외가 나도 무해하게 삼켜진다. 실제 주문 연결은 별도 승인 후 진행한다.
+    _run_shadow_cycle_ai_and_decision_v2(state, enhanced_result, decision, df_1min, hynix_price, inverse_price, now)
 
     price_data_ok = hynix_price is not None
     order_api_ok = True
@@ -376,7 +610,21 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
                 warnings.append(f"TP/SL 처리 실패: {exc}")
                 tp_sl = {"triggered": False}
 
-            if not tp_sl.get("triggered"):
+            if not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
+                # ── ACTIVE STRATEGY(거래모드 기반) — mock 전용 opt-in, 이번 사이클의
+                # 신규진입/전환 판단을 기존 ENHANCED_LEGACY 대신 이 엔진이 담당한다.
+                # 강제청산/레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로 안전망은 유지된다.
+                try:
+                    active_result = _run_active_strategy_entry(state, broker, hynix_price, inverse_price, now, orders_this_cycle)
+                    trace["entry_approved"] = active_result.get("acted", False)
+                    trace["entry_approved_reason"] = f"[ACTIVE_STRATEGY] {active_result.get('message', '')}"
+                    if active_result.get("acted"):
+                        attempted_entry = True
+                        state.pop("pending_entry", None)
+                except Exception as exc:
+                    logger.error("[HynixSwitchEngine] Active Strategy 진입 처리 실패: %s", exc)
+                    warnings.append(f"Active Strategy 진입 처리 실패: {exc}")
+            elif not tp_sl.get("triggered"):
                 final_action = decision.get("final_action", "HOLD")
                 forced = False
                 reason = "; ".join(decision.get("reasons", []))
@@ -606,6 +854,8 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
         "position_manager": position_manager.to_cache_dict() if position_manager is not None else None,
         "warnings": warnings + (enhanced_result.get("warnings") or []),
         "pipeline_trace": trace,
+        # SHADOW MODE 전용 — 실제 주문에 영향 없음(비교/검증 목적).
+        "cycle_ai_shadow_result": state.get("last_cycle_ai_result"),
     }
 
 

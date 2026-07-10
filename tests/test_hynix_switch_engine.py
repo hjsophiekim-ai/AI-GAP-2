@@ -134,6 +134,49 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
     assert trace["stopped_stage"] is None
 
 
+def test_active_strategy_mock_toggle_places_real_dryrun_order(tmp_path, monkeypatch):
+    """섹션 15 완료기준 — active_strategy_enabled=True + mock이면 실제 DryRunBroker
+    buy()가 호출되어야 한다(ENHANCED_LEGACY의 final_action=HOLD여도)."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.dry_run_broker as dry_run_broker_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    # ENHANCED_LEGACY는 HOLD — Active Strategy가 이를 대체해서 진입해야 함을 검증한다.
+    monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_decision)
+    monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    # Cycle AI/Decision V2 shadow 계산을 강한 BUY 신호로 고정(실 네트워크/판단 로직 우회).
+    def _fake_shadow(state, enhanced_result, decision, df_1min, hynix_price, inverse_price, now):
+        state["last_cycle_ai_result"] = {
+            "cycle": {
+                "cycle_phase": "REVERSAL_CONFIRMED_UP",
+                "turning_point": {"up_turn_probability_3m": 80.0, "down_turn_probability_3m": 10.0, "confidence": 80.0},
+                "momentum": {"raw_velocity_3": 0.1, "momentum_acceleration_up": 70.0},
+            },
+            "probability": {"buy_probability": 90.0, "sell_probability": 5.0, "hold_probability": 5.0},
+        }
+        return state["last_cycle_ai_result"]
+
+    monkeypatch.setattr(engine, "_run_shadow_cycle_ai_and_decision_v2", _fake_shadow)
+
+    state = state_module.load_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    state["active_strategy_enabled"] = True
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    assert result["state"]["position"]["symbol"] == "000660"
+    assert result["state"]["position"]["quantity"] > 0
+
+
 def test_pipeline_trace_hold_signal_has_no_blocked_stage(tmp_path, monkeypatch):
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
 

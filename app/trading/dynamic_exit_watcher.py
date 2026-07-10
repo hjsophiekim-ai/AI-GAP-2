@@ -168,11 +168,29 @@ def _get_position_manager(broker, mode: str):
 
 
 def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = None) -> Optional[dict]:
-    """1회 감시 실행(테스트 및 스레드 루프에서 공용으로 사용하는 순수 함수).
+    """1회 감시 실행의 공개 진입점 — mode별 state 락으로 감싼 얇은 wrapper.
+
+    이 틱(1초 주기)과 app.services.hynix_switch_engine.update_hynix_auto_trade_loop(3분
+    주기 + 수동 실행)가 같은 mode의 realized_pnl_today_krw 등을 동시에
+    read-modify-write하면 lost update가 발생할 수 있어(2026-07-10 실측 사고),
+    동일한 mode별 락(with_state_lock)으로 두 진입점을 직렬화한다.
+    """
+    from app.services.hynix_switch_state import with_state_lock
+
+    peek_state = load_state()
+    resolved_mode = peek_state.get("mode", "mock")
+    with with_state_lock(resolved_mode):
+        return _tick_locked(now=now, engine=engine)
+
+
+def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = None) -> Optional[dict]:
+    """1회 감시 실행의 실제 구현(반드시 with_state_lock(mode) 안에서만 호출).
 
     Broker → PositionManager → State(캐시) 순서로만 데이터가 흐른다. 이 함수는
     보유 포지션 판정을 위해 state를 직접 신뢰하지 않고, 매 틱 PositionManager를
     통해 브로커를 확인(mock은 항상 새로고침, real은 5초 TTL 캐시)한 뒤에만 판단한다.
+    락 획득 전에 미리 읽은 state(mode 판별용)는 재사용하지 않고, 락을 잡은 뒤
+    항상 다시 로드한다(read-modify-write의 "read"는 반드시 락 내부에서 일어나야 한다).
     """
     from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
 
@@ -245,7 +263,7 @@ def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = N
             exit_reason_type = classify_exit_reason(decision["reason"])
             order_result = _sell_all_or_ratio(
                 broker, position, current_price, decision["ratio"], decision["reason"], orders,
-                mode=mode, exit_reason_type=exit_reason_type,
+                mode=mode, exit_reason_type=exit_reason_type, signal_source="DYNAMIC_EXIT",
             )
             order_sent = bool(order_result.get("success"))
             if order_sent:

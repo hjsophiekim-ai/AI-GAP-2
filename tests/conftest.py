@@ -91,3 +91,16 @@ def _isolate_ai_gap_data_paths(tmp_path, monkeypatch):
                 stop_loss_module, "_FORCED_LIQUIDATION_LOG_PATH",
                 tmp_path / "forced_liquidation_log.csv", raising=False,
             )
+
+    # 2026-07-10 실제 사고: hynix_execution_ledger._LEDGER_PATH가 이 격리 목록에
+    # 없어서, _record_order()를 실행하는 테스트(test_hynix_switch_engine 등)가
+    # 실제 data/logs/hynix_execution_ledger.csv에 가짜 거래 40건을 남겼다.
+    try:
+        import app.services.hynix_execution_ledger as ledger_module
+    except ImportError:
+        pass
+    else:
+        if hasattr(ledger_module, "_LEDGER_PATH"):
+            monkeypatch.setattr(
+                ledger_module, "_LEDGER_PATH", tmp_path / "hynix_execution_ledger.csv", raising=False,
+            )

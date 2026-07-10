@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -24,6 +26,37 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 _STATE_DIR = ROOT / "data" / "state"
 
 _DEFAULT_MOCK_BUDGET_KRW = 10_000_000.0
+
+# mode별 상태 read-modify-write 전용 락. 백그라운드 3분 사이클 스레드, 1초 주기
+# Dynamic Exit Watcher 스레드, Streamlit 요청 스레드(수동 실행 버튼)가 모두 같은
+# mode의 state 파일을 동시에 load_state() → 필드 수정 → save_state_atomic() 할 수
+# 있는데, 이 셋 사이에 락이 없으면 "lost update"가 발생한다 — 예: 스레드A가 읽은
+# 뒤 스레드B가 realized_pnl_today_krw를 갱신·저장하고, 그 직후 스레드A가 (이미
+# 낡은 값 기준으로 계산한) 자신의 결과를 저장하면서 스레드B의 변경분을 통째로
+# 덮어쓴다(2026-07-10 실측 — 부분손절 1건의 손익이 이런 식으로 누락됨).
+# 아래 with_state_lock()으로 "load_state ~ save_state_atomic" 전체를 감싸면 이
+# read-modify-write 사이클 자체가 mode별로 직렬화되어 lost update가 사라진다.
+_state_locks_guard = threading.Lock()
+_state_locks: dict[str, threading.RLock] = {}
+
+
+def _get_state_lock(mode: Optional[str]) -> threading.RLock:
+    key = mode or "mock"
+    with _state_locks_guard:
+        if key not in _state_locks:
+            _state_locks[key] = threading.RLock()
+        return _state_locks[key]
+
+
+@contextmanager
+def with_state_lock(mode: Optional[str] = None):
+    """이 mode의 state를 load→수정→save하는 전체 구간을 감싸는 컨텍스트 매니저.
+
+    RLock이므로 같은 스레드 안에서 중첩 호출해도 데드락이 나지 않는다.
+    """
+    lock = _get_state_lock(mode)
+    with lock:
+        yield
 
 
 def _today_str() -> str:

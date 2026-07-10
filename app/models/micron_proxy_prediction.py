@@ -84,6 +84,53 @@ CSV_LOG_FIELDS = [
 
 
 # =============================================================================
+# 입력 타입 검증 — DataFrame이어야 할 자리에 문자열(파일경로/세션상태값 등)이나
+# None이 들어와도 '.empty' 같은 속성 접근에서 죽지 않도록 명시적으로 검증한다.
+# (실제 사고: state가 JSON으로 저장/로드되며 DataFrame이 str(df) 문자열로
+# 직렬화된 뒤 그대로 넘어와 "'str' object has no attribute 'empty'" 오류 발생.)
+# =============================================================================
+
+def _coerce_dataframe_input(data, context_label: str = "") -> tuple:
+    """DataFrame이어야 할 입력을 검증/변환한다.
+
+    Returns
+    -------
+    (df: Optional[pd.DataFrame], source_status: str) — source_status는
+    "OK" | "NONE" | "EMPTY" | "INVALID_TYPE_STR_SESSION" | "FILE_PATH_LOADED" |
+    "FILE_PATH_NOT_FOUND" | "FILE_READ_FAILED" | "STALE_TYPE_MISMATCH"
+    """
+    if data is None:
+        return None, "NONE"
+    if isinstance(data, pd.DataFrame):
+        if data.empty:
+            return None, "EMPTY"
+        return data, "OK"
+    if isinstance(data, str):
+        candidate = Path(data)
+        # 확장자가 있고 실제 파일이면 경로로 간주해 명시적으로 읽는다.
+        if candidate.suffix.lower() in (".csv",) and candidate.exists():
+            try:
+                df = pd.read_csv(candidate)
+                if df.empty:
+                    return None, "EMPTY"
+                return df, "FILE_PATH_LOADED"
+            except Exception as exc:
+                logger.debug("[MicronProxyPrediction] %s: 파일 경로 로드 실패(%s): %s", context_label, data, exc)
+                return None, "FILE_READ_FAILED"
+        if candidate.suffix.lower() == ".csv":
+            return None, "FILE_PATH_NOT_FOUND"
+        # 확장자가 없는 문자열은 대개 state 직렬화 잔재(예: str(df) repr) 또는
+        # 세션 상태값(예: "REGULAR") — DataFrame으로 취급하지 않고 명시적으로 배제한다.
+        logger.debug(
+            "[MicronProxyPrediction] %s: DataFrame 자리에 문자열 입력(파일경로 아님, len=%d) — 무시하고 None 처리",
+            context_label, len(data),
+        )
+        return None, "INVALID_TYPE_STR_SESSION"
+    logger.debug("[MicronProxyPrediction] %s: 예상치 못한 타입(%s) — None 처리", context_label, type(data).__name__)
+    return None, "STALE_TYPE_MISMATCH"
+
+
+# =============================================================================
 # 1. 세션 판정 / 신선도 검증
 # =============================================================================
 
@@ -323,7 +370,11 @@ def calculate_micron_recent_trend_score(
     components: dict = {}
     warnings: list = []
 
-    if df_1min is not None and not df_1min.empty and len(df_1min) >= 2:
+    df_1min, _df1_status = _coerce_dataframe_input(df_1min, "calculate_micron_recent_trend_score.df_1min")
+    if _df1_status not in ("OK", "NONE"):
+        warnings.append(f"df_1min 입력 타입 이상({_df1_status}) — 1분봉 없이 계산")
+
+    if df_1min is not None and len(df_1min) >= 2:
         closes = df_1min["close"].astype(float)
         components["return_15m"] = _norm01(_pct_return(closes, 15), 1.0)
         components["return_30m"] = _norm01(_pct_return(closes, 30), 1.5)
@@ -411,6 +462,7 @@ def calculate_micron_recent_trend_score(
     return {
         "micron_recent_trend_score": score, "micron_recent_trend_direction": direction,
         "components": components, "coverage": round(total_w, 3), "warnings": warnings,
+        "df_1min_source_status": _df1_status,
     }
 
 
@@ -1006,13 +1058,19 @@ def compute_effective_micron_score_from_market_data(market_data: dict, now: Opti
 
     mu = market_data.get("mu", {}) or {}
     mu_ext = mu.get("extended_hours") or {}
-    df_1min = mu.get("df_1min")
+    # df_1min은 DataFrame이어야 하지만, state가 JSON으로 저장/복원되며 str(df)로
+    # 직렬화된 문자열이 그대로 들어오는 경우가 있었다("'str' object has no attribute
+    # 'empty'" 사고, 2026-07-10) — 명시적으로 타입을 검증해 이런 입력을 조용히
+    # None으로 처리하고(예측이 stale 값에 고정되지 않도록) source status로 남긴다.
+    df_1min, df1_source_status = _coerce_dataframe_input(
+        mu.get("df_1min"), "compute_effective_micron_score_from_market_data.mu.df_1min",
+    )
 
     mu_data_for_session = None
     if mu_ext.get("current_price") is not None:
         last_time = None
         try:
-            if df_1min is not None and not df_1min.empty:
+            if df_1min is not None:
                 last_time = pd.Timestamp(df_1min["datetime"].iloc[-1]).to_pydatetime()
             elif mu_ext.get("freshness_seconds") is not None:
                 last_time = now - timedelta(seconds=float(mu_ext["freshness_seconds"]))
@@ -1020,7 +1078,7 @@ def compute_effective_micron_score_from_market_data(market_data: dict, now: Opti
             last_time = None
         mu_data_for_session = {
             "current_price": mu_ext.get("current_price"), "last_trade_time": last_time,
-            "bar_interval": "1min" if df_1min is not None and not df_1min.empty else "3min",
+            "bar_interval": "1min" if df_1min is not None else "3min",
             "volume_1m": mu_ext.get("volume_1m"), "source": mu_ext.get("data_source"),
         }
 
@@ -1040,9 +1098,15 @@ def compute_effective_micron_score_from_market_data(market_data: dict, now: Opti
         "samsung_return_pct": kospilab.get("samsung_reference_return"),
     }
 
+    extra_warnings = []
+    if df1_source_status not in ("OK", "NONE"):
+        extra_warnings.append(f"mu.df_1min 입력 타입 이상({df1_source_status}) — 1분봉 없이 계산(stale 값 고정 방지)")
+
     effective = _run_pipeline(
         mu_data_for_session, mu_ext, df_1min, index_data, nvda_data, amd_data, avgo_data, korea_data, now,
+        extra_warnings=extra_warnings,
     )
+    effective["df_1min_source_status"] = df1_source_status
     log_micron_proxy_prediction(effective)
     return effective
 

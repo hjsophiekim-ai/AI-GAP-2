@@ -98,8 +98,11 @@ def _sizing_cash_amount(broker, forced: bool) -> tuple[float, float]:
 def _record_order(
     orders: list, order_result, action: str, symbol: str, quantity: int, price: float, reason: str,
     before_qty: Optional[int] = None, expected_remaining_qty: Optional[int] = None,
+    mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", entry_price: Optional[float] = None,
+    broker=None,
 ) -> None:
     result = order_result.to_dict() if hasattr(order_result, "to_dict") else dict(order_result)
+    success = bool(result.get("success"))
     orders.append({
         "timestamp": datetime.now().isoformat(), "action": action, "symbol": symbol,
         "name": _SYMBOL_NAME.get(symbol, symbol), "quantity": quantity, "price": price,
@@ -108,6 +111,36 @@ def _record_order(
         "before_qty": before_qty, "executed_qty": quantity if result.get("success") else 0,
         "expected_remaining_qty": expected_remaining_qty,
     })
+
+    # ── 단일 거래 원장 기록 (UI의 오늘 거래횟수/실현손익/최근 매수·매도가는 반드시
+    # 이 원장 기준으로 계산해야 한다 — 개별 CSV/state 필드를 따로 집계하지 않는다) ──
+    try:
+        from app.services.hynix_execution_ledger import record_execution
+
+        realized_pnl = None
+        if action == "SELL" and success and entry_price:
+            realized_pnl = round((price - entry_price) * quantity, 2)
+        after_qty = None
+        if before_qty is not None:
+            after_qty = expected_remaining_qty if action == "SELL" else (before_qty + quantity if success else before_qty)
+
+        cash_before = cash_after = None
+        if broker is not None:
+            try:
+                cash_after = float(broker.get_buyable_cash())
+            except Exception:
+                cash_after = None
+
+        is_test_order = "E2E forced" in (reason or "")
+        record_execution(
+            action=action, symbol=symbol, requested_qty=quantity, executed_qty=quantity if success else 0,
+            requested_price=price, executed_price=price if success else None, success=success,
+            mode=mode, strategy_name="hynix_switch", signal_source=signal_source,
+            before_qty=before_qty, after_qty=after_qty, cash_before=cash_before, cash_after=cash_after,
+            realized_pnl=realized_pnl, order_id=result.get("order_id") or "", is_test_order=is_test_order,
+        )
+    except Exception as exc:
+        logger.error("[SwitchPositionManager] 실행 원장 기록 실패(무해하지만 원장 신뢰도 저하): %s", exc)
 
 
 def _record_skipped(orders: list, action: str, symbol: str, price: Optional[float], reason: str, message: str) -> None:
@@ -122,7 +155,7 @@ def _record_skipped(orders: list, action: str, symbol: str, price: Optional[floa
 
 def _sell_all_or_ratio(
     broker, position: dict, current_price: float, ratio: float, reason: str, orders: list,
-    mode: str = "mock", exit_reason_type: Optional[str] = None,
+    mode: str = "mock", exit_reason_type: Optional[str] = None, signal_source: str = "ENHANCED_LEGACY",
 ) -> dict:
     """포지션 전량 또는 비율만큼 매도.
 
@@ -134,6 +167,7 @@ def _sell_all_or_ratio(
     from app.trading.exit_order_coordinator import try_acquire_exit_lock
 
     symbol = position["symbol"]
+    entry_price = position.get("entry_price")
     total_qty = int(position.get("quantity") or 0)
     sell_qty = max(1, int(total_qty * ratio)) if ratio < 1.0 else total_qty
     sell_qty = min(sell_qty, total_qty)
@@ -143,14 +177,20 @@ def _sell_all_or_ratio(
         return {"success": False, "message": "매도 수량 0"}
 
     if exit_reason_type is None:
-        return _execute_sell(broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining)
+        return _execute_sell(
+            broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining,
+            mode=mode, signal_source=signal_source, entry_price=entry_price,
+        )
 
     with try_acquire_exit_lock(mode, symbol, exit_reason_type) as lock:
         if not lock:
             message = "Exit Order Coordinator: 동시 매도 차단(다른 곳에서 진행 중이거나 최근 30초 이내 체결됨)"
             _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, message)
             return {"success": False, "message": message, "blocked_by_coordinator": True}
-        result = _execute_sell(broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining)
+        result = _execute_sell(
+            broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining,
+            mode=mode, signal_source=signal_source, entry_price=entry_price,
+        )
         if result.get("success"):
             lock.mark_executed()
         return result
@@ -159,9 +199,14 @@ def _sell_all_or_ratio(
 def _execute_sell(
     broker, symbol: str, sell_qty: int, current_price: float, reason: str, orders: list,
     before_qty: int, expected_remaining: int,
+    mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", entry_price: Optional[float] = None,
 ) -> dict:
     order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
-    _record_order(orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty, expected_remaining_qty=expected_remaining)
+    _record_order(
+        orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty,
+        expected_remaining_qty=expected_remaining, mode=mode, signal_source=signal_source,
+        entry_price=entry_price, broker=broker,
+    )
     result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
     result["sold_quantity"] = sell_qty
     result["remaining_quantity"] = before_qty - sell_qty
@@ -169,7 +214,10 @@ def _execute_sell(
     return result
 
 
-def _buy_new(broker, symbol: str, current_price: float, cash_amount: float, reason: str, orders: list) -> dict:
+def _buy_new(
+    broker, symbol: str, current_price: float, cash_amount: float, reason: str, orders: list,
+    mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", before_qty: int = 0,
+) -> dict:
     if not current_price or current_price <= 0 or cash_amount <= 0:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "가격/금액 유효하지 않음")
         return {"success": False, "message": "가격/금액 유효하지 않음"}
@@ -178,7 +226,10 @@ def _buy_new(broker, symbol: str, current_price: float, cash_amount: float, reas
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "매수금액으로 1주도 매수 불가")
         return {"success": False, "message": "매수금액으로 1주도 매수 불가"}
     order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
-    _record_order(orders, order, "BUY", symbol, quantity, current_price, reason)
+    _record_order(
+        orders, order, "BUY", symbol, quantity, current_price, reason,
+        before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
+    )
     result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
     result["bought_quantity"] = quantity
     return result
@@ -296,7 +347,7 @@ def run_liquidation_if_needed(
     for attempt in (1, 2):
         result = _sell_all_or_ratio(
             broker, position, current_price, 1.0, "15:15 당일 강제청산", orders,
-            mode=mode, exit_reason_type="liquidation",
+            mode=mode, exit_reason_type="liquidation", signal_source="FORCED_LIQUIDATION",
         )
         if result.get("success"):
             realized = (current_price - position.get("entry_price", current_price)) * result.get("sold_quantity", position.get("quantity", 0))
@@ -489,7 +540,7 @@ def run_switch_or_entry(
     else:
         cash_amount = sized_cash
 
-    buy_result = _buy_new(broker, desired_symbol, current_price, cash_amount, buy_reason, orders)
+    buy_result = _buy_new(broker, desired_symbol, current_price, cash_amount, buy_reason, orders, mode=state.get("mode", "mock"))
     if buy_result.get("success"):
         qty = buy_result.get("bought_quantity", 0)
         state["position"] = {

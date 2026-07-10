@@ -273,6 +273,32 @@ if switch_state.get("mode") == "mock":
         "로컬에서 완전히 자동으로 동작합니다(DryRunBroker). Real 모드만 실제 KIS 계좌를 사용합니다."
     )
 
+    # ── Active Strategy(거래모드 기반 조기진입/Scale-in) — mock 전용 opt-in ──────
+    from app.trading.hynix_trading_mode import ALL_MODES, DEFAULT_MODE
+
+    st.markdown("##### ⚡ Active Strategy (mock 전용, 거래 빈도·기대수익률 개선)")
+    as1, as2 = st.columns([1, 2])
+    with as1:
+        trading_mode = st.selectbox(
+            "거래 모드", ALL_MODES, index=ALL_MODES.index(switch_state.get("trading_mode", DEFAULT_MODE)),
+            key="hynix_trading_mode_select",
+        )
+        if trading_mode != switch_state.get("trading_mode"):
+            switch_state["trading_mode"] = trading_mode
+            save_state_atomic(switch_state)
+    with as2:
+        active_enabled = st.checkbox(
+            "Active Strategy로 신규진입 판단 대체(ENHANCED_LEGACY 대신 Cycle AI + Prediction V2 기반 조기진입/Scale-in 사용)",
+            value=bool(switch_state.get("active_strategy_enabled", False)), key="hynix_active_strategy_toggle",
+        )
+        if active_enabled != switch_state.get("active_strategy_enabled", False):
+            switch_state["active_strategy_enabled"] = active_enabled
+            save_state_atomic(switch_state)
+        st.caption(
+            "OFF면 기존과 완전히 동일하게 동작합니다(ENHANCED_LEGACY). ON이어도 강제청산(15:15)과 "
+            "레거시 TP/SL 안전망은 항상 그대로 우선 적용됩니다. real 모드에서는 이 토글이 적용되지 않습니다."
+        )
+
 if switch_state.get("mode") == "mock" and switch_state.get("stopped") and "일 누적 손실" in (switch_state.get("stopped_reason") or ""):
     mock_override = st.checkbox(
         "모의계좌 손실제한 무시하고 계속 테스트",
@@ -433,13 +459,23 @@ st.markdown(f"**last_cycle_result**: `{_cyc_status['last_cycle_result_summary'] 
 if not _cyc_status["cycle_thread_alive"]:
     st.error("🔴 백그라운드 사이클 스레드가 죽어있습니다 — 다음 페이지 새로고침 시 자동 재시작됩니다.")
 
-if auto_on or switch_run_clicked:
+_manual_cycle_result = None
+if switch_run_clicked:
+    # 주의: auto_on이 True라고 해서 여기서도 매 rerun마다 전체 사이클을 다시 돌리지 않는다.
+    # 백그라운드 스레드(HynixAutoTradeCycle, 3분 주기)가 auto_on=True인 동안 이미 계속
+    # 사이클을 실행하고 있으므로, 페이지가 auto_on일 때도 매번 동일한(네트워크 수집 포함)
+    # 무거운 작업을 중복 실행하면 KIS API 타임아웃/상태파일 쓰기 경합이 겹쳐 응답이 크게
+    # 느려진다(2026-07-10 실측). "수동 실행" 버튼을 눌렀을 때만 이 페이지 요청 스레드에서
+    # 직접 실행하고, 그 외에는 아래 fallback으로 백그라운드 스레드가 저장한 최신 결과만 읽는다.
     with st.spinner("점수 계산 및 자동매매 사이클 실행 중..."):
-        st.session_state["hynix_switch_cycle_result"] = update_hynix_auto_trade_loop(mode=switch_state.get("mode"))
+        _manual_cycle_result = update_hynix_auto_trade_loop(mode=switch_state.get("mode"))
+        st.session_state["hynix_switch_cycle_result"] = _manual_cycle_result
 
-# 세션에 수동/방금 실행분이 없으면, 백그라운드 스레드가 마지막으로 저장한 state 기준
-# pipeline_trace를 사용한다 — "사이클 미실행"이 더 이상 상시로 뜨지 않도록 한다.
-cycle_result = st.session_state.get("hynix_switch_cycle_result")
+# 방금 수동 실행한 결과가 없으면(=이번 rerun이 버튼 클릭이 아니면), session_state의
+# 과거 값을 재사용하지 않고 항상 백그라운드 스레드가 마지막으로 저장한 최신 state 기준
+# pipeline_trace를 사용한다 — session_state를 그대로 쓰면 마지막 클릭 시점 스냅샷에
+# 고정되어 이후 백그라운드 스레드가 갱신한 최신 결과가 화면에 반영되지 않는다.
+cycle_result = _manual_cycle_result
 if not cycle_result and switch_state.get("last_pipeline_trace") is not None:
     cycle_result = {
         "skipped": False, "computed_at": switch_state.get("last_cycle_computed_at"),
@@ -452,6 +488,7 @@ if not cycle_result and switch_state.get("last_pipeline_trace") is not None:
         "state": switch_state,
         "position_manager": {"position": switch_state.get("position"), "position_conflict": switch_state.get("position_conflict")},
         "pipeline_trace": switch_state.get("last_pipeline_trace"),
+        "cycle_ai_shadow_result": switch_state.get("last_cycle_ai_result"),
     }
 
 if not cycle_result:
@@ -539,17 +576,28 @@ else:
     # (실제 CME 선물 체결가가 아니라 SOXX/SOX·NQ=F/QQQ 등 ETF·지수 proxy 기반 추정치).
     st.subheader("🔬 Micron Proxy Prediction")
 
-    @st.cache_data(ttl=60, show_spinner=False)
-    def _run_micron_proxy_prediction(mode: str):
-        from app.models.micron_proxy_prediction import MicronProxyPredictionEngine
+    # 주의: 이 패널은 더 이상 자체적으로 새 네트워크 수집(collect_and_predict)을 하지 않는다.
+    # 예전에는 여기서 MicronProxyPredictionEngine().collect_and_predict()를 매 렌더링마다
+    # (최대 60초 캐시) 별도로 호출했는데, 이미 위쪽 enhanced_result가 같은 사이클에서
+    # collect_all()로 수집한 market_data를 그대로 재사용하면 되는 것을 중복 수집하고
+    # 있었다 — KIS API 타임아웃/부하가 겹쳐 화면이 크게 느려지는 원인 중 하나였다
+    # (2026-07-10 실측). 순수 계산 함수만 호출하므로 네트워크 호출이 전혀 없다.
+    _mpp = None
+    _market_data_for_micron = enh.get("market_data") or {}
+    # state 파일에서 재구성한 결과(백그라운드 스레드 fallback 렌더링)는 DataFrame이
+    # JSON 저장 과정에서 문자열로 직렬화되어 있어 재계산할 수 없다 — 이 경우는 오류가
+    # 아니라 "다음 수동 실행/사이클에서 다시 채워짐" 정상 상태이므로 조용히 건너뛴다.
+    _df1_probe = (_market_data_for_micron.get("hynix_minute") or {}).get("df_1min")
+    if _market_data_for_micron and not isinstance(_df1_probe, str):
+        try:
+            from app.models.micron_proxy_prediction import compute_effective_micron_score_from_market_data
 
-        return MicronProxyPredictionEngine().collect_and_predict(mode=mode)
-
-    try:
-        _mpp = _run_micron_proxy_prediction(cfg.mode if cfg.mode in ("mock", "real") else None)
-    except Exception as _mpp_exc:
-        _mpp = None
-        st.warning(f"Micron Proxy Prediction 계산 실패(무해 — 기존 예측 파이프라인은 계속 동작): {_mpp_exc}")
+            _mpp = compute_effective_micron_score_from_market_data(_market_data_for_micron)
+        except Exception as _mpp_exc:
+            _mpp = None
+            st.warning(f"Micron Proxy Prediction 계산 실패(무해 — 기존 예측 파이프라인은 계속 동작): {_mpp_exc}")
+    elif isinstance(_df1_probe, str):
+        st.info("이번 렌더링은 저장된 state 기준(백그라운드 스레드 결과)이라 Micron Proxy 재계산에 필요한 원본 데이터가 없습니다 — '수동 실행' 또는 다음 자동 사이클에서 갱신됩니다.")
 
     if _mpp:
         p1, p2, p3, p4 = st.columns(4)
@@ -654,6 +702,76 @@ else:
     elif trace.get("prediction_signal") != "HOLD":
         st.success("🟢 신호부터 UI 반영까지 전 단계 정상 완료.")
 
+    # ── 🔄 Cycle & Turning Point AI (SHADOW MODE — 실제 주문에 영향 없음) ──────
+    st.subheader("🔄 Cycle & Turning Point AI")
+    st.caption(
+        "SHADOW MODE — 아래 결과는 기존 Enhanced 자동매매 판단과 나란히 계산·기록만 되며, "
+        "실제 주문에는 아직 연결되어 있지 않습니다(최소 5거래일 검증 후 별도 승인 시 연결 예정)."
+    )
+    shadow = cycle_result.get("cycle_ai_shadow_result")
+    if not shadow:
+        st.info("Cycle AI 결과 없음(다음 사이클에 계산됩니다).")
+    else:
+        cyc = shadow.get("cycle") or {}
+        mom = cyc.get("momentum") or {}
+        tp = cyc.get("turning_point") or {}
+        prob = shadow.get("probability") or {}
+        dv2 = shadow.get("decision_v2") or {}
+
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        with cc1:
+            st.metric("Current Cycle Phase", cyc.get("cycle_phase", "—"))
+        with cc2:
+            st.metric("Previous Cycle Phase", cyc.get("previous_cycle_phase") or "—")
+        with cc3:
+            _started = cyc.get("phase_started_at")
+            st.metric("Phase Started At", _started.split("T")[-1][:8] if _started else "—")
+        with cc4:
+            _dur = cyc.get("phase_duration_seconds") or 0
+            st.metric("Phase Duration", f"{_dur // 60}분 {_dur % 60}초")
+
+        cc5, cc6, cc7, cc8 = st.columns(4)
+        with cc5:
+            st.metric("Momentum Velocity", f"{mom.get('raw_velocity_3', 0):.3f}" if mom.get("raw_velocity_3") is not None else "—")
+        with cc6:
+            st.metric("Momentum Accel Up", f"{mom.get('momentum_acceleration_up', 0):.1f}")
+        with cc7:
+            st.metric("Momentum Accel Down", f"{mom.get('momentum_acceleration_down', 0):.1f}")
+        with cc8:
+            st.metric("Cycle Confidence", f"{cyc.get('cycle_confidence', 0):.1f}")
+
+        cc9, cc10, cc11 = st.columns(3)
+        with cc9:
+            st.metric("Turning Up (3/5/10m)", f"{tp.get('up_turn_probability_3m', 0):.0f} / {tp.get('up_turn_probability_5m', 0):.0f} / {tp.get('up_turn_probability_10m', 0):.0f}")
+        with cc10:
+            st.metric("Turning Down (3/5/10m)", f"{tp.get('down_turn_probability_3m', 0):.0f} / {tp.get('down_turn_probability_5m', 0):.0f} / {tp.get('down_turn_probability_10m', 0):.0f}")
+        with cc11:
+            st.metric("Cycle Entry Score", f"{max((cyc.get('entry_scores') or {}).values(), default=0):.1f}")
+
+        cc12, cc13, cc14 = st.columns(3)
+        with cc12:
+            st.metric("Recommended Symbol", cyc.get("recommended_symbol") or "—")
+        with cc13:
+            st.metric("Recommended Position", f"{cyc.get('recommended_position_pct', 0):.0f}%")
+        with cc14:
+            st.metric("Combined Shadow Action", shadow.get("combined_shadow_action", "HOLD"))
+
+        st.markdown(
+            f"**Prediction AI V2**: BUY {prob.get('buy_probability', 0):.0f}% / "
+            f"SELL {prob.get('sell_probability', 0):.0f}% / HOLD {prob.get('hold_probability', 0):.0f}% "
+            f"→ **{dv2.get('final_action_v2', 'HOLD')}** (Adaptive Threshold: {dv2.get('buy_threshold', 65):.0f}%)"
+        )
+        if cyc.get("blocking_reason"):
+            st.warning(f"Blocking Reason: {cyc['blocking_reason']}")
+        with st.expander("Cycle AI 상세(사유/전환이력)"):
+            for r in cyc.get("reasons") or []:
+                st.markdown(f"- {r}")
+            history = cyc.get("transition_history") or []
+            if history:
+                st.markdown("**State Transition History(최근 10건)**")
+                for h in history[-10:]:
+                    st.markdown(f"- {h.get('at', '')}: {h.get('from') or '—'} → {h.get('to')}")
+
     st.subheader(f"개선된 최종점수: {enh.get('enhanced_score', 0):.1f}/100 → 최종 판단: {decision.get('final_action', 'HOLD')}")
     with st.expander("판단 사유 Top5", expanded=True):
         for i, reason in enumerate(enh.get("reason_top5") or [], start=1):
@@ -662,6 +780,47 @@ else:
             st.markdown("**판단 세부:**")
             for r in decision["reasons"]:
                 st.markdown(f"- {r}")
+
+    # ── 📊 거래 성과 통계(실행 원장 기준, TEST 주문 제외) ─────────────────────
+    st.subheader("📊 거래 성과 통계 (원장 기준, TEST 주문 제외)")
+    try:
+        from app.services.hynix_execution_ledger import compute_performance_stats, compute_trade_counters
+
+        _today_str = datetime.now().strftime("%Y%m%d")
+        _stats = compute_performance_stats(_today_str)
+        _counters = compute_trade_counters(_today_str)
+
+        st1, st2, st3, st4, st5 = st.columns(5)
+        with st1:
+            st.metric("오늘 왕복거래", _counters["round_trip_count"])
+        with st2:
+            st.metric("총 체결 수", _counters["live_order_count"])
+        with st3:
+            st.metric("평균 보유시간", f"{_stats['avg_holding_minutes']:.0f}분" if _stats["avg_holding_minutes"] is not None else "—")
+        with st4:
+            st.metric("승률", f"{_stats['win_rate']:.0f}%" if _stats["win_rate"] is not None else "—")
+        with st5:
+            _pf = _stats["profit_factor"]
+            st.metric("Profit Factor", f"{_pf:.2f}" if isinstance(_pf, (int, float)) and _pf != float("inf") else ("∞" if _pf == float("inf") else "—"))
+
+        st6, st7, st8 = st.columns(3)
+        with st6:
+            st.metric("누적 실현손익(오늘)", f"{_stats['cumulative_realized_pnl']:,.0f}원")
+        with st7:
+            st.metric("최대 장중 손실(DD)", f"{_stats['max_intraday_drawdown_krw']:,.0f}원" if _stats["max_intraday_drawdown_krw"] is not None else "—")
+        with st8:
+            st.metric("TEST 주문 수(통계 제외됨)", _counters["test_order_count"])
+
+        if _stats["pnl_by_signal_source"]:
+            with st.expander("전략별(signal_source) / 종목별 손익"):
+                st.markdown("**전략별 손익:**")
+                for src, pnl in _stats["pnl_by_signal_source"].items():
+                    st.markdown(f"- {src}: {pnl:,.0f}원")
+                st.markdown("**종목별 손익:**")
+                for sym, pnl in _stats["pnl_by_symbol"].items():
+                    st.markdown(f"- {sym}: {pnl:,.0f}원")
+    except Exception as _stats_exc:
+        st.caption(f"거래 성과 통계 계산 실패(무해): {_stats_exc}")
 
     # 보유 종목 없음이면(브로커 기준) 최근매수가/미실현손익/손절·익절 기준가는 과거 값을
     # 그대로 표시하지 않고 "—"로 처리한다 — 그대로 두면 "이미 종료된 매매의 진입가"가

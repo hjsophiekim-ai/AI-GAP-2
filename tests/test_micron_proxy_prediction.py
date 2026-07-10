@@ -16,7 +16,9 @@ from app.models.micron_proxy_prediction import (
     WARNING_DATA_INSUFFICIENT,
     calculate_effective_micron_score, calculate_nasdaq_futures_score,
     calculate_sox_futures_score, calculate_synthetic_micron_score,
+    calculate_micron_recent_trend_score, compute_effective_micron_score_from_market_data,
     detect_micron_session, validate_micron_data_freshness, _time_of_day_weights,
+    _coerce_dataframe_input,
 )
 
 
@@ -207,3 +209,70 @@ class TestPredictionAIV2Integration:
             tech_indicators={}, micron_proxy=low_conf_proxy,
         )
         assert low["confidence_close"] < high["confidence_close"]
+
+
+class TestDataFrameInputValidation:
+    """섹션 7 — 'str' object has no attribute 'empty' 재발 방지 테스트."""
+
+    def _sample_df(self):
+        return pd.DataFrame({
+            "datetime": pd.date_range("2026-07-10 09:00", periods=5, freq="1min"),
+            "open": [100.0] * 5, "high": [101.0] * 5, "low": [99.0] * 5,
+            "close": [100.5, 100.6, 100.4, 100.7, 100.8], "volume": [1000] * 5,
+        })
+
+    def test_dataframe_input_accepted(self):
+        df, status = _coerce_dataframe_input(self._sample_df())
+        assert status == "OK"
+        assert df is not None
+
+    def test_string_file_path_input(self, tmp_path):
+        csv_path = tmp_path / "mu_1min.csv"
+        self._sample_df().to_csv(csv_path, index=False)
+        df, status = _coerce_dataframe_input(str(csv_path))
+        assert status == "FILE_PATH_LOADED"
+        assert df is not None and len(df) == 5
+
+    def test_missing_file_path_input(self, tmp_path):
+        df, status = _coerce_dataframe_input(str(tmp_path / "does_not_exist.csv"))
+        assert df is None
+        assert status == "FILE_PATH_NOT_FOUND"
+
+    def test_session_status_string_input(self):
+        """state가 JSON 왕복하며 DataFrame이 str(df) repr로 직렬화된 경우를 흉내."""
+        df, status = _coerce_dataframe_input("REGULAR")
+        assert df is None
+        assert status == "INVALID_TYPE_STR_SESSION"
+
+    def test_none_input(self):
+        df, status = _coerce_dataframe_input(None)
+        assert df is None
+        assert status == "NONE"
+
+    def test_empty_dataframe_input(self):
+        df, status = _coerce_dataframe_input(pd.DataFrame())
+        assert df is None
+        assert status == "EMPTY"
+
+    def test_calculate_micron_recent_trend_score_never_crashes_on_bad_input(self):
+        for bad_input in (None, "REGULAR", pd.DataFrame(), 12345, ["not", "a", "df"]):
+            result = calculate_micron_recent_trend_score(df_1min=bad_input)
+            assert "micron_recent_trend_score" in result
+            assert result["df_1min_source_status"] in (
+                "NONE", "INVALID_TYPE_STR_SESSION", "EMPTY", "STALE_TYPE_MISMATCH", "FILE_PATH_NOT_FOUND",
+            )
+
+    def test_compute_effective_score_never_crashes_when_df_1min_is_a_stale_string(self):
+        """실제 사고 재현: market_data['mu']['df_1min']이 JSON 왕복으로 문자열이 된 경우."""
+        market_data = {
+            "mu": {
+                "df_1min": "   datetime  open  high  low  close  volume\n0  2026-07-10 ...",
+                "extended_hours": {"current_price": 100.0, "data_source": "kis", "freshness_seconds": 30.0},
+            },
+            "nvda": {}, "amd": {}, "avgo": {}, "index": {}, "domestic_index": {},
+            "investor_flow": {}, "kospilab": {},
+        }
+        result = compute_effective_micron_score_from_market_data(market_data)
+        assert "effective_micron_score" in result
+        assert result["df_1min_source_status"] == "INVALID_TYPE_STR_SESSION"
+        assert any("입력 타입 이상" in w for w in result.get("warnings", []))
