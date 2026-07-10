@@ -95,13 +95,18 @@ def _sizing_cash_amount(broker, forced: bool) -> tuple[float, float]:
     return max(0.0, cash * float(pct)), cash
 
 
-def _record_order(orders: list, order_result, action: str, symbol: str, quantity: int, price: float, reason: str) -> None:
+def _record_order(
+    orders: list, order_result, action: str, symbol: str, quantity: int, price: float, reason: str,
+    before_qty: Optional[int] = None, expected_remaining_qty: Optional[int] = None,
+) -> None:
     result = order_result.to_dict() if hasattr(order_result, "to_dict") else dict(order_result)
     orders.append({
         "timestamp": datetime.now().isoformat(), "action": action, "symbol": symbol,
         "name": _SYMBOL_NAME.get(symbol, symbol), "quantity": quantity, "price": price,
         "amount": (quantity or 0) * (price or 0), "reason": reason,
         "success": result.get("success"), "message": result.get("message"), "order_id": result.get("order_id"),
+        "before_qty": before_qty, "executed_qty": quantity if result.get("success") else 0,
+        "expected_remaining_qty": expected_remaining_qty,
     })
 
 
@@ -115,19 +120,52 @@ def _record_skipped(orders: list, action: str, symbol: str, price: Optional[floa
     })
 
 
-def _sell_all_or_ratio(broker, position: dict, current_price: float, ratio: float, reason: str, orders: list) -> dict:
+def _sell_all_or_ratio(
+    broker, position: dict, current_price: float, ratio: float, reason: str, orders: list,
+    mode: str = "mock", exit_reason_type: Optional[str] = None,
+) -> dict:
+    """포지션 전량 또는 비율만큼 매도.
+
+    exit_reason_type이 주어지면 Exit Order Coordinator 락을 통해 실행한다 — 같은
+    (mode, symbol, exit_reason_type)에 대해 동시 진행 중이거나 최근 30초 이내
+    체결된 매도가 있으면 이번 매도는 스킵된다(레거시 TP/SL, 강제청산, 스위칭,
+    Dynamic Exit AI가 동시에 같은 포지션을 파는 것을 방지).
+    """
+    from app.trading.exit_order_coordinator import try_acquire_exit_lock
+
     symbol = position["symbol"]
     total_qty = int(position.get("quantity") or 0)
     sell_qty = max(1, int(total_qty * ratio)) if ratio < 1.0 else total_qty
     sell_qty = min(sell_qty, total_qty)
+    expected_remaining = 0 if ratio >= 1.0 else max(0, total_qty - sell_qty)
     if sell_qty <= 0:
         _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, "매도 수량 0")
         return {"success": False, "message": "매도 수량 0"}
+
+    if exit_reason_type is None:
+        return _execute_sell(broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining)
+
+    with try_acquire_exit_lock(mode, symbol, exit_reason_type) as lock:
+        if not lock:
+            message = "Exit Order Coordinator: 동시 매도 차단(다른 곳에서 진행 중이거나 최근 30초 이내 체결됨)"
+            _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, message)
+            return {"success": False, "message": message, "blocked_by_coordinator": True}
+        result = _execute_sell(broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining)
+        if result.get("success"):
+            lock.mark_executed()
+        return result
+
+
+def _execute_sell(
+    broker, symbol: str, sell_qty: int, current_price: float, reason: str, orders: list,
+    before_qty: int, expected_remaining: int,
+) -> dict:
     order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
-    _record_order(orders, order, "SELL", symbol, sell_qty, current_price, reason)
+    _record_order(orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty, expected_remaining_qty=expected_remaining)
     result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
     result["sold_quantity"] = sell_qty
-    result["remaining_quantity"] = total_qty - sell_qty
+    result["remaining_quantity"] = before_qty - sell_qty
+    result["expected_remaining_qty"] = expected_remaining
     return result
 
 
@@ -201,43 +239,100 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
     return state
 
 
-def run_liquidation_if_needed(now: datetime, state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float]) -> dict:
+def run_liquidation_if_needed(
+    now: datetime, state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
+    position_manager=None,
+) -> dict:
     """15:15 도달 시 보유 포지션 전량 강제청산(수익/손실 무관, TP/SL보다 우선).
 
-    실패 시 1회 재시도, 재시도도 실패하면 critical_alert 기록(포지션은 유지).
+    보유 포지션이 없으면 청산 대상이 없으므로 즉시 liquidation_done=True로 완료 처리한다
+    (기존 버그: 무보유 상태에서 이 함수가 조용히 아무 것도 하지 않아 화면에 "강제청산 완료: 아니오"가
+    영구히 표시되는 문제가 있었다). 손절모드가 AUTO가 아니면(ALERT_ONLY/BATCH_MANUAL) 자동매도하지
+    않고 알림만 남긴다 — 이 경우 포지션이 남아있는 한 liquidation_done은 False로 유지된다.
+    실패 시 1회 재시도, 재시도도 실패하면 critical_alert 기록(포지션은 유지). 모든 시도는
+    data/logs/forced_liquidation_log.csv에 기록된다.
     """
+    from app.trading.hynix_stop_loss_control import (
+        apply_stop_loss_mode_gate, log_forced_liquidation_event, verify_order_confirmed,
+    )
+
     orders: list = []
     position = state.get("position") or {}
     symbol = position.get("symbol")
+    mode = state.get("mode", "mock")
 
-    if not should_liquidate_now(now) or not symbol or (position.get("quantity") or 0) <= 0:
+    if not should_liquidate_now(now):
         return {"liquidated": False, "orders": orders}
 
+    if not symbol or (position.get("quantity") or 0) <= 0:
+        state["liquidation_done"] = True
+        return {"liquidated": False, "orders": orders, "already_empty": True}
+
     current_price = _current_price(symbol, hynix_price, inverse_price)
+    quantity = position.get("quantity")
+    entry_price = position.get("entry_price")
+
+    gate = apply_stop_loss_mode_gate(state, mode, symbol, position_manager, "FORCED_LIQUIDATION", current_price, now)
+    if gate["blocked"]:
+        state["liquidation_done"] = False
+        log_forced_liquidation_event({
+            "mode": mode, "symbol": symbol, "quantity": quantity, "entry_price": entry_price,
+            "current_price": current_price, "liquidation_attempted": False, "order_sent": False,
+            "order_confirmed": False, "result": "BLOCKED_MANUAL_MODE", "reason": gate["reason"],
+        })
+        return {"liquidated": False, "orders": orders, "blocked_by_mode": True}
+
     if not current_price:
+        state["liquidation_done"] = False
         state["critical_alert"] = f"[{now.isoformat()}] 강제청산 시각 도달했으나 현재가 없음 — 포지션 유지"
         logger.error(state["critical_alert"])
+        log_forced_liquidation_event({
+            "mode": mode, "symbol": symbol, "quantity": quantity, "entry_price": entry_price,
+            "current_price": None, "liquidation_attempted": True, "order_sent": False,
+            "order_confirmed": False, "result": "NO_PRICE", "reason": "현재가 조회 실패",
+        })
         return {"liquidated": False, "orders": orders}
 
     for attempt in (1, 2):
-        result = _sell_all_or_ratio(broker, position, current_price, 1.0, "15:15 당일 강제청산", orders)
+        result = _sell_all_or_ratio(
+            broker, position, current_price, 1.0, "15:15 당일 강제청산", orders,
+            mode=mode, exit_reason_type="liquidation",
+        )
         if result.get("success"):
             realized = (current_price - position.get("entry_price", current_price)) * result.get("sold_quantity", position.get("quantity", 0))
             state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
             state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
             state["position"] = _empty_position()
-            state["liquidation_done"] = True
             state["last_sell_price"] = current_price
             state["last_trade_time"] = now.isoformat()
             state["last_action"] = "SELL"
             state["last_order_id"] = result.get("order_id")
             state["critical_alert"] = None
-            return {"liquidated": True, "orders": orders, "attempts": attempt}
+
+            order_confirmed = True
+            if position_manager is not None:
+                order_confirmed = verify_order_confirmed(position_manager, symbol, expect_cleared=True)
+            state["liquidation_done"] = bool(order_confirmed)
+
+            log_forced_liquidation_event({
+                "mode": mode, "symbol": symbol, "quantity": quantity, "entry_price": entry_price,
+                "current_price": current_price, "liquidation_attempted": True, "order_sent": True,
+                "order_confirmed": order_confirmed,
+                "result": "SUCCESS" if order_confirmed else "UNCONFIRMED",
+                "reason": "15:15 당일 강제청산" + ("" if order_confirmed else " — 체결 미확인, 재확인 필요"),
+            })
+            return {"liquidated": True, "orders": orders, "attempts": attempt, "order_confirmed": order_confirmed}
         logger.warning("[SwitchPositionManager] 강제청산 시도 %s회 실패: %s", attempt, result.get("message"))
 
     state["liquidation_done"] = False
-    state["critical_alert"] = f"[{now.isoformat()}] 강제청산 2회(1회+재시도) 모두 실패: {orders[-1].get('message') if orders else '알수없음'}"
+    failure_message = orders[-1].get("message") if orders else "알수없음"
+    state["critical_alert"] = f"[{now.isoformat()}] 강제청산 2회(1회+재시도) 모두 실패: {failure_message}"
     logger.error(state["critical_alert"])
+    log_forced_liquidation_event({
+        "mode": mode, "symbol": symbol, "quantity": quantity, "entry_price": entry_price,
+        "current_price": current_price, "liquidation_attempted": True, "order_sent": False,
+        "order_confirmed": False, "result": "FAILED", "reason": f"2회 시도 모두 실패: {failure_message}",
+    })
     return {"liquidated": False, "orders": orders}
 
 
@@ -251,22 +346,55 @@ def _empty_position() -> dict:
     }
 
 
-def run_tp_sl_if_needed(state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float]) -> dict:
-    """보유 포지션의 TP/SL 판정 및 실행(강제청산 판정 이후, 스위칭 판정 이전에 호출)."""
+def run_tp_sl_if_needed(
+    state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
+    position_manager=None, now: Optional[datetime] = None,
+) -> dict:
+    """보유 포지션의 TP/SL 판정 및 실행(강제청산 판정 이후, 스위칭 판정 이전에 호출).
+
+    Dynamic Exit AI 감시 스레드가 살아있으면 이 레거시 TP/SL은 완전히 스킵한다 —
+    두 시스템이 서로 다른 임계값(예: 레거시 -0.8% vs Dynamic Exit AI 프로필 -1.2%)으로
+    동시에 같은 포지션을 판단·매도하면 화면 표시와 실제 체결이 어긋나고 중복 매도
+    위험도 생긴다. 이 함수는 감시 스레드가 죽어있을 때만 동작하는 진짜 fallback이다.
+
+    손절(SL) 트리거는 손절모드(AUTO/ALERT_ONLY/BATCH_MANUAL) 게이트를 통과해야만 실제
+    매도가 나간다. 익절(TP) 트리거는 손절 방식 설정과 무관하게 그대로 실행한다.
+    """
+    now = now or datetime.now()
     orders: list = []
     position = state.get("position") or {}
     symbol = position.get("symbol")
     if not symbol or (position.get("quantity") or 0) <= 0:
         return {"triggered": False, "orders": orders}
 
+    try:
+        from app.trading.dynamic_exit_watcher import is_watcher_running
+
+        if is_watcher_running():
+            return {"triggered": False, "orders": orders, "skipped_reason": "Dynamic Exit AI 감시 스레드가 활성 상태 — 레거시 TP/SL은 fallback이므로 스킵"}
+    except Exception as exc:
+        logger.debug("[SwitchPositionManager] watcher 상태 확인 실패, 레거시 TP/SL 계속 진행: %s", exc)
+
+    mode = state.get("mode", "mock")
     current_price = _current_price(symbol, hynix_price, inverse_price)
     trigger = evaluate_tp_sl(position, current_price)
     if not trigger:
         return {"triggered": False, "orders": orders}
 
-    result = _sell_all_or_ratio(broker, position, current_price, trigger["ratio"], trigger["reason"], orders)
+    if trigger["tag"].startswith("sl"):
+        from app.trading.hynix_stop_loss_control import apply_stop_loss_mode_gate
+
+        gate = apply_stop_loss_mode_gate(state, mode, symbol, position_manager, "LEGACY_TP_SL", current_price, now)
+        if gate["blocked"]:
+            return {"triggered": True, "executed": False, "blocked_by_mode": True, "orders": orders}
+
+    exit_reason_type = "stop_loss" if trigger["tag"].startswith("sl") else "take_profit"
+    result = _sell_all_or_ratio(
+        broker, position, current_price, trigger["ratio"], trigger["reason"], orders,
+        mode=mode, exit_reason_type=exit_reason_type,
+    )
     if not result.get("success"):
-        return {"triggered": True, "executed": False, "orders": orders}
+        return {"triggered": True, "executed": False, "orders": orders, "blocked_by_coordinator": result.get("blocked_by_coordinator", False)}
 
     sold_qty = result.get("sold_quantity", 0)
     realized = (current_price - position.get("entry_price", current_price)) * sold_qty
@@ -322,7 +450,10 @@ def run_switch_or_entry(
         current_price = _current_price(held_symbol, hynix_price, inverse_price)
         if not current_price:
             return {"acted": False, "orders": orders, "message": "보유종목 현재가 없음 — 스위칭 skip"}
-        sell_result = _sell_all_or_ratio(broker, position, current_price, 1.0, f"스위칭 매도({reason})", orders)
+        sell_result = _sell_all_or_ratio(
+            broker, position, current_price, 1.0, f"스위칭 매도({reason})", orders,
+            mode=state.get("mode", "mock"), exit_reason_type="switch",
+        )
         if not sell_result.get("success"):
             return {"acted": False, "orders": orders, "message": f"스위칭 매도 실패: {sell_result.get('message')}"}
         sold_qty = sell_result.get("sold_quantity", position.get("quantity", 0))

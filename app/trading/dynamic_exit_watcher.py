@@ -36,6 +36,16 @@ _EXIT_LOG_COLUMNS = [
 _engine = DynamicExitEngine()
 
 
+def _no_position_decision() -> dict:
+    """포지션이 없을 때의 Dynamic Exit 판단 — 과거 SELL_ALL 등 유령 판단 방지용."""
+    return {
+        "action": "NO_POSITION", "reason": "보유 포지션 없음", "entry_time": None,
+        "holding_minutes": 0, "exit_score": 0, "ratio": 0.0,
+        "tp_pct": None, "sl_pct": None, "trailing_pct": None, "trailing_armed": False,
+        "profit_lock_floor_pct": None, "market_type": None, "score_breakdown": {},
+    }
+
+
 def _fetch_current_price(symbol: str, mode: str) -> Optional[float]:
     if symbol == HYNIX_SYMBOL:
         return _fetch_hynix_price_cheap(mode)
@@ -186,6 +196,8 @@ def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = N
     position = state.get("position") or {}
     symbol = position.get("symbol")
     if not symbol or (position.get("quantity") or 0) <= 0:
+        # 포지션이 없으면 과거(청산 직전) 판단이 화면에 유령처럼 남지 않도록 즉시 초기화한다.
+        state["dynamic_exit_last_decision"] = _no_position_decision()
         save_state_atomic(state)
         return None
 
@@ -227,8 +239,14 @@ def tick(now: Optional[datetime] = None, engine: Optional[DynamicExitEngine] = N
                 }
 
         if block_reason is None:
+            from app.trading.exit_order_coordinator import classify_exit_reason
+
             orders: list = []
-            order_result = _sell_all_or_ratio(broker, position, current_price, decision["ratio"], decision["reason"], orders)
+            exit_reason_type = classify_exit_reason(decision["reason"])
+            order_result = _sell_all_or_ratio(
+                broker, position, current_price, decision["ratio"], decision["reason"], orders,
+                mode=mode, exit_reason_type=exit_reason_type,
+            )
             order_sent = bool(order_result.get("success"))
             if order_sent:
                 sold_qty = order_result.get("sold_quantity", 0)
@@ -287,6 +305,14 @@ class DynamicExitWatcher(threading.Thread):
                 tick()
             except Exception as exc:
                 logger.error("[DynamicExitWatcher] tick 실패: %s", exc)
+            try:
+                # 자기 자신은 이 루프가 돌고 있다는 것 자체로 살아있음이 증명되므로,
+                # 여기서는 "3분 자동매매 사이클" 스레드가 죽어있지 않은지만 함께 확인/재시작한다.
+                from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running
+
+                ensure_cycle_thread_running()
+            except Exception as exc:
+                logger.error("[DynamicExitWatcher] 사이클 스레드 헬스체크 실패: %s", exc)
             self._stop_event.wait(self.interval_seconds)
         logger.info("[DynamicExitWatcher] 백그라운드 감시 종료")
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -130,6 +131,17 @@ def _sync_flat_fields(state: dict) -> None:
     state["entry_time"] = pos.get("entry_time")
     state["realized_pnl"] = state.get("realized_pnl_today_krw", 0.0)
 
+    # "오늘 마지막 주문"(날짜 바뀌면 초기화)과 별개로 "전체 마지막 주문"(영구 보존)을
+    # 항상 최신으로 미러링한다 — 오늘 값이 있을 때만 갱신하고, 없다고 지우지 않는다.
+    if state.get("last_order_id"):
+        state["all_time_last_order_id"] = state["last_order_id"]
+        state["all_time_last_action"] = state.get("last_action")
+        state["all_time_last_trade_time"] = state.get("last_trade_time")
+    if state.get("last_buy_price"):
+        state["all_time_last_buy_price"] = state["last_buy_price"]
+    if state.get("last_sell_price"):
+        state["all_time_last_sell_price"] = state["last_sell_price"]
+
 
 def load_state(mode: Optional[str] = None) -> dict:
     """상태 로드. mode를 지정하지 않으면 활성 모드(active_mode 포인터)를 사용.
@@ -171,8 +183,37 @@ def load_state(mode: Optional[str] = None) -> dict:
             state["last_order_cycle_bucket"] = None
             state["last_order_signature"] = None
             state["critical_alert"] = None
+            # 전일 거래 잔재가 오늘 화면에 그대로 남아 "오늘 이미 거래됨"처럼 보이는
+            # 것을 방지 — 날짜가 바뀌면 당일 거래 관련 필드를 전부 초기화한다.
+            state["last_buy_price"] = None
+            state["last_sell_price"] = None
+            state["last_trade_time"] = None
+            state["last_action"] = None
+            state["last_order_id"] = None
+            state["pending_entry"] = None
+            state["pending_manual_stop_loss_alert"] = None
             if mode == "mock":
                 state["cash"] = state.get("mock_budget_krw", _DEFAULT_MOCK_BUDGET_KRW)
+
+        # 15:15(강제청산 시각) 이전인데 liquidation_done=True로 남아있으면 항상 오류다
+        # (테스트/E2E 스크립트가 실제 state를 직접 건드렸거나 다른 버그로 잘못 세팅된
+        # 경우) — 날짜 롤오버 여부와 무관하게 매 로드마다 확인해 자동 복구한다.
+        if state.get("liquidation_done"):
+            try:
+                from app.trading.hynix_switch_risk_gate import should_liquidate_now
+
+                if not should_liquidate_now(datetime.now()):
+                    logger.error(
+                        "[HynixSwitchState] 15:15 이전인데 liquidation_done=True로 기록되어 있어 "
+                        "False로 자동 복구합니다(mode=%s) — 원인 조사 필요",
+                        mode,
+                    )
+                    state["liquidation_done"] = False
+                    state["critical_alert"] = (
+                        "liquidation_done 이상 감지 및 자동 복구됨(15:15 이전에 True로 기록됨)"
+                    )
+            except Exception as exc:
+                logger.debug("[HynixSwitchState] liquidation_done 시간 검증 실패(무해): %s", exc)
 
         _sync_flat_fields(state)
         return state
@@ -181,8 +222,24 @@ def load_state(mode: Optional[str] = None) -> dict:
         return default_state(mode)
 
 
-def save_state_atomic(state: dict) -> None:
-    """상태를 원자적으로 저장(임시파일 write 후 os.replace). mode별 파일에 저장."""
+_SAVE_RETRY_ATTEMPTS = 8
+_SAVE_RETRY_BASE_SLEEP_SEC = 0.03
+
+
+def save_state_atomic(state: dict) -> bool:
+    """상태를 원자적으로 저장(임시파일 write 후 os.replace). mode별 파일에 저장.
+
+    Windows에서는 대상 파일이 다른 프로세스/스레드(예: Dynamic Exit 감시 스레드나
+    다른 브라우저 탭의 세션이 동시에 load_state()로 읽는 중)에 의해 아주 짧게
+    열려 있으면 os.replace가 WinError 5(Access Denied)로 실패할 수 있다. 이런
+    경합은 보통 수십 ms 안에 풀리므로 지수적으로 늘어나는 짧은 대기와 함께
+    재시도한다. 그래도 전부 실패하면(디스크/권한 문제 등 지속적 오류) 기존과
+    동일하게 예외를 삼키고 로그만 남긴다 — 사이클 자체가 죽지는 않게 한다.
+
+    Returns:
+        True — 실제로 디스크에 반영됨. False — 재시도까지 모두 실패해 반영되지
+        않음(UI의 "UI Synced" 표시가 이 값을 그대로 사용한다).
+    """
     try:
         _sync_flat_fields(state)
         mode = state.get("mode", "mock")
@@ -190,9 +247,22 @@ def save_state_atomic(state: dict) -> None:
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(state, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
+
+        last_exc: Optional[OSError] = None
+        for attempt in range(_SAVE_RETRY_ATTEMPTS):
+            try:
+                os.replace(tmp_path, path)
+                if attempt > 0:
+                    logger.debug("[HynixSwitchState] 상태 저장 재시도 %d회 후 성공", attempt)
+                return True
+            except OSError as exc:
+                last_exc = exc
+                time.sleep(_SAVE_RETRY_BASE_SLEEP_SEC * (attempt + 1))
+        logger.error("[HynixSwitchState] 상태 저장 실패(재시도 %d회 모두 실패): %s", _SAVE_RETRY_ATTEMPTS, last_exc)
+        return False
     except Exception as exc:
         logger.error("[HynixSwitchState] 상태 저장 실패: %s", exc)
+        return False
 
 
 def reset_mock_state(budget_krw: Optional[float] = None) -> dict:

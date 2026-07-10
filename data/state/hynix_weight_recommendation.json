@@ -1,0 +1,21 @@
+{
+  "skipped": true,
+  "reason": "샘플 부족(sample_size=0 < 100) — 가중치 추천 생략",
+  "current_weights": {
+    "base_prediction": 0.45,
+    "existing_micron": 0.2,
+    "hynix_technical": 0.25,
+    "intraday_momentum": 0.1
+  },
+  "recommended_weights": null,
+  "sample_size": 0,
+  "expected_improvement": null,
+  "correlations": {
+    "base_prediction_score": null,
+    "existing_micron_score": null,
+    "hynix_technical_score": null,
+    "intraday_momentum_score": null,
+    "inverse_pressure_score": null
+  },
+  "created_at": "2026-07-09T15:41:55.951299"
+}

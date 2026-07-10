@@ -60,6 +60,52 @@ def test_residual_position_flagged_on_new_day(tmp_path, monkeypatch):
     assert reloaded["daily_trade_count"] == 0  # 신규일자로 카운터 리셋
 
 
+def test_last_trade_fields_reset_on_new_day(tmp_path, monkeypatch):
+    """전일 거래 잔재(Last Buy/Sell/Action Time/Pending Entry)가 오늘 화면에 남지 않아야 한다."""
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    stale_state = default_state("mock")
+    stale_state["date"] = "20260709"
+    stale_state["last_buy_price"] = 2_211_000.0
+    stale_state["last_sell_price"] = 2_186_000.0
+    stale_state["last_trade_time"] = "2026-07-09T11:30:00.241536"
+    stale_state["last_action"] = "BUY"
+    stale_state["last_order_id"] = "DRY-20260709-0001"
+    stale_state["pending_entry"] = {"action": "INVERSE_BUY", "symbol": "0197X0", "since": "2026-07-09T09:24:20"}
+    stale_state["pending_manual_stop_loss_alert"] = {"symbol": "000660", "reason": "test"}
+    save_state_atomic(stale_state)
+
+    reloaded = load_state(mode="mock")
+
+    assert reloaded["last_buy_price"] is None
+    assert reloaded["last_sell_price"] is None
+    assert reloaded["last_trade_time"] is None
+    assert reloaded["last_action"] is None
+    assert reloaded["last_order_id"] is None
+    assert reloaded["pending_entry"] is None
+    assert reloaded["pending_manual_stop_loss_alert"] is None
+
+
+def test_all_time_last_order_survives_day_rollover(tmp_path, monkeypatch):
+    """'오늘 마지막 주문'은 날짜가 바뀌면 리셋되지만 '전체 마지막 주문'은 영구 보존돼야 한다."""
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    stale_state = default_state("mock")
+    stale_state["date"] = "20260709"
+    stale_state["last_buy_price"] = 2_211_000.0
+    stale_state["last_trade_time"] = "2026-07-09T11:30:00.241536"
+    stale_state["last_action"] = "BUY"
+    stale_state["last_order_id"] = "DRY-20260709-0001"
+    save_state_atomic(stale_state)  # _sync_flat_fields가 all_time_* 필드를 채운다
+
+    reloaded = load_state(mode="mock")  # 날짜 롤오버 트리거
+
+    assert reloaded["last_order_id"] is None  # 오늘 마지막 주문 — 리셋됨
+    assert reloaded["all_time_last_order_id"] == "DRY-20260709-0001"  # 전체 마지막 주문 — 보존됨
+    assert reloaded["all_time_last_action"] == "BUY"
+    assert reloaded["all_time_last_buy_price"] == 2_211_000.0
+
+
 def test_mock_and_real_states_are_separate_files(tmp_path, monkeypatch):
     monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
 

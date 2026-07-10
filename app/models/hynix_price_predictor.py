@@ -141,13 +141,14 @@ class HynixPricePredictor:
     # ------------------------------------------------------------------
     # Stage 1: 미국 AI/반도체 점수
     # ------------------------------------------------------------------
-    def _stage_us_ai_semi(self, market_data: dict, micron_features: dict) -> dict:
+    def _stage_us_ai_semi(self, market_data: dict, micron_features: dict, micron_proxy: Optional[dict] = None) -> dict:
         mu = market_data.get("mu", {}) or {}
         nvda = market_data.get("nvda", {}) or {}
         amd = market_data.get("amd", {}) or {}
         avgo = market_data.get("avgo", {}) or {}
         index = market_data.get("index", {}) or {}
 
+        # 참고용 원시 등락률(진단/상대강도 표시에만 사용 — 게이팅 입력에는 더 이상 쓰지 않는다).
         mu_ret = _mu_effective_return(micron_features)
         nvda_ret = nvda.get("regular_return")
         amd_ret = amd.get("regular_return")
@@ -158,8 +159,17 @@ class HynixPricePredictor:
         mu_relative_strength_vs_sox = round(mu_ret - sox_ret, 3) if (mu_ret is not None and sox_ret is not None) else None
         mu_relative_strength_vs_qqq = round(mu_ret - qqq_ret, 3) if (mu_ret is not None and qqq_ret is not None) else None
 
+        # ── Micron 입력은 app.models.micron_proxy_prediction의 effective_micron_score로
+        # 전부 교체한다(명세: 실제 MU 데이터가 없거나 stale이어도 SOX/Nasdaq futures proxy +
+        # 미국 반도체 basket + 한국 반도체 확인점수를 결합해 계속 갱신되는 값을 사용).
+        # 0~100 점수를 -1..1 신호로 변환해 기존 _weighted_norm 산식에 그대로 투입한다.
+        effective_micron_score = micron_proxy.get("effective_micron_score") if micron_proxy else None
+        micron_data_confidence = micron_proxy.get("micron_data_confidence") if micron_proxy else None
+        micron_score_source = micron_proxy.get("micron_score_source") if micron_proxy else None
+        mu_component_value = (effective_micron_score - 50.0) if effective_micron_score is not None else None
+
         signal, used_weight = _weighted_norm({
-            "mu": (mu_ret, 3.0, 0.35),
+            "mu": (mu_component_value, 50.0, 0.35),
             "sox": (sox_ret, 2.5, 0.20),
             "nvda": (nvda_ret, 3.5, 0.15),
             "amd": (amd_ret, 4.0, 0.10),
@@ -175,6 +185,12 @@ class HynixPricePredictor:
             "sox_return": sox_ret, "nvda_return": nvda_ret, "amd_return": amd_ret,
             "avgo_return": avgo_ret, "qqq_return": qqq_ret,
             "mu_extended_hours": mu_ext,
+            "effective_micron_score": effective_micron_score,
+            "micron_data_confidence": micron_data_confidence,
+            "micron_score_source": micron_score_source,
+            "sox_futures_score": micron_proxy.get("sox_futures_score") if micron_proxy else None,
+            "nasdaq_futures_score": micron_proxy.get("nasdaq_futures_score") if micron_proxy else None,
+            "korea_semiconductor_confirmation_score": micron_proxy.get("korea_semiconductor_confirmation_score") if micron_proxy else None,
             "sources": {
                 "mu": mu.get("source"), "nvda": nvda.get("source"), "amd": amd.get("source"),
                 "avgo": avgo.get("source"), "index": index.get("source"),
@@ -432,6 +448,7 @@ class HynixPricePredictor:
         market_collapse_score: Optional[float] = None,
         semiconductor_collapse_score: Optional[float] = None,
         tomorrow_market_prediction_factor: Optional[float] = None,
+        micron_proxy: Optional[dict] = None,
     ) -> dict:
         """
         Parameters
@@ -442,12 +459,24 @@ class HynixPricePredictor:
             정상 동작하며, 이 경우 collapse_penalty는 0으로 처리된다.
         tomorrow_market_prediction_factor : market_prediction.predict_tomorrow_market()의
             방향 신호(-1..1로 환산, 선택) — 내일 시가 산식의 10% 비중 항목.
+        micron_proxy : app.models.micron_proxy_prediction.compute_effective_micron_score_from_market_data()
+            결과(선택). 넘기지 않으면 market_data를 재사용해 내부적으로 계산한다
+            (추가 네트워크 호출 없음 — 이미 수집된 market_data만 사용).
         """
         tech_indicators = tech_indicators or {}
         micron_features = micron_features or {}
         market_data = market_data or {}
 
-        stage_us = self._stage_us_ai_semi(market_data, micron_features)
+        if micron_proxy is None:
+            try:
+                from app.models.micron_proxy_prediction import compute_effective_micron_score_from_market_data
+
+                micron_proxy = compute_effective_micron_score_from_market_data(market_data)
+            except Exception as exc:
+                logger.debug("[HynixPricePredictor] Micron Proxy Prediction Engine 계산 실패(무해): %s", exc)
+                micron_proxy = None
+
+        stage_us = self._stage_us_ai_semi(market_data, micron_features, micron_proxy=micron_proxy)
         stage_flow = self._stage_domestic_flow(market_data)
         stage_sector = self._stage_domestic_sector(market_data, hynix_current_price, hynix_prev_close, tech_indicators)
         stage_self = self._stage_hynix_self(tech_indicators)
@@ -527,6 +556,12 @@ class HynixPricePredictor:
                 "hynix_price": hynix_source,
                 "hynix_minute_vwap": stage_sector["sources"].get("hynix_minute"),
             },
+            "effective_micron_score": stage_us.get("effective_micron_score"),
+            "micron_data_confidence": stage_us.get("micron_data_confidence"),
+            "micron_score_source": stage_us.get("micron_score_source"),
+            "sox_futures_score": stage_us.get("sox_futures_score"),
+            "nasdaq_futures_score": stage_us.get("nasdaq_futures_score"),
+            "korea_semiconductor_confirmation_score": stage_us.get("korea_semiconductor_confirmation_score"),
         }
 
         if base_price <= 0:
@@ -609,6 +644,7 @@ class HynixPricePredictor:
                 holiday_mode=holiday_mode, mu_is_stale=mu_is_stale, hynix_source=hynix_source,
                 investor_is_proxy=stage_flow.get("is_proxy", False), recovery_score=recovery_score,
                 predicted_direction=direction, tomorrow_state=tomorrow_state if horizon == "tomorrow_open" else None,
+                micron_data_confidence=stage_us.get("micron_data_confidence"),
             )
 
             # ── MU 장외 데이터 상태에 따른 confidence 상한(명세 7절) — 내일시가/장
@@ -726,6 +762,7 @@ def _compute_confidence(
     horizon: str, data_quality_score: float, stage_results: dict, holiday_mode: bool,
     mu_is_stale: bool, hynix_source, investor_is_proxy: bool,
     recovery_score: Optional[float], predicted_direction: str, tomorrow_state: Optional[str],
+    micron_data_confidence: Optional[float] = None,
 ) -> float:
     """
     confidence = data_quality*0.30 + signal_consistency*0.25 + horizon_reliability*0.15
@@ -756,6 +793,12 @@ def _compute_confidence(
     if recovery_score is not None:
         if (predicted_direction == "DOWN" and recovery_score >= 70.0) or (predicted_direction == "UP" and recovery_score <= 30.0):
             confidence -= 10.0
+
+    # Micron Proxy Prediction Engine의 micron_data_confidence가 낮으면 전체 confidence를
+    # 낮춘다(명세 11절) — 100일 때 변화 없음, 0일 때 최대 절반까지 축소.
+    if micron_data_confidence is not None:
+        factor = 0.5 + 0.5 * (max(0.0, min(100.0, micron_data_confidence)) / 100.0)
+        confidence *= factor
 
     return round(max(0.0, min(100.0, confidence)), 1)
 
@@ -895,6 +938,7 @@ def predict_hynix_multi_horizon(
     market_collapse_score: Optional[float] = None,
     semiconductor_collapse_score: Optional[float] = None,
     tomorrow_market_prediction_factor: Optional[float] = None,
+    micron_proxy: Optional[dict] = None,
 ) -> dict:
     """모듈 수준 진입점 — HynixPricePredictor().predict()의 얇은 래퍼."""
     return HynixPricePredictor().predict(
@@ -907,4 +951,5 @@ def predict_hynix_multi_horizon(
         market_collapse_score=market_collapse_score,
         semiconductor_collapse_score=semiconductor_collapse_score,
         tomorrow_market_prediction_factor=tomorrow_market_prediction_factor,
+        micron_proxy=micron_proxy,
     )

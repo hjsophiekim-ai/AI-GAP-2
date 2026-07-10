@@ -27,6 +27,20 @@ except Exception as exc:
     _config_error = str(exc)
 
 # ---------------------------------------------------------------------------
+# 백그라운드 스레드 부트스트랩 — 특정 페이지를 열지 않아도, 서버 프로세스가
+# 시작되는 즉시(또는 어느 페이지로 진입하든) auto_trade_on 상태를 감지해 동작한다.
+# 두 함수 모두 이미 실행 중이면 아무것도 하지 않는 멱등(idempotent) 호출이다.
+# ---------------------------------------------------------------------------
+try:
+    from app.trading.dynamic_exit_watcher import ensure_watcher_running
+    from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running
+
+    ensure_watcher_running()
+    ensure_cycle_thread_running()
+except Exception as _bootstrap_exc:
+    _config_error = _config_error or f"백그라운드 스레드 부트스트랩 실패: {_bootstrap_exc}"
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

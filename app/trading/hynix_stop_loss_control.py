@@ -43,6 +43,12 @@ _STOP_LOSS_LOG_COLUMNS = [
     "stop_mode", "action", "order_sent", "order_confirmed", "reason",
 ]
 
+_FORCED_LIQUIDATION_LOG_PATH = ROOT / "data" / "logs" / "forced_liquidation_log.csv"
+_FORCED_LIQUIDATION_LOG_COLUMNS = [
+    "timestamp", "mode", "symbol", "quantity", "entry_price", "current_price",
+    "liquidation_attempted", "order_sent", "order_confirmed", "result", "reason",
+]
+
 _MARKET_OPEN = dtime(9, 0)
 _MARKET_ORDER_CUTOFF = dtime(15, 20)
 
@@ -67,6 +73,55 @@ def log_stop_loss_event(record: dict) -> None:
             writer.writerow({col: row.get(col, "") for col in _STOP_LOSS_LOG_COLUMNS})
     except Exception as exc:
         logger.debug("[StopLossControl] stop_loss_log 기록 실패: %s", exc)
+
+
+def log_forced_liquidation_event(record: dict) -> None:
+    """data/logs/forced_liquidation_log.csv 에 append (15:15 당일 강제청산 시도는 항상 기록)."""
+    try:
+        _FORCED_LIQUIDATION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        is_new = not _FORCED_LIQUIDATION_LOG_PATH.exists()
+        row = dict(record)
+        row.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        with _FORCED_LIQUIDATION_LOG_PATH.open("a", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=_FORCED_LIQUIDATION_LOG_COLUMNS)
+            if is_new:
+                writer.writeheader()
+            writer.writerow({col: row.get(col, "") for col in _FORCED_LIQUIDATION_LOG_COLUMNS})
+    except Exception as exc:
+        logger.debug("[StopLossControl] forced_liquidation_log 기록 실패: %s", exc)
+
+
+def apply_stop_loss_mode_gate(
+    state: dict, mode: str, symbol: str, position_manager, action_label: str,
+    current_price: Optional[float] = None, now: Optional[datetime] = None,
+) -> dict:
+    """손절성 매도(Dynamic Exit AI SL / 레거시 TP·SL의 SL / 15:15 강제청산) 공용 게이트.
+
+    AUTO가 아니면 무조건 차단(알림만 남김). AUTO+real이면 6가지 안전조건까지 확인한다.
+    AUTO+mock은 즉시 통과. 반환: {"blocked": bool, "reason": str|None}.
+    """
+    now = now or datetime.now()
+    stop_loss_mode = state.get("stop_loss_mode", STOP_LOSS_MODE_AUTO)
+
+    if stop_loss_mode != STOP_LOSS_MODE_AUTO:
+        reason = f"손절모드={stop_loss_mode} — 자동매도 없이 알림만"
+        state["pending_manual_stop_loss_alert"] = {
+            "symbol": symbol, "action": action_label, "reason": reason,
+            "current_price": current_price, "detected_at": now.isoformat(),
+        }
+        return {"blocked": True, "reason": reason}
+
+    if mode == "real" and position_manager is not None:
+        safety = check_auto_stop_loss_safety(state, mode, position_manager, symbol, now)
+        if not safety["ok"]:
+            reason = "real 자동손절 안전조건 미충족: " + "; ".join(safety["failed_checks"])
+            state["pending_manual_stop_loss_alert"] = {
+                "symbol": symbol, "action": action_label, "reason": reason,
+                "current_price": current_price, "detected_at": now.isoformat(),
+            }
+            return {"blocked": True, "reason": reason}
+
+    return {"blocked": False, "reason": None}
 
 
 def check_auto_stop_loss_safety(

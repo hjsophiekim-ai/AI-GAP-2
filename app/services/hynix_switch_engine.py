@@ -32,6 +32,82 @@ from app.trading.hynix_pullback_entry import detect_pullback
 _PULLBACK_MORNING_WINDOW_END = "10:00"
 _PULLBACK_PATIENCE_MINUTES = 15
 
+_SIGNAL_DISPLAY_MAP = {
+    "HYNIX_BUY": "BUY", "HYNIX_STRONG_BUY": "BUY",
+    "INVERSE_BUY": "INVERSE", "INVERSE_STRONG_BUY": "INVERSE",
+    "HOLD": "HOLD",
+}
+
+# 파이프라인 트레이스 단계 순서 — UI가 "어디서 멈췄는지"를 이 순서로 판정한다.
+_PIPELINE_STAGES = [
+    "prediction_signal", "entry_approved", "risk_manager", "order_sent",
+    "broker_executed", "position_confirmed", "ui_synced",
+]
+
+
+def _map_prediction_signal(final_action: str) -> str:
+    return _SIGNAL_DISPLAY_MAP.get(final_action, "HOLD")
+
+
+def _blank_pipeline_trace() -> dict:
+    """Signal 생성과 실제 체결을 분리해서 보여주기 위한 단계별 추적 정보의 기본값.
+
+    각 단계는 True(성공/승인)/False(실패/차단)/None(해당 없음, 예: HOLD라 진입 자체를
+    시도하지 않음) 중 하나이며, `stopped_stage`는 그 중 실제로 막힌 첫 단계 이름이다
+    (UI가 여기서 빨간색으로 표시한다).
+    """
+    return {
+        "prediction_signal": "HOLD",
+        "entry_approved": None, "entry_approved_reason": "",
+        "risk_manager_ok": True, "risk_manager_reason": "정상",
+        "risk_approved": True,
+        "order_sent": False,
+        "broker_executed": False,
+        "position_confirmed": None,
+        "ui_synced": None,
+        "trade_counter": 0,
+        "stopped_stage": None,
+        "blocking_reason": None,
+    }
+
+
+def _first_blocked_stage(trace: dict) -> Optional[str]:
+    """Signal이 BUY/SELL/INVERSE인데 실제로 어느 단계에서 멈췄는지 첫 번째로 찾는다.
+
+    HOLD는 애초에 아무것도 시도하지 않는 게 정상이므로 항상 None(정상)이다.
+    """
+    if trace["prediction_signal"] == "HOLD":
+        return None
+    if trace["entry_approved"] is False:
+        return "entry_approved"
+    if not trace["risk_manager_ok"]:
+        return "risk_manager"
+    if not trace["order_sent"]:
+        return "order_sent"
+    if not trace["broker_executed"]:
+        return "broker_executed"
+    if trace["position_confirmed"] is False:
+        return "position_confirmed"
+    if trace["ui_synced"] is False:
+        return "ui_synced"
+    return None
+
+
+def _build_blocking_reason(trace: dict) -> Optional[str]:
+    """stopped_stage를 사람이 읽을 수 있는 한 줄 사유로 변환 (UI의 blocking_reason 필드)."""
+    stage = trace.get("stopped_stage")
+    if not stage:
+        return None
+    reason_map = {
+        "entry_approved": trace.get("entry_approved_reason"),
+        "risk_manager": trace.get("risk_manager_reason"),
+        "order_sent": "주문이 브로커로 전송되지 않음(가격 조회 실패/쿨다운/허용 시간대 아님 등)",
+        "broker_executed": "주문은 전송됐으나 브로커 체결 실패",
+        "position_confirmed": "체결 후 재조회한 포지션이 기대와 불일치",
+        "ui_synced": "상태 저장(디스크 반영) 실패 — 다음 사이클에서 재시도됨",
+    }
+    return f"[{stage}] {reason_map.get(stage) or '알 수 없음'}"
+
 
 def evaluate_pullback_gate(state: dict, desired_symbol: str, final_action: str, now: datetime, forced_info: dict, hynix_df_1min, mode: str) -> dict:
     """신규 진입(매수) 전 눌림목 부근인지 확인한다.
@@ -144,7 +220,18 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
     state["mode"] = mode
 
     if state.get("stopped"):
-        return {"skipped": True, "reason": state.get("stopped_reason") or "자동매매 정지 상태", "state": state}
+        trace = _blank_pipeline_trace()
+        trace["risk_manager_ok"] = False
+        trace["risk_manager_reason"] = state.get("stopped_reason") or "자동매매 정지 상태"
+        trace["risk_approved"] = False
+        trace["stopped_stage"] = "risk_manager"
+        trace["blocking_reason"] = f"[risk_manager] {trace['risk_manager_reason']}"
+        return {
+            "skipped": True, "reason": state.get("stopped_reason") or "자동매매 정지 상태", "state": state,
+            "pipeline_trace": trace,
+        }
+
+    trace = _blank_pipeline_trace()
 
     # ── ①~⑥ 점수/판단 계산 (기존 데이터 흐름 재사용) ────────────────────────
     try:
@@ -172,6 +259,8 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
         decision = {"final_action": "HOLD", "enhanced_score": enhanced_result.get("enhanced_score", 50.0),
                     "inverse_pressure_score": enhanced_result.get("inverse_pressure_score", 50.0),
                     "score_gap": 0.0, "score_gap_below_forced_trade_threshold": True, "reasons": [str(exc)]}
+
+    trace["prediction_signal"] = _map_prediction_signal(decision.get("final_action", "HOLD"))
 
     hynix_price = enhanced_result.get("hynix_current_price")
     inverse_price = enhanced_result.get("inverse_current_price")
@@ -245,22 +334,42 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
         decision, fired_windows, price_data_ok, order_api_ok, df_1min, daily_pnl_pct, now=now,
     )
 
+    liquidation_phase_now = get_liquidation_phase(now)
+
     orders_this_cycle: list = []
     attempted_entry = False
     trading_allowed = auto_trade_on and real_gate_ok and not state.get("stopped") and not is_watch_only(now) and broker is not None
 
+    if not trading_allowed:
+        trace["risk_manager_ok"] = False
+        if state.get("stopped"):
+            trace["risk_manager_reason"] = state.get("stopped_reason") or "자동매매 중단 상태"
+        elif not auto_trade_on:
+            trace["risk_manager_reason"] = "자동매매 OFF"
+        elif not real_gate_ok:
+            trace["risk_manager_reason"] = "REAL 완전자동 게이트 미충족"
+        elif is_watch_only(now):
+            trace["risk_manager_reason"] = "관찰 전용 시간대(watch-only)"
+        elif broker is None:
+            trace["risk_manager_reason"] = "브로커 초기화 실패"
+    elif state.get("position_conflict"):
+        trace["risk_manager_ok"] = False
+        trace["risk_manager_reason"] = state.get("critical_alert") or "000660/0197X0 동시 보유 — 포지션 동기화 필요"
+
     if trading_allowed:
         try:
-            liq = run_liquidation_if_needed(now, state, broker, hynix_price, inverse_price)
+            liq = run_liquidation_if_needed(now, state, broker, hynix_price, inverse_price, position_manager=position_manager)
             orders_this_cycle.extend(liq.get("orders", []))
         except Exception as exc:
             logger.error("[HynixSwitchEngine] 강제청산 처리 실패: %s", exc)
             warnings.append(f"강제청산 처리 실패: {exc}")
             liq = {"liquidated": False}
 
-        if not liq.get("liquidated"):
+        if liquidation_phase_now == "closed" and not liq.get("liquidated"):
+            warnings.append("15:20 이후 — 신규 주문 판단 없이 상태 정리만 수행")
+        elif not liq.get("liquidated"):
             try:
-                tp_sl = run_tp_sl_if_needed(state, broker, hynix_price, inverse_price)
+                tp_sl = run_tp_sl_if_needed(state, broker, hynix_price, inverse_price, position_manager=position_manager, now=now)
                 orders_this_cycle.extend(tp_sl.get("orders", []))
             except Exception as exc:
                 logger.error("[HynixSwitchEngine] TP/SL 처리 실패: %s", exc)
@@ -282,18 +391,27 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
                     is_new_entry = desired_symbol is not None and held_symbol != desired_symbol
 
                     proceed = True
-                    if is_new_entry and state.get("position_conflict"):
+                    if not is_new_entry:
+                        trace["entry_approved"] = True
+                        trace["entry_approved_reason"] = "이미 목표 종목 보유 중 — 추가 진입 불필요"
+                    elif state.get("position_conflict"):
                         proceed = False
                         warnings.append("포지션 동기화 필요(000660/0197X0 동시 보유) — 신규매수 금지")
-                    elif is_new_entry:
+                        trace["entry_approved"] = False
+                        trace["entry_approved_reason"] = "포지션 동기화 필요(동시 보유) — 신규매수 금지"
+                    else:
                         try:
                             gate = evaluate_pullback_gate(state, desired_symbol, final_action, now, forced_info, df_1min, mode)
                             proceed = gate["proceed"]
+                            trace["entry_approved"] = proceed
+                            trace["entry_approved_reason"] = gate["message"]
                             if not proceed:
                                 warnings.append(gate["message"])
                         except Exception as exc:
                             logger.error("[HynixSwitchEngine] 눌림목 게이트 판단 실패, 즉시 진입으로 폴백: %s", exc)
                             proceed = True
+                            trace["entry_approved"] = True
+                            trace["entry_approved_reason"] = f"눌림목 게이트 오류로 즉시 진입 폴백: {exc}"
 
                     if proceed:
                         attempted_entry = True
@@ -309,6 +427,7 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
                             warnings.append(f"스위칭/진입 처리 실패: {exc}")
                 else:
                     state.pop("pending_entry", None)
+                    trace["entry_approved_reason"] = "HOLD — 신규 진입 신호 없음"
 
         if forced_info.get("should_force") and forced_info.get("window") and attempted_entry:
             if forced_info["window"] not in fired_windows:
@@ -326,6 +445,34 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
                 logger.error("[HynixSwitchEngine] 주문 후 포지션 재확인 실패: %s", exc)
                 warnings.append(f"주문 후 포지션 재확인 실패: {exc}")
 
+    # ── Order Sent / Broker Executed / Position Confirmed 판정 ──────────────
+    sent_orders = [o for o in orders_this_cycle if o.get("action") in ("BUY", "SELL")]
+    trace["order_sent"] = bool(sent_orders)
+    trace["broker_executed"] = any(o.get("success") for o in sent_orders)
+    if sent_orders:
+        last_order = sent_orders[-1]
+        if not last_order.get("success"):
+            trace["position_confirmed"] = False
+        elif last_order.get("action") == "BUY":
+            pos_now = state.get("position") or {}
+            trace["position_confirmed"] = (
+                pos_now.get("symbol") == last_order.get("symbol") and (pos_now.get("quantity") or 0) > 0
+            )
+        else:  # SELL
+            # 부분매도(expected_remaining_qty>0)는 같은 심볼이 남은 수량과 정확히
+            # 일치해야 confirmed다 — "심볼이 사라졌는지"만 보면 부분매도는 항상
+            # False로 오판된다. 전량매도(expected_remaining_qty==0)만 심볼 소거를 기대한다.
+            pos_now = state.get("position") or {}
+            expected_remaining = last_order.get("expected_remaining_qty")
+            actual_qty = pos_now.get("quantity") or 0
+            if expected_remaining == 0:
+                trace["position_confirmed"] = pos_now.get("symbol") != last_order.get("symbol") or actual_qty == 0
+            else:
+                trace["position_confirmed"] = (
+                    pos_now.get("symbol") == last_order.get("symbol") and actual_qty == expected_remaining
+                )
+            trace["prediction_signal"] = "SELL"  # TP/SL/강제청산/스위칭 매도 — 예측신호와 별개로 실제 실행된 것
+
     # ── 미실현손익/당일수익률 갱신 ────────────────────────────────────────────
     position = state.get("position") or {}
     unrealized_pnl = 0.0
@@ -340,6 +487,23 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
             (state.get("realized_pnl_today_krw", 0.0) + unrealized_pnl) / total_equity * 100.0, 4,
         )
 
+    trace["trade_counter"] = state.get("daily_trade_count", 0)
+    trace["ui_synced"] = save_state_atomic(state)
+    trace["stopped_stage"] = _first_blocked_stage(trace)
+    # 사용자 요청 필드명(risk_approved/blocking_reason)도 함께 노출 — risk_manager_ok/
+    # stopped_stage와 같은 값을 가리키는 별칭이다.
+    trace["risk_approved"] = trace["risk_manager_ok"]
+    trace["blocking_reason"] = _build_blocking_reason(trace)
+
+    # 백그라운드 스레드에서만 사이클이 돌아도(=Streamlit 세션에 아무도 접속하지 않아도)
+    # UI가 "사이클 미실행"을 보여주지 않도록, 이번 사이클 결과(최종 trace 포함)를
+    # state에도 남겨 한 번 더 저장한다.
+    state["last_pipeline_trace"] = trace
+    state["last_cycle_computed_at"] = now.isoformat()
+    state["last_hynix_price"] = hynix_price
+    state["last_inverse_price"] = inverse_price
+    state["last_enhanced_result"] = enhanced_result
+    state["last_decision"] = decision
     save_state_atomic(state)
 
     # ── 로그 기록 ────────────────────────────────────────────────────────────
@@ -392,7 +556,7 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
     except Exception as exc:
         logger.debug("[HynixSwitchEngine] 판단/결과 추적 로그 실패: %s", exc)
 
-    liquidation_phase = get_liquidation_phase(now)
+    liquidation_phase = liquidation_phase_now
 
     # ── 장 종료 후 1일 1회: 종가 outcome 확정 + 일별 리포트 + 가중치 추천 ──────
     today_str = now.strftime("%Y%m%d")
@@ -441,6 +605,7 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
         # state["position"]/state["daily_trade_count"]는 이 값을 그대로 옮겨 담은 캐시일 뿐이다.
         "position_manager": position_manager.to_cache_dict() if position_manager is not None else None,
         "warnings": warnings + (enhanced_result.get("warnings") or []),
+        "pipeline_trace": trace,
     }
 
 

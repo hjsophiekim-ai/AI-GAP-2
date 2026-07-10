@@ -1,0 +1,12 @@
+{
+  "kospi_value": 7521.02,
+  "kosdaq_value": 828.88,
+  "hynix_low": 2166000.0,
+  "samsung_low": 282000.0,
+  "leader_sectors_0920": [
+    "auto",
+    "cosmetics_consumer",
+    "battery_ev"
+  ],
+  "captured_at": "2026-07-10T10:06:10"
+}

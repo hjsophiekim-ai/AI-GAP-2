@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional
 import yaml
 from dotenv import load_dotenv
 
@@ -224,13 +225,32 @@ class Config:
     def dart(self) -> dict:
         return self._raw.get("dart", {})
 
+    @staticmethod
+    def _env_flag_override(env_name: str) -> Optional[bool]:
+        """환경변수가 설정되어 있으면 그 값을(true/false), 없으면 None을 반환한다."""
+        raw = os.getenv(env_name)
+        if raw is None or raw == "":
+            return None
+        return raw.strip().lower() in ("true", "1", "yes")
+
     def real_trading_enabled(self) -> bool:
+        """실전투자 마스터 스위치. ENABLE_REAL_TRADING(.env)이 설정되어 있으면 그 값이
+        config.yaml의 safety.enable_real_trading보다 우선한다."""
+        override = self._env_flag_override("ENABLE_REAL_TRADING")
+        if override is not None:
+            return override
         return bool(self.safety.get("enable_real_trading", False))
 
     def real_buy_enabled(self) -> bool:
+        override = self._env_flag_override("ENABLE_REAL_BUY")
+        if override is not None:
+            return override
         return bool(self.safety.get("enable_real_buy", False))
 
     def real_sell_enabled(self) -> bool:
+        override = self._env_flag_override("ENABLE_REAL_SELL")
+        if override is not None:
+            return override
         return bool(self.safety.get("enable_real_sell", False))
 
     def require_real_confirm(self) -> bool:

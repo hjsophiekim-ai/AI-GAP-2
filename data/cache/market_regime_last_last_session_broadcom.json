@@ -1,11 +1,11 @@
 {
   "symbol": "AVGO",
-  "close": 388.69000244140625,
-  "change_rate": 4.830358628047282,
-  "volume": 31586800,
-  "session_date": "2026-07-08",
+  "close": 401.1099853515625,
+  "change_rate": 3.195344061371509,
+  "volume": 27437098,
+  "session_date": "2026-07-09",
   "source": "yahoo",
   "success": true,
   "error": null,
-  "timestamp": "2026-07-09T15:04:47"
+  "timestamp": "2026-07-10T10:06:03"
 }

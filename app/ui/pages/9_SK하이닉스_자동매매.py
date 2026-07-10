@@ -19,6 +19,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import os
 from datetime import datetime
+from datetime import time as dtime_cls
 
 import streamlit as st
 
@@ -209,6 +210,8 @@ st.caption(
 
 from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.services.hynix_switch_engine import update_hynix_auto_trade_loop, set_control, reset_mock_account
+from app.trading.hynix_switch_risk_gate import is_new_entry_allowed
+from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running, get_status as get_cycle_status
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -237,6 +240,18 @@ with sc3:
 
 if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.get("mode"):
     switch_state = set_control(auto_trade_on=auto_on, mode=switch_mode)
+
+# ── 현재 실행 모드 배너 — 항상 눈에 띄게 표시(REAL이면 빨간 경고) ────────────
+_active_switch_mode = switch_state.get("mode", "mock")
+if _active_switch_mode == "real":
+    _real_gate_ok_banner = cfg.full_auto_real_confirm_ok()
+    st.error(
+        f"🔴🔴🔴 **REAL 모드 — 실제 계좌로 주문이 나갈 수 있습니다.** "
+        f"REAL 완전자동 게이트: {'✅ 충족(주문 가능)' if _real_gate_ok_banner else '❌ 미충족 — 주문 최종 차단됨'}",
+        icon="🚨",
+    )
+else:
+    st.success("🟢 MOCK 모드 — DryRunBroker(로컬 시뮬레이션)로만 동작 중. 실제 계좌/주문 없음.")
 
 if switch_state.get("mode") == "mock":
     bc1, bc2 = st.columns([2, 1])
@@ -281,11 +296,163 @@ if switch_state.get("critical_alert"):
 
 switch_run_clicked = st.button("Enhanced 사이클 1회 수동 실행", key="hynix_switch_run_once")
 
+if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
+    from app.trading.hynix_position_common import HynixPositionManager
+    from app.services.hynix_switch_state import _state_path
+    from app.trading.dynamic_exit_watcher import is_watcher_running
+
+    _dbg_mode = switch_state.get("mode", "mock")
+    _dbg_error = None
+    _dbg_broker = None
+    try:
+        if _dbg_mode == "mock":
+            from app.trading.dry_run_broker import DryRunBroker
+
+            _dbg_broker = DryRunBroker(initial_balance=float(switch_state.get("mock_budget_krw", 10_000_000.0)))
+        else:
+            from app.config import get_config
+            from app.trading.broker_factory import create_broker
+
+            _dbg_broker = create_broker(
+                get_config(), mode="real",
+                runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
+            )
+    except Exception as exc:
+        _dbg_error = str(exc)
+
+    with st.expander("🔍 Broker Debug Panel", expanded=True):
+        st.markdown(f"**현재 모드**: `{_dbg_mode}`")
+        st.markdown(f"**State file path**: `{_state_path(_dbg_mode)}`")
+        if _dbg_error or _dbg_broker is None:
+            st.error(f"브로커 초기화 실패: {_dbg_error}")
+        else:
+            st.markdown(f"**Broker type**: `{type(_dbg_broker).__name__}`")
+            try:
+                _dbg_cash = _dbg_broker.get_buyable_cash()
+            except Exception as exc:
+                _dbg_cash = f"조회 실패: {exc}"
+            st.markdown(f"**Broker cash**: {_dbg_cash}")
+            try:
+                _dbg_positions_raw = _dbg_broker.get_positions()
+            except Exception as exc:
+                _dbg_positions_raw = f"조회 실패: {exc}"
+            st.markdown("**Broker positions raw**:")
+            st.json([
+                {"symbol": p.symbol, "name": p.name, "quantity": p.quantity, "avg_price": p.avg_price}
+                for p in _dbg_positions_raw
+            ] if isinstance(_dbg_positions_raw, list) else str(_dbg_positions_raw))
+
+            _dbg_pm = HynixPositionManager(_dbg_broker, mode=_dbg_mode)
+            _dbg_pm.sync(force=True)
+            st.markdown("**PositionManager current_position**:")
+            st.json(_dbg_pm.current_position)
+
+            st.markdown(f"**Executed orders count**: {_dbg_pm.trade_count if hasattr(_dbg_broker, 'get_executed_order_count') else 'N/A(브로커가 카운터 미지원)'}")
+
+        st.markdown("**State current_position**:")
+        st.json(switch_state.get("position") or {})
+
+        _dbg_ui_position = None
+        _dbg_cycle_result = st.session_state.get("hynix_switch_cycle_result")
+        if _dbg_cycle_result and not _dbg_cycle_result.get("skipped"):
+            _dbg_ui_position = (_dbg_cycle_result.get("position_manager") or {}).get("position")
+        st.markdown("**UI displayed position**:")
+        st.json(_dbg_ui_position or {"info": "사이클 미실행 — 표시할 UI 포지션 없음"})
+
+        if switch_state.get("last_order_id"):
+            st.markdown(
+                f"**오늘 마지막 주문**: order_id=`{switch_state.get('last_order_id')}`, "
+                f"action=`{switch_state.get('last_action')}`, time=`{switch_state.get('last_trade_time')}`"
+            )
+        else:
+            st.markdown("**오늘 마지막 주문**: 없음")
+        st.markdown(
+            f"**전체 마지막 주문**: order_id=`{switch_state.get('all_time_last_order_id') or '없음'}`, "
+            f"action=`{switch_state.get('all_time_last_action') or '—'}`, "
+            f"time=`{switch_state.get('all_time_last_trade_time') or '—'}`"
+        )
+        st.markdown("**Pending orders**: 없음 (이 시스템은 동기식 즉시체결 구조이며 비동기 대기주문을 갖지 않음)")
+        st.markdown(f"**Last sync time(이 패널 조회 시각)**: {datetime.now().isoformat()}")
+        st.markdown(f"**Liquidation done**: {switch_state.get('liquidation_done')}")
+        st.markdown(f"**Stop loss mode**: {switch_state.get('stop_loss_mode')}")
+        st.markdown(
+            f"**Dynamic Exit status**: 감시스레드={'실행중' if is_watcher_running() else '정지'}, "
+            f"최근 판단={switch_state.get('dynamic_exit_last_decision')}"
+        )
+        st.markdown(f"**최근 오류 메시지**: {switch_state.get('critical_alert') or '없음'}")
+
+        st.markdown("---")
+        st.markdown("**Micron 실시간 데이터 원인 진단**")
+        for _mu_label, _mu_filename in (("1분봉", "MU_1min.csv"), ("3분봉", "MU_3min.csv")):
+            _mu_path = Path(_PROJECT_ROOT) / "data" / "micron" / _mu_filename
+            if not _mu_path.exists():
+                st.markdown(f"- {_mu_label}(`{_mu_filename}`): :red[파일 없음] — 수집기가 아직 한 번도 데이터를 쓰지 못함")
+                continue
+            try:
+                import pandas as pd
+
+                _mu_df = pd.read_csv(_mu_path)
+                if _mu_df.empty or "datetime" not in _mu_df.columns:
+                    st.markdown(f"- {_mu_label}(`{_mu_filename}`): :red[비어있거나 datetime 컬럼 없음]")
+                    continue
+                _mu_last = pd.to_datetime(_mu_df["datetime"], errors="coerce").dropna().iloc[-1]
+                _mu_age_min = (datetime.now() - _mu_last.to_pydatetime().replace(tzinfo=None)).total_seconds() / 60
+                _mu_color = "green" if _mu_age_min <= 20 else "red"
+                st.markdown(
+                    f"- {_mu_label}(`{_mu_filename}`): 마지막 캔들 `{_mu_last}` "
+                    f"(:{_mu_color}[{_mu_age_min:.1f}분 전], 신선도 기준 20분)"
+                )
+            except Exception as exc:
+                st.markdown(f"- {_mu_label}(`{_mu_filename}`): :red[읽기 실패] — {exc}")
+        st.caption(
+            "1분/3분 점수가 '—'로 보이는 이유: 위 두 파일이 모두 20분보다 오래됐거나 없으면 "
+            "5분→15분 리샘플, 그다음 세션점수, 그다음 mu_extended_hours 순으로 폴백하고 "
+            "그것도 실패하면 중립값 50을 사용합니다(위 '마이크론 데이터 상세' 참고)."
+        )
+
+# ── 백그라운드 자동매매 사이클 상태 (브라우저 세션과 무관하게 서버에서 계속 도는 스레드) ──
+st.subheader("⚙️ 백그라운드 자동매매 사이클")
+_cyc_status = get_cycle_status()
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.metric("auto_trade_enabled", "YES" if switch_state.get("auto_trade_on") else "NO")
+with c2:
+    st.metric("cycle_thread_alive", "🟢 YES" if _cyc_status["cycle_thread_alive"] else "🔴 NO")
+with c3:
+    st.metric("cycle_count_today", _cyc_status["cycle_count_today"])
+with c4:
+    st.metric("restart_count", _cyc_status["restart_count"])
+c5, c6, c7 = st.columns(3)
+with c5:
+    st.markdown(f"**last_cycle_started_at**: `{_cyc_status['last_cycle_started_at'] or '—'}`")
+with c6:
+    st.markdown(f"**last_cycle_completed_at**: `{_cyc_status['last_cycle_completed_at'] or '—'}`")
+with c7:
+    st.markdown(f"**next_cycle_at**: `{_cyc_status['next_cycle_at'] or '—'}`")
+st.markdown(f"**last_cycle_result**: `{_cyc_status['last_cycle_result_summary'] or '아직 사이클 미실행'}`")
+if not _cyc_status["cycle_thread_alive"]:
+    st.error("🔴 백그라운드 사이클 스레드가 죽어있습니다 — 다음 페이지 새로고침 시 자동 재시작됩니다.")
+
 if auto_on or switch_run_clicked:
     with st.spinner("점수 계산 및 자동매매 사이클 실행 중..."):
         st.session_state["hynix_switch_cycle_result"] = update_hynix_auto_trade_loop(mode=switch_state.get("mode"))
 
+# 세션에 수동/방금 실행분이 없으면, 백그라운드 스레드가 마지막으로 저장한 state 기준
+# pipeline_trace를 사용한다 — "사이클 미실행"이 더 이상 상시로 뜨지 않도록 한다.
 cycle_result = st.session_state.get("hynix_switch_cycle_result")
+if not cycle_result and switch_state.get("last_pipeline_trace") is not None:
+    cycle_result = {
+        "skipped": False, "computed_at": switch_state.get("last_cycle_computed_at"),
+        "mode": switch_state.get("mode"), "new_entry_allowed": is_new_entry_allowed(datetime.now()),
+        "hynix_current_price": switch_state.get("last_hynix_price"),
+        "inverse_current_price": switch_state.get("last_inverse_price"),
+        "enhanced_result": switch_state.get("last_enhanced_result") or {},
+        "decision": switch_state.get("last_decision") or {},
+        "orders_this_cycle": [],
+        "state": switch_state,
+        "position_manager": {"position": switch_state.get("position"), "position_conflict": switch_state.get("position_conflict")},
+        "pipeline_trace": switch_state.get("last_pipeline_trace"),
+    }
 
 if not cycle_result:
     st.info("'Enhanced 사이클 1회 수동 실행' 버튼을 누르거나 자동매매를 ON으로 설정하세요.")
@@ -334,16 +501,158 @@ else:
     s1, s2, s3, s4, s5 = st.columns(5)
     with s1:
         st.metric("기존 예측점수", f"{enh.get('base_prediction_score', 0):.1f}")
+    micron_detail = enh.get("micron_detail", {}) or {}
+    _m1 = micron_detail.get("micron_1min_score")
+    _m3 = micron_detail.get("micron_3min_score")
     with s2:
-        micron_detail = enh.get("micron_detail", {}) or {}
-        st.metric("마이크론 실시간점수", f"{enh.get('existing_micron_score', 0):.1f}",
-                   delta=f"1분:{micron_detail.get('micron_1min_score')} 3분:{micron_detail.get('micron_3min_score')}")
+        st.metric(
+            "마이크론 실시간점수", f"{enh.get('existing_micron_score', 0):.1f}",
+            delta=f"1분:{_m1 if _m1 is not None else '—'} 3분:{_m3 if _m3 is not None else '—'}",
+        )
     with s3:
         st.metric("하이닉스 기술점수", f"{enh.get('hynix_technical_score', 0):.1f}")
     with s4:
         st.metric("장중 모멘텀점수", f"{enh.get('intraday_momentum_score', 0):.1f}")
     with s5:
         st.metric("인버스 압력점수", f"{enh.get('inverse_pressure_score', 0):.1f}")
+
+    with st.expander("마이크론 데이터 상세(fallback 체인)"):
+        st.markdown(
+            f"- micron_1min_score: {_m1 if _m1 is not None else '—'}\n"
+            f"- micron_3min_score: {_m3 if _m3 is not None else '—'}\n"
+            f"- micron_fallback_used: {micron_detail.get('micron_fallback_used')}\n"
+            f"- micron_data_status: {micron_detail.get('micron_data_status', '—')}\n"
+            f"- micron_last_update_time: {micron_detail.get('micron_last_update_time') or '—'}\n"
+            f"- source: {micron_detail.get('source', '—')}"
+        )
+        _micron_warnings = micron_detail.get("warnings") or []
+        if _micron_warnings:
+            st.markdown("**왜 1분/3분 점수가 비어있는지(폴백 단계별 사유)**:")
+            for _w in _micron_warnings:
+                st.markdown(f"- {_w}")
+        else:
+            st.markdown(":green[1분/3분 실시간 데이터 정상 사용 중 — 폴백 없음]")
+
+    # ── Micron Proxy Prediction 패널 ──────────────────────────────────────
+    # 주의: "Micron futures"라는 단일종목 선물은 존재하지 않는다. 아래 점수는
+    # 반드시 "SOX semiconductor futures proxy"/"Nasdaq futures proxy"로 표기한다
+    # (실제 CME 선물 체결가가 아니라 SOXX/SOX·NQ=F/QQQ 등 ETF·지수 proxy 기반 추정치).
+    st.subheader("🔬 Micron Proxy Prediction")
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def _run_micron_proxy_prediction(mode: str):
+        from app.models.micron_proxy_prediction import MicronProxyPredictionEngine
+
+        return MicronProxyPredictionEngine().collect_and_predict(mode=mode)
+
+    try:
+        _mpp = _run_micron_proxy_prediction(cfg.mode if cfg.mode in ("mock", "real") else None)
+    except Exception as _mpp_exc:
+        _mpp = None
+        st.warning(f"Micron Proxy Prediction 계산 실패(무해 — 기존 예측 파이프라인은 계속 동작): {_mpp_exc}")
+
+    if _mpp:
+        p1, p2, p3, p4 = st.columns(4)
+        with p1:
+            st.metric("Micron 세션", _mpp.get("micron_session", "—"))
+        with p2:
+            _age = _mpp.get("real_micron_age_minutes")
+            st.metric(
+                "실제 MU 마지막가", f"{_mpp.get('real_micron_price'):,.2f}" if _mpp.get("real_micron_price") else "—",
+                delta=(f"{_age:.1f}분 경과" if _age is not None else None),
+            )
+        with p3:
+            st.metric("Effective Micron Score", f"{_mpp.get('effective_micron_score', 0):.1f}")
+        with p4:
+            st.metric("데이터 Confidence", f"{_mpp.get('micron_data_confidence', 0):.0f}")
+
+        q1, q2, q3, q4, q5 = st.columns(5)
+        with q1:
+            st.metric("Real Micron Score", f"{_mpp.get('real_micron_score'):.1f}" if _mpp.get("real_micron_score") is not None else "—")
+        with q2:
+            st.metric("Overnight Micron Score", f"{_mpp.get('overnight_micron_score'):.1f}" if _mpp.get("overnight_micron_score") is not None else "—")
+        with q3:
+            st.metric("Micron 최근추세 점수", f"{_mpp.get('micron_recent_trend_score', 0):.1f}")
+        with q4:
+            st.metric("SOX semiconductor futures proxy", f"{_mpp.get('sox_futures_score', 0):.1f}")
+        with q5:
+            st.metric("Nasdaq futures proxy", f"{_mpp.get('nasdaq_futures_score', 0):.1f}")
+
+        r1, r2, r3 = st.columns(3)
+        with r1:
+            st.metric("미국 반도체 Proxy Basket", f"{_mpp.get('us_semiconductor_proxy_score', 0):.1f}")
+        with r2:
+            st.metric("한국 반도체 확인점수", f"{_mpp.get('korea_semiconductor_confirmation_score', 0):.1f}")
+        with r3:
+            st.metric("Synthetic Micron Score", f"{_mpp.get('synthetic_micron_score', 0):.1f}")
+
+        with st.expander("Micron Proxy Prediction 상세(Source/가중치/경고)"):
+            st.markdown(
+                f"- micron_score_source: **{_mpp.get('micron_score_source', '—')}**\n"
+                f"- micron_session: {_mpp.get('micron_session', '—')}\n"
+                f"- 실제 MU 마지막 체결시각: {_mpp.get('real_micron_last_time') or '—'}\n"
+                f"- timestamp: {_mpp.get('timestamp', '—')}"
+            )
+            _session_info = _mpp.get("session_info") or {}
+            if _session_info:
+                st.markdown(f"- 세션 판정 근거: {_session_info.get('reason', '—')}")
+            _reco = None
+            try:
+                from app.models.micron_proxy_prediction import load_micron_proxy_weight_recommendation
+
+                _reco = load_micron_proxy_weight_recommendation()
+            except Exception:
+                _reco = None
+            if _reco:
+                if _reco.get("skipped"):
+                    st.markdown(f"- Lead-Lag 추천 가중치: 생략됨 ({_reco.get('reason')})")
+                else:
+                    st.markdown(f"- Lead-Lag 추천 가중치(표본 {_reco.get('sample_size')}건): `{_reco.get('recommended_weights')}`")
+            else:
+                st.markdown("- Lead-Lag 추천 가중치: 아직 없음(최소 500표본 누적 전)")
+            _mpp_warnings = _mpp.get("warnings") or []
+            if _mpp_warnings:
+                st.markdown("**경고**:")
+                for _w in _mpp_warnings:
+                    st.markdown(f"- {_w}")
+            else:
+                st.markdown(":green[경고 없음]")
+
+    # ── Signal → Order 파이프라인: 예측 신호와 실제 체결을 단계별로 분리 표시 ──
+    st.subheader("🔬 Signal → Order 파이프라인")
+    trace = cycle_result.get("pipeline_trace") or {}
+    stopped_stage = trace.get("stopped_stage")
+
+    def _stage_line(stage_key: str, label: str, value, extra: str = "") -> None:
+        if value is True:
+            color, text = "green", "YES"
+        elif value is False:
+            color, text = "red", "NO"
+        else:
+            color, text = "gray", "N/A"
+        marker = " ⛔ **여기서 멈췄습니다**" if stage_key == stopped_stage else ""
+        suffix = f" — {extra}" if extra else ""
+        st.markdown(f"**{label}**: :{color}[{text}]{suffix}{marker}")
+
+    pp1, pp2 = st.columns(2)
+    with pp1:
+        st.markdown(f"**Prediction Signal**: :blue[{trace.get('prediction_signal', 'HOLD')}]")
+        _stage_line("entry_approved", "Entry Approved", trace.get("entry_approved"), trace.get("entry_approved_reason") or "")
+        _stage_line("risk_manager", "Risk Manager 승인", trace.get("risk_manager_ok"), trace.get("risk_manager_reason") or "")
+        _stage_line("order_sent", "Order Sent", trace.get("order_sent"))
+    with pp2:
+        _stage_line("broker_executed", "Broker Executed", trace.get("broker_executed"))
+        _stage_line("position_confirmed", "Position Confirmed", trace.get("position_confirmed"))
+        _stage_line("ui_synced", "UI Synced", trace.get("ui_synced"))
+        st.markdown(f"**Trade Counter**: {trace.get('trade_counter', 0)}")
+
+    if stopped_stage:
+        st.error(
+            f"🔴 이번 사이클: 신호는 **{trace.get('prediction_signal')}**였지만 **{stopped_stage}** 단계에서 "
+            f"멈춰 실제 체결로 이어지지 않았습니다. blocking_reason: {trace.get('blocking_reason') or '—'}"
+        )
+    elif trace.get("prediction_signal") != "HOLD":
+        st.success("🟢 신호부터 UI 반영까지 전 단계 정상 완료.")
 
     st.subheader(f"개선된 최종점수: {enh.get('enhanced_score', 0):.1f}/100 → 최종 판단: {decision.get('final_action', 'HOLD')}")
     with st.expander("판단 사유 Top5", expanded=True):
@@ -354,6 +663,12 @@ else:
             for r in decision["reasons"]:
                 st.markdown(f"- {r}")
 
+    # 보유 종목 없음이면(브로커 기준) 최근매수가/미실현손익/손절·익절 기준가는 과거 값을
+    # 그대로 표시하지 않고 "—"로 처리한다 — 그대로 두면 "이미 종료된 매매의 진입가"가
+    # "지금 보유 중인 포지션"처럼 보여 혼동을 준다. 거래내역 표(아래 dataframe)에는 과거
+    # 기록이 그대로 남아 있어도 무방하다.
+    _has_position = bool(position.get("symbol")) and (position.get("quantity") or 0) > 0
+
     t1, t2, t3, t4 = st.columns(4)
     with t1:
         st.metric("오늘 거래 횟수", pm_cache.get("trade_count", 0))
@@ -362,15 +677,74 @@ else:
     with t3:
         st.metric("오늘 수익률", f"{state_now.get('realized_pnl_today_pct', 0):.2f}%")
     with t4:
-        st.metric("현재 미실현손익", f"{state_now.get('unrealized_pnl', 0):,.0f}원")
+        st.metric("현재 미실현손익", f"{state_now.get('unrealized_pnl', 0):,.0f}원" if _has_position else "—")
 
     p1, p2, p3 = st.columns(3)
     with p1:
-        st.metric("최근 매수 가격", f"{state_now.get('last_buy_price'):,.0f}원" if state_now.get("last_buy_price") else "—")
+        st.metric(
+            "최근 매수 가격",
+            f"{state_now.get('last_buy_price'):,.0f}원" if (_has_position and state_now.get("last_buy_price")) else "—",
+        )
     with p2:
         st.metric("최근 매도 가격", f"{state_now.get('last_sell_price'):,.0f}원" if state_now.get("last_sell_price") else "—")
     with p3:
         st.metric("거래 발생 시각", state_now.get("last_trade_time") or "—")
+
+    sl1, sl2 = st.columns(2)
+    _dyn_decision_now = state_now.get("dynamic_exit_last_decision") or {}
+    _entry_price_now = position.get("avg_price") or (state_now.get("position") or {}).get("entry_price")
+    _sl_pct_now = _dyn_decision_now.get("sl_pct")
+    _tp_pct_now = _dyn_decision_now.get("tp_pct")
+    with sl1:
+        if _has_position and _entry_price_now and _sl_pct_now is not None:
+            st.metric("자동손절 기준가", f"{_entry_price_now * (1 - _sl_pct_now / 100):,.0f}원", delta=f"-{_sl_pct_now}%")
+        else:
+            st.metric("자동손절 기준가", "—")
+    with sl2:
+        if _has_position and _entry_price_now and _tp_pct_now is not None:
+            st.metric("자동익절 기준가", f"{_entry_price_now * (1 + _tp_pct_now / 100):,.0f}원", delta=f"+{_tp_pct_now}%")
+        else:
+            st.metric("자동익절 기준가", "—")
+
+    # ── 자동 진단 경고: 화면에 보이는 값들 사이의 불일치를 즉시 알린다 ────────
+    _diag_warnings: list[str] = []
+    if not _has_position and state_now.get("last_action") == "BUY":
+        _diag_warnings.append(
+            "보유종목 없음인데 마지막 기록된 동작이 BUY입니다 — 강제청산/장외 매도 여부 확인 필요."
+        )
+    _now_check = datetime.now()
+    if _now_check.time() >= dtime_cls(15, 15) and not _has_position and not state_now.get("liquidation_done"):
+        _diag_warnings.append("15:15 이후이며 보유종목이 없는데 liquidation_done=False입니다 — 상태 갱신 지연 의심.")
+    if pm_cache.get("position_conflict"):
+        _diag_warnings.append("브로커에 000660/0197X0을 동시 보유 중입니다(CONFLICT) — 포지션 동기화 필요.")
+
+    _today_trade_log_path = Path(_PROJECT_ROOT) / "data" / "logs" / f"hynix_auto_trade_log_{datetime.now().strftime('%Y%m%d')}.csv"
+    if _today_trade_log_path.exists():
+        try:
+            import pandas as pd
+
+            _log_rows = pd.read_csv(_today_trade_log_path)
+            if "action" in _log_rows.columns and "success" in _log_rows.columns:
+                _buy_rows = _log_rows[_log_rows["action"].astype(str).str.upper().str.startswith("BUY") & (_log_rows["success"] == True)]  # noqa: E712
+                _sell_rows = _log_rows[_log_rows["action"].astype(str).str.upper().str.startswith("SELL") & (_log_rows["success"] == True)]  # noqa: E712
+                if not _buy_rows.empty:
+                    _last_buy_ts = _buy_rows.iloc[-1]["timestamp"]
+                    _last_sell_ts = _sell_rows.iloc[-1]["timestamp"] if not _sell_rows.empty else None
+                    _buy_is_latest = _last_sell_ts is None or str(_last_buy_ts) > str(_last_sell_ts)
+                    if _buy_is_latest and not _has_position:
+                        _diag_warnings.append("거래로그에 성공한 BUY 기록이 있으나 브로커에 보유 포지션이 없습니다 — 체결 확인 필요.")
+                    if state_now.get("mode") == "real" and _buy_is_latest and not _has_position:
+                        _diag_warnings.append("real 주문로그(BUY)는 있으나 KIS 잔고 증가가 확인되지 않습니다 — 체결 미확인 가능성.")
+        except Exception:
+            pass
+
+    _diag_dyn_state = load_state()
+    _diag_dyn_position = _diag_dyn_state.get("position") or {}
+    if _has_position and not _diag_dyn_position.get("symbol"):
+        _diag_warnings.append("브로커 기준 보유 포지션이 있으나 Dynamic Exit AI가 이를 인식하지 못하고 있습니다 — 감시 스레드 상태 확인 필요.")
+
+    if _diag_warnings:
+        st.error("🔴 자동 진단 경고:\n\n" + "\n".join(f"- {w}" for w in _diag_warnings))
 
     if cycle_result.get("orders_this_cycle"):
         st.markdown("**이번 사이클 거래 사유**")
@@ -504,10 +878,12 @@ from app.services.hynix_exit_recommender import (
     load_exit_recommendation, load_daily_exit_learning, recommend_exit_parameters,
 )
 
-if switch_state.get("auto_trade_on"):
-    ensure_watcher_running()
+# auto_trade_on 여부와 무관하게 스레드 자체는 항상 살려둔다 — 꺼져있으면 내부에서
+# 대기만 하고, 켜지는 순간 다음 틱부터 즉시 반응한다(페이지를 새로 열지 않아도 됨).
+ensure_watcher_running()
+ensure_cycle_thread_running()
 
-st.caption(f"백그라운드 감시 스레드: {'🟢 실행 중' if is_watcher_running() else '⚪ 정지(자동매매 OFF)'}")
+st.caption(f"백그라운드 감시 스레드: {'🟢 실행 중' if is_watcher_running() else '🔴 정지(비정상)'}")
 
 _dyn_state = load_state()
 _dyn_position = _dyn_state.get("position") or {}

@@ -123,4 +123,72 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
 
     assert result["state"]["position"]["symbol"] == "000660"
     assert len(logged_trades) == 1
-    assert logged_trades[0]["mode"] == "mock"
+
+    trace = result["pipeline_trace"]
+    assert trace["prediction_signal"] == "BUY"
+    assert trace["order_sent"] is True
+    assert trace["broker_executed"] is True
+    assert trace["position_confirmed"] is True
+    assert trace["ui_synced"] is True
+    assert trace["trade_counter"] == 1
+    assert trace["stopped_stage"] is None
+
+
+def test_pipeline_trace_hold_signal_has_no_blocked_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_decision)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    broker = _FakeBroker(cash=1_000_000.0)
+    import app.trading.dry_run_broker as dry_run_broker_module
+    monkeypatch.setattr(dry_run_broker_module, "DryRunBroker", lambda **kwargs: broker)
+
+    state = state_module.load_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["prediction_signal"] == "HOLD"
+    assert trace["order_sent"] is False
+    assert trace["broker_executed"] is False
+    assert trace["stopped_stage"] is None  # HOLD는 "정상"이지 "막힌 것"이 아니다
+
+
+def test_pipeline_trace_marks_ui_synced_false_when_save_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.dry_run_broker as dry_run_broker_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", lambda enhanced, current_position=None: {
+        "final_action": "HYNIX_BUY", "enhanced_score": 80.0, "inverse_pressure_score": 10.0,
+        "score_gap": 70.0, "score_gap_below_forced_trade_threshold": False, "reasons": ["test"],
+    })
+    monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    monkeypatch.setattr(engine, "save_state_atomic", lambda state: False)
+    _silence_prediction_tracker(monkeypatch)
+
+    state = state_module.load_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["broker_executed"] is True
+    assert trace["ui_synced"] is False
+    assert trace["stopped_stage"] == "ui_synced"

@@ -1,0 +1,14 @@
+{
+  "initial_regime": "C",
+  "initial_confidence": 81.6,
+  "initial_at": "2026-07-10T10:06:10",
+  "history": [
+    {
+      "timestamp": "2026-07-10T10:06:10",
+      "now_hm": "10:05",
+      "regime": "C",
+      "confidence": 81.6,
+      "policy_name": "policy_gap_support"
+    }
+  ]
+}

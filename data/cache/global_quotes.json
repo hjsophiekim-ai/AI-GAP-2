@@ -1,51 +1,51 @@
 {
   "AMD": {
-    "price": 517.4099731445312,
-    "return_pct": 0.98,
+    "price": 546.719970703125,
+    "return_pct": 5.79,
     "source": "yfinance",
-    "updated_at": "2026-07-09T15:41:50.757508"
+    "updated_at": "2026-07-10T13:49:38.358724"
   },
-  "cached_at": "2026-07-09T15:41:52.778420",
-  "MU": {
-    "price": 948.7999877929688,
-    "return_pct": 3.71,
+  "cached_at": "2026-07-10T13:49:44.536742",
+  "AVGO": {
+    "price": 401.1099853515625,
+    "return_pct": 2.88,
     "source": "yfinance",
-    "updated_at": "2026-07-09T13:41:51.388721"
+    "updated_at": "2026-07-10T13:49:42.746068"
   },
   "NQ=F": {
-    "price": 29616.0,
-    "return_pct": 0.37,
+    "price": 29916.5,
+    "return_pct": 0.14,
     "source": "yfinance",
-    "updated_at": "2026-07-09T15:41:51.703820"
+    "updated_at": "2026-07-10T13:49:43.135548"
   },
   "SOXX": {
-    "price": 562.030029296875,
-    "return_pct": 3.2,
+    "price": 581.7000122070312,
+    "return_pct": 2.98,
     "source": "yfinance",
-    "updated_at": "2026-07-09T15:41:52.484808"
+    "updated_at": "2026-07-10T13:49:44.147047"
   },
   "USDKRW": {
-    "price": 1509.1800537109375,
-    "return_pct": 0.25,
+    "price": 1510.97998046875,
+    "return_pct": 0.29,
     "source": "yfinance",
-    "updated_at": "2026-07-09T15:41:52.777518"
+    "updated_at": "2026-07-10T13:49:44.535893"
+  },
+  "NVDA": {
+    "price": 202.77999877929688,
+    "return_pct": -0.41,
+    "source": "yfinance",
+    "updated_at": "2026-07-10T13:49:34.814264"
+  },
+  "MU": {
+    "price": 991.6400146484375,
+    "return_pct": 3.54,
+    "source": "yfinance",
+    "updated_at": "2026-07-10T13:44:19.607092"
   },
   "QQQ": {
     "price": 402.0,
     "return_pct": 0.49999999999998934,
     "source": "yfinance",
-    "updated_at": "2026-07-09T13:42:13.404704"
-  },
-  "NVDA": {
-    "price": 204.1199951171875,
-    "return_pct": 4.2,
-    "source": "yfinance",
-    "updated_at": "2026-07-09T15:41:50.090231"
-  },
-  "AVGO": {
-    "price": 388.69000244140625,
-    "return_pct": 5.66,
-    "source": "yfinance",
-    "updated_at": "2026-07-09T15:41:51.422604"
+    "updated_at": "2026-07-10T13:44:34.477977"
   }
 }
