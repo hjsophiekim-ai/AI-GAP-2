@@ -219,7 +219,7 @@ class KISClient:
             "appsecret": self._app_secret,
         }
         try:
-            resp = self._session.post(url, json=body, timeout=10)
+            resp = self._session.post(url, json=body, timeout=(3, 10))
             http_status = resp.status_code
 
             # raise_for_status() 전에 KIS 응답 body 파싱 (403/500 원인 확인용)
@@ -307,7 +307,7 @@ class KISClient:
             "Content-Type": "application/json",
         }
         try:
-            resp = self._session.post(url, json=body, headers=headers, timeout=10)
+            resp = self._session.post(url, json=body, headers=headers, timeout=(3, 10))
             resp.raise_for_status()
             return resp.json().get("HASH", "")
         except Exception as e:
@@ -322,7 +322,7 @@ class KISClient:
         headers = self._auth_headers(TR_CURRENT_PRICE)
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=10)
+            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             d = resp.json().get("output", {})
             if not d:
@@ -373,7 +373,7 @@ class KISClient:
             "CTX_AREA_NK100": "",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=15)
+            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 15))
             # raise_for_status() 전에 본문 파싱 — KIS 500/4xx 응답에도 rt_cd/msg_cd가 들어 있음
             try:
                 data = resp.json()
@@ -522,7 +522,7 @@ class KISClient:
             "OVRS_ICLD_YN": "N",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=10)
+            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
             try:
                 data = resp.json()
             except Exception:
@@ -608,7 +608,7 @@ class KISClient:
             "FID_ORG_ADJ_PRC": "0",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=10)
+            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             output = resp.json().get("output", [])
             result = []
@@ -644,7 +644,7 @@ class KISClient:
             "FID_PW_DATA_INCU_YN": "N",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=10)
+            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             output = resp.json().get("output2", [])
             result = []
@@ -677,7 +677,7 @@ class KISClient:
         headers = self._auth_headers(tr_id)
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=10)
+            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             output = resp.json().get("output", [])
             result = []
@@ -757,7 +757,7 @@ class KISClient:
         )
 
         try:
-            resp = self._session.post(url, json=body, headers=headers, timeout=15)
+            resp = self._session.post(url, json=body, headers=headers, timeout=(3, 15))
             http_status = resp.status_code
 
             # raise_for_status 호출 전에 body 파싱 (500 오류 원인 확인)

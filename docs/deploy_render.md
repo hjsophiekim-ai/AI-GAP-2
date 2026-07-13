@@ -13,10 +13,18 @@ https://ai-gap.onrender.com
 | Runtime | Python 3 |
 | Region | Oregon (US West) |
 | Build Command | `pip install -r requirements.txt` |
-| Start Command | `streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT` |
+| Start Command | `streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true` |
 
 > **진입 파일**: `app/ui/streamlit_app.py`  
 > 루트에 `app.py`가 없으므로 반드시 위 경로를 사용해야 합니다.
+>
+> **`main.py`를 Start Command로 쓰지 마세요** — `main.py`는 `--script` 필수 인자를 요구하는
+> argparse CLI 진입점입니다(예: `python main.py --script app --mode mock`). `streamlit run main.py`나
+> `python main.py`처럼 인자 없이 실행하면 즉시 인자 오류로 종료됩니다. Start Command는 반드시 위처럼
+> `app/ui/streamlit_app.py`를 직접 실행해야 합니다.
+>
+> **`--server.headless true`**가 없으면 Streamlit이 로컬 브라우저 자동 실행을 시도하는 등
+> 대화형 동작이 활성화되어 헤드리스 컨테이너에서 시작이 불필요하게 지연될 수 있습니다.
 
 ---
 
@@ -70,6 +78,9 @@ https://ai-gap.onrender.com
 - [ ] `config.yaml` 루트에 존재 (없으면 안전 기본값 자동 사용)
 - [ ] Render 환경변수에 KIS API 키 설정
 - [ ] Start Command에 `--server.address 0.0.0.0` 포함 확인
+- [ ] Start Command에 `--server.headless true` 포함 확인
+- [ ] Start Command가 `main.py`가 아니라 `app/ui/streamlit_app.py`를 직접 실행하는지 확인
+- [ ] 배포 로그에서 `STARTUP_STEP_START/DONE/FAILED` 로그로 어느 단계가 느린지/실패했는지 확인 가능
 
 ---
 

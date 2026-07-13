@@ -382,7 +382,7 @@ I_UNDERSTAND_REAL_TRADING_RISK
 |------|----|
 | Runtime | Python 3 |
 | Build Command | `pip install -r requirements.txt` |
-| Start Command | `streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT` |
+| Start Command | `streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true` |
 
 ### 필수 환경변수 (Render 대시보드 > Environment)
 

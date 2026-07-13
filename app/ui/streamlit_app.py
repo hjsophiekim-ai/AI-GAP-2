@@ -14,31 +14,26 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+from app.utils.startup_log import log_step_start as _log_step_start
+from app.utils.startup_log import log_step_done as _log_step_done
+from app.utils.startup_log import log_step_failed as _log_step_failed
+
+
 # ---------------------------------------------------------------------------
 # Import app config with graceful error handling
 # ---------------------------------------------------------------------------
 _config_error: str | None = None
 _cfg = None
 
+_log_step_start("config_load")
 try:
     from app.config import get_config
     _cfg = get_config()
+    _log_step_done("config_load")
 except Exception as exc:
     _config_error = str(exc)
-
-# ---------------------------------------------------------------------------
-# 백그라운드 스레드 부트스트랩 — 특정 페이지를 열지 않아도, 서버 프로세스가
-# 시작되는 즉시(또는 어느 페이지로 진입하든) auto_trade_on 상태를 감지해 동작한다.
-# 두 함수 모두 이미 실행 중이면 아무것도 하지 않는 멱등(idempotent) 호출이다.
-# ---------------------------------------------------------------------------
-try:
-    from app.trading.dynamic_exit_watcher import ensure_watcher_running
-    from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running
-
-    ensure_watcher_running()
-    ensure_cycle_thread_running()
-except Exception as _bootstrap_exc:
-    _config_error = _config_error or f"백그라운드 스레드 부트스트랩 실패: {_bootstrap_exc}"
+    _log_step_failed("config_load", exc)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -246,3 +241,29 @@ if _cfg is not None:
             st.markdown("**안전 설정**")
             safety = _cfg.safety
             st.json(safety if isinstance(safety, dict) else {})
+
+# ---------------------------------------------------------------------------
+# 백그라운드 스레드 부트스트랩 — 제목·사이드바·대시보드가 이미 렌더된 뒤에만 실행한다.
+# 특정 페이지를 열지 않아도, 서버 프로세스가 살아있는 한 auto_trade_on 상태를
+# 감지해 동작해야 하므로 이 페이지 로드 시 계속 호출은 하되, 렌더 순서를
+# "화면 먼저, 부트스트랩 나중"으로 바꿔 Render 콜드스타트 시 흰 화면 무한로딩을
+# 방지한다. 두 함수 모두 이미 실행 중이면 아무것도 하지 않는 멱등(idempotent)
+# 호출이며, auto_trade_on=False(기본값)이면 내부에서 KIS API를 전혀 호출하지
+# 않는다(각 함수는 스레드만 시작하고 즉시 반환 — 실제 사이클/틱 로직이 그
+# 안에서 auto_trade_on을 확인한다).
+# ---------------------------------------------------------------------------
+_log_step_start("watcher_bootstrap")
+try:
+    from app.trading.dynamic_exit_watcher import ensure_watcher_running
+    ensure_watcher_running()
+    _log_step_done("watcher_bootstrap")
+except Exception as _watcher_exc:
+    _log_step_failed("watcher_bootstrap", _watcher_exc)
+
+_log_step_start("cycle_thread_bootstrap")
+try:
+    from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running
+    ensure_cycle_thread_running()
+    _log_step_done("cycle_thread_bootstrap")
+except Exception as _cycle_exc:
+    _log_step_failed("cycle_thread_bootstrap", _cycle_exc)
