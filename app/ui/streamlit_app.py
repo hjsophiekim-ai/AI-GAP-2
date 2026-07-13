@@ -126,6 +126,13 @@ with st.sidebar:
     if not _real_mode_active_sb:
         st.warning("⚠️ 실전투자 기본 비활성화\n\nAPI 연결 페이지에서 실전모드 버튼을 활성화하세요.")
 
+    try:
+        from app.ui.real_emergency_controls import render_real_emergency_stop
+        st.divider()
+        render_real_emergency_stop(prefix="sidebar")
+    except Exception as _emergency_exc:
+        st.error(f"긴급정지 UI 로드 실패: {_emergency_exc}")
+
 # ---------------------------------------------------------------------------
 # Real mode status banner — top of every page
 # ---------------------------------------------------------------------------

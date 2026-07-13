@@ -94,14 +94,15 @@ _DEFAULT_CONFIG = {
         "enable_real_buy": False,
         "enable_real_sell": False,
         "require_real_order_confirm_text": True,
-        "real_order_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "REAL_ORDER_CONFIRMED"),
-        "max_order_amount": 1000000,
-        "max_daily_order_amount": 3000000,
+        "real_order_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "live"),
+        "real_trading_start_date": "2026-07-14",
+        "max_order_amount": 10000000,
+        "max_daily_order_amount": 10000000,
         "max_daily_loss_rate": -5.0,
         "require_real_confirm": True,
-        "real_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "REAL_ORDER_CONFIRMED"),
-        "max_real_order_amount": 1000000,
-        "max_real_daily_budget": 3000000,
+        "real_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "live"),
+        "max_real_order_amount": 10000000,
+        "max_real_daily_budget": 10000000,
     },
     "volume_spike": {
         "enabled": True,
@@ -264,8 +265,19 @@ class Config:
         """새 키 우선, 구 키 fallback."""
         return (
             self.safety.get("real_order_confirm_text")
-            or self.safety.get("real_confirm_text", "REAL_ORDER_CONFIRMED")
+            or self.safety.get("real_confirm_text", "live")
         )
+
+    def real_trading_start_date(self) -> str:
+        return str(self.safety.get("real_trading_start_date", "2026-07-14"))
+
+    def real_trading_date_allowed(self) -> bool:
+        from datetime import date
+        try:
+            start = date.fromisoformat(self.real_trading_start_date())
+        except ValueError:
+            return True
+        return date.today() >= start
 
     @property
     def hynix_auto_trade(self) -> dict:
@@ -321,12 +333,12 @@ class Config:
         per_order = _read(
             ["REAL_MAX_ORDER_AMOUNT", "MAX_REAL_ORDER_AMOUNT", "REAL_ORDER_MAX_AMOUNT"],
             ["max_order_amount", "max_real_order_amount"],
-            5_000_000.0,
+            10_000_000.0,
         )
         daily = _read(
             ["REAL_MAX_DAILY_ORDER_AMOUNT", "MAX_REAL_DAILY_BUDGET"],
             ["max_daily_order_amount", "max_real_daily_budget"],
-            30_000_000.0,
+            10_000_000.0,
         )
         per_symbol = _read(
             ["REAL_MAX_POSITION_AMOUNT_PER_SYMBOL"],

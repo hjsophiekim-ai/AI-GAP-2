@@ -19,6 +19,7 @@ runtime_real_mode=True (UI 실전모드 버튼) 이면 gate 2~3 우회.
 
 from app.trading.broker_base import BrokerBase
 from app.trading.kis_client import KISTokenError
+from app.trading.emergency_stop import real_order_lock
 from app.models import OrderResult, Position
 from app.logger import logger
 
@@ -77,6 +78,13 @@ class KisRealBroker(BrokerBase):
 
         self.kis = kis_client
         self._daily_ordered_amount: float = 0.0
+
+    def _check_real_start_date(self) -> str | None:
+        checker = getattr(self._cfg, "real_trading_date_allowed", None)
+        if callable(checker) and not checker():
+            start = getattr(self._cfg, "real_trading_start_date", lambda: "2026-07-14")()
+            return f"REAL orders are blocked until {start}."
+        return None
 
     # ------------------------------------------------------------------
     # 주문 금액 안전장치 (gate 5, 매수 전용)
@@ -286,6 +294,16 @@ class KisRealBroker(BrokerBase):
         price: float,
         order_type: str = "limit",
     ) -> OrderResult:
+        start_block = self._check_real_start_date()
+        if start_block:
+            return OrderResult(
+                success=False, mode=self.mode, account_type="real",
+                symbol=symbol, name=name, side="buy",
+                quantity=quantity, price=price, order_type=order_type,
+                order_id="", message=start_block,
+                error_type="real_start_date_blocked",
+            )
+
         # gate 5a: enable_real_buy OR runtime flags
         real_buy_ok = (
             self._runtime_real_mode
@@ -349,7 +367,8 @@ class KisRealBroker(BrokerBase):
             symbol, name, quantity, price, order_type,
         )
         try:
-            result = self.kis.buy(symbol, quantity, int(price), order_type)
+            with real_order_lock("buy"):
+                result = self.kis.buy(symbol, quantity, int(price), order_type)
             if result["success"]:
                 self._daily_ordered_amount += quantity * price
             return OrderResult(
@@ -387,6 +406,16 @@ class KisRealBroker(BrokerBase):
         price: float,
         order_type: str = "limit",
     ) -> OrderResult:
+        start_block = self._check_real_start_date()
+        if start_block:
+            return OrderResult(
+                success=False, mode=self.mode, account_type="real",
+                symbol=symbol, name=name, side="sell",
+                quantity=quantity, price=price, order_type=order_type,
+                order_id="", message=start_block,
+                error_type="real_start_date_blocked",
+            )
+
         # gate 6: enable_real_sell OR runtime flags
         real_sell_ok = (
             self._runtime_real_mode
@@ -406,7 +435,8 @@ class KisRealBroker(BrokerBase):
             "REAL SELL: symbol=%s quantity=%d price=%s", symbol, quantity, price
         )
         try:
-            result = self.kis.sell(symbol, quantity, int(price), order_type)
+            with real_order_lock("sell"):
+                result = self.kis.sell(symbol, quantity, int(price), order_type)
             return OrderResult(
                 success=result["success"],
                 mode=self.mode,

@@ -89,19 +89,20 @@ safety:
 
   # ── 확인 문구 ──────────────────────────────────────────────────────────────
   require_real_order_confirm_text: true
-  real_order_confirm_text: "REAL_ORDER_CONFIRMED"
+  real_order_confirm_text: "live"
+  real_trading_start_date: "2026-07-14"
 
   # ── 주문 한도 ──────────────────────────────────────────────────────────────
-  max_order_amount: 5000000       # 건당 최대 주문금액 (원)
-  max_daily_order_amount: 30000000 # 일일 최대 주문금액 (원)
+  max_order_amount: 10000000       # 건당 최대 주문금액 (원)
+  max_daily_order_amount: 10000000 # 일일 최대 주문금액 (원)
   max_position_amount_per_symbol: 10000000 # 종목당 최대 보유금액 (원)
   max_daily_loss_rate: -5.0
 
   # ── 하위 호환 (기존 키 유지) ───────────────────────────────────────────────
   require_real_confirm: true
-  real_confirm_text: "REAL_ORDER_CONFIRMED"
-  max_real_order_amount: 5000000
-  max_real_daily_budget: 30000000
+  real_confirm_text: "live"
+  max_real_order_amount: 10000000
+  max_real_daily_budget: 10000000
 
 hynix_auto_trade:
   # SK하이닉스 예측 기반 자동매매(제안+승인) 임계값 — 코드 수정 없이 조정 가능.

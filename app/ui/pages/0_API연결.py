@@ -13,6 +13,7 @@ import streamlit as st
 try:
     from app.trading.kis_client import create_kis_client, KISTokenError
     from app.config import get_config, get_kis_account_config
+    from app.ui.real_emergency_controls import render_real_emergency_stop
 except Exception as e:
     st.error(f"모듈 로드 오류: {e}")
     st.stop()
@@ -424,3 +425,6 @@ else:
 
     if act_confirm and act_confirm != _expected_confirm:
         st.error("확인 문구가 틀립니다. 정확히 입력하세요.")
+
+st.divider()
+render_real_emergency_stop(prefix="api_page")
