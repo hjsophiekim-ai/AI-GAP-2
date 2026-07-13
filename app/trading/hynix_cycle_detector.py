@@ -56,6 +56,26 @@ _PHASE_PRECEDENCE = [
 _CONFIRM_BARS_1MIN = 2  # 최소 연속 1분봉 확인 개수
 _GAP_WINDOW = ("09:00", "09:30")
 
+# Cycle Phase는 신규진입 Entry Gate가 아니라 최종점수(fusion_score)의 보조 feature로만
+# 쓴다 — 작은 가점/감점일 뿐 단독으로 주문을 막지 않는다(app.models.hynix_decision_v2의
+# calculate_fusion_score가 이 값을 0.10 가중치로만 반영한다). 사용자가 명시한 7개
+# phase 외 나머지는 방향성에 맞춰 합리적으로 근사한 값이다.
+_CYCLE_BONUS = {
+    PHASE_TREND_UP: 15.0, PHASE_REVERSAL_CONFIRMED_UP: 12.0, PHASE_EARLY_REVERSAL_UP: 10.0,
+    PHASE_SELLING_EXHAUSTION: 10.0, PHASE_BASE_BUILDING: 6.0, PHASE_GAP_FAILURE: 8.0,
+    PHASE_DISTRIBUTION: -4.0, PHASE_NO_TRADE: -8.0,
+    PHASE_PANIC_SELL: -6.0, PHASE_CAPITULATION: -10.0, PHASE_CLIMAX_UP: 4.0,
+    PHASE_BREAKDOWN: -10.0, PHASE_RANGE_NOISE: 0.0, PHASE_OPENING_GAP: 0.0,
+}
+
+
+def calculate_cycle_bonus(cycle_phase: Optional[str]) -> float:
+    """Cycle Phase를 fusion_score의 작은 가점/감점(feature)으로 변환한다.
+
+    절대 단독 Entry Gate가 아니다 — 호출부가 이 값으로 신규진입을 차단해서는 안 된다.
+    """
+    return _CYCLE_BONUS.get(cycle_phase, 0.0)
+
 CSV_LOG_FIELDS = [
     "timestamp", "hynix_price", "inverse_price", "cycle_phase", "previous_cycle_phase",
     "phase_duration_seconds", "momentum_velocity", "momentum_acceleration_up",

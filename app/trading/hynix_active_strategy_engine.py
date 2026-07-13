@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from app.trading.hynix_trading_mode import (
-    DEFAULT_MODE, calculate_entry_position_pct, calculate_scale_up_target_pct,
+    DEFAULT_MODE, calculate_scale_up_target_pct,
     daily_pnl_position_scale, max_total_position_pct, mode_initial_threshold,
     mode_max_round_trips, mode_min_threshold_floor, HOLD_RELIEF_AT_5, HOLD_RELIEF_AT_8,
     MIN_EXPECTED_MOVE_FOR_RELIEF_PCT,
@@ -150,8 +150,13 @@ def decide_active_strategy_action(
     atr_pct: Optional[float], consecutive_stop_losses: int, recent_pnl_pct: Optional[float],
     daily_return_pct: Optional[float], position_state: dict, strategy_state: dict,
     data_ok: bool = True, position_conflict: bool = False,
+    enhanced_ai_score: Optional[float] = None, micron_ai_score: Optional[float] = None,
 ) -> dict:
     """전체 판단(진입/Scale-in/방향전환/선제매도/재진입)을 1회 실행한다.
+
+    신규 진입 판단은 fusion_score(app.models.hynix_decision_v2.calculate_fusion_score)
+    기반이다 — Cycle Phase는 Entry Gate가 아니라 fusion_score의 작은 보조 feature일
+    뿐이며, enhanced_ai_score/micron_ai_score를 넘기지 않으면 중립값(50)으로 대체된다.
 
     position_state: {"symbol": str|None, "quantity": int, "entry_price": float|None}
     strategy_state: default_active_strategy_state() 스키마(호출부가 이어서 유지).
@@ -177,8 +182,9 @@ def decide_active_strategy_action(
         blocking_reason = "데이터 오류/stale — 신규 진입 금지"
     elif position_conflict:
         blocking_reason = "Broker/Position 불일치 — 신규 진입 금지"
-    elif cycle_phase == "NO_TRADE":
-        blocking_reason = "Cycle Phase NO_TRADE — 신규 진입 금지"
+    # 주의: Cycle Phase NO_TRADE는 더 이상 단독 Entry Gate가 아니다 — fusion_score의
+    # 작은 감점(cycle_bonus)으로만 반영되며, PredictionAI/EnhancedAI가 충분히 높으면
+    # decide_fusion_based_action()의 NO_TRADE override로 오히려 시험진입이 허용된다.
     elif now_hm >= "15:00":
         blocking_reason = "15:00 이후 — 신규 진입 금지"
     elif eff["force_liquidate"]:
@@ -264,47 +270,54 @@ def decide_active_strategy_action(
             "blocking_reason": reason, "reasons": [reason], "effective_threshold": eff, "state": state,
         }
 
-    # ── 무포지션: 신규/조기 진입 판단(1·2절) ─────────────────────────────────
-    if buy_probability >= inverse_probability:
-        prob, opposite, symbol = buy_probability, inverse_probability, "000660"
-    else:
-        prob, opposite, symbol = inverse_probability, buy_probability, "0197X0"
+    # ── 무포지션: 신규/조기 진입 판단 — fusion_score 기반(Cycle Phase는 보조 feature) ──
+    from app.models.hynix_decision_v2 import (
+        calculate_fusion_score, calculate_prediction_ai_directional_score, decide_fusion_based_action,
+        ACTION_BUY as _FUSION_BUY, ACTION_HOLD as _FUSION_HOLD,
+    )
 
-    entry_pct = 0.0
-    if prob >= threshold:
-        entry_pct = 50.0 if prob < 65 else calculate_scale_up_target_pct(prob) or 50.0
-        reasons.append(f"{symbol} 확률 {prob:.0f}% >= 임계값 {threshold:.0f} — 정식 진입")
-    else:
-        early_ok = (
-            model_confidence >= 55.0 and opposite <= 42.0 and expected_move_pct >= 0.20
-            and (momentum_inflection_or_acceleration is None or momentum_inflection_or_acceleration >= 55.0)
-        )
-        if early_ok:
-            entry_pct = calculate_entry_position_pct(prob, mode)
-            if entry_pct > 0:
-                reasons.append(f"{symbol} 조기 시험진입 확률 {prob:.0f}% — {entry_pct:.0f}% 진입")
+    prediction_ai_score = calculate_prediction_ai_directional_score(buy_probability, inverse_probability)
+    momentum_ai_score = momentum_inflection_or_acceleration if momentum_inflection_or_acceleration is not None else 50.0
+    fusion_result = calculate_fusion_score(
+        prediction_ai_score=prediction_ai_score,
+        enhanced_ai_score=enhanced_ai_score if enhanced_ai_score is not None else 50.0,
+        momentum_ai_score=momentum_ai_score,
+        micron_ai_score=micron_ai_score if micron_ai_score is not None else 50.0,
+        cycle_phase=cycle_phase,
+    )
+    fusion_decision = decide_fusion_based_action(fusion_result, cycle_phase)
+    reasons.append(
+        f"fusion_score={fusion_result['fusion_score']:.1f} "
+        f"(Prediction={prediction_ai_score:.0f} Enhanced={fusion_result['enhanced_ai_score']:.0f} "
+        f"Momentum={momentum_ai_score:.0f} Micron={fusion_result['micron_ai_score']:.0f} "
+        f"CycleBonus={fusion_result['cycle_bonus']:+.0f}[{cycle_phase}]) — {fusion_decision['reason']}"
+    )
 
-    if entry_pct <= 0:
+    symbol = "000660" if fusion_decision["action"] == _FUSION_BUY else "0197X0"
+    entry_pct = fusion_decision["position_pct"]
+
+    if fusion_decision["action"] == _FUSION_HOLD or entry_pct <= 0:
         action = ACTION_HOLD
-        reasons.append(f"진입 조건 미충족(확률 {prob:.0f}%, 임계값 {threshold:.0f}) — HOLD")
         state = update_hold_streak(state, False, action, now)
         return {
             "action": action, "recommended_symbol": None, "recommended_position_pct": 0.0,
-            "blocking_reason": None, "reasons": reasons, "effective_threshold": eff, "state": state,
+            "blocking_reason": None, "reasons": reasons, "effective_threshold": eff,
+            "fusion_result": fusion_result, "state": state,
         }
 
-    cap = min(eff["daily_max_position_pct"], max_total_position_pct(prob, model_confidence))
+    cap = min(eff["daily_max_position_pct"], max_total_position_pct(prediction_ai_score, model_confidence))
     entry_pct = min(entry_pct, cap)
 
     action = ACTION_ENTER_HYNIX if symbol == "000660" else ACTION_ENTER_INVERSE
     recommended_symbol = symbol
     recommended_position_pct = entry_pct
-    state["position_entry_probability"] = prob
+    state["position_entry_probability"] = prediction_ai_score
     state = update_hold_streak(state, False, action, now)
 
     return {
         "action": action, "recommended_symbol": recommended_symbol, "recommended_position_pct": recommended_position_pct,
-        "blocking_reason": None, "reasons": reasons, "effective_threshold": eff, "state": state,
+        "blocking_reason": None, "reasons": reasons, "effective_threshold": eff,
+        "fusion_result": fusion_result, "state": state,
     }
 
 

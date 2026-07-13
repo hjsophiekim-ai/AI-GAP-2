@@ -13,6 +13,9 @@ from app.models.hynix_decision_v2 import (
     adaptive_threshold_update, classify_realized_outcome, compute_buy_sell_hold_probability,
     compute_profit_factor, decide_final_action_v2, default_threshold_state,
     recommend_profit_factor_weights, PROFIT_FACTOR_MIN_SAMPLES,
+    calculate_fusion_score, decide_fusion_based_action, calculate_prediction_ai_directional_score,
+    calculate_momentum_ai_directional_score, FUSION_BAND_BUY, FUSION_BAND_TRIAL_ENTRY,
+    FUSION_BAND_HOLD, FUSION_BAND_INVERSE, FUSION_BAND_NO_TRADE_OVERRIDE,
 )
 
 
@@ -148,3 +151,76 @@ class TestProfitFactor:
         result = recommend_profit_factor_weights(df)
         assert result["skipped"] is False
         assert result["recommended_horizon_weights"] is not None
+
+
+class TestFusionScore:
+    """Cycle AI는 Entry Gate가 아니라 fusion_score의 작은 보조 feature(cycle_bonus)일 뿐이다."""
+
+    def test_directional_score_conversion(self):
+        assert calculate_prediction_ai_directional_score(80.0, 20.0) == 80.0
+        assert calculate_prediction_ai_directional_score(50.0, 50.0) == 50.0
+        assert calculate_momentum_ai_directional_score(70.0, 30.0) == 70.0
+
+    def test_fusion_score_formula_matches_literal_weights(self):
+        result = calculate_fusion_score(
+            prediction_ai_score=100.0, enhanced_ai_score=90.0, momentum_ai_score=90.0,
+            micron_ai_score=90.0, cycle_bonus=15.0,
+        )
+        expected = 0.35 * 100.0 + 0.25 * 90.0 + 0.20 * 90.0 + 0.10 * 90.0 + 0.10 * 15.0
+        assert result["fusion_score"] == pytest.approx(expected, abs=0.01)
+
+    def test_cycle_bonus_is_a_small_nudge_not_dominant(self):
+        """NO_TRADE(-8)와 TREND_UP(+15) 차이가 나머지 컴포넌트 대비 작아야 한다(단독 게이트 아님)."""
+        base_kwargs = dict(prediction_ai_score=70.0, enhanced_ai_score=70.0, momentum_ai_score=70.0, micron_ai_score=70.0)
+        trend_up = calculate_fusion_score(**base_kwargs, cycle_bonus=15.0)
+        no_trade = calculate_fusion_score(**base_kwargs, cycle_bonus=-8.0)
+        # 두 cycle_bonus 차이(23점)의 10% 가중치만 반영되므로 fusion_score 차이는 2.3점 이하다.
+        assert abs(trend_up["fusion_score"] - no_trade["fusion_score"]) <= 2.5
+
+    def test_no_trade_phase_does_not_block_by_itself(self):
+        """NO_TRADE라도 fusion_score가 밴드를 충족하면(또는 override 조건이면) BUY/INVERSE가 나올 수 있다."""
+        strong_bullish = calculate_fusion_score(
+            prediction_ai_score=95.0, enhanced_ai_score=90.0, momentum_ai_score=85.0, micron_ai_score=80.0,
+            cycle_phase="NO_TRADE",
+        )
+        decision = decide_fusion_based_action(strong_bullish, cycle_phase="NO_TRADE")
+        assert decision["action"] == ACTION_BUY
+        assert decision["band"] in (FUSION_BAND_BUY, FUSION_BAND_NO_TRADE_OVERRIDE)
+
+    def test_no_trade_override_allows_15pct_trial_entry(self):
+        """NO_TRADE + PredictionAI>=65면 fusion_score 밴드와 무관하게 15% 시험진입 허용."""
+        result = calculate_fusion_score(
+            prediction_ai_score=70.0, enhanced_ai_score=40.0, momentum_ai_score=30.0, micron_ai_score=30.0,
+            cycle_phase="NO_TRADE",
+        )
+        decision = decide_fusion_based_action(result, cycle_phase="NO_TRADE")
+        assert decision["band"] == FUSION_BAND_NO_TRADE_OVERRIDE
+        assert decision["action"] == ACTION_BUY
+        assert decision["position_pct"] == 15.0
+
+    def test_band_buy_at_68_or_above(self):
+        result = calculate_fusion_score(prediction_ai_score=100.0, enhanced_ai_score=100.0, momentum_ai_score=100.0, micron_ai_score=100.0, cycle_bonus=15.0)
+        decision = decide_fusion_based_action(result, cycle_phase="TREND_UP")
+        assert decision["band"] == FUSION_BAND_BUY
+        assert decision["action"] == ACTION_BUY
+
+    def test_band_trial_entry_between_58_and_67(self):
+        result = calculate_fusion_score(prediction_ai_score=85.0, enhanced_ai_score=70.0, momentum_ai_score=60.0, micron_ai_score=55.0, cycle_bonus=6.0)
+        assert 58.0 <= result["fusion_score"] < 68.0
+        decision = decide_fusion_based_action(result, cycle_phase="BASE_BUILDING")
+        assert decision["band"] == FUSION_BAND_TRIAL_ENTRY
+        assert decision["action"] == ACTION_BUY
+        assert 0 < decision["position_pct"] < 50.0
+
+    def test_band_hold_between_50_and_57(self):
+        result = calculate_fusion_score(prediction_ai_score=60.0, enhanced_ai_score=60.0, momentum_ai_score=60.0, micron_ai_score=60.0, cycle_bonus=0.0)
+        assert 50.0 <= result["fusion_score"] < 58.0
+        decision = decide_fusion_based_action(result, cycle_phase="RANGE_NOISE")
+        assert decision["band"] == FUSION_BAND_HOLD
+        assert decision["action"] == ACTION_HOLD
+
+    def test_band_inverse_below_50(self):
+        result = calculate_fusion_score(prediction_ai_score=20.0, enhanced_ai_score=20.0, momentum_ai_score=20.0, micron_ai_score=20.0, cycle_bonus=-4.0)
+        decision = decide_fusion_based_action(result, cycle_phase="DISTRIBUTION")
+        assert decision["band"] == FUSION_BAND_INVERSE
+        assert decision["action"] == ACTION_INVERSE

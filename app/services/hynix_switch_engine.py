@@ -210,7 +210,7 @@ def _daily_pnl_pct(state: dict, total_equity: Optional[float]) -> Optional[float
 
 def _run_active_strategy_entry(
     state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
-    now: datetime, orders_this_cycle: list,
+    now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
 ) -> dict:
     """ACTIVE STRATEGY(거래모드 기반 조기진입/Scale-in/빠른전환) — mock 전용 opt-in.
 
@@ -261,6 +261,7 @@ def _run_active_strategy_entry(
         recent_pnl_pct=state.get("realized_pnl_today_pct"), daily_return_pct=state.get("realized_pnl_today_pct"),
         position_state=position_state, strategy_state=strategy_state,
         data_ok=bool(hynix_price and inverse_price), position_conflict=bool(state.get("position_conflict")),
+        enhanced_ai_score=enhanced_ai_score, micron_ai_score=shadow.get("effective_micron_score"),
     )
     state["active_strategy_state"] = decision_result["state"]
     action = decision_result["action"]
@@ -615,7 +616,10 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 # 신규진입/전환 판단을 기존 ENHANCED_LEGACY 대신 이 엔진이 담당한다.
                 # 강제청산/레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로 안전망은 유지된다.
                 try:
-                    active_result = _run_active_strategy_entry(state, broker, hynix_price, inverse_price, now, orders_this_cycle)
+                    active_result = _run_active_strategy_entry(
+                        state, broker, hynix_price, inverse_price, now, orders_this_cycle,
+                        enhanced_ai_score=decision.get("enhanced_score"),
+                    )
                     trace["entry_approved"] = active_result.get("acted", False)
                     trace["entry_approved_reason"] = f"[ACTIVE_STRATEGY] {active_result.get('message', '')}"
                     if active_result.get("acted"):

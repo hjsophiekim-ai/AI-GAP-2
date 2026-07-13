@@ -216,6 +216,111 @@ def decide_final_action_v2(probability: dict, threshold_state: dict) -> dict:
 
 
 # =============================================================================
+# Fusion Score — Cycle Phase는 Entry Gate가 아니라 최종점수의 보조 feature일 뿐이다.
+#
+# fusion_score = 0.35*PredictionAI + 0.25*EnhancedAI + 0.20*MomentumAI
+#                + 0.10*MicronAI + 0.10*CycleBonus
+#
+# 4개 AI 점수(PredictionAI/EnhancedAI/MomentumAI/MicronAI)는 0~100(50=중립,
+# 높을수록 하이닉스 강세) 방향성 점수이고, CycleBonus는 calculate_cycle_bonus()가
+# 반환하는 작은 가점/감점(-10~+15 수준)을 그대로(재정규화 없이) 더한다 — 그래서
+# 중립 상태(모든 AI=50)의 fusion_score는 약 45이고, cycle bonus의 실제 기여는
+# ±0.4~1.5점 수준이다(의도적 — "Cycle Phase는 사소한 feature"라는 요구를 그대로
+# 반영). Cycle AI는 이 구간 로직에서도 절대 단독으로 주문을 차단하지 않는다.
+# =============================================================================
+
+FUSION_WEIGHT_PREDICTION_AI = 0.35
+FUSION_WEIGHT_ENHANCED_AI = 0.25
+FUSION_WEIGHT_MOMENTUM_AI = 0.20
+FUSION_WEIGHT_MICRON_AI = 0.10
+FUSION_WEIGHT_CYCLE_BONUS = 0.10
+
+FUSION_BUY_THRESHOLD = 68.0
+FUSION_TRIAL_ENTRY_MIN = 58.0
+FUSION_HOLD_MIN = 50.0
+FUSION_NO_TRADE_OVERRIDE_SCORE = 65.0
+FUSION_NO_TRADE_TRIAL_ENTRY_PCT = 15.0
+FUSION_TRIAL_ENTRY_PCT = 20.0
+FUSION_FULL_ENTRY_PCT = 50.0
+
+FUSION_BAND_BUY = "BUY"
+FUSION_BAND_TRIAL_ENTRY = "TRIAL_ENTRY"
+FUSION_BAND_HOLD = "HOLD"
+FUSION_BAND_INVERSE = "INVERSE"
+FUSION_BAND_NO_TRADE_OVERRIDE = "NO_TRADE_OVERRIDE"
+
+
+def calculate_prediction_ai_directional_score(buy_probability: float, sell_probability: float) -> float:
+    """BUY/SELL 확률(합 100%가 아니어도 무방)을 0~100 방향성 점수로 변환(50=중립)."""
+    return round(max(0.0, min(100.0, 50.0 + (buy_probability - sell_probability) / 2.0)), 2)
+
+
+def calculate_momentum_ai_directional_score(momentum_acceleration_up: float, momentum_acceleration_down: float) -> float:
+    """상승/하락 모멘텀 가속도를 0~100 방향성 점수로 변환(50=중립)."""
+    return round(max(0.0, min(100.0, 50.0 + (momentum_acceleration_up - momentum_acceleration_down) / 2.0)), 2)
+
+
+def calculate_fusion_score(
+    prediction_ai_score: float, enhanced_ai_score: float, momentum_ai_score: float,
+    micron_ai_score: float, cycle_phase: Optional[str] = None, cycle_bonus: Optional[float] = None,
+) -> dict:
+    """PredictionAI/EnhancedAI/MomentumAI/MicronAI(각 0~100) + Cycle Bonus를 합성한다.
+
+    cycle_bonus를 직접 넘기지 않으면 cycle_phase로 app.trading.hynix_cycle_detector.
+    calculate_cycle_bonus()를 조회한다.
+    """
+    if cycle_bonus is None:
+        from app.trading.hynix_cycle_detector import calculate_cycle_bonus
+
+        cycle_bonus = calculate_cycle_bonus(cycle_phase)
+
+    fusion_score = (
+        FUSION_WEIGHT_PREDICTION_AI * prediction_ai_score
+        + FUSION_WEIGHT_ENHANCED_AI * enhanced_ai_score
+        + FUSION_WEIGHT_MOMENTUM_AI * momentum_ai_score
+        + FUSION_WEIGHT_MICRON_AI * micron_ai_score
+        + FUSION_WEIGHT_CYCLE_BONUS * cycle_bonus
+    )
+    return {
+        "fusion_score": round(fusion_score, 2), "cycle_bonus": cycle_bonus,
+        "prediction_ai_score": prediction_ai_score, "enhanced_ai_score": enhanced_ai_score,
+        "momentum_ai_score": momentum_ai_score, "micron_ai_score": micron_ai_score,
+    }
+
+
+def decide_fusion_based_action(fusion_result: dict, cycle_phase: Optional[str] = None) -> dict:
+    """fusion_score 구간(>=68 BUY, 58~67 시험진입, 50~57 HOLD, <50 INVERSE)으로
+    액션/비중을 정한다. Cycle Phase는 여기서도 단독으로 주문을 차단하지 않는다 —
+    NO_TRADE라도 PredictionAI 또는 EnhancedAI가 65 이상이면 fusion_score 구간과
+    무관하게 15% 시험진입을 허용한다.
+    """
+    score = fusion_result["fusion_score"]
+    prediction_ai = fusion_result["prediction_ai_score"]
+    enhanced_ai = fusion_result["enhanced_ai_score"]
+
+    if cycle_phase == "NO_TRADE" and (prediction_ai >= FUSION_NO_TRADE_OVERRIDE_SCORE or enhanced_ai >= FUSION_NO_TRADE_OVERRIDE_SCORE):
+        return {
+            "action": ACTION_BUY, "position_pct": FUSION_NO_TRADE_TRIAL_ENTRY_PCT, "band": FUSION_BAND_NO_TRADE_OVERRIDE,
+            "reason": (
+                f"NO_TRADE이지만 PredictionAI {prediction_ai:.0f}/EnhancedAI {enhanced_ai:.0f} 중 "
+                f"{FUSION_NO_TRADE_OVERRIDE_SCORE:.0f} 이상 — {FUSION_NO_TRADE_TRIAL_ENTRY_PCT:.0f}% 시험진입 허용"
+            ),
+        }
+
+    if score >= FUSION_BUY_THRESHOLD:
+        return {"action": ACTION_BUY, "position_pct": FUSION_FULL_ENTRY_PCT, "band": FUSION_BAND_BUY,
+                "reason": f"fusion_score {score:.1f} >= {FUSION_BUY_THRESHOLD:.0f} — BUY"}
+    if score >= FUSION_TRIAL_ENTRY_MIN:
+        return {"action": ACTION_BUY, "position_pct": FUSION_TRIAL_ENTRY_PCT, "band": FUSION_BAND_TRIAL_ENTRY,
+                "reason": f"fusion_score {score:.1f} — 시험진입({FUSION_TRIAL_ENTRY_PCT:.0f}%)"}
+    if score >= FUSION_HOLD_MIN:
+        return {"action": ACTION_HOLD, "position_pct": 0.0, "band": FUSION_BAND_HOLD,
+                "reason": f"fusion_score {score:.1f} — HOLD"}
+    return {"action": ACTION_INVERSE, "position_pct": FUSION_FULL_ENTRY_PCT, "band": FUSION_BAND_INVERSE,
+            "reason": f"fusion_score {score:.1f} < {FUSION_HOLD_MIN:.0f} — INVERSE"}
+
+
+# =============================================================================
 # 실현수익률 기반 Accuracy / Profit Factor
 # =============================================================================
 

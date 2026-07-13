@@ -1,7 +1,7 @@
 {
-  "foreign_net_buy": -209485,
-  "institution_net_buy": 404365,
-  "source": "naver",
+  "foreign_net_buy": 0,
+  "institution_net_buy": 0,
+  "source": "kis",
   "error": null,
-  "cached_at": "2026-07-10T16:46:29.802730"
+  "cached_at": "2026-07-13T09:49:41.696859"
 }

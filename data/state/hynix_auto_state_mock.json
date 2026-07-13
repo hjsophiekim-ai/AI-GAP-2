@@ -1,5 +1,5 @@
 {
-  "date": "20260710",
+  "date": "20260713",
   "mode": "mock",
   "position": {
     "symbol": null,
@@ -23,43 +23,40 @@
   "entry_price": null,
   "quantity": 0,
   "entry_time": null,
-  "realized_pnl": -40655.0,
+  "realized_pnl": 0.0,
   "unrealized_pnl": 0.0,
-  "daily_trade_count": 12,
-  "liquidation_done": true,
+  "daily_trade_count": 0,
+  "liquidation_done": false,
   "mock_budget_krw": 10000000.0,
   "cash": 10000000.0,
   "trades_today": [],
-  "realized_pnl_today_krw": -40655.0,
-  "realized_pnl_today_pct": -0.4085,
+  "realized_pnl_today_krw": 0.0,
+  "realized_pnl_today_pct": 0.0,
   "daily_pnl_baseline_equity": 10000000.0,
-  "fired_windows": [
-    "10:30-11:00",
-    "13:30-14:30"
-  ],
+  "fired_windows": [],
   "liquidation_mode": false,
   "residual_position_error": false,
   "position_conflict": false,
-  "critical_alert": "liquidation_done 이상 감지 및 자동 복구됨(15:15 이전에 True로 기록됨)",
+  "critical_alert": null,
   "auto_trade_on": true,
   "weight_auto_apply_enabled": false,
   "daily_report_generated_date": "20260710",
   "stopped": false,
   "stopped_reason": null,
-  "last_order_cycle_bucket": "202607101354",
-  "last_order_signature": "INVERSE_BUY:0197X0",
-  "last_buy_price": 8615.0,
-  "last_sell_price": 8685.0,
-  "last_trade_time": "2026-07-10T14:13:09.487366",
-  "last_action": "BUY",
-  "last_order_id": "DRY-20260710-0005",
+  "last_order_cycle_bucket": null,
+  "last_order_signature": null,
+  "last_buy_price": null,
+  "last_sell_price": null,
+  "last_trade_time": null,
+  "last_action": null,
+  "last_order_id": null,
   "stop_loss_mode": "AUTO",
   "last_stop_loss_signature": "0197X0:202607101413",
   "pending_manual_stop_loss_alert": null,
   "last_pipeline_trace": {
     "prediction_signal": "INVERSE",
-    "entry_approved": null,
-    "entry_approved_reason": "",
+    "entry_approved": false,
+    "entry_approved_reason": "[ACTIVE_STRATEGY] Cycle Phase NO_TRADE — 신규 진입 금지",
     "risk_manager_ok": true,
     "risk_manager_reason": "정상",
     "risk_approved": true,
@@ -67,27 +64,27 @@
     "broker_executed": false,
     "position_confirmed": null,
     "ui_synced": true,
-    "trade_counter": 12,
-    "stopped_stage": "order_sent",
-    "blocking_reason": "[order_sent] 주문이 브로커로 전송되지 않음(가격 조회 실패/쿨다운/허용 시간대 아님 등)"
+    "trade_counter": 0,
+    "stopped_stage": "entry_approved",
+    "blocking_reason": "[entry_approved] [ACTIVE_STRATEGY] Cycle Phase NO_TRADE — 신규 진입 금지"
   },
-  "last_cycle_computed_at": "2026-07-10T16:46:23.229728",
-  "last_hynix_price": 2180000.0,
-  "last_inverse_price": 9210.0,
+  "last_cycle_computed_at": "2026-07-13T09:38:54.536511",
+  "last_hynix_price": 2042000.0,
+  "last_inverse_price": 10435.0,
   "last_enhanced_result": {
     "base_prediction_score": 44.3,
-    "existing_micron_score": 42.46,
+    "existing_micron_score": 29.99,
     "hynix_technical_score": 40.0,
-    "intraday_momentum_score": 3.14,
-    "inverse_pressure_score": 55.85,
-    "inverse_pressure_tier": "INVERSE_BUY",
-    "enhanced_score": 38.74,
+    "intraday_momentum_score": 0.0,
+    "inverse_pressure_score": 72.0,
+    "inverse_pressure_tier": "INVERSE_STRONG_BUY",
+    "enhanced_score": 35.93,
     "reason_top5": [
-      "장중 모멘텀점수 3.1/100",
-      "-19.9점: 최근 5개 1분봉 누적수익률 -0.80%",
+      "장중 모멘텀점수 0.0/100",
+      "-20.0점: 최근 5개 1분봉 누적수익률 -0.92%",
+      "마이크론 실시간점수 30.0/100 (mu_extended_hours_score)",
       "기존 예측점수 44.3/100",
-      "하이닉스 기술점수 40.0/100",
-      "-10점: 현재가 VWAP 하회"
+      "하이닉스 기술점수 40.0/100"
     ],
     "data_valid": {
       "base_prediction": true,
@@ -100,16 +97,16 @@
       "5분봉도 지연(60분 초과) — 15분봉 리샘플로 대체 시도",
       "15분봉도 지연(180분 초과) — micron_session_strength_score로 대체"
     ],
-    "hynix_current_price": 2180000.0,
-    "hynix_prev_close": 2180000.0,
-    "inverse_current_price": 9210.0,
+    "hynix_current_price": 2042000.0,
+    "hynix_prev_close": 2042000.0,
+    "inverse_current_price": 10435.0,
     "inverse_price_stale": false,
     "micron_detail": {
       "micron_1min_score": null,
       "micron_3min_score": null,
       "micron_session_type": "CLOSED",
-      "micron_last_update_time": "2026-07-10T16:46:30",
-      "existing_micron_score": 42.46,
+      "micron_last_update_time": "2026-07-13T09:39:02",
+      "existing_micron_score": 29.99,
       "source": "mu_extended_hours_score",
       "micron_fallback_used": true,
       "micron_data_status": "FALLBACK_EXTENDED_HOURS",
@@ -127,158 +124,168 @@
       ],
       "warnings": [],
       "detail": {
-        "rsi_14": 33.23,
-        "macd": -50291.5328,
+        "rsi_14": 37.03,
+        "macd": -72288.572,
         "macd_signal_cross": 0,
-        "ma5_position_pct": -0.78,
-        "ma20_position_pct": -12.31,
+        "ma5_position_pct": -4.45,
+        "ma20_position_pct": -17.45,
         "ma60_position_pct": null,
-        "from_20d_high_pct": -27.02,
-        "from_20d_low_pct": 6.6,
-        "bollinger_pct": 19.42,
+        "from_20d_high_pct": -31.64,
+        "from_20d_low_pct": 0.29,
+        "bollinger_pct": 9.42,
         "prev_candle_type": 0,
-        "return_3d_pct": -0.95,
-        "return_5d_pct": -10.1,
-        "return_10d_pct": -18.44,
-        "volume_change_pct": -5.39,
-        "atr_14_pct": 12.4836,
-        "macd_histogram": -58933.9588,
-        "bollinger_upper": 2986318.64,
-        "bollinger_mid": 2486000.0,
-        "bollinger_lower": 1985681.36,
-        "williams_r": -85.67,
-        "stochastic_k": 10.86,
-        "stochastic_d": 13.21,
-        "ma10_position_pct": -6.98,
-        "vwap": 2189562.64,
+        "return_3d_pct": -1.64,
+        "return_5d_pct": -12.85,
+        "return_10d_pct": -22.3,
+        "volume_change_pct": -12.88,
+        "atr_14_pct": 12.4073,
+        "macd_histogram": -61567.8591,
+        "bollinger_upper": 3005612.18,
+        "bollinger_mid": 2473700.0,
+        "bollinger_lower": 1941787.82,
+        "williams_r": -99.37,
+        "stochastic_k": 9.98,
+        "stochastic_d": 10.82,
+        "ma10_position_pct": -10.63,
+        "vwap": 2080271.3,
         "minute_direction_1m": "flat",
-        "minute_direction_3m": "flat",
-        "minute_direction_5m": "flat",
+        "minute_direction_3m": "down",
+        "minute_direction_5m": "down",
         "intraday_new_high": false,
-        "intraday_new_low": true
+        "intraday_new_low": false
       }
     },
     "momentum_detail": {
-      "intraday_momentum_score": 3.14,
-      "raw_point_sum": -46.86,
+      "intraday_momentum_score": 0.0,
+      "raw_point_sum": -52.0,
       "reason_top5": [
-        "-19.9점: 최근 5개 1분봉 누적수익률 -0.80%",
-        "-10.0점: 최근 3분간 급락(-0.80%)",
-        "-10.0점: 최근 3개 3분봉 누적수익률 -0.80%",
+        "-20.0점: 최근 5개 1분봉 누적수익률 -0.92%",
+        "-15.0점: 최근 3개 3분봉 누적수익률 -1.97%",
+        "-10.0점: 최근 3분간 급락(-0.68%)",
         "-7.0점: 최근 2봉 내 당일 신저가 갱신"
       ],
       "warnings": [],
       "detail": {
-        "return_last_5_1min_bars_pct": -0.796,
-        "return_last_3_3min_bars_pct": -0.796,
+        "return_last_5_1min_bars_pct": -0.921,
+        "return_last_3_3min_bars_pct": -1.965,
         "direction_streak": "mixed",
         "new_high_recent": false,
         "new_low_recent": true,
-        "surge_window_return_pct": -0.796
+        "surge_window_return_pct": -0.68
       }
     },
     "inverse_detail": {
-      "inverse_pressure_score": 55.85,
-      "inverse_pressure_tier": "INVERSE_BUY",
-      "raw_point_sum": 40.85,
+      "inverse_pressure_score": 72.0,
+      "inverse_pressure_tier": "INVERSE_STRONG_BUY",
+      "raw_point_sum": 57.0,
       "reason_top5": [
         "+12.0점: 현재가 VWAP 하회",
-        "+10.0점: MACD 히스토그램 음수(하락확산 가능, -58933.96)",
-        "+10.0점: RSI(14) 33.2 — 45 이하",
-        "+8.0점: 장중 저점 갱신",
-        "+0.8점: 마이크론 점수 약세(42.5)"
+        "+12.0점: 3분봉 저점 연속 하락",
+        "+10.0점: MACD 히스토그램 음수(하락확산 가능, -61567.86)",
+        "+10.0점: RSI(14) 37.0 — 45 이하",
+        "+8.0점: 장중 저점 갱신"
       ],
       "warnings": []
     },
     "market_data": {
       "mu": {
-        "df_1min": "               datetime       open       high  ...  volume      session  source\n0   2026-07-10 07:00:00   994.7900   995.5000  ...    3179  aftermarket     kis\n1   2026-07-10 07:01:00   995.4142   995.5000  ...    1589  aftermarket     kis\n2   2026-07-10 07:02:00   995.2000   995.5000  ...    1293  aftermarket     kis\n3   2026-07-10 07:03:00   994.4000   995.5000  ...    1182  aftermarket     kis\n4   2026-07-10 07:04:00   995.3900   995.8000  ...    2736  aftermarket     kis\n..                  ...        ...        ...  ...     ...          ...     ...\n115 2026-07-10 08:55:00  1002.7490  1002.8000  ...    4792  aftermarket     kis\n116 2026-07-10 08:56:00  1001.9000  1002.6671  ...    1557  aftermarket     kis\n117 2026-07-10 08:57:00  1002.2000  1002.5000  ...    2731  aftermarket     kis\n118 2026-07-10 08:58:00  1002.0000  1002.4900  ...    2340  aftermarket     kis\n119 2026-07-10 08:59:00  1002.1200  1002.5000  ...    4162  aftermarket     kis\n\n[120 rows x 8 columns]",
-        "df_3min": "              datetime       open     high  ...  volume      session  source\n0  2026-07-10 07:00:00   994.7900   995.50  ...    6061  aftermarket     kis\n1  2026-07-10 07:03:00   994.4000   995.93  ...    5529  aftermarket     kis\n2  2026-07-10 07:06:00   995.3500   998.80  ...   18719  aftermarket     kis\n3  2026-07-10 07:09:00   998.1900   999.38  ...    8981  aftermarket     kis\n4  2026-07-10 07:12:00   999.0000   999.75  ...    8338  aftermarket     kis\n5  2026-07-10 07:15:00   999.0000  1001.20  ...   16517  aftermarket     kis\n6  2026-07-10 07:18:00  1000.1425  1000.40  ...   14310  aftermarket     kis\n7  2026-07-10 07:21:00   997.5100   999.00  ...    3076  aftermarket     kis\n8  2026-07-10 07:24:00   998.4800   998.48  ...    4670  aftermarket     kis\n9  2026-07-10 07:27:00   997.4900   997.74  ...    4653  aftermarket     kis\n10 2026-07-10 07:30:00   996.7825   998.00  ...    3062  aftermarket     kis\n11 2026-07-10 07:33:00   997.1519   998.00  ...    3906  aftermarket     kis\n12 2026-07-10 07:36:00   997.3300   998.29  ...    4054  aftermarket     kis\n13 2026-07-10 07:39:00   998.0000   998.28  ...    4949  aftermarket     kis\n14 2026-07-10 07:42:00   997.8619   999.50  ...    8220  aftermarket     kis\n15 2026-07-10 07:45:00   999.4000   999.77  ...    3612  aftermarket     kis\n16 2026-07-10 07:48:00   998.3277  1000.35  ...    9670  aftermarket     kis\n17 2026-07-10 07:51:00   999.5200  1000.49  ...    7233  aftermarket     kis\n18 2026-07-10 07:54:00   999.5927  1000.50  ...    6308  aftermarket     kis\n19 2026-07-10 07:57:00  1000.2800  1001.12  ...    8460  aftermarket     kis\n20 2026-07-10 08:00:00  1001.0000  1001.00  ...   15874  aftermarket     kis\n21 2026-07-10 08:03:00   999.1000  1001.98  ...    9634  aftermarket     kis\n22 2026-07-10 08:06:00  1000.8000  1001.00  ...    4270  aftermarket     kis\n23 2026-07-10 08:09:00   999.5401  1001.00  ...    4809  aftermarket     kis\n24 2026-07-10 08:12:00   999.7500  1000.19  ...    2708  aftermarket     kis\n25 2026-07-10 08:15:00   999.5400  1000.85  ...    6257  aftermarket     kis\n26 2026-07-10 08:18:00  1000.8500  1001.75  ...   10999  aftermarket     kis\n27 2026-07-10 08:21:00  1000.0000  1000.94  ...    4255  aftermarket     kis\n28 2026-07-10 08:24:00  1000.1900  1000.60  ...    3884  aftermarket     kis\n29 2026-07-10 08:27:00  1000.1800  1001.50  ...    4832  aftermarket     kis\n30 2026-07-10 08:30:00  1001.3300  1001.75  ...    5435  aftermarket     kis\n31 2026-07-10 08:33:00  1001.4200  1002.00  ...    6984  aftermarket     kis\n32 2026-07-10 08:36:00  1001.8960  1003.10  ...    8544  aftermarket     kis\n33 2026-07-10 08:39:00  1002.9900  1003.50  ...    7504  aftermarket     kis\n34 2026-07-10 08:42:00  1003.2800  1003.50  ...   11454  aftermarket     kis\n35 2026-07-10 08:45:00  1001.6500  1003.00  ...    6576  aftermarket     kis\n36 2026-07-10 08:48:00  1002.5501  1003.35  ...    7204  aftermarket     kis\n37 2026-07-10 08:51:00  1002.0000  1002.50  ...    4976  aftermarket     kis\n38 2026-07-10 08:54:00  1001.8100  1002.80  ...    8465  aftermarket     kis\n39 2026-07-10 08:57:00  1002.2000  1002.50  ...    9233  aftermarket     kis\n\n[40 rows x 8 columns]",
-        "current_price": null,
+        "df_1min": "               datetime      open      high  ...  volume      session  source\n0   2026-07-11 07:00:00  979.5500  979.5500  ...     911  aftermarket     kis\n1   2026-07-11 07:01:00  979.2400  979.5400  ...     394  aftermarket     kis\n2   2026-07-11 07:02:00  979.4500  979.4500  ...     566  aftermarket     kis\n3   2026-07-11 07:03:00  979.2500  979.6000  ...     829  aftermarket     kis\n4   2026-07-11 07:04:00  979.5000  979.7515  ...    1440  aftermarket     kis\n..                  ...       ...       ...  ...     ...          ...     ...\n115 2026-07-11 08:55:00  981.9829  982.0000  ...    1683  aftermarket     kis\n116 2026-07-11 08:56:00  981.2900  981.7000  ...    1965  aftermarket     kis\n117 2026-07-11 08:57:00  981.6533  982.7500  ...    1768  aftermarket     kis\n118 2026-07-11 08:58:00  982.6000  982.8200  ...    1827  aftermarket     kis\n119 2026-07-11 08:59:00  982.7000  983.0000  ...    7023  aftermarket     kis\n\n[120 rows x 8 columns]",
+        "df_3min": "              datetime      open      high  ...  volume      session  source\n0  2026-07-11 07:00:00  979.5500  979.5500  ...    1871  aftermarket     kis\n1  2026-07-11 07:03:00  979.2500  979.9186  ...    3033  aftermarket     kis\n2  2026-07-11 07:06:00  979.8000  979.9900  ...    2304  aftermarket     kis\n3  2026-07-11 07:09:00  979.2500  979.2500  ...     850  aftermarket     kis\n4  2026-07-11 07:12:00  979.1000  979.1000  ...    2820  aftermarket     kis\n5  2026-07-11 07:15:00  978.8100  979.0000  ...    1614  aftermarket     kis\n6  2026-07-11 07:18:00  978.6466  979.1200  ...    1918  aftermarket     kis\n7  2026-07-11 07:21:00  979.0000  979.2000  ...    1468  aftermarket     kis\n8  2026-07-11 07:24:00  979.0600  979.1800  ...    1746  aftermarket     kis\n9  2026-07-11 07:27:00  978.8000  978.8000  ...    4458  aftermarket     kis\n10 2026-07-11 07:30:00  978.3900  978.5000  ...    1977  aftermarket     kis\n11 2026-07-11 07:33:00  978.1191  978.8000  ...    1860  aftermarket     kis\n12 2026-07-11 07:36:00  978.6500  978.6500  ...    3379  aftermarket     kis\n13 2026-07-11 07:39:00  977.4300  977.4900  ...    4795  aftermarket     kis\n14 2026-07-11 07:42:00  977.3300  977.4200  ...    2033  aftermarket     kis\n15 2026-07-11 07:45:00  977.1700  977.1700  ...    4100  aftermarket     kis\n16 2026-07-11 07:48:00  976.4400  977.4000  ...    6227  aftermarket     kis\n17 2026-07-11 07:51:00  977.4000  977.9999  ...    2452  aftermarket     kis\n18 2026-07-11 07:54:00  977.8000  978.2000  ...    2488  aftermarket     kis\n19 2026-07-11 07:57:00  978.0500  978.0500  ...    1657  aftermarket     kis\n20 2026-07-11 08:00:00  978.0800  978.1900  ...    3709  aftermarket     kis\n21 2026-07-11 08:03:00  977.9510  978.5000  ...    2867  aftermarket     kis\n22 2026-07-11 08:06:00  978.2300  978.8000  ...    3603  aftermarket     kis\n23 2026-07-11 08:09:00  978.7300  979.0000  ...    1518  aftermarket     kis\n24 2026-07-11 08:12:00  978.4800  978.5300  ...    5658  aftermarket     kis\n25 2026-07-11 08:15:00  978.0000  978.1000  ...    4470  aftermarket     kis\n26 2026-07-11 08:18:00  977.7000  977.7500  ...    1309  aftermarket     kis\n27 2026-07-11 08:21:00  977.4200  977.6600  ...    3803  aftermarket     kis\n28 2026-07-11 08:24:00  977.4900  977.7300  ...    1393  aftermarket     kis\n29 2026-07-11 08:27:00  977.5000  977.6300  ...    1560  aftermarket     kis\n30 2026-07-11 08:30:00  977.3600  977.3600  ...    1380  aftermarket     kis\n31 2026-07-11 08:33:00  977.1582  978.8700  ...    6334  aftermarket     kis\n32 2026-07-11 08:36:00  978.8500  979.9000  ...   12327  aftermarket     kis\n33 2026-07-11 08:39:00  979.0000  981.0000  ...    6618  aftermarket     kis\n34 2026-07-11 08:42:00  980.8900  981.3800  ...    5129  aftermarket     kis\n35 2026-07-11 08:45:00  981.1600  981.9700  ...    3933  aftermarket     kis\n36 2026-07-11 08:48:00  981.5000  982.2500  ...    5235  aftermarket     kis\n37 2026-07-11 08:51:00  982.0267  983.8200  ...    9182  aftermarket     kis\n38 2026-07-11 08:54:00  981.5223  982.2000  ...    6846  aftermarket     kis\n39 2026-07-11 08:57:00  981.6533  983.0000  ...   10618  aftermarket     kis\n\n[40 rows x 8 columns]",
+        "current_price": {
+          "price": 979.3,
+          "open": 979.3,
+          "high": 979.3,
+          "low": 979.3,
+          "volume": 31768093,
+          "symbol": "MU",
+          "timestamp": "2026-07-13T09:38:54.809895"
+        },
         "source": "kis",
         "error": null,
         "fallback_chain": [
           "KIS: success"
         ],
-        "current_price_status": "failed",
+        "current_price_status": "success",
         "minute_1m_status": "real candle success",
         "minute_3m_status": "real candle success",
         "daily_status": "real candle success",
         "minute_error": null,
-        "df_daily": "                    datetime         open  ...    source    session\n0  2026-03-02 00:00:00-05:00   401.239731  ...  yfinance  premarket\n1  2026-03-03 00:00:00-05:00   386.328243  ...  yfinance  premarket\n2  2026-03-04 00:00:00-05:00   393.414186  ...  yfinance  premarket\n3  2026-03-05 00:00:00-05:00   398.371364  ...  yfinance  premarket\n4  2026-03-06 00:00:00-05:00   379.921968  ...  yfinance  premarket\n..                       ...          ...  ...       ...        ...\n85 2026-07-02 00:00:00-04:00  1041.339835  ...  yfinance  premarket\n86 2026-07-06 00:00:00-04:00  1007.000000  ...  yfinance  premarket\n87 2026-07-07 00:00:00-04:00   923.010010  ...  yfinance  premarket\n88 2026-07-08 00:00:00-04:00   902.640015  ...  yfinance  premarket\n89 2026-07-09 00:00:00-04:00  1016.510010  ...  yfinance  premarket\n\n[90 rows x 8 columns]",
+        "df_daily": "                    datetime         open  ...    source    session\n0  2026-03-03 00:00:00-05:00   386.328274  ...  yfinance  premarket\n1  2026-03-04 00:00:00-05:00   393.414186  ...  yfinance  premarket\n2  2026-03-05 00:00:00-05:00   398.371364  ...  yfinance  premarket\n3  2026-03-06 00:00:00-05:00   379.921968  ...  yfinance  premarket\n4  2026-03-09 00:00:00-04:00   363.751211  ...  yfinance  premarket\n..                       ...          ...  ...       ...        ...\n85 2026-07-06 00:00:00-04:00  1007.000000  ...  yfinance  premarket\n86 2026-07-07 00:00:00-04:00   923.010010  ...  yfinance  premarket\n87 2026-07-08 00:00:00-04:00   902.640015  ...  yfinance  premarket\n88 2026-07-09 00:00:00-04:00  1016.510010  ...  yfinance  premarket\n89 2026-07-10 00:00:00-04:00   964.979980  ...  yfinance  premarket\n\n[90 rows x 8 columns]",
         "is_stale": false,
         "data_gap_reason": "NORMAL",
         "last_session": null,
         "extended_hours": {
           "symbol": "MU",
           "session_type": "CLOSED",
-          "current_price": 991.64,
-          "previous_close": 991.6400146484375,
+          "current_price": 979.3,
+          "previous_close": 979.2999877929688,
           "premarket_price": null,
-          "afterhours_price": null,
-          "change_pct_from_previous_close": -0.0,
-          "change_pct_from_regular_close": -0.0,
-          "bar_1m": "unavailable",
-          "bar_3m": "unavailable",
-          "bar_5m": "unavailable",
-          "volume_1m": null,
-          "volume_3m": null,
+          "afterhours_price": 982.7501,
+          "change_pct_from_previous_close": 0.0,
+          "change_pct_from_regular_close": 0.0,
+          "bar_1m": "collected",
+          "bar_3m": "collected",
+          "bar_5m": "collected",
+          "volume_1m": 7023,
+          "volume_3m": 10618,
           "vwap_premarket": null,
-          "vwap_afterhours": null,
-          "slope_3m": null,
-          "slope_5m": null,
-          "slope_15m": null,
+          "vwap_afterhours": 979.2378830244495,
+          "slope_3m": 0.107,
+          "slope_5m": 0.0764,
+          "slope_15m": 0.1501,
           "data_source": "kis",
-          "timestamp": "2026-07-10T16:46:24",
+          "timestamp": "2026-07-13T09:38:55",
           "timezones": {
-            "asia_seoul": "2026-07-10T16:46:24.182758+09:00",
-            "us_eastern": "2026-07-10T03:46:24.182758-04:00"
+            "asia_seoul": "2026-07-13T09:38:55.246742+09:00",
+            "us_eastern": "2026-07-12T20:38:55.246742-04:00"
           },
-          "freshness_seconds": null,
+          "freshness_seconds": 175195.246742,
           "is_realtime": true,
           "is_delayed": false,
           "is_extended_hours": false,
-          "confidence_penalty_reason": [],
-          "mu_extended_hours_score": 50.0,
+          "confidence_penalty_reason": [
+            "마지막 봉이 175195초 전(5분 초과 지연)"
+          ],
+          "mu_extended_hours_score": 54.37,
           "mu_extended_hours_score_components": {
             "change_pct_component": 50.0,
-            "slope_3m_component": null,
-            "slope_15m_component": null,
-            "vwap_position_component": null,
-            "volume_component": null,
+            "slope_3m_component": 60.7,
+            "slope_15m_component": 57.505,
+            "vwap_position_component": 50.31716999835933,
+            "volume_component": 60.0,
             "relative_strength_vs_sox": null,
             "relative_strength_vs_qqq": null,
             "nvda_amd_comovement": null
           }
         },
         "session_type": "CLOSED",
-        "mu_extended_hours_score": 50.0,
+        "mu_extended_hours_score": 54.37,
         "is_extended_hours_realtime": true,
         "is_extended_hours_delayed": false
       },
       "nvda": {
-        "current_price": 202.77999877929688,
+        "current_price": 210.9600067138672,
         "premarket_return": null,
-        "regular_return": -0.41,
+        "regular_return": 4.27,
         "source": "yfinance",
         "error": null
       },
       "amd": {
-        "current_price": 546.719970703125,
-        "regular_return": 5.79,
+        "current_price": 557.8900146484375,
+        "regular_return": 1.98,
         "source": "yfinance",
         "error": null
       },
       "avgo": {
-        "current_price": 401.1099853515625,
-        "regular_return": 2.88,
+        "current_price": 399.9700012207031,
+        "regular_return": -0.22,
         "source": "yfinance",
         "error": null
       },
       "index": {
-        "qqq_return": -0.41,
-        "sox_return": 2.98,
-        "usdkrw_change": -0.21,
+        "qqq_return": -0.19,
+        "sox_return": -0.39,
+        "usdkrw_change": 0.3,
         "source": "yfinance",
         "error": null,
         "fallback_detail": {
@@ -293,15 +300,15 @@
         }
       },
       "domestic_index": {
-        "kospi_return": 2.5237527782554503,
+        "kospi_return": -0.5345142049119178,
         "kospi200_return": null,
         "source": "yfinance",
         "error": "pykrx index failed: '지수명'"
       },
       "hynix": {
-        "df_daily": "        date   datetime       open       high        low      close   volume\n0   20260529 2026-05-29  2352000.0  2379000.0  2290500.0  2333000.0  8518013\n1   20260601 2026-06-01  2299000.0  2398000.0  2296000.0  2363000.0  5602897\n2   20260602 2026-06-02  2376000.0  2407000.0  2259000.0  2360000.0  5837216\n3   20260604 2026-06-04  2284000.0  2327000.0  2262000.0  2298000.0  3941067\n4   20260605 2026-06-05  2142000.0  2188000.0  2070000.0  2070000.0  5778751\n5   20260608 2026-06-08  1856000.0  2072000.0  1855000.0  1911000.0  6610833\n6   20260609 2026-06-09  2050000.0  2226000.0  1998000.0  2215000.0  5878039\n7   20260610 2026-06-10  2137000.0  2180000.0  1992000.0  2048000.0  4928269\n8   20260611 2026-06-11  1975000.0  2163000.0  1960000.0  2101000.0  6625775\n9   20260612 2026-06-12  2281000.0  2304000.0  2150000.0  2150000.0  5286416\n10  20260615 2026-06-15  2283000.0  2322000.0  2265000.0  2288000.0  3872910\n11  20260616 2026-06-16  2381000.0  2400000.0  2286000.0  2382000.0  3644469\n12  20260617 2026-06-17  2335000.0  2523000.0  2334000.0  2521000.0  3980010\n13  20260618 2026-06-18  2556000.0  2738000.0  2556000.0  2685000.0  5808765\n14  20260619 2026-06-19  2824000.0  2891000.0  2688000.0  2764000.0  7478195\n15  20260622 2026-06-22  2728000.0  2945000.0  2728000.0  2919000.0  5179795\n16  20260623 2026-06-23  2898000.0  2943000.0  2536000.0  2555000.0  8050335\n17  20260624 2026-06-24  2598000.0  2703000.0  2453000.0  2580000.0  7487916\n18  20260625 2026-06-25  2865000.0  2987000.0  2749000.0  2917000.0  6790853\n19  20260626 2026-06-26  2850000.0  2880000.0  2600000.0  2673000.0  7467492\n20  20260629 2026-06-29  2636000.0  2688000.0  2517000.0  2628000.0  5217788\n21  20260630 2026-06-30  2608000.0  2742000.0  2541000.0  2650000.0  5109213\n22  20260701 2026-07-01  2665000.0  2723000.0  2502000.0  2560000.0  4277276\n23  20260702 2026-07-02  2351000.0  2448000.0  2187000.0  2187000.0  7685914\n24  20260703 2026-07-03  2197000.0  2454000.0  2045000.0  2425000.0  7984914\n25  20260706 2026-07-06  2450000.0  2497000.0  2292000.0  2343000.0  4235360\n26  20260707 2026-07-07  2289000.0  2343000.0  2080000.0  2201000.0  6351195\n27  20260708 2026-07-08  2118000.0  2329000.0  2076000.0  2076000.0  6975631\n28  20260709 2026-07-09  2228000.0  2270000.0  2091000.0  2186000.0  6261504\n29  20260710 2026-07-10  2296000.0  2305000.0  2166000.0  2180000.0  4819564",
-        "prev_close": 2180000.0,
-        "current_price": 2180000.0,
+        "df_daily": "        date   datetime       open       high        low      close   volume\n0   20260601 2026-06-01  2299000.0  2398000.0  2296000.0  2363000.0  5602897\n1   20260602 2026-06-02  2376000.0  2407000.0  2259000.0  2360000.0  5837216\n2   20260604 2026-06-04  2284000.0  2327000.0  2262000.0  2298000.0  3941067\n3   20260605 2026-06-05  2142000.0  2188000.0  2070000.0  2070000.0  5778751\n4   20260608 2026-06-08  1856000.0  2072000.0  1855000.0  1911000.0  6610833\n5   20260609 2026-06-09  2050000.0  2226000.0  1998000.0  2215000.0  5878039\n6   20260610 2026-06-10  2137000.0  2180000.0  1992000.0  2048000.0  4928269\n7   20260611 2026-06-11  1975000.0  2163000.0  1960000.0  2101000.0  6625775\n8   20260612 2026-06-12  2281000.0  2304000.0  2150000.0  2150000.0  5286416\n9   20260615 2026-06-15  2283000.0  2322000.0  2265000.0  2288000.0  3872910\n10  20260616 2026-06-16  2381000.0  2400000.0  2286000.0  2382000.0  3644469\n11  20260617 2026-06-17  2335000.0  2523000.0  2334000.0  2521000.0  3980010\n12  20260618 2026-06-18  2556000.0  2738000.0  2556000.0  2685000.0  5808765\n13  20260619 2026-06-19  2824000.0  2891000.0  2688000.0  2764000.0  7478195\n14  20260622 2026-06-22  2728000.0  2945000.0  2728000.0  2919000.0  5179795\n15  20260623 2026-06-23  2898000.0  2943000.0  2536000.0  2555000.0  8050335\n16  20260624 2026-06-24  2598000.0  2703000.0  2453000.0  2580000.0  7487916\n17  20260625 2026-06-25  2865000.0  2987000.0  2749000.0  2917000.0  6790853\n18  20260626 2026-06-26  2850000.0  2880000.0  2600000.0  2673000.0  7467492\n19  20260629 2026-06-29  2636000.0  2688000.0  2517000.0  2628000.0  5217788\n20  20260630 2026-06-30  2608000.0  2742000.0  2541000.0  2650000.0  5109213\n21  20260701 2026-07-01  2665000.0  2723000.0  2502000.0  2560000.0  4277276\n22  20260702 2026-07-02  2351000.0  2448000.0  2187000.0  2187000.0  7685914\n23  20260703 2026-07-03  2197000.0  2454000.0  2045000.0  2425000.0  7984914\n24  20260706 2026-07-06  2450000.0  2497000.0  2292000.0  2343000.0  4235360\n25  20260707 2026-07-07  2289000.0  2343000.0  2080000.0  2201000.0  6351195\n26  20260708 2026-07-08  2118000.0  2329000.0  2076000.0  2076000.0  6975631\n27  20260709 2026-07-09  2228000.0  2270000.0  2091000.0  2186000.0  6261504\n28  20260710 2026-07-10  2296000.0  2305000.0  2166000.0  2180000.0  4827239\n29  20260713 2026-07-13  2113000.0  2142000.0  2036000.0  2042000.0  1104799",
+        "prev_close": 2042000.0,
+        "current_price": 2042000.0,
         "source": "KIS",
         "error": null,
         "fallback_chain": [
@@ -309,6 +316,7 @@
           "KIS daily: collected",
           "Naver current: success",
           "Yahoo current: success",
+          "current price cross-check: mismatch ignored (current price source spread 1.37% >= 1.00%)",
           "KIS: success"
         ],
         "source_detail": {
@@ -322,49 +330,49 @@
           "message": "ok"
         },
         "price_validation": {
-          "ok": true,
-          "message": "ok",
+          "ok": false,
+          "message": "current price source spread 1.37% >= 1.00%",
           "source_prices": {
-            "KIS": 2180000.0,
-            "naver": 2180000.0,
-            "yfinance": 2180000.0
+            "KIS": 2042000.0,
+            "naver": 2045000.0,
+            "yfinance": 2070000.0
           },
-          "selected_source": "KIS",
-          "selected_price": 2180000.0,
-          "max_diff_pct": 0.0,
+          "selected_source": null,
+          "selected_price": null,
+          "max_diff_pct": 1.3712,
           "missing_sources": []
         },
         "current_price_sources": {
-          "KIS": 2180000.0,
-          "naver": 2180000.0,
-          "yfinance": 2180000.0
+          "KIS": 2042000.0,
+          "naver": 2045000.0,
+          "yfinance": 2070000.0
         },
-        "collected_at": "2026-07-10T16:46:29.476237",
+        "collected_at": "2026-07-13T09:39:01.013262",
         "cache_stale": false
       },
       "hynix_minute": {
-        "df_1min": "      time       open       high  ...      close  volume            datetime\n0   150100  2223000.0  2225000.0  ...  2214000.0   17056 2026-07-10 15:01:00\n1   150200  2214000.0  2214000.0  ...  2211000.0   12729 2026-07-10 15:02:00\n2   150300  2211000.0  2211500.0  ...  2206000.0    7708 2026-07-10 15:03:00\n3   150400  2206500.0  2215000.0  ...  2213000.0    7952 2026-07-10 15:04:00\n4   150500  2213000.0  2215000.0  ...  2207000.0   11435 2026-07-10 15:05:00\n5   150600  2207000.0  2208000.0  ...  2202000.0   19477 2026-07-10 15:06:00\n6   150700  2202000.0  2205000.0  ...  2201000.0   11204 2026-07-10 15:07:00\n7   150800  2201000.0  2210000.0  ...  2206000.0   11349 2026-07-10 15:08:00\n8   150900  2206000.0  2207000.0  ...  2204000.0   12269 2026-07-10 15:09:00\n9   151000  2204000.0  2205000.0  ...  2201000.0   12545 2026-07-10 15:10:00\n10  151100  2201000.0  2202000.0  ...  2197000.0   21016 2026-07-10 15:11:00\n11  151200  2197000.0  2201000.0  ...  2199000.0   14560 2026-07-10 15:12:00\n12  151300  2199000.0  2209000.0  ...  2205000.0   16740 2026-07-10 15:13:00\n13  151400  2204000.0  2209000.0  ...  2206000.0    9601 2026-07-10 15:14:00\n14  151500  2206000.0  2206000.0  ...  2202000.0   10939 2026-07-10 15:15:00\n15  151600  2202000.0  2203000.0  ...  2196000.0   13781 2026-07-10 15:16:00\n16  151700  2196000.0  2198000.0  ...  2193000.0   19852 2026-07-10 15:17:00\n17  151800  2192000.0  2197000.0  ...  2194000.0   14019 2026-07-10 15:18:00\n18  151900  2193000.0  2199000.0  ...  2197500.0   13019 2026-07-10 15:19:00\n19  152000  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:20:00\n20  152100  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:21:00\n21  152200  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:22:00\n22  152300  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:23:00\n23  152400  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:24:00\n24  152500  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:25:00\n25  152600  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:26:00\n26  152700  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:27:00\n27  152800  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:28:00\n28  152900  2197500.0  2197500.0  ...  2197500.0       0 2026-07-10 15:29:00\n29  153000  2180000.0  2180000.0  ...  2180000.0  363048 2026-07-10 15:30:00\n\n[30 rows x 7 columns]",
-        "df_3min": "              datetime       open       high  ...      close  volume     source\n0  2026-07-10 15:00:00  2223000.0  2225000.0  ...  2211000.0   29785  resampled\n1  2026-07-10 15:03:00  2211000.0  2215000.0  ...  2207000.0   27095  resampled\n2  2026-07-10 15:06:00  2207000.0  2210000.0  ...  2206000.0   42030  resampled\n3  2026-07-10 15:09:00  2206000.0  2207000.0  ...  2197000.0   45830  resampled\n4  2026-07-10 15:12:00  2197000.0  2209000.0  ...  2206000.0   40901  resampled\n5  2026-07-10 15:15:00  2206000.0  2206000.0  ...  2193000.0   44572  resampled\n6  2026-07-10 15:18:00  2192000.0  2199000.0  ...  2197500.0   27038  resampled\n7  2026-07-10 15:21:00  2197500.0  2197500.0  ...  2197500.0       0  resampled\n8  2026-07-10 15:24:00  2197500.0  2197500.0  ...  2197500.0       0  resampled\n9  2026-07-10 15:27:00  2197500.0  2197500.0  ...  2197500.0       0  resampled\n10 2026-07-10 15:30:00  2180000.0  2180000.0  ...  2180000.0  363048  resampled\n\n[11 rows x 7 columns]",
-        "df_5min": "             datetime       open       high  ...      close  volume     source\n0 2026-07-10 15:00:00  2223000.0  2225000.0  ...  2213000.0   45445  resampled\n1 2026-07-10 15:05:00  2213000.0  2215000.0  ...  2204000.0   65734  resampled\n2 2026-07-10 15:10:00  2204000.0  2209000.0  ...  2206000.0   74462  resampled\n3 2026-07-10 15:15:00  2206000.0  2206000.0  ...  2197500.0   71610  resampled\n4 2026-07-10 15:20:00  2197500.0  2197500.0  ...  2197500.0       0  resampled\n5 2026-07-10 15:25:00  2197500.0  2197500.0  ...  2197500.0       0  resampled\n6 2026-07-10 15:30:00  2180000.0  2180000.0  ...  2180000.0  363048  resampled\n\n[7 rows x 7 columns]",
-        "source": "cache",
-        "error": "KIS 분봉 응답 없음 | 실시간 분봉 수집 실패, 캐시 사용(지연 가능)",
-        "status": "stale_cache",
-        "last_bar_time": "2026-07-10T15:30:00"
+        "df_1min": "      time       open       high  ...      close  volume            datetime\n0   090900  2097000.0  2106000.0  ...  2098000.0   22088 2026-07-13 09:09:00\n1   091000  2099000.0  2122000.0  ...  2113000.0   13450 2026-07-13 09:10:00\n2   091100  2113000.0  2113000.0  ...  2104000.0   10982 2026-07-13 09:11:00\n3   091200  2103000.0  2113000.0  ...  2102000.0   13733 2026-07-13 09:12:00\n4   091300  2102000.0  2105000.0  ...  2098000.0   17453 2026-07-13 09:13:00\n5   091400  2099000.0  2110000.0  ...  2108000.0   20304 2026-07-13 09:14:00\n6   091500  2109000.0  2113000.0  ...  2100000.0   15194 2026-07-13 09:15:00\n7   091600  2101000.0  2103000.0  ...  2097000.0   14658 2026-07-13 09:16:00\n8   091700  2097000.0  2097000.0  ...  2084000.0   31735 2026-07-13 09:17:00\n9   091800  2084000.0  2085000.0  ...  2067000.0   51402 2026-07-13 09:18:00\n10  091900  2066000.0  2070000.0  ...  2067000.0   49013 2026-07-13 09:19:00\n11  092000  2067000.0  2080000.0  ...  2079000.0   32122 2026-07-13 09:20:00\n12  092100  2079000.0  2086000.0  ...  2082000.0   26652 2026-07-13 09:21:00\n13  092200  2082000.0  2088000.0  ...  2088000.0   25706 2026-07-13 09:22:00\n14  092300  2087500.0  2100000.0  ...  2097000.0   19435 2026-07-13 09:23:00\n15  092400  2096000.0  2097000.0  ...  2087000.0   12294 2026-07-13 09:24:00\n16  092500  2086000.0  2097000.0  ...  2095000.0   14059 2026-07-13 09:25:00\n17  092600  2095500.0  2106000.0  ...  2105000.0   21468 2026-07-13 09:26:00\n18  092700  2106000.0  2106000.0  ...  2102000.0   22180 2026-07-13 09:27:00\n19  092800  2103000.0  2114000.0  ...  2096000.0   25714 2026-07-13 09:28:00\n20  092900  2095000.0  2098000.0  ...  2086000.0   18297 2026-07-13 09:29:00\n21  093000  2086000.0  2089000.0  ...  2081000.0   18458 2026-07-13 09:30:00\n22  093100  2081000.0  2081000.0  ...  2073000.0   13691 2026-07-13 09:31:00\n23  093200  2073000.0  2077000.0  ...  2073000.0   21097 2026-07-13 09:32:00\n24  093300  2074000.0  2074000.0  ...  2065000.0   27684 2026-07-13 09:33:00\n25  093400  2064000.0  2066000.0  ...  2060000.0   23169 2026-07-13 09:34:00\n26  093500  2060000.0  2068000.0  ...  2058500.0   21473 2026-07-13 09:35:00\n27  093600  2059000.0  2059000.0  ...  2055000.0   12906 2026-07-13 09:36:00\n28  093700  2054000.0  2055000.0  ...  2046000.0   38135 2026-07-13 09:37:00\n29  093800  2045000.0  2046000.0  ...  2045000.0   30613 2026-07-13 09:38:00\n\n[30 rows x 7 columns]",
+        "df_3min": "             datetime       open       high  ...      close  volume     source\n0 2026-07-13 09:09:00  2097000.0  2122000.0  ...  2104000.0   46520  resampled\n1 2026-07-13 09:12:00  2103000.0  2113000.0  ...  2108000.0   51490  resampled\n2 2026-07-13 09:15:00  2109000.0  2113000.0  ...  2084000.0   61587  resampled\n3 2026-07-13 09:18:00  2084000.0  2085000.0  ...  2079000.0  132537  resampled\n4 2026-07-13 09:21:00  2079000.0  2100000.0  ...  2097000.0   71793  resampled\n5 2026-07-13 09:24:00  2096000.0  2106000.0  ...  2105000.0   47821  resampled\n6 2026-07-13 09:27:00  2106000.0  2114000.0  ...  2086000.0   66191  resampled\n7 2026-07-13 09:30:00  2086000.0  2089000.0  ...  2073000.0   53246  resampled\n8 2026-07-13 09:33:00  2074000.0  2074000.0  ...  2058500.0   72326  resampled\n9 2026-07-13 09:36:00  2059000.0  2059000.0  ...  2045000.0   81654  resampled\n\n[10 rows x 7 columns]",
+        "df_5min": "             datetime       open       high  ...      close  volume     source\n0 2026-07-13 09:05:00  2097000.0  2106000.0  ...  2098000.0   22088  resampled\n1 2026-07-13 09:10:00  2099000.0  2122000.0  ...  2108000.0   75922  resampled\n2 2026-07-13 09:15:00  2109000.0  2113000.0  ...  2067000.0  162002  resampled\n3 2026-07-13 09:20:00  2067000.0  2100000.0  ...  2087000.0  116209  resampled\n4 2026-07-13 09:25:00  2086000.0  2114000.0  ...  2086000.0  101718  resampled\n5 2026-07-13 09:30:00  2086000.0  2089000.0  ...  2060000.0  104099  resampled\n6 2026-07-13 09:35:00  2060000.0  2068000.0  ...  2045000.0  103127  resampled\n\n[7 rows x 7 columns]",
+        "source": "kis",
+        "error": null,
+        "status": "success",
+        "last_bar_time": "2026-07-13T09:38:00"
       },
       "investor_flow": {
-        "foreign_net_buy": -209485,
-        "institution_net_buy": 404365,
-        "source": "naver",
+        "foreign_net_buy": 0,
+        "institution_net_buy": 0,
+        "source": "kis",
         "error": null
       },
       "kospilab": {
-        "hynix_reference_price": 284369.0,
-        "hynix_reference_return": 2.52,
-        "samsung_reference_return": 2.52,
-        "hyundai_reference_return": 2.52,
+        "hynix_reference_price": 286787.0,
+        "hynix_reference_return": 0.55,
+        "samsung_reference_return": 0.55,
+        "hyundai_reference_return": 0.55,
         "source_status": "success",
         "error_message": null,
-        "collected_at": "2026-07-10T16:43:22.317190"
+        "collected_at": "2026-07-13T09:35:53.291534"
       },
       "news": {
         "score": 5.0,
@@ -373,25 +381,24 @@
         "headline_count": 0,
         "keywords_found": [],
         "error": "insufficient headlines (0)",
-        "computed_at": "2026-07-10T16:46:30.011257"
+        "computed_at": "2026-07-13T09:39:01.423060"
       },
-      "collected_at": "2026-07-10T16:46:30.011277",
+      "collected_at": "2026-07-13T09:39:01.423081",
       "errors": [
         "DomesticIndex: pykrx index failed: '지수명'",
-        "HynixMinute: KIS 분봉 응답 없음 | 실시간 분봉 수집 실패, 캐시 사용(지연 가능)",
         "News: insufficient headlines (0)"
       ]
     },
-    "computed_at": "2026-07-10T16:46:30.670792"
+    "computed_at": "2026-07-13T09:39:02.763173"
   },
   "last_decision": {
-    "final_action": "INVERSE_BUY",
-    "enhanced_score": 38.74,
-    "inverse_pressure_score": 55.85,
-    "score_gap": 17.11,
+    "final_action": "INVERSE_STRONG_BUY",
+    "enhanced_score": 35.93,
+    "inverse_pressure_score": 72.0,
+    "score_gap": 36.07,
     "score_gap_below_forced_trade_threshold": false,
     "reasons": [
-      "inverse_pressure_score 55.9≥50"
+      "inverse_pressure_score 72.0≥70"
     ]
   },
   "all_time_last_order_id": "DRY-20260710-0005",
@@ -416,11 +423,32 @@
   },
   "cycle_ai_state": {
     "current_phase": "NO_TRADE",
-    "previous_phase": null,
-    "phase_started_at": null,
+    "previous_phase": "EARLY_REVERSAL_UP",
+    "phase_started_at": "2026-07-13T09:35:45.102560",
     "candidate_phase": "NO_TRADE",
-    "candidate_count": 32,
-    "transition_history": [],
+    "candidate_count": 3,
+    "transition_history": [
+      {
+        "at": "2026-07-13T09:19:51.661456",
+        "from": "NO_TRADE",
+        "to": "GAP_FAILURE"
+      },
+      {
+        "at": "2026-07-13T09:23:08.098288",
+        "from": "GAP_FAILURE",
+        "to": "NO_TRADE"
+      },
+      {
+        "at": "2026-07-13T09:26:16.438280",
+        "from": "NO_TRADE",
+        "to": "EARLY_REVERSAL_UP"
+      },
+      {
+        "at": "2026-07-13T09:35:45.102560",
+        "from": "EARLY_REVERSAL_UP",
+        "to": "NO_TRADE"
+      }
+    ],
     "last_entry_direction": null,
     "last_entry_time": null,
     "last_flip_time": null,
@@ -428,107 +456,120 @@
     "consecutive_stop_losses": 0,
     "position_size_scale": 1.0,
     "halted_for_day": false,
-    "_state_date": "20260710"
+    "_state_date": "20260713"
   },
   "decision_v2_threshold_state": {
     "buy_threshold": 60.0,
     "sell_threshold": 60.0,
     "action_history": [
       {
-        "at": "2026-07-10T16:18:06.362508",
+        "at": "2026-07-13T09:14:22.599331",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:21:15.556842",
+        "at": "2026-07-13T09:16:32.222447",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:24:24.096734",
+        "at": "2026-07-13T09:19:32.528417",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:27:34.106384",
+        "at": "2026-07-13T09:19:51.661456",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:30:43.114456",
+        "at": "2026-07-13T09:20:00.383342",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:33:50.930425",
+        "at": "2026-07-13T09:21:28.597043",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:36:58.714696",
+        "at": "2026-07-13T09:23:08.098288",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:40:06.864017",
+        "at": "2026-07-13T09:24:05.495696",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:43:14.596781",
+        "at": "2026-07-13T09:26:16.438280",
         "action": "HOLD"
       },
       {
-        "at": "2026-07-10T16:46:23.229728",
+        "at": "2026-07-13T09:29:25.308758",
+        "action": "HOLD"
+      },
+      {
+        "at": "2026-07-13T09:32:33.745081",
+        "action": "HOLD"
+      },
+      {
+        "at": "2026-07-13T09:35:45.102560",
+        "action": "HOLD"
+      },
+      {
+        "at": "2026-07-13T09:38:54.536511",
         "action": "HOLD"
       }
     ],
-    "consecutive_hold": 10,
+    "consecutive_hold": 13,
     "whipsaw_flips": 0
   },
   "last_cycle_ai_result": {
     "cycle": {
       "cycle_phase": "NO_TRADE",
-      "previous_cycle_phase": null,
-      "phase_started_at": null,
-      "phase_duration_seconds": 0,
+      "previous_cycle_phase": "EARLY_REVERSAL_UP",
+      "phase_started_at": "2026-07-13T09:35:45.102560",
+      "phase_duration_seconds": 189,
       "momentum": {
-        "momentum_velocity_up": 5.757805587156874,
-        "momentum_velocity_down": 94.24219441284313,
-        "momentum_acceleration_up": 50.0,
-        "momentum_acceleration_down": 100.0,
+        "momentum_velocity_up": 13.507845656035535,
+        "momentum_velocity_down": 86.49215434396447,
+        "momentum_acceleration_up": 52.659964294790846,
+        "momentum_acceleration_down": 47.340035705209154,
         "acceleration_confirmed_up": false,
-        "acceleration_confirmed_down": true,
-        "raw_velocity_3": -0.2655,
-        "raw_acceleration": -0.2655,
+        "acceleration_confirmed_down": false,
+        "raw_velocity_3": -0.219,
+        "raw_acceleration": 0.008,
         "available": true
       },
       "turning_point": {
-        "up_turn_probability_3m": 59.0,
-        "up_turn_probability_5m": 57.7,
-        "up_turn_probability_10m": 55.9,
-        "down_turn_probability_3m": 52.6,
-        "down_turn_probability_5m": 53.0,
-        "down_turn_probability_10m": 53.5,
-        "confidence": 80.0,
+        "up_turn_probability_3m": 49.1,
+        "up_turn_probability_5m": 49.2,
+        "up_turn_probability_10m": 49.4,
+        "down_turn_probability_3m": 51.1,
+        "down_turn_probability_5m": 50.9,
+        "down_turn_probability_10m": 50.7,
+        "confidence": 90.0,
         "available": true,
         "up_components": {
           "lower_lows_reversing": 40.0,
           "macd_hist_improving": 45.0,
           "rsi_bullish_zone": 55.0,
-          "lower_wick": 50.0,
-          "vwap_gap_narrowing": 78.16313197535301,
+          "down_volume_declining": 45.0,
+          "lower_wick": 100.0,
+          "vwap_gap_narrowing": 15.224283614775757,
           "prior_high_break": 42.0,
-          "korea_confirmation": 82.47,
-          "micron_score": 79.41
+          "korea_confirmation": 50.7,
+          "micron_score": 48.59
         },
         "down_components": {
           "higher_highs_reversing": 70.0,
           "macd_hist_declining": 45.0,
           "rsi_bearish_zone": 45.0,
-          "upper_wick": 50.0,
+          "upper_wick": 15.151515151515156,
           "vwap_break": 65.0,
           "prior_low_break": 68.0,
-          "korea_confirmation": 17.53,
-          "micron_score": 20.590000000000003
+          "korea_confirmation": 49.3,
+          "micron_score": 51.41
         }
       },
-      "cycle_confidence": 65.0,
+      "cycle_confidence": 68.0,
       "entry_scores": {
-        "cycle_entry_score_inverse": 69.3,
-        "cycle_entry_score_hynix": 56.8
+        "cycle_entry_score_inverse": 53.4,
+        "cycle_entry_score_hynix": 54.0
       },
       "action": "HOLD",
       "recommended_symbol": null,
@@ -539,11 +580,32 @@
       "blocking_reason": null,
       "state": {
         "current_phase": "NO_TRADE",
-        "previous_phase": null,
-        "phase_started_at": null,
+        "previous_phase": "EARLY_REVERSAL_UP",
+        "phase_started_at": "2026-07-13T09:35:45.102560",
         "candidate_phase": "NO_TRADE",
-        "candidate_count": 32,
-        "transition_history": [],
+        "candidate_count": 3,
+        "transition_history": [
+          {
+            "at": "2026-07-13T09:19:51.661456",
+            "from": "NO_TRADE",
+            "to": "GAP_FAILURE"
+          },
+          {
+            "at": "2026-07-13T09:23:08.098288",
+            "from": "GAP_FAILURE",
+            "to": "NO_TRADE"
+          },
+          {
+            "at": "2026-07-13T09:26:16.438280",
+            "from": "NO_TRADE",
+            "to": "EARLY_REVERSAL_UP"
+          },
+          {
+            "at": "2026-07-13T09:35:45.102560",
+            "from": "EARLY_REVERSAL_UP",
+            "to": "NO_TRADE"
+          }
+        ],
         "last_entry_direction": null,
         "last_entry_time": null,
         "last_flip_time": null,
@@ -551,16 +613,37 @@
         "consecutive_stop_losses": 0,
         "position_size_scale": 1.0,
         "halted_for_day": false,
-        "_state_date": "20260710"
+        "_state_date": "20260713"
       },
-      "transition_history": []
+      "transition_history": [
+        {
+          "at": "2026-07-13T09:19:51.661456",
+          "from": "NO_TRADE",
+          "to": "GAP_FAILURE"
+        },
+        {
+          "at": "2026-07-13T09:23:08.098288",
+          "from": "GAP_FAILURE",
+          "to": "NO_TRADE"
+        },
+        {
+          "at": "2026-07-13T09:26:16.438280",
+          "from": "NO_TRADE",
+          "to": "EARLY_REVERSAL_UP"
+        },
+        {
+          "at": "2026-07-13T09:35:45.102560",
+          "from": "EARLY_REVERSAL_UP",
+          "to": "NO_TRADE"
+        }
+      ]
     },
     "probability": {
-      "buy_probability": 20.7,
-      "sell_probability": 8.1,
-      "hold_probability": 71.3,
-      "raw_buy_score": 60.34,
-      "raw_sell_score": 54.03,
+      "buy_probability": 0.0,
+      "sell_probability": 5.0,
+      "hold_probability": 95.0,
+      "raw_buy_score": 49.19,
+      "raw_sell_score": 52.48,
       "horizon_weights": {
         "3m": 0.5,
         "5m": 0.3,
@@ -569,14 +652,41 @@
     },
     "decision_v2": {
       "final_action_v2": "HOLD",
-      "buy_probability": 20.7,
-      "sell_probability": 8.1,
-      "hold_probability": 71.3,
+      "buy_probability": 0.0,
+      "sell_probability": 5.0,
+      "hold_probability": 95.0,
       "buy_threshold": 60.0,
       "sell_threshold": 60.0
     },
     "combined_shadow_action": "HOLD",
-    "effective_micron_score": 79.41,
-    "korea_semiconductor_confirmation_score": 82.47
+    "effective_micron_score": 48.59,
+    "korea_semiconductor_confirmation_score": 50.7
+  },
+  "pending_entry": {
+    "action": "INVERSE_BUY",
+    "symbol": "0197X0",
+    "since": "2026-07-13T09:16:32.222447"
+  },
+  "trading_mode": "ACTIVE",
+  "active_strategy_enabled": true,
+  "active_strategy_state": {
+    "_state_date": "20260713",
+    "mode": "ACTIVE",
+    "position_symbol": null,
+    "position_entry_price": null,
+    "position_entry_time": null,
+    "position_entry_probability": null,
+    "position_current_pct": 0.0,
+    "scale_in_count": 0,
+    "last_exit_time": null,
+    "last_exit_was_stop_loss": false,
+    "last_exit_symbol": null,
+    "last_switch_time": null,
+    "switch_history": [],
+    "whipsaw_dampened_until": null,
+    "round_trip_count_today": 0,
+    "hold_streak_no_position": 10,
+    "hold_streak_started_at": "2026-07-13T09:19:51.661456",
+    "consecutive_stop_losses": 0
   }
 }

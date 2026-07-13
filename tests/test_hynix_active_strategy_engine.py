@@ -95,27 +95,38 @@ class TestHoldStreakRelief:
 
 
 class TestEarlyEntryDecision:
-    def test_no_entry_when_below_threshold_and_early_conditions_unmet(self):
-        result = decide_active_strategy_action(**_base_kwargs(buy_probability=53.0, model_confidence=40.0))
+    """진입 판단은 fusion_score(0.35*Prediction+0.25*Enhanced+0.20*Momentum+0.10*Micron+0.10*CycleBonus)
+    기반이다 — Cycle Phase는 Entry Gate가 아니라 cycle_bonus라는 작은 보조 feature일 뿐이다."""
+
+    def test_neutral_setup_holds(self):
+        result = decide_active_strategy_action(**_base_kwargs(
+            buy_probability=50.0, inverse_probability=50.0, enhanced_ai_score=65.0, micron_ai_score=60.0,
+        ))
         assert result["action"] == ACTION_HOLD
 
-    def test_early_test_entry_in_54_to_59_band(self):
+    def test_trial_entry_band_58_to_67(self):
         result = decide_active_strategy_action(**_base_kwargs(
-            buy_probability=56.0, inverse_probability=20.0, model_confidence=60.0, expected_move_pct=0.3,
-            momentum_inflection_or_acceleration=60.0,
+            buy_probability=85.0, inverse_probability=15.0, enhanced_ai_score=60.0, micron_ai_score=55.0,
         ))
+        fusion = result["fusion_result"]["fusion_score"]
+        assert 58.0 <= fusion < 68.0
         assert result["action"] == ACTION_ENTER_HYNIX
-        assert result["recommended_position_pct"] == 15.0
+        assert 0 < result["recommended_position_pct"] < 50.0
 
-    def test_full_entry_above_threshold(self):
-        result = decide_active_strategy_action(**_base_kwargs(buy_probability=62.0, inverse_probability=15.0))
+    def test_full_entry_above_68(self):
+        result = decide_active_strategy_action(**_base_kwargs(
+            buy_probability=100.0, inverse_probability=0.0, enhanced_ai_score=90.0, micron_ai_score=90.0,
+            momentum_inflection_or_acceleration=90.0, cycle_phase="TREND_UP",
+        ))
+        assert result["fusion_result"]["fusion_score"] >= 68.0
         assert result["action"] == ACTION_ENTER_HYNIX
         assert result["recommended_position_pct"] > 0
 
-    def test_no_trade_phase_blocks_entry(self):
-        result = decide_active_strategy_action(**_base_kwargs(buy_probability=90.0, cycle_phase="NO_TRADE"))
-        assert result["action"] == ACTION_HOLD
-        assert "NO_TRADE" in result["blocking_reason"]
+    def test_no_trade_phase_does_not_block_entry(self):
+        """핵심 변경사항 검증 — Cycle Phase NO_TRADE는 더 이상 단독으로 신규진입을 막지 않는다."""
+        result = decide_active_strategy_action(**_base_kwargs(buy_probability=90.0, inverse_probability=10.0, cycle_phase="NO_TRADE"))
+        assert result["action"] == ACTION_ENTER_HYNIX
+        assert result["blocking_reason"] is None
 
     def test_after_1500_blocks_new_entry(self):
         result = decide_active_strategy_action(**_base_kwargs(buy_probability=90.0, now=datetime(2026, 7, 13, 15, 5)))
@@ -160,7 +171,7 @@ class TestReentryCooldown:
         state["_state_date"] = _NOW.strftime("%Y%m%d")
         state = register_position_closed(state, was_stop_loss=False, now=_NOW)
         result = decide_active_strategy_action(**_base_kwargs(
-            buy_probability=90.0, now=_NOW + timedelta(minutes=6), strategy_state=state,
+            buy_probability=95.0, inverse_probability=5.0, now=_NOW + timedelta(minutes=6), strategy_state=state,
         ))
         assert result["action"] == ACTION_ENTER_HYNIX
 

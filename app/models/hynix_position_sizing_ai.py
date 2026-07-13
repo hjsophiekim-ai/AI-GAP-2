@@ -66,9 +66,18 @@ class PositionSizingAI:
             scale *= 0.7
             reasons.append(f"최근 손익 {recent_pnl_pct:+.2f}% 부진 — 비중 축소")
 
-        if cycle_phase == "NO_TRADE":
-            scale = 0.0
-            reasons.append("Cycle Phase NO_TRADE — 진입 금지")
+        # Cycle Phase는 단독 Entry Gate가 아니다 — cycle_bonus를 비중에 대한 작은
+        # 가점/감점(feature)으로만 반영한다(NO_TRADE라고 무조건 0으로 막지 않음).
+        if cycle_phase is not None:
+            try:
+                from app.trading.hynix_cycle_detector import calculate_cycle_bonus
+
+                bonus = calculate_cycle_bonus(cycle_phase)
+                if bonus != 0.0:
+                    scale *= max(0.5, min(1.5, 1.0 + bonus / 100.0))
+                    reasons.append(f"Cycle Phase {cycle_phase} bonus {bonus:+.0f} — 비중 {'확대' if bonus > 0 else '축소'}")
+            except Exception:
+                pass
 
         if order_flow_confidence is not None and order_flow_confidence < 30.0:
             scale *= 0.85
