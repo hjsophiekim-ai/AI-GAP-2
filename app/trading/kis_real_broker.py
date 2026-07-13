@@ -44,7 +44,7 @@ class KisRealBroker(BrokerBase):
         runtime_enable_real_sell: bool = False,
         **kwargs,
     ) -> None:
-        from app.config import get_config
+        from app.config import get_config, get_kis_account_config, get_real_account_change_status
         self._cfg = cfg or get_config()
         self._runtime_real_mode = runtime_real_mode
         self._runtime_enable_real_buy = runtime_enable_real_buy
@@ -74,6 +74,19 @@ class KisRealBroker(BrokerBase):
         if self._cfg.require_real_confirm() and confirm_text != expected:
             raise RuntimeError(
                 f"실전투자 확인 문구가 틀립니다. '{expected}'를 정확히 입력하세요."
+            )
+
+        account_cfg = get_kis_account_config("real")
+        if account_cfg.get("account_conflict"):
+            raise RuntimeError(
+                "실전계좌 환경변수 충돌이 감지되어 REAL 주문을 차단합니다. "
+                f"충돌 변수: {', '.join(account_cfg.get('account_conflict_vars', []))}"
+            )
+        change_status = get_real_account_change_status()
+        if change_status.get("sync_required"):
+            raise RuntimeError(
+                "실전계좌 변경 감지: 새 계좌 동기화 확인 전까지 REAL 주문을 차단합니다. "
+                "KIS API 연결 화면에서 '새 계좌 동기화 확인'을 실행하세요."
             )
 
         self.kis = kis_client

@@ -48,9 +48,9 @@ kis:
     enabled: false                               # 기본 비활성화 — UI 실전모드 버튼으로 override
     app_key_env: "KIS_REAL_APP_KEY"
     app_secret_env: "KIS_REAL_APP_SECRET"
-    account_no_env: "KIS_ACCOUNT_NO"             # .env의 실제 키 이름
-    account_product_code_env: "KIS_ACCOUNT_PRODUCT_CODE"
-    product_code_env: "KIS_ACCOUNT_PRODUCT_CODE" # 하위 호환용
+    account_no_env: "KIS_REAL_ACCOUNT_NO"
+    account_product_code_env: "KIS_REAL_ACCOUNT_PRODUCT_CODE"
+    product_code_env: "KIS_REAL_ACCOUNT_PRODUCT_CODE"
     base_url: "https://openapi.koreainvestment.com:9443"
 
   mock:
@@ -83,13 +83,13 @@ ml:
 
 safety:
   # ── 실전투자 활성화 플래그 (기본값: 모두 false = 안전) ─────────────────────
-  enable_real_trading: false    # 전체 실전투자 마스터 스위치
+  enable_real_trading: true     # 전체 실전투자 마스터 스위치
   enable_real_buy: false        # 실전 매수 허용
   enable_real_sell: false       # 실전 매도 허용
 
   # ── 확인 문구 ──────────────────────────────────────────────────────────────
   require_real_order_confirm_text: true
-  real_order_confirm_text: "live"
+  real_order_confirm_text: "I_UNDERSTAND_REAL_TRADING_RISK"
   real_trading_start_date: "2026-07-14"
 
   # ── 주문 한도 ──────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ safety:
 
   # ── 하위 호환 (기존 키 유지) ───────────────────────────────────────────────
   require_real_confirm: true
-  real_confirm_text: "live"
+  real_confirm_text: "I_UNDERSTAND_REAL_TRADING_RISK"
   max_real_order_amount: 10000000
   max_real_daily_budget: 10000000
 
@@ -110,6 +110,22 @@ hynix_auto_trade:
   max_symbol_pct: 0.70           # 종목당 최대 비중 = 총자산의 70%
   min_cash_ratio_for_buy: 0.20   # 현금비중이 이 값 미만이면 신규매수 금지
   daily_loss_limit_pct: -3.0     # 당일 누적 손익이 이 값 이하면 신규매수 중단
+
+trading_cost:
+  # 한국투자증권(KIS) 실거래 기준 수수료/거래세/슬리피지 — 하드코딩 금지, 이 설정을
+  # 통해서만 읽는다(docs/requirements.md 섹션 2). 예시값이며 실제 KIS 고시 요율로
+  # 운영 전 재확인이 필요하다.
+  domestic_buy_fee_rate: 0.00015       # 일반주식(000660) 매수수수료율
+  domestic_sell_fee_rate: 0.00015      # 일반주식 매도수수료율
+  etf_buy_fee_rate: 0.00015            # ETF/ETN(0197X0) 매수수수료율
+  etf_sell_fee_rate: 0.00015           # ETF/ETN 매도수수료율
+  transaction_tax_rate: 0.0018         # 일반주식 증권거래세율(매도 시)
+  etf_transaction_tax_rate: 0.0        # ETF/ETN은 거래세 면제
+  clearing_fee_rate: 0.0               # 청산수수료율(있는 경우)
+  slippage_rate_default: 0.0002        # 기본 슬리피지 0.02%
+  slippage_rate_market_order: 0.0003   # 시장가 슬리피지(더 크게)
+  slippage_rate_limit_order: 0.0001    # 지정가 슬리피지(더 작게)
+  min_commission_krw: 0.0              # 최소수수료(있는 경우)
 
 volume_spike:
   enabled: true

@@ -10,6 +10,14 @@ mode:
 from app.trading.broker_base import BrokerBase
 from app.logger import logger
 
+_BROKER_CACHE_GENERATION = 0
+
+
+def clear_broker_cache() -> None:
+    """Clear broker-factory runtime cache markers."""
+    global _BROKER_CACHE_GENERATION
+    _BROKER_CACHE_GENERATION += 1
+
 
 def create_broker(
     cfg=None,

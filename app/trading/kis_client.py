@@ -131,6 +131,17 @@ class KISClient:
     def _app_key_hash(self) -> str:
         return hashlib.sha256(self._app_key.encode()).hexdigest()[:16]
 
+    def _credential_fingerprint(self) -> str:
+        raw = "|".join([
+            self.mode,
+            self.base_url,
+            self._app_key,
+            self._app_secret,
+            self.account_no,
+            self.product_code,
+        ])
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
     def _load_token_cache(self) -> bool:
         """파일 캐시에서 토큰 로드. 유효(5분 버퍼)하면 True."""
         try:
@@ -149,6 +160,13 @@ class KISClient:
             stored_hash = data.get("app_key_hash", "")
             if stored_hash != self._app_key_hash():
                 logger.info(f"[KIS-{self.mode.upper()}] 토큰 캐시 무효: app_key 변경")
+                return False
+            stored_fingerprint = data.get("credential_fingerprint", "")
+            if stored_fingerprint and stored_fingerprint != self._credential_fingerprint():
+                logger.info(f"[KIS-{self.mode.upper()}] 토큰 캐시 무효: 인증/계좌 정보 변경")
+                return False
+            if not stored_fingerprint:
+                logger.info(f"[KIS-{self.mode.upper()}] 토큰 캐시 무효: 이전 캐시 형식")
                 return False
             self._token = data.get("access_token", "")
             self._token_expires_at = expires_at
@@ -169,6 +187,7 @@ class KISClient:
                 "expires_at": self._token_expires_at.isoformat(),
                 "mode": self.mode,
                 "app_key_hash": self._app_key_hash(),
+                "credential_fingerprint": self._credential_fingerprint(),
                 "base_url": self.base_url,
             }
             with open(self._token_cache_path(), "w", encoding="utf-8") as f:
@@ -364,7 +383,7 @@ class KISClient:
                 logger.error(
                     f"[KIS-{self.mode.upper()}] 잔고 조회 HTTP {resp.status_code}: "
                     f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r} "
-                    f"url={resp.url}"
+                    f"account=***{self.account_no[-2:]}-{self.product_code}"
                 )
                 detail = f"HTTP {resp.status_code}"
                 if msg_cd:
@@ -798,6 +817,20 @@ class KISClient:
             }
 
 
+_CLIENT_CACHE_GENERATION = 0
+
+
+def clear_kis_client_cache() -> None:
+    """Clear in-memory KIS client runtime cache markers.
+
+    create_kis_client currently returns a fresh client each call; the generation
+    counter exists so reload paths and tests can verify cache invalidation
+    without exposing credentials.
+    """
+    global _CLIENT_CACHE_GENERATION
+    _CLIENT_CACHE_GENERATION += 1
+
+
 def create_kis_client(mode: str = "mock") -> "KISClient | None":
     """
     환경변수에서 인증 정보를 읽어 KISClient를 생성합니다.
@@ -806,8 +839,12 @@ def create_kis_client(mode: str = "mock") -> "KISClient | None":
     from app.config import get_kis_account_config
     try:
         account_cfg = get_kis_account_config(mode)
+        if account_cfg.get("account_conflict"):
+            vars_text = ", ".join(account_cfg.get("account_conflict_vars", []))
+            logger.warning("[KIS] 클라이언트 초기화 실패 (%s): 계좌 환경변수 충돌: %s", mode, vars_text)
+            return None
         client = KISClient.from_account_config(account_cfg)
-        logger.info(f"[KIS] {mode} 클라이언트 초기화 완료")
+        logger.info("[KIS] %s 클라이언트 초기화 완료 fp=%s", mode, account_cfg.get("account_fingerprint", ""))
         return client
     except ValueError as e:
         logger.warning(f"[KIS] 클라이언트 초기화 실패 ({mode}): {e}")

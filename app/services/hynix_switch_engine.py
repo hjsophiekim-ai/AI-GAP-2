@@ -208,6 +208,38 @@ def _daily_pnl_pct(state: dict, total_equity: Optional[float]) -> Optional[float
     return (total_equity / baseline - 1.0) * 100.0
 
 
+def check_real_mode_gates(state: dict, cfg=None) -> dict:
+    """명세 5절 — real 실제 주문 전 필수 게이트 체크리스트(읽기 전용 진단 함수).
+
+    이 함수는 어떤 게이트도 새로 활성화하지 않는다 — 기존 config.yaml/.env/
+    trading_policy.yaml 값을 그대로 조회만 한다. Active Strategy는 여전히 mock
+    전용이며, 이 체크리스트는 향후 real 연결 승인 여부를 판단하기 위한 참고용이다.
+    """
+    from app.config import get_config
+
+    cfg = cfg or get_config()
+    real_gate_status = (
+        cfg.enhanced_real_gate_status(current_mode=state.get("mode", "mock"))
+        if hasattr(cfg, "enhanced_real_gate_status")
+        else {"ready": cfg.full_auto_real_confirm_ok(), "blocking_reasons": []}
+    )
+    checks = {
+        "ui_mode_real": state.get("mode") == "real",
+        "real_master_switch": cfg.real_trading_enabled(),
+        "auto_trade_enabled": bool(state.get("auto_trade_on")),
+        "real_auto_order_enabled": bool(real_gate_status.get("ready")),
+        "no_position_conflict": not bool(state.get("position_conflict")),
+    }
+    all_pass = all(checks.values())
+    failed = [name for name, ok in checks.items() if not ok]
+    return {
+        "checks": checks,
+        "all_pass": all_pass,
+        "failed_gates": failed,
+        "real_gate_status": real_gate_status,
+    }
+
+
 def _run_active_strategy_entry(
     state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
     now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
@@ -218,12 +250,15 @@ def _run_active_strategy_entry(
     호출된다(real 모드에서는 절대 호출되지 않음 — 호출부에서 이미 mode=="mock"을
     확인). 기존 ENHANCED_LEGACY 진입 로직(run_switch_or_entry)을 이번 사이클만
     대체하며, 같은 브로커/포지션 파이프라인(_buy_new/_sell_all_or_ratio → 실행
-    원장)을 그대로 사용하되 signal_source="ACTIVE_STRATEGY_MOCK"으로 구분 기록한다.
+    원장)을 그대로 사용하되 signal_source="ACTIVE_ONLY"으로 구분 기록한다.
     """
     from app.trading.hynix_switch_position_manager import _buy_new, _sell_all_or_ratio
     from app.trading.hynix_active_strategy_engine import (
         decide_active_strategy_action, default_active_strategy_state,
         register_position_opened, register_position_closed,
+        to_final_execution_decision, generate_idempotency_key, is_duplicate_signal, register_idempotency_key,
+        REASON_INSUFFICIENT_CASH, REASON_DUPLICATE_SIGNAL, REASON_STALE_PRICE, REASON_ORDER_EXCEPTION,
+        REASON_RISK_LIMIT, REASON_COOLDOWN,
         ACTION_ENTER_HYNIX, ACTION_ENTER_INVERSE, ACTION_SCALE_OUT_PARTIAL, ACTION_EXIT_ALL, ACTION_SWITCH,
     )
     from app.trading.hynix_trading_mode import DEFAULT_MODE
@@ -265,44 +300,94 @@ def _run_active_strategy_entry(
     )
     state["active_strategy_state"] = decision_result["state"]
     action = decision_result["action"]
+
+    # ── FinalExecutionDecision: 이번 사이클의 실행 신호를 단일 객체로 통일한다.
+    # 주문 실행은 이 객체의 executable/blocking_reason만 근거로 삼는다.
+    final_decision = to_final_execution_decision(decision_result, held_symbol=position_state.get("symbol"))
+    state["last_final_execution_decision"] = final_decision
+
     acted = False
-    message = decision_result.get("blocking_reason") or "; ".join(decision_result.get("reasons", [])) or "HOLD"
+    order_id = executed_price = executed_qty = None
+    failure_reason = None
+    message = final_decision.get("blocking_reason") or "; ".join(final_decision.get("reasons", [])) or "HOLD"
+
+    if not final_decision["executable"]:
+        final_decision.update(order_sent=False, order_id=None, executed_price=None, executed_qty=None, failure_reason=None)
+        return {
+            "acted": False, "message": message, "action": action,
+            "decision": decision_result, "final_decision": final_decision, "failure_reason": None,
+        }
+
+    # ── 중복 신호 방지(명세 8절): 같은 분 단위 cycle_id 안에서 동일 action+symbol 재실행 금지 ──
+    cycle_id = now.strftime("%Y%m%d%H%M")
+    idem_key = generate_idempotency_key(now, mode_name, cycle_id, final_decision["action"], final_decision["symbol"] or "")
+    if is_duplicate_signal(state["active_strategy_state"], idem_key):
+        failure_reason = REASON_DUPLICATE_SIGNAL
+        message = f"중복 신호 차단(idempotency_key={idem_key})"
+        final_decision.update(order_sent=False, order_id=None, executed_price=None, executed_qty=None, failure_reason=failure_reason)
+        return {
+            "acted": False, "message": message, "action": action,
+            "decision": decision_result, "final_decision": final_decision, "failure_reason": failure_reason,
+        }
 
     if action in (ACTION_ENTER_HYNIX, ACTION_ENTER_INVERSE):
         symbol = decision_result["recommended_symbol"]
         price = _current_price(symbol, hynix_price, inverse_price)
         pct = decision_result["recommended_position_pct"]
-        if price and pct > 0:
+        if not price:
+            failure_reason, message = REASON_STALE_PRICE, f"{symbol} 현재가 없음 — 주문 미실행"
+        elif pct <= 0:
+            failure_reason, message = REASON_RISK_LIMIT, "권장 비중 0% — 주문 미실행"
+        else:
             try:
                 full_cash = float(broker.get_buyable_cash())
-            except Exception:
-                full_cash = 0.0
-            cash_amount = full_cash * (pct / 100.0)
-            buy_result = _buy_new(
-                broker, symbol, price, cash_amount, f"Active Strategy({mode_name}) 진입 {pct:.0f}%",
-                orders_this_cycle, mode="mock", signal_source="ACTIVE_STRATEGY_MOCK",
-            )
-            if buy_result.get("success"):
-                acted = True
-                qty = buy_result.get("bought_quantity", 0)
-                state["position"] = {
-                    "symbol": symbol, "name": symbol, "quantity": qty, "avg_price": price,
-                    "entry_price": price, "entry_time": now.isoformat(), "partial_tp1_done": False, "partial_sl1_done": False,
-                }
-                state["active_strategy_state"] = register_position_opened(state["active_strategy_state"], symbol, price, pct, now)
-                message = f"Active Strategy 진입: {symbol} {pct:.0f}%({qty}주)"
+            except Exception as exc:
+                full_cash, failure_reason, message = 0.0, REASON_ORDER_EXCEPTION, f"매수가능금액 조회 실패: {exc}"
+            if full_cash > 0:
+                cash_amount = full_cash * (pct / 100.0)
+                if cash_amount < price:
+                    failure_reason = REASON_INSUFFICIENT_CASH
+                    message = f"매수가능금액 부족(필요 {price:,.0f}원, 가용 {cash_amount:,.0f}원)"
+                else:
+                    try:
+                        buy_result = _buy_new(
+                            broker, symbol, price, cash_amount, f"Active Strategy({mode_name}) 진입 {pct:.0f}%",
+                            orders_this_cycle, mode="mock", signal_source="ACTIVE_ONLY",
+                        )
+                    except Exception as exc:
+                        buy_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
+                    if buy_result.get("success"):
+                        acted = True
+                        qty = buy_result.get("bought_quantity", 0)
+                        order_id, executed_price, executed_qty = buy_result.get("order_id"), price, qty
+                        state["position"] = {
+                            "symbol": symbol, "name": symbol, "quantity": qty, "avg_price": price,
+                            "entry_price": price, "entry_time": now.isoformat(), "partial_tp1_done": False, "partial_sl1_done": False,
+                        }
+                        state["active_strategy_state"] = register_position_opened(state["active_strategy_state"], symbol, price, pct, now)
+                        message = f"Active Strategy 진입: {symbol} {pct:.0f}%({qty}주)"
+                    elif not failure_reason:
+                        failure_reason = REASON_ORDER_EXCEPTION
+                        message = buy_result.get("message", "매수 실패")
 
     elif action in (ACTION_SCALE_OUT_PARTIAL, ACTION_EXIT_ALL, ACTION_SWITCH) and position_state.get("symbol"):
         symbol = position_state["symbol"]
         price = _current_price(symbol, hynix_price, inverse_price)
         ratio = 1.0 if action in (ACTION_EXIT_ALL, ACTION_SWITCH) else max(0.01, min(1.0, decision_result["recommended_position_pct"] / 100.0))
-        if price:
-            sell_result = _sell_all_or_ratio(
-                broker, position, price, ratio, f"Active Strategy({mode_name}) {action}", orders_this_cycle,
-                mode="mock", exit_reason_type="active_strategy", signal_source="ACTIVE_STRATEGY_MOCK",
-            )
+        if not price:
+            failure_reason, message = REASON_STALE_PRICE, f"{symbol} 현재가 없음 — 매도 미실행"
+        else:
+            try:
+                sell_result = _sell_all_or_ratio(
+                    broker, position, price, ratio, f"Active Strategy({mode_name}) {action}", orders_this_cycle,
+                    mode="mock", exit_reason_type="active_strategy", signal_source="ACTIVE_ONLY",
+                )
+            except Exception as exc:
+                sell_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
             if sell_result.get("success"):
                 acted = True
+                order_id, executed_price = sell_result.get("order_id"), price
+                executed_qty = sell_result.get("sold_quantity")
                 remaining = sell_result.get("remaining_quantity", 0)
                 if remaining <= 0:
                     state["position"] = {
@@ -313,8 +398,270 @@ def _run_active_strategy_entry(
                 else:
                     state["position"]["quantity"] = remaining
                 message = f"Active Strategy 청산/축소: {symbol} {action} (비중 {ratio*100:.0f}%)"
+            elif not failure_reason:
+                failure_reason = REASON_COOLDOWN if sell_result.get("blocked_by_coordinator") else REASON_ORDER_EXCEPTION
+                message = sell_result.get("message", "매도 실패")
 
-    return {"acted": acted, "message": message, "action": action, "decision": decision_result}
+    if acted:
+        state["active_strategy_state"] = register_idempotency_key(state["active_strategy_state"], idem_key)
+
+    final_decision.update(
+        order_sent=acted, order_id=order_id, executed_price=executed_price, executed_qty=executed_qty,
+        failure_reason=(failure_reason if not acted else None),
+    )
+    state["last_final_execution_decision"] = final_decision
+
+    return {
+        "acted": acted, "message": message, "action": action,
+        "decision": decision_result, "final_decision": final_decision, "failure_reason": failure_reason,
+    }
+
+
+def _run_adaptive_fusion_entry(
+    state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
+    now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
+) -> dict:
+    """ADAPTIVE FUSION — Prediction AI V2를 실제 mock 주문에 반영하되 ACTIVE_FUSION을
+    완전히 대체하지 않는 성과기반 융합 엔진(mock 전용 opt-in, state["adaptive_fusion_enabled"]).
+
+    2026-07-13 사용자 검증: 이전에는 Prediction V2가 buy_probability/sell_probability
+    "값"만 _run_active_strategy_entry의 입력으로 흘러들어갔을 뿐, V2 자신의 독자 판단
+    (decide_final_action_v2)이나 Cycle AI/Micron Proxy의 독자 판단은 실제 체결
+    signal_source에 전혀 반영되지 않았다(항상 ACTIVE_STRATEGY_MOCK/DYNAMIC_EXIT만
+    기록됨). 이 함수는 5개 모델(ACTIVE_FUSION/PREDICTION_V2/CYCLE_AI/EARLY_PREDICTION/
+    MICRON_PROXY)의 독자 확률을 실제로 융합해 신규 진입을 결정하고, 그 기여도를
+    ledger(active_probability/prediction_v2_probability/.../dominant_model/
+    prediction_v2_weight)에 그대로 남긴다. 보유 포지션의 청산/전환 관리는 이미 검증된
+    decide_active_strategy_action()의 판단을 그대로 재사용한다(이번 턴에서 선제청산
+    로직까지 전부 새로 검증하기보다, 신규진입 판단에 V2를 반영하는 핵심 문제부터
+    안전하게 해결하기 위함 — 확장 여지는 남겨둔다).
+    """
+    from app.trading.hynix_switch_position_manager import _buy_new, _sell_all_or_ratio
+    from app.trading.hynix_active_strategy_engine import (
+        decide_active_strategy_action, default_active_strategy_state,
+        register_position_opened, register_position_closed,
+        generate_idempotency_key, is_duplicate_signal, register_idempotency_key,
+        REASON_INSUFFICIENT_CASH, REASON_DUPLICATE_SIGNAL, REASON_STALE_PRICE, REASON_ORDER_EXCEPTION,
+        REASON_RISK_LIMIT, REASON_COOLDOWN,
+        ACTION_ENTER_HYNIX, ACTION_ENTER_INVERSE, ACTION_SCALE_OUT_PARTIAL, ACTION_EXIT_ALL, ACTION_SWITCH,
+    )
+    from app.trading.hynix_trading_mode import DEFAULT_MODE
+    from app.trading.hynix_adaptive_fusion_engine import (
+        HynixAdaptiveFusionEngine, evaluate_prediction_v2_performance,
+        default_hold_tracker, update_hold_tracker, default_whipsaw_state, register_direction_flip,
+        MODEL_PREDICTION_V2, MODEL_STATUS_ADVISORY, MODEL_STATUS_LIVE_VALIDATED,
+        ACTION_HYNIX as FUSION_HYNIX, ACTION_INVERSE as FUSION_INVERSE, ACTION_HOLD as FUSION_HOLD,
+    )
+    from app.services.hynix_execution_ledger import (
+        SIGNAL_SOURCE_ACTIVE_ONLY, SIGNAL_SOURCE_ADAPTIVE_FUSION, SIGNAL_SOURCE_PREDICTION_V2_ASSISTED,
+    )
+
+    shadow = state.get("last_cycle_ai_result") or {}
+    cyc = shadow.get("cycle") or {}
+    prob = shadow.get("probability") or {}
+    decision_v2 = shadow.get("decision_v2") or {"final_action_v2": "HOLD"}
+    turning_point = cyc.get("turning_point") or {}
+    momentum = cyc.get("momentum") or {}
+
+    mode_name = state.get("trading_mode", DEFAULT_MODE)
+    strategy_state = state.get("active_strategy_state") or default_active_strategy_state(mode_name)
+
+    position = state.get("position") or {}
+    position_state = {
+        "symbol": position.get("symbol"), "quantity": position.get("quantity") or 0,
+        "entry_price": position.get("entry_price"),
+    }
+    has_position = bool(position_state["symbol"]) and position_state["quantity"] > 0
+
+    raw_vel = momentum.get("raw_velocity_3")
+    expected_move_pct = round(abs(raw_vel) * 2.0, 3) if raw_vel is not None else 0.25
+    data_ok = bool(hynix_price and inverse_price)
+
+    # ── Model A: ACTIVE_FUSION 자체 판단(이미 검증된 로직 — 보유 포지션 관리는 이 결과를 그대로 쓴다) ──
+    active_decision_result = decide_active_strategy_action(
+        mode=mode_name, now=now,
+        buy_probability=prob.get("buy_probability", 0.0), inverse_probability=prob.get("sell_probability", 0.0),
+        hold_probability=prob.get("hold_probability", 100.0),
+        model_confidence=turning_point.get("confidence", 50.0), expected_move_pct=expected_move_pct,
+        down_turn_probability_3m=turning_point.get("down_turn_probability_3m"),
+        up_turn_probability_3m=turning_point.get("up_turn_probability_3m"),
+        momentum_inflection_or_acceleration=momentum.get("momentum_acceleration_up"),
+        cycle_phase=cyc.get("cycle_phase"), order_flow_confidence=None,
+        atr_pct=None, consecutive_stop_losses=strategy_state.get("consecutive_stop_losses", 0),
+        recent_pnl_pct=state.get("realized_pnl_today_pct"), daily_return_pct=state.get("realized_pnl_today_pct"),
+        position_state=position_state, strategy_state=strategy_state,
+        data_ok=data_ok, position_conflict=bool(state.get("position_conflict")),
+        enhanced_ai_score=enhanced_ai_score, micron_ai_score=shadow.get("effective_micron_score"),
+    )
+    state["active_strategy_state"] = active_decision_result["state"]
+
+    # ── Model B~E 입력 준비 ──────────────────────────────────────────────────
+    prediction_v2_performance = evaluate_prediction_v2_performance(now)
+    micron_snapshot = state.get("last_micron_proxy_snapshot") or {}
+    micron_proxy = None
+    if micron_snapshot.get("effective_micron_score") is not None:
+        micron_proxy = {
+            "effective_micron_score": micron_snapshot.get("effective_micron_score"),
+            "micron_data_confidence": micron_snapshot.get("confidence"),
+            "micron_score_source": micron_snapshot.get("score_source"),
+        }
+
+    hold_tracker = state.get("adaptive_fusion_hold_tracker") or default_hold_tracker()
+    whipsaw_state = state.get("adaptive_fusion_whipsaw_state") or default_whipsaw_state()
+
+    engine = HynixAdaptiveFusionEngine()
+    fusion_decision = engine.decide(
+        now=now, active_decision_result=active_decision_result,
+        prediction_v2_probability=prob, prediction_v2_decision=decision_v2,
+        prediction_v2_performance=prediction_v2_performance, cycle_result=cyc,
+        cycle_ai_validated=bool(state.get("cycle_ai_validated", False)), micron_proxy=micron_proxy,
+        held_symbol=position_state["symbol"], position_conflict=bool(state.get("position_conflict")),
+        data_ok=data_ok, price_is_stale=not data_ok,
+        daily_return_pct=state.get("realized_pnl_today_pct"), orders_today_count=state.get("daily_trade_count", 0),
+        hold_tracker=hold_tracker, whipsaw_state=whipsaw_state,
+        consecutive_stop_losses=strategy_state.get("consecutive_stop_losses", 0),
+    )
+
+    fused_action = fusion_decision["final_action"]
+    hold_tracker = update_hold_tracker(hold_tracker, has_position, fused_action, now)
+    state["adaptive_fusion_hold_tracker"] = hold_tracker
+    last_direction = state.get("adaptive_fusion_last_direction")
+    if fused_action in (FUSION_HYNIX, FUSION_INVERSE):
+        if last_direction and last_direction != fused_action:
+            whipsaw_state = register_direction_flip(whipsaw_state, now)
+        state["adaptive_fusion_last_direction"] = fused_action
+    state["adaptive_fusion_whipsaw_state"] = whipsaw_state
+    state["last_fusion_decision"] = fusion_decision
+
+    # ── signal_source: Prediction V2가 실제로 (SHADOW를 벗어나) 기여했을 때만 그렇다고 표기한다 ──
+    pv2_weight = fusion_decision["weights"].get(MODEL_PREDICTION_V2, 0.0)
+    pv2_status = prediction_v2_performance.get("model_status")
+    pv2_applied = pv2_status in (MODEL_STATUS_ADVISORY, MODEL_STATUS_LIVE_VALIDATED) and pv2_weight > 0
+    if not pv2_applied:
+        signal_source = SIGNAL_SOURCE_ACTIVE_ONLY
+    elif fusion_decision["dominant_model"] == MODEL_PREDICTION_V2:
+        signal_source = SIGNAL_SOURCE_PREDICTION_V2_ASSISTED
+    else:
+        signal_source = SIGNAL_SOURCE_ADAPTIVE_FUSION
+
+    fusion_metadata = {
+        "active_probability": fusion_decision["fused_hynix_probability"],  # 참고용(대표값) — 상세는 아래 개별 확률 사용
+        "prediction_v2_probability": prob.get("buy_probability"),
+        "cycle_probability": turning_point.get("up_turn_probability_3m"),
+        "fused_probability": max(fusion_decision["fused_hynix_probability"], fusion_decision["fused_inverse_probability"]),
+        "prediction_v2_weight": pv2_weight if pv2_applied else 0.0,
+        "dominant_model": fusion_decision["dominant_model"],
+        "model_agreement": fusion_decision["model_agreement"],
+        "expected_value": fusion_decision["expected_value"],
+        "target_position_pct": fusion_decision["target_position_pct"],
+    }
+
+    action = None
+    acted = False
+    order_id = executed_price = executed_qty = None
+    failure_reason = None
+    message = fusion_decision.get("blocking_reason") or "; ".join(fusion_decision.get("reasons", [])[:1]) or "HOLD"
+
+    if has_position:
+        # 보유 포지션 관리(청산/전환/Scale)는 이미 검증된 ACTIVE_FUSION 판단을 그대로 쓴다.
+        action = active_decision_result["action"]
+        if action in (ACTION_SCALE_OUT_PARTIAL, ACTION_EXIT_ALL, ACTION_SWITCH):
+            symbol = position_state["symbol"]
+            price = _current_price(symbol, hynix_price, inverse_price)
+            ratio = 1.0 if action in (ACTION_EXIT_ALL, ACTION_SWITCH) else max(0.01, min(1.0, active_decision_result["recommended_position_pct"] / 100.0))
+            if not price:
+                failure_reason, message = REASON_STALE_PRICE, f"{symbol} 현재가 없음 — 매도 미실행"
+            else:
+                try:
+                    sell_result = _sell_all_or_ratio(
+                        broker, position, price, ratio, f"Adaptive Fusion({mode_name}) {action}", orders_this_cycle,
+                        mode="mock", exit_reason_type="active_strategy", signal_source=signal_source,
+                        fusion_metadata=fusion_metadata,
+                    )
+                except Exception as exc:
+                    sell_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
+                if sell_result.get("success"):
+                    acted = True
+                    order_id, executed_price = sell_result.get("order_id"), price
+                    executed_qty = sell_result.get("sold_quantity")
+                    remaining = sell_result.get("remaining_quantity", 0)
+                    if remaining <= 0:
+                        state["position"] = {
+                            "symbol": None, "quantity": 0, "avg_price": None, "entry_price": None,
+                            "entry_time": None, "name": None, "partial_tp1_done": False, "partial_sl1_done": False,
+                        }
+                        state["active_strategy_state"] = register_position_closed(state["active_strategy_state"], was_stop_loss=False, now=now)
+                    else:
+                        state["position"]["quantity"] = remaining
+                    message = f"Adaptive Fusion 청산/축소: {symbol} {action} (비중 {ratio*100:.0f}%)"
+                elif not failure_reason:
+                    failure_reason = REASON_COOLDOWN if sell_result.get("blocked_by_coordinator") else REASON_ORDER_EXCEPTION
+                    message = sell_result.get("message", "매도 실패")
+    elif fusion_decision["executable"] and fused_action in (FUSION_HYNIX, FUSION_INVERSE) and fusion_decision.get("symbol"):
+        symbol = fusion_decision["symbol"]
+        pct = fusion_decision["target_position_pct"]
+        price = _current_price(symbol, hynix_price, inverse_price)
+        cycle_id = now.strftime("%Y%m%d%H%M")
+        idem_key = generate_idempotency_key(now, mode_name, cycle_id, fused_action, symbol)
+        if is_duplicate_signal(state["active_strategy_state"], idem_key):
+            failure_reason, message = REASON_DUPLICATE_SIGNAL, f"중복 신호 차단(idempotency_key={idem_key})"
+        elif not price:
+            failure_reason, message = REASON_STALE_PRICE, f"{symbol} 현재가 없음 — 주문 미실행"
+        elif pct <= 0:
+            failure_reason, message = REASON_RISK_LIMIT, "권장 비중 0% — 주문 미실행"
+        else:
+            try:
+                full_cash = float(broker.get_buyable_cash())
+            except Exception as exc:
+                full_cash, failure_reason, message = 0.0, REASON_ORDER_EXCEPTION, f"매수가능금액 조회 실패: {exc}"
+            if full_cash > 0:
+                cash_amount = full_cash * (pct / 100.0)
+                if cash_amount < (price or 0):
+                    failure_reason = REASON_INSUFFICIENT_CASH
+                    message = f"매수가능금액 부족(필요 {price:,.0f}원, 가용 {cash_amount:,.0f}원)"
+                else:
+                    try:
+                        buy_result = _buy_new(
+                            broker, symbol, price, cash_amount, f"Adaptive Fusion({mode_name}) 진입 {pct:.0f}%",
+                            orders_this_cycle, mode="mock", signal_source=signal_source, fusion_metadata=fusion_metadata,
+                        )
+                    except Exception as exc:
+                        buy_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
+                    if buy_result.get("success"):
+                        acted = True
+                        action = ACTION_ENTER_HYNIX if symbol == "000660" else ACTION_ENTER_INVERSE
+                        qty = buy_result.get("bought_quantity", 0)
+                        order_id, executed_price, executed_qty = buy_result.get("order_id"), price, qty
+                        state["position"] = {
+                            "symbol": symbol, "name": symbol, "quantity": qty, "avg_price": price,
+                            "entry_price": price, "entry_time": now.isoformat(), "partial_tp1_done": False, "partial_sl1_done": False,
+                        }
+                        state["active_strategy_state"] = register_position_opened(state["active_strategy_state"], symbol, price, pct, now)
+                        state["active_strategy_state"] = register_idempotency_key(state["active_strategy_state"], idem_key)
+                        message = f"Adaptive Fusion 진입: {symbol} {pct:.0f}%({qty}주) — {signal_source}"
+                    elif not failure_reason:
+                        failure_reason = REASON_ORDER_EXCEPTION
+                        message = buy_result.get("message", "매수 실패")
+
+    from app.trading.hynix_active_strategy_engine import build_final_execution_decision
+    final_decision = build_final_execution_decision(
+        action=(fused_action if not has_position else (active_decision_result.get("action") or "HOLD")),
+        symbol=fusion_decision.get("symbol") or position_state.get("symbol"),
+        target_position_pct=fusion_decision.get("target_position_pct", 0.0),
+        confidence=fusion_decision.get("fused_confidence", 50.0), signal_source=signal_source,
+        reasons=fusion_decision.get("reasons", []), executable=bool(acted),
+        blocking_reason=(failure_reason if not acted else None),
+    )
+    final_decision.update(
+        order_sent=acted, order_id=order_id, executed_price=executed_price, executed_qty=executed_qty,
+        failure_reason=(failure_reason if not acted else None),
+    )
+    state["last_final_execution_decision"] = final_decision
+
+    return {
+        "acted": acted, "message": message, "action": action,
+        "decision": fusion_decision, "final_decision": final_decision, "failure_reason": failure_reason,
+    }
 
 
 def _run_shadow_cycle_ai_and_decision_v2(
@@ -342,6 +689,19 @@ def _run_shadow_cycle_ai_and_decision_v2(
         micron_proxy = compute_effective_micron_score_from_market_data(market_data, now=now)
         effective_micron_score = micron_proxy.get("effective_micron_score")
         korea_score = micron_proxy.get("korea_semiconductor_confirmation_score")
+
+        # 매 사이클 Micron Proxy 결과를 state에 스냅샷으로 저장한다 — 이번 사이클에서
+        # 원본 데이터가 없어 계산이 실패/생략되더라도 이 필드는 마지막 성공 값을 그대로
+        # 유지하므로, UI는 "데이터 없음"으로 빈 화면을 보이는 대신 마지막 성공 계산
+        # 결과 + 경과시간을 표시할 수 있다.
+        state["last_micron_proxy_snapshot"] = {
+            "real_micron_score": micron_proxy.get("real_micron_score"),
+            "synthetic_micron_score": micron_proxy.get("synthetic_micron_score"),
+            "effective_micron_score": effective_micron_score,
+            "score_source": micron_proxy.get("micron_score_source"),
+            "confidence": micron_proxy.get("micron_data_confidence"),
+            "calculated_at": now.isoformat(timespec="seconds"),
+        }
 
         gap_pct = None
         session_high = session_low = None
@@ -505,6 +865,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     order_api_ok = True
     broker = None
     real_gate_ok = True
+    real_gate_status = None
 
     auto_trade_on = bool(state.get("auto_trade_on"))
     position_manager = None
@@ -515,21 +876,29 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 from app.trading.broker_factory import create_broker
 
                 cfg = get_config()
-                real_gate_ok = cfg.full_auto_real_confirm_ok()
+                real_gate_status = (
+                    cfg.enhanced_real_gate_status(current_mode=mode)
+                    if hasattr(cfg, "enhanced_real_gate_status")
+                    else {"ready": cfg.full_auto_real_confirm_ok(), "blocking_reasons": [], "checks": {}}
+                )
+                real_gate_ok = bool(real_gate_status.get("ready"))
+                trace["real_gate_status"] = real_gate_status
                 if not real_gate_ok:
-                    warnings.append("REAL 완전자동 게이트 미충족(safety.enable_real_trading / FULL_AUTO_REAL_CONFIRM_TEXT) — 주문 실행 생략")
+                    warnings.append(
+                        "REAL 완전자동 게이트 미충족: "
+                        + ", ".join(real_gate_status.get("blocking_reasons") or ["UNKNOWN"])
+                        + " — 주문 실행 생략"
+                    )
                 if real_gate_ok:
                     broker = create_broker(
                         cfg, mode="real",
                         runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
                     )
             else:
-                # mock은 KIS 모의투자 서버(계좌 권한/외부 상태에 의존)를 거치지 않고,
-                # 사용자가 설정한 예산으로 완전히 로컬에서 동작하는 DryRunBroker를 사용한다.
-                # → KIS 모의계좌 승인/장시간 이슈와 무관하게 항상 자동매매가 동작한다.
-                from app.trading.dry_run_broker import DryRunBroker
+                from app.config import get_config
+                from app.trading.broker_factory import create_broker
 
-                broker = DryRunBroker(initial_balance=float(state.get("mock_budget_krw", 10_000_000.0)))
+                broker = create_broker(get_config(), mode="mock")
 
             if broker is not None:
                 # Broker가 유일한 Source of Truth — position_manager.sync()로 실제 포지션을
@@ -551,6 +920,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
             positions = broker.get_positions()
             cash = broker.get_buyable_cash()
             total_equity = float(cash) + sum(p.market_value for p in positions)
+            state["total_equity"] = total_equity
             is_mock_override = mode == "mock" and state.get("allow_mock_loss_override")
             daily_pnl_pct = _daily_pnl_pct(state, total_equity)
             if daily_pnl_pct is not None and daily_pnl_pct <= -2.5 and mode == "real":
@@ -582,7 +952,13 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         elif not auto_trade_on:
             trace["risk_manager_reason"] = "자동매매 OFF"
         elif not real_gate_ok:
-            trace["risk_manager_reason"] = "REAL 완전자동 게이트 미충족"
+            if real_gate_status:
+                trace["risk_manager_reason"] = (
+                    "REAL_GATE_NOT_READY: "
+                    + ", ".join(real_gate_status.get("blocking_reasons") or ["UNKNOWN"])
+                )
+            else:
+                trace["risk_manager_reason"] = "REAL_GATE_NOT_READY"
         elif is_watch_only(now):
             trace["risk_manager_reason"] = "관찰 전용 시간대(watch-only)"
         elif broker is None:
@@ -612,22 +988,33 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 tp_sl = {"triggered": False}
 
             if not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
-                # ── ACTIVE STRATEGY(거래모드 기반) — mock 전용 opt-in, 이번 사이클의
-                # 신규진입/전환 판단을 기존 ENHANCED_LEGACY 대신 이 엔진이 담당한다.
-                # 강제청산/레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로 안전망은 유지된다.
+                # ── ACTIVE STRATEGY / ADAPTIVE FUSION(거래모드 기반) — mock 전용 opt-in,
+                # 이번 사이클의 신규진입/전환 판단을 기존 ENHANCED_LEGACY 대신 이 엔진이
+                # 담당한다. 강제청산/레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로
+                # 안전망은 유지된다. adaptive_fusion_enabled가 켜져 있으면 Prediction AI
+                # V2/Cycle AI/Micron Proxy를 실제로 융합하는 Adaptive Fusion 경로를 쓰고,
+                # 꺼져 있으면 기존 ACTIVE_FUSION 단독 경로를 그대로 쓴다(대체가 아니라 opt-in).
                 try:
-                    active_result = _run_active_strategy_entry(
-                        state, broker, hynix_price, inverse_price, now, orders_this_cycle,
-                        enhanced_ai_score=decision.get("enhanced_score"),
-                    )
+                    if state.get("adaptive_fusion_enabled"):
+                        active_result = _run_adaptive_fusion_entry(
+                            state, broker, hynix_price, inverse_price, now, orders_this_cycle,
+                            enhanced_ai_score=decision.get("enhanced_score"),
+                        )
+                        trace_label = "ADAPTIVE_FUSION"
+                    else:
+                        active_result = _run_active_strategy_entry(
+                            state, broker, hynix_price, inverse_price, now, orders_this_cycle,
+                            enhanced_ai_score=decision.get("enhanced_score"),
+                        )
+                        trace_label = "ACTIVE_STRATEGY"
                     trace["entry_approved"] = active_result.get("acted", False)
-                    trace["entry_approved_reason"] = f"[ACTIVE_STRATEGY] {active_result.get('message', '')}"
+                    trace["entry_approved_reason"] = f"[{trace_label}] {active_result.get('message', '')}"
                     if active_result.get("acted"):
                         attempted_entry = True
                         state.pop("pending_entry", None)
                 except Exception as exc:
-                    logger.error("[HynixSwitchEngine] Active Strategy 진입 처리 실패: %s", exc)
-                    warnings.append(f"Active Strategy 진입 처리 실패: {exc}")
+                    logger.error("[HynixSwitchEngine] Active Strategy/Adaptive Fusion 진입 처리 실패: %s", exc)
+                    warnings.append(f"Active Strategy/Adaptive Fusion 진입 처리 실패: {exc}")
             elif not tp_sl.get("triggered"):
                 final_action = decision.get("final_action", "HOLD")
                 forced = False
@@ -726,17 +1113,46 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
             trace["prediction_signal"] = "SELL"  # TP/SL/강제청산/스위칭 매도 — 예측신호와 별개로 실제 실행된 것
 
     # ── 미실현손익/당일수익률 갱신 ────────────────────────────────────────────
+    # unrealized_pnl은 GrossPnL이 아니라 NetPnL이다 — "지금 판다면" 발생할 매도수수료/
+    # 거래세/슬리피지를 선차감해 표시한다(docs/requirements.md 섹션 2.10). 일손익
+    # 리스크 게이트(daily_return_pct 기반 신규진입 중단/강제청산)도 이 값을 그대로
+    # 쓰므로, Gross보다 보수적인(더 이르게 위험을 인식하는) 방향으로 안전하게 작동한다.
     position = state.get("position") or {}
     unrealized_pnl = 0.0
+    gross_unrealized_pnl = 0.0
     if position.get("symbol") and (position.get("quantity") or 0) > 0 and position.get("entry_price"):
         cur = _current_price(position["symbol"], hynix_price, inverse_price)
         if cur is not None:
-            unrealized_pnl = (cur - position["entry_price"]) * position["quantity"]
-    state["unrealized_pnl"] = unrealized_pnl
+            try:
+                from app.trading.trading_cost_engine import TradeCostEngine
 
-    if total_equity:
+                cost_result = TradeCostEngine().compute_unrealized_net_pnl(
+                    position["symbol"], entry_price=position["entry_price"], current_price=cur,
+                    quantity=position["quantity"],
+                )
+                unrealized_pnl = cost_result["net_unrealized_pnl"]
+                gross_unrealized_pnl = cost_result["gross_unrealized_pnl"]
+                state["unrealized_pnl_cost_breakdown"] = cost_result
+            except Exception:
+                unrealized_pnl = gross_unrealized_pnl = (cur - position["entry_price"]) * position["quantity"]
+    state["unrealized_pnl"] = unrealized_pnl
+    state["gross_unrealized_pnl"] = gross_unrealized_pnl
+
+    # net_daily_return = (net_realized_pnl + net_unrealized_pnl) / starting_equity(당일 시작
+    # 자산) — 반드시 당일 시작 시점 자산(daily_pnl_baseline_equity)을 분모로 써야 한다.
+    # 과거에는 분모로 "지금 이 순간의" total_equity를 썼는데, total_equity 자체가 이미
+    # 오늘 실현/미실현 손익을 반영해 시시각각 변하는 값이라 분모가 함께 움직이면서
+    # 표시값이 실제 수익률보다 항상 작게 나오는 왜곡이 있었다(2026-07-13 사용자 리포트 —
+    # 예: 순손익 406,333원/시작자산 10,000,000원=4.0633%가 정답인데, 분모를 변동 중인
+    # total_equity로 쓰면 다른 값이 나온다). 일손익 리스크 게이트(daily_return_pct 기반
+    # 신규진입 중단/강제청산, blocking_reason)도 이 값을 그대로 쓰므로 이 필드가 SoT다.
+    starting_equity = state.get("daily_pnl_baseline_equity") or total_equity
+    if starting_equity:
         state["realized_pnl_today_pct"] = round(
-            (state.get("realized_pnl_today_krw", 0.0) + unrealized_pnl) / total_equity * 100.0, 4,
+            (state.get("realized_pnl_today_krw", 0.0) + unrealized_pnl) / starting_equity * 100.0, 4,
+        )
+        state["gross_realized_pnl_today_pct"] = round(
+            (state.get("gross_realized_pnl_today_krw", 0.0) + gross_unrealized_pnl) / starting_equity * 100.0, 4,
         )
 
     trace["trade_counter"] = state.get("daily_trade_count", 0)

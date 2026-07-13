@@ -16,6 +16,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from app.config import _parse_account_no
+from app.config import Config
 from app.trading.kis_client import (
     BASE_URL_MOCK,
     BASE_URL_REAL,
@@ -56,22 +57,75 @@ class TestAccountNumberParsing:
         assert cano == "64282746"
         assert prdt == "02"
 
-    def test_mock_cano_env_priority(self):
-        """KIS_MOCK_CANO가 있으면 KIS_MOCK_ACCOUNT_NO보다 우선."""
+    def test_mock_account_no_env_priority(self):
+        """KIS_MOCK_ACCOUNT_NO가 KIS_MOCK_CANO보다 우선."""
         env = {
             "KIS_MOCK_APP_KEY": "fake_key",
             "KIS_MOCK_APP_SECRET": "fake_secret",
             "KIS_MOCK_CANO": "99887766",
             "KIS_MOCK_ACNT_PRDT_CD": "03",
-            "KIS_MOCK_ACCOUNT_NO": "11223344-01",  # 이것보다 CANO 우선
+            "KIS_MOCK_ACCOUNT_NO": "11223344-01",
             "KIS_MOCK_ACCOUNT_PRODUCT_CODE": "",
         }
         with patch.dict(os.environ, env, clear=False):
             from app.config import get_kis_account_config
             cfg = get_kis_account_config("mock")
-        assert cfg["account_no"] == "99887766"
-        assert cfg["product_code"] == "03"
-        assert cfg["cano_source"] == "CANO_env"
+        assert cfg["account_no"] == "11223344"
+        assert cfg["product_code"] == "01"
+        assert cfg["cano_source"] == "KIS_MOCK_ACCOUNT_NO"
+        assert cfg["account_conflict"] is True
+
+
+class TestEnhancedRealGate:
+    def _set_real_env(self, monkeypatch, confirm="I_UNDERSTAND_REAL_TRADING_RISK"):
+        values = {
+            "ENABLE_FULL_AUTO": "true",
+            "ENABLE_REAL_TRADING": "true",
+            "ENABLE_REAL_BUY": "true",
+            "ENABLE_REAL_SELL": "true",
+            "FULL_AUTO_REAL_CONFIRM_TEXT": confirm,
+            "KIS_REAL_APP_KEY": "real_key",
+            "KIS_REAL_APP_SECRET": "real_secret",
+            "KIS_REAL_ACCOUNT_NO": "12345678-01",
+            "KIS_REAL_ACCOUNT_PRODUCT_CODE": "01",
+        }
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+        for key in ("KIS_REAL_CANO", "KIS_REAL_ACNT_PRDT_CD", "KIS_ACCOUNT_NO", "KIS_ACCOUNT_PRODUCT_CODE"):
+            monkeypatch.delenv(key, raising=False)
+
+    def _cfg(self):
+        cfg = Config()
+        cfg._raw["safety"]["enable_real_trading"] = True
+        cfg._raw["safety"]["require_real_confirm"] = True
+        cfg._raw["safety"]["require_real_order_confirm_text"] = True
+        cfg._raw["safety"]["real_confirm_text"] = "I_UNDERSTAND_REAL_TRADING_RISK"
+        cfg._raw["safety"]["real_order_confirm_text"] = "I_UNDERSTAND_REAL_TRADING_RISK"
+        cfg._raw["kis"]["real"]["account_no_env"] = "KIS_REAL_ACCOUNT_NO"
+        cfg._raw["kis"]["real"]["product_code_env"] = "KIS_REAL_ACCOUNT_PRODUCT_CODE"
+        cfg._raw["kis"]["real"]["account_product_code_env"] = "KIS_REAL_ACCOUNT_PRODUCT_CODE"
+        return cfg
+
+    def test_all_required_real_gate_conditions_pass(self, monkeypatch):
+        self._set_real_env(monkeypatch)
+        status = self._cfg().enhanced_real_gate_status(current_mode="real")
+        assert status["ready"] is True
+        assert status["blocking_reasons"] == []
+        assert status["checks"]["enable_full_auto"] is True
+        assert status["checks"]["config_enable_real_trading"] is True
+        assert status["checks"]["env_enable_real_trading"] is True
+        assert status["checks"]["enable_real_buy"] is True
+        assert status["checks"]["enable_real_sell"] is True
+        assert status["checks"]["confirm_text_matched"] is True
+        assert status["checks"]["real_app_key_present"] is True
+        assert status["checks"]["real_app_secret_present"] is True
+        assert status["checks"]["real_account_present"] is True
+
+    def test_confirm_text_mismatch_blocks_real_gate(self, monkeypatch):
+        self._set_real_env(monkeypatch, confirm="live")
+        status = self._cfg().enhanced_real_gate_status(current_mode="real")
+        assert status["ready"] is False
+        assert "FULL_AUTO_REAL_CONFIRM_TEXT_MISMATCH" in status["blocking_reasons"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

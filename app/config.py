@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 from typing import Optional
@@ -5,7 +6,30 @@ import yaml
 from dotenv import load_dotenv
 
 _ROOT = Path(__file__).parent.parent
-load_dotenv(_ROOT / ".env")
+_ENV_PATH = _ROOT / ".env"
+_ENV_LOADED_MTIME: float | None = None
+
+
+def reload_environment(force: bool = False) -> None:
+    """Reload .env without overriding Render/OS environment variables.
+
+    Effective precedence:
+    1. Render/OS environment variables
+    2. Local .env
+    3. config.yaml/default values
+    """
+    global _ENV_LOADED_MTIME
+    try:
+        mtime = _ENV_PATH.stat().st_mtime
+    except FileNotFoundError:
+        mtime = None
+    if not force and mtime == _ENV_LOADED_MTIME:
+        return
+    load_dotenv(_ENV_PATH, override=False)
+    _ENV_LOADED_MTIME = mtime
+
+
+reload_environment(force=True)
 
 _CONFIG_PATH = _ROOT / "config.yaml"
 
@@ -55,9 +79,9 @@ _DEFAULT_CONFIG = {
             "enabled": False,
             "app_key_env": "KIS_REAL_APP_KEY",
             "app_secret_env": "KIS_REAL_APP_SECRET",
-            "account_no_env": "KIS_ACCOUNT_NO",
-            "account_product_code_env": "KIS_ACCOUNT_PRODUCT_CODE",
-            "product_code_env": "KIS_ACCOUNT_PRODUCT_CODE",
+            "account_no_env": "KIS_REAL_ACCOUNT_NO",
+            "account_product_code_env": "KIS_REAL_ACCOUNT_PRODUCT_CODE",
+            "product_code_env": "KIS_REAL_ACCOUNT_PRODUCT_CODE",
             "base_url": "https://openapi.koreainvestment.com:9443",
         },
         "mock": {
@@ -262,10 +286,10 @@ class Config:
         return bool(val)
 
     def real_confirm_text(self) -> str:
-        """새 키 우선, 구 키 fallback."""
+        """REAL 확인 문구. safety.real_confirm_text를 기준값으로 사용한다."""
         return (
-            self.safety.get("real_order_confirm_text")
-            or self.safety.get("real_confirm_text", "live")
+            self.safety.get("real_confirm_text")
+            or self.safety.get("real_order_confirm_text", "live")
         )
 
     def real_trading_start_date(self) -> str:
@@ -290,23 +314,118 @@ class Config:
         defaults.update(self._raw.get("hynix_auto_trade", {}) or {})
         return defaults
 
+    @property
+    def trading_cost(self) -> dict:
+        """한국투자증권 실거래 기준 수수료/거래세/슬리피지 설정(docs/requirements.md
+        섹션 2). 하드코딩 금지 — 반드시 이 설정을 통해서만 읽는다. 예시값이며 실제
+        KIS 고시 요율로 운영 전 재확인이 필요하다."""
+        defaults = {
+            "domestic_buy_fee_rate": 0.00015, "domestic_sell_fee_rate": 0.00015,
+            "etf_buy_fee_rate": 0.00015, "etf_sell_fee_rate": 0.00015,
+            "transaction_tax_rate": 0.0018, "etf_transaction_tax_rate": 0.0,
+            "clearing_fee_rate": 0.0, "slippage_rate_default": 0.0002,
+            "slippage_rate_market_order": 0.0003, "slippage_rate_limit_order": 0.0001,
+            "min_commission_krw": 0.0,
+        }
+        defaults.update(self._raw.get("trading_cost", {}) or {})
+        return defaults
+
     def full_auto_enabled(self) -> bool:
         """ENABLE_FULL_AUTO=true 여부. 기본값 false(제안+승인 모드)."""
         import os
-        return os.getenv("ENABLE_FULL_AUTO", "false").lower() in ("true", "1", "yes")
+        return os.getenv("ENABLE_FULL_AUTO", "false").strip().lower() in ("true", "1", "yes")
 
     def full_auto_real_confirm_ok(self) -> bool:
-        """완전자동 REAL 실행 허가 여부.
+        """완전자동 REAL 실행 허가 여부."""
+        return self.enhanced_real_gate_status(current_mode="real")["ready"]
 
-        config.yaml의 safety.enable_real_trading(기본 false)와,
-        .env의 FULL_AUTO_REAL_CONFIRM_TEXT가 real_confirm_text()와
-        정확히 일치해야 한다 (UI 클릭 없이 자동 실행되므로 이중 게이트 필요).
+    def enhanced_real_gate_status(self, current_mode: str = "real") -> dict:
+        """Enhanced REAL 자동매매 게이트의 단일 진단 결과.
+
+        UI와 주문 risk_manager가 이 함수의 ready 값을 함께 사용한다.
+        비밀값은 반환하지 않고, 환경변수 존재 여부와 마스킹 계좌만 반환한다.
         """
+        reload_environment()
         import os
-        if not self.real_trading_enabled():
-            return False
-        confirm = os.getenv("FULL_AUTO_REAL_CONFIRM_TEXT", "")
-        return bool(confirm) and confirm == self.real_confirm_text()
+        from datetime import datetime
+
+        def _env_bool(name: str) -> bool:
+            return os.getenv(name, "").strip().lower() in ("true", "1", "yes")
+
+        def _present(name: str) -> bool:
+            return bool(os.getenv(name, "").strip())
+
+        expected_confirm = str(self.real_confirm_text() or "").strip()
+        actual_confirm = os.getenv("FULL_AUTO_REAL_CONFIRM_TEXT", "").strip()
+        config_enable_real = bool(self.safety.get("enable_real_trading", False))
+
+        checks = {
+            "current_mode_is_real": current_mode == "real",
+            "enable_full_auto": _env_bool("ENABLE_FULL_AUTO"),
+            "config_enable_real_trading": config_enable_real,
+            "env_enable_real_trading": _env_bool("ENABLE_REAL_TRADING"),
+            "enable_real_buy": _env_bool("ENABLE_REAL_BUY"),
+            "enable_real_sell": _env_bool("ENABLE_REAL_SELL"),
+            "confirm_text_present": bool(actual_confirm),
+            "confirm_text_matched": bool(actual_confirm) and actual_confirm == expected_confirm,
+            "real_app_key_present": _present("KIS_REAL_APP_KEY"),
+            "real_app_secret_present": _present("KIS_REAL_APP_SECRET"),
+            "real_account_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_NO", "KIS_REAL_CANO", "KIS_ACCOUNT_NO")),
+            "real_product_code_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_PRODUCT_CODE", "KIS_REAL_ACNT_PRDT_CD", "KIS_ACCOUNT_PRODUCT_CODE")),
+        }
+
+        account_info = {}
+        try:
+            account_cfg = get_kis_account_config("real")
+            checks["real_account_config_ok"] = True
+            checks["real_account_conflict"] = bool(account_cfg.get("account_conflict"))
+            account_info = {
+                "account_source": account_cfg.get("account_source") or account_cfg.get("cano_source"),
+                "masked_account": account_cfg.get("masked_account"),
+                "account_conflict_vars": account_cfg.get("account_conflict_vars", []),
+                "account_fingerprint": account_cfg.get("account_fingerprint"),
+            }
+        except Exception as exc:
+            checks["real_account_config_ok"] = False
+            checks["real_account_conflict"] = False
+            account_info = {"account_error": str(exc)}
+
+        blocking_map = {
+            "current_mode_is_real": "CURRENT_MODE_NOT_REAL",
+            "enable_full_auto": "ENABLE_FULL_AUTO_NOT_TRUE",
+            "config_enable_real_trading": "CONFIG_REAL_TRADING_DISABLED",
+            "env_enable_real_trading": "ENV_ENABLE_REAL_TRADING_NOT_TRUE",
+            "enable_real_buy": "ENABLE_REAL_BUY_NOT_TRUE",
+            "enable_real_sell": "ENABLE_REAL_SELL_NOT_TRUE",
+            "confirm_text_present": "FULL_AUTO_REAL_CONFIRM_TEXT_MISSING",
+            "confirm_text_matched": "FULL_AUTO_REAL_CONFIRM_TEXT_MISMATCH",
+            "real_app_key_present": "KIS_REAL_APP_KEY_MISSING",
+            "real_app_secret_present": "KIS_REAL_APP_SECRET_MISSING",
+            "real_account_present": "KIS_REAL_ACCOUNT_MISSING",
+            "real_product_code_present": "KIS_REAL_PRODUCT_CODE_MISSING",
+            "real_account_config_ok": "KIS_REAL_ACCOUNT_CONFIG_INVALID",
+        }
+        blocking_reasons = [reason for key, reason in blocking_map.items() if not checks.get(key)]
+        if checks.get("real_account_conflict"):
+            blocking_reasons.append("KIS_REAL_ACCOUNT_ENV_CONFLICT")
+
+        try:
+            config_mtime = datetime.fromtimestamp(_CONFIG_PATH.stat().st_mtime).isoformat(timespec="seconds")
+        except Exception:
+            config_mtime = None
+
+        return {
+            "ready": not blocking_reasons,
+            "checks": checks,
+            "blocking_reasons": blocking_reasons,
+            "loaded_config_path": str(_CONFIG_PATH),
+            "loaded_config_modified_time": config_mtime,
+            "final_safety_enable_real_trading": self.real_trading_enabled(),
+            "config_safety_enable_real_trading": config_enable_real,
+            "env_precedence": "Render/OS environment variables > local .env > config.yaml/default",
+            "expected_confirm_text_present": bool(expected_confirm),
+            **account_info,
+        }
 
     def get_real_order_limits(self) -> dict:
         """실계좌 주문 안전한도 조회. 우선순위: env vars → config.yaml → 기본값."""
@@ -374,6 +493,34 @@ def _parse_account_no(raw: str, product_code: str = "") -> tuple[str, str]:
     return raw, product_code or "01"
 
 
+def mask_account(account_no: str, product_code: str = "01") -> str:
+    digits = (account_no or "").strip()
+    if not digits:
+        return ""
+    visible = digits[-2:] if len(digits) > 2 else digits
+    masked = ("*" * max(len(digits) - len(visible), 0)) + visible
+    return f"{masked}-{product_code or '01'}"
+
+
+def _account_fingerprint(mode: str, account_no: str, product_code: str, app_key: str) -> str:
+    raw = "|".join([mode, account_no or "", product_code or "", app_key or ""])
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _account_candidate(source: str, raw_no: str, raw_product_code: str = "") -> dict | None:
+    raw_no = (raw_no or "").strip()
+    raw_product_code = (raw_product_code or "").strip()
+    if not raw_no:
+        return None
+    account_no, product_code = _parse_account_no(raw_no, raw_product_code)
+    return {
+        "source": source,
+        "account_no": account_no,
+        "product_code": product_code or "01",
+        "normalized": f"{account_no}-{product_code or '01'}",
+    }
+
+
 def get_kis_account_config(mode: str) -> dict:
     """
     Returns KIS account credentials for the given mode ('mock' or 'real').
@@ -381,29 +528,38 @@ def get_kis_account_config(mode: str) -> dict:
     Raises ValueError with a descriptive message (not the key values) if required vars are missing.
 
     계좌번호 우선순위:
-    - mock: KIS_MOCK_CANO(+KIS_MOCK_ACNT_PRDT_CD) → KIS_MOCK_ACCOUNT_NO
-    - real: KIS_REAL_CANO(+KIS_REAL_ACNT_PRDT_CD) → KIS_ACCOUNT_NO(+KIS_ACCOUNT_PRODUCT_CODE)
+    - mock: KIS_MOCK_ACCOUNT_NO → KIS_MOCK_CANO(+KIS_MOCK_ACNT_PRDT_CD)
+    - real: KIS_REAL_ACCOUNT_NO → KIS_REAL_CANO(+KIS_REAL_ACNT_PRDT_CD)
+            → KIS_ACCOUNT_NO(+KIS_ACCOUNT_PRODUCT_CODE)
     """
+    reload_environment()
     cfg = get_config()
     kis_cfg = cfg._raw.get("kis", {})
 
     if mode == "mock":
         section = kis_cfg.get("mock", {})
-        cano_env_direct = "KIS_MOCK_CANO"
-        prdt_env_direct = "KIS_MOCK_ACNT_PRDT_CD"
-        legacy_cano_envs: list[str] = []
+        priority = [
+            (
+                section.get("account_no_env", "KIS_MOCK_ACCOUNT_NO"),
+                section.get("product_code_env", "KIS_MOCK_ACCOUNT_PRODUCT_CODE"),
+            ),
+            ("KIS_MOCK_CANO", "KIS_MOCK_ACNT_PRDT_CD"),
+        ]
     elif mode == "real":
         section = kis_cfg.get("real", {})
-        cano_env_direct = "KIS_REAL_CANO"
-        prdt_env_direct = "KIS_REAL_ACNT_PRDT_CD"
-        legacy_cano_envs = ["KIS_ACCOUNT_NO"]
+        priority = [
+            (
+                section.get("account_no_env", "KIS_REAL_ACCOUNT_NO"),
+                section.get("product_code_env", "KIS_REAL_ACCOUNT_PRODUCT_CODE"),
+            ),
+            ("KIS_REAL_CANO", "KIS_REAL_ACNT_PRDT_CD"),
+            ("KIS_ACCOUNT_NO", "KIS_ACCOUNT_PRODUCT_CODE"),
+        ]
     else:
         raise ValueError(f"Unknown KIS mode: {mode}. Use 'mock' or 'real'.")
 
     app_key_env = section.get("app_key_env", "")
     app_secret_env = section.get("app_secret_env", "")
-    account_no_env = section.get("account_no_env", "")
-    product_code_env = section.get("product_code_env", "")
 
     app_key = os.getenv(app_key_env, "")
     app_secret = os.getenv(app_secret_env, "")
@@ -414,45 +570,24 @@ def get_kis_account_config(mode: str) -> dict:
         app_secret_env: bool(app_secret),
     }
 
-    # ── 계좌번호 해석 (우선순위 순) ──────────────────────────────────────
-    cano_source = ""
-    account_no = ""
-    product_code = ""
+    candidates = []
+    for account_env, product_env in priority:
+        raw_no = os.getenv(account_env, "").strip()
+        raw_prdt = os.getenv(product_env, "").strip()
+        env_checks[account_env] = bool(raw_no)
+        env_checks[product_env] = bool(raw_prdt)
+        candidate = _account_candidate(account_env, raw_no, raw_prdt)
+        if candidate is not None:
+            candidates.append(candidate)
 
-    # 1순위: KIS_MOCK_CANO / KIS_REAL_CANO 직접 지정
-    direct_cano = os.getenv(cano_env_direct, "").strip()
-    direct_prdt = os.getenv(prdt_env_direct, "").strip()
-    env_checks[cano_env_direct] = bool(direct_cano)
-    env_checks[prdt_env_direct] = bool(direct_prdt)
-    if direct_cano:
-        account_no = direct_cano
-        product_code = direct_prdt or "01"
-        cano_source = "CANO_env"
+    selected = candidates[0] if candidates else None
+    account_no = selected["account_no"] if selected else ""
+    product_code = selected["product_code"] if selected else "01"
+    account_source = selected["source"] if selected else ""
 
-    # 2순위: config의 account_no_env (KIS_MOCK_ACCOUNT_NO / KIS_ACCOUNT_NO)
-    if not account_no:
-        raw_no = os.getenv(account_no_env, "").strip()
-        raw_prdt = os.getenv(product_code_env, "").strip()
-        env_checks[account_no_env] = bool(raw_no)
-        env_checks[product_code_env] = bool(raw_prdt)
-        if raw_no:
-            account_no, product_code = _parse_account_no(raw_no, raw_prdt)
-            cano_source = "account_no_env"
-
-    # 3순위 (real만): 레거시 alias KIS_ACCOUNT_NO + KIS_ACCOUNT_PRODUCT_CODE
-    if not account_no and legacy_cano_envs:
-        for legacy_env in legacy_cano_envs:
-            raw_no = os.getenv(legacy_env, "").strip()
-            env_checks[legacy_env] = bool(raw_no)
-            if raw_no:
-                raw_prdt = os.getenv("KIS_ACCOUNT_PRODUCT_CODE", "").strip()
-                env_checks["KIS_ACCOUNT_PRODUCT_CODE"] = bool(raw_prdt)
-                account_no, product_code = _parse_account_no(raw_no, raw_prdt)
-                cano_source = "legacy_alias"
-                break
-
-    if not product_code:
-        product_code = "01"
+    normalized_values = {c["normalized"] for c in candidates}
+    account_conflict = len(normalized_values) > 1
+    account_conflict_vars = [c["source"] for c in candidates] if account_conflict else []
 
     missing = []
     if not app_key:
@@ -460,21 +595,29 @@ def get_kis_account_config(mode: str) -> dict:
     if not app_secret:
         missing.append(app_secret_env)
     if not account_no:
-        missing.append(f"{cano_env_direct} 또는 {account_no_env}")
+        missing.append(" 또는 ".join(account_env for account_env, _ in priority))
 
     if missing:
         raise ValueError(f"필수 환경변수 누락: {', '.join(missing)}")
+
+    masked_account = mask_account(account_no, product_code)
+    account_fingerprint = _account_fingerprint(mode, account_no, product_code, app_key)
 
     return {
         "app_key": app_key,
         "app_secret": app_secret,
         "account_no": account_no,
         "product_code": product_code,
+        "account_source": account_source,
+        "masked_account": masked_account,
+        "account_conflict": account_conflict,
+        "account_conflict_vars": account_conflict_vars,
+        "account_fingerprint": account_fingerprint,
         "base_url": section.get("base_url", ""),
         "mode": mode,
         "enabled": section.get("enabled", False),
         "env_checks": env_checks,
-        "cano_source": cano_source,
+        "cano_source": account_source,
     }
 
 
@@ -497,8 +640,90 @@ def get_config() -> Config:
 
 def reload_config() -> Config:
     global _instance
+    reload_environment(force=True)
     _instance = Config()
     return _instance
+
+
+def reload_runtime_configuration() -> Config:
+    """Reload config/env and clear runtime caches without touching in-flight orders."""
+    cfg = reload_config()
+    for module_name, func_names in (
+        ("app.trading.kis_client", ("clear_kis_client_cache",)),
+        ("app.trading.broker_factory", ("clear_broker_cache",)),
+        ("app.trading.dynamic_exit_watcher", ("clear_runtime_caches",)),
+    ):
+        try:
+            module = __import__(module_name, fromlist=["*"])
+            for func_name in func_names:
+                func = getattr(module, func_name, None)
+                if callable(func):
+                    func()
+        except Exception:
+            pass
+    return cfg
+
+
+_REAL_ACCOUNT_STATE_PATH = _ROOT / "data" / "state" / "kis_real_account_state.json"
+
+
+def get_real_account_change_status() -> dict:
+    """Return whether the current real account fingerprint differs from the last confirmed one."""
+    import json
+
+    try:
+        cfg = get_kis_account_config("real")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "changed": False,
+            "sync_required": False,
+            "current_fingerprint": "",
+            "masked_account": "",
+        }
+
+    current = cfg.get("account_fingerprint", "")
+    state = {}
+    try:
+        if _REAL_ACCOUNT_STATE_PATH.exists():
+            with _REAL_ACCOUNT_STATE_PATH.open("r", encoding="utf-8") as f:
+                state = json.load(f) or {}
+    except Exception:
+        state = {}
+
+    previous = state.get("account_fingerprint", "")
+    sync_confirmed = state.get("sync_confirmed", False)
+    changed = bool(previous and previous != current)
+    return {
+        "ok": True,
+        "changed": changed,
+        "sync_required": changed and not sync_confirmed,
+        "current_fingerprint": current,
+        "previous_fingerprint": previous,
+        "masked_account": cfg.get("masked_account", ""),
+        "account_source": cfg.get("account_source", ""),
+        "sync_confirmed": sync_confirmed if not changed else False,
+    }
+
+
+def mark_real_account_sync_confirmed() -> dict:
+    """Mark the current real account as externally synchronized after balance/order checks."""
+    import json
+    from datetime import datetime
+
+    cfg = get_kis_account_config("real")
+    _REAL_ACCOUNT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "account_fingerprint": cfg.get("account_fingerprint", ""),
+        "masked_account": cfg.get("masked_account", ""),
+        "account_source": cfg.get("account_source", ""),
+        "sync_confirmed": True,
+        "confirmed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _REAL_ACCOUNT_STATE_PATH.open("w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    return state
 
 
 _MARKET_REGIME_CONFIG_PATH = _ROOT / "config" / "market_regime.yaml"
