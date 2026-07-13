@@ -84,8 +84,8 @@ ml:
 safety:
   # ── 실전투자 활성화 플래그 (기본값: 모두 false = 안전) ─────────────────────
   enable_real_trading: true     # 전체 실전투자 마스터 스위치
-  enable_real_buy: false        # 실전 매수 허용
-  enable_real_sell: false       # 실전 매도 허용
+  enable_real_buy: true         # 실전 매수 허용
+  enable_real_sell: true        # 실전 매도 허용
 
   # ── 확인 문구 ──────────────────────────────────────────────────────────────
   require_real_order_confirm_text: true

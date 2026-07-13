@@ -1,4 +1,19 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+KST = ZoneInfo("Asia/Seoul")
+
+
+def kst_now() -> datetime:
+    """Asia/Seoul 기준 현재 시각(naive datetime).
+
+    하이닉스 Enhanced 자동매매(14:50 신규매수 금지, 15:15 전량청산 등)의 시간
+    판정은 배포 서버(OS)의 타임존과 무관하게 항상 KST 기준이어야 한다. 서버가
+    UTC로 배포되면 naive datetime.now()는 9시간 어긋난 시각을 반환하므로, 이
+    함수를 통해서만 "지금이 몇 시인지"를 판정한다. tzinfo는 제거해 반환한다 —
+    호출부가 기존에 naive datetime과 비교/직렬화하던 코드를 그대로 쓸 수 있게 한다.
+    """
+    return datetime.now(KST).replace(tzinfo=None)
 
 
 def now_str() -> str:

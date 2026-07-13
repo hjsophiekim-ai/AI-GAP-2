@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
 
@@ -88,7 +89,7 @@ def is_buy_cooldown_active(last_trade_time: Optional[str], last_action: Optional
 
 def reset_mock_daily_state_if_new_day(state: dict, default_budget_krw: float = 10_000_000.0) -> dict:
     """state['date']가 오늘이 아니면 mock 전용 필드(현금/포지션/거래횟수)를 초기화한다."""
-    today = datetime.now().strftime("%Y%m%d")
+    today = kst_now().strftime("%Y%m%d")
     if state.get("date") == today:
         return state
     state["date"] = today
@@ -96,7 +97,9 @@ def reset_mock_daily_state_if_new_day(state: dict, default_budget_krw: float = 1
     state["mock_budget_krw"] = state.get("mock_budget_krw", default_budget_krw)
     state["daily_trade_count"] = 0
     state["realized_pnl_today_krw"] = 0.0
+    state["gross_realized_pnl_today_krw"] = 0.0
     state["realized_pnl_today_pct"] = 0.0
+    state["gross_realized_pnl_today_pct"] = 0.0
     state["trades_today"] = []
     state["fired_windows"] = []
     state["liquidation_done"] = False

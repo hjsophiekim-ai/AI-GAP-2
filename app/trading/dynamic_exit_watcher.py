@@ -25,6 +25,7 @@ from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.trading.hynix_switch_position_manager import _sell_all_or_ratio, _SYMBOL_NAME
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
+import app.trading.hynix_big_trend_engine as bte
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _EXIT_LOG_PATH = ROOT / "data" / "logs" / "exit_engine_log.csv"
@@ -114,6 +115,99 @@ def _load_minute_df(symbol: str):
     return None
 
 
+def _compute_big_trend_decision(state: dict, position: dict, symbol: str, current_price: float, df_1min, now: datetime) -> Optional[dict]:
+    """Big Trend Holding AI(app.trading.hynix_big_trend_engine) 1회 계산 — 항상 호출되어
+    Shadow 로그로 남으며, state["big_trend_holding_enabled"]가 켜졌을 때만 호출부가
+    이 결과로 실제 청산 action/ratio를 대체한다. 예외 발생 시 None을 반환해 호출부가
+    기존 DynamicExitEngine 판단만으로 안전하게 계속 동작하도록 한다."""
+    from app.trading.trading_cost_engine import TradeCostEngine
+
+    entry_price = position.get("entry_price")
+    quantity = position.get("quantity") or 0
+    if not entry_price or quantity <= 0:
+        return None
+
+    cost = TradeCostEngine().compute_unrealized_net_pnl(symbol, entry_price=entry_price, current_price=current_price, quantity=quantity)
+    invested = entry_price * quantity
+    net_return_pct = round(cost["net_unrealized_pnl"] / invested * 100.0, 4) if invested else 0.0
+
+    peak_net_return_pct = max(position.get("peak_net_return_pct", net_return_pct), net_return_pct)
+    position["peak_net_return_pct"] = peak_net_return_pct
+
+    shadow = state.get("last_cycle_ai_result") or {}
+    prob = shadow.get("probability") or {}
+    cyc = shadow.get("cycle") or {}
+    decision_v2 = shadow.get("decision_v2") or {}
+    inverse_probability = prob.get("sell_probability")
+    hynix_probability = prob.get("buy_probability")
+
+    snapshot_engine = DynamicExitEngine()
+    snapshot = snapshot_engine.build_snapshot(position, _load_daily_df(symbol), df_1min, current_price, now)
+
+    features = bte.build_big_trend_features(df_1min, snapshot, inverse_probability, hynix_probability)
+    trend = bte.compute_trend_strength_score(features)
+    direction = trend["dominant_direction"]
+
+    reversal_signals = bte.build_reversal_signals(
+        features, direction, decision_v2.get("final_action_v2"), cyc.get("cycle_phase"),
+    )
+
+    held_minutes = snapshot.get("held_minutes")
+    volatility_class = "HIGH_VOL" if (features.get("atr_pct") or 0) >= 1.5 else ("LOW_VOL" if (features.get("atr_pct") or 0) <= 0.5 else "NORMAL")
+    is_strong_trend_initial = bool(held_minutes is not None and held_minutes <= 10 and trend["trend_strength_score"] >= 75.0)
+    sl_pct = bte.effective_sl_pct(volatility_class, is_strong_trend_initial)
+    hard_stop_triggered = net_return_pct <= sl_pct
+
+    big_trend_state = state.get("big_trend_state") or {}
+    recent_flip_count = big_trend_state.get("recent_direction_flip_count", 0)
+    first_tp_taken = bool(position.get("big_trend_first_tp_taken"))
+    regime_state = position.get("big_trend_regime_state") or bte.default_regime_state()
+
+    engine = bte.HynixBigTrendEngine()
+    result = engine.compute(
+        features=features, held_symbol=symbol, entry_price=entry_price, current_price=current_price,
+        net_return_pct=net_return_pct, peak_net_return_pct=peak_net_return_pct,
+        reversal_probability_3m=None, reversal_probability_5m=None, reversal_probability_15m=None,
+        reversal_signals=reversal_signals, recent_direction_flip_count=recent_flip_count,
+        hard_stop_triggered=hard_stop_triggered, first_tp_taken=first_tp_taken,
+        volatility_class=volatility_class, is_strong_trend_initial_phase=is_strong_trend_initial,
+        regime_state=regime_state, now=now,
+    )
+
+    # regime_state는 포지션 단위로 유지한다(청산 후 재진입 시 자연히 초기화됨 —
+    # position 딕셔너리 자체가 새로 만들어지므로 별도 리셋 로직이 필요 없다).
+    position["big_trend_regime_state"] = result.get("regime_state") or regime_state
+
+    final_action = result.get("final_hold_action")
+    if final_action in (bte.ACTION_TAKE_PROFIT_25, bte.ACTION_TAKE_PROFIT_50):
+        position["big_trend_first_tp_taken"] = True
+
+    log_row = {
+        "timestamp": now.isoformat(timespec="seconds"), "symbol": symbol, "entry_price": entry_price,
+        "current_price": current_price, "net_return_pct": net_return_pct, "peak_net_return_pct": peak_net_return_pct,
+        "profit_giveback_pct": bte.compute_profit_giveback_pct(peak_net_return_pct, net_return_pct),
+        "dominant_direction": result["dominant_direction"], "trend_regime": result["trend_regime"],
+        "trend_strength_score": result["trend_strength_score"], "trend_persistence_score": result["trend_persistence_score"],
+        "reversal_probability_3m": result["reversal_probability_3m"], "reversal_probability_5m": result["reversal_probability_5m"],
+        "reversal_probability_15m": result["reversal_probability_15m"], "hold_confidence": result["hold_confidence"],
+        "exit_confidence": result["exit_confidence"], "profit_lock_floor_pct": result["current_profit_lock_pct"],
+        "trailing_pct": result["trailing_pct"], "position_pct": result["max_position_pct"],
+        "recommended_action": final_action, "executed_action": None,
+        "reason_top1": (result["reasons"][0] if result["reasons"] else ""),
+        "reason_top2": (result["reasons"][1] if len(result["reasons"]) > 1 else ""),
+        "reason_top3": (result["reasons"][2] if len(result["reasons"]) > 2 else ""),
+    }
+    bte.log_big_trend_decision(log_row)
+
+    return {
+        **{k: v for k, v in result.items() if k != "reversal_confirmation"},
+        "net_return_pct": net_return_pct, "peak_net_return_pct": peak_net_return_pct,
+        "effective_sl_pct": sl_pct, "hard_stop_triggered": hard_stop_triggered,
+        "decision": {"action": final_action, "reasons": result.get("reasons", []), "tp_ratio": result.get("tp_ratio")},
+        "log_row": log_row,
+    }
+
+
 def _append_exit_log(row: dict) -> None:
     try:
         _EXIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -141,20 +235,32 @@ def _get_cached_broker(mode: str, mock_budget_krw: float):
         return entry[0]
 
     if mode == "mock":
-        from app.trading.dry_run_broker import DryRunBroker
+        from app.config import get_config
+        from app.trading.broker_factory import create_broker
 
-        broker = DryRunBroker(initial_balance=mock_budget_krw)
+        broker = create_broker(get_config(), mode="mock")
     else:
         from app.config import get_config
         from app.trading.broker_factory import create_broker
 
+        _cfg = get_config()
         broker = create_broker(
-            get_config(), mode="real",
+            _cfg, mode="real", confirm_text=_cfg.full_auto_real_confirm_text(),
             runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
         )
     _broker_cache[mode] = (broker, now_mono)
     _position_manager_cache.pop(mode, None)  # 브로커가 바뀌었으니 매니저도 새로 만든다
     return broker
+
+
+def clear_runtime_caches() -> None:
+    """계좌/설정 변경(환경설정 다시 읽기) 시 캐시된 브로커·PositionManager를 즉시 폐기한다.
+
+    30초 TTL로 자연 만료되긴 하지만, 계좌를 바꾼 직후에도 최대 30초간 이전 계좌의
+    브로커가 재사용될 수 있어(요구사항: 계좌 변경 후 기존 broker cache 재사용 금지)
+    reload_runtime_configuration()이 이 함수를 호출해 즉시 무효화한다."""
+    _broker_cache.clear()
+    _position_manager_cache.clear()
 
 
 def _get_position_manager(broker, mode: str):
@@ -230,6 +336,46 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
     state["position"] = position
     state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
 
+    # ── Big Trend Holding AI(섹션 1~13 — 장중 큰 추세 추종) ────────────────────
+    # 항상 계산·로그(Shadow)하고, state["big_trend_holding_enabled"]가 켜져 있을 때만
+    # (mock 전용) 실제 청산 action/ratio를 이 엔진 결과로 대체한다. 초기 손절
+    # 안전장치(effective_sl_pct)는 토글과 무관하게 항상 최우선으로 적용된다.
+    big_trend_result = None
+    try:
+        big_trend_result = _compute_big_trend_decision(state, position, symbol, current_price, df_1min, now)
+    except Exception as exc:
+        logger.debug("[DynamicExitWatcher] Big Trend Holding 계산 실패(무해 — 기존 로직 계속 동작): %s", exc)
+
+    if big_trend_result:
+        state["last_big_trend_result"] = {k: v for k, v in big_trend_result.items() if k != "reversal_confirmation"}
+        if mode == "mock" and state.get("big_trend_holding_enabled"):
+            hard_stop = big_trend_result["hard_stop_triggered"]
+            action_map = {
+                bte.ACTION_TAKE_PROFIT_25: ("SELL_PARTIAL", 0.25),
+                bte.ACTION_TAKE_PROFIT_50: ("SELL_PARTIAL", big_trend_result["decision"].get("tp_ratio", 0.5)),
+                bte.ACTION_EXIT_ALL: ("SELL_ALL", 1.0),
+                bte.ACTION_SWITCH_TO_HYNIX: ("SELL_ALL", 1.0),
+                bte.ACTION_SWITCH_TO_INVERSE: ("SELL_ALL", 1.0),
+            }
+            if hard_stop:
+                decision["action"], decision["ratio"] = "SELL_ALL", 1.0
+                decision["reason"] = f"손절({big_trend_result['net_return_pct']:.2f}%≤{big_trend_result['effective_sl_pct']:.2f}%) — Big Trend 안전장치"
+            else:
+                final_action = big_trend_result["decision"].get("action")
+                if final_action in action_map:
+                    decision["action"], decision["ratio"] = action_map[final_action]
+                    decision["reason"] = "; ".join(big_trend_result["decision"].get("reasons", [])) or final_action
+                else:
+                    # 섹션 20 — Regime 전환 자체가 즉시 축소를 요구하면(HOLD/HOLD_REDUCED로
+                    # 끝나는 사이클이라도) 그 축소를 적용한다.
+                    transition = big_trend_result.get("regime_transition_action") or {}
+                    if transition.get("action") == "REDUCE_POSITION" and transition.get("reduce_ratio", 0) > 0:
+                        decision["action"], decision["ratio"] = "SELL_PARTIAL", transition["reduce_ratio"]
+                        decision["reason"] = f"Regime 전환({big_trend_result.get('raw_trend_regime')}) — {transition['reduce_ratio']*100:.0f}% 축소"
+                    else:
+                        decision["action"], decision["ratio"] = "HOLD", 0.0
+            state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
+
     if decision["action"] in ("SELL_ALL", "SELL_PARTIAL"):
         from app.trading.hynix_stop_loss_control import (
             STOP_LOSS_MODE_AUTO, check_auto_stop_loss_safety, verify_order_confirmed, log_stop_loss_event,
@@ -267,9 +413,18 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             )
             order_sent = bool(order_result.get("success"))
             if order_sent:
+                from app.trading.hynix_switch_position_manager import _resolve_realized_pnl
+
                 sold_qty = order_result.get("sold_quantity", 0)
-                realized = (current_price - (position.get("entry_price") or current_price)) * sold_qty
-                state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
+                # net_pnl/gross_pnl은 _execute_sell()이 원장 기록과 함께 계산해 order_result에
+                # 넣어준 값이다 — 여기서 (current_price-entry_price)*qty(Gross)를 다시 계산해
+                # 쌓으면 "오늘 실현손익(순손익)"이 원장의 net_realized_pnl과 어긋난다
+                # (2026-07-13 사용자 리포트: Dynamic Exit AI 매도가 이 버그의 주 원인 중 하나였다).
+                net_realized, gross_realized = _resolve_realized_pnl(
+                    order_result, current_price, position.get("entry_price") or current_price, sold_qty,
+                )
+                state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
+                state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
                 state["last_sell_price"] = current_price
                 state["last_trade_time"] = now.isoformat()
                 state["last_stop_loss_signature"] = f"{symbol}:{now.strftime('%Y%m%d%H%M')}"

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, should_liquidate_now
@@ -99,8 +100,19 @@ def _record_order(
     orders: list, order_result, action: str, symbol: str, quantity: int, price: float, reason: str,
     before_qty: Optional[int] = None, expected_remaining_qty: Optional[int] = None,
     mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", entry_price: Optional[float] = None,
-    broker=None,
-) -> None:
+    broker=None, fusion_metadata: Optional[dict] = None,
+) -> Optional[dict]:
+    """fusion_metadata: Adaptive Fusion 경로에서만 전달되는 dict —
+    {active_probability, prediction_v2_probability, cycle_probability, fused_probability,
+     prediction_v2_weight, dominant_model, model_agreement, expected_value, target_position_pct}.
+    다른 경로(ENHANCED_LEGACY/DYNAMIC_EXIT 등)는 None으로 두면 해당 컬럼이 빈 값으로 남는다
+    (확률 필드는 그 전략에서 계산되지 않았으므로 빈 값이 맞다 — 거래비용 필드와는 다름).
+
+    반환값: SELL이 성공하고 entry_price가 있으면 {"gross_pnl", "net_pnl", "total_cost"} —
+    이 체결 1건의 거래비용 breakdown이다. 호출부는 반드시 이 값으로 state의 실현손익을
+    갱신해야 한다 — 별도로 (current_price-entry_price)*qty(Gross) 공식을 다시 계산하면
+    원장(ledger)의 net_pnl과 어긋난다(2026-07-13 사용자 리포트: UI가 "순손익"이라
+    표시하면서 실제로는 Gross를 누적하고 있었다). 그 외(BUY/실패/entry_price 없음)는 None."""
     result = order_result.to_dict() if hasattr(order_result, "to_dict") else dict(order_result)
     success = bool(result.get("success"))
     orders.append({
@@ -116,10 +128,32 @@ def _record_order(
     # 이 원장 기준으로 계산해야 한다 — 개별 CSV/state 필드를 따로 집계하지 않는다) ──
     try:
         from app.services.hynix_execution_ledger import record_execution
+        from app.trading.trading_cost_engine import TradeCostEngine
 
+        # 거래비용 필드는 모든 체결(BUY/SELL 모두, 성공 시)에서 반드시 숫자로 채운다 —
+        # NaN/빈 값을 남기지 않는다(2026-07-13 사용자 검증 이슈). BUY는 그 시점에 실제로
+        # 발생한 매수수수료(+매수측 슬리피지 추정)만 기록하고(아직 청산 전이라
+        # gross/net_pnl은 0), SELL은 entry_price를 알고 있으므로 왕복 전체 비용을
+        # 계산해 realized_pnl(=net_pnl)까지 확정한다.
+        cost_engine = TradeCostEngine()
+        gross_pnl = buy_fee = sell_fee = transaction_tax = slippage_cost = net_pnl = 0.0
         realized_pnl = None
-        if action == "SELL" and success and entry_price:
-            realized_pnl = round((price - entry_price) * quantity, 2)
+        fees_total = tax_total = 0.0
+
+        if success and action == "BUY":
+            buy_cost = cost_engine.compute_trade_cost(symbol, "BUY", price, quantity)
+            buy_fee = buy_cost["fee"]
+            slippage_cost = cost_engine._slippage_rate("limit") * price * quantity
+            net_pnl = -(buy_fee + slippage_cost)
+            fees_total = buy_fee
+        elif success and action == "SELL" and entry_price:
+            cost = cost_engine.compute_net_pnl(symbol, entry_price=entry_price, exit_price=price, quantity=quantity)
+            gross_pnl, buy_fee, sell_fee = cost["gross_pnl"], cost["buy_fee"], cost["sell_fee"]
+            transaction_tax, slippage_cost, net_pnl = cost["transaction_tax"], cost["slippage"], cost["net_pnl"]
+            fees_total = buy_fee + sell_fee
+            tax_total = transaction_tax
+            realized_pnl = net_pnl
+
         after_qty = None
         if before_qty is not None:
             after_qty = expected_remaining_qty if action == "SELL" else (before_qty + quantity if success else before_qty)
@@ -132,15 +166,28 @@ def _record_order(
                 cash_after = None
 
         is_test_order = "E2E forced" in (reason or "")
+        fm = fusion_metadata or {}
         record_execution(
             action=action, symbol=symbol, requested_qty=quantity, executed_qty=quantity if success else 0,
             requested_price=price, executed_price=price if success else None, success=success,
             mode=mode, strategy_name="hynix_switch", signal_source=signal_source,
             before_qty=before_qty, after_qty=after_qty, cash_before=cash_before, cash_after=cash_after,
-            realized_pnl=realized_pnl, order_id=result.get("order_id") or "", is_test_order=is_test_order,
+            realized_pnl=realized_pnl, fees=fees_total, tax=tax_total,
+            order_id=result.get("order_id") or "", is_test_order=is_test_order,
+            gross_pnl=gross_pnl, buy_fee=buy_fee, sell_fee=sell_fee,
+            transaction_tax=transaction_tax, slippage_cost=slippage_cost, net_pnl=net_pnl,
+            active_probability=fm.get("active_probability"), prediction_v2_probability=fm.get("prediction_v2_probability"),
+            cycle_probability=fm.get("cycle_probability"), fused_probability=fm.get("fused_probability"),
+            prediction_v2_weight=fm.get("prediction_v2_weight"), dominant_model=fm.get("dominant_model"),
+            model_agreement=fm.get("model_agreement"), expected_value=fm.get("expected_value"),
+            target_position_pct=fm.get("target_position_pct"),
         )
+        if action == "SELL" and realized_pnl is not None:
+            return {"gross_pnl": gross_pnl, "net_pnl": net_pnl, "total_cost": round(fees_total + tax_total + slippage_cost, 2)}
+        return None
     except Exception as exc:
         logger.error("[SwitchPositionManager] 실행 원장 기록 실패(무해하지만 원장 신뢰도 저하): %s", exc)
+        return None
 
 
 def _record_skipped(orders: list, action: str, symbol: str, price: Optional[float], reason: str, message: str) -> None:
@@ -156,6 +203,7 @@ def _record_skipped(orders: list, action: str, symbol: str, price: Optional[floa
 def _sell_all_or_ratio(
     broker, position: dict, current_price: float, ratio: float, reason: str, orders: list,
     mode: str = "mock", exit_reason_type: Optional[str] = None, signal_source: str = "ENHANCED_LEGACY",
+    fusion_metadata: Optional[dict] = None, position_manager=None,
 ) -> dict:
     """포지션 전량 또는 비율만큼 매도.
 
@@ -163,6 +211,9 @@ def _sell_all_or_ratio(
     (mode, symbol, exit_reason_type)에 대해 동시 진행 중이거나 최근 30초 이내
     체결된 매도가 있으면 이번 매도는 스킵된다(레거시 TP/SL, 강제청산, 스위칭,
     Dynamic Exit AI가 동시에 같은 포지션을 파는 것을 방지).
+
+    position_manager가 주어지면 주문 접수(success) 응답만 믿지 않고 브로커를
+    재조회해 실제 남은 수량으로 remaining_quantity를 확정한다(미체결/부분체결 반영).
     """
     from app.trading.exit_order_coordinator import try_acquire_exit_lock
 
@@ -179,7 +230,8 @@ def _sell_all_or_ratio(
     if exit_reason_type is None:
         return _execute_sell(
             broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining,
-            mode=mode, signal_source=signal_source, entry_price=entry_price,
+            mode=mode, signal_source=signal_source, entry_price=entry_price, fusion_metadata=fusion_metadata,
+            position_manager=position_manager,
         )
 
     with try_acquire_exit_lock(mode, symbol, exit_reason_type) as lock:
@@ -189,7 +241,8 @@ def _sell_all_or_ratio(
             return {"success": False, "message": message, "blocked_by_coordinator": True}
         result = _execute_sell(
             broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining,
-            mode=mode, signal_source=signal_source, entry_price=entry_price,
+            mode=mode, signal_source=signal_source, entry_price=entry_price, fusion_metadata=fusion_metadata,
+            position_manager=position_manager,
         )
         if result.get("success"):
             lock.mark_executed()
@@ -200,23 +253,68 @@ def _execute_sell(
     broker, symbol: str, sell_qty: int, current_price: float, reason: str, orders: list,
     before_qty: int, expected_remaining: int,
     mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", entry_price: Optional[float] = None,
+    fusion_metadata: Optional[dict] = None, position_manager=None,
 ) -> dict:
     order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
-    _record_order(
+    cost_breakdown = _record_order(
         orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty,
         expected_remaining_qty=expected_remaining, mode=mode, signal_source=signal_source,
-        entry_price=entry_price, broker=broker,
+        entry_price=entry_price, broker=broker, fusion_metadata=fusion_metadata,
     )
     result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
     result["sold_quantity"] = sell_qty
     result["remaining_quantity"] = before_qty - sell_qty
     result["expected_remaining_qty"] = expected_remaining
+    result["fill_confirmed"] = None
+
+    # 주문 접수(rt_cd=0) 응답만으로 체결을 확정하지 않는다 — position_manager가 주어지면
+    # 브로커를 재조회해 실제로 남은 수량을 remaining_quantity로 확정한다. 기대치보다
+    # 많이 남아 있으면 미체결/부분체결로 간주해 partial_fill_detected를 남긴다.
+    if result.get("success") and position_manager is not None:
+        try:
+            position_manager.sync(force=True)
+            cur = position_manager.current_position
+            actual_qty = (cur.get("quantity") or 0) if cur.get("symbol") == symbol else 0
+            result["remaining_quantity"] = actual_qty
+            result["fill_confirmed"] = True
+            if actual_qty > expected_remaining:
+                result["partial_fill_detected"] = True
+                logger.warning(
+                    "[SwitchPositionManager] 매도 미체결/부분체결 감지: %s 기대잔량=%s 실제잔량=%s",
+                    symbol, expected_remaining, actual_qty,
+                )
+        except Exception as exc:
+            logger.warning("[SwitchPositionManager] 매도 후 체결 재확인 실패(추정치 사용): %s", exc)
+            result["fill_confirmed"] = False
+
+    # 호출부는 반드시 아래 net_pnl로 state의 실현손익을 갱신해야 한다 — 원장(ledger)의
+    # net_pnl과 다른 별도 Gross 공식을 다시 계산하면 UI 표시값이 원장과 어긋난다.
+    result["gross_pnl"] = cost_breakdown.get("gross_pnl") if cost_breakdown else None
+    result["net_pnl"] = cost_breakdown.get("net_pnl") if cost_breakdown else None
     return result
+
+
+def _resolve_realized_pnl(sell_result: dict, current_price: float, entry_price: float, sold_qty: float) -> tuple[float, float]:
+    """매도 결과에서 (Net실현손익, Gross실현손익)을 뽑아낸다.
+
+    반드시 _execute_sell()이 원장 기록과 함께 계산해 넣어준 net_pnl/gross_pnl을 우선
+    사용한다 — 호출부가 (current_price-entry_price)*qty(Gross)로 따로 계산해 state에
+    쌓으면 "오늘 실현손익(순손익)"이 실제로는 Gross를 누적하게 되어 원장(ledger)의
+    net_realized_pnl과 어긋난다(2026-07-13 사용자 리포트). net_pnl이 없으면(원장 기록
+    자체가 실패한 예외 상황) Gross로 폴백하되 두 값을 동일하게 채워 최소한 내부적으로
+    일관되게 만든다."""
+    gross_pnl = sell_result.get("gross_pnl")
+    net_pnl = sell_result.get("net_pnl")
+    if net_pnl is not None:
+        return float(net_pnl), float(gross_pnl if gross_pnl is not None else net_pnl)
+    fallback = (current_price - entry_price) * sold_qty
+    return fallback, fallback
 
 
 def _buy_new(
     broker, symbol: str, current_price: float, cash_amount: float, reason: str, orders: list,
     mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", before_qty: int = 0,
+    fusion_metadata: Optional[dict] = None,
 ) -> dict:
     if not current_price or current_price <= 0 or cash_amount <= 0:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "가격/금액 유효하지 않음")
@@ -229,6 +327,7 @@ def _buy_new(
     _record_order(
         orders, order, "BUY", symbol, quantity, current_price, reason,
         before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
+        fusion_metadata=fusion_metadata,
     )
     result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
     result["bought_quantity"] = quantity
@@ -350,8 +449,12 @@ def run_liquidation_if_needed(
             mode=mode, exit_reason_type="liquidation", signal_source="FORCED_LIQUIDATION",
         )
         if result.get("success"):
-            realized = (current_price - position.get("entry_price", current_price)) * result.get("sold_quantity", position.get("quantity", 0))
-            state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
+            net_realized, gross_realized = _resolve_realized_pnl(
+                result, current_price, position.get("entry_price", current_price),
+                result.get("sold_quantity", position.get("quantity", 0)),
+            )
+            state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
+            state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
             state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
             state["position"] = _empty_position()
             state["last_sell_price"] = current_price
@@ -411,7 +514,7 @@ def run_tp_sl_if_needed(
     손절(SL) 트리거는 손절모드(AUTO/ALERT_ONLY/BATCH_MANUAL) 게이트를 통과해야만 실제
     매도가 나간다. 익절(TP) 트리거는 손절 방식 설정과 무관하게 그대로 실행한다.
     """
-    now = now or datetime.now()
+    now = now or kst_now()
     orders: list = []
     position = state.get("position") or {}
     symbol = position.get("symbol")
@@ -442,14 +545,17 @@ def run_tp_sl_if_needed(
     exit_reason_type = "stop_loss" if trigger["tag"].startswith("sl") else "take_profit"
     result = _sell_all_or_ratio(
         broker, position, current_price, trigger["ratio"], trigger["reason"], orders,
-        mode=mode, exit_reason_type=exit_reason_type,
+        mode=mode, exit_reason_type=exit_reason_type, position_manager=position_manager,
     )
     if not result.get("success"):
         return {"triggered": True, "executed": False, "orders": orders, "blocked_by_coordinator": result.get("blocked_by_coordinator", False)}
 
     sold_qty = result.get("sold_quantity", 0)
-    realized = (current_price - position.get("entry_price", current_price)) * sold_qty
-    state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
+    net_realized, gross_realized = _resolve_realized_pnl(
+        result, current_price, position.get("entry_price", current_price), sold_qty,
+    )
+    state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
+    state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
     state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
     state["last_sell_price"] = current_price
     state["last_trade_time"] = datetime.now().isoformat()
@@ -471,10 +577,10 @@ def run_tp_sl_if_needed(
 
 def run_switch_or_entry(
     state: dict, broker, final_action: str, hynix_price: Optional[float], inverse_price: Optional[float],
-    now: Optional[datetime] = None, forced: bool = False, reason: str = "",
+    now: Optional[datetime] = None, forced: bool = False, reason: str = "", position_manager=None,
 ) -> dict:
     """스위칭 또는 신규 진입 실행. 14:50 이후에는 반대 종목 재매수 없이 매도만."""
-    now = now or datetime.now()
+    now = now or kst_now()
     orders: list = []
     desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
     if desired_symbol is None:
@@ -503,18 +609,35 @@ def run_switch_or_entry(
             return {"acted": False, "orders": orders, "message": "보유종목 현재가 없음 — 스위칭 skip"}
         sell_result = _sell_all_or_ratio(
             broker, position, current_price, 1.0, f"스위칭 매도({reason})", orders,
-            mode=state.get("mode", "mock"), exit_reason_type="switch",
+            mode=state.get("mode", "mock"), exit_reason_type="switch", position_manager=position_manager,
         )
         if not sell_result.get("success"):
             return {"acted": False, "orders": orders, "message": f"스위칭 매도 실패: {sell_result.get('message')}"}
         sold_qty = sell_result.get("sold_quantity", position.get("quantity", 0))
-        realized = (current_price - position.get("entry_price", current_price)) * sold_qty
-        state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + realized
+        net_realized, gross_realized = _resolve_realized_pnl(
+            sell_result, current_price, position.get("entry_price", current_price), sold_qty,
+        )
+        state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
+        state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
         state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
         state["last_sell_price"] = current_price
         state["last_trade_time"] = now.isoformat()
         state["last_action"] = "SELL"
         state["last_order_id"] = sell_result.get("order_id")
+
+        # 기존 포지션 청산이 실제로 확인됐을 때만 반대 포지션에 진입한다. 주문 접수
+        # (rt_cd=0) 응답만으로는 체결을 확정하지 않으며, position_manager가 재조회한
+        # remaining_quantity가 0이 아니면(미체결/부분체결) 이번 사이클은 매도까지만
+        # 실행하고 반대 매수는 다음 사이클로 미룬다.
+        sell_confirmed = sell_result.get("remaining_quantity", 0) <= 0
+        if position_manager is not None and not sell_confirmed:
+            state["position"] = {**position, "quantity": sell_result.get("remaining_quantity", position.get("quantity"))}
+            state["last_order_cycle_bucket"] = bucket
+            state["last_order_signature"] = signature
+            return {
+                "acted": True, "orders": orders,
+                "message": "스위칭 매도 체결 미확인(미체결/부분체결) — 반대 포지션 진입 보류, 다음 사이클 재확인",
+            }
         state["position"] = _empty_position()
 
         if not entry_allowed:

@@ -59,6 +59,22 @@ def predict_hynix_signal(market_data: dict) -> dict:
     if mu_afterhours is None:
         mu_afterhours = micron_features.get("micron_premarket_return")
 
+    # ── 마이크론 정규장/장외 등락률이 없어도(장 마감/데이터 지연 등) 더 이상
+    # 전체 제안 생성을 차단하지 않는다 — Micron Proxy Prediction Engine의
+    # effective_micron_score/synthetic_micron_score/micron_data_confidence로
+    # 대체한다(SOX/Nasdaq futures proxy + 미국 반도체 basket + 한국 확인신호
+    # 기반 추정치이며, 실제 CME 선물 체결가가 아니다).
+    micron_proxy_result: Optional[dict] = None
+    micron_regular_score_source = "REAL"
+    micron_afterhours_score_source = "REAL"
+    if mu_regular is None or mu_afterhours is None:
+        try:
+            from app.models.micron_proxy_prediction import compute_effective_micron_score_from_market_data
+
+            micron_proxy_result = compute_effective_micron_score_from_market_data(market_data)
+        except Exception:
+            micron_proxy_result = None
+
     nvda_ret = nvda_data.get("regular_return")
     amd_ret = amd_data.get("regular_return")
     sox_ret = index_data.get("sox_return")
@@ -77,10 +93,11 @@ def predict_hynix_signal(market_data: dict) -> dict:
         missing_data.append("SK하이닉스 일봉(최근 20거래일 이상)")
     if df_1min is None or (hasattr(df_1min, "empty") and df_1min.empty):
         missing_data.append("SK하이닉스 분봉(1/3/5분봉)")
-    if mu_regular is None:
-        missing_data.append("마이크론 정규장 등락률")
-    if mu_afterhours is None:
-        missing_data.append("마이크론 장외(프리마켓/애프터마켓) 등락률")
+    # 마이크론 정규장/장외 등락률은 더 이상 단독으로 제안 생성을 차단하지 않는다
+    # (Micron Proxy 대체 계산으로 진행 — 위 micron_proxy_result 참고). 단, Proxy
+    # 계산마저 완전히 실패한 경우(예외)에만 데이터 누락으로 기록한다.
+    if mu_regular is None and mu_afterhours is None and micron_proxy_result is None:
+        missing_data.append("마이크론 정규장/장외 등락률 및 Proxy 대체 계산 모두 실패")
     if nvda_ret is None and amd_ret is None and sox_ret is None:
         missing_data.append("NVDA/AMD/SOX 등락률")
     if kospi_ret is None and kospi200_ret is None:
@@ -106,8 +123,24 @@ def predict_hynix_signal(market_data: dict) -> dict:
     news_ok = bool(news_data.get("success", False))
 
     # ── 점수 계산 (100점 만점) ───────────────────────────────────────────────
-    micron_regular_score, _ = _linear_score(mu_regular, span=3.0, max_points=20.0)
-    micron_afterhours_score, _ = _linear_score(mu_afterhours, span=3.0, max_points=10.0)
+    if mu_regular is not None:
+        micron_regular_score, _ = _linear_score(mu_regular, span=3.0, max_points=20.0)
+    elif micron_proxy_result is not None:
+        # effective_micron_score는 0~100(중립 50) 스케일 — max_points=20 스케일로 선형 환산.
+        micron_regular_score = (micron_proxy_result.get("effective_micron_score", 50.0) / 100.0) * 20.0
+        micron_regular_score_source = str(micron_proxy_result.get("micron_score_source", "PROXY"))
+    else:
+        micron_regular_score, _ = _linear_score(None, span=3.0, max_points=20.0)
+        micron_regular_score_source = "NEUTRAL_FALLBACK"
+
+    if mu_afterhours is not None:
+        micron_afterhours_score, _ = _linear_score(mu_afterhours, span=3.0, max_points=10.0)
+    elif micron_proxy_result is not None:
+        micron_afterhours_score = (micron_proxy_result.get("effective_micron_score", 50.0) / 100.0) * 10.0
+        micron_afterhours_score_source = str(micron_proxy_result.get("micron_score_source", "PROXY"))
+    else:
+        micron_afterhours_score, _ = _linear_score(None, span=3.0, max_points=10.0)
+        micron_afterhours_score_source = "NEUTRAL_FALLBACK"
 
     us_semi_values = [v for v in (nvda_ret, amd_ret, sox_ret) if v is not None]
     us_semi_avg = sum(us_semi_values) / len(us_semi_values) if us_semi_values else None
@@ -241,6 +274,11 @@ def predict_hynix_signal(market_data: dict) -> dict:
         "missing_data": [],
         "news_warning": None if news_ok else "뉴스 데이터 수집 실패 - 중립값(5/10) 사용",
         "raw_inputs": raw_inputs,
+        "micron_regular_score_source": micron_regular_score_source,
+        "micron_afterhours_score_source": micron_afterhours_score_source,
+        "micron_proxy_effective_score": micron_proxy_result.get("effective_micron_score") if micron_proxy_result else None,
+        "micron_proxy_synthetic_score": micron_proxy_result.get("synthetic_micron_score") if micron_proxy_result else None,
+        "micron_proxy_data_confidence": micron_proxy_result.get("micron_data_confidence") if micron_proxy_result else None,
         "blocked": False,
         "block_reason": None,
         "disclaimer": DISCLAIMER,

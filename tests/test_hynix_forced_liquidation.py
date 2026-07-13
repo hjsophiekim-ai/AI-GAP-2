@@ -117,11 +117,12 @@ def test_forced_liquidation_blocked_in_alert_only_mode(tmp_path, monkeypatch):
 
 
 def test_ui_shows_dash_for_position_dependent_metrics_when_empty():
-    """보유종목 없음이면 최근매수가/미실현손익/자동손절·익절 기준가가 '—'로 표시되는지(소스 패턴 검증)."""
+    """보유종목 없음이면 미실현손익/자동손절·익절 기준가가 '—'로 표시되는지,
+    보유 중이면 원장 기반 평균매수가/최초진입시각 등이 표시되는지(소스 패턴 검증)."""
     source = _UI_PAGE_PATH.read_text(encoding="utf-8")
     assert "_has_position = bool(position.get(\"symbol\"))" in source
-    assert '"최근 매수 가격"' in source and "_has_position and state_now.get(\"last_buy_price\")" in source
-    assert '"현재 미실현손익"' in source and 'if _has_position else "—"' in source
+    assert '"평균 매수가"' in source and "compute_current_position_detail" in source
+    assert '"현재 미실현손익(순손익)"' in source and 'if _has_position else "—"' in source
     assert '"자동손절 기준가"' in source and '"자동익절 기준가"' in source
 
 
@@ -129,6 +130,20 @@ def test_ui_has_broker_debug_panel_button():
     source = _UI_PAGE_PATH.read_text(encoding="utf-8")
     assert "🔍 Broker Debug Panel" in source
     assert 'st.button("🔍 Broker Debug Panel"' in source
+
+
+def test_ui_trade_history_table_uses_execution_ledger_not_legacy_csv():
+    """오늘 거래내역 표와 BUY/SELL 정합성 진단이 execution ledger를 기준으로 하는지
+    검증한다 — legacy hynix_auto_trade_log_{date}.csv는 Dynamic Exit AI(1초 감시)의
+    매도를 기록하지 않아 "매수만 보이고 매도가 안 보인다"는 사고(2026-07-13)의
+    원인이었다(소스 패턴 검증)."""
+    source = _UI_PAGE_PATH.read_text(encoding="utf-8")
+    assert "from app.services.hynix_execution_ledger import load_ledger" in source
+    assert "오늘 거래내역 (원장 기준" in source
+    # 표시/진단 모두 legacy per-day CSV(pd.read_csv(...hynix_auto_trade_log_...))를
+    # 더 이상 직접 읽지 않아야 한다(주석에서의 언급은 허용).
+    assert "pd.read_csv(trade_log_path)" not in source
+    assert 'pd.read_csv(_today_trade_log_path)' not in source
 
 
 def test_micron_fallback_used_when_1min_3min_missing(tmp_path, monkeypatch):

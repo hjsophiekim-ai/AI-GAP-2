@@ -37,6 +37,18 @@ LEDGER_COLUMNS = [
     "signal_source", "action", "symbol", "requested_qty", "executed_qty", "requested_price",
     "executed_price", "before_qty", "after_qty", "cash_before", "cash_after", "realized_pnl",
     "fees", "tax", "success", "order_id", "position_confirmed", "is_test_order",
+    # Adaptive Fusion(섹션 12) — 각 모델 확률/합의도/기대값/목표비중을 원장에 함께
+    # 남겨 전략별 손익 분리 집계와 사후 분석이 가능하게 한다. 기존 원장(위 24개
+    # 컬럼)에는 없던 컬럼이므로 _migrate_ledger_schema_if_needed()가 기존 파일의
+    # 헤더를 안전하게 확장한 뒤에만 새 컬럼으로 기록한다.
+    "active_probability", "prediction_v2_probability", "cycle_probability",
+    "fused_probability", "prediction_v2_weight", "dominant_model", "model_agreement",
+    "expected_value", "target_position_pct",
+    # 실거래 비용 반영(docs/requirements.md 섹션 2) — realized_pnl은 이제 GrossPnL이
+    # 아니라 NetPnL(수수료/거래세/슬리피지 차감 후)의 alias다. 아래 6개 필드는 모든
+    # 체결(BUY/SELL 모두)에 항상 숫자(0.0 포함)로 기록되어야 하며 NaN/빈 값을 허용하지
+    # 않는다(2026-07-13 사용자 검증 — 이전에는 이 필드들이 전부 비어 있었다).
+    "gross_pnl", "buy_fee", "sell_fee", "transaction_tax", "slippage_cost", "net_pnl",
 ]
 
 SIGNAL_SOURCE_ENHANCED_LEGACY = "ENHANCED_LEGACY"
@@ -45,10 +57,54 @@ SIGNAL_SOURCE_CYCLE_AI = "CYCLE_AI"
 SIGNAL_SOURCE_DYNAMIC_EXIT = "DYNAMIC_EXIT"
 SIGNAL_SOURCE_FORCED_LIQUIDATION = "FORCED_LIQUIDATION"
 SIGNAL_SOURCE_TEST = "TEST"
+# 아래 3개는 Active Strategy/Adaptive Fusion이 "실제로 어떤 전략이 이번 주문을
+# 지배했는지" 정직하게 남기기 위한 값이다(2026-07-13 사용자 요청) —
+#   ACTIVE_ONLY: Adaptive Fusion이 꺼져있거나, Prediction V2가 아직 SHADOW라서
+#                (검증 전) 실제로는 ACTIVE_FUSION 신호만 주문에 반영된 경우.
+#   ADAPTIVE_FUSION: Prediction V2가 ADVISORY/LIVE_VALIDATED 상태로 실제 확률/
+#                    비중/진입시점에 유의미하게 반영된 경우.
+#   PREDICTION_V2_ASSISTED: ADAPTIVE_FUSION 중에서도 dominant_model이 PREDICTION_V2인
+#                           경우(Prediction V2가 이번 결정을 실질적으로 주도).
+SIGNAL_SOURCE_ACTIVE_ONLY = "ACTIVE_ONLY"
+SIGNAL_SOURCE_ADAPTIVE_FUSION = "ADAPTIVE_FUSION"
+SIGNAL_SOURCE_PREDICTION_V2_ASSISTED = "PREDICTION_V2_ASSISTED"
+# 하위호환(레거시 코드가 참조할 수 있음) — 새 코드는 SIGNAL_SOURCE_ACTIVE_ONLY를 쓴다.
+SIGNAL_SOURCE_ACTIVE_STRATEGY_MOCK = "ACTIVE_STRATEGY_MOCK"
 
 
 def _new_trade_id() -> str:
     return uuid.uuid4().hex[:16]
+
+
+def _migrate_ledger_schema_if_needed() -> None:
+    """기존 원장 파일의 헤더가 현재 LEDGER_COLUMNS보다 컬럼이 적으면(예: Adaptive
+    Fusion 컬럼 추가 이전 데이터) 기존 행은 그대로 보존한 채 누락된 컬럼만 빈 값으로
+    채워 헤더를 확장한다. 실거래 원장이므로 데이터 유실 없이 헤더만 확장해야 한다 —
+    기존 컬럼 순서/값은 절대 변경하지 않는다.
+    """
+    if not _LEDGER_PATH.exists():
+        return
+    try:
+        with _LEDGER_PATH.open("r", encoding="utf-8-sig", newline="") as fh:
+            first_line = fh.readline()
+        existing_header = next(csv.reader([first_line])) if first_line else []
+        if existing_header == LEDGER_COLUMNS:
+            return  # 이미 최신 스키마
+        if not existing_header:
+            return  # 빈 파일 — append 시 자연스럽게 새 헤더로 시작됨
+
+        df = pd.read_csv(_LEDGER_PATH, dtype=str)
+        for col in LEDGER_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+        df = df[LEDGER_COLUMNS]
+        df.to_csv(_LEDGER_PATH, index=False, encoding="utf-8-sig")
+        logger.info(
+            "[ExecutionLedger] 원장 스키마 마이그레이션 완료(%d개 컬럼 → %d개, 기존 %d행 보존)",
+            len(existing_header), len(LEDGER_COLUMNS), len(df),
+        )
+    except Exception as exc:
+        logger.error("[ExecutionLedger] 원장 스키마 마이그레이션 실패(원본은 그대로 유지됨): %s", exc)
 
 
 def record_execution(
@@ -62,12 +118,24 @@ def record_execution(
     order_id: str = "", position_confirmed: Optional[bool] = None,
     is_test_order: bool = False, parent_trade_id: Optional[str] = None,
     now: Optional[datetime] = None,
+    active_probability: Optional[float] = None, prediction_v2_probability: Optional[float] = None,
+    cycle_probability: Optional[float] = None, fused_probability: Optional[float] = None,
+    prediction_v2_weight: Optional[float] = None, dominant_model: Optional[str] = None,
+    model_agreement: Optional[float] = None, expected_value: Optional[float] = None,
+    target_position_pct: Optional[float] = None,
+    gross_pnl: float = 0.0, buy_fee: float = 0.0, sell_fee: float = 0.0,
+    transaction_tax: float = 0.0, slippage_cost: float = 0.0, net_pnl: float = 0.0,
 ) -> str:
     """단일 체결/시도를 원장에 append하고 새로 발급한 trade_id를 반환한다.
 
     실패한 시도(success=False)도 기록한다 — "왜 이번엔 주문이 안 나갔는지" 추적을
-    위해 스킵/실패 사유까지 원장에 남기는 것이 목적이다.
+    위해 스킵/실패 사유까지 원장에 남기는 것이 목적이다. Adaptive Fusion 관련
+    확률 필드(active_probability 등)는 해당 전략 경로에서만 채워지고 다른
+    signal_source는 빈 값으로 남지만, 거래비용 필드(gross_pnl/buy_fee/sell_fee/
+    transaction_tax/slippage_cost/net_pnl)는 모든 체결에서 반드시 숫자(기본 0.0)로
+    기록된다 — NaN/빈 값 금지(2026-07-13 사용자 검증 이슈 수정).
     """
+    _migrate_ledger_schema_if_needed()
     trade_id = _new_trade_id()
     now = now or datetime.now()
     row = {
@@ -83,6 +151,13 @@ def record_execution(
         "realized_pnl": realized_pnl, "fees": fees, "tax": tax,
         "success": bool(success), "order_id": order_id or "",
         "position_confirmed": position_confirmed, "is_test_order": bool(is_test_order),
+        "active_probability": active_probability, "prediction_v2_probability": prediction_v2_probability,
+        "cycle_probability": cycle_probability, "fused_probability": fused_probability,
+        "prediction_v2_weight": prediction_v2_weight, "dominant_model": dominant_model,
+        "model_agreement": model_agreement, "expected_value": expected_value,
+        "target_position_pct": target_position_pct,
+        "gross_pnl": gross_pnl, "buy_fee": buy_fee, "sell_fee": sell_fee,
+        "transaction_tax": transaction_tax, "slippage_cost": slippage_cost, "net_pnl": net_pnl,
     }
     try:
         _LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +183,12 @@ def load_ledger(date_str: Optional[str] = None) -> pd.DataFrame:
         return pd.DataFrame(columns=LEDGER_COLUMNS)
     if df.empty:
         return df
+    # 마이그레이션 이전 원장(Adaptive Fusion 컬럼 없음)을 읽어도 KeyError 없이
+    # 항상 LEDGER_COLUMNS 전체를 갖도록 보장한다(파일 자체는 건드리지 않음 —
+    # 실제 파일 마이그레이션은 record_execution()의 다음 기록 시점에 이루어진다).
+    for col in LEDGER_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["timestamp"])
     if date_str:
@@ -163,6 +244,52 @@ def compute_realized_pnl_breakdown(date_str: Optional[str] = None) -> dict:
         "trade_id", "timestamp", "symbol", "executed_qty", "executed_price", "realized_pnl", "signal_source",
     ]].to_dict("records")
     return {"total_realized_pnl": round(float(live["realized_pnl"].sum()), 2), "trades": trades}
+
+
+def compute_strategy_real_stats(signal_sources, date_str: Optional[str] = None) -> dict:
+    """실제로 체결된(원장 기준) 특정 signal_source(들)의 성과를 hynix_strategy_shadow_tracker의
+    가상 포트폴리오 통계와 같은 스키마로 반환한다 — ADAPTIVE_FUSION처럼 실제 mock 주문이
+    나가는 전략을 가상 전략들과 나란히 비교하기 위함(섹션 18/19)."""
+    if isinstance(signal_sources, str):
+        signal_sources = [signal_sources]
+    empty = {
+        "trade_count": 0, "win_rate": None, "total_return_pct": 0.0, "profit_factor": None,
+        "max_drawdown_pct": None, "avg_holding_minutes": None, "hynix_pnl_krw": 0.0, "inverse_pnl_krw": 0.0,
+    }
+    df = load_ledger(date_str)
+    if df.empty:
+        return empty
+    live = df[(df["success"] == True) & (df["is_test_order"] != True) & (df["signal_source"].isin(signal_sources))].copy()  # noqa: E712
+    sells = live[live["action"] == "SELL"].copy()
+    if sells.empty:
+        return empty
+    sells["realized_pnl"] = pd.to_numeric(sells["realized_pnl"], errors="coerce")
+    sells["executed_qty"] = pd.to_numeric(sells["executed_qty"], errors="coerce")
+    sells["executed_price"] = pd.to_numeric(sells["executed_price"], errors="coerce")
+
+    pnl = sells["realized_pnl"].dropna()
+    wins, losses = pnl[pnl > 0], pnl[pnl < 0]
+    gross_profit, gross_loss = float(wins.sum()), float(abs(losses.sum()))
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (float("inf") if gross_profit > 0 else None)
+    win_rate = round(len(wins) / len(pnl) * 100.0, 2) if len(pnl) else None
+
+    # entry_cost = executed_qty*executed_price - realized_pnl(=진입원가 근사, entry_price*qty)
+    entry_cost = sells["executed_qty"] * sells["executed_price"] - sells["realized_pnl"]
+    pct = (sells["realized_pnl"] / entry_cost.replace(0, pd.NA)) * 100.0
+    total_return_pct = round(float(pct.dropna().sum()), 4)
+
+    cum = pnl.cumsum()
+    drawdown = cum - cum.cummax()
+    max_dd = round(float(drawdown.min()), 2) if not drawdown.empty else 0.0
+
+    hynix_pnl = float(pd.to_numeric(sells[sells["symbol"] == "000660"]["realized_pnl"], errors="coerce").sum())
+    inverse_pnl = float(pd.to_numeric(sells[sells["symbol"] == "0197X0"]["realized_pnl"], errors="coerce").sum())
+
+    return {
+        "trade_count": int(len(sells)), "win_rate": win_rate, "total_return_pct": total_return_pct,
+        "profit_factor": profit_factor, "max_drawdown_pct": max_dd, "avg_holding_minutes": None,
+        "hynix_pnl_krw": round(hynix_pnl, 2), "inverse_pnl_krw": round(inverse_pnl, 2),
+    }
 
 
 def compute_performance_stats(date_str: Optional[str] = None) -> dict:
@@ -231,6 +358,179 @@ def compute_performance_stats(date_str: Optional[str] = None) -> dict:
     }
 
 
+def compute_cost_breakdown_stats(date_str: Optional[str] = None) -> dict:
+    """오늘 체결의 거래비용 총계(총 매수수수료/총 매도수수료/총 거래세/총 슬리피지/
+    Gross 실현손익/Net 실현손익)를 반환한다 — UI '거래 성과 통계'에서 비용 breakdown을
+    보여주기 위함(2026-07-13 사용자 요청). TEST 주문은 제외한다."""
+    stats = calculate_daily_net_pnl_from_ledger(date_str)
+    return {
+        "total_buy_fee": stats["total_buy_fee"],
+        "total_sell_fee": stats["total_sell_fee"],
+        "total_transaction_tax": stats["total_transaction_tax"],
+        "total_slippage_cost": stats["total_slippage_cost"],
+        "total_commission": round(stats["total_buy_fee"] + stats["total_sell_fee"], 2),
+        "total_trading_cost": stats["total_trading_cost"],
+        "gross_realized_pnl": stats["gross_realized_pnl"],
+        "net_realized_pnl": stats["net_realized_pnl"],
+    }
+
+
+def _bool_series(series: pd.Series) -> pd.Series:
+    if series.dtype == bool:
+        return series.fillna(False)
+    return series.astype(str).str.strip().str.lower().isin(("true", "1", "yes", "y"))
+
+
+def _successful_operating_trades(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    success = _bool_series(df["success"]) if "success" in df.columns else pd.Series(False, index=df.index)
+    is_test = _bool_series(df["is_test_order"]) if "is_test_order" in df.columns else pd.Series(False, index=df.index)
+    return df[success & ~is_test].copy()
+
+
+def calculate_daily_net_pnl_from_ledger(
+    date_str: Optional[str] = None,
+    starting_equity: float = 10_000_000.0,
+) -> dict:
+    """Single source of truth for daily realized PnL and UI trade rows.
+
+    Cost and PnL are intentionally sourced only from successful operating SELL
+    rows. BUY rows are displayed and counted, but their costs are counted only
+    when the matching SELL row carries them as realized round-trip cost.
+    """
+    df = load_ledger(date_str)
+    empty = {
+        "ledger_raw_row_count": 0,
+        "operating_trade_count": 0,
+        "display_row_count": 0,
+        "buy_fill_count": 0,
+        "sell_fill_count": 0,
+        "round_trip_count": 0,
+        "gross_realized_pnl": 0.0,
+        "total_buy_fee": 0.0,
+        "total_sell_fee": 0.0,
+        "total_transaction_tax": 0.0,
+        "total_slippage_cost": 0.0,
+        "total_commission": 0.0,
+        "total_trading_cost": 0.0,
+        "net_realized_pnl": 0.0,
+        "starting_equity": float(starting_equity),
+        "net_daily_return_pct": 0.0,
+        "trades": pd.DataFrame(columns=LEDGER_COLUMNS),
+    }
+    if df.empty:
+        return empty
+
+    live = _successful_operating_trades(df)
+    empty["ledger_raw_row_count"] = int(len(df))
+    if live.empty:
+        return empty
+
+    live = live.sort_values("timestamp").reset_index(drop=True)
+    sells = live[live["action"] == "SELL"].copy()
+
+    gross = float(pd.to_numeric(sells["gross_pnl"], errors="coerce").fillna(0.0).sum())
+    buy_fee = float(pd.to_numeric(sells["buy_fee"], errors="coerce").fillna(0.0).sum())
+    sell_fee = float(pd.to_numeric(sells["sell_fee"], errors="coerce").fillna(0.0).sum())
+    tax = float(pd.to_numeric(sells["transaction_tax"], errors="coerce").fillna(0.0).sum())
+    slippage = float(pd.to_numeric(sells["slippage_cost"], errors="coerce").fillna(0.0).sum())
+    net_field_sum = float(pd.to_numeric(sells["net_pnl"], errors="coerce").fillna(0.0).sum())
+    total_cost = buy_fee + sell_fee + tax + slippage
+    net = gross - total_cost
+    # Row-level costs are rounded before writing. Reconcile sub-cent drift against
+    # the SELL row net_pnl total so Gross - Cost and Net always agree in the UI.
+    if sells["net_pnl"].notna().any() and round(net, 2) != round(net_field_sum, 2):
+        reconciled_total_cost = gross - net_field_sum
+        if abs(reconciled_total_cost - total_cost) <= 0.05:
+            slippage = reconciled_total_cost - buy_fee - sell_fee - tax
+            total_cost = reconciled_total_cost
+            net = net_field_sum
+
+    after_qty = pd.to_numeric(sells.get("after_qty"), errors="coerce") if "after_qty" in sells.columns else pd.Series([], dtype=float)
+    round_trips = int((after_qty == 0).sum()) if not sells.empty else 0
+    net_return = (net / starting_equity * 100.0) if starting_equity else 0.0
+
+    return {
+        "ledger_raw_row_count": int(len(df)),
+        "operating_trade_count": int(len(live)),
+        "display_row_count": int(len(live)),
+        "buy_fill_count": int((live["action"] == "BUY").sum()),
+        "sell_fill_count": int((live["action"] == "SELL").sum()),
+        "round_trip_count": round_trips,
+        "total_buy_fee": round(buy_fee, 2),
+        "total_sell_fee": round(sell_fee, 2),
+        "total_transaction_tax": round(tax, 2),
+        "total_slippage_cost": round(slippage, 2),
+        "total_commission": round(buy_fee + sell_fee, 2),
+        "total_trading_cost": round(total_cost, 2),
+        "gross_realized_pnl": round(gross, 2),
+        "net_realized_pnl": round(net, 2),
+        "starting_equity": float(starting_equity),
+        "net_daily_return_pct": round(net_return, 6),
+        "trades": live,
+    }
+
+
+def compute_current_position_detail(symbol: Optional[str], total_equity: Optional[float] = None) -> dict:
+    """현재 보유 중인 포지션의 평균매수가/최초진입시각/최근추가매수시각/총투자금액/
+    포지션비중을 원장에서 재구성한다(section: 보유 포지션 상세 표시).
+
+    "현재 보유 중인 에피소드"는 원장 전체(날짜 무관 — 당일청산 원칙이라 보통 당일
+    이지만, 안전하게 전체 기간에서 마지막으로 0→보유로 전환된 이후 아직 0으로
+    돌아오지 않은 구간)로 정의한다. symbol이 없거나(포지션 없음) 매칭되는 원장
+    기록이 없으면 has_position=False만 반환한다.
+    """
+    empty = {
+        "has_position": False, "avg_buy_price": None, "first_entry_time": None,
+        "last_add_time": None, "total_invested_krw": None, "position_pct": None,
+        "buy_count_in_position": 0,
+    }
+    if not symbol:
+        return empty
+
+    df = load_ledger(None)
+    if df.empty:
+        return empty
+    live = df[(df["success"] == True) & (df["is_test_order"] != True) & (df["symbol"] == symbol)]  # noqa: E712
+    live = live.sort_values("timestamp").reset_index(drop=True)
+    if live.empty:
+        return empty
+
+    # 가장 최근에 시작된(0→보유 전환) 후 아직 0으로 청산되지 않은 구간의 시작 위치를 찾는다.
+    episode_start_pos = None
+    for pos, row in live.iterrows():
+        before_qty = pd.to_numeric(row.get("before_qty"), errors="coerce")
+        after_qty = pd.to_numeric(row.get("after_qty"), errors="coerce")
+        if row["action"] == "BUY" and (pd.isna(before_qty) or before_qty == 0):
+            episode_start_pos = pos
+        elif row["action"] == "SELL" and pd.notna(after_qty) and after_qty == 0:
+            episode_start_pos = None
+
+    if episode_start_pos is None:
+        return empty
+
+    episode_buys = live.iloc[episode_start_pos:]
+    episode_buys = episode_buys[episode_buys["action"] == "BUY"]
+    if episode_buys.empty:
+        return empty
+
+    qtys = pd.to_numeric(episode_buys["executed_qty"], errors="coerce").fillna(0)
+    prices = pd.to_numeric(episode_buys["executed_price"], errors="coerce").fillna(0)
+    total_qty = float(qtys.sum())
+    total_cost = float((qtys * prices).sum())
+
+    return {
+        "has_position": True,
+        "avg_buy_price": round(total_cost / total_qty, 2) if total_qty > 0 else None,
+        "first_entry_time": episode_buys.iloc[0]["timestamp"].isoformat(),
+        "last_add_time": episode_buys.iloc[-1]["timestamp"].isoformat(),
+        "total_invested_krw": round(total_cost, 2),
+        "buy_count_in_position": int(len(episode_buys)),
+        "position_pct": round(total_cost / total_equity * 100, 2) if total_equity else None,
+    }
+
+
 def reconcile_execution_ledger(date_str: Optional[str] = None, broker=None) -> dict:
     """원장과 broker.get_positions()를 대조해 UI 표시값과의 불일치를 점검한다.
 
@@ -278,6 +578,143 @@ def reconcile_execution_ledger(date_str: Optional[str] = None, broker=None) -> d
         "ledger_final_position": ledger_position, "broker_position": broker_position,
         "position_match": position_match, "mismatches": mismatches,
     }
+
+
+# =============================================================================
+# 거래비용 재구성(섹션 8) — TradeCostEngine 도입 이전에 기록된 완료 왕복거래를
+# 실제 수수료/거래세/슬리피지 기준으로 재계산한다. reconstruct_*는 순수 리포트
+# (파일을 건드리지 않음), backfill_trading_costs_into_ledger는 그 결과를 실제
+# 원장 파일에 반영한다(과거 행의 gross_pnl/buy_fee/sell_fee/transaction_tax/
+# slippage_cost/net_pnl/realized_pnl만 갱신 — 다른 컬럼/행은 절대 건드리지 않음).
+# =============================================================================
+
+def _match_round_trips_fifo(live: pd.DataFrame) -> list:
+    """심볼별 FIFO로 BUY→SELL을 매칭해 완료된 왕복거래 목록을 만든다(Scale-in은
+    수량가중평균 매수가로 합산). 매도수량이 남은 매수보다 크면 잘라서(min) 매칭한다."""
+    from app.trading.trading_cost_engine import TradeCostEngine
+
+    cost_engine = TradeCostEngine()
+    trades: list = []
+    open_positions: dict = {}
+
+    for _, row in live.sort_values("timestamp").iterrows():
+        symbol = row["symbol"]
+        action = row["action"]
+        qty = pd.to_numeric(row.get("executed_qty"), errors="coerce")
+        price = pd.to_numeric(row.get("executed_price"), errors="coerce")
+        if pd.isna(qty) or pd.isna(price) or qty <= 0:
+            continue
+
+        if action == "BUY":
+            if symbol not in open_positions:
+                open_positions[symbol] = {"price": float(price), "qty": float(qty)}
+            else:
+                prev = open_positions[symbol]
+                total_qty = prev["qty"] + qty
+                prev["price"] = (prev["price"] * prev["qty"] + float(price) * float(qty)) / total_qty
+                prev["qty"] = total_qty
+        elif action == "SELL" and symbol in open_positions:
+            entry = open_positions[symbol]
+            sell_qty = min(float(qty), entry["qty"])
+            if sell_qty <= 0:
+                continue
+            cost = cost_engine.compute_net_pnl(symbol, entry_price=entry["price"], exit_price=float(price), quantity=int(sell_qty))
+            trades.append({
+                "trade_id": row["trade_id"], "symbol": symbol, "buy_price": entry["price"], "sell_price": float(price),
+                "quantity": int(sell_qty), "gross_pnl": cost["gross_pnl"], "buy_fee": cost["buy_fee"],
+                "sell_fee": cost["sell_fee"], "transaction_tax": cost["transaction_tax"],
+                "slippage_cost": cost["slippage"], "net_pnl": cost["net_pnl"], "sell_timestamp": row["timestamp"],
+            })
+            entry["qty"] -= sell_qty
+            if entry["qty"] <= 0:
+                del open_positions[symbol]
+
+    return trades
+
+
+def reconstruct_trade_costs_for_date(date_str: Optional[str] = None) -> dict:
+    """섹션 8 — 완료된 왕복거래를 TradeCostEngine으로 재계산한 표+합계를 반환한다
+    (파일을 수정하지 않는 순수 리포트). trade_no는 1부터 매긴다."""
+    df = load_ledger(date_str)
+    empty = {
+        "trades": [],
+        "totals": {"gross_realized_pnl": 0.0, "total_commission": 0.0, "total_tax": 0.0, "total_slippage": 0.0, "net_realized_pnl": 0.0},
+    }
+    if df.empty:
+        return empty
+    live = df[(df["success"] == True) & (df["is_test_order"] != True)].copy()  # noqa: E712
+    if live.empty:
+        return empty
+
+    trades = _match_round_trips_fifo(live)
+    for i, t in enumerate(trades, start=1):
+        t["trade_no"] = i
+
+    totals = {
+        "gross_realized_pnl": round(sum(t["gross_pnl"] for t in trades), 2),
+        "total_commission": round(sum(t["buy_fee"] + t["sell_fee"] for t in trades), 2),
+        "total_tax": round(sum(t["transaction_tax"] for t in trades), 2),
+        "total_slippage": round(sum(t["slippage_cost"] for t in trades), 2),
+        "net_realized_pnl": round(sum(t["net_pnl"] for t in trades), 2),
+    }
+    return {"trades": trades, "totals": totals}
+
+
+def backfill_trading_costs_into_ledger(date_str: Optional[str] = None) -> dict:
+    """reconstruct_trade_costs_for_date()의 결과를 실제 원장 CSV 파일에 반영한다 —
+    해당 SELL 행의 gross_pnl/buy_fee/sell_fee/transaction_tax/slippage_cost/net_pnl/
+    realized_pnl/fees/tax만 갱신하고, 그 외 모든 행/컬럼은 그대로 둔다. 이미
+    gross_pnl이 채워진(0이 아닌) 행은 건드리지 않는다(중복 백필 방지)."""
+    _migrate_ledger_schema_if_needed()
+    report = reconstruct_trade_costs_for_date(date_str)
+    if not report["trades"]:
+        return {"updated_rows": 0, "report": report}
+
+    if not _LEDGER_PATH.exists():
+        return {"updated_rows": 0, "report": report}
+
+    with _LEDGER_PATH.open("r", newline="", encoding="utf-8-sig") as fh:
+        rows = list(csv.reader(fh))
+    if len(rows) < 2:
+        return {"updated_rows": 0, "report": report}
+    header = rows[0]
+    by_trade_id = {t["trade_id"]: t for t in report["trades"]}
+
+    updated = 0
+    for i in range(1, len(rows)):
+        row_dict = dict(zip(header, rows[i]))
+        tid = row_dict.get("trade_id")
+        if tid not in by_trade_id:
+            continue
+        # gross_pnl과 slippage_cost가 둘 다 이미 채워져 있어야 "완료된 백필"로 본다 —
+        # 스키마 마이그레이션이 컬럼명을 바꾸면서(예: slippage→slippage_cost) 값이
+        # 유실될 수 있으므로, 하나라도 비어 있으면 다시 채운다(멱등 — 항상 동일한
+        # 계산 결과로 덮어쓰므로 여러 번 실행해도 값이 달라지지 않는다).
+        already_done = all(
+            row_dict.get(col) not in (None, "", "0", "0.0")
+            for col in ("gross_pnl", "slippage_cost")
+        )
+        if already_done:
+            continue
+        t = by_trade_id[tid]
+        row_dict["gross_pnl"] = t["gross_pnl"]
+        row_dict["buy_fee"] = t["buy_fee"]
+        row_dict["sell_fee"] = t["sell_fee"]
+        row_dict["transaction_tax"] = t["transaction_tax"]
+        row_dict["slippage_cost"] = t["slippage_cost"]
+        row_dict["net_pnl"] = t["net_pnl"]
+        row_dict["realized_pnl"] = t["net_pnl"]
+        row_dict["fees"] = round(t["buy_fee"] + t["sell_fee"], 2)
+        row_dict["tax"] = t["transaction_tax"]
+        rows[i] = [row_dict.get(col, "") for col in header]
+        updated += 1
+
+    if updated:
+        with _LEDGER_PATH.open("w", newline="", encoding="utf-8-sig") as fh:
+            csv.writer(fh).writerows(rows)
+        logger.info("[ExecutionLedger] 거래비용 백필 완료: %d개 SELL 행 갱신", updated)
+
+    return {"updated_rows": updated, "report": report}
 
 
 # =============================================================================

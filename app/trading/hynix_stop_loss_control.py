@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
 
@@ -55,7 +56,7 @@ _MARKET_ORDER_CUTOFF = dtime(15, 20)
 
 def is_order_time_allowed(now: Optional[datetime] = None) -> bool:
     """대략적인 KRX 주문 가능 시간(09:00~15:20). 손절 매도 주문 실행 전 공통 체크."""
-    now = now or datetime.now()
+    now = now or kst_now()
     return _MARKET_OPEN <= now.time() <= _MARKET_ORDER_CUTOFF
 
 
@@ -100,7 +101,7 @@ def apply_stop_loss_mode_gate(
     AUTO가 아니면 무조건 차단(알림만 남김). AUTO+real이면 6가지 안전조건까지 확인한다.
     AUTO+mock은 즉시 통과. 반환: {"blocked": bool, "reason": str|None}.
     """
-    now = now or datetime.now()
+    now = now or kst_now()
     stop_loss_mode = state.get("stop_loss_mode", STOP_LOSS_MODE_AUTO)
 
     if stop_loss_mode != STOP_LOSS_MODE_AUTO:
@@ -132,7 +133,7 @@ def check_auto_stop_loss_safety(
     조건: ①real 자동매매 ON ②자동손절(AUTO) 모드 ③실제 계좌에 해당 종목 보유 확인
     ④(호출부에서 손절가 도달을 이미 확인했다는 전제) ⑤주문 가능 시간 ⑥중복 매도 주문 없음.
     """
-    now = now or datetime.now()
+    now = now or kst_now()
     failed: list[str] = []
 
     if mode == "real" and not state.get("auto_trade_on"):
@@ -180,7 +181,7 @@ def execute_manual_stop_loss(mode: str, symbol_filter: Optional[str] = None) -> 
     from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
     from app.trading.dynamic_exit_watcher import _get_cached_broker, _fetch_current_price
 
-    now = datetime.now()
+    now = kst_now()
     state = load_state(mode=mode)
     results: list[dict] = []
 

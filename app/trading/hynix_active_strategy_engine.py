@@ -41,6 +41,94 @@ _ADVERSE_MOVE_LIMIT_PCT = 0.8
 _REENTRY_COOLDOWN_SECONDS = 5 * 60
 _REENTRY_COOLDOWN_AFTER_SL_SECONDS = 15 * 60
 
+# =============================================================================
+# FinalExecutionDecision — enhanced final_action/Prediction AI V2/Cycle AI/
+# Active Strategy/Dynamic Exit로 흩어져 있던 신호를 단일 객체로 통일한다(명세 1절).
+# 주문 엔진(hynix_switch_engine._run_active_strategy_entry)은 이 객체 하나만 본다.
+# Cycle AI는 "CYCLE_SHADOW"로만 참고되고, 실제 실행 신호는 "ACTIVE_FUSION"이다
+# (명세 6절 — Cycle Shadow의 NO_TRADE가 Active 주문을 자동 차단하지 않는다).
+# =============================================================================
+
+SIGNAL_SOURCE_ACTIVE_FUSION = "ACTIVE_FUSION"
+SIGNAL_SOURCE_CYCLE_SHADOW = "CYCLE_SHADOW"
+SIGNAL_SOURCE_ENHANCED_LEGACY = "ENHANCED_LEGACY"
+SIGNAL_SOURCE_DYNAMIC_EXIT = "DYNAMIC_EXIT"
+
+FINAL_ACTION_HYNIX_BUY = "HYNIX_BUY"
+FINAL_ACTION_INVERSE_BUY = "INVERSE_BUY"
+FINAL_ACTION_SELL_HYNIX = "SELL_HYNIX"
+FINAL_ACTION_SELL_INVERSE = "SELL_INVERSE"
+FINAL_ACTION_SCALE_IN_HYNIX = "SCALE_IN_HYNIX"
+FINAL_ACTION_SCALE_IN_INVERSE = "SCALE_IN_INVERSE"
+FINAL_ACTION_HOLD = "HOLD"
+
+# 명세 9절 — 주문 미실행/실패 사유 taxonomy(재시도는 order_exception만).
+REASON_INSUFFICIENT_CASH = "insufficient_cash"
+REASON_POSITION_CONFLICT = "position_conflict"
+REASON_COOLDOWN = "cooldown"
+REASON_DUPLICATE_SIGNAL = "duplicate_signal"
+REASON_STALE_PRICE = "stale_price"
+REASON_RISK_LIMIT = "risk_limit"
+REASON_OUTSIDE_TRADING_HOURS = "outside_trading_hours"
+REASON_ORDER_EXCEPTION = "order_exception"
+RETRYABLE_FAILURE_REASONS = frozenset({REASON_ORDER_EXCEPTION})
+
+
+def build_final_execution_decision(
+    action: str, symbol: Optional[str], target_position_pct: float, confidence: float,
+    signal_source: str, reasons: list, executable: bool, blocking_reason: Optional[str] = None,
+) -> dict:
+    """명세 1절 — 여러 신호원을 대체하는 단일 결과 객체."""
+    return {
+        "action": action, "symbol": symbol, "target_position_pct": target_position_pct,
+        "confidence": confidence, "signal_source": signal_source, "reasons": list(reasons),
+        "executable": bool(executable), "blocking_reason": blocking_reason,
+    }
+
+
+def to_final_execution_decision(decision_result: dict, held_symbol: Optional[str] = None) -> dict:
+    """decide_active_strategy_action()의 내부 반환값을 FinalExecutionDecision으로 변환한다.
+    주문 엔진은 이 변환 결과 하나만 사용해야 한다(enhanced_score/Cycle AI를 따로 보지 않음)."""
+    action = decision_result.get("action")
+    symbol = decision_result.get("recommended_symbol") or held_symbol
+    blocking_reason = decision_result.get("blocking_reason")
+    executable = action != ACTION_HOLD and blocking_reason is None
+
+    if action == ACTION_ENTER_HYNIX:
+        final_action = FINAL_ACTION_HYNIX_BUY
+    elif action == ACTION_ENTER_INVERSE:
+        final_action = FINAL_ACTION_INVERSE_BUY
+    elif action in (ACTION_EXIT_ALL, ACTION_SCALE_OUT_PARTIAL, ACTION_SWITCH):
+        final_action = FINAL_ACTION_SELL_HYNIX if symbol == "000660" else FINAL_ACTION_SELL_INVERSE
+    else:
+        final_action = FINAL_ACTION_HOLD
+        executable = False
+
+    fusion = decision_result.get("fusion_result") or {}
+    return build_final_execution_decision(
+        action=final_action, symbol=symbol if final_action != FINAL_ACTION_HOLD else None,
+        target_position_pct=decision_result.get("recommended_position_pct", 0.0),
+        confidence=fusion.get("fusion_score", 50.0), signal_source=SIGNAL_SOURCE_ACTIVE_FUSION,
+        reasons=decision_result.get("reasons", []), executable=executable, blocking_reason=blocking_reason,
+    )
+
+
+def generate_idempotency_key(now: datetime, mode: str, cycle_id: str, action: str, symbol: str) -> str:
+    """명세 8절 — date+mode+cycle_id+action+symbol. 같은 신호가 재실행되는 것을 막는다."""
+    return f"{now.strftime('%Y%m%d')}:{mode}:{cycle_id}:{action}:{symbol}"
+
+
+def is_duplicate_signal(strategy_state: dict, idempotency_key: str) -> bool:
+    return idempotency_key in (strategy_state.get("executed_idempotency_keys") or [])
+
+
+def register_idempotency_key(strategy_state: dict, idempotency_key: str) -> dict:
+    state = dict(strategy_state)
+    keys = list(state.get("executed_idempotency_keys") or [])
+    keys.append(idempotency_key)
+    state["executed_idempotency_keys"] = keys[-200:]
+    return state
+
 
 def default_active_strategy_state(mode: str = DEFAULT_MODE) -> dict:
     return {
@@ -51,7 +139,7 @@ def default_active_strategy_state(mode: str = DEFAULT_MODE) -> dict:
         "last_switch_time": None, "switch_history": [],
         "whipsaw_dampened_until": None,
         "round_trip_count_today": 0, "hold_streak_no_position": 0, "hold_streak_started_at": None,
-        "consecutive_stop_losses": 0,
+        "consecutive_stop_losses": 0, "executed_idempotency_keys": [],
     }
 
 

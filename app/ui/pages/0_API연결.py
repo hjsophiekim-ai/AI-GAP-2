@@ -12,7 +12,7 @@ import streamlit as st
 
 try:
     from app.trading.kis_client import create_kis_client, KISTokenError
-    from app.config import get_config, get_kis_account_config
+    from app.config import get_config, get_kis_account_config, reload_runtime_configuration
     from app.ui.real_emergency_controls import render_real_emergency_stop
 except Exception as e:
     st.error(f"모듈 로드 오류: {e}")
@@ -20,6 +20,33 @@ except Exception as e:
 
 st.title("KIS API 연결")
 st.caption("Mock(모의투자) / Real(실전투자) 계좌 연결 상태를 확인합니다.")
+
+# ---------------------------------------------------------------------------
+# 진단 정보: git commit SHA / config.yaml 경로 / 환경설정 다시 읽기
+# ---------------------------------------------------------------------------
+_diag_c1, _diag_c2, _diag_c3 = st.columns(3)
+with _diag_c1:
+    try:
+        import subprocess as _sp
+        _git_sha = _sp.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=_PROJECT_ROOT, timeout=5,
+        ).decode().strip()
+    except Exception:
+        _git_sha = "조회 실패"
+    st.markdown(f"**Git commit SHA**: `{_git_sha}`")
+with _diag_c2:
+    try:
+        from app.config import _CONFIG_PATH as _CFG_PATH
+        st.markdown(f"**config.yaml 경로**: `{_CFG_PATH}`")
+    except Exception:
+        st.markdown("**config.yaml 경로**: 조회 실패")
+with _diag_c3:
+    if st.button("🔄 환경설정 다시 읽기", key="api_page_reload_runtime_config"):
+        try:
+            reload_runtime_configuration()
+            st.success("환경설정(.env/config.yaml)을 다시 읽고 브로커/토큰 캐시를 초기화했습니다.")
+        except Exception as exc:
+            st.error(f"환경설정 재로드 실패: {exc}")
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -31,6 +58,15 @@ def _run_test(mode: str, test_name: str) -> None:
 
     if test_name == "token":
         with st.spinner("토큰 발급 중..."):
+            for stale_key in (
+                key_client, key_ok,
+                f"{mode}_balance", f"{mode}_breakdown", f"{mode}_buyable",
+            ):
+                st.session_state.pop(stale_key, None)
+            try:
+                reload_runtime_configuration()
+            except Exception:
+                pass
             # 환경변수 체크 (진단용)
             env_info: dict = {}
             base_url_used = ""
@@ -327,6 +363,45 @@ with tab_real:
         st.success("Real 계좌 주문 가능 상태입니다.")
     elif real_ok:
         st.warning("토큰은 발급됐지만 주문가능금액을 확인하세요.")
+
+# ---------------------------------------------------------------------------
+# 계좌(마스킹) / 환경변수 source / 종목코드 검증
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader("계좌 정보 (마스킹) / 종목코드 검증")
+
+_acc_col1, _acc_col2 = st.columns(2)
+for _acc_col, _acc_mode in ((_acc_col1, "mock"), (_acc_col2, "real")):
+    with _acc_col:
+        st.markdown(f"**{_acc_mode.upper()} 계좌**")
+        try:
+            _acc_cfg = get_kis_account_config(_acc_mode)
+            st.markdown(f"- 마스킹 계좌: `{_acc_cfg.get('masked_account', '')}`")
+            st.markdown(f"- 환경변수 source: `{_acc_cfg.get('account_source', '')}`")
+            if _acc_cfg.get("account_conflict"):
+                st.error(f"🔴 계좌 환경변수 충돌: {', '.join(_acc_cfg.get('account_conflict_vars', []))}")
+        except Exception as exc:
+            st.warning(f"계좌 설정 미확인: {exc}")
+
+st.markdown("**000660 / 0197X0 검증 (현재가+종목명 조회, PDNO에 그대로 전달)**")
+_verify_mode_choice = st.radio("검증할 계좌", ["mock", "real"], horizontal=True, key="symbol_verify_mode")
+if st.button("종목코드 검증 실행", key="btn_verify_symbols"):
+    try:
+        from app.trading.kis_client import create_kis_client, verify_symbol
+        from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
+
+        _vclient = create_kis_client(_verify_mode_choice)
+        if _vclient is None:
+            st.error(f"{_verify_mode_choice} KIS 클라이언트 초기화 실패 — 검증 불가")
+        else:
+            for _sym, _expected in (("000660", "SK하이닉스"), (INVERSE_SYMBOL, INVERSE_NAME)):
+                _res = verify_symbol(_vclient, _sym, expected_name_substr=_expected)
+                if _res["verified"]:
+                    st.success(f"✅ {_sym}: 현재가 {_res['current_price']:,.0f}원, 종목명 `{_res['name']}`")
+                else:
+                    st.error(f"❌ {_sym}: 검증 실패 — {_res.get('error')}")
+    except Exception as exc:
+        st.error(f"종목코드 검증 실패: {exc}")
 
 # ---------------------------------------------------------------------------
 # 실전모드 활성화 섹션

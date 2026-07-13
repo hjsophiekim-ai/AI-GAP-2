@@ -335,6 +335,15 @@ class Config:
         import os
         return os.getenv("ENABLE_FULL_AUTO", "false").strip().lower() in ("true", "1", "yes")
 
+    def full_auto_real_confirm_text(self) -> str:
+        """완전자동 REAL 주문 시 브로커 gate4(확인 문구)에 전달할 실제 값.
+
+        enhanced_real_gate_status()는 이 값을 real_confirm_text()와 비교해 "ready"
+        여부만 진단하지만, create_broker()/KisRealBroker에 실제로 이 값을 넘겨주지
+        않으면 gate4가 confirm_text="" 로 항상 실패한다 — REAL 자동주문이 게이트를
+        통과하고도 브로커 생성 단계에서 매번 막히는 원인이었다(2026-07-14 수정)."""
+        return os.getenv("FULL_AUTO_REAL_CONFIRM_TEXT", "").strip()
+
     def full_auto_real_confirm_ok(self) -> bool:
         """완전자동 REAL 실행 허가 여부."""
         return self.enhanced_real_gate_status(current_mode="real")["ready"]
@@ -355,6 +364,12 @@ class Config:
         def _present(name: str) -> bool:
             return bool(os.getenv(name, "").strip())
 
+        try:
+            from app.trading.emergency_stop import is_emergency_stopped
+            kill_switch_off = not is_emergency_stopped()
+        except Exception:
+            kill_switch_off = True
+
         expected_confirm = str(self.real_confirm_text() or "").strip()
         actual_confirm = os.getenv("FULL_AUTO_REAL_CONFIRM_TEXT", "").strip()
         config_enable_real = bool(self.safety.get("enable_real_trading", False))
@@ -373,6 +388,7 @@ class Config:
             "real_account_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_NO", "KIS_REAL_CANO", "KIS_ACCOUNT_NO")),
             "real_product_code_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_PRODUCT_CODE", "KIS_REAL_ACNT_PRDT_CD", "KIS_ACCOUNT_PRODUCT_CODE")),
             "real_trading_start_date_allowed": self.real_trading_date_allowed(),
+            "kill_switch_off": kill_switch_off,
         }
 
         account_info = {}
@@ -406,6 +422,7 @@ class Config:
             "real_product_code_present": "KIS_REAL_PRODUCT_CODE_MISSING",
             "real_trading_start_date_allowed": f"REAL_TRADING_START_DATE_NOT_REACHED({self.real_trading_start_date()})",
             "real_account_config_ok": "KIS_REAL_ACCOUNT_CONFIG_INVALID",
+            "kill_switch_off": "KILL_SWITCH_ACTIVE",
         }
         blocking_reasons = [reason for key, reason in blocking_map.items() if not checks.get(key)]
         if checks.get("real_account_conflict"):

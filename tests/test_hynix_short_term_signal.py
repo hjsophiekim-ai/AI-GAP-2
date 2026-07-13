@@ -122,6 +122,16 @@ class TestPredictHynixSignalComplete:
         assert result["news_warning"] is not None
         assert result["score_breakdown"]["news_momentum"] == 5.0
 
+    def test_missing_micron_real_data_does_not_block_uses_proxy(self):
+        """마이크론 정규장/장외 실데이터가 없어도(장 마감 등) Micron Proxy로 대체하고
+        전체 제안 생성을 차단하지 않는다."""
+        data = _complete_market_data()
+        data["mu"] = {"df_1min": None, "current_price": None}
+        result = predict_hynix_signal(data)
+        assert not result["blocked"]
+        assert result["micron_regular_score_source"] != "REAL"
+        assert 0.0 <= result["score_breakdown"]["micron_regular"] <= 20.0
+
 
 class TestPredictHynixSignalBlocked:
     def test_missing_current_price_blocks(self):

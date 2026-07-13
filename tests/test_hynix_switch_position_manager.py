@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pandas as pd
 import pytest
 
 from app.models import OrderResult
@@ -214,3 +215,96 @@ def test_run_tp_sl_if_needed_executes_and_clears_position():
 
     assert result["triggered"] is True and result["executed"] is True
     assert state["position"]["symbol"] is None
+
+
+class TestExecutionLedgerCostFields:
+    """2026-07-13 사용자 검증 — 모든 체결에 거래비용 필드가 숫자(0.0 포함)로 기록되고,
+    Prediction V2 등 Adaptive Fusion 메타데이터가 전달되면 그대로 원장에 남는지 확인."""
+
+    def test_buy_records_nonzero_buy_fee_and_no_nan(self):
+        from app.trading.hynix_switch_position_manager import _buy_new
+        from app.services.hynix_execution_ledger import load_ledger
+
+        broker = DummyBroker(buy_success=True, buyable_cash=10_000_000.0)
+        orders: list = []
+        _buy_new(broker, HYNIX_SYMBOL, current_price=100_000.0, cash_amount=1_000_000.0, reason="test", orders=orders, mode="mock")
+
+        df = load_ledger()
+        row = df.iloc[0]
+        assert row["buy_fee"] > 0.0
+        assert not pd.isna(row["buy_fee"])
+        assert not pd.isna(row["sell_fee"])
+        assert not pd.isna(row["transaction_tax"])
+        assert not pd.isna(row["slippage_cost"])
+        assert not pd.isna(row["gross_pnl"])
+        assert not pd.isna(row["net_pnl"])
+        assert row["sell_fee"] == pytest.approx(0.0)
+        assert row["gross_pnl"] == pytest.approx(0.0)
+
+    def test_stock_sell_records_transaction_tax(self):
+        from app.trading.hynix_switch_position_manager import _sell_all_or_ratio
+        from app.services.hynix_execution_ledger import load_ledger
+
+        broker = DummyBroker(sell_success=True)
+        position = {"symbol": HYNIX_SYMBOL, "quantity": 10, "entry_price": 100_000.0}
+        orders: list = []
+        _sell_all_or_ratio(broker, position, current_price=103_000.0, ratio=1.0, reason="test", orders=orders, mode="mock")
+
+        df = load_ledger()
+        row = df[df["action"] == "SELL"].iloc[-1]
+        assert row["transaction_tax"] > 0.0
+        assert row["gross_pnl"] == pytest.approx((103_000.0 - 100_000.0) * 10)
+        assert row["net_pnl"] < row["gross_pnl"]
+
+    def test_etf_sell_records_zero_transaction_tax_explicitly(self):
+        from app.trading.hynix_switch_position_manager import _sell_all_or_ratio
+        from app.services.hynix_execution_ledger import load_ledger
+        import pandas as _pd
+
+        broker = DummyBroker(sell_success=True)
+        position = {"symbol": INVERSE_SYMBOL, "quantity": 100, "entry_price": 10_000.0}
+        orders: list = []
+        _sell_all_or_ratio(broker, position, current_price=10_200.0, ratio=1.0, reason="test", orders=orders, mode="mock")
+
+        df = load_ledger()
+        row = df[(df["action"] == "SELL") & (df["symbol"] == INVERSE_SYMBOL)].iloc[-1]
+        assert not _pd.isna(row["transaction_tax"])
+        assert row["transaction_tax"] == pytest.approx(0.0)
+
+    def test_fusion_metadata_recorded_when_provided(self):
+        from app.trading.hynix_switch_position_manager import _buy_new
+        from app.services.hynix_execution_ledger import load_ledger
+
+        broker = DummyBroker(buy_success=True, buyable_cash=10_000_000.0)
+        orders: list = []
+        fusion_metadata = {
+            "active_probability": 70.0, "prediction_v2_probability": 65.0, "cycle_probability": 55.0,
+            "fused_probability": 68.0, "prediction_v2_weight": 0.18, "dominant_model": "ACTIVE_FUSION",
+            "model_agreement": 82.0, "expected_value": 0.3, "target_position_pct": 35.0,
+        }
+        _buy_new(
+            broker, HYNIX_SYMBOL, current_price=100_000.0, cash_amount=1_000_000.0, reason="test",
+            orders=orders, mode="mock", signal_source="ADAPTIVE_FUSION", fusion_metadata=fusion_metadata,
+        )
+
+        df = load_ledger()
+        row = df.iloc[0]
+        assert row["signal_source"] == "ADAPTIVE_FUSION"
+        assert row["prediction_v2_probability"] == pytest.approx(65.0)
+        assert row["dominant_model"] == "ACTIVE_FUSION"
+        assert row["prediction_v2_weight"] == pytest.approx(0.18)
+
+    def test_ui_net_pnl_sum_matches_ledger_net_pnl_sum(self):
+        from app.trading.hynix_switch_position_manager import _buy_new, _sell_all_or_ratio
+        from app.services.hynix_execution_ledger import load_ledger, compute_performance_stats
+
+        broker = DummyBroker(buy_success=True, sell_success=True, buyable_cash=10_000_000.0)
+        orders: list = []
+        _buy_new(broker, HYNIX_SYMBOL, current_price=100_000.0, cash_amount=1_000_000.0, reason="test", orders=orders, mode="mock")
+        position = {"symbol": HYNIX_SYMBOL, "quantity": 10, "entry_price": 100_000.0}
+        _sell_all_or_ratio(broker, position, current_price=103_000.0, ratio=1.0, reason="test", orders=orders, mode="mock")
+
+        df = load_ledger()
+        ledger_net_sum = round(float(pd.to_numeric(df[df["action"] == "SELL"]["net_pnl"], errors="coerce").sum()), 2)
+        stats = compute_performance_stats(datetime.now().strftime("%Y%m%d"))
+        assert round(stats["cumulative_realized_pnl"], 0) == pytest.approx(round(ledger_net_sum, 0), abs=1.0)

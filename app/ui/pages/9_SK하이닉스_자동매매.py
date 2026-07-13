@@ -525,6 +525,77 @@ if switch_state.get("position_conflict"):
 if switch_state.get("critical_alert"):
     st.error(f"🔴 CRITICAL: {switch_state.get('critical_alert')}")
 
+with st.expander("🩺 REAL 게이트 / 계좌 / 종목코드 진단", expanded=(switch_state.get("mode") == "real")):
+    _diag_col1, _diag_col2 = st.columns(2)
+    with _diag_col1:
+        try:
+            import subprocess as _sp
+            _git_sha = _sp.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], cwd=_PROJECT_ROOT, timeout=5,
+            ).decode().strip()
+        except Exception:
+            _git_sha = "조회 실패"
+        st.markdown(f"**Git commit SHA**: `{_git_sha}`")
+        try:
+            from app.config import _CONFIG_PATH as _CFG_PATH
+            st.markdown(f"**config.yaml 경로**: `{_CFG_PATH}`")
+        except Exception:
+            pass
+        st.markdown(f"**현재 broker mode**: `{switch_state.get('mode', 'mock')}`")
+    with _diag_col2:
+        try:
+            from app.config import get_kis_account_config
+            _acc_mode = switch_state.get("mode", "mock")
+            _acc_cfg = get_kis_account_config(_acc_mode)
+            st.markdown(f"**계좌(마스킹)**: `{_acc_cfg.get('masked_account', '')}`")
+            st.markdown(f"**계좌 환경변수 source**: `{_acc_cfg.get('account_source', '')}`")
+            if _acc_cfg.get("account_conflict"):
+                st.error(f"🔴 계좌 환경변수 충돌: {', '.join(_acc_cfg.get('account_conflict_vars', []))}")
+        except Exception as exc:
+            st.warning(f"계좌 설정 조회 실패: {exc}")
+
+    st.markdown("---")
+    st.markdown("**REAL 게이트 항목별 상태**")
+    try:
+        _gate = cfg.enhanced_real_gate_status(current_mode=switch_state.get("mode", "mock"))
+        _gate_checks = _gate.get("checks", {})
+        for _k, _v in _gate_checks.items():
+            st.markdown(f"{'✅' if _v else '❌'} `{_k}`")
+        if _gate.get("blocking_reasons"):
+            st.error("차단 사유: " + ", ".join(_gate["blocking_reasons"]))
+        else:
+            st.success("REAL 게이트 통과 상태입니다(그 외 실전모드 활성화/킬스위치 조건도 함께 확인하세요).")
+    except Exception as exc:
+        st.warning(f"REAL 게이트 조회 실패: {exc}")
+
+    st.markdown("---")
+    st.markdown("**종목코드 검증(현재가+종목명 조회, PDNO에 그대로 전달)**")
+    if st.button("000660 / 0197X0 검증 실행", key="hynix_verify_symbols"):
+        try:
+            from app.trading.kis_client import create_kis_client, verify_symbol
+            from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
+            _verify_mode = switch_state.get("mode", "mock") if switch_state.get("mode") in ("mock", "real") else "mock"
+            _verify_client = create_kis_client(_verify_mode)
+            if _verify_client is None:
+                st.error(f"{_verify_mode} KIS 클라이언트 초기화 실패 — 검증 불가")
+            else:
+                for _sym, _expected_name in (("000660", "SK하이닉스"), (INVERSE_SYMBOL, INVERSE_NAME)):
+                    _res = verify_symbol(_verify_client, _sym, expected_name_substr=_expected_name)
+                    if _res["verified"]:
+                        st.success(f"✅ {_sym}: 현재가 {_res['current_price']:,.0f}원, 종목명 `{_res['name']}`")
+                    else:
+                        st.error(f"❌ {_sym}: 검증 실패 — {_res.get('error')}")
+        except Exception as exc:
+            st.error(f"종목코드 검증 실패: {exc}")
+
+if st.button("🔄 환경설정 다시 읽기", key="hynix_reload_runtime_config"):
+    try:
+        from app.config import reload_runtime_configuration
+        reload_runtime_configuration()
+        st.success("환경설정(.env/config.yaml)을 다시 읽고 브로커/토큰 캐시를 초기화했습니다.")
+    except Exception as exc:
+        st.error(f"환경설정 재로드 실패: {exc}")
+
 switch_run_clicked = st.button("Enhanced 사이클 1회 수동 실행", key="hynix_switch_run_once")
 
 if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
@@ -541,8 +612,9 @@ if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
         if _dbg_mode == "mock":
             _dbg_broker = create_broker(get_config(), mode="mock")
         else:
+            _dbg_cfg = get_config()
             _dbg_broker = create_broker(
-                get_config(), mode="real",
+                _dbg_cfg, mode="real", confirm_text=_dbg_cfg.full_auto_real_confirm_text(),
                 runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
             )
     except Exception as exc:

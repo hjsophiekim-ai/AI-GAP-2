@@ -337,6 +337,9 @@ class KISClient:
                 "change_rate": float(d.get("prdy_ctrt", 0)),
                 "volume": int(d.get("acml_vol", 0)),
                 "trade_value": float(d.get("acml_tr_pbmn", 0)),
+                # 종목명(한글) — inquire-price 응답에 포함되어 별도 API 호출 없이
+                # 종목코드 검증(현재가+종목명 일치 확인)에 사용할 수 있다.
+                "name": d.get("hts_kor_isnm", ""),
             }
         except Exception as e:
             logger.warning(f"[KIS] 현재가 조회 실패 {symbol}: {e}")
@@ -815,6 +818,34 @@ class KISClient:
                 "raw": {},
                 "http_status": 0,
             }
+
+
+def verify_symbol(client: "KISClient", symbol: str, expected_name_substr: str = "") -> dict:
+    """KIS 현재가 조회 + 종목명 조회로 종목코드를 검증한다.
+
+    영문/숫자 혼용 코드(예: 0197X0)를 isdigit()/6자리 등으로 걸러내지 않는다 —
+    symbol을 그대로 PDNO/FID_INPUT_ISCD에 전달해 KIS가 실제로 인식하는지만 확인한다.
+    반환: {"symbol", "verified", "current_price", "name", "name_matched", "error"}.
+    """
+    try:
+        quote = client.get_current_price(symbol)
+    except Exception as exc:
+        return {"symbol": symbol, "verified": False, "current_price": None, "name": "", "name_matched": False, "error": str(exc)}
+
+    if not quote or not quote.get("current_price"):
+        return {"symbol": symbol, "verified": False, "current_price": None, "name": "", "name_matched": False,
+                "error": "현재가 조회 실패 또는 0원 — 종목코드를 확인하세요"}
+
+    name = quote.get("name", "")
+    name_matched = bool(expected_name_substr) and expected_name_substr in name
+    return {
+        "symbol": symbol,
+        "verified": True,
+        "current_price": quote.get("current_price"),
+        "name": name,
+        "name_matched": name_matched if expected_name_substr else None,
+        "error": None,
+    }
 
 
 _CLIENT_CACHE_GENERATION = 0

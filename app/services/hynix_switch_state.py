@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _STATE_DIR = ROOT / "data" / "state"
@@ -60,7 +61,10 @@ def with_state_lock(mode: Optional[str] = None):
 
 
 def _today_str() -> str:
-    return datetime.now().strftime("%Y%m%d")
+    """KST(Asia/Seoul) 기준 오늘 날짜 — 서버가 UTC로 배포돼도 일일 상태(예산/거래
+    횟수/실현손익) 리셋 경계가 KST 자정이 아니라 UTC 자정(=KST 09:00, 장중)에서
+    발생하는 것을 방지한다."""
+    return kst_now().strftime("%Y%m%d")
 
 
 def _state_path(mode: str) -> Path:
@@ -125,7 +129,9 @@ def default_state(mode: str = "mock") -> dict:
         # 내부 운영 필드
         "trades_today": [],
         "realized_pnl_today_krw": 0.0,
+        "gross_realized_pnl_today_krw": 0.0,
         "realized_pnl_today_pct": 0.0,
+        "gross_realized_pnl_today_pct": 0.0,
         "daily_pnl_baseline_equity": None,
         "fired_windows": [],
         "liquidation_mode": False,
@@ -208,7 +214,9 @@ def load_state(mode: Optional[str] = None) -> dict:
             state["daily_trade_count"] = 0
             state["trades_today"] = []
             state["realized_pnl_today_krw"] = 0.0
+            state["gross_realized_pnl_today_krw"] = 0.0
             state["realized_pnl_today_pct"] = 0.0
+            state["gross_realized_pnl_today_pct"] = 0.0
             state["fired_windows"] = []
             state["liquidation_done"] = False
             state["liquidation_mode"] = False

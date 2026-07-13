@@ -804,7 +804,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     `now`는 테스트에서 시각을 주입하기 위한 선택 인자이며, 운영 시에는 항상 현재시각이 쓰인다.
     """
     warnings: list[str] = []
-    now = now or datetime.now()
+    now = now or kst_now()
     state = load_state(mode=mode)
     mode = mode or state.get("mode", "mock")
     state["mode"] = mode
@@ -891,7 +891,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                     )
                 if real_gate_ok:
                     broker = create_broker(
-                        cfg, mode="real",
+                        cfg, mode="real", confirm_text=cfg.full_auto_real_confirm_text(),
                         runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
                     )
             else:
@@ -1058,7 +1058,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         try:
                             switch = run_switch_or_entry(
                                 state, broker, final_action, hynix_price, inverse_price,
-                                now=now, forced=forced, reason=reason,
+                                now=now, forced=forced, reason=reason, position_manager=position_manager,
                             )
                             orders_this_cycle.extend(switch.get("orders", []))
                         except Exception as exc:

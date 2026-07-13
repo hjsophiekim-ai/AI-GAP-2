@@ -17,6 +17,7 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
@@ -53,21 +54,21 @@ def _parse_hm(text: str) -> dtime:
 
 
 def is_watch_only(now: Optional[datetime] = None) -> bool:
-    now = now or datetime.now()
+    now = now or kst_now()
     sched = _load_schedule()
     return _parse_hm(sched["watch_only_start"]) <= now.time() < _parse_hm(sched["watch_only_end"])
 
 
 def is_new_entry_allowed(now: Optional[datetime] = None) -> bool:
     """09:10~14:50 구간에서만 True (스위칭의 재매수 레그에도 동일 적용)."""
-    now = now or datetime.now()
+    now = now or kst_now()
     sched = _load_schedule()
     return _parse_hm(sched["watch_only_end"]) <= now.time() < _parse_hm(sched["entry_cutoff_time"])
 
 
 def get_liquidation_phase(now: Optional[datetime] = None) -> str:
     """'normal' | 'prep' | 'liquidation_mode' | 'closed'."""
-    now = now or datetime.now()
+    now = now or kst_now()
     sched = _load_schedule()
     t = now.time()
     if t >= _parse_hm(sched["no_new_order_time"]):
@@ -80,14 +81,14 @@ def get_liquidation_phase(now: Optional[datetime] = None) -> str:
 
 
 def should_liquidate_now(now: Optional[datetime] = None) -> bool:
-    now = now or datetime.now()
+    now = now or kst_now()
     sched = _load_schedule()
     return now.time() >= _parse_hm(sched["liquidation_time"])
 
 
 def check_forced_trade_window(now: Optional[datetime] = None, fired_windows: Optional[list] = None) -> Optional[str]:
     """현재 시각이 강제판단 시간대 안이고 아직 그 창에서 실행하지 않았으면 창 라벨(예: '09:10-09:30') 반환."""
-    now = now or datetime.now()
+    now = now or kst_now()
     fired_windows = fired_windows or []
     sched = _load_schedule()
     for start_s, end_s in sched["forced_trade_windows"]:
@@ -142,7 +143,7 @@ def should_force_trade(
     now: Optional[datetime] = None,
 ) -> dict:
     """강제거래(하루 최소 2회 보장) 수행 여부 종합 판단."""
-    now = now or datetime.now()
+    now = now or kst_now()
     result = {"should_force": False, "window": None, "forced_direction": None, "block_reason": None}
 
     if is_watch_only(now):
