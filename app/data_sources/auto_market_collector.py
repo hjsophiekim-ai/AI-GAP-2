@@ -48,6 +48,8 @@ try:
         validate_hynix_current_sources,
         validate_hynix_dataframe,
         validate_hynix_price,
+        auto_fix_hynix_price,
+        normalize_hynix_dataframe_prices,
         validate_stock_identity,
     )
 except ImportError:
@@ -58,7 +60,21 @@ except ImportError:
         return len(ok) >= 20, f"valid rows={len(ok)}", ok
 
     def validate_hynix_price(price):  # type: ignore[misc]
-        return price is not None and 50_000 <= float(price) <= 5_000_000, "ok"
+        return price is not None and 50_000 <= float(price) <= 1_000_000, "ok"
+
+    def auto_fix_hynix_price(price):  # type: ignore[misc]
+        if price is None:
+            return None
+        value = float(price)
+        if 50_000 <= value <= 1_000_000:
+            return value
+        fixed = value / 10
+        if 50_000 <= fixed <= 1_000_000:
+            return fixed
+        return None
+
+    def normalize_hynix_dataframe_prices(df):  # type: ignore[misc]
+        return df
 
     def validate_hynix_current_sources(source_prices, tolerance_pct=1.0):  # type: ignore[misc]
         return False, "validator unavailable", {"source_prices": source_prices}
@@ -458,6 +474,7 @@ def collect_hynix_daily(mode: Optional[str] = None, n_days: int = 70) -> dict:
         if not identity_ok:
             result["fallback_chain"].append(f"{source}: identity failed ({identity_msg})")
             return False
+        df = normalize_hynix_dataframe_prices(df)
         valid, msg, df_ok = validate_hynix_dataframe(df)
         if not valid:
             result["fallback_chain"].append(f"{source}: validation failed ({msg})")
@@ -466,7 +483,7 @@ def collect_hynix_daily(mode: Optional[str] = None, n_days: int = 70) -> dict:
         if current_price is None:
             result["fallback_chain"].append(f"{source}: current price missing")
             return False
-        price = current_price
+        price = auto_fix_hynix_price(current_price)
         price_ok, price_msg = validate_hynix_price(price)
         if not price_ok:
             result["fallback_chain"].append(f"{source}: invalid current price ({price_msg})")
@@ -1211,7 +1228,7 @@ def _fetch_hynix_current_from_kis(mode: str) -> Optional[float]:
             mode=mode,
         )
         data = client.get_current_price("000660")
-        price = _float_or_none((data or {}).get("current_price"))
+        price = auto_fix_hynix_price(_float_or_none((data or {}).get("current_price")))
         ok, _ = validate_hynix_price(price)
         return price if ok else None
     except Exception as exc:
@@ -1230,7 +1247,7 @@ def _fetch_hynix_current_from_yfinance() -> Optional[float]:
         close = hist["Close"].dropna()
         if close.empty:
             return None
-        price = _float_or_none(close.iloc[-1])
+        price = auto_fix_hynix_price(_float_or_none(close.iloc[-1]))
         ok, _ = validate_hynix_price(price)
         return price if ok else None
     except Exception as exc:
@@ -1248,7 +1265,7 @@ def _fetch_hynix_current_from_pykrx() -> Optional[float]:
         if df is None or df.empty:
             return None
         close_col = "종가" if "종가" in df.columns else "Close"
-        price = _float_or_none(df.iloc[-1][close_col])
+        price = auto_fix_hynix_price(_float_or_none(df.iloc[-1][close_col]))
         ok, _ = validate_hynix_price(price)
         return price if ok else None
     except Exception as exc:

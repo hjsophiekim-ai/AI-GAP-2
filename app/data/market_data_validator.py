@@ -26,7 +26,7 @@ MU_PRICE_HARD_MAX: float = 5000.0  # 이 이상이면 즉시 무효
 # 가격은 그대로 통과시키고, 진짜 10배 이상 벌어진 값만 보정 대상으로 삼는다.
 
 HYNIX_PRICE_MIN: int = 50_000     # KRW
-HYNIX_PRICE_MAX: int = 5_000_000  # KRW
+HYNIX_PRICE_MAX: int = 1_000_000  # KRW
 HYNIX_CODE: str = "000660"
 HYNIX_NAME: str = "SK하이닉스"
 
@@ -118,6 +118,42 @@ def validate_hynix_price(price: Optional[float]) -> tuple[bool, str]:
     return True, "ok"
 
 
+def auto_fix_hynix_price(price: Optional[float]) -> Optional[float]:
+    """Normalize SK Hynix prices to the post-split KRW scale used by this app.
+
+    Some providers can return 10x historical/quote values for 000660. The app,
+    tests, sizing, and order UI all expect the 50,000~1,000,000 KRW range. If a
+    value is outside that range but dividing by 10 lands in range, use the
+    normalized value; otherwise return None.
+    """
+    if price is None:
+        return None
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return None
+    if HYNIX_PRICE_MIN <= value <= HYNIX_PRICE_MAX:
+        return value
+    fixed = value / 10
+    if HYNIX_PRICE_MIN <= fixed <= HYNIX_PRICE_MAX:
+        return fixed
+    return None
+
+
+def normalize_hynix_dataframe_prices(df):
+    """Return a copy with OHLC columns normalized to the app's SK Hynix scale."""
+    if df is None:
+        return df
+    try:
+        df_work = df.copy()
+    except Exception:
+        return df
+    price_cols = [c for c in ["open", "high", "low", "close"] if c in df_work.columns]
+    for col in price_cols:
+        df_work[col] = df_work[col].apply(lambda x: auto_fix_hynix_price(x) if x is not None else None)
+    return df_work
+
+
 def validate_stock_identity(code: object, name: object) -> tuple[bool, str]:
     """Validate that the selected stock is SK Hynix (000660)."""
     normalized_code = str(code or "").strip().zfill(6)
@@ -141,7 +177,7 @@ def validate_hynix_current_sources(source_prices: dict, tolerance_pct: float = 1
     missing: list[str] = []
     invalid: dict[str, str] = {}
     for source in required:
-        price = source_prices.get(source)
+        price = auto_fix_hynix_price(source_prices.get(source))
         ok, msg = validate_hynix_price(price)
         if not ok:
             missing.append(source)
@@ -198,13 +234,13 @@ def validate_hynix_dataframe(df) -> tuple[bool, str, object]:
 
     import pandas as pd
 
-    df_work = df.copy()
+    df_work = normalize_hynix_dataframe_prices(df)
     if "close" not in df_work.columns:
         return False, "close 컬럼 없음", df
 
     n_before = len(df_work)
     df_work = df_work[
-        df_work["close"].apply(lambda x: HYNIX_PRICE_MIN <= x <= HYNIX_PRICE_MAX)
+        df_work["close"].apply(lambda x: x is not None and HYNIX_PRICE_MIN <= x <= HYNIX_PRICE_MAX)
     ].reset_index(drop=True)
     n_after = len(df_work)
 

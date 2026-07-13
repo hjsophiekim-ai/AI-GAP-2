@@ -372,6 +372,7 @@ class Config:
             "real_app_secret_present": _present("KIS_REAL_APP_SECRET"),
             "real_account_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_NO", "KIS_REAL_CANO", "KIS_ACCOUNT_NO")),
             "real_product_code_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_PRODUCT_CODE", "KIS_REAL_ACNT_PRDT_CD", "KIS_ACCOUNT_PRODUCT_CODE")),
+            "real_trading_start_date_allowed": self.real_trading_date_allowed(),
         }
 
         account_info = {}
@@ -403,6 +404,7 @@ class Config:
             "real_app_secret_present": "KIS_REAL_APP_SECRET_MISSING",
             "real_account_present": "KIS_REAL_ACCOUNT_MISSING",
             "real_product_code_present": "KIS_REAL_PRODUCT_CODE_MISSING",
+            "real_trading_start_date_allowed": f"REAL_TRADING_START_DATE_NOT_REACHED({self.real_trading_start_date()})",
             "real_account_config_ok": "KIS_REAL_ACCOUNT_CONFIG_INVALID",
         }
         blocking_reasons = [reason for key, reason in blocking_map.items() if not checks.get(key)]
@@ -421,6 +423,8 @@ class Config:
             "loaded_config_path": str(_CONFIG_PATH),
             "loaded_config_modified_time": config_mtime,
             "final_safety_enable_real_trading": self.real_trading_enabled(),
+            "real_trading_start_date": self.real_trading_start_date(),
+            "real_trading_date_allowed": self.real_trading_date_allowed(),
             "config_safety_enable_real_trading": config_enable_real,
             "env_precedence": "Render/OS environment variables > local .env > config.yaml/default",
             "expected_confirm_text_present": bool(expected_confirm),

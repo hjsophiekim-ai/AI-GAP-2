@@ -42,6 +42,109 @@ st.info(
 
 cfg = get_config()
 
+
+def _safe_real_gate_status(cfg_obj, current_mode: str = "real") -> dict:
+    """Return REAL auto-trade gate diagnostics without assuming a new Config API.
+
+    Older Streamlit worker processes can keep an old app.config module loaded.
+    In that case cfg.enhanced_real_gate_status may be missing even though the
+    current source has it. Keep the page alive and show a conservative
+    diagnostic instead of raising AttributeError.
+    """
+    if hasattr(cfg_obj, "enhanced_real_gate_status"):
+        try:
+            return cfg_obj.enhanced_real_gate_status(current_mode=current_mode)
+        except Exception as exc:
+            return {
+                "ready": False,
+                "checks": {"enhanced_real_gate_status_callable": False},
+                "blocking_reasons": [f"REAL_GATE_DIAGNOSTIC_ERROR: {exc}"],
+                "diagnostic_error": str(exc),
+            }
+
+    import os
+
+    def _env_bool(name: str) -> bool:
+        return os.getenv(name, "").strip().lower() in ("true", "1", "yes")
+
+    def _present(name: str) -> bool:
+        return bool(os.getenv(name, "").strip())
+
+    config_real_enabled = (
+        bool(cfg_obj.real_trading_enabled())
+        if hasattr(cfg_obj, "real_trading_enabled")
+        else bool(getattr(cfg_obj, "safety", {}).get("enable_real_trading", False))
+    )
+    real_start_date = (
+        cfg_obj.real_trading_start_date()
+        if hasattr(cfg_obj, "real_trading_start_date")
+        else str(getattr(cfg_obj, "safety", {}).get("real_trading_start_date", "2026-07-14"))
+    )
+    real_date_allowed = (
+        bool(cfg_obj.real_trading_date_allowed())
+        if hasattr(cfg_obj, "real_trading_date_allowed")
+        else True
+    )
+    checks = {
+        "current_mode_is_real": current_mode == "real",
+        "config_or_env_real_trading_enabled": config_real_enabled,
+        "real_trading_start_date_allowed": real_date_allowed,
+        "enable_full_auto": _env_bool("ENABLE_FULL_AUTO"),
+        "env_enable_real_trading": _env_bool("ENABLE_REAL_TRADING"),
+        "enable_real_buy": _env_bool("ENABLE_REAL_BUY"),
+        "enable_real_sell": _env_bool("ENABLE_REAL_SELL"),
+        "real_app_key_present": _present("KIS_REAL_APP_KEY"),
+        "real_app_secret_present": _present("KIS_REAL_APP_SECRET"),
+        "real_account_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_NO", "KIS_REAL_CANO", "KIS_ACCOUNT_NO")),
+        "real_product_code_present": any(_present(name) for name in ("KIS_REAL_ACCOUNT_PRODUCT_CODE", "KIS_REAL_ACNT_PRDT_CD", "KIS_ACCOUNT_PRODUCT_CODE")),
+    }
+    blocking_map = {
+        "current_mode_is_real": "CURRENT_MODE_NOT_REAL",
+        "config_or_env_real_trading_enabled": "REAL_TRADING_DISABLED",
+        "real_trading_start_date_allowed": f"REAL_TRADING_START_DATE_NOT_REACHED({real_start_date})",
+        "enable_full_auto": "ENABLE_FULL_AUTO_NOT_TRUE",
+        "env_enable_real_trading": "ENV_ENABLE_REAL_TRADING_NOT_TRUE",
+        "enable_real_buy": "ENABLE_REAL_BUY_NOT_TRUE",
+        "enable_real_sell": "ENABLE_REAL_SELL_NOT_TRUE",
+        "real_app_key_present": "KIS_REAL_APP_KEY_MISSING",
+        "real_app_secret_present": "KIS_REAL_APP_SECRET_MISSING",
+        "real_account_present": "KIS_REAL_ACCOUNT_MISSING",
+        "real_product_code_present": "KIS_REAL_PRODUCT_CODE_MISSING",
+    }
+    blocking_reasons = [reason for key, reason in blocking_map.items() if not checks.get(key)]
+    return {
+        "ready": not blocking_reasons,
+        "checks": checks,
+        "blocking_reasons": blocking_reasons,
+        "fallback_diagnostic": "Config.enhanced_real_gate_status missing; restart Streamlit to load latest app.config.",
+        "final_safety_enable_real_trading": config_real_enabled,
+        "real_trading_start_date": real_start_date,
+        "real_trading_date_allowed": real_date_allowed,
+    }
+
+
+def _krx_order_window_status(now: datetime | None = None) -> dict:
+    """Approximate SK Hynix real-order timing used by the enhanced engine."""
+    now = now or datetime.now()
+    t = now.time()
+    is_weekday = now.weekday() < 5
+    market_open = is_weekday and dtime_cls(9, 0) <= t <= dtime_cls(15, 30)
+    new_entry_allowed = is_weekday and dtime_cls(9, 10) <= t < dtime_cls(14, 50)
+    liquidation_only = is_weekday and dtime_cls(14, 50) <= t < dtime_cls(15, 20)
+    return {
+        "market_open": market_open,
+        "new_entry_allowed": new_entry_allowed,
+        "liquidation_only": liquidation_only,
+        "can_send_real_order_now": new_entry_allowed or liquidation_only,
+        "message": (
+            "KRX new entries allowed now (09:10-14:50)."
+            if new_entry_allowed else
+            "KRX liquidation/position-management window only (14:50-15:20)."
+            if liquidation_only else
+            "Outside KRX real-order window. Real account gate can be ready, but orders should wait for the next session."
+        ),
+    }
+
 if is_stopped():
     st.error("🛑 자동매매가 정지 상태입니다. 아래 '자동매매 재개' 버튼을 눌러야 새 제안을 생성합니다.")
 
@@ -233,7 +336,8 @@ with sc2:
     )
 with sc3:
     if switch_mode == "real":
-        real_gate_status = cfg.enhanced_real_gate_status(current_mode="real")
+        real_gate_status = _safe_real_gate_status(cfg, current_mode="real")
+        order_window_status = _krx_order_window_status()
         real_gate_ok = bool(real_gate_status.get("ready"))
         st.caption(
             f"REAL 완전자동 게이트: {'✅ 충족' if real_gate_ok else '❌ 미충족'} "
@@ -244,8 +348,16 @@ with sc3:
             st.markdown(f"- loaded_config_path: `{real_gate_status.get('loaded_config_path')}`")
             st.markdown(f"- loaded_config_modified_time: `{real_gate_status.get('loaded_config_modified_time')}`")
             st.markdown(f"- final safety.enable_real_trading: `{real_gate_status.get('final_safety_enable_real_trading')}`")
+            st.markdown(f"- real_trading_start_date: `{real_gate_status.get('real_trading_start_date') or 'unknown'}`")
+            st.markdown(f"- real_trading_date_allowed: `{real_gate_status.get('real_trading_date_allowed')}`")
             st.markdown(f"- account_source: `{real_gate_status.get('account_source') or '—'}`")
             st.markdown(f"- masked_account: `{real_gate_status.get('masked_account') or '—'}`")
+            st.markdown(f"- krx_market_open_now: `{'true' if order_window_status['market_open'] else 'false'}`")
+            st.markdown(f"- krx_new_entry_allowed_now: `{'true' if order_window_status['new_entry_allowed'] else 'false'}`")
+            st.markdown(f"- krx_can_send_real_order_now: `{'true' if order_window_status['can_send_real_order_now'] else 'false'}`")
+            st.caption(order_window_status["message"])
+            if real_gate_status.get("fallback_diagnostic"):
+                st.warning(real_gate_status["fallback_diagnostic"])
             checks = real_gate_status.get("checks") or {}
             for key, value in checks.items():
                 st.markdown(f"- {key}: `{'true' if value else 'false'}`")
@@ -258,13 +370,16 @@ if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.g
 # ── 현재 실행 모드 배너 — 항상 눈에 띄게 표시(REAL이면 빨간 경고) ────────────
 _active_switch_mode = switch_state.get("mode", "mock")
 if _active_switch_mode == "real":
-    _real_gate_status_banner = cfg.enhanced_real_gate_status(current_mode="real")
+    _real_gate_status_banner = _safe_real_gate_status(cfg, current_mode="real")
+    _order_window_banner = _krx_order_window_status()
     _real_gate_ok_banner = bool(_real_gate_status_banner.get("ready"))
     st.error(
         f"🔴🔴🔴 **REAL 모드 — 실제 계좌로 주문이 나갈 수 있습니다.** "
         f"REAL 완전자동 게이트: {'✅ 충족(주문 가능)' if _real_gate_ok_banner else '❌ 미충족 — 주문 최종 차단됨'}",
         icon="🚨",
     )
+    if not _order_window_banner["can_send_real_order_now"]:
+        st.warning("KRX order window: " + _order_window_banner["message"])
     if not _real_gate_ok_banner:
         st.warning("REAL gate blocking_reason: " + ", ".join(_real_gate_status_banner.get("blocking_reasons") or ["UNKNOWN"]))
 else:

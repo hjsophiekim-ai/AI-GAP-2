@@ -14,6 +14,8 @@ from app.data.market_data_validator import (
     validate_hynix_dataframe,
     validate_swing_result,
     auto_fix_mu_price,
+    auto_fix_hynix_price,
+    normalize_hynix_dataframe_prices,
     parse_mu_price_str,
     MU_PRICE_MIN,
     MU_PRICE_MAX,
@@ -138,6 +140,29 @@ class TestValidateHynixPrice:
 
 
 # ── validate_hynix_dataframe ──────────────────────────────────────────────────
+
+class TestAutoFixHynixPrice:
+    def test_already_valid(self):
+        assert auto_fix_hynix_price(184_500) == 184_500
+
+    def test_divide_by_10_provider_scale(self):
+        assert auto_fix_hynix_price(1_845_000) == 184_500
+
+    def test_unrecoverable_returns_none(self):
+        assert auto_fix_hynix_price(99_999_999) is None
+
+    def test_dataframe_price_columns_are_normalized(self):
+        df = pd.DataFrame({
+            "open": [1_850_000],
+            "high": [1_860_000],
+            "low": [1_830_000],
+            "close": [1_845_000],
+            "volume": [1],
+        })
+        fixed = normalize_hynix_dataframe_prices(df)
+        assert fixed.loc[0, "open"] == 185_000
+        assert fixed.loc[0, "close"] == 184_500
+
 
 class TestValidateHynixDataframe:
     def _make_df(self, n: int, close: float = 180_000) -> pd.DataFrame:
