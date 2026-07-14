@@ -1348,18 +1348,52 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         trace["entry_approved"] = False
                         trace["entry_approved_reason"] = "포지션 동기화 필요(동시 보유) — 신규매수 금지"
                     else:
-                        try:
-                            gate = evaluate_pullback_gate(state, desired_symbol, final_action, now, forced_info, df_1min, mode)
-                            proceed = gate["proceed"]
+                        if str(final_action).endswith("_STRONG_BUY"):
+                            confirm_tracker = update_confirm_tracker(
+                                state.get("trend_switch_confirm_tracker") or default_confirm_state(),
+                                final_action, held_symbol, desired_symbol, now,
+                            )
+                            state["trend_switch_confirm_tracker"] = confirm_tracker
+                            trend_plan = plan_trend_switch_entry(
+                                final_action=final_action,
+                                held_symbol=held_symbol,
+                                desired_symbol=desired_symbol,
+                                confirm_tracker=confirm_tracker,
+                                frequency_state=state.get("trend_switch_frequency_state") or default_trend_frequency_state(),
+                                pullback_result=None,
+                                now=now,
+                                data_ok=bool(hynix_price and inverse_price),
+                                has_unconfirmed_order=bool(state.get("order_in_flight") or state.get("pending_order")),
+                                daily_return_pct=state.get("realized_pnl_today_pct"),
+                                atr_pct=None,
+                            )
+                            proceed = bool(trend_plan.get("proceed"))
                             trace["entry_approved"] = proceed
-                            trace["entry_approved_reason"] = gate["message"]
+                            trace["entry_approved_reason"] = (
+                                f"{final_action} 강한 신호 — 눌림목 대기 생략"
+                                if proceed else (trend_plan.get("block_reason") or "강한 신호 차단")
+                            )
                             if not proceed:
-                                warnings.append(gate["message"])
-                        except Exception as exc:
-                            logger.error("[HynixSwitchEngine] 눌림목 게이트 판단 실패, 즉시 진입으로 폴백: %s", exc)
-                            proceed = True
-                            trace["entry_approved"] = True
-                            trace["entry_approved_reason"] = f"눌림목 게이트 오류로 즉시 진입 폴백: {exc}"
+                                warnings.append(trace["entry_approved_reason"])
+                            state["last_trend_switch_plan"] = {
+                                **trend_plan,
+                                "dominant_direction": "HYNIX" if desired_symbol == HYNIX_SYMBOL else "INVERSE",
+                                "desired_symbol": desired_symbol,
+                                "pullback_wait_remaining_seconds": 0,
+                            }
+                        else:
+                            try:
+                                gate = evaluate_pullback_gate(state, desired_symbol, final_action, now, forced_info, df_1min, mode)
+                                proceed = gate["proceed"]
+                                trace["entry_approved"] = proceed
+                                trace["entry_approved_reason"] = gate["message"]
+                                if not proceed:
+                                    warnings.append(gate["message"])
+                            except Exception as exc:
+                                logger.error("[HynixSwitchEngine] 눌림목 게이트 판단 실패, 즉시 진입으로 폴백: %s", exc)
+                                proceed = True
+                                trace["entry_approved"] = True
+                                trace["entry_approved_reason"] = f"눌림목 게이트 오류로 즉시 진입 폴백: {exc}"
 
                     if proceed:
                         attempted_entry = True
