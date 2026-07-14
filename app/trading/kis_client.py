@@ -46,6 +46,31 @@ ORD_DVSN_LIMIT = "00"
 ORD_DVSN_MARKET = "01"
 
 
+def _first_present(mapping: dict, *keys, default=None):
+    for key in keys:
+        if key in mapping and mapping.get(key) not in (None, ""):
+            return mapping.get(key)
+    return default
+
+
+def _to_float(value, default=None):
+    try:
+        if value in (None, ""):
+            return default
+        return float(str(value).replace(",", ""))
+    except Exception:
+        return default
+
+
+def _to_int(value, default=0):
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(str(value).replace(",", "")))
+    except Exception:
+        return default
+
+
 class KISTokenError(Exception):
     """KIS oauth2/tokenP 오류 — 이 예외가 발생하면 배치 전체를 중단해야 합니다."""
 
@@ -437,7 +462,11 @@ class KISClient:
                     detail += f": {msg1}"
                 elif not msg_cd:
                     detail += f" (응답 본문 없음)"
-                return {"cash": 0.0, "orderable_cash": 0.0, "positions": [], "error": detail}
+                return {
+                    "cash": None, "orderable_cash": None, "positions": [], "error": detail,
+                    "rt_cd": rt_cd, "msg_cd": msg_cd, "msg1": msg1,
+                    "response_field_names": sorted(list(data.keys())),
+                }
 
             rt_cd = data.get("rt_cd", "")
             if rt_cd != "0":
@@ -448,36 +477,69 @@ class KISClient:
                     f"rt_cd={rt_cd} msg1={msg1} msg2={msg2}"
                 )
                 detail = f"{msg1}" + (f" / {msg2}" if msg2 else "")
-                return {"cash": 0.0, "orderable_cash": 0.0, "positions": [],
-                        "error": f"rt_cd={rt_cd}: {detail}"}
+                return {
+                    "cash": None, "orderable_cash": None, "positions": [],
+                    "error": f"rt_cd={rt_cd}: {detail}", "rt_cd": rt_cd,
+                    "msg_cd": data.get("msg_cd", ""), "msg1": msg1,
+                    "response_field_names": sorted(list(data.keys())),
+                }
 
             output2 = data.get("output2") or [{}]
-            o2 = output2[0] if output2 else {}
+            if isinstance(output2, dict):
+                o2 = output2
+            else:
+                o2 = output2[0] if output2 else {}
             # dnca_tot_amt: 예탁금총금액 (=인출가능금액 근사치, 결제 전 매도대금 미포함)
-            cash = float(o2.get("dnca_tot_amt", 0))
+            cash = _to_float(_first_present(
+                o2, "dnca_tot_amt", "tot_evlu_amt", "cash", "cash_balance", "withdrawable_amount",
+            ))
             # ord_psbl_cash: 주문가능현금 (=실제 매수에 사용할 금액, D+2 매도대금 포함)
-            orderable_cash = float(o2.get("ord_psbl_cash", 0))
+            orderable_cash = _to_float(_first_present(
+                o2, "ord_psbl_cash", "nrcvb_buy_amt", "orderable_cash", "buyable_amount", "dnca_tot_amt",
+            ))
+            if cash is None:
+                return {
+                    "cash": None, "orderable_cash": orderable_cash, "positions": [],
+                    "error": "cash field missing in KIS balance output2",
+                    "rt_cd": rt_cd, "msg_cd": data.get("msg_cd", ""), "msg1": data.get("msg1", ""),
+                    "response_field_names": sorted(list(data.keys())),
+                    "output2_field_names": sorted(list(o2.keys())),
+                }
 
             positions = []
-            for item in (data.get("output1") or []):
-                qty = int(item.get("hldg_qty", 0) or 0)
+            output1 = data.get("output1") or []
+            if isinstance(output1, dict):
+                output1 = [output1]
+            output1_field_names = set()
+            for item in output1:
+                if not isinstance(item, dict):
+                    continue
+                output1_field_names.update(item.keys())
+                qty = _to_int(_first_present(item, "hldg_qty", "evlu_qty", "qty", "quantity"), 0)
                 if qty <= 0:
                     continue
                 positions.append({
-                    "symbol": item.get("pdno", ""),
-                    "name": item.get("prdt_name", ""),
+                    "symbol": _first_present(item, "pdno", "symb_code", "symbol", "isu_cd", default=""),
+                    "name": _first_present(item, "prdt_name", "prdt_name120", "name", "hts_kor_isnm", default=""),
                     "quantity": qty,
-                    "avg_price": float(item.get("pchs_avg_pric", 0) or 0),
-                    "current_price": float(item.get("prpr", 0) or 0),
+                    "avg_price": _to_float(_first_present(item, "pchs_avg_pric", "pchs_avg_price", "avg_price", "pchs_avg_pric_amt"), 0.0) or 0.0,
+                    "current_price": _to_float(_first_present(item, "prpr", "now_pric", "current_price"), 0.0) or 0.0,
+                    "market_value": _to_float(_first_present(item, "evlu_amt", "market_value", "evlu_pfls_amt"), None),
                 })
             logger.info(
                 f"[KIS-{self.mode.upper()}] 잔고 조회 성공: "
                 f"{len(positions)}종목 예탁금={cash:,.0f}원 주문가능={orderable_cash:,.0f}원"
             )
-            return {"cash": cash, "orderable_cash": orderable_cash, "positions": positions}
+            return {
+                "cash": cash, "orderable_cash": orderable_cash, "positions": positions,
+                "response_field_names": sorted(list(data.keys())),
+                "output1_field_names": sorted(list(output1_field_names)),
+                "output2_field_names": sorted(list(o2.keys())),
+                "as_of": datetime.now().isoformat(timespec="seconds"),
+            }
         except Exception as e:
             logger.error(f"[KIS-{self.mode.upper()}] 잔고 조회 예외: {e}")
-            return {"cash": 0.0, "orderable_cash": 0.0, "positions": [], "error": str(e)}
+            return {"cash": None, "orderable_cash": None, "positions": [], "error": str(e)}
 
     def get_account_cash_breakdown(self) -> dict:
         """계좌 현금 상세 분리 조회.
@@ -495,8 +557,12 @@ class KISClient:
         bal = self.get_balance()
         raw_psbl = self.get_buyable_cash_raw("005930", 0)
 
-        withdrawable = bal.get("cash", 0.0)
-        orderable_from_bal = bal.get("orderable_cash", 0.0)
+        withdrawable = bal.get("cash")
+        if withdrawable is None:
+            withdrawable = 0.0
+        orderable_from_bal = bal.get("orderable_cash")
+        if orderable_from_bal is None:
+            orderable_from_bal = 0.0
         ord_psbl_cash = raw_psbl["ord_psbl_cash"]
         nrcvb_buy_amt = raw_psbl["nrcvb_buy_amt"]
 

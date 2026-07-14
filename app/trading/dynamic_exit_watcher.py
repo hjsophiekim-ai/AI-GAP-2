@@ -410,6 +410,7 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             order_result = _sell_all_or_ratio(
                 broker, position, current_price, decision["ratio"], decision["reason"], orders,
                 mode=mode, exit_reason_type=exit_reason_type, signal_source="DYNAMIC_EXIT",
+                position_manager=position_manager,
             )
             order_sent = bool(order_result.get("success"))
             if order_sent:

@@ -72,6 +72,25 @@ class PositionSyncBroker(DummyBroker):
         return list(self.positions_after_sell)
 
 
+class LiquidationSyncBroker(DummyBroker):
+    def __init__(self, initial_positions):
+        super().__init__(sell_success=True)
+        self.positions = list(initial_positions)
+
+    def get_positions(self):
+        return list(self.positions)
+
+    def sell(self, symbol, name, quantity, price, order_type="limit"):
+        result = super().sell(symbol, name, quantity, price, order_type)
+        if result.success:
+            self.positions = [
+                {**p, "quantity": max(0, int(p.get("quantity", 0)) - quantity)}
+                for p in self.positions
+                if p.get("symbol") != symbol or max(0, int(p.get("quantity", 0)) - quantity) > 0
+            ]
+        return result
+
+
 def _holding_state(symbol: str, quantity: int = 10, entry_price: float = 100_000.0) -> dict:
     state = default_state()
     state["position"] = {
@@ -254,6 +273,27 @@ def test_partial_sell_keeps_kis_confirmed_remaining_quantity():
     assert state["position_sync_block_new_orders"] is False
 
 
+def test_buy_success_uses_broker_confirmed_filled_quantity():
+    from app.trading.hynix_position_common import HynixPositionManager
+    from app.trading.hynix_switch_position_manager import _buy_new
+
+    broker = PositionSyncBroker([
+        {"symbol": INVERSE_SYMBOL, "name": INVERSE_NAME, "quantity": 114, "avg_price": 5_000.0}
+    ])
+    pm = HynixPositionManager(broker, mode="mock")
+    orders = []
+
+    result = _buy_new(
+        broker, INVERSE_SYMBOL, current_price=5_000.0, cash_amount=570_000.0,
+        reason="buy confirm", orders=orders, mode="mock", position_manager=pm,
+    )
+
+    assert result["success"] is True
+    assert result["position_sync_status"] == "SYNCED"
+    assert result["filled_quantity"] == 114
+    assert result["actual_quantity"] == 114
+
+
 def test_sell_sync_failure_does_not_delete_position_and_blocks_new_orders():
     state = _holding_state(INVERSE_SYMBOL, quantity=114, entry_price=5_000.0)
     broker = PositionSyncBroker([], fail_positions=True)
@@ -277,6 +317,27 @@ def test_sell_sync_failure_does_not_delete_position_and_blocks_new_orders():
     assert state["position"]["symbol"] == INVERSE_SYMBOL
     assert state["position"]["quantity"] == 114
     assert state["position_sync_block_new_orders"] is True
+
+
+def test_liquidation_queries_broker_even_when_local_state_is_empty():
+    from app.trading.hynix_position_common import HynixPositionManager
+
+    state = default_state()
+    state["mode"] = "mock"
+    broker = LiquidationSyncBroker([
+        {"symbol": INVERSE_SYMBOL, "name": INVERSE_NAME, "quantity": 18, "avg_price": 5_000.0}
+    ])
+    pm = HynixPositionManager(broker, mode="mock")
+
+    result = run_liquidation_if_needed(
+        datetime(2026, 7, 9, 15, 16), state, broker,
+        hynix_price=101_000.0, inverse_price=5_100.0, position_manager=pm,
+    )
+
+    assert result["liquidated"] is True
+    assert broker.sell_calls == [(INVERSE_SYMBOL, 18, 5_100.0)]
+    assert state["position"]["symbol"] is None
+    assert state["liquidation_done"] is True
 
 
 class TestExecutionLedgerCostFields:

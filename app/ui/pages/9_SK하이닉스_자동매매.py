@@ -797,6 +797,22 @@ if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
         st.markdown("**Pending orders**: 없음 (이 시스템은 동기식 즉시체결 구조이며 비동기 대기주문을 갖지 않음)")
         st.markdown(f"**Last sync time(이 패널 조회 시각)**: {datetime.now().isoformat()}")
         st.markdown(f"**Liquidation done**: {switch_state.get('liquidation_done')}")
+        st.markdown(f"**Position sync status**: `{switch_state.get('position_sync_status') or 'UNKNOWN'}`")
+        if switch_state.get("position_sync_error"):
+            st.markdown(f"**Position sync error**: `{switch_state.get('position_sync_error')}`")
+        _acct_snap = switch_state.get("last_account_equity_snapshot") or {}
+        if _acct_snap:
+            st.markdown("**Account equity snapshot**:")
+            st.json({
+                "as_of": _acct_snap.get("as_of"),
+                "source": _acct_snap.get("source"),
+                "ok": _acct_snap.get("ok"),
+                "cash": _acct_snap.get("cash"),
+                "holdings_market_value": _acct_snap.get("holdings_market_value"),
+                "current_equity": _acct_snap.get("current_equity"),
+                "error": _acct_snap.get("error"),
+                "positions": _acct_snap.get("positions") or [],
+            })
         st.markdown(f"**Stop loss mode**: {switch_state.get('stop_loss_mode')}")
         st.markdown(
             f"**Dynamic Exit status**: 감시스레드={'실행중' if is_watcher_running() else '정지'}, "

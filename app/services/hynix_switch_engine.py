@@ -430,6 +430,12 @@ def _read_account_equity_snapshot(broker, now: datetime) -> dict:
             bal = broker.kis.get_balance()
             if bal.get("error"):
                 snapshot["error"] = bal.get("error")
+                snapshot["rt_cd"] = bal.get("rt_cd")
+                snapshot["msg_cd"] = bal.get("msg_cd")
+                snapshot["msg1"] = bal.get("msg1")
+                snapshot["response_field_names"] = bal.get("response_field_names")
+                snapshot["output1_field_names"] = bal.get("output1_field_names")
+                snapshot["output2_field_names"] = bal.get("output2_field_names")
                 return snapshot
             positions = bal.get("positions") or []
             cash = bal.get("cash", None)
@@ -441,6 +447,9 @@ def _read_account_equity_snapshot(broker, now: datetime) -> dict:
                 "ok": True, "cash": float(cash), "holdings_market_value": holdings,
                 "current_equity": float(cash) + holdings, "positions": positions,
                 "source": "kis.get_balance",
+                "response_field_names": bal.get("response_field_names"),
+                "output1_field_names": bal.get("output1_field_names"),
+                "output2_field_names": bal.get("output2_field_names"),
             })
             return snapshot
 
@@ -488,13 +497,37 @@ def compute_net_daily_return(
         "settlement_grace_active": settlement_grace_active,
     }
 
-    if not cash_fetch_ok:
-        result["blocked_reason"] = DAILY_RETURN_UNKNOWN
-        return result
-
     has_position = bool(
         position and position.get("symbol") and (position.get("quantity") or 0) > 0 and position.get("entry_price"),
     )
+
+    def _local_unrealized_pnl() -> float:
+        if not has_position:
+            return 0.0
+        cur = hynix_price if position["symbol"] == "000660" else inverse_price
+        if cur is None:
+            return 0.0
+        try:
+            from app.trading.trading_cost_engine import TradeCostEngine
+
+            cost_result = TradeCostEngine().compute_unrealized_net_pnl(
+                position["symbol"], entry_price=position["entry_price"], current_price=cur,
+                quantity=position["quantity"],
+            )
+            return float(cost_result["net_unrealized_pnl"])
+        except Exception:
+            return float((cur - position["entry_price"]) * position["quantity"])
+
+    if not cash_fetch_ok:
+        starting_equity = result["starting_equity"]
+        if starting_equity and starting_equity > 0:
+            net_unrealized_pnl = _local_unrealized_pnl()
+            result["net_unrealized_pnl"] = net_unrealized_pnl
+            result["net_daily_return"] = round((net_realized_pnl + net_unrealized_pnl) / starting_equity * 100.0, 4)
+            result["calculation_warning"] = "ACCOUNT_SNAPSHOT_UNAVAILABLE_LEDGER_FALLBACK"
+            return result
+        result["blocked_reason"] = DAILY_RETURN_UNKNOWN
+        return result
 
     holdings_value = sum(
         (getattr(p, "market_value", None) if not isinstance(p, dict) else p.get("market_value")) or 0.0
@@ -526,20 +559,7 @@ def compute_net_daily_return(
         return result
 
     # ── 미실현손익(요구사항 2절 — 보유 없으면 0) ─────────────────────────────
-    net_unrealized_pnl = 0.0
-    if has_position:
-        cur = hynix_price if position["symbol"] == "000660" else inverse_price
-        if cur is not None:
-            try:
-                from app.trading.trading_cost_engine import TradeCostEngine
-
-                cost_result = TradeCostEngine().compute_unrealized_net_pnl(
-                    position["symbol"], entry_price=position["entry_price"], current_price=cur,
-                    quantity=position["quantity"],
-                )
-                net_unrealized_pnl = cost_result["net_unrealized_pnl"]
-            except Exception:
-                net_unrealized_pnl = (cur - position["entry_price"]) * position["quantity"]
+    net_unrealized_pnl = _local_unrealized_pnl()
     result["net_unrealized_pnl"] = net_unrealized_pnl
 
     net_daily_return = (net_realized_pnl + net_unrealized_pnl) / starting_equity * 100.0
@@ -592,6 +612,11 @@ def _compute_net_daily_return_with_retries(
             "cash": snapshot.get("cash"), "holdings_market_value": snapshot.get("holdings_market_value"),
             "current_equity": snapshot.get("current_equity"), "ok": snapshot.get("ok"),
             "error": snapshot.get("error"),
+            "positions": snapshot.get("positions") or [],
+            "rt_cd": snapshot.get("rt_cd"), "msg_cd": snapshot.get("msg_cd"), "msg1": snapshot.get("msg1"),
+            "response_field_names": snapshot.get("response_field_names"),
+            "output1_field_names": snapshot.get("output1_field_names"),
+            "output2_field_names": snapshot.get("output2_field_names"),
         }
         result["mismatch_retry_index"] = idx + 1
         history.append({
@@ -651,6 +676,7 @@ def check_real_mode_gates(state: dict, cfg=None) -> dict:
 def _run_active_strategy_entry(
     state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
     now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
+    position_manager=None,
 ) -> dict:
     """ACTIVE STRATEGY(거래모드 기반 조기진입/Scale-in/빠른전환) — mock 전용 opt-in.
 
@@ -761,10 +787,21 @@ def _run_active_strategy_entry(
                         buy_result = _buy_new(
                             broker, symbol, price, cash_amount, f"Active Strategy({mode_name}) 진입 {pct:.0f}%",
                             orders_this_cycle, mode="mock", signal_source="ACTIVE_ONLY",
+                            position_manager=position_manager,
                         )
                     except Exception as exc:
                         buy_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
                     if buy_result.get("success"):
+                        if buy_result.get("position_sync_status") == "POSITION_SYNC_PENDING":
+                            failure_reason = REASON_ORDER_EXCEPTION
+                            message = buy_result.get("message", "POSITION_SYNC_PENDING")
+                            state["position_sync_block_new_orders"] = True
+                            state["position_sync_status"] = "POSITION_SYNC_PENDING"
+                            state["critical_alert"] = message
+                            return {
+                                "acted": True, "message": message, "action": action,
+                                "decision": decision_result, "final_decision": {}, "failure_reason": failure_reason,
+                            }
                         acted = True
                         qty = buy_result.get("bought_quantity", 0)
                         order_id, executed_price, executed_qty = buy_result.get("order_id"), price, qty
@@ -789,6 +826,7 @@ def _run_active_strategy_entry(
                 sell_result = _sell_all_or_ratio(
                     broker, position, price, ratio, f"Active Strategy({mode_name}) {action}", orders_this_cycle,
                     mode="mock", exit_reason_type="active_strategy", signal_source="ACTIVE_ONLY",
+                    position_manager=position_manager,
                 )
             except Exception as exc:
                 sell_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
@@ -796,7 +834,17 @@ def _run_active_strategy_entry(
                 acted = True
                 order_id, executed_price = sell_result.get("order_id"), price
                 executed_qty = sell_result.get("sold_quantity")
-                remaining = sell_result.get("remaining_quantity", 0)
+                remaining = sell_result.get("remaining_quantity")
+                if sell_result.get("position_sync_status") == "POSITION_SYNC_PENDING" or remaining is None:
+                    state["position_sync_block_new_orders"] = True
+                    state["position_sync_status"] = "POSITION_SYNC_PENDING"
+                    state["critical_alert"] = "POSITION_SYNC_PENDING - broker balance confirmation failed after sell"
+                    failure_reason = REASON_ORDER_EXCEPTION
+                    message = state["critical_alert"]
+                    return {
+                        "acted": True, "message": message, "action": action,
+                        "decision": decision_result, "final_decision": {}, "failure_reason": failure_reason,
+                    }
                 if remaining <= 0:
                     state["position"] = {
                         "symbol": None, "quantity": 0, "avg_price": None, "entry_price": None,
@@ -828,7 +876,7 @@ def _run_active_strategy_entry(
 def _run_adaptive_fusion_entry(
     state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
     now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
-    hynix_df_1min=None,
+    hynix_df_1min=None, position_manager=None,
 ) -> dict:
     """ADAPTIVE FUSION — Prediction AI V2를 실제 mock 주문에 반영하되 ACTIVE_FUSION을
     완전히 대체하지 않는 성과기반 융합 엔진(mock 전용 opt-in, state["adaptive_fusion_enabled"]).
@@ -1015,7 +1063,7 @@ def _run_adaptive_fusion_entry(
                     sell_result = _sell_all_or_ratio(
                         broker, position, price, ratio, f"Adaptive Fusion({mode_name}) {action}", orders_this_cycle,
                         mode="mock", exit_reason_type="active_strategy", signal_source=signal_source,
-                        fusion_metadata=fusion_metadata,
+                        fusion_metadata=fusion_metadata, position_manager=position_manager,
                     )
                 except Exception as exc:
                     sell_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
@@ -1023,7 +1071,17 @@ def _run_adaptive_fusion_entry(
                     acted = True
                     order_id, executed_price = sell_result.get("order_id"), price
                     executed_qty = sell_result.get("sold_quantity")
-                    remaining = sell_result.get("remaining_quantity", 0)
+                    remaining = sell_result.get("remaining_quantity")
+                    if sell_result.get("position_sync_status") == "POSITION_SYNC_PENDING" or remaining is None:
+                        state["position_sync_block_new_orders"] = True
+                        state["position_sync_status"] = "POSITION_SYNC_PENDING"
+                        state["critical_alert"] = "POSITION_SYNC_PENDING - broker balance confirmation failed after sell"
+                        failure_reason = REASON_ORDER_EXCEPTION
+                        message = state["critical_alert"]
+                        return {
+                            "acted": True, "message": message, "action": action,
+                            "decision": fusion_decision, "final_decision": {}, "failure_reason": failure_reason,
+                        }
                     if remaining <= 0:
                         state["position"] = {
                             "symbol": None, "quantity": 0, "avg_price": None, "entry_price": None,
@@ -1064,10 +1122,21 @@ def _run_adaptive_fusion_entry(
                         buy_result = _buy_new(
                             broker, symbol, price, cash_amount, f"Adaptive Fusion({mode_name}) 진입 {pct:.0f}%",
                             orders_this_cycle, mode="mock", signal_source=signal_source, fusion_metadata=fusion_metadata,
+                            position_manager=position_manager,
                         )
                     except Exception as exc:
                         buy_result, failure_reason = {"success": False, "message": str(exc)}, REASON_ORDER_EXCEPTION
                     if buy_result.get("success"):
+                        if buy_result.get("position_sync_status") == "POSITION_SYNC_PENDING":
+                            failure_reason = REASON_ORDER_EXCEPTION
+                            message = buy_result.get("message", "POSITION_SYNC_PENDING")
+                            state["position_sync_block_new_orders"] = True
+                            state["position_sync_status"] = "POSITION_SYNC_PENDING"
+                            state["critical_alert"] = message
+                            return {
+                                "acted": True, "message": message, "action": fused_action,
+                                "decision": fusion_decision, "final_decision": {}, "failure_reason": failure_reason,
+                            }
                         acted = True
                         action = ACTION_ENTER_HYNIX if symbol == "000660" else ACTION_ENTER_INVERSE
                         qty = buy_result.get("bought_quantity", 0)
@@ -1480,12 +1549,13 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         active_result = _run_adaptive_fusion_entry(
                             state, broker, hynix_price, inverse_price, now, orders_this_cycle,
                             enhanced_ai_score=_boosted_enhanced_score, hynix_df_1min=df_1min,
+                            position_manager=position_manager,
                         )
                         trace_label = "ADAPTIVE_FUSION"
                     else:
                         active_result = _run_active_strategy_entry(
                             state, broker, hynix_price, inverse_price, now, orders_this_cycle,
-                            enhanced_ai_score=_boosted_enhanced_score,
+                            enhanced_ai_score=_boosted_enhanced_score, position_manager=position_manager,
                         )
                         trace_label = "ACTIVE_STRATEGY"
                     trace["entry_approved"] = active_result.get("acted", False)

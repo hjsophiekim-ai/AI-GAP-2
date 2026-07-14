@@ -237,7 +237,7 @@ def _confirm_remaining_quantity_from_broker(
     broker, symbol: str, position_manager=None, attempts: int = _POSITION_SYNC_RETRY_ATTEMPTS,
     delay_seconds: int = _POSITION_SYNC_RETRY_DELAY_SECONDS,
 ) -> dict:
-    """Confirm remaining quantity from broker/KIS after a sell.
+    """Confirm symbol quantity from broker/KIS after an order.
 
     A failed balance read is never treated as zero. The caller must keep the
     previous local position and block new entries until a later sync succeeds.
@@ -414,7 +414,7 @@ def _resolve_realized_pnl(sell_result: dict, current_price: float, entry_price: 
 def _buy_new(
     broker, symbol: str, current_price: float, cash_amount: float, reason: str, orders: list,
     mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", before_qty: int = 0,
-    fusion_metadata: Optional[dict] = None,
+    fusion_metadata: Optional[dict] = None, position_manager=None,
 ) -> dict:
     if not current_price or current_price <= 0 or cash_amount <= 0:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "가격/금액 유효하지 않음")
@@ -423,15 +423,109 @@ def _buy_new(
     if quantity < 1:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "매수금액으로 1주도 매수 불가")
         return {"success": False, "message": "매수금액으로 1주도 매수 불가"}
-    order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
-    _record_order(
-        orders, order, "BUY", symbol, quantity, current_price, reason,
-        before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
-        fusion_metadata=fusion_metadata,
-    )
+    with _POSITION_STATE_LOCK:
+        order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
+        _record_order(
+            orders, order, "BUY", symbol, quantity, current_price, reason,
+            before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
+            fusion_metadata=fusion_metadata,
+        )
     result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
     result["bought_quantity"] = quantity
+    result["filled_quantity"] = None
+    result["actual_quantity"] = None
+    result["fill_confirmed"] = None
+    if result.get("success") and position_manager is not None:
+        confirmed = _confirm_remaining_quantity_from_broker(
+            broker, symbol, position_manager=position_manager,
+        )
+        result["position_sync"] = confirmed
+        if confirmed.get("ok"):
+            actual_qty = int(confirmed.get("quantity") or 0)
+            filled_qty = max(0, actual_qty - int(before_qty or 0))
+            result["actual_quantity"] = actual_qty
+            result["filled_quantity"] = filled_qty
+            result["bought_quantity"] = filled_qty
+            if filled_qty <= 0:
+                result["fill_confirmed"] = False
+                result["position_sync_status"] = POSITION_SYNC_PENDING
+                result["message"] = (result.get("message") or "order accepted") + " / buy fill not visible in broker balance"
+            else:
+                result["fill_confirmed"] = True
+                result["position_sync_status"] = "SYNCED"
+        else:
+            logger.warning(
+                "[SwitchPositionManager] buy succeeded but position sync failed; keeping local position pending: %s",
+                confirmed.get("error"),
+            )
+            result["fill_confirmed"] = False
+            result["position_sync_status"] = POSITION_SYNC_PENDING
     return result
+
+
+def _mark_position_sync_pending(state: dict, position: Optional[dict], error: Optional[str], message: str) -> None:
+    kept = dict(position or state.get("position") or _empty_position())
+    kept["position_sync_status"] = POSITION_SYNC_PENDING
+    kept["position_sync_error"] = error
+    kept["position_sync_pending_since"] = datetime.now().isoformat()
+    state["position"] = kept
+    state["position_sync_status"] = POSITION_SYNC_PENDING
+    state["position_sync_error"] = error
+    state["position_sync_block_new_orders"] = True
+    state["critical_alert"] = message
+
+
+def _clear_stale_buy_state_when_flat(state: dict) -> None:
+    if state.get("last_action") == "BUY":
+        state["last_action"] = None
+        state["last_buy_price"] = None
+        state["last_order_signature"] = None
+        state["last_order_cycle_bucket"] = None
+    state["last_big_trend_result"] = None
+    state["big_trend_state"] = {}
+
+
+def _apply_buy_result_to_state_position(
+    state: dict, symbol: str, current_price: float, buy_result: dict, *,
+    now: datetime, previous_position: Optional[dict] = None,
+    entry_type: Optional[str] = None, stop_loss_pct: Optional[float] = None,
+) -> bool:
+    status = buy_result.get("position_sync_status")
+    if status == POSITION_SYNC_PENDING:
+        _mark_position_sync_pending(
+            state, previous_position, (buy_result.get("position_sync") or {}).get("error"),
+            "POSITION_SYNC_PENDING - broker balance confirmation failed after buy; new orders blocked",
+        )
+        return False
+
+    if status == "SYNCED":
+        qty = int(buy_result.get("actual_quantity") or 0)
+        if qty <= 0:
+            _mark_position_sync_pending(
+                state, previous_position, (buy_result.get("position_sync") or {}).get("error"),
+                "POSITION_SYNC_PENDING - buy order accepted but filled quantity is not visible in broker balance",
+            )
+            return False
+    else:
+        qty = int(buy_result.get("bought_quantity") or 0)
+
+    if qty <= 0:
+        return False
+
+    avg_price = ((buy_result.get("position_sync") or {}).get("avg_price")) or current_price
+    state["position"] = {
+        **_empty_position(),
+        "symbol": symbol, "name": _SYMBOL_NAME.get(symbol, symbol),
+        "quantity": qty, "avg_price": avg_price, "entry_price": avg_price,
+        "entry_time": now.isoformat(),
+        "entry_type": entry_type or "NORMAL",
+        "stop_loss_pct": stop_loss_pct,
+        "position_sync_status": "SYNCED",
+    }
+    state["position_sync_status"] = "SYNCED"
+    state["position_sync_block_new_orders"] = False
+    state["position_sync_error"] = None
+    return True
 
 
 def sync_position_from_broker(state: dict, broker) -> dict:
@@ -478,6 +572,8 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
             existing["quantity"] = pos_info.get("quantity")
             existing["avg_price"] = pos_info.get("avg_price")
             state["position"] = existing
+        else:
+            _clear_stale_buy_state_when_flat(state)
     else:
         logger.warning(
             "[SwitchPositionManager] state 포지션(%s)과 실제 브로커 포지션(%s) 불일치 — 브로커 기준으로 동기화",
@@ -485,6 +581,7 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
         )
         if broker_symbol is None:
             state["position"] = _empty_position()
+            _clear_stale_buy_state_when_flat(state)
         else:
             state["position"] = {
                 **_empty_position(),
@@ -571,6 +668,7 @@ def run_liquidation_if_needed(
         result = _sell_all_or_ratio(
             broker, position, current_price, 1.0, "15:15 당일 강제청산", orders,
             mode=mode, exit_reason_type="liquidation", signal_source="FORCED_LIQUIDATION",
+            position_manager=position_manager,
         )
         if result.get("success"):
             net_realized, gross_realized = _resolve_realized_pnl(
@@ -628,14 +726,10 @@ def _apply_sell_result_to_state_position(state: dict, position: dict, sell_resul
     remaining = sell_result.get("remaining_quantity")
     status = sell_result.get("position_sync_status")
     if status == POSITION_SYNC_PENDING or remaining is None:
-        kept = dict(position)
-        kept["position_sync_status"] = POSITION_SYNC_PENDING
-        kept["position_sync_error"] = (sell_result.get("position_sync") or {}).get("error")
-        kept["position_sync_pending_since"] = datetime.now().isoformat()
-        state["position"] = kept
-        state["position_sync_status"] = POSITION_SYNC_PENDING
-        state["position_sync_block_new_orders"] = True
-        state["critical_alert"] = "POSITION_SYNC_PENDING — broker balance confirmation failed after sell; new orders blocked"
+        _mark_position_sync_pending(
+            state, position, (sell_result.get("position_sync") or {}).get("error"),
+            "POSITION_SYNC_PENDING - broker balance confirmation failed after sell; new orders blocked",
+        )
         return
 
     remaining = int(remaining or 0)
@@ -643,6 +737,7 @@ def _apply_sell_result_to_state_position(state: dict, position: dict, sell_resul
     state["position_sync_block_new_orders"] = False
     if remaining <= 0:
         state["position"] = _empty_position()
+        _clear_stale_buy_state_when_flat(state)
         return
 
     position["quantity"] = remaining
@@ -776,9 +871,16 @@ def run_switch_or_entry(
                 buy_result = _buy_new(
                     broker, desired_symbol, current_price, add_cash,
                     f"TrendSwitchAccel 목표비중 증액 {pct * 100:.0f}%", orders,
-                    mode=state.get("mode", "mock"),
+                    mode=state.get("mode", "mock"), before_qty=int(position.get("quantity") or 0),
+                    position_manager=position_manager,
                 )
                 if buy_result.get("success"):
+                    if buy_result.get("position_sync_status") == POSITION_SYNC_PENDING:
+                        _mark_position_sync_pending(
+                            state, position, (buy_result.get("position_sync") or {}).get("error"),
+                            "POSITION_SYNC_PENDING - broker balance confirmation failed after buy; new orders blocked",
+                        )
+                        return {"acted": True, "orders": orders, "message": buy_result.get("message", "buy fill unconfirmed")}
                     add_qty = int(buy_result.get("bought_quantity", 0))
                     old_qty = int(position.get("quantity") or 0)
                     new_qty = old_qty + add_qty
@@ -870,13 +972,25 @@ def run_switch_or_entry(
     else:
         cash_amount = sized_cash
 
-    buy_result = _buy_new(broker, desired_symbol, current_price, cash_amount, buy_reason, orders, mode=state.get("mode", "mock"))
+    buy_result = _buy_new(
+        broker, desired_symbol, current_price, cash_amount, buy_reason, orders,
+        mode=state.get("mode", "mock"), position_manager=position_manager,
+    )
     if buy_result.get("success"):
-        qty = buy_result.get("bought_quantity", 0)
+        if buy_result.get("position_sync_status") == POSITION_SYNC_PENDING:
+            _mark_position_sync_pending(
+                state, state.get("position"), (buy_result.get("position_sync") or {}).get("error"),
+                "POSITION_SYNC_PENDING - broker balance confirmation failed after buy; new orders blocked",
+            )
+            state["last_order_cycle_bucket"] = bucket
+            state["last_order_signature"] = signature
+            return {"acted": True, "orders": orders, "message": buy_result.get("message", "buy fill unconfirmed")}
+        qty = buy_result.get("actual_quantity") or buy_result.get("bought_quantity", 0)
+        avg_price = ((buy_result.get("position_sync") or {}).get("avg_price")) or current_price
         state["position"] = {
             **_empty_position(),
             "symbol": desired_symbol, "name": _SYMBOL_NAME.get(desired_symbol, desired_symbol),
-            "quantity": qty, "avg_price": current_price, "entry_price": current_price,
+            "quantity": qty, "avg_price": avg_price, "entry_price": avg_price,
             "entry_time": now.isoformat(),
             "entry_type": entry_type or ("FORCED" if forced else "NORMAL"),
             "stop_loss_pct": stop_loss_pct,
