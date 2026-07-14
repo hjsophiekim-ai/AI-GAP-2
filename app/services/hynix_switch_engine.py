@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
 from app.services.hynix_switch_state import load_state, save_state_atomic, set_active_mode, reset_mock_state

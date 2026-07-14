@@ -636,3 +636,30 @@ class TestAdaptiveFusionRealOrderWiring:
         fusion_decision = result["state"].get("last_fusion_decision")
         assert fusion_decision is not None
         assert "weights" in fusion_decision and "dominant_model" in fusion_decision
+
+
+def test_update_loop_default_now_uses_kst_without_crashing(tmp_path, monkeypatch):
+    """회귀 방지: now=를 명시적으로 넘기지 않는 실제 운영 호출 경로(스케줄러가 이렇게
+    호출한다)에서 `now = now or kst_now()`가 NameError 없이 동작해야 한다. 기존 테스트는
+    전부 now=를 명시적으로 넘겨서 이 줄을 실질적으로 검증하지 못했다(2026-07-14 실제
+    회귀 발견: kst_now import 누락으로 프로덕션 사이클이 매번 예외로 실패했었음)."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_decision)
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = False  # broker/KIS 경로는 스킵하되, now 처리는 그 전에 실행돼야 한다
+    state_module.save_state_atomic(state)
+
+    # now 인자를 아예 생략한다 — 스케줄러(HynixAutoTradeCycleThread._run_cycle_if_enabled)가
+    # 실제로 호출하는 방식과 동일하다.
+    result = engine.update_hynix_auto_trade_loop(mode="mock")
+    assert "pipeline_trace" in result
