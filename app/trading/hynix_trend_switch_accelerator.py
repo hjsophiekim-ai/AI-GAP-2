@@ -30,7 +30,7 @@ _DEFAULTS = {
     "daily_target_round_trips_min": 4,
     "daily_target_round_trips_max": 5,
     "max_daily_round_trips": 8,
-    "normal_signal_pullback_wait_minutes": 5,
+    "normal_signal_pullback_wait_minutes": 3,
     "exploratory_stop_loss_pct": -0.8,
     "normal_stop_loss_atr_multiplier": 1.2,
     "normal_stop_loss_cap_pct": -1.5,
@@ -208,6 +208,9 @@ def plan_entry(
 
     strong = is_strong_signal(final_action)
     is_switch_target = held_symbol is not None and desired_symbol != held_symbol
+    if is_switch_target and reversal_streak < 2:
+        result["block_reason"] = f"opposite direction signal confirmation pending ({reversal_streak}/2)"
+        return result
 
     # 동일 방향 재진입 쿨다운(3분, 방향 전환 시 면제)
     if not (is_switch_target and reversal_streak >= 2):
@@ -230,27 +233,20 @@ def plan_entry(
 
     # ── 1) 기존 포지션과 반대 방향 신호 2회 연속 — 즉시 전환(눌림목 불요) ──────
     if is_switch_target and reversal_streak >= 2:
-        pct = _halved_if_needed(_confirmed_position_pct(cfg))
+        pct = _halved_if_needed(cfg["exploratory_position_pct"])
         result.update(
-            proceed=True, position_pct=pct, entry_type="NORMAL", immediate_switch=True,
-            stop_loss_pct=normal_entry_stop_loss_pct(atr_pct, cfg),
+            proceed=True, position_pct=pct, entry_type="EXPLORATORY", immediate_switch=True,
+            stop_loss_pct=cfg["exploratory_stop_loss_pct"],
         )
         return result
 
     # ── 2) STRONG_BUY 연속 확인 — 눌림목 불요, 1회차 탐색/2회차 이상 확정 ─────
     if strong and same_streak >= 1:
-        if same_streak == 1:
-            pct = _halved_if_needed(cfg["exploratory_position_pct"])
-            result.update(
-                proceed=True, position_pct=pct, entry_type="EXPLORATORY",
-                stop_loss_pct=cfg["exploratory_stop_loss_pct"],
-            )
-        else:
-            pct = _halved_if_needed(_confirmed_position_pct(cfg))
-            result.update(
-                proceed=True, position_pct=pct, entry_type="NORMAL",
-                stop_loss_pct=normal_entry_stop_loss_pct(atr_pct, cfg),
-            )
+        pct = _halved_if_needed(cfg["exploratory_position_pct"])
+        result.update(
+            proceed=True, position_pct=pct, entry_type="EXPLORATORY",
+            stop_loss_pct=cfg["exploratory_stop_loss_pct"],
+        )
         result["immediate_switch"] = is_switch_target
         return result
 

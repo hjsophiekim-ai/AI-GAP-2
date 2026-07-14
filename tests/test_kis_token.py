@@ -7,6 +7,7 @@ KIS 토큰 발급 관련 단위 테스트.
 import json
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -208,6 +209,109 @@ class TestKISTokenErrorAttributes:
             with patch.object(client, "_save_token_cache"):
                 token = client.get_access_token()
         assert token == "eyJhbGci...token"
+
+    def test_fresh_cache_with_stale_fingerprint_is_reused(self, tmp_path, monkeypatch):
+        client = _make_client("mock")
+        monkeypatch.setattr("app.trading.kis_client._TOKEN_CACHE_DIR", tmp_path)
+        cache_path = tmp_path / "kis_token_mock.json"
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "access_token": "cached-token",
+                    "expires_at": (datetime.now() + timedelta(hours=6)).isoformat(),
+                    "mode": "mock",
+                    "base_url": BASE_URL_MOCK,
+                    "app_key_hash": client._app_key_hash(),
+                    "credential_fingerprint": "stale-account-fp",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.object(client._session, "post") as mock_post:
+            token = client.get_access_token()
+
+        assert token == "cached-token"
+        mock_post.assert_not_called()
+
+    def test_403_uses_valid_cache_if_available(self, tmp_path, monkeypatch):
+        client = _make_client("mock")
+        monkeypatch.setattr("app.trading.kis_client._TOKEN_CACHE_DIR", tmp_path)
+        cache_path = tmp_path / "kis_token_mock.json"
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "access_token": "cached-after-403",
+                    "expires_at": (datetime.now() + timedelta(hours=6)).isoformat(),
+                    "mode": "mock",
+                    "base_url": BASE_URL_MOCK,
+                    "app_key_hash": client._app_key_hash(),
+                    "credential_fingerprint": client._credential_fingerprint(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        real_load_token_cache = client._load_token_cache
+        load_calls = {"count": 0}
+
+        def delayed_cache_load():
+            load_calls["count"] += 1
+            if load_calls["count"] == 1:
+                return False
+            return real_load_token_cache()
+
+        client._load_token_cache = MagicMock(side_effect=delayed_cache_load)
+        client._token = ""
+        client._token_expires_at = datetime.min
+        body = {"rt_cd": "", "msg_cd": "", "msg1": "1분당 1회"}
+
+        with patch.object(client._session, "post", return_value=_mock_resp(403, body)):
+            token = client.get_access_token()
+
+        assert token == "cached-after-403"
+
+    def test_legacy_overseas_cache_format_is_reused(self, tmp_path, monkeypatch):
+        client = _make_client("mock")
+        monkeypatch.setattr("app.trading.kis_client._TOKEN_CACHE_DIR", tmp_path)
+        cache_path = tmp_path / "kis_token_mock.json"
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "access_token": "legacy-token",
+                    "expires_at": (datetime.now() + timedelta(hours=6)).isoformat(),
+                    "mode": "mock",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.object(client._session, "post") as mock_post:
+            token = client.get_access_token()
+
+        assert token == "legacy-token"
+        mock_post.assert_not_called()
+
+    def test_overseas_token_writer_uses_shared_cache_metadata(self, tmp_path, monkeypatch):
+        from app.data_sources import kis_overseas_minute as overseas
+
+        monkeypatch.setattr(overseas, "_TOKEN_CACHE_DIR", tmp_path)
+        overseas._TOKEN_CACHE.clear()
+        overseas._TOKEN_EXPIRY.clear()
+        monkeypatch.setenv("KIS_MOCK_APP_KEY", "test_key")
+        monkeypatch.setenv("KIS_MOCK_APP_SECRET", "test_secret")
+        body = {
+            "access_token": "overseas-token",
+            "expires_in": 86400,
+        }
+
+        with patch("app.data_sources.kis_overseas_minute.requests.post", return_value=_mock_resp(200, body)):
+            token = overseas._get_access_token("mock")
+
+        assert token == "overseas-token"
+        saved = json.loads((tmp_path / "kis_token_mock.json").read_text(encoding="utf-8"))
+        assert saved["app_key_hash"] == _make_client("mock")._app_key_hash()
+        assert saved["credential_fingerprint"] == _make_client("mock")._credential_fingerprint()
+        assert saved["base_url"] == BASE_URL_MOCK
 
 
 # ─────────────────────────────────────────────────────────────────────────────

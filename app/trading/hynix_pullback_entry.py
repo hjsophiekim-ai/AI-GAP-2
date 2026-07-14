@@ -14,10 +14,10 @@ from typing import Optional
 
 import pandas as pd
 
-_DEFAULT_LOOKBACK_BARS = 30
+_DEFAULT_LOOKBACK_BARS = 10
 _SHALLOW_PULLBACK_MIN_PCT = 0.3
 _SHALLOW_PULLBACK_MAX_PCT = 2.0
-_BREAKDOWN_BUFFER = 1.001  # 국소 저점 대비 이 이상이어야 "붕괴 아님"으로 판정
+_BREAKDOWN_BUFFER = 1.0003  # Require a small hold above the recent low without forcing long waits.
 
 
 def detect_pullback(
@@ -40,7 +40,13 @@ def detect_pullback(
     if df_1min is None or len(df_1min) < 5:
         return result
 
-    work = df_1min.sort_values("datetime").tail(lookback_bars)
+    work = df_1min.sort_values("datetime").tail(max(5, min(lookback_bars, 10))).copy()
+    for col in ("high", "low", "close"):
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=["high", "low", "close"])
+    if len(work) < 5:
+        return result
     recent_high = float(work["high"].max())
     recent_low = float(work["low"].min())
     current = float(work["close"].iloc[-1])
@@ -52,6 +58,23 @@ def detect_pullback(
 
     pullback_pct = (recent_high - current) / recent_high * 100
     result["pullback_pct"] = round(pullback_pct, 3)
+
+    atr_pct = None
+    if {"high", "low", "close"}.issubset(work.columns) and len(work) >= 3:
+        prev_close = work["close"].shift(1)
+        tr = pd.concat(
+            [
+                (work["high"] - work["low"]).abs(),
+                (work["high"] - prev_close).abs(),
+                (work["low"] - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1).dropna()
+        if not tr.empty and current > 0:
+            atr_pct = float(tr.tail(min(5, len(tr))).mean()) / current * 100.0
+    if atr_pct is not None:
+        shallow_max_pct = max(shallow_max_pct, min(3.0, atr_pct * 1.5))
+    result["atr_pct"] = round(atr_pct, 3) if atr_pct is not None else None
 
     is_shallow = shallow_min_pct <= pullback_pct <= shallow_max_pct
     not_breaking_down = current > recent_low * _BREAKDOWN_BUFFER

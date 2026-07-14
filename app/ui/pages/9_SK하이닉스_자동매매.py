@@ -584,6 +584,31 @@ if switch_state.get("mode") == "mock":
                 ])
                 st.dataframe(_diag_df, use_container_width=True, hide_index=True)
 
+            _live_trend = _last_fusion.get("live_hynix_trend") or switch_state.get("last_live_hynix_trend") or {}
+            if _live_trend:
+                st.markdown("**Live Hynix Trend / Data Age**")
+                _lt1, _lt2, _lt3, _lt4 = st.columns(4)
+                _lt1.metric("Direction", _live_trend.get("direction", "-"), delta=f"age={_live_trend.get('age_minutes')}")
+                _lt2.metric("1m/3m", f"{(_live_trend.get('returns') or {}).get('1m')} / {(_live_trend.get('returns') or {}).get('3m')}")
+                _lt3.metric("5m/15m", f"{(_live_trend.get('returns') or {}).get('5m')} / {(_live_trend.get('returns') or {}).get('15m')}")
+                _lt4.metric("VWAP/EMA", "UP" if _live_trend.get("above_vwap") else "DOWN", delta=_live_trend.get("ema_slope_pct"))
+                st.caption("Top factors: " + ", ".join(_last_fusion.get("top_decision_factors") or _live_trend.get("top_factors") or []))
+
+            _equity = switch_state.get("daily_return_calculation") or {}
+            if _equity:
+                st.markdown("**Equity Check**")
+                _eq1, _eq2, _eq3, _eq4 = st.columns(4)
+                _eq1.metric("Ledger return", _equity.get("net_daily_return"), delta=_equity.get("calculation_source"))
+                _eq2.metric("Broker equity", _equity.get("current_equity"), delta=_equity.get("equity_ratio_return"))
+                _eq3.metric("Start equity", _equity.get("starting_equity"), delta=f"tol={_equity.get('equity_tolerance_pct')}")
+                _eq4.metric("Retry/Block", _equity.get("equity_check_attempts"), delta=_equity.get("blocked_reason"))
+                _snap = _equity.get("account_snapshot") or {}
+                st.caption(
+                    f"snapshot_at={_snap.get('as_of')} source={_snap.get('source')} "
+                    f"cash={_snap.get('cash')} holdings={_snap.get('holdings_market_value')} "
+                    f"grace={_equity.get('settlement_grace_active')} rebased={_equity.get('baseline_rebased')}"
+                )
+
 if switch_state.get("mode") == "mock" and switch_state.get("stopped") and "일 누적 손실" in (switch_state.get("stopped_reason") or ""):
     mock_override = st.checkbox(
         "모의계좌 손실제한 무시하고 계속 테스트",

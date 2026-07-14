@@ -83,9 +83,75 @@ def test_cash_zero_with_existing_ledger_is_flagged_as_mismatch_not_minus_100():
         state, position=None, hynix_price=None, inverse_price=None,
         cash=0.0, positions_from_broker=[], cash_fetch_ok=True,
     )
-    assert result["blocked_reason"] == engine.ACCOUNT_EQUITY_MISMATCH
+    assert result["blocked_reason"] == engine.DAILY_RETURN_UNKNOWN
     assert result["net_daily_return"] != -100.0
     assert result["net_daily_return"] is None
+
+
+def test_recent_order_mismatch_is_deferred_not_blocked():
+    from datetime import datetime, timedelta
+
+    now = datetime(2026, 7, 14, 10, 0, 30)
+    state = _state(realized_pnl_krw=20_000.0, baseline=10_000_000.0)
+    state["last_trade_time"] = (now - timedelta(seconds=30)).isoformat()
+    result = engine.compute_net_daily_return(
+        state, position=None, hynix_price=None, inverse_price=None,
+        cash=9_500_000.0, positions_from_broker=[], cash_fetch_ok=True,
+        settlement_grace_active=True,
+    )
+    assert result["blocked_reason"] is None
+    assert result["mismatch_deferred"] is True
+
+
+def test_three_consecutive_equity_mismatches_are_required_to_block(monkeypatch):
+    from datetime import datetime
+
+    class _FakeKis:
+        def __init__(self):
+            self.calls = 0
+
+        def get_balance(self):
+            self.calls += 1
+            return {"cash": 9_000_000.0, "orderable_cash": 9_000_000.0, "positions": []}
+
+    class _FakeBroker:
+        def __init__(self):
+            self.kis = _FakeKis()
+
+    state = _state(realized_pnl_krw=50_000.0, baseline=10_000_000.0)
+    result = engine._compute_net_daily_return_with_retries(
+        state, _FakeBroker(), None, None, None, datetime(2026, 7, 14, 10, 0),
+        attempts=3, delay_seconds=0,
+    )
+    assert result["blocked_reason"] == engine.ACCOUNT_EQUITY_MISMATCH
+    assert result["equity_check_attempts"] == 3
+
+
+def test_transient_equity_mismatch_resolved_by_retry_does_not_block():
+    from datetime import datetime
+
+    class _FakeKis:
+        def __init__(self):
+            self.calls = 0
+
+        def get_balance(self):
+            self.calls += 1
+            if self.calls < 3:
+                return {"cash": 9_000_000.0, "orderable_cash": 9_000_000.0, "positions": []}
+            return {"cash": 10_050_000.0, "orderable_cash": 10_050_000.0, "positions": []}
+
+    class _FakeBroker:
+        def __init__(self):
+            self.kis = _FakeKis()
+
+    state = _state(realized_pnl_krw=50_000.0, baseline=10_000_000.0)
+    result = engine._compute_net_daily_return_with_retries(
+        state, _FakeBroker(), None, None, None, datetime(2026, 7, 14, 10, 0),
+        attempts=3, delay_seconds=0,
+    )
+    assert result["blocked_reason"] is None
+    assert result["equity_check_attempts"] == 3
+    assert result["net_daily_return"] == 0.5
 
 
 # ---------------------------------------------------------------------------

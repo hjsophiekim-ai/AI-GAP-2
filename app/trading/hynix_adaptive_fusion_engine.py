@@ -89,6 +89,94 @@ ACTION_HYNIX = "HYNIX"
 ACTION_INVERSE = "INVERSE"
 ACTION_HOLD = "HOLD"
 
+
+def compute_live_hynix_trend(df_1min, now: Optional[datetime] = None) -> dict:
+    """Compute the live domestic trend that must dominate Enhanced entries."""
+    now = now or datetime.now()
+    result = {
+        "as_of": now.isoformat(timespec="seconds"), "available": False, "direction": ACTION_HOLD,
+        "is_stale": True, "age_minutes": None, "returns": {}, "vwap": None,
+        "last_price": None, "above_vwap": False, "ema_slope_pct": None,
+        "higher_highs": False, "higher_lows": False, "lower_highs": False, "lower_lows": False,
+        "hynix_uptrend_confirmed": False, "hynix_downtrend_confirmed": False,
+        "top_factors": [],
+    }
+    if df_1min is None or getattr(df_1min, "empty", True):
+        result["top_factors"].append("hynix 1m data unavailable")
+        return result
+    try:
+        df = df_1min.copy()
+        for col in ("close", "high", "low", "volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["close"])
+        if df.empty:
+            result["top_factors"].append("hynix close data unavailable")
+            return result
+        ts = None
+        if "datetime" in df.columns:
+            try:
+                ts = pd.to_datetime(df["datetime"].iloc[-1]).to_pydatetime()
+            except Exception:
+                ts = None
+        if ts is not None:
+            age = max(0.0, (now - ts).total_seconds() / 60.0)
+            result["age_minutes"] = round(age, 2)
+            result["is_stale"] = age > 3.0
+        else:
+            result["is_stale"] = False
+        close = df["close"].astype(float)
+        last = float(close.iloc[-1])
+        result["last_price"] = last
+        for minutes in (1, 3, 5, 15):
+            if len(close) > minutes and float(close.iloc[-1 - minutes]) > 0:
+                result["returns"][f"{minutes}m"] = round((last / float(close.iloc[-1 - minutes]) - 1.0) * 100.0, 4)
+            else:
+                result["returns"][f"{minutes}m"] = None
+        if {"high", "low", "volume"}.issubset(df.columns) and df["volume"].fillna(0).sum() > 0:
+            typical = (df["high"].astype(float) + df["low"].astype(float) + close) / 3.0
+            vwap = float((typical * df["volume"].fillna(0).astype(float)).sum() / df["volume"].fillna(0).astype(float).sum())
+        else:
+            vwap = float(close.tail(min(20, len(close))).mean())
+        result["vwap"] = round(vwap, 4)
+        result["above_vwap"] = last >= vwap
+        ema = close.ewm(span=min(5, len(close)), adjust=False).mean()
+        if len(ema) >= 2 and float(ema.iloc[-2]) > 0:
+            result["ema_slope_pct"] = round((float(ema.iloc[-1]) / float(ema.iloc[-2]) - 1.0) * 100.0, 4)
+        highs = pd.to_numeric(df.get("high", close), errors="coerce").dropna().tail(4)
+        lows = pd.to_numeric(df.get("low", close), errors="coerce").dropna().tail(4)
+        if len(highs) >= 3:
+            result["higher_highs"] = bool(highs.iloc[-1] > highs.iloc[-2] >= highs.iloc[-3])
+            result["lower_highs"] = bool(highs.iloc[-1] < highs.iloc[-2] <= highs.iloc[-3])
+        if len(lows) >= 3:
+            result["higher_lows"] = bool(lows.iloc[-1] >= lows.iloc[-2] > lows.iloc[-3])
+            result["lower_lows"] = bool(lows.iloc[-1] <= lows.iloc[-2] < lows.iloc[-3])
+        r3 = result["returns"].get("3m")
+        r5 = result["returns"].get("5m")
+        ema_up = (result["ema_slope_pct"] or 0.0) > 0
+        ema_down = (result["ema_slope_pct"] or 0.0) < 0
+        result["hynix_uptrend_confirmed"] = bool(
+            not result["is_stale"] and result["above_vwap"] and (r3 or 0) > 0 and (r5 or 0) > 0
+            and result["higher_highs"] and result["higher_lows"] and ema_up
+        )
+        result["hynix_downtrend_confirmed"] = bool(
+            not result["is_stale"] and not result["above_vwap"] and (r3 or 0) < 0 and (r5 or 0) < 0
+            and result["lower_highs"] and result["lower_lows"] and ema_down
+        )
+        if result["hynix_uptrend_confirmed"]:
+            result["direction"] = ACTION_HYNIX
+            result["top_factors"] = ["above VWAP", "3m/5m returns positive", "higher highs/lows", "EMA slope up"]
+        elif result["hynix_downtrend_confirmed"]:
+            result["direction"] = ACTION_INVERSE
+            result["top_factors"] = ["below VWAP", "3m/5m returns negative", "lower highs/lows", "EMA slope down"]
+        else:
+            result["top_factors"] = ["live trend not fully confirmed"]
+        result["available"] = True
+        return result
+    except Exception as exc:
+        result["top_factors"].append(f"live trend calculation failed: {exc}")
+        return result
+
 # ── 섹션 2: 초기 모델 가중치 ──────────────────────────────────────────────────
 _BASE_WEIGHTS = {
     MODEL_ACTIVE_FUSION: 0.40,
@@ -440,15 +528,20 @@ def _entry_ladder_from_config(cfg: dict) -> list:
     return pairs
 
 
-def position_pct_from_probability_ladder(dominant_probability: float, tier_reduction: int = 0) -> float:
+def position_pct_from_probability_ladder(dominant_probability: float, tier_reduction: int = 0, floor_relief: float = 0.0) -> float:
     """dominant_probability(우세 방향 확률)를 4단계 사다리(52/55/60/68%, config로 조정
     가능)로 비중(%)에 매핑한다. tier_reduction>0이면 시장급변/데이터stale/리스크경고
     시 한 단계씩 낮은 비중으로 축소한다(0으로 완전히 죽이지는 않음 — 신호 자체는
-    유효하기 때문)."""
+    유효하기 때문). floor_relief(>=0)는 HOLD 완화/시간대별 문턱완화(threshold relief)를
+    사다리 바닥에도 동일하게 반영한다 — 그렇지 않으면 문턱완화가 entry_threshold_used
+    표시에만 나타나고 실제 진입비중 산정(사다리 최저 52% 고정 바닥)에는 전혀 영향을
+    주지 못해, "완화"가 이름뿐인 채로 계속 진입 0건이 되는 버그가 있었다(2026-07-14
+    실측: fused_inverse_probability 49.73%, threshold_used 50.5%였는데도 target_position_pct
+    0%로 매 사이클 차단됨)."""
     ladder = _entry_ladder_from_config(_load_fusion_v2_config())
     idx = None
     for i, (floor, _pct) in enumerate(ladder):
-        if dominant_probability >= floor:
+        if dominant_probability >= floor - floor_relief:
             idx = i
             break
     if idx is None:
@@ -1294,13 +1387,23 @@ def model_result_from_micron_proxy(micron_proxy: dict) -> Optional[dict]:
     if score is None:
         return None
     confidence = micron_proxy.get("micron_data_confidence", 50.0)
+    is_stale = bool(micron_proxy.get("is_stale"))
+    if not is_stale and micron_proxy.get("calculated_at"):
+        try:
+            age = (datetime.now() - datetime.fromisoformat(str(micron_proxy.get("calculated_at")))).total_seconds() / 60.0
+            micron_proxy["age_minutes"] = round(max(0.0, age), 2)
+            is_stale = age > 15.0
+        except Exception:
+            pass
+    if is_stale or (micron_proxy.get("age_minutes") is not None and micron_proxy.get("age_minutes") > 15.0):
+        confidence = 0.0
     hynix_p, inverse_p, hold_p = _score_to_triple(score)
-    status = MODEL_STATUS_ADVISORY if confidence >= 60.0 else MODEL_STATUS_SHADOW
+    status = MODEL_STATUS_DEGRADED if confidence <= 0.0 else (MODEL_STATUS_ADVISORY if confidence >= 60.0 else MODEL_STATUS_SHADOW)
     return build_model_result(
         model_name=MODEL_MICRON_PROXY, hynix_probability=hynix_p, inverse_probability=inverse_p,
         hold_probability=hold_p, confidence=confidence, recommended_position_pct=0.0,
         data_quality=confidence, model_status=status,
-        reasons=[f"score_source={micron_proxy.get('micron_score_source')}"],
+        reasons=[f"score_source={micron_proxy.get('micron_score_source')}", f"age={micron_proxy.get('age_minutes')} stale={is_stale}"],
     )
 
 
@@ -1343,7 +1446,7 @@ def build_fusion_decision(
     disagreement_index: float = 0.0, disagreement_override: Optional[dict] = None,
     strong_conflict: bool = False, entry_type: Optional[str] = None,
     consecutive_loss_note: Optional[str] = None, frequency_state: Optional[dict] = None,
-    orders_today_count: int = 0,
+    orders_today_count: int = 0, live_hynix_trend: Optional[dict] = None,
 ) -> dict:
     reasons = fused.get("reasons", []) + conflict.get("notes", [])
     if relief_reasons:
@@ -1381,6 +1484,8 @@ def build_fusion_decision(
         "round_trips_today": (frequency_state or {}).get("round_trips_today", 0),
         "max_daily_round_trips": _load_fusion_v2_config()["max_daily_round_trips"],
         "daily_target_trades": [DAILY_TARGET_TRADES_MIN, DAILY_TARGET_TRADES_MAX],
+        "live_hynix_trend": live_hynix_trend or {},
+        "top_decision_factors": (live_hynix_trend or {}).get("top_factors", []) + reasons[:3],
     }
 
 
@@ -1396,6 +1501,7 @@ class HynixAdaptiveFusionEngine:
         daily_return_pct: Optional[float], orders_today_count: int,
         hold_tracker: dict, whipsaw_state: dict, consecutive_stop_losses: int,
         frequency_state: Optional[dict] = None,
+        live_hynix_trend: Optional[dict] = None,
         expected_profit_pct: float = _DEFAULT_EXPECTED_PROFIT_PCT,
         expected_loss_pct: float = _DEFAULT_EXPECTED_LOSS_PCT,
         estimated_fees_pct: float = 0.015, estimated_slippage_pct: float = 0.02,
@@ -1427,20 +1533,11 @@ class HynixAdaptiveFusionEngine:
         if pv2_r is not None:
             pv2_action = _implied_action(pv2_r)
 
-        base_pct = position_pct_from_probability_ladder(
-            max(fused["fused_hynix_probability"], fused["fused_inverse_probability"]),
-        )
-        conflict = apply_conflict_resolution(fused, active_action, pv2_action, cycle_phase, base_pct)
-
-        # ── expected_move / expected_value ──────────────────────────────────
+        # ── expected_move / dom_prob — 문턱완화(threshold relief) 계산에 필요하므로
+        # 사다리 적용보다 먼저 계산한다 ──────────────────────────────────────────
         dom_prob = max(fused["fused_hynix_probability"], fused["fused_inverse_probability"])
         expected_move_3m = round(abs(turning_point.get("up_turn_probability_3m", 50.0) - turning_point.get("down_turn_probability_3m", 50.0)) / 100.0, 4)
         expected_move_5m = round(abs(turning_point.get("up_turn_probability_5m", 50.0) - turning_point.get("down_turn_probability_5m", 50.0)) / 100.0, 4)
-        expected_value = calculate_expected_value(
-            dom_prob, expected_profit_pct, expected_loss_pct, estimated_fees_pct, estimated_slippage_pct,
-        )
-
-        final_pct_result = calculate_final_position_pct(conflict["position_pct"], expected_value)
 
         # ── HOLD 완화 — 기존(HOLD 연속 발생) + 신규(시간대별, 요구사항 3절) 합산 ──
         opposite_prob = fused["fused_inverse_probability"] if fused["final_action"] == ACTION_HYNIX else fused["fused_hynix_probability"]
@@ -1452,6 +1549,18 @@ class HynixAdaptiveFusionEngine:
         time_relief_result = time_based_threshold_relief(now, orders_today_count, daily_return_pct)
         total_relief = relief_result["relief"] + time_relief_result["relief"]
         threshold = max(TRIAL_ENTRY_MIN_THRESHOLD, cfg["entry_min_probability"] - total_relief)
+
+        # 완화된 문턱을 사다리 바닥에도 그대로 반영한다(entry_gate_ok 표시에만 쓰이고
+        # 실제 진입비중에는 반영되지 않던 버그 수정 — position_pct_from_probability_ladder
+        # 주석 참조).
+        base_pct = position_pct_from_probability_ladder(dom_prob, floor_relief=total_relief)
+        conflict = apply_conflict_resolution(fused, active_action, pv2_action, cycle_phase, base_pct)
+
+        expected_value = calculate_expected_value(
+            dom_prob, expected_profit_pct, expected_loss_pct, estimated_fees_pct, estimated_slippage_pct,
+        )
+
+        final_pct_result = calculate_final_position_pct(conflict["position_pct"], expected_value)
 
         # ── Whipsaw 완화 ─────────────────────────────────────────────────────
         whipsaw_result = apply_whipsaw_dampening(final_pct_result["final_pct"], threshold, whipsaw_state, now)
@@ -1475,6 +1584,24 @@ class HynixAdaptiveFusionEngine:
             target_symbol = "000660"
         elif final_action == ACTION_INVERSE:
             target_symbol = "0197X0"
+
+        live_trend_note = None
+        if live_hynix_trend and live_hynix_trend.get("hynix_uptrend_confirmed"):
+            streak = int(live_hynix_trend.get("hynix_uptrend_streak", 1) or 1)
+            if final_action == ACTION_INVERSE:
+                if streak >= 2:
+                    final_action, target_symbol = ACTION_HYNIX, "000660"
+                    final_pct = min(final_pct if final_pct > 0 else 25.0, 45.0)
+                    live_trend_note = "live Hynix uptrend confirmed 2x: INVERSE blocked and switched to HYNIX"
+                else:
+                    final_action, target_symbol, final_pct = ACTION_HOLD, None, 0.0
+                    live_trend_note = "live Hynix uptrend confirmed: INVERSE new entry blocked"
+        elif live_hynix_trend and live_hynix_trend.get("hynix_downtrend_confirmed"):
+            streak = int(live_hynix_trend.get("hynix_downtrend_streak", 1) or 1)
+            if final_action == ACTION_HYNIX and streak >= 2:
+                final_action, target_symbol = ACTION_INVERSE, "0197X0"
+                final_pct = min(final_pct if final_pct > 0 else 25.0, 45.0)
+                live_trend_note = "live Hynix downtrend confirmed 2x: switched to INVERSE"
 
         # ── 모델 불일치 예외 진입(요구사항 2절) — 정규 사다리가 0%일 때만 시도한다.
         # 강한 신호 충돌(strong_conflict)이면 애초에 시도하지 않는다(HOLD가 우선).
@@ -1546,9 +1673,10 @@ class HynixAdaptiveFusionEngine:
             fused, conflict, final_pct_result, expected_move_3m, expected_move_5m, expected_value,
             final_action, target_symbol, executable, blocking_reason, threshold,
             original_threshold=cfg["entry_min_probability"], threshold_relief=total_relief,
-            relief_reasons=(relief_result.get("blocked_reasons") or []) + time_relief_result.get("reasons", []),
+            relief_reasons=(relief_result.get("blocked_reasons") or []) + time_relief_result.get("reasons", []) + ([live_trend_note] if live_trend_note else []),
             model_results=model_results, disagreement_index=disagreement_index,
             disagreement_override=disagreement_override, strong_conflict=strong_conflict,
             entry_type=entry_type, consecutive_loss_note=consecutive_loss_note,
             frequency_state=frequency_state, orders_today_count=orders_today_count,
+            live_hynix_trend=live_hynix_trend,
         )

@@ -174,6 +174,6 @@ def test_micron_fallback_used_when_1min_3min_missing(tmp_path, monkeypatch):
     assert result["micron_1min_score"] is None
     assert result["micron_3min_score"] is None
     assert result["micron_fallback_used"] is True
-    assert result["micron_data_status"] == mscore.STATUS_FALLBACK_EXTENDED_HOURS
-    assert result["existing_micron_score"] == 42.0
-    assert result["source"] == "mu_extended_hours_score"
+    assert result["micron_data_status"] == mscore.STATUS_STALE_DATA
+    assert result["existing_micron_score"] == 50.0
+    assert result["source"] == "stale_micron_display_only"

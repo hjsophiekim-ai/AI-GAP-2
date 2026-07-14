@@ -278,8 +278,7 @@ def test_strong_inverse_pressure_boosts_enhanced_score_toward_inverse():
     from app.services.hynix_switch_engine import _boost_enhanced_score_with_inverse_pressure
 
     boosted = _boost_enhanced_score_with_inverse_pressure(42.78, 77.87)
-    assert boosted < 42.78
-    assert boosted == min(42.78, 100.0 - 77.87)
+    assert boosted == 42.78
 
 
 def test_weak_inverse_pressure_does_not_change_enhanced_score():
@@ -295,3 +294,44 @@ def test_boost_never_pushes_score_away_from_original_direction():
 
     boosted = _boost_enhanced_score_with_inverse_pressure(15.0, 70.0)
     assert boosted <= 15.0
+
+
+# ---------------------------------------------------------------------------
+# 11) 문턱완화(threshold relief)가 표시(entry_threshold_used)에만 반영되고 실제
+# 진입비중 산정(사다리 52% 고정 바닥)에는 전혀 영향을 주지 못해, 완화가 이름뿐인
+# 채로 하루 종일 거래 0건이 이어지던 버그(2026-07-14 실측: fused_inverse_probability
+# 49.73%, entry_threshold_used 50.5%인데도 target_position_pct 0%로 매 사이클 차단).
+# ---------------------------------------------------------------------------
+
+def test_ladder_floor_relief_lets_borderline_probability_enter():
+    assert fusion.position_pct_from_probability_ladder(49.73, floor_relief=0.0) == 0.0
+    assert fusion.position_pct_from_probability_ladder(49.73, floor_relief=2.5) == 10.0
+    assert fusion.position_pct_from_probability_ladder(51.9, floor_relief=1.5) == 10.0
+
+
+def test_ladder_floor_relief_does_not_change_tier_gaps():
+    # relief는 모든 단계의 바닥을 동일하게 낮출 뿐, 단계 간 간격(52/55/60/68)은 유지한다.
+    assert fusion.position_pct_from_probability_ladder(53.5, floor_relief=1.5) == 25.0
+    assert fusion.position_pct_from_probability_ladder(66.5, floor_relief=1.5) == 65.0
+
+
+def test_decide_enters_when_relief_closes_the_gap_to_ladder_floor():
+    """실측 재현: ACTIVE_FUSION 단독으로는 인버스 우세(66.53%)지만 다른 모델과 융합하면
+    49.73%로 사다리 바닥(52%) 밑으로 떨어진다. 11:00 이후 거래 0건 완화(1.5%p)가 걸리면
+    문턱이 50.5%까지 낮아지므로, 완화가 사다리에도 반영돼야 51%대 융합확률에서 진입이
+    이뤄진다(수정 전에는 완화가 entry_gate_ok 표시에만 쓰이고 사다리엔 영향이 없어
+    ladder 자체가 0%를 반환해 이 케이스가 계속 차단됐다)."""
+    engine = fusion.HynixAdaptiveFusionEngine()
+    result = _decide(
+        engine,
+        now=datetime(2026, 7, 14, 11, 5),
+        orders_today_count=0, daily_return_pct=0.3,
+        active_decision_result=_active_decision_result(fusion_score=32.0, action="HOLD"),  # 인버스쪽 우세
+        cycle_result=_cycle_result(cycle_phase="TREND_DOWN", up3=20.0, down3=58.0, confidence=60.0, accel_up=5.0, accel_down=60.0),
+        micron_proxy={"effective_micron_score": 30.0, "micron_data_confidence": 60.0, "micron_score_source": "test"},
+    )
+    assert result["entry_threshold_used"] < 52.0
+    dom_prob = max(result["fused_hynix_probability"], result["fused_inverse_probability"])
+    if 52.0 - result["threshold_relief_applied"] <= dom_prob < 52.0:
+        assert result["target_position_pct"] > 0
+        assert result["executable"] is True

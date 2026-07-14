@@ -55,7 +55,7 @@ def test_strong_buy_enters_immediately_with_exploratory_size(monkeypatch):
     assert state["position"]["stop_loss_pct"] == -0.8
 
 
-def test_second_consecutive_strong_signal_scales_toward_confirmed_size(monkeypatch):
+def test_second_consecutive_strong_signal_stays_exploratory(monkeypatch):
     monkeypatch.setattr(switch_engine, "detect_pullback", lambda df: {"is_pullback": False, "reason": "wait"})
     state = default_state()
     broker = Broker(cash=1_000_000.0)
@@ -69,25 +69,25 @@ def test_second_consecutive_strong_signal_scales_toward_confirmed_size(monkeypat
     result = run_switch_or_entry(state, broker, "HYNIX_STRONG_BUY", 100_000.0, 5_000.0, now=later)
 
     assert gate["proceed"] is True
-    assert state["last_trend_switch_plan"]["entry_type"] == "NORMAL"
-    assert result["acted"] is True
-    assert state["position"]["quantity"] > 2
+    assert state["last_trend_switch_plan"]["entry_type"] == "EXPLORATORY"
+    assert result["acted"] is False
+    assert state["position"]["quantity"] == 2
 
 
-def test_general_signal_waits_no_more_than_five_minutes(monkeypatch):
+def test_general_signal_waits_no_more_than_three_minutes(monkeypatch):
     monkeypatch.setattr(switch_engine, "detect_pullback", lambda df: {"is_pullback": False, "reason": "wait"})
     state = default_state()
     start = datetime(2026, 7, 14, 10, 0)
 
     first = switch_engine.evaluate_pullback_gate(state, HYNIX_SYMBOL, "HYNIX_BUY", start, {}, None, "mock")
-    after_five = switch_engine.evaluate_pullback_gate(
-        state, HYNIX_SYMBOL, "HYNIX_BUY", start + timedelta(minutes=5), {}, None, "mock",
+    after_three = switch_engine.evaluate_pullback_gate(
+        state, HYNIX_SYMBOL, "HYNIX_BUY", start + timedelta(minutes=3), {}, None, "mock",
     )
 
     assert first["proceed"] is False
-    assert first["pullback_wait_remaining_seconds"] == 300
-    assert after_five["proceed"] is True
-    assert after_five["deadline_expired"] is True
+    assert first["pullback_wait_remaining_seconds"] == 180
+    assert after_three["proceed"] is True
+    assert after_three["deadline_expired"] is True
 
 
 def test_two_reversal_confirmations_switch_after_sell_fill():

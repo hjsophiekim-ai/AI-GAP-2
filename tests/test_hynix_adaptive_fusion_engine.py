@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pandas as pd
 import pytest
 
 import app.trading.hynix_adaptive_fusion_engine as afe
@@ -440,6 +441,26 @@ class TestHynixAdaptiveFusionEngineDecide:
             "fusion_result": {"fusion_score": fusion_score}, "reasons": ["active reasons"],
         }
 
+    def _uptrend(self, streak=1):
+        return {
+            "available": True, "direction": afe.ACTION_HYNIX, "is_stale": False,
+            "returns": {"1m": 0.2, "3m": 0.6, "5m": 1.0, "15m": 1.4},
+            "above_vwap": True, "ema_slope_pct": 0.1,
+            "higher_highs": True, "higher_lows": True,
+            "hynix_uptrend_confirmed": True, "hynix_downtrend_confirmed": False,
+            "hynix_uptrend_streak": streak, "top_factors": ["test uptrend"],
+        }
+
+    def _downtrend(self, streak=2):
+        return {
+            "available": True, "direction": afe.ACTION_INVERSE, "is_stale": False,
+            "returns": {"1m": -0.2, "3m": -0.6, "5m": -1.0, "15m": -1.4},
+            "above_vwap": False, "ema_slope_pct": -0.1,
+            "lower_highs": True, "lower_lows": True,
+            "hynix_uptrend_confirmed": False, "hynix_downtrend_confirmed": True,
+            "hynix_downtrend_streak": streak, "top_factors": ["test downtrend"],
+        }
+
     def test_strong_aligned_signals_produce_executable_hynix_buy(self):
         engine = afe.HynixAdaptiveFusionEngine()
         now = datetime(2026, 7, 14, 10, 0)
@@ -546,3 +567,82 @@ class TestHynixAdaptiveFusionEngineDecide:
         )
         assert result["executable"] is False
         assert "14:50" in result["blocking_reason"]
+
+    def test_live_hynix_uptrend_blocks_inverse_new_entry(self):
+        engine = afe.HynixAdaptiveFusionEngine()
+        now = datetime(2026, 7, 14, 10, 0)
+        result = engine.decide(
+            now=now, active_decision_result=self._active_decision(action="ENTER_INVERSE", fusion_score=35.0),
+            prediction_v2_probability={"buy_probability": 20.0, "sell_probability": 70.0, "hold_probability": 10.0},
+            prediction_v2_decision={"final_action_v2": "INVERSE"},
+            prediction_v2_performance={"model_status": afe.MODEL_STATUS_ADVISORY, "sample_size": 30, "valid_sample_fraction": 0.9},
+            cycle_result=self._cycle_result(up3=25, down3=70, up5=25, down5=70, up_accel=25, down_accel=70, phase="TREND_DOWN"),
+            cycle_ai_validated=False, micron_proxy={"effective_micron_score": 20.0, "micron_data_confidence": 70.0},
+            held_symbol=None, position_conflict=False, data_ok=True, price_is_stale=False,
+            daily_return_pct=0.0, orders_today_count=1,
+            hold_tracker=afe.default_hold_tracker(), whipsaw_state=afe.default_whipsaw_state(),
+            consecutive_stop_losses=0, live_hynix_trend=self._uptrend(streak=1),
+        )
+        assert result["final_action"] == afe.ACTION_HOLD
+        assert result["symbol"] is None
+        assert result["executable"] is False
+
+    def test_live_hynix_uptrend_two_confirmations_switches_to_hynix(self):
+        engine = afe.HynixAdaptiveFusionEngine()
+        now = datetime(2026, 7, 14, 10, 0)
+        result = engine.decide(
+            now=now, active_decision_result=self._active_decision(action="ENTER_INVERSE", fusion_score=35.0),
+            prediction_v2_probability={"buy_probability": 20.0, "sell_probability": 70.0, "hold_probability": 10.0},
+            prediction_v2_decision={"final_action_v2": "INVERSE"},
+            prediction_v2_performance={"model_status": afe.MODEL_STATUS_ADVISORY, "sample_size": 30, "valid_sample_fraction": 0.9},
+            cycle_result=self._cycle_result(up3=25, down3=70, up5=25, down5=70, up_accel=25, down_accel=70, phase="TREND_DOWN"),
+            cycle_ai_validated=False, micron_proxy={"effective_micron_score": 20.0, "micron_data_confidence": 70.0},
+            held_symbol=None, position_conflict=False, data_ok=True, price_is_stale=False,
+            daily_return_pct=0.0, orders_today_count=1,
+            hold_tracker=afe.default_hold_tracker(), whipsaw_state=afe.default_whipsaw_state(),
+            consecutive_stop_losses=0, live_hynix_trend=self._uptrend(streak=2),
+        )
+        assert result["final_action"] == afe.ACTION_HYNIX
+        assert result["symbol"] == "000660"
+
+    def test_live_hynix_downtrend_two_confirmations_switches_to_inverse(self):
+        engine = afe.HynixAdaptiveFusionEngine()
+        now = datetime(2026, 7, 14, 10, 0)
+        result = engine.decide(
+            now=now, active_decision_result=self._active_decision(action="ENTER_HYNIX", fusion_score=70.0),
+            prediction_v2_probability={"buy_probability": 70.0, "sell_probability": 20.0, "hold_probability": 10.0},
+            prediction_v2_decision={"final_action_v2": "BUY"},
+            prediction_v2_performance={"model_status": afe.MODEL_STATUS_ADVISORY, "sample_size": 30, "valid_sample_fraction": 0.9},
+            cycle_result=self._cycle_result(), cycle_ai_validated=False, micron_proxy=None,
+            held_symbol=None, position_conflict=False, data_ok=True, price_is_stale=False,
+            daily_return_pct=0.0, orders_today_count=1,
+            hold_tracker=afe.default_hold_tracker(), whipsaw_state=afe.default_whipsaw_state(),
+            consecutive_stop_losses=0, live_hynix_trend=self._downtrend(streak=2),
+        )
+        assert result["final_action"] == afe.ACTION_INVERSE
+        assert result["symbol"] == "0197X0"
+
+
+class TestLiveTrendAndStaleData:
+    def test_compute_live_hynix_trend_detects_uptrend(self):
+        now = datetime(2026, 7, 14, 10, 5)
+        rows = []
+        prices = [100, 101, 102, 103, 104, 105]
+        for i, price in enumerate(prices):
+            rows.append({
+                "datetime": now - timedelta(minutes=len(prices) - 1 - i),
+                "close": price, "high": price + 1, "low": price - 0.5, "volume": 1000 + i,
+            })
+        trend = afe.compute_live_hynix_trend(pd.DataFrame(rows), now=now)
+        assert trend["hynix_uptrend_confirmed"] is True
+        assert trend["direction"] == afe.ACTION_HYNIX
+
+    def test_stale_micron_data_gets_zero_weight_status(self):
+        result = afe.model_result_from_micron_proxy({
+            "effective_micron_score": 10.0,
+            "micron_data_confidence": 80.0,
+            "micron_score_source": "synthetic_micron",
+            "age_minutes": 30.0,
+        })
+        assert result["model_status"] == afe.MODEL_STATUS_DEGRADED
+        assert result["confidence"] == 0.0

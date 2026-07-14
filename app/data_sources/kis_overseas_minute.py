@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -89,7 +90,16 @@ def _token_cache_path(mode: str) -> Path:
     return _TOKEN_CACHE_DIR / f"kis_token_{mode}.json"
 
 
-def _get_access_token(mode: str = "real") -> str:
+def _app_key_hash(app_key: str) -> str:
+    return hashlib.sha256(app_key.encode()).hexdigest()[:16]
+
+
+def _credential_fingerprint(mode: str, base_url: str, app_key: str, app_secret: str) -> str:
+    raw = "|".join([mode, base_url, app_key, app_secret])
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _get_access_token_legacy_disabled(mode: str = "real") -> str:
     """
     액세스 토큰 발급.
     1) 메모리 캐시 → 2) 파일 캐시 → 3) tokenP API
@@ -149,6 +159,89 @@ def _get_access_token(mode: str = "real") -> str:
         json.dump(
             {"access_token": token, "expires_at": expires_at.isoformat(), "mode": mode},
             f,
+        )
+
+    return token
+
+
+def _get_access_token(mode: str = "real") -> str:
+    """Issue or reuse a KIS token using the shared cache format."""
+    now = datetime.now()
+
+    if (
+        mode in _TOKEN_CACHE
+        and now < _TOKEN_EXPIRY.get(mode, datetime.min) - timedelta(minutes=5)
+    ):
+        return _TOKEN_CACHE[mode]
+
+    creds = _load_credentials(mode)
+    cache_path = _token_cache_path(mode)
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            expires_at = datetime.fromisoformat(data.get("expires_at", "2000-01-01"))
+            stored_mode = data.get("mode", "")
+            stored_base_url = data.get("base_url", "")
+            stored_hash = data.get("app_key_hash", "")
+            stored_fingerprint = data.get("credential_fingerprint", "")
+            expected_fingerprint = _credential_fingerprint(
+                mode, creds["base_url"], creds["app_key"], creds["app_secret"]
+            )
+            metadata_ok = (
+                (not stored_mode or stored_mode == mode)
+                and (not stored_base_url or stored_base_url == creds["base_url"])
+                and (not stored_hash or stored_hash == _app_key_hash(creds["app_key"]))
+                and (not stored_fingerprint or stored_fingerprint == expected_fingerprint)
+            )
+            if metadata_ok and now < expires_at - timedelta(minutes=5) and data.get("access_token"):
+                _TOKEN_CACHE[mode] = data["access_token"]
+                _TOKEN_EXPIRY[mode] = expires_at
+                return _TOKEN_CACHE[mode]
+        except Exception:
+            pass
+
+    if not creds["app_key"] or not creds["app_secret"]:
+        raise ValueError(
+            f"KIS {mode.upper()} credentials missing. Check KIS_{mode.upper()}_APP_KEY / "
+            f"KIS_{mode.upper()}_APP_SECRET in .env"
+        )
+
+    url = f"{creds['base_url']}/oauth2/tokenP"
+    body = {
+        "grant_type": "client_credentials",
+        "appkey": creds["app_key"],
+        "appsecret": creds["app_secret"],
+    }
+    resp = requests.post(url, json=body, timeout=10)
+    resp.raise_for_status()
+    token_data = resp.json()
+
+    token = token_data.get("access_token", "")
+    if not token:
+        raise ValueError(f"Token issuance failed: {token_data}")
+
+    expires_in = int(token_data.get("expires_in", 86400))
+    expires_at = now + timedelta(seconds=expires_in)
+    _TOKEN_CACHE[mode] = token
+    _TOKEN_EXPIRY[mode] = expires_at
+
+    _TOKEN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "access_token": token,
+                "expires_at": expires_at.isoformat(),
+                "mode": mode,
+                "app_key_hash": _app_key_hash(creds["app_key"]),
+                "credential_fingerprint": _credential_fingerprint(
+                    mode, creds["base_url"], creds["app_key"], creds["app_secret"]
+                ),
+                "base_url": creds["base_url"],
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
         )
 
     return token

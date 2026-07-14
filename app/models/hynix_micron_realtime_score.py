@@ -29,10 +29,10 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 _MU_1MIN_CSV = ROOT / "data" / "micron" / "MU_1min.csv"
 _MU_3MIN_CSV = ROOT / "data" / "micron" / "MU_3min.csv"
 
-_STALE_MINUTES_1MIN = 20.0
-_STALE_MINUTES_3MIN = 20.0
-_STALE_MINUTES_5MIN = 60.0
-_STALE_MINUTES_15MIN = 180.0
+_STALE_MINUTES_1MIN = 15.0
+_STALE_MINUTES_3MIN = 15.0
+_STALE_MINUTES_5MIN = 15.0
+_STALE_MINUTES_15MIN = 15.0
 
 _1MIN_LOOKBACK = 20
 _1MIN_SPAN_PCT = 1.0
@@ -50,6 +50,7 @@ STATUS_FALLBACK_15MIN = "FALLBACK_15MIN"
 STATUS_FALLBACK_SESSION = "FALLBACK_SESSION_SCORE"
 STATUS_FALLBACK_EXTENDED_HOURS = "FALLBACK_EXTENDED_HOURS"
 STATUS_FALLBACK_NEUTRAL = "FALLBACK_NEUTRAL_50"
+STATUS_STALE_DATA = "STALE_DATA"
 
 
 def _load_raw_csv(path: Path) -> Optional[pd.DataFrame]:
@@ -212,7 +213,20 @@ def calculate_existing_micron_score(mode: Optional[str] = None) -> dict:
             result["micron_last_update_time"] = df_15min["datetime"].iloc[-1].isoformat()
             return result
 
-    result["warnings"].append("15분봉도 지연(180분 초과) — micron_session_strength_score로 대체")
+    result["warnings"].append("Micron data older than 15 minutes; stale data is display-only and excluded from scoring")
+    result["source"] = "stale_micron_display_only"
+    result["micron_fallback_used"] = True
+    result["micron_data_status"] = STATUS_STALE_DATA
+    last_ts = None
+    for raw in (raw_1min, raw_3min):
+        if raw is not None and not raw.empty and "datetime" in raw.columns:
+            try:
+                ts = raw["datetime"].iloc[-1]
+                last_ts = max(last_ts, ts) if last_ts is not None else ts
+            except Exception:
+                pass
+    result["micron_last_update_time"] = last_ts.isoformat() if last_ts is not None else None
+    return result
 
     try:
         from app.features.micron_premarket_features import compute_micron_features

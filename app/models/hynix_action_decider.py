@@ -62,12 +62,18 @@ def decide_hynix_or_inverse_action(enhanced_result: dict, current_position: Opti
     th = _load_thresholds()
 
     enhanced_score = float(enhanced_result.get("enhanced_score", 50.0))
-    inverse_score = float(enhanced_result.get("inverse_pressure_score", 50.0))
+    raw_inverse_pressure_score = float(enhanced_result.get("inverse_pressure_score", 100.0 - enhanced_score))
+    inverse_score = max(0.0, min(100.0, 100.0 - enhanced_score))
     existing_micron_score = float(enhanced_result.get("existing_micron_score", 50.0))
     hynix_technical_score = float(enhanced_result.get("hynix_technical_score", 50.0))
     data_valid = enhanced_result.get("data_valid", {}) or {}
 
     reasons: list[str] = []
+    if abs(raw_inverse_pressure_score - inverse_score) > 0.01:
+        reasons.append(
+            f"score polarity normalized: hynix_score={enhanced_score:.1f}, "
+            f"inverse_score=100-hynix={inverse_score:.1f}, raw_inverse_pressure={raw_inverse_pressure_score:.1f}"
+        )
 
     # ── 1. 데이터 부족 ────────────────────────────────────────────────────────
     if not (data_valid.get("base_prediction", True) and data_valid.get("hynix_technical", True)):
@@ -75,12 +81,11 @@ def decide_hynix_or_inverse_action(enhanced_result: dict, current_position: Opti
         return _result(HOLD, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
     # ── 2. 신호 상충 ─────────────────────────────────────────────────────────
-    if enhanced_score >= th["conflict_enhanced_min"] and inverse_score >= th["conflict_inverse_min"]:
+    if enhanced_score >= th["conflict_enhanced_min"] and raw_inverse_pressure_score >= th["conflict_inverse_min"]:
         reasons.append(
             f"enhanced_score {enhanced_score:.1f}(≥{th['conflict_enhanced_min']})와 "
             f"inverse_pressure_score {inverse_score:.1f}(≥{th['conflict_inverse_min']}) 동시 상승 — 상충 보류"
         )
-        return _result(HOLD, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
     if existing_micron_score >= _MICRON_STRONG_THRESHOLD and hynix_technical_score <= _TECH_STRONG_WEAK_THRESHOLD:
         reasons.append(
@@ -102,6 +107,10 @@ def decide_hynix_or_inverse_action(enhanced_result: dict, current_position: Opti
     if enhanced_score >= th["buy_enhanced_min"] and inverse_score < th["buy_inverse_max"]:
         reasons.append(f"enhanced_score {enhanced_score:.1f}≥{th['buy_enhanced_min']}, inverse {inverse_score:.1f}<{th['buy_inverse_max']}")
         return _result(HYNIX_BUY, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
+
+    if th["hold_min"] <= enhanced_score <= th["hold_max"]:
+        reasons.append(f"enhanced_score {enhanced_score:.1f} is in HOLD band({th['hold_min']}~{th['hold_max']})")
+        return _result(HOLD, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
     if inverse_score >= th["inverse_strong_buy_min"]:
         reasons.append(f"inverse_pressure_score {inverse_score:.1f}≥{th['inverse_strong_buy_min']}")

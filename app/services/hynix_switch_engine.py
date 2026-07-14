@@ -10,6 +10,7 @@ hynix_switch_engine.py — 하이닉스⇄인버스 Enhanced 자동매매 오케
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -38,7 +39,7 @@ from app.trading.hynix_trend_switch_accelerator import (
 )
 
 _PULLBACK_MORNING_WINDOW_END = "10:00"
-_PULLBACK_PATIENCE_MINUTES = 5
+_PULLBACK_PATIENCE_MINUTES = 3
 
 _SIGNAL_DISPLAY_MAP = {
     "HYNIX_BUY": "BUY", "HYNIX_STRONG_BUY": "BUY",
@@ -71,11 +72,7 @@ def _boost_enhanced_score_with_inverse_pressure(enhanced_score: Optional[float],
     약해지는(반대 방향으로 밀리는) 경우는 없다. 하이닉스 쪽은 enhanced_score 자체가
     이미 그 강도를 직접 반영하므로 별도 보정이 필요 없다(decision_thresholds의
     strong_buy_enhanced_min이 enhanced_score에 직접 적용됨)."""
-    if enhanced_score is None:
-        return enhanced_score
-    if inverse_pressure_score is None or inverse_pressure_score < _INVERSE_PRESSURE_BOOST_THRESHOLD:
-        return enhanced_score
-    return min(enhanced_score, 100.0 - inverse_pressure_score)
+    return enhanced_score
 
 
 def _map_prediction_signal(final_action: str) -> str:
@@ -381,12 +378,93 @@ def reset_mock_account(budget_krw: Optional[float] = None) -> dict:
 
 DAILY_RETURN_UNKNOWN = "DAILY_RETURN_UNKNOWN"
 ACCOUNT_EQUITY_MISMATCH = "ACCOUNT_EQUITY_MISMATCH"
-_EQUITY_MISMATCH_TOLERANCE_PCT = 0.1
+_EQUITY_MISMATCH_TOLERANCE_PCT = 0.5
+_EQUITY_MISMATCH_RETRY_ATTEMPTS = 3
+_EQUITY_MISMATCH_RETRY_DELAY_SECONDS = 3
+_ACCOUNT_SETTLEMENT_GRACE_SECONDS = 60
+
+
+def _position_market_value(position) -> float:
+    if isinstance(position, dict):
+        qty = float(position.get("quantity", position.get("hldg_qty", 0)) or 0)
+        price = float(position.get("current_price", position.get("prpr", 0)) or 0)
+        market_value = position.get("market_value")
+    else:
+        qty = float(getattr(position, "quantity", 0) or 0)
+        price = float(getattr(position, "current_price", 0) or 0)
+        market_value = getattr(position, "market_value", None)
+    if market_value not in (None, ""):
+        try:
+            return float(market_value)
+        except Exception:
+            pass
+    return qty * price
+
+
+def _account_settlement_grace_active(state: dict, now: datetime) -> bool:
+    candidates = [
+        state.get("last_trade_time"),
+        state.get("last_order_time"),
+        (state.get("position") or {}).get("entry_time"),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw))
+        except Exception:
+            continue
+        if 0 <= (now - ts).total_seconds() <= _ACCOUNT_SETTLEMENT_GRACE_SECONDS:
+            return True
+    return False
+
+
+def _read_account_equity_snapshot(broker, now: datetime) -> dict:
+    """Read one account snapshot and calculate equity from that same response."""
+    snapshot = {
+        "ok": False, "cash": None, "holdings_market_value": None, "current_equity": None,
+        "positions": [], "error": None, "source": None, "as_of": now.isoformat(timespec="seconds"),
+    }
+    try:
+        if hasattr(broker, "kis") and hasattr(broker.kis, "get_balance"):
+            bal = broker.kis.get_balance()
+            if bal.get("error"):
+                snapshot["error"] = bal.get("error")
+                return snapshot
+            positions = bal.get("positions") or []
+            cash = bal.get("cash", None)
+            if cash is None:
+                snapshot["error"] = "cash field missing"
+                return snapshot
+            holdings = sum(_position_market_value(p) for p in positions)
+            snapshot.update({
+                "ok": True, "cash": float(cash), "holdings_market_value": holdings,
+                "current_equity": float(cash) + holdings, "positions": positions,
+                "source": "kis.get_balance",
+            })
+            return snapshot
+
+        positions = broker.get_positions()
+        cash = broker.get_balance() if hasattr(broker, "get_balance") else None
+        if cash is None:
+            snapshot["error"] = "broker cash field missing"
+            return snapshot
+        holdings = sum(_position_market_value(p) for p in positions)
+        snapshot.update({
+            "ok": True, "cash": float(cash), "holdings_market_value": holdings,
+            "current_equity": float(cash) + holdings, "positions": positions,
+            "source": "broker.get_balance+get_positions",
+        })
+        return snapshot
+    except Exception as exc:
+        snapshot["error"] = str(exc)
+        return snapshot
 
 
 def compute_net_daily_return(
     state: dict, position: Optional[dict], hynix_price: Optional[float], inverse_price: Optional[float],
     cash: Optional[float], positions_from_broker: Optional[list], cash_fetch_ok: bool,
+    settlement_grace_active: bool = False,
 ) -> dict:
     """risk_manager와 UI가 공유하는 단일 일일손익 계산(요구사항 1/5절).
 
@@ -406,11 +484,17 @@ def compute_net_daily_return(
         "net_realized_pnl": net_realized_pnl, "net_unrealized_pnl": 0.0,
         "net_daily_return": None, "current_equity": None,
         "calculation_source": "ledger_unified", "blocked_reason": None,
+        "equity_tolerance_pct": _EQUITY_MISMATCH_TOLERANCE_PCT,
+        "settlement_grace_active": settlement_grace_active,
     }
 
     if not cash_fetch_ok:
         result["blocked_reason"] = DAILY_RETURN_UNKNOWN
         return result
+
+    has_position = bool(
+        position and position.get("symbol") and (position.get("quantity") or 0) > 0 and position.get("entry_price"),
+    )
 
     holdings_value = sum(
         (getattr(p, "market_value", None) if not isinstance(p, dict) else p.get("market_value")) or 0.0
@@ -438,14 +522,11 @@ def compute_net_daily_return(
 
     # 요구사항 6절 — current_equity<=0인데 현금/원장잔고가 실제로 존재해야 하는 상황
     if current_equity is not None and current_equity <= 0 and (net_realized_pnl != 0 or starting_equity > 0):
-        result["blocked_reason"] = ACCOUNT_EQUITY_MISMATCH
+        result["blocked_reason"] = ACCOUNT_EQUITY_MISMATCH if has_position else DAILY_RETURN_UNKNOWN
         return result
 
     # ── 미실현손익(요구사항 2절 — 보유 없으면 0) ─────────────────────────────
     net_unrealized_pnl = 0.0
-    has_position = bool(
-        position and position.get("symbol") and (position.get("quantity") or 0) > 0 and position.get("entry_price"),
-    )
     if has_position:
         cur = hynix_price if position["symbol"] == "000660" else inverse_price
         if cur is not None:
@@ -468,12 +549,71 @@ def compute_net_daily_return(
     if current_equity is not None and current_equity > 0:
         equity_ratio_return = (current_equity / starting_equity - 1.0) * 100.0
         if abs(equity_ratio_return - net_daily_return) > _EQUITY_MISMATCH_TOLERANCE_PCT:
+            if not has_position and net_realized_pnl == 0 and net_unrealized_pnl == 0:
+                state["daily_pnl_baseline_equity"] = current_equity
+                result["starting_equity"] = current_equity
+                result["net_daily_return"] = 0.0
+                result["equity_ratio_return"] = 0.0
+                result["baseline_rebased"] = True
+                return result
+            if settlement_grace_active:
+                result["net_daily_return"] = round(net_daily_return, 4)
+                result["equity_ratio_return"] = round(equity_ratio_return, 4)
+                result["mismatch_deferred"] = True
+                return result
             result["blocked_reason"] = ACCOUNT_EQUITY_MISMATCH
             result["equity_ratio_return"] = round(equity_ratio_return, 4)
             return result
 
     result["net_daily_return"] = round(net_daily_return, 4)
     return result
+
+
+def _compute_net_daily_return_with_retries(
+    state: dict, broker, position: Optional[dict], hynix_price: Optional[float], inverse_price: Optional[float],
+    now: datetime, *, attempts: int = _EQUITY_MISMATCH_RETRY_ATTEMPTS,
+    delay_seconds: int = _EQUITY_MISMATCH_RETRY_DELAY_SECONDS,
+) -> dict:
+    attempts = max(1, int(attempts or 1))
+    grace = _account_settlement_grace_active(state, now)
+    history = []
+    last_result = None
+    last_snapshot = None
+    for idx in range(attempts):
+        snapshot = _read_account_equity_snapshot(broker, now)
+        last_snapshot = snapshot
+        result = compute_net_daily_return(
+            state, position, hynix_price, inverse_price,
+            cash=snapshot.get("cash"), positions_from_broker=snapshot.get("positions"),
+            cash_fetch_ok=bool(snapshot.get("ok")), settlement_grace_active=grace,
+        )
+        result["account_snapshot"] = {
+            "as_of": snapshot.get("as_of"), "source": snapshot.get("source"),
+            "cash": snapshot.get("cash"), "holdings_market_value": snapshot.get("holdings_market_value"),
+            "current_equity": snapshot.get("current_equity"), "ok": snapshot.get("ok"),
+            "error": snapshot.get("error"),
+        }
+        result["mismatch_retry_index"] = idx + 1
+        history.append({
+            "attempt": idx + 1,
+            "blocked_reason": result.get("blocked_reason"),
+            "current_equity": result.get("current_equity"),
+            "net_daily_return": result.get("net_daily_return"),
+            "equity_ratio_return": result.get("equity_ratio_return"),
+            "snapshot": result["account_snapshot"],
+        })
+        last_result = result
+        if result.get("blocked_reason") != ACCOUNT_EQUITY_MISMATCH:
+            break
+        if idx < attempts - 1:
+            time.sleep(delay_seconds)
+    last_result = last_result or {"blocked_reason": DAILY_RETURN_UNKNOWN}
+    last_result["equity_check_history"] = history
+    last_result["equity_check_attempts"] = len(history)
+    last_result["settlement_grace_active"] = grace
+    if last_snapshot:
+        state["last_account_equity_snapshot"] = last_result.get("account_snapshot")
+    return last_result
 
 
 def check_real_mode_gates(state: dict, cfg=None) -> dict:
@@ -688,6 +828,7 @@ def _run_active_strategy_entry(
 def _run_adaptive_fusion_entry(
     state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
     now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
+    hynix_df_1min=None,
 ) -> dict:
     """ADAPTIVE FUSION — Prediction AI V2를 실제 mock 주문에 반영하되 ACTIVE_FUSION을
     완전히 대체하지 않는 성과기반 융합 엔진(mock 전용 opt-in, state["adaptive_fusion_enabled"]).
@@ -718,6 +859,7 @@ def _run_adaptive_fusion_entry(
         HynixAdaptiveFusionEngine, evaluate_prediction_v2_performance,
         default_hold_tracker, update_hold_tracker, default_whipsaw_state, register_direction_flip,
         default_frequency_state, register_frequency_entry, register_frequency_round_trip_closed,
+        compute_live_hynix_trend,
         MODEL_PREDICTION_V2, MODEL_STATUS_ADVISORY, MODEL_STATUS_LIVE_VALIDATED,
         ACTION_HYNIX as FUSION_HYNIX, ACTION_INVERSE as FUSION_INVERSE, ACTION_HOLD as FUSION_HOLD,
     )
@@ -773,11 +915,37 @@ def _run_adaptive_fusion_entry(
             "effective_micron_score": micron_snapshot.get("effective_micron_score"),
             "micron_data_confidence": micron_snapshot.get("confidence"),
             "micron_score_source": micron_snapshot.get("score_source"),
+            "calculated_at": micron_snapshot.get("calculated_at"),
         }
+        try:
+            if micron_snapshot.get("calculated_at"):
+                age = (now - datetime.fromisoformat(str(micron_snapshot.get("calculated_at")))).total_seconds() / 60.0
+                micron_proxy["age_minutes"] = round(max(0.0, age), 2)
+                micron_proxy["is_stale"] = age > 15.0
+        except Exception:
+            pass
 
     hold_tracker = state.get("adaptive_fusion_hold_tracker") or default_hold_tracker()
     whipsaw_state = state.get("adaptive_fusion_whipsaw_state") or default_whipsaw_state()
     frequency_state = state.get("adaptive_fusion_frequency_state") or default_frequency_state()
+    live_hynix_trend = compute_live_hynix_trend(hynix_df_1min, now)
+    prior_live = state.get("live_hynix_trend_state") or {}
+    if live_hynix_trend.get("hynix_uptrend_confirmed"):
+        live_hynix_trend["hynix_uptrend_streak"] = int(prior_live.get("hynix_uptrend_streak", 0) or 0) + 1
+        live_hynix_trend["hynix_downtrend_streak"] = 0
+    elif live_hynix_trend.get("hynix_downtrend_confirmed"):
+        live_hynix_trend["hynix_downtrend_streak"] = int(prior_live.get("hynix_downtrend_streak", 0) or 0) + 1
+        live_hynix_trend["hynix_uptrend_streak"] = 0
+    else:
+        live_hynix_trend["hynix_uptrend_streak"] = 0
+        live_hynix_trend["hynix_downtrend_streak"] = 0
+    state["live_hynix_trend_state"] = {
+        "hynix_uptrend_streak": live_hynix_trend.get("hynix_uptrend_streak", 0),
+        "hynix_downtrend_streak": live_hynix_trend.get("hynix_downtrend_streak", 0),
+        "last_direction": live_hynix_trend.get("direction"),
+        "as_of": live_hynix_trend.get("as_of"),
+    }
+    state["last_live_hynix_trend"] = live_hynix_trend
 
     engine = HynixAdaptiveFusionEngine()
     fusion_decision = engine.decide(
@@ -790,6 +958,7 @@ def _run_adaptive_fusion_entry(
         daily_return_pct=state.get("realized_pnl_today_pct"), orders_today_count=state.get("daily_trade_count", 0),
         hold_tracker=hold_tracker, whipsaw_state=whipsaw_state, frequency_state=frequency_state,
         consecutive_stop_losses=strategy_state.get("consecutive_stop_losses", 0),
+        live_hynix_trend=live_hynix_trend,
     )
 
     fused_action = fusion_decision["final_action"]
@@ -1192,9 +1361,13 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     net_return_result = None
     if broker is not None:
         try:
-            positions = broker.get_positions()
-            cash = broker.get_buyable_cash()
-            total_equity = float(cash) + sum(p.market_value for p in positions)
+            net_return_result = _compute_net_daily_return_with_retries(
+                state, broker, state.get("position"), hynix_price, inverse_price, now,
+            )
+            snapshot = net_return_result.get("account_snapshot") or {}
+            positions = snapshot.get("positions") or []
+            cash = snapshot.get("cash")
+            total_equity = snapshot.get("current_equity")
             is_mock_override = mode == "mock" and state.get("allow_mock_loss_override")
 
             # 요구사항 1/5절 — risk_manager와 UI가 동일한 값(원장 실현손익 + 미실현손익
@@ -1204,10 +1377,6 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
             # 써버리면 일일 손실이 -100%로 오판된다(2026-07-14 실측). 새 계산식은 실현손익을
             # 원장(state)에서, 미실현손익을 보유 포지션+현재가에서 가져오므로 이 계좌조회
             # 글리치의 영향을 받지 않는다 — cash/positions는 교차검증에만 쓰인다.
-            net_return_result = compute_net_daily_return(
-                state, state.get("position"), hynix_price, inverse_price,
-                cash=cash, positions_from_broker=positions, cash_fetch_ok=True,
-            )
             state["daily_return_calculation"] = {k: v for k, v in net_return_result.items()}
             daily_pnl_pct = net_return_result["net_daily_return"]
 
@@ -1307,7 +1476,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                     if state.get("adaptive_fusion_enabled"):
                         active_result = _run_adaptive_fusion_entry(
                             state, broker, hynix_price, inverse_price, now, orders_this_cycle,
-                            enhanced_ai_score=_boosted_enhanced_score,
+                            enhanced_ai_score=_boosted_enhanced_score, hynix_df_1min=df_1min,
                         )
                         trace_label = "ADAPTIVE_FUSION"
                     else:
@@ -1431,6 +1600,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     sent_orders = [o for o in orders_this_cycle if o.get("action") in ("BUY", "SELL")]
     trace["order_sent"] = bool(sent_orders)
     trace["broker_executed"] = any(o.get("success") for o in sent_orders)
+    if trace["broker_executed"]:
+        state["last_trade_time"] = now.isoformat()
     if sent_orders:
         last_order = sent_orders[-1]
         if not last_order.get("success"):

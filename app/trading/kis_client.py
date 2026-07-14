@@ -137,45 +137,82 @@ class KISClient:
             self.base_url,
             self._app_key,
             self._app_secret,
+        ])
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    def _legacy_credential_fingerprint(self) -> str:
+        raw = "|".join([
+            self.mode,
+            self.base_url,
+            self._app_key,
+            self._app_secret,
             self.account_no,
             self.product_code,
         ])
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def _load_token_cache(self) -> bool:
-        """파일 캐시에서 토큰 로드. 유효(5분 버퍼)하면 True."""
+        """Load a valid file token cache without calling tokenP.
+
+        KIS access tokens are issued for app credentials, not for a specific
+        account/product code. Older cache files and the overseas-minute module
+        may not have the same metadata, so accept a fresh token when mode,
+        base_url, and app_key metadata are either matching or absent.
+        """
         try:
             path = self._token_cache_path()
             if not path.exists():
                 return False
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+
+            token = data.get("access_token", "")
             expires_at_str = data.get("expires_at", "")
-            if not expires_at_str:
+            if not token or not expires_at_str:
                 return False
             expires_at = datetime.fromisoformat(expires_at_str)
             if datetime.now() >= expires_at - timedelta(minutes=5):
-                logger.debug(f"[KIS-{self.mode.upper()}] 파일 캐시 토큰 만료")
+                logger.debug(f"[KIS-{self.mode.upper()}] token cache expired")
                 return False
+
+            stored_mode = data.get("mode", "")
+            if stored_mode and stored_mode != self.mode:
+                logger.info(f"[KIS-{self.mode.upper()}] token cache invalid: mode mismatch")
+                return False
+            stored_base_url = data.get("base_url", "")
+            if stored_base_url and stored_base_url != self.base_url:
+                logger.info(f"[KIS-{self.mode.upper()}] token cache invalid: base_url mismatch")
+                return False
+
             stored_hash = data.get("app_key_hash", "")
-            if stored_hash != self._app_key_hash():
-                logger.info(f"[KIS-{self.mode.upper()}] 토큰 캐시 무효: app_key 변경")
+            if stored_hash and stored_hash != self._app_key_hash():
+                logger.info(f"[KIS-{self.mode.upper()}] token cache invalid: app_key changed")
                 return False
+
             stored_fingerprint = data.get("credential_fingerprint", "")
-            if stored_fingerprint and stored_fingerprint != self._credential_fingerprint():
-                logger.info(f"[KIS-{self.mode.upper()}] 토큰 캐시 무효: 인증/계좌 정보 변경")
-                return False
-            if not stored_fingerprint:
-                logger.info(f"[KIS-{self.mode.upper()}] 토큰 캐시 무효: 이전 캐시 형식")
-                return False
-            self._token = data.get("access_token", "")
+            valid_fingerprints = {
+                self._credential_fingerprint(),
+                self._legacy_credential_fingerprint(),
+            }
+            if stored_fingerprint and stored_fingerprint not in valid_fingerprints:
+                if stored_hash == self._app_key_hash():
+                    logger.info(
+                        f"[KIS-{self.mode.upper()}] token cache accepted: app_key matched, fingerprint stale"
+                    )
+                else:
+                    logger.info(f"[KIS-{self.mode.upper()}] token cache invalid: credentials changed")
+                    return False
+            elif not stored_fingerprint:
+                logger.info(f"[KIS-{self.mode.upper()}] token cache accepted: legacy cache format")
+
+            self._token = token
             self._token_expires_at = expires_at
             logger.info(
-                f"[KIS-{self.mode.upper()}] 파일 캐시에서 토큰 로드 (만료: {expires_at:%H:%M:%S})"
+                f"[KIS-{self.mode.upper()}] file token cache loaded (expires: {expires_at:%H:%M:%S})"
             )
-            return bool(self._token)
+            return True
         except Exception as e:
-            logger.debug(f"[KIS-{self.mode.upper()}] 토큰 캐시 로드 실패: {e}")
+            logger.debug(f"[KIS-{self.mode.upper()}] token cache load failed: {e}")
             return False
 
     def _save_token_cache(self) -> None:
@@ -232,6 +269,11 @@ class KISClient:
             msg1 = resp_data.get("msg1", resp_data.get("error_description", ""))
 
             if http_status == 403:
+                if self._load_token_cache():
+                    logger.warning(
+                        f"[KIS-{self.mode.upper()}] tokenP 403; using valid file token cache"
+                    )
+                    return self._token
                 key_exists = bool(self._app_key and self._app_secret)
                 cache_exists = self._token_cache_path().exists()
                 raise KISTokenError(
