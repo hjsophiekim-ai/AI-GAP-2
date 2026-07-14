@@ -1415,6 +1415,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     trading_allowed = (
         auto_trade_on and real_gate_ok and not state.get("stopped")
         and not daily_return_blocked_this_cycle and not is_watch_only(now) and broker is not None
+        and not state.get("position_sync_block_new_orders")
     )
 
     if not trading_allowed:
@@ -1424,6 +1425,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         elif daily_return_blocked_this_cycle:
             blocked_reason = (net_return_result or {}).get("blocked_reason") or DAILY_RETURN_UNKNOWN
             trace["risk_manager_reason"] = f"{blocked_reason} — 계좌 데이터 이상으로 이번 사이클 신규주문 일시 보류"
+        elif state.get("position_sync_block_new_orders"):
+            trace["risk_manager_reason"] = state.get("critical_alert") or "POSITION_SYNC_PENDING"
         elif not auto_trade_on:
             trace["risk_manager_reason"] = "자동매매 OFF"
         elif not real_gate_ok:

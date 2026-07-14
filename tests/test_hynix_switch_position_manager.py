@@ -58,6 +58,20 @@ class DummyBroker:
         return self.buyable_cash
 
 
+class PositionSyncBroker(DummyBroker):
+    def __init__(self, positions_after_sell, fail_positions: bool = False):
+        super().__init__(sell_success=True)
+        self.positions_after_sell = positions_after_sell
+        self.fail_positions = fail_positions
+        self.position_calls = 0
+
+    def get_positions(self):
+        self.position_calls += 1
+        if self.fail_positions:
+            raise RuntimeError("balance unavailable")
+        return list(self.positions_after_sell)
+
+
 def _holding_state(symbol: str, quantity: int = 10, entry_price: float = 100_000.0) -> dict:
     state = default_state()
     state["position"] = {
@@ -215,6 +229,54 @@ def test_run_tp_sl_if_needed_executes_and_clears_position():
 
     assert result["triggered"] is True and result["executed"] is True
     assert state["position"]["symbol"] is None
+
+
+def test_partial_sell_keeps_kis_confirmed_remaining_quantity():
+    state = _holding_state(INVERSE_SYMBOL, quantity=114, entry_price=5_000.0)
+    state["position"]["partial_tp1_done"] = False
+    broker = PositionSyncBroker([
+        {"symbol": INVERSE_SYMBOL, "name": INVERSE_NAME, "quantity": 18, "avg_price": 5_000.0}
+    ])
+
+    from app.trading.hynix_switch_position_manager import _sell_all_or_ratio, _apply_sell_result_to_state_position
+
+    orders = []
+    result = _sell_all_or_ratio(
+        broker, state["position"], current_price=5_100.0, ratio=96 / 114,
+        reason="partial test", orders=orders, mode="mock",
+    )
+    _apply_sell_result_to_state_position(state, state["position"], result, mark_partial="tp1")
+
+    assert result["success"] is True
+    assert result["remaining_quantity"] == 18
+    assert state["position"]["symbol"] == INVERSE_SYMBOL
+    assert state["position"]["quantity"] == 18
+    assert state["position_sync_block_new_orders"] is False
+
+
+def test_sell_sync_failure_does_not_delete_position_and_blocks_new_orders():
+    state = _holding_state(INVERSE_SYMBOL, quantity=114, entry_price=5_000.0)
+    broker = PositionSyncBroker([], fail_positions=True)
+
+    from app.trading.hynix_switch_position_manager import (
+        POSITION_SYNC_PENDING,
+        _sell_all_or_ratio,
+        _apply_sell_result_to_state_position,
+    )
+
+    orders = []
+    result = _sell_all_or_ratio(
+        broker, state["position"], current_price=5_100.0, ratio=96 / 114,
+        reason="partial test", orders=orders, mode="mock",
+    )
+    _apply_sell_result_to_state_position(state, state["position"], result)
+
+    assert result["success"] is True
+    assert result["remaining_quantity"] is None
+    assert result["position_sync_status"] == POSITION_SYNC_PENDING
+    assert state["position"]["symbol"] == INVERSE_SYMBOL
+    assert state["position"]["quantity"] == 114
+    assert state["position_sync_block_new_orders"] is True
 
 
 class TestExecutionLedgerCostFields:

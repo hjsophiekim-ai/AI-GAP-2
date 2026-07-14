@@ -139,6 +139,8 @@ class HynixPositionManager:
         self.trade_count: int = 0
         self.cash: Optional[float] = None
         self.conflict_error: Optional[str] = None
+        self.last_sync_ok: bool = False
+        self.last_sync_error: Optional[str] = None
         self._last_synced_monotonic: Optional[float] = None
         self._own_trade_tally: int = 0
 
@@ -153,8 +155,12 @@ class HynixPositionManager:
             positions = self.broker.get_positions()
         except Exception as exc:
             logger.warning("[HynixPositionManager] 브로커 포지션 조회 실패, 마지막 값 유지: %s", exc)
+            self.last_sync_ok = False
+            self.last_sync_error = str(exc)
             return self.current_position
 
+        self.last_sync_ok = True
+        self.last_sync_error = None
         detected = get_hynix_auto_position(positions)
         self.conflict_error = detected.get("error")
 

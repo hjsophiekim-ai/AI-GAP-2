@@ -9,6 +9,8 @@ ETF/ETN 필터에 걸려 차단됨). 모든 포지션은 당일 진입·당일 �
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -33,6 +35,10 @@ _DEFAULT_RISK = {
     "daily_loss_limit_pct": -2.5,
 }
 _DEFAULT_SIZING = {"normal_trade_cash_pct": 0.20, "forced_trade_cash_pct": 0.08}
+POSITION_SYNC_PENDING = "POSITION_SYNC_PENDING"
+_POSITION_SYNC_RETRY_ATTEMPTS = 3
+_POSITION_SYNC_RETRY_DELAY_SECONDS = 2
+_POSITION_STATE_LOCK = threading.RLock()
 
 _ACTION_TO_SYMBOL = {
     "HYNIX_STRONG_BUY": HYNIX_SYMBOL, "HYNIX_BUY": HYNIX_SYMBOL,
@@ -206,6 +212,70 @@ def _record_skipped(orders: list, action: str, symbol: str, price: Optional[floa
     })
 
 
+def _position_qty(position, symbol: str) -> int:
+    if isinstance(position, dict):
+        pos_symbol = position.get("symbol")
+        qty = position.get("quantity", position.get("hldg_qty", 0))
+    else:
+        pos_symbol = getattr(position, "symbol", None)
+        qty = getattr(position, "quantity", getattr(position, "hldg_qty", 0))
+    if pos_symbol != symbol:
+        return 0
+    try:
+        return int(float(qty or 0))
+    except Exception:
+        return 0
+
+
+def _position_avg_price(position):
+    if isinstance(position, dict):
+        return position.get("avg_price") or position.get("pchs_avg_pric") or position.get("entry_price")
+    return getattr(position, "avg_price", getattr(position, "pchs_avg_pric", None))
+
+
+def _confirm_remaining_quantity_from_broker(
+    broker, symbol: str, position_manager=None, attempts: int = _POSITION_SYNC_RETRY_ATTEMPTS,
+    delay_seconds: int = _POSITION_SYNC_RETRY_DELAY_SECONDS,
+) -> dict:
+    """Confirm remaining quantity from broker/KIS after a sell.
+
+    A failed balance read is never treated as zero. The caller must keep the
+    previous local position and block new entries until a later sync succeeds.
+    """
+    last_error = None
+    attempts = max(1, int(attempts or 1))
+    for idx in range(attempts):
+        try:
+            positions = broker.get_positions()
+            qty = 0
+            avg_price = None
+            matched = None
+            for pos in positions or []:
+                q = _position_qty(pos, symbol)
+                if q > 0:
+                    qty = q
+                    matched = pos
+                    avg_price = _position_avg_price(pos)
+                    break
+            if position_manager is not None:
+                try:
+                    position_manager.sync(force=True)
+                except Exception:
+                    pass
+            return {
+                "ok": True, "quantity": qty, "avg_price": avg_price, "position": matched,
+                "attempts": idx + 1, "status": "SYNCED",
+            }
+        except Exception as exc:
+            last_error = str(exc)
+            if idx < attempts - 1 and delay_seconds > 0:
+                time.sleep(delay_seconds)
+    return {
+        "ok": False, "quantity": None, "avg_price": None, "position": None,
+        "attempts": attempts, "status": POSITION_SYNC_PENDING, "error": last_error,
+    }
+
+
 def _sell_all_or_ratio(
     broker, position: dict, current_price: float, ratio: float, reason: str, orders: list,
     mode: str = "mock", exit_reason_type: Optional[str] = None, signal_source: str = "ENHANCED_LEGACY",
@@ -261,22 +331,46 @@ def _execute_sell(
     mode: str = "mock", signal_source: str = "ENHANCED_LEGACY", entry_price: Optional[float] = None,
     fusion_metadata: Optional[dict] = None, position_manager=None,
 ) -> dict:
-    order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
-    cost_breakdown = _record_order(
-        orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty,
-        expected_remaining_qty=expected_remaining, mode=mode, signal_source=signal_source,
-        entry_price=entry_price, broker=broker, fusion_metadata=fusion_metadata,
-    )
+    with _POSITION_STATE_LOCK:
+        order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
+        cost_breakdown = _record_order(
+            orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty,
+            expected_remaining_qty=expected_remaining, mode=mode, signal_source=signal_source,
+            entry_price=entry_price, broker=broker, fusion_metadata=fusion_metadata,
+        )
     result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
     result["sold_quantity"] = sell_qty
-    result["remaining_quantity"] = before_qty - sell_qty
+    result["remaining_quantity"] = None
     result["expected_remaining_qty"] = expected_remaining
     result["fill_confirmed"] = None
+    if result.get("success"):
+        confirmed = _confirm_remaining_quantity_from_broker(
+            broker, symbol, position_manager=position_manager,
+        )
+        result["position_sync"] = confirmed
+        if confirmed.get("ok"):
+            actual_qty = int(confirmed.get("quantity") or 0)
+            result["remaining_quantity"] = actual_qty
+            result["fill_confirmed"] = True
+            result["position_sync_status"] = "SYNCED"
+            if actual_qty > expected_remaining:
+                result["partial_fill_detected"] = True
+                logger.warning(
+                    "[SwitchPositionManager] sell partially filled or broker still holds shares: %s expected_remaining=%s actual_remaining=%s",
+                    symbol, expected_remaining, actual_qty,
+                )
+        else:
+            logger.warning(
+                "[SwitchPositionManager] sell succeeded but position sync failed; keeping local position pending: %s",
+                confirmed.get("error"),
+            )
+            result["fill_confirmed"] = False
+            result["position_sync_status"] = POSITION_SYNC_PENDING
 
     # 주문 접수(rt_cd=0) 응답만으로 체결을 확정하지 않는다 — position_manager가 주어지면
     # 브로커를 재조회해 실제로 남은 수량을 remaining_quantity로 확정한다. 기대치보다
     # 많이 남아 있으면 미체결/부분체결로 간주해 partial_fill_detected를 남긴다.
-    if result.get("success") and position_manager is not None:
+    if result.get("success") and position_manager is not None and result.get("position_sync_status") is None:
         try:
             position_manager.sync(force=True)
             cur = position_manager.current_position
@@ -357,7 +451,18 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
     브로커가 항상 우선한다 — 심볼이 같으면 수량/평단만 갱신하고 entry_time 등
     우리 쪽에서만 관리하는 필드는 보존하며, 심볼이 다르면 완전히 새로 시작한다.
     """
+    if getattr(position_manager, "last_sync_ok", True) is False:
+        state["position_sync_status"] = POSITION_SYNC_PENDING
+        state["position_sync_error"] = getattr(position_manager, "last_sync_error", None)
+        state["position_sync_block_new_orders"] = True
+        state["critical_alert"] = (
+            "POSITION_SYNC_PENDING — broker position sync failed; keeping previous local position"
+        )
+        return state
+
     pos_info = position_manager.current_position
+    state["position_sync_status"] = "SYNCED"
+    state["position_sync_block_new_orders"] = False
     state["position_conflict"] = bool(pos_info.get("conflict"))
     if state["position_conflict"]:
         state["critical_alert"] = position_manager.conflict_error
@@ -420,6 +525,19 @@ def run_liquidation_if_needed(
     if not should_liquidate_now(now):
         return {"liquidated": False, "orders": orders}
 
+    if position_manager is not None:
+        try:
+            position_manager.sync(force=True)
+            apply_position_manager_to_state(state, position_manager)
+            position = state.get("position") or {}
+            symbol = position.get("symbol")
+        except Exception as exc:
+            state["liquidation_done"] = False
+            state["position_sync_status"] = POSITION_SYNC_PENDING
+            state["position_sync_block_new_orders"] = True
+            state["critical_alert"] = f"POSITION_SYNC_PENDING — 15:15 liquidation balance check failed: {exc}"
+            return {"liquidated": False, "orders": orders, "position_sync_pending": True}
+
     if not symbol or (position.get("quantity") or 0) <= 0:
         state["liquidation_done"] = True
         return {"liquidated": False, "orders": orders, "already_empty": True}
@@ -462,7 +580,7 @@ def run_liquidation_if_needed(
             state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
             state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
             state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
-            state["position"] = _empty_position()
+            _apply_sell_result_to_state_position(state, position, result)
             state["last_sell_price"] = current_price
             state["last_trade_time"] = now.isoformat()
             state["last_action"] = "SELL"
@@ -472,7 +590,7 @@ def run_liquidation_if_needed(
             order_confirmed = True
             if position_manager is not None:
                 order_confirmed = verify_order_confirmed(position_manager, symbol, expect_cleared=True)
-            state["liquidation_done"] = bool(order_confirmed)
+            state["liquidation_done"] = bool(order_confirmed and (state.get("position") or {}).get("symbol") is None)
 
             log_forced_liquidation_event({
                 "mode": mode, "symbol": symbol, "quantity": quantity, "entry_price": entry_price,
@@ -504,6 +622,39 @@ def _empty_position() -> dict:
         "trailing_armed": False, "trailing_peak_price": None,
         "profit_lock_peak_pct": 0.0,
     }
+
+
+def _apply_sell_result_to_state_position(state: dict, position: dict, sell_result: dict, *, mark_partial: Optional[str] = None) -> None:
+    remaining = sell_result.get("remaining_quantity")
+    status = sell_result.get("position_sync_status")
+    if status == POSITION_SYNC_PENDING or remaining is None:
+        kept = dict(position)
+        kept["position_sync_status"] = POSITION_SYNC_PENDING
+        kept["position_sync_error"] = (sell_result.get("position_sync") or {}).get("error")
+        kept["position_sync_pending_since"] = datetime.now().isoformat()
+        state["position"] = kept
+        state["position_sync_status"] = POSITION_SYNC_PENDING
+        state["position_sync_block_new_orders"] = True
+        state["critical_alert"] = "POSITION_SYNC_PENDING — broker balance confirmation failed after sell; new orders blocked"
+        return
+
+    remaining = int(remaining or 0)
+    state["position_sync_status"] = "SYNCED"
+    state["position_sync_block_new_orders"] = False
+    if remaining <= 0:
+        state["position"] = _empty_position()
+        return
+
+    position["quantity"] = remaining
+    avg_price = (sell_result.get("position_sync") or {}).get("avg_price")
+    if avg_price:
+        position["avg_price"] = avg_price
+    if mark_partial == "tp1":
+        position["partial_tp1_done"] = True
+    elif mark_partial == "sl1":
+        position["partial_sl1_done"] = True
+    position["position_sync_status"] = "SYNCED"
+    state["position"] = position
 
 
 def run_tp_sl_if_needed(
@@ -568,15 +719,10 @@ def run_tp_sl_if_needed(
     state["last_action"] = "SELL"
     state["last_order_id"] = result.get("order_id")
 
-    if trigger["tag"] in ("tp2", "sl2") or result.get("remaining_quantity", 0) <= 0:
-        state["position"] = _empty_position()
-    else:
-        position["quantity"] = result.get("remaining_quantity", position["quantity"])
-        if trigger["tag"] == "tp1":
-            position["partial_tp1_done"] = True
-        elif trigger["tag"] == "sl1":
-            position["partial_sl1_done"] = True
-        state["position"] = position
+    _apply_sell_result_to_state_position(
+        state, position, result,
+        mark_partial=trigger["tag"] if trigger["tag"] in ("tp1", "sl1") else None,
+    )
 
     return {"triggered": True, "executed": True, "orders": orders}
 
@@ -689,16 +835,17 @@ def run_switch_or_entry(
         # (rt_cd=0) 응답만으로는 체결을 확정하지 않으며, position_manager가 재조회한
         # remaining_quantity가 0이 아니면(미체결/부분체결) 이번 사이클은 매도까지만
         # 실행하고 반대 매수는 다음 사이클로 미룬다.
-        sell_confirmed = sell_result.get("remaining_quantity", 0) <= 0
-        if position_manager is not None and not sell_confirmed:
-            state["position"] = {**position, "quantity": sell_result.get("remaining_quantity", position.get("quantity"))}
+        remaining_after_sell = sell_result.get("remaining_quantity")
+        sell_confirmed = sell_result.get("position_sync_status") == "SYNCED" and int(remaining_after_sell or 0) <= 0
+        if not sell_confirmed:
+            _apply_sell_result_to_state_position(state, position, sell_result)
             state["last_order_cycle_bucket"] = bucket
             state["last_order_signature"] = signature
             return {
                 "acted": True, "orders": orders,
                 "message": "스위칭 매도 체결 미확인(미체결/부분체결) — 반대 포지션 진입 보류, 다음 사이클 재확인",
             }
-        state["position"] = _empty_position()
+        _apply_sell_result_to_state_position(state, position, sell_result)
 
         if not entry_allowed:
             state["last_order_cycle_bucket"] = bucket

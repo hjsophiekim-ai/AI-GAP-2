@@ -43,6 +43,24 @@ st.info(
 cfg = get_config()
 
 
+def _num(value, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _fmt_num(value, fmt: str = ".1f", suffix: str = "", empty: str = "—") -> str:
+    if value is None:
+        return empty
+    try:
+        return f"{float(value):{fmt}}{suffix}"
+    except Exception:
+        return empty
+
+
 def _safe_real_gate_status(cfg_obj, current_mode: str = "real") -> dict:
     """Return REAL auto-trade gate diagnostics without assuming a new Config API.
 
@@ -545,14 +563,14 @@ if switch_state.get("mode") == "mock":
     if _fx_fusion_on and _last_fusion:
         with st.expander("🧠 Adaptive Fusion 진단(요구사항 6절)", expanded=True):
             _fc1, _fc2, _fc3, _fc4 = st.columns(4)
-            _fc1.metric("최종 합성 확률", f"H{_last_fusion.get('fused_hynix_probability', 0):.1f}/I{_last_fusion.get('fused_inverse_probability', 0):.1f}")
+            _fc1.metric("최종 합성 확률", f"H{_num(_last_fusion.get('fused_hynix_probability')):.1f}/I{_num(_last_fusion.get('fused_inverse_probability')):.1f}")
             _fc2.metric(
                 "문턱(조정 후/원래)",
-                f"{_last_fusion.get('entry_threshold_used', 0):.1f}% / {_last_fusion.get('entry_threshold_original', 0):.1f}%",
-                delta=f"완화 {_last_fusion.get('threshold_relief_applied', 0):.1f}%p" if _last_fusion.get("threshold_relief_applied") else None,
+                f"{_num(_last_fusion.get('entry_threshold_used')):.1f}% / {_num(_last_fusion.get('entry_threshold_original')):.1f}%",
+                delta=f"완화 {_num(_last_fusion.get('threshold_relief_applied')):.1f}%p" if _last_fusion.get("threshold_relief_applied") else None,
             )
-            _fc3.metric("진입 비중", f"{_last_fusion.get('target_position_pct', 0):.0f}%", delta=_last_fusion.get("entry_type"))
-            _fc4.metric("모델 불일치 지수", f"{_last_fusion.get('disagreement_index', 0):.1f}")
+            _fc3.metric("진입 비중", f"{_num(_last_fusion.get('target_position_pct')):.0f}%", delta=_last_fusion.get("entry_type"))
+            _fc4.metric("모델 불일치 지수", f"{_num(_last_fusion.get('disagreement_index')):.1f}")
 
             _fc5, _fc6, _fc7 = st.columns(3)
             _fc5.metric("오늘 거래수", f"{_last_fusion.get('orders_today_count', 0)}건 (목표 {_last_fusion.get('daily_target_trades', [4, 5])[0]}~{_last_fusion.get('daily_target_trades', [4, 5])[1]}회)")
@@ -565,7 +583,7 @@ if switch_state.get("mode") == "mock":
                 detail = _last_fusion.get("disagreement_override_detail") or {}
                 st.info(
                     f"🧩 모델 불일치 예외 진입 사용: {detail.get('leader_model')}"
-                    f"(확신도 {detail.get('leader_confidence', 0):.0f}%) 방향, "
+                    f"(확신도 {_num(detail.get('leader_confidence')):.0f}%) 방향, "
                     f"동조 {len(detail.get('allies', []))}개, 강반대모델 {detail.get('opposing_strong_count', 0)}개"
                 )
 
@@ -916,21 +934,21 @@ else:
 
     s1, s2, s3, s4, s5 = st.columns(5)
     with s1:
-        st.metric("기존 예측점수", f"{enh.get('base_prediction_score', 0):.1f}")
+        st.metric("기존 예측점수", f"{_num(enh.get('base_prediction_score')):.1f}")
     micron_detail = enh.get("micron_detail", {}) or {}
     _m1 = micron_detail.get("micron_1min_score")
     _m3 = micron_detail.get("micron_3min_score")
     with s2:
         st.metric(
-            "마이크론 실시간점수", f"{enh.get('existing_micron_score', 0):.1f}",
+            "마이크론 실시간점수", f"{_num(enh.get('existing_micron_score')):.1f}",
             delta=f"1분:{_m1 if _m1 is not None else '—'} 3분:{_m3 if _m3 is not None else '—'}",
         )
     with s3:
-        st.metric("하이닉스 기술점수", f"{enh.get('hynix_technical_score', 0):.1f}")
+        st.metric("하이닉스 기술점수", f"{_num(enh.get('hynix_technical_score')):.1f}")
     with s4:
-        st.metric("장중 모멘텀점수", f"{enh.get('intraday_momentum_score', 0):.1f}")
+        st.metric("장중 모멘텀점수", f"{_num(enh.get('intraday_momentum_score')):.1f}")
     with s5:
-        st.metric("인버스 압력점수", f"{enh.get('inverse_pressure_score', 0):.1f}")
+        st.metric("인버스 압력점수", f"{_num(enh.get('inverse_pressure_score')):.1f}")
 
     with st.expander("마이크론 데이터 상세(fallback 체인)"):
         st.markdown(
@@ -1004,7 +1022,7 @@ else:
             with sn4:
                 st.metric("Score Source(마지막값)", _mpp_snap.get("score_source") or "—")
             st.caption(
-                f"Confidence(마지막값): {_mpp_snap.get('confidence', 0):.0f} · "
+                f"Confidence(마지막값): {_num(_mpp_snap.get('confidence')):.0f} · "
                 f"계산시각: {_mpp_snap.get('calculated_at')}"
             )
         else:
@@ -1021,9 +1039,9 @@ else:
                 delta=(f"{_age:.1f}분 경과" if _age is not None else None),
             )
         with p3:
-            st.metric("Effective Micron Score", f"{_mpp.get('effective_micron_score', 0):.1f}")
+            st.metric("Effective Micron Score", f"{_num(_mpp.get('effective_micron_score')):.1f}")
         with p4:
-            st.metric("데이터 Confidence", f"{_mpp.get('micron_data_confidence', 0):.0f}")
+            st.metric("데이터 Confidence", f"{_num(_mpp.get('micron_data_confidence')):.0f}")
 
         q1, q2, q3, q4, q5 = st.columns(5)
         with q1:
@@ -1031,19 +1049,19 @@ else:
         with q2:
             st.metric("Overnight Micron Score", f"{_mpp.get('overnight_micron_score'):.1f}" if _mpp.get("overnight_micron_score") is not None else "—")
         with q3:
-            st.metric("Micron 최근추세 점수", f"{_mpp.get('micron_recent_trend_score', 0):.1f}")
+            st.metric("Micron 최근추세 점수", f"{_num(_mpp.get('micron_recent_trend_score')):.1f}")
         with q4:
-            st.metric("SOX semiconductor futures proxy", f"{_mpp.get('sox_futures_score', 0):.1f}")
+            st.metric("SOX semiconductor futures proxy", f"{_num(_mpp.get('sox_futures_score')):.1f}")
         with q5:
-            st.metric("Nasdaq futures proxy", f"{_mpp.get('nasdaq_futures_score', 0):.1f}")
+            st.metric("Nasdaq futures proxy", f"{_num(_mpp.get('nasdaq_futures_score')):.1f}")
 
         r1, r2, r3 = st.columns(3)
         with r1:
-            st.metric("미국 반도체 Proxy Basket", f"{_mpp.get('us_semiconductor_proxy_score', 0):.1f}")
+            st.metric("미국 반도체 Proxy Basket", f"{_num(_mpp.get('us_semiconductor_proxy_score')):.1f}")
         with r2:
-            st.metric("한국 반도체 확인점수", f"{_mpp.get('korea_semiconductor_confirmation_score', 0):.1f}")
+            st.metric("한국 반도체 확인점수", f"{_num(_mpp.get('korea_semiconductor_confirmation_score')):.1f}")
         with r3:
-            st.metric("Synthetic Micron Score", f"{_mpp.get('synthetic_micron_score', 0):.1f}")
+            st.metric("Synthetic Micron Score", f"{_num(_mpp.get('synthetic_micron_score')):.1f}")
 
         with st.expander("Micron Proxy Prediction 상세(Source/가중치/경고)"):
             st.markdown(
@@ -1169,17 +1187,17 @@ else:
         with cc5:
             st.metric("Momentum Velocity", f"{mom.get('raw_velocity_3', 0):.3f}" if mom.get("raw_velocity_3") is not None else "—")
         with cc6:
-            st.metric("Momentum Accel Up", f"{mom.get('momentum_acceleration_up', 0):.1f}")
+            st.metric("Momentum Accel Up", f"{_num(mom.get('momentum_acceleration_up')):.1f}")
         with cc7:
-            st.metric("Momentum Accel Down", f"{mom.get('momentum_acceleration_down', 0):.1f}")
+            st.metric("Momentum Accel Down", f"{_num(mom.get('momentum_acceleration_down')):.1f}")
         with cc8:
-            st.metric("Cycle Confidence", f"{cyc.get('cycle_confidence', 0):.1f}")
+            st.metric("Cycle Confidence", f"{_num(cyc.get('cycle_confidence')):.1f}")
 
         cc9, cc10, cc11 = st.columns(3)
         with cc9:
-            st.metric("Turning Up (3/5/10m)", f"{tp.get('up_turn_probability_3m', 0):.0f} / {tp.get('up_turn_probability_5m', 0):.0f} / {tp.get('up_turn_probability_10m', 0):.0f}")
+            st.metric("Turning Up (3/5/10m)", f"{_num(tp.get('up_turn_probability_3m')):.0f} / {_num(tp.get('up_turn_probability_5m')):.0f} / {_num(tp.get('up_turn_probability_10m')):.0f}")
         with cc10:
-            st.metric("Turning Down (3/5/10m)", f"{tp.get('down_turn_probability_3m', 0):.0f} / {tp.get('down_turn_probability_5m', 0):.0f} / {tp.get('down_turn_probability_10m', 0):.0f}")
+            st.metric("Turning Down (3/5/10m)", f"{_num(tp.get('down_turn_probability_3m')):.0f} / {_num(tp.get('down_turn_probability_5m')):.0f} / {_num(tp.get('down_turn_probability_10m')):.0f}")
         with cc11:
             st.metric("Cycle Entry Score", f"{max((cyc.get('entry_scores') or {}).values(), default=0):.1f}")
 
@@ -1187,14 +1205,14 @@ else:
         with cc12:
             st.metric("Recommended Symbol", cyc.get("recommended_symbol") or "—")
         with cc13:
-            st.metric("Recommended Position", f"{cyc.get('recommended_position_pct', 0):.0f}%")
+            st.metric("Recommended Position", f"{_num(cyc.get('recommended_position_pct')):.0f}%")
         with cc14:
             st.metric("Combined Shadow Action", shadow.get("combined_shadow_action", "HOLD"))
 
         st.markdown(
-            f"**Prediction AI V2**: BUY {prob.get('buy_probability', 0):.0f}% / "
-            f"SELL {prob.get('sell_probability', 0):.0f}% / HOLD {prob.get('hold_probability', 0):.0f}% "
-            f"→ **{dv2.get('final_action_v2', 'HOLD')}** (Adaptive Threshold: {dv2.get('buy_threshold', 65):.0f}%)"
+            f"**Prediction AI V2**: BUY {_num(prob.get('buy_probability')):.0f}% / "
+            f"SELL {_num(prob.get('sell_probability')):.0f}% / HOLD {_num(prob.get('hold_probability')):.0f}% "
+            f"→ **{dv2.get('final_action_v2', 'HOLD')}** (Adaptive Threshold: {_num(dv2.get('buy_threshold'), 65):.0f}%)"
         )
         if cyc.get("blocking_reason"):
             st.warning(f"Blocking Reason: {cyc['blocking_reason']}")
@@ -1224,9 +1242,9 @@ else:
         with bt2:
             st.metric("Trend Regime", _bt.get("trend_regime", "—"))
         with bt3:
-            st.metric("Trend Strength", f"{_bt.get('trend_strength_score', 0):.0f}")
+            st.metric("Trend Strength", f"{_num(_bt.get('trend_strength_score')):.0f}")
         with bt4:
-            st.metric("Trend Persistence", f"{_bt.get('trend_persistence_score', 0):.0f}")
+            st.metric("Trend Persistence", f"{_num(_bt.get('trend_persistence_score')):.0f}")
 
         _regime_state = _bt.get("regime_state") or {}
         _regime_duration = None
@@ -1248,7 +1266,7 @@ else:
 
         bt8, bt9, bt10 = st.columns(3)
         with bt8:
-            st.metric("Hold Confidence", f"{_bt.get('hold_confidence', 0):.0f}")
+            st.metric("Hold Confidence", f"{_num(_bt.get('hold_confidence')):.0f}")
         with bt9:
             st.metric("Exit Confidence", f"{_bt.get('exit_confidence') or 0:.0f}" if _bt.get("exit_confidence") is not None else "—")
         with bt10:
@@ -1256,9 +1274,9 @@ else:
 
         bt11, bt12, bt13, bt14 = st.columns(4)
         with bt11:
-            st.metric("Peak Net Return", f"{_bt.get('peak_net_return_pct', 0):.2f}%")
+            st.metric("Peak Net Return", f"{_num(_bt.get('peak_net_return_pct')):.2f}%")
         with bt12:
-            st.metric("Current Net Return", f"{_bt.get('net_return_pct', 0):.2f}%")
+            st.metric("Current Net Return", f"{_num(_bt.get('net_return_pct')):.2f}%")
         with bt13:
             _giveback = bte.compute_profit_giveback_pct(_bt.get("peak_net_return_pct", 0), _bt.get("net_return_pct", 0))
             st.metric("Profit Giveback", f"{_giveback:.2f}%p")
@@ -1270,13 +1288,13 @@ else:
         with bt15:
             st.metric("현재 익절 방식", f"+{_bt.get('reasons', [''])[0][:30]}" if _bt.get("final_hold_action") in ("TAKE_PROFIT_25", "TAKE_PROFIT_50") else "부분/전량청산 대기 중")
         with bt16:
-            st.metric("현재 손절 방식(effective_sl_pct)", f"{_bt.get('effective_sl_pct', 0):.2f}%")
+            st.metric("현재 손절 방식(effective_sl_pct)", f"{_num(_bt.get('effective_sl_pct')):.2f}%")
         with bt17:
             st.metric("현재 Trailing 폭", f"{_bt.get('trailing_pct') or 0:.2f}%" if _bt.get("trailing_pct") is not None else "—")
 
         bt18, bt19 = st.columns(2)
         with bt18:
-            st.metric("Remaining Position %", f"{_bt.get('max_position_pct', 0):.0f}%")
+            st.metric("Remaining Position %", f"{_num(_bt.get('max_position_pct')):.0f}%")
         with bt19:
             st.metric("Final Hold Action", _bt.get("final_hold_action") or "—")
 
@@ -1291,7 +1309,7 @@ else:
             for r in _bt.get("reasons") or []:
                 st.markdown(f"- {r}")
 
-    st.subheader(f"개선된 최종점수: {enh.get('enhanced_score', 0):.1f}/100 → 최종 판단: {decision.get('final_action', 'HOLD')}")
+    st.subheader(f"개선된 최종점수: {_num(enh.get('enhanced_score')):.1f}/100 → 최종 판단: {decision.get('final_action', 'HOLD')}")
     with st.expander("판단 사유 Top5", expanded=True):
         for i, reason in enumerate(enh.get("reason_top5") or [], start=1):
             st.markdown(f"{i}. {reason}")
