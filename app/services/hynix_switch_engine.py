@@ -46,6 +46,31 @@ _PIPELINE_STAGES = [
 ]
 
 
+_INVERSE_PRESSURE_BOOST_THRESHOLD = 70.0
+
+
+def _boost_enhanced_score_with_inverse_pressure(enhanced_score: Optional[float], inverse_pressure_score: Optional[float]) -> Optional[float]:
+    """ACTIVE_FUSION/Adaptive Fusion에 넘기는 enhanced_ai_score를 inverse_pressure_score로
+    보정한다(2026-07-14 실측 버그 수정).
+
+    calculate_fusion_score()(app/models/hynix_decision_v2.py)는 enhanced_ai_score만
+    입력받고 inverse_pressure_score는 그 계산 체인 어디에도 전달되지 않는다. 그 결과
+    레거시 판단(decide_hynix_or_inverse_action)이 inverse_pressure_score>=70을 근거로
+    "INVERSE_STRONG_BUY"를 표시해도, Active Strategy/Adaptive Fusion 앙상블은 이 강한
+    인버스 근거를 전혀 보지 못해 약한 신호로만 취급하고 매수하지 않는 일이 있었다.
+
+    inverse_pressure_score가 강한 인버스 근거(>=70)를 보이면 enhanced_ai_score를 그
+    방향(낮은 값)으로 더 강하게 보정한다 — min()을 써서 원래 enhanced_score보다
+    약해지는(반대 방향으로 밀리는) 경우는 없다. 하이닉스 쪽은 enhanced_score 자체가
+    이미 그 강도를 직접 반영하므로 별도 보정이 필요 없다(decision_thresholds의
+    strong_buy_enhanced_min이 enhanced_score에 직접 적용됨)."""
+    if enhanced_score is None:
+        return enhanced_score
+    if inverse_pressure_score is None or inverse_pressure_score < _INVERSE_PRESSURE_BOOST_THRESHOLD:
+        return enhanced_score
+    return min(enhanced_score, 100.0 - inverse_pressure_score)
+
+
 def _map_prediction_signal(final_action: str) -> str:
     return _SIGNAL_DISPLAY_MAP.get(final_action, "HOLD")
 
@@ -1119,16 +1144,19 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 # V2/Cycle AI/Micron Proxy를 실제로 융합하는 Adaptive Fusion 경로를 쓰고,
                 # 꺼져 있으면 기존 ACTIVE_FUSION 단독 경로를 그대로 쓴다(대체가 아니라 opt-in).
                 try:
+                    _boosted_enhanced_score = _boost_enhanced_score_with_inverse_pressure(
+                        decision.get("enhanced_score"), decision.get("inverse_pressure_score"),
+                    )
                     if state.get("adaptive_fusion_enabled"):
                         active_result = _run_adaptive_fusion_entry(
                             state, broker, hynix_price, inverse_price, now, orders_this_cycle,
-                            enhanced_ai_score=decision.get("enhanced_score"),
+                            enhanced_ai_score=_boosted_enhanced_score,
                         )
                         trace_label = "ADAPTIVE_FUSION"
                     else:
                         active_result = _run_active_strategy_entry(
                             state, broker, hynix_price, inverse_price, now, orders_this_cycle,
-                            enhanced_ai_score=decision.get("enhanced_score"),
+                            enhanced_ai_score=_boosted_enhanced_score,
                         )
                         trace_label = "ACTIVE_STRATEGY"
                     trace["entry_approved"] = active_result.get("acted", False)

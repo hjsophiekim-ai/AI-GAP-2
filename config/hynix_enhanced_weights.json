@@ -42,5 +42,33 @@
   "sizing": {
     "normal_trade_cash_pct": 0.20,
     "forced_trade_cash_pct": 0.08
+  },
+  "adaptive_fusion_v2": {
+    "entry_ladder": [
+      {"floor": 68.0, "pct": 65.0},
+      {"floor": 60.0, "pct": 45.0},
+      {"floor": 55.0, "pct": 25.0},
+      {"floor": 52.0, "pct": 10.0}
+    ],
+    "entry_min_probability": 52.0,
+    "exploratory_max_pct": 10.0,
+    "daily_target_trades_min": 4,
+    "daily_target_trades_max": 5,
+    "max_daily_round_trips": 6,
+    "same_direction_reentry_cooldown_seconds": 600,
+    "time_relief_stage_1_time": "11:00",
+    "time_relief_stage_1_pct": 1.5,
+    "time_relief_stage_2_time": "13:00",
+    "time_relief_stage_2_pct": 1.5,
+    "time_relief_max_total_pct": 3.0,
+    "strong_signal_conflict_threshold": 70.0,
+    "disagreement_leader_min_confidence": 75.0,
+    "disagreement_max_opposing_strong": 2,
+    "disagreement_opposing_strong_threshold": 65.0,
+    "disagreement_entry_pct": 12.0,
+    "active_fusion_neutral_band": 4.0,
+    "active_fusion_neutral_weight_scale": 0.5,
+    "consecutive_loss_halve_threshold": 2,
+    "consecutive_loss_block_threshold": 3
   }
 }

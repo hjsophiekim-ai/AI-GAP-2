@@ -445,10 +445,22 @@ if switch_state.get("mode") == "mock":
         if trading_mode != switch_state.get("trading_mode"):
             switch_state["trading_mode"] = trading_mode
             save_state_atomic(switch_state)
+    # ── 체크박스 세션 동기화 버그 수정(2026-07-14) ───────────────────────────
+    # Streamlit은 key=가 있는 위젯의 값을 최초 렌더 이후로는 value= 파라미터를
+    # 무시하고 st.session_state[key]만 신뢰한다. 이 페이지 밖(스크립트/다른 세션)에서
+    # switch_state["active_strategy_enabled"] 등을 바꿔도, 이미 이 체크박스를 본 적
+    # 있는 브라우저 탭은 예전 값을 계속 화면에 남겨두다가 다음 rerun에서 그 예전
+    # 값을 다시 파일에 덮어써버린다(실측: 백엔드에서 끈 설정이 몇 분 뒤 다시 켜짐).
+    # _toggle_gen을 위젯 key에 포함시켜, 외부에서 값이 바뀔 때마다 _toggle_gen을
+    # 올리면 Streamlit이 이를 "새 위젯"으로 취급해 value=(=파일의 최신값)로 다시
+    # 초기화한다 — 그 뒤에는 다시 사용자의 클릭이 정상적으로 우선한다.
+    _toggle_gen = switch_state.get("_toggle_gen", 0)
+
     with as2:
         active_enabled = st.checkbox(
             "Active Strategy로 신규진입 판단 대체(ENHANCED_LEGACY 대신 Cycle AI + Prediction V2 기반 조기진입/Scale-in 사용)",
-            value=bool(switch_state.get("active_strategy_enabled", False)), key="hynix_active_strategy_toggle",
+            value=bool(switch_state.get("active_strategy_enabled", False)),
+            key=f"hynix_active_strategy_toggle_{_toggle_gen}",
         )
         if active_enabled != switch_state.get("active_strategy_enabled", False):
             switch_state["active_strategy_enabled"] = active_enabled
@@ -461,7 +473,8 @@ if switch_state.get("mode") == "mock":
     if switch_state.get("active_strategy_enabled"):
         adaptive_fusion_enabled = st.checkbox(
             "🧠 Adaptive Fusion — Prediction AI V2/Cycle AI/Micron Proxy를 실제 신규진입 판단에 융합",
-            value=bool(switch_state.get("adaptive_fusion_enabled", False)), key="hynix_adaptive_fusion_toggle",
+            value=bool(switch_state.get("adaptive_fusion_enabled", False)),
+            key=f"hynix_adaptive_fusion_toggle_{_toggle_gen}",
         )
         if adaptive_fusion_enabled != switch_state.get("adaptive_fusion_enabled", False):
             switch_state["adaptive_fusion_enabled"] = adaptive_fusion_enabled
@@ -503,6 +516,52 @@ if switch_state.get("mode") == "mock":
     for _name, _on, _impact, _scope in _fx_rows:
         _fx_table += f"| {_name} | {'ON' if _on else 'OFF'} | {_impact} | {_scope} |\n"
     st.markdown(_fx_table)
+
+    # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
+    # 최종합성확률, 문턱(원래/조정), 진입비중, HOLD·진입 사유, 오늘거래수/연속손실/
+    # 남은거래한도, 모델불일치지수를 매 사이클 표시한다.
+    _last_fusion = switch_state.get("last_fusion_decision")
+    if _fx_fusion_on and _last_fusion:
+        with st.expander("🧠 Adaptive Fusion 진단(요구사항 6절)", expanded=True):
+            _fc1, _fc2, _fc3, _fc4 = st.columns(4)
+            _fc1.metric("최종 합성 확률", f"H{_last_fusion.get('fused_hynix_probability', 0):.1f}/I{_last_fusion.get('fused_inverse_probability', 0):.1f}")
+            _fc2.metric(
+                "문턱(조정 후/원래)",
+                f"{_last_fusion.get('entry_threshold_used', 0):.1f}% / {_last_fusion.get('entry_threshold_original', 0):.1f}%",
+                delta=f"완화 {_last_fusion.get('threshold_relief_applied', 0):.1f}%p" if _last_fusion.get("threshold_relief_applied") else None,
+            )
+            _fc3.metric("진입 비중", f"{_last_fusion.get('target_position_pct', 0):.0f}%", delta=_last_fusion.get("entry_type"))
+            _fc4.metric("모델 불일치 지수", f"{_last_fusion.get('disagreement_index', 0):.1f}")
+
+            _fc5, _fc6, _fc7 = st.columns(3)
+            _fc5.metric("오늘 거래수", f"{_last_fusion.get('orders_today_count', 0)}건 (목표 {_last_fusion.get('daily_target_trades', [4, 5])[0]}~{_last_fusion.get('daily_target_trades', [4, 5])[1]}회)")
+            _fc6.metric("오늘 왕복거래", f"{_last_fusion.get('round_trips_today', 0)} / {_last_fusion.get('max_daily_round_trips', 6)}회")
+            _fc7.metric("HOLD/진입 사유", "진입" if _last_fusion.get("executable") else "HOLD", delta=_last_fusion.get("blocking_reason"))
+
+            if _last_fusion.get("strong_signal_conflict"):
+                st.error("🔴 하이닉스/인버스 강신호(≥70%) 동시 충돌 — HOLD 처리됨")
+            if _last_fusion.get("disagreement_override_used"):
+                detail = _last_fusion.get("disagreement_override_detail") or {}
+                st.info(
+                    f"🧩 모델 불일치 예외 진입 사용: {detail.get('leader_model')}"
+                    f"(확신도 {detail.get('leader_confidence', 0):.0f}%) 방향, "
+                    f"동조 {len(detail.get('allies', []))}개, 강반대모델 {detail.get('opposing_strong_count', 0)}개"
+                )
+
+            st.markdown("**모델별 방향·확률·가중치·데이터 신선도**")
+            _diag_rows = _last_fusion.get("model_diagnostics") or []
+            if _diag_rows:
+                import pandas as _pd
+                _diag_df = _pd.DataFrame([
+                    {
+                        "모델": d["model"], "방향": d.get("action", "-"),
+                        "H%": d.get("hynix_probability"), "I%": d.get("inverse_probability"), "Hold%": d.get("hold_probability"),
+                        "확신도": d.get("confidence"), "가중치%": d.get("weight_pct"),
+                        "데이터신선도": d.get("data_quality"), "상태": d.get("model_status", "미가용" if not d.get("available") else ""),
+                    }
+                    for d in _diag_rows
+                ])
+                st.dataframe(_diag_df, use_container_width=True, hide_index=True)
 
 if switch_state.get("mode") == "mock" and switch_state.get("stopped") and "일 누적 손실" in (switch_state.get("stopped_reason") or ""):
     mock_override = st.checkbox(

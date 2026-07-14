@@ -133,8 +133,11 @@ class TestConflictResolution:
 
 
 class TestEntryLadder:
+    # 2026-07-14 개편 — 단일 55% 게이트가 모델 의견 불일치 시 하루 종일 거래 0건을
+    # 유발하는 문제가 실측되어, 52%부터 4단계로 세분화한 사다리로 교체됐다
+    # (52~55%:10%, 55~60%:25%, 60~68%:45%, 68%+:65%, 52% 미만:0%=HOLD).
     @pytest.mark.parametrize("prob,expected", [
-        (90.0, 85.0), (82.0, 70.0), (75.0, 50.0), (68.0, 35.0), (62.0, 20.0), (57.0, 10.0), (50.0, 0.0),
+        (90.0, 65.0), (70.0, 65.0), (62.0, 45.0), (57.0, 25.0), (53.0, 10.0), (50.0, 0.0),
     ])
     def test_ladder_bands(self, prob, expected):
         assert afe.position_pct_from_probability_ladder(prob) == expected
@@ -366,15 +369,21 @@ class TestDailyRiskLadder:
         r = afe.adaptive_fusion_daily_risk_ladder(2.2)
         assert r["max_position_pct"] == 50.0 and r["threshold_add"] == 3.0
 
-    def test_profit_3pct_halts_entries(self):
-        assert afe.adaptive_fusion_daily_risk_ladder(3.1)["entries_allowed"] is False
+    def test_profit_3pct_enters_profit_protection_mode_not_full_halt(self):
+        # 2026-07-14 개편(요구사항 4절) — +3% 이후는 완전 차단이 아니라 "수익보호
+        # 모드"로 비중을 크게 줄이고(최대 20%) 문턱을 높인다(+6).
+        r = afe.adaptive_fusion_daily_risk_ladder(3.1)
+        assert r["entries_allowed"] is True
+        assert r["max_position_pct"] == 20.0
+        assert r["threshold_add"] == 6.0
 
     def test_loss_2_5pct_forces_liquidate(self):
         r = afe.adaptive_fusion_daily_risk_ladder(-2.6)
         assert r["force_liquidate"] is True and r["entries_allowed"] is False
 
-    def test_loss_1_8pct_halts_entries_no_liquidate(self):
-        r = afe.adaptive_fusion_daily_risk_ladder(-1.9)
+    def test_loss_2pct_halts_entries_no_liquidate(self):
+        # 2026-07-14 개편 — 신규진입 중단 기준이 -1.8%에서 요구사항 4절의 -2.0%로 조정됨.
+        r = afe.adaptive_fusion_daily_risk_ladder(-2.1)
         assert r["entries_allowed"] is False and r["force_liquidate"] is False
 
     def test_neutral_day_full_size(self):
@@ -519,9 +528,11 @@ class TestHynixAdaptiveFusionEngineDecide:
         )
         assert result["executable"] is False
 
-    def test_after_1500_blocks_new_entries(self):
+    def test_after_1450_blocks_new_entries(self):
+        # 2026-07-14 개편 — 플랫폼 공통 규칙(14:50 이후 신규매수 금지)과 일치시킴.
+        # 과거 "15:00"은 ENHANCED_LEGACY/강제청산 경로의 14:50 컷오프와 어긋나는 버그였다.
         engine = afe.HynixAdaptiveFusionEngine()
-        now = datetime(2026, 7, 14, 15, 5)
+        now = datetime(2026, 7, 14, 14, 51)
         result = engine.decide(
             now=now, active_decision_result=self._active_decision(fusion_score=80.0),
             prediction_v2_probability={"buy_probability": 75.0, "sell_probability": 15.0, "hold_probability": 10.0},
@@ -534,4 +545,4 @@ class TestHynixAdaptiveFusionEngineDecide:
             consecutive_stop_losses=0,
         )
         assert result["executable"] is False
-        assert "15:00" in result["blocking_reason"]
+        assert "14:50" in result["blocking_reason"]
