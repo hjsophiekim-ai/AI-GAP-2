@@ -520,6 +520,27 @@ if switch_state.get("mode") == "mock":
     # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
     # 최종합성확률, 문턱(원래/조정), 진입비중, HOLD·진입 사유, 오늘거래수/연속손실/
     # 남은거래한도, 모델불일치지수를 매 사이클 표시한다.
+    _last_trend_plan = switch_state.get("last_trend_switch_plan") or {}
+    _trend_freq = switch_state.get("trend_switch_frequency_state") or {}
+    if _last_trend_plan:
+        with st.expander("Enhanced Trend Switch 가속 진단", expanded=True):
+            _ts1, _ts2, _ts3, _ts4 = st.columns(4)
+            _ts1.metric("현재 우세 방향", _last_trend_plan.get("dominant_direction") or "HOLD")
+            _ts2.metric(
+                "연속 확인",
+                f"{_last_trend_plan.get('same_direction_streak', 0)}회",
+                delta=f"전환 {_last_trend_plan.get('reversal_streak', 0)}회",
+            )
+            _ts3.metric("즉시 전환", "YES" if _last_trend_plan.get("immediate_switch") else "NO")
+            _remain = _last_trend_plan.get("pullback_wait_remaining_seconds")
+            _ts4.metric("눌림목 대기", "-" if _remain is None else f"{int(_remain)}초")
+
+            _ts5, _ts6, _ts7 = st.columns(3)
+            _pct = _last_trend_plan.get("position_pct")
+            _ts5.metric("진입 비중", "-" if _pct is None else f"{float(_pct) * 100:.0f}%", delta=_last_trend_plan.get("entry_type"))
+            _ts6.metric("오늘 왕복거래", f"{_trend_freq.get('round_trips_today', 0)} / 8회")
+            _ts7.metric("주문 차단 사유", _last_trend_plan.get("block_reason") or "없음")
+
     _last_fusion = switch_state.get("last_fusion_decision")
     if _fx_fusion_on and _last_fusion:
         with st.expander("🧠 Adaptive Fusion 진단(요구사항 6절)", expanded=True):

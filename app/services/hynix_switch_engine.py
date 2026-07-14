@@ -29,9 +29,16 @@ from app.trading.hynix_switch_position_manager import (
 )
 from app.trading.hynix_position_common import HynixPositionManager
 from app.trading.hynix_pullback_entry import detect_pullback
+from app.trading.hynix_trend_switch_accelerator import (
+    default_confirm_state,
+    default_frequency_state as default_trend_frequency_state,
+    plan_entry as plan_trend_switch_entry,
+    signal_direction,
+    update_confirm_tracker,
+)
 
 _PULLBACK_MORNING_WINDOW_END = "10:00"
-_PULLBACK_PATIENCE_MINUTES = 15
+_PULLBACK_PATIENCE_MINUTES = 5
 
 _SIGNAL_DISPLAY_MAP = {
     "HYNIX_BUY": "BUY", "HYNIX_STRONG_BUY": "BUY",
@@ -181,6 +188,156 @@ def evaluate_pullback_gate(state: dict, desired_symbol: str, final_action: str, 
     return {
         "proceed": False,
         "message": f"눌림목 대기 중({pullback.get('reason')}) — 데드라인 {deadline.strftime('%H:%M')}까지 대기",
+    }
+
+def evaluate_pullback_gate(state: dict, desired_symbol: str, final_action: str, now: datetime, forced_info: dict, hynix_df_1min, mode: str) -> dict:
+    """General BUY pullback gate with a five-minute maximum wait."""
+    held_symbol = (state.get("position") or {}).get("symbol")
+    confirm_tracker = update_confirm_tracker(
+        state.get("trend_switch_confirm_tracker") or default_confirm_state(),
+        final_action, held_symbol, desired_symbol, now,
+    )
+    frequency_state = state.get("trend_switch_frequency_state") or default_trend_frequency_state()
+    state["trend_switch_confirm_tracker"] = confirm_tracker
+    has_unconfirmed_order = bool(
+        state.get("order_in_flight")
+        or state.get("pending_order")
+        or state.get("trend_switch_unconfirmed_order")
+    )
+    pre_plan = plan_trend_switch_entry(
+        final_action=final_action,
+        held_symbol=held_symbol,
+        desired_symbol=desired_symbol,
+        confirm_tracker=confirm_tracker,
+        frequency_state=frequency_state,
+        pullback_result=None,
+        now=now,
+        data_ok=bool(desired_symbol),
+        has_unconfirmed_order=has_unconfirmed_order,
+        daily_return_pct=state.get("realized_pnl_today_pct"),
+        atr_pct=None,
+    )
+    state["last_trend_switch_plan"] = {
+        **pre_plan,
+        "dominant_direction": signal_direction(final_action),
+        "desired_symbol": desired_symbol,
+        "pullback_wait_remaining_seconds": None,
+    }
+    if pre_plan.get("proceed"):
+        return {
+            "proceed": True,
+            "deadline_expired": False,
+            "pullback_wait_remaining_seconds": 0,
+            "message": (
+                f"TrendSwitchAccel 즉시 진입: {pre_plan.get('entry_type')} "
+                f"{(pre_plan.get('position_pct') or 0) * 100:.0f}%"
+            ),
+        }
+    pre_block = str(pre_plan.get("block_reason") or "")
+    if pre_block and "눌림목" not in pre_block:
+        return {
+            "proceed": False,
+            "deadline_expired": False,
+            "pullback_wait_remaining_seconds": None,
+            "message": pre_block,
+        }
+
+    pending = state.get("pending_entry")
+    if not pending or pending.get("action") != final_action or pending.get("symbol") != desired_symbol:
+        pending = {"action": final_action, "symbol": desired_symbol, "since": now.isoformat()}
+        state["pending_entry"] = pending
+
+    try:
+        since = datetime.fromisoformat(pending["since"])
+    except Exception:
+        since = now
+
+    deadline = since + timedelta(minutes=_PULLBACK_PATIENCE_MINUTES)
+    window = forced_info.get("window")
+    if window:
+        try:
+            _, end_str = window.split("-")
+            deadline = min(deadline, datetime.combine(now.date(), _parse_hm(end_str)))
+        except Exception:
+            pass
+
+    remaining_seconds = max(0, int((deadline - now).total_seconds()))
+    if now >= deadline:
+        deadline_plan = plan_trend_switch_entry(
+            final_action=final_action,
+            held_symbol=held_symbol,
+            desired_symbol=desired_symbol,
+            confirm_tracker=confirm_tracker,
+            frequency_state=frequency_state,
+            pullback_result={"proceed": True, "message": "pullback wait expired with current signal revalidated"},
+            now=now,
+            data_ok=bool(desired_symbol),
+            has_unconfirmed_order=has_unconfirmed_order,
+            daily_return_pct=state.get("realized_pnl_today_pct"),
+            atr_pct=None,
+        )
+        state["last_trend_switch_plan"] = {
+            **deadline_plan,
+            "dominant_direction": signal_direction(final_action),
+            "desired_symbol": desired_symbol,
+            "pullback_wait_remaining_seconds": 0,
+        }
+        return {
+            "proceed": bool(deadline_plan.get("proceed")),
+            "deadline_expired": True,
+            "pullback_wait_remaining_seconds": 0,
+            "message": (
+                f"눌림목 대기 데드라인 5분 만료({deadline.strftime('%H:%M')}) - 현재 신호 재검증 후 진입 허용"
+                if deadline_plan.get("proceed") else deadline_plan.get("block_reason")
+            ),
+        }
+
+    df_for_check = hynix_df_1min if desired_symbol == HYNIX_SYMBOL else _load_inverse_1min_for_pullback(mode)
+    pullback = detect_pullback(df_for_check)
+    if pullback.get("is_pullback"):
+        pullback_plan = plan_trend_switch_entry(
+            final_action=final_action,
+            held_symbol=held_symbol,
+            desired_symbol=desired_symbol,
+            confirm_tracker=confirm_tracker,
+            frequency_state=frequency_state,
+            pullback_result={"proceed": True, "message": pullback.get("reason")},
+            now=now,
+            data_ok=bool(desired_symbol),
+            has_unconfirmed_order=has_unconfirmed_order,
+            daily_return_pct=state.get("realized_pnl_today_pct"),
+            atr_pct=None,
+        )
+        state["last_trend_switch_plan"] = {
+            **pullback_plan,
+            "dominant_direction": signal_direction(final_action),
+            "desired_symbol": desired_symbol,
+            "pullback_wait_remaining_seconds": remaining_seconds,
+        }
+        return {
+            "proceed": bool(pullback_plan.get("proceed")),
+            "deadline_expired": False,
+            "pullback_wait_remaining_seconds": remaining_seconds,
+            "message": (
+                f"눌림목 진입 조건 충족: {pullback.get('reason')}"
+                if pullback_plan.get("proceed") else pullback_plan.get("block_reason")
+            ),
+        }
+    wait_plan = {
+        **pre_plan,
+        "block_reason": f"눌림목 대기 중({pullback.get('reason')}) - {deadline.strftime('%H:%M')}까지 대기",
+    }
+    state["last_trend_switch_plan"] = {
+        **wait_plan,
+        "dominant_direction": signal_direction(final_action),
+        "desired_symbol": desired_symbol,
+        "pullback_wait_remaining_seconds": remaining_seconds,
+    }
+    return {
+        "proceed": False,
+        "deadline_expired": False,
+        "pullback_wait_remaining_seconds": remaining_seconds,
+        "message": wait_plan["block_reason"],
     }
 
 

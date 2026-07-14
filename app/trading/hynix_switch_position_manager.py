@@ -84,7 +84,7 @@ def evaluate_tp_sl(position: dict, current_price: Optional[float]) -> Optional[d
     return None
 
 
-def _sizing_cash_amount(broker, forced: bool) -> tuple[float, float]:
+def _sizing_cash_amount(broker, forced: bool, target_position_pct: Optional[float] = None) -> tuple[float, float]:
     """반환: (사이징 적용된 매수금액, 실제 매수가능금액 전체). 조회 실패 시 (0.0, 0.0)."""
     sizing = _load_section("sizing", _DEFAULT_SIZING)
     try:
@@ -92,7 +92,13 @@ def _sizing_cash_amount(broker, forced: bool) -> tuple[float, float]:
     except Exception as exc:
         logger.warning("[SwitchPositionManager] 매수가능금액 조회 실패: %s", exc)
         return 0.0, 0.0
-    pct = sizing["forced_trade_cash_pct"] if forced else sizing["normal_trade_cash_pct"]
+    if target_position_pct is not None:
+        pct = float(target_position_pct)
+        if pct > 1.0:
+            pct = pct / 100.0
+        pct = max(0.0, min(1.0, pct))
+    else:
+        pct = sizing["forced_trade_cash_pct"] if forced else sizing["normal_trade_cash_pct"]
     return max(0.0, cash * float(pct)), cash
 
 
@@ -578,11 +584,21 @@ def run_tp_sl_if_needed(
 def run_switch_or_entry(
     state: dict, broker, final_action: str, hynix_price: Optional[float], inverse_price: Optional[float],
     now: Optional[datetime] = None, forced: bool = False, reason: str = "", position_manager=None,
+    target_position_pct: Optional[float] = None, entry_type: Optional[str] = None,
+    stop_loss_pct: Optional[float] = None,
 ) -> dict:
     """스위칭 또는 신규 진입 실행. 14:50 이후에는 반대 종목 재매수 없이 매도만."""
     now = now or kst_now()
     orders: list = []
     desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
+    trend_plan = state.get("last_trend_switch_plan") or {}
+    if trend_plan.get("desired_symbol") == desired_symbol and trend_plan.get("proceed"):
+        if target_position_pct is None:
+            target_position_pct = trend_plan.get("position_pct")
+        if entry_type is None:
+            entry_type = trend_plan.get("entry_type")
+        if stop_loss_pct is None:
+            stop_loss_pct = trend_plan.get("stop_loss_pct")
     if desired_symbol is None:
         return {"acted": False, "orders": orders, "message": "HOLD — 신규 진입/스위칭 없음"}
 
@@ -598,6 +614,42 @@ def run_switch_or_entry(
     held_symbol = position.get("symbol")
 
     if held_symbol == desired_symbol:
+        current_price = _current_price(desired_symbol, hynix_price, inverse_price)
+        if target_position_pct and current_price and trend_plan.get("entry_type") == "NORMAL":
+            try:
+                full_cash = float(broker.get_buyable_cash())
+            except Exception as exc:
+                return {"acted": False, "orders": orders, "message": f"매수가능금액 조회 실패: {exc}"}
+            pct = float(target_position_pct)
+            if pct > 1.0:
+                pct = pct / 100.0
+            held_value = float(position.get("quantity") or 0) * float(current_price)
+            target_value = (full_cash + held_value) * max(0.0, min(1.0, pct))
+            add_cash = max(0.0, target_value - held_value)
+            if add_cash >= current_price:
+                buy_result = _buy_new(
+                    broker, desired_symbol, current_price, add_cash,
+                    f"TrendSwitchAccel 목표비중 증액 {pct * 100:.0f}%", orders,
+                    mode=state.get("mode", "mock"),
+                )
+                if buy_result.get("success"):
+                    add_qty = int(buy_result.get("bought_quantity", 0))
+                    old_qty = int(position.get("quantity") or 0)
+                    new_qty = old_qty + add_qty
+                    old_avg = float(position.get("avg_price") or position.get("entry_price") or current_price)
+                    position["quantity"] = new_qty
+                    position["avg_price"] = ((old_avg * old_qty) + (current_price * add_qty)) / new_qty if new_qty else current_price
+                    position["entry_type"] = entry_type or position.get("entry_type") or "NORMAL"
+                    position["stop_loss_pct"] = stop_loss_pct if stop_loss_pct is not None else position.get("stop_loss_pct")
+                    state["position"] = position
+                    state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
+                    state["last_buy_price"] = current_price
+                    state["last_trade_time"] = now.isoformat()
+                    state["last_action"] = "BUY"
+                    state["last_order_id"] = buy_result.get("order_id")
+                    state["last_order_cycle_bucket"] = bucket
+                    state["last_order_signature"] = signature
+                    return {"acted": True, "orders": orders, "message": buy_result.get("message", "목표비중 증액")}
         label = "인버스" if desired_symbol == INVERSE_SYMBOL else "하이닉스"
         return {"acted": False, "orders": orders, "message": f"이미 {label} 보유 중 — 중복 매수 방지"}
 
@@ -620,6 +672,14 @@ def run_switch_or_entry(
         state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
         state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
         state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
+        try:
+            from app.trading.hynix_trend_switch_accelerator import register_round_trip_closed
+
+            state["trend_switch_frequency_state"] = register_round_trip_closed(
+                state.get("trend_switch_frequency_state"), bool(net_realized < 0), now,
+            )
+        except Exception as exc:
+            logger.debug("[SwitchPositionManager] trend frequency sell update skipped: %s", exc)
         state["last_sell_price"] = current_price
         state["last_trade_time"] = now.isoformat()
         state["last_action"] = "SELL"
@@ -655,7 +715,7 @@ def run_switch_or_entry(
     if not current_price:
         return {"acted": bool(orders), "orders": orders, "message": "목표 종목 현재가 없음 — 매수 skip"}
 
-    sized_cash, full_cash = _sizing_cash_amount(broker, forced)
+    sized_cash, full_cash = _sizing_cash_amount(broker, forced, target_position_pct=target_position_pct)
     buy_reason = f"신규진입/스위칭 매수({reason})"
     if int(sized_cash // current_price) < 1 and full_cash >= current_price:
         cash_amount = current_price  # 사이징 금액으로 1주 미달이나 실제 매수가능금액은 충분 → 최소 1주 보장
@@ -671,8 +731,18 @@ def run_switch_or_entry(
             "symbol": desired_symbol, "name": _SYMBOL_NAME.get(desired_symbol, desired_symbol),
             "quantity": qty, "avg_price": current_price, "entry_price": current_price,
             "entry_time": now.isoformat(),
+            "entry_type": entry_type or ("FORCED" if forced else "NORMAL"),
+            "stop_loss_pct": stop_loss_pct,
         }
         state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
+        try:
+            from app.trading.hynix_trend_switch_accelerator import register_frequency_entry, signal_direction
+
+            state["trend_switch_frequency_state"] = register_frequency_entry(
+                state.get("trend_switch_frequency_state"), signal_direction(final_action), now,
+            )
+        except Exception as exc:
+            logger.debug("[SwitchPositionManager] trend frequency buy update skipped: %s", exc)
         state["last_buy_price"] = current_price
         state["last_trade_time"] = now.isoformat()
         state["last_action"] = "BUY"
