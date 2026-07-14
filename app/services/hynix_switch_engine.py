@@ -197,16 +197,101 @@ def reset_mock_account(budget_krw: Optional[float] = None) -> dict:
     return reset_mock_state(budget_krw=budget_krw)
 
 
-def _daily_pnl_pct(state: dict, total_equity: Optional[float]) -> Optional[float]:
-    if total_equity is None:
-        return None
-    baseline = state.get("daily_pnl_baseline_equity")
-    if not baseline:
-        state["daily_pnl_baseline_equity"] = total_equity
-        return 0.0
-    if baseline <= 0:
-        return 0.0
-    return (total_equity / baseline - 1.0) * 100.0
+DAILY_RETURN_UNKNOWN = "DAILY_RETURN_UNKNOWN"
+ACCOUNT_EQUITY_MISMATCH = "ACCOUNT_EQUITY_MISMATCH"
+_EQUITY_MISMATCH_TOLERANCE_PCT = 0.1
+
+
+def compute_net_daily_return(
+    state: dict, position: Optional[dict], hynix_price: Optional[float], inverse_price: Optional[float],
+    cash: Optional[float], positions_from_broker: Optional[list], cash_fetch_ok: bool,
+) -> dict:
+    """risk_manager와 UI가 공유하는 단일 일일손익 계산(요구사항 1/5절).
+
+    net_daily_return = (net_realized_pnl + net_unrealized_pnl) / starting_equity.
+    실현손익은 원장(state["realized_pnl_today_krw"])을, 미실현손익은 현재 보유
+    포지션+현재가로 계산한다 — 둘 다 "지금 이 순간의 계좌 잔고 조회"에 의존하지
+    않으므로, KIS API 오류(레이트리밋 등)로 잔고조회가 0을 반환해도 이 계산 자체는
+    영향받지 않는다(2026-07-14 실측 버그: total_equity=0 → 일손실 -100%로 오판).
+
+    cash/positions_from_broker는 오직 교차검증(current_equity 대조)에만 쓰이며,
+    주 계산식에는 들어가지 않는다. cash_fetch_ok=False(조회 실패/빈 응답/필드
+    누락)면 DAILY_RETURN_UNKNOWN으로 신규주문만 보류하고 손실로 기록하지 않는다.
+    """
+    net_realized_pnl = state.get("realized_pnl_today_krw", 0.0)
+    result = {
+        "starting_equity": state.get("daily_pnl_baseline_equity"),
+        "net_realized_pnl": net_realized_pnl, "net_unrealized_pnl": 0.0,
+        "net_daily_return": None, "current_equity": None,
+        "calculation_source": "ledger_unified", "blocked_reason": None,
+    }
+
+    if not cash_fetch_ok:
+        result["blocked_reason"] = DAILY_RETURN_UNKNOWN
+        return result
+
+    holdings_value = sum(
+        (getattr(p, "market_value", None) if not isinstance(p, dict) else p.get("market_value")) or 0.0
+        for p in (positions_from_broker or [])
+    )
+    current_equity = (float(cash) + holdings_value) if cash is not None else None
+    result["current_equity"] = current_equity
+
+    starting_equity = result["starting_equity"]
+    if starting_equity is None:
+        # 당일 첫 유효 조회 — 기준자산으로 확정한다. 조회 자체가 이미 실패
+        # 케이스(cash_fetch_ok=False)에서 걸러졌으므로 여기 도달했다면 신뢰할 수
+        # 있는 값이다.
+        if current_equity is not None and current_equity > 0:
+            state["daily_pnl_baseline_equity"] = current_equity
+            result["starting_equity"] = current_equity
+            result["net_daily_return"] = 0.0
+        else:
+            result["blocked_reason"] = DAILY_RETURN_UNKNOWN
+        return result
+
+    if starting_equity <= 0:
+        result["blocked_reason"] = ACCOUNT_EQUITY_MISMATCH
+        return result
+
+    # 요구사항 6절 — current_equity<=0인데 현금/원장잔고가 실제로 존재해야 하는 상황
+    if current_equity is not None and current_equity <= 0 and (net_realized_pnl != 0 or starting_equity > 0):
+        result["blocked_reason"] = ACCOUNT_EQUITY_MISMATCH
+        return result
+
+    # ── 미실현손익(요구사항 2절 — 보유 없으면 0) ─────────────────────────────
+    net_unrealized_pnl = 0.0
+    has_position = bool(
+        position and position.get("symbol") and (position.get("quantity") or 0) > 0 and position.get("entry_price"),
+    )
+    if has_position:
+        cur = hynix_price if position["symbol"] == "000660" else inverse_price
+        if cur is not None:
+            try:
+                from app.trading.trading_cost_engine import TradeCostEngine
+
+                cost_result = TradeCostEngine().compute_unrealized_net_pnl(
+                    position["symbol"], entry_price=position["entry_price"], current_price=cur,
+                    quantity=position["quantity"],
+                )
+                net_unrealized_pnl = cost_result["net_unrealized_pnl"]
+            except Exception:
+                net_unrealized_pnl = (cur - position["entry_price"]) * position["quantity"]
+    result["net_unrealized_pnl"] = net_unrealized_pnl
+
+    net_daily_return = (net_realized_pnl + net_unrealized_pnl) / starting_equity * 100.0
+
+    # 요구사항 6절 — 원장기준 수익률과 현재자산기준 수익률 차이가 0.1%p 초과하면
+    # 계좌 데이터 불일치로 간주하고 -100% 같은 값으로 기록하지 않는다.
+    if current_equity is not None and current_equity > 0:
+        equity_ratio_return = (current_equity / starting_equity - 1.0) * 100.0
+        if abs(equity_ratio_return - net_daily_return) > _EQUITY_MISMATCH_TOLERANCE_PCT:
+            result["blocked_reason"] = ACCOUNT_EQUITY_MISMATCH
+            result["equity_ratio_return"] = round(equity_ratio_return, 4)
+            return result
+
+    result["net_daily_return"] = round(net_daily_return, 4)
+    return result
 
 
 def check_real_mode_gates(state: dict, cfg=None) -> dict:
@@ -450,6 +535,7 @@ def _run_adaptive_fusion_entry(
     from app.trading.hynix_adaptive_fusion_engine import (
         HynixAdaptiveFusionEngine, evaluate_prediction_v2_performance,
         default_hold_tracker, update_hold_tracker, default_whipsaw_state, register_direction_flip,
+        default_frequency_state, register_frequency_entry, register_frequency_round_trip_closed,
         MODEL_PREDICTION_V2, MODEL_STATUS_ADVISORY, MODEL_STATUS_LIVE_VALIDATED,
         ACTION_HYNIX as FUSION_HYNIX, ACTION_INVERSE as FUSION_INVERSE, ACTION_HOLD as FUSION_HOLD,
     )
@@ -509,6 +595,7 @@ def _run_adaptive_fusion_entry(
 
     hold_tracker = state.get("adaptive_fusion_hold_tracker") or default_hold_tracker()
     whipsaw_state = state.get("adaptive_fusion_whipsaw_state") or default_whipsaw_state()
+    frequency_state = state.get("adaptive_fusion_frequency_state") or default_frequency_state()
 
     engine = HynixAdaptiveFusionEngine()
     fusion_decision = engine.decide(
@@ -519,7 +606,7 @@ def _run_adaptive_fusion_entry(
         held_symbol=position_state["symbol"], position_conflict=bool(state.get("position_conflict")),
         data_ok=data_ok, price_is_stale=not data_ok,
         daily_return_pct=state.get("realized_pnl_today_pct"), orders_today_count=state.get("daily_trade_count", 0),
-        hold_tracker=hold_tracker, whipsaw_state=whipsaw_state,
+        hold_tracker=hold_tracker, whipsaw_state=whipsaw_state, frequency_state=frequency_state,
         consecutive_stop_losses=strategy_state.get("consecutive_stop_losses", 0),
     )
 
@@ -592,6 +679,7 @@ def _run_adaptive_fusion_entry(
                             "entry_time": None, "name": None, "partial_tp1_done": False, "partial_sl1_done": False,
                         }
                         state["active_strategy_state"] = register_position_closed(state["active_strategy_state"], was_stop_loss=False, now=now)
+                        state["adaptive_fusion_frequency_state"] = register_frequency_round_trip_closed(frequency_state, now)
                     else:
                         state["position"]["quantity"] = remaining
                     message = f"Adaptive Fusion 청산/축소: {symbol} {action} (비중 {ratio*100:.0f}%)"
@@ -636,10 +724,12 @@ def _run_adaptive_fusion_entry(
                         state["position"] = {
                             "symbol": symbol, "name": symbol, "quantity": qty, "avg_price": price,
                             "entry_price": price, "entry_time": now.isoformat(), "partial_tp1_done": False, "partial_sl1_done": False,
+                            "entry_type": fusion_decision.get("entry_type") or "NORMAL",
                         }
                         state["active_strategy_state"] = register_position_opened(state["active_strategy_state"], symbol, price, pct, now)
                         state["active_strategy_state"] = register_idempotency_key(state["active_strategy_state"], idem_key)
-                        message = f"Adaptive Fusion 진입: {symbol} {pct:.0f}%({qty}주) — {signal_source}"
+                        state["adaptive_fusion_frequency_state"] = register_frequency_entry(frequency_state, fused_action, now)
+                        message = f"Adaptive Fusion 진입: {symbol} {pct:.0f}%({qty}주, {fusion_decision.get('entry_type') or 'NORMAL'}) — {signal_source}"
                     elif not failure_reason:
                         failure_reason = REASON_ORDER_EXCEPTION
                         message = buy_result.get("message", "매수 실패")
@@ -916,21 +1006,48 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
     total_equity = None
     daily_pnl_pct = None
+    daily_return_blocked_this_cycle = False
+    net_return_result = None
     if broker is not None:
         try:
             positions = broker.get_positions()
             cash = broker.get_buyable_cash()
             total_equity = float(cash) + sum(p.market_value for p in positions)
-            state["total_equity"] = total_equity
             is_mock_override = mode == "mock" and state.get("allow_mock_loss_override")
-            daily_pnl_pct = _daily_pnl_pct(state, total_equity)
-            if daily_pnl_pct is not None and daily_pnl_pct <= -2.5 and mode == "real":
-                state["stopped"] = True
-                state["stopped_reason"] = f"일 누적 손실 {daily_pnl_pct:.2f}% ≤ -2.5% — REAL 자동매매 강제 중단"
-                logger.error(state["stopped_reason"])
-            elif daily_pnl_pct is not None and daily_pnl_pct <= -2.5 and mode == "mock" and not is_mock_override:
-                state["stopped"] = True
-                state["stopped_reason"] = f"일 누적 손실 {daily_pnl_pct:.2f}% ≤ -2.5% — MOCK 자동매매 중단(설정에서 계속 테스트 가능)"
+
+            # 요구사항 1/5절 — risk_manager와 UI가 동일한 값(원장 실현손익 + 미실현손익
+            # / 시작자산)을 쓰도록 통합한다. get_buyable_cash()는 KIS API 오류(예: "1분당
+            # 1회" 토큰발급 레이트리밋)가 나도 예외 없이 0.0을 반환하는 하위호환 계약이
+            # 있어(KisMockBroker.get_orderable_cash), 그 값을 곧바로 "계좌가 0원이 됐다"로
+            # 써버리면 일일 손실이 -100%로 오판된다(2026-07-14 실측). 새 계산식은 실현손익을
+            # 원장(state)에서, 미실현손익을 보유 포지션+현재가에서 가져오므로 이 계좌조회
+            # 글리치의 영향을 받지 않는다 — cash/positions는 교차검증에만 쓰인다.
+            net_return_result = compute_net_daily_return(
+                state, state.get("position"), hynix_price, inverse_price,
+                cash=cash, positions_from_broker=positions, cash_fetch_ok=True,
+            )
+            state["daily_return_calculation"] = {k: v for k, v in net_return_result.items()}
+            daily_pnl_pct = net_return_result["net_daily_return"]
+
+            if net_return_result["blocked_reason"]:
+                daily_return_blocked_this_cycle = True
+                warnings.append(
+                    f"일일손익 판정 보류({net_return_result['blocked_reason']}) — "
+                    f"신규주문만 일시 보류(기존 정지상태는 변경하지 않음)"
+                )
+                logger.warning(
+                    "[HynixSwitchEngine] %s — 손익 판정 보류, -100%% 등으로 기록하지 않음",
+                    net_return_result["blocked_reason"],
+                )
+            else:
+                state["total_equity"] = total_equity
+                if daily_pnl_pct is not None and daily_pnl_pct <= -2.5 and mode == "real":
+                    state["stopped"] = True
+                    state["stopped_reason"] = f"일 누적 손실 {daily_pnl_pct:.2f}% ≤ -2.5% — REAL 자동매매 강제 중단"
+                    logger.error(state["stopped_reason"])
+                elif daily_pnl_pct is not None and daily_pnl_pct <= -2.5 and mode == "mock" and not is_mock_override:
+                    state["stopped"] = True
+                    state["stopped_reason"] = f"일 누적 손실 {daily_pnl_pct:.2f}% ≤ -2.5% — MOCK 자동매매 중단(설정에서 계속 테스트 가능)"
         except Exception as exc:
             order_api_ok = False
             warnings.append(f"계좌 조회 실패: {exc}")
@@ -944,12 +1061,18 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
     orders_this_cycle: list = []
     attempted_entry = False
-    trading_allowed = auto_trade_on and real_gate_ok and not state.get("stopped") and not is_watch_only(now) and broker is not None
+    trading_allowed = (
+        auto_trade_on and real_gate_ok and not state.get("stopped")
+        and not daily_return_blocked_this_cycle and not is_watch_only(now) and broker is not None
+    )
 
     if not trading_allowed:
         trace["risk_manager_ok"] = False
         if state.get("stopped"):
             trace["risk_manager_reason"] = state.get("stopped_reason") or "자동매매 중단 상태"
+        elif daily_return_blocked_this_cycle:
+            blocked_reason = (net_return_result or {}).get("blocked_reason") or DAILY_RETURN_UNKNOWN
+            trace["risk_manager_reason"] = f"{blocked_reason} — 계좌 데이터 이상으로 이번 사이클 신규주문 일시 보류"
         elif not auto_trade_on:
             trace["risk_manager_reason"] = "자동매매 OFF"
         elif not real_gate_ok:
@@ -1141,20 +1264,32 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
     # net_daily_return = (net_realized_pnl + net_unrealized_pnl) / starting_equity(당일 시작
     # 자산) — 반드시 당일 시작 시점 자산(daily_pnl_baseline_equity)을 분모로 써야 한다.
-    # 과거에는 분모로 "지금 이 순간의" total_equity를 썼는데, total_equity 자체가 이미
-    # 오늘 실현/미실현 손익을 반영해 시시각각 변하는 값이라 분모가 함께 움직이면서
-    # 표시값이 실제 수익률보다 항상 작게 나오는 왜곡이 있었다(2026-07-13 사용자 리포트 —
-    # 예: 순손익 406,333원/시작자산 10,000,000원=4.0633%가 정답인데, 분모를 변동 중인
-    # total_equity로 쓰면 다른 값이 나온다). 일손익 리스크 게이트(daily_return_pct 기반
-    # 신규진입 중단/강제청산, blocking_reason)도 이 값을 그대로 쓰므로 이 필드가 SoT다.
-    starting_equity = state.get("daily_pnl_baseline_equity") or total_equity
-    if starting_equity:
+    # total_equity(지금 이 순간의 계좌평가액)를 분모로 쓰지 않는다 — 그 값 자체가
+    # 이미 오늘 손익을 반영해 시시각각 변하고, 계좌조회 실패 시 0을 반환할 수 있어
+    # (2026-07-14 실측: 이 경로 때문에 일손실 -100%로 오판돼 자동매매가 잘못
+    # 정지됨) 분모로 쓰면 위험하다. risk_manager 게이트(compute_net_daily_return, 위
+    # 참조)와 반드시 같은 분모/공식을 써야 하므로(요구사항 1/5절) baseline이 아직
+    # 확정되지 않았으면(당일 첫 유효 조회가 아직 없었으면) 갱신을 건너뛰고 이전 값을
+    # 유지한다 — 0이나 total_equity로 대체하지 않는다.
+    starting_equity = state.get("daily_pnl_baseline_equity")
+    if starting_equity and starting_equity > 0:
         state["realized_pnl_today_pct"] = round(
             (state.get("realized_pnl_today_krw", 0.0) + unrealized_pnl) / starting_equity * 100.0, 4,
         )
         state["gross_realized_pnl_today_pct"] = round(
             (state.get("gross_realized_pnl_today_krw", 0.0) + gross_unrealized_pnl) / starting_equity * 100.0, 4,
         )
+        # risk_manager와 UI가 같은 값을 쓰도록(요구사항 5절) 이번 사이클(주문 반영 후)
+        # 최신 미실현손익 기준으로 daily_return_calculation도 함께 갱신한다.
+        dr = state.get("daily_return_calculation") or {}
+        dr.update({
+            "starting_equity": starting_equity,
+            "net_realized_pnl": state.get("realized_pnl_today_krw", 0.0),
+            "net_unrealized_pnl": unrealized_pnl,
+            "net_daily_return": state["realized_pnl_today_pct"],
+            "calculation_source": "ledger_unified",
+        })
+        state["daily_return_calculation"] = dr
 
     trace["trade_counter"] = state.get("daily_trade_count", 0)
     trace["ui_synced"] = save_state_atomic(state)
