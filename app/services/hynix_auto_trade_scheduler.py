@@ -18,6 +18,7 @@ from app.logger import logger
 from app.services.hynix_switch_state import load_state
 
 DEFAULT_INTERVAL_SECONDS = 180.0
+FAST_WATCHER_INTERVAL_SECONDS = 30.0
 
 _status_lock = threading.Lock()
 _status = {
@@ -29,6 +30,15 @@ _status = {
     "last_cycle_result_summary": None,
     "restart_count": 0,
 }
+_fast_status = {
+    "last_started_at": None,
+    "last_completed_at": None,
+    "next_run_at": None,
+    "run_count_today": 0,
+    "_run_count_date": None,
+    "last_result_summary": None,
+    "restart_count": 0,
+}
 
 
 def get_status() -> dict:
@@ -36,6 +46,14 @@ def get_status() -> dict:
     with _status_lock:
         snap = {k: v for k, v in _status.items() if not k.startswith("_")}
     snap["cycle_thread_alive"] = is_cycle_thread_running()
+    snap["fast_trend_watcher"] = get_fast_status()
+    return snap
+
+
+def get_fast_status() -> dict:
+    with _status_lock:
+        snap = {k: v for k, v in _fast_status.items() if not k.startswith("_")}
+    snap["thread_alive"] = is_fast_trend_watcher_running()
     return snap
 
 
@@ -89,8 +107,59 @@ class HynixAutoTradeCycleThread(threading.Thread):
             _status["cycle_count_today"] += 1
 
 
+class HynixFastTrendWatcherThread(threading.Thread):
+    def __init__(self, interval_seconds: float = FAST_WATCHER_INTERVAL_SECONDS):
+        super().__init__(daemon=True, name="HynixFastTrendWatcher")
+        self.interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        logger.info("[HynixFastTrendWatcher] start (%.0fs interval)", self.interval_seconds)
+        while not self._stop_event.is_set():
+            self._run_if_enabled()
+            with _status_lock:
+                _fast_status["next_run_at"] = (datetime.now() + timedelta(seconds=self.interval_seconds)).isoformat()
+            self._stop_event.wait(self.interval_seconds)
+        logger.info("[HynixFastTrendWatcher] stopped")
+
+    def _run_if_enabled(self) -> None:
+        from app.services.hynix_switch_engine import run_fast_trend_watcher_tick
+
+        state = load_state()
+        if not state.get("auto_trade_on") or state.get("stopped"):
+            return
+
+        today = datetime.now().strftime("%Y%m%d")
+        started_at = datetime.now()
+        with _status_lock:
+            _fast_status["last_started_at"] = started_at.isoformat()
+        try:
+            result = run_fast_trend_watcher_tick(mode=state.get("mode"))
+            summary = {
+                "skipped": bool(result.get("skipped", False)),
+                "reason": result.get("reason"),
+                "direction": (result.get("fast_signal") or {}).get("direction"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[HynixFastTrendWatcher] run failed: %s", exc)
+            summary = {"error": str(exc)}
+        completed_at = datetime.now()
+        with _status_lock:
+            _fast_status["last_completed_at"] = completed_at.isoformat()
+            _fast_status["last_result_summary"] = summary
+            if _fast_status["_run_count_date"] != today:
+                _fast_status["_run_count_date"] = today
+                _fast_status["run_count_today"] = 0
+            _fast_status["run_count_today"] += 1
+
+
 _cycle_lock = threading.Lock()
 _cycle_instance: Optional[HynixAutoTradeCycleThread] = None
+_fast_lock = threading.Lock()
+_fast_instance: Optional[HynixFastTrendWatcherThread] = None
 
 
 def ensure_cycle_thread_running(interval_seconds: float = DEFAULT_INTERVAL_SECONDS) -> HynixAutoTradeCycleThread:
@@ -117,3 +186,28 @@ def stop_cycle_thread() -> None:
 
 def is_cycle_thread_running() -> bool:
     return _cycle_instance is not None and _cycle_instance.is_alive()
+
+
+def ensure_fast_trend_watcher_running(interval_seconds: float = FAST_WATCHER_INTERVAL_SECONDS) -> HynixFastTrendWatcherThread:
+    global _fast_instance
+    with _fast_lock:
+        if _fast_instance is None or not _fast_instance.is_alive():
+            if _fast_instance is not None:
+                with _status_lock:
+                    _fast_status["restart_count"] += 1
+                logger.warning("[HynixFastTrendWatcher] dead thread restarting")
+            _fast_instance = HynixFastTrendWatcherThread(interval_seconds=interval_seconds)
+            _fast_instance.start()
+        return _fast_instance
+
+
+def stop_fast_trend_watcher() -> None:
+    global _fast_instance
+    with _fast_lock:
+        if _fast_instance is not None:
+            _fast_instance.stop()
+            _fast_instance = None
+
+
+def is_fast_trend_watcher_running() -> bool:
+    return _fast_instance is not None and _fast_instance.is_alive()

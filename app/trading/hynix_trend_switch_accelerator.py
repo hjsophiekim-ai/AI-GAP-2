@@ -30,7 +30,7 @@ _DEFAULTS = {
     "daily_target_round_trips_min": 4,
     "daily_target_round_trips_max": 5,
     "max_daily_round_trips": 8,
-    "normal_signal_pullback_wait_minutes": 3,
+    "normal_signal_pullback_wait_minutes": 2,
     "exploratory_stop_loss_pct": -0.8,
     "normal_stop_loss_atr_multiplier": 1.2,
     "normal_stop_loss_cap_pct": -1.5,
@@ -231,16 +231,40 @@ def plan_entry(
             return round(pct * 0.5, 4)
         return pct
 
+    def _confirmed_pct() -> float:
+        return _halved_if_needed(_confirmed_position_pct(cfg))
+
     # ── 1) 기존 포지션과 반대 방향 신호 2회 연속 — 즉시 전환(눌림목 불요) ──────
     if is_switch_target and reversal_streak >= 2:
-        pct = _halved_if_needed(cfg["exploratory_position_pct"])
+        pct = _confirmed_pct() if same_streak >= 3 else _halved_if_needed(cfg["exploratory_position_pct"])
         result.update(
-            proceed=True, position_pct=pct, entry_type="EXPLORATORY", immediate_switch=True,
-            stop_loss_pct=cfg["exploratory_stop_loss_pct"],
+            proceed=True, position_pct=pct,
+            entry_type=("CONFIRMED" if same_streak >= 3 else "EXPLORATORY"),
+            immediate_switch=True,
+            stop_loss_pct=(normal_entry_stop_loss_pct(atr_pct, cfg) if same_streak >= 3 else cfg["exploratory_stop_loss_pct"]),
         )
         return result
 
-    # ── 2) STRONG_BUY 연속 확인 — 눌림목 불요, 1회차 탐색/2회차 이상 확정 ─────
+    # ── 2) 일반 방향 신호도 2회 확인이면 탐색, 3회 확인이면 50~70% 확대 ─────
+    if same_streak >= 3:
+        pct = _confirmed_pct()
+        result.update(
+            proceed=True, position_pct=pct, entry_type="CONFIRMED",
+            stop_loss_pct=normal_entry_stop_loss_pct(atr_pct, cfg),
+        )
+        result["immediate_switch"] = is_switch_target
+        return result
+
+    if same_streak >= 2:
+        pct = _halved_if_needed(cfg["exploratory_position_pct"])
+        result.update(
+            proceed=True, position_pct=pct, entry_type="EXPLORATORY",
+            stop_loss_pct=cfg["exploratory_stop_loss_pct"],
+        )
+        result["immediate_switch"] = is_switch_target
+        return result
+
+    # STRONG_BUY 첫 신호는 계속 소액 탐색 진입을 허용한다.
     if strong and same_streak >= 1:
         pct = _halved_if_needed(cfg["exploratory_position_pct"])
         result.update(
@@ -250,7 +274,7 @@ def plan_entry(
         result["immediate_switch"] = is_switch_target
         return result
 
-    # ── 3) 일반 신호 — 눌림목 대기(호출부가 evaluate_pullback_gate 결과를 전달) ──
+    # ── 3) 약한 단일 신호만 눌림목 대기(호출부가 evaluate_pullback_gate 결과 전달) ──
     if pullback_result is None:
         result["block_reason"] = "눌림목 판정 불가(데이터 없음)"
         return result

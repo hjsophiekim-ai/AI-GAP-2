@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.trading.hynix_fast_trend import is_live_hynix_uptrend
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _WEIGHTS_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
@@ -67,6 +68,7 @@ def decide_hynix_or_inverse_action(enhanced_result: dict, current_position: Opti
     existing_micron_score = float(enhanced_result.get("existing_micron_score", 50.0))
     hynix_technical_score = float(enhanced_result.get("hynix_technical_score", 50.0))
     data_valid = enhanced_result.get("data_valid", {}) or {}
+    fast_live_trend = enhanced_result.get("fast_live_trend") or enhanced_result.get("live_hynix_trend") or {}
 
     reasons: list[str] = []
     if abs(raw_inverse_pressure_score - inverse_score) > 0.01:
@@ -110,6 +112,15 @@ def decide_hynix_or_inverse_action(enhanced_result: dict, current_position: Opti
 
     if th["hold_min"] <= enhanced_score <= th["hold_max"]:
         reasons.append(f"enhanced_score {enhanced_score:.1f} is in HOLD band({th['hold_min']}~{th['hold_max']})")
+        return _result(HOLD, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
+
+    if is_live_hynix_uptrend(fast_live_trend):
+        returns = fast_live_trend.get("returns") or {}
+        reasons.append(
+            "live Hynix uptrend blocks new INVERSE: "
+            f"VWAP=above, 3m={returns.get('3m')}, 5m={returns.get('5m')}, "
+            f"ema_slope={fast_live_trend.get('ema_slope_pct')}"
+        )
         return _result(HOLD, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
     if inverse_score >= th["inverse_strong_buy_min"]:

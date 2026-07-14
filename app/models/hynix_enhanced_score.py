@@ -45,6 +45,54 @@ def _load_weights() -> dict:
     return dict(_DEFAULT_WEIGHTS)
 
 
+def _parse_dt(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _micron_age_minutes(micron_result: dict) -> Optional[float]:
+    ts = _parse_dt((micron_result or {}).get("micron_last_update_time"))
+    if ts is None:
+        return None
+    return max(0.0, (datetime.now() - ts).total_seconds() / 60.0)
+
+
+def _is_micron_stale_for_orders(micron_result: dict) -> bool:
+    status = str((micron_result or {}).get("micron_data_status") or "").upper()
+    age = _micron_age_minutes(micron_result)
+    return status == "STALE_DATA" or (age is not None and age > 15.0)
+
+
+def _live_order_weights(base_weights: dict, micron_result: dict) -> dict:
+    if not _is_micron_stale_for_orders(micron_result):
+        return {**_DEFAULT_WEIGHTS, **(base_weights or {})}
+    return {
+        "base_prediction": 0.20,
+        "existing_micron": 0.0,
+        "hynix_technical": 0.45,
+        "intraday_momentum": 0.35,
+    }
+
+
+def _score_contribution_rows(scores: dict, weights: dict) -> list[dict]:
+    rows = []
+    for key, score in scores.items():
+        score_f = float(score)
+        weight = float(weights.get(key, 0.0) or 0.0)
+        rows.append({
+            "factor": key,
+            "score": round(score_f, 2),
+            "direction": "HYNIX" if score_f >= 50.0 else "INVERSE",
+            "weight": round(weight, 4),
+            "weighted_delta": round((score_f - 50.0) * weight, 4),
+        })
+    return rows
+
+
 def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dict:
     """개선된 최종점수 산출. mode(mock/real/None)는 데이터 수집 계좌 컨텍스트."""
     from app.data_sources.auto_market_collector import collect_all
@@ -55,6 +103,7 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
     from app.models.hynix_technical_score import calculate_hynix_technical_score
     from app.models.hynix_intraday_momentum_score import calculate_intraday_momentum_score
     from app.models.hynix_inverse_pressure_score import calculate_inverse_pressure_score
+    from app.trading.hynix_fast_trend import compute_fast_trend_signal
 
     warnings: list[str] = []
     data_valid = {"base_prediction": True, "existing_micron": True, "hynix_technical": True, "intraday_momentum": True}
@@ -95,6 +144,14 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
         warnings.append(f"existing_micron_score 계산 실패: {exc}")
         micron_result = {"existing_micron_score": 50.0, "warnings": [str(exc)]}
         data_valid["existing_micron"] = False
+    micron_age_minutes = _micron_age_minutes(micron_result)
+    micron_stale_for_orders = _is_micron_stale_for_orders(micron_result)
+    raw_existing_micron_score = float((micron_result or {}).get("existing_micron_score", 50.0))
+    micron_for_orders = dict(micron_result or {})
+    if micron_stale_for_orders:
+        micron_for_orders["existing_micron_score"] = 50.0
+        micron_for_orders["actual_order_weight"] = 0.0
+        warnings.append("Micron STALE_DATA/age>15m: live-order weight set to 0; display-only")
 
     # ── hynix_technical_score ─────────────────────────────────────────────────
     try:
@@ -115,7 +172,7 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
     # ── inverse_pressure_score ────────────────────────────────────────────────
     try:
         inverse_result = calculate_inverse_pressure_score(
-            tech_result=tech_result, momentum_result=momentum_result, micron_result=micron_result,
+            tech_result=tech_result, momentum_result=momentum_result, micron_result=micron_for_orders,
             kospilab_result=kospilab_result, df_1min=df_1min, current_price=hynix_current_price,
             investor_flow=investor_flow,
         )
@@ -130,11 +187,12 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
         warnings.append(f"인버스 현재가 수집 실패: {exc}")
         inverse_price_result = {"current_price": None, "stale": True, "error": str(exc)}
 
-    weights = _load_weights()
-    existing_micron_score = float(micron_result.get("existing_micron_score", 50.0))
+    weights = _live_order_weights(_load_weights(), micron_result)
+    existing_micron_score = float(micron_for_orders.get("existing_micron_score", 50.0))
     hynix_technical_score = float(tech_result.get("hynix_technical_score", 50.0))
     intraday_momentum_score = float(momentum_result.get("intraday_momentum_score", 50.0))
     inverse_pressure_score = float(inverse_result.get("inverse_pressure_score", 50.0))
+    fast_live_trend = compute_fast_trend_signal(df_1min)
 
     enhanced_score = (
         base_prediction_score * weights["base_prediction"]
@@ -156,16 +214,27 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
         candidates.append((abs(intraday_momentum_score - 50) * weights["intraday_momentum"] * 0.9, momentum_result["reason_top5"][0]))
     candidates.sort(key=lambda x: x[0], reverse=True)
     reason_top5 = [desc for _, desc in candidates[:5]]
+    score_contributions = _score_contribution_rows(
+        {
+            "base_prediction": base_prediction_score,
+            "existing_micron": existing_micron_score,
+            "hynix_technical": hynix_technical_score,
+            "intraday_momentum": intraday_momentum_score,
+        },
+        weights,
+    )
 
     return {
         "base_prediction_score": round(base_prediction_score, 2),
         "existing_micron_score": round(existing_micron_score, 2),
+        "raw_existing_micron_score": round(raw_existing_micron_score, 2),
         "hynix_technical_score": round(hynix_technical_score, 2),
         "intraday_momentum_score": round(intraday_momentum_score, 2),
         "inverse_pressure_score": round(inverse_pressure_score, 2),
         "inverse_pressure_tier": inverse_result.get("inverse_pressure_tier"),
         "enhanced_score": enhanced_score,
         "reason_top5": reason_top5,
+        "score_contributions": score_contributions,
         "data_valid": data_valid,
         "warnings": warnings + tech_result.get("warnings", []) + momentum_result.get("warnings", []) + micron_result.get("warnings", []) + inverse_result.get("warnings", []),
         "hynix_current_price": hynix_current_price,
@@ -173,6 +242,11 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
         "inverse_current_price": inverse_price_result.get("current_price"),
         "inverse_price_stale": bool(inverse_price_result.get("stale")),
         "micron_detail": micron_result,
+        "micron_age_minutes": None if micron_age_minutes is None else round(micron_age_minutes, 2),
+        "micron_stale_for_orders": bool(micron_stale_for_orders),
+        "micron_live_order_weight": float(weights.get("existing_micron", 0.0) or 0.0),
+        "live_order_weights": weights,
+        "fast_live_trend": fast_live_trend,
         "tech_detail": tech_result,
         "momentum_detail": momentum_result,
         "inverse_detail": inverse_result,

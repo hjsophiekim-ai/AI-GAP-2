@@ -856,7 +856,7 @@ def run_switch_or_entry(
 
     if held_symbol == desired_symbol:
         current_price = _current_price(desired_symbol, hynix_price, inverse_price)
-        if target_position_pct and current_price and trend_plan.get("entry_type") == "NORMAL":
+        if target_position_pct and current_price and trend_plan.get("entry_type") in ("NORMAL", "CONFIRMED"):
             try:
                 full_cash = float(broker.get_buyable_cash())
             except Exception as exc:

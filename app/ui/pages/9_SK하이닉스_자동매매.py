@@ -332,7 +332,11 @@ st.caption(
 from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.services.hynix_switch_engine import update_hynix_auto_trade_loop, set_control, reset_mock_account
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed
-from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running, get_status as get_cycle_status
+from app.services.hynix_auto_trade_scheduler import (
+    ensure_cycle_thread_running,
+    ensure_fast_trend_watcher_running,
+    get_status as get_cycle_status,
+)
 import app.trading.hynix_big_trend_engine as bte
 
 try:
@@ -342,6 +346,33 @@ except Exception:
     pass
 
 switch_state = load_state()
+
+try:
+    import os as _os
+    import sys as _sys
+    import subprocess as _sp
+
+    _runtime_port = _os.environ.get("STREAMLIT_SERVER_PORT")
+    for _i, _arg in enumerate(_sys.argv):
+        if _arg == "--server.port" and _i + 1 < len(_sys.argv):
+            _runtime_port = _sys.argv[_i + 1]
+        elif _arg.startswith("--server.port="):
+            _runtime_port = _arg.split("=", 1)[1]
+    _runtime_sha = _sp.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=_PROJECT_ROOT, timeout=5).decode().strip()
+except Exception:
+    _runtime_port = _runtime_port if "_runtime_port" in locals() else "unknown"
+    _runtime_sha = "unknown"
+
+_fw_state = switch_state.get("fast_trend_watcher") or {}
+_fw_signal = _fw_state.get("last_signal") or {}
+_rt_cols = st.columns(5)
+_rt_cols[0].metric("Run port", _runtime_port or "unknown")
+_rt_cols[1].metric("Git SHA", _runtime_sha)
+_rt_cols[2].metric("Code path", str(_PROJECT_ROOT))
+_rt_cols[3].metric("Order driver", switch_state.get("actual_order_driver") or "ENHANCED_REGIME_SWITCH")
+_rt_cols[4].metric("Fast watcher", _fw_signal.get("direction") or "-", delta=f"{_fw_state.get('confirmation_count', 0)}x")
+if _fw_state.get("blocked_reason"):
+    st.caption(f"Fast watcher block: {_fw_state.get('blocked_reason')}")
 
 sc1, sc2, sc3 = st.columns([1, 1, 2])
 with sc1:
@@ -972,9 +1003,16 @@ else:
             f"- micron_3min_score: {_m3 if _m3 is not None else '—'}\n"
             f"- micron_fallback_used: {micron_detail.get('micron_fallback_used')}\n"
             f"- micron_data_status: {micron_detail.get('micron_data_status', '—')}\n"
+            f"- micron_age_minutes: {enh.get('micron_age_minutes')}\n"
+            f"- live_order_weight: {enh.get('micron_live_order_weight')}\n"
+            f"- raw_existing_micron_score: {enh.get('raw_existing_micron_score')}\n"
             f"- micron_last_update_time: {micron_detail.get('micron_last_update_time') or '—'}\n"
             f"- source: {micron_detail.get('source', '—')}"
         )
+        _contrib = enh.get("score_contributions") or []
+        if _contrib:
+            import pandas as _pd
+            st.dataframe(_pd.DataFrame(_contrib), use_container_width=True, hide_index=True)
         _micron_warnings = micron_detail.get("warnings") or []
         if _micron_warnings:
             st.markdown("**왜 1분/3분 점수가 비어있는지(폴백 단계별 사유)**:")
@@ -1772,6 +1810,7 @@ from app.services.hynix_exit_recommender import (
 # 대기만 하고, 켜지는 순간 다음 틱부터 즉시 반응한다(페이지를 새로 열지 않아도 됨).
 ensure_watcher_running()
 ensure_cycle_thread_running()
+ensure_fast_trend_watcher_running()
 
 st.caption(f"백그라운드 감시 스레드: {'🟢 실행 중' if is_watcher_running() else '🔴 정지(비정상)'}")
 

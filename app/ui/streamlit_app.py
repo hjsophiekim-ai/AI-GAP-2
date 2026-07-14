@@ -262,8 +262,9 @@ except Exception as _watcher_exc:
 
 _log_step_start("cycle_thread_bootstrap")
 try:
-    from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running
+    from app.services.hynix_auto_trade_scheduler import ensure_cycle_thread_running, ensure_fast_trend_watcher_running
     ensure_cycle_thread_running()
+    ensure_fast_trend_watcher_running()
     _log_step_done("cycle_thread_bootstrap")
 except Exception as _cycle_exc:
     _log_step_failed("cycle_thread_bootstrap", _cycle_exc)

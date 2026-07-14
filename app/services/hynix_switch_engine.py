@@ -1,4 +1,4 @@
-"""
+﻿"""
 hynix_switch_engine.py — 하이닉스⇄인버스 Enhanced 자동매매 오케스트레이터.
 
 3분마다(또는 UI 자동새로고침 주기마다) 아래 순서를 반복한다:
@@ -37,9 +37,10 @@ from app.trading.hynix_trend_switch_accelerator import (
     signal_direction,
     update_confirm_tracker,
 )
+from app.trading.hynix_fast_trend import compute_fast_trend_signal
 
 _PULLBACK_MORNING_WINDOW_END = "10:00"
-_PULLBACK_PATIENCE_MINUTES = 3
+_PULLBACK_PATIENCE_MINUTES = 2
 
 _SIGNAL_DISPLAY_MAP = {
     "HYNIX_BUY": "BUY", "HYNIX_STRONG_BUY": "BUY",
@@ -140,55 +141,7 @@ def _build_blocking_reason(trace: dict) -> Optional[str]:
 
 
 def evaluate_pullback_gate(state: dict, desired_symbol: str, final_action: str, now: datetime, forced_info: dict, hynix_df_1min, mode: str) -> dict:
-    """신규 진입(매수) 전 눌림목 부근인지 확인한다.
-
-    09:10~10:00 구간은 그 창이 끝날 때까지, 그 외 시간대는 신호 발생 후 최대
-    `_PULLBACK_PATIENCE_MINUTES`분까지 눌림목을 기다린다. 강제거래창이 먼저
-    끝나면 그 마감시각을 데드라인으로 우선한다. 데드라인 도달 시 무조건 진입(진행)한다.
-    """
-    pending = state.get("pending_entry")
-    if not pending or pending.get("action") != final_action or pending.get("symbol") != desired_symbol:
-        pending = {"action": final_action, "symbol": desired_symbol, "since": now.isoformat()}
-        state["pending_entry"] = pending
-
-    try:
-        since = datetime.fromisoformat(pending["since"])
-    except Exception:
-        since = now
-
-    signal_started_in_morning_window = _parse_hm("09:10") <= since.time() < _parse_hm(_PULLBACK_MORNING_WINDOW_END)
-    if signal_started_in_morning_window:
-        deadline = datetime.combine(since.date(), _parse_hm(_PULLBACK_MORNING_WINDOW_END))
-    else:
-        deadline = since + timedelta(minutes=_PULLBACK_PATIENCE_MINUTES)
-
-    window = forced_info.get("window")
-    if window:
-        try:
-            _, end_str = window.split("-")
-            window_deadline = datetime.combine(now.date(), _parse_hm(end_str))
-            deadline = min(deadline, window_deadline)
-        except Exception:
-            pass
-
-    if now >= deadline:
-        return {"proceed": True, "message": f"눌림목 대기 데드라인({deadline.strftime('%H:%M')}) 도달 — 강제 진입"}
-
-    if desired_symbol == HYNIX_SYMBOL:
-        df_for_check = hynix_df_1min
-    else:
-        df_for_check = _load_inverse_1min_for_pullback(mode)
-
-    pullback = detect_pullback(df_for_check)
-    if pullback.get("is_pullback"):
-        return {"proceed": True, "message": f"눌림목 진입 조건 충족: {pullback.get('reason')}"}
-    return {
-        "proceed": False,
-        "message": f"눌림목 대기 중({pullback.get('reason')}) — 데드라인 {deadline.strftime('%H:%M')}까지 대기",
-    }
-
-def evaluate_pullback_gate(state: dict, desired_symbol: str, final_action: str, now: datetime, forced_info: dict, hynix_df_1min, mode: str) -> dict:
-    """General BUY pullback gate with a five-minute maximum wait."""
+    """General BUY pullback gate with a two-minute maximum wait."""
     held_symbol = (state.get("position") or {}).get("symbol")
     confirm_tracker = update_confirm_tracker(
         state.get("trend_switch_confirm_tracker") or default_confirm_state(),
@@ -284,13 +237,33 @@ def evaluate_pullback_gate(state: dict, desired_symbol: str, final_action: str, 
             "deadline_expired": True,
             "pullback_wait_remaining_seconds": 0,
             "message": (
-                f"눌림목 대기 데드라인 5분 만료({deadline.strftime('%H:%M')}) - 현재 신호 재검증 후 진입 허용"
+                f"눌림목 대기 데드라인 2분 만료({deadline.strftime('%H:%M')}) - 현재 신호 재검증 후 진입 허용"
                 if deadline_plan.get("proceed") else deadline_plan.get("block_reason")
             ),
         }
 
     df_for_check = hynix_df_1min if desired_symbol == HYNIX_SYMBOL else _load_inverse_1min_for_pullback(mode)
     pullback = detect_pullback(df_for_check)
+    try:
+        pullback_pct = float(pullback.get("pullback_pct") or pullback.get("drop_pct") or pullback.get("distance_pct") or 0.0)
+    except Exception:
+        pullback_pct = 0.0
+    if pullback_pct >= 4.0:
+        message = f"deep pullback {pullback_pct:.2f}% - re-evaluate current trend instead of waiting on old high"
+        wait_plan = {**pre_plan, "block_reason": message}
+        state["last_trend_switch_plan"] = {
+            **wait_plan,
+            "dominant_direction": signal_direction(final_action),
+            "desired_symbol": desired_symbol,
+            "pullback_wait_remaining_seconds": 0,
+            "dynamic_pullback_basis": pullback,
+        }
+        return {
+            "proceed": False,
+            "deadline_expired": False,
+            "pullback_wait_remaining_seconds": 0,
+            "message": message,
+        }
     if pullback.get("is_pullback"):
         pullback_plan = plan_trend_switch_entry(
             final_action=final_action,
@@ -1309,6 +1282,135 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
         return _update_hynix_auto_trade_loop_locked(mode=mode, now=now)
 
 
+def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
+    """30s fast live-trend watcher entry point.
+
+    It only uses live Hynix minute trend for direction flips. The 3-minute AI
+    cycle remains the broader confirmation/diagnostic path.
+    """
+    from app.models.hynix_enhanced_score import calculate_enhanced_hynix_prediction_score
+    from app.services.hynix_switch_state import with_state_lock
+
+    now = now or kst_now()
+    resolved_mode = mode or load_state(mode=None).get("mode", "mock")
+    with with_state_lock(resolved_mode):
+        state = load_state(mode=resolved_mode)
+        state["mode"] = resolved_mode
+        if not state.get("auto_trade_on") or state.get("stopped"):
+            return {"skipped": True, "reason": "auto off or stopped"}
+        if not is_new_entry_allowed(now):
+            status = state.get("fast_trend_watcher") or {}
+            status.update({"last_checked_at": now.isoformat(), "blocked_reason": "new entries blocked after 14:50"})
+            state["fast_trend_watcher"] = status
+            save_state_atomic(state)
+            return {"skipped": True, "reason": "new entries blocked after 14:50", "state": state}
+
+        enhanced_result = calculate_enhanced_hynix_prediction_score(mode=resolved_mode)
+        df_1min = (enhanced_result.get("market_data") or {}).get("hynix_minute", {}).get("df_1min")
+        fast_signal = compute_fast_trend_signal(df_1min, now=now)
+        status = dict(state.get("fast_trend_watcher") or {})
+        direction = fast_signal.get("direction")
+        if direction in ("UP", "DOWN"):
+            if status.get("candidate_direction") == direction:
+                status["confirmation_count"] = int(status.get("confirmation_count", 0)) + 1
+            else:
+                status["candidate_direction"] = direction
+                status["confirmation_count"] = 1
+        else:
+            status["confirmation_count"] = 0
+        status.update({
+            "direction": direction,
+            "last_signal": fast_signal,
+            "last_checked_at": now.isoformat(timespec="seconds"),
+            "actual_order_driver": "ENHANCED_REGIME_SWITCH",
+            "blocked_reason": None,
+        })
+        state["fast_trend_watcher"] = status
+
+        if direction not in ("UP", "DOWN") or int(status.get("confirmation_count", 0)) < 2:
+            save_state_atomic(state)
+            return {"skipped": True, "reason": "fast trend not confirmed", "fast_signal": fast_signal, "state": state}
+
+        final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
+        desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
+        held_symbol = (state.get("position") or {}).get("symbol")
+        if desired_symbol == held_symbol:
+            status["blocked_reason"] = "already holding confirmed fast direction"
+            state["fast_trend_watcher"] = status
+            save_state_atomic(state)
+            return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
+
+        idempotency_key = f"FAST:{direction}:{now.strftime('%Y%m%d%H%M')}"
+        if state.get("last_execution_idempotency_key") == idempotency_key:
+            status["blocked_reason"] = "duplicate fast watcher idempotency key"
+            state["fast_trend_watcher"] = status
+            save_state_atomic(state)
+            return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
+        state["last_execution_idempotency_key"] = idempotency_key
+        state["last_trend_switch_plan"] = {
+            "proceed": True,
+            "position_pct": 0.20,
+            "entry_type": "EXPLORATORY",
+            "immediate_switch": bool(held_symbol and desired_symbol != held_symbol),
+            "dominant_direction": "HYNIX" if direction == "UP" else "INVERSE",
+            "desired_symbol": desired_symbol,
+            "same_direction_streak": int(status.get("confirmation_count", 0)),
+            "reversal_streak": int(status.get("confirmation_count", 0)),
+            "pullback_wait_remaining_seconds": 0,
+            "block_reason": None,
+            "source": "FAST_TREND_WATCHER",
+        }
+
+        try:
+            from app.config import get_config
+            from app.trading.broker_factory import create_broker
+
+            cfg = get_config()
+            if resolved_mode == "real":
+                real_gate_status = (
+                    cfg.enhanced_real_gate_status(current_mode=resolved_mode)
+                    if hasattr(cfg, "enhanced_real_gate_status")
+                    else {"ready": cfg.full_auto_real_confirm_ok(), "blocking_reasons": [], "checks": {}}
+                )
+                if not bool(real_gate_status.get("ready")):
+                    status["blocked_reason"] = "REAL gate blocked: " + ", ".join(real_gate_status.get("blocking_reasons") or ["UNKNOWN"])
+                    state["fast_trend_watcher"] = status
+                    save_state_atomic(state)
+                    return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
+                broker = create_broker(
+                    cfg, mode="real", confirm_text=cfg.full_auto_real_confirm_text(),
+                    runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
+                )
+            else:
+                broker = create_broker(cfg, mode=resolved_mode)
+            position_manager = HynixPositionManager(broker, mode=resolved_mode)
+            position_manager.sync(force=True)
+            apply_position_manager_to_state(state, position_manager)
+            switch = run_switch_or_entry(
+                state, broker, final_action,
+                enhanced_result.get("hynix_current_price"), enhanced_result.get("inverse_current_price"),
+                now=now, forced=True, reason="FAST_TREND_WATCHER 2x confirmed",
+                position_manager=position_manager, target_position_pct=0.20, entry_type="EXPLORATORY",
+            )
+            status["last_execution"] = {
+                "idempotency_key": idempotency_key,
+                "final_action": final_action,
+                "result_message": switch.get("message"),
+                "orders": switch.get("orders", []),
+            }
+            position_manager.sync(force=True)
+            apply_position_manager_to_state(state, position_manager)
+            state["fast_trend_watcher"] = status
+            save_state_atomic(state)
+            return {"skipped": False, "fast_signal": fast_signal, "switch": switch, "state": state}
+        except Exception as exc:
+            status["blocked_reason"] = f"fast watcher execution failed: {exc}"
+            state["fast_trend_watcher"] = status
+            save_state_atomic(state)
+            logger.error("[FastTrendWatcher] execution failed: %s", exc)
+            return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
+
+
 def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
     """1회 실행 사이클의 실제 구현(반드시 with_state_lock(mode) 안에서만 호출).
 
@@ -1319,6 +1421,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     state = load_state(mode=mode)
     mode = mode or state.get("mode", "mock")
     state["mode"] = mode
+    state["actual_order_driver"] = "ENHANCED_REGIME_SWITCH"
 
     if state.get("stopped"):
         trace = _blank_pipeline_trace()
@@ -1534,7 +1637,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 warnings.append(f"TP/SL 처리 실패: {exc}")
                 tp_sl = {"triggered": False}
 
-            if not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
+            if False and not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
                 # ── ACTIVE STRATEGY / ADAPTIVE FUSION(거래모드 기반) — mock 전용 opt-in,
                 # 이번 사이클의 신규진입/전환 판단을 기존 ENHANCED_LEGACY 대신 이 엔진이
                 # 담당한다. 강제청산/레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로
