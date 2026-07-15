@@ -182,6 +182,96 @@ def _sync_flat_fields(state: dict) -> None:
         state["all_time_last_sell_price"] = state["last_sell_price"]
 
 
+def _iso_date(value) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).strftime("%Y%m%d")
+    except Exception:
+        text = str(value)
+        if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+            return text[:10].replace("-", "")
+        return None
+
+
+def _dict_state_date(value: dict, *timestamp_keys: str) -> Optional[str]:
+    if not isinstance(value, dict):
+        return None
+    raw_date = value.get("_state_date") or value.get("date")
+    if raw_date:
+        return str(raw_date).replace("-", "")[:8]
+    for key in timestamp_keys:
+        parsed = _iso_date(value.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _clear_intraday_decision_state(state: dict) -> None:
+    for key in (
+        "pending_entry",
+        "trend_switch_confirm_tracker",
+        "trend_switch_frequency_state",
+        "last_trend_switch_plan",
+        "fast_trend_watcher",
+        "trend_switch_unconfirmed_order",
+        "last_big_trend_result",
+        "last_final_execution_decision",
+        "last_pipeline_trace",
+        "daily_return_calculation",
+        "last_account_equity_snapshot",
+        "dynamic_exit_last_decision",
+        "last_cycle_ai_result",
+    ):
+        state[key] = None
+    state["position_sync_error"] = None
+    state["position_sync_status"] = None
+    state["position_sync_block_new_orders"] = False
+
+
+def _sanitize_intraday_state_dates(state: dict, today: str) -> None:
+    """Drop stale day-scoped caches even when the top-level state date is current.
+
+    A previous rollover could update `state["date"]` while leaving nested Enhanced
+    switching/pullback/account snapshots from the prior session. Those fields must
+    not influence today's order gate.
+    """
+    stale = False
+    tracker_date = _dict_state_date(state.get("trend_switch_confirm_tracker"), "last_signal_at")
+    freq_date = _dict_state_date(state.get("trend_switch_frequency_state"), "last_entry_at")
+    pending_date = _dict_state_date(state.get("pending_entry"), "since")
+    fast_date = _dict_state_date(state.get("fast_trend_watcher"), "last_checked_at", "updated_at", "last_signal_at", "as_of")
+    account_date = _dict_state_date(state.get("last_account_equity_snapshot"), "as_of")
+    daily_calc = state.get("daily_return_calculation") or {}
+    daily_calc_date = _dict_state_date(daily_calc.get("account_snapshot") if isinstance(daily_calc, dict) else None, "as_of")
+    big_trend = state.get("last_big_trend_result") or {}
+    big_trend_date = None
+    if isinstance(big_trend, dict):
+        big_trend_date = _dict_state_date(big_trend.get("log_row"), "timestamp")
+
+    for observed in (tracker_date, freq_date, pending_date, fast_date, account_date, daily_calc_date, big_trend_date):
+        if observed and observed != today:
+            stale = True
+            break
+    if stale:
+        logger.warning("[HynixSwitchState] stale intraday Enhanced cache detected; clearing day-scoped fields")
+        _clear_intraday_decision_state(state)
+
+
+def _sanitize_position_sync_flags(state: dict) -> None:
+    pos = state.get("position") or {}
+    flat = not pos.get("symbol") or (pos.get("quantity") or 0) <= 0
+    if state.get("position_sync_status") == "SYNCED":
+        state["position_sync_block_new_orders"] = False
+        if flat:
+            state["position_sync_error"] = None
+        return
+    if flat and state.get("position_sync_block_new_orders") and not state.get("residual_position_error"):
+        state["position_sync_block_new_orders"] = False
+        state["position_sync_error"] = None
+        state["position_sync_status"] = None
+
+
 def load_state(mode: Optional[str] = None) -> dict:
     """상태 로드. mode를 지정하지 않으면 활성 모드(active_mode 포인터)를 사용.
 
@@ -232,6 +322,11 @@ def load_state(mode: Optional[str] = None) -> dict:
             state["last_action"] = None
             state["last_order_id"] = None
             state["pending_entry"] = None
+            state["trend_switch_confirm_tracker"] = None
+            state["trend_switch_frequency_state"] = None
+            state["last_trend_switch_plan"] = None
+            state["fast_trend_watcher"] = None
+            state["trend_switch_unconfirmed_order"] = None
             state["pending_manual_stop_loss_alert"] = None
             if mode == "mock":
                 state["cash"] = state.get("mock_budget_krw", _DEFAULT_MOCK_BUDGET_KRW)
@@ -239,6 +334,9 @@ def load_state(mode: Optional[str] = None) -> dict:
         # 15:15(강제청산 시각) 이전인데 liquidation_done=True로 남아있으면 항상 오류다
         # (테스트/E2E 스크립트가 실제 state를 직접 건드렸거나 다른 버그로 잘못 세팅된
         # 경우) — 날짜 롤오버 여부와 무관하게 매 로드마다 확인해 자동 복구한다.
+        _sanitize_intraday_state_dates(state, today)
+        _sanitize_position_sync_flags(state)
+
         if state.get("liquidation_done"):
             try:
                 from app.trading.hynix_switch_risk_gate import should_liquidate_now

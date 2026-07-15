@@ -1,5 +1,5 @@
 """
-hynix_trend_switch_accelerator.py — Enhanced 하이닉스⇄0197X0(ENHANCED_LEGACY 경로,
+hynix_trend_switch_accelerator.py — Enhanced 하이닉스⇄0197X0(ENHANCED_REGIME_SWITCH 경로,
 active_strategy_enabled=False일 때) 전용 추세 전환 가속기.
 
 Adaptive Fusion(hynix_adaptive_fusion_engine.py)이나 Active Strategy와는 완전히

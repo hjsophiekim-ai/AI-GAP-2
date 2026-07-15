@@ -308,6 +308,19 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         return None
 
     mode = state.get("mode", "mock")
+    position = state.get("position") or {}
+    symbol = position.get("symbol")
+    flat_without_recovery_context = (
+        (not symbol or (position.get("quantity") or 0) <= 0)
+        and not position.get("entry_price")
+        and not position.get("entry_time")
+    )
+    if flat_without_recovery_context:
+        # Dynamic Exit는 보유 포지션 청산 전용이다. 보유가 없는데도 1초마다
+        # KIS 잔고를 조회하면 EGW00201/tokenP 제한으로 Enhanced 신규진입까지 막힌다.
+        state["dynamic_exit_last_decision"] = _no_position_decision()
+        save_state_atomic(state)
+        return None
     try:
         broker = _get_cached_broker(mode, state.get("mock_budget_krw", 10_000_000.0))
         position_manager = _get_position_manager(broker, mode)

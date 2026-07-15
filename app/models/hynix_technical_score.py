@@ -243,22 +243,19 @@ def calculate_hynix_technical_score(df_daily: Optional[pd.DataFrame], df_1min: O
     except Exception as exc:
         warnings.append(f"거래량 신호 계산 실패: {exc}")
 
-    # ── 1/3/5분봉 방향 + 장중 고저 갱신 ──────────────────────────────────────
+    # ── 1/3/5분봉 방향(참고용 detail만, 점수에는 반영하지 않음) + 장중 고저 갱신 ──
+    # 요구사항: 초단기(1·3·5분) 모멘텀은 intraday_momentum_score가 별도 가중치로만
+    # 반영해야 하며, "당일 주추세"를 나타내야 할 hynix_technical_score에 다시
+    # 섞이면(이중 반영) 5분 조정 하나가 기술점수까지 함께 흔들어 HYNIX→INVERSE
+    # 전환을 유발할 수 있다(2026-07-15 요구사항: 5분 조정만으로 전환 금지). 방향은
+    # UI 참고용으로만 남기고 raw_point_sum에는 더하지 않는다.
     try:
         if df_1min is not None and not df_1min.empty:
             df_3min = _resample(df_1min, 3)
             df_5min = _resample(df_1min, 5)
-            dir_1 = _bar_direction(df_1min)
-            dir_3 = _bar_direction(df_3min)
-            dir_5 = _bar_direction(df_5min)
-            detail["minute_direction_1m"] = dir_1
-            detail["minute_direction_3m"] = dir_3
-            detail["minute_direction_5m"] = dir_5
-            dirs = [d for d in (dir_1, dir_3, dir_5) if d is not None]
-            if dirs and all(d == "up" for d in dirs):
-                points.append((10.0, "1·3·5분봉 모두 상승"))
-            elif dirs and all(d == "down" for d in dirs):
-                points.append((-10.0, "1·3·5분봉 모두 하락"))
+            detail["minute_direction_1m"] = _bar_direction(df_1min)
+            detail["minute_direction_3m"] = _bar_direction(df_3min)
+            detail["minute_direction_5m"] = _bar_direction(df_5min)
 
             today = pd.Timestamp.now().normalize()
             work = df_1min.copy()

@@ -17,6 +17,7 @@ from app.data_sources.auto_market_collector import (
     collect_nvda_data,
     collect_index_data,
     collect_hynix_daily,
+    collect_hynix_minute,
     collect_kospilab_data,
     _normalize_yf_ohlcv,
 )
@@ -195,3 +196,19 @@ class TestCollectHynixDaily:
 
         # 캐시를 읽거나 yfinance 실패 후 None — 크래시 없어야 함
         assert "df_daily" in result
+
+
+class TestCollectHynixMinute:
+    def test_uses_same_day_quote_seed_when_kis_minute_and_cache_are_missing(self):
+        with patch("app.data_sources.auto_market_collector._load_hynix_minute_cache", return_value=None), \
+             patch("app.data_sources.auto_market_collector._fresh_cache", return_value=False), \
+             patch("app.data_sources.auto_market_collector._fetch_hynix_current_from_kis", return_value=None), \
+             patch("app.data_sources.auto_market_collector._naver_current_price",
+                   return_value={"status": "success", "current_price": 191_300.0}):
+            result = collect_hynix_minute(mode="mock")
+
+        assert result["status"] == "quote_seed"
+        assert result["source"] == "quote_seed"
+        assert result["df_1min"] is not None
+        assert len(result["df_1min"]) >= 2
+        assert set(result["df_1min"]["close"].astype(float)) == {191_300.0}

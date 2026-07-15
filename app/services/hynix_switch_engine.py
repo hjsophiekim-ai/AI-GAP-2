@@ -38,6 +38,11 @@ from app.trading.hynix_trend_switch_accelerator import (
     update_confirm_tracker,
 )
 from app.trading.hynix_fast_trend import compute_fast_trend_signal
+from app.trading.hynix_primary_trend import (
+    PRIMARY_TREND_RANGE, PRIMARY_TREND_UP, PRIMARY_TREND_DOWN,
+    classify_short_term_move, compute_primary_trend, default_reversal_confirmation_state,
+    new_hynix_entry_blocked, new_inverse_entry_blocked, update_reversal_confirmation,
+)
 
 _PULLBACK_MORNING_WINDOW_END = "10:00"
 _PULLBACK_PATIENCE_MINUTES = 2
@@ -93,6 +98,11 @@ def _blank_pipeline_trace() -> dict:
         "risk_manager_ok": True, "risk_manager_reason": "정상",
         "risk_approved": True,
         "order_sent": False,
+        # execution_stage: run_switch_or_entry()가 실제로 보고한 단계("entry"=주문이
+        # 필요 없었음/진입 자체를 시도 안 함, "state_sync"=POSITION_SYNC_PENDING으로
+        # 차단, "order_sent"=주문을 실제로 시도함). order_sent=False가 "주문 전송
+        # 실패"인지 "애초에 주문이 필요 없었음"인지 구분하는 데 쓴다.
+        "execution_stage": None,
         "broker_executed": False,
         "position_confirmed": None,
         "ui_synced": None,
@@ -114,6 +124,13 @@ def _first_blocked_stage(trace: dict) -> Optional[str]:
     if not trace["risk_manager_ok"]:
         return "risk_manager"
     if not trace["order_sent"]:
+        # order_sent=False만으로는 "주문 전송 실패"로 단정하지 않는다 — 이미 목표
+        # 종목을 보유해서 추가 진입이 필요 없었거나(entry), POSITION_SYNC_PENDING으로
+        # 차단됐을 수 있다(state_sync). 실행 계층(run_switch_or_entry)이 보고한
+        # execution_stage를 우선 신뢰하고, 없을 때만(레거시 경로 등) order_sent로 본다.
+        exec_stage = trace.get("execution_stage")
+        if exec_stage in ("entry", "state_sync"):
+            return exec_stage
         return "order_sent"
     if not trace["broker_executed"]:
         return "broker_executed"
@@ -132,6 +149,8 @@ def _build_blocking_reason(trace: dict) -> Optional[str]:
     reason_map = {
         "entry_approved": trace.get("entry_approved_reason"),
         "risk_manager": trace.get("risk_manager_reason"),
+        "entry": trace.get("entry_approved_reason") or "이미 목표 종목 보유 중이거나 추가 진입이 필요 없어 주문을 시도하지 않음",
+        "state_sync": trace.get("entry_approved_reason") or "POSITION_SYNC_PENDING — 브로커 잔고 확인 전이라 주문 차단",
         "order_sent": "주문이 브로커로 전송되지 않음(가격 조회 실패/쿨다운/허용 시간대 아님 등)",
         "broker_executed": "주문은 전송됐으나 브로커 체결 실패",
         "position_confirmed": "체결 후 재조회한 포지션이 기대와 불일치",
@@ -140,9 +159,40 @@ def _build_blocking_reason(trace: dict) -> Optional[str]:
     return f"[{stage}] {reason_map.get(stage) or '알 수 없음'}"
 
 
-def evaluate_pullback_gate(state: dict, desired_symbol: str, final_action: str, now: datetime, forced_info: dict, hynix_df_1min, mode: str) -> dict:
+def evaluate_pullback_gate(
+    state: dict, desired_symbol: str, final_action: str, now: datetime, forced_info: dict, hynix_df_1min, mode: str,
+    primary_trend_result: Optional[dict] = None,
+) -> dict:
     """General BUY pullback gate with a two-minute maximum wait."""
     held_symbol = (state.get("position") or {}).get("symbol")
+    ptrend = primary_trend_result or {}
+    primary_trend = ptrend.get("primary_trend", PRIMARY_TREND_RANGE)
+    trend_blocked_reason = None
+    if final_action in ("INVERSE_BUY", "INVERSE_STRONG_BUY") and new_inverse_entry_blocked(
+        primary_trend, ptrend.get("above_vwap"), ptrend.get("above_ema20"),
+    ):
+        trend_blocked_reason = (
+            f"PRIMARY_TREND=UP and price above VWAP/EMA20 - new INVERSE entry blocked "
+            f"(short-term move classified as {classify_short_term_move(primary_trend, None)}"
+            "; requires 2x-confirmed VWAP/15m-trend/swing-low breakdown to flip)"
+        )
+    elif final_action in ("HYNIX_BUY", "HYNIX_STRONG_BUY") and new_hynix_entry_blocked(
+        primary_trend, ptrend.get("above_vwap"), ptrend.get("above_ema20"),
+    ):
+        trend_blocked_reason = (
+            "PRIMARY_TREND=DOWN and price below VWAP/EMA20 - new HYNIX entry blocked "
+            "(requires 2x-confirmed VWAP/15m-trend/swing-high breakout to flip)"
+        )
+    if trend_blocked_reason:
+        state["last_trend_switch_plan"] = {
+            "proceed": False, "dominant_direction": signal_direction(final_action), "desired_symbol": desired_symbol,
+            "pullback_wait_remaining_seconds": None, "block_reason": trend_blocked_reason,
+            "primary_trend": primary_trend,
+        }
+        return {
+            "proceed": False, "deadline_expired": False, "pullback_wait_remaining_seconds": None,
+            "message": trend_blocked_reason,
+        }
     confirm_tracker = update_confirm_tracker(
         state.get("trend_switch_confirm_tracker") or default_confirm_state(),
         final_action, held_symbol, desired_symbol, now,
@@ -355,6 +405,7 @@ _EQUITY_MISMATCH_TOLERANCE_PCT = 0.5
 _EQUITY_MISMATCH_RETRY_ATTEMPTS = 3
 _EQUITY_MISMATCH_RETRY_DELAY_SECONDS = 3
 _ACCOUNT_SETTLEMENT_GRACE_SECONDS = 60
+_ACCOUNT_SNAPSHOT_FALLBACK_SECONDS = 90
 
 
 def _position_market_value(position) -> float:
@@ -441,6 +492,38 @@ def _read_account_equity_snapshot(broker, now: datetime) -> dict:
     except Exception as exc:
         snapshot["error"] = str(exc)
         return snapshot
+
+
+def _recent_valid_account_snapshot(state: dict, now: datetime) -> Optional[dict]:
+    """Return a recent successful account snapshot when KIS is temporarily rate-limited.
+
+    This is only a short-lived read-through fallback for EGW00201/tokenP throttling.
+    It must not turn a missing or failed account response into 0 won.
+    """
+    snapshot = state.get("last_account_equity_snapshot") or {}
+    if not snapshot.get("ok"):
+        return None
+    if snapshot.get("cash") is None or snapshot.get("current_equity") is None:
+        return None
+    raw_as_of = snapshot.get("as_of")
+    if not raw_as_of:
+        return None
+    try:
+        as_of = datetime.fromisoformat(str(raw_as_of))
+    except Exception:
+        return None
+    try:
+        age_seconds = (now - as_of).total_seconds()
+    except Exception:
+        return None
+    if age_seconds < 0 or age_seconds > _ACCOUNT_SNAPSHOT_FALLBACK_SECONDS:
+        return None
+    cached = dict(snapshot)
+    cached["ok"] = True
+    cached["cached_fallback"] = True
+    cached["cached_age_seconds"] = int(age_seconds)
+    cached["source"] = f"{cached.get('source') or 'account_snapshot'}+recent_cache"
+    return cached
 
 
 def compute_net_daily_return(
@@ -574,6 +657,13 @@ def _compute_net_daily_return_with_retries(
     last_snapshot = None
     for idx in range(attempts):
         snapshot = _read_account_equity_snapshot(broker, now)
+        if not snapshot.get("ok"):
+            cached_snapshot = _recent_valid_account_snapshot(state, now)
+            if cached_snapshot is not None:
+                cached_snapshot["live_error"] = snapshot.get("error")
+                cached_snapshot["live_msg_cd"] = snapshot.get("msg_cd")
+                cached_snapshot["live_msg1"] = snapshot.get("msg1")
+                snapshot = cached_snapshot
         last_snapshot = snapshot
         result = compute_net_daily_return(
             state, position, hynix_price, inverse_price,
@@ -591,6 +681,9 @@ def _compute_net_daily_return_with_retries(
             "output1_field_names": snapshot.get("output1_field_names"),
             "output2_field_names": snapshot.get("output2_field_names"),
         }
+        for key in ("cached_fallback", "cached_age_seconds", "live_error", "live_msg_cd", "live_msg1"):
+            if snapshot.get(key) is not None:
+                result["account_snapshot"][key] = snapshot.get(key)
         result["mismatch_retry_index"] = idx + 1
         history.append({
             "attempt": idx + 1,
@@ -655,7 +748,7 @@ def _run_active_strategy_entry(
 
     state["active_strategy_enabled"]가 True이고 mode=="mock"일 때만 호출부에서
     호출된다(real 모드에서는 절대 호출되지 않음 — 호출부에서 이미 mode=="mock"을
-    확인). 기존 ENHANCED_LEGACY 진입 로직(run_switch_or_entry)을 이번 사이클만
+    확인). 기존 ENHANCED_REGIME_SWITCH 진입 로직(run_switch_or_entry)을 이번 사이클만
     대체하며, 같은 브로커/포지션 파이프라인(_buy_new/_sell_all_or_ratio → 실행
     원장)을 그대로 사용하되 signal_source="ACTIVE_ONLY"으로 구분 기록한다.
     """
@@ -1308,7 +1401,24 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
         enhanced_result = calculate_enhanced_hynix_prediction_score(mode=resolved_mode)
         df_1min = (enhanced_result.get("market_data") or {}).get("hynix_minute", {}).get("df_1min")
         fast_signal = compute_fast_trend_signal(df_1min, now=now)
+        primary_trend_result = compute_primary_trend(
+            df_1min, prev_close=enhanced_result.get("hynix_prev_close"), now=now,
+        )
+        primary_trend = primary_trend_result.get("primary_trend")
+        state["last_primary_trend"] = primary_trend_result
         status = dict(state.get("fast_trend_watcher") or {})
+
+        # 요구사항: fast confirmed direction(candidate_direction/confirmation_count)은
+        # 날짜(위 auto off/rollover 분기에서 이미 처리) 뿐 아니라 계좌/보유수량이 바뀌면도
+        # 초기화해야 한다 — 이전 사이클과 보유 상태가 달라졌다면 그 사이의 연속 확인
+        # 횟수는 지금의 포지션에 대해 더 이상 유효하지 않다.
+        position_now = state.get("position") or {}
+        position_signature = f"{resolved_mode}:{position_now.get('symbol')}:{position_now.get('quantity') or 0}"
+        if status.get("position_signature") not in (None, position_signature):
+            status["candidate_direction"] = None
+            status["confirmation_count"] = 0
+        status["position_signature"] = position_signature
+
         direction = fast_signal.get("direction")
         if direction in ("UP", "DOWN"):
             if status.get("candidate_direction") == direction:
@@ -1323,9 +1433,24 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
             "last_signal": fast_signal,
             "last_checked_at": now.isoformat(timespec="seconds"),
             "actual_order_driver": "ENHANCED_REGIME_SWITCH",
+            "primary_trend": primary_trend,
             "blocked_reason": None,
         })
         state["fast_trend_watcher"] = status
+
+        # 요구사항: Fast Watcher의 빠른 스위칭은 PRIMARY_TREND가 RANGE일 때만 허용한다.
+        # UP/DOWN 추세 중에는 1·3·5분 신호가 그 추세에 대한 PULLBACK일 수 있으므로,
+        # 이 30초 워처가 단독으로 전환하지 않는다 — 실제 추세반전은 update_reversal_confirmation
+        # (VWAP 이탈 + 15분 추세 + 주요 저점/고점 붕괴, 2회 연속 확인)이 별도로 담당한다.
+        if primary_trend != PRIMARY_TREND_RANGE:
+            move_kind = classify_short_term_move(primary_trend, direction)
+            status["blocked_reason"] = (
+                f"PRIMARY_TREND={primary_trend} - fast rapid switching only runs in RANGE "
+                f"(this move classified as {move_kind})"
+            )
+            state["fast_trend_watcher"] = status
+            save_state_atomic(state)
+            return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "primary_trend": primary_trend_result, "state": state}
 
         if direction not in ("UP", "DOWN") or int(status.get("confirmation_count", 0)) < 2:
             save_state_atomic(state)
@@ -1341,12 +1466,14 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
             return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
 
         idempotency_key = f"FAST:{direction}:{now.strftime('%Y%m%d%H%M')}"
-        if state.get("last_execution_idempotency_key") == idempotency_key:
+        previous_fast_execution = ((state.get("fast_trend_watcher") or {}).get("last_execution") or {})
+        previous_orders = previous_fast_execution.get("orders") or []
+        previous_had_success_order = any(bool(o.get("success")) for o in previous_orders if isinstance(o, dict))
+        if state.get("last_execution_idempotency_key") == idempotency_key and previous_had_success_order:
             status["blocked_reason"] = "duplicate fast watcher idempotency key"
             state["fast_trend_watcher"] = status
             save_state_atomic(state)
             return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
-        state["last_execution_idempotency_key"] = idempotency_key
         state["last_trend_switch_plan"] = {
             "proceed": True,
             "position_pct": 0.20,
@@ -1398,6 +1525,10 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
                 "result_message": switch.get("message"),
                 "orders": switch.get("orders", []),
             }
+            if any(bool(o.get("success")) for o in (switch.get("orders") or []) if isinstance(o, dict)):
+                state["last_execution_idempotency_key"] = idempotency_key
+            elif state.get("last_execution_idempotency_key") == idempotency_key:
+                state["last_execution_idempotency_key"] = None
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
             state["fast_trend_watcher"] = status
@@ -1637,13 +1768,16 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 warnings.append(f"TP/SL 처리 실패: {exc}")
                 tp_sl = {"triggered": False}
 
-            if False and not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
+            if not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
                 # ── ACTIVE STRATEGY / ADAPTIVE FUSION(거래모드 기반) — mock 전용 opt-in,
-                # 이번 사이클의 신규진입/전환 판단을 기존 ENHANCED_LEGACY 대신 이 엔진이
-                # 담당한다. 강제청산/레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로
-                # 안전망은 유지된다. adaptive_fusion_enabled가 켜져 있으면 Prediction AI
-                # V2/Cycle AI/Micron Proxy를 실제로 융합하는 Adaptive Fusion 경로를 쓰고,
-                # 꺼져 있으면 기존 ACTIVE_FUSION 단독 경로를 그대로 쓴다(대체가 아니라 opt-in).
+                # 이번 사이클의 신규진입/전환 판단을 기존 ENHANCED_REGIME_SWITCH 대신 이
+                # 엔진이 담당한다. mode=="mock" 조건 때문에 실거래(real)에는 절대 관여하지
+                # 않으므로(요구사항4: 실제 주문 지배 엔진은 ENHANCED_REGIME_SWITCH 하나로
+                # 통일), 이 opt-in 경로가 "두 번째 실주문 엔진"이 되지는 않는다. 강제청산/
+                # 레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로 안전망은 유지된다.
+                # adaptive_fusion_enabled가 켜져 있으면 Prediction AI V2/Cycle AI/Micron
+                # Proxy를 실제로 융합하는 Adaptive Fusion 경로를 쓰고, 꺼져 있으면 기존
+                # ACTIVE_FUSION 단독 경로를 그대로 쓴다(대체가 아니라 opt-in).
                 try:
                     _boosted_enhanced_score = _boost_enhanced_score_with_inverse_pressure(
                         decision.get("enhanced_score"), decision.get("inverse_pressure_score"),
@@ -1713,10 +1847,35 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                                 atr_pct=None,
                             )
                             proceed = bool(trend_plan.get("proceed"))
+                            # 강한 신호(STRONG_BUY)도 PRIMARY_TREND 차단은 무시할 수 없다 — "강한
+                            # 신호니까 눌림목 대기 생략"이 단기 조정을 실제 추세전환으로 오판하게
+                            # 두지 않는다.
+                            strong_primary_trend_result = compute_primary_trend(
+                                df_1min, prev_close=enhanced_result.get("hynix_prev_close"), now=now,
+                            )
+                            state["last_primary_trend"] = strong_primary_trend_result
+                            strong_ptrend = strong_primary_trend_result.get("primary_trend", PRIMARY_TREND_RANGE)
+                            trend_block_reason = None
+                            if final_action == "INVERSE_STRONG_BUY" and new_inverse_entry_blocked(
+                                strong_ptrend, strong_primary_trend_result.get("above_vwap"), strong_primary_trend_result.get("above_ema20"),
+                            ):
+                                trend_block_reason = (
+                                    "PRIMARY_TREND=UP and price above VWAP/EMA20 - even a strong INVERSE "
+                                    "signal is blocked without 2x-confirmed VWAP/15m-trend/swing-low breakdown"
+                                )
+                            elif final_action == "HYNIX_STRONG_BUY" and new_hynix_entry_blocked(
+                                strong_ptrend, strong_primary_trend_result.get("above_vwap"), strong_primary_trend_result.get("above_ema20"),
+                            ):
+                                trend_block_reason = (
+                                    "PRIMARY_TREND=DOWN and price below VWAP/EMA20 - even a strong HYNIX "
+                                    "signal is blocked without 2x-confirmed VWAP/15m-trend/swing-high breakout"
+                                )
+                            if trend_block_reason:
+                                proceed = False
                             trace["entry_approved"] = proceed
                             trace["entry_approved_reason"] = (
                                 f"{final_action} 강한 신호 — 눌림목 대기 생략"
-                                if proceed else (trend_plan.get("block_reason") or "강한 신호 차단")
+                                if proceed else (trend_block_reason or trend_plan.get("block_reason") or "강한 신호 차단")
                             )
                             if not proceed:
                                 warnings.append(trace["entry_approved_reason"])
@@ -1725,10 +1884,19 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                                 "dominant_direction": "HYNIX" if desired_symbol == HYNIX_SYMBOL else "INVERSE",
                                 "desired_symbol": desired_symbol,
                                 "pullback_wait_remaining_seconds": 0,
+                                "primary_trend": strong_ptrend,
+                                **({"block_reason": trend_block_reason} if trend_block_reason else {}),
                             }
                         else:
                             try:
-                                gate = evaluate_pullback_gate(state, desired_symbol, final_action, now, forced_info, df_1min, mode)
+                                primary_trend_result = compute_primary_trend(
+                                    df_1min, prev_close=enhanced_result.get("hynix_prev_close"), now=now,
+                                )
+                                state["last_primary_trend"] = primary_trend_result
+                                gate = evaluate_pullback_gate(
+                                    state, desired_symbol, final_action, now, forced_info, df_1min, mode,
+                                    primary_trend_result=primary_trend_result,
+                                )
                                 proceed = gate["proceed"]
                                 trace["entry_approved"] = proceed
                                 trace["entry_approved_reason"] = gate["message"]
@@ -1749,9 +1917,13 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                                 now=now, forced=forced, reason=reason, position_manager=position_manager,
                             )
                             orders_this_cycle.extend(switch.get("orders", []))
+                            trace["execution_stage"] = switch.get("stage")
+                            if not switch.get("orders"):
+                                trace["entry_approved_reason"] = switch.get("message") or trace.get("entry_approved_reason")
                         except Exception as exc:
                             logger.error("[HynixSwitchEngine] 스위칭/진입 처리 실패: %s", exc)
                             warnings.append(f"스위칭/진입 처리 실패: {exc}")
+                            trace["execution_stage"] = "order_sent"
                 else:
                     state.pop("pending_entry", None)
                     trace["entry_approved_reason"] = "HOLD — 신규 진입 신호 없음"

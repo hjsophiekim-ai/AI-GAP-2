@@ -374,6 +374,20 @@ _rt_cols[4].metric("Fast watcher", _fw_signal.get("direction") or "-", delta=f"{
 if _fw_state.get("blocked_reason"):
     st.caption(f"Fast watcher block: {_fw_state.get('blocked_reason')}")
 
+_pt = switch_state.get("last_primary_trend") or {}
+if _pt:
+    _pt_cols = st.columns(5)
+    _pt_cols[0].metric("PRIMARY_TREND", _pt.get("primary_trend", "-"))
+    _pt_cols[1].metric("갭 방향", _pt.get("gap_direction", "-"), delta=(f"{_pt.get('gap_pct'):.2f}%" if _pt.get("gap_pct") is not None else None))
+    _pt_cols[2].metric("VWAP 위치", "위" if _pt.get("above_vwap") else ("아래" if _pt.get("above_vwap") is False else "-"))
+    _pt_cols[3].metric("15분 추세", _pt.get("trend_15m", "-"))
+    _pt_cols[4].metric("30분 추세", _pt.get("trend_30m", "-"))
+    _pt_move_kind = "PULLBACK" if _pt.get("primary_trend") in ("UP", "DOWN") and _fw_signal.get("direction") not in (None, _pt.get("primary_trend")) else ("추세전환 후보" if _pt.get("primary_trend") == "RANGE" else "추세와 일치")
+    st.caption(
+        f"현재 움직임: {_pt_move_kind} · 인버스 전환 차단 사유: "
+        f"{(switch_state.get('last_trend_switch_plan') or {}).get('block_reason') or '차단 없음'}"
+    )
+
 sc1, sc2, sc3 = st.columns([1, 1, 2])
 with sc1:
     auto_on = st.checkbox("Enhanced 자동매매 ON", value=switch_state.get("auto_trade_on", False), key="hynix_switch_auto_on")
@@ -507,7 +521,7 @@ if switch_state.get("mode") == "mock":
 
     with as2:
         active_enabled = st.checkbox(
-            "Active Strategy로 신규진입 판단 대체(ENHANCED_LEGACY 대신 Cycle AI + Prediction V2 기반 조기진입/Scale-in 사용)",
+            "Active Strategy로 신규진입 판단 대체(ENHANCED_REGIME_SWITCH 대신 Cycle AI + Prediction V2 기반 조기진입/Scale-in 사용)",
             value=bool(switch_state.get("active_strategy_enabled", False)),
             key=f"hynix_active_strategy_toggle_{_toggle_gen}",
         )
@@ -515,7 +529,7 @@ if switch_state.get("mode") == "mock":
             switch_state["active_strategy_enabled"] = active_enabled
             save_state_atomic(switch_state)
         st.caption(
-            "OFF면 기존과 완전히 동일하게 동작합니다(ENHANCED_LEGACY). ON이어도 강제청산(15:15)과 "
+            "OFF면 기존과 완전히 동일하게 동작합니다(ENHANCED_REGIME_SWITCH). ON이어도 강제청산(15:15)과 "
             "레거시 TP/SL 안전망은 항상 그대로 우선 적용됩니다. real 모드에서는 이 토글이 적용되지 않습니다."
         )
 
@@ -556,7 +570,7 @@ if switch_state.get("mode") == "mock":
     _fx_bigtrend_on = bool(switch_state.get("big_trend_holding_enabled", False))
     _fx_mode = switch_state.get("mode", "mock")
     _fx_rows = [
-        ("Active Strategy", _fx_active_on, "실제 반영(mock)" if (_fx_active_on and _fx_mode == "mock") else "Shadow(적용 안 됨)", "mock 전용 — real은 항상 ENHANCED_LEGACY"),
+        ("Active Strategy", _fx_active_on, "실제 반영(mock)" if (_fx_active_on and _fx_mode == "mock") else "Shadow(적용 안 됨)", "mock 전용 — real은 항상 ENHANCED_REGIME_SWITCH"),
         ("Adaptive Fusion", _fx_fusion_on, "실제 반영(mock, Active Strategy ON 시)" if (_fx_fusion_on and _fx_active_on and _fx_mode == "mock") else "Shadow(적용 안 됨)", "mock 전용 — Active Strategy가 꺼져 있으면 이 토글도 무효"),
         ("Big Trend Holding AI", _fx_bigtrend_on, "실제 반영(mock, 청산 지배)" if (_fx_bigtrend_on and _fx_mode == "mock") else "Shadow(계산·기록만)", "mock 전용 — real은 항상 Dynamic Exit AI/레거시 TP-SL"),
     ]
@@ -1158,7 +1172,7 @@ else:
     _last_fd = state_now.get("last_final_execution_decision") or {}
     _last_signal_source = _last_fd.get("signal_source")
     if not _active_enabled_now:
-        _governing_strategy = "ENHANCED_LEGACY"
+        _governing_strategy = "ENHANCED_REGIME_SWITCH"
     elif not _adaptive_fusion_enabled_now:
         _governing_strategy = "ACTIVE_FUSION"
     else:
@@ -1641,7 +1655,7 @@ else:
             st.markdown(f"- [{order.get('action')}] {order.get('symbol')} {order.get('quantity')}주 @ {order.get('price')} — {order.get('reason')}")
 
     # "오늘 거래내역"은 반드시 원장(execution ledger) 기준으로 표시한다 — legacy
-    # hynix_auto_trade_log_{date}.csv는 3분 사이클(ENHANCED_LEGACY/ACTIVE_STRATEGY_MOCK)
+    # hynix_auto_trade_log_{date}.csv는 3분 사이클(ENHANCED_REGIME_SWITCH/ACTIVE_STRATEGY_MOCK)
     # 매수·매도만 기록하고 Dynamic Exit AI(1초 감시)의 매도는 기록하지 않아, 매수만
     # 보이고 매도가 누락되는 문제가 있었다(2026-07-13 사용자 리포트). 원장에는 모든
     # 실행 경로(신규진입/스위칭/레거시 TP·SL/강제청산/Dynamic Exit)가 공통으로 쓴다.

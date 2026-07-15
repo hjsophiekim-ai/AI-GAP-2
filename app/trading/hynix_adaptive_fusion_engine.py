@@ -1635,7 +1635,7 @@ class HynixAdaptiveFusionEngine:
             executable, blocking_reason = False, "Broker/Position 불일치"
         elif now.strftime("%H:%M") >= "14:50":
             # 플랫폼 공통 규칙(요구사항: 14:50 이후 신규매수 금지)과 일치시킨다 —
-            # 과거 "15:00"이었던 것은 ENHANCED_LEGACY/강제청산 경로의 14:50 컷오프와
+            # 과거 "15:00"이었던 것은 ENHANCED_REGIME_SWITCH/강제청산 경로의 14:50 컷오프와
             # 어긋나는 별도 버그였다.
             executable, blocking_reason = False, "14:50 이후 — 신규 진입 금지"
         elif not risk["entries_allowed"]:

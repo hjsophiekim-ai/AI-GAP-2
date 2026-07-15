@@ -51,7 +51,7 @@ LEDGER_COLUMNS = [
     "gross_pnl", "buy_fee", "sell_fee", "transaction_tax", "slippage_cost", "net_pnl",
 ]
 
-SIGNAL_SOURCE_ENHANCED_LEGACY = "ENHANCED_LEGACY"
+SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH = "ENHANCED_REGIME_SWITCH"
 SIGNAL_SOURCE_PREDICTION_V2 = "PREDICTION_V2"
 SIGNAL_SOURCE_CYCLE_AI = "CYCLE_AI"
 SIGNAL_SOURCE_DYNAMIC_EXIT = "DYNAMIC_EXIT"
@@ -111,7 +111,7 @@ def record_execution(
     action: str, symbol: str, requested_qty: int, executed_qty: int,
     requested_price: Optional[float], executed_price: Optional[float],
     success: bool, mode: str = "mock", environment: Optional[str] = None,
-    strategy_name: str = "hynix_switch", signal_source: str = SIGNAL_SOURCE_ENHANCED_LEGACY,
+    strategy_name: str = "hynix_switch", signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH,
     before_qty: Optional[int] = None, after_qty: Optional[int] = None,
     cash_before: Optional[float] = None, cash_after: Optional[float] = None,
     realized_pnl: Optional[float] = None, fees: float = 0.0, tax: float = 0.0,
@@ -744,7 +744,7 @@ def backfill_from_legacy_logs(date_str: str, initial_cash: float = 10_000_000.0)
                 reason = str(r.get("reason", ""))
                 is_test = "E2E forced" in reason
                 signal_source = SIGNAL_SOURCE_TEST if is_test else (
-                    SIGNAL_SOURCE_FORCED_LIQUIDATION if "강제청산" in reason else SIGNAL_SOURCE_ENHANCED_LEGACY
+                    SIGNAL_SOURCE_FORCED_LIQUIDATION if "강제청산" in reason else SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH
                 )
                 rows.append({
                     "timestamp": r["timestamp"], "action": r.get("action"), "symbol": str(r.get("symbol")),

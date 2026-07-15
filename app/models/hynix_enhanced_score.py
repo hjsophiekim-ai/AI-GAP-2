@@ -21,11 +21,18 @@ from app.logger import logger
 ROOT = Path(__file__).resolve().parent.parent.parent
 _WEIGHTS_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
 
+_MOMENTUM_WEIGHT_CAP = 0.15
+_TREND_WEIGHT_FLOOR = 0.40
+
+# 요구사항: 초단기(1·3·5분) 모멘텀 가중치는 최대 15%, 15·30분/당일 추세를 담당하는
+# hynix_technical(일간 RSI/MACD/200일선 + 요구사항2 이후로는 분봉 소음이 빠진 순수
+# 추세 신호)은 최소 40%를 유지한다 — 장중 모멘텀 0점 하나가 전체 점수를 뒤집지
+# 못하게 하기 위함이다.
 _DEFAULT_WEIGHTS = {
-    "base_prediction": 0.45,
-    "existing_micron": 0.20,
-    "hynix_technical": 0.25,
-    "intraday_momentum": 0.10,
+    "base_prediction": 0.30,
+    "existing_micron": 0.15,
+    "hynix_technical": 0.40,
+    "intraday_momentum": 0.15,
 }
 
 
@@ -69,13 +76,36 @@ def _is_micron_stale_for_orders(micron_result: dict) -> bool:
 
 def _live_order_weights(base_weights: dict, micron_result: dict) -> dict:
     if not _is_micron_stale_for_orders(micron_result):
-        return {**_DEFAULT_WEIGHTS, **(base_weights or {})}
+        return _clamp_weights({**_DEFAULT_WEIGHTS, **(base_weights or {})})
+    # Micron 데이터가 stale이어도 momentum<=15%/trend>=40% 제약은 그대로 지켜야 한다
+    # (과거 이 폴백이 momentum=0.35까지 올려 요구사항을 위반했다).
     return {
-        "base_prediction": 0.20,
+        "base_prediction": 0.25,
         "existing_micron": 0.0,
-        "hynix_technical": 0.45,
-        "intraday_momentum": 0.35,
+        "hynix_technical": 0.60,
+        "intraday_momentum": 0.15,
     }
+
+
+def _clamp_weights(weights: dict) -> dict:
+    """momentum<=15%/trend(hynix_technical)>=40% 제약을 강제하고, 남는/모자란 만큼을
+    base_prediction으로 흡수해 합이 항상 1.0이 되도록 한다."""
+    w = dict(weights)
+    momentum = float(w.get("intraday_momentum", 0.0) or 0.0)
+    trend = float(w.get("hynix_technical", 0.0) or 0.0)
+    base = float(w.get("base_prediction", 0.0) or 0.0)
+    if momentum > _MOMENTUM_WEIGHT_CAP:
+        base += momentum - _MOMENTUM_WEIGHT_CAP
+        momentum = _MOMENTUM_WEIGHT_CAP
+    if trend < _TREND_WEIGHT_FLOOR:
+        deficit = _TREND_WEIGHT_FLOOR - trend
+        take = min(deficit, base)
+        base -= take
+        trend += take
+    w["intraday_momentum"] = round(momentum, 4)
+    w["hynix_technical"] = round(trend, 4)
+    w["base_prediction"] = round(max(0.0, base), 4)
+    return w
 
 
 def _score_contribution_rows(scores: dict, weights: dict) -> list[dict]:

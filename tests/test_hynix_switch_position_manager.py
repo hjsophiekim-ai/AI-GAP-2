@@ -172,6 +172,95 @@ def test_new_entry_blocked_after_1450_sells_only():
     assert "14:50" in result["message"]
 
 
+def test_position_sync_pending_blocks_already_holding_assumption():
+    """요구사항3 — POSITION_SYNC_PENDING이면 로컬 보유 플래그("이미 보유 중")를
+    신뢰하지 않고, 재동기화를 시도한 뒤에도 확인되지 않으면 주문을 차단해야 한다.
+    position_manager 없이는 재동기화가 불가능하므로 반드시 차단(state_sync)된다."""
+    state = _holding_state(HYNIX_SYMBOL)  # 로컬 상태는 "이미 000660 보유 중"으로 보임
+    state["position_sync_status"] = "POSITION_SYNC_PENDING"
+    broker = DummyBroker()
+    now = datetime(2026, 7, 9, 10, 0)
+
+    result = run_switch_or_entry(state, broker, "HYNIX_BUY", 101_000, 5_000, now=now)
+
+    assert result["acted"] is False
+    assert result["stage"] == "state_sync"
+    assert len(broker.buy_calls) == 0
+    assert len(broker.sell_calls) == 0
+
+
+def test_position_sync_pending_with_no_local_holding_still_blocks_new_entry():
+    """요구사항3 — 보유 없음(로컬 flat) + POSITION_SYNC_PENDING 조합에서도 "이미
+    보유 없으니 바로 진입 가능"으로 판단하지 않고 재동기화 확인 전까지 차단한다."""
+    state = default_state()
+    state["position_sync_status"] = "POSITION_SYNC_PENDING"
+    broker = DummyBroker()
+    now = datetime(2026, 7, 9, 10, 0)
+
+    result = run_switch_or_entry(state, broker, "HYNIX_BUY", 101_000, 5_000, now=now)
+
+    assert result["acted"] is False
+    assert result["stage"] == "state_sync"
+    assert len(broker.buy_calls) == 0
+
+
+class _FillTrackingBroker(DummyBroker):
+    """DummyBroker에 브로커 잔고 재조회(get_positions)가 실제 체결 수량을 반영하도록
+    확장한 버전 — POSITION_SYNC_PENDING 재동기화가 실제로 해소되는 경로를 검증할 때 쓴다."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._filled: dict = {}
+
+    def buy(self, symbol, name, quantity, price, order_type="limit"):
+        result = super().buy(symbol, name, quantity, price, order_type)
+        if result.success:
+            self._filled[symbol] = self._filled.get(symbol, 0) + quantity
+        return result
+
+    def get_positions(self):
+        return [
+            {"symbol": sym, "quantity": qty, "avg_price": 100_000.0}
+            for sym, qty in self._filled.items() if qty > 0
+        ]
+
+
+def test_position_sync_pending_resolves_once_position_manager_confirms():
+    """position_manager가 주어지고 재동기화가 성공하면(POSITION_SYNC_PENDING이었어도)
+    확인된 실제 보유 상태를 기준으로 정상 진행되어야 한다."""
+    from app.trading.hynix_position_common import HynixPositionManager
+
+    state = default_state()
+    state["position_sync_status"] = "POSITION_SYNC_PENDING"
+    broker = _FillTrackingBroker()
+    position_manager = HynixPositionManager(broker, mode="mock")
+    now = datetime(2026, 7, 9, 10, 0)
+
+    result = run_switch_or_entry(state, broker, "HYNIX_BUY", 101_000, 5_000, now=now, position_manager=position_manager)
+
+    assert result["acted"] is True
+    assert len(broker.buy_calls) == 1
+    assert state["position_sync_status"] == "SYNCED"
+
+
+def test_duplicate_order_blocked_within_same_cycle_single_engine():
+    """요구사항4 — 단일 주문 엔진(run_switch_or_entry) 안에서 같은 3분 주기(cycle_bucket)에
+    동일 신호가 재호출되면 두 번째 호출은 중복 주문을 내지 않는다."""
+    state = default_state()
+    broker = DummyBroker()
+    now = datetime(2026, 7, 9, 10, 0)
+
+    result1 = run_switch_or_entry(state, broker, "HYNIX_BUY", 101_000, 5_000, now=now)
+    assert result1["acted"] is True
+    assert len(broker.buy_calls) == 1
+
+    # 같은 사이클(같은 3분 버킷) 안에서 같은 신호로 다시 호출 — 이미 보유 중이므로
+    # 두 번째 호출은 "already holding"으로 스킵되고 중복 매수가 일어나지 않는다.
+    result2 = run_switch_or_entry(state, broker, "HYNIX_BUY", 101_000, 5_000, now=now)
+    assert len(broker.buy_calls) == 1
+    assert result2["acted"] is False
+
+
 def test_liquidation_success_clears_position():
     state = _holding_state(HYNIX_SYMBOL)
     broker = DummyBroker(sell_success=True)
@@ -316,6 +405,42 @@ def test_sell_sync_failure_does_not_delete_position_and_blocks_new_orders():
     assert result["position_sync_status"] == POSITION_SYNC_PENDING
     assert state["position"]["symbol"] == INVERSE_SYMBOL
     assert state["position"]["quantity"] == 114
+    assert state["position_sync_block_new_orders"] is True
+
+
+def test_recent_flat_sync_allows_transient_position_sync_failure():
+    from datetime import datetime
+    from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
+
+    state = default_state()
+    state["position_sync_last_ok_at"] = datetime.now().isoformat()
+    state["position_sync_last_position"] = {"symbol": None, "quantity": 0}
+
+    class _FailedPositionManager:
+        last_sync_ok = False
+        last_sync_error = "HTTP 500 msg_cd=EGW00201: rate limit"
+        current_position = {"symbol": None, "quantity": 0}
+
+    apply_position_manager_to_state(state, _FailedPositionManager())
+
+    assert state["position_sync_status"] == "SYNCED_RECENT_CACHE"
+    assert state["position_sync_block_new_orders"] is False
+    assert "EGW00201" in state["position_sync_error"]
+
+
+def test_sync_failure_without_recent_flat_confirmation_still_blocks():
+    from app.trading.hynix_switch_position_manager import POSITION_SYNC_PENDING, apply_position_manager_to_state
+
+    state = default_state()
+
+    class _FailedPositionManager:
+        last_sync_ok = False
+        last_sync_error = "tokenP 403"
+        current_position = {"symbol": None, "quantity": 0}
+
+    apply_position_manager_to_state(state, _FailedPositionManager())
+
+    assert state["position_sync_status"] == POSITION_SYNC_PENDING
     assert state["position_sync_block_new_orders"] is True
 
 

@@ -157,6 +157,71 @@ def test_transient_equity_mismatch_resolved_by_retry_does_not_block():
     assert result["net_daily_return"] == 0.5
 
 
+def test_recent_account_snapshot_fallback_keeps_orders_available_on_rate_limit():
+    from datetime import datetime, timedelta
+
+    class _RateLimitedKis:
+        def get_balance(self):
+            return {"error": "HTTP 500 msg_cd=EGW00201: rate limit", "msg_cd": "EGW00201"}
+
+    class _FakeBroker:
+        def __init__(self):
+            self.kis = _RateLimitedKis()
+
+    now = datetime(2026, 7, 15, 10, 0)
+    state = _state(realized_pnl_krw=10_000.0, baseline=10_000_000.0)
+    state["last_account_equity_snapshot"] = {
+        "ok": True,
+        "cash": 10_010_000.0,
+        "holdings_market_value": 0.0,
+        "current_equity": 10_010_000.0,
+        "positions": [],
+        "source": "kis.get_balance",
+        "as_of": (now - timedelta(seconds=30)).isoformat(timespec="seconds"),
+    }
+
+    result = engine._compute_net_daily_return_with_retries(
+        state, _FakeBroker(), None, None, None, now, attempts=1, delay_seconds=0,
+    )
+
+    assert result["blocked_reason"] is None
+    assert result["net_daily_return"] == pytest.approx(0.1)
+    assert result["account_snapshot"]["cached_fallback"] is True
+    assert result["account_snapshot"]["live_msg_cd"] == "EGW00201"
+
+
+def test_stale_account_snapshot_is_not_used_for_rate_limit_fallback():
+    from datetime import datetime
+
+    class _RateLimitedKis:
+        def get_balance(self):
+            return {"error": "HTTP 500 msg_cd=EGW00201: rate limit", "msg_cd": "EGW00201"}
+
+    class _FakeBroker:
+        def __init__(self):
+            self.kis = _RateLimitedKis()
+
+    now = datetime(2026, 7, 15, 10, 0)
+    state = _state(realized_pnl_krw=10_000.0, baseline=10_000_000.0)
+    state["last_account_equity_snapshot"] = {
+        "ok": True,
+        "cash": 10_010_000.0,
+        "holdings_market_value": 0.0,
+        "current_equity": 10_010_000.0,
+        "positions": [],
+        "source": "kis.get_balance",
+        "as_of": "2026-07-14T14:50:00",
+    }
+
+    result = engine._compute_net_daily_return_with_retries(
+        state, _FakeBroker(), None, None, None, now, attempts=1, delay_seconds=0,
+    )
+
+    assert result["blocked_reason"] is None
+    assert result["calculation_warning"] == "ACCOUNT_SNAPSHOT_UNAVAILABLE_LEDGER_FALLBACK"
+    assert "cached_fallback" not in result["account_snapshot"]
+
+
 # ---------------------------------------------------------------------------
 # 4) 잔고조회 실패 시 신규주문만 보류(정지 상태로 기록하지 않음) — 엔진 통합 시나리오
 # ---------------------------------------------------------------------------

@@ -814,7 +814,71 @@ def collect_hynix_minute(mode: Optional[str] = None, count: int = 60) -> dict:
             last_bar_time=cached["datetime"].iloc[-1].isoformat(),
         )
         result["error"] = (result.get("error") or "") + " | 실시간 분봉 수집 실패, 캐시 사용(지연 가능)"
+        return result
+
+    seeded = _build_hynix_minute_seed_from_current(mode=mode)
+    if seeded is not None and not seeded.empty:
+        df_3min = _resample_minutes(seeded, 3)
+        df_5min = _resample_minutes(seeded, 5)
+        result.update(
+            df_1min=seeded, df_3min=df_3min, df_5min=df_5min,
+            source="quote_seed", status="quote_seed",
+            last_bar_time=seeded["datetime"].iloc[-1].isoformat(),
+        )
+        result["error"] = (
+            (result.get("error") or "")
+            + " | live minute unavailable; using same-day current-price seed only"
+        )
     return result
+
+
+def _build_hynix_minute_seed_from_current(mode: Optional[str] = None, bars: int = 5) -> Optional[pd.DataFrame]:
+    """Build neutral same-day minute bars from current quote when KIS minute is empty."""
+    price = None
+    source = None
+
+    if _fresh_cache(_HYNIX_CURRENT_JSON, max_hours=1.0):
+        cached = _load_hynix_current_cache() or {}
+        try:
+            price = float(cached.get("current_price") or 0)
+            source = cached.get("source") or "current_cache"
+        except Exception:
+            price = None
+
+    if not price and mode:
+        try:
+            price = _fetch_hynix_current_from_kis(mode)
+            source = "KIS"
+        except Exception:
+            price = None
+
+    if not price:
+        try:
+            current = _naver_current_price(HYNIX_SYMBOL)
+            if current.get("status") == "success" and current.get("current_price") is not None:
+                price = float(current["current_price"])
+                source = "naver"
+        except Exception:
+            price = None
+
+    if not price or price <= 0:
+        return None
+
+    now = datetime.now().replace(second=0, microsecond=0)
+    rows = []
+    for offset in range(max(2, int(bars)) - 1, -1, -1):
+        ts = now - pd.Timedelta(minutes=offset)
+        rows.append({
+            "time": ts.strftime("%H%M%S"),
+            "open": float(price),
+            "high": float(price),
+            "low": float(price),
+            "close": float(price),
+            "volume": 0,
+            "datetime": ts,
+            "source": f"{source or 'quote'}_seed",
+        })
+    return pd.DataFrame(rows)
 
 
 def collect_investor_flow(mode: Optional[str] = None, symbol: str = HYNIX_SYMBOL) -> dict:

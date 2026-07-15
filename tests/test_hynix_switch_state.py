@@ -86,6 +86,75 @@ def test_last_trade_fields_reset_on_new_day(tmp_path, monkeypatch):
     assert reloaded["pending_manual_stop_loss_alert"] is None
 
 
+def test_stale_nested_intraday_cache_is_cleared_even_when_top_level_date_is_today(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+    today = switch_state_module._today_str()
+
+    contaminated = default_state("mock")
+    contaminated["date"] = today
+    contaminated["trend_switch_confirm_tracker"] = {
+        "direction": "INVERSE",
+        "same_direction_streak": 11,
+        "last_signal_at": "2026-07-14T14:46:52",
+        "_state_date": "20260714",
+    }
+    contaminated["trend_switch_frequency_state"] = {
+        "round_trips_today": 2,
+        "last_entry_at": "2026-07-14T14:39:35",
+        "_state_date": "20260714",
+    }
+    contaminated["last_trend_switch_plan"] = {
+        "proceed": False,
+        "block_reason": "old pullback wait",
+        "pullback_wait_remaining_seconds": 300,
+    }
+    contaminated["pending_entry"] = {
+        "action": "INVERSE_BUY",
+        "symbol": "0197X0",
+        "since": "2026-07-14T14:45:00",
+    }
+    contaminated["last_account_equity_snapshot"] = {
+        "ok": True,
+        "cash": 10_000_000.0,
+        "current_equity": 10_000_000.0,
+        "as_of": "2026-07-14T14:50:00",
+    }
+    contaminated["daily_return_calculation"] = {
+        "account_snapshot": {"ok": True, "as_of": "2026-07-14T14:50:00"}
+    }
+    contaminated["last_big_trend_result"] = {
+        "log_row": {"timestamp": "2026-07-14T14:42:39"}
+    }
+    save_state_atomic(contaminated)
+
+    reloaded = load_state(mode="mock")
+
+    assert reloaded["trend_switch_confirm_tracker"] is None
+    assert reloaded["trend_switch_frequency_state"] is None
+    assert reloaded["last_trend_switch_plan"] is None
+    assert reloaded["pending_entry"] is None
+    assert reloaded["last_account_equity_snapshot"] is None
+    assert reloaded["daily_return_calculation"] is None
+    assert reloaded["last_big_trend_result"] is None
+    assert reloaded["position_sync_block_new_orders"] is False
+
+
+def test_synced_flat_position_clears_stale_position_sync_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    state = default_state("mock")
+    state["position_sync_status"] = "SYNCED"
+    state["position_sync_block_new_orders"] = True
+    state["position_sync_error"] = "old EGW00201"
+    save_state_atomic(state)
+
+    reloaded = load_state(mode="mock")
+
+    assert reloaded["position_sync_status"] == "SYNCED"
+    assert reloaded["position_sync_block_new_orders"] is False
+    assert reloaded["position_sync_error"] is None
+
+
 def test_all_time_last_order_survives_day_rollover(tmp_path, monkeypatch):
     """'오늘 마지막 주문'은 날짜가 바뀌면 리셋되지만 '전체 마지막 주문'은 영구 보존돼야 한다."""
     monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)

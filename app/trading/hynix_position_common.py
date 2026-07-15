@@ -178,10 +178,15 @@ class HynixPositionManager:
         else:
             self.current_position = _blank_position()
 
-        try:
-            self.cash = self.broker.get_buyable_cash()
-        except Exception as exc:
-            logger.debug("[HynixPositionManager] 매수가능금액 조회 실패: %s", exc)
+        if hasattr(self.broker, "kis"):
+            # KIS 포지션 동기화의 목적은 실제 보유수량 확정이다. 주문가능금액은
+            # 신규주문 직전에만 조회해도 되며, 여기서 매번 조회하면 EGW00201로 막힌다.
+            self.cash = None
+        else:
+            try:
+                self.cash = self.broker.get_buyable_cash()
+            except Exception as exc:
+                logger.debug("[HynixPositionManager] 매수가능금액 조회 실패: %s", exc)
 
         if hasattr(self.broker, "get_executed_order_count"):
             try:

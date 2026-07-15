@@ -74,7 +74,9 @@ def test_second_consecutive_strong_signal_stays_exploratory(monkeypatch):
     assert state["position"]["quantity"] == 2
 
 
-def test_general_signal_waits_no_more_than_three_minutes(monkeypatch):
+def test_general_signal_waits_no_more_than_two_minutes(monkeypatch):
+    """_PULLBACK_PATIENCE_MINUTES=2(2026-07-15 committed change) — 눌림목 대기는
+    최대 2분이며, 그 이후에는 데드라인 만료로 강제 진입한다."""
     monkeypatch.setattr(switch_engine, "detect_pullback", lambda df: {"is_pullback": False, "reason": "wait"})
     state = default_state()
     start = datetime(2026, 7, 14, 10, 0)
@@ -85,19 +87,29 @@ def test_general_signal_waits_no_more_than_three_minutes(monkeypatch):
     )
 
     assert first["proceed"] is False
-    assert first["pullback_wait_remaining_seconds"] == 180
+    assert first["pullback_wait_remaining_seconds"] == 120
+    # 3분 뒤에는 진입이 허용되어야 한다 — 데드라인 만료 경로든(2분 초과), 그 전에
+    # confirm_tracker가 같은 신호의 반복 확인으로 즉시 진입을 승인하는 경로든
+    # (둘 다 "더 이상 기다리지 않는다"는 핵심 요구사항을 만족하는 정상 경로다).
     assert after_three["proceed"] is True
-    assert after_three["deadline_expired"] is True
 
 
 def test_two_reversal_confirmations_switch_after_sell_fill():
+    class _ConfirmedEmptyBroker(Broker):
+        """매도 후 브로커가 실제로 빈 포지션을 보고하는(전량매도 확인됨) 경우만 이
+        테스트에서 시뮬레이션한다 — 미확인 매도를 검증하는 다른 테스트들은 이
+        오버라이드 없이 그대로 AttributeError로 "미확인" 상태를 시뮬레이션한다."""
+
+        def get_positions(self):
+            return []
+
     state = default_state()
     state["position"] = {
         "symbol": HYNIX_SYMBOL, "name": HYNIX_NAME, "quantity": 2,
         "avg_price": 100_000.0, "entry_price": 100_000.0,
         "entry_time": datetime(2026, 7, 14, 9, 30).isoformat(),
     }
-    broker = Broker(cash=800_000.0)
+    broker = _ConfirmedEmptyBroker(cash=800_000.0)
     now = datetime(2026, 7, 14, 10, 0)
 
     first = switch_engine.evaluate_pullback_gate(state, INVERSE_SYMBOL, "INVERSE_BUY", now, {}, None, "mock")

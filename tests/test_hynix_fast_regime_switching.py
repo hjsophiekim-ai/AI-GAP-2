@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import pandas as pd
+import pytest
 
 from app.models.hynix_action_decider import decide_hynix_or_inverse_action
 from app.models.hynix_enhanced_score import _live_order_weights
@@ -55,12 +56,16 @@ def test_general_signal_two_confirmations_skip_pullback():
 
 
 def test_stale_micron_weight_zero_for_live_orders():
+    """요구사항2(2026-07-15) — Micron이 stale이어도 momentum<=15%/trend>=40% 제약은
+    그대로 지켜야 한다(과거에는 이 폴백이 momentum을 0.35까지 올려 제약을 어겼다)."""
     weights = _live_order_weights(
-        {"base_prediction": 0.45, "existing_micron": 0.20, "hynix_technical": 0.25, "intraday_momentum": 0.10},
+        {"base_prediction": 0.30, "existing_micron": 0.15, "hynix_technical": 0.40, "intraday_momentum": 0.15},
         {"micron_data_status": "STALE_DATA", "micron_last_update_time": "2026-07-14T08:00:00"},
     )
     assert weights["existing_micron"] == 0.0
-    assert weights["hynix_technical"] + weights["intraday_momentum"] >= 0.80
+    assert weights["intraday_momentum"] <= 0.15
+    assert weights["hynix_technical"] >= 0.40
+    assert sum(weights.values()) == pytest.approx(1.0)
 
 
 def test_inverse_blocked_during_live_hynix_uptrend():
