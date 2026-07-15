@@ -1652,7 +1652,19 @@ else:
     if cycle_result.get("orders_this_cycle"):
         st.markdown("**이번 사이클 거래 사유**")
         for order in cycle_result["orders_this_cycle"]:
-            st.markdown(f"- [{order.get('action')}] {order.get('symbol')} {order.get('quantity')}주 @ {order.get('price')} — {order.get('reason')}")
+            # 요구사항1 — KIS 응답의 rt_cd/msg_cd/msg1과 주문번호를 그대로 노출해
+            # "Order Sent=YES인데 Broker Executed=NO" 같은 상황의 원인을 화면에서 바로
+            # 진단할 수 있게 한다.
+            _kis_diag = ", ".join(
+                f"{k}={order.get(k)}" for k in ("rt_cd", "msg_cd", "msg1") if order.get(k) not in (None, "")
+            )
+            _order_id_part = f" · 주문번호 {order.get('order_id')}" if order.get("order_id") else ""
+            _diag_part = f" ({_kis_diag})" if _kis_diag else ""
+            st.markdown(
+                f"- [{order.get('action')}] {order.get('symbol')} 요청 {order.get('quantity')}주 "
+                f"(체결확정 {order.get('executed_qty', 0)}주) @ {order.get('price')} — {order.get('reason')}"
+                f"{_order_id_part}{_diag_part}"
+            )
 
     # "오늘 거래내역"은 반드시 원장(execution ledger) 기준으로 표시한다 — legacy
     # hynix_auto_trade_log_{date}.csv는 3분 사이클(ENHANCED_REGIME_SWITCH/ACTIVE_STRATEGY_MOCK)

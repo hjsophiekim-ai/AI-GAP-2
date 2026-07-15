@@ -178,9 +178,19 @@ def _record_order(
     orders: list, order_result, action: str, symbol: str, quantity: int, price: float, reason: str,
     before_qty: Optional[int] = None, expected_remaining_qty: Optional[int] = None,
     mode: str = "mock", signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH, entry_price: Optional[float] = None,
-    broker=None, fusion_metadata: Optional[dict] = None,
+    broker=None, fusion_metadata: Optional[dict] = None, confirmed_executed_qty: Optional[int] = None,
 ) -> Optional[dict]:
-    """fusion_metadata: dict passed only from the Adaptive Fusion path —
+    """confirmed_executed_qty: the ACTUAL filled quantity, confirmed by re-querying the
+    broker after the order (see _confirm_remaining_quantity_from_broker) — never the
+    requested `quantity`. rt_cd=0 ("success") or the presence of an order number only
+    means the order was ACCEPTED, not that it filled (limit orders can sit unfilled).
+    Recording the requested quantity as executed_qty on acceptance alone falsely marks
+    unfilled/pending orders as filled in the ledger (2026-07-15 user report: CSV showed
+    1480 bought/648 sold while the broker/UI showed no holding). When the caller hasn't
+    confirmed a fill (confirmed_executed_qty is None), this records executed_qty=0 —
+    acceptance and fill are recorded as separate facts.
+
+    fusion_metadata: dict passed only from the Adaptive Fusion path —
     {active_probability, prediction_v2_probability, cycle_probability, fused_probability,
      prediction_v2_weight, dominant_model, model_agreement, expected_value, target_position_pct}.
     Other paths (ENHANCED_REGIME_SWITCH/DYNAMIC_EXIT etc.) pass None, leaving those columns
@@ -195,13 +205,21 @@ def _record_order(
     returns None."""
     result = order_result.to_dict() if hasattr(order_result, "to_dict") else dict(order_result)
     success = bool(result.get("success"))
+    # confirmed_executed_qty=None means "not confirmed yet" (caller had no position_manager
+    # to verify with) — historically this fell back to trusting `quantity` on success, which
+    # is exactly the bug being fixed. None now means 0 (unconfirmed), not "assume full fill".
+    executed_qty = int(confirmed_executed_qty) if confirmed_executed_qty is not None else 0
     orders.append({
         "timestamp": datetime.now().isoformat(), "action": action, "symbol": symbol,
         "name": _SYMBOL_NAME.get(symbol, symbol), "quantity": quantity, "price": price,
         "amount": (quantity or 0) * (price or 0), "reason": reason,
         "success": result.get("success"), "message": result.get("message"), "order_id": result.get("order_id"),
-        "before_qty": before_qty, "executed_qty": quantity if result.get("success") else 0,
+        "before_qty": before_qty, "executed_qty": executed_qty,
         "expected_remaining_qty": expected_remaining_qty,
+        # 요구사항1 — KIS 응답의 rt_cd/msg_cd/msg1을 UI/로그에서 바로 진단할 수 있도록
+        # 주문 로그에도 그대로 남긴다(그동안은 success/message만 남아 실패 원인을
+        # 알 수 없었다).
+        "rt_cd": result.get("rt_cd"), "msg_cd": result.get("msg_cd"), "msg1": result.get("msg1"),
     })
 
     # ── Single trade-ledger record (the UI's today's-trade-count/realized-PnL/last buy·sell
@@ -222,14 +240,17 @@ def _record_order(
         realized_pnl = None
         fees_total = tax_total = 0.0
 
-        if success and action == "BUY":
-            buy_cost = cost_engine.compute_trade_cost(symbol, "BUY", price, quantity)
+        # 요구사항2 — 비용/손익도 확정된 체결수량(executed_qty) 기준으로 계산한다.
+        # 접수(success)만으로 quantity(요청수량) 기준 비용을 매겼다면 미체결/부분체결
+        # 주문에서 실제보다 큰 수수료·손익이 기록된다.
+        if success and action == "BUY" and executed_qty > 0:
+            buy_cost = cost_engine.compute_trade_cost(symbol, "BUY", price, executed_qty)
             buy_fee = buy_cost["fee"]
-            slippage_cost = cost_engine._slippage_rate("limit") * price * quantity
+            slippage_cost = cost_engine._slippage_rate("limit") * price * executed_qty
             net_pnl = -(buy_fee + slippage_cost)
             fees_total = buy_fee
-        elif success and action == "SELL" and entry_price:
-            cost = cost_engine.compute_net_pnl(symbol, entry_price=entry_price, exit_price=price, quantity=quantity)
+        elif success and action == "SELL" and entry_price and executed_qty > 0:
+            cost = cost_engine.compute_net_pnl(symbol, entry_price=entry_price, exit_price=price, quantity=executed_qty)
             gross_pnl, buy_fee, sell_fee = cost["gross_pnl"], cost["buy_fee"], cost["sell_fee"]
             transaction_tax, slippage_cost, net_pnl = cost["transaction_tax"], cost["slippage"], cost["net_pnl"]
             fees_total = buy_fee + sell_fee
@@ -238,7 +259,7 @@ def _record_order(
 
         after_qty = None
         if before_qty is not None:
-            after_qty = expected_remaining_qty if action == "SELL" else (before_qty + quantity if success else before_qty)
+            after_qty = expected_remaining_qty if action == "SELL" else before_qty + executed_qty
 
         cash_before = cash_after = None
         if broker is not None:
@@ -250,8 +271,8 @@ def _record_order(
         is_test_order = "E2E forced" in (reason or "")
         fm = fusion_metadata or {}
         record_execution(
-            action=action, symbol=symbol, requested_qty=quantity, executed_qty=quantity if success else 0,
-            requested_price=price, executed_price=price if success else None, success=success,
+            action=action, symbol=symbol, requested_qty=quantity, executed_qty=executed_qty,
+            requested_price=price, executed_price=price if executed_qty > 0 else None, success=success,
             mode=mode, strategy_name="hynix_switch", signal_source=signal_source,
             before_qty=before_qty, after_qty=after_qty, cash_before=cash_before, cash_after=cash_after,
             realized_pnl=realized_pnl, fees=fees_total, tax=tax_total,
@@ -305,12 +326,17 @@ def _position_avg_price(position):
 
 def _confirm_remaining_quantity_from_broker(
     broker, symbol: str, position_manager=None, attempts: int = _POSITION_SYNC_RETRY_ATTEMPTS,
-    delay_seconds: int = _POSITION_SYNC_RETRY_DELAY_SECONDS,
+    delay_seconds: int = _POSITION_SYNC_RETRY_DELAY_SECONDS, retry_while_qty_equals: Optional[int] = None,
 ) -> dict:
     """Confirm symbol quantity from broker/KIS after an order.
 
     A failed balance read is never treated as zero. The caller must keep the
     previous local position and block new entries until a later sync succeeds.
+
+    retry_while_qty_equals: 요구사항3 — 브로커 조회 자체는 성공(예외 없음)했지만
+    아직 이번 주문 전(before_qty)과 수량이 똑같다면(=아직 반영 안 됨), 그것만으로
+    "확정"하지 않고 2초 간격으로 재조회한다. 예외 발생 시 재시도 로직과는 별개의
+    경로다 — 여기서는 "조회는 성공했는데 체결이 아직 안 보임"을 다룬다.
     """
     last_error = None
     attempts = max(1, int(attempts or 1))
@@ -332,6 +358,12 @@ def _confirm_remaining_quantity_from_broker(
                     position_manager.sync(force=True)
                 except Exception:
                     pass
+            if (
+                retry_while_qty_equals is not None and qty == retry_while_qty_equals
+                and idx < attempts - 1 and delay_seconds > 0
+            ):
+                time.sleep(delay_seconds)
+                continue
             return {
                 "ok": True, "quantity": qty, "avg_price": avg_price, "position": matched,
                 "attempts": idx + 1, "status": "SYNCED",
@@ -449,60 +481,49 @@ def _execute_sell(
 ) -> dict:
     with _POSITION_STATE_LOCK:
         order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
+        order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)
+        confirmed = None
+        confirmed_sell_qty = None
+        actual_remaining_qty = None
+        if order_dict.get("success"):
+            # 요구사항2 — 접수 성공만으로 매도 체결수량을 원장에 기록하지 않는다.
+            # 브로커 재조회로 실제 잔량을 확정한 뒤, before_qty와의 차이만큼만 "체결된
+            # 매도수량"으로 인정한다.
+            confirmed = _confirm_remaining_quantity_from_broker(
+                broker, symbol, position_manager=position_manager, retry_while_qty_equals=before_qty,
+            )
+            if confirmed.get("ok"):
+                actual_remaining_qty = int(confirmed.get("quantity") or 0)
+                confirmed_sell_qty = max(0, int(before_qty or 0) - actual_remaining_qty)
         cost_breakdown = _record_order(
             orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty,
             expected_remaining_qty=expected_remaining, mode=mode, signal_source=signal_source,
             entry_price=entry_price, broker=broker, fusion_metadata=fusion_metadata,
+            confirmed_executed_qty=confirmed_sell_qty,
         )
-    result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
-    result["sold_quantity"] = sell_qty
-    result["remaining_quantity"] = None
+    result = order_dict
+    result["sold_quantity"] = confirmed_sell_qty if confirmed_sell_qty is not None else 0
+    result["remaining_quantity"] = actual_remaining_qty
     result["expected_remaining_qty"] = expected_remaining
     result["fill_confirmed"] = None
     if result.get("success"):
-        confirmed = _confirm_remaining_quantity_from_broker(
-            broker, symbol, position_manager=position_manager,
-        )
         result["position_sync"] = confirmed
-        if confirmed.get("ok"):
-            actual_qty = int(confirmed.get("quantity") or 0)
-            result["remaining_quantity"] = actual_qty
+        if confirmed is not None and confirmed.get("ok"):
             result["fill_confirmed"] = True
             result["position_sync_status"] = "SYNCED"
-            if actual_qty > expected_remaining:
+            if actual_remaining_qty > expected_remaining:
                 result["partial_fill_detected"] = True
                 logger.warning(
                     "[SwitchPositionManager] sell partially filled or broker still holds shares: %s expected_remaining=%s actual_remaining=%s",
-                    symbol, expected_remaining, actual_qty,
+                    symbol, expected_remaining, actual_remaining_qty,
                 )
         else:
             logger.warning(
                 "[SwitchPositionManager] sell succeeded but position sync failed; keeping local position pending: %s",
-                confirmed.get("error"),
+                confirmed.get("error") if confirmed else "no confirmation attempted",
             )
             result["fill_confirmed"] = False
             result["position_sync_status"] = POSITION_SYNC_PENDING
-
-    # The order-accepted (rt_cd=0) response alone doesn't confirm the fill — when
-    # position_manager is given, the broker is re-queried so the actual remaining
-    # quantity determines remaining_quantity. If more remains than expected, treat
-    # it as an unfilled/partial fill and flag partial_fill_detected.
-    if result.get("success") and position_manager is not None and result.get("position_sync_status") is None:
-        try:
-            position_manager.sync(force=True)
-            cur = position_manager.current_position
-            actual_qty = (cur.get("quantity") or 0) if cur.get("symbol") == symbol else 0
-            result["remaining_quantity"] = actual_qty
-            result["fill_confirmed"] = True
-            if actual_qty > expected_remaining:
-                result["partial_fill_detected"] = True
-                logger.warning(
-                    "[SwitchPositionManager] sell unfilled/partial fill detected: %s expected_remaining=%s actual_remaining=%s",
-                    symbol, expected_remaining, actual_qty,
-                )
-        except Exception as exc:
-            logger.warning("[SwitchPositionManager] failed to reconfirm fill after sell (using estimate): %s", exc)
-            result["fill_confirmed"] = False
 
     # The caller MUST update state's realized PnL with net_pnl below — recomputing a
     # separate Gross formula would make the UI's displayed value drift from the ledger.
@@ -543,41 +564,51 @@ def _buy_new(
         return {"success": False, "message": "buy amount insufficient for 1 share"}
     with _POSITION_STATE_LOCK:
         order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
+        order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)
+        confirmed = None
+        confirmed_qty = None
+        # 요구사항2 — rt_cd=0(success) 또는 주문번호만으로 원장에 체결수량을 기록하지
+        # 않는다. position_manager가 주어지면(실거래 경로는 항상 준다) 브로커를
+        # 재조회해 실제 체결량을 확정한 뒤에만 원장에 넘긴다. position_manager가 없는
+        # 호출부(간단한 단위테스트 등, 체결 재확인 자체가 불가능)만 과거처럼 접수
+        # 성공을 곧 체결로 간주한다 — 실거래 경로는 이 분기를 타지 않는다.
+        if order_dict.get("success") and position_manager is not None:
+            confirmed = _confirm_remaining_quantity_from_broker(
+                broker, symbol, position_manager=position_manager, retry_while_qty_equals=before_qty,
+            )
+            if confirmed.get("ok"):
+                confirmed_qty = max(0, int(confirmed.get("quantity") or 0) - int(before_qty or 0))
+        elif order_dict.get("success"):
+            confirmed_qty = quantity
         _record_order(
             orders, order, "BUY", symbol, quantity, current_price, reason,
             before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
-            fusion_metadata=fusion_metadata,
+            fusion_metadata=fusion_metadata, confirmed_executed_qty=confirmed_qty,
         )
-    result = order.to_dict() if hasattr(order, "to_dict") else dict(order)
-    result["bought_quantity"] = quantity
-    result["filled_quantity"] = None
-    result["actual_quantity"] = None
+    result = order_dict
+    result["bought_quantity"] = confirmed_qty if confirmed_qty is not None else 0
+    result["filled_quantity"] = confirmed_qty if position_manager is not None else None
+    result["actual_quantity"] = int(confirmed.get("quantity") or 0) if confirmed and confirmed.get("ok") else None
     result["fill_confirmed"] = None
-    if result.get("success") and position_manager is not None:
-        confirmed = _confirm_remaining_quantity_from_broker(
-            broker, symbol, position_manager=position_manager,
-        )
-        result["position_sync"] = confirmed
-        if confirmed.get("ok"):
-            actual_qty = int(confirmed.get("quantity") or 0)
-            filled_qty = max(0, actual_qty - int(before_qty or 0))
-            result["actual_quantity"] = actual_qty
-            result["filled_quantity"] = filled_qty
-            result["bought_quantity"] = filled_qty
-            if filled_qty <= 0:
-                result["fill_confirmed"] = False
-                result["position_sync_status"] = POSITION_SYNC_PENDING
-                result["message"] = (result.get("message") or "order accepted") + " / buy fill not visible in broker balance"
-            else:
-                result["fill_confirmed"] = True
-                result["position_sync_status"] = "SYNCED"
-        else:
-            logger.warning(
-                "[SwitchPositionManager] buy succeeded but position sync failed; keeping local position pending: %s",
-                confirmed.get("error"),
-            )
+    if result.get("success"):
+        if position_manager is None:
+            result["fill_confirmed"] = None
+            result["position_sync_status"] = None
+        elif confirmed is None or not confirmed.get("ok"):
             result["fill_confirmed"] = False
             result["position_sync_status"] = POSITION_SYNC_PENDING
+            result["message"] = (result.get("message") or "order accepted") + " / broker balance confirmation failed"
+            logger.warning(
+                "[SwitchPositionManager] buy succeeded but position sync failed; keeping local position pending: %s",
+                confirmed.get("error") if confirmed else "no confirmation attempted",
+            )
+        elif confirmed_qty is not None and confirmed_qty <= 0:
+            result["fill_confirmed"] = False
+            result["position_sync_status"] = POSITION_SYNC_PENDING
+            result["message"] = (result.get("message") or "order accepted") + " / buy fill not visible in broker balance"
+        else:
+            result["fill_confirmed"] = True
+            result["position_sync_status"] = "SYNCED"
     return result
 
 

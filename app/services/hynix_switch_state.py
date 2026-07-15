@@ -49,15 +49,102 @@ def _get_state_lock(mode: Optional[str]) -> threading.RLock:
         return _state_locks[key]
 
 
+_CROSS_PROCESS_LOCK_STALE_SECONDS = 30.0
+_CROSS_PROCESS_LOCK_POLL_SECONDS = 0.05
+_CROSS_PROCESS_LOCK_TIMEOUT_SECONDS = 20.0
+_cross_process_lock_depth = threading.local()
+
+
+def _cross_process_lock_path(mode: str) -> Path:
+    return _STATE_DIR / f".hynix_auto_state_{mode}.lock"
+
+
+@contextmanager
+def _acquire_cross_process_lock(mode: str):
+    """Real cross-process mutex for this mode's state file (atomic file creation).
+
+    threading.RLock (_get_state_lock) only serializes within a single process.
+    If two separate Python processes both run the 3-min cycle/Fast Watcher
+    against the same data/state directory (2026-07-15 실측 — 여러 포트로 동시
+    실행된 서버 프로세스 흔적: start_streamlit_8507.ps1/8512.cmd, 8503/8504/8506/
+    8507 로그 파일들), the in-process RLock provides zero protection between
+    them, and a lost-update race explains the reported symptoms (CSV shows
+    1480 bought/648 sold but UI shows no holding; cycle completion timestamp
+    earlier than start). This adds a genuine OS-level mutex via O_CREAT|O_EXCL.
+    A lock older than _CROSS_PROCESS_LOCK_STALE_SECONDS is assumed to belong to
+    a crashed process and is stolen rather than causing a permanent deadlock.
+    Reentrant within the same thread (nested with_state_lock calls don't
+    re-acquire the file lock).
+    """
+    depth = getattr(_cross_process_lock_depth, "depth", 0)
+    if depth > 0:
+        _cross_process_lock_depth.depth = depth + 1
+        try:
+            yield
+        finally:
+            _cross_process_lock_depth.depth = depth
+        return
+
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = _cross_process_lock_path(mode or "mock")
+    deadline = time.monotonic() + _CROSS_PROCESS_LOCK_TIMEOUT_SECONDS
+    acquired = False
+    fd = None
+    try:
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode("utf-8"))
+                acquired = True
+                break
+            except FileExistsError:
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                except OSError:
+                    age = 0.0
+                if age > _CROSS_PROCESS_LOCK_STALE_SECONDS:
+                    try:
+                        lock_path.unlink()
+                        logger.warning(
+                            "[HynixSwitchState] stale cross-process lock removed (mode=%s, age=%.1fs) "
+                            "— owning process likely crashed without releasing it",
+                            mode, age,
+                        )
+                    except OSError:
+                        pass
+                    continue
+                if time.monotonic() >= deadline:
+                    logger.error(
+                        "[HynixSwitchState] cross-process lock timeout(mode=%s) after %.0fs — proceeding "
+                        "without it to avoid a permanent deadlock; a concurrent write is possible this cycle",
+                        mode, _CROSS_PROCESS_LOCK_TIMEOUT_SECONDS,
+                    )
+                    break
+                time.sleep(_CROSS_PROCESS_LOCK_POLL_SECONDS)
+        _cross_process_lock_depth.depth = 1
+        yield
+    finally:
+        _cross_process_lock_depth.depth = 0
+        if fd is not None:
+            os.close(fd)
+        if acquired:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+
 @contextmanager
 def with_state_lock(mode: Optional[str] = None):
     """이 mode의 state를 load→수정→save하는 전체 구간을 감싸는 컨텍스트 매니저.
 
+    RLock(같은 프로세스 안)과 파일 기반 상호배제(여러 프로세스 사이)를 함께 건다 —
     RLock이므로 같은 스레드 안에서 중첩 호출해도 데드락이 나지 않는다.
     """
     lock = _get_state_lock(mode)
     with lock:
-        yield
+        with _acquire_cross_process_lock(mode or "mock"):
+            yield
 
 
 def _today_str() -> str:

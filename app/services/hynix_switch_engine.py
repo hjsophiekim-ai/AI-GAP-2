@@ -1488,15 +1488,23 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
             state["fast_trend_watcher"] = status
             save_state_atomic(state)
             return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
+        _is_reversal_vs_holding = bool(held_symbol and desired_symbol != held_symbol)
+        # 요구사항8 — same_direction_streak(연속 같은 방향 확인 횟수)과 reversal_streak
+        # (현재 보유와 반대 방향 전환이 확인된 횟수)은 서로 다른 개념이다. Fast Watcher의
+        # confirmation_count는 "같은 방향이 몇 틱 연속 확인됐는지"만 측정하므로,
+        # 실제로 보유 종목과 반대 방향으로 전환하는 상황(_is_reversal_vs_holding)이
+        # 아니면 reversal_streak은 0이어야 한다 — 과거에는 두 필드에 항상 같은 값을
+        # 넣어 "그냥 같은 방향 유지"도 "반전 확인"처럼 보이게 했다.
+        _confirmation_count = int(status.get("confirmation_count", 0))
         state["last_trend_switch_plan"] = {
             "proceed": True,
             "position_pct": 0.20,
             "entry_type": "EXPLORATORY",
-            "immediate_switch": bool(held_symbol and desired_symbol != held_symbol),
+            "immediate_switch": _is_reversal_vs_holding,
             "dominant_direction": "HYNIX" if direction == "UP" else "INVERSE",
             "desired_symbol": desired_symbol,
-            "same_direction_streak": int(status.get("confirmation_count", 0)),
-            "reversal_streak": int(status.get("confirmation_count", 0)),
+            "same_direction_streak": _confirmation_count,
+            "reversal_streak": _confirmation_count if _is_reversal_vs_holding else 0,
             "pullback_wait_remaining_seconds": 0,
             "block_reason": None,
             "source": "FAST_TREND_WATCHER",

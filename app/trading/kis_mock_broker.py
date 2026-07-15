@@ -116,6 +116,7 @@ class KisMockBroker(BrokerBase):
                 message=result.get("message", ""),
                 raw=result.get("raw", {}),
                 http_status=result.get("http_status", 0),
+                rt_cd=result.get("rt_cd", ""), msg_cd=result.get("msg_cd", ""), msg1=result.get("msg1", ""),
             )
         except KISTokenError:
             raise
@@ -126,7 +127,7 @@ class KisMockBroker(BrokerBase):
                 symbol=symbol, name=name, side="buy",
                 quantity=quantity, price=price, order_type=order_type,
                 order_id="", message=str(e),
-                error_type="exception",
+                error_type="exception", msg_cd="EXCEPTION", msg1=str(e),
             )
 
     def sell(
@@ -152,6 +153,7 @@ class KisMockBroker(BrokerBase):
                 order_id=result.get("order_id", ""),
                 message=result.get("message", ""),
                 raw=result.get("raw", {}),
+                rt_cd=result.get("rt_cd", ""), msg_cd=result.get("msg_cd", ""), msg1=result.get("msg1", ""),
             )
         except Exception as e:
             logger.error("MOCK sell 예외 %s: %s", symbol, e)
@@ -160,4 +162,5 @@ class KisMockBroker(BrokerBase):
                 symbol=symbol, name=name, side="sell",
                 quantity=quantity, price=price, order_type=order_type,
                 order_id="", message=str(e),
+                error_type="exception", msg_cd="EXCEPTION", msg1=str(e),
             )

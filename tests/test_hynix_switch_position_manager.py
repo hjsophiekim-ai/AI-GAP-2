@@ -444,6 +444,72 @@ def test_sync_failure_without_recent_flat_confirmation_still_blocks():
     assert state["position_sync_block_new_orders"] is True
 
 
+def test_confirm_remaining_quantity_polls_until_fill_becomes_visible():
+    """요구사항3(2026-07-15) — 조회 자체는 성공했지만 아직 체결 전 수량과 동일하면
+    (=아직 반영 안 됨) 바로 확정하지 말고 지정된 간격으로 재조회해야 한다."""
+    from app.trading.hynix_switch_position_manager import _confirm_remaining_quantity_from_broker
+
+    class _DelayedFillBroker:
+        def __init__(self):
+            self.calls = 0
+
+        def get_positions(self):
+            self.calls += 1
+            if self.calls < 3:
+                return []  # 아직 체결 미반영(before_qty=0과 동일)
+            return [{"symbol": HYNIX_SYMBOL, "quantity": 28, "avg_price": 100_000.0}]
+
+    broker = _DelayedFillBroker()
+    result = _confirm_remaining_quantity_from_broker(
+        broker, HYNIX_SYMBOL, attempts=5, delay_seconds=0.01, retry_while_qty_equals=0,
+    )
+
+    assert broker.calls == 3
+    assert result["ok"] is True
+    assert result["quantity"] == 28
+
+
+def test_confirm_remaining_quantity_gives_up_after_max_attempts_still_unchanged():
+    from app.trading.hynix_switch_position_manager import _confirm_remaining_quantity_from_broker
+
+    class _NeverFillsBroker:
+        def get_positions(self):
+            return []
+
+    result = _confirm_remaining_quantity_from_broker(
+        _NeverFillsBroker(), HYNIX_SYMBOL, attempts=3, delay_seconds=0.01, retry_while_qty_equals=0,
+    )
+
+    assert result["ok"] is True
+    assert result["quantity"] == 0
+    assert result["attempts"] == 3
+
+
+def test_kis_confirmed_holding_overrides_stale_no_holding_state():
+    """요구사항4(2026-07-15) — 원장은 0197X0 매수 1480주/매도 648주(잔량 832주)인데
+    로컬 state는 "보유 없음"으로 남아있던 실측 버그. KIS(position_manager)가 실제로
+    832주 보유를 보고하면, KIS를 최종 기준으로 state가 그 값으로 동기화되어야 한다 —
+    로컬의 낡은 "보유 없음"을 그대로 두지 않는다."""
+    from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
+
+    state = default_state()
+    state["position"] = {**state["position"], "symbol": None, "quantity": 0}  # 로컬은 "보유 없음"
+
+    class _KisConfirmedPositionManager:
+        last_sync_ok = True
+        broker = object()
+        current_position = {
+            "symbol": INVERSE_SYMBOL, "name": INVERSE_NAME, "quantity": 1480 - 648,
+            "avg_price": 9_000.0, "conflict": False,
+        }
+
+    apply_position_manager_to_state(state, _KisConfirmedPositionManager())
+
+    assert state["position_sync_status"] == "SYNCED"
+    assert state["position"]["symbol"] == INVERSE_SYMBOL
+    assert state["position"]["quantity"] == 832
+
+
 def test_liquidation_queries_broker_even_when_local_state_is_empty():
     from app.trading.hynix_position_common import HynixPositionManager
 

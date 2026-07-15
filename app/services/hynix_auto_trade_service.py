@@ -107,6 +107,17 @@ def generate_trade_proposal(mode: str = "mock") -> dict:
         return proposal
 
     cash = broker.get_buyable_cash()
+    if not cash or cash <= 0:
+        # 요구사항7(2026-07-15) — get_buyable_cash()는 조회 실패(레이트리밋/타임아웃/
+        # 토큰 오류 등)와 "실제로 잔고가 0원"을 구분하지 못하고 둘 다 0.0을 반환한다.
+        # 이 0을 그대로 total_equity 계산에 넣으면 "총자산 0원/-100%"처럼 실제
+        # 계좌상태를 오도하는 값이 표시된다(Enhanced 쪽은 이미 이 문제를 별도로
+        # 고쳤다 — 이 레거시 제안 모듈에도 같은 안전장치를 적용한다). 실제 잔고가
+        # 0원인 경우도 신규매수 제안을 만들 이유가 없으므로 차단해도 손해가 없다.
+        proposal = _blocked_proposal("매수가능금액 조회 결과 0원 — 계좌 조회 실패 가능성, 제안 생성 보류")
+        proposal["signal"] = signal
+        _log_decision(proposal, mode=mode)
+        return proposal
     detected = get_hynix_auto_position(positions)
     if detected["current_position"] == POSITION_CONFLICT:
         proposal = _blocked_proposal(detected["error"])

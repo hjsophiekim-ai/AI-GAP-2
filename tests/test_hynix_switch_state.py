@@ -5,6 +5,9 @@ test_hynix_switch_state.py — mock/real 분리 저장, atomic write, 손상 시
 from __future__ import annotations
 
 import json
+import os
+import threading
+import time
 
 import app.services.hynix_switch_state as switch_state_module
 from app.services.hynix_switch_state import load_state, save_state_atomic, default_state, reset_mock_state
@@ -222,3 +225,82 @@ def test_reset_mock_state_clears_position_and_sets_budget(tmp_path, monkeypatch)
     assert reset["daily_trade_count"] == 0
     assert reset["cash"] == 5_000_000
     assert reset["mock_budget_krw"] == 5_000_000
+
+
+# ---------------------------------------------------------------------------
+# 요구사항6(2026-07-15) — Fast Watcher/3분 사이클이 여러 프로세스에서 동시에 실행돼도
+# 같은 state를 동시에 덮어쓰지 않도록 하는 프로세스 간(cross-process) 락 검증.
+# threading.RLock은 같은 프로세스 안에서만 유효하므로, 서로 다른 두 "프로세스"를
+# 스레드로 흉내 내되 각자 독립된 RLock 딕셔너리를 쓰는 것처럼 파일 락 자체의 상호배제
+# 동작만 직접 검증한다.
+# ---------------------------------------------------------------------------
+
+def test_cross_process_lock_serializes_concurrent_holders(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    order: list[str] = []
+    barrier_entered = threading.Event()
+
+    def _holder_a():
+        with switch_state_module._acquire_cross_process_lock("mock"):
+            order.append("a-enter")
+            barrier_entered.set()
+            time.sleep(0.2)
+            order.append("a-exit")
+
+    def _holder_b():
+        barrier_entered.wait(timeout=2)
+        with switch_state_module._acquire_cross_process_lock("mock"):
+            order.append("b-enter")
+
+    ta = threading.Thread(target=_holder_a)
+    tb = threading.Thread(target=_holder_b)
+    ta.start()
+    tb.start()
+    ta.join(timeout=5)
+    tb.join(timeout=5)
+
+    # b는 a가 락을 놓은 뒤에만 들어갈 수 있어야 한다 — 동시에 겹치지 않는다.
+    assert order.index("a-exit") < order.index("b-enter")
+    assert not switch_state_module._cross_process_lock_path("mock").exists()
+
+
+def test_cross_process_lock_is_reentrant_within_same_thread(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    with switch_state_module._acquire_cross_process_lock("mock"):
+        # 같은 스레드 안에서 중첩 호출해도 데드락 없이 통과해야 한다(with_state_lock이
+        # 내부에서 다시 with_state_lock을 호출하는 경우를 흉내).
+        with switch_state_module._acquire_cross_process_lock("mock"):
+            assert switch_state_module._cross_process_lock_path("mock").exists()
+        # 안쪽 컨텍스트를 빠져나와도 바깥쪽이 아직 살아있는 동안은 락 파일이 남아있어야 한다.
+        assert switch_state_module._cross_process_lock_path("mock").exists()
+
+    assert not switch_state_module._cross_process_lock_path("mock").exists()
+
+
+def test_stale_cross_process_lock_is_stolen_not_deadlocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(switch_state_module, "_CROSS_PROCESS_LOCK_STALE_SECONDS", 0.05)
+    monkeypatch.setattr(switch_state_module, "_CROSS_PROCESS_LOCK_TIMEOUT_SECONDS", 2.0)
+
+    lock_path = switch_state_module._cross_process_lock_path("mock")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    # 죽은 프로세스가 남긴 락 파일을 흉내낸다(오래된 mtime).
+    lock_path.write_text("99999", encoding="utf-8")
+    stale_time = time.time() - 10
+    os.utime(lock_path, (stale_time, stale_time))
+
+    with switch_state_module._acquire_cross_process_lock("mock"):
+        assert lock_path.exists()
+
+    assert not lock_path.exists()
+
+
+def test_with_state_lock_uses_cross_process_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    with switch_state_module.with_state_lock("mock"):
+        assert switch_state_module._cross_process_lock_path("mock").exists()
+
+    assert not switch_state_module._cross_process_lock_path("mock").exists()

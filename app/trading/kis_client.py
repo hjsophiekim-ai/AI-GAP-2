@@ -889,6 +889,7 @@ class KISClient:
                     "message": f"HTTP {http_status}: rt_cd={rt_cd} msg_cd={msg_cd} msg1={msg1}",
                     "raw": data,
                     "http_status": http_status,
+                    "rt_cd": rt_cd, "msg_cd": msg_cd, "msg1": msg1,
                 }
 
             output = data.get("output", {})
@@ -902,6 +903,7 @@ class KISClient:
                     "message": msg1,
                     "raw": output,
                     "http_status": http_status,
+                    "rt_cd": rt_cd, "msg_cd": msg_cd, "msg1": msg1,
                 }
             else:
                 logger.warning(
@@ -914,6 +916,7 @@ class KISClient:
                     "message": msg1,
                     "raw": data,
                     "http_status": http_status,
+                    "rt_cd": rt_cd, "msg_cd": msg_cd, "msg1": msg1,
                 }
         except KISTokenError:
             raise
@@ -925,6 +928,7 @@ class KISClient:
                 "message": str(e),
                 "raw": {},
                 "http_status": 0,
+                "rt_cd": "", "msg_cd": "EXCEPTION", "msg1": str(e),
             }
 
 
