@@ -632,6 +632,20 @@ def compute_net_daily_return(
                 result["equity_ratio_return"] = 0.0
                 result["baseline_rebased"] = True
                 return result
+            # KRX는 매도대금을 T+2에 정산한다 — 오늘 청산한 왕복거래의 실현손익은
+            # 원장(net_realized_pnl)에는 즉시 반영되지만, 브로커의 실제 현금(cash)에는
+            # 아직 반영되지 않은 게 정상이다. 이 "정산 지연"만으로 설명되는 차이라면
+            # (미실현손익 기준 기대 수익률과는 실제로 일치) 계좌 이상이 아니므로 차단하지
+            # 않는다 — 이전에는 60초 유예만으로는 턱없이 부족해 실현손익이 있는 날은
+            # 이후 신규주문이 하루 종일 계속 차단되는 문제가 있었다.
+            unsettled_adjusted_return = (net_unrealized_pnl / starting_equity) * 100.0
+            settlement_adjusted_mismatch = abs(equity_ratio_return - unsettled_adjusted_return)
+            if settlement_adjusted_mismatch <= _EQUITY_MISMATCH_TOLERANCE_PCT:
+                result["net_daily_return"] = round(net_daily_return, 4)
+                result["equity_ratio_return"] = round(equity_ratio_return, 4)
+                result["mismatch_explained_by_unsettled_realized_pnl"] = True
+                result["unsettled_realized_pnl_krw"] = net_realized_pnl
+                return result
             if settlement_grace_active:
                 result["net_daily_return"] = round(net_daily_return, 4)
                 result["equity_ratio_return"] = round(equity_ratio_return, 4)

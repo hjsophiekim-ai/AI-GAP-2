@@ -430,12 +430,26 @@ def calculate_daily_net_pnl_from_ledger(
     live = live.sort_values("timestamp").reset_index(drop=True)
     sells = live[live["action"] == "SELL"].copy()
 
-    gross = float(pd.to_numeric(sells["gross_pnl"], errors="coerce").fillna(0.0).sum())
+    # 거래비용 엔진 도입(2026-07-13) 이전에 체결된 SELL 행은 gross_pnl/net_pnl이 아예
+    # NaN이다(그 필드 자체가 아직 없었음) — 이걸 그대로 fillna(0.0)하면 해당 거래의
+    # 실제 손익(특히 손실)이 Gross/Net 합계에서 조용히 0으로 사라진다("일부 거래는
+    # 손익이 보이는데 일부 손실 거래 금액이 안 보인다"는 2026-07-15 사용자 리포트의
+    # 원인). 그 시절엔 수수료를 별도 추적하지 않았으므로, 레거시 realized_pnl(당시
+    # 유일하게 기록된 손익 필드)을 gross/net 둘 다의 근사치로 되살린다 — 수수료는
+    # 여전히 0으로 표시되지만(위 UI 캡션이 이미 이 사실을 알림), 손익 금액 자체는
+    # 더 이상 사라지지 않는다.
+    legacy_pnl = pd.to_numeric(sells.get("realized_pnl"), errors="coerce")
+    gross_pnl_filled = pd.to_numeric(sells["gross_pnl"], errors="coerce")
+    net_pnl_filled = pd.to_numeric(sells["net_pnl"], errors="coerce")
+    gross_pnl_filled = gross_pnl_filled.where(gross_pnl_filled.notna(), legacy_pnl)
+    net_pnl_filled = net_pnl_filled.where(net_pnl_filled.notna(), legacy_pnl)
+
+    gross = float(gross_pnl_filled.fillna(0.0).sum())
     buy_fee = float(pd.to_numeric(sells["buy_fee"], errors="coerce").fillna(0.0).sum())
     sell_fee = float(pd.to_numeric(sells["sell_fee"], errors="coerce").fillna(0.0).sum())
     tax = float(pd.to_numeric(sells["transaction_tax"], errors="coerce").fillna(0.0).sum())
     slippage = float(pd.to_numeric(sells["slippage_cost"], errors="coerce").fillna(0.0).sum())
-    net_field_sum = float(pd.to_numeric(sells["net_pnl"], errors="coerce").fillna(0.0).sum())
+    net_field_sum = float(net_pnl_filled.fillna(0.0).sum())
     total_cost = buy_fee + sell_fee + tax + slippage
     net = gross - total_cost
     # Row-level costs are rounded before writing. Reconcile sub-cent drift against

@@ -479,6 +479,31 @@ class TestTradeCostReconstruction:
         assert float(last["executed_price"]) == pytest.approx(11_515.0)
         assert last["order_id"] == "DRY-SELL-20260713-0008"
 
+    def test_legacy_rows_missing_cost_engine_fields_still_show_their_loss(self, _isolate_ledger_path):
+        """2026-07-15 사용자 리포트 — 거래비용 엔진 도입 이전(gross_pnl/net_pnl이
+        아예 NaN) 체결 중 손실 거래가 있으면, 그 손실 금액이 Gross/Net 실현손익
+        요약에서 조용히 0으로 사라지면 안 된다(레거시 realized_pnl로 복원해야 함)."""
+        ledger.record_execution(
+            action="BUY", symbol="0197X0", requested_qty=100, executed_qty=100,
+            requested_price=9_000.0, executed_price=9_000.0, success=True, mode="real",
+            before_qty=0, after_qty=100, now=datetime(2026, 7, 10, 11, 20, 0),
+        )
+        ledger.record_execution(
+            action="SELL", symbol="0197X0", requested_qty=100, executed_qty=100,
+            requested_price=8_925.0, executed_price=8_925.0, success=True, mode="real",
+            before_qty=100, after_qty=0, realized_pnl=-8_175.0,
+            now=datetime(2026, 7, 10, 11, 21, 0),
+        )
+        df = ledger.load_ledger()
+        # 거래비용 엔진 도입 이전 스키마를 흉내내기 위해 gross_pnl/net_pnl을 직접 NaN으로
+        # 되돌린다(당시엔 이 컬럼 자체가 없었고, 이후 스키마 마이그레이션이 빈 값으로 채웠다).
+        df.loc[df["action"] == "SELL", ["gross_pnl", "net_pnl"]] = pd.NA
+        df.to_csv(_isolate_ledger_path, index=False, encoding="utf-8-sig")
+
+        stats = ledger.calculate_daily_net_pnl_from_ledger("20260710")
+        assert stats["gross_realized_pnl"] == pytest.approx(-8_175.0)
+        assert stats["net_realized_pnl"] == pytest.approx(-8_175.0)
+
     def test_backfill_does_not_duplicate_on_second_run(self):
         self._seed_pre_cost_engine_trade(
             "0197X0", 10_680.0, 10_720.0, 468, datetime(2026, 7, 13, 9, 54, 6), datetime(2026, 7, 13, 10, 14, 43),

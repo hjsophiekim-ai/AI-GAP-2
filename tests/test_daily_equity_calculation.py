@@ -319,6 +319,40 @@ def test_small_real_loss_does_not_trigger_false_block():
 # 6) UI와 risk_manager가 동일한 수익률을 사용한다(요구사항 5절)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 7) KRX T+2 정산 지연 — 오늘 실현손익이 브로커 현금에 아직 반영되지 않아도
+#    신규주문을 차단하지 않는다(2026-07-15 실측: 하이닉스 BUY 신호가 risk_manager
+#    단계에서 ACCOUNT_EQUITY_MISMATCH로 계속 차단되던 문제).
+# ---------------------------------------------------------------------------
+
+def test_unsettled_realized_pnl_does_not_block_new_orders():
+    """오늘 왕복거래로 +69,956.75원을 실현했지만(포지션은 이미 flat) 브로커 현금은
+    아직 baseline과 동일(매도대금 T+2 미정산) — 계좌 이상이 아니라 정상적인 정산
+    지연이므로 차단되면 안 된다."""
+    state = _state(realized_pnl_krw=69_956.75, baseline=10_000_000.0)
+    empty_position = {"symbol": None, "quantity": 0, "avg_price": None, "entry_price": None}
+    result = engine.compute_net_daily_return(
+        state, position=empty_position, hynix_price=100_000.0, inverse_price=9_000.0,
+        cash=10_000_000.0, positions_from_broker=[], cash_fetch_ok=True,  # 현금이 아직 baseline 그대로
+    )
+    assert result["blocked_reason"] is None
+    assert result["mismatch_explained_by_unsettled_realized_pnl"] is True
+    assert result["unsettled_realized_pnl_krw"] == 69_956.75
+    assert result["net_daily_return"] == pytest.approx(0.6996, abs=0.001)
+
+
+def test_unsettled_realized_pnl_does_not_mask_a_genuine_mismatch():
+    """정산 지연으로 설명되지 않는 진짜 불일치(현금이 기대치보다 훨씬 더 벗어남)는
+    여전히 차단해야 한다 — 이 폴백이 진짜 계좌 이상까지 숨기면 안 된다."""
+    state = _state(realized_pnl_krw=69_956.75, baseline=10_000_000.0)
+    empty_position = {"symbol": None, "quantity": 0, "avg_price": None, "entry_price": None}
+    result = engine.compute_net_daily_return(
+        state, position=empty_position, hynix_price=100_000.0, inverse_price=9_000.0,
+        cash=8_000_000.0, positions_from_broker=[], cash_fetch_ok=True,  # 정산 지연으로는 설명 안 되는 큰 결손
+    )
+    assert result["blocked_reason"] == engine.ACCOUNT_EQUITY_MISMATCH
+
+
 def test_risk_manager_and_ui_use_identical_return_value():
     state = _state(realized_pnl_krw=33_545.89, baseline=10_000_000.0)
     result = engine.compute_net_daily_return(
