@@ -219,16 +219,16 @@ else:
             pr = proposal.get("profit_rate")
             st.metric("평균매수가 대비 수익률", f"{pr:.1f}%" if pr is not None else "보유 없음")
         with m5:
-            st.metric("단기 방향 점수", f"{proposal.get('short_term_score', 0):.0f}/100")
+            st.metric("단기 방향 점수", f"{_num(proposal.get('short_term_score')):.0f}/100")
 
         # f, g: 판단 + 제안 금액/비율
         action = proposal.get("action", "HOLD")
         action_label = {"BUY": "🟢 매수 제안", "SELL": "🔴 매도 제안", "HOLD": "⚪ 대기"}.get(action, action)
         st.subheader(f"매매 판단: {action_label}")
         if action == "BUY":
-            st.markdown(f"**제안 매수금액:** {proposal.get('buy_cash_amount', 0):,.0f}원")
+            st.markdown(f"**제안 매수금액:** {_num(proposal.get('buy_cash_amount')):,.0f}원")
         elif action == "SELL":
-            st.markdown(f"**제안 매도비중:** {proposal.get('sell_quantity_ratio', 0)*100:.0f}%")
+            st.markdown(f"**제안 매도비중:** {_num(proposal.get('sell_quantity_ratio'))*100:.0f}%")
         st.caption(f"세부 판단: {proposal.get('judgement', '—')}")
 
         # h, i, j: 지지선/목표가/확률
@@ -244,7 +244,7 @@ else:
         probs = proposal.get("target_probabilities") or {}
         for col, label, val, key in zip(tgt_cols, ["목표가 1", "목표가 2", "목표가 3"], targets, ["target_1", "target_2", "target_3"]):
             with col:
-                st.metric(label, f"{val:,.0f}원" if val else "—", delta=f"도달확률 {probs.get(key, 0):.0f}%")
+                st.metric(label, f"{val:,.0f}원" if val else "—", delta=f"도달확률 {_num(probs.get(key)):.0f}%")
 
         # k: 판단 근거 Top5
         with st.expander("판단 근거 Top 5", expanded=True):
@@ -263,8 +263,8 @@ else:
             st.warning("**위험 경고**\n\n" + "\n".join(f"- {w}" for w in warnings))
 
         st.markdown(
-            f"현금비중 {proposal.get('cash_ratio', 0):.1f}% · 종목비중 {proposal.get('symbol_ratio', 0):.1f}% "
-            f"· 총자산 {proposal.get('total_equity', 0):,.0f}원 · 보유수량 {proposal.get('position_quantity', 0)}주"
+            f"현금비중 {_num(proposal.get('cash_ratio')):.1f}% · 종목비중 {_num(proposal.get('symbol_ratio')):.1f}% "
+            f"· 총자산 {_num(proposal.get('total_equity')):,.0f}원 · 보유수량 {int(_num(proposal.get('position_quantity')))}주"
         )
         st.caption(f"ℹ️ {proposal.get('disclaimer', '')}")
 
@@ -274,12 +274,12 @@ else:
         if action == "HOLD":
             st.info("현재 제안은 대기(HOLD)이므로 실행할 주문이 없습니다.")
         else:
-            order_amount = proposal.get("buy_cash_amount", 0) if action == "BUY" else (
-                (proposal.get("current_price") or 0) * (proposal.get("position_quantity", 0) * proposal.get("sell_quantity_ratio", 0))
+            order_amount = _num(proposal.get("buy_cash_amount")) if action == "BUY" else (
+                _num(proposal.get("current_price")) * (_num(proposal.get("position_quantity")) * _num(proposal.get("sell_quantity_ratio")))
             )
             est_qty = int(order_amount // proposal["current_price"]) if action == "BUY" and proposal.get("current_price") else None
             st.markdown(
-                f"**예상 주문가격:** {proposal.get('current_price', 0):,.0f}원  \n"
+                f"**예상 주문가격:** {_num(proposal.get('current_price')):,.0f}원  \n"
                 + (f"**예상 수량:** {est_qty}주  \n" if est_qty is not None else "")
                 + f"**예상 주문금액:** {order_amount:,.0f}원"
             )
@@ -1922,7 +1922,7 @@ else:
                 pass
         st.metric("보유시간", f"{_held_minutes:.0f}분" if _held_minutes is not None else "—")
     with ex7:
-        st.metric("Exit Score", f"{_dyn_decision.get('exit_score', 0):.0f}/100")
+        st.metric("Exit Score", f"{_num(_dyn_decision.get('exit_score')):.0f}/100")
 
     ex8, ex9 = st.columns(2)
     with ex8:
