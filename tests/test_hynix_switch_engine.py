@@ -11,7 +11,7 @@ import pandas as pd
 import app.services.hynix_switch_engine as engine
 import app.services.hynix_switch_state as state_module
 
-_MID_SESSION_NOW = datetime(2026, 7, 9, 10, 0, 0)  # 09:10~14:50 신규진입 허용 구간
+_MID_SESSION_NOW = datetime(2026, 7, 15, 10, 0, 0)  # 09:10~14:50 신규진입 허용 구간
 
 
 class _FakeBroker:
@@ -22,6 +22,9 @@ class _FakeBroker:
         return []
 
     def get_buyable_cash(self):
+        return self.cash
+
+    def get_balance(self):
         return self.cash
 
     def buy(self, *args, **kwargs):
@@ -93,6 +96,10 @@ def test_real_mode_daily_loss_limit_stops_auto_trade(tmp_path, monkeypatch):
     result1 = engine.update_hynix_auto_trade_loop(mode="real", now=_MID_SESSION_NOW)
     assert result1["state"]["stopped"] is False
 
+    state = result1["state"]
+    state["daily_pnl_baseline_equity"] = 1_000_000.0
+    state["realized_pnl_today_krw"] = -30_000.0
+    state_module.save_state_atomic(state)
     broker.cash = 970_000.0  # baseline 대비 -3.0%
     from datetime import timedelta
     result2 = engine.update_hynix_auto_trade_loop(mode="real", now=_MID_SESSION_NOW + timedelta(minutes=3))
@@ -107,6 +114,9 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
     import app.models.hynix_enhanced_score as enhanced_score_module
     import app.models.hynix_action_decider as decider_module
     import app.trading.dry_run_broker as dry_run_broker_module
+    import app.trading.broker_factory as broker_factory_module
+    import app.trading.broker_factory as broker_factory_module
+    import app.trading.broker_factory as broker_factory_module
 
     monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
     monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", lambda enhanced, current_position=None: {
@@ -116,6 +126,7 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
 
     # mock 모드는 이제 DryRunBroker(로컬 시뮬레이션)를 사용 — 그 상태파일 경로만 tmp_path로 격리
     monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
 
     logged_trades = []
     monkeypatch.setattr(engine, "log_trade", lambda record: logged_trades.append(record))
@@ -129,7 +140,7 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
 
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
-    assert result["state"]["position"]["symbol"] == "000660"
+    assert result["state"]["position"]["symbol"] == "0193T0"
     assert len(logged_trades) == 1
 
     trace = result["pipeline_trace"]
@@ -150,11 +161,13 @@ def test_active_strategy_mock_toggle_places_real_dryrun_order(tmp_path, monkeypa
     import app.models.hynix_enhanced_score as enhanced_score_module
     import app.models.hynix_action_decider as decider_module
     import app.trading.dry_run_broker as dry_run_broker_module
+    import app.trading.broker_factory as broker_factory_module
 
     monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
     # ENHANCED_LEGACY는 HOLD — Active Strategy가 이를 대체해서 진입해야 함을 검증한다.
     monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_decision)
     monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
     monkeypatch.setattr(engine, "log_trade", lambda record: None)
     monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
     _silence_prediction_tracker(monkeypatch)
@@ -181,7 +194,7 @@ def test_active_strategy_mock_toggle_places_real_dryrun_order(tmp_path, monkeypa
 
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
-    assert result["state"]["position"]["symbol"] == "000660"
+    assert result["state"]["position"]["symbol"] == "0193T0"
     assert result["state"]["position"]["quantity"] > 0
 
 
@@ -194,10 +207,12 @@ def _setup_active_strategy_run(tmp_path, monkeypatch, shadow: dict, mode: str = 
     import app.models.hynix_enhanced_score as enhanced_score_module
     import app.models.hynix_action_decider as decider_module
     import app.trading.dry_run_broker as dry_run_broker_module
+    import app.trading.broker_factory as broker_factory_module
 
     monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
     monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_decision)
     monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
     monkeypatch.setattr(engine, "log_trade", lambda record: None)
     monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
     _silence_prediction_tracker(monkeypatch)
@@ -306,7 +321,7 @@ def test_position_confirmed_after_buy(tmp_path, monkeypatch):
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
     pm_cache = result.get("position_manager") or {}
-    assert pm_cache.get("position", {}).get("symbol") == "000660"
+    assert pm_cache.get("position", {}).get("symbol") == "0193T0"
     assert result["state"]["position"]["quantity"] == pm_cache["position"]["quantity"]
 
 
@@ -357,7 +372,7 @@ def test_duplicate_signal_within_same_cycle_executes_once(tmp_path, monkeypatch)
 
     result1 = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
     assert len(buy_calls) == 1
-    assert result1["state"]["position"]["symbol"] == "000660"
+    assert result1["state"]["position"]["symbol"] == "0193T0"
 
     # 같은 분(cycle_id) 안에서 다시 실행 — 이미 보유 중이므로 신규 BUY 자체가 재판단되지
     # 않지만(무포지션 진입 로직만 idempotency 대상), 포지션이 있는 상태에서 같은 방향
@@ -367,7 +382,7 @@ def test_duplicate_signal_within_same_cycle_executes_once(tmp_path, monkeypatch)
 
 
 def test_hynix_to_inverse_switch_sells_before_buying(tmp_path, monkeypatch):
-    """섹션 13-7 — 000660 보유 중 INVERSE 신호 발생 시, 000660 매도 확인 후에만 0197X0을 매수한다."""
+    """섹션 13-7 — 0193T0 보유 중 INVERSE 신호 발생 시, 0193T0 매도 확인 후에만 0197X0을 매수한다."""
     bullish_shadow = {
         "cycle": {
             "cycle_phase": "TREND_UP",
@@ -379,7 +394,7 @@ def test_hynix_to_inverse_switch_sells_before_buying(tmp_path, monkeypatch):
     }
     state = _setup_active_strategy_run(tmp_path, monkeypatch, bullish_shadow)
     result1 = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
-    assert result1["state"]["position"]["symbol"] == "000660"
+    assert result1["state"]["position"]["symbol"] == "0193T0"
 
     # 강한 반대(INVERSE) 신호로 전환 — 방향전환 최소간격(3분) 이후 시각을 사용한다.
     bearish_shadow = {
@@ -402,10 +417,10 @@ def test_hynix_to_inverse_switch_sells_before_buying(tmp_path, monkeypatch):
     result2 = engine.update_hynix_auto_trade_loop(mode="mock", now=later)
 
     # 전환이 이번 사이클에 완료됐다면 0197X0 보유, 아직 매도 단계라면 무포지션(둘 다 "매수
-    # 전에 매도 확인"이라는 순서를 어긴 상태 — 즉 000660을 보유한 채 0197X0도 동시에
+    # 전에 매도 확인"이라는 순서를 어긴 상태 — 즉 0193T0을 보유한 채 0197X0도 동시에
     # 보유하는 상태는 나오지 않아야 한다).
     pos = result2["state"]["position"]
-    assert not (pos.get("symbol") == "0197X0" and result1["state"]["position"]["quantity"] > 0 and pos.get("quantity", 0) > 0 and pos.get("symbol") == "000660")
+    assert not (pos.get("symbol") == "0197X0" and result1["state"]["position"]["quantity"] > 0 and pos.get("quantity", 0) > 0 and pos.get("symbol") == "0193T0")
 
 
 def test_mock_orders_use_kis_mock_broker_path_not_real_broker(tmp_path, monkeypatch):
@@ -518,7 +533,7 @@ def test_order_success_ledger_state_ui_all_consistent(tmp_path, monkeypatch):
     ledger_df = load_ledger()
     live_buys = ledger_df[(ledger_df["success"] == True) & (ledger_df["action"] == "BUY") & (ledger_df["is_test_order"] != True)]  # noqa: E712
 
-    assert state_symbol == pm_symbol == "000660"
+    assert state_symbol == pm_symbol == "0193T0"
     assert state_qty == pm_qty
     assert int(live_buys["executed_qty"].sum()) == state_qty
 
@@ -558,6 +573,7 @@ def test_pipeline_trace_marks_ui_synced_false_when_save_fails(tmp_path, monkeypa
     import app.models.hynix_enhanced_score as enhanced_score_module
     import app.models.hynix_action_decider as decider_module
     import app.trading.dry_run_broker as dry_run_broker_module
+    import app.trading.broker_factory as broker_factory_module
 
     monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
     monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", lambda enhanced, current_position=None: {
@@ -565,6 +581,7 @@ def test_pipeline_trace_marks_ui_synced_false_when_save_fails(tmp_path, monkeypa
         "score_gap": 70.0, "score_gap_below_forced_trade_threshold": False, "reasons": ["test"],
     })
     monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
     monkeypatch.setattr(engine, "log_trade", lambda record: None)
     monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
     monkeypatch.setattr(engine, "save_state_atomic", lambda state: False)

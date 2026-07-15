@@ -591,7 +591,7 @@ class TestExecutionLedgerCostFields:
         assert row["sell_fee"] == pytest.approx(0.0)
         assert row["gross_pnl"] == pytest.approx(0.0)
 
-    def test_stock_sell_records_transaction_tax(self):
+    def test_long_etf_sell_records_zero_transaction_tax(self):
         from app.trading.hynix_switch_position_manager import _sell_all_or_ratio
         from app.services.hynix_execution_ledger import load_ledger
 
@@ -602,7 +602,7 @@ class TestExecutionLedgerCostFields:
 
         df = load_ledger()
         row = df[df["action"] == "SELL"].iloc[-1]
-        assert row["transaction_tax"] > 0.0
+        assert row["transaction_tax"] == pytest.approx(0.0)
         assert row["gross_pnl"] == pytest.approx((103_000.0 - 100_000.0) * 10)
         assert row["net_pnl"] < row["gross_pnl"]
 

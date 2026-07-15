@@ -22,6 +22,7 @@ from app.trading.hynix_trading_mode import (
     MIN_EXPECTED_MOVE_FOR_RELIEF_PCT,
 )
 from app.models.hynix_position_sizing_ai import PositionSizingAI
+from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
 
 ACTION_HOLD = "HOLD"
 ACTION_ENTER_HYNIX = "ENTER_HYNIX"
@@ -98,7 +99,7 @@ def to_final_execution_decision(decision_result: dict, held_symbol: Optional[str
     elif action == ACTION_ENTER_INVERSE:
         final_action = FINAL_ACTION_INVERSE_BUY
     elif action in (ACTION_EXIT_ALL, ACTION_SCALE_OUT_PARTIAL, ACTION_SWITCH):
-        final_action = FINAL_ACTION_SELL_HYNIX if symbol == "000660" else FINAL_ACTION_SELL_INVERSE
+        final_action = FINAL_ACTION_SELL_HYNIX if symbol == LONG_SYMBOL else FINAL_ACTION_SELL_INVERSE
     else:
         final_action = FINAL_ACTION_HOLD
         executable = False
@@ -290,18 +291,18 @@ def decide_active_strategy_action(
 
     # ── 보유 중: 선제매도(명세 8절) + 방향전환(명세 4절) ─────────────────────
     if has_position:
-        opposite_prob = inverse_probability if held_symbol != "0197X0" else buy_probability
+        opposite_prob = inverse_probability if held_symbol != SHORT_SYMBOL else buy_probability
         exit_prob = opposite_prob  # 반대 방향 확률을 청산 확률의 근사로 사용
         entry_prob = state.get("position_entry_probability")
-        prob_drop = (entry_prob - (buy_probability if held_symbol != "0197X0" else inverse_probability)) if entry_prob is not None else None
+        prob_drop = (entry_prob - (buy_probability if held_symbol != SHORT_SYMBOL else inverse_probability)) if entry_prob is not None else None
 
         # 빠른 방향 전환(4절): 반대 확률 + 전환확률 + inflection이 모두 강하면 스위칭
         can_switch = (
             not _is_whipsaw_dampened(state, now)
             and (not state.get("last_switch_time") or (now - _parse_iso(state["last_switch_time"])).total_seconds() >= _MIN_SWITCH_INTERVAL_SECONDS)
         )
-        target_symbol = "0197X0" if held_symbol != "0197X0" else "000660"
-        turn_prob_for_switch = down_turn_probability_3m if held_symbol != "0197X0" else up_turn_probability_3m
+        target_symbol = SHORT_SYMBOL if held_symbol != SHORT_SYMBOL else LONG_SYMBOL
+        turn_prob_for_switch = down_turn_probability_3m if held_symbol != SHORT_SYMBOL else up_turn_probability_3m
         strong_switch = (
             opposite_prob >= 76.0
             or (opposite_prob >= 68.0 and (turn_prob_for_switch or 0) >= 65.0 and (momentum_inflection_or_acceleration or 0) >= 60.0)
@@ -380,7 +381,7 @@ def decide_active_strategy_action(
         f"CycleBonus={fusion_result['cycle_bonus']:+.0f}[{cycle_phase}]) — {fusion_decision['reason']}"
     )
 
-    symbol = "000660" if fusion_decision["action"] == _FUSION_BUY else "0197X0"
+    symbol = LONG_SYMBOL if fusion_decision["action"] == _FUSION_BUY else SHORT_SYMBOL
     entry_pct = fusion_decision["position_pct"]
 
     if fusion_decision["action"] == _FUSION_HOLD or entry_pct <= 0:
@@ -395,7 +396,7 @@ def decide_active_strategy_action(
     cap = min(eff["daily_max_position_pct"], max_total_position_pct(prediction_ai_score, model_confidence))
     entry_pct = min(entry_pct, cap)
 
-    action = ACTION_ENTER_HYNIX if symbol == "000660" else ACTION_ENTER_INVERSE
+    action = ACTION_ENTER_HYNIX if symbol == LONG_SYMBOL else ACTION_ENTER_INVERSE
     recommended_symbol = symbol
     recommended_position_pct = entry_pct
     state["position_entry_probability"] = prediction_ai_score
@@ -426,7 +427,7 @@ def evaluate_scale_in(
         adverse_pct = (current_price / entry_price - 1.0) * 100.0
         symbol = position_state.get("symbol")
         # 인버스는 가격 하락이 유리하므로 부호를 뒤집어 "불리한 방향" 여부를 판정한다.
-        if symbol == "0197X0":
+        if symbol == SHORT_SYMBOL:
             adverse_pct = -adverse_pct
         if adverse_pct <= -_ADVERSE_MOVE_LIMIT_PCT:
             return {"approved": False, "reason": f"진입가 대비 불리하게 {adverse_pct:.2f}% 이동 — 추가매수 금지", "target_pct": None, "state": state}

@@ -23,9 +23,13 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
 
 _DEFAULTS = {
-    "exploratory_position_pct": 0.20,
+    # 요구사항6(2026-07-15, 레버리지 ETF 위험 반영) — 1회 진입 최대 30%,
+    # 같은 방향 신호가 3회 연속 확인된 뒤(same_direction_streak>=3)에만 최대 50%까지
+    # 확대한다. confirmed_position_pct_min/max를 둘 다 0.50으로 두어(평균 0.50)
+    # "최대 50%"를 고정 상한으로 취급한다.
+    "exploratory_position_pct": 0.30,
     "confirmed_position_pct_min": 0.50,
-    "confirmed_position_pct_max": 0.70,
+    "confirmed_position_pct_max": 0.50,
     "same_direction_reentry_cooldown_seconds": 180,
     "daily_target_round_trips_min": 4,
     "daily_target_round_trips_max": 5,

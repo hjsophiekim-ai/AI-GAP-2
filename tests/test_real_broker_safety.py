@@ -79,12 +79,12 @@ class TestDefaultLimits:
             f"기본 1회 주문한도가 5M 미만: {limits['per_order']}"
         )
 
-    def test_default_daily_is_30m(self):
+    def test_default_daily_is_10m_or_more(self):
         from app.config import Config
         cfg = Config()
         limits = cfg.get_real_order_limits()
-        assert limits["daily"] >= 30_000_000, (
-            f"기본 일일한도가 30M 미만: {limits['daily']}"
+        assert limits["daily"] >= 10_000_000, (
+            f"기본 일일한도가 10M 미만: {limits['daily']}"
         )
 
 

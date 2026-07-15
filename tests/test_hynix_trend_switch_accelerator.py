@@ -50,7 +50,7 @@ def test_strong_buy_enters_immediately_with_exploratory_size(monkeypatch):
     assert gate["proceed"] is True
     assert called["pullback"] is False
     assert result["acted"] is True
-    assert state["position"]["quantity"] == 2
+    assert state["position"]["quantity"] == 3  # 요구사항6: exploratory 30% (1,000,000원의 30%=300,000원 // 100,000원 = 3주)
     assert state["position"]["entry_type"] == "EXPLORATORY"
     assert state["position"]["stop_loss_pct"] == -0.8
 
@@ -71,7 +71,7 @@ def test_second_consecutive_strong_signal_stays_exploratory(monkeypatch):
     assert gate["proceed"] is True
     assert state["last_trend_switch_plan"]["entry_type"] == "EXPLORATORY"
     assert result["acted"] is False
-    assert state["position"]["quantity"] == 2
+    assert state["position"]["quantity"] == 3  # 요구사항6: exploratory 30% (1,000,000원의 30%=300,000원 // 100,000원 = 3주)
 
 
 def test_general_signal_waits_no_more_than_two_minutes(monkeypatch):

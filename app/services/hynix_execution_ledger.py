@@ -282,7 +282,7 @@ def compute_strategy_real_stats(signal_sources, date_str: Optional[str] = None) 
     drawdown = cum - cum.cummax()
     max_dd = round(float(drawdown.min()), 2) if not drawdown.empty else 0.0
 
-    hynix_pnl = float(pd.to_numeric(sells[sells["symbol"] == "000660"]["realized_pnl"], errors="coerce").sum())
+    hynix_pnl = float(pd.to_numeric(sells[sells["symbol"] == "0193T0"]["realized_pnl"], errors="coerce").sum())
     inverse_pnl = float(pd.to_numeric(sells[sells["symbol"] == "0197X0"]["realized_pnl"], errors="coerce").sum())
 
     return {

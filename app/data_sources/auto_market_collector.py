@@ -1168,20 +1168,24 @@ def _mu_holiday_gap_reason() -> str:
 
 
 def _fetch_yfinance_intraday(symbol: str, period: str = "1d", interval: str = "1m") -> Optional[pd.DataFrame]:
-    _configure_yfinance_cache()
-    import yfinance as yf
+    try:
+        _configure_yfinance_cache()
+        import yfinance as yf
 
-    hist = yf.Ticker(symbol).history(period=period, interval=interval, prepost=True)
-    if hist is None or hist.empty:
+        hist = yf.Ticker(symbol).history(period=period, interval=interval, prepost=True)
+        if hist is None or hist.empty:
+            return None
+        df = hist.reset_index()
+        df.columns = [str(col).lower() for col in df.columns]
+        dt_col = "datetime" if "datetime" in df.columns else ("date" if "date" in df.columns else df.columns[0])
+        df = df.rename(columns={dt_col: "datetime"})
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df["source"] = "yfinance"
+        df["session"] = df["datetime"].apply(_classify_us_session)
+        return df[["datetime", "open", "high", "low", "close", "volume", "source", "session"]]
+    except Exception as exc:
+        logger.debug("[AutoMarketCollector] yfinance intraday fetch failed(%s): %s", symbol, exc)
         return None
-    df = hist.reset_index()
-    df.columns = [str(col).lower() for col in df.columns]
-    dt_col = "datetime" if "datetime" in df.columns else ("date" if "date" in df.columns else df.columns[0])
-    df = df.rename(columns={dt_col: "datetime"})
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df["source"] = "yfinance"
-    df["session"] = df["datetime"].apply(_classify_us_session)
-    return df[["datetime", "open", "high", "low", "close", "volume", "source", "session"]]
 
 
 def _fetch_yfinance_daily(symbol: str, period: str = "90d") -> Optional[pd.DataFrame]:

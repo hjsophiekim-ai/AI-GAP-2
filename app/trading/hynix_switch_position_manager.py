@@ -18,9 +18,14 @@ from typing import Optional
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
-from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
-from app.data_sources.hynix_long_collector import LONG_SYMBOL, LONG_NAME
+from app.trading.hynix_symbols import (
+    SIGNAL_SYMBOL,
+    SIGNAL_NAME,
+    LONG_SYMBOL,
+    LONG_NAME,
+    SHORT_SYMBOL,
+    SHORT_NAME,
+)
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, should_liquidate_now
 from app.trading.hynix_position_common import (
     get_hynix_auto_position, is_buy_cooldown_active, POSITION_CONFLICT,
@@ -36,12 +41,12 @@ _DEFAULT_RISK = {
     "stop_loss_2_pct": -1.5, "stop_loss_2_ratio": 1.0,
     "daily_loss_limit_pct": -2.0,
 }
-# 요구사항6(2026-07-15) — 레버리지 ETF 위험 반영: 1회 최대 30%, 3회 확인 후
-# 최대 50%까지 확대 가능.
-_DEFAULT_SIZING = {
-    "normal_trade_cash_pct": 0.30, "forced_trade_cash_pct": 0.08,
-    "scale_in_confirm_count": 3, "scale_in_max_pct": 0.50,
-}
+# 요구사항6(2026-07-15) — 레버리지 ETF 위험 반영: 일반(눌림목 확인) 진입은 최대 30%.
+# "3회 확인 후 최대 50%"로 확대되는 계단식 사이징은 이 값이 아니라
+# hynix_trend_switch_accelerator.py의 exploratory_position_pct(30%)/
+# confirmed_position_pct_min·max(50%)가 담당한다(plan_entry의 same_direction_streak
+# 기반 진입 전용 경로) — 이 sizing 섹션은 그 경로를 타지 않는 일반 진입에만 쓰인다.
+_DEFAULT_SIZING = {"normal_trade_cash_pct": 0.30, "forced_trade_cash_pct": 0.08}
 POSITION_SYNC_PENDING = "POSITION_SYNC_PENDING"
 SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH = "ENHANCED_REGIME_SWITCH"
 _POSITION_SYNC_RETRY_ATTEMPTS = 3
@@ -52,7 +57,10 @@ _POSITION_STATE_LOCK = threading.RLock()
 # 매매는 상승 신호일 때 KODEX SK하이닉스단일종목레버리지(0193T0), 하락 신호일 때
 # SOL SK하이닉스선물단일종목인버스2X(0197X0)를 매수한다. 000660 직접 매수·매도는
 # 완전히 금지된다 — _buy_new/_execute_sell의 하드 가드가 이를 강제한다.
-SIGNAL_SYMBOL = HYNIX_SYMBOL
+HYNIX_SYMBOL = SIGNAL_SYMBOL
+HYNIX_NAME = SIGNAL_NAME
+INVERSE_SYMBOL = SHORT_SYMBOL
+INVERSE_NAME = SHORT_NAME
 
 _ACTION_TO_SYMBOL = {
     "HYNIX_STRONG_BUY": LONG_SYMBOL, "HYNIX_BUY": LONG_SYMBOL,

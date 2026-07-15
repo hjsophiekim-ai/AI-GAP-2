@@ -248,7 +248,7 @@ def _sync_flat_fields(state: dict) -> None:
     symbol = pos.get("symbol")
     state["current_position"] = symbol
     state["current_position_type"] = (
-        "HYNIX" if symbol == "000660" else "INVERSE" if symbol == "0197X0" else "NONE"
+        "HYNIX" if symbol == "0193T0" else "INVERSE" if symbol == "0197X0" else "NONE"
     )
     state["symbol"] = symbol
     state["name"] = pos.get("name")

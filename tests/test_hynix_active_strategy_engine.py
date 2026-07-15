@@ -178,7 +178,7 @@ class TestReentryCooldown:
 
 class TestFastSwitchAndExit:
     def test_strong_opposite_signal_switches_position(self):
-        position_state = {"symbol": "000660", "quantity": 100, "entry_price": 100000.0}
+        position_state = {"symbol": "0193T0", "quantity": 100, "entry_price": 100000.0}
         result = decide_active_strategy_action(**_base_kwargs(
             buy_probability=20.0, inverse_probability=80.0, position_state=position_state,
             down_turn_probability_3m=70.0,
@@ -186,7 +186,7 @@ class TestFastSwitchAndExit:
         assert result["action"] in (ACTION_SWITCH, ACTION_SCALE_OUT_PARTIAL)
 
     def test_holding_with_no_strong_signal_stays_held(self):
-        position_state = {"symbol": "000660", "quantity": 100, "entry_price": 100000.0}
+        position_state = {"symbol": "0193T0", "quantity": 100, "entry_price": 100000.0}
         result = decide_active_strategy_action(**_base_kwargs(
             buy_probability=55.0, inverse_probability=45.0, position_state=position_state,
         ))
@@ -196,18 +196,18 @@ class TestFastSwitchAndExit:
 class TestScaleIn:
     def test_rejected_before_90_seconds(self):
         state = default_active_strategy_state(MODE_ACTIVE)
-        state = register_position_opened(state, "000660", 100000.0, 15.0, _NOW)
+        state = register_position_opened(state, "0193T0", 100000.0, 15.0, _NOW)
         result = evaluate_scale_in(
-            _NOW + timedelta(seconds=30), {"symbol": "000660"}, state,
+            _NOW + timedelta(seconds=30), {"symbol": "0193T0"}, state,
             current_probability=70.0, opposite_probability=20.0, momentum_continuing=True, current_price=100200.0,
         )
         assert result["approved"] is False
 
     def test_approved_after_90_seconds_with_good_conditions(self):
         state = default_active_strategy_state(MODE_ACTIVE)
-        state = register_position_opened(state, "000660", 100000.0, 15.0, _NOW)
+        state = register_position_opened(state, "0193T0", 100000.0, 15.0, _NOW)
         result = evaluate_scale_in(
-            _NOW + timedelta(seconds=100), {"symbol": "000660"}, state,
+            _NOW + timedelta(seconds=100), {"symbol": "0193T0"}, state,
             current_probability=70.0, opposite_probability=20.0, momentum_continuing=True, current_price=100200.0,
         )
         assert result["approved"] is True
@@ -215,19 +215,19 @@ class TestScaleIn:
 
     def test_rejected_on_adverse_move(self):
         state = default_active_strategy_state(MODE_ACTIVE)
-        state = register_position_opened(state, "000660", 100000.0, 15.0, _NOW)
+        state = register_position_opened(state, "0193T0", 100000.0, 15.0, _NOW)
         result = evaluate_scale_in(
-            _NOW + timedelta(seconds=100), {"symbol": "000660"}, state,
+            _NOW + timedelta(seconds=100), {"symbol": "0193T0"}, state,
             current_probability=70.0, opposite_probability=20.0, momentum_continuing=True, current_price=99100.0,
         )
         assert result["approved"] is False
 
     def test_rejected_when_max_scale_ins_reached(self):
         state = default_active_strategy_state(MODE_ACTIVE)
-        state = register_position_opened(state, "000660", 100000.0, 15.0, _NOW)
+        state = register_position_opened(state, "0193T0", 100000.0, 15.0, _NOW)
         state["scale_in_count"] = 3
         result = evaluate_scale_in(
-            _NOW + timedelta(seconds=200), {"symbol": "000660"}, state,
+            _NOW + timedelta(seconds=200), {"symbol": "0193T0"}, state,
             current_probability=90.0, opposite_probability=10.0, momentum_continuing=True, current_price=100500.0,
         )
         assert result["approved"] is False

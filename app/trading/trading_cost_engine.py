@@ -17,7 +17,7 @@ from typing import Optional
 # ETF/ETN으로 취급할 종목코드 — 이 프로젝트에서는 0197X0(SOL SK하이닉스선물단일종목
 # 인버스2X)이 유일하다. 종목이 늘어나면 이 set만 확장하면 된다(정식 종목마스터
 # 연동 전까지의 근사).
-ETF_ETN_SYMBOLS = frozenset({"0197X0"})
+ETF_ETN_SYMBOLS = frozenset({"0193T0", "0197X0"})
 
 _DEFAULT_COST_CONFIG = {
     "domestic_buy_fee_rate": 0.00015,

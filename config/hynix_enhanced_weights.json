@@ -41,9 +41,12 @@
   },
   "sizing": {
     "normal_trade_cash_pct": 0.30,
-    "forced_trade_cash_pct": 0.08,
-    "scale_in_confirm_count": 3,
-    "scale_in_max_pct": 0.50
+    "forced_trade_cash_pct": 0.08
+  },
+  "trend_switch_accel": {
+    "exploratory_position_pct": 0.30,
+    "confirmed_position_pct_min": 0.50,
+    "confirmed_position_pct_max": 0.50
   },
   "adaptive_fusion_v2": {
     "entry_ladder": [

@@ -16,8 +16,7 @@ from typing import Optional
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
-from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
+from app.trading.hynix_symbols import SIGNAL_SYMBOL, LONG_SYMBOL as HYNIX_SYMBOL, SHORT_SYMBOL as INVERSE_SYMBOL
 from app.services.hynix_switch_state import load_state, save_state_atomic, set_active_mode, reset_mock_state
 from app.services.hynix_switch_logger import log_enhanced_prediction, log_trade
 from app.trading.hynix_switch_risk_gate import (
@@ -1702,7 +1701,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 position_manager.sync(force=True)
                 apply_position_manager_to_state(state, position_manager)
                 if state.get("position_conflict"):
-                    warnings.append(state.get("critical_alert") or "000660/0197X0 동시 보유 감지 — 신규매수 금지")
+                    warnings.append(state.get("critical_alert") or "0193T0/0197X0 동시 보유 감지 — 신규매수 금지")
         except Exception as exc:
             order_api_ok = False
             warnings.append(f"브로커 초기화 실패: {exc}")
@@ -1796,7 +1795,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
             trace["risk_manager_reason"] = "브로커 초기화 실패"
     elif state.get("position_conflict"):
         trace["risk_manager_ok"] = False
-        trace["risk_manager_reason"] = state.get("critical_alert") or "000660/0197X0 동시 보유 — 포지션 동기화 필요"
+        trace["risk_manager_reason"] = state.get("critical_alert") or "0193T0/0197X0 동시 보유 — 포지션 동기화 필요"
 
     if trading_allowed:
         try:
@@ -1873,7 +1872,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         trace["entry_approved_reason"] = "이미 목표 종목 보유 중 — 추가 진입 불필요"
                     elif state.get("position_conflict"):
                         proceed = False
-                        warnings.append("포지션 동기화 필요(000660/0197X0 동시 보유) — 신규매수 금지")
+                        warnings.append("포지션 동기화 필요(0193T0/0197X0 동시 보유) — 신규매수 금지")
                         trace["entry_approved"] = False
                         trace["entry_approved_reason"] = "포지션 동기화 필요(동시 보유) — 신규매수 금지"
                     else:

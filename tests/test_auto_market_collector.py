@@ -202,10 +202,11 @@ class TestCollectHynixMinute:
     def test_uses_same_day_quote_seed_when_kis_minute_and_cache_are_missing(self):
         with patch("app.data_sources.auto_market_collector._load_hynix_minute_cache", return_value=None), \
              patch("app.data_sources.auto_market_collector._fresh_cache", return_value=False), \
+             patch("app.data_sources.auto_market_collector._kis_mode", return_value=None), \
              patch("app.data_sources.auto_market_collector._fetch_hynix_current_from_kis", return_value=None), \
              patch("app.data_sources.auto_market_collector._naver_current_price",
                    return_value={"status": "success", "current_price": 191_300.0}):
-            result = collect_hynix_minute(mode="mock")
+            result = collect_hynix_minute(mode=None)
 
         assert result["status"] == "quote_seed"
         assert result["source"] == "quote_seed"

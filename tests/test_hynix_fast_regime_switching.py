@@ -52,7 +52,34 @@ def test_general_signal_two_confirmations_skip_pullback():
     )
     assert gate["proceed"] is True
     assert state["last_trend_switch_plan"]["entry_type"] == "EXPLORATORY"
-    assert state["last_trend_switch_plan"]["position_pct"] == 0.20
+    assert state["last_trend_switch_plan"]["position_pct"] == 0.30  # 요구사항6: exploratory 1회 최대 30%
+
+
+def test_three_confirmations_scale_to_50_percent():
+    """요구사항6(2026-07-15, 레버리지 ETF 위험 반영) — 같은 방향 신호가 3회 연속
+    확인되면(same_direction_streak>=3) 최대 50%까지 확대된다(1~2회는 30% 상한)."""
+    state = {
+        "trend_switch_confirm_tracker": {
+            "direction": "HYNIX",
+            "same_direction_streak": 3,
+            "reversal_streak": 0,
+            "reversal_against_symbol": None,
+            "_state_date": "20260714",
+        },
+        "trend_switch_frequency_state": {"round_trips_today": 0, "consecutive_losses": 0, "_state_date": "20260714"},
+    }
+    gate = evaluate_pullback_gate(
+        state,
+        "000660",
+        "HYNIX_BUY",
+        datetime(2026, 7, 14, 10, 0),
+        {},
+        _df([100, 101, 102, 103, 104, 105, 106]),
+        "mock",
+    )
+    assert gate["proceed"] is True
+    assert state["last_trend_switch_plan"]["entry_type"] == "CONFIRMED"
+    assert state["last_trend_switch_plan"]["position_pct"] == 0.50
 
 
 def test_stale_micron_weight_zero_for_live_orders():

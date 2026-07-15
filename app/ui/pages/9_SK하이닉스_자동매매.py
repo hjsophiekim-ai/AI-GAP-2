@@ -693,7 +693,7 @@ if switch_state.get("stopped"):
 if switch_state.get("residual_position_error"):
     st.error("🔴 전일 포지션이 청산되지 않고 남아 있었습니다 — 프로그램 오류 가능성. 원인 확인이 필요합니다.")
 if switch_state.get("position_conflict"):
-    st.error("🔴 000660과 0197X0을 동시에 보유 중입니다 — 포지션 동기화 필요, 신규매수가 차단됩니다.")
+    st.error("🔴 0193T0과 0197X0을 동시에 보유 중입니다 — 포지션 동기화 필요, 신규매수가 차단됩니다.")
 if switch_state.get("critical_alert"):
     st.error(f"🔴 CRITICAL: {switch_state.get('critical_alert')}")
 
@@ -742,16 +742,20 @@ with st.expander("🩺 REAL 게이트 / 계좌 / 종목코드 진단", expanded=
 
     st.markdown("---")
     st.markdown("**종목코드 검증(현재가+종목명 조회, PDNO에 그대로 전달)**")
-    if st.button("000660 / 0197X0 검증 실행", key="hynix_verify_symbols"):
+    if st.button("000660 / 0193T0 / 0197X0 검증 실행", key="hynix_verify_symbols"):
         try:
             from app.trading.kis_client import create_kis_client, verify_symbol
-            from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
+            from app.trading.hynix_symbols import SIGNAL_SYMBOL, SIGNAL_NAME, LONG_SYMBOL, LONG_NAME, SHORT_SYMBOL, SHORT_NAME
             _verify_mode = switch_state.get("mode", "mock") if switch_state.get("mode") in ("mock", "real") else "mock"
             _verify_client = create_kis_client(_verify_mode)
             if _verify_client is None:
                 st.error(f"{_verify_mode} KIS 클라이언트 초기화 실패 — 검증 불가")
             else:
-                for _sym, _expected_name in (("000660", "SK하이닉스"), (INVERSE_SYMBOL, INVERSE_NAME)):
+                for _sym, _expected_name in (
+                    (SIGNAL_SYMBOL, SIGNAL_NAME),
+                    (LONG_SYMBOL, LONG_NAME),
+                    (SHORT_SYMBOL, SHORT_NAME),
+                ):
                     _res = verify_symbol(_verify_client, _sym, expected_name_substr=_expected_name)
                     if _res["verified"]:
                         st.success(f"✅ {_sym}: 현재가 {_res['current_price']:,.0f}원, 종목명 `{_res['name']}`")
@@ -967,7 +971,7 @@ else:
     position = pm_cache.get("position") or {}
     position_entry_time = (state_now.get("position") or {}).get("entry_time")
     if pm_cache.get("position_conflict"):
-        st.error("🔴 000660과 0197X0을 동시에 보유 중입니다 — 포지션 동기화 필요, 신규매수가 차단됩니다.")
+        st.error("🔴 0193T0과 0197X0을 동시에 보유 중입니다 — 포지션 동기화 필요, 신규매수가 차단됩니다.")
 
     now_badge_cols = st.columns(4)
     with now_badge_cols[0]:
@@ -988,7 +992,7 @@ else:
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        st.metric("감시 종목", "SK하이닉스(000660) / SOL 인버스2X(0197X0)")
+        st.metric("감시/거래 종목", "감시: SK하이닉스(000660) / 상승: KODEX 레버리지(0193T0) / 하락: SOL 인버스2X(0197X0)")
     with m2:
         st.metric("보유 종목", position.get("name") or "없음", delta=(f"{position.get('quantity')}주" if position.get("quantity") else None))
     with m3:
@@ -1620,7 +1624,7 @@ else:
     if _now_check.time() >= dtime_cls(15, 15) and not _has_position and not state_now.get("liquidation_done"):
         _diag_warnings.append("15:15 이후이며 보유종목이 없는데 liquidation_done=False입니다 — 상태 갱신 지연 의심.")
     if pm_cache.get("position_conflict"):
-        _diag_warnings.append("브로커에 000660/0197X0을 동시 보유 중입니다(CONFLICT) — 포지션 동기화 필요.")
+        _diag_warnings.append("브로커에 0193T0/0197X0을 동시 보유 중입니다(CONFLICT) — 포지션 동기화 필요.")
 
     # 주의: 이 진단은 반드시 원장(execution ledger) 기준이어야 한다. 과거 이 블록이
     # legacy hynix_auto_trade_log_{date}.csv만 읽었는데, Dynamic Exit AI(1초 감시
@@ -1959,8 +1963,7 @@ from app.trading.hynix_stop_loss_control import (
     STOP_LOSS_MODE_LABELS,
     execute_manual_stop_loss,
 )
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
-from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
+from app.trading.hynix_symbols import LONG_SYMBOL as HYNIX_SYMBOL, SHORT_SYMBOL as INVERSE_SYMBOL
 
 _current_stop_mode = switch_state.get("stop_loss_mode", STOP_LOSS_MODE_AUTO)
 _stop_mode_choice = st.radio(

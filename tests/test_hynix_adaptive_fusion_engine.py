@@ -235,7 +235,7 @@ class TestEarlyEntry:
             expected_move_5m_pct=0.2,
         )
         assert result is not None
-        assert result["symbol"] == "000660"
+        assert result["symbol"] == "0193T0"
 
     def test_hynix_early_entry_blocked_when_down_probability_too_high(self):
         result = afe.evaluate_early_entry_hynix(
@@ -279,7 +279,7 @@ class TestEarlyEntry:
 class TestPreemptiveExit:
     def test_hynix_profit_lock_at_1_2_pct(self):
         result = afe.evaluate_preemptive_exit(
-            held_symbol="000660", inverse_probability=60.0, hynix_probability=40.0,
+            held_symbol="0193T0", inverse_probability=60.0, hynix_probability=40.0,
             down_turn_probability_3m=50.0, up_turn_probability_3m=50.0,
             momentum_inflection_down=50.0, momentum_inflection_up=50.0, current_profit_pct=1.3,
         )
@@ -288,7 +288,7 @@ class TestPreemptiveExit:
 
     def test_hynix_full_exit_on_high_exit_probability(self):
         result = afe.evaluate_preemptive_exit(
-            held_symbol="000660", inverse_probability=80.0, hynix_probability=20.0,
+            held_symbol="0193T0", inverse_probability=80.0, hynix_probability=20.0,
             down_turn_probability_3m=50.0, up_turn_probability_3m=50.0,
             momentum_inflection_down=50.0, momentum_inflection_up=50.0,
         )
@@ -296,7 +296,7 @@ class TestPreemptiveExit:
 
     def test_hynix_partial_exit_on_moderate_signals(self):
         result = afe.evaluate_preemptive_exit(
-            held_symbol="000660", inverse_probability=59.0, hynix_probability=41.0,
+            held_symbol="0193T0", inverse_probability=59.0, hynix_probability=41.0,
             down_turn_probability_3m=62.0, up_turn_probability_3m=38.0,
             momentum_inflection_down=61.0, momentum_inflection_up=39.0,
         )
@@ -304,7 +304,7 @@ class TestPreemptiveExit:
 
     def test_no_action_when_signals_weak(self):
         result = afe.evaluate_preemptive_exit(
-            held_symbol="000660", inverse_probability=45.0, hynix_probability=55.0,
+            held_symbol="0193T0", inverse_probability=45.0, hynix_probability=55.0,
             down_turn_probability_3m=40.0, up_turn_probability_3m=60.0,
             momentum_inflection_down=30.0, momentum_inflection_up=70.0,
         )
@@ -476,7 +476,7 @@ class TestHynixAdaptiveFusionEngineDecide:
             consecutive_stop_losses=0,
         )
         assert result["final_action"] == afe.ACTION_HYNIX
-        assert result["symbol"] == "000660"
+        assert result["symbol"] == "0193T0"
         assert result["executable"] is True
         assert result["target_position_pct"] > 0
 
@@ -603,7 +603,7 @@ class TestHynixAdaptiveFusionEngineDecide:
             consecutive_stop_losses=0, live_hynix_trend=self._uptrend(streak=2),
         )
         assert result["final_action"] == afe.ACTION_HYNIX
-        assert result["symbol"] == "000660"
+        assert result["symbol"] == "0193T0"
 
     def test_live_hynix_downtrend_two_confirmations_switches_to_inverse(self):
         engine = afe.HynixAdaptiveFusionEngine()

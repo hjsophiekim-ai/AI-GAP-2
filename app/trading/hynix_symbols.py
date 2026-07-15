@@ -1,0 +1,17 @@
+"""Canonical symbols for the Enhanced Hynix ETF switching strategy."""
+
+SIGNAL_SYMBOL = "000660"
+SIGNAL_NAME = "SK하이닉스"
+
+LONG_SYMBOL = "0193T0"
+LONG_NAME = "KODEX SK하이닉스단일종목레버리지"
+
+SHORT_SYMBOL = "0197X0"
+SHORT_NAME = "SOL SK하이닉스선물단일종목인버스2X"
+
+TRADE_SYMBOLS = (LONG_SYMBOL, SHORT_SYMBOL)
+TRADE_SYMBOL_NAME = {
+    LONG_SYMBOL: LONG_NAME,
+    SHORT_SYMBOL: SHORT_NAME,
+}
+

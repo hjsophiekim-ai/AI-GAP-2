@@ -383,18 +383,22 @@ for _acc_col, _acc_mode in ((_acc_col1, "mock"), (_acc_col2, "real")):
         except Exception as exc:
             st.warning(f"계좌 설정 미확인: {exc}")
 
-st.markdown("**000660 / 0197X0 검증 (현재가+종목명 조회, PDNO에 그대로 전달)**")
+st.markdown("**000660 / 0193T0 / 0197X0 검증 (현재가+종목명 조회, PDNO에 그대로 전달)**")
 _verify_mode_choice = st.radio("검증할 계좌", ["mock", "real"], horizontal=True, key="symbol_verify_mode")
 if st.button("종목코드 검증 실행", key="btn_verify_symbols"):
     try:
         from app.trading.kis_client import create_kis_client, verify_symbol
-        from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
+        from app.trading.hynix_symbols import SIGNAL_SYMBOL, SIGNAL_NAME, LONG_SYMBOL, LONG_NAME, SHORT_SYMBOL, SHORT_NAME
 
         _vclient = create_kis_client(_verify_mode_choice)
         if _vclient is None:
             st.error(f"{_verify_mode_choice} KIS 클라이언트 초기화 실패 — 검증 불가")
         else:
-            for _sym, _expected in (("000660", "SK하이닉스"), (INVERSE_SYMBOL, INVERSE_NAME)):
+            for _sym, _expected in (
+                (SIGNAL_SYMBOL, SIGNAL_NAME),
+                (LONG_SYMBOL, LONG_NAME),
+                (SHORT_SYMBOL, SHORT_NAME),
+            ):
                 _res = verify_symbol(_vclient, _sym, expected_name_substr=_expected)
                 if _res["verified"]:
                     st.success(f"✅ {_sym}: 현재가 {_res['current_price']:,.0f}원, 종목명 `{_res['name']}`")

@@ -33,6 +33,7 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _FUSION_CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
@@ -378,7 +379,7 @@ def evaluate_disagreement_override(model_results: dict) -> Optional[dict]:
 
     return {
         "action": leader_action,
-        "target_symbol": "000660" if leader_action == ACTION_HYNIX else "0197X0",
+        "target_symbol": LONG_SYMBOL if leader_action == ACTION_HYNIX else SHORT_SYMBOL,
         "position_pct": entry_pct,
         "leader_model": leader_name, "leader_confidence": leader_confidence,
         "allies": allies, "opposing_strong_count": opposing_strong,
@@ -745,7 +746,7 @@ def evaluate_early_entry_hynix(
     )
     if not ok:
         return None
-    return {"symbol": "000660", "position_pct": 15.0, "reason": "조기진입(하이닉스): momentum/turning point 조건 충족"}
+    return {"symbol": LONG_SYMBOL, "position_pct": 15.0, "reason": "조기진입(하이닉스): momentum/turning point 조건 충족"}
 
 
 def evaluate_early_entry_inverse(
@@ -762,7 +763,7 @@ def evaluate_early_entry_inverse(
     )
     if not ok:
         return None
-    return {"symbol": "0197X0", "position_pct": 15.0, "reason": "조기진입(인버스): momentum/turning point 조건 충족"}
+    return {"symbol": SHORT_SYMBOL, "position_pct": 15.0, "reason": "조기진입(인버스): momentum/turning point 조건 충족"}
 
 
 def default_early_entry_state() -> dict:
@@ -811,7 +812,7 @@ def evaluate_preemptive_exit(
 ) -> Optional[dict]:
     """하이닉스/인버스 보유 중 예측 확률 악화 시 손절선 전에 선제적으로 축소한다.
     반환 None이면 조치 없음, dict면 {"ratio": 매도비중, "reason": str}."""
-    is_hynix = held_symbol == "000660"
+    is_hynix = held_symbol == LONG_SYMBOL
     opposite_prob = inverse_probability if is_hynix else hynix_probability
     opposite_turn_3m = down_turn_probability_3m if is_hynix else up_turn_probability_3m
     opposite_inflection = momentum_inflection_down if is_hynix else momentum_inflection_up
@@ -1581,16 +1582,16 @@ class HynixAdaptiveFusionEngine:
         final_action = fused["final_action"]
         target_symbol = None
         if final_action == ACTION_HYNIX:
-            target_symbol = "000660"
+            target_symbol = LONG_SYMBOL
         elif final_action == ACTION_INVERSE:
-            target_symbol = "0197X0"
+            target_symbol = SHORT_SYMBOL
 
         live_trend_note = None
         if live_hynix_trend and live_hynix_trend.get("hynix_uptrend_confirmed"):
             streak = int(live_hynix_trend.get("hynix_uptrend_streak", 1) or 1)
             if final_action == ACTION_INVERSE:
                 if streak >= 2:
-                    final_action, target_symbol = ACTION_HYNIX, "000660"
+                    final_action, target_symbol = ACTION_HYNIX, LONG_SYMBOL
                     final_pct = min(final_pct if final_pct > 0 else 25.0, 45.0)
                     live_trend_note = "live Hynix uptrend confirmed 2x: INVERSE blocked and switched to HYNIX"
                 else:
@@ -1599,7 +1600,7 @@ class HynixAdaptiveFusionEngine:
         elif live_hynix_trend and live_hynix_trend.get("hynix_downtrend_confirmed"):
             streak = int(live_hynix_trend.get("hynix_downtrend_streak", 1) or 1)
             if final_action == ACTION_HYNIX and streak >= 2:
-                final_action, target_symbol = ACTION_INVERSE, "0197X0"
+                final_action, target_symbol = ACTION_INVERSE, SHORT_SYMBOL
                 final_pct = min(final_pct if final_pct > 0 else 25.0, 45.0)
                 live_trend_note = "live Hynix downtrend confirmed 2x: switched to INVERSE"
 

@@ -65,7 +65,7 @@ class TestValidateHynixDataframeDeep:
 
     def test_prices_above_max_filtered_out(self):
         df = _make_hynix_df(30)
-        df.loc[:9, "close"] = HYNIX_PRICE_MAX + 1_000   # 10개 비정상 고가
+        df.loc[:9, "close"] = HYNIX_PRICE_MAX * 10 + 1_000   # 10개 비정상 고가(10x 보정 후에도 상한 초과)
         ok, msg, result = validate_hynix_dataframe(df)
         assert ok is True
         assert len(result) == 20
