@@ -10,7 +10,7 @@ from datetime import datetime
 import app.services.hynix_switch_state as state_module
 import app.trading.dynamic_exit_watcher as watcher
 from app.models import OrderResult, Position
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
+from app.data_sources.hynix_long_collector import LONG_SYMBOL as HYNIX_SYMBOL, LONG_NAME as HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
 from app.trading.hynix_position_common import get_hynix_auto_position, POSITION_INVERSE, POSITION_HYNIX
 from app.trading.hynix_switch_position_manager import run_switch_or_entry, sync_position_from_broker

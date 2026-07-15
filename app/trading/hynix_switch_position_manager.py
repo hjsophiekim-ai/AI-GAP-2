@@ -20,6 +20,7 @@ from app.logger import logger
 from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
+from app.data_sources.hynix_long_collector import LONG_SYMBOL, LONG_NAME
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, should_liquidate_now
 from app.trading.hynix_position_common import (
     get_hynix_auto_position, is_buy_cooldown_active, POSITION_CONFLICT,
@@ -31,22 +32,33 @@ _CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
 _DEFAULT_RISK = {
     "take_profit_1_pct": 1.2, "take_profit_1_ratio": 0.5,
     "take_profit_2_pct": 2.0, "take_profit_2_ratio": 1.0,
-    "stop_loss_1_pct": -0.8, "stop_loss_1_ratio": 0.5,
+    "stop_loss_1_pct": -1.0, "stop_loss_1_ratio": 0.5,
     "stop_loss_2_pct": -1.5, "stop_loss_2_ratio": 1.0,
-    "daily_loss_limit_pct": -2.5,
+    "daily_loss_limit_pct": -2.0,
 }
-_DEFAULT_SIZING = {"normal_trade_cash_pct": 0.20, "forced_trade_cash_pct": 0.08}
+# 요구사항6(2026-07-15) — 레버리지 ETF 위험 반영: 1회 최대 30%, 3회 확인 후
+# 최대 50%까지 확대 가능.
+_DEFAULT_SIZING = {
+    "normal_trade_cash_pct": 0.30, "forced_trade_cash_pct": 0.08,
+    "scale_in_confirm_count": 3, "scale_in_max_pct": 0.50,
+}
 POSITION_SYNC_PENDING = "POSITION_SYNC_PENDING"
 SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH = "ENHANCED_REGIME_SWITCH"
 _POSITION_SYNC_RETRY_ATTEMPTS = 3
 _POSITION_SYNC_RETRY_DELAY_SECONDS = 2
 _POSITION_STATE_LOCK = threading.RLock()
 
+# 요구사항(2026-07-15) — SK하이닉스(000660)는 시세·추세·신호 계산에만 쓴다. 실제
+# 매매는 상승 신호일 때 KODEX SK하이닉스단일종목레버리지(0193T0), 하락 신호일 때
+# SOL SK하이닉스선물단일종목인버스2X(0197X0)를 매수한다. 000660 직접 매수·매도는
+# 완전히 금지된다 — _buy_new/_execute_sell의 하드 가드가 이를 강제한다.
+SIGNAL_SYMBOL = HYNIX_SYMBOL
+
 _ACTION_TO_SYMBOL = {
-    "HYNIX_STRONG_BUY": HYNIX_SYMBOL, "HYNIX_BUY": HYNIX_SYMBOL,
+    "HYNIX_STRONG_BUY": LONG_SYMBOL, "HYNIX_BUY": LONG_SYMBOL,
     "INVERSE_STRONG_BUY": INVERSE_SYMBOL, "INVERSE_BUY": INVERSE_SYMBOL,
 }
-_SYMBOL_NAME = {HYNIX_SYMBOL: HYNIX_NAME, INVERSE_SYMBOL: INVERSE_NAME}
+_SYMBOL_NAME = {LONG_SYMBOL: LONG_NAME, INVERSE_SYMBOL: INVERSE_NAME, HYNIX_SYMBOL: HYNIX_NAME}
 
 
 def _load_section(name: str, defaults: dict) -> dict:
@@ -64,11 +76,27 @@ def _cycle_bucket(now: datetime) -> str:
 
 
 def _current_price(symbol: str, hynix_price: Optional[float], inverse_price: Optional[float]) -> Optional[float]:
-    if symbol == HYNIX_SYMBOL:
+    """`hynix_price`/`inverse_price`는 실행(주문·손익) 기준 가격 슬롯의 기존 이름을
+    그대로 쓴다 — 실제로 이 자리에 들어오는 값은 000660이 아니라 실거래 종목(상승:
+    LONG_SYMBOL/0193T0, 하락: INVERSE_SYMBOL/0197X0)의 현재가다(호출부인
+    hynix_switch_engine.py에서 그렇게 채워 넘긴다). SIGNAL_SYMBOL(000660)은 이
+    함수가 알 필요가 없다 — 거래 대상이 아니기 때문이다."""
+    if symbol == LONG_SYMBOL:
         return hynix_price
     if symbol == INVERSE_SYMBOL:
         return inverse_price
     return None
+
+
+def _assert_not_signal_symbol(symbol: str, action: str) -> None:
+    """요구사항8 — SIGNAL_SYMBOL(000660) 직접 매수·매도는 완전히 금지한다. 호출부
+    로직에 실수가 있어 000660이 실제 주문 경로로 흘러 들어와도, 여기서 즉시 막아
+    (테스트가 이 예외로 실패해) 절대 브로커에 도달하지 않게 한다."""
+    if symbol == SIGNAL_SYMBOL:
+        raise ValueError(
+            f"{action}: SIGNAL_SYMBOL({SIGNAL_SYMBOL}) direct order is forbidden — "
+            f"trade LONG_SYMBOL({LONG_SYMBOL}) or INVERSE_SYMBOL({INVERSE_SYMBOL}) instead"
+        )
 
 
 def evaluate_tp_sl(position: dict, current_price: Optional[float]) -> Optional[dict]:
@@ -479,6 +507,7 @@ def _execute_sell(
     mode: str = "mock", signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH, entry_price: Optional[float] = None,
     fusion_metadata: Optional[dict] = None, position_manager=None,
 ) -> dict:
+    _assert_not_signal_symbol(symbol, "SELL")
     with _POSITION_STATE_LOCK:
         order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
         order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)
@@ -562,6 +591,7 @@ def _buy_new(
     if quantity < 1:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "buy amount insufficient for 1 share")
         return {"success": False, "message": "buy amount insufficient for 1 share"}
+    _assert_not_signal_symbol(symbol, "BUY")
     with _POSITION_STATE_LOCK:
         order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
         order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)

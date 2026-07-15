@@ -105,7 +105,9 @@ class TestKillSwitch:
         svc.stop_auto_trade()
         result = svc.execute_proposal({"action": "BUY", "blocked": False, "buy_cash_amount": 1000}, mode="mock")
         assert result["success"] is False
-        assert result["error_type"] == "stopped"
+        # 2026-07-15부터 이 레거시 실행 경로(000660 직접 주문) 자체가 완전히
+        # 비활성화되어, stopped 여부와 무관하게 항상 이 error_type을 반환한다.
+        assert result["error_type"] == "signal_symbol_direct_order_disabled"
         svc.resume_auto_trade()
 
 
@@ -143,28 +145,33 @@ class TestGenerateProposal:
 
 
 class TestExecuteProposal:
+    """2026-07-15부터 execute_proposal()은 완전히 비활성화되어 있다 — SK하이닉스
+    (000660) 직접 매수·매도는 금지되고, Enhanced 자동매매(0193T0/0197X0)만 실제
+    주문을 낸다. 아래는 이 레거시 경로가 항상 차단된 응답만 반환하는지 검증한다."""
+
     def test_not_actionable_rejected(self):
         result = svc.execute_proposal({"action": "HOLD", "blocked": False}, mode="mock")
         assert result["success"] is False
-        assert result["error_type"] == "not_actionable"
+        assert result["error_type"] == "signal_symbol_direct_order_disabled"
 
-    def test_buy_executes_and_logs(self, monkeypatch, tmp_path):
+    def test_buy_does_not_execute_signal_symbol_order(self, monkeypatch, tmp_path):
         monkeypatch.setattr("app.trading.broker_factory.create_broker", lambda cfg, mode=None, **kw: _FakeBroker())
         proposal = {
             "blocked": False, "action": "BUY", "buy_cash_amount": 1_700_000.0,
             "current_price": 170_000.0,
         }
         result = svc.execute_proposal(proposal, mode="mock")
-        assert result["success"] is True
+        assert result["success"] is False
+        assert result["error_type"] == "signal_symbol_direct_order_disabled"
         log_files = list((tmp_path / "logs").glob("hynix_auto_trade_orders_*.csv"))
-        assert len(log_files) == 1
+        assert len(log_files) == 0
 
-    def test_sell_with_no_position_rejected(self, monkeypatch):
+    def test_sell_does_not_execute_signal_symbol_order(self, monkeypatch):
         monkeypatch.setattr("app.trading.broker_factory.create_broker", lambda cfg, mode=None, **kw: _FakeBroker(positions=[]))
         proposal = {"blocked": False, "action": "SELL", "sell_quantity_ratio": 0.5, "current_price": 170_000.0}
         result = svc.execute_proposal(proposal, mode="mock")
         assert result["success"] is False
-        assert result["error_type"] == "no_position"
+        assert result["error_type"] == "signal_symbol_direct_order_disabled"
 
 
 class TestFullAutoGate:

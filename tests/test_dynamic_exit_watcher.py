@@ -14,7 +14,7 @@ import pytest
 
 import app.services.hynix_switch_state as state_module
 import app.trading.dynamic_exit_watcher as watcher
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
+from app.data_sources.hynix_long_collector import LONG_SYMBOL as HYNIX_SYMBOL, LONG_NAME as HYNIX_NAME
 from app.models import OrderResult, Position
 
 

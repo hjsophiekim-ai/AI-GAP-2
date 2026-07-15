@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import app.trading.hynix_stop_loss_control as slc
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
+from app.data_sources.hynix_long_collector import LONG_SYMBOL as HYNIX_SYMBOL, LONG_NAME as HYNIX_NAME
 from app.models import OrderResult, Position
 from app.trading.hynix_switch_position_manager import run_liquidation_if_needed
 from app.trading.hynix_position_common import HynixPositionManager

@@ -14,11 +14,14 @@ from typing import Optional
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
+from app.data_sources.hynix_long_collector import LONG_SYMBOL, LONG_NAME
 
-TRADE_SYMBOLS = [HYNIX_SYMBOL, INVERSE_SYMBOL]
-SYMBOL_NAME = {HYNIX_SYMBOL: HYNIX_NAME, INVERSE_SYMBOL: INVERSE_NAME}
+# 2026-07-15부터 "하이닉스 보유"는 000660이 아니라 LONG_SYMBOL(0193T0, KODEX
+# SK하이닉스단일종목레버리지) 보유를 뜻한다 — 000660은 신호 계산 전용이라 실제
+# 거래 유니버스(TRADE_SYMBOLS)에 포함되지 않는다.
+TRADE_SYMBOLS = [LONG_SYMBOL, INVERSE_SYMBOL]
+SYMBOL_NAME = {LONG_SYMBOL: LONG_NAME, INVERSE_SYMBOL: INVERSE_NAME}
 
 POSITION_HYNIX = "HYNIX"
 POSITION_INVERSE = "INVERSE"
@@ -50,14 +53,14 @@ def get_hynix_auto_position(positions: list) -> dict:
         "error": str|None (CONFLICT일 때만),
     }
     """
-    hynix_pos = next((p for p in positions if _attr(p, "symbol") == HYNIX_SYMBOL and (_attr(p, "quantity") or 0) > 0), None)
+    hynix_pos = next((p for p in positions if _attr(p, "symbol") == LONG_SYMBOL and (_attr(p, "quantity") or 0) > 0), None)
     inverse_pos = next((p for p in positions if _attr(p, "symbol") == INVERSE_SYMBOL and (_attr(p, "quantity") or 0) > 0), None)
 
     if hynix_pos and inverse_pos:
         return {
             "current_position": POSITION_CONFLICT, "position": None,
             "hynix_position": hynix_pos, "inverse_position": inverse_pos,
-            "error": "000660과 0197X0을 동시에 보유 중 — 포지션 동기화 필요, 신규매수 금지",
+            "error": f"{LONG_SYMBOL}과 {INVERSE_SYMBOL}을 동시에 보유 중 — 포지션 동기화 필요, 신규매수 금지",
         }
     if hynix_pos:
         return {"current_position": POSITION_HYNIX, "position": hynix_pos, "hynix_position": hynix_pos, "inverse_position": None, "error": None}

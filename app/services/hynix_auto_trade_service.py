@@ -243,7 +243,36 @@ def execute_proposal(
     runtime_enable_real_sell: bool = False,
     full_auto: bool = False,
 ) -> dict:
-    """승인된 제안을 실제 주문으로 실행한다."""
+    """승인된 제안을 실제 주문으로 실행한다.
+
+    2026-07-15부터 비활성화됨 — 이 경로는 SK하이닉스(000660)를 직접 매수·매도
+    했다. Enhanced 자동매매는 이제 상승 신호에 KODEX SK하이닉스단일종목레버리지
+    (0193T0), 하락 신호에 SOL SK하이닉스선물단일종목인버스2X(0197X0)를 매매하며
+    (app.trading.hynix_switch_position_manager), 000660 직접 주문은 완전히
+    금지된다. 이 레거시 제안 실행 경로는 대체되지 않고 그대로 차단만 한다.
+    """
+    return {
+        "success": False,
+        "message": (
+            "이 실행 경로(레거시 제안 실행)는 비활성화되었습니다 — SK하이닉스(000660) 직접 "
+            "주문은 완전히 금지됩니다. Enhanced 자동매매(0193T0/0197X0)를 사용하세요."
+        ),
+        "error_type": "signal_symbol_direct_order_disabled",
+    }
+
+
+def _execute_proposal_disabled_legacy_body(
+    proposal: dict,
+    mode: str,
+    confirm_text: str = "",
+    runtime_real_mode: bool = False,
+    runtime_enable_real_buy: bool = False,
+    runtime_enable_real_sell: bool = False,
+    full_auto: bool = False,
+) -> dict:
+    """요구사항8(2026-07-15) — 000660 직접 주문 코드는 삭제하지 않고 이 함수 안에
+    비활성 상태로 보존한다(호출되지 않음, 사후 참고/회귀 방지용). 실제 실행 경로는
+    위 execute_proposal()의 즉시 차단 응답이다."""
     from app.trading.broker_factory import create_broker
     from app.config import get_config
 

@@ -20,7 +20,7 @@ from typing import Optional
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
+from app.data_sources.hynix_long_collector import LONG_SYMBOL as HYNIX_SYMBOL, LONG_NAME as HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
 
 STOP_LOSS_MODE_AUTO = "AUTO"

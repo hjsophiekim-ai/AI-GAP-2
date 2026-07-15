@@ -256,7 +256,7 @@ class _FakePositionManager:
 class TestFillConfirmation:
     def test_execute_sell_detects_partial_fill_via_position_manager(self):
         from app.trading.hynix_switch_position_manager import _execute_sell
-        from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
+        from app.data_sources.hynix_long_collector import LONG_SYMBOL
 
         class _Broker:
             def sell(self, symbol, name, quantity, price, order_type="limit"):
@@ -268,10 +268,10 @@ class TestFillConfirmation:
 
         # 10주 전량매도를 시도했지만(rt_cd=0으로 접수는 성공) 실제로는 4주만 체결되어
         # 브로커 재조회 시 6주가 그대로 남아있는 상황(미체결/부분체결)을 재현한다.
-        pm = _FakePositionManager(remaining_symbol=HYNIX_SYMBOL, remaining_qty=6)
+        pm = _FakePositionManager(remaining_symbol=LONG_SYMBOL, remaining_qty=6)
         orders: list = []
         result = _execute_sell(
-            _Broker(), HYNIX_SYMBOL, sell_qty=10, current_price=100_000.0, reason="test",
+            _Broker(), LONG_SYMBOL, sell_qty=10, current_price=100_000.0, reason="test",
             orders=orders, before_qty=10, expected_remaining=0, position_manager=pm,
         )
         assert result["fill_confirmed"] is True
@@ -281,7 +281,7 @@ class TestFillConfirmation:
     def test_switch_defers_opposite_buy_when_sell_not_confirmed(self):
         """기존 포지션 청산이 실제로 확인되지 않으면 반대 포지션에 진입하지 않는다."""
         from app.trading.hynix_switch_position_manager import run_switch_or_entry
-        from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
+        from app.data_sources.hynix_long_collector import LONG_SYMBOL, LONG_NAME
         from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
         from app.services.hynix_switch_state import default_state
         from app.models import OrderResult
@@ -308,12 +308,12 @@ class TestFillConfirmation:
 
         state = default_state()
         state["position"] = {
-            "symbol": HYNIX_SYMBOL, "name": HYNIX_NAME, "quantity": 10,
+            "symbol": LONG_SYMBOL, "name": LONG_NAME, "quantity": 10,
             "avg_price": 100_000.0, "entry_price": 100_000.0,
             "entry_time": datetime.now().isoformat(), "partial_tp1_done": False, "partial_sl1_done": False,
         }
         broker = _Broker()
-        pm = _FakePositionManager(remaining_symbol=HYNIX_SYMBOL, remaining_qty=10)  # 매도 미체결 재현
+        pm = _FakePositionManager(remaining_symbol=LONG_SYMBOL, remaining_qty=10)  # 매도 미체결 재현
 
         result = run_switch_or_entry(
             state, broker, "INVERSE_BUY", 101_000.0, 5_000.0,
@@ -321,7 +321,7 @@ class TestFillConfirmation:
         )
 
         assert broker.buy_calls == [], "매도 체결이 확인되지 않았는데 반대 포지션을 매수해서는 안 된다"
-        assert state["position"]["symbol"] == HYNIX_SYMBOL
+        assert state["position"]["symbol"] == LONG_SYMBOL
 
 
 # ---------------------------------------------------------------------------

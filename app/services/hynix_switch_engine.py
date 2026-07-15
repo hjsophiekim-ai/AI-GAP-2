@@ -1535,9 +1535,20 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
             position_manager = HynixPositionManager(broker, mode=resolved_mode)
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
+            # 요구사항(2026-07-15) — 실행가는 000660이 아니라 LONG_SYMBOL(0193T0)의
+            # 실제 현재가여야 한다(3분 사이클과 동일 원칙).
+            from app.data_sources.hynix_long_collector import collect_long_current
+
+            _fast_long_quote = collect_long_current(mode=resolved_mode)
+            _fast_long_price = _fast_long_quote.get("current_price")
+            if not _fast_long_price:
+                status["blocked_reason"] = f"LONG_SYMBOL(0193T0) 현재가 조회 실패: {_fast_long_quote.get('error')}"
+                state["fast_trend_watcher"] = status
+                save_state_atomic(state)
+                return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
             switch = run_switch_or_entry(
                 state, broker, final_action,
-                enhanced_result.get("hynix_current_price"), enhanced_result.get("inverse_current_price"),
+                _fast_long_price, enhanced_result.get("inverse_current_price"),
                 now=now, forced=True, reason="FAST_TREND_WATCHER 2x confirmed",
                 position_manager=position_manager, target_position_pct=0.20, entry_type="EXPLORATORY",
             )
@@ -1619,14 +1630,31 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
     trace["prediction_signal"] = _map_prediction_signal(decision.get("final_action", "HOLD"))
 
-    hynix_price = enhanced_result.get("hynix_current_price")
+    hynix_signal_price = enhanced_result.get("hynix_current_price")
     inverse_price = enhanced_result.get("inverse_current_price")
     df_1min = (enhanced_result.get("market_data") or {}).get("hynix_minute", {}).get("df_1min")
 
     # ── SHADOW MODE: Cycle Detector AI + Prediction AI V2(BUY/SELL/HOLD 확률) ──
     # 아래 호출은 `decision`/실제 주문에 절대 영향을 주지 않는다 — 계산·로그·state 저장만
     # 수행하며, 예외가 나도 무해하게 삼켜진다. 실제 주문 연결은 별도 승인 후 진행한다.
-    _run_shadow_cycle_ai_and_decision_v2(state, enhanced_result, decision, df_1min, hynix_price, inverse_price, now)
+    # 신호 계산 참고용이므로 여기서는 000660 가격(hynix_signal_price)을 그대로 쓴다.
+    _run_shadow_cycle_ai_and_decision_v2(state, enhanced_result, decision, df_1min, hynix_signal_price, inverse_price, now)
+
+    # 요구사항(2026-07-15) — 실제 매매 종목은 000660이 아니라 LONG_SYMBOL(0193T0)이다.
+    # 이 지점부터 `hynix_price`는 000660이 아니라 0193T0의 실제 현재가여야 한다 —
+    # run_switch_or_entry/run_tp_sl_if_needed/run_liquidation_if_needed/evaluate_pullback_gate
+    # 등 실행 계층에 넘기는 값이 그대로 주문가격·손익 계산 기준이 되기 때문이다.
+    try:
+        from app.data_sources.hynix_long_collector import collect_long_current
+
+        _long_quote = collect_long_current(mode=mode)
+        hynix_price = _long_quote.get("current_price")
+        if _long_quote.get("stale"):
+            warnings.append(f"LONG_SYMBOL(0193T0) 현재가가 최신이 아닐 수 있음: {_long_quote.get('error')}")
+    except Exception as exc:
+        logger.error("[HynixSwitchEngine] LONG_SYMBOL(0193T0) 현재가 조회 실패: %s", exc)
+        warnings.append(f"LONG_SYMBOL(0193T0) 현재가 조회 실패: {exc}")
+        hynix_price = None
 
     price_data_ok = hynix_price is not None
     order_api_ok = True
@@ -2064,7 +2092,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     # state에도 남겨 한 번 더 저장한다.
     state["last_pipeline_trace"] = trace
     state["last_cycle_computed_at"] = now.isoformat()
-    state["last_hynix_price"] = hynix_price
+    state["last_hynix_price"] = hynix_price  # LONG_SYMBOL(0193T0) 실행가 — 실제 매매/손익 기준
+    state["last_hynix_signal_price"] = hynix_signal_price  # 000660 — 감시 기초자산(신호 계산 참고용)
     state["last_inverse_price"] = inverse_price
     state["last_enhanced_result"] = enhanced_result
     state["last_decision"] = decision
@@ -2159,6 +2188,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         "new_entry_allowed": is_new_entry_allowed(now),
         "liquidation_phase": liquidation_phase,
         "hynix_current_price": hynix_price,
+        "hynix_signal_price": hynix_signal_price,
         "inverse_current_price": inverse_price,
         "enhanced_result": enhanced_result,
         "decision": decision,
