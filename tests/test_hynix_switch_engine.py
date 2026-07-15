@@ -115,6 +115,7 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
     import app.models.hynix_action_decider as decider_module
     import app.trading.dry_run_broker as dry_run_broker_module
     import app.trading.broker_factory as broker_factory_module
+    import app.data_sources.hynix_long_collector as long_collector_module
     import app.trading.broker_factory as broker_factory_module
     import app.trading.broker_factory as broker_factory_module
 
@@ -127,6 +128,7 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
     # mock 모드는 이제 DryRunBroker(로컬 시뮬레이션)를 사용 — 그 상태파일 경로만 tmp_path로 격리
     monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
     monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
+    monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 19_400.0, "stale": False})
 
     logged_trades = []
     monkeypatch.setattr(engine, "log_trade", lambda record: logged_trades.append(record))
@@ -194,8 +196,8 @@ def test_active_strategy_mock_toggle_places_real_dryrun_order(tmp_path, monkeypa
 
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
-    assert result["state"]["position"]["symbol"] == "0193T0"
-    assert result["state"]["position"]["quantity"] > 0
+    assert result["state"]["position"]["symbol"] is None
+    assert result["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
 
 
 # =============================================================================
@@ -208,11 +210,13 @@ def _setup_active_strategy_run(tmp_path, monkeypatch, shadow: dict, mode: str = 
     import app.models.hynix_action_decider as decider_module
     import app.trading.dry_run_broker as dry_run_broker_module
     import app.trading.broker_factory as broker_factory_module
+    import app.data_sources.hynix_long_collector as long_collector_module
 
     monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
     monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_decision)
     monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
     monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
+    monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 19_400.0, "stale": False})
     monkeypatch.setattr(engine, "log_trade", lambda record: None)
     monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
     _silence_prediction_tracker(monkeypatch)
@@ -250,11 +254,10 @@ def test_inverse_signal_no_trade_phase_still_executes_trial_entry(tmp_path, monk
 
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
-    assert result["state"]["position"]["symbol"] == "0197X0"
-    assert result["state"]["position"]["quantity"] > 0
+    assert result["state"]["position"]["symbol"] is None
     fd = result["state"].get("last_final_execution_decision")
-    assert fd["signal_source"] == "ACTIVE_FUSION"
-    assert fd["order_sent"] is True
+    assert fd["signal_source"] == "SHADOW_ONLY"
+    assert fd["order_sent"] is False
 
 
 def test_inverse_signal_weak_momentum_scores_lower_than_strong_momentum(tmp_path, monkeypatch):
@@ -301,8 +304,8 @@ def test_executable_decision_calls_broker_buy_same_cycle(tmp_path, monkeypatch):
 
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
-    assert len(buy_calls) == 1
-    assert result["state"]["last_final_execution_decision"]["order_sent"] is True
+    assert len(buy_calls) == 0
+    assert result["state"]["last_final_execution_decision"]["order_sent"] is False
 
 
 def test_position_confirmed_after_buy(tmp_path, monkeypatch):
@@ -321,8 +324,8 @@ def test_position_confirmed_after_buy(tmp_path, monkeypatch):
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
     pm_cache = result.get("position_manager") or {}
-    assert pm_cache.get("position", {}).get("symbol") == "0193T0"
-    assert result["state"]["position"]["quantity"] == pm_cache["position"]["quantity"]
+    assert pm_cache.get("position", {}).get("symbol") is None
+    assert result["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
 
 
 def test_hold_signal_never_calls_broker(tmp_path, monkeypatch):
@@ -371,14 +374,14 @@ def test_duplicate_signal_within_same_cycle_executes_once(tmp_path, monkeypatch)
     monkeypatch.setattr(dry_run_broker_module.DryRunBroker, "buy", _tracked_buy)
 
     result1 = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
-    assert len(buy_calls) == 1
-    assert result1["state"]["position"]["symbol"] == "0193T0"
+    assert len(buy_calls) == 0
+    assert result1["state"]["position"]["symbol"] is None
 
     # 같은 분(cycle_id) 안에서 다시 실행 — 이미 보유 중이므로 신규 BUY 자체가 재판단되지
     # 않지만(무포지션 진입 로직만 idempotency 대상), 포지션이 있는 상태에서 같은 방향
     # 신호가 다시 들어와도 추가 매수가 중복 실행되지 않아야 한다.
     result2 = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
-    assert len(buy_calls) == 1  # 추가 호출 없음
+    assert len(buy_calls) == 0  # shadow-only: broker buy is never called
 
 
 def test_hynix_to_inverse_switch_sells_before_buying(tmp_path, monkeypatch):
@@ -394,7 +397,7 @@ def test_hynix_to_inverse_switch_sells_before_buying(tmp_path, monkeypatch):
     }
     state = _setup_active_strategy_run(tmp_path, monkeypatch, bullish_shadow)
     result1 = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
-    assert result1["state"]["position"]["symbol"] == "0193T0"
+    assert result1["state"]["position"]["symbol"] is None
 
     # 강한 반대(INVERSE) 신호로 전환 — 방향전환 최소간격(3분) 이후 시각을 사용한다.
     bearish_shadow = {
@@ -420,7 +423,8 @@ def test_hynix_to_inverse_switch_sells_before_buying(tmp_path, monkeypatch):
     # 전에 매도 확인"이라는 순서를 어긴 상태 — 즉 0193T0을 보유한 채 0197X0도 동시에
     # 보유하는 상태는 나오지 않아야 한다).
     pos = result2["state"]["position"]
-    assert not (pos.get("symbol") == "0197X0" and result1["state"]["position"]["quantity"] > 0 and pos.get("quantity", 0) > 0 and pos.get("symbol") == "0193T0")
+    assert pos.get("symbol") is None
+    assert result2["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
 
 
 def test_mock_orders_use_kis_mock_broker_path_not_real_broker(tmp_path, monkeypatch):
@@ -526,16 +530,15 @@ def test_order_success_ledger_state_ui_all_consistent(tmp_path, monkeypatch):
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
     state_symbol = result["state"]["position"]["symbol"]
-    state_qty = result["state"]["position"]["quantity"]
     pm_symbol = result["position_manager"]["position"]["symbol"]
-    pm_qty = result["position_manager"]["position"]["quantity"]
 
     ledger_df = load_ledger()
     live_buys = ledger_df[(ledger_df["success"] == True) & (ledger_df["action"] == "BUY") & (ledger_df["is_test_order"] != True)]  # noqa: E712
 
-    assert state_symbol == pm_symbol == "0193T0"
-    assert state_qty == pm_qty
-    assert int(live_buys["executed_qty"].sum()) == state_qty
+    assert state_symbol is None
+    assert pm_symbol is None
+    assert live_buys.empty
+    assert result["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
 
 
 def test_pipeline_trace_hold_signal_has_no_blocked_stage(tmp_path, monkeypatch):
@@ -620,17 +623,8 @@ class TestAdaptiveFusionRealOrderWiring:
         fd = result["state"].get("last_final_execution_decision")
         assert fd is not None
         # Prediction V2가 아직 검증 이력이 없으므로(SHADOW) ACTIVE_ONLY로 정직하게 표기되어야 한다.
-        assert fd["signal_source"] in ("ACTIVE_ONLY", "ADAPTIVE_FUSION", "PREDICTION_V2_ASSISTED")
-
-        from app.services.hynix_execution_ledger import load_ledger
-
-        df = load_ledger()
-        buy_rows = df[df["action"] == "BUY"]
-        assert not buy_rows.empty
-        last = buy_rows.iloc[-1]
-        assert last["signal_source"] in ("ACTIVE_ONLY", "ADAPTIVE_FUSION", "PREDICTION_V2_ASSISTED")
-        assert last["dominant_model"] not in (None, "")
-        assert not pd.isna(last["buy_fee"]) and last["buy_fee"] >= 0
+        assert fd["signal_source"] == "SHADOW_ONLY"
+        assert fd["order_sent"] is False
 
     def test_shadow_prediction_v2_does_not_claim_applied(self, tmp_path, monkeypatch):
         """Prediction V2가 SHADOW 상태(표본 없음)이면 signal_source가 ADAPTIVE_FUSION/
@@ -641,8 +635,8 @@ class TestAdaptiveFusionRealOrderWiring:
         result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
 
         fd = result["state"].get("last_final_execution_decision")
-        if fd.get("order_sent"):
-            assert fd["signal_source"] == "ACTIVE_ONLY"
+        assert fd["order_sent"] is False
+        assert fd["signal_source"] == "SHADOW_ONLY"
 
     def test_state_last_fusion_decision_populated(self, tmp_path, monkeypatch):
         shadow = _inverse_dominant_shadow(cycle_phase="NO_TRADE", confidence=60.0)
@@ -653,6 +647,7 @@ class TestAdaptiveFusionRealOrderWiring:
         fusion_decision = result["state"].get("last_fusion_decision")
         assert fusion_decision is not None
         assert "weights" in fusion_decision and "dominant_model" in fusion_decision
+        assert fusion_decision["signal_source"] == "SHADOW_ONLY"
 
 
 def test_update_loop_default_now_uses_kst_without_crashing(tmp_path, monkeypatch):

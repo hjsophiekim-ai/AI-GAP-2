@@ -18,9 +18,14 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.trading.hynix_symbols import LONG_SYMBOL, LONG_NAME, SIGNAL_SYMBOL, SIGNAL_NAME
 
-HYNIX_SYMBOL = "000660"
-HYNIX_NAME = "SK하이닉스"
+# Actual long-side trading symbol. 000660 remains the signal-only asset and must
+# not be treated as an executable/held Hynix position by this service.
+HYNIX_SYMBOL = LONG_SYMBOL
+HYNIX_NAME = LONG_NAME
+HYNIX_SIGNAL_SYMBOL = SIGNAL_SYMBOL
+HYNIX_SIGNAL_NAME = SIGNAL_NAME
 
 # 0197X0(SOL SK하이닉스선물단일종목인버스2X)도 이 서비스의 자동매매 유니버스에 포함된다.
 # 실제 매수 판단은 predict_hynix_signal(하이닉스 전용)만 하지만, 보유종목 인식/충돌감지는

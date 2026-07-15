@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
 
-def _make_hynix_df(n: int = 25, close: float = 180_000) -> pd.DataFrame:
+def _make_hynix_df(n: int = 25, close: float = 2_080_000) -> pd.DataFrame:
     return pd.DataFrame({
         "datetime": pd.date_range("2026-01-01", periods=n, freq="B"),
         "open":   [close * 0.99] * n,
@@ -29,10 +29,10 @@ class TestCollectHynixDailyFallback:
     @pytest.fixture(autouse=True)
     def _valid_current_price_gate(self):
         detail = {
-            "source_prices": {"KIS": 180_000.0, "naver": 180_100.0, "yfinance": 179_900.0},
+            "source_prices": {"KIS": 2_080_000.0, "naver": 2_080_000.0, "yfinance": 2_080_000.0},
             "selected_source": "KIS",
-            "selected_price": 180_000.0,
-            "max_diff_pct": 0.1112,
+            "selected_price": 2_080_000.0,
+            "max_diff_pct": 0.0,
         }
         with patch(
             "app.data_sources.auto_market_collector.validate_hynix_current_sources",

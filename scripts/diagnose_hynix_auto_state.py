@@ -32,8 +32,9 @@ except Exception:
 
 from app.services.hynix_switch_state import load_state  # noqa: E402
 from app.trading.hynix_position_common import (  # noqa: E402
-    get_hynix_auto_position, POSITION_CONFLICT, POSITION_NONE, HYNIX_SYMBOL, INVERSE_SYMBOL,
+    get_hynix_auto_position, POSITION_CONFLICT, POSITION_NONE,
 )
+from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL  # noqa: E402
 
 
 def _section(title: str) -> None:
@@ -43,9 +44,9 @@ def _section(title: str) -> None:
 
 
 def _symbol_to_type(symbol) -> str:
-    if symbol == HYNIX_SYMBOL:
+    if symbol == LONG_SYMBOL:
         return "HYNIX"
-    if symbol == INVERSE_SYMBOL:
+    if symbol == SHORT_SYMBOL:
         return "INVERSE"
     return "NONE"
 
@@ -152,7 +153,7 @@ def compare_state_vs_broker(mode: str, state_info: dict, broker_info: dict, mism
     broker_type = broker_info["detected_position"]
 
     if broker_type == POSITION_CONFLICT:
-        mismatches.append(f"[{mode}] 브로커에 000660/0197X0 동시 보유 감지: {broker_info.get('conflict_error')}")
+        mismatches.append(f"[{mode}] 브로커에 0193T0/0197X0 동시 보유 감지: {broker_info.get('conflict_error')}")
         return
 
     if state_type != broker_type:

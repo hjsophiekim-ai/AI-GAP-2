@@ -156,18 +156,11 @@ def collect_long_current(mode: Optional[str] = None) -> dict:
 
     if mode:
         try:
-            app_key = os.environ.get(f"KIS_{mode.upper()}_APP_KEY", "")
-            app_secret = os.environ.get(f"KIS_{mode.upper()}_APP_SECRET", "")
-            if not app_key or not app_secret:
-                raise ValueError("KIS 인증 정보 없음")
-            from app.trading.kis_client import KISClient
+            from app.trading.kis_client import create_kis_client
 
-            client = KISClient(
-                app_key=app_key, app_secret=app_secret,
-                account_no=os.environ.get("KIS_ACCOUNT_NO", "00000000"),
-                product_code=os.environ.get("KIS_ACCOUNT_PRODUCT_CODE", "01"),
-                mode=mode,
-            )
+            client = create_kis_client(mode)
+            if client is None:
+                raise ValueError(f"KIS {mode} account config unavailable")
             quote = client.get_current_price(LONG_SYMBOL)
             if quote and _valid_long_price(quote.get("current_price")):
                 result.update(
@@ -233,18 +226,11 @@ def collect_long_minute(mode: Optional[str] = None, count: int = 60) -> dict:
 
     if mode:
         try:
-            app_key = os.environ.get(f"KIS_{mode.upper()}_APP_KEY", "")
-            app_secret = os.environ.get(f"KIS_{mode.upper()}_APP_SECRET", "")
-            if not app_key or not app_secret:
-                raise ValueError("KIS 인증 정보 없음")
-            from app.trading.kis_client import KISClient
+            from app.trading.kis_client import create_kis_client
 
-            client = KISClient(
-                app_key=app_key, app_secret=app_secret,
-                account_no=os.environ.get("KIS_ACCOUNT_NO", "00000000"),
-                product_code=os.environ.get("KIS_ACCOUNT_PRODUCT_CODE", "01"),
-                mode=mode,
-            )
+            client = create_kis_client(mode)
+            if client is None:
+                raise ValueError(f"KIS {mode} account config unavailable")
             candles = client.get_minute_candles(LONG_SYMBOL, period_min=1, count=count)
             if candles:
                 df_1min = pd.DataFrame(candles)

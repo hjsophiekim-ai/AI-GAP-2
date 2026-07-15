@@ -11,6 +11,7 @@ import time
 
 import app.services.hynix_switch_state as switch_state_module
 from app.services.hynix_switch_state import load_state, save_state_atomic, default_state, reset_mock_state
+from app.trading.hynix_symbols import LONG_SYMBOL, LONG_NAME, SIGNAL_SYMBOL, SIGNAL_NAME, SHORT_SYMBOL
 
 
 def test_load_state_missing_file_returns_default(tmp_path, monkeypatch):
@@ -55,6 +56,8 @@ def test_residual_position_flagged_on_new_day(tmp_path, monkeypatch):
         "entry_price": 100_000, "entry_time": "2020-01-01T15:00:00",
         "partial_tp1_done": False, "partial_sl1_done": False,
     }
+    stale_state["position"]["symbol"] = LONG_SYMBOL
+    stale_state["position"]["name"] = LONG_NAME
     save_state_atomic(stale_state)
 
     reloaded = load_state(mode="mock")
@@ -182,20 +185,47 @@ def test_mock_and_real_states_are_separate_files(tmp_path, monkeypatch):
     monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
 
     mock_state = default_state("mock")
-    mock_state["position"]["symbol"] = "000660"
+    mock_state["position"]["symbol"] = LONG_SYMBOL
+    mock_state["position"]["name"] = LONG_NAME
+    mock_state["position"]["quantity"] = 1
     save_state_atomic(mock_state)
 
     real_state = default_state("real")
-    real_state["position"]["symbol"] = "0197X0"
+    real_state["position"]["symbol"] = SHORT_SYMBOL
+    real_state["position"]["quantity"] = 1
     save_state_atomic(real_state)
 
     reloaded_mock = load_state(mode="mock")
     reloaded_real = load_state(mode="real")
 
-    assert reloaded_mock["position"]["symbol"] == "000660"
-    assert reloaded_real["position"]["symbol"] == "0197X0"
+    assert reloaded_mock["current_position"] == LONG_SYMBOL
+    assert reloaded_mock["current_position_type"] == "HYNIX"
+    assert reloaded_real["current_position"] == SHORT_SYMBOL
+    assert reloaded_real["current_position_type"] == "INVERSE"
     assert (tmp_path / "hynix_auto_state_mock.json").exists()
     assert (tmp_path / "hynix_auto_state_real.json").exists()
+
+
+def test_signal_symbol_is_not_recognized_as_actual_position(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    state = default_state("mock")
+    state["position"] = {
+        **state["position"],
+        "symbol": SIGNAL_SYMBOL,
+        "name": SIGNAL_NAME,
+        "quantity": 10,
+        "avg_price": 100_000,
+        "entry_price": 100_000,
+    }
+    save_state_atomic(state)
+
+    reloaded = load_state(mode="mock")
+
+    assert reloaded["current_position"] is None
+    assert reloaded["current_position_type"] == "NONE"
+    assert reloaded["symbol"] is None
+    assert reloaded["quantity"] == 0
 
 
 def test_active_mode_pointer_roundtrip(tmp_path, monkeypatch):
@@ -215,7 +245,8 @@ def test_reset_mock_state_clears_position_and_sets_budget(tmp_path, monkeypatch)
     monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)  # 실제 data/orders/ 삭제 방지
 
     dirty_state = default_state("mock")
-    dirty_state["position"]["symbol"] = "000660"
+    dirty_state["position"]["symbol"] = LONG_SYMBOL
+    dirty_state["position"]["quantity"] = 1
     dirty_state["daily_trade_count"] = 5
     save_state_atomic(dirty_state)
 

@@ -175,6 +175,8 @@ class TestBuyFlagConditions(unittest.TestCase):
             # 임시 state/log 경로 패치
             with patch("app.services.intraday_auto_trade_service._ROOT", Path(tmp)):
                 svc = IntradayAutoTradeService(broker=MockBroker(), kis_client=None, cfg=cfg_mock)
+        svc.buy_start_time = "00:00"
+        svc.buy_end_time = "23:59"
         return svc
 
     def _make_state(self, **kwargs):
@@ -283,6 +285,7 @@ class TestSellFlagConditions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch("app.services.intraday_auto_trade_service._ROOT", Path(tmp)):
                 svc = IntradayAutoTradeService(broker=MockBroker(), kis_client=None, cfg=cfg_mock)
+        svc.force_sell_time = "23:59"
         return svc
 
     def _holding_state(self, avg_buy=180000, qty=10, highest=185000, half_done=False):

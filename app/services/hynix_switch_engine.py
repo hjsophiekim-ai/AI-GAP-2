@@ -40,7 +40,7 @@ from app.trading.hynix_fast_trend import compute_fast_trend_signal
 from app.trading.hynix_primary_trend import (
     PRIMARY_TREND_RANGE, PRIMARY_TREND_UP, PRIMARY_TREND_DOWN,
     classify_short_term_move, compute_primary_trend, default_reversal_confirmation_state,
-    new_hynix_entry_blocked, new_inverse_entry_blocked, update_reversal_confirmation,
+    inverse_block_vote_count, new_hynix_entry_blocked, new_inverse_entry_blocked, update_reversal_confirmation,
 )
 
 _PULLBACK_MORNING_WINDOW_END = "10:00"
@@ -168,10 +168,11 @@ def evaluate_pullback_gate(
     primary_trend = ptrend.get("primary_trend", PRIMARY_TREND_RANGE)
     trend_blocked_reason = None
     if final_action in ("INVERSE_BUY", "INVERSE_STRONG_BUY") and new_inverse_entry_blocked(
-        primary_trend, ptrend.get("above_vwap"), ptrend.get("above_ema20"),
+        primary_trend, ptrend.get("above_vwap"), ptrend.get("above_ema20"), ptrend,
     ):
+        votes, vote_reasons = inverse_block_vote_count(ptrend)
         trend_blocked_reason = (
-            f"PRIMARY_TREND=UP and price above VWAP/EMA20 - new INVERSE entry blocked "
+            f"PRIMARY_TREND=UP with {votes} uptrend confirmations({', '.join(vote_reasons)}) - new INVERSE entry blocked "
             f"(short-term move classified as {classify_short_term_move(primary_trend, None)}"
             "; requires 2x-confirmed VWAP/15m-trend/swing-low breakdown to flip)"
         )
@@ -559,7 +560,7 @@ def compute_net_daily_return(
     def _local_unrealized_pnl() -> float:
         if not has_position:
             return 0.0
-        cur = hynix_price if position["symbol"] == "000660" else inverse_price
+        cur = hynix_price if position["symbol"] == HYNIX_SYMBOL else inverse_price
         if cur is None:
             return 0.0
         try:
@@ -765,6 +766,17 @@ def _run_active_strategy_entry(
     대체하며, 같은 브로커/포지션 파이프라인(_buy_new/_sell_all_or_ratio → 실행
     원장)을 그대로 사용하되 signal_source="ACTIVE_ONLY"으로 구분 기록한다.
     """
+    final_decision = {"executable": False, "order_sent": False, "signal_source": "SHADOW_ONLY"}
+    state["last_final_execution_decision"] = final_decision
+    return {
+        "acted": False,
+        "message": "ACTIVE_STRATEGY shadow-only: actual broker orders are owned by ENHANCED_REGIME_SWITCH",
+        "action": "SHADOW_ONLY",
+        "decision": {},
+        "final_decision": final_decision,
+        "failure_reason": "SHADOW_ONLY",
+    }
+
     from app.trading.hynix_switch_position_manager import _buy_new, _sell_all_or_ratio
     from app.trading.hynix_active_strategy_engine import (
         decide_active_strategy_action, default_active_strategy_state,
@@ -972,6 +984,20 @@ def _run_adaptive_fusion_entry(
     로직까지 전부 새로 검증하기보다, 신규진입 판단에 V2를 반영하는 핵심 문제부터
     안전하게 해결하기 위함 — 확장 여지는 남겨둔다).
     """
+    fusion_decision = {"executable": False, "signal_source": "SHADOW_ONLY", "weights": {}, "dominant_model": "SHADOW_ONLY"}
+    final_decision = {"executable": False, "order_sent": False, "signal_source": "SHADOW_ONLY"}
+    state["last_fusion_decision"] = fusion_decision
+    state["last_final_execution_decision"] = final_decision
+    return {
+        "acted": False,
+        "message": "ADAPTIVE_FUSION shadow-only: actual broker orders are owned by ENHANCED_REGIME_SWITCH",
+        "action": "SHADOW_ONLY",
+        "decision": {},
+        "fusion_decision": fusion_decision,
+        "final_decision": final_decision,
+        "failure_reason": "SHADOW_ONLY",
+    }
+
     from app.trading.hynix_switch_position_manager import _buy_new, _sell_all_or_ratio
     from app.trading.hynix_active_strategy_engine import (
         decide_active_strategy_action, default_active_strategy_state,
@@ -1655,7 +1681,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         warnings.append(f"LONG_SYMBOL(0193T0) 현재가 조회 실패: {exc}")
         hynix_price = None
 
-    price_data_ok = hynix_price is not None
+    signal_data_ok = bool((enhanced_result.get("data_valid") or {}).get("hynix_signal_price", True))
+    price_data_ok = hynix_price is not None and signal_data_ok
     order_api_ok = True
     broker = None
     real_gate_ok = True
@@ -1817,7 +1844,11 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 warnings.append(f"TP/SL 처리 실패: {exc}")
                 tp_sl = {"triggered": False}
 
-            if not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
+            if not signal_data_ok:
+                trace["entry_approved"] = False
+                trace["entry_approved_reason"] = "DATA_UNIT_MISMATCH/DATA_ERROR — 000660 신호가격 검증 실패로 신규 진입 차단"
+                warnings.append(trace["entry_approved_reason"])
+            elif not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
                 # ── ACTIVE STRATEGY / ADAPTIVE FUSION(거래모드 기반) — mock 전용 opt-in,
                 # 이번 사이클의 신규진입/전환 판단을 기존 ENHANCED_REGIME_SWITCH 대신 이
                 # 엔진이 담당한다. mode=="mock" 조건 때문에 실거래(real)에는 절대 관여하지
@@ -1906,10 +1937,12 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             strong_ptrend = strong_primary_trend_result.get("primary_trend", PRIMARY_TREND_RANGE)
                             trend_block_reason = None
                             if final_action == "INVERSE_STRONG_BUY" and new_inverse_entry_blocked(
-                                strong_ptrend, strong_primary_trend_result.get("above_vwap"), strong_primary_trend_result.get("above_ema20"),
+                                strong_ptrend, strong_primary_trend_result.get("above_vwap"),
+                                strong_primary_trend_result.get("above_ema20"), strong_primary_trend_result,
                             ):
+                                votes, vote_reasons = inverse_block_vote_count(strong_primary_trend_result)
                                 trend_block_reason = (
-                                    "PRIMARY_TREND=UP and price above VWAP/EMA20 - even a strong INVERSE "
+                                    f"PRIMARY_TREND=UP with {votes} uptrend confirmations({', '.join(vote_reasons)}) - even a strong INVERSE "
                                     "signal is blocked without 2x-confirmed VWAP/15m-trend/swing-low breakdown"
                                 )
                             elif final_action == "HYNIX_STRONG_BUY" and new_hynix_entry_blocked(
@@ -2091,7 +2124,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     # state에도 남겨 한 번 더 저장한다.
     state["last_pipeline_trace"] = trace
     state["last_cycle_computed_at"] = now.isoformat()
-    state["last_hynix_price"] = hynix_price  # LONG_SYMBOL(0193T0) 실행가 — 실제 매매/손익 기준
+    state["last_hynix_price"] = hynix_price  # legacy alias: LONG_SYMBOL(0193T0) execution price
+    state["last_long_price"] = hynix_price  # LONG_SYMBOL(0193T0) — 실제 매매/손익 기준
     state["last_hynix_signal_price"] = hynix_signal_price  # 000660 — 감시 기초자산(신호 계산 참고용)
     state["last_inverse_price"] = inverse_price
     state["last_enhanced_result"] = enhanced_result
@@ -2188,6 +2222,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         "liquidation_phase": liquidation_phase,
         "hynix_current_price": hynix_price,
         "hynix_signal_price": hynix_signal_price,
+        "long_current_price": hynix_price,
         "inverse_current_price": inverse_price,
         "enhanced_result": enhanced_result,
         "decision": decision,

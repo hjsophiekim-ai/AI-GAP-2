@@ -946,7 +946,9 @@ if not cycle_result and switch_state.get("last_pipeline_trace") is not None:
     cycle_result = {
         "skipped": False, "computed_at": switch_state.get("last_cycle_computed_at"),
         "mode": switch_state.get("mode"), "new_entry_allowed": is_new_entry_allowed(datetime.now()),
-        "hynix_current_price": switch_state.get("last_hynix_price"),
+        "hynix_current_price": switch_state.get("last_hynix_signal_price"),
+        "hynix_signal_price": switch_state.get("last_hynix_signal_price"),
+        "long_current_price": switch_state.get("last_long_price") or switch_state.get("last_hynix_price"),
         "inverse_current_price": switch_state.get("last_inverse_price"),
         "enhanced_result": switch_state.get("last_enhanced_result") or {},
         "decision": switch_state.get("last_decision") or {},
@@ -996,7 +998,8 @@ else:
     with m2:
         st.metric("보유 종목", position.get("name") or "없음", delta=(f"{position.get('quantity')}주" if position.get("quantity") else None))
     with m3:
-        st.metric("하이닉스 현재가", f"{cycle_result.get('hynix_current_price'):,.0f}원" if cycle_result.get("hynix_current_price") else "—")
+        _long_price = cycle_result.get("long_current_price") or cycle_result.get("hynix_current_price")
+        st.metric("KODEX 레버리지 현재가(0193T0)", f"{_long_price:,.0f}원" if _long_price else "—")
     with m4:
         inv_label = f"{cycle_result.get('inverse_current_price'):,.0f}원" if cycle_result.get("inverse_current_price") else "—"
         st.metric("인버스(0197X0) 현재가", inv_label, delta=("가격 갱신 실패" if enh.get("inverse_price_stale") else None))

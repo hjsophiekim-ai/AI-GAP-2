@@ -8,6 +8,7 @@ from app.models.hynix_enhanced_score import _live_order_weights
 from app.services.hynix_switch_engine import evaluate_pullback_gate
 from app.trading.hynix_fast_trend import compute_fast_trend_signal
 from app.trading.hynix_switch_position_manager import run_switch_or_entry
+from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
 
 
 def _df(prices):
@@ -132,3 +133,94 @@ def test_duplicate_order_prevention_same_cycle():
 
     assert first["acted"] is True
     assert second["acted"] is False
+
+
+def test_up_signal_places_order_for_0193t0():
+    class Broker:
+        def __init__(self):
+            self.buy_calls = []
+
+        def get_buyable_cash(self):
+            return 1_000_000
+
+        def buy(self, symbol, name, quantity, price, order_type="limit"):
+            self.buy_calls.append((symbol, quantity, price))
+            return {"success": True, "bought_quantity": quantity, "actual_quantity": quantity, "order_id": "b1"}
+
+        def get_positions(self):
+            return [{"symbol": LONG_SYMBOL, "quantity": 2, "avg_price": 19_400, "market_value": 38_800}]
+
+    broker = Broker()
+    result = run_switch_or_entry(
+        {"mode": "mock", "position": {}, "last_trend_switch_plan": {"desired_symbol": LONG_SYMBOL, "proceed": True}},
+        broker,
+        "HYNIX_BUY",
+        19_400,
+        5_100,
+        now=datetime(2026, 7, 15, 10, 45),
+    )
+
+    assert result["acted"] is True
+    assert broker.buy_calls
+    assert broker.buy_calls[0][0] == LONG_SYMBOL
+    assert broker.buy_calls[0][0] != "000660"
+    assert broker.buy_calls[0][0] != SHORT_SYMBOL
+
+
+def test_primary_uptrend_blocks_inverse_entry_with_two_confirmations():
+    state = {
+        "trend_switch_confirm_tracker": {
+            "direction": "INVERSE",
+            "same_direction_streak": 2,
+            "reversal_streak": 0,
+            "reversal_against_symbol": None,
+            "_state_date": "20260715",
+        },
+        "trend_switch_frequency_state": {"round_trips_today": 0, "consecutive_losses": 0, "_state_date": "20260715"},
+    }
+    primary = {
+        "primary_trend": "UP",
+        "above_vwap": True,
+        "trend_15m": "UP",
+        "trend_30m": "FLAT",
+        "swing_15m": {"higher_low": False},
+        "ema20_slope_pct": 0.0,
+        "above_ema20": False,
+    }
+
+    gate = evaluate_pullback_gate(
+        state,
+        SHORT_SYMBOL,
+        "INVERSE_BUY",
+        datetime(2026, 7, 15, 11, 20),
+        {},
+        _df([100, 101, 102, 103, 104, 103, 102]),
+        "mock",
+        primary_trend_result=primary,
+    )
+
+    assert gate["proceed"] is False
+    assert "new INVERSE entry blocked" in gate["message"]
+
+
+def test_active_strategy_shadow_does_not_call_broker():
+    from app.services.hynix_switch_engine import _run_active_strategy_entry
+
+    class Broker:
+        def buy(self, *args, **kwargs):
+            raise AssertionError("ACTIVE_STRATEGY must not call broker.buy")
+
+        def sell(self, *args, **kwargs):
+            raise AssertionError("ACTIVE_STRATEGY must not call broker.sell")
+
+    result = _run_active_strategy_entry(
+        {"mode": "mock", "position": {}, "last_cycle_ai_result": {}},
+        Broker(),
+        19_400,
+        5_100,
+        datetime(2026, 7, 15, 11, 20),
+        [],
+    )
+
+    assert result["acted"] is False
+    assert result["final_decision"]["signal_source"] == "SHADOW_ONLY"

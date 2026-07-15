@@ -25,10 +25,14 @@ MU_PRICE_HARD_MAX: float = 5000.0  # 이 이상이면 즉시 무효
 # (예: 984.75 -> 98.475로 잘못 축소). 상한을 넉넉히 올려 이 구간의 정상
 # 가격은 그대로 통과시키고, 진짜 10배 이상 벌어진 값만 보정 대상으로 삼는다.
 
-HYNIX_PRICE_MIN: int = 50_000     # KRW
-HYNIX_PRICE_MAX: int = 1_000_000  # KRW
+HYNIX_PRICE_MIN: int = 50_000       # KRW, keeps older historical fixtures valid
+HYNIX_PRICE_MAX: int = 5_000_000    # KRW, 000660 must stay in raw won units
 HYNIX_CODE: str = "000660"
 HYNIX_NAME: str = "SK하이닉스"
+_UNIT_RATIO_LOW: float = 0.08
+_UNIT_RATIO_HIGH: float = 0.12
+_UNIT_RATIO_INV_LOW: float = 8.0
+_UNIT_RATIO_INV_HIGH: float = 12.0
 
 
 # ── MU 가격 검증 ─────────────────────────────────────────────────────────────
@@ -119,12 +123,10 @@ def validate_hynix_price(price: Optional[float]) -> tuple[bool, str]:
 
 
 def auto_fix_hynix_price(price: Optional[float]) -> Optional[float]:
-    """Normalize SK Hynix prices to the post-split KRW scale used by this app.
+    """Return the SK Hynix price in raw KRW units without unit correction.
 
-    Some providers can return 10x historical/quote values for 000660. The app,
-    tests, sizing, and order UI all expect the 50,000~1,000,000 KRW range. If a
-    value is outside that range but dividing by 10 lands in range, use the
-    normalized value; otherwise return None.
+    Kept for compatibility with older call sites. It must never divide or
+    multiply 000660 prices by 10/100; unit conflicts block trading instead.
     """
     if price is None:
         return None
@@ -134,14 +136,11 @@ def auto_fix_hynix_price(price: Optional[float]) -> Optional[float]:
         return None
     if HYNIX_PRICE_MIN <= value <= HYNIX_PRICE_MAX:
         return value
-    fixed = value / 10
-    if HYNIX_PRICE_MIN <= fixed <= HYNIX_PRICE_MAX:
-        return fixed
     return None
 
 
 def normalize_hynix_dataframe_prices(df):
-    """Return a copy with OHLC columns normalized to the app's SK Hynix scale."""
+    """Return a numeric OHLC copy without changing 000660 price units."""
     if df is None:
         return df
     try:
@@ -152,6 +151,25 @@ def normalize_hynix_dataframe_prices(df):
     for col in price_cols:
         df_work[col] = df_work[col].apply(lambda x: auto_fix_hynix_price(x) if x is not None else None)
     return df_work
+
+
+def _is_near_10x_ratio(ratio: float) -> bool:
+    return _UNIT_RATIO_LOW <= ratio <= _UNIT_RATIO_HIGH or _UNIT_RATIO_INV_LOW <= ratio <= _UNIT_RATIO_INV_HIGH
+
+
+def validate_hynix_unit_consistency(current_price: Optional[float], reference_price: Optional[float]) -> tuple[bool, str]:
+    """Detect 10x/0.1x unit collisions between 000660 price fields."""
+    try:
+        cur = float(current_price)
+        ref = float(reference_price)
+    except (TypeError, ValueError):
+        return False, "DATA_UNIT_MISMATCH: missing or non-numeric 000660 price"
+    if cur <= 0 or ref <= 0:
+        return False, "DATA_UNIT_MISMATCH: non-positive 000660 price"
+    ratio = cur / ref
+    if _is_near_10x_ratio(ratio):
+        return False, f"DATA_UNIT_MISMATCH: 000660 price ratio {ratio:.4f} indicates 10x/0.1x unit conflict"
+    return True, "ok"
 
 
 def validate_stock_identity(code: object, name: object) -> tuple[bool, str]:
@@ -197,6 +215,16 @@ def validate_hynix_current_sources(source_prices: dict, tolerance_pct: float = 1
     values = list(cleaned.values())
     low = min(values)
     high = max(values)
+    ratio = high / low if low > 0 else 0.0
+    if ratio and _is_near_10x_ratio(ratio):
+        return False, f"DATA_UNIT_MISMATCH: current price source ratio {ratio:.4f} indicates 10x/0.1x conflict", {
+            "source_prices": cleaned,
+            "selected_source": None,
+            "selected_price": None,
+            "max_diff_pct": None,
+            "missing_sources": missing,
+            "data_gap_reason": "DATA_UNIT_MISMATCH",
+        }
     max_diff_pct = (high / low - 1.0) * 100 if low > 0 else 100.0
     if max_diff_pct >= tolerance_pct:
         return False, f"current price source spread {max_diff_pct:.2f}% >= {tolerance_pct:.2f}%", {

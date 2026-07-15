@@ -146,7 +146,7 @@ class TestAutoFixHynixPrice:
         assert auto_fix_hynix_price(184_500) == 184_500
 
     def test_divide_by_10_provider_scale(self):
-        assert auto_fix_hynix_price(1_845_000) == 184_500
+        assert auto_fix_hynix_price(1_845_000) == 1_845_000
 
     def test_unrecoverable_returns_none(self):
         assert auto_fix_hynix_price(99_999_999) is None
@@ -160,8 +160,8 @@ class TestAutoFixHynixPrice:
             "volume": [1],
         })
         fixed = normalize_hynix_dataframe_prices(df)
-        assert fixed.loc[0, "open"] == 185_000
-        assert fixed.loc[0, "close"] == 184_500
+        assert fixed.loc[0, "open"] == 1_850_000
+        assert fixed.loc[0, "close"] == 1_845_000
 
 
 class TestValidateHynixDataframe:

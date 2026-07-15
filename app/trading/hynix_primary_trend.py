@@ -106,7 +106,7 @@ def compute_primary_trend(df_1min, *, prev_close: Optional[float] = None, now: O
         "primary_trend": PRIMARY_TREND_RANGE, "gap_direction": GAP_FLAT, "gap_pct": None,
         "above_vwap": None, "vwap": None, "trend_15m": "FLAT", "trend_30m": "FLAT",
         "ema_slope_15m_pct": None, "ema_slope_30m_pct": None,
-        "ema20": None, "ema50": None, "above_ema20": None,
+        "ema20": None, "ema50": None, "above_ema20": None, "ema20_slope_pct": None,
         "swing_15m": {}, "relative_volume": None, "last_price": None,
         "computed_at": now.isoformat(timespec="seconds"), "reasons": [], "up_votes": 0, "down_votes": 0,
     }
@@ -142,8 +142,11 @@ def compute_primary_trend(df_1min, *, prev_close: Optional[float] = None, now: O
     result["above_vwap"] = (last_close >= vwap) if vwap is not None else None
 
     if len(work["close"]) >= 20:
-        result["ema20"] = round(float(work["close"].ewm(span=20, adjust=False).mean().iloc[-1]), 4)
+        ema20_series = work["close"].ewm(span=20, adjust=False).mean()
+        result["ema20"] = round(float(ema20_series.iloc[-1]), 4)
         result["above_ema20"] = last_close >= result["ema20"]
+        if len(ema20_series) >= 2 and float(ema20_series.iloc[-2]) > 0:
+            result["ema20_slope_pct"] = round((float(ema20_series.iloc[-1]) / float(ema20_series.iloc[-2]) - 1.0) * 100.0, 4)
     if len(work["close"]) >= 50:
         result["ema50"] = round(float(work["close"].ewm(span=50, adjust=False).mean().iloc[-1]), 4)
 
@@ -213,10 +216,35 @@ def classify_short_term_move(primary_trend: str, short_term_direction: Optional[
     return MOVE_ALIGNED
 
 
-def new_inverse_entry_blocked(primary_trend: str, above_vwap: Optional[bool], above_ema20: Optional[bool]) -> bool:
-    """Block new INVERSE entries while PRIMARY_TREND=UP and price holds above VWAP/EMA20."""
+def inverse_block_vote_count(primary_trend_result: dict) -> tuple[int, list[str]]:
+    """Return UP-trend evidence that forbids a new inverse entry."""
+    votes: list[str] = []
+    if not primary_trend_result or primary_trend_result.get("primary_trend") != PRIMARY_TREND_UP:
+        return 0, votes
+    if primary_trend_result.get("above_vwap") is True:
+        votes.append("000660 above VWAP")
+    if primary_trend_result.get("trend_15m") == "UP":
+        votes.append("15m trend UP")
+    if primary_trend_result.get("trend_30m") == "UP":
+        votes.append("30m trend UP")
+    if (primary_trend_result.get("swing_15m") or {}).get("higher_low"):
+        votes.append("higher low")
+    if (primary_trend_result.get("ema20_slope_pct") or 0) > 0:
+        votes.append("EMA20 rising")
+    return len(votes), votes
+
+
+def new_inverse_entry_blocked(
+    primary_trend: str, above_vwap: Optional[bool], above_ema20: Optional[bool],
+    primary_trend_result: Optional[dict] = None,
+) -> bool:
+    """Block new INVERSE entries during a confirmed PRIMARY_TREND=UP."""
     if primary_trend != PRIMARY_TREND_UP:
         return False
+    if primary_trend_result:
+        votes, _ = inverse_block_vote_count(primary_trend_result)
+        if votes >= 2:
+            return True
     return bool(above_vwap) and bool(above_ema20)
 
 

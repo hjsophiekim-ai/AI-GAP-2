@@ -18,9 +18,9 @@ import pandas as pd
 import pytest
 
 from app.models import OrderResult
-from app.services.hynix_auto_trade_service import HYNIX_SYMBOL, HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
 from app.data_sources.hynix_long_collector import LONG_SYMBOL, LONG_NAME
+from app.trading.hynix_symbols import SIGNAL_SYMBOL, SIGNAL_NAME
 from app.trading.hynix_switch_position_manager import (
     run_switch_or_entry, run_liquidation_if_needed, run_tp_sl_if_needed, evaluate_tp_sl,
 )
@@ -115,10 +115,10 @@ def test_signal_symbol_direct_order_is_forbidden():
 
     broker = DummyBroker(buy_success=True, buyable_cash=10_000_000.0)
     with pytest.raises(ValueError):
-        _buy_new(broker, HYNIX_SYMBOL, current_price=100_000.0, cash_amount=1_000_000.0, reason="test", orders=[], mode="mock")
+        _buy_new(broker, SIGNAL_SYMBOL, current_price=100_000.0, cash_amount=1_000_000.0, reason="test", orders=[], mode="mock")
     assert broker.buy_calls == []
 
-    position = {"symbol": HYNIX_SYMBOL, "quantity": 10, "entry_price": 100_000.0}
+    position = {"symbol": SIGNAL_SYMBOL, "name": SIGNAL_NAME, "quantity": 10, "entry_price": 100_000.0}
     with pytest.raises(ValueError):
         _sell_all_or_ratio(broker, position, current_price=103_000.0, ratio=1.0, reason="test", orders=[], mode="mock")
     assert broker.sell_calls == []

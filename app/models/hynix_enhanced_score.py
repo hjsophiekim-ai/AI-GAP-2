@@ -36,6 +36,24 @@ _DEFAULT_WEIGHTS = {
 }
 
 
+def compute_signal_gap_pct(current_price: object, prev_close: object) -> dict:
+    """Compute 000660-only gap and reject unit/data mismatches."""
+    try:
+        cur = float(current_price)
+        prev = float(prev_close)
+    except (TypeError, ValueError):
+        return {"ok": False, "gap_pct": None, "reason": "DATA_ERROR: missing 000660 current/prev_close"}
+    if cur <= 0 or prev <= 0:
+        return {"ok": False, "gap_pct": None, "reason": "DATA_ERROR: non-positive 000660 current/prev_close"}
+    ratio = cur / prev
+    if 0.08 <= ratio <= 0.12 or 8.0 <= ratio <= 12.0:
+        return {"ok": False, "gap_pct": None, "reason": f"DATA_UNIT_MISMATCH: 000660 current/prev_close ratio {ratio:.4f}"}
+    gap_pct = (ratio - 1.0) * 100.0
+    if abs(gap_pct) > 30.0:
+        return {"ok": False, "gap_pct": round(gap_pct, 4), "reason": f"DATA_ERROR: abnormal 000660 gap {gap_pct:.2f}%"}
+    return {"ok": True, "gap_pct": round(gap_pct, 4), "reason": "ok"}
+
+
 def _load_weights() -> dict:
     try:
         from app.services.hynix_weight_manager import get_active_weights
@@ -148,6 +166,12 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
     df_daily = hynix_data.get("df_daily")
     df_1min = hynix_minute.get("df_1min")
     hynix_current_price = hynix_data.get("current_price")
+    hynix_prev_close = hynix_data.get("prev_close")
+    signal_gap = compute_signal_gap_pct(hynix_current_price, hynix_prev_close)
+    if not signal_gap["ok"]:
+        data_valid["hynix_signal_price"] = False
+        data_valid["hynix_technical"] = False
+        warnings.append(signal_gap["reason"])
     kospilab_result = market_data.get("kospilab", {}) or {}
     investor_flow_raw = market_data.get("investor_flow", {}) or {}
     investor_flow = investor_flow_raw if (
@@ -268,7 +292,9 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
         "data_valid": data_valid,
         "warnings": warnings + tech_result.get("warnings", []) + momentum_result.get("warnings", []) + micron_result.get("warnings", []) + inverse_result.get("warnings", []),
         "hynix_current_price": hynix_current_price,
-        "hynix_prev_close": hynix_data.get("prev_close"),
+        "hynix_prev_close": hynix_prev_close,
+        "hynix_signal_gap_pct": signal_gap.get("gap_pct"),
+        "hynix_signal_gap_status": signal_gap,
         "inverse_current_price": inverse_price_result.get("current_price"),
         "inverse_price_stale": bool(inverse_price_result.get("stale")),
         "micron_detail": micron_result,

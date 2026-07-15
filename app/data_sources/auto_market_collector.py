@@ -50,6 +50,7 @@ try:
         validate_hynix_price,
         auto_fix_hynix_price,
         normalize_hynix_dataframe_prices,
+        validate_hynix_unit_consistency,
         validate_stock_identity,
     )
 except ImportError:
@@ -66,15 +67,23 @@ except ImportError:
         if price is None:
             return None
         value = float(price)
-        if 50_000 <= value <= 1_000_000:
+        if 50_000 <= value <= 5_000_000:
             return value
-        fixed = value / 10
-        if 50_000 <= fixed <= 1_000_000:
-            return fixed
         return None
 
     def normalize_hynix_dataframe_prices(df):  # type: ignore[misc]
         return df
+
+    def validate_hynix_unit_consistency(current_price, reference_price):  # type: ignore[misc]
+        try:
+            cur = float(current_price)
+            ref = float(reference_price)
+        except (TypeError, ValueError):
+            return False, "DATA_UNIT_MISMATCH: missing or non-numeric 000660 price"
+        ratio = cur / ref if ref else 0.0
+        if 0.08 <= ratio <= 0.12 or 8.0 <= ratio <= 12.0:
+            return False, f"DATA_UNIT_MISMATCH: 000660 price ratio {ratio:.4f}"
+        return True, "ok"
 
     def validate_hynix_current_sources(source_prices, tolerance_pct=1.0):  # type: ignore[misc]
         return False, "validator unavailable", {"source_prices": source_prices}
@@ -488,6 +497,12 @@ def collect_hynix_daily(mode: Optional[str] = None, n_days: int = 70) -> dict:
         if not price_ok:
             result["fallback_chain"].append(f"{source}: invalid current price ({price_msg})")
             return False
+        unit_ok, unit_msg = validate_hynix_unit_consistency(price, last_close)
+        if not unit_ok:
+            result["error"] = unit_msg
+            result["data_gap_reason"] = "DATA_UNIT_MISMATCH"
+            result["fallback_chain"].append(f"{source}: {unit_msg}")
+            return False
 
         _save_hynix_daily(df_ok)
         _save_hynix_current(price, current_source or source)
@@ -549,6 +564,11 @@ def collect_hynix_daily(mode: Optional[str] = None, n_days: int = 70) -> dict:
     price_ok, price_msg, price_detail = validate_hynix_current_sources(current_sources)
     result["current_price_sources"] = current_sources
     result["price_validation"] = {"ok": price_ok, "message": price_msg, **price_detail}
+    if (price_detail or {}).get("data_gap_reason") == "DATA_UNIT_MISMATCH" or "DATA_UNIT_MISMATCH" in str(price_msg):
+        result["error"] = price_msg
+        result["data_gap_reason"] = "DATA_UNIT_MISMATCH"
+        result["fallback_chain"].append(f"current price cross-check: blocked ({price_msg})")
+        return result
 
     # 교차검증 실패(소스간 가격 불일치)는 더 이상 전체 수집을 중단시키지 않는다.
     # API(KIS)를 우선 시도하고, 실패/불충분하면 네이버증권 → yfinance 순으로

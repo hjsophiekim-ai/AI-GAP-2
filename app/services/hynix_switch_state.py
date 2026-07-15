@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
 from app.utils.time_utils import kst_now
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -246,15 +247,22 @@ def default_state(mode: str = "mock") -> dict:
 def _sync_flat_fields(state: dict) -> None:
     pos = state.get("position") or {}
     symbol = pos.get("symbol")
+    qty = pos.get("quantity", 0) or 0
+    if symbol == LONG_SYMBOL and qty > 0:
+        position_type = "HYNIX"
+    elif symbol == SHORT_SYMBOL and qty > 0:
+        position_type = "INVERSE"
+    else:
+        position_type = "NONE"
+        symbol = None
+
     state["current_position"] = symbol
-    state["current_position_type"] = (
-        "HYNIX" if symbol == "0193T0" else "INVERSE" if symbol == "0197X0" else "NONE"
-    )
+    state["current_position_type"] = position_type
     state["symbol"] = symbol
-    state["name"] = pos.get("name")
-    state["entry_price"] = pos.get("entry_price")
-    state["quantity"] = pos.get("quantity", 0)
-    state["entry_time"] = pos.get("entry_time")
+    state["name"] = pos.get("name") if symbol else None
+    state["entry_price"] = pos.get("entry_price") if symbol else None
+    state["quantity"] = qty if symbol else 0
+    state["entry_time"] = pos.get("entry_time") if symbol else None
     state["realized_pnl"] = state.get("realized_pnl_today_krw", 0.0)
 
     # "오늘 마지막 주문"(날짜 바뀌면 초기화)과 별개로 "전체 마지막 주문"(영구 보존)을
@@ -381,7 +389,7 @@ def load_state(mode: Optional[str] = None) -> dict:
         today = _today_str()
         if state.get("date") != today:
             pos = state["position"]
-            if pos.get("symbol") and (pos.get("quantity") or 0) > 0:
+            if pos.get("symbol") in (LONG_SYMBOL, SHORT_SYMBOL) and (pos.get("quantity") or 0) > 0:
                 state["residual_position_error"] = True
                 logger.error(
                     "[HynixSwitchState] 전일 포지션이 청산되지 않고 남아있음(프로그램 오류 의심, mode=%s): %s",
