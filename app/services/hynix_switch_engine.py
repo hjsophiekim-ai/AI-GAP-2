@@ -1073,8 +1073,23 @@ def _run_adaptive_fusion_entry(
         try:
             if micron_snapshot.get("calculated_at"):
                 age = (now - datetime.fromisoformat(str(micron_snapshot.get("calculated_at")))).total_seconds() / 60.0
-                micron_proxy["age_minutes"] = round(max(0.0, age), 2)
-                micron_proxy["is_stale"] = age > 15.0
+                if age < 0:
+                    # 캔들/스냅샷 시각이 현재(KST) 기준 미래로 보임 — 시계/타임존
+                    # 불일치(DATA_TIME_ERROR)이지 "매우 신선한 데이터"가 아니다.
+                    # 절대 0으로 뭉개서 fresh처럼 취급하면 안 된다(2026-07-16 실측
+                    # 버그: age=-538분이 is_stale=False로 통과됨).
+                    micron_proxy["age_minutes"] = round(age, 2)
+                    micron_proxy["is_stale"] = True
+                    micron_proxy["data_time_error"] = True
+                    logger.error(
+                        "[HynixSwitchEngine] Micron proxy DATA_TIME_ERROR: age=%.1f분(음수) — "
+                        "시계/타임존 불일치 의심, stale로 처리",
+                        age,
+                    )
+                else:
+                    micron_proxy["age_minutes"] = round(age, 2)
+                    micron_proxy["is_stale"] = age > 15.0
+                    micron_proxy["data_time_error"] = False
         except Exception:
             pass
 

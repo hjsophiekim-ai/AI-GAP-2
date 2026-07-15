@@ -12,6 +12,7 @@ import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 from app.logger import logger
+from app.utils.time_utils import kst_now
 
 # ── token cache directory ───────────────────────────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent.parent  # repo root
@@ -535,7 +536,10 @@ class KISClient:
                 "response_field_names": sorted(list(data.keys())),
                 "output1_field_names": sorted(list(output1_field_names)),
                 "output2_field_names": sorted(list(o2.keys())),
-                "as_of": datetime.now().isoformat(timespec="seconds"),
+                # KST 기준 — 호출부(hynix_switch_engine._recent_valid_account_snapshot 등)가
+                # 이 값을 kst_now() 기준 age로 비교한다. 서버 로컬시각(UTC)로 찍으면 Render에서
+                # 9시간 어긋나 정상 스냅샷이 "너무 오래됨/미래"로 오판된다.
+                "as_of": kst_now().isoformat(timespec="seconds"),
             }
         except Exception as e:
             logger.error(f"[KIS-{self.mode.upper()}] 잔고 조회 예외: {e}")
@@ -690,6 +694,10 @@ class KISClient:
         실계좌(real)에서는 nrcvb_buy_amt(재매수가능금액, D+2 매도대금 포함)를
         ord_psbl_cash보다 우선 사용한다. 앱 "주문가능금액"과 일치하는 필드.
         두 값 모두 0이면 0 반환.
+
+        주의: 이 메서드는 하위호환을 위해 실패/정상 0원을 모두 float 0.0으로
+        반환한다 — 호출부가 "조회 실패"와 "실제 잔고 0원"을 구분해야 한다면
+        get_buyable_cash_status()를 사용할 것.
         """
         raw = self.get_buyable_cash_raw(symbol=symbol, price=price)
         ord_psbl = raw["ord_psbl_cash"]
@@ -703,6 +711,57 @@ class KISClient:
                 f"nrcvb_buy_amt={nrcvb:,.0f} → {result:,.0f} 사용"
             )
         return result
+
+    def get_buyable_cash_status(self, symbol: str = "005930", price: int = 0) -> dict:
+        """매수가능금액 조회 + "실패/정상 0원/필드누락"을 구분하는 진단 정보.
+
+        요구사항: 정상 응답의 실제 0원, API 실패(rt_cd!=0/HTTP 오류/예외),
+        필드 누락을 각각 다른 status로 구분해 UI/자동매매 판단이 "조회 실패로
+        인한 0"을 "정말 잔고가 0원"으로 오인하지 않게 한다(2026-07-16 실측:
+        모의계좌에 약 1000만원이 있는데 매수가능금액이 0으로 표시됨).
+
+        반환: {
+            "value": float,             # 조회된 매수가능금액(실패 시 0.0)
+            "ok": bool,                 # True면 value를 신뢰 가능(정상 0원 포함)
+            "status": "OK"|"API_ERROR"|"FIELD_MISSING",
+            "rt_cd", "msg_cd", "msg1": str,  # KIS 원본 응답 필드
+            "error": str|None,
+            "raw_output": dict,         # inquire-psbl-order 원본 output(비밀값 없음)
+        }
+        """
+        raw = self.get_buyable_cash_raw(symbol=symbol, price=price)
+        output = raw.get("output") or {}
+        base = {
+            "rt_cd": raw.get("rt_cd", ""), "msg_cd": raw.get("msg_cd", ""), "msg1": raw.get("msg1", ""),
+            "raw_output": output,
+        }
+        if raw.get("error"):
+            return {"value": 0.0, "ok": False, "status": "API_ERROR", "error": raw.get("error"), **base}
+        rt_cd = raw.get("rt_cd", "")
+        if rt_cd not in ("", "0", None):
+            return {
+                "value": 0.0, "ok": False, "status": "API_ERROR",
+                "error": raw.get("msg1") or f"rt_cd={rt_cd}", **base,
+            }
+        if "ord_psbl_cash" not in output and "nrcvb_buy_amt" not in output:
+            return {
+                "value": 0.0, "ok": False, "status": "FIELD_MISSING",
+                "error": "ord_psbl_cash/nrcvb_buy_amt missing in inquire-psbl-order output", **base,
+            }
+        value = max(raw.get("nrcvb_buy_amt", 0.0), raw.get("ord_psbl_cash", 0.0))
+        return {"value": value, "ok": True, "status": "OK", "error": None, **base}
+
+    def get_token_status(self) -> dict:
+        """토큰 상태 진단(비밀값 없음) — 토큰 문자열 자체는 절대 반환하지 않는다."""
+        expires_at = self._token_expires_at
+        now = datetime.now()
+        return {
+            "mode": self.mode,
+            "has_token": bool(self._token),
+            "expires_at": expires_at.isoformat() if expires_at and expires_at != datetime.min else None,
+            "is_expired": bool(self._token) and now >= expires_at,
+            "token_cache_path_exists": self._token_cache_path().exists(),
+        }
 
     # ── 일별 주가 조회 ────────────────────────────────────────────────────
 

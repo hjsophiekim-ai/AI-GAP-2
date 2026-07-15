@@ -31,6 +31,11 @@ _DEFAULT_SCHEDULE = {
     "liquidation_mode_time": "15:10",
     "liquidation_time": "15:15",
     "no_new_order_time": "15:20",
+    # 장외 시간대(운영창 밖)에는 백그라운드 사이클이 시세/주문/계좌조회를 하지 않고
+    # heartbeat만 유지한다 — 09:00 장시작보다 넉넉히 이른 08:50부터, 15:30 정규장
+    # 종료까지를 "운영창"으로 둔다.
+    "operating_window_start": "08:50",
+    "operating_window_end": "15:30",
 }
 
 _VI_MOVE_THRESHOLD_PCT = 6.0
@@ -51,6 +56,19 @@ def _load_schedule() -> dict:
 def _parse_hm(text: str) -> dtime:
     h, m = text.split(":")
     return dtime(int(h), int(m))
+
+
+def is_within_operating_window(now: Optional[datetime] = None) -> bool:
+    """08:50~15:30(KST, 기본값) 운영창 안이면 True.
+
+    이 창 밖에서는 백그라운드 사이클(HynixAutoTradeCycleThread)이 시세/주문/
+    계좌조회를 하지 않고 heartbeat만 유지해야 한다 — 장외 시간에도 3분마다 전체
+    사이클을 계속 돌리면 KIS API를 불필요하게 반복 호출하고, cycle_count_today가
+    실제 거래 가능 사이클 수와 무관하게 밤새 누적된다(2026-07-16 실측:
+    cycle_count_today=284)."""
+    now = now or kst_now()
+    sched = _load_schedule()
+    return _parse_hm(sched["operating_window_start"]) <= now.time() < _parse_hm(sched["operating_window_end"])
 
 
 def is_watch_only(now: Optional[datetime] = None) -> bool:

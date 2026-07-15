@@ -52,6 +52,16 @@ class KisMockBroker(BrokerBase):
         """하위 호환 — get_orderable_cash() 위임."""
         return self.get_orderable_cash()
 
+    def get_buyable_cash_status(self, symbol: str = "005930", price: int = 0) -> dict:
+        """매수가능금액 조회 실패/정상0원/필드누락 구분 진단(계좌 source/rt_cd/msg_cd 포함)."""
+        try:
+            status = self.kis.get_buyable_cash_status(symbol=symbol, price=price)
+        except Exception as e:
+            logger.error("MOCK get_buyable_cash_status 예외 %s: %s", symbol, e)
+            status = {"value": 0.0, "ok": False, "status": "EXCEPTION", "error": str(e)}
+        status["source"] = "kis_mock"
+        return status
+
     def get_stock_buyable_amount(self, symbol: str = "005930", price: int = 0) -> float:
         """종목별 매수가능금액."""
         try:

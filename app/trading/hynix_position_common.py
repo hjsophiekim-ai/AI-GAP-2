@@ -82,7 +82,7 @@ def is_buy_cooldown_active(last_trade_time: Optional[str], last_action: Optional
     """마지막 매수 주문 후 최소 대기시간(기본 180초) 이내면 True(신규 매수만 차단, 매도는 항상 허용)."""
     if not last_trade_time or not last_action or "BUY" not in str(last_action).upper():
         return False
-    now = now or datetime.now()
+    now = now or kst_now()
     try:
         last_dt = datetime.fromisoformat(last_trade_time)
     except Exception:
@@ -148,7 +148,13 @@ class HynixPositionManager:
         self._own_trade_tally: int = 0
 
     def sync(self, force: bool = False) -> dict:
-        """broker.get_positions()를 조회해 current_position/trade_count/cash를 갱신한다."""
+        """broker.get_positions()를 조회해 current_position/trade_count/cash를 갱신한다.
+
+        주의: 이 메서드는 Dynamic Exit Watcher(1초 주기)에서도 호출되므로 여기서
+        재조회를 위해 sleep하지 않는다 — 그 1초 주기 자체가 이미 재시도 역할을
+        한다. POSITION_SYNC_PENDING 확정 전 "3회 재조회"는 실제 주문 실행
+        경로(hynix_switch_position_manager._confirm_remaining_quantity_from_broker
+        등)에서 수행하며, 그곳은 즉시성보다 정확한 체결 확인이 더 중요하다."""
         now = time.monotonic()
         if (not force and self.mode == "real" and self._last_synced_monotonic is not None
                 and (now - self._last_synced_monotonic) < self.real_sync_ttl_seconds):

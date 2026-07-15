@@ -143,7 +143,7 @@ def _safe_real_gate_status(cfg_obj, current_mode: str = "real") -> dict:
 
 def _krx_order_window_status(now: datetime | None = None) -> dict:
     """Approximate SK Hynix real-order timing used by the enhanced engine."""
-    now = now or datetime.now()
+    now = now or kst_now()
     t = now.time()
     is_weekday = now.weekday() < 5
     market_open = is_weekday and dtime_cls(9, 0) <= t <= dtime_cls(15, 30)
@@ -336,6 +336,7 @@ st.caption(
 from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.services.hynix_switch_engine import update_hynix_auto_trade_loop, set_control, reset_mock_account
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed
+from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_scheduler import (
     ensure_cycle_thread_running,
     ensure_fast_trend_watcher_running,
@@ -808,6 +809,58 @@ if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
             except Exception as exc:
                 _dbg_cash = f"조회 실패: {exc}"
             st.markdown(f"**Broker cash**: {_dbg_cash}")
+
+            st.markdown("**계좌조회 사전점검(Account Preflight)**")
+            if hasattr(_dbg_broker, "get_buyable_cash_status"):
+                try:
+                    _dbg_cash_status = _dbg_broker.get_buyable_cash_status()
+                except Exception as exc:
+                    _dbg_cash_status = {"ok": False, "status": "EXCEPTION", "error": str(exc)}
+                _cs_status = _dbg_cash_status.get("status")
+                _cs_icon = "🟢" if _cs_status == "OK" else "🔴"
+                st.markdown(
+                    f"{_cs_icon} **매수가능금액 조회(TR: inquire-psbl-order) 결과**: `{_cs_status}` "
+                    f"— {'실제 조회값' if _dbg_cash_status.get('ok') else '조회 실패(0원이 아니라 실패로 인한 값일 수 있음)'}"
+                )
+                st.json({
+                    "value": _dbg_cash_status.get("value"),
+                    "ok": _dbg_cash_status.get("ok"),
+                    "account_source": _dbg_cash_status.get("source"),
+                    "rt_cd": _dbg_cash_status.get("rt_cd"),
+                    "msg_cd": _dbg_cash_status.get("msg_cd"),
+                    "msg1": _dbg_cash_status.get("msg1"),
+                    "error": _dbg_cash_status.get("error"),
+                })
+            else:
+                st.caption("이 브로커는 get_buyable_cash_status()를 지원하지 않습니다(예: dry-run 로컬 시뮬레이션).")
+
+            if hasattr(_dbg_broker, "kis") and hasattr(_dbg_broker.kis, "get_token_status"):
+                try:
+                    _dbg_token_status = _dbg_broker.kis.get_token_status()
+                except Exception as exc:
+                    _dbg_token_status = {"error": str(exc)}
+                _tok_icon = "🟢" if _dbg_token_status.get("has_token") and not _dbg_token_status.get("is_expired") else "🔴"
+                st.markdown(f"{_tok_icon} **토큰 상태**(값 자체는 절대 표시하지 않음):")
+                st.json(_dbg_token_status)
+
+            if hasattr(_dbg_broker, "kis") and hasattr(_dbg_broker.kis, "get_balance"):
+                try:
+                    _dbg_balance = _dbg_broker.kis.get_balance()
+                except Exception as exc:
+                    _dbg_balance = {"error": str(exc)}
+                st.markdown("**잔고조회(TR: inquire-balance) 응답 필드**:")
+                st.json({
+                    "cash": _dbg_balance.get("cash"),
+                    "orderable_cash": _dbg_balance.get("orderable_cash"),
+                    "error": _dbg_balance.get("error"),
+                    "rt_cd": _dbg_balance.get("rt_cd"),
+                    "msg_cd": _dbg_balance.get("msg_cd"),
+                    "msg1": _dbg_balance.get("msg1"),
+                    "response_field_names": _dbg_balance.get("response_field_names"),
+                    "output1_field_names": _dbg_balance.get("output1_field_names"),
+                    "output2_field_names": _dbg_balance.get("output2_field_names"),
+                })
+
             try:
                 _dbg_positions_raw = _dbg_broker.get_positions()
             except Exception as exc:
@@ -848,7 +901,7 @@ if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
             f"time=`{switch_state.get('all_time_last_trade_time') or '—'}`"
         )
         st.markdown("**Pending orders**: 없음 (이 시스템은 동기식 즉시체결 구조이며 비동기 대기주문을 갖지 않음)")
-        st.markdown(f"**Last sync time(이 패널 조회 시각)**: {datetime.now().isoformat()}")
+        st.markdown(f"**Last sync time(이 패널 조회 시각)**: {kst_now().isoformat()}")
         st.markdown(f"**Liquidation done**: {switch_state.get('liquidation_done')}")
         st.markdown(f"**Position sync status**: `{switch_state.get('position_sync_status') or 'UNKNOWN'}`")
         if switch_state.get("position_sync_error"):
@@ -864,8 +917,21 @@ if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
                 "holdings_market_value": _acct_snap.get("holdings_market_value"),
                 "current_equity": _acct_snap.get("current_equity"),
                 "error": _acct_snap.get("error"),
+                "rt_cd": _acct_snap.get("rt_cd"), "msg_cd": _acct_snap.get("msg_cd"), "msg1": _acct_snap.get("msg1"),
+                "response_field_names": _acct_snap.get("response_field_names"),
+                "output1_field_names": _acct_snap.get("output1_field_names"),
+                "output2_field_names": _acct_snap.get("output2_field_names"),
                 "positions": _acct_snap.get("positions") or [],
             })
+        _buyable_diag = switch_state.get("buyable_cash_diagnostic") or {}
+        if _buyable_diag:
+            st.markdown("**최근 자동매매 사이클의 매수가능금액 조회 진단(buyable_cash_diagnostic)**:")
+            st.markdown(
+                f"{'🟢' if _buyable_diag.get('ok') else '🔴'} status=`{_buyable_diag.get('status')}` "
+                f"value=`{_buyable_diag.get('value')}` source=`{_buyable_diag.get('source')}` "
+                f"({'정상 응답(0원이면 실제 잔고 0원)' if _buyable_diag.get('ok') else '조회 실패 — 0원이 아니라 오류일 가능성'})"
+            )
+            st.json(_buyable_diag)
         st.markdown(f"**Stop loss mode**: {switch_state.get('stop_loss_mode')}")
         st.markdown(
             f"**Dynamic Exit status**: 감시스레드={'실행중' if is_watcher_running() else '정지'}, "
@@ -888,7 +954,13 @@ if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
                     st.markdown(f"- {_mu_label}(`{_mu_filename}`): :red[비어있거나 datetime 컬럼 없음]")
                     continue
                 _mu_last = pd.to_datetime(_mu_df["datetime"], errors="coerce").dropna().iloc[-1]
-                _mu_age_min = (datetime.now() - _mu_last.to_pydatetime().replace(tzinfo=None)).total_seconds() / 60
+                _mu_age_min = (kst_now() - _mu_last.to_pydatetime().replace(tzinfo=None)).total_seconds() / 60
+                if _mu_age_min < 0:
+                    st.markdown(
+                        f"- {_mu_label}(`{_mu_filename}`): 마지막 캔들 `{_mu_last}` "
+                        f"(:red[DATA_TIME_ERROR — 현재(KST) 기준 {-_mu_age_min:.1f}분 미래로 보임, 서버 시계/타임존 확인 필요])"
+                    )
+                    continue
                 _mu_color = "green" if _mu_age_min <= 20 else "red"
                 st.markdown(
                     f"- {_mu_label}(`{_mu_filename}`): 마지막 캔들 `{_mu_last}` "
@@ -925,6 +997,14 @@ st.markdown(f"**last_cycle_result**: `{_cyc_status['last_cycle_result_summary'] 
 if not _cyc_status["cycle_thread_alive"]:
     st.error("🔴 백그라운드 사이클 스레드가 죽어있습니다 — 다음 페이지 새로고침 시 자동 재시작됩니다.")
 
+_within_window = _cyc_status.get("within_operating_window")
+st.markdown(
+    f"**운영창(08:50~15:30 KST)**: {'🟢 안(전체 사이클 실행)' if _within_window else '🌙 밖(heartbeat만 유지, 시세/주문/계좌조회 안 함)' if _within_window is False else '—'}  "
+    f"| **last_heartbeat_at(KST)**: `{_cyc_status.get('last_heartbeat_at') or '—'}`"
+)
+if _within_window is False and _cyc_status.get("last_heartbeat_only_at"):
+    st.caption(f"마지막 heartbeat-only 틱: {_cyc_status['last_heartbeat_only_at']}")
+
 _manual_cycle_result = None
 if switch_run_clicked:
     # 주의: auto_on이 True라고 해서 여기서도 매 rerun마다 전체 사이클을 다시 돌리지 않는다.
@@ -945,7 +1025,7 @@ cycle_result = _manual_cycle_result
 if not cycle_result and switch_state.get("last_pipeline_trace") is not None:
     cycle_result = {
         "skipped": False, "computed_at": switch_state.get("last_cycle_computed_at"),
-        "mode": switch_state.get("mode"), "new_entry_allowed": is_new_entry_allowed(datetime.now()),
+        "mode": switch_state.get("mode"), "new_entry_allowed": is_new_entry_allowed(kst_now()),
         "hynix_current_price": switch_state.get("last_hynix_signal_price"),
         "hynix_signal_price": switch_state.get("last_hynix_signal_price"),
         "long_current_price": switch_state.get("last_long_price") or switch_state.get("last_hynix_price"),
@@ -1082,7 +1162,7 @@ else:
         _mpp_snap = state_now.get("last_micron_proxy_snapshot") or {}
         if _mpp_snap.get("calculated_at"):
             try:
-                _snap_age_min = (datetime.now() - datetime.fromisoformat(_mpp_snap["calculated_at"])).total_seconds() / 60
+                _snap_age_min = (kst_now() - datetime.fromisoformat(_mpp_snap["calculated_at"])).total_seconds() / 60
             except Exception:
                 _snap_age_min = None
             sn1, sn2, sn3, sn4 = st.columns(4)
@@ -1331,7 +1411,7 @@ else:
         if _started:
             try:
                 from datetime import datetime as _dt2
-                _regime_duration = (datetime.now() - _dt2.fromisoformat(_started)).total_seconds() / 60.0
+                _regime_duration = (kst_now() - _dt2.fromisoformat(_started)).total_seconds() / 60.0
             except Exception:
                 _regime_duration = None
         bt5, bt6, bt7 = st.columns(3)
@@ -1421,7 +1501,7 @@ else:
         def _fmt_pct(value) -> str:
             return f"{_safe_float(value):.0f}%" if value is not None else "—"
 
-        _today_str = datetime.now().strftime("%Y%m%d")
+        _today_str = kst_now().strftime("%Y%m%d")
         _stats = compute_performance_stats(_today_str)
         _counters = compute_trade_counters(_today_str)
         _cost_stats = calculate_daily_net_pnl_from_ledger(_today_str)
@@ -1503,7 +1583,7 @@ else:
         _ledger_pnl_single = _cost_stats
     except NameError:
         from app.services.hynix_execution_ledger import calculate_daily_net_pnl_from_ledger
-        _ledger_pnl_single = calculate_daily_net_pnl_from_ledger(datetime.now().strftime("%Y%m%d"))
+        _ledger_pnl_single = calculate_daily_net_pnl_from_ledger(kst_now().strftime("%Y%m%d"))
     _net_realized = _ledger_pnl_single["net_realized_pnl"]
     _gross_realized = _ledger_pnl_single["gross_realized_pnl"]
     _total_cost_today = _ledger_pnl_single["total_trading_cost"]
@@ -1623,7 +1703,7 @@ else:
         _diag_warnings.append(
             "보유종목 없음인데 마지막 기록된 동작이 BUY입니다 — 강제청산/장외 매도 여부 확인 필요."
         )
-    _now_check = datetime.now()
+    _now_check = kst_now()
     if _now_check.time() >= dtime_cls(15, 15) and not _has_position and not state_now.get("liquidation_done"):
         _diag_warnings.append("15:15 이후이며 보유종목이 없는데 liquidation_done=False입니다 — 상태 갱신 지연 의심.")
     if pm_cache.get("position_conflict"):
@@ -1637,7 +1717,7 @@ else:
     try:
         from app.services.hynix_execution_ledger import load_ledger as _load_ledger_for_diag
 
-        _ledger_today = _load_ledger_for_diag(datetime.now().strftime("%Y%m%d"))
+        _ledger_today = _load_ledger_for_diag(kst_now().strftime("%Y%m%d"))
         if not _ledger_today.empty and "action" in _ledger_today.columns:
             _buy_rows = _ledger_today[(_ledger_today["action"] == "BUY") & (_ledger_today["success"] == True)]  # noqa: E712
             _sell_rows = _ledger_today[(_ledger_today["action"] == "SELL") & (_ledger_today["success"] == True)]  # noqa: E712
@@ -1682,7 +1762,7 @@ else:
     # 매수·매도만 기록하고 Dynamic Exit AI(1초 감시)의 매도는 기록하지 않아, 매수만
     # 보이고 매도가 누락되는 문제가 있었다(2026-07-13 사용자 리포트). 원장에는 모든
     # 실행 경로(신규진입/스위칭/레거시 TP·SL/강제청산/Dynamic Exit)가 공통으로 쓴다.
-    date_str = datetime.now().strftime("%Y%m%d")
+    date_str = kst_now().strftime("%Y%m%d")
     try:
         from app.services.hynix_execution_ledger import calculate_daily_net_pnl_from_ledger
 
@@ -1744,7 +1824,7 @@ from app.services.hynix_prediction_tracker import _read_outcome_log_for_dates, c
 from app.services.hynix_weight_recommender import load_recommendation, recommend_weight_adjustment
 from app.services.hynix_weight_manager import get_active_weights, apply_recommended_weights, reset_weights_to_default
 
-_today_str = datetime.now().strftime("%Y%m%d")
+_today_str = kst_now().strftime("%Y%m%d")
 _today_outcomes = _read_outcome_log_for_dates([_today_str])
 
 acc_cols = st.columns(4)
@@ -1940,7 +2020,7 @@ else:
         _held_minutes = None
         if _dyn_position.get("entry_time"):
             try:
-                _held_minutes = (datetime.now() - datetime.fromisoformat(_dyn_position["entry_time"])).total_seconds() / 60
+                _held_minutes = (kst_now() - datetime.fromisoformat(_dyn_position["entry_time"])).total_seconds() / 60
             except Exception:
                 pass
         st.metric("보유시간", f"{_held_minutes:.0f}분" if _held_minutes is not None else "—")

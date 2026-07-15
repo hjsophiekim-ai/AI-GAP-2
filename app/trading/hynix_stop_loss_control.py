@@ -66,7 +66,7 @@ def log_stop_loss_event(record: dict) -> None:
         _STOP_LOSS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         is_new = not _STOP_LOSS_LOG_PATH.exists()
         row = dict(record)
-        row.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        row.setdefault("timestamp", kst_now().strftime("%Y-%m-%d %H:%M:%S"))
         with _STOP_LOSS_LOG_PATH.open("a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=_STOP_LOSS_LOG_COLUMNS)
             if is_new:
@@ -82,7 +82,7 @@ def log_forced_liquidation_event(record: dict) -> None:
         _FORCED_LIQUIDATION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         is_new = not _FORCED_LIQUIDATION_LOG_PATH.exists()
         row = dict(record)
-        row.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        row.setdefault("timestamp", kst_now().strftime("%Y-%m-%d %H:%M:%S"))
         with _FORCED_LIQUIDATION_LOG_PATH.open("a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=_FORCED_LIQUIDATION_LOG_COLUMNS)
             if is_new:

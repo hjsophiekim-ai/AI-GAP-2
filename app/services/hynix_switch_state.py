@@ -317,6 +317,8 @@ def _clear_intraday_decision_state(state: dict) -> None:
         "last_account_equity_snapshot",
         "dynamic_exit_last_decision",
         "last_cycle_ai_result",
+        "last_micron_proxy_snapshot",
+        "buyable_cash_diagnostic",
     ):
         state[key] = None
     state["position_sync_error"] = None
@@ -343,8 +345,12 @@ def _sanitize_intraday_state_dates(state: dict, today: str) -> None:
     big_trend_date = None
     if isinstance(big_trend, dict):
         big_trend_date = _dict_state_date(big_trend.get("log_row"), "timestamp")
+    # 요구사항7 — Micron proxy 스냅샷도 다른 날짜 캐시와 동일하게 KST 날짜가
+    # 바뀌면 stale 처리한다(2026-07-16 실측: 전일 Micron 스냅샷이 다음날에도
+    # 남아 새 거래일의 age/판단에 영향을 줄 수 있었음).
+    micron_date = _dict_state_date(state.get("last_micron_proxy_snapshot"), "calculated_at")
 
-    for observed in (tracker_date, freq_date, pending_date, fast_date, account_date, daily_calc_date, big_trend_date):
+    for observed in (tracker_date, freq_date, pending_date, fast_date, account_date, daily_calc_date, big_trend_date, micron_date):
         if observed and observed != today:
             stale = True
             break
@@ -436,7 +442,7 @@ def load_state(mode: Optional[str] = None) -> dict:
             try:
                 from app.trading.hynix_switch_risk_gate import should_liquidate_now
 
-                if not should_liquidate_now(datetime.now()):
+                if not should_liquidate_now(kst_now()):
                     logger.error(
                         "[HynixSwitchState] 15:15 이전인데 liquidation_done=True로 기록되어 있어 "
                         "False로 자동 복구합니다(mode=%s) — 원인 조사 필요",

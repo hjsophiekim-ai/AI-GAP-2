@@ -162,7 +162,43 @@ def _state_buyable_cash_fallback(state: Optional[dict]) -> tuple[float, Optional
 def _query_buyable_cash(
     broker, *, symbol: Optional[str] = None, current_price: Optional[float] = None, state: Optional[dict] = None,
 ) -> tuple[float, str]:
+    """요구사항(2026-07-16) — 매수가능금액 0원이 "조회 실패"인지 "실제 0원"인지
+    구분한다. broker.get_buyable_cash_status()가 있으면(KisMockBroker/KisRealBroker)
+    그 결과를 최우선으로 신뢰한다: 정상 응답의 실제 0원은 fallback으로 덮어쓰지
+    않고 그대로 0을 반환해 매수를 막고(정상 상태), API 실패/필드누락일 때만 기존
+    폴백 체인(stock_buyable → buyable_cash → state 캐시)으로 넘어간다."""
     errors: list[str] = []
+
+    if hasattr(broker, "get_buyable_cash_status"):
+        status = None
+        try:
+            status = broker.get_buyable_cash_status(symbol=symbol or "005930", price=int(current_price or 0))
+        except Exception as exc:
+            errors.append(f"buyable_cash_status: {exc}")
+        if isinstance(state, dict):
+            state["buyable_cash_diagnostic"] = {
+                "status": (status or {}).get("status", "EXCEPTION"),
+                "ok": (status or {}).get("ok", False),
+                "value": (status or {}).get("value"),
+                "source": (status or {}).get("source"),
+                "rt_cd": (status or {}).get("rt_cd"), "msg_cd": (status or {}).get("msg_cd"),
+                "msg1": (status or {}).get("msg1"), "error": (status or {}).get("error") or (errors[-1] if errors else None),
+                "checked_at": kst_now().isoformat(),
+            }
+        if status is not None and status.get("ok"):
+            value = float(status.get("value") or 0.0)
+            if value > 0:
+                return value, f"broker_buyable_cash_status:{status.get('source')}"
+            # 정상 응답의 실제 0원 — "조회 실패로 인한 0"과 달리 fallback으로
+            # 대체하지 않는다(실제로 살 수 있는 돈이 없는 정상 상태이기 때문).
+            logger.info(
+                "[SwitchPositionManager] buyable cash query OK, actual balance is 0 (source=%s)",
+                status.get("source"),
+            )
+            return 0.0, f"broker_buyable_cash_status_zero:{status.get('source')}"
+        if status is not None:
+            errors.append(f"buyable_cash_status: {status.get('status')} {status.get('error')}")
+
     if symbol and hasattr(broker, "get_stock_buyable_amount"):
         try:
             cash = _positive_float(broker.get_stock_buyable_amount(symbol, int(current_price or 0)))
@@ -246,7 +282,7 @@ def _record_order(
     # is exactly the bug being fixed. None now means 0 (unconfirmed), not "assume full fill".
     executed_qty = int(confirmed_executed_qty) if confirmed_executed_qty is not None else 0
     orders.append({
-        "timestamp": datetime.now().isoformat(), "action": action, "symbol": symbol,
+        "timestamp": kst_now().isoformat(), "action": action, "symbol": symbol,
         "name": _SYMBOL_NAME.get(symbol, symbol), "quantity": quantity, "price": price,
         "amount": (quantity or 0) * (price or 0), "reason": reason,
         "success": result.get("success"), "message": result.get("message"), "order_id": result.get("order_id"),
@@ -332,7 +368,7 @@ def _record_order(
 def _record_skipped(orders: list, action: str, symbol: str, price: Optional[float], reason: str, message: str) -> None:
     """Log even orders that never made it to the broker (avoid silent gaps in the order log)."""
     orders.append({
-        "timestamp": datetime.now().isoformat(), "action": action, "symbol": symbol,
+        "timestamp": kst_now().isoformat(), "action": action, "symbol": symbol,
         "name": _SYMBOL_NAME.get(symbol, symbol), "quantity": 0, "price": price or 0,
         "amount": 0, "reason": f"{reason} — skipped: {message}",
         "success": False, "message": message, "order_id": "",
@@ -654,7 +690,7 @@ def _mark_position_sync_pending(state: dict, position: Optional[dict], error: Op
     kept = dict(position or state.get("position") or _empty_position())
     kept["position_sync_status"] = POSITION_SYNC_PENDING
     kept["position_sync_error"] = error
-    kept["position_sync_pending_since"] = datetime.now().isoformat()
+    kept["position_sync_pending_since"] = kst_now().isoformat()
     state["position"] = kept
     state["position_sync_status"] = POSITION_SYNC_PENDING
     state["position_sync_error"] = error
@@ -740,7 +776,7 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
         recent_flat_ok = False
         if local_flat and last_ok_at:
             try:
-                age = (datetime.now() - datetime.fromisoformat(str(last_ok_at))).total_seconds()
+                age = (kst_now() - datetime.fromisoformat(str(last_ok_at))).total_seconds()
                 last_pos = state.get("position_sync_last_position") or {}
                 recent_flat_ok = age <= 90 and (
                     not last_pos.get("symbol") or (last_pos.get("quantity") or 0) <= 0
@@ -768,7 +804,7 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
     state["position_sync_block_new_orders"] = False
     state["position_sync_error"] = None
     state["position_sync_warning"] = None
-    state["position_sync_last_ok_at"] = datetime.now().isoformat()
+    state["position_sync_last_ok_at"] = kst_now().isoformat()
     state["position_sync_last_position"] = dict(pos_info or {})
     state["position_conflict"] = bool(pos_info.get("conflict"))
     if state["position_conflict"]:
@@ -801,7 +837,7 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
                 "symbol": broker_symbol, "name": _SYMBOL_NAME.get(broker_symbol, broker_symbol),
                 "quantity": pos_info.get("quantity"), "avg_price": pos_info.get("avg_price"),
                 "entry_price": pos_info.get("avg_price"),
-                "entry_time": datetime.now().isoformat(),
+                "entry_time": kst_now().isoformat(),
             }
 
     # Trade count: when the broker itself tracks it (e.g. DryRunBroker), that value always
@@ -1027,7 +1063,7 @@ def run_tp_sl_if_needed(
     state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
     state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
     state["last_sell_price"] = current_price
-    state["last_trade_time"] = datetime.now().isoformat()
+    state["last_trade_time"] = kst_now().isoformat()
     state["last_action"] = "SELL"
     state["last_order_id"] = result.get("order_id")
 

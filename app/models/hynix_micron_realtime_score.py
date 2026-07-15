@@ -24,6 +24,7 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _MU_1MIN_CSV = ROOT / "data" / "micron" / "MU_1min.csv"
@@ -51,6 +52,11 @@ STATUS_FALLBACK_SESSION = "FALLBACK_SESSION_SCORE"
 STATUS_FALLBACK_EXTENDED_HOURS = "FALLBACK_EXTENDED_HOURS"
 STATUS_FALLBACK_NEUTRAL = "FALLBACK_NEUTRAL_50"
 STATUS_STALE_DATA = "STALE_DATA"
+# Render 등 UTC로 배포된 서버에서 naive datetime.now()를 KST 타임스탬프와 그대로
+# 비교하면 캔들 시각이 "미래"로 보여 age가 음수가 된다(2026-07-16 실측: Render
+# 사이클 시각 23:12 vs Micron 캔들 08:12 → age=-538분). 이런 음수 age는 "아주
+# 신선한 데이터"가 아니라 시계/타임존 불일치이므로 별도 상태로 구분한다.
+STATUS_DATA_TIME_ERROR = "DATA_TIME_ERROR"
 
 
 def _load_raw_csv(path: Path) -> Optional[pd.DataFrame]:
@@ -69,14 +75,32 @@ def _load_raw_csv(path: Path) -> Optional[pd.DataFrame]:
         return None
 
 
-def _is_fresh(df: Optional[pd.DataFrame], stale_minutes: float) -> bool:
+def _age_minutes(df: Optional[pd.DataFrame]) -> Optional[float]:
+    """(kst_now() - 마지막 캔들 시각) 분 단위. 조회 불가하면 None.
+
+    음수 값은 "매우 신선한 데이터"가 아니라 캔들 시각이 현재(KST) 기준 미래로
+    보이는 시계/타임존 불일치를 뜻한다 — 호출부는 반드시 이를 DATA_TIME_ERROR로
+    취급해야 한다(절대 fresh로 해석하면 안 됨)."""
     if df is None or df.empty:
-        return False
+        return None
     try:
         last_ts = df["datetime"].iloc[-1].to_pydatetime().replace(tzinfo=None)
     except Exception:
+        return None
+    return (kst_now() - last_ts).total_seconds() / 60.0
+
+
+def _is_fresh(df: Optional[pd.DataFrame], stale_minutes: float) -> bool:
+    age_min = _age_minutes(df)
+    if age_min is None:
         return False
-    age_min = (datetime.now() - last_ts).total_seconds() / 60.0
+    if age_min < 0:
+        logger.error(
+            "[MicronRealtimeScore] DATA_TIME_ERROR: 캔들 시각이 현재(KST) 기준 %.1f분 "
+            "미래로 보임(시계/타임존 불일치 의심) — fresh 아님으로 처리",
+            -age_min,
+        )
+        return False
     return age_min <= stale_minutes
 
 
@@ -158,6 +182,15 @@ def calculate_existing_micron_score(mode: Optional[str] = None) -> dict:
     raw_1min = _load_raw_csv(_MU_1MIN_CSV)
     raw_3min = _load_raw_csv(_MU_3MIN_CSV)
 
+    _age_1m = _age_minutes(raw_1min)
+    _age_3m = _age_minutes(raw_3min)
+    if (_age_1m is not None and _age_1m < 0) or (_age_3m is not None and _age_3m < 0):
+        result["micron_data_status"] = STATUS_DATA_TIME_ERROR
+        result["warnings"].append(
+            f"DATA_TIME_ERROR: 캔들 시각이 현재(KST) 기준 미래로 보임 "
+            f"(1분봉 age={_age_1m}, 3분봉 age={_age_3m}분) — 서버 시계/타임존 확인 필요"
+        )
+
     df_1min = raw_1min if _is_fresh(raw_1min, _STALE_MINUTES_1MIN) else None
     df_3min = raw_3min if _is_fresh(raw_3min, _STALE_MINUTES_3MIN) else None
 
@@ -216,7 +249,10 @@ def calculate_existing_micron_score(mode: Optional[str] = None) -> dict:
     result["warnings"].append("Micron data older than 15 minutes; stale data is display-only and excluded from scoring")
     result["source"] = "stale_micron_display_only"
     result["micron_fallback_used"] = True
-    result["micron_data_status"] = STATUS_STALE_DATA
+    # DATA_TIME_ERROR(음수 age)로 이미 플래그된 경우 STALE_DATA로 덮어쓰지 않는다 —
+    # "오래된 데이터"와 "시계/타임존이 어긋난 데이터"는 원인과 대응이 다르다.
+    if result["micron_data_status"] != STATUS_DATA_TIME_ERROR:
+        result["micron_data_status"] = STATUS_STALE_DATA
     last_ts = None
     for raw in (raw_1min, raw_3min):
         if raw is not None and not raw.empty and "datetime" in raw.columns:

@@ -6,16 +6,26 @@ Dynamic Exit Watcher(1초 주기, 이미 보유 중인 포지션의 TP/SL만 감
 다르다 — 이 스레드는 신규 진입/스위칭/강제청산 "판단"(update_hynix_auto_trade_loop)을
 3분마다 수행한다. 브라우저 탭이 하나도 열려있지 않아도, 서버 프로세스가 살아있는
 한 auto_trade_on 상태를 계속 확인하며 동작한다.
+
+모든 시각 판단은 kst_now()(Asia/Seoul) 기준이다 — Render 등 UTC로 배포된 서버에서
+naive datetime.now()를 쓰면 "지금이 몇 시인지" 자체가 서버 타임존만큼 어긋나 14:50
+신규매수 차단/15:15 강제청산/일일 사이클 카운트 리셋이 실제 KST 시각과 무관하게
+잘못된 시점에 발동한다(2026-07-16 실측: Render UTC 23:12를 그대로 "23:12"로 판정해
+KST 08:12임에도 14:50 이후로 오판, cycle_count_today가 밤새 계속 누적되어 284까지
+증가). 또한 08:50~15:30(KST) 운영창 밖에서는 시세/주문/계좌조회를 하지 않고
+heartbeat만 유지한다 — 장외에 3분마다 전체 사이클을 계속 돌리는 것 자체가 불필요한
+KIS API 호출과 카운터 누적의 원인이었다.
 """
 
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 from app.logger import logger
 from app.services.hynix_switch_state import load_state
+from app.utils.time_utils import kst_now
 
 DEFAULT_INTERVAL_SECONDS = 180.0
 FAST_WATCHER_INTERVAL_SECONDS = 30.0
@@ -29,6 +39,9 @@ _status = {
     "_cycle_count_date": None,
     "last_cycle_result_summary": None,
     "restart_count": 0,
+    "last_heartbeat_at": None,
+    "within_operating_window": None,
+    "last_heartbeat_only_at": None,
 }
 _fast_status = {
     "last_started_at": None,
@@ -38,6 +51,8 @@ _fast_status = {
     "_run_count_date": None,
     "last_result_summary": None,
     "restart_count": 0,
+    "last_heartbeat_at": None,
+    "within_operating_window": None,
 }
 
 
@@ -57,6 +72,26 @@ def get_fast_status() -> dict:
     return snap
 
 
+def _reset_cycle_count_if_new_kst_day(now) -> None:
+    """KST 날짜가 바뀌면 cycle_count_today를 초기화한다.
+
+    heartbeat-only(장외) 틱에서도 매번 호출되므로, 실제 첫 장전 사이클이 돌기 전에도
+    KST 자정이 지나는 즉시 카운터가 0으로 보인다."""
+    today = now.strftime("%Y%m%d")
+    with _status_lock:
+        if _status["_cycle_count_date"] != today:
+            _status["_cycle_count_date"] = today
+            _status["cycle_count_today"] = 0
+
+
+def _reset_fast_run_count_if_new_kst_day(now) -> None:
+    today = now.strftime("%Y%m%d")
+    with _status_lock:
+        if _fast_status["_run_count_date"] != today:
+            _fast_status["_run_count_date"] = today
+            _fast_status["run_count_today"] = 0
+
+
 class HynixAutoTradeCycleThread(threading.Thread):
     def __init__(self, interval_seconds: float = DEFAULT_INTERVAL_SECONDS):
         super().__init__(daemon=True, name="HynixAutoTradeCycle")
@@ -71,19 +106,33 @@ class HynixAutoTradeCycleThread(threading.Thread):
         while not self._stop_event.is_set():
             self._run_cycle_if_enabled()
             with _status_lock:
-                _status["next_cycle_at"] = (datetime.now() + timedelta(seconds=self.interval_seconds)).isoformat()
+                _status["next_cycle_at"] = (kst_now() + timedelta(seconds=self.interval_seconds)).isoformat()
             self._stop_event.wait(self.interval_seconds)
         logger.info("[HynixAutoTradeCycle] 백그라운드 사이클 스레드 종료")
 
     def _run_cycle_if_enabled(self) -> None:
         from app.services.hynix_switch_engine import update_hynix_auto_trade_loop
+        from app.trading.hynix_switch_risk_gate import is_within_operating_window
+
+        now = kst_now()
+        _reset_cycle_count_if_new_kst_day(now)
+        within_window = is_within_operating_window(now)
+        with _status_lock:
+            _status["last_heartbeat_at"] = now.isoformat()
+            _status["within_operating_window"] = within_window
 
         state = load_state()
         if not state.get("auto_trade_on") or state.get("stopped"):
             return
 
-        today = datetime.now().strftime("%Y%m%d")
-        started_at = datetime.now()
+        if not within_window:
+            # 장외(08:50 이전/15:30 이후) — 시세/주문/계좌조회를 하지 않고 스레드가
+            # 살아있다는 사실(heartbeat)만 기록한다. cycle_count_today는 증가시키지 않는다.
+            with _status_lock:
+                _status["last_heartbeat_only_at"] = now.isoformat()
+            return
+
+        started_at = now
         with _status_lock:
             _status["last_cycle_started_at"] = started_at.isoformat()
         try:
@@ -97,13 +146,10 @@ class HynixAutoTradeCycleThread(threading.Thread):
         except Exception as exc:  # noqa: BLE001
             logger.error("[HynixAutoTradeCycle] 사이클 실행 실패: %s", exc)
             summary = {"error": str(exc)}
-        completed_at = datetime.now()
+        completed_at = kst_now()
         with _status_lock:
             _status["last_cycle_completed_at"] = completed_at.isoformat()
             _status["last_cycle_result_summary"] = summary
-            if _status["_cycle_count_date"] != today:
-                _status["_cycle_count_date"] = today
-                _status["cycle_count_today"] = 0
             _status["cycle_count_today"] += 1
 
 
@@ -121,19 +167,30 @@ class HynixFastTrendWatcherThread(threading.Thread):
         while not self._stop_event.is_set():
             self._run_if_enabled()
             with _status_lock:
-                _fast_status["next_run_at"] = (datetime.now() + timedelta(seconds=self.interval_seconds)).isoformat()
+                _fast_status["next_run_at"] = (kst_now() + timedelta(seconds=self.interval_seconds)).isoformat()
             self._stop_event.wait(self.interval_seconds)
         logger.info("[HynixFastTrendWatcher] stopped")
 
     def _run_if_enabled(self) -> None:
         from app.services.hynix_switch_engine import run_fast_trend_watcher_tick
+        from app.trading.hynix_switch_risk_gate import is_within_operating_window
+
+        now = kst_now()
+        _reset_fast_run_count_if_new_kst_day(now)
+        within_window = is_within_operating_window(now)
+        with _status_lock:
+            _fast_status["last_heartbeat_at"] = now.isoformat()
+            _fast_status["within_operating_window"] = within_window
 
         state = load_state()
         if not state.get("auto_trade_on") or state.get("stopped"):
             return
 
-        today = datetime.now().strftime("%Y%m%d")
-        started_at = datetime.now()
+        if not within_window:
+            # 장외에는 빠른 추세감시도 시세조회를 하지 않는다(heartbeat만 유지).
+            return
+
+        started_at = now
         with _status_lock:
             _fast_status["last_started_at"] = started_at.isoformat()
         try:
@@ -146,13 +203,10 @@ class HynixFastTrendWatcherThread(threading.Thread):
         except Exception as exc:  # noqa: BLE001
             logger.error("[HynixFastTrendWatcher] run failed: %s", exc)
             summary = {"error": str(exc)}
-        completed_at = datetime.now()
+        completed_at = kst_now()
         with _status_lock:
             _fast_status["last_completed_at"] = completed_at.isoformat()
             _fast_status["last_result_summary"] = summary
-            if _fast_status["_run_count_date"] != today:
-                _fast_status["_run_count_date"] = today
-                _fast_status["run_count_today"] = 0
             _fast_status["run_count_today"] += 1
 
 

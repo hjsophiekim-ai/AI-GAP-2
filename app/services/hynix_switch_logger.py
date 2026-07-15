@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _PREDICTIONS_DIR = ROOT / "data" / "predictions"
@@ -47,7 +48,7 @@ def _archive_if_schema_drifted(path: Path, columns: list[str]) -> None:
     깨뜨리지 않도록 옛 파일을 타임스탬프를 붙여 보존하고 새 스키마로 다시 시작한다."""
     if not path.exists() or _header_matches(path, columns):
         return
-    backup = path.with_name(f"{path.stem}.schema_{datetime.now().strftime('%H%M%S')}{path.suffix}")
+    backup = path.with_name(f"{path.stem}.schema_{kst_now().strftime('%H%M%S')}{path.suffix}")
     try:
         path.rename(backup)
         logger.warning("[HynixSwitchLogger] %s 스키마 변경 감지, 기존 파일을 %s로 보존하고 새로 시작", path.name, backup.name)
@@ -71,10 +72,10 @@ def _append_csv(path: Path, columns: list[str], record: dict) -> None:
 
 def log_enhanced_prediction(record: dict) -> None:
     """data/predictions/hynix_enhanced_prediction_log_{YYYYMMDD}.csv 에 append."""
-    date_str = datetime.now().strftime("%Y%m%d")
+    date_str = kst_now().strftime("%Y%m%d")
     path = _PREDICTIONS_DIR / f"hynix_enhanced_prediction_log_{date_str}.csv"
     row = dict(record)
-    row.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    row.setdefault("timestamp", kst_now().strftime("%Y-%m-%d %H:%M:%S"))
     reasons = record.get("reason_top5") or []
     for i in range(5):
         row[f"reason_top{i + 1}"] = reasons[i] if i < len(reasons) else ""
@@ -83,8 +84,8 @@ def log_enhanced_prediction(record: dict) -> None:
 
 def log_trade(record: dict) -> None:
     """data/logs/hynix_auto_trade_log_{YYYYMMDD}.csv 에 append."""
-    date_str = datetime.now().strftime("%Y%m%d")
+    date_str = kst_now().strftime("%Y%m%d")
     path = _LOGS_DIR / f"hynix_auto_trade_log_{date_str}.csv"
     row = dict(record)
-    row.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    row.setdefault("timestamp", kst_now().strftime("%Y-%m-%d %H:%M:%S"))
     _append_csv(path, _TRADE_LOG_COLUMNS, row)

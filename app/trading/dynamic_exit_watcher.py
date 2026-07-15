@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 from app.trading.dynamic_exit_engine import DynamicExitEngine
 from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.trading.hynix_switch_position_manager import _sell_all_or_ratio, _SYMBOL_NAME
@@ -299,7 +300,7 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
     """
     from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
 
-    now = now or datetime.now()
+    now = now or kst_now()
     engine = engine or _engine
     state = load_state()
 

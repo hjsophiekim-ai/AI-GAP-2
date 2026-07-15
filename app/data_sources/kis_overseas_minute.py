@@ -20,6 +20,8 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
+from app.utils.time_utils import kst_now
+
 load_dotenv()
 
 try:
@@ -468,7 +470,7 @@ def classify_current_session_type(now: Optional[datetime] = None) -> str:
     -------
     "PREMARKET" | "REGULAR" | "AFTERHOURS" | "CLOSED"
     """
-    now = now or datetime.now()
+    now = now or kst_now()
     try:
         from app.market.us_market_data import get_us_market_status
 

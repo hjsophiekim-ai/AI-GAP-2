@@ -17,13 +17,14 @@ def kst_now() -> datetime:
 
 
 def now_str() -> str:
-    """Current time as 'HH:MM'."""
-    return datetime.now().strftime("%H:%M")
+    """Current time as 'HH:MM' (KST)."""
+    return kst_now().strftime("%H:%M")
 
 
 def today_str() -> str:
-    """Today's date as 'YYYYMMDD'."""
-    return datetime.now().strftime("%Y%m%d")
+    """Today's date as 'YYYYMMDD' (KST) — Render 등 UTC 서버에서도 거래일 경계가
+    KST 자정과 일치하도록 kst_now() 기준으로 계산한다."""
+    return kst_now().strftime("%Y%m%d")
 
 
 def parse_time(t: str) -> tuple:
@@ -38,16 +39,16 @@ def time_gte(t1: str, t2: str) -> bool:
 
 
 def is_market_open() -> bool:
-    """Korean stock market open: 09:00 ~ 15:30."""
-    now = datetime.now()
+    """Korean stock market open: 09:00 ~ 15:30 (KST)."""
+    now = kst_now()
     h, m = now.hour, now.minute
     current = h * 60 + m
     return (9 * 60) <= current <= (15 * 60 + 30)
 
 
 def is_pre_market() -> bool:
-    """Return True before 09:00 market open."""
-    now = datetime.now()
+    """Return True before 09:00 market open (KST)."""
+    now = kst_now()
     return now.hour * 60 + now.minute < 9 * 60
 
 
