@@ -843,6 +843,14 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
         if broker_symbol is not None:
             existing["quantity"] = pos_info.get("quantity")
             existing["avg_price"] = pos_info.get("avg_price")
+            # 요구사항(2026-07-16 실측) — 브로커가 보고하는 평단(avg_price)이 이
+            # 포지션의 손익 계산 기준 진실이다(추가매수/부분체결/수수료 반영 등으로
+            # 로컬에서 계산한 값과 어긋날 수 있음). entry_price를 여기서 함께
+            # 갱신하지 않으면 evaluate_tp_sl()/dynamic_exit_engine.decide()가 계속
+            # 예전(보통 더 낮은) entry_price로 손익률을 계산해 실제로는 손절선을
+            # 넘은 손실도 문턱을 못 넘은 것처럼 보고한다.
+            if pos_info.get("avg_price"):
+                existing["entry_price"] = pos_info.get("avg_price")
             state["position"] = existing
         else:
             _clear_stale_buy_state_when_flat(state)
@@ -1018,6 +1026,9 @@ def _apply_sell_result_to_state_position(state: dict, position: dict, sell_resul
     avg_price = (sell_result.get("position_sync") or {}).get("avg_price")
     if avg_price:
         position["avg_price"] = avg_price
+        # entry_price도 함께 맞춘다 — evaluate_tp_sl()/dynamic_exit_engine이 손익률
+        # 계산에 entry_price를 쓰므로, 브로커가 보고한 평단과 어긋나면 안 된다.
+        position["entry_price"] = avg_price
     if mark_partial == "tp1":
         position["partial_tp1_done"] = True
     elif mark_partial == "sl1":
@@ -1200,8 +1211,17 @@ def run_switch_or_entry(
                     old_qty = int(position.get("quantity") or 0)
                     new_qty = old_qty + add_qty
                     old_avg = float(position.get("avg_price") or position.get("entry_price") or current_price)
+                    new_avg = ((old_avg * old_qty) + (current_price * add_qty)) / new_qty if new_qty else current_price
                     position["quantity"] = new_qty
-                    position["avg_price"] = ((old_avg * old_qty) + (current_price * add_qty)) / new_qty if new_qty else current_price
+                    position["avg_price"] = new_avg
+                    # 요구사항(2026-07-16 실측) — entry_price도 함께 갱신해야 한다.
+                    # evaluate_tp_sl()/dynamic_exit_engine.decide()는 손익률을
+                    # avg_price가 아니라 entry_price 기준으로 계산하는데, 목표비중
+                    # 증액(top-up) 시 entry_price를 그대로 두면 최초 진입가(보통 더
+                    # 낮은 가격)로 손익을 계산하게 되어 실제 평단 대비 손실이 커도
+                    # 손절 문턱을 넘지 못한 것처럼 보인다(2026-07-16 사용자 리포트:
+                    # 실제 -3.48% 손실인데 자동손절이 전혀 발동하지 않음).
+                    position["entry_price"] = new_avg
                     position["entry_type"] = entry_type or position.get("entry_type") or "NORMAL"
                     position["stop_loss_pct"] = stop_loss_pct if stop_loss_pct is not None else position.get("stop_loss_pct")
                     state["position"] = position

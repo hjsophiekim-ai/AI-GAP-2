@@ -158,6 +158,58 @@ def test_target_weight_increase_failure_reports_real_reason_not_generic_message(
     assert "이미" not in result["message"]
 
 
+def test_target_weight_increase_updates_entry_price_not_just_avg_price():
+    """요구사항(2026-07-16 사용자 리포트) — 실제 -3.48% 손실인데도 자동손절이 전혀
+    발동하지 않은 근본 원인. evaluate_tp_sl()/dynamic_exit_engine.decide()는 손익률을
+    entry_price 기준으로 계산하는데, 목표비중 증액(top-up) 시 avg_price만 재계산하고
+    entry_price는 최초 진입가에 그대로 고정돼 있었다. 나중에 더 높은 가격에 추가매수
+    했다면(추세 확인 후 증액이 일반적), 진짜 평단(avg_price)은 올랐는데 손절 판단은
+    여전히 더 낮은 최초 진입가 기준으로 계산되어 실제 손실률보다 작게 보이고, 손절
+    문턱을 넘지 못한 것처럼 판정된다."""
+    state = _holding_state(LONG_SYMBOL, quantity=10, entry_price=100_000.0)
+    state["position"]["avg_price"] = 100_000.0
+    state["last_trend_switch_plan"] = {
+        "desired_symbol": LONG_SYMBOL, "proceed": True, "position_pct": 0.50, "entry_type": "CONFIRMED",
+    }
+    broker = DummyBroker(buy_success=True, buyable_cash=10_000_000.0)
+    now = datetime(2026, 7, 16, 10, 0)
+
+    # 현재가(110,000)가 최초 진입가(100,000)보다 높은 시점에 추가매수(top-up)한다 —
+    # 추세 확인 후 증액하는 일반적인 시나리오.
+    result = run_switch_or_entry(state, broker, "HYNIX_BUY", 110_000.0, 5_000.0, now=now)
+
+    assert result["acted"] is True
+    pos = state["position"]
+    assert pos["quantity"] == 50  # 10주(기존) + 40주(추가매수)
+    expected_new_avg = (100_000.0 * 10 + 110_000.0 * 40) / 50  # = 108,000
+    assert pos["avg_price"] == expected_new_avg
+    # 핵심 검증: entry_price가 최초 진입가(100,000)에 고정돼 있지 않고, avg_price와
+    # 함께 갱신되어야 한다 — 그래야 이후 evaluate_tp_sl()의 손익률 계산이 정확해진다.
+    assert pos["entry_price"] == expected_new_avg
+    assert pos["entry_price"] != 100_000.0
+
+
+def test_apply_position_manager_to_state_syncs_entry_price_with_broker_avg_price():
+    """브로커 sync(포지션 확인 매 사이클)로 avg_price가 갱신될 때도 entry_price가
+    함께 갱신되어야 한다 — 브로커가 보고하는 평단이 손익 계산의 최종 진실이다."""
+    from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
+
+    state = _holding_state(LONG_SYMBOL, quantity=50, entry_price=100_000.0)
+
+    class _ConfirmedPositionManager:
+        last_sync_ok = True
+        broker = object()
+        current_position = {
+            "symbol": LONG_SYMBOL, "name": "KODEX", "quantity": 50,
+            "avg_price": 108_000.0, "conflict": False,
+        }
+
+    apply_position_manager_to_state(state, _ConfirmedPositionManager())
+
+    assert state["position"]["avg_price"] == 108_000.0
+    assert state["position"]["entry_price"] == 108_000.0
+
+
 def test_target_weight_increase_too_small_reports_specific_reason():
     """add_cash가 1주 가격보다 작아 애초에 매수 시도조차 안 한 경우도 원인을
     구체적으로 남긴다(목표비중에 이미 근접)."""
