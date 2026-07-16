@@ -150,7 +150,12 @@ def _build_blocking_reason(trace: dict) -> Optional[str]:
         "risk_manager": trace.get("risk_manager_reason"),
         "entry": trace.get("entry_approved_reason") or "이미 목표 종목 보유 중이거나 추가 진입이 필요 없어 주문을 시도하지 않음",
         "state_sync": trace.get("entry_approved_reason") or "POSITION_SYNC_PENDING — 브로커 잔고 확인 전이라 주문 차단",
-        "order_sent": "주문이 브로커로 전송되지 않음(가격 조회 실패/쿨다운/허용 시간대 아님 등)",
+        # 요구사항(2026-07-16 사용자 리포트: BUY 신호가 2회 연속 떴는데 "가격 조회
+        # 실패/쿨다운/허용 시간대 아님 등"이라는 뭉뚱그린 문구만 표시되어 실제
+        # 원인(예: 매수가능금액 0/사이즈된 현금 0/주문 거부 사유)을 알 수 없었다.
+        # entry_approved_reason(=run_switch_or_entry가 실제로 보고한 message)을
+        # 최우선으로 쓰고, 그게 없을 때만 이 일반 문구로 폴백한다.
+        "order_sent": trace.get("entry_approved_reason") or "주문이 브로커로 전송되지 않음(가격 조회 실패/쿨다운/허용 시간대 아님 등)",
         "broker_executed": "주문은 전송됐으나 브로커 체결 실패",
         "position_confirmed": "체결 후 재조회한 포지션이 기대와 불일치",
         "ui_synced": "상태 저장(디스크 반영) 실패 — 다음 사이클에서 재시도됨",
@@ -2015,7 +2020,17 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             )
                             orders_this_cycle.extend(switch.get("orders", []))
                             trace["execution_stage"] = switch.get("stage")
-                            if not switch.get("orders"):
+                            # 요구사항(2026-07-16) — switch.get("orders")가 "실제로 브로커에
+                            # 보낸 주문"이 아니라 BUY_SKIPPED 같은 스킵 기록만 담고 있어도
+                            # 비어있지 않다고 판정돼(`if not switch.get("orders")`), 정작
+                            # 왜 스킵됐는지(예: "buyable cash amount is 0")를 알려주는
+                            # switch.get("message")가 blocking_reason에 전혀 반영되지
+                            # 않았다 — 스킵된 것도 "실제 주문 전송"이 아니므로 동일하게
+                            # 취급한다.
+                            _switch_sent_orders = [
+                                o for o in (switch.get("orders") or []) if o.get("action") in ("BUY", "SELL")
+                            ]
+                            if not _switch_sent_orders:
                                 trace["entry_approved_reason"] = switch.get("message") or trace.get("entry_approved_reason")
                         except Exception as exc:
                             logger.error("[HynixSwitchEngine] 스위칭/진입 처리 실패: %s", exc)

@@ -628,9 +628,16 @@ def _buy_new(
     mode: str = "mock", signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH, before_qty: int = 0,
     fusion_metadata: Optional[dict] = None, position_manager=None,
 ) -> dict:
-    if not current_price or current_price <= 0 or cash_amount <= 0:
-        _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "invalid price/amount")
-        return {"success": False, "message": "invalid price/amount"}
+    # 요구사항(2026-07-16 사용자 리포트) — "invalid price/amount"는 가격 문제와
+    # 현금(매수가능금액 산정 0원) 문제를 구분하지 못해, BUY 신호가 떴는데 왜 실제
+    # 주문이 안 나갔는지 화면에서 알 수 없었다. 두 원인을 분리해 로그/blocking_reason
+    # 에서 바로 진단 가능하게 한다.
+    if not current_price or current_price <= 0:
+        _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "no valid current price")
+        return {"success": False, "message": "no valid current price"}
+    if cash_amount <= 0:
+        _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "sized cash amount is 0 (buyable cash query returned 0/unavailable)")
+        return {"success": False, "message": "sized cash amount is 0 (buyable cash query returned 0/unavailable)"}
     quantity = int(cash_amount // current_price)
     if quantity < 1:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "buy amount insufficient for 1 share")
@@ -783,19 +790,28 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
                 )
             except Exception:
                 recent_flat_ok = False
+        sync_error = getattr(position_manager, "last_sync_error", None)
         if recent_flat_ok:
             state["position_sync_status"] = "SYNCED_RECENT_CACHE"
-            state["position_sync_error"] = getattr(position_manager, "last_sync_error", None)
+            state["position_sync_error"] = sync_error
             state["position_sync_block_new_orders"] = False
             state["position_sync_warning"] = (
                 "broker position sync temporarily failed; using recent flat broker sync"
             )
+            # 최근(90초 이내) 정상 동기화된 flat 포지션이 있으므로 실질적으로 위험한
+            # 상황이 아니다 — 이전에 남아있던 POSITION_SYNC_PENDING류 stale 배너를 지운다.
+            if state.get("critical_alert") and "POSITION_SYNC_PENDING" in str(state.get("critical_alert")):
+                state["critical_alert"] = None
             return state
         state["position_sync_status"] = POSITION_SYNC_PENDING
-        state["position_sync_error"] = getattr(position_manager, "last_sync_error", None)
+        state["position_sync_error"] = sync_error
         state["position_sync_block_new_orders"] = True
+        # 요구사항 — 원인을 명확히 표시: 브로커 예외(rt_cd/msg_cd/msg1이 포함된 문자열)를
+        # 그대로 이어붙인다. 이전에는 고정 문구만 남아 "왜" 실패했는지 화면에서 전혀 알 수
+        # 없었다(2026-07-16 사용자 리포트).
         state["critical_alert"] = (
             "POSITION_SYNC_PENDING - broker position sync failed; keeping previous local position"
+            + (f" — cause: {sync_error}" if sync_error else "")
         )
         return state
 
@@ -811,6 +827,13 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
         state["critical_alert"] = position_manager.conflict_error
         logger.error("[SwitchPositionManager] %s", position_manager.conflict_error)
         return state
+
+    # 브로커 동기화가 정상 회복됐다 — 이전에 남아있던 POSITION_SYNC_PENDING류 stale
+    # critical_alert를 지운다. 그렇지 않으면 과거 1회성 실패로 세팅된 "🔴 CRITICAL"
+    # 배너가 이후 몇 번이고 정상 동기화에 성공해도 화면에 영구히 남는다(2026-07-16
+    # 사용자 리포트 — position_sync_status/error는 이미 정상인데 배너만 계속 표시됨).
+    if state.get("critical_alert") and "POSITION_SYNC_PENDING" in str(state.get("critical_alert")):
+        state["critical_alert"] = None
 
     broker_symbol = pos_info.get("symbol")
     existing = state.get("position") or {}

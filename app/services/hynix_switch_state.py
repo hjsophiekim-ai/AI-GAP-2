@@ -359,6 +359,16 @@ def _sanitize_intraday_state_dates(state: dict, today: str) -> None:
         _clear_intraday_decision_state(state)
 
 
+def _clear_stale_position_sync_critical_alert(state: dict) -> None:
+    """POSITION_SYNC_PENDING류로 세팅된 critical_alert는, 동기화 상태 자체가 이미
+    회복(SYNCED 또는 block_new_orders 해제)됐다면 함께 지운다 — 그렇지 않으면 과거
+    1회성 실패로 뜬 "🔴 CRITICAL" 배너가 이후 계속 정상 동작해도 화면에 영구히
+    남는다(2026-07-16 사용자 리포트)."""
+    alert = state.get("critical_alert")
+    if alert and "POSITION_SYNC_PENDING" in str(alert):
+        state["critical_alert"] = None
+
+
 def _sanitize_position_sync_flags(state: dict) -> None:
     pos = state.get("position") or {}
     flat = not pos.get("symbol") or (pos.get("quantity") or 0) <= 0
@@ -366,11 +376,13 @@ def _sanitize_position_sync_flags(state: dict) -> None:
         state["position_sync_block_new_orders"] = False
         if flat:
             state["position_sync_error"] = None
+        _clear_stale_position_sync_critical_alert(state)
         return
     if flat and state.get("position_sync_block_new_orders") and not state.get("residual_position_error"):
         state["position_sync_block_new_orders"] = False
         state["position_sync_error"] = None
         state["position_sync_status"] = None
+        _clear_stale_position_sync_critical_alert(state)
 
 
 def load_state(mode: Optional[str] = None) -> dict:
