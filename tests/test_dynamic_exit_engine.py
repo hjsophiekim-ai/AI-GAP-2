@@ -20,7 +20,8 @@ import pytest
 
 from app.trading.dynamic_exit_engine import DynamicExitEngine
 from app.trading.adaptive_market_regime import (
-    RANGE, STRONG_UP, STRONG_DOWN, HIGH_VOLATILITY, PANIC, REVERSAL, DATA_INSUFFICIENT, VOLATILE_RANGE,
+    RANGE, STRONG_UP, STRONG_DOWN, HIGH_VOLATILITY, PANIC, DATA_INSUFFICIENT, VOLATILE_RANGE,
+    REVERSAL_CANDIDATE_UP, REVERSAL_CANDIDATE_DOWN,
 )
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL

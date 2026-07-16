@@ -15,7 +15,8 @@ adaptive_market_regime.py — ADAPTIVE_MARKET_REGIME: 신규진입(PRIMARY_TREND
 이 모듈은 000660(SK하이닉스)의 갭/VWAP/5·15·30분 추세/EMA/고저점 구조/ATR/
 볼린저 폭/최근 3·5분 수익률/상대거래량/VWAP 교차횟수/스윙 방향전환횟수/방향
 이동효율을 입력으로 받아 8개 통일 장세(STRONG_UP/STRONG_DOWN/RANGE/
-VOLATILE_RANGE/HIGH_VOLATILITY/PANIC/REVERSAL/DATA_INSUFFICIENT) 중 하나로
+VOLATILE_RANGE/HIGH_VOLATILITY/REVERSAL_CANDIDATE_UP/REVERSAL_CANDIDATE_DOWN/
+PANIC/DATA_INSUFFICIENT) 중 하나로
 분류하고, 장세별 진입비중/익절/손절/트레일링/최대보유시간 프로필을 함께
 반환한다. hynix_primary_trend.py의 신규진입 게이트, dynamic_exit_engine.py의
 청산 판단, hynix_big_trend_engine.py의 Big Trend Holding이 모두 이 결과를
@@ -42,10 +43,19 @@ RANGE = "RANGE"
 VOLATILE_RANGE = "VOLATILE_RANGE"
 HIGH_VOLATILITY = "HIGH_VOLATILITY"
 PANIC = "PANIC"
-REVERSAL = "REVERSAL"
+# 요구사항(2026-07-16, 장중 다중 추세전환 상태머신) — 방향이 없는 REVERSAL을
+# REVERSAL_CANDIDATE_UP/DOWN으로 대체한다. STRONG_UP 보유 중 하락반전 후보가
+# 잡히면 REVERSAL_CANDIDATE_DOWN, STRONG_DOWN 보유 중 상승반전 후보가 잡히면
+# REVERSAL_CANDIDATE_UP — "확정된 반대 STRONG 추세"가 아니라 "확인 진행 중"이라는
+# 뜻이며, 실제 청산/진입 단계는 update_reversal_switch_state()가 담당한다.
+REVERSAL_CANDIDATE_UP = "REVERSAL_CANDIDATE_UP"
+REVERSAL_CANDIDATE_DOWN = "REVERSAL_CANDIDATE_DOWN"
 DATA_INSUFFICIENT = "DATA_INSUFFICIENT"
 
-ALL_REGIMES = (STRONG_UP, STRONG_DOWN, RANGE, VOLATILE_RANGE, HIGH_VOLATILITY, PANIC, REVERSAL, DATA_INSUFFICIENT)
+ALL_REGIMES = (
+    STRONG_UP, STRONG_DOWN, RANGE, VOLATILE_RANGE, HIGH_VOLATILITY,
+    REVERSAL_CANDIDATE_UP, REVERSAL_CANDIDATE_DOWN, PANIC, DATA_INSUFFICIENT,
+)
 
 _GAP_FLAT_THRESHOLD_PCT = 0.15
 _EMA_FLAT_SLOPE_PCT = 0.02
@@ -146,10 +156,18 @@ RISK_PROFILES: dict[str, dict] = {
         "max_hold_minutes": 10, "position_pct_multiplier": 0.15,
         "position_pct_min": 0.10, "position_pct_max": 0.20,
     },
-    REVERSAL: {
-        # 요구사항2 — REVERSAL은 "기존 포지션 우선 청산 후 반대 ETF 탐색진입"이
-        # 목적이므로 고정 TP/SL 폭보다 "즉시 재평가/청산 우선"이 핵심이다.
-        # 신규 탐색진입은 EXPLORATORY 취급(작은 비중)한다.
+    REVERSAL_CANDIDATE_UP: {
+        # 요구사항(2026-07-16) — REVERSAL_CANDIDATE는 "기존 포지션 우선 청산 후
+        # 반대 ETF 탐색진입"이 목적이므로 고정 TP/SL 폭보다 "즉시 재평가/청산
+        # 우선"이 핵심이다. 실제 단계별 청산/탐색진입/확대 수량은
+        # update_reversal_switch_state()가 담당하고, 이 프로필은 그 사이 남아있는
+        # 잔여 포지션의 TP/SL 안전망 역할만 한다.
+        "tp1_pct": 1.0, "tp1_ratio": 1.0, "tp2_pct": None, "tp2_ratio": None,
+        "sl_pct": 0.8, "uses_trailing": False, "trailing_pct": None,
+        "max_hold_minutes": None, "position_pct_multiplier": 0.5,
+        "force_exit_existing_position": True,
+    },
+    REVERSAL_CANDIDATE_DOWN: {
         "tp1_pct": 1.0, "tp1_ratio": 1.0, "tp2_pct": None, "tp2_ratio": None,
         "sl_pct": 0.8, "uses_trailing": False, "trailing_pct": None,
         "max_hold_minutes": None, "position_pct_multiplier": 0.5,
@@ -602,6 +620,8 @@ def default_regime_confirmation_state() -> dict:
     return {
         "confirmed_regime": DATA_INSUFFICIENT, "candidate_regime": None, "candidate_count": 0,
         "last_confirmed_at": None, "previous_regime": None, "transitioned_at": None,
+        "reversal_direction": None, "reversal_confirmation_count": 0,
+        "previous_confirmed_regime": None, "regime_changed_at": None,
     }
 
 
@@ -617,21 +637,37 @@ def update_regime_confirmation(
     확정된다.
     """
     state = dict(state) if state else default_regime_confirmation_state()
+    for key, value in default_regime_confirmation_state().items():
+        state.setdefault(key, value)
+
+    def _stamp_reversal_aliases() -> None:
+        candidate = state.get("candidate_regime")
+        confirmed = state.get("confirmed_regime")
+        if candidate and is_opposite_trend(confirmed, candidate):
+            state["reversal_direction"] = "DOWN" if candidate == STRONG_DOWN else "UP"
+            state["reversal_confirmation_count"] = int(state.get("candidate_count", 0))
+        else:
+            state["reversal_direction"] = None
+            state["reversal_confirmation_count"] = 0
 
     if hard_override:
         if state["confirmed_regime"] != hard_override:
             state["previous_regime"] = state["confirmed_regime"]
+            state["previous_confirmed_regime"] = state["confirmed_regime"]
             state["transitioned_at"] = now.isoformat(timespec="seconds")
+            state["regime_changed_at"] = state["transitioned_at"]
         state["confirmed_regime"] = hard_override
         state["candidate_regime"] = None
         state["candidate_count"] = 0
         state["last_confirmed_at"] = now.isoformat(timespec="seconds")
+        _stamp_reversal_aliases()
         return state
 
     if raw_regime == state["confirmed_regime"]:
         state["candidate_regime"] = None
         state["candidate_count"] = 0
         state["last_confirmed_at"] = now.isoformat(timespec="seconds")
+        _stamp_reversal_aliases()
         return state
 
     if state.get("candidate_regime") == raw_regime:
@@ -642,12 +678,15 @@ def update_regime_confirmation(
 
     if state["candidate_count"] >= _CONFIRMATIONS_REQUIRED:
         state["previous_regime"] = state["confirmed_regime"]
+        state["previous_confirmed_regime"] = state["confirmed_regime"]
         state["confirmed_regime"] = raw_regime
         state["candidate_regime"] = None
         state["candidate_count"] = 0
         state["transitioned_at"] = now.isoformat(timespec="seconds")
+        state["regime_changed_at"] = state["transitioned_at"]
         state["last_confirmed_at"] = now.isoformat(timespec="seconds")
 
+    _stamp_reversal_aliases()
     return state
 
 
@@ -683,6 +722,11 @@ def compute_and_confirm_regime(
         "profile": get_risk_profile(confirmed),
         "previous_regime": updated_state.get("previous_regime"),
         "transitioned_at": updated_state.get("transitioned_at"),
+        "candidate_regime": updated_state.get("candidate_regime"),
+        "reversal_direction": updated_state.get("reversal_direction"),
+        "reversal_confirmation_count": updated_state.get("reversal_confirmation_count"),
+        "previous_confirmed_regime": updated_state.get("previous_confirmed_regime"),
+        "regime_changed_at": updated_state.get("regime_changed_at"),
         "confirmation_state": updated_state, "snapshot": raw,
     }
 
@@ -727,13 +771,15 @@ def displayed_regime(state: dict) -> str:
     """UI/게이트가 실제로 참고해야 할 "지금 이 순간의" 장세.
 
     확인 대기 중(candidate_count==1)에 그 후보가 confirmed_regime의 정반대
-    방향이면 REVERSAL을 보여준다(요구사항4 "반대 추세 확정은 즉시 우선" —
-    확정되기 전까지는 REVERSAL이라는 별도 상태로 노출해 신중하게 취급한다).
+    방향이면 REVERSAL_CANDIDATE_UP/DOWN을 보여준다(요구사항4 "반대 추세 확정은
+    즉시 우선" — 확정되기 전까지는 방향이 있는 REVERSAL_CANDIDATE 상태로 노출해
+    신중하게 취급한다). STRONG_UP 보유 중 STRONG_DOWN 후보 대기 =
+    REVERSAL_CANDIDATE_DOWN, 그 반대는 REVERSAL_CANDIDATE_UP.
     """
     confirmed = state.get("confirmed_regime", DATA_INSUFFICIENT)
     candidate = state.get("candidate_regime")
     if candidate and is_opposite_trend(confirmed, candidate) and state.get("candidate_count", 0) >= 1:
-        return REVERSAL
+        return REVERSAL_CANDIDATE_DOWN if confirmed == STRONG_UP else REVERSAL_CANDIDATE_UP
     return confirmed
 
 
@@ -794,4 +840,249 @@ def opposite_signal_response(opposite_signal_streak: int, regime: str) -> Option
     if reduce_at is not None and opposite_signal_streak >= reduce_at:
         ratio = profile.get("opposite_signal_reduce_ratio", 0.5)
         return {"action": "SELL_PARTIAL", "ratio": ratio, "reason": f"반대 강신호 {opposite_signal_streak}회 확인 — {ratio*100:.0f}% 축소"}
+    return None
+
+
+# =============================================================================
+# 장중 다중 추세전환 상태머신(2026-07-16) — 요구사항1~8
+#
+# 장세는 하루 고정값이 아니라 20~30초마다 재평가된다(요구사항1 — Fast Watcher가
+# 이 재평가 주기를 담당하고, 실행은 아래 실행 계층이 담당한다). STRONG_UP/DOWN
+# 보유 중 반전이 감지되면 다음 단계를 밟는다(요구사항2/3 — 두 방향 완전히 대칭):
+#   1회 확인 -> 추가매수 금지 + trailing 축소 + 기존 25~50% 청산
+#   2회 확인 -> 기존 포지션 전량청산
+#   (브로커로 실제 잔량 0 확인 후) -> 반대 ETF 10~20% 탐색진입
+#   3회 확인 또는 강한 붕괴 -> 반대 포지션 30~50%까지 확대
+# PANIC/하드손절은 확인횟수와 무관하게 즉시 전량청산(요구사항6).
+# =============================================================================
+
+_REVERSAL_SIGNAL_MIN_COUNT = 3  # 5개 신호 중 3개 이상이면 "1회 확인"(요구사항5)
+_REVERSAL_RELATIVE_VOLUME_MIN = 1.5
+_REVERSAL_HARD_COLLAPSE_VOTES = 5  # 5개 신호 전부 확인되면 "강한 붕괴"로 간주(요구사항2 "3회 확인 또는 강한 붕괴")
+
+_REVERSAL_STAGE_NONE = "NONE"
+_REVERSAL_STAGE_REDUCED = "REDUCED"
+_REVERSAL_STAGE_FULLY_EXITED = "FULLY_EXITED"
+_REVERSAL_STAGE_FLAT_CONFIRMED = "FLAT_CONFIRMED"
+_REVERSAL_STAGE_EXPLORATORY_ENTERED = "EXPLORATORY_ENTERED"
+_REVERSAL_STAGE_EXPANDED = "EXPANDED"
+
+REVERSAL_ACTION_REDUCE_EXISTING = "REDUCE_EXISTING"
+REVERSAL_ACTION_FULL_EXIT = "FULL_EXIT"
+REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE = "EXPLORATORY_ENTRY_OPPOSITE"
+REVERSAL_ACTION_EXPAND_OPPOSITE = "EXPAND_OPPOSITE"
+REVERSAL_ACTION_REDUCE_TO_CORE = "REDUCE_TO_CORE"
+
+
+def count_reversal_signals(snapshot: dict, held_direction: str) -> tuple[int, list[str]]:
+    """보유 방향(held_direction="UP"=0193T0/레버리지 보유, "DOWN"=0197X0/인버스
+    보유)에 대한 반전 신호를 5가지 기준으로 센다(요구사항5): VWAP 반대 이탈,
+    5분·15분 방향 반전, 주요 스윙 고점/저점 붕괴, EMA 기울기 반전, 상대거래량
+    증가. classify_raw_regime()의 snapshot을 그대로 입력받는다(별도 재계산 없음).
+    """
+    votes = 0
+    reasons: list[str] = []
+    swing = snapshot.get("swing") or {}
+    rel_vol = snapshot.get("relative_volume")
+    ema_slope = snapshot.get("ema20_slope_pct")
+
+    if held_direction == "UP":
+        if snapshot.get("above_vwap") is False:
+            votes += 1; reasons.append("VWAP 하향 이탈")
+        if snapshot.get("trend_5m") == "DOWN" or snapshot.get("trend_15m") == "DOWN":
+            votes += 1; reasons.append("5분/15분 방향 하락 반전")
+        if swing.get("lower_high") and swing.get("lower_low"):
+            votes += 1; reasons.append("주요 스윙 고점/저점 붕괴(하락 구조)")
+        if ema_slope is not None and ema_slope < 0:
+            votes += 1; reasons.append("EMA20 기울기 하락 반전")
+        if rel_vol is not None and rel_vol >= _REVERSAL_RELATIVE_VOLUME_MIN:
+            votes += 1; reasons.append(f"상대거래량 증가({rel_vol}배)")
+    elif held_direction == "DOWN":
+        if snapshot.get("above_vwap") is True:
+            votes += 1; reasons.append("VWAP 상향 이탈")
+        if snapshot.get("trend_5m") == "UP" or snapshot.get("trend_15m") == "UP":
+            votes += 1; reasons.append("5분/15분 방향 상승 반전")
+        if swing.get("higher_high") and swing.get("higher_low"):
+            votes += 1; reasons.append("주요 스윙 고점/저점 붕괴(상승 구조)")
+        if ema_slope is not None and ema_slope > 0:
+            votes += 1; reasons.append("EMA20 기울기 상승 반전")
+        if rel_vol is not None and rel_vol >= _REVERSAL_RELATIVE_VOLUME_MIN:
+            votes += 1; reasons.append(f"상대거래량 증가({rel_vol}배)")
+
+    return votes, reasons
+
+
+def default_reversal_switch_state() -> dict:
+    return {
+        "direction": None, "confirm_count": 0, "stage": _REVERSAL_STAGE_NONE,
+        "last_updated_at": None, "transitions": [],
+        "reversal_direction": None, "reversal_confirmation_count": 0,
+        "first_reduce_executed": False, "opposite_entry_wait_reason": None,
+        "last_kis_flat_check": None,
+    }
+
+
+def _sync_reversal_switch_aliases(state: dict) -> dict:
+    direction = state.get("direction")
+    confirm_count = int(state.get("confirm_count", 0) or 0)
+    state["reversal_direction"] = "DOWN" if direction == "UP" else ("UP" if direction == "DOWN" else None)
+    state["reversal_confirmation_count"] = confirm_count
+    state["first_reduce_executed"] = state.get("stage") in (
+        _REVERSAL_STAGE_REDUCED, _REVERSAL_STAGE_FULLY_EXITED,
+        _REVERSAL_STAGE_FLAT_CONFIRMED, _REVERSAL_STAGE_EXPLORATORY_ENTERED,
+        _REVERSAL_STAGE_EXPANDED,
+    )
+    if state.get("stage") == _REVERSAL_STAGE_FULLY_EXITED:
+        state["opposite_entry_wait_reason"] = "waiting_for_broker_flat_confirmation"
+    elif state.get("stage") == _REVERSAL_STAGE_FLAT_CONFIRMED:
+        state["opposite_entry_wait_reason"] = None
+    elif state.get("stage") in (_REVERSAL_STAGE_NONE, _REVERSAL_STAGE_REDUCED):
+        state["opposite_entry_wait_reason"] = "reversal_confirmation_pending" if confirm_count > 0 else None
+    return state
+
+
+def evaluate_reversal_switch(
+    state: Optional[dict], *, held_direction: Optional[str], snapshot: dict, now: datetime,
+    hard_stop_triggered: bool = False, broker_confirmed_flat: bool = False,
+    regime_downgraded_to_range: bool = False,
+) -> dict:
+    """장중 다중 추세전환 상태머신의 순수 판단 함수(요구사항2/3/5/6) — 실제 주문은
+    실행하지 않고 "이번 평가에서 무엇을 해야 하는지"(pending_action)만 반환한다.
+    호출자(실행 계층)가 그 조치를 실제로 실행한 뒤 mark_reversal_stage_executed()로
+    단계를 확정해야 다음 단계로 진행된다.
+
+    held_direction: 지금 보유 중인 포지션이 어느 STRONG 방향에 해당하는지
+    ("UP"=0193T0 보유, "DOWN"=0197X0 보유, None=무포지션 — 무포지션이면 감시
+    상태를 리셋한다).
+    broker_confirmed_flat: FULLY_EXITED 단계에서 브로커 재조회로 실제 잔량이
+    0임이 확인됐을 때만 True로 넘긴다 — 그래야 반대 ETF 탐색진입이 트리거된다
+    (요구사항 "잔량 0 확인 전 반대 ETF 주문 금지").
+    regime_downgraded_to_range: STRONG_TREND에서 RANGE로 막 전환됐을 때(요구사항4)
+    — Core 비중을 25%로 축소하고, 반대 ETF 즉시진입은 하지 않는다(반전 확인
+    절차와는 별개의, 더 가벼운 축소 조치).
+    """
+    state = dict(state) if state else default_reversal_switch_state()
+
+    if held_direction is None:
+        if state.get("direction") is not None:
+            state = default_reversal_switch_state()
+        return {**_sync_reversal_switch_aliases(state), "pending_action": None, "votes": 0, "reasons": []}
+
+    if state.get("direction") != held_direction:
+        # 보유 방향이 바뀌었다(전환 완료 후 새 방향 보유, 또는 첫 감시 시작) —
+        # 반전 감시를 새로 시작한다.
+        state = default_reversal_switch_state()
+        state["direction"] = held_direction
+
+    # 요구사항6 — PANIC/하드손절은 확인횟수와 무관하게 즉시 전량청산.
+    if hard_stop_triggered:
+        state["confirm_count"] = 0
+        state["stage"] = _REVERSAL_STAGE_NONE
+        state["last_updated_at"] = now.isoformat(timespec="seconds")
+        return {
+            **_sync_reversal_switch_aliases(state),
+            "pending_action": {"action": REVERSAL_ACTION_FULL_EXIT, "ratio": 1.0, "reason": "하드손절/PANIC — 확인 절차 없이 즉시 전량청산"},
+            "votes": None, "reasons": ["hard_stop_or_panic"],
+        }
+
+    # 요구사항4 — STRONG_TREND→RANGE는 반전 확인 절차와 별개로 즉시 축소한다.
+    if regime_downgraded_to_range and state["stage"] == _REVERSAL_STAGE_NONE:
+        state["last_updated_at"] = now.isoformat(timespec="seconds")
+        return {
+            **_sync_reversal_switch_aliases(state),
+            "pending_action": {
+                "action": REVERSAL_ACTION_REDUCE_TO_CORE, "target_ratio": 0.25,
+                "block_opposite_entry": True,
+                "reason": "STRONG_TREND→RANGE 전환 — Core 비중 25%로 축소, 반대 ETF 즉시진입 금지",
+            },
+            "votes": None, "reasons": ["regime_downgraded_to_range"],
+        }
+
+    # 잔량 0 확인 대기 중이었다면(2회 확인으로 전량청산 주문은 나갔으나 아직
+    # 브로커 재조회로 확정되지 않음) 그 확인이 들어왔을 때만 탐색진입으로 진행한다.
+    if state["stage"] == _REVERSAL_STAGE_FULLY_EXITED and broker_confirmed_flat:
+        state["stage"] = _REVERSAL_STAGE_FLAT_CONFIRMED
+        state["last_updated_at"] = now.isoformat(timespec="seconds")
+        return {
+            **_sync_reversal_switch_aliases(state),
+            "pending_action": {
+                "action": REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE, "ratio": 0.15,
+                "reason": "잔량 0 확인 — 반대 방향 탐색진입(10~20%)",
+            },
+            "votes": None, "reasons": ["flat_confirmed"],
+        }
+
+    votes, reasons = count_reversal_signals(snapshot, held_direction)
+    confirmed_this_tick = votes >= _REVERSAL_SIGNAL_MIN_COUNT
+
+    if not confirmed_this_tick:
+        # 요구사항 — "가짜 반전 1회에서 전액 스위칭 금지": 연속되지 않는 확인은
+        # (아직 어떤 단계도 진행되지 않았다면) 무효화한다. 이미 REDUCED 단계까지
+        # 진행된 뒤라면(1회 확인은 살아있는 채로) 다음 확인 신호를 계속 기다린다
+        # (요구사항에 "확인이 끊기면 원상복귀"는 없으므로 진행된 단계는 유지).
+        if state["stage"] == _REVERSAL_STAGE_NONE:
+            state["confirm_count"] = 0
+        return {**_sync_reversal_switch_aliases(state), "pending_action": None, "votes": votes, "reasons": reasons}
+
+    state["confirm_count"] = int(state.get("confirm_count", 0)) + 1
+    count = state["confirm_count"]
+    state["last_updated_at"] = now.isoformat(timespec="seconds")
+    hard_collapse = votes >= _REVERSAL_HARD_COLLAPSE_VOTES
+    pending_action = None
+
+    if state["stage"] == _REVERSAL_STAGE_NONE and count >= 1:
+        state["stage"] = _REVERSAL_STAGE_REDUCED
+        pending_action = {
+            "action": REVERSAL_ACTION_REDUCE_EXISTING, "ratio": 0.375,  # 25~50% 중간값
+            "block_new_adds": True, "reduce_trailing": True,
+            "reason": f"반전 1회 확인({votes}/5: {', '.join(reasons)}) — 추가매수 금지·trailing 축소·기존 37.5% 청산",
+        }
+    elif state["stage"] == _REVERSAL_STAGE_REDUCED and count >= 2:
+        state["stage"] = _REVERSAL_STAGE_FULLY_EXITED
+        pending_action = {
+            "action": REVERSAL_ACTION_FULL_EXIT, "ratio": 1.0,
+            "reason": f"반전 2회 확인({votes}/5: {', '.join(reasons)}) — 기존 포지션 전량청산",
+        }
+    elif state["stage"] == _REVERSAL_STAGE_EXPLORATORY_ENTERED and (count >= 3 or hard_collapse):
+        state["stage"] = _REVERSAL_STAGE_EXPANDED
+        pending_action = {
+            "action": REVERSAL_ACTION_EXPAND_OPPOSITE, "target_ratio": 0.40,  # 30~50% 중간값
+            "reason": f"반전 {count}회 확인 또는 강한 붕괴(votes={votes}) — 반대 포지션 30~50%까지 확대",
+        }
+
+    return {**_sync_reversal_switch_aliases(state), "pending_action": pending_action, "votes": votes, "reasons": reasons}
+
+
+def mark_reversal_stage_executed(
+    state: dict, *, action: str, executed_qty: int, now: datetime,
+    previous_regime: Optional[str] = None, current_regime: Optional[str] = None,
+    reasons: Optional[list[str]] = None, kis_balance_check: Optional[dict] = None,
+) -> dict:
+    """요구사항8 — 실행 계층이 pending_action을 실제로 성공 실행한 뒤 호출한다.
+    FULL_EXIT 실행 후에는(잔량 0을 아직 브로커로 재확인하기 전이므로) 단계를
+    FULLY_EXITED에 머무르게 한다 — evaluate_reversal_switch()가
+    broker_confirmed_flat=True를 받아야만 다음 단계(탐색진입)로 진행한다.
+    EXPLORATORY_ENTRY_OPPOSITE 실행 후에만 EXPLORATORY_ENTERED로 넘어간다.
+
+    전환 로그(previous/current regime, 전환시각, 확인횟수, 실행수량)를
+    state["transitions"]에 남긴다."""
+    state = dict(state)
+    if action == REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE:
+        state["stage"] = _REVERSAL_STAGE_EXPLORATORY_ENTERED
+    state = _sync_reversal_switch_aliases(state)
+    # REDUCE_EXISTING/FULL_EXIT/EXPAND_OPPOSITE/REDUCE_TO_CORE는 evaluate_reversal_switch()가
+    # pending_action을 반환하는 시점에 이미 stage를 다음 단계로 옮겨뒀으므로 여기서는
+    # 추가로 건드리지 않는다(멱등 — 두 번 호출돼도 stage가 잘못 전진하지 않음).
+
+    log_entry = {
+        "action": action, "executed_qty": executed_qty, "at": now.isoformat(timespec="seconds"),
+        "direction": state.get("direction"), "confirm_count": state.get("confirm_count"),
+        "stage_after": state.get("stage"),
+        "previous_regime": previous_regime, "current_regime": current_regime,
+        "reasons": list(reasons or []), "kis_balance_check": kis_balance_check,
+    }
+    transitions = list(state.get("transitions") or [])
+    transitions.append(log_entry)
+    state["transitions"] = transitions[-50:]
+    return state
     return None

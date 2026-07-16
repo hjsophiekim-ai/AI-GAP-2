@@ -108,6 +108,28 @@ class TestRegimeClassification:
         assert regime == bte.REGIME_PANIC
 
 
+class TestMapAdaptiveRegimeToBigTrendRegime:
+    """공용 Adaptive Regime(app.trading.adaptive_market_regime)의 확정 regime
+    문자열을 Big Trend Holding 자체 regime으로 매핑만 하는지 검증한다(재분류 없음).
+    REVERSAL_CANDIDATE_UP/DOWN(2026-07-16 도입, 이전의 단일 REVERSAL을 대체)이
+    둘 다 REGIME_REVERSAL_RISK로 매핑되어야 한다 — 예전 bare "REVERSAL" 키는
+    이제 절대 나오지 않는 값이라 매핑에 남아있으면 안 된다."""
+
+    def test_reversal_candidate_up_maps_to_reversal_risk(self):
+        assert bte.map_adaptive_regime_to_big_trend_regime("REVERSAL_CANDIDATE_UP") == bte.REGIME_REVERSAL_RISK
+
+    def test_reversal_candidate_down_maps_to_reversal_risk(self):
+        assert bte.map_adaptive_regime_to_big_trend_regime("REVERSAL_CANDIDATE_DOWN") == bte.REGIME_REVERSAL_RISK
+
+    def test_strong_up_and_down_map_to_strong_trend(self):
+        assert bte.map_adaptive_regime_to_big_trend_regime("STRONG_UP") == bte.REGIME_STRONG_TREND
+        assert bte.map_adaptive_regime_to_big_trend_regime("STRONG_DOWN") == bte.REGIME_STRONG_TREND
+
+    def test_unknown_regime_falls_back_to_range(self):
+        assert bte.map_adaptive_regime_to_big_trend_regime("REVERSAL") == bte.REGIME_RANGE
+        assert bte.map_adaptive_regime_to_big_trend_regime(None) == bte.REGIME_RANGE
+
+
 class TestHysteresis:
     def test_entry_requires_high_probability_and_strength(self):
         assert bte.entry_gate_ok(62.0, 65.0) is True

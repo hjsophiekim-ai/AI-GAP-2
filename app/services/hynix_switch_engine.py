@@ -25,7 +25,7 @@ from app.trading.hynix_switch_risk_gate import (
 )
 from app.trading.hynix_switch_position_manager import (
     run_liquidation_if_needed, run_tp_sl_if_needed, run_switch_or_entry, _current_price, _ACTION_TO_SYMBOL,
-    apply_position_manager_to_state,
+    apply_position_manager_to_state, run_reversal_switch_if_needed,
 )
 from app.trading.hynix_position_common import HynixPositionManager
 from app.trading.hynix_pullback_entry import detect_pullback
@@ -1682,12 +1682,45 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
                 state["fast_trend_watcher"] = status
                 save_state_atomic(state)
                 return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
-            switch = run_switch_or_entry(
-                state, broker, final_action,
-                _fast_long_price, enhanced_result.get("inverse_current_price"),
-                now=now, forced=True, reason="FAST_TREND_WATCHER 2x confirmed",
-                position_manager=position_manager, target_position_pct=0.20, entry_type="EXPLORATORY",
-            )
+            if _is_reversal_vs_holding:
+                # 요구사항7 — Fast Watcher는 REVERSAL_CANDIDATE만 만들고 단독으로 반대
+                # ETF 전액 주문을 넣지 못한다. 최종 주문권한은 공용 반전 스위칭
+                # 상태머신(run_reversal_switch_if_needed)만 갖는다 — run_switch_or_entry
+                # (즉시 전량 스위칭)는 호출하지 않는다.
+                #
+                # 요구사항1 — 장세를 하루 고정값으로 쓰지 않고 20~30초마다 재평가한다.
+                # 메인 3분 사이클과 동일한 confirmation_state 키(state["adaptive_regime_
+                # confirmation"])를 공유해(별도 재분류가 아니라 같은 단일 소스를 더 빠른
+                # 주기로 갱신) Fast Watcher의 30초 틱마다 함께 갱신한다.
+                from app.trading.adaptive_market_regime import compute_and_confirm_regime
+
+                _fast_adaptive_result = compute_and_confirm_regime(
+                    df_1min, prev_close=enhanced_result.get("hynix_prev_close"),
+                    confirmation_state=state.get("adaptive_regime_confirmation"), now=now,
+                )
+                state["adaptive_regime_confirmation"] = _fast_adaptive_result["confirmation_state"]
+                state["adaptive_regime"] = {k: v for k, v in _fast_adaptive_result.items() if k != "confirmation_state"}
+                _previous_confirmed_regime = _fast_adaptive_result.get("previous_regime")
+                _current_confirmed_regime = _fast_adaptive_result.get("confirmed_regime")
+                switch = run_reversal_switch_if_needed(
+                    state, broker, _fast_long_price, enhanced_result.get("inverse_current_price"),
+                    now=now, position_manager=position_manager,
+                    hard_stop_triggered=(_current_confirmed_regime == "PANIC"),
+                    regime_downgraded_to_range=(
+                        _previous_confirmed_regime in ("STRONG_UP", "STRONG_DOWN")
+                        and _current_confirmed_regime == "RANGE"
+                    ),
+                    snapshot=_fast_adaptive_result.get("snapshot"),
+                    previous_regime=_previous_confirmed_regime, current_regime=_current_confirmed_regime,
+                    allow_final_actions=False,
+                )
+            else:
+                switch = run_switch_or_entry(
+                    state, broker, final_action,
+                    _fast_long_price, enhanced_result.get("inverse_current_price"),
+                    now=now, forced=True, reason="FAST_TREND_WATCHER 2x confirmed",
+                    position_manager=position_manager, target_position_pct=0.20, entry_type="EXPLORATORY",
+                )
             status["last_execution"] = {
                 "idempotency_key": idempotency_key,
                 "final_action": final_action,
@@ -1973,6 +2006,31 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 logger.error("[HynixSwitchEngine] TP/SL 처리 실패: %s", exc)
                 warnings.append(f"TP/SL 처리 실패: {exc}")
                 tp_sl = {"triggered": False}
+
+            # 요구사항(2026-07-16) — 장중 다중 추세전환 상태머신: STRONG_TREND 보유 중
+            # 반전 신호가 쌓이면 TP/SL(가격 기준)과는 별개로 선제 축소·전량청산·
+            # (브로커 확인 후) 반대 ETF 탐색진입·확대를 단계적으로 실행한다. 이번
+            # 사이클에 이미 한 번만 계산된 공용 state["adaptive_regime"] 결과(snapshot/
+            # confirmed_regime/previous_regime)만 사용한다 — 별도 재분류하지 않는다.
+            try:
+                _ar = state.get("adaptive_regime") or {}
+                _current_confirmed_regime = _ar.get("confirmed_regime")
+                _previous_confirmed_regime = _ar.get("previous_regime")
+                _regime_downgraded_to_range = (
+                    _previous_confirmed_regime in ("STRONG_UP", "STRONG_DOWN")
+                    and _current_confirmed_regime == "RANGE"
+                )
+                reversal_switch_result = run_reversal_switch_if_needed(
+                    state, broker, hynix_price, inverse_price, now=now, position_manager=position_manager,
+                    hard_stop_triggered=(_current_confirmed_regime == "PANIC"),
+                    regime_downgraded_to_range=_regime_downgraded_to_range,
+                    snapshot=_ar.get("snapshot"),
+                    previous_regime=_previous_confirmed_regime, current_regime=_current_confirmed_regime,
+                )
+                orders_this_cycle.extend(reversal_switch_result.get("orders", []))
+            except Exception as exc:
+                logger.error("[HynixSwitchEngine] 반전 스위칭 처리 실패: %s", exc)
+                warnings.append(f"반전 스위칭 처리 실패: {exc}")
 
             if not signal_data_ok:
                 trace["entry_approved"] = False

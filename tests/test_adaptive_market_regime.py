@@ -23,7 +23,13 @@ from app.trading.adaptive_market_regime import (
     update_regime_confirmation, displayed_regime, is_opposite_trend,
     is_chase_blocked, is_entry_at_recent_extreme, opposite_signal_response,
     compute_and_confirm_regime, adaptive_regime_to_primary_trend_result,
-    STRONG_UP, STRONG_DOWN, RANGE, VOLATILE_RANGE, HIGH_VOLATILITY, PANIC, REVERSAL, DATA_INSUFFICIENT,
+    count_reversal_signals, default_reversal_switch_state, evaluate_reversal_switch,
+    mark_reversal_stage_executed,
+    REVERSAL_ACTION_REDUCE_EXISTING, REVERSAL_ACTION_FULL_EXIT,
+    REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE, REVERSAL_ACTION_EXPAND_OPPOSITE,
+    REVERSAL_ACTION_REDUCE_TO_CORE,
+    STRONG_UP, STRONG_DOWN, RANGE, VOLATILE_RANGE, HIGH_VOLATILITY, PANIC,
+    REVERSAL_CANDIDATE_UP, REVERSAL_CANDIDATE_DOWN, DATA_INSUFFICIENT,
 )
 
 
@@ -90,8 +96,9 @@ def test_strong_trend_survives_single_opposite_candidate():
     assert state["confirmed_regime"] == STRONG_UP  # 아직 유지
     assert state["candidate_regime"] == STRONG_DOWN
     assert state["candidate_count"] == 1
-    # 이 대기 상태는 REVERSAL로 노출된다(단, 실제 판단 기준은 여전히 STRONG_UP 유지).
-    assert displayed_regime(state) == REVERSAL
+    # 이 대기 상태는 REVERSAL_CANDIDATE_DOWN으로 노출된다(단, 실제 판단 기준은
+    # 여전히 STRONG_UP 유지).
+    assert displayed_regime(state) == REVERSAL_CANDIDATE_DOWN
 
     # 2회 연속 확인되면 그제서야 전환된다.
     even_later = later + timedelta(minutes=3)
@@ -111,6 +118,21 @@ def test_hard_override_bypasses_confirmation_immediately():
     forced = update_regime_confirmation(state, RANGE, now, hard_override=PANIC)
     assert forced["confirmed_regime"] == PANIC
     assert forced["previous_regime"] == STRONG_UP
+
+
+def test_regime_confirmation_exposes_reversal_alias_fields():
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_regime_confirmation_state()
+    state = update_regime_confirmation(state, STRONG_UP, now)
+    state = update_regime_confirmation(state, STRONG_UP, now)
+
+    candidate = update_regime_confirmation(state, STRONG_DOWN, now + timedelta(minutes=3))
+    assert candidate["reversal_direction"] == "DOWN"
+    assert candidate["reversal_confirmation_count"] == 1
+
+    confirmed = update_regime_confirmation(candidate, STRONG_DOWN, now + timedelta(minutes=6))
+    assert confirmed["previous_confirmed_regime"] == STRONG_UP
+    assert confirmed["regime_changed_at"] == (now + timedelta(minutes=6)).isoformat(timespec="seconds")
 
 
 def test_range_profile_matches_spec_take_profit_and_stop_loss():
@@ -409,7 +431,7 @@ def test_adaptive_regime_to_primary_trend_result_maps_strong_down_to_down():
 
 
 def test_adaptive_regime_to_primary_trend_result_maps_everything_else_to_range():
-    for regime in (RANGE, VOLATILE_RANGE, HIGH_VOLATILITY, PANIC, REVERSAL, DATA_INSUFFICIENT):
+    for regime in (RANGE, VOLATILE_RANGE, HIGH_VOLATILITY, PANIC, REVERSAL_CANDIDATE_UP, REVERSAL_CANDIDATE_DOWN, DATA_INSUFFICIENT):
         result = adaptive_regime_to_primary_trend_result({"confirmed_regime": regime, "snapshot": {}})
         assert result["primary_trend"] == "RANGE"
 
@@ -443,3 +465,239 @@ def test_live_profiles_match_final_spec_exactly():
     assert 0.10 <= panic["position_pct_multiplier"] <= 0.20  # 소액진입
     assert 0.6 <= panic["sl_pct"] <= 0.8
     assert panic["max_hold_minutes"] == 10
+
+
+# ── 장중 다중 추세전환 상태머신(2026-07-16) ───────────────────────────────────
+
+def _snapshot(**overrides) -> dict:
+    base = {
+        "above_vwap": True, "trend_5m": "UP", "trend_15m": "UP", "trend_30m": "UP",
+        "swing": {"higher_high": True, "higher_low": True, "lower_high": False, "lower_low": False},
+        "ema20_slope_pct": 0.05, "relative_volume": 1.0,
+    }
+    base.update(overrides)
+    return base
+
+
+def _down_reversal_snapshot(rel_vol=2.0) -> dict:
+    """STRONG_UP 보유 중 5개 신호 전부(VWAP/추세/스윙/EMA/거래량)가 하락반전을 가리키는 스냅샷."""
+    return _snapshot(
+        above_vwap=False, trend_5m="DOWN", trend_15m="DOWN",
+        swing={"higher_high": False, "higher_low": False, "lower_high": True, "lower_low": True},
+        ema20_slope_pct=-0.05, relative_volume=rel_vol,
+    )
+
+
+def _up_reversal_snapshot(rel_vol=2.0) -> dict:
+    """STRONG_DOWN 보유 중 5개 신호 전부가 상승반전을 가리키는 스냅샷."""
+    return _snapshot(
+        above_vwap=True, trend_5m="UP", trend_15m="UP",
+        swing={"higher_high": True, "higher_low": True, "lower_high": False, "lower_low": False},
+        ema20_slope_pct=0.05, relative_volume=rel_vol,
+    )
+
+
+def test_count_reversal_signals_all_five_against_up():
+    votes, reasons = count_reversal_signals(_down_reversal_snapshot(), "UP")
+    assert votes == 5
+    assert len(reasons) == 5
+
+
+def test_count_reversal_signals_all_five_against_down():
+    votes, reasons = count_reversal_signals(_up_reversal_snapshot(), "DOWN")
+    assert votes == 5
+
+
+def test_count_reversal_signals_below_threshold_with_calm_snapshot():
+    # 보유방향(UP)과 정렬된 평범한 스냅샷 — 반전 신호가 없어야 한다.
+    votes, _ = count_reversal_signals(_snapshot(), "UP")
+    assert votes == 0
+
+
+def test_evaluate_reversal_switch_no_position_resets_state():
+    state = {"direction": "UP", "confirm_count": 2, "stage": "REDUCED"}
+    result = evaluate_reversal_switch(state, held_direction=None, snapshot=_snapshot(), now=datetime(2026, 7, 16, 10, 0))
+    assert result["direction"] is None
+    assert result["confirm_count"] == 0
+    assert result["pending_action"] is None
+
+
+def test_evaluate_reversal_switch_single_confirmation_only_reduces_partially():
+    """요구사항 — 가짜 반전 1회에서 전액 스위칭 금지: 1회 확인은 부분 축소만
+    트리거하고 전량청산/스위칭은 절대 하지 않는다."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+
+    result = evaluate_reversal_switch(state, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now)
+
+    assert result["stage"] == "REDUCED"
+    assert result["confirm_count"] == 1
+    action = result["pending_action"]
+    assert action["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+    assert 0.25 <= action["ratio"] <= 0.50
+    assert action["block_new_adds"] is True
+
+
+def test_evaluate_reversal_switch_unconfirmed_tick_resets_before_any_stage():
+    """1회 확인 신호 자체가 부족하면(3개 미만) 아무 조치도 없고, 아직 REDUCED
+    단계에 진입하지 않았다면 confirm_count가 리셋된다."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+
+    weak = _snapshot(above_vwap=False)  # VWAP 하나만 반전(1표) — 3표 미만
+    result = evaluate_reversal_switch(state, held_direction="UP", snapshot=weak, now=now)
+
+    assert result["pending_action"] is None
+    assert result["stage"] == "NONE"
+    assert result["confirm_count"] == 0
+
+
+def test_evaluate_reversal_switch_two_confirmations_triggers_full_exit():
+    """요구사항 — 2회 확인 시 기존 포지션 전량청산."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+
+    r1 = evaluate_reversal_switch(state, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now)
+    assert r1["stage"] == "REDUCED"
+
+    later = now + timedelta(seconds=25)
+    r2 = evaluate_reversal_switch(r1, held_direction="UP", snapshot=_down_reversal_snapshot(), now=later)
+
+    assert r2["stage"] == "FULLY_EXITED"
+    assert r2["confirm_count"] == 2
+    assert r2["pending_action"]["action"] == REVERSAL_ACTION_FULL_EXIT
+    assert r2["pending_action"]["ratio"] == 1.0
+
+
+def test_evaluate_reversal_switch_blocks_opposite_entry_until_flat_confirmed():
+    """요구사항 — 잔량 0 확인 전 반대 ETF 주문 금지."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+    r1 = evaluate_reversal_switch(state, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now)
+    r2 = evaluate_reversal_switch(r1, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=25))
+    assert r2["stage"] == "FULLY_EXITED"
+
+    # 잔량이 아직 0이 아니면(broker_confirmed_flat=False) 반대 ETF 탐색진입이 나가면 안 된다.
+    r3 = evaluate_reversal_switch(r2, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=50), broker_confirmed_flat=False)
+    assert r3["pending_action"] is None
+    assert r3["stage"] == "FULLY_EXITED"
+
+    # 잔량 0이 확인되면 그제서야 탐색진입.
+    r4 = evaluate_reversal_switch(r3, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=75), broker_confirmed_flat=True)
+    assert r4["stage"] == "FLAT_CONFIRMED"
+    assert r4["pending_action"]["action"] == REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE
+    assert 0.10 <= r4["pending_action"]["ratio"] <= 0.20
+
+
+def test_evaluate_reversal_switch_third_confirmation_expands():
+    """요구사항 — 3회 확인 또는 강한 붕괴 시 30~50%까지 확대."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+    r1 = evaluate_reversal_switch(state, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now)
+    r2 = evaluate_reversal_switch(r1, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=25))
+    r3 = evaluate_reversal_switch(r2, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=50), broker_confirmed_flat=True)
+    assert r3["pending_action"]["action"] == REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE
+
+    # 탐색진입 실행 확정(held_direction은 아직 그대로 "UP"로 넘어오는 케이스도 있을 수
+    # 있으나, 실제로는 실행 계층이 반대 포지션 진입 후 방향을 갱신한다 — 여기서는
+    # 상태머신 자체의 단계 전진만 검증한다).
+    executed = mark_reversal_stage_executed(r3, action=REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE, executed_qty=20, now=now + timedelta(seconds=60))
+    assert executed["stage"] == "EXPLORATORY_ENTERED"
+
+    r4 = evaluate_reversal_switch(executed, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=90))
+    assert r4["stage"] == "EXPANDED"
+    assert r4["confirm_count"] == 3
+    assert r4["pending_action"]["action"] == REVERSAL_ACTION_EXPAND_OPPOSITE
+    assert 0.30 <= r4["pending_action"]["target_ratio"] <= 0.50
+
+
+def test_evaluate_reversal_switch_hard_stop_bypasses_confirmation_count():
+    """요구사항6 — PANIC/하드손절은 확인횟수와 무관하게 즉시 전량청산."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()  # 확인 이력 전무(0회)
+
+    result = evaluate_reversal_switch(state, held_direction="UP", snapshot=_snapshot(), now=now, hard_stop_triggered=True)
+
+    assert result["pending_action"]["action"] == REVERSAL_ACTION_FULL_EXIT
+    assert result["pending_action"]["ratio"] == 1.0
+
+
+def test_evaluate_reversal_switch_strong_down_to_up_is_symmetric():
+    """요구사항3 — STRONG_DOWN→UP도 완전히 대칭적으로 적용된다."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+
+    r1 = evaluate_reversal_switch(state, held_direction="DOWN", snapshot=_up_reversal_snapshot(), now=now)
+    assert r1["stage"] == "REDUCED"
+    assert r1["pending_action"]["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+
+    r2 = evaluate_reversal_switch(r1, held_direction="DOWN", snapshot=_up_reversal_snapshot(), now=now + timedelta(seconds=25))
+    assert r2["stage"] == "FULLY_EXITED"
+    assert r2["pending_action"]["action"] == REVERSAL_ACTION_FULL_EXIT
+
+    r3 = evaluate_reversal_switch(r2, held_direction="DOWN", snapshot=_up_reversal_snapshot(), now=now + timedelta(seconds=50), broker_confirmed_flat=True)
+    assert r3["pending_action"]["action"] == REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE
+
+
+def test_evaluate_reversal_switch_regime_downgraded_to_range_reduces_to_core():
+    """요구사항4 — STRONG_TREND→RANGE는 Core 25%로 축소하고 반대 ETF 즉시진입은 금지한다."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+
+    result = evaluate_reversal_switch(
+        state, held_direction="UP", snapshot=_snapshot(), now=now, regime_downgraded_to_range=True,
+    )
+
+    action = result["pending_action"]
+    assert action["action"] == REVERSAL_ACTION_REDUCE_TO_CORE
+    assert action["target_ratio"] == 0.25
+    assert action["block_opposite_entry"] is True
+
+
+def test_multiple_intraday_reversals_can_occur_in_one_day():
+    """요구사항 — 하루에 여러 번 regime 전환이 가능해야 한다. 한 번의 반전 사이클이
+    끝나고(EXPANDED, 이제 INVERSE를 보유 중) held_direction이 "DOWN"으로 바뀌면
+    상태머신이 새로 리셋되어 다음 반전을 처음부터 다시 감시할 수 있어야 한다."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+    r1 = evaluate_reversal_switch(state, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now)
+    r2 = evaluate_reversal_switch(r1, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=25))
+    r3 = evaluate_reversal_switch(r2, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now + timedelta(seconds=50), broker_confirmed_flat=True)
+    executed = mark_reversal_stage_executed(r3, action=REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE, executed_qty=20, now=now + timedelta(seconds=60))
+    assert executed["stage"] == "EXPLORATORY_ENTERED"
+
+    # 이제 실제로 0197X0(인버스)을 보유 중이므로 held_direction="DOWN"으로 넘어온다 —
+    # 오늘 두 번째 반전(다시 상승 반전)을 처음부터 감시할 수 있어야 한다. 여기서는
+    # DOWN 보유와 정렬된(반전 신호 없는) 스냅샷을 써야 한다 — 기본 _snapshot()은
+    # 상승 정렬이라 DOWN 보유 기준으로는 그 자체가 반전 신호이므로 부적절하다.
+    later_today = now + timedelta(hours=2)
+    down_aligned_calm = _down_reversal_snapshot(rel_vol=1.0)
+    fresh_start = evaluate_reversal_switch(executed, held_direction="DOWN", snapshot=down_aligned_calm, now=later_today)
+    assert fresh_start["direction"] == "DOWN"
+    assert fresh_start["confirm_count"] == 0
+    assert fresh_start["stage"] == "NONE"
+
+    up_r1 = evaluate_reversal_switch(fresh_start, held_direction="DOWN", snapshot=_up_reversal_snapshot(), now=later_today + timedelta(seconds=25))
+    assert up_r1["stage"] == "REDUCED"
+    assert up_r1["pending_action"]["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+
+
+def test_mark_reversal_stage_executed_logs_transition():
+    """요구사항8 — 모든 상태전환을 기록한다(이전/현재 regime, 전환시각, 확인횟수, 실행수량)."""
+    now = datetime(2026, 7, 16, 10, 0)
+    state = default_reversal_switch_state()
+    r1 = evaluate_reversal_switch(state, held_direction="UP", snapshot=_down_reversal_snapshot(), now=now)
+
+    logged = mark_reversal_stage_executed(
+        r1, action=REVERSAL_ACTION_REDUCE_EXISTING, executed_qty=50, now=now,
+        previous_regime="STRONG_UP", current_regime="REVERSAL_CANDIDATE_DOWN",
+    )
+
+    assert len(logged["transitions"]) == 1
+    entry = logged["transitions"][0]
+    assert entry["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+    assert entry["executed_qty"] == 50
+    assert entry["previous_regime"] == "STRONG_UP"
+    assert entry["current_regime"] == "REVERSAL_CANDIDATE_DOWN"
+    assert entry["confirm_count"] == 1
+    assert entry["at"]

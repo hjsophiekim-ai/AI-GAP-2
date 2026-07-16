@@ -523,6 +523,28 @@ if _ar_eod:
         "(오늘 저장된 1분봉 기준 — 실제 주문에는 절대 사용되지 않는 참고용 표시입니다)"
     )
 
+_rs = switch_state.get("reversal_switch") or {}
+_pos_for_rs = switch_state.get("position") or {}
+_rs_cols = st.columns(6)
+_rs_cols[0].metric("Confirmed Regime", _ar.get("confirmed_regime") or "-")
+_rs_cols[1].metric("Candidate Regime", _ar.get("candidate_regime") or "-")
+_rs_cols[2].metric("Reversal Dir", _rs.get("reversal_direction") or _ar.get("reversal_direction") or "-")
+_rs_cols[3].metric("Confirm Count", _rs.get("reversal_confirmation_count", _ar.get("reversal_confirmation_count", 0)))
+_rs_cols[4].metric("First Reduce", "YES" if _rs.get("first_reduce_executed") else "NO")
+_rs_cols[5].metric("Held Qty", int(_pos_for_rs.get("quantity") or 0))
+_wait_reason = _rs.get("opposite_entry_wait_reason")
+_flat_check = _rs.get("last_kis_flat_check") or {}
+if _wait_reason or _flat_check:
+    st.caption(
+        f"Opposite entry wait: {_wait_reason or '-'} | "
+        f"KIS flat check: confirmed={_flat_check.get('confirmed_flat', '-')} "
+        f"remaining={_flat_check.get('remaining_symbol') or '-'}:{_flat_check.get('remaining_qty', '-')}"
+    )
+_rs_history = list(_rs.get("transitions") or [])[-8:]
+if _rs_history:
+    with st.expander("Recent intraday regime reversal history", expanded=False):
+        st.dataframe(_rs_history, use_container_width=True, hide_index=True)
+
 _ar_applied = st.columns(5)
 _ar_applied[0].metric("진입비중", f"{(_ar_profile.get('position_pct_multiplier') or 0) * 100:.0f}%")
 _ar_applied[1].metric("익절(TP1/TP2)", f"+{_ar_profile.get('tp1_pct', '-')}%/+{_ar_profile.get('tp2_pct') or '-'}%")

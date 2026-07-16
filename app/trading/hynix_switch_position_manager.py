@@ -1544,3 +1544,213 @@ def run_switch_or_entry(
         "buyable_cash": full_cash, "failure_code": buy_result.get("failure_code"),
         "broker_error": buy_result.get("broker_error"),
     }
+
+
+def run_reversal_switch_if_needed(
+    state: dict, broker, hynix_price: Optional[float], inverse_price: Optional[float],
+    now: Optional[datetime] = None, position_manager=None,
+    hard_stop_triggered: bool = False, regime_downgraded_to_range: bool = False,
+    snapshot: Optional[dict] = None,
+    previous_regime: Optional[str] = None, current_regime: Optional[str] = None,
+    allow_final_actions: bool = True,
+) -> dict:
+    """장중 다중 추세전환 상태머신(2026-07-16)의 pending_action을 실제 주문으로
+    실행한다. run_switch_or_entry()(신규진입/즉시스위칭)와는 별개의 경로다 —
+    STRONG_TREND 보유 중 반전 신호가 쌓일 때 선제적으로 축소·청산하고, 브로커가
+    실제 잔량 0을 확인해준 뒤에만 반대 ETF 탐색진입을 허용한다(요구사항
+    "잔량 0 확인 전 반대 ETF 주문 금지"). Fast Watcher와 메인 3분 사이클이 모두
+    이 함수를 통해서만 반전 스위칭을 실행한다 — Fast Watcher는 이 함수를 호출하는
+    것 외에 단독으로 반대 ETF 전액 주문을 넣지 않는다(요구사항7).
+
+    주문이 실패/생략되면(executed_qty<=0) 상태머신의 단계·확인횟수를 이번 호출
+    직전 값으로 되돌린다 — evaluate_reversal_switch()는 pending_action을 결정할
+    때 단계를 먼저 전진시키므로, 그대로 저장하면 주문 실패 시 그 조치가 영영
+    재시도되지 않는다(다음 틱에 같은 단계에서 다시 판단하게 하기 위한 안전장치).
+    """
+    from app.trading.adaptive_market_regime import (
+        evaluate_reversal_switch, mark_reversal_stage_executed, default_reversal_switch_state,
+        REVERSAL_ACTION_REDUCE_EXISTING, REVERSAL_ACTION_FULL_EXIT,
+        REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE, REVERSAL_ACTION_EXPAND_OPPOSITE,
+        REVERSAL_ACTION_REDUCE_TO_CORE,
+    )
+
+    now = now or kst_now()
+    orders: list = []
+    snapshot = snapshot or {}
+    rs_state = state.get("reversal_switch") or default_reversal_switch_state()
+    pre_rs_state = dict(rs_state)
+
+    position = state.get("position") or {}
+    symbol = position.get("symbol")
+    qty = int(position.get("quantity") or 0)
+    if symbol == LONG_SYMBOL and qty > 0:
+        held_direction = "UP"
+    elif symbol == INVERSE_SYMBOL and qty > 0:
+        held_direction = "DOWN"
+    else:
+        held_direction = None
+
+    broker_confirmed_flat = False
+    kis_flat_check = None
+    if rs_state.get("stage") == "FULLY_EXITED":
+        if held_direction is None:
+            # 요구사항 "잔량 0 확인 전 반대 ETF 주문 금지" — 로컬 캐시가 아니라
+            # 브로커 재조회로 실제 청산 여부를 확인한 뒤에만 다음 단계로 넘어간다.
+            if position_manager is not None:
+                try:
+                    position_manager.sync(force=True)
+                    apply_position_manager_to_state(state, position_manager)
+                    position = state.get("position") or {}
+                except Exception as exc:
+                    logger.error("[SwitchPositionManager] reversal switch 잔량 재확인 실패: %s", exc)
+            remaining_symbol = position.get("symbol")
+            remaining_qty = int(position.get("quantity") or 0)
+            broker_confirmed_flat = not remaining_symbol or remaining_qty <= 0
+            kis_flat_check = {
+                "checked_at": now.isoformat(timespec="seconds"),
+                "confirmed_flat": broker_confirmed_flat,
+                "remaining_symbol": remaining_symbol,
+                "remaining_qty": remaining_qty,
+            }
+        # 청산 완료 대기 중에는(브로커 확인 전이든 후든) 원래 감시하던 방향을 그대로
+        # 유지한다 — 지금 실제 보유가 없어(held_direction=None) 감시가 리셋되면 안 된다.
+        held_direction = rs_state.get("direction") or held_direction
+
+    result = evaluate_reversal_switch(
+        rs_state, held_direction=held_direction, snapshot=snapshot, now=now,
+        hard_stop_triggered=hard_stop_triggered, broker_confirmed_flat=broker_confirmed_flat,
+        regime_downgraded_to_range=regime_downgraded_to_range,
+    )
+    pending_action = result.get("pending_action")
+    executed_qty = 0
+    execution_message = None
+
+    final_only_actions = {
+        REVERSAL_ACTION_FULL_EXIT, REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE,
+        REVERSAL_ACTION_EXPAND_OPPOSITE,
+    }
+    if pending_action and not allow_final_actions and pending_action.get("action") in final_only_actions:
+        final_rs_state = {**pre_rs_state, "last_updated_at": now.isoformat(timespec="seconds")}
+        final_rs_state["opposite_entry_wait_reason"] = "waiting_for_main_adaptive_regime_cycle"
+        state["reversal_switch"] = {
+            k: v for k, v in final_rs_state.items() if k not in ("pending_action", "votes", "reasons")
+        }
+        return {
+            "pending_action": pending_action, "executed_qty": 0, "orders": orders,
+            "message": "Fast Watcher limited to alert/first reduction; final action deferred",
+            "reversal_switch": state["reversal_switch"], "votes": result.get("votes"),
+            "reasons": result.get("reasons"),
+        }
+
+    if pending_action:
+        action = pending_action["action"]
+        try:
+            if action in (REVERSAL_ACTION_REDUCE_EXISTING, REVERSAL_ACTION_FULL_EXIT, REVERSAL_ACTION_REDUCE_TO_CORE):
+                sell_position = state.get("position") or {}
+                if sell_position.get("symbol") and int(sell_position.get("quantity") or 0) > 0:
+                    current_price = _current_price(sell_position["symbol"], hynix_price, inverse_price)
+                    if current_price:
+                        if action == REVERSAL_ACTION_REDUCE_TO_CORE:
+                            sell_ratio = max(0.0, min(1.0, 1.0 - float(pending_action.get("target_ratio", 0.25))))
+                        else:
+                            sell_ratio = float(pending_action.get("ratio", 1.0))
+                        sell_result = _sell_all_or_ratio(
+                            broker, sell_position, current_price, sell_ratio,
+                            pending_action.get("reason", "reversal switch"), orders,
+                            mode=state.get("mode", "mock"), exit_reason_type=f"reversal_switch_{action.lower()}",
+                            position_manager=position_manager,
+                        )
+                        if sell_result.get("success"):
+                            sold_qty = sell_result.get("sold_quantity") or 0
+                            net_realized, gross_realized = _resolve_realized_pnl(
+                                sell_result, current_price, sell_position.get("entry_price", current_price), sold_qty,
+                            )
+                            state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
+                            state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
+                            state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
+                            _apply_sell_result_to_state_position(state, sell_position, sell_result)
+                            executed_qty = sold_qty
+                            execution_message = sell_result.get("message")
+                        else:
+                            execution_message = sell_result.get("message")
+                    else:
+                        execution_message = "no current price for held symbol; reversal action skipped"
+                else:
+                    execution_message = "no position held; reversal action skipped"
+            elif action in (REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE, REVERSAL_ACTION_EXPAND_OPPOSITE):
+                opposite_symbol = INVERSE_SYMBOL if result.get("direction") == "UP" else LONG_SYMBOL
+                current_price = _current_price(opposite_symbol, hynix_price, inverse_price)
+                existing_position = state.get("position") or {}
+                before_qty = int(existing_position.get("quantity") or 0) if existing_position.get("symbol") == opposite_symbol else 0
+                if current_price:
+                    target_ratio = pending_action.get("ratio", pending_action.get("target_ratio"))
+                    if action == REVERSAL_ACTION_EXPAND_OPPOSITE and before_qty > 0:
+                        # 이미 탐색진입된 포지션을 목표비중까지 "증액"한다 — 부족분만
+                        # 추가 매수한다(run_switch_or_entry의 target-weight increase와 동일 원칙).
+                        full_cash, cash_source = _query_buyable_cash(
+                            broker, symbol=opposite_symbol, current_price=current_price, state=state,
+                        )
+                        pct = float(target_ratio)
+                        if pct > 1.0:
+                            pct = pct / 100.0
+                        held_value = before_qty * current_price
+                        target_value = (full_cash + held_value) * max(0.0, min(1.0, pct))
+                        add_cash = max(0.0, target_value - held_value)
+                        cash_amount = add_cash if add_cash >= current_price else 0.0
+                    else:
+                        cash_amount, _full_cash = _sizing_cash_amount(
+                            broker, False, target_position_pct=target_ratio,
+                            symbol=opposite_symbol, current_price=current_price, state=state,
+                        )
+                    if cash_amount >= current_price:
+                        buy_result = _buy_new(
+                            broker, opposite_symbol, current_price, cash_amount,
+                            pending_action.get("reason", "reversal switch entry"), orders,
+                            mode=state.get("mode", "mock"), before_qty=before_qty, position_manager=position_manager,
+                        )
+                        if buy_result.get("success"):
+                            applied = _apply_buy_result_to_state_position(
+                                state, opposite_symbol, current_price, buy_result, now=now,
+                                previous_position=existing_position if before_qty else None,
+                                entry_type=(
+                                    "REVERSAL_EXPLORATORY" if action == REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE
+                                    else "REVERSAL_EXPANDED"
+                                ),
+                            )
+                            if applied:
+                                bought = int(buy_result.get("actual_quantity") or buy_result.get("bought_quantity") or 0)
+                                executed_qty = max(0, bought - before_qty) if action == REVERSAL_ACTION_EXPAND_OPPOSITE else bought
+                                execution_message = buy_result.get("message")
+                        else:
+                            execution_message = buy_result.get("message")
+                    else:
+                        execution_message = "sized cash amount below 1-share price; reversal entry skipped"
+                else:
+                    execution_message = "no current price for opposite symbol; reversal entry skipped"
+        except Exception as exc:
+            logger.error("[SwitchPositionManager] reversal switch 실행 실패(action=%s): %s", pending_action.get("action"), exc)
+            execution_message = f"reversal switch execution failed: {exc}"
+
+    if pending_action and executed_qty > 0:
+        final_rs_state = mark_reversal_stage_executed(
+            result, action=pending_action["action"], executed_qty=executed_qty, now=now,
+            previous_regime=previous_regime, current_regime=current_regime,
+            reasons=result.get("reasons"), kis_balance_check=kis_flat_check,
+        )
+    elif pending_action:
+        # 주문이 실패/생략됐다 — 단계를 전진시키지 않고 이번 호출 직전 상태를 그대로
+        # 유지해 다음 틱에 같은 단계에서 재시도되게 한다.
+        final_rs_state = {**pre_rs_state, "last_updated_at": now.isoformat(timespec="seconds")}
+    else:
+        final_rs_state = result
+
+    state["reversal_switch"] = {
+        k: v for k, v in final_rs_state.items() if k not in ("pending_action", "votes", "reasons")
+    }
+    if kis_flat_check is not None:
+        state["reversal_switch"]["last_kis_flat_check"] = kis_flat_check
+    return {
+        "pending_action": pending_action, "executed_qty": executed_qty, "orders": orders,
+        "message": execution_message, "reversal_switch": state["reversal_switch"],
+        "votes": result.get("votes"), "reasons": result.get("reasons"),
+    }

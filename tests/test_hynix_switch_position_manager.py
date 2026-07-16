@@ -12,7 +12,7 @@ KODEX SK하이닉스단일종목레버리지(LONG_SYMBOL/0193T0)를 매수한다
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -23,6 +23,12 @@ from app.data_sources.hynix_long_collector import LONG_SYMBOL, LONG_NAME
 from app.trading.hynix_symbols import SIGNAL_SYMBOL, SIGNAL_NAME
 from app.trading.hynix_switch_position_manager import (
     run_switch_or_entry, run_liquidation_if_needed, run_tp_sl_if_needed, evaluate_tp_sl,
+    run_reversal_switch_if_needed,
+)
+from app.trading.adaptive_market_regime import (
+    REVERSAL_ACTION_REDUCE_EXISTING, REVERSAL_ACTION_FULL_EXIT,
+    REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE, REVERSAL_ACTION_EXPAND_OPPOSITE,
+    REVERSAL_ACTION_REDUCE_TO_CORE,
 )
 from app.services.hynix_switch_state import default_state
 from app.utils.time_utils import kst_now
@@ -787,3 +793,293 @@ class TestExecutionLedgerCostFields:
         ledger_net_sum = round(float(pd.to_numeric(df[df["action"] == "SELL"]["net_pnl"], errors="coerce").sum()), 2)
         stats = compute_performance_stats(datetime.now().strftime("%Y%m%d"))
         assert round(stats["cumulative_realized_pnl"], 0) == pytest.approx(round(ledger_net_sum, 0), abs=1.0)
+
+
+class _StatefulBroker(DummyBroker):
+    """buy/sell 호출에 따라 실제로 보유수량이 바뀌는 브로커 — 반전 스위칭
+    상태머신(run_reversal_switch_if_needed)의 여러 틱에 걸친 축소·전량청산·반대
+    탐색진입·확대를 검증하려면 매 sell/buy 이후 get_positions()가 실제 갱신된
+    값을 반영해야 한다(DummyBroker.get_positions()는 항상 빈 리스트를 반환)."""
+
+    def __init__(self, buyable_cash: float = 100_000_000.0):
+        super().__init__(buyable_cash=buyable_cash)
+        self.holdings: dict = {}
+        self.fail_next_sell = False
+        self.fail_next_buy = False
+
+    def buy(self, symbol, name, quantity, price, order_type="limit"):
+        self.buy_calls.append((symbol, quantity, price))
+        if self.fail_next_buy:
+            self.fail_next_buy = False
+            return OrderResult(
+                success=False, mode="dry_run", account_type="dry_run", symbol=symbol, name=name,
+                side="buy", quantity=quantity, price=price, order_type=order_type, order_id="", message="매수 실패",
+            )
+        existing = self.holdings.get(symbol, {"quantity": 0, "avg_price": price})
+        new_qty = existing["quantity"] + quantity
+        new_avg = (
+            ((existing["avg_price"] * existing["quantity"]) + (price * quantity)) / new_qty if new_qty else price
+        )
+        self.holdings[symbol] = {"quantity": new_qty, "avg_price": new_avg}
+        return OrderResult(
+            success=True, mode="dry_run", account_type="dry_run", symbol=symbol, name=name,
+            side="buy", quantity=quantity, price=price, order_type=order_type, order_id="B1", message="ok",
+        )
+
+    def sell(self, symbol, name, quantity, price, order_type="limit"):
+        self.sell_calls.append((symbol, quantity, price))
+        if self.fail_next_sell:
+            self.fail_next_sell = False
+            return OrderResult(
+                success=False, mode="dry_run", account_type="dry_run", symbol=symbol, name=name,
+                side="sell", quantity=quantity, price=price, order_type=order_type, order_id="", message="매도 실패",
+            )
+        existing = self.holdings.get(symbol, {"quantity": 0, "avg_price": price})
+        new_qty = max(0, existing["quantity"] - quantity)
+        if new_qty <= 0:
+            self.holdings.pop(symbol, None)
+        else:
+            self.holdings[symbol] = {"quantity": new_qty, "avg_price": existing["avg_price"]}
+        return OrderResult(
+            success=True, mode="dry_run", account_type="dry_run", symbol=symbol, name=name,
+            side="sell", quantity=quantity, price=price, order_type=order_type, order_id="S1", message="ok",
+        )
+
+    def get_positions(self):
+        return [
+            {"symbol": sym, "quantity": data["quantity"], "avg_price": data["avg_price"]}
+            for sym, data in self.holdings.items() if data["quantity"] > 0
+        ]
+
+
+def _rev_snapshot(**overrides) -> dict:
+    base = {
+        "above_vwap": True, "trend_5m": "UP", "trend_15m": "UP",
+        "swing": {"higher_high": True, "higher_low": True, "lower_high": False, "lower_low": False},
+        "ema20_slope_pct": 0.05, "relative_volume": 1.0,
+    }
+    base.update(overrides)
+    return base
+
+
+def _down_reversal_snapshot(rel_vol: float = 2.0) -> dict:
+    """STRONG_UP(0193T0) 보유 중 5개 신호 전부가 하락반전을 가리키는 스냅샷."""
+    return _rev_snapshot(
+        above_vwap=False, trend_5m="DOWN", trend_15m="DOWN",
+        swing={"higher_high": False, "higher_low": False, "lower_high": True, "lower_low": True},
+        ema20_slope_pct=-0.05, relative_volume=rel_vol,
+    )
+
+
+class TestRunReversalSwitchIfNeeded:
+    """장중 다중 추세전환 상태머신(2026-07-16)의 실제 주문 실행 계층 검증.
+    evaluate_reversal_switch()의 순수 판단은 tests/test_adaptive_market_regime.py가
+    이미 검증했다 — 여기서는 그 pending_action이 실제로 브로커 주문(_sell_all_or_ratio/
+    _buy_new)으로 옮겨지고, 잔량 0 확인 전까지 반대 ETF 매수가 나가지 않는지를
+    검증한다."""
+
+    def test_first_confirmation_reduces_existing_position(self):
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 100, "avg_price": 20_000.0}
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=100, entry_price=20_000.0)
+        now = datetime(2026, 7, 16, 10, 0)
+
+        result = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager,
+            snapshot=_down_reversal_snapshot(),
+        )
+
+        assert result["pending_action"]["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+        assert result["executed_qty"] == 37  # int(100*0.375)
+        assert broker.sell_calls == [(LONG_SYMBOL, 37, 20_500.0)]
+        assert state["position"]["quantity"] == 63
+        assert state["reversal_switch"]["stage"] == "REDUCED"
+        assert state["reversal_switch"]["confirm_count"] == 1
+        assert len(state["reversal_switch"]["transitions"]) == 1
+
+    def test_second_confirmation_fully_exits_then_third_flat_confirm_enters_opposite(self):
+        """요구사항 — 2회 확인 시 기존 포지션 전량청산, 잔량 0 확인 후 반대 ETF 탐색진입.
+        가짜 반전 1회에서는 절대 전액 스위칭되지 않는다는 것도 함께 검증한다(1회차의
+        assert들)."""
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 100, "avg_price": 20_000.0}
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=100, entry_price=20_000.0)
+        now = datetime(2026, 7, 16, 10, 0)
+        snapshot = _down_reversal_snapshot()
+
+        r1 = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager, snapshot=snapshot,
+        )
+        assert r1["pending_action"]["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+        assert state["position"]["symbol"] == LONG_SYMBOL  # 1회 확인만으로는 종목이 살아있음
+
+        r2 = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now + timedelta(seconds=25),
+            position_manager=position_manager, snapshot=snapshot,
+        )
+        assert r2["pending_action"]["action"] == REVERSAL_ACTION_FULL_EXIT
+        assert state["position"]["symbol"] is None
+        assert state["reversal_switch"]["stage"] == "FULLY_EXITED"
+        assert broker.holdings.get(LONG_SYMBOL) is None
+
+        # 잔량 0이 브로커로 확인된 뒤에만 반대 ETF(0197X0) 탐색진입이 나간다.
+        r3 = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now + timedelta(seconds=50),
+            position_manager=position_manager, snapshot=snapshot,
+        )
+        assert r3["pending_action"]["action"] == REVERSAL_ACTION_EXPLORATORY_ENTRY_OPPOSITE
+        assert state["position"]["symbol"] == INVERSE_SYMBOL
+        assert state["reversal_switch"]["stage"] == "EXPLORATORY_ENTERED"
+        assert len(broker.buy_calls) == 1
+        assert broker.buy_calls[0][0] == INVERSE_SYMBOL
+
+    def test_opposite_entry_blocked_while_broker_still_shows_remaining_quantity(self):
+        """요구사항 — 잔량 0 확인 전 반대 ETF 주문 금지: 전량청산 주문은 나갔지만
+        (부분체결 등으로) 브로커가 아직 잔량을 보고하면 탐색진입 매수가 나가면 안 된다."""
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 5, "avg_price": 20_000.0}  # 아직 청산 덜 됨
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=0, entry_price=20_000.0)
+        state["reversal_switch"] = {
+            "direction": "UP", "confirm_count": 2, "stage": "FULLY_EXITED",
+            "last_updated_at": None, "transitions": [],
+        }
+        state["position"] = {"symbol": None, "quantity": 0}
+        now = datetime(2026, 7, 16, 10, 0)
+
+        result = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager,
+            snapshot=_down_reversal_snapshot(),
+        )
+
+        assert result["pending_action"] is None
+        assert broker.buy_calls == []
+        assert state["reversal_switch"]["stage"] == "FULLY_EXITED"
+
+    def test_weak_single_tick_does_not_trigger_any_order(self):
+        """가짜 반전 1회(신호 3개 미만) — 어떤 주문도 나가면 안 된다."""
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 100, "avg_price": 20_000.0}
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=100, entry_price=20_000.0)
+        now = datetime(2026, 7, 16, 10, 0)
+
+        result = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager,
+            snapshot=_rev_snapshot(above_vwap=False),  # VWAP 1표뿐 — 3표 미만
+        )
+
+        assert result["pending_action"] is None
+        assert broker.sell_calls == []
+        assert broker.buy_calls == []
+        assert state["position"]["quantity"] == 100
+
+    def test_failed_sell_rolls_back_stage_for_retry_next_tick(self):
+        """매도 주문이 실패하면 단계를 전진시키지 않고 그대로 두어 다음 틱에
+        재시도할 수 있게 한다 — 그렇지 않으면 실패한 조치가 영영 재시도되지 않는다."""
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 100, "avg_price": 20_000.0}
+        broker.fail_next_sell = True
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=100, entry_price=20_000.0)
+        now = datetime(2026, 7, 16, 10, 0)
+
+        result = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager,
+            snapshot=_down_reversal_snapshot(),
+        )
+
+        assert result["executed_qty"] == 0
+        assert state["reversal_switch"]["stage"] == "NONE"
+        assert state["reversal_switch"]["confirm_count"] == 0
+        assert state["position"]["quantity"] == 100  # 포지션 변화 없음
+
+        # 다음 틱에 매도가 성공하면 정상적으로 재시도되어야 한다.
+        result2 = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now + timedelta(seconds=25),
+            position_manager=position_manager, snapshot=_down_reversal_snapshot(),
+        )
+        assert result2["pending_action"]["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+        assert result2["executed_qty"] == 37
+        assert state["reversal_switch"]["stage"] == "REDUCED"
+
+    def test_hard_stop_triggers_immediate_full_exit_regardless_of_confirm_count(self):
+        """요구사항6 — PANIC/하드손절은 확인횟수와 무관하게 즉시 전량청산한다."""
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 100, "avg_price": 20_000.0}
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=100, entry_price=20_000.0)
+        now = datetime(2026, 7, 16, 10, 0)
+
+        result = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager,
+            snapshot=_rev_snapshot(), hard_stop_triggered=True,
+        )
+
+        assert result["pending_action"]["action"] == REVERSAL_ACTION_FULL_EXIT
+        assert state["position"]["symbol"] is None
+        assert broker.sell_calls == [(LONG_SYMBOL, 100, 20_500.0)]
+
+    def test_regime_downgraded_to_range_reduces_to_core_and_blocks_opposite_entry(self):
+        """요구사항4 — STRONG_TREND→RANGE는 Core 비중 25%로 축소하고 반대 ETF
+        즉시진입은 하지 않는다."""
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 100, "avg_price": 20_000.0}
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=100, entry_price=20_000.0)
+        now = datetime(2026, 7, 16, 10, 0)
+
+        result = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager,
+            snapshot=_rev_snapshot(), regime_downgraded_to_range=True,
+        )
+
+        assert result["pending_action"]["action"] == REVERSAL_ACTION_REDUCE_TO_CORE
+        # target_ratio=0.25 -> sell_ratio=0.75 -> int(100*0.75)=75 매도, 25주 남음
+        assert broker.sell_calls == [(LONG_SYMBOL, 75, 20_500.0)]
+        assert state["position"]["quantity"] == 25
+        assert broker.buy_calls == []
+
+    def test_fast_watcher_deferred_final_exit_after_first_reduce(self):
+        """Fast Watcher는 1차 축소 이후 최종 전량청산/반대 ETF 진입을 직접 실행하지 않는다."""
+        from app.trading.hynix_position_common import HynixPositionManager
+
+        broker = _StatefulBroker()
+        broker.holdings[LONG_SYMBOL] = {"quantity": 100, "avg_price": 20_000.0}
+        position_manager = HynixPositionManager(broker, mode="mock")
+        state = _holding_state(LONG_SYMBOL, quantity=100, entry_price=20_000.0)
+        now = datetime(2026, 7, 16, 10, 0)
+        snapshot = _down_reversal_snapshot()
+
+        r1 = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now, position_manager=position_manager,
+            snapshot=snapshot, allow_final_actions=False,
+        )
+        assert r1["pending_action"]["action"] == REVERSAL_ACTION_REDUCE_EXISTING
+        assert r1["executed_qty"] == 37
+
+        r2 = run_reversal_switch_if_needed(
+            state, broker, 20_500.0, 5_000.0, now=now + timedelta(seconds=25),
+            position_manager=position_manager, snapshot=snapshot, allow_final_actions=False,
+        )
+        assert r2["pending_action"]["action"] == REVERSAL_ACTION_FULL_EXIT
+        assert r2["executed_qty"] == 0
+        assert broker.sell_calls == [(LONG_SYMBOL, 37, 20_500.0)]
+        assert state["position"]["symbol"] == LONG_SYMBOL
+        assert state["reversal_switch"]["opposite_entry_wait_reason"] == "waiting_for_main_adaptive_regime_cycle"
