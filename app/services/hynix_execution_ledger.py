@@ -24,6 +24,7 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _LEDGER_PATH = ROOT / "data" / "logs" / "hynix_execution_ledger.csv"
@@ -137,7 +138,7 @@ def record_execution(
     """
     _migrate_ledger_schema_if_needed()
     trade_id = _new_trade_id()
-    now = now or datetime.now()
+    now = now or kst_now()
     row = {
         "trade_id": trade_id, "parent_trade_id": parent_trade_id or "",
         "timestamp": now.isoformat(timespec="seconds"), "mode": mode,
@@ -553,7 +554,7 @@ def reconcile_execution_ledger(date_str: Optional[str] = None, broker=None) -> d
     dict: counters, pnl, broker_position, ledger_final_position, position_match(bool),
           mismatches(list[str]) — 1개라도 있으면 UI에 빨간 경고를 표시해야 한다.
     """
-    date_str = date_str or datetime.now().strftime("%Y%m%d")
+    date_str = date_str or kst_now().strftime("%Y%m%d")
     counters = compute_trade_counters(date_str)
     pnl = compute_realized_pnl_breakdown(date_str)
 
