@@ -2049,6 +2049,22 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         warnings.append("포지션 동기화 필요(0193T0/0197X0 동시 보유) — 신규매수 금지")
                         trace["entry_approved"] = False
                         trace["entry_approved_reason"] = "포지션 동기화 필요(동시 보유) — 신규매수 금지"
+                    elif (
+                        (desired_symbol == INVERSE_SYMBOL and (state.get("adaptive_regime") or {}).get("confirmed_regime") == "STRONG_UP")
+                        or (desired_symbol == HYNIX_SYMBOL and (state.get("adaptive_regime") or {}).get("confirmed_regime") == "STRONG_DOWN")
+                    ):
+                        # 요구사항(2026-07-16, 큰 추세 수익 극대화판) — STRONG_UP 확정 중에는
+                        # 0197X0(인버스) 신규매수를, STRONG_DOWN 확정 중에는 0193T0(레버리지)
+                        # 신규매수를 금지한다. Adaptive Regime(2연속 사이클로 이미 확정된
+                        # confirmed_regime — 매 사이클 재분류하지 않고 공용 결과만 참조)만
+                        # 사용한다.
+                        proceed = False
+                        _ar_confirmed_for_block = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+                        trace["entry_approved"] = False
+                        trace["entry_approved_reason"] = (
+                            f"Adaptive Regime={_ar_confirmed_for_block} 확정 중 — 반대방향 신규진입 금지"
+                        )
+                        warnings.append(trace["entry_approved_reason"])
                     else:
                         if str(final_action).endswith("_STRONG_BUY"):
                             confirm_tracker = update_confirm_tracker(

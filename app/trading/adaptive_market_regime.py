@@ -66,6 +66,16 @@ _VOLATILE_RANGE_ATR_MIN_PCT = 1.0
 _VOLATILE_RANGE_SWING_REVERSAL_MIN = 3
 _VOLATILE_RANGE_EFFICIENCY_MAX = 0.35
 
+# STRONG_UP/DOWN 판단 임계값(2026-07-16 요구사항, 큰 추세 수익 극대화판) — VWAP/
+# 15·30분추세/고저구조 정렬(이미 구현됨)에 더해, 추세 지속시간·방향이동효율·
+# 거래량 또는 ATR 확인을 추가로 요구한다. "2회 연속 확인"은
+# update_regime_confirmation()의 2-사이클 확인 절차가 담당한다(여기서는 순간
+# 스냅샷만 검사).
+_STRONG_TREND_MIN_DURATION_MINUTES = 15
+_STRONG_TREND_MIN_EFFICIENCY = 0.5
+_STRONG_TREND_MIN_RELATIVE_VOLUME = 1.2
+_STRONG_TREND_MIN_ATR_PCT = 0.5
+
 # ── 요구사항 2 — 장세별 리스크 프로필 ────────────────────────────────────────
 # position_pct_multiplier: 기존 사이징(EXPLORATORY 30%/CONFIRMED 50% 등) 위에
 # 곱해지는 배율. 별도 언급 없는 장세(RANGE/STRONG_TREND류)는 1.0(변경 없음).
@@ -76,14 +86,21 @@ RISK_PROFILES: dict[str, dict] = {
         "max_hold_minutes": 20, "position_pct_multiplier": 1.0,
     },
     STRONG_UP: {
-        "tp1_pct": 2.0, "tp1_ratio": 0.5, "tp2_pct": None, "tp2_ratio": None,
-        "sl_pct": 1.5, "uses_trailing": True, "trailing_pct": 1.5,
+        # 요구사항(2026-07-16, 큰 추세 수익 극대화판) — +2%에서 20~30%만 부분
+        # 익절하고 나머지 70~80%는 ATR trailing(uses_trailing)으로 추세를 끝까지
+        # 태운다. 초기 손절 최대 -1.5%. Profit Lock(+3% 이상 시 최소 +1.5% 잠금)은
+        # 이 프로필과 무관하게 compute_profit_lock_floor()의 공통 사다리
+        # (3%→2.0% 잠금)가 이미 이 요구사항보다 보수적으로 충족한다.
+        "tp1_pct": 2.0, "tp1_ratio": 0.25, "tp2_pct": None, "tp2_ratio": None,
+        "sl_pct": 1.5, "uses_trailing": True, "trailing_pct": 1.25,
         "max_hold_minutes": None, "position_pct_multiplier": 1.0,
+        "core_position_ratio": 0.75,
     },
     STRONG_DOWN: {
-        "tp1_pct": 2.0, "tp1_ratio": 0.5, "tp2_pct": None, "tp2_ratio": None,
-        "sl_pct": 1.5, "uses_trailing": True, "trailing_pct": 1.5,
+        "tp1_pct": 2.0, "tp1_ratio": 0.25, "tp2_pct": None, "tp2_ratio": None,
+        "sl_pct": 1.5, "uses_trailing": True, "trailing_pct": 1.25,
         "max_hold_minutes": None, "position_pct_multiplier": 1.0,
+        "core_position_ratio": 0.75,
     },
     VOLATILE_RANGE: {
         # 요구사항(2026-07-16, 초단기 실행모드 최종판) — 좁은 박스 안에서 빠르게
@@ -309,6 +326,33 @@ def _box_bounds(df_1min, lookback_minutes: int) -> tuple[Optional[float], Option
     return round(float(recent["high"].max()), 2), round(float(recent["low"].min()), 2)
 
 
+def _trend_duration_minutes(df_1min, direction: str) -> Optional[int]:
+    """지금 이 순간부터 거슬러 올라가며, 종가가 누적VWAP 기준으로 계속
+    direction("UP"=위/"DOWN"=아래) 쪽에 머문 연속 분(分)을 센다(STRONG_UP/DOWN
+    요구사항 — "추세 지속시간 15분 이상")."""
+    if df_1min is None or df_1min.empty or "volume" not in df_1min.columns:
+        return None
+    work = df_1min.sort_values("datetime")
+    vol = work["volume"].fillna(0)
+    cum_vol = vol.cumsum()
+    if float(cum_vol.iloc[-1]) <= 0:
+        return None
+    typical = (work["high"] + work["low"] + work["close"]) / 3.0
+    vwap = (typical * vol).cumsum() / cum_vol.replace(0, pd.NA)
+    diff = (work["close"] - vwap).tolist()
+    duration = 0
+    for val in reversed(diff):
+        if pd.isna(val):
+            break
+        if direction == "UP" and val > 0:
+            duration += 1
+        elif direction == "DOWN" and val < 0:
+            duration += 1
+        else:
+            break
+    return duration
+
+
 def classify_raw_regime(
     df_1min: Optional[pd.DataFrame], df_daily: Optional[pd.DataFrame] = None,
     *, prev_close: Optional[float] = None, now: Optional[datetime] = None,
@@ -333,6 +377,8 @@ def classify_raw_regime(
         # 박스 상단/하단, VWAP 교차횟수, 방향 이동효율.
         "vwap_cross_count": None, "swing_reversal_count": None, "efficiency_ratio": None,
         "box_high": None, "box_low": None,
+        # STRONG_UP/DOWN 진단(UI 표시용) — 추세 지속시간(분).
+        "trend_duration_minutes": None,
     }
     # 요구사항(2026-07-16) — 데이터가 부족하면 "비활성화"가 아니라 DATA_INSUFFICIENT로
     # 표시하되, 정확히 무엇이 부족한지(1분봉 자체가 없는지/행 수가 모자란지/유효한
@@ -444,29 +490,51 @@ def classify_raw_regime(
         down_votes += 1; reasons.append("lower high/low structure")
     result["up_votes"], result["down_votes"] = up_votes, down_votes
 
-    # 요구사항(2026-07-16) — STRONG_UP/DOWN은 15분·30분 추세, VWAP, 고저점 구조가
-    # "전부" 같은 방향으로 일치해야만 후보가 된다(느슨한 투표 다수결이 아니라 엄격한
-    # AND 조건). "2회 확인"은 여기서가 아니라 update_regime_confirmation()의
-    # 2연속 사이클 확인 절차가 담당한다 — 이 함수는 순간 스냅샷만 본다.
+    # 요구사항(2026-07-16, 큰 추세 수익 극대화판) — STRONG_UP/DOWN은 15분·30분
+    # 추세, VWAP, 고저점 구조가 "전부" 같은 방향으로 일치해야 하고(엄격한 AND
+    # 조건), 여기에 추세 지속시간(≥15분)·방향이동효율(높음)·거래량 또는 ATR
+    # 확인까지 전부 충족해야 후보가 된다. "2회 확인"은 여기서가 아니라
+    # update_regime_confirmation()의 2연속 사이클 확인 절차가 담당한다 — 이
+    # 함수는 순간 스냅샷만 본다.
+    trend_duration_up = _trend_duration_minutes(work, "UP")
+    trend_duration_down = _trend_duration_minutes(work, "DOWN")
+    result["trend_duration_minutes"] = trend_duration_up if (trend_duration_up or 0) >= (trend_duration_down or 0) else trend_duration_down
+    efficiency_for_strong = result["efficiency_ratio"]
+    volume_or_atr_confirmed = (
+        (result["relative_volume"] is not None and result["relative_volume"] >= _STRONG_TREND_MIN_RELATIVE_VOLUME)
+        or (atr_pct is not None and atr_pct >= _STRONG_TREND_MIN_ATR_PCT)
+    )
+    high_efficiency = efficiency_for_strong is not None and efficiency_for_strong >= _STRONG_TREND_MIN_EFFICIENCY
+
     strong_up_aligned = (
         result["trend_15m"] == "UP" and result["trend_30m"] == "UP"
         and result["above_vwap"] is True
         and bool(swing_15.get("higher_high")) and bool(swing_15.get("higher_low"))
+        and (trend_duration_up or 0) >= _STRONG_TREND_MIN_DURATION_MINUTES
+        and high_efficiency and volume_or_atr_confirmed
     )
     strong_down_aligned = (
         result["trend_15m"] == "DOWN" and result["trend_30m"] == "DOWN"
         and result["above_vwap"] is False
         and bool(swing_15.get("lower_high")) and bool(swing_15.get("lower_low"))
+        and (trend_duration_down or 0) >= _STRONG_TREND_MIN_DURATION_MINUTES
+        and high_efficiency and volume_or_atr_confirmed
     )
     if strong_up_aligned:
         result["regime"] = STRONG_UP
         result["confidence"] = round(min(100.0, 60.0 + up_votes * 6.0), 2)
-        result["reasons"] = reasons
+        result["reasons"] = reasons + [
+            f"추세 지속 {trend_duration_up}분", f"방향이동효율 {efficiency_for_strong}",
+            f"상대거래량 {result['relative_volume']}/ATR {atr_pct}%로 확인",
+        ]
         return result
     if strong_down_aligned:
         result["regime"] = STRONG_DOWN
         result["confidence"] = round(min(100.0, 60.0 + down_votes * 6.0), 2)
-        result["reasons"] = reasons
+        result["reasons"] = reasons + [
+            f"추세 지속 {trend_duration_down}분", f"방향이동효율 {efficiency_for_strong}",
+            f"상대거래량 {result['relative_volume']}/ATR {atr_pct}%로 확인",
+        ]
         return result
 
     # ── VOLATILE_RANGE(2026-07-16 요구사항) — 좁은 박스 안에서 빠르게 휩쏘 ────

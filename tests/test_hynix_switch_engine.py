@@ -819,3 +819,128 @@ def test_default_state_adaptive_regime_matches_auto_trade_on_default():
     assert state["auto_trade_on"] is True
     assert state["adaptive_regime_enabled"] is True
     assert state["adaptive_regime_mode"] == "LIVE"
+
+
+# =============================================================================
+# 2026-07-16 — 큰 추세 수익 극대화: STRONG_UP 확정 중 인버스 신규매수 금지,
+# STRONG_DOWN 확정 중 레버리지(HYNIX) 신규매수 금지.
+# =============================================================================
+
+def test_strong_up_confirmed_blocks_new_inverse_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.adaptive_market_regime as regime_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "INVERSE_BUY", "enhanced_score": 40.0, "inverse_pressure_score": 65.0,
+            "score_gap": 25.0, "score_gap_below_forced_trade_threshold": False, "reasons": [],
+        },
+    )
+    monkeypatch.setattr(
+        regime_module, "compute_and_confirm_regime",
+        lambda *a, **kw: {
+            "raw_regime": "STRONG_UP", "confirmed_regime": "STRONG_UP", "displayed_regime": "STRONG_UP",
+            "confidence": 90.0, "reasons": ["forced for test"], "profile": regime_module.get_risk_profile("STRONG_UP"),
+            "previous_regime": None, "transitioned_at": None,
+            "confirmation_state": regime_module.default_regime_confirmation_state(), "snapshot": {},
+        },
+    )
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    class _AssertNoBuyBroker:
+        def get_positions(self):
+            return []
+
+        def get_buyable_cash(self):
+            return 10_000_000.0
+
+        def get_balance(self):
+            return 10_000_000.0
+
+        def buy(self, *a, **k):
+            raise AssertionError("STRONG_UP 확정 중에는 인버스 신규매수가 금지돼야 한다")
+
+        def sell(self, *a, **k):
+            raise AssertionError("이 테스트에서는 매도가 발생하면 안 됩니다.")
+
+    import app.trading.broker_factory as broker_factory_module
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: _AssertNoBuyBroker())
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["entry_approved"] is False
+    assert "STRONG_UP" in trace["entry_approved_reason"]
+    assert result["state"]["position"].get("symbol") is None
+
+
+def test_strong_down_confirmed_blocks_new_hynix_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.adaptive_market_regime as regime_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "HYNIX_BUY", "enhanced_score": 65.0, "inverse_pressure_score": 40.0,
+            "score_gap": 25.0, "score_gap_below_forced_trade_threshold": False, "reasons": [],
+        },
+    )
+    monkeypatch.setattr(
+        regime_module, "compute_and_confirm_regime",
+        lambda *a, **kw: {
+            "raw_regime": "STRONG_DOWN", "confirmed_regime": "STRONG_DOWN", "displayed_regime": "STRONG_DOWN",
+            "confidence": 90.0, "reasons": ["forced for test"], "profile": regime_module.get_risk_profile("STRONG_DOWN"),
+            "previous_regime": None, "transitioned_at": None,
+            "confirmation_state": regime_module.default_regime_confirmation_state(), "snapshot": {},
+        },
+    )
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    class _AssertNoBuyBroker:
+        def get_positions(self):
+            return []
+
+        def get_buyable_cash(self):
+            return 10_000_000.0
+
+        def get_balance(self):
+            return 10_000_000.0
+
+        def buy(self, *a, **k):
+            raise AssertionError("STRONG_DOWN 확정 중에는 레버리지(HYNIX) 신규매수가 금지돼야 한다")
+
+        def sell(self, *a, **k):
+            raise AssertionError("이 테스트에서는 매도가 발생하면 안 됩니다.")
+
+    import app.trading.broker_factory as broker_factory_module
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: _AssertNoBuyBroker())
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["entry_approved"] is False
+    assert "STRONG_DOWN" in trace["entry_approved_reason"]
+    assert result["state"]["position"].get("symbol") is None

@@ -265,10 +265,11 @@ def _steady_rise_prices(minutes: int = 120, start_price: float = 100.0, per_minu
 
 def test_strong_up_requires_full_alignment_of_trend_vwap_swing():
     """요구사항 — STRONG_UP은 15분/30분 추세, VWAP, 고저점 구조가 전부 같은
-    방향으로 정렬돼야 한다(느슨한 다수결이 아님). 꾸준한 상승 구간은 이 네 조건을
-    모두 자연스럽게 만족한다."""
+    방향으로 정렬돼야 하고(느슨한 다수결이 아님), 추세 지속시간·방향이동효율·
+    거래량 또는 ATR 확인까지 충족해야 한다. 꾸준한 상승 구간(+실제 변동폭)은
+    이 조건들을 모두 자연스럽게 만족한다."""
     prices = _steady_rise_prices(minutes=120, per_minute_pct=0.05)
-    df = _bars(prices)
+    df = _bars_with_range(prices, range_pct=0.6)
 
     result = classify_raw_regime(df)
 
@@ -276,12 +277,13 @@ def test_strong_up_requires_full_alignment_of_trend_vwap_swing():
     assert result["trend_30m"] == "UP"
     assert result["above_vwap"] is True
     assert result["swing"].get("higher_high") and result["swing"].get("higher_low")
+    assert result["trend_duration_minutes"] >= 15
     assert result["regime"] == STRONG_UP
 
 
 def test_strong_down_requires_full_alignment_of_trend_vwap_swing():
     prices = _steady_rise_prices(minutes=120, per_minute_pct=-0.05)
-    df = _bars(prices)
+    df = _bars_with_range(prices, range_pct=0.6)
 
     result = classify_raw_regime(df)
 
@@ -289,6 +291,17 @@ def test_strong_down_requires_full_alignment_of_trend_vwap_swing():
     assert result["trend_30m"] == "DOWN"
     assert result["above_vwap"] is False
     assert result["regime"] == STRONG_DOWN
+
+
+def test_strong_up_rejected_when_no_volume_or_atr_confirmation():
+    """요구사항 — 추세 정렬 조건을 만족해도 거래량/ATR 확인이 없으면(너무 조용한
+    시세면) STRONG으로 확정하지 않는다."""
+    prices = _steady_rise_prices(minutes=120, per_minute_pct=0.05)
+    df = _bars(prices)  # 기본 padding(0.1%)은 ATR/거래량 확인 임계값에 못 미침
+
+    result = classify_raw_regime(df)
+
+    assert result["regime"] != STRONG_UP
 
 
 # ── VOLATILE_RANGE 초단기 실행 보호(2026-07-16) — CHASE_BLOCK/최근극값/반대신호 ──
@@ -350,7 +363,7 @@ def test_opposite_signal_response_noop_for_regimes_without_the_setting():
 
 def test_compute_and_confirm_regime_returns_confirmed_profile_and_state():
     prices = _steady_rise_prices(minutes=120, per_minute_pct=0.05)
-    df = _bars(prices)
+    df = _bars_with_range(prices, range_pct=0.6)
     now = datetime(2026, 7, 16, 10, 0)
 
     result = compute_and_confirm_regime(df, confirmation_state=None, now=now)

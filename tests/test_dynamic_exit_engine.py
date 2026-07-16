@@ -186,14 +186,15 @@ def test_decide_holds_when_profit_between_thresholds():
 # ── decide() 통합 — STRONG_UP(tp1 부분익절 후 나머지는 트레일링) ─────────────
 
 def test_decide_strong_up_partial_tp1_then_trails_remainder():
-    """요구사항 — STRONG_TREND: +2% 일부익절, 나머지는 ATR trailing(즉시 전량청산 아님)."""
+    """요구사항(2026-07-16, 큰 추세 수익 극대화판) — STRONG_TREND: +2%에서
+    20~30%만 부분익절, 나머지 70~80%는 ATR trailing(즉시 전량청산 아님)."""
     engine = DynamicExitEngine()
     _force_regime(engine, STRONG_UP)
     position = _base_position()
 
     decision = engine.decide(position, df_daily=None, df_1min=None, current_price=102_100.0, now=datetime(2026, 7, 9, 10, 5))
     assert decision["action"] == "SELL_PARTIAL"
-    assert decision["ratio"] == pytest.approx(0.5)
+    assert 0.20 <= decision["ratio"] <= 0.30
     assert position["partial_tp1_done"] is True
     assert position["trailing_armed"] is True  # tp1 도달과 동시에 트레일링 무장
 
@@ -285,3 +286,79 @@ def test_decide_opposite_signal_streak_zero_is_noop():
         opposite_signal_streak=0,
     )
     assert decision["action"] == "HOLD"
+
+
+# ── 큰 추세 수익 극대화(2026-07-16) — 추세 반전 확정 시 전량청산 ────────────
+
+def test_decide_exits_long_position_when_confirmed_regime_reverses_to_strong_down():
+    """요구사항 — VWAP 이탈+15분반전+스윙붕괴 2회 확인(=confirmed_regime이
+    STRONG_DOWN으로 확정)되면 TP/SL 도달 여부와 무관하게 롱 포지션을 즉시
+    전량청산한다."""
+    engine = DynamicExitEngine()
+    _force_regime(engine, STRONG_UP)  # raw 재분류는 여전히 STRONG_UP(작은 반대신호일 뿐)일 수도 있음
+    position = _base_position()  # HYNIX_SYMBOL(LONG) 보유 중, entry_price=100,000
+
+    decision = engine.decide(
+        position, df_daily=None, df_1min=None, current_price=100_500.0, now=datetime(2026, 7, 9, 10, 2),
+        confirmed_regime=STRONG_DOWN,
+    )
+    assert decision["action"] == "SELL_ALL"
+    assert decision["ratio"] == 1.0
+    assert "추세 반전 확정" in decision["reason"]
+
+
+def test_decide_does_not_exit_on_small_opposite_signal_without_confirmed_regime():
+    """요구사항 — 작은 1·3·5분 반대 신호만으로는(confirmed_regime을 넘기지 않으면)
+    청산하지 않는다."""
+    engine = DynamicExitEngine()
+    _force_regime(engine, STRONG_UP)
+    position = _base_position()
+
+    decision = engine.decide(
+        position, df_daily=None, df_1min=None, current_price=100_500.0, now=datetime(2026, 7, 9, 10, 2),
+    )
+    assert decision["action"] == "HOLD"
+
+
+def test_decide_reversal_exit_does_not_fire_when_regime_still_aligned_with_position():
+    engine = DynamicExitEngine()
+    _force_regime(engine, STRONG_UP)
+    position = _base_position()
+
+    decision = engine.decide(
+        position, df_daily=None, df_1min=None, current_price=100_500.0, now=datetime(2026, 7, 9, 10, 2),
+        confirmed_regime=STRONG_UP,
+    )
+    assert decision["action"] != "SELL_ALL"
+
+
+def test_decide_strong_trend_to_range_applies_short_exit_criteria_immediately():
+    """요구사항5 — STRONG_TREND에서 RANGE/VOLATILE_RANGE로 전환되면 즉시 짧은
+    TP/SL 프로필로 바뀐다(-0.8%는 RANGE 기준 손절이지 STRONG_UP의 -1.5% 기준으로는
+    아직 안전권이었을 손실률)."""
+    engine = DynamicExitEngine()
+    position = _base_position()
+
+    _force_regime(engine, STRONG_UP)
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=99_150.0, now=datetime(2026, 7, 9, 10, 3))
+    assert decision["action"] == "HOLD"  # STRONG_UP sl=-1.5%, -0.85%는 아직 안전
+
+    _force_regime(engine, RANGE)
+    decision2 = engine.decide(position, df_daily=None, df_1min=None, current_price=99_150.0, now=datetime(2026, 7, 9, 10, 4))
+    assert decision2["action"] == "SELL_ALL"  # RANGE sl=-0.8%로 즉시 전환되어 같은 손실률로 손절
+    assert "손절" in decision2["reason"]
+
+
+def test_decide_exits_inverse_position_when_confirmed_regime_reverses_to_strong_up():
+    from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
+
+    engine = DynamicExitEngine()
+    _force_regime(engine, STRONG_DOWN)
+    position = _base_position(symbol=INVERSE_SYMBOL, entry_price=5_000.0)
+
+    decision = engine.decide(
+        position, df_daily=None, df_1min=None, current_price=5_010.0, now=datetime(2026, 7, 9, 10, 2),
+        confirmed_regime=STRONG_UP,
+    )
+    assert decision["action"] == "SELL_ALL"
+    assert decision["ratio"] == 1.0

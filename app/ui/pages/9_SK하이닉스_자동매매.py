@@ -530,6 +530,21 @@ _ar_applied[2].metric("손절(SL)", f"-{_ar_profile.get('sl_pct', '-')}%")
 _ar_applied[3].metric("최대 보유시간", f"{_ar_profile.get('max_hold_minutes')}분" if _ar_profile.get("max_hold_minutes") else "제한없음(트레일링)")
 _ar_applied[4].metric("Big Trend Holding", "🚫 금지" if _ar_profile.get("block_big_trend_holding") else "허용")
 
+# 요구사항(2026-07-16, 큰 추세 수익 극대화판) — STRONG_UP/STRONG_DOWN 확정 중에는
+# Core 보유비중/최고 수익률/Profit Lock/ATR trailing 폭/추세 유지-붕괴 근거를
+# 별도로 보여준다.
+if _ar_current_regime in ("STRONG_UP", "STRONG_DOWN"):
+    _dyn_exit_last = switch_state.get("dynamic_exit_last_decision") or {}
+    _position_now_for_ar = switch_state.get("position") or {}
+    st.markdown("**📈 STRONG_TREND 수익 극대화 상태**")
+    _st_cols = st.columns(5)
+    _st_cols[0].metric(f"{_ar_current_regime} Confidence", f"{_num(_ar.get('confidence')):.0f}")
+    _st_cols[1].metric("Core 보유비중", f"{(_ar_profile.get('core_position_ratio') or 0) * 100:.0f}%")
+    _st_cols[2].metric("최고 수익률", f"{_num(_position_now_for_ar.get('profit_lock_peak_pct')):.2f}%")
+    _st_cols[3].metric("Profit Lock", f"{_dyn_exit_last.get('profit_lock_floor_pct'):.2f}%" if _dyn_exit_last.get("profit_lock_floor_pct") is not None else "-")
+    _st_cols[4].metric("ATR Trailing 폭", f"{_ar_profile.get('trailing_pct', '-')}%p")
+    st.caption(f"추세 유지/붕괴 근거: {_dyn_exit_last.get('reason') or '-'}")
+
 with st.expander("Adaptive Regime 판단 근거 / VOLATILE_RANGE 진단", expanded=(_ar_current_regime in ("VOLATILE_RANGE", "DATA_INSUFFICIENT"))):
     st.markdown(f"**신규진입 실제 엔진**: {'ADAPTIVE_MARKET_REGIME(' + _ar_mode + ')' if _ar_enabled else 'ENHANCED_REGIME_SWITCH(레거시, adaptive 비활성)'}")
     st.markdown(f"**실제 청산 엔진**: Dynamic Exit AI(adaptive_market_regime 프로필 사용)")

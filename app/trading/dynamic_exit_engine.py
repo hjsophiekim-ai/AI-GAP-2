@@ -338,6 +338,7 @@ class DynamicExitEngine:
         self, position: dict, df_daily: Optional[pd.DataFrame], df_1min: Optional[pd.DataFrame],
         current_price: float, now: datetime, tick_strength: Optional[float] = None,
         prev_close: Optional[float] = None, opposite_signal_streak: int = 0,
+        confirmed_regime: Optional[str] = None,
     ) -> dict:
         """포지션 청산 여부를 종합 판단한다. position dict는 트레일링/최고저가 추적을 위해 in-place 갱신됨."""
         snapshot = self.build_snapshot(position, df_daily, df_1min, current_price, now, tick_strength)
@@ -384,6 +385,29 @@ class DynamicExitEngine:
                 return {
                     **base_result, "action": opposite_action["action"], "ratio": opposite_action["ratio"],
                     "exit_score": 100.0, "score_breakdown": {}, "reason": opposite_action["reason"],
+                }
+
+        # ①-c 추세 반전 확정(큰 추세 수익 극대화 요구사항) — VWAP 이탈+15분반전+
+        # 주요 스윙 붕괴가 2회 연속으로 확인돼 confirmed_regime이 보유 방향과
+        # 반대되는 STRONG 추세로 이미 확정됐다면(2연속 확인은 caller가
+        # compute_and_confirm_regime()/update_regime_confirmation()으로 수행 —
+        # 이 함수는 순간 raw 재분류만 하므로 노이즈 방지를 위해 반드시
+        # confirmed_regime을 명시적으로 받아야만 이 트리거가 동작한다), TP/SL
+        # 도달 여부와 무관하게 즉시 전량청산한다. 작은 1·3·5분 반대신호만으로는
+        # (confirmed_regime이 주어지지 않는 한) 청산하지 않는다.
+        if confirmed_regime:
+            from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL as _INVERSE_SYMBOL
+            from app.trading.adaptive_market_regime import STRONG_UP as _STRONG_UP, STRONG_DOWN as _STRONG_DOWN
+
+            position_symbol = position.get("symbol")
+            reversal_confirmed = (
+                (position_symbol == _INVERSE_SYMBOL and confirmed_regime == _STRONG_UP)
+                or (position_symbol and position_symbol != _INVERSE_SYMBOL and confirmed_regime == _STRONG_DOWN)
+            )
+            if reversal_confirmed:
+                return {
+                    **base_result, "action": "SELL_ALL", "ratio": 1.0, "exit_score": 100.0, "score_breakdown": {},
+                    "reason": f"추세 반전 확정({confirmed_regime}) — VWAP 이탈+15분 반전+스윙 붕괴 2회 확인, 전량청산",
                 }
 
         # ② Profit Lock 손절선 붕괴
