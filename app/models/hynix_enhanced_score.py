@@ -17,6 +17,7 @@ from typing import Optional
 from datetime import datetime
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _WEIGHTS_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
@@ -80,16 +81,23 @@ def _parse_dt(value) -> Optional[datetime]:
 
 
 def _micron_age_minutes(micron_result: dict) -> Optional[float]:
+    """(kst_now() - micron_last_update_time) 분 단위.
+
+    음수를 0으로 뭉개지 않는다 — 캔들 시각이 현재(KST) 기준 미래로 보이면
+    (시계/타임존 불일치) "매우 신선함"이 아니라 오류이며, 그걸 0으로 클램프하면
+    _is_micron_stale_for_orders()가 "age > 15.0"만 검사해 이 음수를 fresh로
+    잘못 판정한다(2026-07-16 실측과 동일 계열 버그 — hynix_micron_realtime_score.py
+    에서 먼저 발견/수정됨)."""
     ts = _parse_dt((micron_result or {}).get("micron_last_update_time"))
     if ts is None:
         return None
-    return max(0.0, (datetime.now() - ts).total_seconds() / 60.0)
+    return (kst_now() - ts).total_seconds() / 60.0
 
 
 def _is_micron_stale_for_orders(micron_result: dict) -> bool:
     status = str((micron_result or {}).get("micron_data_status") or "").upper()
     age = _micron_age_minutes(micron_result)
-    return status == "STALE_DATA" or (age is not None and age > 15.0)
+    return status == "STALE_DATA" or (age is not None and (age < 0 or age > 15.0))
 
 
 def _live_order_weights(base_weights: dict, micron_result: dict) -> dict:

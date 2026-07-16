@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
+from app.utils.time_utils import kst_now
+
 
 def _float(value: Any) -> Optional[float]:
     try:
@@ -46,7 +48,7 @@ def compute_fast_trend_signal(df_1min, now: Optional[datetime] = None) -> dict:
     The function is intentionally deterministic and side-effect free so both
     the 30s watcher and tests can use the same logic.
     """
-    now = now or datetime.now()
+    now = now or kst_now()
     closes = _close_series(df_1min)
     volumes = _volume_series(df_1min)
     if len(closes) < 6:

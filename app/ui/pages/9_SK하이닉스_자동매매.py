@@ -594,6 +594,32 @@ if switch_state.get("mode") == "mock":
         _fx_table += f"| {_name} | {'ON' if _on else 'OFF'} | {_impact} | {_scope} |\n"
     st.markdown(_fx_table)
 
+    # 요구사항(2026-07-16 사용자 리포트) — "현재 우세 방향"이 last_trend_switch_plan에서
+    # 읽혀왔는데, 이 필드는 STRONG_BUY 신호가 떴을 때만 갱신된다(hynix_switch_engine.py의
+    # "if final_action.endswith('_STRONG_BUY')" 분기 안에서만 dominant_direction을
+    # 씀). 그래서 아침에 한 번 HYNIX_STRONG_BUY가 뜬 뒤로는, 실제 가격이 떨어져도
+    # 이후 사이클이 STRONG_BUY가 아니면(HOLD/일반 BUY/INVERSE 등) 이 필드가 갱신되지
+    # 않고 "HYNIX"로 굳어 있었다 — 사용자에게는 "방향을 잘못 잡고 있다"로 보였지만
+    # 실제로는 매 사이클 갱신되는 last_decision(enhanced_score/inverse_pressure_score)
+    # 이 아니라 이 stale 스냅샷을 보여준 UI 버그였다. 매 사이클(HOLD 포함) 갱신되는
+    # last_decision 기준으로 별도의 "라이브" 우세 방향을 계산해 보여준다.
+    _live_decision = switch_state.get("last_decision") or {}
+    _live_enhanced = _live_decision.get("enhanced_score")
+    _live_inverse = _live_decision.get("inverse_pressure_score")
+    if _live_enhanced is not None and _live_inverse is not None:
+        if _live_enhanced > _live_inverse:
+            _live_dominant = "HYNIX"
+        elif _live_inverse > _live_enhanced:
+            _live_dominant = "INVERSE"
+        else:
+            _live_dominant = "NEUTRAL"
+        st.metric(
+            "현재 우세 방향(매 사이클 갱신, 라이브)",
+            f"{_live_dominant} (enhanced {_live_enhanced:.1f} vs inverse {_live_inverse:.1f})",
+        )
+    else:
+        st.metric("현재 우세 방향(매 사이클 갱신, 라이브)", "—")
+
     # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
     # 최종합성확률, 문턱(원래/조정), 진입비중, HOLD·진입 사유, 오늘거래수/연속손실/
     # 남은거래한도, 모델불일치지수를 매 사이클 표시한다.
@@ -601,8 +627,12 @@ if switch_state.get("mode") == "mock":
     _trend_freq = switch_state.get("trend_switch_frequency_state") or {}
     if _last_trend_plan:
         with st.expander("Enhanced Trend Switch 가속 진단", expanded=True):
+            st.caption(
+                "아래 '가속 진단' 값들은 마지막으로 STRONG_BUY 신호가 떴을 때의 스냅샷입니다 "
+                "— HOLD/일반 신호 사이클에서는 갱신되지 않으므로 '현재' 라이브 상태로 오인하지 마세요."
+            )
             _ts1, _ts2, _ts3, _ts4 = st.columns(4)
-            _ts1.metric("현재 우세 방향", _last_trend_plan.get("dominant_direction") or "HOLD")
+            _ts1.metric("마지막 강한신호 방향", _last_trend_plan.get("dominant_direction") or "HOLD")
             _ts2.metric(
                 "연속 확인",
                 f"{_last_trend_plan.get('same_direction_streak', 0)}회",

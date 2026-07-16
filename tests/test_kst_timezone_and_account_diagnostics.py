@@ -85,6 +85,23 @@ def test_negative_micron_age_is_not_treated_as_fresh(monkeypatch):
     assert mscore._is_fresh(df, stale_minutes=999999) is False
 
 
+def test_enhanced_score_micron_negative_age_treated_as_stale(monkeypatch):
+    """hynix_enhanced_score.py의 _is_micron_stale_for_orders()가 별도로 같은 클래스의
+    버그(음수 age를 fresh로 오판)를 갖고 있었다 — hynix_micron_realtime_score.py와는
+    다른 모듈이라 최초 KST 정리 때 놓쳤다(2026-07-16 후속 발견)."""
+    import app.models.hynix_enhanced_score as es
+
+    fixed_now = datetime(2026, 7, 16, 9, 30)
+    monkeypatch.setattr(es, "kst_now", lambda: fixed_now)
+
+    future_ts = (fixed_now.replace(hour=17, minute=0)).isoformat()
+    micron_result = {"micron_last_update_time": future_ts, "micron_data_status": "OK"}
+
+    age = es._micron_age_minutes(micron_result)
+    assert age is not None and age < 0
+    assert es._is_micron_stale_for_orders(micron_result) is True
+
+
 def test_positive_fresh_age_still_works(monkeypatch):
     import app.models.hynix_micron_realtime_score as mscore
 
