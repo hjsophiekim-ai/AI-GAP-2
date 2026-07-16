@@ -110,10 +110,14 @@ def decide_hynix_or_inverse_action(enhanced_result: dict, current_position: Opti
         reasons.append(f"enhanced_score {enhanced_score:.1f}≥{th['buy_enhanced_min']}, inverse {inverse_score:.1f}<{th['buy_inverse_max']}")
         return _result(HYNIX_BUY, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
-    if th["hold_min"] <= enhanced_score <= th["hold_max"]:
-        reasons.append(f"enhanced_score {enhanced_score:.1f} is in HOLD band({th['hold_min']}~{th['hold_max']})")
-        return _result(HOLD, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
-
+    # 요구사항(2026-07-16 사용자 리포트: "우세방향은 INVERSE인데 최종판단은 HOLD") —
+    # 이 HOLD 밴드 체크가 여기(인버스 임계값 체크보다 먼저)에 있으면, inverse_score가
+    # 100-enhanced_score이므로 enhanced_score가 [45,50) 구간(=inverse_score가
+    # (50,55])일 때 inverse_buy_min(50)을 이미 넘겼는데도 이 체크가 먼저 걸려
+    # 무조건 HOLD로 귀결된다 — inverse_buy_min=50 설정값이 사실상 죽은 코드가 되고,
+    # 실질 인버스 진입 문턱이 몰래 55로 올라가 있었다(HYNIX 쪽은 buy_enhanced_min
+    # 체크가 이미 hold 밴드보다 먼저라 이런 비대칭이 없음). 인버스 임계값 체크를
+    # 먼저 평가하도록 옮기고, HOLD 밴드는 맨 아래 catch-all에서만 판정한다.
     if is_live_hynix_uptrend(fast_live_trend):
         returns = fast_live_trend.get("returns") or {}
         reasons.append(
@@ -123,12 +127,16 @@ def decide_hynix_or_inverse_action(enhanced_result: dict, current_position: Opti
         )
         return _result(HOLD, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
-    if inverse_score >= th["inverse_strong_buy_min"]:
-        reasons.append(f"inverse_pressure_score {inverse_score:.1f}≥{th['inverse_strong_buy_min']}")
+    # inverse_score = 100 - enhanced_score이므로, 정확히 50 대 50인 동점(진짜 중립)은
+    # 여전히 HOLD로 남아야 한다(test_hold_mid_range) — HYNIX 쪽의 buy_inverse_max도
+    # 강한부등호(<)를 쓰는 것과 대칭으로, 여기도 강한부등호(>)를 써서 "완전 동점"은
+    # 제외하고 "확실히 인버스 쪽으로 기운" 경우만 신호로 인정한다.
+    if inverse_score > th["inverse_strong_buy_min"]:
+        reasons.append(f"inverse_pressure_score {inverse_score:.1f}>{th['inverse_strong_buy_min']}")
         return _result(INVERSE_STRONG_BUY, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
-    if inverse_score >= th["inverse_buy_min"]:
-        reasons.append(f"inverse_pressure_score {inverse_score:.1f}≥{th['inverse_buy_min']}")
+    if inverse_score > th["inverse_buy_min"]:
+        reasons.append(f"inverse_pressure_score {inverse_score:.1f}>{th['inverse_buy_min']}")
         return _result(INVERSE_BUY, enhanced_score, inverse_score, reasons, th, score_gap_blocked=False)
 
     if th["hold_min"] <= enhanced_score <= th["hold_max"]:

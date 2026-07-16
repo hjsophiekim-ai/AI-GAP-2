@@ -43,6 +43,17 @@ def test_hold_mid_range():
     assert result["final_action"] == HOLD
 
 
+def test_inverse_buy_not_shadowed_by_hold_band():
+    """요구사항(2026-07-16 사용자 리포트: "우세방향은 INVERSE인데 최종판단은 HOLD") —
+    enhanced_score=48이면 정규화된 inverse_score=52로 inverse_buy_min(50)을 이미
+    넘지만, 예전 코드는 HOLD 밴드(45~59, enhanced_score 기준) 체크가 인버스 임계값
+    체크보다 먼저 실행돼 무조건 HOLD를 반환했다 — inverse_buy_min=50 설정값이
+    사실상 죽은 코드였다(실질 문턱이 몰래 55로 올라가 있었음)."""
+    result = decide_hynix_or_inverse_action(_enhanced(enhanced=48, micron=48, tech=48))
+    assert result["final_action"] == INVERSE_BUY
+    assert result["inverse_pressure_score"] == 52
+
+
 def test_raw_inverse_conflict_does_not_override_hynix_polarity():
     result = decide_hynix_or_inverse_action(_enhanced(enhanced=70, inverse=60, micron=55, tech=55))
     assert result["final_action"] == HYNIX_BUY
