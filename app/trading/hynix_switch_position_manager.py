@@ -298,7 +298,7 @@ def _record_order(
     # price MUST be computed from this ledger — individual CSV/state fields are not
     # aggregated separately) ──
     try:
-        from app.services.hynix_execution_ledger import record_execution
+        from app.services.hynix_execution_ledger import record_execution, record_confirmed_fill
         from app.trading.trading_cost_engine import TradeCostEngine
 
         # Trade-cost fields must always be filled with a real number on every fill
@@ -342,21 +342,54 @@ def _record_order(
 
         is_test_order = "E2E forced" in (reason or "")
         fm = fusion_metadata or {}
-        record_execution(
-            action=action, symbol=symbol, requested_qty=quantity, executed_qty=executed_qty,
-            requested_price=price, executed_price=price if executed_qty > 0 else None, success=success,
-            mode=mode, strategy_name="hynix_switch", signal_source=signal_source,
-            before_qty=before_qty, after_qty=after_qty, cash_before=cash_before, cash_after=cash_after,
-            realized_pnl=realized_pnl, fees=fees_total, tax=tax_total,
-            order_id=result.get("order_id") or "", is_test_order=is_test_order,
-            gross_pnl=gross_pnl, buy_fee=buy_fee, sell_fee=sell_fee,
-            transaction_tax=transaction_tax, slippage_cost=slippage_cost, net_pnl=net_pnl,
-            active_probability=fm.get("active_probability"), prediction_v2_probability=fm.get("prediction_v2_probability"),
-            cycle_probability=fm.get("cycle_probability"), fused_probability=fm.get("fused_probability"),
-            prediction_v2_weight=fm.get("prediction_v2_weight"), dominant_model=fm.get("dominant_model"),
-            model_agreement=fm.get("model_agreement"), expected_value=fm.get("expected_value"),
-            target_position_pct=fm.get("target_position_pct"),
-        )
+
+        if success and executed_qty > 0 and not is_test_order:
+            # 요구사항(2026-07-16) — 실제 확정 체결(executed_qty>0)은 단일 기록 지점
+            # record_confirmed_fill()을 거친다(idempotent — 재확인 사이클에서 같은
+            # 체결이 다시 넘어와도 중복 기록되지 않음). 쓰기 실패는 예외로 삼키지
+            # 않고 orders[-1]에 남겨 호출부가 LEDGER_WRITE_FAILED 경고를 세울 수
+            # 있게 한다(체결 자체는 취소하지 않는다).
+            outcome = record_confirmed_fill(
+                action=action, symbol=symbol, executed_qty=executed_qty,
+                executed_price=price if executed_qty > 0 else None,
+                mode=mode, before_qty=before_qty or 0, after_qty=after_qty if after_qty is not None else (before_qty or 0),
+                order_id=result.get("order_id") or "", requested_qty=quantity, requested_price=price,
+                signal_source=signal_source, realized_pnl=realized_pnl, fees=fees_total, tax=tax_total,
+                cash_before=cash_before, cash_after=cash_after,
+                gross_pnl=gross_pnl, buy_fee=buy_fee, sell_fee=sell_fee,
+                transaction_tax=transaction_tax, slippage_cost=slippage_cost, net_pnl=net_pnl,
+                active_probability=fm.get("active_probability"), prediction_v2_probability=fm.get("prediction_v2_probability"),
+                cycle_probability=fm.get("cycle_probability"), fused_probability=fm.get("fused_probability"),
+                prediction_v2_weight=fm.get("prediction_v2_weight"), dominant_model=fm.get("dominant_model"),
+                model_agreement=fm.get("model_agreement"), expected_value=fm.get("expected_value"),
+                target_position_pct=fm.get("target_position_pct"),
+            )
+            if outcome.get("error"):
+                orders[-1]["ledger_write_failed"] = True
+                orders[-1]["ledger_error"] = outcome["error"]
+                logger.error(
+                    "[SwitchPositionManager] LEDGER_WRITE_FAILED symbol=%s action=%s qty=%s: %s",
+                    symbol, action, executed_qty, outcome["error"],
+                )
+        else:
+            # 실패한 시도/미확정 체결(executed_qty=0)/E2E 테스트 주문은 dedup 대상이
+            # 아니므로(같은 초에 반복 재시도돼도 각각 남아야 진단에 유용) 기존
+            # 방식대로 매 시도를 그대로 기록한다.
+            record_execution(
+                action=action, symbol=symbol, requested_qty=quantity, executed_qty=executed_qty,
+                requested_price=price, executed_price=price if executed_qty > 0 else None, success=success,
+                mode=mode, strategy_name="hynix_switch", signal_source=signal_source,
+                before_qty=before_qty, after_qty=after_qty, cash_before=cash_before, cash_after=cash_after,
+                realized_pnl=realized_pnl, fees=fees_total, tax=tax_total,
+                order_id=result.get("order_id") or "", is_test_order=is_test_order,
+                gross_pnl=gross_pnl, buy_fee=buy_fee, sell_fee=sell_fee,
+                transaction_tax=transaction_tax, slippage_cost=slippage_cost, net_pnl=net_pnl,
+                active_probability=fm.get("active_probability"), prediction_v2_probability=fm.get("prediction_v2_probability"),
+                cycle_probability=fm.get("cycle_probability"), fused_probability=fm.get("fused_probability"),
+                prediction_v2_weight=fm.get("prediction_v2_weight"), dominant_model=fm.get("dominant_model"),
+                model_agreement=fm.get("model_agreement"), expected_value=fm.get("expected_value"),
+                target_position_pct=fm.get("target_position_pct"),
+            )
         if action == "SELL" and realized_pnl is not None:
             return {"gross_pnl": gross_pnl, "net_pnl": net_pnl, "total_cost": round(fees_total + tax_total + slippage_cost, 2)}
         return None
@@ -769,6 +802,39 @@ def sync_position_from_broker(state: dict, broker) -> dict:
     return apply_position_manager_to_state(state, pm)
 
 
+def _reconcile_ledger_with_kis(state: dict, position_manager, pos_info: dict, previous_position: dict, symbols: set) -> None:
+    """symbols 각각에 대해 KIS 실보유수량과 원장 순수량을 비교하고 필요하면
+    backfill한다(요구사항 2026-07-16). UI 표시를 위해 결과를 state["ledger_reconciliation"]
+    에 남긴다 — 이 함수 자체는 예외를 밖으로 던지지 않는다(포지션 동기화 자체를
+    막으면 안 됨)."""
+    from app.services.hynix_execution_ledger import reconcile_symbol_with_kis
+
+    mode = getattr(position_manager, "mode", None) or state.get("mode", "mock")
+    broker = getattr(position_manager, "broker", None)
+    now = kst_now()
+    reconciliations: dict = {}
+    for symbol in symbols:
+        is_current_broker_symbol = pos_info.get("symbol") == symbol
+        broker_qty = pos_info.get("quantity") if is_current_broker_symbol else 0
+        avg_price = pos_info.get("avg_price") if is_current_broker_symbol else None
+        if avg_price is None and previous_position.get("symbol") == symbol:
+            avg_price = previous_position.get("avg_price") or previous_position.get("entry_price")
+        try:
+            result = reconcile_symbol_with_kis(
+                symbol, mode, broker_qty=int(broker_qty or 0), avg_price=avg_price, broker=broker, now=now,
+            )
+        except Exception as exc:
+            logger.error("[SwitchPositionManager] 원장-KIS 재조정 실패(%s): %s", symbol, exc)
+            result = {"symbol": symbol, "error": str(exc), "mismatch": None, "backfilled": []}
+        reconciliations[symbol] = result
+        if result.get("mismatch"):
+            logger.warning(
+                "[SwitchPositionManager] LEDGER_POSITION_MISMATCH symbol=%s kis_qty=%s ledger_qty=%s backfilled=%d건",
+                symbol, result.get("kis_quantity"), result.get("ledger_quantity"), len(result.get("backfilled") or []),
+            )
+    state["ledger_reconciliation"] = {"checked_at": now.isoformat(timespec="seconds"), "results": reconciliations}
+
+
 def apply_position_manager_to_state(state: dict, position_manager) -> dict:
     """Reflect HynixPositionManager.sync() result (broker's actual holdings) into state (cache).
 
@@ -838,6 +904,19 @@ def apply_position_manager_to_state(state: dict, position_manager) -> dict:
     broker_symbol = pos_info.get("symbol")
     existing = state.get("position") or {}
     state_symbol = existing.get("symbol")
+
+    # 요구사항(2026-07-16) — 매 사이클 KIS 실보유수량과 원장 순수량을 비교하고,
+    # state.position을 실제로 갱신하기 전에 먼저 원장을 맞춘다. 그렇지 않으면
+    # "브로커에는 129주 실보유가 확인되는데 원장 매수/매도/총체결은 0건"인 상황이
+    # 다음 사이클로도 계속 넘어간다. 대상 심볼: 브로커가 지금 보고하는 심볼 +
+    # (다른 심볼을 들고 있다가 방금 청산되어 사라졌다면) 그 이전 심볼도 함께 맞춘다.
+    reconcile_targets = set()
+    if broker_symbol:
+        reconcile_targets.add(broker_symbol)
+    if state_symbol and state_symbol != broker_symbol:
+        reconcile_targets.add(state_symbol)
+    if reconcile_targets:
+        _reconcile_ledger_with_kis(state, position_manager, pos_info, existing, reconcile_targets)
 
     if broker_symbol == state_symbol:
         if broker_symbol is not None:

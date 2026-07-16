@@ -585,13 +585,30 @@ def compute_net_daily_return(
         except Exception:
             return float((cur - position["entry_price"]) * position["quantity"])
 
+    # 요구사항(2026-07-16 실측) — 방금 체결된 실매수 직후 KIS 잔고조회(output1)가
+    # 아직 새 보유종목을 반영하지 못해 positions_from_broker가 비어있거나 보유 중인
+    # 심볼을 포함하지 않는 짧은 지연이 실제로 발생한다(모의/실전 공통). 이 상태로
+    # holdings_value를 계산하면 current_equity가 방금 매수한 금액만큼 실제보다 낮게
+    # 잡혀 큰 괴리가 생기고, 이를 ACCOUNT_EQUITY_MISMATCH(계좌 데이터 이상)로 오판해
+    # 신규주문이 계속 차단됐다(BUY 신호가 risk_manager에서 반복 차단됨) — 브로커
+    # 포지션 동기화 지연은 계좌 이상이 아니므로, cash_fetch_ok=False와 동일하게
+    # 원장/entry_price 기준(신뢰 가능) 미실현손익 계산으로 즉시 대체한다.
+    if has_position and cash_fetch_ok and positions_from_broker is not None:
+        broker_has_held_symbol = any(
+            (p.get("symbol") if isinstance(p, dict) else getattr(p, "symbol", None)) == position.get("symbol")
+            for p in positions_from_broker
+        )
+        if not broker_has_held_symbol:
+            cash_fetch_ok = False
+            result["calculation_warning"] = "BROKER_POSITION_SYNC_LAG_LEDGER_FALLBACK"
+
     if not cash_fetch_ok:
         starting_equity = result["starting_equity"]
         if starting_equity and starting_equity > 0:
             net_unrealized_pnl = _local_unrealized_pnl()
             result["net_unrealized_pnl"] = net_unrealized_pnl
             result["net_daily_return"] = round((net_realized_pnl + net_unrealized_pnl) / starting_equity * 100.0, 4)
-            result["calculation_warning"] = "ACCOUNT_SNAPSHOT_UNAVAILABLE_LEDGER_FALLBACK"
+            result["calculation_warning"] = result.get("calculation_warning") or "ACCOUNT_SNAPSHOT_UNAVAILABLE_LEDGER_FALLBACK"
             return result
         result["blocked_reason"] = DAILY_RETURN_UNKNOWN
         return result

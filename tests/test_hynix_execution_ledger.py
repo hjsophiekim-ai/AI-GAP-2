@@ -1,6 +1,7 @@
 """test_hynix_execution_ledger.py — 단일 거래 원장 기록/집계/재구성 테스트."""
 
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -512,3 +513,178 @@ class TestTradeCostReconstruction:
         second = ledger.backfill_trading_costs_into_ledger("20260713")
         assert first["updated_rows"] == 1
         assert second["updated_rows"] == 0
+
+
+# =============================================================================
+# 2026-07-16 — 모든 확정 체결 경로가 거쳐야 하는 단일 기록 지점(record_confirmed_fill)
+# 과 KIS 실보유수량 vs 원장 순수량 재조정(reconcile_symbol_with_kis) 회귀 테스트.
+# 증상: KIS에 0193T0 129주 실제 보유가 확인되는데 원장 매수/매도/총체결이 모두 0건.
+# =============================================================================
+
+class TestRecordConfirmedFill:
+    def test_new_buy_immediately_increments_ledger(self):
+        outcome = ledger.record_confirmed_fill(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="real", before_qty=0, after_qty=129, order_id="0000012345",
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        assert outcome["recorded"] is True
+        assert outcome["duplicate"] is False
+        df = ledger.load_ledger("20260716")
+        assert len(df) == 1
+        assert df.iloc[0]["symbol"] == "0193T0"
+        assert int(df.iloc[0]["executed_qty"]) == 129
+
+    def test_same_order_id_is_not_recorded_twice(self):
+        kwargs = dict(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="real", before_qty=0, after_qty=129, order_id="0000012345",
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        first = ledger.record_confirmed_fill(**kwargs)
+        second = ledger.record_confirmed_fill(**kwargs)
+        assert first["recorded"] is True
+        assert second["recorded"] is False and second["duplicate"] is True
+        assert len(ledger.load_ledger("20260716")) == 1
+
+    def test_no_order_id_dedups_on_timestamp_qty_price_delta(self):
+        kwargs = dict(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="mock", before_qty=0, after_qty=129, order_id="",
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        first = ledger.record_confirmed_fill(**kwargs)
+        second = ledger.record_confirmed_fill(**kwargs)
+        assert first["recorded"] is True
+        assert second["duplicate"] is True
+        assert len(ledger.load_ledger("20260716")) == 1
+
+    def test_partial_sell_and_switching_each_recorded(self):
+        ledger.record_confirmed_fill(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="real", before_qty=0, after_qty=129, order_id="ORD-1",
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        ledger.record_confirmed_fill(
+            action="SELL", symbol="0193T0", executed_qty=64, executed_price=18_700.0,
+            mode="real", before_qty=129, after_qty=65, order_id="ORD-2",
+            signal_source=ledger.SIGNAL_SOURCE_DYNAMIC_EXIT,
+            now=datetime(2026, 7, 16, 10, 5, 0),
+        )
+        ledger.record_confirmed_fill(
+            action="SELL", symbol="0193T0", executed_qty=65, executed_price=18_650.0,
+            mode="real", before_qty=65, after_qty=0, order_id="ORD-3",
+            now=datetime(2026, 7, 16, 10, 6, 0),
+        )
+        ledger.record_confirmed_fill(
+            action="BUY", symbol="0197X0", executed_qty=1000, executed_price=9_000.0,
+            mode="real", before_qty=0, after_qty=1000, order_id="ORD-4",
+            now=datetime(2026, 7, 16, 10, 6, 30),
+        )
+        df = ledger.load_ledger("20260716")
+        assert len(df) == 4
+        assert list(df["action"]) == ["BUY", "SELL", "SELL", "BUY"]
+
+    def test_ledger_write_failure_reports_error_without_raising(self, monkeypatch):
+        def _raise_open(self, *a, **kw):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(Path, "open", _raise_open, raising=True)
+        outcome = ledger.record_confirmed_fill(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="real", before_qty=0, after_qty=129, order_id="ORD-FAIL",
+        )
+        assert outcome["recorded"] is False
+        assert outcome["duplicate"] is False
+        assert outcome["error"]
+
+
+class TestLedgerNetQuantityReconciliation:
+    def test_ledger_net_quantity_matches_buy_minus_sell(self):
+        ledger.record_confirmed_fill(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="real", before_qty=0, after_qty=129, order_id="ORD-1",
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        ledger.record_confirmed_fill(
+            action="SELL", symbol="0193T0", executed_qty=29, executed_price=18_700.0,
+            mode="real", before_qty=129, after_qty=100, order_id="ORD-2",
+            now=datetime(2026, 7, 16, 10, 5, 0),
+        )
+        assert ledger.compute_ledger_net_quantity("0193T0", "real", "20260716") == 100
+
+    def test_reconcile_backfills_missing_buy_via_kis_today_fills(self):
+        """KIS는 129주 실보유(2분 전 체결)를 보고하지만 원장은 0건 — 당일체결조회로
+        누락된 매수를 복구한다."""
+        class _Broker:
+            def get_today_fills(self, symbol=""):
+                return {
+                    "ok": True, "error": None,
+                    "fills": [{
+                        "symbol": "0193T0", "side": "BUY", "order_id": "KIS-ORD-1",
+                        "quantity": 129, "price": 18_500.0, "timestamp": "20260716095800",
+                    }],
+                }
+
+        result = ledger.reconcile_symbol_with_kis(
+            "0193T0", "real", broker_qty=129, avg_price=18_500.0, broker=_Broker(),
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        assert result["mismatch"] is True
+        assert len(result["backfilled"]) == 1
+        assert ledger.compute_ledger_net_quantity("0193T0", "real", "20260716") == 129
+        df = ledger.load_ledger("20260716")
+        assert df.iloc[0]["signal_source"] == ledger.SIGNAL_SOURCE_KIS_RECONCILE_BACKFILL
+        assert df.iloc[0]["order_id"] == "KIS-ORD-1"
+
+    def test_reconcile_falls_back_to_approximate_fill_when_kis_fills_unavailable(self):
+        class _Broker:
+            def get_today_fills(self, symbol=""):
+                return {"ok": False, "error": "HTTP 500", "fills": []}
+
+        result = ledger.reconcile_symbol_with_kis(
+            "0193T0", "real", broker_qty=129, avg_price=18_500.0, broker=_Broker(),
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        assert result["mismatch"] is True
+        assert len(result["backfilled"]) == 1
+        assert result["backfilled"][0]["source"] == "approximate_avg_price"
+        assert ledger.compute_ledger_net_quantity("0193T0", "real", "20260716") == 129
+
+    def test_reconcile_no_mismatch_when_ledger_already_matches_kis(self):
+        ledger.record_confirmed_fill(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="real", before_qty=0, after_qty=129, order_id="ORD-1",
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        result = ledger.reconcile_symbol_with_kis(
+            "0193T0", "real", broker_qty=129, avg_price=18_500.0, broker=None,
+            now=datetime(2026, 7, 16, 10, 5, 0),
+        )
+        assert result["mismatch"] is False
+        assert result["backfilled"] == []
+
+    def test_reconcile_does_not_duplicate_backfill_across_cycles(self):
+        """한 사이클에서 backfill된 뒤, 다음 사이클에서 KIS 수량이 그대로면 다시
+        backfill하지 않는다(중복 backfill 방지)."""
+        class _Broker:
+            def get_today_fills(self, symbol=""):
+                return {"ok": False, "error": "unavailable", "fills": []}
+
+        first = ledger.reconcile_symbol_with_kis(
+            "0193T0", "real", broker_qty=129, avg_price=18_500.0, broker=_Broker(),
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+        second = ledger.reconcile_symbol_with_kis(
+            "0193T0", "real", broker_qty=129, avg_price=18_500.0, broker=_Broker(),
+            now=datetime(2026, 7, 16, 10, 3, 0),
+        )
+        assert len(first["backfilled"]) == 1
+        assert second["mismatch"] is False
+        assert second["backfilled"] == []
+        assert len(ledger.load_ledger("20260716")) == 1
+
+
+class TestGetLedgerPath:
+    def test_get_ledger_path_matches_module_constant(self, _isolate_ledger_path):
+        assert ledger.get_ledger_path() == _isolate_ledger_path

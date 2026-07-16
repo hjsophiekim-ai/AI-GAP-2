@@ -82,6 +82,14 @@ class KisMockBroker(BrokerBase):
                 "settlement_pending_cash": 0.0, "raw_fields": {}, "error": str(e),
             }
 
+    def get_today_fills(self, symbol: str = "") -> dict:
+        """당일 체결 조회(거래원장 backfill용) — KIS 모의계좌 원본 체결 데이터."""
+        try:
+            return self.kis.get_today_fills(symbol=symbol)
+        except Exception as e:
+            logger.error("MOCK get_today_fills 예외 %s: %s", symbol, e)
+            return {"ok": False, "fills": [], "error": str(e)}
+
     def get_positions(self) -> list[Position]:
         result = self.kis.get_balance()
         if "error" in result:

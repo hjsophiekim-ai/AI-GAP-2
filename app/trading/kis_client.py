@@ -606,6 +606,77 @@ class KISClient:
             logger.error(f"[KIS-{self.mode.upper()}] 잔고 조회 예외: {e}")
             return {"cash": None, "orderable_cash": None, "positions": [], "error": str(e)}
 
+    def get_today_fills(self, symbol: str = "") -> dict:
+        """당일 주식 일별 주문체결 조회(TR TTTC8001R/VTTC8001R) — 거래원장 누락 체결을
+        KIS 원본 체결 데이터로 backfill(요구사항 2026-07-16)하기 위한 조회.
+
+        반환: {
+            "ok": bool, "fills": [{"symbol", "side"("BUY"/"SELL"), "order_id",
+                                    "quantity", "price", "timestamp"(ISO, KST)}], "error": str,
+        }
+        완전 체결(잔량 0)만 backfill 대상으로 포함한다 — 미체결/부분체결 잔량은 아직
+        확정된 체결이 아니므로 제외한다.
+        """
+        tr_id = TR_ORDER_HISTORY_MOCK if self.mode == "mock" else TR_ORDER_HISTORY_REAL
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        headers = self._auth_headers(tr_id)
+        today = kst_now().strftime("%Y%m%d")
+        params = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.product_code,
+            "INQR_STRT_DT": today,
+            "INQR_END_DT": today,
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": symbol or "",
+            "CCLD_DVSN": "01",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        try:
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 15))
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            if not resp.ok:
+                rt_cd = data.get("rt_cd", "")
+                msg1 = data.get("msg1", "")
+                return {"ok": False, "fills": [], "error": f"HTTP {resp.status_code}: rt_cd={rt_cd} msg1={msg1}"}
+            rt_cd = data.get("rt_cd", "")
+            if rt_cd != "0":
+                return {"ok": False, "fills": [], "error": f"rt_cd={rt_cd}: {data.get('msg1', '')}"}
+
+            output = data.get("output1") or []
+            if isinstance(output, dict):
+                output = [output]
+            fills = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                ccld_qty = _to_int(_first_present(item, "tot_ccld_qty", "ccld_qty"), 0)
+                if ccld_qty <= 0:
+                    continue
+                side_code = _first_present(item, "sll_buy_dvsn_cd", default="")
+                side = "SELL" if str(side_code) == "01" else "BUY"
+                order_time = _first_present(item, "ord_tmd", "ccld_tmd", default="")
+                fills.append({
+                    "symbol": _first_present(item, "pdno", "symbol", default=""),
+                    "side": side,
+                    "order_id": _first_present(item, "odno", "order_id", default=""),
+                    "quantity": ccld_qty,
+                    "price": _to_float(_first_present(item, "avg_prvs", "ccld_unpr", "avg_price"), 0.0) or 0.0,
+                    "timestamp": f"{today}{order_time}" if order_time else today,
+                })
+            return {"ok": True, "fills": fills, "error": None}
+        except Exception as e:
+            logger.error(f"[KIS-{self.mode.upper()}] 당일체결 조회 예외: {e}")
+            return {"ok": False, "fills": [], "error": str(e)}
+
     def get_account_cash_breakdown(self) -> dict:
         """계좌 현금 상세 분리 조회.
         반환: {

@@ -25,6 +25,7 @@ from app.trading.hynix_switch_position_manager import (
     run_switch_or_entry, run_liquidation_if_needed, run_tp_sl_if_needed, evaluate_tp_sl,
 )
 from app.services.hynix_switch_state import default_state
+from app.utils.time_utils import kst_now
 
 
 class DummyBroker:
@@ -636,6 +637,42 @@ def test_kis_confirmed_holding_overrides_stale_no_holding_state():
     assert state["position_sync_status"] == "SYNCED"
     assert state["position"]["symbol"] == INVERSE_SYMBOL
     assert state["position"]["quantity"] == 832
+
+
+def test_broker_confirmed_new_position_backfills_ledger_before_state_update():
+    """요구사항(2026-07-16 실측) — KIS에 0193T0 129주 실보유가 확인되는데 거래원장
+    매수/매도/총체결이 전부 0건이던 사고. 로컬 state는 "보유 없음"인데 KIS가 새
+    포지션을 보고하면, state.position을 덮어쓰기 전에 먼저 원장에 그 매수를
+    backfill해야 한다 — 그래야 "브로커 포지션은 있으나 원장 매수이력 없음"이 사라진다."""
+    from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
+    from app.services.hynix_execution_ledger import load_ledger, compute_ledger_net_quantity
+
+    state = default_state()
+    state["mode"] = "real"
+    state["position"] = {**state["position"], "symbol": None, "quantity": 0}
+
+    class _NewlyConfirmedPositionManager:
+        last_sync_ok = True
+        mode = "real"
+        broker = object()  # get_today_fills 미구현 — approximate backfill 경로 사용
+        current_position = {
+            "symbol": LONG_SYMBOL, "name": LONG_NAME, "quantity": 129,
+            "avg_price": 18_500.0, "conflict": False,
+        }
+
+    apply_position_manager_to_state(state, _NewlyConfirmedPositionManager())
+
+    assert state["position"]["symbol"] == LONG_SYMBOL
+    assert state["position"]["quantity"] == 129
+
+    today = kst_now().strftime("%Y%m%d")
+    df = load_ledger(today)
+    live = df[(df["success"] == True) & (df["symbol"] == LONG_SYMBOL)]  # noqa: E712
+    assert len(live) == 1
+    assert live.iloc[0]["action"] == "BUY"
+    assert int(live.iloc[0]["executed_qty"]) == 129
+    assert compute_ledger_net_quantity(LONG_SYMBOL, "real", today) == 129
+    assert state["ledger_reconciliation"]["results"][LONG_SYMBOL]["mismatch"] is True
 
 
 def test_liquidation_queries_broker_even_when_local_state_is_empty():

@@ -71,6 +71,16 @@ SIGNAL_SOURCE_ADAPTIVE_FUSION = "ADAPTIVE_FUSION"
 SIGNAL_SOURCE_PREDICTION_V2_ASSISTED = "PREDICTION_V2_ASSISTED"
 # 하위호환(레거시 코드가 참조할 수 있음) — 새 코드는 SIGNAL_SOURCE_ACTIVE_ONLY를 쓴다.
 SIGNAL_SOURCE_ACTIVE_STRATEGY_MOCK = "ACTIVE_STRATEGY_MOCK"
+# 요구사항(2026-07-16) — KIS에 실제 체결/보유가 확인되는데 원장에는 없는 체결을
+# 사후 복구(backfill)한 행임을 표시한다(정상 실시간 기록과 구분해 사후 분석 가능).
+SIGNAL_SOURCE_KIS_RECONCILE_BACKFILL = "KIS_RECONCILE_BACKFILL"
+
+
+def get_ledger_path() -> Path:
+    """원장 writer/reader가 반드시 공유해야 하는 단일 경로 조회 함수(요구사항 2026-07-16
+    — writer와 UI reader가 서로 다른 경로를 참조해 "브로커에는 보유 중인데 원장은
+    0건"으로 보이는 사고를 막는다). $AI_GAP_DATA_DIR/logs/hynix_execution_ledger.csv."""
+    return _LEDGER_PATH
 
 
 def _new_trade_id() -> str:
@@ -126,8 +136,13 @@ def record_execution(
     target_position_pct: Optional[float] = None,
     gross_pnl: float = 0.0, buy_fee: float = 0.0, sell_fee: float = 0.0,
     transaction_tax: float = 0.0, slippage_cost: float = 0.0, net_pnl: float = 0.0,
+    raise_on_failure: bool = False,
 ) -> str:
     """단일 체결/시도를 원장에 append하고 새로 발급한 trade_id를 반환한다.
+
+    raise_on_failure=True면 CSV 쓰기 실패 시 예외를 삼키지 않고 그대로 올린다 —
+    record_confirmed_fill()이 이걸로 LEDGER_WRITE_FAILED를 감지한다(기본값 False는
+    기존 호출부(_record_order 등)의 하위호환을 위해 계속 예외를 삼키고 로그만 남긴다).
 
     실패한 시도(success=False)도 기록한다 — "왜 이번엔 주문이 안 나갔는지" 추적을
     위해 스킵/실패 사유까지 원장에 남기는 것이 목적이다. Adaptive Fusion 관련
@@ -170,6 +185,8 @@ def record_execution(
             writer.writerow(row)
     except Exception as exc:
         logger.error("[ExecutionLedger] 원장 기록 실패(중대 — 손익/거래횟수 집계에 영향): %s", exc)
+        if raise_on_failure:
+            raise
     return trade_id
 
 
@@ -195,6 +212,236 @@ def load_ledger(date_str: Optional[str] = None) -> pd.DataFrame:
     if date_str:
         df = df[df["timestamp"].dt.strftime("%Y%m%d") == date_str]
     return df.sort_values("timestamp").reset_index(drop=True)
+
+
+def _position_delta_from_row(row) -> Optional[int]:
+    try:
+        before = row.get("before_qty")
+        after = row.get("after_qty")
+        if pd.isna(before) or pd.isna(after):
+            return None
+        return int(after) - int(before)
+    except Exception:
+        return None
+
+
+def _normalize_order_id(order_id) -> Optional[str]:
+    """order_id를 dedup 비교용으로 정규화한다. CSV 왕복 시 pandas가 숫자형
+    order_id의 앞자리 0을 지워버릴 수 있어(예: "0000012345" -> 12345), 숫자면
+    int로 정규화해 기록 시점/재조회 시점 표현이 항상 같은 키로 비교되게 한다."""
+    if order_id is None:
+        return None
+    try:
+        if pd.isna(order_id):
+            return None
+    except Exception:
+        pass
+    text = str(order_id).strip()
+    if not text:
+        return None
+    try:
+        return str(int(float(text)))
+    except Exception:
+        return text
+
+
+def _dedup_key(
+    mode: str, symbol: str, action: str, order_id: Optional[str],
+    timestamp, executed_qty, executed_price, position_delta,
+) -> tuple:
+    """요구사항(2026-07-16) — account + mode + date + symbol + side + order_no/fill_no로
+    식별하고, 주문번호가 없으면 timestamp + qty + price + position_delta로 식별한다."""
+    normalized_order_id = _normalize_order_id(order_id)
+    if normalized_order_id:
+        return ("order", mode, symbol, action, normalized_order_id)
+    ts_key = timestamp.isoformat(timespec="seconds") if hasattr(timestamp, "isoformat") else str(timestamp)
+    try:
+        price_key = round(float(executed_price), 4) if executed_price is not None else None
+    except Exception:
+        price_key = None
+    try:
+        qty_key = int(executed_qty) if executed_qty is not None else None
+    except Exception:
+        qty_key = None
+    return ("synthetic", mode, symbol, action, ts_key, qty_key, price_key, position_delta)
+
+
+def _existing_dedup_keys(date_str: str) -> set:
+    df = load_ledger(date_str)
+    keys: set = set()
+    if df.empty:
+        return keys
+    for _, row in df.iterrows():
+        delta = _position_delta_from_row(row)
+        order_id = row.get("order_id")
+        mode = row.get("mode")
+        symbol = row.get("symbol")
+        action = row.get("action")
+        normalized_order_id = _normalize_order_id(order_id)
+        if normalized_order_id:
+            keys.add(("order", mode, symbol, action, normalized_order_id))
+        keys.add(_dedup_key(mode, symbol, action, None, row.get("timestamp"), row.get("executed_qty"), row.get("executed_price"), delta))
+    return keys
+
+
+def record_confirmed_fill(
+    *, action: str, symbol: str, executed_qty: int, executed_price: Optional[float],
+    mode: str, before_qty: int, after_qty: int, order_id: str = "",
+    now: Optional[datetime] = None, signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH,
+    strategy_name: str = "hynix_switch", realized_pnl: Optional[float] = None,
+    cash_before: Optional[float] = None, cash_after: Optional[float] = None,
+    fees: float = 0.0, tax: float = 0.0, gross_pnl: float = 0.0, buy_fee: float = 0.0,
+    sell_fee: float = 0.0, transaction_tax: float = 0.0, slippage_cost: float = 0.0, net_pnl: float = 0.0,
+    requested_qty: Optional[int] = None, requested_price: Optional[float] = None,
+    parent_trade_id: Optional[str] = None,
+    active_probability: Optional[float] = None, prediction_v2_probability: Optional[float] = None,
+    cycle_probability: Optional[float] = None, fused_probability: Optional[float] = None,
+    prediction_v2_weight: Optional[float] = None, dominant_model: Optional[str] = None,
+    model_agreement: Optional[float] = None, expected_value: Optional[float] = None,
+    target_position_pct: Optional[float] = None,
+) -> dict:
+    """모든 실제 체결 확정 경로(신규매수/부분매도/전량매도/스위칭/Dynamic Exit/
+    Big Trend Holding/KIS 잔고 재조회로 체결이 확인되는 경로)가 반드시 거쳐야 하는
+    단일 기록 지점(요구사항 2026-07-16). 호출자는 반드시 state.position을 갱신하기
+    전에 이 함수를 호출해야 한다 — 원장 기록이 먼저, 상태 갱신은 그 다음이다.
+
+    이미 기록된 체결(order_id 또는 timestamp+qty+price+position_delta)은 중복
+    기록하지 않는다(idempotent — 같은 체결이 재확인 사이클에서 다시 넘어와도 안전).
+
+    Returns: {"recorded": bool, "duplicate": bool, "trade_id": str|None, "error": str|None}
+    원장 쓰기 자체가 실패해도 예외를 던지지 않는다 — 호출자가 "error"를 보고
+    LEDGER_WRITE_FAILED critical alert를 세팅해야 한다(체결 자체는 취소하지 않음).
+    """
+    now = now or kst_now()
+    position_delta = None
+    try:
+        position_delta = int(after_qty) - int(before_qty)
+    except Exception:
+        position_delta = None
+
+    key = _dedup_key(mode, symbol, action, order_id, now, executed_qty, executed_price, position_delta)
+    if key in _existing_dedup_keys(now.strftime("%Y%m%d")):
+        return {"recorded": False, "duplicate": True, "trade_id": None, "error": None}
+
+    try:
+        trade_id = record_execution(
+            action=action, symbol=symbol,
+            requested_qty=requested_qty if requested_qty is not None else executed_qty,
+            executed_qty=executed_qty,
+            requested_price=requested_price if requested_price is not None else executed_price,
+            executed_price=executed_price, success=True, mode=mode, strategy_name=strategy_name,
+            signal_source=signal_source, before_qty=before_qty, after_qty=after_qty,
+            cash_before=cash_before, cash_after=cash_after, realized_pnl=realized_pnl,
+            fees=fees, tax=tax, order_id=order_id, position_confirmed=True,
+            is_test_order=False, now=now, gross_pnl=gross_pnl, buy_fee=buy_fee, sell_fee=sell_fee,
+            transaction_tax=transaction_tax, slippage_cost=slippage_cost, net_pnl=net_pnl,
+            parent_trade_id=parent_trade_id,
+            active_probability=active_probability, prediction_v2_probability=prediction_v2_probability,
+            cycle_probability=cycle_probability, fused_probability=fused_probability,
+            prediction_v2_weight=prediction_v2_weight, dominant_model=dominant_model,
+            model_agreement=model_agreement, expected_value=expected_value,
+            target_position_pct=target_position_pct,
+            raise_on_failure=True,
+        )
+        return {"recorded": True, "duplicate": False, "trade_id": trade_id, "error": None}
+    except Exception as exc:
+        logger.error("[ExecutionLedger] record_confirmed_fill 기록 실패(LEDGER_WRITE_FAILED): %s", exc)
+        return {"recorded": False, "duplicate": False, "trade_id": None, "error": str(exc)}
+
+
+def compute_ledger_net_quantity(symbol: str, mode: str, date_str: Optional[str] = None) -> int:
+    """원장 기준 오늘 순수량(BUY 누적 - SELL 누적, 성공/운영거래만)을 계산한다.
+    KIS 실제 보유수량과 대조해 LEDGER_POSITION_MISMATCH를 판단하는 데 쓰인다."""
+    df = load_ledger(date_str or kst_now().strftime("%Y%m%d"))
+    if df.empty:
+        return 0
+    live = df[(df["success"] == True) & (df["is_test_order"] != True) & (df["mode"] == mode) & (df["symbol"] == symbol)]  # noqa: E712
+    if live.empty:
+        return 0
+    buy_qty = pd.to_numeric(live[live["action"] == "BUY"]["executed_qty"], errors="coerce").fillna(0).sum()
+    sell_qty = pd.to_numeric(live[live["action"] == "SELL"]["executed_qty"], errors="coerce").fillna(0).sum()
+    return int(buy_qty - sell_qty)
+
+
+def reconcile_symbol_with_kis(
+    symbol: str, mode: str, broker_qty: int, avg_price: Optional[float], *,
+    broker=None, now: Optional[datetime] = None,
+) -> dict:
+    """요구사항 5 — 매 사이클 KIS 실제 보유수량과 원장 순수량을 비교하고, 불일치하면
+    KIS 당일체결조회로 누락된 체결을 backfill한다.
+
+    KIS 당일체결조회가 없거나(broker에 get_today_fills 미구현) 실패하거나 그 델타를
+    설명하는 체결을 찾지 못하면, 브로커가 보고하는 현재 평단가를 이용해 근사치로 1건
+    backfill한다(signal_source=KIS_RECONCILE_BACKFILL로 표시 — 실시간 정상 기록과
+    구분됨). 이미 채워 넣은 체결은 record_confirmed_fill()의 dedup으로 중복되지 않는다.
+    """
+    now = now or kst_now()
+    date_str = now.strftime("%Y%m%d")
+    ledger_qty = compute_ledger_net_quantity(symbol, mode, date_str)
+    delta = int(broker_qty) - int(ledger_qty)
+    result = {
+        "symbol": symbol, "kis_quantity": int(broker_qty), "ledger_quantity": int(ledger_qty),
+        "mismatch": delta != 0, "backfilled": [], "error": None,
+    }
+    if delta == 0:
+        return result
+
+    action = "BUY" if delta > 0 else "SELL"
+    remaining = abs(delta)
+
+    fills: list = []
+    if broker is not None and hasattr(broker, "get_today_fills"):
+        try:
+            fetched = broker.get_today_fills(symbol=symbol)
+            if fetched.get("ok"):
+                fills = [f for f in (fetched.get("fills") or []) if f.get("side") == action]
+            else:
+                result["error"] = fetched.get("error")
+        except Exception as exc:
+            result["error"] = str(exc)
+
+    for fill in fills:
+        if remaining <= 0:
+            break
+        qty = int(fill.get("quantity") or 0)
+        if qty <= 0:
+            continue
+        qty = min(qty, remaining)
+        try:
+            fill_ts = datetime.strptime(str(fill.get("timestamp")), "%Y%m%d%H%M%S")
+        except Exception:
+            fill_ts = now
+        before = ledger_qty if action == "BUY" else ledger_qty
+        after = before + qty if action == "BUY" else before - qty
+        outcome = record_confirmed_fill(
+            action=action, symbol=symbol, executed_qty=qty, executed_price=fill.get("price"),
+            mode=mode, before_qty=before, after_qty=after, order_id=fill.get("order_id") or "",
+            now=fill_ts, signal_source=SIGNAL_SOURCE_KIS_RECONCILE_BACKFILL,
+        )
+        if outcome.get("recorded"):
+            result["backfilled"].append({"source": "kis_today_fills", **outcome})
+            ledger_qty = after
+            remaining -= qty
+
+    if remaining > 0:
+        # KIS 당일체결로 델타를 전부 설명하지 못했다(API 미지원/실패/조회 누락) —
+        # 브로커가 보고하는 현재 평단가로 근사치 1건을 backfill해 최소한 순수량은
+        # 맞춘다. 다음 사이클에 같은 delta가 이미 해소돼 있으므로 재실행돼도
+        # dedup(timestamp+qty+price+position_delta)이 겹치지 않게 before/after를
+        # 그대로 재사용해도 안전하다.
+        before = ledger_qty
+        after = before + remaining if action == "BUY" else before - remaining
+        outcome = record_confirmed_fill(
+            action=action, symbol=symbol, executed_qty=remaining, executed_price=avg_price,
+            mode=mode, before_qty=before, after_qty=after, order_id="",
+            now=now, signal_source=SIGNAL_SOURCE_KIS_RECONCILE_BACKFILL,
+        )
+        if outcome.get("recorded"):
+            result["backfilled"].append({"source": "approximate_avg_price", **outcome})
+        elif outcome.get("error"):
+            result["error"] = outcome.get("error")
+
+    return result
 
 
 def compute_trade_counters(date_str: Optional[str] = None, include_test: bool = False) -> dict:

@@ -393,11 +393,9 @@ if _fw_state.get("blocked_reason"):
 # (2026-07-16 실측). AI_GAP_DATA_DIR이 실제로 적용됐는지, 그 경로가 진짜로
 # 쓰기 가능한지를 항상 보이는 곳에 표시한다.
 try:
-    from app.utils.data_paths import (
-        DATA_ROOT, DATA_ROOT_ENV_VAR, check_writable, file_info,
-        EXECUTION_LEDGER_PATH, STATE_DIR,
-    )
+    from app.utils.data_paths import DATA_ROOT, DATA_ROOT_ENV_VAR, check_writable, file_info, STATE_DIR
     from app.services.hynix_switch_state import _state_path
+    from app.services.hynix_execution_ledger import get_ledger_path
 
     _data_writable_status = check_writable()
     _dp_cols = st.columns(3)
@@ -416,7 +414,7 @@ try:
             f"{_data_writable_status.get('error')}"
         )
     with st.expander("💾 데이터 저장 경로 상세(원장/상태 파일 실제 경로·크기·수정시각)"):
-        _ledger_info = file_info(EXECUTION_LEDGER_PATH)
+        _ledger_info = file_info(get_ledger_path())
         _state_info = file_info(_state_path(switch_state.get("mode", "mock")))
         st.markdown(f"**거래원장(execution ledger) 실제 경로**: `{_ledger_info['path']}`")
         st.json(_ledger_info)
@@ -428,6 +426,45 @@ try:
         )
 except Exception as _data_path_exc:
     st.warning(f"데이터 저장 경로 진단 실패: {_data_path_exc}")
+
+# ── 원장 ↔ KIS 재조정(reconciliation) 진단 — 요구사항(2026-07-16): KIS 실제
+# 체결/보유는 확인되는데 거래원장이 0건으로 남는 사고를 사이클마다 자동 감지하고
+# backfill한 결과를 화면에서 바로 확인할 수 있게 한다.
+try:
+    from app.services.hynix_execution_ledger import get_ledger_path, load_ledger
+
+    _ledger_path_now = get_ledger_path()
+    _recon = switch_state.get("ledger_reconciliation") or {}
+    _recon_results = _recon.get("results") or {}
+    _ledger_today_rows = load_ledger(kst_now().strftime("%Y%m%d"))
+    _last_write_ts = (
+        _ledger_today_rows["timestamp"].max().isoformat()
+        if not _ledger_today_rows.empty else None
+    )
+
+    with st.expander("🔗 거래원장 ↔ KIS 재조정(reconciliation) 진단", expanded=bool(
+        any(r.get("mismatch") for r in _recon_results.values())
+    )):
+        st.markdown(f"**원장 실제 경로**: `{_ledger_path_now}`")
+        _recon_cols = st.columns(2)
+        _recon_cols[0].metric("마지막 재조정 확인 시각", _recon.get("checked_at") or "—")
+        _recon_cols[1].metric("마지막 원장 기록 시각", _last_write_ts or "기록 없음")
+
+        if not _recon_results:
+            st.caption("이번 세션에서 아직 재조정 점검이 실행되지 않았습니다(다음 사이클에 자동 실행됩니다).")
+        for _symbol, _r in _recon_results.items():
+            _cols = st.columns(4)
+            _cols[0].metric(f"{_symbol} KIS 수량", _r.get("kis_quantity", "—"))
+            _cols[1].metric(f"{_symbol} 원장 순수량", _r.get("ledger_quantity", "—"))
+            _diff = (_r.get("kis_quantity") or 0) - (_r.get("ledger_quantity") or 0)
+            _cols[2].metric("차이", _diff)
+            _cols[3].metric("상태", "🔴 LEDGER_POSITION_MISMATCH" if _r.get("mismatch") else "🟢 일치")
+            if _r.get("backfilled"):
+                st.success(f"자동 backfill 완료: {len(_r['backfilled'])}건 — {_r['backfilled']}")
+            if _r.get("error"):
+                st.warning(f"재조정 조회 오류(다음 사이클에 재시도): {_r['error']}")
+except Exception as _recon_exc:
+    st.warning(f"원장 재조정 진단 실패: {_recon_exc}")
 
 _pt = switch_state.get("last_primary_trend") or {}
 if _pt:
@@ -1533,9 +1570,19 @@ else:
 
         bt18, bt19 = st.columns(2)
         with bt18:
-            st.metric("Remaining Position %", f"{_num(_bt.get('max_position_pct')):.0f}%")
+            # 요구사항(2026-07-16) — 이전에는 이 metric이 max_position_pct(추세강도
+            # 기준 "신규진입 권장비중")를 표시해, 129주를 그대로 보유 중인데도 추세강도가
+            # 약하면(RANGE 등) 0%로 보여 "포지션이 사라진 것처럼" 오인시켰다. 실제
+            # 보유 잔량(부분익절 이후 남은 비율)으로 바꾼다 — 보유 없으면 0%가 맞다.
+            _pos_now = switch_state.get("position") or {}
+            if _pos_now.get("symbol") and (_pos_now.get("quantity") or 0) > 0:
+                _remaining_pct = 50.0 if _pos_now.get("partial_tp1_done") else 100.0
+                st.metric("Remaining Position %(실제 보유 잔량)", f"{_remaining_pct:.0f}%")
+            else:
+                st.metric("Remaining Position %(실제 보유 잔량)", "0%(보유 없음)")
         with bt19:
             st.metric("Final Hold Action", _bt.get("final_hold_action") or "—")
+        st.caption(f"참고 — 권장 신규진입 비중(추세강도 기준): {_num(_bt.get('max_position_pct')):.0f}%")
 
         _transition = _bt.get("regime_transition_action") or {}
         if _transition.get("action") not in (None, "NONE"):

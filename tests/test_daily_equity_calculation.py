@@ -353,6 +353,44 @@ def test_unsettled_realized_pnl_does_not_mask_a_genuine_mismatch():
     assert result["blocked_reason"] == engine.ACCOUNT_EQUITY_MISMATCH
 
 
+# ---------------------------------------------------------------------------
+# 8) 방금 체결된 매수 직후 KIS 잔고조회(output1)가 아직 새 보유종목을 반영하지
+#    못하는 브로커 포지션 동기화 지연 — 계좌 이상(ACCOUNT_EQUITY_MISMATCH)이
+#    아니므로 신규주문을 차단하지 않는다(2026-07-16 실측: 500만원 매수 직후
+#    BUY 신호가 risk_manager 단계에서 반복 차단됨).
+# ---------------------------------------------------------------------------
+
+def test_broker_missing_held_symbol_falls_back_to_ledger_not_mismatch():
+    state = _state(realized_pnl_krw=0.0, baseline=10_000_000.0)
+    held_position = {
+        "symbol": engine.HYNIX_SYMBOL, "quantity": 50, "avg_price": 100_000.0, "entry_price": 100_000.0,
+    }
+    result = engine.compute_net_daily_return(
+        state, position=held_position, hynix_price=100_500.0, inverse_price=9_000.0,
+        # cash already reflects the buy debit, but output1 hasn't caught up yet — empty positions.
+        cash=5_000_000.0, positions_from_broker=[], cash_fetch_ok=True,
+    )
+    assert result["blocked_reason"] is None
+    assert result["calculation_warning"] == "BROKER_POSITION_SYNC_LAG_LEDGER_FALLBACK"
+    assert result["net_unrealized_pnl"] != 0.0
+
+
+def test_broker_reporting_held_symbol_is_not_treated_as_sync_lag():
+    """브로커가 실제로 그 심볼을 정상 보유 중으로 보고하면(정상 케이스) 폴백 없이
+    기존 현재자산 기준 계산을 그대로 사용한다."""
+    state = _state(realized_pnl_krw=0.0, baseline=10_000_000.0)
+    held_position = {
+        "symbol": engine.HYNIX_SYMBOL, "quantity": 50, "avg_price": 100_000.0, "entry_price": 100_000.0,
+    }
+    result = engine.compute_net_daily_return(
+        state, position=held_position, hynix_price=100_000.0, inverse_price=9_000.0,
+        cash=5_000_000.0,
+        positions_from_broker=[{"symbol": engine.HYNIX_SYMBOL, "quantity": 50, "market_value": 5_000_000.0}],
+        cash_fetch_ok=True,
+    )
+    assert result.get("calculation_warning") != "BROKER_POSITION_SYNC_LAG_LEDGER_FALLBACK"
+
+
 def test_risk_manager_and_ui_use_identical_return_value():
     state = _state(realized_pnl_krw=33_545.89, baseline=10_000_000.0)
     result = engine.compute_net_daily_return(
