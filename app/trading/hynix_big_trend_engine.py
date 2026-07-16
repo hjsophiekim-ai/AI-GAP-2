@@ -209,6 +209,24 @@ _REGIME_CONFIRM_BARS_1MIN = 2
 _WHIPSAW_REPEAT_WINDOW_SECONDS = 120
 
 
+# 요구사항(2026-07-16) — Big Trend Holding은 더 이상 자체적으로 장세를 재분류하지
+# 않는다. 이미 2연속 사이클로 확정된 공용 Adaptive Regime(app.trading.
+# adaptive_market_regime) 결과를 이 표로 매핑만 해서 실행한다.
+_ADAPTIVE_REGIME_TO_BIG_TREND_REGIME = {
+    "STRONG_UP": REGIME_STRONG_TREND, "STRONG_DOWN": REGIME_STRONG_TREND,
+    "RANGE": REGIME_RANGE, "VOLATILE_RANGE": REGIME_WHIPSAW,
+    "HIGH_VOLATILITY": REGIME_WHIPSAW, "PANIC": REGIME_PANIC,
+    "REVERSAL": REGIME_REVERSAL_RISK, "DATA_INSUFFICIENT": REGIME_RANGE,
+}
+
+
+def map_adaptive_regime_to_big_trend_regime(adaptive_regime: Optional[str]) -> str:
+    """공용 Adaptive Regime 결과를 Big Trend Holding의 정책 실행에 필요한 자체
+    regime 이름으로 매핑만 한다(재분류 없음). 모르는/빈 값은 RANGE(가장 보수적인
+    기본값)로 폴백한다."""
+    return _ADAPTIVE_REGIME_TO_BIG_TREND_REGIME.get(adaptive_regime, REGIME_RANGE)
+
+
 def default_regime_state() -> dict:
     return {
         "confirmed_regime": None, "candidate_regime": None, "candidate_bar_count": 0,
@@ -726,6 +744,7 @@ class HynixBigTrendEngine:
         first_tp_taken: bool = False, volatility_class: str = "NORMAL",
         is_strong_trend_initial_phase: bool = False,
         regime_state: Optional[dict] = None, now: Optional[datetime] = None, bar_completed_3min: bool = False,
+        adaptive_regime: Optional[str] = None,
     ) -> dict:
         trend = compute_trend_strength_score(features)
         direction = trend["dominant_direction"]
@@ -733,25 +752,49 @@ class HynixBigTrendEngine:
 
         is_panic = bool(features.get("is_panic_signal"))
         is_recovery = bool(features.get("is_recovery_signal"))
-        raw_regime = classify_trend_regime(
-            trend["trend_strength_score"], persistence, reversal_probability_5m,
-            features.get("relative_volume"), features.get("atr_pct"), recent_direction_flip_count,
-            is_panic_signal=is_panic, is_recovery_signal=is_recovery,
-        )
 
-        # 섹션 21 — regime_state가 주어지면(실시간 연동) 한 틱의 변화로 바로 전환하지
-        # 않고 confirm된 regime만 실제 정책에 사용한다. 주어지지 않으면(단위 테스트 등)
-        # 기존처럼 즉시 분류 결과를 그대로 쓴다(하위호환).
-        updated_regime_state = None
-        transition_action = {"action": "NONE", "reduce_ratio": 0.0}
-        if regime_state is not None and now is not None:
-            previous_confirmed = regime_state.get("confirmed_regime")
-            updated_regime_state = update_regime_state(regime_state, raw_regime, trend["trend_strength_score"], now, bar_completed_3min)
-            regime = updated_regime_state["confirmed_regime"]
-            if previous_confirmed is not None and previous_confirmed != regime:
-                transition_action = compute_regime_transition_action(previous_confirmed, regime)
+        if adaptive_regime is not None:
+            # 요구사항(2026-07-16) — 별도로 재분류하지 않는다. 이미 2연속 사이클로
+            # 확정된 공용 Adaptive Regime 결과를 그대로 매핑해서 실행만 한다.
+            # regime_state는 "전환이 방금 일어났는지"(포지션 축소 트리거용)만
+            # 계속 추적한다 — classify_trend_regime()/update_regime_state()의
+            # 자체 확인 절차(1분봉 2연속/3분봉 완성/confidence>=80)는 더 이상
+            # 거치지 않는다(공용 엔진이 이미 그 역할을 함).
+            raw_regime = map_adaptive_regime_to_big_trend_regime(adaptive_regime)
+            updated_regime_state = None
+            transition_action = {"action": "NONE", "reduce_ratio": 0.0}
+            if regime_state is not None and now is not None:
+                previous_confirmed = regime_state.get("confirmed_regime")
+                updated_regime_state = dict(regime_state)
+                if previous_confirmed != raw_regime:
+                    updated_regime_state["confirmed_regime"] = raw_regime
+                    updated_regime_state["regime_started_at"] = now.isoformat()
+                    updated_regime_state["transition_count"] = regime_state.get("transition_count", 0) + 1
+                    if previous_confirmed is not None:
+                        transition_action = compute_regime_transition_action(previous_confirmed, raw_regime)
+                regime = updated_regime_state["confirmed_regime"]
+            else:
+                regime = raw_regime
         else:
-            regime = raw_regime
+            raw_regime = classify_trend_regime(
+                trend["trend_strength_score"], persistence, reversal_probability_5m,
+                features.get("relative_volume"), features.get("atr_pct"), recent_direction_flip_count,
+                is_panic_signal=is_panic, is_recovery_signal=is_recovery,
+            )
+
+            # 섹션 21 — regime_state가 주어지면(실시간 연동) 한 틱의 변화로 바로 전환하지
+            # 않고 confirm된 regime만 실제 정책에 사용한다. 주어지지 않으면(단위 테스트 등)
+            # 기존처럼 즉시 분류 결과를 그대로 쓴다(하위호환).
+            updated_regime_state = None
+            transition_action = {"action": "NONE", "reduce_ratio": 0.0}
+            if regime_state is not None and now is not None:
+                previous_confirmed = regime_state.get("confirmed_regime")
+                updated_regime_state = update_regime_state(regime_state, raw_regime, trend["trend_strength_score"], now, bar_completed_3min)
+                regime = updated_regime_state["confirmed_regime"]
+                if previous_confirmed is not None and previous_confirmed != regime:
+                    transition_action = compute_regime_transition_action(previous_confirmed, regime)
+            else:
+                regime = raw_regime
 
         reversal = count_reversal_confirmations(reversal_signals)
 

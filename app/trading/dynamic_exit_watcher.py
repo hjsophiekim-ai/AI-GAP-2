@@ -164,6 +164,11 @@ def _compute_big_trend_decision(state: dict, position: dict, symbol: str, curren
     first_tp_taken = bool(position.get("big_trend_first_tp_taken"))
     regime_state = position.get("big_trend_regime_state") or bte.default_regime_state()
 
+    # 요구사항(2026-07-16, 남은 통합 작업5) — Big Trend Holding은 더 이상 자체
+    # classify_trend_regime()으로 재분류하지 않는다. 매 사이클 한 번만 계산돼
+    # state에 저장된 공용 confirmed_regime을 그대로 넘겨 프로필을 실행만 한다.
+    _adaptive_confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+
     engine = bte.HynixBigTrendEngine()
     result = engine.compute(
         features=features, held_symbol=symbol, entry_price=entry_price, current_price=current_price,
@@ -172,7 +177,7 @@ def _compute_big_trend_decision(state: dict, position: dict, symbol: str, curren
         reversal_signals=reversal_signals, recent_direction_flip_count=recent_flip_count,
         hard_stop_triggered=hard_stop_triggered, first_tp_taken=first_tp_taken,
         volatility_class=volatility_class, is_strong_trend_initial_phase=is_strong_trend_initial,
-        regime_state=regime_state, now=now,
+        regime_state=regime_state, now=now, adaptive_regime=_adaptive_confirmed_regime,
     )
 
     # regime_state는 포지션 단위로 유지한다(청산 후 재진입 시 자연히 초기화됨 —
@@ -346,7 +351,11 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
     df_daily = _load_daily_df(symbol)
     df_1min = _load_minute_df(symbol)
 
-    decision = engine.decide(position, df_daily, df_1min, current_price, now)
+    # 요구사항(2026-07-16, 남은 통합 작업) — 신규진입/스위칭/청산이 전부 같은
+    # adaptive_regime 결과를 쓰도록, 매 사이클 한 번만 계산돼 state에 저장된
+    # confirmed_regime을 그대로 넘긴다(이 함수가 별도로 재분류하지 않음).
+    _adaptive_confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+    decision = engine.decide(position, df_daily, df_1min, current_price, now, confirmed_regime=_adaptive_confirmed_regime)
     state["position"] = position
     state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
 

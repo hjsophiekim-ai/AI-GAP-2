@@ -22,7 +22,7 @@ from app.trading.adaptive_market_regime import (
     classify_raw_regime, get_risk_profile, default_regime_confirmation_state,
     update_regime_confirmation, displayed_regime, is_opposite_trend,
     is_chase_blocked, is_entry_at_recent_extreme, opposite_signal_response,
-    compute_and_confirm_regime,
+    compute_and_confirm_regime, adaptive_regime_to_primary_trend_result,
     STRONG_UP, STRONG_DOWN, RANGE, VOLATILE_RANGE, HIGH_VOLATILITY, PANIC, REVERSAL, DATA_INSUFFICIENT,
 )
 
@@ -380,3 +380,66 @@ def test_compute_and_confirm_regime_returns_confirmed_profile_and_state():
     assert result2["confirmed_regime"] == STRONG_UP
     assert result2["profile"] == get_risk_profile(STRONG_UP)
     assert result2["previous_regime"] == DATA_INSUFFICIENT
+
+
+# ── PRIMARY_TREND 브릿지(2026-07-16, 남은 통합 작업1) — 별도 재분류 없이 이미
+# 계산된 adaptive_regime 결과에서만 파생시킨다 ──────────────────────────────
+
+def test_adaptive_regime_to_primary_trend_result_maps_strong_up_to_up():
+    adaptive_result = {
+        "confirmed_regime": STRONG_UP, "reasons": ["above VWAP", "15m trend UP"],
+        "snapshot": {
+            "gap_direction": "UP", "gap_pct": 0.3, "above_vwap": True, "vwap": 100_000.0,
+            "trend_15m": "UP", "trend_30m": "UP", "ema20_slope_pct": 0.1,
+            "swing": {"higher_high": True, "higher_low": True}, "relative_volume": 1.5,
+            "up_votes": 6, "down_votes": 0, "computed_at": "2026-07-16T10:00:00",
+        },
+    }
+    result = adaptive_regime_to_primary_trend_result(adaptive_result)
+    assert result["primary_trend"] == "UP"
+    assert result["above_vwap"] is True
+    assert result["trend_15m"] == "UP" and result["trend_30m"] == "UP"
+    assert result["swing_15m"] == {"higher_high": True, "higher_low": True}
+
+
+def test_adaptive_regime_to_primary_trend_result_maps_strong_down_to_down():
+    adaptive_result = {"confirmed_regime": STRONG_DOWN, "snapshot": {"above_vwap": False}}
+    result = adaptive_regime_to_primary_trend_result(adaptive_result)
+    assert result["primary_trend"] == "DOWN"
+
+
+def test_adaptive_regime_to_primary_trend_result_maps_everything_else_to_range():
+    for regime in (RANGE, VOLATILE_RANGE, HIGH_VOLATILITY, PANIC, REVERSAL, DATA_INSUFFICIENT):
+        result = adaptive_regime_to_primary_trend_result({"confirmed_regime": regime, "snapshot": {}})
+        assert result["primary_trend"] == "RANGE"
+
+
+def test_adaptive_regime_to_primary_trend_result_handles_none_input():
+    result = adaptive_regime_to_primary_trend_result(None)
+    assert result["primary_trend"] == "RANGE"
+
+
+# ── 장세별 LIVE 프로필 최종 확인(2026-07-16, 남은 통합 작업4) ─────────────────
+
+def test_live_profiles_match_final_spec_exactly():
+    strong_up = get_risk_profile(STRONG_UP)
+    assert strong_up["tp1_pct"] == 2.0 and strong_up["tp1_ratio"] == 0.25  # +2%에서 25% 익절
+    assert strong_up["uses_trailing"] is True  # 75% ATR trailing
+    strong_down = get_risk_profile(STRONG_DOWN)
+    assert strong_down["tp1_pct"] == 2.0 and strong_down["tp1_ratio"] == 0.25
+    assert strong_down["uses_trailing"] is True
+
+    range_profile = get_risk_profile(RANGE)
+    assert range_profile["tp1_pct"] == 1.5 and range_profile["tp2_pct"] == 2.0
+    assert range_profile["sl_pct"] == 0.8
+    assert range_profile["max_hold_minutes"] == 20
+
+    volatile_range = get_risk_profile(VOLATILE_RANGE)
+    assert volatile_range["tp1_pct"] == 0.8 and volatile_range["tp2_pct"] == 1.3
+    assert volatile_range["sl_pct"] == 0.6
+    assert volatile_range["max_hold_minutes"] == 8
+
+    panic = get_risk_profile(PANIC)
+    assert 0.10 <= panic["position_pct_multiplier"] <= 0.20  # 소액진입
+    assert 0.6 <= panic["sl_pct"] <= 0.8
+    assert panic["max_hold_minutes"] == 10

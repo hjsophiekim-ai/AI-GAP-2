@@ -687,6 +687,42 @@ def compute_and_confirm_regime(
     }
 
 
+def adaptive_regime_to_primary_trend_result(adaptive_regime_result: Optional[dict]) -> dict:
+    """요구사항(2026-07-16, 남은 통합 작업1) — hynix_primary_trend.py의 신규진입
+    게이트(evaluate_pullback_gate/new_inverse_entry_blocked/new_hynix_entry_blocked
+    등)가 계속 기대하는 PRIMARY_TREND(UP/DOWN/RANGE) 모양의 dict를, compute_and_
+    confirm_regime()이 이미 계산한 snapshot에서만 파생시켜 반환한다 — 별도로
+    compute_primary_trend()를 다시 호출해 재분류하지 않는다.
+
+    STRONG_UP→"UP", STRONG_DOWN→"DOWN", 그 외(RANGE/VOLATILE_RANGE/
+    HIGH_VOLATILITY/PANIC/REVERSAL/DATA_INSUFFICIENT)는 전부 "RANGE"로 매핑한다
+    (PRIMARY_TREND은 3단계뿐이므로, adaptive_market_regime의 세분화된 나머지
+    장세는 "확정된 강한 추세가 아니다"라는 의미에서 전부 RANGE에 해당한다).
+    """
+    from app.trading.hynix_primary_trend import PRIMARY_TREND_UP, PRIMARY_TREND_DOWN, PRIMARY_TREND_RANGE
+
+    adaptive_regime_result = adaptive_regime_result or {}
+    snapshot = adaptive_regime_result.get("snapshot") or {}
+    confirmed = adaptive_regime_result.get("confirmed_regime")
+    if confirmed == STRONG_UP:
+        primary_trend = PRIMARY_TREND_UP
+    elif confirmed == STRONG_DOWN:
+        primary_trend = PRIMARY_TREND_DOWN
+    else:
+        primary_trend = PRIMARY_TREND_RANGE
+    return {
+        "primary_trend": primary_trend,
+        "gap_direction": snapshot.get("gap_direction"), "gap_pct": snapshot.get("gap_pct"),
+        "above_vwap": snapshot.get("above_vwap"), "vwap": snapshot.get("vwap"),
+        "trend_15m": snapshot.get("trend_15m", "FLAT"), "trend_30m": snapshot.get("trend_30m", "FLAT"),
+        "ema20_slope_pct": snapshot.get("ema20_slope_pct"), "swing_15m": snapshot.get("swing") or {},
+        "relative_volume": snapshot.get("relative_volume"), "last_price": None,
+        "reasons": adaptive_regime_result.get("reasons") or [],
+        "up_votes": snapshot.get("up_votes", 0), "down_votes": snapshot.get("down_votes", 0),
+        "computed_at": snapshot.get("computed_at"),
+    }
+
+
 def displayed_regime(state: dict) -> str:
     """UI/게이트가 실제로 참고해야 할 "지금 이 순간의" 장세.
 

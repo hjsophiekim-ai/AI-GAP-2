@@ -96,6 +96,47 @@ def test_tick_executes_sell_on_take_profit(tmp_path, monkeypatch):
     assert fake_exit_log.exists()
 
 
+def _decide_result_stub(**overrides) -> dict:
+    base = {
+        "action": "HOLD", "ratio": 0.0, "reason": "test", "market_type": "RANGE", "regime": "RANGE",
+        "regime_confidence": None, "regime_reasons": [], "profile": {}, "snapshot": {},
+        "tp_pct": 1.0, "sl_pct": 1.0, "trailing_pct": None, "trailing_enabled": False,
+        "trailing_armed": False, "profit_lock_floor_pct": None, "exit_score": 0.0, "score_breakdown": {},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_tick_passes_state_confirmed_regime_to_decide(tmp_path, monkeypatch):
+    """요구사항(2026-07-16, 남은 통합 작업2) — dynamic_exit_watcher.py가 매 사이클
+    한 번만 계산된 state["adaptive_regime"]["confirmed_regime"]을 반드시
+    DynamicExitEngine.decide()에 전달해야 한다(별도 재분류 없이)."""
+    _setup_state_with_entry_bookkeeping(tmp_path, monkeypatch, entry_price=100_000.0)
+
+    monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: 100_500.0)
+    monkeypatch.setattr(watcher, "_load_daily_df", lambda symbol: None)
+    monkeypatch.setattr(watcher, "_load_minute_df", lambda symbol: None)
+
+    hynix_position = Position(symbol=HYNIX_SYMBOL, name=HYNIX_NAME, quantity=10, avg_price=100_000.0, current_price=100_500.0)
+    broker = _FakeSellBroker(positions=[hynix_position])
+    monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
+
+    state = state_module.load_state(mode="mock")
+    state["adaptive_regime"] = {"confirmed_regime": "STRONG_DOWN", "snapshot": {}}
+    state_module.save_state_atomic(state)
+
+    captured: dict = {}
+
+    class _CapturingEngine:
+        def decide(self, *args, **kwargs):
+            captured.update(kwargs)
+            return _decide_result_stub()
+
+    watcher.tick(now=datetime.now(), engine=_CapturingEngine())
+
+    assert captured.get("confirmed_regime") == "STRONG_DOWN"
+
+
 def _setup_e2e_position(tmp_path, monkeypatch, symbol, name, entry_price, qty, entry_minutes_ago=5, mode="mock"):
     """실제 현재 보유 중인 포지션(예: 0197X0 468주 @10,680원)과 동일한 구조를 원장+
     DryRunBroker에 실제로 재현한다 — 강제 신호가 아니라 진짜 BUY 체결을 통해 포지션을
@@ -291,6 +332,24 @@ class TestBigTrendHoldingIntegration:
         assert decision["action"] == "SELL_ALL"
         reloaded = state_module.load_state(mode="mock")
         assert reloaded["position"]["symbol"] is None
+
+    def test_big_trend_uses_shared_adaptive_regime_not_own_classification(self, tmp_path, monkeypatch):
+        """요구사항(2026-07-16, 남은 통합 작업5) — Big Trend Holding은 state에 이미
+        저장된 공용 adaptive_regime을 그대로 매핑해 실행한다(자체 재분류가 아님).
+        state["adaptive_regime"]["confirmed_regime"]=STRONG_DOWN이면, features 기반
+        자체 분류 결과와 무관하게 trend_regime이 STRONG_TREND로 매핑되어야 한다."""
+        current_price = self.ENTRY_PRICE * 1.010
+        self._setup(tmp_path, monkeypatch, current_price)
+
+        state = state_module.load_state(mode="mock")
+        state["adaptive_regime"] = {"confirmed_regime": "STRONG_DOWN", "snapshot": {}}
+        state_module.save_state_atomic(state)
+
+        watcher.tick(now=datetime.now())
+
+        reloaded = state_module.load_state(mode="mock")
+        assert reloaded["last_big_trend_result"]["trend_regime"] == "STRONG_TREND"
+        assert reloaded["last_big_trend_result"]["raw_trend_regime"] == "STRONG_TREND"
 
     def test_toggle_off_leaves_baseline_dynamic_exit_behavior(self, tmp_path, monkeypatch):
         current_price = self.ENTRY_PRICE * 1.010

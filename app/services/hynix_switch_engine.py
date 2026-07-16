@@ -42,6 +42,7 @@ from app.trading.hynix_primary_trend import (
     classify_short_term_move, compute_primary_trend, default_reversal_confirmation_state,
     inverse_block_vote_count, new_hynix_entry_blocked, new_inverse_entry_blocked, update_reversal_confirmation,
 )
+from app.trading.adaptive_market_regime import adaptive_regime_to_primary_trend_result
 
 _PULLBACK_MORNING_WINDOW_END = "10:00"
 _PULLBACK_PATIENCE_MINUTES = 2
@@ -2089,9 +2090,10 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             # 강한 신호(STRONG_BUY)도 PRIMARY_TREND 차단은 무시할 수 없다 — "강한
                             # 신호니까 눌림목 대기 생략"이 단기 조정을 실제 추세전환으로 오판하게
                             # 두지 않는다.
-                            strong_primary_trend_result = compute_primary_trend(
-                                df_1min, prev_close=enhanced_result.get("hynix_prev_close"), now=now,
-                            )
+                            # 요구사항(2026-07-16, 남은 통합 작업1) — 별도로 compute_primary_trend()를
+                            # 다시 호출해 재분류하지 않는다. 이번 사이클에 이미 한 번만 계산된 공용
+                            # state["adaptive_regime"] 결과에서만 파생시킨다.
+                            strong_primary_trend_result = adaptive_regime_to_primary_trend_result(state.get("adaptive_regime"))
                             state["last_primary_trend"] = strong_primary_trend_result
                             strong_ptrend = strong_primary_trend_result.get("primary_trend", PRIMARY_TREND_RANGE)
                             trend_block_reason = None
@@ -2130,9 +2132,9 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             }
                         else:
                             try:
-                                primary_trend_result = compute_primary_trend(
-                                    df_1min, prev_close=enhanced_result.get("hynix_prev_close"), now=now,
-                                )
+                                # 요구사항(2026-07-16, 남은 통합 작업1) — 여기서도 재분류하지 않고
+                                # 이번 사이클의 공용 adaptive_regime 결과에서만 파생시킨다.
+                                primary_trend_result = adaptive_regime_to_primary_trend_result(state.get("adaptive_regime"))
                                 state["last_primary_trend"] = primary_trend_result
                                 gate = evaluate_pullback_gate(
                                     state, desired_symbol, final_action, now, forced_info, df_1min, mode,

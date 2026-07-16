@@ -886,6 +886,79 @@ def test_strong_up_confirmed_blocks_new_inverse_entry(tmp_path, monkeypatch):
     assert result["state"]["position"].get("symbol") is None
 
 
+def test_new_entry_error_does_not_block_existing_position_liquidation(tmp_path, monkeypatch):
+    """요구사항7 — 신규진입 오류가 기존 포지션 청산을 막지 않는다.
+    run_liquidation_if_needed()는 entry-decision 블록보다 먼저 실행되고, entry
+    블록 자체도 run_switch_or_entry() 호출을 try/except로 감싸고 있으므로,
+    강제청산 시각(15:15 이후)에 신규진입 처리 중 예외가 나도 이미 실행된
+    청산은 그대로 완료돼야 한다."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    from app.data_sources.hynix_long_collector import LONG_SYMBOL, LONG_NAME
+    from app.models import Position, OrderResult
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "INVERSE_BUY", "enhanced_score": 40.0, "inverse_pressure_score": 65.0,
+            "score_gap": 25.0, "score_gap_below_forced_trade_threshold": False, "reasons": [],
+        },
+    )
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    def _raise(*a, **kw):
+        raise RuntimeError("강제 진입 오류(테스트)")
+
+    monkeypatch.setattr(engine, "run_switch_or_entry", _raise)
+
+    class _HeldPositionBroker:
+        def __init__(self):
+            self._positions = [Position(symbol=LONG_SYMBOL, name=LONG_NAME, quantity=10, avg_price=100_000.0, current_price=100_000.0)]
+            self.sell_calls = []
+
+        def get_positions(self):
+            return self._positions
+
+        def get_buyable_cash(self):
+            return 10_000_000.0
+
+        def get_balance(self):
+            return 10_000_000.0
+
+        def sell(self, symbol, name, quantity, price, order_type="limit"):
+            self.sell_calls.append((symbol, quantity, price))
+            self._positions = [p for p in self._positions if p.symbol != symbol]
+            return OrderResult(
+                success=True, mode="mock", account_type="mock", symbol=symbol, name=name,
+                side="sell", quantity=quantity, price=price, order_type=order_type, order_id="S1", message="ok",
+            )
+
+        def buy(self, *a, **k):
+            raise AssertionError("이 테스트에서는 매수가 발생하면 안 됩니다.")
+
+    broker = _HeldPositionBroker()
+    import app.trading.broker_factory as broker_factory_module
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: broker)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state_module.save_state_atomic(state)
+
+    # 15:17 — liquidation_mode(15:10~15:20), should_liquidate_now()==True, 아직
+    # "closed"(15:20) 전이라 entry-decision 블록도 함께 실행된다.
+    now = datetime(2026, 7, 15, 15, 17, 0)
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=now)
+
+    assert len(broker.sell_calls) == 1  # 강제청산이 실제로 실행됨
+    assert result["state"]["position"]["symbol"] is None  # 청산 완료(신규진입 예외와 무관)
+
+
 def test_strong_down_confirmed_blocks_new_hynix_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
 
