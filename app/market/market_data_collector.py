@@ -25,9 +25,9 @@ from app.market import naver_market_collector as nmc
 from app.market import kis_market_collector as kmc
 from app.market import us_market_data as umd
 from app.market import tick_history
+from app.utils.data_paths import CACHE_DIR as _CACHE_DIR
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_CACHE_DIR = _ROOT / "data" / "cache"
 
 # 감시 대상 반도체 대형주
 HYNIX = {"symbol": "000660", "name": "SK하이닉스"}

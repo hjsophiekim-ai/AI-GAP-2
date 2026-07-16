@@ -26,9 +26,10 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.data_paths import LOGS_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_LOG_PATH = ROOT / "data" / "logs" / "hynix_cycle_ai_log.csv"
+_LOG_PATH = LOGS_DIR / "hynix_cycle_ai_log.csv"
 
 # ── Cycle Phase 목록(명세 2절) ────────────────────────────────────────────────
 PHASE_OPENING_GAP = "OPENING_GAP"

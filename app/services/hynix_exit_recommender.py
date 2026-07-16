@@ -18,11 +18,12 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.data_paths import LOGS_DIR, STATE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_EXIT_LOG_PATH = ROOT / "data" / "logs" / "exit_engine_log.csv"
-_RECOMMENDATION_PATH = ROOT / "data" / "state" / "hynix_exit_recommendation.json"
-_DAILY_LEARNING_PATH = ROOT / "data" / "state" / "hynix_exit_daily_learning.json"
+_EXIT_LOG_PATH = LOGS_DIR / "exit_engine_log.csv"
+_RECOMMENDATION_PATH = STATE_DIR / "hynix_exit_recommendation.json"
+_DAILY_LEARNING_PATH = STATE_DIR / "hynix_exit_daily_learning.json"
 
 MIN_SAMPLE_PER_GROUP = 5
 LOOKBACK_TRADES = 1000

@@ -31,12 +31,12 @@ from app.market.regime_rules import decide_regime, RegimeDecision
 from app.market import market_prediction as mp
 from app.market import market_alert as ma
 from app.market import tick_history
+from app.utils.data_paths import STATE_DIR as _STATE_DIR, LOGS_DIR as _LOGS_DIR_ROOT
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_STATE_DIR = _ROOT / "data" / "state"
-_LOG_DIR = _ROOT / "logs" / "market_regime"
-_PREDICTION_LOG_DIR = _ROOT / "logs" / "market_prediction"
-_FEATURE_SNAPSHOT_LOG_DIR = _ROOT / "logs" / "feature_snapshots"
+_LOG_DIR = _LOGS_DIR_ROOT / "market_regime"
+_PREDICTION_LOG_DIR = _LOGS_DIR_ROOT / "market_prediction"
+_FEATURE_SNAPSHOT_LOG_DIR = _LOGS_DIR_ROOT / "feature_snapshots"
 
 CONFIRM_TIME = "09:20"
 REEVALUATION_INTERVAL_MINUTES = 5

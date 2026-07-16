@@ -27,8 +27,9 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
+from app.utils.data_paths import MODEL_CALIBRATION_DIR as CALIBRATION_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-CALIBRATION_DIR = ROOT / "data" / "model_calibration"
 HYNIX_BIAS_PATH = CALIBRATION_DIR / "hynix_bias.json"
 MARKET_BIAS_PATH = CALIBRATION_DIR / "market_bias.json"
 

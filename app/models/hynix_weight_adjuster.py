@@ -20,9 +20,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.utils.data_paths import PREDICTIONS_DIR
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _WEIGHTS_PATH = _ROOT / "config" / "hynix_model_weights.json"
-_HISTORY_PATH = _ROOT / "data" / "predictions" / "weight_adjustment_history.csv"
+_HISTORY_PATH = PREDICTIONS_DIR / "weight_adjustment_history.csv"
 
 # 가중치 제약 (min, max)
 _CONSTRAINTS = {

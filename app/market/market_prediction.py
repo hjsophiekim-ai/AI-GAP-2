@@ -25,11 +25,12 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 from app.market import regime_features as rf
+from app.utils.data_paths import LOGS_DIR
 
 HORIZONS = ("30m", "1h", "3h")
 
 _ROOT = Path(__file__).resolve().parents[2]
-_DEBUG_LOG_DIR = _ROOT / "logs" / "market_prediction_debug"
+_DEBUG_LOG_DIR = LOGS_DIR / "market_prediction_debug"
 
 # 각 horizon의 "전체 시장(overall_market)" 하락압력 구성요소 가중치 (합계 100).
 # 반도체 대장주 VWAP(semi_vwap)/주도섹터 회전(theme)은 여기서 제외했다 — 전체

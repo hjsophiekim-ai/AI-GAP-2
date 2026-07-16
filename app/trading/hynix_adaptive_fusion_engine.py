@@ -34,6 +34,7 @@ import pandas as pd
 
 from app.logger import logger
 from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
+from app.utils.data_paths import LOGS_DIR, STATE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _FUSION_CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
@@ -1024,8 +1025,8 @@ def adaptive_fusion_daily_risk_ladder(daily_return_pct: Optional[float]) -> dict
 # 섹션 11 — Prediction AI V2 성능 기반 자동 감쇠
 # =============================================================================
 
-_PV2_LOG_PATH = ROOT / "data" / "logs" / "prediction_v2_snapshot_log.csv"
-_PV2_PENDING_PATH = ROOT / "data" / "state" / "hynix_prediction_v2_pending.json"
+_PV2_LOG_PATH = LOGS_DIR / "prediction_v2_snapshot_log.csv"
+_PV2_PENDING_PATH = STATE_DIR / "hynix_prediction_v2_pending.json"
 _PV2_LOG_COLUMNS = [
     "decision_timestamp", "outcome_timestamp", "horizon_minutes", "predicted_action",
     "buy_probability", "sell_probability", "hynix_price_at_decision", "hynix_price_at_outcome",

@@ -21,9 +21,10 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.data_paths import LOGS_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_SHADOW_LEDGER_PATH = ROOT / "data" / "logs" / "hynix_strategy_shadow_ledger.csv"
+_SHADOW_LEDGER_PATH = LOGS_DIR / "hynix_strategy_shadow_ledger.csv"
 
 STRATEGY_ACTIVE_ONLY = "ACTIVE_ONLY"
 STRATEGY_PREDICTION_V2_ONLY = "PREDICTION_V2_ONLY"

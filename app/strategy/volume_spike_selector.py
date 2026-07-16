@@ -22,6 +22,7 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.data_paths import VOLUME_SPIKE_DIR
 
 # 상승률 구간 경계
 _MIN_CHANGE_RATE = 3.0
@@ -268,7 +269,7 @@ class VolumeSpikeSelector:
         if not date_str:
             date_str = datetime.now().strftime("%Y%m%d")
 
-        out_dir = Path(__file__).resolve().parent.parent.parent / "data" / "volume_spike"
+        out_dir = VOLUME_SPIKE_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
         filepath = out_dir / f"{date_str}_volume_spike_top10.csv"
 
@@ -292,7 +293,7 @@ class VolumeSpikeSelector:
         if not date_str:
             date_str = datetime.now().strftime("%Y%m%d")
 
-        out_dir = Path(__file__).resolve().parent.parent.parent / "data" / "volume_spike"
+        out_dir = VOLUME_SPIKE_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
         filepath = out_dir / f"{date_str}_volume_spike_excluded.csv"
 

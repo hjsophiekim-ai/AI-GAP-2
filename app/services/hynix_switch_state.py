@@ -23,9 +23,9 @@ from typing import Optional
 from app.logger import logger
 from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
 from app.utils.time_utils import kst_now
+from app.utils.data_paths import STATE_DIR as _STATE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_STATE_DIR = ROOT / "data" / "state"
 
 _DEFAULT_MOCK_BUDGET_KRW = 10_000_000.0
 
@@ -226,7 +226,10 @@ def default_state(mode: str = "mock") -> dict:
         "residual_position_error": False,
         "position_conflict": False,
         "critical_alert": None,
-        "auto_trade_on": False,
+        # 요구사항(2026-07-16) — Enhanced 자동매매는 기본값을 ON으로 시작한다.
+        # 새 계좌/state 초기화 시에만 적용되며, 사용자가 화면에서 명시적으로 끈
+        # 이후에는 그 선택(False)이 그대로 저장·유지된다(이 기본값이 되돌리지 않음).
+        "auto_trade_on": True,
         "weight_auto_apply_enabled": False,
         "daily_report_generated_date": None,
         "stopped": False,

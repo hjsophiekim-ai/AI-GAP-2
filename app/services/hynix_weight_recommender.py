@@ -22,8 +22,10 @@ from app.services.hynix_prediction_tracker import (
     compute_score_outcome_correlations,
 )
 
+from app.utils.data_paths import STATE_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-_RECOMMENDATION_PATH = ROOT / "data" / "state" / "hynix_weight_recommendation.json"
+_RECOMMENDATION_PATH = STATE_DIR / "hynix_weight_recommendation.json"
 
 _WEIGHTED_COLUMNS = ["base_prediction_score", "existing_micron_score", "hynix_technical_score", "intraday_momentum_score"]
 _WEIGHT_KEY_BY_COLUMN = {

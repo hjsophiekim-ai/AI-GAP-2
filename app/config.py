@@ -5,6 +5,8 @@ from typing import Optional
 import yaml
 from dotenv import load_dotenv
 
+from app.utils.data_paths import STATE_DIR as _CONFIG_STATE_DIR
+
 _ROOT = Path(__file__).parent.parent
 _ENV_PATH = _ROOT / ".env"
 _ENV_LOADED_MTIME: float | None = None
@@ -685,7 +687,7 @@ def reload_runtime_configuration() -> Config:
     return cfg
 
 
-_REAL_ACCOUNT_STATE_PATH = _ROOT / "data" / "state" / "kis_real_account_state.json"
+_REAL_ACCOUNT_STATE_PATH = _CONFIG_STATE_DIR / "kis_real_account_state.json"
 
 
 def get_real_account_change_status() -> dict:

@@ -28,9 +28,10 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.data_paths import STATE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_WEIGHT_RECO_PATH = ROOT / "data" / "state" / "hynix_decision_v2_weight_recommendation.json"
+_WEIGHT_RECO_PATH = STATE_DIR / "hynix_decision_v2_weight_recommendation.json"
 
 DEFAULT_BUY_THRESHOLD = 65.0
 DEFAULT_SELL_THRESHOLD = 65.0

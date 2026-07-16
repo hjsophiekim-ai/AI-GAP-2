@@ -47,9 +47,9 @@ except ImportError:
         except Exception:
             return None
 
+from app.utils.data_paths import MICRON_DIR as _MICRON_DIR, CACHE_DIR as _TOKEN_CACHE_DIR
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_MICRON_DIR = _ROOT / "data" / "micron"
-_TOKEN_CACHE_DIR = _ROOT / "data" / "cache"
 
 # ── KIS API 설정 ─────────────────────────────────────────────────────────────
 BASE_URL_REAL = "https://openapi.koreainvestment.com:9443"

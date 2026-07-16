@@ -42,8 +42,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from app.utils.data_paths import HISTORICAL_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-HIST_RAW_DIR = ROOT / "data" / "historical" / "raw"
+HIST_RAW_DIR = HISTORICAL_DIR / "raw"
 
 DOMESTIC_SYMBOLS = {
     "hynix": ("000660", "SK하이닉스"),

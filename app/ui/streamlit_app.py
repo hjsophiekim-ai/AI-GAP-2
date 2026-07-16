@@ -36,6 +36,23 @@ except Exception as exc:
     _log_step_failed("config_load", exc)
 
 # ---------------------------------------------------------------------------
+# 데이터 루트 디렉토리 생성 + 실제 쓰기 테스트 — 원장/상태/캐시를 쓰기 전에
+# 가장 먼저 수행한다. Render Persistent Disk(AI_GAP_DATA_DIR)가 마운트는 됐지만
+# 권한/용량 문제로 실제로는 못 쓰는 경우를 앱이 뭔가 쓰기 전에 조기 발견한다.
+# ---------------------------------------------------------------------------
+_log_step_start("data_dir_bootstrap")
+try:
+    from app.utils.data_paths import ensure_data_dirs, check_writable
+    ensure_data_dirs()
+    _data_writable_probe = check_writable()
+    if _data_writable_probe.get("writable"):
+        _log_step_done("data_dir_bootstrap")
+    else:
+        _log_step_failed("data_dir_bootstrap", RuntimeError(_data_writable_probe.get("error") or "unknown"))
+except Exception as _data_dir_exc:
+    _log_step_failed("data_dir_bootstrap", _data_dir_exc)
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

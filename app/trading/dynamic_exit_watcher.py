@@ -25,10 +25,11 @@ from app.trading.dynamic_exit_engine import DynamicExitEngine
 from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.trading.hynix_switch_position_manager import _sell_all_or_ratio, _SYMBOL_NAME
 from app.trading.hynix_symbols import LONG_SYMBOL as HYNIX_SYMBOL, SHORT_SYMBOL as INVERSE_SYMBOL
+from app.utils.data_paths import LOGS_DIR
 import app.trading.hynix_big_trend_engine as bte
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_EXIT_LOG_PATH = ROOT / "data" / "logs" / "exit_engine_log.csv"
+_EXIT_LOG_PATH = LOGS_DIR / "exit_engine_log.csv"
 _EXIT_LOG_COLUMNS = [
     "timestamp", "symbol", "entry_price", "current_price", "profit_pct", "market_type",
     "tp", "sl", "trailing_stop", "profit_lock", "exit_score", "action", "reason",

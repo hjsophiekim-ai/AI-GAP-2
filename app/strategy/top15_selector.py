@@ -18,6 +18,7 @@ from app.models import Candidate
 from app.config import get_config
 from app.logger import logger
 from app.strategy.candidate_quality_filter import CandidateQualityFilter
+from app.utils.data_paths import SELECTED_DIR
 
 # 위험 판단 임계값
 _TV_RISKY_THRESHOLD    = 3_000_000_000   # 30억 미만 → 거래대금 위험
@@ -133,7 +134,7 @@ class Top15Selector:
         if date_str is None:
             date_str = datetime.now().strftime("%Y%m%d")
 
-        save_dir = Path(__file__).parent.parent.parent / "data" / "selected"
+        save_dir = SELECTED_DIR
         save_dir.mkdir(parents=True, exist_ok=True)
         filepath = save_dir / f"{date_str}_top15.csv"
 
@@ -179,11 +180,7 @@ class Top15Selector:
         if date_str is None:
             date_str = datetime.now().strftime("%Y%m%d")
 
-        filepath = (
-            Path(__file__).parent.parent.parent
-            / "data" / "selected"
-            / f"{date_str}_top15.csv"
-        )
+        filepath = SELECTED_DIR / f"{date_str}_top15.csv"
         if not filepath.exists():
             logger.warning(f"[Top15] 파일 없음: {filepath}")
             return []

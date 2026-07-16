@@ -36,9 +36,10 @@ except ImportError:
 
 from app.models.hynix_predictor import _resolve_price_anchor, _round_krx
 from app.models import model_calibration
+from app.utils.data_paths import LOGS_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-LOG_DIR = ROOT / "logs" / "hynix_prediction"
+LOG_DIR = LOGS_DIR / "hynix_prediction"
 
 MODEL_VERSION = "rule_based_multi_horizon_v2_recovery_aware"
 HORIZONS = ("30m", "1h", "3h", "close", "tomorrow_open")
@@ -77,7 +78,7 @@ MU_EXTENDED_HOURS_PREOPEN_WINDOW = ("08:30", "09:00")
 # 장중(30m/1h/3h/close) horizon에서 MU 장외 신호를 반영하는 비중(관성 편향 완화와 동일한
 # 축을 공유 — 3시간/종가일수록 크게 반영).
 MU_EXTENDED_HOURS_INFLUENCE = {"30m": 0.05, "1h": 0.10, "3h": 0.20, "close": 0.20, "tomorrow_open": 0.0}
-MU_LOG_DIR = ROOT / "logs" / "mu_extended_hours"
+MU_LOG_DIR = LOGS_DIR / "mu_extended_hours"
 
 
 def _weighted_norm(components: dict) -> tuple:

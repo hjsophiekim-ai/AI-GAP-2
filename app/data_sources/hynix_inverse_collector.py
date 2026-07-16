@@ -19,6 +19,7 @@ import pandas as pd
 import requests
 
 from app.logger import logger
+from app.utils.data_paths import CACHE_DIR
 
 INVERSE_SYMBOL = "0197X0"
 INVERSE_NAME = "SOL SK하이닉스선물단일종목인버스2X"
@@ -27,7 +28,6 @@ INVERSE_PRICE_MIN = 500
 INVERSE_PRICE_MAX = 200_000
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-CACHE_DIR = ROOT / "data" / "cache"
 _CURRENT_JSON = CACHE_DIR / "hynix_inverse_current.json"
 _MINUTE_CSV = CACHE_DIR / "hynix_inverse_minute_1m.csv"
 

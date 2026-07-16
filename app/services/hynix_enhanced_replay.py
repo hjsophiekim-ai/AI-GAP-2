@@ -29,8 +29,10 @@ from app.trading.hynix_trend_switch_accelerator import (
     update_confirm_tracker,
 )
 
+from app.utils.data_paths import ENHANCED_REPLAY_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-REPLAY_DATA_DIR = ROOT / "data" / "enhanced_replay"
+REPLAY_DATA_DIR = ENHANCED_REPLAY_DIR
 SESSION_START = time(9, 0)
 SESSION_END = time(15, 30)
 

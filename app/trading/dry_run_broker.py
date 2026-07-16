@@ -6,8 +6,7 @@ from pathlib import Path
 from app.logger import logger
 from app.models import OrderResult, Position
 from app.trading.broker_base import BrokerBase
-
-_DATA_DIR = Path("data/orders")
+from app.utils.data_paths import ORDERS_DIR as _DATA_DIR
 
 
 class DryRunBroker(BrokerBase):

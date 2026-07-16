@@ -34,6 +34,23 @@ STATUS_ERROR = "ERROR"
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 
+
+def _resolve_data_relative_path(template: str) -> Path:
+    """설정값이 "data/xxx" 형태(기본값 포함)면 AI_GAP_DATA_DIR(설정 시)/DATA_ROOT
+    기준으로 해석한다. AI_GAP_DATA_DIR이 설정돼 있지 않으면(테스트가 이 모듈의
+    _ROOT를 patch해 격리 디렉토리로 리다이렉트하는 경우 포함) 기존과 동일하게
+    이 모듈의 _ROOT를 기준으로 해석한다 — 그래야 테스트의 `patch(..., "_ROOT",
+    tmp_dir)`가 여전히 작동한다."""
+    import os
+
+    from app.utils.data_paths import DATA_ROOT, DATA_ROOT_ENV_VAR
+
+    normalized = template.replace("\\", "/")
+    if normalized.startswith("data/") and os.environ.get(DATA_ROOT_ENV_VAR):
+        return DATA_ROOT / normalized[len("data/"):]
+    return _ROOT / template
+
+
 _LOG_COLUMNS = [
     "timestamp", "action", "symbol", "name", "quantity", "price",
     "reason", "sell_type", "order_success", "order_id", "error",
@@ -82,8 +99,8 @@ class IntradayAutoTradeService:
         today = datetime.now().strftime("%Y%m%d")
         state_tmpl = ic.get("state_file", "data/state/intraday_auto_trade_state_YYYYMMDD.json")
         log_tmpl = ic.get("log_file", "data/logs/intraday_auto_trades_YYYYMMDD.csv")
-        self.state_file = _ROOT / state_tmpl.replace("YYYYMMDD", today)
-        self.log_file = _ROOT / log_tmpl.replace("YYYYMMDD", today)
+        self.state_file = _resolve_data_relative_path(state_tmpl.replace("YYYYMMDD", today))
+        self.log_file = _resolve_data_relative_path(log_tmpl.replace("YYYYMMDD", today))
 
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -650,8 +667,8 @@ class Top3TimedBuyService:
         self.safety_filter_enabled: bool = bool(ic.get("minimum_safety_filter_enabled", True))
 
         today = datetime.now().strftime("%Y%m%d")
-        self.state_file = _ROOT / f"data/state/{_TIMED_STRATEGY_NAME}_{today}.json"
-        self.log_file = _ROOT / f"data/logs/{_TIMED_STRATEGY_NAME}_{today}.csv"
+        self.state_file = _resolve_data_relative_path(f"data/state/{_TIMED_STRATEGY_NAME}_{today}.json")
+        self.log_file = _resolve_data_relative_path(f"data/logs/{_TIMED_STRATEGY_NAME}_{today}.csv")
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
 

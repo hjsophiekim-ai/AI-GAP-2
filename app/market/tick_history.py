@@ -22,8 +22,10 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
+from app.utils.data_paths import STATE_DIR as _STATE_DIR_ROOT
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_TICK_DIR = _ROOT / "data" / "state" / "market_ticks"
+_TICK_DIR = _STATE_DIR_ROOT / "market_ticks"
 
 
 def _today() -> str:

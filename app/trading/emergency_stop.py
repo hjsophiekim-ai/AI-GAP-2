@@ -15,8 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from app.utils.data_paths import STATE_DIR as _STATE_DIR
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_STATE_DIR = _ROOT / "data" / "state"
 _STOP_FLAG_PATH = _STATE_DIR / "real_auto_trade_emergency_stop.json"
 
 _ORDER_LOCK = threading.RLock()

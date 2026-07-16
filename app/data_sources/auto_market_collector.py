@@ -91,10 +91,9 @@ except ImportError:
     def validate_stock_identity(code, name):  # type: ignore[misc]
         return code == "000660" and name == "SK하이닉스", "ok"
 
+from app.utils.data_paths import MICRON_DIR, CACHE_DIR, HYNIX_DIR as LEGACY_HYNIX_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-MICRON_DIR = ROOT / "data" / "micron"
-CACHE_DIR = ROOT / "data" / "cache"
-LEGACY_HYNIX_DIR = ROOT / "data" / "hynix"
 
 _HYNIX_DAILY_CSV = CACHE_DIR / "hynix_daily.csv"
 _HYNIX_CURRENT_JSON = CACHE_DIR / "hynix_current.json"

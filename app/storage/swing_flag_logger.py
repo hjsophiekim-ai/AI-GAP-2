@@ -12,8 +12,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.utils.data_paths import PREDICTIONS_DIR as _PRED_DIR
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_PRED_DIR = _ROOT / "data" / "predictions"
 SWING_FLAGS_CSV = _PRED_DIR / "hynix_swing_flags.csv"
 
 _CSV_FIELDS = [

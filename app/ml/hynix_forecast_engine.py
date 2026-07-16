@@ -7,12 +7,14 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from app.utils.data_paths import LOGS_DIR
+
 BLOCK_THRESHOLD = 0.40
 LOW_CONF_THRESHOLD = 0.70
 CONFIDENCE_GATE = 40.0
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-LOG_DIR = ROOT / "logs"
+LOG_DIR = LOGS_DIR
 
 
 def _get_debug_logger() -> logging.Logger:

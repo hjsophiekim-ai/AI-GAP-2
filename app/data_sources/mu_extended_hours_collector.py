@@ -31,8 +31,10 @@ except ImportError:
 
 import pandas as pd
 
+from app.utils.data_paths import LOGS_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-LOG_DIR = ROOT / "logs" / "mu_extended_hours"
+LOG_DIR = LOGS_DIR / "mu_extended_hours"
 
 REALTIME_SOURCES = {"kis", "alpaca", "polygon", "finnhub"}
 DELAYED_SOURCES = {"yahoo", "naver"}

@@ -388,6 +388,47 @@ _rt_cols[4].metric("Fast watcher", _fw_signal.get("direction") or "-", delta=f"{
 if _fw_state.get("blocked_reason"):
     st.caption(f"Fast watcher block: {_fw_state.get('blocked_reason')}")
 
+# ── 데이터 저장 경로(Persistent Disk) 진단 — Render 등에서 컨테이너 로컬(휘발성)
+# 경로에 계속 쓰고 있으면 재배포/재시작마다 거래원장·계좌상태가 사라진다
+# (2026-07-16 실측). AI_GAP_DATA_DIR이 실제로 적용됐는지, 그 경로가 진짜로
+# 쓰기 가능한지를 항상 보이는 곳에 표시한다.
+try:
+    from app.utils.data_paths import (
+        DATA_ROOT, DATA_ROOT_ENV_VAR, check_writable, file_info,
+        EXECUTION_LEDGER_PATH, STATE_DIR,
+    )
+    from app.services.hynix_switch_state import _state_path
+
+    _data_writable_status = check_writable()
+    _dp_cols = st.columns(3)
+    _dp_cols[0].metric(
+        f"Data root ({'env' if _os.environ.get(DATA_ROOT_ENV_VAR) else 'default'})",
+        str(DATA_ROOT),
+    )
+    _dp_cols[1].metric(
+        "Persistent 쓰기 가능",
+        "🟢 YES" if _data_writable_status.get("writable") else "🔴 NO",
+    )
+    _dp_cols[2].metric(f"{DATA_ROOT_ENV_VAR}", _os.environ.get(DATA_ROOT_ENV_VAR) or "(미설정 — 기본값 사용)")
+    if not _data_writable_status.get("writable"):
+        st.error(
+            f"🔴 데이터 루트({DATA_ROOT})에 쓰기 실패 — 거래원장/계좌상태가 저장되지 않습니다: "
+            f"{_data_writable_status.get('error')}"
+        )
+    with st.expander("💾 데이터 저장 경로 상세(원장/상태 파일 실제 경로·크기·수정시각)"):
+        _ledger_info = file_info(EXECUTION_LEDGER_PATH)
+        _state_info = file_info(_state_path(switch_state.get("mode", "mock")))
+        st.markdown(f"**거래원장(execution ledger) 실제 경로**: `{_ledger_info['path']}`")
+        st.json(_ledger_info)
+        st.markdown(f"**계좌 상태(state) 실제 경로**: `{_state_info['path']}`")
+        st.json(_state_info)
+        st.caption(
+            f"마지막 쓰기 테스트: {_data_writable_status.get('checked_at') or '—'} "
+            f"({'성공' if _data_writable_status.get('writable') else '실패: ' + str(_data_writable_status.get('error'))})"
+        )
+except Exception as _data_path_exc:
+    st.warning(f"데이터 저장 경로 진단 실패: {_data_path_exc}")
+
 _pt = switch_state.get("last_primary_trend") or {}
 if _pt:
     _pt_cols = st.columns(5)
@@ -404,7 +445,7 @@ if _pt:
 
 sc1, sc2, sc3 = st.columns([1, 1, 2])
 with sc1:
-    auto_on = st.checkbox("Enhanced 자동매매 ON", value=switch_state.get("auto_trade_on", False), key="hynix_switch_auto_on")
+    auto_on = st.checkbox("Enhanced 자동매매 ON", value=switch_state.get("auto_trade_on", True), key="hynix_switch_auto_on")
 with sc2:
     switch_mode = st.radio(
         "모드", ["mock", "real"],

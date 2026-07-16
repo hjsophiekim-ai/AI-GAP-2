@@ -19,8 +19,9 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from app.utils.data_paths import MODELS_DIR as _MODEL_DIR
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_MODEL_DIR = _ROOT / "data" / "models"
 
 # feature 컬럼 목록 (학습 시 사용할 feature 순서)
 FEATURE_COLUMNS = [

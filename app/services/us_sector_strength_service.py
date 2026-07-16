@@ -131,8 +131,9 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml",
 }
 
+from app.utils.data_paths import CACHE_DIR as _CACHE_DIR
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_CACHE_DIR = _ROOT / "data" / "cache"
 
 
 class USSectorStrengthService:

@@ -17,10 +17,12 @@ from typing import Optional
 
 import requests
 
+from app.utils.data_paths import CACHE_DIR
+
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_CACHE_PATH = ROOT / "data" / "cache" / "hynix_news_momentum.json"
+_CACHE_PATH = CACHE_DIR / "hynix_news_momentum.json"
 _CACHE_MAX_AGE_HOURS = 2.0
 
 HEADERS = {

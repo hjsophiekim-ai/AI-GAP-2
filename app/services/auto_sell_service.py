@@ -24,6 +24,16 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.data_paths import DATA_ROOT
+
+
+def _resolve_data_relative_path(template: str) -> Path:
+    """설정값이 "data/xxx" 형태(기본값 포함)면 DATA_ROOT 기준으로, 그 외 커스텀
+    경로는 프로젝트 루트 기준으로 해석한다."""
+    normalized = template.replace("\\", "/")
+    if normalized.startswith("data/"):
+        return DATA_ROOT / normalized[len("data/"):]
+    return Path(__file__).resolve().parent.parent.parent / template
 
 
 class AutoSellService:
@@ -71,9 +81,8 @@ class AutoSellService:
         self._market_start: str = auto_cfg.get("market_start", "09:00")
         self._market_end: str = auto_cfg.get("market_end", "15:20")
 
-        _root = Path(__file__).resolve().parent.parent.parent
-        self._state_file: Path = _root / auto_cfg.get("state_file", self.DEFAULT_STATE_FILE)
-        self._log_file: Path = _root / auto_cfg.get("log_file", self.DEFAULT_LOG_FILE)
+        self._state_file: Path = _resolve_data_relative_path(auto_cfg.get("state_file", self.DEFAULT_STATE_FILE))
+        self._log_file: Path = _resolve_data_relative_path(auto_cfg.get("log_file", self.DEFAULT_LOG_FILE))
 
         self.state: dict = {}
         self._last_run_time: Optional[datetime] = None

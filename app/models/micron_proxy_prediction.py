@@ -30,13 +30,14 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.data_paths import MICRON_DIR, LOGS_DIR, STATE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
-_MU_1MIN_CSV = ROOT / "data" / "micron" / "MU_1min.csv"
-_MU_3MIN_CSV = ROOT / "data" / "micron" / "MU_3min.csv"
-_LOG_PATH = ROOT / "data" / "logs" / "micron_proxy_prediction_log.csv"
-_WEIGHT_RECO_PATH = ROOT / "data" / "state" / "micron_proxy_weight_recommendation.json"
+_MU_1MIN_CSV = MICRON_DIR / "MU_1min.csv"
+_MU_3MIN_CSV = MICRON_DIR / "MU_3min.csv"
+_LOG_PATH = LOGS_DIR / "micron_proxy_prediction_log.csv"
+_WEIGHT_RECO_PATH = STATE_DIR / "micron_proxy_weight_recommendation.json"
 
 MODEL_VERSION = "micron_proxy_prediction_v1"
 

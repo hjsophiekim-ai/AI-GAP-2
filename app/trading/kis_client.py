@@ -16,10 +16,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from app.logger import logger
 from app.utils.time_utils import kst_now
+from app.utils.data_paths import CACHE_DIR as _TOKEN_CACHE_DIR
 
 # ── token cache directory ───────────────────────────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent.parent  # repo root
-_TOKEN_CACHE_DIR = _ROOT / "data" / "cache"
 
 # ── 프로세스 전역 요청 레이트리미터(EGW00201 대응) ──────────────────────────
 # KIS 모의투자(모의계좌) API는 초당 요청수 제한이 매우 엄격하다(실측: "초당

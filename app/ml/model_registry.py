@@ -21,8 +21,10 @@ except ImportError:
 
 import joblib
 
+from app.utils.data_paths import HISTORICAL_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-MODELS_DIR = ROOT / "data" / "historical" / "models"
+MODELS_DIR = HISTORICAL_DIR / "models"
 REGISTRY_PATH = MODELS_DIR / "registry.json"
 
 

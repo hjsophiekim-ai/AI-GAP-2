@@ -25,13 +25,13 @@ import pandas as pd
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
+from app.utils.data_paths import LOGS_DIR, EXECUTION_LEDGER_PATH as _LEDGER_PATH
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_LEDGER_PATH = ROOT / "data" / "logs" / "hynix_execution_ledger.csv"
 
 # 레거시(원장 도입 이전) 로그 — 백필 전용으로만 읽는다.
-_LEGACY_TRADE_LOG_PATH = ROOT / "data" / "logs" / "hynix_auto_trade_log_{date}.csv"
-_LEGACY_EXIT_LOG_PATH = ROOT / "data" / "logs" / "exit_engine_log.csv"
+_LEGACY_TRADE_LOG_PATH = LOGS_DIR / "hynix_auto_trade_log_{date}.csv"
+_LEGACY_EXIT_LOG_PATH = LOGS_DIR / "exit_engine_log.csv"
 
 LEDGER_COLUMNS = [
     "trade_id", "parent_trade_id", "timestamp", "mode", "environment", "strategy_name",

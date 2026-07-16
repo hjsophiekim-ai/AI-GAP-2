@@ -18,8 +18,10 @@ from app.services.hynix_prediction_tracker import (
     compute_accuracy, compute_score_outcome_correlations,
 )
 
+from app.utils.data_paths import REPORTS_DIR
+
 ROOT = Path(__file__).resolve().parent.parent.parent
-_REPORT_PATH = ROOT / "data" / "reports" / "hynix_prediction_daily_report.csv"
+_REPORT_PATH = REPORTS_DIR / "hynix_prediction_daily_report.csv"
 
 _REPORT_COLUMNS = [
     "date", "total_predictions",

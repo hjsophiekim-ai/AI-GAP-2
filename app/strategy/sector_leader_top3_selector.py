@@ -26,6 +26,8 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
+from app.utils.data_paths import OUTPUT_DIR
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Score caps (defaults; overridden by config)
@@ -486,7 +488,7 @@ class SectorLeaderTop3Selector:
             date_str = datetime.now().strftime("%Y%m%d")
         if not time_str:
             time_str = datetime.now().strftime("%H%M")
-        out_dir = _ROOT / "data" / "output"
+        out_dir = OUTPUT_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
         filepath = out_dir / f"sector_leader_top3_{date_str}_{time_str}.csv"
         columns = [
@@ -510,7 +512,7 @@ class SectorLeaderTop3Selector:
             date_str = datetime.now().strftime("%Y%m%d")
         if not time_str:
             time_str = datetime.now().strftime("%H%M")
-        out_dir = _ROOT / "data" / "output"
+        out_dir = OUTPUT_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
         filepath = out_dir / f"sector_strength_{date_str}_{time_str}.csv"
         rows = []
@@ -537,7 +539,7 @@ class SectorLeaderTop3Selector:
             date_str = datetime.now().strftime("%Y%m%d")
         if not time_str:
             time_str = datetime.now().strftime("%H%M")
-        out_dir = _ROOT / "data" / "output"
+        out_dir = OUTPUT_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
         filepath = out_dir / f"sector_leader_excluded_{date_str}_{time_str}.csv"
         df = pd.DataFrame(excluded)

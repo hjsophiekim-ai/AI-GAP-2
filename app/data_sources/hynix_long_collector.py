@@ -20,6 +20,7 @@ import pandas as pd
 import requests
 
 from app.logger import logger
+from app.utils.data_paths import CACHE_DIR
 
 LONG_SYMBOL = "0193T0"
 LONG_NAME = "KODEX SK하이닉스단일종목레버리지"
@@ -30,7 +31,6 @@ LONG_PRICE_MIN = 100
 LONG_PRICE_MAX = 1_000_000
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-CACHE_DIR = ROOT / "data" / "cache"
 _CURRENT_JSON = CACHE_DIR / "hynix_long_current.json"
 _MINUTE_CSV = CACHE_DIR / "hynix_long_minute_1m.csv"
 

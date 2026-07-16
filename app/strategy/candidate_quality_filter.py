@@ -28,6 +28,7 @@ import pandas as pd
 from app.logger import logger
 from app.models import Candidate, StockData
 from app.config import get_config
+from app.utils.data_paths import OUTPUT_DIR
 
 try:
     from app.services.us_theme_map import match_kr_stock_to_themes
@@ -197,7 +198,7 @@ class CandidateQualityFilter:
         if time_str is None:
             time_str = datetime.now().strftime("%H%M")
 
-        out_dir = Path("data") / "output"
+        out_dir = OUTPUT_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
 
         explain_rows = []

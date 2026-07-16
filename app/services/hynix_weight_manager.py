@@ -15,10 +15,11 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.data_paths import STATE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_WEIGHTS_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
-_ACTIVE_WEIGHTS_PATH = ROOT / "data" / "state" / "hynix_model_weights.json"
+_ACTIVE_WEIGHTS_PATH = STATE_DIR / "hynix_model_weights.json"
 
 _FALLBACK_DEFAULTS = {
     "base_prediction": 0.45, "existing_micron": 0.20, "hynix_technical": 0.25, "intraday_momentum": 0.10,

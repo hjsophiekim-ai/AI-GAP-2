@@ -135,7 +135,9 @@ class ModelPredictor:
         if date_str is None:
             date_str = datetime.now().strftime("%Y%m%d")
 
-        out_dir = _ROOT / "data" / "predictions"
+        from app.utils.data_paths import PREDICTIONS_DIR
+
+        out_dir = PREDICTIONS_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
 
         out_path = out_dir / f"{date_str}_predictions.csv"

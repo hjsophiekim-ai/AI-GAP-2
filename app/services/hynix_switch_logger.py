@@ -13,10 +13,9 @@ from pathlib import Path
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
+from app.utils.data_paths import PREDICTIONS_DIR as _PREDICTIONS_DIR, LOGS_DIR as _LOGS_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_PREDICTIONS_DIR = ROOT / "data" / "predictions"
-_LOGS_DIR = ROOT / "data" / "logs"
 
 _PREDICTION_LOG_COLUMNS = [
     "timestamp", "hynix_price", "inverse_price",

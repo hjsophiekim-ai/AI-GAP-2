@@ -19,6 +19,7 @@ from typing import Optional
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
+from app.utils.data_paths import LOGS_DIR as _LOG_DIR, STATE_DIR as _STATE_DIR
 from app.trading.hynix_symbols import LONG_SYMBOL, LONG_NAME, SIGNAL_SYMBOL, SIGNAL_NAME
 
 # Actual long-side trading symbol. 000660 remains the signal-only asset and must
@@ -36,8 +37,6 @@ from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAM
 TRADE_SYMBOLS = [HYNIX_SYMBOL, INVERSE_SYMBOL]
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_LOG_DIR = _ROOT / "data" / "logs"
-_STATE_DIR = _ROOT / "data" / "state"
 _STOP_FLAG_PATH = _STATE_DIR / "hynix_auto_trade_stopped.flag"
 
 _ORDER_LOG_COLUMNS = [

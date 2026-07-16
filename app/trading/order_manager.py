@@ -9,6 +9,7 @@ from app.trading.broker_base import BrokerBase
 from app.trading.kis_client import KISTokenError
 from app.config import get_config
 from app.logger import logger
+from app.utils.data_paths import LOGS_DIR
 
 # ── repo root (app/trading → app → repo root) ─────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent.parent
@@ -274,7 +275,7 @@ class OrderManager:
         path: data/logs/{label}_{YYYYMMDD_HHMMSS}.csv
         """
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir = _ROOT / "data" / "logs"
+        log_dir = LOGS_DIR
         log_dir.mkdir(parents=True, exist_ok=True)
         file_path = log_dir / f"{label}_{ts}.csv"
 

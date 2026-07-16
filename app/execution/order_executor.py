@@ -23,9 +23,10 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 from app.models import OrderResult
+from app.utils.data_paths import LOGS_DIR as _LOGS_DIR
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_TRADE_LOG_DIR = _ROOT / "logs" / "trades"
+_TRADE_LOG_DIR = _LOGS_DIR / "trades"
 
 MAX_RETRIES = 2  # 최초 시도 + 2회 재시도 = 총 3회
 

@@ -22,9 +22,10 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.data_paths import LOGS_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_LOG_PATH = ROOT / "data" / "logs" / "hynix_big_trend_log.csv"
+_LOG_PATH = LOGS_DIR / "hynix_big_trend_log.csv"
 
 # =============================================================================
 # 상수

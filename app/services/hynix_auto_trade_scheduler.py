@@ -19,6 +19,7 @@ KIS API 호출과 카운터 누적의 원인이었다.
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import timedelta
 from typing import Optional
@@ -26,6 +27,7 @@ from typing import Optional
 from app.logger import logger
 from app.services.hynix_switch_state import load_state
 from app.utils.time_utils import kst_now
+from app.utils.data_paths import SCHEDULER_HEARTBEAT_PATH
 
 DEFAULT_INTERVAL_SECONDS = 180.0
 FAST_WATCHER_INTERVAL_SECONDS = 30.0
@@ -70,6 +72,37 @@ def get_fast_status() -> dict:
         snap = {k: v for k, v in _fast_status.items() if not k.startswith("_")}
     snap["thread_alive"] = is_fast_trend_watcher_running()
     return snap
+
+
+def _write_heartbeat_file() -> None:
+    """스케줄러 상태를 DATA_ROOT(영구 디스크 마운트 시 그쪽)에 파일로 남긴다.
+
+    _status/_fast_status는 프로세스 메모리에만 있어 컨테이너가 재시작되면
+    사라진다 — "마지막으로 언제까지 살아있었는지"조차 재시작 직후에는 알 수
+    없다. 이 파일은 매 틱(heartbeat-only 포함)마다 갱신되므로, 재시작 직후에도
+    이전 프로세스가 언제 마지막으로 응답했는지 화면에서 바로 확인할 수 있다."""
+    try:
+        with _status_lock:
+            snapshot = {"cycle": dict(_status), "fast": dict(_fast_status)}
+        SCHEDULER_HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = SCHEDULER_HEARTBEAT_PATH.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(snapshot, ensure_ascii=False, default=str), encoding="utf-8")
+        tmp_path.replace(SCHEDULER_HEARTBEAT_PATH)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[HynixAutoTradeScheduler] heartbeat 파일 기록 실패(무해): %s", exc)
+
+
+def read_heartbeat_file() -> Optional[dict]:
+    """디스크에 남은 마지막 heartbeat 스냅샷을 읽는다(현재 프로세스 재시작 여부와
+    무관하게 UI에서 "재시작 전 마지막 상태"를 보여주기 위함). 파일이 없거나
+    손상됐으면 None."""
+    try:
+        if not SCHEDULER_HEARTBEAT_PATH.exists():
+            return None
+        return json.loads(SCHEDULER_HEARTBEAT_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("[HynixAutoTradeScheduler] heartbeat 파일 로드 실패: %s", exc)
+        return None
 
 
 def _reset_cycle_count_if_new_kst_day(now) -> None:
@@ -123,6 +156,7 @@ class HynixAutoTradeCycleThread(threading.Thread):
 
         state = load_state()
         if not state.get("auto_trade_on") or state.get("stopped"):
+            _write_heartbeat_file()
             return
 
         if not within_window:
@@ -130,6 +164,7 @@ class HynixAutoTradeCycleThread(threading.Thread):
             # 살아있다는 사실(heartbeat)만 기록한다. cycle_count_today는 증가시키지 않는다.
             with _status_lock:
                 _status["last_heartbeat_only_at"] = now.isoformat()
+            _write_heartbeat_file()
             return
 
         started_at = now
@@ -151,6 +186,7 @@ class HynixAutoTradeCycleThread(threading.Thread):
             _status["last_cycle_completed_at"] = completed_at.isoformat()
             _status["last_cycle_result_summary"] = summary
             _status["cycle_count_today"] += 1
+        _write_heartbeat_file()
 
 
 class HynixFastTrendWatcherThread(threading.Thread):
@@ -184,10 +220,12 @@ class HynixFastTrendWatcherThread(threading.Thread):
 
         state = load_state()
         if not state.get("auto_trade_on") or state.get("stopped"):
+            _write_heartbeat_file()
             return
 
         if not within_window:
             # 장외에는 빠른 추세감시도 시세조회를 하지 않는다(heartbeat만 유지).
+            _write_heartbeat_file()
             return
 
         started_at = now
@@ -208,6 +246,7 @@ class HynixFastTrendWatcherThread(threading.Thread):
             _fast_status["last_completed_at"] = completed_at.isoformat()
             _fast_status["last_result_summary"] = summary
             _fast_status["run_count_today"] += 1
+        _write_heartbeat_file()
 
 
 _cycle_lock = threading.Lock()

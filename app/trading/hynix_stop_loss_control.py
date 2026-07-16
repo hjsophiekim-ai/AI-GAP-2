@@ -20,6 +20,7 @@ from typing import Optional
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
+from app.utils.data_paths import LOGS_DIR
 from app.data_sources.hynix_long_collector import LONG_SYMBOL as HYNIX_SYMBOL, LONG_NAME as HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
 
@@ -37,14 +38,14 @@ STOP_LOSS_MODE_LABELS = {
 _SYMBOL_NAME = {HYNIX_SYMBOL: HYNIX_NAME, INVERSE_SYMBOL: INVERSE_NAME}
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_STOP_LOSS_LOG_PATH = ROOT / "data" / "logs" / "stop_loss_log.csv"
+_STOP_LOSS_LOG_PATH = LOGS_DIR / "stop_loss_log.csv"
 _STOP_LOSS_LOG_COLUMNS = [
     "timestamp", "mode", "symbol", "name", "entry_price", "current_price",
     "stop_loss_price", "stop_loss_pct", "take_profit_price", "take_profit_pct",
     "stop_mode", "action", "order_sent", "order_confirmed", "reason",
 ]
 
-_FORCED_LIQUIDATION_LOG_PATH = ROOT / "data" / "logs" / "forced_liquidation_log.csv"
+_FORCED_LIQUIDATION_LOG_PATH = LOGS_DIR / "forced_liquidation_log.csv"
 _FORCED_LIQUIDATION_LOG_COLUMNS = [
     "timestamp", "mode", "symbol", "quantity", "entry_price", "current_price",
     "liquidation_attempted", "order_sent", "order_confirmed", "result", "reason",

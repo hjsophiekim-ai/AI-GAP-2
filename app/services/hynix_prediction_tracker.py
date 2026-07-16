@@ -19,12 +19,12 @@ from typing import Optional
 import pandas as pd
 
 from app.logger import logger
+from app.utils.data_paths import LOGS_DIR as _LOGS_DIR, STATE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_LOGS_DIR = ROOT / "data" / "logs"
 _DECISION_LOG_PATH = _LOGS_DIR / "trade_decision_log.csv"
 _OUTCOME_LOG_PATH = _LOGS_DIR / "prediction_outcome_log.csv"
-_PENDING_PATH = ROOT / "data" / "state" / "hynix_pending_outcomes.json"
+_PENDING_PATH = STATE_DIR / "hynix_pending_outcomes.json"
 
 HORIZON_MINUTES = [3, 5, 10, 30]
 _NEUTRAL_RETURN_THRESHOLD_PCT = 0.15
