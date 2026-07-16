@@ -8,6 +8,9 @@ API 키/시크릿/토큰은 로그에 절대 출력하지 않습니다.
 
 import hashlib
 import json
+import os
+import threading
+import time
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +20,55 @@ from app.utils.time_utils import kst_now
 # ── token cache directory ───────────────────────────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent.parent  # repo root
 _TOKEN_CACHE_DIR = _ROOT / "data" / "cache"
+
+# ── 프로세스 전역 요청 레이트리미터(EGW00201 대응) ──────────────────────────
+# KIS 모의투자(모의계좌) API는 초당 요청수 제한이 매우 엄격하다(실측: "초당
+# 거래건수를 초과하였습니다" msg_cd=EGW00201). broker_factory.create_broker()가
+# 매번 새 KISClient 인스턴스를 만들기 때문에(3분 자동매매 사이클/30초 Fast Trend
+# Watcher/1초 Dynamic Exit Watcher가 각자 별도 인스턴스로 KIS를 호출), 인스턴스별
+# 상태로는 스레드 간 동시 호출을 막을 수 없다 — 여러 스레드가 우연히 같은 순간에
+# 겹쳐 호출하면 그 자체로 레이트리밋에 걸린다(2026-07-16 실측: BUY 신호가 났는데
+# POSITION_SYNC_PENDING - ... HTTP 500 msg_cd=EGW00201로 주문이 막힘). mode별
+# 전역 락 + 마지막 요청 시각으로 모든 KISClient 인스턴스가 공유하는 최소 요청
+# 간격을 강제한다.
+_RATE_LIMIT_LOCKS_GUARD = threading.Lock()
+_RATE_LIMIT_LOCKS: dict[str, threading.Lock] = {}
+_LAST_REQUEST_AT: dict[str, float] = {}
+# 모의투자는 초당 1건 수준(실측 EGW00201)보다 확실히 낮게, 실전은 KIS 공식
+# 한도(초당 20건)보다 넉넉히 여유를 두고 설정한다.
+_MIN_REQUEST_INTERVAL_SECONDS = {"mock": 1.1, "real": 0.08}
+_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.1
+
+
+def _rate_limit_lock(mode: str) -> threading.Lock:
+    with _RATE_LIMIT_LOCKS_GUARD:
+        lock = _RATE_LIMIT_LOCKS.get(mode)
+        if lock is None:
+            lock = threading.Lock()
+            _RATE_LIMIT_LOCKS[mode] = lock
+        return lock
+
+
+def _throttle(mode: str) -> None:
+    """이 mode(mock/real)로 나가는 다음 HTTP 요청이 최소 간격을 지키도록 필요하면
+    대기한다. 락을 쥔 채로 대기해 같은 mode의 동시 호출들이 서로 겹치지 않고
+    순서대로 최소 간격만큼 떨어져 나가게 한다.
+
+    pytest 실행 중에는 이 sleep이 테스트 스위트를 크게 느리게 만들 뿐 실제 KIS
+    서버를 호출하지 않으므로(대부분 requests_mock/monkeypatch로 세션 자체가
+    가짜) 건너뛴다 — 운영 환경(Render 등)에는 PYTEST_CURRENT_TEST가 존재하지
+    않으므로 이 우회는 테스트 실행에만 적용된다."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    lock = _rate_limit_lock(mode)
+    min_interval = _MIN_REQUEST_INTERVAL_SECONDS.get(mode, _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS)
+    with lock:
+        now = time.monotonic()
+        last = _LAST_REQUEST_AT.get(mode, 0.0)
+        wait = min_interval - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQUEST_AT[mode] = time.monotonic()
 
 # ── base URLs ──────────────────────────────────────────────────────────────
 BASE_URL_MOCK = "https://openapivts.koreainvestment.com:29443"
@@ -123,6 +175,15 @@ class KISClient:
         self._token_expires_at: datetime = datetime.min
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json; charset=utf-8"})
+
+    # ── 레이트리밋 적용 HTTP 요청(EGW00201 대응) ────────────────────────────
+    def _get(self, url: str, **kwargs):
+        _throttle(self.mode)
+        return self._session.get(url, **kwargs)
+
+    def _post(self, url: str, **kwargs):
+        _throttle(self.mode)
+        return self._session.post(url, **kwargs)
 
     # ── 공개 속성 ─────────────────────────────────────────────────────────
 
@@ -282,7 +343,7 @@ class KISClient:
             "appsecret": self._app_secret,
         }
         try:
-            resp = self._session.post(url, json=body, timeout=(3, 10))
+            resp = self._post(url, json=body, timeout=(3, 10))
             http_status = resp.status_code
 
             # raise_for_status() 전에 KIS 응답 body 파싱 (403/500 원인 확인용)
@@ -375,7 +436,7 @@ class KISClient:
             "Content-Type": "application/json",
         }
         try:
-            resp = self._session.post(url, json=body, headers=headers, timeout=(3, 10))
+            resp = self._post(url, json=body, headers=headers, timeout=(3, 10))
             resp.raise_for_status()
             return resp.json().get("HASH", "")
         except Exception as e:
@@ -390,7 +451,7 @@ class KISClient:
         headers = self._auth_headers(TR_CURRENT_PRICE)
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             d = resp.json().get("output", {})
             if not d:
@@ -441,7 +502,7 @@ class KISClient:
             "CTX_AREA_NK100": "",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 15))
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 15))
             # raise_for_status() 전에 본문 파싱 — KIS 500/4xx 응답에도 rt_cd/msg_cd가 들어 있음
             try:
                 data = resp.json()
@@ -634,7 +695,7 @@ class KISClient:
             "OVRS_ICLD_YN": "N",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
             try:
                 data = resp.json()
             except Exception:
@@ -775,7 +836,7 @@ class KISClient:
             "FID_ORG_ADJ_PRC": "0",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             output = resp.json().get("output", [])
             result = []
@@ -811,7 +872,7 @@ class KISClient:
             "FID_PW_DATA_INCU_YN": "N",
         }
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             output = resp.json().get("output2", [])
             result = []
@@ -844,7 +905,7 @@ class KISClient:
         headers = self._auth_headers(tr_id)
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             output = resp.json().get("output", [])
             result = []
@@ -924,7 +985,7 @@ class KISClient:
         )
 
         try:
-            resp = self._session.post(url, json=body, headers=headers, timeout=(3, 15))
+            resp = self._post(url, json=body, headers=headers, timeout=(3, 15))
             http_status = resp.status_code
 
             # raise_for_status 호출 전에 body 파싱 (500 오류 원인 확인)
