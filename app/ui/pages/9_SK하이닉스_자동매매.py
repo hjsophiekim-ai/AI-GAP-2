@@ -205,6 +205,15 @@ else:
             f"🔴 **제안을 생성할 수 없습니다.** {proposal.get('block_reason', '')}"
             + (f"\n\n누락된 데이터: {', '.join(missing)}" if missing else "")
         )
+        _cash_diag = proposal.get("cash_query_diagnostic")
+        if _cash_diag:
+            with st.expander("매수가능금액 조회 진단(rt_cd/msg_cd/msg1)"):
+                st.json({
+                    "ok": _cash_diag.get("ok"), "status": _cash_diag.get("status"),
+                    "value": _cash_diag.get("value"), "source": _cash_diag.get("source"),
+                    "rt_cd": _cash_diag.get("rt_cd"), "msg_cd": _cash_diag.get("msg_cd"),
+                    "msg1": _cash_diag.get("msg1"), "error": _cash_diag.get("error"),
+                })
     else:
         # a~e: 현재가/고점저점/하락률/수익률/score
         m1, m2, m3, m4, m5 = st.columns(5)

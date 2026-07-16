@@ -144,6 +144,71 @@ class TestGenerateProposal:
         assert record["mode"] == "mock"
 
 
+class _StatusBroker(_FakeBroker):
+    """get_buyable_cash_status()를 지원하는 브로커(KisMockBroker/KisRealBroker 흉내).
+
+    실제 계좌잔고(1006만원 등)가 있어도 API 실패(rt_cd!=0)면 get_buyable_cash()가
+    0.0을 반환하는 시나리오를 재현한다 — generate_trade_proposal()이 이걸 "실제
+    0원"으로 오인해 차단하지 않는지 검증한다(2026-07-16 사용자 리포트: 장시작 전
+    제안생성 시 모의계좌 실잔고 1006만원인데 매수가능금액 0원으로 표시됨)."""
+
+    def __init__(self, status: dict, **kwargs):
+        super().__init__(**kwargs)
+        self._status = status
+
+    def get_buyable_cash_status(self, symbol="005930", price=0):
+        return dict(self._status)
+
+
+class TestGenerateProposalBuyableCashDiagnosis:
+    def test_api_error_blocks_with_failure_wording_not_zero_wording(self, monkeypatch):
+        monkeypatch.setattr(svc, "is_stopped", lambda: False)
+        monkeypatch.setattr("app.data_sources.auto_market_collector.collect_all", lambda mode=None: {})
+        monkeypatch.setattr("app.models.hynix_short_term_signal.predict_hynix_signal", lambda md: _fake_signal_ok())
+        broker = _StatusBroker({
+            "ok": False, "status": "API_ERROR", "value": 0.0,
+            "rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다",
+        })
+        monkeypatch.setattr("app.trading.broker_factory.create_broker", lambda cfg, mode=None, **kw: broker)
+
+        proposal = svc.generate_trade_proposal(mode="mock")
+
+        assert proposal["blocked"] is True
+        assert "조회 실패" in proposal["block_reason"]
+        assert "실제로 0원" not in proposal["block_reason"]
+        assert proposal["cash_query_diagnostic"]["msg_cd"] == "EGW00201"
+
+    def test_ok_nonzero_balance_does_not_block(self, monkeypatch):
+        monkeypatch.setattr(svc, "is_stopped", lambda: False)
+        monkeypatch.setattr("app.data_sources.auto_market_collector.collect_all", lambda mode=None: {})
+        monkeypatch.setattr("app.models.hynix_short_term_signal.predict_hynix_signal", lambda md: _fake_signal_ok())
+        broker = _StatusBroker({
+            "ok": True, "status": "OK", "value": 10_060_000.0,
+            "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상처리 되었습니다",
+        })
+        monkeypatch.setattr("app.trading.broker_factory.create_broker", lambda cfg, mode=None, **kw: broker)
+
+        proposal = svc.generate_trade_proposal(mode="mock")
+
+        assert proposal["blocked"] is False
+        assert proposal["cash"] == 10_060_000.0
+
+    def test_ok_genuine_zero_blocks_with_zero_wording(self, monkeypatch):
+        monkeypatch.setattr(svc, "is_stopped", lambda: False)
+        monkeypatch.setattr("app.data_sources.auto_market_collector.collect_all", lambda mode=None: {})
+        monkeypatch.setattr("app.models.hynix_short_term_signal.predict_hynix_signal", lambda md: _fake_signal_ok())
+        broker = _StatusBroker({
+            "ok": True, "status": "OK", "value": 0.0,
+            "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상처리 되었습니다",
+        })
+        monkeypatch.setattr("app.trading.broker_factory.create_broker", lambda cfg, mode=None, **kw: broker)
+
+        proposal = svc.generate_trade_proposal(mode="mock")
+
+        assert proposal["blocked"] is True
+        assert "실제로 0원" in proposal["block_reason"]
+
+
 class TestExecuteProposal:
     """2026-07-15부터 execute_proposal()은 완전히 비활성화되어 있다 — SK하이닉스
     (000660) 직접 매수·매도는 금지되고, Enhanced 자동매매(0193T0/0197X0)만 실제

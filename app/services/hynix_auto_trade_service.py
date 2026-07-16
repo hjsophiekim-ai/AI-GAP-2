@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.logger import logger
+from app.utils.time_utils import kst_now
 from app.trading.hynix_symbols import LONG_SYMBOL, LONG_NAME, SIGNAL_SYMBOL, SIGNAL_NAME
 
 # Actual long-side trading symbol. 000660 remains the signal-only asset and must
@@ -54,7 +55,7 @@ def is_stopped() -> bool:
 
 def stop_auto_trade() -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _STOP_FLAG_PATH.write_text(datetime.now().isoformat(), encoding="utf-8")
+    _STOP_FLAG_PATH.write_text(kst_now().isoformat(), encoding="utf-8")
     logger.warning("[HYNIX_AUTO] 자동매매 정지 요청됨")
 
 
@@ -111,18 +112,45 @@ def generate_trade_proposal(mode: str = "mock") -> dict:
         _log_decision(proposal, mode=mode)
         return proposal
 
-    cash = broker.get_buyable_cash()
-    if not cash or cash <= 0:
-        # 요구사항7(2026-07-15) — get_buyable_cash()는 조회 실패(레이트리밋/타임아웃/
-        # 토큰 오류 등)와 "실제로 잔고가 0원"을 구분하지 못하고 둘 다 0.0을 반환한다.
-        # 이 0을 그대로 total_equity 계산에 넣으면 "총자산 0원/-100%"처럼 실제
-        # 계좌상태를 오도하는 값이 표시된다(Enhanced 쪽은 이미 이 문제를 별도로
-        # 고쳤다 — 이 레거시 제안 모듈에도 같은 안전장치를 적용한다). 실제 잔고가
-        # 0원인 경우도 신규매수 제안을 만들 이유가 없으므로 차단해도 손해가 없다.
-        proposal = _blocked_proposal("매수가능금액 조회 결과 0원 — 계좌 조회 실패 가능성, 제안 생성 보류")
-        proposal["signal"] = signal
-        _log_decision(proposal, mode=mode)
-        return proposal
+    # 요구사항(2026-07-16) — get_buyable_cash()는 조회 실패(레이트리밋/타임아웃/
+    # 토큰 오류/장시작 전 TR 오류 등)와 "실제로 잔고가 0원"을 구분하지 못하고 둘 다
+    # 0.0을 반환한다. 그 결과 모의계좌에 실제로 1000만원이 있어도 API가 일시적으로
+    # 실패하면 "매수가능금액 0원"으로 오인해 제안 생성을 막았다(2026-07-16 사용자
+    # 리포트 — 장시작 전 제안생성 시 실잔고 1006만원인데 0원으로 표시됨).
+    # get_buyable_cash_status()(KisMockBroker/KisRealBroker 지원)가 있으면 그 결과로
+    # "조회 실패"와 "정상 응답의 실제 0원"을 구분한다 — 실패일 때만 차단 문구를
+    # "0원"이 아니라 "조회 실패"로 명확히 하고 rt_cd/msg_cd/msg1을 함께 남긴다.
+    cash_status = None
+    if hasattr(broker, "get_buyable_cash_status"):
+        try:
+            cash_status = broker.get_buyable_cash_status()
+        except Exception as exc:
+            cash_status = {"ok": False, "status": "EXCEPTION", "value": 0.0, "error": str(exc)}
+    if cash_status is not None:
+        cash = float(cash_status.get("value") or 0.0)
+        if not cash_status.get("ok"):
+            proposal = _blocked_proposal(
+                f"매수가능금액 조회 실패({cash_status.get('status')}) — 실제 잔고가 0원이 아닐 수 있음: "
+                f"rt_cd={cash_status.get('rt_cd')} msg_cd={cash_status.get('msg_cd')} "
+                f"msg1={cash_status.get('msg1') or cash_status.get('error')}"
+            )
+            proposal["signal"] = signal
+            proposal["cash_query_diagnostic"] = cash_status
+            _log_decision(proposal, mode=mode)
+            return proposal
+        if cash <= 0:
+            proposal = _blocked_proposal("매수가능금액 조회 결과 실제로 0원입니다 — 제안 생성 보류")
+            proposal["signal"] = signal
+            proposal["cash_query_diagnostic"] = cash_status
+            _log_decision(proposal, mode=mode)
+            return proposal
+    else:
+        cash = broker.get_buyable_cash()
+        if not cash or cash <= 0:
+            proposal = _blocked_proposal("매수가능금액 조회 결과 0원 — 계좌 조회 실패 가능성, 제안 생성 보류")
+            proposal["signal"] = signal
+            _log_decision(proposal, mode=mode)
+            return proposal
     detected = get_hynix_auto_position(positions)
     if detected["current_position"] == POSITION_CONFLICT:
         proposal = _blocked_proposal(detected["error"])
@@ -218,7 +246,7 @@ def generate_trade_proposal(mode: str = "mock") -> dict:
         "disclaimer": signal.get("disclaimer"),
         "signal": signal,
         "risk": risk,
-        "computed_at": datetime.now().isoformat(),
+        "computed_at": kst_now().isoformat(),
     }
     _log_decision(proposal, mode=mode)
     return proposal
@@ -233,7 +261,7 @@ def _blocked_proposal(reason: str, missing_data: Optional[list] = None) -> dict:
         "buy_cash_amount": 0.0,
         "sell_quantity_ratio": 0.0,
         "disclaimer": "확률 기반 참고자료이며 투자판단은 사용자 책임입니다.",
-        "computed_at": datetime.now().isoformat(),
+        "computed_at": kst_now().isoformat(),
     }
 
 
@@ -368,11 +396,11 @@ def run_full_auto_cycle(mode: str = "mock") -> dict:
 def _log_decision(proposal: dict, mode: str) -> None:
     try:
         _LOG_DIR.mkdir(parents=True, exist_ok=True)
-        date_str = datetime.now().strftime("%Y%m%d")
+        date_str = kst_now().strftime("%Y%m%d")
         path = _LOG_DIR / f"hynix_auto_trade_decisions_{date_str}.jsonl"
         record = dict(proposal)
         record["mode"] = mode
-        record["logged_at"] = datetime.now().isoformat()
+        record["logged_at"] = kst_now().isoformat()
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except Exception as exc:
@@ -382,7 +410,7 @@ def _log_decision(proposal: dict, mode: str) -> None:
 def _log_order(result: dict, action: str, symbol: str, quantity: int, price: float, mode: str, full_auto: bool) -> None:
     try:
         _LOG_DIR.mkdir(parents=True, exist_ok=True)
-        date_str = datetime.now().strftime("%Y%m%d")
+        date_str = kst_now().strftime("%Y%m%d")
         path = _LOG_DIR / f"hynix_auto_trade_orders_{date_str}.csv"
         is_new = not path.exists()
         with path.open("a", newline="", encoding="utf-8-sig") as f:
@@ -390,7 +418,7 @@ def _log_order(result: dict, action: str, symbol: str, quantity: int, price: flo
             if is_new:
                 writer.writeheader()
             writer.writerow({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": kst_now().strftime("%Y-%m-%d %H:%M:%S"),
                 "mode": mode,
                 "full_auto": full_auto,
                 "action": action,
@@ -412,7 +440,7 @@ def _daily_pnl_pct(total_equity: float) -> float:
     """당일 시작 자산 대비 현재 총자산의 등락률(%). 상태 파일에 자정 기준 스냅샷을 유지한다."""
     try:
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        date_str = datetime.now().strftime("%Y%m%d")
+        date_str = kst_now().strftime("%Y%m%d")
         path = _STATE_DIR / f"hynix_daily_equity_{date_str}.json"
         if path.exists():
             baseline = json.loads(path.read_text(encoding="utf-8")).get("baseline_equity")
