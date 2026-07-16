@@ -480,6 +480,53 @@ if _pt:
         f"{(switch_state.get('last_trend_switch_plan') or {}).get('block_reason') or '차단 없음'}"
     )
 
+# ── ADAPTIVE_MARKET_REGIME(2026-07-16) — 신규진입/스위칭/손절/익절/보유시간이
+# 전부 공유하는 단일 장세판단. PRIMARY_TREND/Fast Watcher/Big Trend Holding/
+# Dynamic Exit가 각자 다른 장세·방향을 판단하던 것을 통일한다.
+st.subheader("🧭 Adaptive Market Regime(공용 장세판단)")
+_ar = switch_state.get("adaptive_regime") or {}
+_ar_enabled = switch_state.get("adaptive_regime_enabled", False)
+_ar_mode = switch_state.get("adaptive_regime_mode", "SHADOW")
+_ar_profile = _ar.get("profile") or {}
+_ar_snapshot = _ar.get("snapshot") or {}
+
+_ar_top = st.columns(4)
+_ar_top[0].metric("Adaptive Regime", "🟢 ENABLED" if _ar_enabled else "⚪ DISABLED")
+_ar_top[1].metric("적용 모드", "🔴 LIVE" if _ar_mode == "LIVE" else "🟡 SHADOW")
+_ar_top[2].metric("현재 Regime", _ar.get("displayed_regime") or _ar.get("confirmed_regime") or "-")
+_ar_top[3].metric("Confidence", f"{_num(_ar.get('confidence')):.0f}" if _ar.get("confidence") is not None else "-")
+if _ar.get("previous_regime") and _ar.get("previous_regime") != _ar.get("confirmed_regime"):
+    st.caption(f"이전 장세: {_ar['previous_regime']} → 전환시각: {_ar.get('transitioned_at') or '-'}")
+
+_ar_applied = st.columns(5)
+_ar_applied[0].metric("진입비중", f"{(_ar_profile.get('position_pct_multiplier') or 0) * 100:.0f}%")
+_ar_applied[1].metric("익절(TP1/TP2)", f"+{_ar_profile.get('tp1_pct', '-')}%/+{_ar_profile.get('tp2_pct') or '-'}%")
+_ar_applied[2].metric("손절(SL)", f"-{_ar_profile.get('sl_pct', '-')}%")
+_ar_applied[3].metric("최대 보유시간", f"{_ar_profile.get('max_hold_minutes')}분" if _ar_profile.get("max_hold_minutes") else "제한없음(트레일링)")
+_ar_applied[4].metric("Big Trend Holding", "🚫 금지" if _ar_profile.get("block_big_trend_holding") else "허용")
+
+with st.expander("Adaptive Regime 판단 근거 / VOLATILE_RANGE 진단", expanded=(_ar.get("displayed_regime") == "VOLATILE_RANGE")):
+    st.markdown(f"**신규진입 실제 엔진**: {'ADAPTIVE_MARKET_REGIME(' + _ar_mode + ')' if _ar_enabled else 'ENHANCED_REGIME_SWITCH(레거시, adaptive 비활성)'}")
+    st.markdown(f"**실제 청산 엔진**: Dynamic Exit AI(adaptive_market_regime 프로필 사용)")
+    _pt_conflict = bool(_pt) and _pt.get("primary_trend") and _ar.get("confirmed_regime") and (
+        (_pt.get("primary_trend") == "UP" and _ar.get("confirmed_regime") == "STRONG_DOWN")
+        or (_pt.get("primary_trend") == "DOWN" and _ar.get("confirmed_regime") == "STRONG_UP")
+    )
+    if _pt_conflict:
+        st.warning(
+            f"⚠️ 다른 엔진과 충돌 감지: PRIMARY_TREND={_pt.get('primary_trend')} vs "
+            f"Adaptive Regime={_ar.get('confirmed_regime')} — 실제 주문은 Adaptive Regime 결과만 사용합니다."
+        )
+    else:
+        st.caption("다른 엔진과의 충돌 없음(또는 아직 비교 불가) — Adaptive Regime 결과만 주문에 사용됩니다.")
+    for r in (_ar.get("reasons") or []):
+        st.markdown(f"- {r}")
+    _box_cols = st.columns(4)
+    _box_cols[0].metric("박스 상단", f"{_ar_snapshot.get('box_high'):,.0f}" if _ar_snapshot.get("box_high") else "-")
+    _box_cols[1].metric("박스 하단", f"{_ar_snapshot.get('box_low'):,.0f}" if _ar_snapshot.get("box_low") else "-")
+    _box_cols[2].metric("VWAP 교차횟수", _ar_snapshot.get("vwap_cross_count") if _ar_snapshot.get("vwap_cross_count") is not None else "-")
+    _box_cols[3].metric("방향이동효율", _ar_snapshot.get("efficiency_ratio") if _ar_snapshot.get("efficiency_ratio") is not None else "-")
+
 sc1, sc2, sc3 = st.columns([1, 1, 2])
 with sc1:
     auto_on = st.checkbox("Enhanced 자동매매 ON", value=switch_state.get("auto_trade_on", True), key="hynix_switch_auto_on")

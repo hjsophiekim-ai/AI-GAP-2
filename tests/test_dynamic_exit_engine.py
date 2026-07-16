@@ -1,7 +1,15 @@
 """
-test_dynamic_exit_engine.py — DynamicExitEngine의 시장유형 분류/TP·SL/Trailing/
-Profit Lock/Exit Score 동작 검증(6종: LOW_VOLATILITY/NORMAL/HIGH_VOLATILITY/
-TREND_UP/TREND_DOWN/PANIC + SHORT_SQUEEZE 분류 포함).
+test_dynamic_exit_engine.py — DynamicExitEngine이 ADAPTIVE_MARKET_REGIME 공용
+엔진(app.trading.adaptive_market_regime)에 위임한 이후의 동작을 검증한다.
+
+장세 분류 자체(갭/VWAP/추세/PANIC 동적임계값/2회 연속 확인 등)는
+tests/test_adaptive_market_regime.py에서 이미 검증하므로, 여기서는
+  - classify_market()이 공용 엔진에 정확히 위임되는지(스모크)
+  - get_profile()이 공용 리스크 프로필을 기존 필드명(tp_pct/sl_pct/trailing_pct/
+    uses_trailing)으로 정확히 매핑하는지, 인버스 보유 시 방향이 뒤집히는지
+  - Profit Lock/Trailing Stop/Time Stop(프로필 기반 max_hold_minutes)
+  - decide()의 2단계(tp1 부분익절 → tp2 전량익절) TP 메커닉과 손절/시간손절
+만 다룬다.
 """
 
 from __future__ import annotations
@@ -10,8 +18,9 @@ from datetime import datetime
 
 import pytest
 
-from app.trading.dynamic_exit_engine import (
-    DynamicExitEngine, LOW_VOLATILITY, NORMAL, HIGH_VOLATILITY, TREND_UP, TREND_DOWN, PANIC, SHORT_SQUEEZE,
+from app.trading.dynamic_exit_engine import DynamicExitEngine
+from app.trading.adaptive_market_regime import (
+    RANGE, STRONG_UP, STRONG_DOWN, HIGH_VOLATILITY, PANIC, REVERSAL, DATA_INSUFFICIENT, VOLATILE_RANGE,
 )
 from app.services.hynix_auto_trade_service import HYNIX_SYMBOL
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
@@ -22,82 +31,57 @@ def engine():
     return DynamicExitEngine()
 
 
-def _neutral_snapshot(**overrides):
-    base = {
-        "atr_14_pct": 1.8, "atr_5_pct": 1.8, "rsi_14": 50.0, "macd_histogram": 0.0, "macd_histogram_prev": 0.0,
-        "bollinger_width_pct": 4.0, "bollinger_upper": 101000.0, "bollinger_lower": 99000.0,
-        "williams_r": -50.0, "stochastic_k": 50.0, "stochastic_d": 50.0,
-        "vwap": 100000.0, "vwap_distance_pct": 0.0, "current_price": 100000.0,
-        "relative_volume": 1.0, "return_3m_pct": 0.0, "return_5m_pct": 0.0,
-        "held_minutes": 5.0, "profit_pct": 0.5,
+def _base_position(**overrides) -> dict:
+    position = {
+        "symbol": HYNIX_SYMBOL, "entry_price": 100_000.0,
+        "entry_time": datetime(2026, 7, 9, 10, 0).isoformat(),
+        "highest_price": 100_000.0, "lowest_price": 100_000.0,
+        "trailing_armed": False, "trailing_peak_price": None, "profit_lock_peak_pct": 0.0,
     }
-    base.update(overrides)
-    return base
+    position.update(overrides)
+    return position
 
 
-# ── 시장유형 분류 ────────────────────────────────────────────────────────────
-
-def test_classify_normal(engine):
-    assert engine.classify_market(_neutral_snapshot()) == NORMAL
+def _force_regime(engine: DynamicExitEngine, regime: str) -> None:
+    engine.classify_regime = lambda *a, **kw: {"regime": regime, "confidence": 80.0, "reasons": ["forced for test"]}
 
 
-def test_classify_low_volatility(engine):
-    snap = _neutral_snapshot(atr_14_pct=0.5, bollinger_width_pct=1.0, return_5m_pct=0.05)
-    assert engine.classify_market(snap) == LOW_VOLATILITY
+# ── classify_market() 위임 ───────────────────────────────────────────────────
+
+def test_classify_market_delegates_to_adaptive_regime_insufficient_data(engine):
+    assert engine.classify_market(None, None) == DATA_INSUFFICIENT
 
 
-def test_classify_high_volatility(engine):
-    snap = _neutral_snapshot(atr_14_pct=4.0, bollinger_width_pct=9.0, return_5m_pct=0.9)
-    assert engine.classify_market(snap) == HIGH_VOLATILITY
+# ── get_profile() — 공용 리스크 프로필 매핑 ──────────────────────────────────
 
-
-def test_classify_trend_up(engine):
-    snap = _neutral_snapshot(macd_histogram=2.0, vwap_distance_pct=1.5, rsi_14=75.0, return_5m_pct=1.2, return_3m_pct=0.4, relative_volume=1.2)
-    assert engine.classify_market(snap) == TREND_UP
-
-
-def test_classify_trend_down(engine):
-    snap = _neutral_snapshot(macd_histogram=-2.0, vwap_distance_pct=-1.5, rsi_14=25.0, return_5m_pct=-1.2, return_3m_pct=-0.4, relative_volume=1.2)
-    assert engine.classify_market(snap) == TREND_DOWN
-
-
-def test_classify_panic(engine):
-    snap = _neutral_snapshot(return_3m_pct=-2.0, relative_volume=3.0)
-    assert engine.classify_market(snap) == PANIC
-
-
-def test_classify_short_squeeze(engine):
-    snap = _neutral_snapshot(return_3m_pct=2.0, relative_volume=3.0, rsi_14=45.0)
-    assert engine.classify_market(snap) == SHORT_SQUEEZE
-
-
-# ── 프로파일 (TP/SL/Trailing) ────────────────────────────────────────────────
-
-@pytest.mark.parametrize("market_type,expected_tp,expected_sl,expected_trailing", [
-    (LOW_VOLATILITY, 2.0, 1.0, False),
-    (NORMAL, 3.0, 1.5, False),
-    (HIGH_VOLATILITY, 4.5, 2.2, False),
-    (TREND_UP, 6.0, 2.5, True),
-    (TREND_DOWN, 2.5, 1.2, False),
-    (PANIC, 2.0, 0.8, False),
+@pytest.mark.parametrize("regime,expected_tp,expected_sl,expected_trailing", [
+    (RANGE, 2.0, 0.8, False),
+    (STRONG_UP, 2.0, 1.5, True),
+    (STRONG_DOWN, 2.0, 1.5, True),
+    (HIGH_VOLATILITY, 3.5, 1.0, False),
+    (PANIC, 2.0, 0.7, False),
 ])
-def test_profile_values_for_hynix_long(engine, market_type, expected_tp, expected_sl, expected_trailing):
-    profile = engine.get_profile(market_type, HYNIX_SYMBOL)
+def test_profile_values_for_hynix_long(engine, regime, expected_tp, expected_sl, expected_trailing):
+    profile = engine.get_profile(regime, HYNIX_SYMBOL)
     assert profile["tp_pct"] == expected_tp
     assert profile["sl_pct"] == expected_sl
     assert profile["uses_trailing"] == expected_trailing
+    assert profile["applied_profile"] == regime
 
 
-def test_inverse_position_flips_trend_profiles(engine):
-    """인버스 보유 중 TREND_DOWN(하이닉스 하락=인버스에 유리)은 TREND_UP 프로필을 적용해야 한다."""
-    profile_for_inverse = engine.get_profile(TREND_DOWN, INVERSE_SYMBOL)
-    assert profile_for_inverse["applied_profile"] == TREND_UP
-    assert profile_for_inverse["tp_pct"] == 6.0
-    assert profile_for_inverse["uses_trailing"] is True
+def test_inverse_position_flips_strong_trend_profiles(engine):
+    """인버스 보유 중 STRONG_DOWN(하이닉스 하락=인버스에 유리)은 STRONG_UP 프로필을 적용한다."""
+    profile_for_inverse = engine.get_profile(STRONG_DOWN, INVERSE_SYMBOL)
+    assert profile_for_inverse["applied_profile"] == STRONG_UP
 
-    profile_for_hynix = engine.get_profile(TREND_DOWN, HYNIX_SYMBOL)
-    assert profile_for_hynix["applied_profile"] == TREND_DOWN
-    assert profile_for_hynix["tp_pct"] == 2.5
+    profile_for_hynix = engine.get_profile(STRONG_DOWN, HYNIX_SYMBOL)
+    assert profile_for_hynix["applied_profile"] == STRONG_DOWN
+
+
+def test_range_and_panic_do_not_flip_for_inverse(engine):
+    """방향성이 없는(RANGE) 또는 방향 대칭이 아닌(PANIC) 장세는 인버스 보유중에도 그대로 적용된다."""
+    assert engine.get_profile(RANGE, INVERSE_SYMBOL)["applied_profile"] == RANGE
+    assert engine.get_profile(PANIC, INVERSE_SYMBOL)["applied_profile"] == PANIC
 
 
 # ── Profit Lock ──────────────────────────────────────────────────────────────
@@ -136,58 +120,168 @@ def test_trailing_not_armed_below_tp(engine):
     assert position["trailing_armed"] is False
 
 
-# ── Time Stop ─────────────────────────────────────────────────────────────────
+# ── Time Stop — 장세별 프로필의 max_hold_minutes 기준 ────────────────────────
 
 def test_time_stop_stagnant_20min(engine):
     snap = {"held_minutes": 22.0, "profit_pct": 0.1}
-    assert engine.check_time_stop(snap, NORMAL) is not None
+    profile = {"max_hold_minutes": None}  # 정체 판단은 하드캡과 무관하게 항상 적용
+    assert engine.check_time_stop(snap, profile) is not None
 
 
-def test_time_stop_hard_cap_30min_for_normal(engine):
-    snap = {"held_minutes": 31.0, "profit_pct": 2.0}
-    assert engine.check_time_stop(snap, NORMAL) is not None
+def test_time_stop_hard_cap_from_profile(engine):
+    """RANGE(max_hold_minutes=20)처럼 프로필이 명시한 하드캡을 그대로 사용한다."""
+    snap = {"held_minutes": 21.0, "profit_pct": 2.0}
+    assert engine.check_time_stop(snap, {"max_hold_minutes": 20}) is not None
+    snap_ok = {"held_minutes": 19.0, "profit_pct": 2.0}
+    assert engine.check_time_stop(snap_ok, {"max_hold_minutes": 20}) is None
 
 
-def test_time_stop_allows_60min_for_strong_trend(engine):
+def test_time_stop_falls_back_to_trend_max_minutes_when_profile_has_no_cap(engine):
+    """STRONG_UP/STRONG_DOWN(max_hold_minutes=None)은 추세를 끝까지 태우되,
+    무기한 보유를 막기 위한 안전망(trend_max_minutes, 기본 60분)이 적용된다."""
     snap = {"held_minutes": 45.0, "profit_pct": 2.0}
-    assert engine.check_time_stop(snap, TREND_UP) is None
+    assert engine.check_time_stop(snap, {"max_hold_minutes": None}) is None
     snap2 = {"held_minutes": 61.0, "profit_pct": 2.0}
-    assert engine.check_time_stop(snap2, TREND_UP) is not None
+    assert engine.check_time_stop(snap2, {"max_hold_minutes": None}) is not None
 
 
-# ── decide() 통합 ─────────────────────────────────────────────────────────────
+# ── decide() 통합 — RANGE(2단계 tp1/tp2) ─────────────────────────────────────
 
-def test_decide_triggers_take_profit_in_normal_market():
+def test_decide_range_partial_take_profit_then_full_on_tp2():
+    """요구사항 — RANGE에서 +2% 전량익절(tp2), 그 전 +1.5%에서는 부분익절(tp1)."""
     engine = DynamicExitEngine()
-    position = {
-        "symbol": HYNIX_SYMBOL, "entry_price": 100_000.0, "entry_time": datetime(2026, 7, 9, 10, 0).isoformat(),
-        "highest_price": 100_000.0, "lowest_price": 100_000.0, "trailing_armed": False,
-        "trailing_peak_price": None, "profit_lock_peak_pct": 0.0,
-    }
-    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=103_100.0, now=datetime(2026, 7, 9, 10, 5))
-    assert decision["action"] == "SELL_ALL"
-    assert decision["market_type"] == NORMAL
-    assert "익절" in decision["reason"]
+    _force_regime(engine, RANGE)
+    position = _base_position()
+
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=101_600.0, now=datetime(2026, 7, 9, 10, 5))
+    assert decision["action"] == "SELL_PARTIAL"
+    assert decision["ratio"] == pytest.approx(0.5)
+    assert position["partial_tp1_done"] is True
+
+    decision2 = engine.decide(position, df_daily=None, df_1min=None, current_price=102_100.0, now=datetime(2026, 7, 9, 10, 8))
+    assert decision2["action"] == "SELL_ALL"
+    assert decision2["ratio"] == pytest.approx(1.0)
+    assert "익절" in decision2["reason"]
 
 
-def test_decide_triggers_stop_loss_in_normal_market():
+def test_decide_range_stop_loss_at_minus_0_8_pct():
+    """요구사항 — RANGE에서 -0.8% 손절."""
     engine = DynamicExitEngine()
-    position = {
-        "symbol": HYNIX_SYMBOL, "entry_price": 100_000.0, "entry_time": datetime(2026, 7, 9, 10, 0).isoformat(),
-        "highest_price": 100_000.0, "lowest_price": 100_000.0, "trailing_armed": False,
-        "trailing_peak_price": None, "profit_lock_peak_pct": 0.0,
-    }
-    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=98_400.0, now=datetime(2026, 7, 9, 10, 5))
+    _force_regime(engine, RANGE)
+    position = _base_position()
+
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=99_150.0, now=datetime(2026, 7, 9, 10, 5))
     assert decision["action"] == "SELL_ALL"
     assert "손절" in decision["reason"]
 
 
 def test_decide_holds_when_profit_between_thresholds():
     engine = DynamicExitEngine()
-    position = {
-        "symbol": HYNIX_SYMBOL, "entry_price": 100_000.0, "entry_time": datetime(2026, 7, 9, 10, 0).isoformat(),
-        "highest_price": 100_000.0, "lowest_price": 100_000.0, "trailing_armed": False,
-        "trailing_peak_price": None, "profit_lock_peak_pct": 0.0,
-    }
+    _force_regime(engine, RANGE)
+    position = _base_position()
     decision = engine.decide(position, df_daily=None, df_1min=None, current_price=100_500.0, now=datetime(2026, 7, 9, 10, 5))
+    assert decision["action"] == "HOLD"
+
+
+# ── decide() 통합 — STRONG_UP(tp1 부분익절 후 나머지는 트레일링) ─────────────
+
+def test_decide_strong_up_partial_tp1_then_trails_remainder():
+    """요구사항 — STRONG_TREND: +2% 일부익절, 나머지는 ATR trailing(즉시 전량청산 아님)."""
+    engine = DynamicExitEngine()
+    _force_regime(engine, STRONG_UP)
+    position = _base_position()
+
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=102_100.0, now=datetime(2026, 7, 9, 10, 5))
+    assert decision["action"] == "SELL_PARTIAL"
+    assert decision["ratio"] == pytest.approx(0.5)
+    assert position["partial_tp1_done"] is True
+    assert position["trailing_armed"] is True  # tp1 도달과 동시에 트레일링 무장
+
+
+def test_decide_regime_change_swaps_profile_between_calls():
+    """요구사항 — 장세가 바뀌면 다음 결정부터 즉시 새 프로필(SL 등)이 적용된다.
+
+    -0.75% 손실은 RANGE(sl=-0.8%)에서는 아직 손절 전이지만, PANIC(sl=-0.7%)으로
+    장세가 바뀌면 같은 손실률로도 즉시 손절된다."""
+    engine = DynamicExitEngine()
+    position = _base_position()
+
+    _force_regime(engine, RANGE)
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=99_250.0, now=datetime(2026, 7, 9, 10, 3))
+    assert decision["action"] == "HOLD"
+
+    _force_regime(engine, PANIC)
+    decision2 = engine.decide(position, df_daily=None, df_1min=None, current_price=99_250.0, now=datetime(2026, 7, 9, 10, 4))
+    assert decision2["action"] == "SELL_ALL"
+    assert "손절" in decision2["reason"]
+
+
+# ── VOLATILE_RANGE 초단기 실행 보호(2026-07-16) ──────────────────────────────
+
+def test_decide_volatile_range_tp1_50pct_then_tp2_full():
+    """요구사항 — VOLATILE_RANGE에서 +0.8% 50% 매도, +1.3%에서 전량매도."""
+    engine = DynamicExitEngine()
+    _force_regime(engine, VOLATILE_RANGE)
+    position = _base_position()
+
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=100_800.0, now=datetime(2026, 7, 9, 10, 2))
+    assert decision["action"] == "SELL_PARTIAL"
+    assert decision["ratio"] == pytest.approx(0.5)
+
+    decision2 = engine.decide(position, df_daily=None, df_1min=None, current_price=101_300.0, now=datetime(2026, 7, 9, 10, 4))
+    assert decision2["action"] == "SELL_ALL"
+    assert decision2["ratio"] == pytest.approx(1.0)
+
+
+def test_decide_volatile_range_stop_loss_at_minus_0_6_pct():
+    engine = DynamicExitEngine()
+    _force_regime(engine, VOLATILE_RANGE)
+    position = _base_position()
+
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=99_400.0, now=datetime(2026, 7, 9, 10, 2))
+    assert decision["action"] == "SELL_ALL"
+    assert "손절" in decision["reason"]
+
+
+def test_decide_volatile_range_time_stop_at_8_minutes():
+    engine = DynamicExitEngine()
+    _force_regime(engine, VOLATILE_RANGE)
+    position = _base_position()
+
+    decision = engine.decide(position, df_daily=None, df_1min=None, current_price=100_000.0, now=datetime(2026, 7, 9, 10, 9))
+    assert decision["action"] == "SELL_ALL"
+    assert "시간손절" in decision["reason"]
+
+
+def test_decide_opposite_signal_streak_reduces_then_exits():
+    """요구사항 — 반대 강신호 1회면 50% 축소, 2회면 전량청산(TP/SL 도달 전이어도)."""
+    engine = DynamicExitEngine()
+    _force_regime(engine, VOLATILE_RANGE)
+    position = _base_position()
+
+    decision = engine.decide(
+        position, df_daily=None, df_1min=None, current_price=100_100.0, now=datetime(2026, 7, 9, 10, 1),
+        opposite_signal_streak=1,
+    )
+    assert decision["action"] == "SELL_PARTIAL"
+    assert decision["ratio"] == pytest.approx(0.5)
+    assert "반대 강신호" in decision["reason"]
+
+    decision2 = engine.decide(
+        position, df_daily=None, df_1min=None, current_price=100_100.0, now=datetime(2026, 7, 9, 10, 2),
+        opposite_signal_streak=2,
+    )
+    assert decision2["action"] == "SELL_ALL"
+    assert decision2["ratio"] == 1.0
+
+
+def test_decide_opposite_signal_streak_zero_is_noop():
+    engine = DynamicExitEngine()
+    _force_regime(engine, VOLATILE_RANGE)
+    position = _base_position()
+
+    decision = engine.decide(
+        position, df_daily=None, df_1min=None, current_price=100_100.0, now=datetime(2026, 7, 9, 10, 1),
+        opposite_signal_streak=0,
+    )
     assert decision["action"] == "HOLD"

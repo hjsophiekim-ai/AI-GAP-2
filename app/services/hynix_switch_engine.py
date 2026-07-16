@@ -1738,6 +1738,25 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     inverse_price = enhanced_result.get("inverse_current_price")
     df_1min = (enhanced_result.get("market_data") or {}).get("hynix_minute", {}).get("df_1min")
 
+    # 요구사항(2026-07-16) — ADAPTIVE_MARKET_REGIME을 신규진입/스위칭/손절/익절/
+    # 보유시간이 전부 공유하는 단일 계산 지점으로 만든다. Enhanced 자동매매가
+    # ON이면(auto_trade_on) 별도 수동 체크박스 없이 이 결과가 곧바로 LIVE로
+    # 적용되고, OFF면 SHADOW(계산·표시만, 주문에 미반영)로 남는다.
+    try:
+        from app.trading.adaptive_market_regime import compute_and_confirm_regime
+
+        adaptive_regime_result = compute_and_confirm_regime(
+            df_1min, prev_close=enhanced_result.get("hynix_prev_close"),
+            confirmation_state=state.get("adaptive_regime_confirmation"), now=now,
+        )
+        state["adaptive_regime_confirmation"] = adaptive_regime_result["confirmation_state"]
+        state["adaptive_regime"] = {k: v for k, v in adaptive_regime_result.items() if k != "confirmation_state"}
+    except Exception as exc:
+        logger.error("[HynixSwitchEngine] adaptive_regime 계산 실패: %s", exc)
+        warnings.append(f"adaptive_regime 계산 실패: {exc}")
+    state["adaptive_regime_enabled"] = bool(state.get("auto_trade_on"))
+    state["adaptive_regime_mode"] = "LIVE" if state["adaptive_regime_enabled"] else "SHADOW"
+
     # ── SHADOW MODE: Cycle Detector AI + Prediction AI V2(BUY/SELL/HOLD 확률) ──
     # 아래 호출은 `decision`/실제 주문에 절대 영향을 주지 않는다 — 계산·로그·state 저장만
     # 수행하며, 예외가 나도 무해하게 삼켜진다. 실제 주문 연결은 별도 승인 후 진행한다.

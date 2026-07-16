@@ -6,8 +6,19 @@ dynamic_exit_engine.py — Dynamic Exit AI: 익절/손절/트레일링/Profit Lo
 개입하지 않으며 오직 "이미 보유한 포지션을 언제/얼마나 청산할지"만 판단한다.
 
 `compute_hynix_tech_indicators`/`hynix_technical_score`의 지표 계산 로직(RSI/MACD/
-볼린저/Williams%R/Stochastic/VWAP)을 그대로 재사용하고, 여기서는 시장유형 분류 ·
-Profit Lock · Trailing Stop · Exit Score 판단만 추가한다.
+볼린저/Williams%R/Stochastic/VWAP)을 그대로 재사용하고, 여기서는 Profit Lock ·
+Trailing Stop · Time Stop · Exit Score 판단만 추가한다.
+
+요구사항(2026-07-16, ADAPTIVE_MARKET_REGIME 통합) — 장세 분류와 그에 따른
+익절/손절/트레일링/최대보유시간/진입비중 프로필은 더 이상 이 엔진이 독자적으로
+계산하지 않는다. 신규진입 게이트(hynix_switch_engine.evaluate_pullback_gate)와
+Big Trend Holding(hynix_big_trend_engine)이 서로 다른 기준으로 장세를 판단해
+진입·청산 기준이 충돌할 수 있었던 문제를, app.trading.adaptive_market_regime의
+공용 분류(STRONG_UP/STRONG_DOWN/RANGE/HIGH_VOLATILITY/PANIC/REVERSAL/
+DATA_INSUFFICIENT)로 통일한다. 예전 7종 시장유형(LOW_VOLATILITY/NORMAL/
+HIGH_VOLATILITY/TREND_UP/TREND_DOWN/PANIC/SHORT_SQUEEZE)과 그 판정/프로필
+로직은 중복 장세분류이므로 제거했다 — Profit Lock/Trailing/Time Stop/Exit
+Score(장세와 무관한 공통 메커니즘)만 이 파일에 남아있다.
 """
 
 from __future__ import annotations
@@ -28,33 +39,9 @@ from app.models.hynix_technical_score import (
 ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = ROOT / "config" / "dynamic_exit_config.json"
 
-LOW_VOLATILITY = "LOW_VOLATILITY"
-NORMAL = "NORMAL"
-HIGH_VOLATILITY = "HIGH_VOLATILITY"
-TREND_UP = "TREND_UP"
-TREND_DOWN = "TREND_DOWN"
-PANIC = "PANIC"
-SHORT_SQUEEZE = "SHORT_SQUEEZE"
-
-_INVERSE_FLIP = {TREND_UP: TREND_DOWN, TREND_DOWN: TREND_UP}
-
 _DEFAULT_CONFIG = {
-    "market_profiles": {
-        LOW_VOLATILITY: {"tp_pct": 2.0, "sl_pct": 1.0, "trailing_pct": 1.0, "uses_trailing": False},
-        NORMAL: {"tp_pct": 3.0, "sl_pct": 1.5, "trailing_pct": 1.0, "uses_trailing": False},
-        HIGH_VOLATILITY: {"tp_pct": 4.5, "sl_pct": 2.2, "trailing_pct": 2.0, "uses_trailing": False},
-        TREND_UP: {"tp_pct": 6.0, "sl_pct": 2.5, "trailing_pct": 2.0, "uses_trailing": True},
-        TREND_DOWN: {"tp_pct": 2.5, "sl_pct": 1.2, "trailing_pct": 1.0, "uses_trailing": False},
-        PANIC: {"tp_pct": 2.0, "sl_pct": 0.8, "trailing_pct": 1.0, "uses_trailing": False},
-        SHORT_SQUEEZE: {"tp_pct": 6.0, "sl_pct": 2.5, "trailing_pct": 3.0, "uses_trailing": True},
-    },
-    "fallback": {"tp_pct": 3.0, "sl_pct": 1.5},
     "profit_lock_steps": [[1.0, 0.0], [2.0, 1.0], [3.0, 2.0], [4.0, 3.0], [5.0, 4.0]],
     "time_stop": {"stagnant_minutes": 20, "stagnant_band_pct": 0.5, "max_minutes": 30, "trend_max_minutes": 60},
-    "panic_detection": {"return_3m_pct": -1.5, "relative_volume": 2.0},
-    "short_squeeze_detection": {"return_3m_pct": 1.5, "relative_volume": 2.0, "prior_oversold_rsi": 35},
-    "trend_detection": {"trend_score_up": 65, "trend_score_down": 35},
-    "volatility_detection": {"high": 65, "low": 35},
     "exit_score_weights": {
         "atr": 0.10, "macd": 0.15, "rsi": 0.10, "vwap": 0.10, "bollinger": 0.10,
         "williams": 0.10, "stochastic": 0.10, "volume": 0.10, "profit_lock": 0.10, "trailing": 0.15,
@@ -68,9 +55,7 @@ def _load_config() -> dict:
         if _CONFIG_PATH.exists():
             data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
             merged = dict(_DEFAULT_CONFIG)
-            merged.update({k: v for k, v in data.items() if k != "market_profiles"})
-            if "market_profiles" in data:
-                merged["market_profiles"] = {**_DEFAULT_CONFIG["market_profiles"], **data["market_profiles"]}
+            merged.update(data)
             return merged
     except Exception as exc:
         logger.debug("[DynamicExitEngine] 설정 로드 실패, 기본값 사용: %s", exc)
@@ -190,76 +175,50 @@ class DynamicExitEngine:
 
         return snapshot
 
-    # ── 2. 시장유형 분류 (7종) ────────────────────────────────────────────────
-    def classify_market(self, snapshot: dict) -> str:
-        panic_cfg = self.config["panic_detection"]
-        squeeze_cfg = self.config["short_squeeze_detection"]
-        ret3m = snapshot.get("return_3m_pct")
-        rel_vol = snapshot.get("relative_volume")
+    # ── 2. 시장유형(장세) 분류 — ADAPTIVE_MARKET_REGIME 공용 엔진에 위임 ──────
+    # 요구사항(2026-07-16) — 신규진입 게이트/Big Trend Holding과 서로 다른
+    # 기준으로 장세를 각자 판단하던 중복 로직을 제거하고, 하나의 공용 분류
+    # (app.trading.adaptive_market_regime)만 사용한다.
+    def classify_regime(
+        self, df_1min: Optional[pd.DataFrame], df_daily: Optional[pd.DataFrame] = None,
+        *, prev_close: Optional[float] = None, now: Optional[datetime] = None,
+    ) -> dict:
+        from app.trading.adaptive_market_regime import classify_raw_regime
 
-        if ret3m is not None and rel_vol is not None:
-            if ret3m <= panic_cfg["return_3m_pct"] and rel_vol >= panic_cfg["relative_volume"]:
-                return PANIC
-            if (ret3m >= squeeze_cfg["return_3m_pct"] and rel_vol >= squeeze_cfg["relative_volume"]
-                    and (snapshot.get("rsi_14") or 50) <= squeeze_cfg["prior_oversold_rsi"] + 15):
-                return SHORT_SQUEEZE
+        return classify_raw_regime(df_1min, df_daily, prev_close=prev_close, now=now)
 
-        trend_score = self._trend_score(snapshot)
-        trend_cfg = self.config["trend_detection"]
-        if trend_score >= trend_cfg["trend_score_up"]:
-            return TREND_UP
-        if trend_score <= trend_cfg["trend_score_down"]:
-            return TREND_DOWN
+    # 하위호환 별칭 — 예전 코드/테스트가 시장유형 문자열만 필요로 할 때.
+    def classify_market(
+        self, df_1min: Optional[pd.DataFrame] = None, df_daily: Optional[pd.DataFrame] = None,
+        *, prev_close: Optional[float] = None, now: Optional[datetime] = None,
+    ) -> str:
+        return self.classify_regime(df_1min, df_daily, prev_close=prev_close, now=now)["regime"]
 
-        volatility_score = self._volatility_score(snapshot)
-        vol_cfg = self.config["volatility_detection"]
-        if volatility_score >= vol_cfg["high"]:
-            return HIGH_VOLATILITY
-        if volatility_score <= vol_cfg["low"]:
-            return LOW_VOLATILITY
-        return NORMAL
-
-    def _volatility_score(self, snapshot: dict) -> float:
-        parts = []
-        atr = snapshot.get("atr_14_pct")
-        if atr is not None:
-            parts.append(50 + max(-50, min(50, (atr - 1.8) / 1.5 * 50)))
-        bb = snapshot.get("bollinger_width_pct")
-        if bb is not None:
-            parts.append(50 + max(-50, min(50, (bb - 4.0) / 3.0 * 50)))
-        ret5 = snapshot.get("return_5m_pct")
-        if ret5 is not None:
-            parts.append(50 + max(-50, min(50, (abs(ret5) - 0.35) / 0.4 * 50)))
-        return sum(parts) / len(parts) if parts else 50.0
-
-    def _trend_score(self, snapshot: dict) -> float:
-        parts = []
-        hist = snapshot.get("macd_histogram")
-        if hist is not None:
-            atr_ref = max(snapshot.get("atr_14_pct") or 1.5, 0.5)
-            parts.append(50 + max(-50, min(50, hist / atr_ref * 200)))
-        vwap_dist = snapshot.get("vwap_distance_pct")
-        if vwap_dist is not None:
-            parts.append(50 + max(-50, min(50, vwap_dist / 1.0 * 50)))
-        rsi = snapshot.get("rsi_14")
-        if rsi is not None:
-            parts.append(rsi)
-        ret5 = snapshot.get("return_5m_pct")
-        if ret5 is not None:
-            parts.append(50 + max(-50, min(50, ret5 / 1.5 * 50)))
-        return sum(parts) / len(parts) if parts else 50.0
-
-    # ── 3. 프로파일(시장유형별 TP/SL/Trailing) ───────────────────────────────
-    def get_profile(self, market_type: str, position_symbol: Optional[str]) -> dict:
+    # ── 3. 프로파일(장세별 TP/SL/Trailing) — 공용 리스크 프로필 사용 ─────────
+    def get_profile(self, regime: str, position_symbol: Optional[str]) -> dict:
+        """장세별 리스크 프로필을 공용 엔진(adaptive_market_regime.RISK_PROFILES)
+        에서 조회한다. 인버스 보유 중에는 방향을 뒤집어 적용한다(하이닉스
+        STRONG_DOWN=인버스 유리이므로 STRONG_UP 프로필을 적용하는 식)."""
         from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
+        from app.trading.adaptive_market_regime import get_risk_profile, STRONG_UP, STRONG_DOWN
 
-        applied_type = market_type
-        if position_symbol == INVERSE_SYMBOL and market_type in _INVERSE_FLIP:
-            applied_type = _INVERSE_FLIP[market_type]
+        inverse_flip = {STRONG_UP: STRONG_DOWN, STRONG_DOWN: STRONG_UP}
+        applied_regime = regime
+        if position_symbol == INVERSE_SYMBOL and regime in inverse_flip:
+            applied_regime = inverse_flip[regime]
 
-        profile = dict(self.config["market_profiles"].get(applied_type, self.config["fallback"]))
-        profile["market_type"] = market_type
-        profile["applied_profile"] = applied_type
+        profile = get_risk_profile(applied_regime)
+        profile["market_type"] = regime
+        profile["regime"] = regime
+        profile["applied_profile"] = applied_regime
+        # decide()의 나머지 로직(Profit Lock/Trailing/Exit Score/기존 테스트)이
+        # 참조하는 기존 필드명(tp_pct/sl_pct/trailing_pct/uses_trailing)을
+        # 공용 프로필(tp1_pct/tp2_pct)에서 매핑해 채운다 — 익절은 "일부"가 있으면
+        # 그 폭을, 없으면 최종 폭을 즉시청산 기준으로 쓴다.
+        profile["tp_pct"] = profile.get("tp2_pct") if profile.get("tp2_pct") is not None else profile.get("tp1_pct")
+        profile["sl_pct"] = profile.get("sl_pct")
+        profile["trailing_pct"] = profile.get("trailing_pct") or 1.0
+        profile["uses_trailing"] = bool(profile.get("uses_trailing"))
         return profile
 
     # ── 4. Profit Lock ───────────────────────────────────────────────────────
@@ -293,15 +252,21 @@ class DynamicExitEngine:
         return result
 
     # ── 6. Time Stop ─────────────────────────────────────────────────────────
-    def check_time_stop(self, snapshot: dict, market_type: str) -> Optional[str]:
+    def check_time_stop(self, snapshot: dict, profile: dict) -> Optional[str]:
+        """최대보유시간은 이제 장세별 리스크 프로필(profile["max_hold_minutes"])이
+        결정한다(요구사항2 — RANGE 20분/PANIC 10분 등). 프로필이 명시하지 않으면
+        (STRONG_UP/STRONG_DOWN/HIGH_VOLATILITY처럼 추세를 끝까지 태우는 장세)
+        기존 안전망(trend_max_minutes, 기본 60분)을 그대로 적용해 무기한 보유를
+        방지한다."""
         cfg = self.config["time_stop"]
         held = snapshot.get("held_minutes")
         profit_pct = snapshot.get("profit_pct")
         if held is None:
             return None
 
-        is_strong_trend = market_type in (TREND_UP, TREND_DOWN, SHORT_SQUEEZE)
-        hard_cap = cfg["trend_max_minutes"] if is_strong_trend else cfg["max_minutes"]
+        hard_cap = profile.get("max_hold_minutes")
+        if hard_cap is None:
+            hard_cap = cfg["trend_max_minutes"]
         if held >= hard_cap:
             return f"시간손절(보유 {held:.0f}분 ≥ 최대 {hard_cap}분)"
 
@@ -372,6 +337,7 @@ class DynamicExitEngine:
     def decide(
         self, position: dict, df_daily: Optional[pd.DataFrame], df_1min: Optional[pd.DataFrame],
         current_price: float, now: datetime, tick_strength: Optional[float] = None,
+        prev_close: Optional[float] = None, opposite_signal_streak: int = 0,
     ) -> dict:
         """포지션 청산 여부를 종합 판단한다. position dict는 트레일링/최고저가 추적을 위해 in-place 갱신됨."""
         snapshot = self.build_snapshot(position, df_daily, df_1min, current_price, now, tick_strength)
@@ -380,13 +346,20 @@ class DynamicExitEngine:
         if snapshot.get("profit_pct") is not None:
             position["profit_lock_peak_pct"] = max(position.get("profit_lock_peak_pct", 0.0), snapshot["profit_pct"])
 
-        market_type = self.classify_market(snapshot)
+        if prev_close is None and df_daily is not None and len(df_daily) >= 2:
+            try:
+                prev_close = float(df_daily.sort_values("datetime")["close"].iloc[-2])
+            except Exception:
+                prev_close = None
+        regime_result = self.classify_regime(df_1min, df_daily, prev_close=prev_close, now=now)
+        market_type = regime_result["regime"]
         profile = self.get_profile(market_type, position.get("symbol"))
         profit_pct = snapshot.get("profit_pct")
 
         thresholds = self.config["exit_score_thresholds"]
         base_result = {
-            "market_type": market_type, "profile": profile, "snapshot": snapshot,
+            "market_type": market_type, "regime": market_type, "regime_confidence": regime_result.get("confidence"),
+            "regime_reasons": regime_result.get("reasons"), "profile": profile, "snapshot": snapshot,
             "tp_pct": profile["tp_pct"], "sl_pct": profile["sl_pct"],
             "trailing_pct": profile["trailing_pct"], "trailing_enabled": profile["uses_trailing"],
             "trailing_armed": bool(position.get("trailing_armed")),
@@ -397,9 +370,21 @@ class DynamicExitEngine:
             return {**base_result, "action": "HOLD", "ratio": 0.0, "exit_score": 0.0, "score_breakdown": {}, "reason": "현재가/매수가 정보 부족"}
 
         # ① 시간손절 (최우선)
-        time_stop_reason = self.check_time_stop(snapshot, market_type)
+        time_stop_reason = self.check_time_stop(snapshot, profile)
         if time_stop_reason:
             return {**base_result, "action": "SELL_ALL", "ratio": 1.0, "exit_score": 100.0, "score_breakdown": {}, "reason": time_stop_reason}
+
+        # ①-b 반대 강신호 단계적 대응(VOLATILE_RANGE 요구사항 — 1회=50% 축소,
+        # 2회=전량청산). TP/SL 도달 여부와 무관하게 시간손절 다음으로 최우선 적용된다.
+        if opposite_signal_streak:
+            from app.trading.adaptive_market_regime import opposite_signal_response
+
+            opposite_action = opposite_signal_response(opposite_signal_streak, profile.get("applied_profile", market_type))
+            if opposite_action:
+                return {
+                    **base_result, "action": opposite_action["action"], "ratio": opposite_action["ratio"],
+                    "exit_score": 100.0, "score_breakdown": {}, "reason": opposite_action["reason"],
+                }
 
         # ② Profit Lock 손절선 붕괴
         lock_floor = base_result["profit_lock_floor_pct"]
@@ -413,13 +398,30 @@ class DynamicExitEngine:
         if trailing["triggered"]:
             return {**base_result, "action": "SELL_ALL", "ratio": 1.0, "exit_score": 100.0, "score_breakdown": {}, "reason": trailing["reason"]}
 
-        # ④ 시장유형별 기본 익절/손절 (트레일링 미사용 시에만 익절 즉시청산)
-        if profit_pct >= profile["tp_pct"] and not profile["uses_trailing"]:
-            return {**base_result, "action": "SELL_ALL", "ratio": 1.0, "exit_score": 100.0, "score_breakdown": {},
-                    "reason": f"익절(+{profit_pct:.2f}%≥{profile['tp_pct']}%, {market_type})"}
+        # ④ 손절 (장세별 리스크 프로필 기준)
         if profit_pct <= -profile["sl_pct"]:
             return {**base_result, "action": "SELL_ALL", "ratio": 1.0, "exit_score": 100.0, "score_breakdown": {},
                     "reason": f"손절({profit_pct:.2f}%≤-{profile['sl_pct']}%, {market_type})"}
+
+        # ⑤ 익절 — tp2(전량)가 있으면 tp1(부분) 먼저, 없으면 tp1이 곧 전량 기준.
+        # 트레일링을 쓰는 장세(STRONG_UP/STRONG_DOWN)는 tp1에서 일부만 확정하고
+        # 나머지는 트레일링에 맡긴다(요구사항2 "+2% 일부익절, 나머지 ATR trailing").
+        tp1_pct, tp2_pct = profile.get("tp1_pct"), profile.get("tp2_pct")
+        if tp2_pct is not None and profit_pct >= tp2_pct:
+            return {**base_result, "action": "SELL_ALL", "ratio": 1.0, "exit_score": 100.0, "score_breakdown": {},
+                    "reason": f"익절(+{profit_pct:.2f}%≥{tp2_pct}%, {market_type})"}
+        if tp1_pct is not None and profit_pct >= tp1_pct and not position.get("partial_tp1_done"):
+            # ratio는 프로필의 tp1_ratio를 그대로 쓴다 — RANGE/HIGH_VOLATILITY/PANIC
+            # 처럼 tp2가 있는 2단계 프로필은 tp1_ratio(보통 0.5)만큼만 부분매도하고,
+            # STRONG_UP/STRONG_DOWN(tp2 없음, uses_trailing=True)도 마찬가지로
+            # tp1_ratio만큼만 확정하고 나머지는 트레일링에 맡긴다(요구사항2 "+2%
+            # 일부익절, 나머지 ATR trailing"). REVERSAL/DATA_INSUFFICIENT처럼
+            # tp1_ratio=1.0인 단일단계 프로필만 이 시점에 전량 매도된다.
+            ratio = profile.get("tp1_ratio", 0.5)
+            position["partial_tp1_done"] = True
+            return {**base_result, "action": "SELL_ALL" if ratio >= 1.0 else "SELL_PARTIAL", "ratio": ratio,
+                    "exit_score": 100.0, "score_breakdown": {},
+                    "reason": f"{'익절' if ratio >= 1.0 else '부분익절'}(+{profit_pct:.2f}%≥{tp1_pct}%, {market_type})"}
 
         # ⑤ Exit Score 기반 소프트 판단
         score_result = self.compute_exit_score(snapshot, profile, position)
