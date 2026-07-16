@@ -244,6 +244,18 @@ def default_state(mode: str = "mock") -> dict:
         "stop_loss_mode": "AUTO",  # AUTO | ALERT_ONLY | BATCH_MANUAL
         "last_stop_loss_signature": None,
         "pending_manual_stop_loss_alert": None,
+        # 요구사항(2026-07-16) — Adaptive Market Regime은 Enhanced 자동매매(auto_trade_on)
+        # ON/OFF에서 그대로 파생된다(별도 체크박스 없음). 이 필드들은 아직 실제 사이클이
+        # 한 번도 돌지 않았을 때(막 초기화된 state)도 UI가 "DISABLED"로 잘못 표시하지
+        # 않도록 auto_trade_on 기본값(True)과 항상 일치하는 기본값으로 시작한다 —
+        # UI는 이 필드보다 switch_state["auto_trade_on"]을 우선 신뢰한다(엔진이 아직
+        # 한 번도 갱신하지 않았어도 항상 정확하도록).
+        "adaptive_regime_enabled": True,
+        "adaptive_regime_mode": "LIVE",
+        "adaptive_regime": None,
+        "adaptive_regime_confirmation": None,
+        "adaptive_regime_eod": None,
+        "adaptive_regime_eod_confirmation": None,
     }
 
 

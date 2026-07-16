@@ -1493,6 +1493,37 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
         return _update_hynix_auto_trade_loop_locked(mode=mode, now=now)
 
 
+def compute_eod_regime_only(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
+    """요구사항(2026-07-16) — 장 마감 후(is_within_operating_window()==False)에도
+    오늘 저장된(또는 방금 조회 가능하면 최신) 1분봉으로 EOD(End-Of-Day) regime
+    분석을 수행해 오늘 최종 장세를 표시한다. 이 함수는 시세 조회 + 장세분류 +
+    state 저장만 한다 — run_switch_or_entry/run_tp_sl_if_needed/
+    run_liquidation_if_needed 등 주문 실행 함수는 절대 호출하지 않는다.
+    """
+    from app.services.hynix_switch_state import with_state_lock
+    from app.trading.adaptive_market_regime import compute_and_confirm_regime
+    from app.data_sources.auto_market_collector import collect_hynix_minute, collect_hynix_daily
+
+    now = now or kst_now()
+    resolved_mode = mode or load_state(mode=None).get("mode", "mock")
+    with with_state_lock(resolved_mode):
+        state = load_state(mode=resolved_mode)
+        try:
+            minute_result = collect_hynix_minute(mode=resolved_mode)
+            daily_result = collect_hynix_daily(mode=resolved_mode)
+            eod_result = compute_and_confirm_regime(
+                minute_result.get("df_1min"), prev_close=daily_result.get("prev_close"),
+                confirmation_state=state.get("adaptive_regime_eod_confirmation"), now=now,
+            )
+            state["adaptive_regime_eod_confirmation"] = eod_result["confirmation_state"]
+            state["adaptive_regime_eod"] = {k: v for k, v in eod_result.items() if k != "confirmation_state"}
+            save_state_atomic(state)
+            return state["adaptive_regime_eod"]
+        except Exception as exc:
+            logger.error("[HynixSwitchEngine] EOD regime 분석 실패: %s", exc)
+            return {"error": str(exc)}
+
+
 def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
     """30s fast live-trend watcher entry point.
 

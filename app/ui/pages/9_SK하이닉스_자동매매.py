@@ -483,20 +483,45 @@ if _pt:
 # ── ADAPTIVE_MARKET_REGIME(2026-07-16) — 신규진입/스위칭/손절/익절/보유시간이
 # 전부 공유하는 단일 장세판단. PRIMARY_TREND/Fast Watcher/Big Trend Holding/
 # Dynamic Exit가 각자 다른 장세·방향을 판단하던 것을 통일한다.
+#
+# 요구사항(2026-07-16 후속) — enabled/LIVE 여부는 절대 "아직 사이클이 안 돌아
+# state에 값이 안 찍혔다"는 이유로 DISABLED처럼 보이면 안 된다. auto_trade_on
+# (Enhanced 자동매매 ON/OFF)이 유일한 소스이며, 엔진이 사이클마다 stamping하는
+# adaptive_regime_enabled/mode 필드는 그 값과 항상 같아야 정상이다 — 여기서
+# switch_state["auto_trade_on"]을 직접 최우선으로 써서, state가 막 초기화됐거나
+# (장 마감 후처럼) 이번 세션에 아직 사이클이 한 번도 안 돌았어도 정확하다.
 st.subheader("🧭 Adaptive Market Regime(공용 장세판단)")
 _ar = switch_state.get("adaptive_regime") or {}
-_ar_enabled = switch_state.get("adaptive_regime_enabled", False)
-_ar_mode = switch_state.get("adaptive_regime_mode", "SHADOW")
+_ar_eod = switch_state.get("adaptive_regime_eod") or {}
+_ar_auto_trade_on = switch_state.get("auto_trade_on", True)
+_ar_enabled = bool(_ar_auto_trade_on)
+_ar_mode = "LIVE" if _ar_enabled else "SHADOW"
+_ar_stamped_enabled = switch_state.get("adaptive_regime_enabled")
 _ar_profile = _ar.get("profile") or {}
 _ar_snapshot = _ar.get("snapshot") or {}
+# 요구사항4 — 데이터 부족은 "비활성화"가 아니라 DATA_INSUFFICIENT라는 정상적인
+# regime 상태다. 아직 첫 사이클이 안 돌았어도(_ar 비어있음) 동일하게 취급한다.
+_ar_current_regime = _ar.get("displayed_regime") or _ar.get("confirmed_regime") or "DATA_INSUFFICIENT"
+_ar_missing_reasons = _ar_snapshot.get("reasons") or (["장중 사이클이 아직 한 번도 계산하지 않음 — 다음 사이클에 자동 계산됩니다"] if not _ar else [])
 
-_ar_top = st.columns(4)
+_ar_top = st.columns(5)
 _ar_top[0].metric("Adaptive Regime", "🟢 ENABLED" if _ar_enabled else "⚪ DISABLED")
 _ar_top[1].metric("적용 모드", "🔴 LIVE" if _ar_mode == "LIVE" else "🟡 SHADOW")
-_ar_top[2].metric("현재 Regime", _ar.get("displayed_regime") or _ar.get("confirmed_regime") or "-")
-_ar_top[3].metric("Confidence", f"{_num(_ar.get('confidence')):.0f}" if _ar.get("confidence") is not None else "-")
+_ar_top[2].metric("현재 Regime(장중)", _ar_current_regime)
+_ar_top[3].metric("EOD Regime(장마감)", _ar_eod.get("displayed_regime") or _ar_eod.get("confirmed_regime") or "-")
+_ar_top[4].metric("Confidence", f"{_num(_ar.get('confidence')):.0f}" if _ar.get("confidence") is not None else "-")
+st.caption(
+    f"enabled source: switch_state[\"auto_trade_on\"]={_ar_auto_trade_on}"
+    + (f" (엔진 기록값 adaptive_regime_enabled={_ar_stamped_enabled}과 불일치 — 다음 사이클에 재동기화됩니다)"
+       if _ar_stamped_enabled is not None and bool(_ar_stamped_enabled) != _ar_enabled else "")
+)
 if _ar.get("previous_regime") and _ar.get("previous_regime") != _ar.get("confirmed_regime"):
     st.caption(f"이전 장세: {_ar['previous_regime']} → 전환시각: {_ar.get('transitioned_at') or '-'}")
+if _ar_eod:
+    st.caption(
+        f"EOD 분석 계산시각: {_ar_eod.get('snapshot', {}).get('computed_at') or '-'} "
+        "(오늘 저장된 1분봉 기준 — 실제 주문에는 절대 사용되지 않는 참고용 표시입니다)"
+    )
 
 _ar_applied = st.columns(5)
 _ar_applied[0].metric("진입비중", f"{(_ar_profile.get('position_pct_multiplier') or 0) * 100:.0f}%")
@@ -505,7 +530,7 @@ _ar_applied[2].metric("손절(SL)", f"-{_ar_profile.get('sl_pct', '-')}%")
 _ar_applied[3].metric("최대 보유시간", f"{_ar_profile.get('max_hold_minutes')}분" if _ar_profile.get("max_hold_minutes") else "제한없음(트레일링)")
 _ar_applied[4].metric("Big Trend Holding", "🚫 금지" if _ar_profile.get("block_big_trend_holding") else "허용")
 
-with st.expander("Adaptive Regime 판단 근거 / VOLATILE_RANGE 진단", expanded=(_ar.get("displayed_regime") == "VOLATILE_RANGE")):
+with st.expander("Adaptive Regime 판단 근거 / VOLATILE_RANGE 진단", expanded=(_ar_current_regime in ("VOLATILE_RANGE", "DATA_INSUFFICIENT"))):
     st.markdown(f"**신규진입 실제 엔진**: {'ADAPTIVE_MARKET_REGIME(' + _ar_mode + ')' if _ar_enabled else 'ENHANCED_REGIME_SWITCH(레거시, adaptive 비활성)'}")
     st.markdown(f"**실제 청산 엔진**: Dynamic Exit AI(adaptive_market_regime 프로필 사용)")
     _pt_conflict = bool(_pt) and _pt.get("primary_trend") and _ar.get("confirmed_regime") and (
@@ -519,6 +544,8 @@ with st.expander("Adaptive Regime 판단 근거 / VOLATILE_RANGE 진단", expand
         )
     else:
         st.caption("다른 엔진과의 충돌 없음(또는 아직 비교 불가) — Adaptive Regime 결과만 주문에 사용됩니다.")
+    if _ar_current_regime == "DATA_INSUFFICIENT":
+        st.warning("⚠️ 누락된 데이터: " + " / ".join(_ar_missing_reasons))
     for r in (_ar.get("reasons") or []):
         st.markdown(f"- {r}")
     _box_cols = st.columns(4)

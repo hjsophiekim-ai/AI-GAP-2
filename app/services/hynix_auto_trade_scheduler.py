@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import timedelta
+from datetime import timedelta, time as _dtime
 from typing import Optional
 
 from app.logger import logger
@@ -31,6 +31,10 @@ from app.utils.data_paths import SCHEDULER_HEARTBEAT_PATH
 
 DEFAULT_INTERVAL_SECONDS = 180.0
 FAST_WATCHER_INTERVAL_SECONDS = 30.0
+# 요구사항(2026-07-16) — 장 마감 후에도 오늘 저장된 1분봉으로 EOD regime 분석을
+# 계속 표시하되(요구사항3), 장외 heartbeat마다(수 초~수 분 간격) 매번 KIS를 다시
+# 조회하는 것은 불필요한 API 호출이므로 최소 이 간격(초)만큼은 재사용한다.
+_EOD_REGIME_REFRESH_INTERVAL_SECONDS = 900.0
 
 _status_lock = threading.Lock()
 _status = {
@@ -125,6 +129,35 @@ def _reset_fast_run_count_if_new_kst_day(now) -> None:
             _fast_status["run_count_today"] = 0
 
 
+_EOD_ANALYSIS_START_TIME = _dtime(15, 30)
+
+
+def _maybe_refresh_eod_regime(now, state: dict) -> None:
+    """요구사항(2026-07-16) — 장 마감 후에도 오늘 저장된 1분봉으로 EOD regime
+    분석만(주문 없음) 주기적으로 갱신한다. 너무 자주(heartbeat마다) 다시
+    조회하지 않도록 마지막 계산 이후 _EOD_REGIME_REFRESH_INTERVAL_SECONDS가
+    지났을 때만 재계산한다."""
+    if not state.get("auto_trade_on"):
+        return
+    existing = (state.get("adaptive_regime_eod") or {}).get("snapshot") or {}
+    last_computed_at = existing.get("computed_at")
+    if last_computed_at:
+        try:
+            from datetime import datetime as _datetime
+
+            age_seconds = (now - _datetime.fromisoformat(last_computed_at)).total_seconds()
+            if 0 <= age_seconds < _EOD_REGIME_REFRESH_INTERVAL_SECONDS:
+                return
+        except Exception:
+            pass
+    try:
+        from app.services.hynix_switch_engine import compute_eod_regime_only
+
+        compute_eod_regime_only(mode=state.get("mode"), now=now)
+    except Exception as exc:
+        logger.debug("[HynixAutoTradeScheduler] EOD regime 분석 실패(무해, 다음 주기에 재시도): %s", exc)
+
+
 class HynixAutoTradeCycleThread(threading.Thread):
     def __init__(self, interval_seconds: float = DEFAULT_INTERVAL_SECONDS):
         super().__init__(daemon=True, name="HynixAutoTradeCycle")
@@ -160,10 +193,15 @@ class HynixAutoTradeCycleThread(threading.Thread):
             return
 
         if not within_window:
-            # 장외(08:50 이전/15:30 이후) — 시세/주문/계좌조회를 하지 않고 스레드가
+            # 장외(08:50 이전/15:30 이후) — 신규 시세/주문/계좌조회를 하지 않고 스레드가
             # 살아있다는 사실(heartbeat)만 기록한다. cycle_count_today는 증가시키지 않는다.
             with _status_lock:
                 _status["last_heartbeat_only_at"] = now.isoformat()
+            # 요구사항(2026-07-16) — 단, 장 마감 후(15:30 이후)에는 오늘 저장된 1분봉으로
+            # EOD(End-Of-Day) regime 분석만(주문 없음) 주기적으로 갱신한다. 08:50 이전
+            # (장 시작 전, 아직 오늘 데이터가 없음)에는 실행하지 않는다.
+            if now.time() >= _EOD_ANALYSIS_START_TIME:
+                _maybe_refresh_eod_regime(now, state)
             _write_heartbeat_file()
             return
 

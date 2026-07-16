@@ -323,7 +323,7 @@ def classify_raw_regime(
 
     now = now or kst_now()
     result = {
-        "regime": DATA_INSUFFICIENT, "confidence": 0.0, "reasons": ["insufficient 1m bars for regime classification"],
+        "regime": DATA_INSUFFICIENT, "confidence": 0.0, "reasons": ["1분봉 데이터 없음(df_1min=None)"],
         "gap_direction": None, "gap_pct": None, "above_vwap": None, "vwap": None,
         "trend_5m": "FLAT", "trend_15m": "FLAT", "trend_30m": "FLAT",
         "ema20_slope_pct": None, "swing": {}, "atr_pct": None, "bollinger_width_pct": None,
@@ -334,7 +334,17 @@ def classify_raw_regime(
         "vwap_cross_count": None, "swing_reversal_count": None, "efficiency_ratio": None,
         "box_high": None, "box_low": None,
     }
-    if df_1min is None or getattr(df_1min, "empty", True) or len(df_1min) < _MIN_BARS_REQUIRED:
+    # 요구사항(2026-07-16) — 데이터가 부족하면 "비활성화"가 아니라 DATA_INSUFFICIENT로
+    # 표시하되, 정확히 무엇이 부족한지(1분봉 자체가 없는지/행 수가 모자란지/유효한
+    # 종가가 없는지) UI가 그대로 보여줄 수 있게 구체적인 사유를 남긴다.
+    if df_1min is None:
+        result["reasons"] = ["1분봉 데이터 없음(df_1min=None) — 시세 수집 실패"]
+        return result
+    if getattr(df_1min, "empty", True):
+        result["reasons"] = ["1분봉 데이터가 빈 데이터프레임(0행)"]
+        return result
+    if len(df_1min) < _MIN_BARS_REQUIRED:
+        result["reasons"] = [f"1분봉 {len(df_1min)}개만 확보(최소 {_MIN_BARS_REQUIRED}개 필요)"]
         return result
 
     work = df_1min.sort_values("datetime").copy()
@@ -343,7 +353,7 @@ def classify_raw_regime(
             work[col] = pd.to_numeric(work[col], errors="coerce")
     work = work.dropna(subset=["close"])
     if work.empty:
-        result["reasons"] = ["no valid close prices"]
+        result["reasons"] = ["1분봉에 유효한 종가(close)가 하나도 없음(전부 결측/변환 실패)"]
         return result
 
     last_close = float(work["close"].iloc[-1])

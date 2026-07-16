@@ -727,3 +727,95 @@ def test_update_loop_default_now_uses_kst_without_crashing(tmp_path, monkeypatch
     # 실제로 호출하는 방식과 동일하다.
     result = engine.update_hynix_auto_trade_loop(mode="mock")
     assert "pipeline_trace" in result
+
+
+# =============================================================================
+# 2026-07-16 — Adaptive Market Regime이 항상 실제 auto_trade_on 값을 반영하고
+# (DISABLED로 조용히 남지 않음), 장중 사이클마다 계산되며, 장 마감 후에도 EOD
+# 분석이 주문 없이 수행되는지 검증한다.
+# =============================================================================
+
+def test_intraday_cycle_populates_adaptive_regime_state(tmp_path, monkeypatch):
+    """요구사항2 — scheduler의 모든 장중 사이클에서 adaptive_regime을 계산해
+    state에 남긴다(entry_approved 이전 단계에서 이미 계산되므로 auto_trade_on=False
+    여도, 즉 신호가 HOLD로 막히기 전에도 값이 채워진다)."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_decision)
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    final_state = result["state"]
+    assert final_state.get("adaptive_regime_enabled") is True
+    assert final_state.get("adaptive_regime_mode") == "LIVE"
+    assert final_state.get("adaptive_regime") is not None
+    assert final_state["adaptive_regime"].get("confirmed_regime")
+
+
+def test_compute_eod_regime_only_never_calls_order_execution(tmp_path, monkeypatch):
+    """요구사항3 — 장 마감 후에도 오늘 저장된 1분봉으로 EOD 분석을 수행하되,
+    실제 주문(run_switch_or_entry 등)은 절대 호출하지 않는다."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import pandas as pd
+    from datetime import datetime, timedelta
+
+    def _fake_collect_minute(mode=None):
+        rows = []
+        start = datetime(2026, 7, 16, 9, 0)
+        for i in range(30):
+            price = 100.0 + (0.05 if i % 2 == 0 else -0.03)
+            rows.append({"datetime": start + timedelta(minutes=i), "open": price, "high": price * 1.001, "low": price * 0.999, "close": price, "volume": 1000.0})
+        return {"df_1min": pd.DataFrame(rows), "source": "cache", "status": "stale_cache"}
+
+    def _fake_collect_daily(mode=None):
+        return {"prev_close": 100.0, "df_daily": None}
+
+    import app.data_sources.auto_market_collector as collector_module
+    monkeypatch.setattr(collector_module, "collect_hynix_minute", _fake_collect_minute)
+    monkeypatch.setattr(collector_module, "collect_hynix_daily", _fake_collect_daily)
+
+    def _assert_not_called(*a, **kw):
+        raise AssertionError("compute_eod_regime_only는 절대 주문 실행 함수를 호출하면 안 된다")
+
+    import app.trading.hynix_switch_position_manager as position_manager_module
+    monkeypatch.setattr(position_manager_module, "run_switch_or_entry", _assert_not_called)
+    monkeypatch.setattr(position_manager_module, "run_tp_sl_if_needed", _assert_not_called)
+    monkeypatch.setattr(position_manager_module, "run_liquidation_if_needed", _assert_not_called)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state_module.save_state_atomic(state)
+
+    now = datetime(2026, 7, 16, 15, 45)  # 장 마감 후
+    result = engine.compute_eod_regime_only(mode="mock", now=now)
+
+    assert "error" not in result
+    assert result.get("confirmed_regime") or result.get("raw_regime")
+
+    saved = state_module.load_state(mode="mock")
+    assert saved.get("adaptive_regime_eod") is not None
+    # 신규진입/스위칭/보유 포지션 관련 필드는 전혀 건드리지 않는다.
+    assert saved.get("position") == state.get("position")
+    assert saved.get("daily_trade_count", 0) == 0
+
+
+def test_default_state_adaptive_regime_matches_auto_trade_on_default():
+    """요구사항1 — Enhanced 자동매매 기본값(True)과 adaptive_regime_enabled/mode
+    기본값이 처음부터 일치해야 한다(첫 사이클 전에도 DISABLED로 보이지 않도록)."""
+    state = state_module.default_state("mock")
+    assert state["auto_trade_on"] is True
+    assert state["adaptive_regime_enabled"] is True
+    assert state["adaptive_regime_mode"] == "LIVE"
