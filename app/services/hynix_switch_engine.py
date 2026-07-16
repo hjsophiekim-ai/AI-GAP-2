@@ -102,6 +102,18 @@ def _blank_pipeline_trace() -> dict:
         # 차단, "order_sent"=주문을 실제로 시도함). order_sent=False가 "주문 전송
         # 실패"인지 "애초에 주문이 필요 없었음"인지 구분하는 데 쓴다.
         "execution_stage": None,
+        # 요구사항(2026-07-16) — run_switch_or_entry()의 실제 결과는 entry_approved_reason
+        # (진입 "승인" 사유)과 완전히 분리된 필드에 저장한다. blocking_reason이 "왜
+        # 주문이 안 나갔는지"를 설명할 때 이 필드들만 사용하고, 승인 문구를 실패
+        # 사유로 재사용하지 않는다.
+        "execution_message": None, "order_failure_code": None, "broker_error": None,
+        "requested_symbol": None, "requested_qty": None, "order_price": None,
+        "buyable_cash": None, "sized_cash": None, "cooldown_remaining": None, "pending_order": False,
+        # 과거(사이클 시작 전) 스냅샷 vs 이번 사이클에 새로 계산한 live 상태를 UI에서
+        # 완전히 분리해 보여주기 위한 필드(요구사항1) — 눌림목 대기 같은 과거
+        # 스냅샷이 남아 있어도 이번 사이클의 실제 진입 판단(live)과 혼동되지 않게 한다.
+        "snapshot_pullback_status": None, "snapshot_confirmation_count": None,
+        "live_entry_gate_status": None, "live_confirmation_count": None,
         "broker_executed": False,
         "position_confirmed": None,
         "ui_synced": None,
@@ -140,22 +152,46 @@ def _first_blocked_stage(trace: dict) -> Optional[str]:
     return None
 
 
+_ORDER_FAILURE_CODE_TEXT = {
+    "ORDER_QTY_ZERO": "계산된 매수 수량이 0주(투입 현금이 1주 가격보다 작음)",
+    "BUYABLE_CASH_ZERO": "매수가능금액(buyable cash) 조회 결과 0원",
+    "PRICE_UNAVAILABLE": "현재가 조회 실패로 가격을 확인할 수 없음",
+    "COOLDOWN_ACTIVE": "직전 매수 후 쿨다운 시간 이내 — 신규 매수 대기",
+    "ORDER_IN_FLIGHT": "이미 처리 중인 주문이 있어 중복 전송 방지",
+    "BROKER_REJECTED": "브로커가 주문을 거부함",
+    "EXECUTION_EXCEPTION": "주문 실행 중 예외 발생",
+}
+
+
 def _build_blocking_reason(trace: dict) -> Optional[str]:
-    """stopped_stage를 사람이 읽을 수 있는 한 줄 사유로 변환 (UI의 blocking_reason 필드)."""
+    """stopped_stage를 사람이 읽을 수 있는 한 줄 사유로 변환 (UI의 blocking_reason 필드).
+
+    요구사항(2026-07-16) — entry/state_sync/order_sent 단계는 절대 entry_approved_reason
+    (진입 "승인" 문구)을 실패 사유로 재사용하지 않는다. run_switch_or_entry()가 실제로
+    보고한 execution_message/order_failure_code/broker_error만 사용하고, 실패코드가
+    있으면 사람이 읽을 한 줄 설명(+ 원본 코드)을 함께 보여준다."""
     stage = trace.get("stopped_stage")
     if not stage:
         return None
+
+    def _execution_reason(fallback: str) -> str:
+        code = trace.get("order_failure_code")
+        msg = trace.get("execution_message")
+        broker_error = trace.get("broker_error")
+        if code:
+            text = _ORDER_FAILURE_CODE_TEXT.get(code, code)
+            detail = f" — {broker_error}" if broker_error else (f" ({msg})" if msg else "")
+            return f"{code}: {text}{detail}"
+        if msg:
+            return msg
+        return fallback
+
     reason_map = {
         "entry_approved": trace.get("entry_approved_reason"),
         "risk_manager": trace.get("risk_manager_reason"),
-        "entry": trace.get("entry_approved_reason") or "이미 목표 종목 보유 중이거나 추가 진입이 필요 없어 주문을 시도하지 않음",
-        "state_sync": trace.get("entry_approved_reason") or "POSITION_SYNC_PENDING — 브로커 잔고 확인 전이라 주문 차단",
-        # 요구사항(2026-07-16 사용자 리포트: BUY 신호가 2회 연속 떴는데 "가격 조회
-        # 실패/쿨다운/허용 시간대 아님 등"이라는 뭉뚱그린 문구만 표시되어 실제
-        # 원인(예: 매수가능금액 0/사이즈된 현금 0/주문 거부 사유)을 알 수 없었다.
-        # entry_approved_reason(=run_switch_or_entry가 실제로 보고한 message)을
-        # 최우선으로 쓰고, 그게 없을 때만 이 일반 문구로 폴백한다.
-        "order_sent": trace.get("entry_approved_reason") or "주문이 브로커로 전송되지 않음(가격 조회 실패/쿨다운/허용 시간대 아님 등)",
+        "entry": _execution_reason("이미 목표 종목 보유 중이거나 추가 진입이 필요 없어 주문을 시도하지 않음"),
+        "state_sync": _execution_reason("POSITION_SYNC_PENDING — 브로커 잔고 확인 전이라 주문 차단"),
+        "order_sent": _execution_reason("주문이 브로커로 전송되지 않음(가격 조회 실패/쿨다운/허용 시간대 아님 등)"),
         "broker_executed": "주문은 전송됐으나 브로커 체결 실패",
         "position_confirmed": "체결 후 재조회한 포지션이 기대와 불일치",
         "ui_synced": "상태 저장(디스크 반영) 실패 — 다음 사이클에서 재시도됨",
@@ -1937,6 +1973,23 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                     desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
                     is_new_entry = desired_symbol is not None and held_symbol != desired_symbol
 
+                    # 요구사항(2026-07-16) — 이번 사이클이 갱신하기 전, "과거(직전 사이클까지)"
+                    # 스냅샷을 먼저 떼어 UI에 별도로 보여준다. 예: 직전 사이클엔 눌림목
+                    # 대기 중이었는데 이번 사이클엔 이미 확인횟수가 쌓여 즉시 진입이
+                    # 승인된 경우, 과거 스냅샷("눌림목 대기")과 이번 사이클의 live 승인
+                    # 상태가 뒤섞여 보이지 않게 한다.
+                    _snapshot_trend_plan = dict(state.get("last_trend_switch_plan") or {})
+                    _snapshot_confirm_tracker = dict(state.get("trend_switch_confirm_tracker") or {})
+                    trace["snapshot_confirmation_count"] = _snapshot_confirm_tracker.get("same_direction_streak")
+                    if _snapshot_trend_plan.get("block_reason"):
+                        trace["snapshot_pullback_status"] = _snapshot_trend_plan["block_reason"]
+                    elif _snapshot_trend_plan.get("proceed") is True:
+                        trace["snapshot_pullback_status"] = "PROCEED(직전 사이클 승인)"
+                    elif _snapshot_trend_plan:
+                        trace["snapshot_pullback_status"] = "눌림목 대기 중(직전 사이클)"
+                    else:
+                        trace["snapshot_pullback_status"] = None
+
                     proceed = True
                     if not is_new_entry:
                         trace["entry_approved"] = True
@@ -2030,6 +2083,16 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                                 trace["entry_approved"] = True
                                 trace["entry_approved_reason"] = f"눌림목 게이트 오류로 즉시 진입 폴백: {exc}"
 
+                    # 요구사항(2026-07-16) — 이번 사이클에 새로 계산된 live 상태(위
+                    # snapshot_*와 명확히 구분됨). same_direction_streak(연속 확인
+                    # 횟수) 규칙: 1회=일반적으로 대기, 2회=탐색진입(20~30%), 3회
+                    # 이상=확대(50%) — 단, STRONG 신호는 1회 확인만으로도 즉시
+                    # 탐색진입을 허용한다(plan_entry의 "STRONG_BUY 첫 신호는 계속
+                    # 소액 탐색 진입을 허용한다" 분기, entry_approved_reason에
+                    # "강한 신호 — 눌림목 대기 생략"으로 명시됨).
+                    trace["live_confirmation_count"] = (state.get("trend_switch_confirm_tracker") or {}).get("same_direction_streak")
+                    trace["live_entry_gate_status"] = trace.get("entry_approved_reason")
+
                     if proceed:
                         attempted_entry = True
                         state.pop("pending_entry", None)
@@ -2040,22 +2103,42 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             )
                             orders_this_cycle.extend(switch.get("orders", []))
                             trace["execution_stage"] = switch.get("stage")
-                            # 요구사항(2026-07-16) — switch.get("orders")가 "실제로 브로커에
-                            # 보낸 주문"이 아니라 BUY_SKIPPED 같은 스킵 기록만 담고 있어도
-                            # 비어있지 않다고 판정돼(`if not switch.get("orders")`), 정작
-                            # 왜 스킵됐는지(예: "buyable cash amount is 0")를 알려주는
-                            # switch.get("message")가 blocking_reason에 전혀 반영되지
-                            # 않았다 — 스킵된 것도 "실제 주문 전송"이 아니므로 동일하게
-                            # 취급한다.
+                            # 요구사항(2026-07-16) — run_switch_or_entry()의 실제 결과는
+                            # entry_approved_reason(진입 "승인" 사유 필드)을 덮어쓰지 않고
+                            # 별도 필드에 저장한다. 과거에는 실제로 브로커가 주문을 거부
+                            # (action=BUY, success=False)했을 때도 "_switch_sent_orders"가
+                            # 비어있지 않다고 판정돼 entry_approved_reason이 그대로 남아,
+                            # blocking_reason에 "EXPLORATORY 30% 진입 승인" 같은 승인 문구가
+                            # 실패 사유인 것처럼 표시되는 사고가 있었다(2026-07-16 사용자
+                            # 리포트: Entry Approved=YES, Order Sent=NO인데도 blocking_reason
+                            # 이 승인 문구를 그대로 보여줌).
+                            trace["execution_message"] = switch.get("message")
+                            trace["order_failure_code"] = switch.get("failure_code")
+                            trace["broker_error"] = switch.get("broker_error")
+                            trace["requested_symbol"] = switch.get("requested_symbol")
+                            trace["requested_qty"] = switch.get("requested_qty")
+                            trace["order_price"] = switch.get("order_price")
+                            trace["buyable_cash"] = switch.get("buyable_cash")
+                            trace["sized_cash"] = switch.get("sized_cash")
+                            trace["cooldown_remaining"] = switch.get("cooldown_remaining")
+                            trace["pending_order"] = switch.get("pending_order", False)
                             _switch_sent_orders = [
-                                o for o in (switch.get("orders") or []) if o.get("action") in ("BUY", "SELL")
+                                o for o in (switch.get("orders") or [])
+                                if o.get("action") in ("BUY", "SELL") and o.get("success")
                             ]
                             if not _switch_sent_orders:
-                                trace["entry_approved_reason"] = switch.get("message") or trace.get("entry_approved_reason")
+                                # entry_approved_reason 자체는 "진입이 승인됐는지/왜"만
+                                # 담는다 — 주문 실행 결과는 위 execution_message/
+                                # order_failure_code로만 노출한다(같은 필드를 재사용하지
+                                # 않음, 요구사항2).
+                                pass
                         except Exception as exc:
                             logger.error("[HynixSwitchEngine] 스위칭/진입 처리 실패: %s", exc)
                             warnings.append(f"스위칭/진입 처리 실패: {exc}")
                             trace["execution_stage"] = "order_sent"
+                            trace["execution_message"] = f"스위칭/진입 처리 예외: {exc}"
+                            trace["order_failure_code"] = "EXECUTION_EXCEPTION"
+                            trace["broker_error"] = str(exc)
                 else:
                     state.pop("pending_entry", None)
                     trace["entry_approved_reason"] = "HOLD — 신규 진입 신호 없음"

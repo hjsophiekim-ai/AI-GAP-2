@@ -1431,6 +1431,45 @@ else:
     elif trace.get("prediction_signal") != "HOLD":
         st.success("🟢 신호부터 UI 반영까지 전 단계 정상 완료.")
 
+    # 요구사항(2026-07-16) — 과거(직전 사이클까지) 스냅샷과 이번 사이클의 live 진입
+    # 판단을 완전히 분리해 보여준다. "과거 가속진단엔 눌림목 대기가 남아 있는데
+    # 실제로는 이미 진입이 승인됐다" 같은 혼동을 UI에서 바로 구분할 수 있게 한다.
+    with st.expander("📸 과거 스냅샷 vs 🔴 이번 사이클 Live 진입 판단", expanded=bool(stopped_stage)):
+        snap_col, live_col = st.columns(2)
+        with snap_col:
+            st.markdown("**📸 과거 스냅샷(직전 사이클까지)**")
+            st.metric("눌림목/전환 상태(snapshot)", trace.get("snapshot_pullback_status") or "—")
+            st.metric("연속 확인 횟수(snapshot)", trace.get("snapshot_confirmation_count") if trace.get("snapshot_confirmation_count") is not None else "—")
+        with live_col:
+            st.markdown("**🔴 이번 사이클(live)**")
+            st.metric("진입 게이트 상태(live)", trace.get("live_entry_gate_status") or "—")
+            st.metric("연속 확인 횟수(live)", trace.get("live_confirmation_count") if trace.get("live_confirmation_count") is not None else "—")
+        st.caption(
+            "확인 규칙: 1회=일반적으로 대기 · 2회=탐색진입(20~30%) · 3회 이상=확대(50%). "
+            "단, STRONG 신호는 1회 확인만으로 즉시 탐색진입이 허용됩니다(entry_approved_reason에 "
+            "\"강한 신호 — 눌림목 대기 생략\"으로 명시됨)."
+        )
+
+    # 요구사항(2026-07-16) — Order Sent=NO일 때 blocking_reason이 진입 "승인" 문구를
+    # 재사용하지 않는다. run_switch_or_entry()가 실제로 보고한 실행 결과만 별도로
+    # 보여준다(entry_approved_reason과 절대 혼동되지 않게 분리).
+    if trace.get("execution_message") or trace.get("order_failure_code") or trace.get("stopped_stage") == "order_sent":
+        with st.expander("📡 주문 전송(Order Sent) 실행 결과 상세", expanded=trace.get("stopped_stage") == "order_sent"):
+            if trace.get("order_failure_code"):
+                st.error(f"실패 코드: **{trace['order_failure_code']}**")
+            st.markdown(f"**execution_message**: {trace.get('execution_message') or '—'}")
+            if trace.get("broker_error"):
+                st.markdown(f"**broker_error**: {trace['broker_error']}")
+            _oc1, _oc2, _oc3, _oc4 = st.columns(4)
+            _oc1.metric("요청 종목", trace.get("requested_symbol") or "—")
+            _oc2.metric("요청 수량", trace.get("requested_qty") if trace.get("requested_qty") is not None else "—")
+            _oc3.metric("주문 가격", f"{trace['order_price']:,.0f}" if trace.get("order_price") else "—")
+            _oc4.metric("쿨다운 남은시간(초)", trace.get("cooldown_remaining") if trace.get("cooldown_remaining") is not None else "—")
+            _oc5, _oc6, _oc7 = st.columns(3)
+            _oc5.metric("매수가능금액", f"{trace['buyable_cash']:,.0f}" if trace.get("buyable_cash") is not None else "—")
+            _oc6.metric("사이징된 투입현금", f"{trace['sized_cash']:,.0f}" if trace.get("sized_cash") is not None else "—")
+            _oc7.metric("처리 중인 주문", "🟡 YES" if trace.get("pending_order") else "NO")
+
     # ── 🔄 Cycle & Turning Point AI (SHADOW MODE — 실제 주문에 영향 없음) ──────
     st.subheader("🔄 Cycle & Turning Point AI")
     st.caption(

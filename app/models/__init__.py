@@ -167,6 +167,9 @@ class OrderResult:
     http_status: int = 0
     error_type: str = ""
     excluded_reason: str = ""
+    rt_cd: str = ""
+    msg_cd: str = ""
+    msg1: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -185,6 +188,9 @@ class OrderResult:
             "http_status": self.http_status,
             "error_type": self.error_type,
             "excluded_reason": self.excluded_reason,
+            "rt_cd": self.rt_cd,
+            "msg_cd": self.msg_cd,
+            "msg1": self.msg1,
         }
 
 

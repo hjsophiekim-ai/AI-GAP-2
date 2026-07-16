@@ -28,7 +28,7 @@ from app.trading.hynix_symbols import (
 )
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, should_liquidate_now
 from app.trading.hynix_position_common import (
-    get_hynix_auto_position, is_buy_cooldown_active, POSITION_CONFLICT,
+    get_hynix_auto_position, is_buy_cooldown_active, POSITION_CONFLICT, MIN_SECONDS_BETWEEN_BUYS,
 )
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -49,6 +49,18 @@ _DEFAULT_RISK = {
 _DEFAULT_SIZING = {"normal_trade_cash_pct": 0.30, "forced_trade_cash_pct": 0.08}
 POSITION_SYNC_PENDING = "POSITION_SYNC_PENDING"
 SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH = "ENHANCED_REGIME_SWITCH"
+
+# 요구사항(2026-07-16) — Entry Approved=YES인데 Order Sent=NO일 때, blocking_reason에
+# 진입 승인 문구가 그대로 남는 대신 "왜 주문이 전송되지 않았는지" 정확히 한 가지
+# 사유를 남긴다. hynix_switch_engine._build_blocking_reason()이 이 코드를 사람이
+# 읽을 문장으로 매핑한다.
+ORDER_FAILURE_ORDER_QTY_ZERO = "ORDER_QTY_ZERO"
+ORDER_FAILURE_BUYABLE_CASH_ZERO = "BUYABLE_CASH_ZERO"
+ORDER_FAILURE_PRICE_UNAVAILABLE = "PRICE_UNAVAILABLE"
+ORDER_FAILURE_COOLDOWN_ACTIVE = "COOLDOWN_ACTIVE"
+ORDER_FAILURE_ORDER_IN_FLIGHT = "ORDER_IN_FLIGHT"
+ORDER_FAILURE_BROKER_REJECTED = "BROKER_REJECTED"
+ORDER_FAILURE_EXECUTION_EXCEPTION = "EXECUTION_EXCEPTION"
 _POSITION_SYNC_RETRY_ATTEMPTS = 3
 _POSITION_SYNC_RETRY_DELAY_SECONDS = 2
 _POSITION_STATE_LOCK = threading.RLock()
@@ -664,21 +676,46 @@ def _buy_new(
     # 요구사항(2026-07-16 사용자 리포트) — "invalid price/amount"는 가격 문제와
     # 현금(매수가능금액 산정 0원) 문제를 구분하지 못해, BUY 신호가 떴는데 왜 실제
     # 주문이 안 나갔는지 화면에서 알 수 없었다. 두 원인을 분리해 로그/blocking_reason
-    # 에서 바로 진단 가능하게 한다.
+    # 에서 바로 진단 가능하게 한다. requested_qty/order_price/sized_cash는 실패해도
+    # 항상 반환해 UI가 "계산식과 입력값"을 그대로 보여줄 수 있게 한다(요구사항4).
+    _diag_base = {"requested_symbol": symbol, "order_price": current_price, "sized_cash": cash_amount}
     if not current_price or current_price <= 0:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "no valid current price")
-        return {"success": False, "message": "no valid current price"}
+        return {
+            "success": False, "message": "no valid current price",
+            "failure_code": ORDER_FAILURE_PRICE_UNAVAILABLE, "requested_qty": 0, **_diag_base,
+        }
     if cash_amount <= 0:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "sized cash amount is 0 (buyable cash query returned 0/unavailable)")
-        return {"success": False, "message": "sized cash amount is 0 (buyable cash query returned 0/unavailable)"}
+        return {
+            "success": False, "message": "sized cash amount is 0 (buyable cash query returned 0/unavailable)",
+            "failure_code": ORDER_FAILURE_BUYABLE_CASH_ZERO, "requested_qty": 0, **_diag_base,
+        }
     quantity = int(cash_amount // current_price)
     if quantity < 1:
         _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "buy amount insufficient for 1 share")
-        return {"success": False, "message": "buy amount insufficient for 1 share"}
+        return {
+            "success": False, "message": "buy amount insufficient for 1 share",
+            "failure_code": ORDER_FAILURE_ORDER_QTY_ZERO, "requested_qty": quantity, **_diag_base,
+        }
     _assert_not_signal_symbol(symbol, "BUY")
     with _POSITION_STATE_LOCK:
-        order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
+        try:
+            order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
+        except Exception as exc:
+            logger.error("[SwitchPositionManager] broker.buy() 예외: %s", exc)
+            return {
+                "success": False, "message": f"broker.buy() exception: {exc}",
+                "failure_code": ORDER_FAILURE_EXECUTION_EXCEPTION, "broker_error": str(exc),
+                "requested_qty": quantity, **_diag_base,
+            }
         order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)
+        if not order_dict.get("success"):
+            order_dict["failure_code"] = ORDER_FAILURE_BROKER_REJECTED
+            order_dict["broker_error"] = ", ".join(
+                f"{k}={order_dict.get(k)}" for k in ("rt_cd", "msg_cd", "msg1") if order_dict.get(k) not in (None, "")
+            ) or order_dict.get("message") or "broker rejected order"
+        order_dict.update({"requested_qty": quantity, **_diag_base})
         confirmed = None
         confirmed_qty = None
         # 요구사항2 — rt_cd=0(success) 또는 주문번호만으로 원장에 체결수량을 기록하지
@@ -1247,6 +1284,16 @@ def run_switch_or_entry(
     if state.get("last_order_cycle_bucket") == bucket and state.get("last_order_signature") == signature:
         return {"acted": False, "orders": orders, "message": "same signal within same 3-minute cycle; duplicate order blocked", "stage": "entry"}
 
+    # 요구사항(2026-07-16) — Entry Approved=YES까지 도달했더라도 이미 처리 중인
+    # 주문이 있으면(원인 불명 재시도/중복 사이클 등) 새 주문을 또 보내지 않는다.
+    # order_sent 실패사유를 정확히 ORDER_IN_FLIGHT로 남긴다.
+    if state.get("order_in_flight") or state.get("pending_order"):
+        return {
+            "acted": False, "orders": orders, "message": "order already in flight for this position",
+            "stage": "order_sent", "failure_code": ORDER_FAILURE_ORDER_IN_FLIGHT,
+            "pending_order": True, "requested_symbol": desired_symbol,
+        }
+
     # Buy cooldown must be determined from the previous trade record before "already holding
     # this cycle" overwrites that value.
     buy_cooldown_active = is_buy_cooldown_active(state.get("last_trade_time"), state.get("last_action"), now)
@@ -1265,7 +1312,11 @@ def run_switch_or_entry(
             state["last_buyable_cash_source"] = cash_source
             state["last_buyable_cash_used"] = full_cash
             if full_cash <= 0:
-                return {"acted": False, "orders": orders, "message": "buyable cash unavailable", "stage": "entry"}
+                return {
+                    "acted": False, "orders": orders, "message": "buyable cash unavailable", "stage": "entry",
+                    "failure_code": ORDER_FAILURE_BUYABLE_CASH_ZERO, "buyable_cash": full_cash,
+                    "requested_symbol": desired_symbol,
+                }
             pct = float(target_position_pct)
             if pct > 1.0:
                 pct = pct / 100.0
@@ -1285,7 +1336,12 @@ def run_switch_or_entry(
                             state, position, (buy_result.get("position_sync") or {}).get("error"),
                             "POSITION_SYNC_PENDING - broker balance confirmation failed after buy; new orders blocked",
                         )
-                        return {"acted": True, "orders": orders, "message": buy_result.get("message", "buy fill unconfirmed"), "stage": "state_sync"}
+                        return {
+                            "acted": True, "orders": orders, "message": buy_result.get("message", "buy fill unconfirmed"),
+                            "stage": "state_sync", "requested_symbol": desired_symbol,
+                            "requested_qty": buy_result.get("requested_qty"), "order_price": buy_result.get("order_price"),
+                            "sized_cash": buy_result.get("sized_cash"), "buyable_cash": full_cash,
+                        }
                     add_qty = int(buy_result.get("bought_quantity", 0))
                     old_qty = int(position.get("quantity") or 0)
                     new_qty = old_qty + add_qty
@@ -1311,7 +1367,12 @@ def run_switch_or_entry(
                     state["last_order_id"] = buy_result.get("order_id")
                     state["last_order_cycle_bucket"] = bucket
                     state["last_order_signature"] = signature
-                    return {"acted": True, "orders": orders, "message": buy_result.get("message", "target-weight increase"), "stage": "order_sent"}
+                    return {
+                        "acted": True, "orders": orders, "message": buy_result.get("message", "target-weight increase"),
+                        "stage": "order_sent", "requested_symbol": desired_symbol,
+                        "requested_qty": buy_result.get("requested_qty"), "order_price": buy_result.get("order_price"),
+                        "sized_cash": buy_result.get("sized_cash"), "buyable_cash": full_cash,
+                    }
                 # 요구사항(2026-07-16 사용자 리포트) — 여기서 그냥 아래 "이미 보유 중"
                 # 문구로 흘러가면 실제 매수 시도가 실패한 진짜 이유(예: "sized cash
                 # amount is 0", KIS rt_cd/msg_cd 거부 사유)가 통째로 사라지고, 마치
@@ -1320,7 +1381,10 @@ def run_switch_or_entry(
                 return {
                     "acted": True, "orders": orders,
                     "message": buy_result.get("message") or "target-weight increase buy failed",
-                    "stage": "order_sent",
+                    "stage": "order_sent", "requested_symbol": desired_symbol,
+                    "requested_qty": buy_result.get("requested_qty"), "order_price": buy_result.get("order_price"),
+                    "sized_cash": buy_result.get("sized_cash"), "buyable_cash": full_cash,
+                    "failure_code": buy_result.get("failure_code"), "broker_error": buy_result.get("broker_error"),
                 }
             # add_cash가 1주 가격보다 작아 애초에 매수를 시도하지 않은 경우도 "이미
             # 보유 중 — 중복 매수 방지"로 뭉뚱그리면 원인(목표비중 증액분이 1주 미만)을
@@ -1392,14 +1456,30 @@ def run_switch_or_entry(
             return {"acted": True, "orders": orders, "message": "after 14:50 - sell only, no new symbol entry", "stage": "entry"}
 
     if not entry_allowed:
-        return {"acted": bool(orders), "orders": orders, "message": "new entry window closed", "stage": "entry"}
+        return {
+            "acted": bool(orders), "orders": orders, "message": "new entry window closed", "stage": "entry",
+            "requested_symbol": desired_symbol,
+        }
 
     if buy_cooldown_active:
-        return {"acted": bool(orders), "orders": orders, "message": "buy cooldown active", "stage": "entry"}
+        cooldown_remaining = None
+        try:
+            last_dt = datetime.fromisoformat(str(state.get("last_trade_time")))
+            cooldown_remaining = max(0, int(MIN_SECONDS_BETWEEN_BUYS - (now - last_dt).total_seconds()))
+        except Exception:
+            cooldown_remaining = None
+        return {
+            "acted": bool(orders), "orders": orders, "message": "buy cooldown active", "stage": "entry",
+            "failure_code": ORDER_FAILURE_COOLDOWN_ACTIVE, "cooldown_remaining": cooldown_remaining,
+            "requested_symbol": desired_symbol,
+        }
 
     current_price = _current_price(desired_symbol, hynix_price, inverse_price)
     if not current_price:
-        return {"acted": bool(orders), "orders": orders, "message": "no current price for target symbol; buy skipped", "stage": "entry"}
+        return {
+            "acted": bool(orders), "orders": orders, "message": "no current price for target symbol; buy skipped",
+            "stage": "entry", "failure_code": ORDER_FAILURE_PRICE_UNAVAILABLE, "requested_symbol": desired_symbol,
+        }
 
     sized_cash, full_cash = _sizing_cash_amount(
         broker, forced, target_position_pct=target_position_pct,
@@ -1424,7 +1504,12 @@ def run_switch_or_entry(
             )
             state["last_order_cycle_bucket"] = bucket
             state["last_order_signature"] = signature
-            return {"acted": True, "orders": orders, "message": buy_result.get("message", "buy fill unconfirmed"), "stage": "state_sync"}
+            return {
+                "acted": True, "orders": orders, "message": buy_result.get("message", "buy fill unconfirmed"),
+                "stage": "state_sync", "requested_symbol": desired_symbol, "requested_qty": buy_result.get("requested_qty"),
+                "order_price": buy_result.get("order_price"), "sized_cash": buy_result.get("sized_cash"),
+                "buyable_cash": full_cash,
+            }
         qty = buy_result.get("actual_quantity") or buy_result.get("bought_quantity", 0)
         avg_price = ((buy_result.get("position_sync") or {}).get("avg_price")) or current_price
         state["position"] = {
@@ -1452,4 +1537,10 @@ def run_switch_or_entry(
     if any(bool(o.get("success")) for o in orders if isinstance(o, dict)):
         state["last_order_cycle_bucket"] = bucket
         state["last_order_signature"] = signature
-    return {"acted": True, "orders": orders, "message": buy_result.get("message", ""), "stage": "order_sent"}
+    return {
+        "acted": True, "orders": orders, "message": buy_result.get("message", ""), "stage": "order_sent",
+        "requested_symbol": desired_symbol, "requested_qty": buy_result.get("requested_qty"),
+        "order_price": buy_result.get("order_price"), "sized_cash": buy_result.get("sized_cash"),
+        "buyable_cash": full_cash, "failure_code": buy_result.get("failure_code"),
+        "broker_error": buy_result.get("broker_error"),
+    }
