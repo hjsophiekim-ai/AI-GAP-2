@@ -1213,6 +1213,27 @@ def run_switch_or_entry(
                     state["last_order_cycle_bucket"] = bucket
                     state["last_order_signature"] = signature
                     return {"acted": True, "orders": orders, "message": buy_result.get("message", "target-weight increase"), "stage": "order_sent"}
+                # 요구사항(2026-07-16 사용자 리포트) — 여기서 그냥 아래 "이미 보유 중"
+                # 문구로 흘러가면 실제 매수 시도가 실패한 진짜 이유(예: "sized cash
+                # amount is 0", KIS rt_cd/msg_cd 거부 사유)가 통째로 사라지고, 마치
+                # "이미 보유해서 매수할 필요 없음"인 것처럼 보인다 — 이건 시도했다가
+                # 실패한 것이지 "필요 없어서 안 한 것"이 아니다.
+                return {
+                    "acted": True, "orders": orders,
+                    "message": buy_result.get("message") or "target-weight increase buy failed",
+                    "stage": "order_sent",
+                }
+            # add_cash가 1주 가격보다 작아 애초에 매수를 시도하지 않은 경우도 "이미
+            # 보유 중 — 중복 매수 방지"로 뭉뚱그리면 원인(목표비중 증액분이 1주 미만)을
+            # 알 수 없다.
+            return {
+                "acted": False, "orders": orders,
+                "message": (
+                    f"target-weight increase skipped: add_cash {add_cash:,.0f} < "
+                    f"1-share price {current_price:,.0f} (already close to target weight)"
+                ),
+                "stage": "entry",
+            }
         label = "인버스" if desired_symbol == INVERSE_SYMBOL else "하이닉스"
         return {"acted": False, "orders": orders, "message": f"이미 {label} 보유 중 — 중복 매수 방지", "stage": "entry"}
 

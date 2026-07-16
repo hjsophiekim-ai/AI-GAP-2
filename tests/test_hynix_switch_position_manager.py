@@ -137,6 +137,46 @@ def test_hynix_buy_signal_trades_long_symbol_not_signal_symbol():
     assert state["position"]["symbol"] == LONG_SYMBOL
 
 
+def test_target_weight_increase_failure_reports_real_reason_not_generic_message():
+    """요구사항(2026-07-16 사용자 리포트) — 이미 목표 종목을 보유 중인데 목표비중
+    증액(target-weight increase) 매수가 실제로 실패하면, 그 실패 사유를 그대로
+    보여줘야 한다. 과거에는 buy_result.success=False인 경우를 처리하는 분기가 없어
+    무조건 "이미 하이닉스 보유 중 — 중복 매수 방지"로 흘러갔다 — 마치 매수 시도조차
+    안 한 것처럼 보였지만 실제로는 시도했다가 실패한 것이었다."""
+    state = _holding_state(LONG_SYMBOL, quantity=3, entry_price=100_000.0)
+    state["last_trend_switch_plan"] = {
+        "desired_symbol": LONG_SYMBOL, "proceed": True, "position_pct": 0.50, "entry_type": "CONFIRMED",
+    }
+    broker = DummyBroker(buy_success=False, buyable_cash=10_000_000.0)
+    now = datetime(2026, 7, 16, 10, 0)
+
+    result = run_switch_or_entry(state, broker, "HYNIX_BUY", 100_000.0, 5_000.0, now=now)
+
+    assert len(broker.buy_calls) == 1  # 실제로 매수를 시도했다
+    assert result["stage"] == "order_sent"
+    assert "매수 실패" in result["message"]
+    assert "이미" not in result["message"]
+
+
+def test_target_weight_increase_too_small_reports_specific_reason():
+    """add_cash가 1주 가격보다 작아 애초에 매수 시도조차 안 한 경우도 원인을
+    구체적으로 남긴다(목표비중에 이미 근접)."""
+    state = _holding_state(LONG_SYMBOL, quantity=50, entry_price=100_000.0)
+    state["last_trend_switch_plan"] = {
+        "desired_symbol": LONG_SYMBOL, "proceed": True, "position_pct": 0.50, "entry_type": "CONFIRMED",
+    }
+    # held_value=5,000,000, full_cash=10,000 -> target_value=(10,000+5,000,000)*0.5=2,505,000
+    # add_cash = max(0, 2,505,000-5,000,000) = 0 < current_price
+    broker = DummyBroker(buy_success=True, buyable_cash=10_000.0)
+    now = datetime(2026, 7, 16, 10, 0)
+
+    result = run_switch_or_entry(state, broker, "HYNIX_BUY", 100_000.0, 5_000.0, now=now)
+
+    assert broker.buy_calls == []
+    assert result["stage"] == "entry"
+    assert "target-weight increase skipped" in result["message"]
+
+
 def test_switch_from_hynix_to_inverse_sells_then_buys():
     state = _holding_state(LONG_SYMBOL)
     broker = DummyBroker()
