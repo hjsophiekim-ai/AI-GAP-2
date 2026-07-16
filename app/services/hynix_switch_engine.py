@@ -409,7 +409,13 @@ ACCOUNT_EQUITY_MISMATCH = "ACCOUNT_EQUITY_MISMATCH"
 _EQUITY_MISMATCH_TOLERANCE_PCT = 0.5
 _EQUITY_MISMATCH_RETRY_ATTEMPTS = 3
 _EQUITY_MISMATCH_RETRY_DELAY_SECONDS = 3
-_ACCOUNT_SETTLEMENT_GRACE_SECONDS = 60
+# 요구사항(2026-07-16 실측) — 60초는 3분 주기 사이클 + KIS 레이트리밋(EGW00201)
+# 백오프/재시도 지연을 감안하면 너무 짧다. 실제 매수 직후 브로커 잔고에 그
+# 매수가 반영되기까지(레이트리밋으로 재시도가 몇 번 겹치면) 60초를 쉽게 넘길 수
+# 있고, 그 사이에 유예가 끝나버리면 방금 막 체결된 정상 거래를
+# ACCOUNT_EQUITY_MISMATCH로 오판해 신규주문을 막아버린다(2026-07-16 실측: 500만원
+# 매수 직후 인버스 신호가 이 사유로 차단됨). 사이클 1~2회분 여유를 두도록 5분으로 늘린다.
+_ACCOUNT_SETTLEMENT_GRACE_SECONDS = 300
 _ACCOUNT_SNAPSHOT_FALLBACK_SECONDS = 90
 
 
@@ -1868,42 +1874,39 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 trace["entry_approved"] = False
                 trace["entry_approved_reason"] = "DATA_UNIT_MISMATCH/DATA_ERROR — 000660 신호가격 검증 실패로 신규 진입 차단"
                 warnings.append(trace["entry_approved_reason"])
-            elif not tp_sl.get("triggered") and mode == "mock" and state.get("active_strategy_enabled"):
-                # ── ACTIVE STRATEGY / ADAPTIVE FUSION(거래모드 기반) — mock 전용 opt-in,
-                # 이번 사이클의 신규진입/전환 판단을 기존 ENHANCED_REGIME_SWITCH 대신 이
-                # 엔진이 담당한다. mode=="mock" 조건 때문에 실거래(real)에는 절대 관여하지
-                # 않으므로(요구사항4: 실제 주문 지배 엔진은 ENHANCED_REGIME_SWITCH 하나로
-                # 통일), 이 opt-in 경로가 "두 번째 실주문 엔진"이 되지는 않는다. 강제청산/
-                # 레거시 TP·SL은 위에서 이미 항상 우선 실행되었으므로 안전망은 유지된다.
-                # adaptive_fusion_enabled가 켜져 있으면 Prediction AI V2/Cycle AI/Micron
-                # Proxy를 실제로 융합하는 Adaptive Fusion 경로를 쓰고, 꺼져 있으면 기존
-                # ACTIVE_FUSION 단독 경로를 그대로 쓴다(대체가 아니라 opt-in).
-                try:
-                    _boosted_enhanced_score = _boost_enhanced_score_with_inverse_pressure(
-                        decision.get("enhanced_score"), decision.get("inverse_pressure_score"),
-                    )
-                    if state.get("adaptive_fusion_enabled"):
-                        active_result = _run_adaptive_fusion_entry(
-                            state, broker, hynix_price, inverse_price, now, orders_this_cycle,
-                            enhanced_ai_score=_boosted_enhanced_score, hynix_df_1min=df_1min,
-                            position_manager=position_manager,
-                        )
-                        trace_label = "ADAPTIVE_FUSION"
-                    else:
-                        active_result = _run_active_strategy_entry(
-                            state, broker, hynix_price, inverse_price, now, orders_this_cycle,
-                            enhanced_ai_score=_boosted_enhanced_score, position_manager=position_manager,
-                        )
-                        trace_label = "ACTIVE_STRATEGY"
-                    trace["entry_approved"] = active_result.get("acted", False)
-                    trace["entry_approved_reason"] = f"[{trace_label}] {active_result.get('message', '')}"
-                    if active_result.get("acted"):
-                        attempted_entry = True
-                        state.pop("pending_entry", None)
-                except Exception as exc:
-                    logger.error("[HynixSwitchEngine] Active Strategy/Adaptive Fusion 진입 처리 실패: %s", exc)
-                    warnings.append(f"Active Strategy/Adaptive Fusion 진입 처리 실패: {exc}")
             elif not tp_sl.get("triggered"):
+                # 요구사항(2026-07-16 실측) — active_strategy_enabled가 켜져 있으면 이
+                # 자리가 예전엔 `elif`로 아래 ENHANCED_REGIME_SWITCH 실제 판단과 배타적
+                # 이었다. _run_active_strategy_entry/_run_adaptive_fusion_entry는 맨
+                # 위에서 무조건 "acted": False(SHADOW_ONLY)만 반환하도록 이미 비활성화돼
+                # 있는데(그 아래 실제 매수/매도 코드는 도달 불가능한 죽은 코드), 이
+                # 토글이 켜져 있으면 그 사이클에 실제 엔진(ENHANCED_REGIME_SWITCH)이
+                # 아예 실행되지 않아 BUY/INVERSE 신호가 나도 주문이 전혀 들어가지
+                # 않았다 — "ACTIVE_STRATEGY shadow-only: actual broker orders are owned
+                # by ENHANCED_REGIME_SWITCH"라는, 마치 다른 엔진이 대신 처리한 것처럼
+                # 보이는 메시지만 남고 사실은 아무도 처리하지 않았다. 진단용 shadow
+                # 계산(state["last_final_execution_decision"] 등 UI 표시용)은 그대로
+                # 유지하되, 더 이상 아래 실제 진입 로직을 막지 않는다 — 항상 실행한다.
+                if mode == "mock" and state.get("active_strategy_enabled"):
+                    try:
+                        _boosted_enhanced_score = _boost_enhanced_score_with_inverse_pressure(
+                            decision.get("enhanced_score"), decision.get("inverse_pressure_score"),
+                        )
+                        if state.get("adaptive_fusion_enabled"):
+                            _run_adaptive_fusion_entry(
+                                state, broker, hynix_price, inverse_price, now, [],
+                                enhanced_ai_score=_boosted_enhanced_score, hynix_df_1min=df_1min,
+                                position_manager=position_manager,
+                            )
+                        else:
+                            _run_active_strategy_entry(
+                                state, broker, hynix_price, inverse_price, now, [],
+                                enhanced_ai_score=_boosted_enhanced_score, position_manager=position_manager,
+                            )
+                    except Exception as exc:
+                        logger.error("[HynixSwitchEngine] Active Strategy/Adaptive Fusion 진단 계산 실패(무해): %s", exc)
+                        warnings.append(f"Active Strategy/Adaptive Fusion 진단 계산 실패: {exc}")
+
                 final_action = decision.get("final_action", "HOLD")
                 forced = False
                 reason = "; ".join(decision.get("reasons", []))

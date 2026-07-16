@@ -200,6 +200,58 @@ def test_active_strategy_mock_toggle_places_real_dryrun_order(tmp_path, monkeypa
     assert result["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
 
 
+def _fake_strong_buy_decision(*_args, **_kwargs):
+    return {
+        "final_action": "HYNIX_STRONG_BUY", "enhanced_score": 90.0, "inverse_pressure_score": 10.0,
+        "score_gap": 80.0, "score_gap_below_forced_trade_threshold": False, "reasons": [],
+    }
+
+
+def test_active_strategy_toggle_does_not_block_real_enhanced_regime_switch_entry(tmp_path, monkeypatch):
+    """요구사항(2026-07-16 실측) — active_strategy_enabled=True여도 실제 주문 엔진
+    (ENHANCED_REGIME_SWITCH)이 신규 진입을 계속 실행해야 한다.
+
+    _run_active_strategy_entry/_run_adaptive_fusion_entry는 이미 맨 위에서 무조건
+    shadow-only를 반환하도록 비활성화돼 있는데, 예전 코드는 이 토글이 켜져 있으면
+    `elif`로 ENHANCED_REGIME_SWITCH의 실제 진입 로직 자체를 건너뛰었다 — 그 결과
+    BUY/INVERSE 신호가 나도 어느 엔진도 실제로 주문을 넣지 않았다(2026-07-16 실측:
+    "[entry_approved] [ACTIVE_STRATEGY] ACTIVE_STRATEGY shadow-only: actual broker
+    orders are owned by ENHANCED_REGIME_SWITCH" 메시지와 함께 매수가 전혀 체결되지
+    않음)."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.dry_run_broker as dry_run_broker_module
+    import app.trading.broker_factory as broker_factory_module
+    import app.data_sources.hynix_long_collector as long_collector_module
+    from app.data_sources.hynix_long_collector import LONG_SYMBOL
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(decider_module, "decide_hynix_or_inverse_action", _fake_strong_buy_decision)
+    monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
+    monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 19_400.0, "stale": False})
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    monkeypatch.setattr(engine, "_run_shadow_cycle_ai_and_decision_v2", lambda *a, **kw: {})
+    _silence_prediction_tracker(monkeypatch)
+
+    state = state_module.load_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    state["active_strategy_enabled"] = True  # 토글 ON — 이게 실제 진입을 막으면 안 된다.
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    # 실제 ENHANCED_REGIME_SWITCH가 이번 사이클에 진짜로 진입해야 한다.
+    assert result["state"]["position"]["symbol"] == LONG_SYMBOL
+    assert result["state"]["position"]["quantity"] > 0
+    # Active Strategy 진단(shadow) 필드는 UI 표시용으로 계속 채워져야 한다.
+    assert result["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
+
+
 # =============================================================================
 # FinalExecutionDecision / 중복주문 방지 / real-mode 게이트 테스트 (섹션 13)
 # =============================================================================
