@@ -119,8 +119,13 @@ def _assert_not_signal_symbol(symbol: str, action: str) -> None:
         )
 
 
-def evaluate_tp_sl(position: dict, current_price: Optional[float]) -> Optional[dict]:
-    """Evaluate TP/SL stage. Returns {"ratio":.., "reason":.., "tag":..} when triggered, else None."""
+def evaluate_tp_sl(position: dict, current_price: Optional[float], hard_sl_pct: Optional[float] = None) -> Optional[dict]:
+    """Evaluate TP/SL stage. Returns {"ratio":.., "reason":.., "tag":..} when triggered, else None.
+
+    hard_sl_pct(음수, confirmed adaptive regime 기준 effective_sl_pct)가 주어지면
+    legacy 고정폭 tier(_DEFAULT_RISK)보다 항상 먼저 확인한다 — Dynamic Exit
+    watcher 스레드가 죽어 이 legacy 경로가 fallback으로 동작할 때도, 손절 계산의
+    단일 입력(단일 effective_sl_pct)에서 벗어나지 않게 한다."""
     risk = _load_section("risk", _DEFAULT_RISK)
     if not position or not position.get("symbol") or (position.get("quantity") or 0) <= 0:
         return None
@@ -128,6 +133,9 @@ def evaluate_tp_sl(position: dict, current_price: Optional[float]) -> Optional[d
     if not entry or entry <= 0 or current_price is None:
         return None
     pct = (current_price / entry - 1.0) * 100
+
+    if hard_sl_pct is not None and pct <= hard_sl_pct:
+        return {"ratio": 1.0, "reason": f"hard stop loss ({pct:.2f}% <= {hard_sl_pct:.2f}%, confirmed regime)", "tag": "hard_sl"}
 
     if pct >= risk["take_profit_2_pct"]:
         return {"ratio": 1.0, "reason": f"take profit full (+{pct:.2f}%>=+{risk['take_profit_2_pct']}%)", "tag": "tp2"}
@@ -1186,7 +1194,11 @@ def run_tp_sl_if_needed(
 
     mode = state.get("mode", "mock")
     current_price = _current_price(symbol, hynix_price, inverse_price)
-    trigger = evaluate_tp_sl(position, current_price)
+    from app.trading.adaptive_market_regime import effective_sl_pct_for_position
+
+    confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+    hard_sl_pct = effective_sl_pct_for_position(confirmed_regime, symbol)
+    trigger = evaluate_tp_sl(position, current_price, hard_sl_pct=hard_sl_pct)
     if not trigger:
         return {"triggered": False, "orders": orders}
 

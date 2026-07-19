@@ -48,46 +48,42 @@ def _no_position_decision() -> dict:
     }
 
 
+# 요구사항(구값 참조 문제 수정) — symbol별 마지막 가격조회의 stale 여부/출처를
+# 기록해 손절 스냅샷/UI가 "지금 이 가격이 실시간인지, 갱신 실패로 오래된 캐시를
+# 쓰고 있는지"를 알 수 있게 한다. _fetch_current_price()는 기존 테스트가
+# monkeypatch하는 시그니처(symbol, mode)->Optional[float]를 그대로 유지한다.
+_last_price_fetch_info: dict = {}  # symbol -> {"stale": bool, "source": str|None, "status": str|None, "cached_at": str|None}
+
+
 def _fetch_current_price(symbol: str, mode: str) -> Optional[float]:
     if symbol == HYNIX_SYMBOL:
         return _fetch_hynix_price_cheap(mode)
     if symbol == INVERSE_SYMBOL:
         from app.data_sources.hynix_inverse_collector import collect_inverse_current
 
-        return collect_inverse_current(mode=mode).get("current_price")
+        result = collect_inverse_current(mode=mode)
+        _last_price_fetch_info[symbol] = {
+            "stale": bool(result.get("stale")), "source": result.get("source"),
+            "status": result.get("status"), "cached_at": result.get("cached_at"),
+        }
+        return result.get("current_price")
     return None
 
 
 def _fetch_hynix_price_cheap(mode: str) -> Optional[float]:
-    import os
+    """레버리지 ETF(0193T0) 실시간가 조회 — collect_long_current()의 기존
+    KIS→Naver→stale캐시 폴백체인을 그대로 재사용한다(예전에는 이 함수가 별도의
+    간이 로직으로 KIS만 시도하고 실패하면 stale 표시 없이 원본 캐시를 그대로
+    반환해, 갱신이 오래 실패해도 화면·손절판단이 이를 전혀 알 수 없었다 — '구값
+    참조' 버그의 핵심 원인 중 하나)."""
+    from app.data_sources.hynix_long_collector import collect_long_current
 
-    for candidate in (mode, "real", "mock"):
-        if not candidate:
-            continue
-        app_key = os.environ.get(f"KIS_{candidate.upper()}_APP_KEY", "")
-        app_secret = os.environ.get(f"KIS_{candidate.upper()}_APP_SECRET", "")
-        if app_key and app_secret:
-            try:
-                from app.trading.kis_client import KISClient
-
-                client = KISClient(
-                    app_key=app_key, app_secret=app_secret,
-                    account_no=os.environ.get("KIS_ACCOUNT_NO", "00000000"),
-                    product_code=os.environ.get("KIS_ACCOUNT_PRODUCT_CODE", "01"), mode=candidate,
-                )
-                quote = client.get_current_price(HYNIX_SYMBOL)
-                if quote and quote.get("current_price"):
-                    return quote["current_price"]
-            except Exception as exc:
-                logger.debug("[DynamicExitWatcher] KIS 현재가 실패: %s", exc)
-            break
-    try:
-        from app.data_sources.hynix_long_collector import _read_json_cache
-
-        cached = _read_json_cache()
-        return cached.get("current_price") if cached else None
-    except Exception:
-        return None
+    result = collect_long_current(mode=mode)
+    _last_price_fetch_info[HYNIX_SYMBOL] = {
+        "stale": bool(result.get("stale")), "source": result.get("source"),
+        "status": result.get("status"), "cached_at": result.get("cached_at"),
+    }
+    return result.get("current_price")
 
 
 def _load_daily_df(symbol: str):
@@ -116,11 +112,21 @@ def _load_minute_df(symbol: str):
     return None
 
 
-def _compute_big_trend_decision(state: dict, position: dict, symbol: str, current_price: float, df_1min, now: datetime) -> Optional[dict]:
+def _compute_big_trend_decision(
+    state: dict, position: dict, symbol: str, current_price: float, df_1min, now: datetime,
+    snapshot: Optional[dict] = None,
+) -> Optional[dict]:
     """Big Trend Holding AI(app.trading.hynix_big_trend_engine) 1회 계산 — 항상 호출되어
     Shadow 로그로 남으며, state["big_trend_holding_enabled"]가 켜졌을 때만 호출부가
     이 결과로 실제 청산 action/ratio를 대체한다. 예외 발생 시 None을 반환해 호출부가
-    기존 DynamicExitEngine 판단만으로 안전하게 계속 동작하도록 한다."""
+    기존 DynamicExitEngine 판단만으로 안전하게 계속 동작하도록 한다.
+
+    snapshot(손절 계산의 단일 입력, app.trading.stop_loss_snapshot)이 주어지면
+    net_return_pct/effective_sl_pct/hard_stop_triggered는 이 값을 그대로 쓴다 —
+    Big Trend Holding이 ATR 변동성 등급(volatility_class) 기준의 자체 sl_pct
+    사다리로 따로 재계산하면(과거 버그), confirmed adaptive regime 기준으로는
+    이미 손절 조건인데도 Big Trend 자체 기준으로는 아직 아니라고 판단해 정상
+    손절 결정을 뒤집어 HOLD로 되돌리는 사고가 날 수 있다(2026-07-20 실측)."""
     from app.trading.trading_cost_engine import TradeCostEngine
 
     entry_price = position.get("entry_price")
@@ -128,9 +134,12 @@ def _compute_big_trend_decision(state: dict, position: dict, symbol: str, curren
     if not entry_price or quantity <= 0:
         return None
 
-    cost = TradeCostEngine().compute_unrealized_net_pnl(symbol, entry_price=entry_price, current_price=current_price, quantity=quantity)
-    invested = entry_price * quantity
-    net_return_pct = round(cost["net_unrealized_pnl"] / invested * 100.0, 4) if invested else 0.0
+    if snapshot is not None:
+        net_return_pct = snapshot["net_return_pct"]
+    else:
+        cost = TradeCostEngine().compute_unrealized_net_pnl(symbol, entry_price=entry_price, current_price=current_price, quantity=quantity)
+        invested = entry_price * quantity
+        net_return_pct = round(cost["net_unrealized_pnl"] / invested * 100.0, 4) if invested else 0.0
 
     peak_net_return_pct = max(position.get("peak_net_return_pct", net_return_pct), net_return_pct)
     position["peak_net_return_pct"] = peak_net_return_pct
@@ -156,8 +165,16 @@ def _compute_big_trend_decision(state: dict, position: dict, symbol: str, curren
     held_minutes = snapshot.get("held_minutes")
     volatility_class = "HIGH_VOL" if (features.get("atr_pct") or 0) >= 1.5 else ("LOW_VOL" if (features.get("atr_pct") or 0) <= 0.5 else "NORMAL")
     is_strong_trend_initial = bool(held_minutes is not None and held_minutes <= 10 and trend["trend_strength_score"] >= 75.0)
-    sl_pct = bte.effective_sl_pct(volatility_class, is_strong_trend_initial)
-    hard_stop_triggered = net_return_pct <= sl_pct
+    if snapshot is not None and snapshot.get("hard_stop_triggered"):
+        # 공용 스냅샷이 이미 하드손절을 확정했다면(confirmed regime 기준) 그
+        # 결과를 그대로 쓴다 — ATR 변동성 등급 기준의 별도 사다리로 재계산해
+        # "아직 아니다"로 뒤집을 여지를 남기지 않는다.
+        sl_pct_local = snapshot["effective_sl_pct"]
+        hard_stop_triggered = True
+    else:
+        sl_pct_local = bte.effective_sl_pct(volatility_class, is_strong_trend_initial)
+        hard_stop_triggered = net_return_pct <= sl_pct_local
+    sl_pct = sl_pct_local
 
     big_trend_state = state.get("big_trend_state") or {}
     recent_flip_count = big_trend_state.get("recent_direction_flip_count", 0)
@@ -344,6 +361,31 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         save_state_atomic(state)
         return None
 
+    # SELL_ONLY_RECOVERY — 이전 주문의 체결 재확인이 실패해 position_sync_status가
+    # POSITION_SYNC_PENDING으로 남아있는 동안에도, 신규진입/스위칭은 계속 차단된
+    # 채로 두되(이 함수는 매도 전용) 실제 보유를 재확인해 하드손절만은 반드시
+    # 집행한다. 회복이 필요 없으면(정상 SYNCED) None을 반환하고 평소 흐름을 계속한다.
+    from app.trading.hynix_stop_loss_control import attempt_sell_only_recovery
+
+    recovery = None
+    try:
+        recovery = attempt_sell_only_recovery(state, mode, now=now)
+    except Exception as exc:
+        logger.warning("[DynamicExitWatcher] SELL_ONLY_RECOVERY 시도 실패(무해 — 평소 흐름 계속): %s", exc)
+    if recovery is not None:
+        state["stop_loss_source"] = "SELL_ONLY_RECOVERY"
+        state["stop_loss_block_reason"] = None if recovery.get("sold") else recovery.get("reason")
+        save_state_atomic(state)
+        if recovery.get("sold"):
+            return {"action": "SELL_ALL", "ratio": 1.0, "reason": recovery.get("reason"), "source": "SELL_ONLY_RECOVERY"}
+        # 아직 실보유 재확인 결과 손절 임계 미도달이거나 재확인 자체가 실패했다면,
+        # 이번 틱은 여기서 끝낸다 — position_sync_status가 여전히 PENDING인 채로
+        # engine.decide()/Big Trend에 넘기면 불확실한 데이터로 판단하게 된다.
+        return None
+
+    position = state.get("position") or {}
+    symbol = position.get("symbol")
+
     current_price = _fetch_current_price(symbol, mode)
     if not current_price:
         return None
@@ -355,6 +397,27 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
     # adaptive_regime 결과를 쓰도록, 매 사이클 한 번만 계산돼 state에 저장된
     # confirmed_regime을 그대로 넘긴다(이 함수가 별도로 재분류하지 않음).
     _adaptive_confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+
+    # ── 손절 계산의 단일 입력(position_snapshot) ────────────────────────────────
+    # entry_price는 PositionManager가 방금 동기화한 브로커 실제 평단(KIS
+    # pchs_avg_pric)을 최우선으로 쓰고, effective_sl_pct는 confirmed_regime
+    # 하나에서만 도출한다 — legacy evaluate_tp_sl/Dynamic Exit/Big Trend
+    # Holding/SELL_ONLY_RECOVERY가 전부 이 스냅샷 하나를 공유한다.
+    from app.trading.stop_loss_snapshot import build_stop_loss_snapshot
+
+    price_info = _last_price_fetch_info.get(symbol, {})
+    kis_avg_price = None
+    if position_manager.current_position.get("symbol") == symbol:
+        kis_avg_price = position_manager.current_position.get("avg_price")
+    snapshot = build_stop_loss_snapshot(
+        symbol=symbol, quantity=position.get("quantity") or 0, kis_entry_price=kis_avg_price,
+        fallback_entry_price=position.get("entry_price"), current_price=current_price,
+        current_price_stale=price_info.get("stale", False), current_price_source=price_info.get("source"),
+        confirmed_regime=_adaptive_confirmed_regime, now=now,
+    )
+    state["stop_loss_snapshot"] = snapshot
+    stop_loss_source = "DYNAMIC_EXIT_ENGINE"
+
     decision = engine.decide(position, df_daily, df_1min, current_price, now, confirmed_regime=_adaptive_confirmed_regime)
     state["position"] = position
     state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
@@ -365,7 +428,7 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
     # 안전장치(effective_sl_pct)는 토글과 무관하게 항상 최우선으로 적용된다.
     big_trend_result = None
     try:
-        big_trend_result = _compute_big_trend_decision(state, position, symbol, current_price, df_1min, now)
+        big_trend_result = _compute_big_trend_decision(state, position, symbol, current_price, df_1min, now, snapshot=snapshot)
     except Exception as exc:
         logger.debug("[DynamicExitWatcher] Big Trend Holding 계산 실패(무해 — 기존 로직 계속 동작): %s", exc)
 
@@ -383,11 +446,13 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             if hard_stop:
                 decision["action"], decision["ratio"] = "SELL_ALL", 1.0
                 decision["reason"] = f"손절({big_trend_result['net_return_pct']:.2f}%≤{big_trend_result['effective_sl_pct']:.2f}%) — Big Trend 안전장치"
+                stop_loss_source = "BIG_TREND_HARD_STOP"
             else:
                 final_action = big_trend_result["decision"].get("action")
                 if final_action in action_map:
                     decision["action"], decision["ratio"] = action_map[final_action]
                     decision["reason"] = "; ".join(big_trend_result["decision"].get("reasons", [])) or final_action
+                    stop_loss_source = "BIG_TREND_HOLDING"
                 else:
                     # 섹션 20 — Regime 전환 자체가 즉시 축소를 요구하면(HOLD/HOLD_REDUCED로
                     # 끝나는 사이클이라도) 그 축소를 적용한다.
@@ -395,9 +460,31 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
                     if transition.get("action") == "REDUCE_POSITION" and transition.get("reduce_ratio", 0) > 0:
                         decision["action"], decision["ratio"] = "SELL_PARTIAL", transition["reduce_ratio"]
                         decision["reason"] = f"Regime 전환({big_trend_result.get('raw_trend_regime')}) — {transition['reduce_ratio']*100:.0f}% 축소"
+                        stop_loss_source = "BIG_TREND_HOLDING"
                     else:
                         decision["action"], decision["ratio"] = "HOLD", 0.0
+                        stop_loss_source = "BIG_TREND_HOLDING"
             state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
+
+    # ── 하드 손절 최우선 실행(요구사항) ──────────────────────────────────────────
+    # 실제 순손익률이 confirmed adaptive regime 기준 effective_sl_pct 이하이면,
+    # 신규진입 차단 여부/Big Trend HOLD 판단/TP-SL 엔진 간 충돌과 완전히 무관하게
+    # 전량매도를 강제한다 — 위에서 어떤 엔진이 무엇을 판단했든 이 블록이 최종
+    # 결정권을 가진다(2026-07-20 실측: Big Trend Holding이 자체 ATR 기준
+    # effective_sl_pct로 재계산해 confirmed regime 기준 정상 손절을 HOLD로
+    # 되돌린 사고 재발 방지).
+    if snapshot and snapshot["hard_stop_triggered"]:
+        decision["action"], decision["ratio"] = "SELL_ALL", 1.0
+        decision["reason"] = (
+            f"하드손절(단일 스냅샷 net {snapshot['net_return_pct']:.2f}% <= "
+            f"{snapshot['effective_sl_pct']:.2f}%, regime={snapshot['confirmed_regime']}) — "
+            "신규진입 차단/Big Trend HOLD/TP-SL 엔진 충돌과 무관하게 최우선 실행"
+        )
+        stop_loss_source = "HARD_STOP_SNAPSHOT"
+        state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
+
+    state["stop_loss_source"] = stop_loss_source
+    state["stop_loss_block_reason"] = None
 
     if decision["action"] in ("SELL_ALL", "SELL_PARTIAL"):
         from app.trading.hynix_stop_loss_control import (
@@ -424,6 +511,8 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
                     "symbol": symbol, "name": position.get("name"), "action": decision["action"],
                     "reason": block_reason, "current_price": current_price, "detected_at": now.isoformat(),
                 }
+
+        state["stop_loss_block_reason"] = block_reason
 
         if block_reason is None:
             from app.trading.exit_order_coordinator import classify_exit_reason

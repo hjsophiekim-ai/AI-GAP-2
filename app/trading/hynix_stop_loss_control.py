@@ -171,6 +171,100 @@ def verify_order_confirmed(position_manager, symbol: str, expect_cleared: bool =
     return True
 
 
+def attempt_sell_only_recovery(state: dict, mode: str, now: Optional[datetime] = None) -> Optional[dict]:
+    """SELL_ONLY_RECOVERY — position_sync_status가 POSITION_SYNC_PENDING인 중에도
+    실제 보유를 재확인해 하드손절만은 반드시 집행한다.
+
+    신규진입/스위칭은 이 경로를 절대 타지 않는다(브로커를 직접 재조회해 "실제
+    보유"만 확인하고, 확인되면 오직 매도만 실행한다 — 함수 이름대로 매도 전용).
+    POSITION_SYNC_PENDING이 신규주문을 막는 것과 무관하게, 손절은 반드시
+    실행되어야 한다는 요구사항을 만족한다. 조건 미충족(무포지션/손절 미도달/
+    재확인 자체 실패)이면 아무 매도도 하지 않고 사유만 반환한다."""
+    from app.trading.hynix_switch_position_manager import (
+        _sell_all_or_ratio, _resolve_realized_pnl, _apply_sell_result_to_state_position, POSITION_SYNC_PENDING,
+    )
+    from app.trading.stop_loss_snapshot import build_stop_loss_snapshot
+    from app.trading.dynamic_exit_watcher import _get_cached_broker, _fetch_current_price
+
+    now = now or kst_now()
+    if state.get("position_sync_status") != POSITION_SYNC_PENDING:
+        return None
+
+    position = state.get("position") or {}
+    symbol = position.get("symbol")
+    if not symbol or (position.get("quantity") or 0) <= 0:
+        return {"attempted": False, "sold": False, "reason": "실보유 정보 없음(state 상 무포지션) — SELL_ONLY_RECOVERY 불필요"}
+
+    mode = mode or state.get("mode", "mock")
+    try:
+        broker = _get_cached_broker(mode, state.get("mock_budget_krw", 10_000_000.0))
+        positions = broker.get_positions()
+    except Exception as exc:
+        return {"attempted": True, "sold": False, "reason": f"실보유 재확인 실패(브로커 조회 불가): {exc}"}
+
+    held = None
+    for p in positions or []:
+        p_symbol = p.get("symbol") if isinstance(p, dict) else getattr(p, "symbol", None)
+        if p_symbol != symbol:
+            continue
+        p_qty = p.get("quantity") if isinstance(p, dict) else getattr(p, "quantity", None)
+        if (p_qty or 0) > 0:
+            held = p
+            break
+    if held is None:
+        return {"attempted": True, "sold": False, "reason": "실보유 재확인 결과 보유수량 0(정상 — 손절 불필요)"}
+
+    real_qty = held.get("quantity") if isinstance(held, dict) else getattr(held, "quantity", None)
+    real_avg_price = held.get("avg_price") if isinstance(held, dict) else getattr(held, "avg_price", None)
+
+    current_price = _fetch_current_price(symbol, mode)
+    confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+    snapshot = build_stop_loss_snapshot(
+        symbol=symbol, quantity=real_qty, kis_entry_price=real_avg_price,
+        fallback_entry_price=position.get("entry_price"), current_price=current_price,
+        confirmed_regime=confirmed_regime, now=now,
+    )
+    state["stop_loss_snapshot"] = snapshot
+    if snapshot is None:
+        return {"attempted": True, "sold": False, "reason": "손절 스냅샷 계산 불가(현재가/평단 확인 실패)"}
+    if not snapshot["hard_stop_triggered"]:
+        return {"attempted": True, "sold": False, "reason": "손절 임계 미도달 — SELL_ONLY_RECOVERY 대기", "snapshot": snapshot}
+
+    orders: list = []
+    position_for_sell = {**position, "symbol": symbol, "quantity": real_qty, "entry_price": snapshot["entry_price"]}
+    reason = (
+        f"SELL_ONLY_RECOVERY 하드손절(net {snapshot['net_return_pct']:.2f}% <= "
+        f"{snapshot['effective_sl_pct']:.2f}%, regime={snapshot['confirmed_regime']})"
+    )
+    result = _sell_all_or_ratio(
+        broker, position_for_sell, current_price, 1.0, reason, orders,
+        mode=mode, exit_reason_type="stop_loss", signal_source="SELL_ONLY_RECOVERY",
+    )
+    sold = bool(result.get("success"))
+    if sold:
+        sold_qty = result.get("sold_quantity", real_qty)
+        net_realized, gross_realized = _resolve_realized_pnl(result, current_price, snapshot["entry_price"], sold_qty)
+        state["realized_pnl_today_krw"] = state.get("realized_pnl_today_krw", 0.0) + net_realized
+        state["gross_realized_pnl_today_krw"] = state.get("gross_realized_pnl_today_krw", 0.0) + gross_realized
+        state["daily_trade_count"] = state.get("daily_trade_count", 0) + 1
+        _apply_sell_result_to_state_position(state, position_for_sell, result)
+        state["last_sell_price"] = current_price
+        state["last_trade_time"] = now.isoformat()
+        state["last_action"] = "SELL"
+        state["last_order_id"] = result.get("order_id")
+        state["last_stop_loss_signature"] = f"{symbol}:{now.strftime('%Y%m%d%H%M')}"
+
+    log_stop_loss_event({
+        "mode": mode, "symbol": symbol, "name": position.get("name"),
+        "entry_price": snapshot["entry_price"], "current_price": current_price,
+        "stop_loss_price": "", "stop_loss_pct": snapshot["effective_sl_pct"],
+        "take_profit_price": "", "take_profit_pct": "",
+        "stop_mode": "SELL_ONLY_RECOVERY", "action": "SELL_ALL",
+        "order_sent": sold, "order_confirmed": result.get("fill_confirmed"), "reason": reason,
+    })
+    return {"attempted": True, "sold": sold, "orders": orders, "snapshot": snapshot, "result": result, "reason": reason}
+
+
 def execute_manual_stop_loss(mode: str, symbol_filter: Optional[str] = None) -> dict:
     """'일괄 수동손절' 버튼 핸들러. symbol_filter=None이면 하이닉스+인버스 전량 청산.
 

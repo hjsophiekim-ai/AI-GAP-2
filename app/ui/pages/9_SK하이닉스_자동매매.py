@@ -2315,6 +2315,58 @@ else:
     st.caption(f"판단 사유: {_dyn_decision.get('reason', '—')}")
 
 st.divider()
+st.subheader("🎯 손절 판단 단일 스냅샷 (position_snapshot)")
+st.caption(
+    "legacy evaluate_tp_sl/Dynamic Exit/Big Trend Holding/SELL_ONLY_RECOVERY가 전부 공유하는 "
+    "손절 계산의 단일 입력. 화면에 보이는 값과 실제 매도 주문 판단에 쓰인 값이 항상 같은 스냅샷에서 나온다."
+)
+_sl_snapshot_state = load_state()
+_sl_snapshot = _sl_snapshot_state.get("stop_loss_snapshot")
+if not _sl_snapshot:
+    st.info("보유 포지션이 없거나 아직 손절 스냅샷이 계산되지 않았습니다.")
+else:
+    ss1, ss2, ss3 = st.columns(3)
+    with ss1:
+        st.metric("KIS 평균매수가", f"{_sl_snapshot['entry_price']:,.0f}원")
+    with ss2:
+        _price_label = "실제 현재가"
+        if _sl_snapshot.get("current_price_stale"):
+            _price_label += " ⚠️(stale)"
+        st.metric(_price_label, f"{_sl_snapshot['current_price']:,.0f}원")
+    with ss3:
+        st.metric("confirmed regime", _sl_snapshot.get("confirmed_regime", "—"))
+
+    ss4, ss5, ss6 = st.columns(3)
+    with ss4:
+        st.metric("실제 gross 손익률", f"{_sl_snapshot['gross_return_pct']:.2f}%")
+    with ss5:
+        st.metric("실제 net 손익률", f"{_sl_snapshot['net_return_pct']:.2f}%")
+    with ss6:
+        st.metric("적용 effective_sl_pct", f"{_sl_snapshot['effective_sl_pct']:.2f}%")
+
+    ss7, ss8 = st.columns(2)
+    with ss7:
+        _hard_stop = _sl_snapshot.get("hard_stop_triggered")
+        st.metric("하드손절 조건", "🔴 도달" if _hard_stop else "🟢 미도달")
+    with ss8:
+        st.metric("stop-loss source", _sl_snapshot_state.get("stop_loss_source") or "—")
+
+    _sl_block_reason = _sl_snapshot_state.get("stop_loss_block_reason")
+    if _hard_stop and _sl_block_reason:
+        st.error(f"⚠️ 하드손절 조건 도달했으나 매도 미실행 — 사유: {_sl_block_reason}")
+    elif _sl_block_reason:
+        st.warning(f"매도 미실행 사유: {_sl_block_reason}")
+    else:
+        st.caption("매도 미실행 사유: 없음(정상 — 임계 미도달 또는 정상 실행됨)")
+
+    st.caption(
+        f"snapshot id: `{_sl_snapshot.get('position_snapshot_id')}` · "
+        f"computed_at: {_sl_snapshot.get('computed_at')} · "
+        f"entry_price_source: {_sl_snapshot.get('entry_price_source')} · "
+        f"current_price_source: {_sl_snapshot.get('current_price_source') or '—'}"
+    )
+
+st.divider()
 st.subheader("🛡️ 손절 실행 방식")
 
 from app.trading.hynix_stop_loss_control import (

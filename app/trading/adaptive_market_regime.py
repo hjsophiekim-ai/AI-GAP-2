@@ -190,6 +190,37 @@ def get_risk_profile(regime: str) -> dict:
     return dict(RISK_PROFILES.get(regime, RISK_PROFILES[RANGE]))
 
 
+def get_risk_profile_for_position(regime: Optional[str], position_symbol: Optional[str]) -> dict:
+    """포지션 방향을 반영해 리스크 프로필을 조회한다(요구사항 — 손절 계산의 단일
+    입력을 만든다). 인버스 보유 중에는 방향을 뒤집어 적용한다(하이닉스
+    STRONG_DOWN=인버스 유리이므로 STRONG_UP 프로필을 적용하는 식). 모든 손절
+    평가 경로(legacy evaluate_tp_sl/Dynamic Exit/Big Trend Holding/SELL_ONLY_
+    RECOVERY)가 이 함수 하나만 호출해 effective_sl_pct를 얻어야 한다 — 각자
+    다른 규칙으로 재계산하지 않는다."""
+    from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
+
+    inverse_flip = {STRONG_UP: STRONG_DOWN, STRONG_DOWN: STRONG_UP}
+    regime = regime or DATA_INSUFFICIENT
+    applied_regime = regime
+    if position_symbol == INVERSE_SYMBOL and regime in inverse_flip:
+        applied_regime = inverse_flip[regime]
+
+    profile = get_risk_profile(applied_regime)
+    profile["market_type"] = regime
+    profile["regime"] = regime
+    profile["applied_profile"] = applied_regime
+    profile["tp_pct"] = profile.get("tp2_pct") if profile.get("tp2_pct") is not None else profile.get("tp1_pct")
+    profile["trailing_pct"] = profile.get("trailing_pct") or 1.0
+    profile["uses_trailing"] = bool(profile.get("uses_trailing"))
+    return profile
+
+
+def effective_sl_pct_for_position(regime: Optional[str], position_symbol: Optional[str]) -> float:
+    """단일 입력 손절 임계값(음수, 예: RANGE=-0.8, VOLATILE_RANGE=-0.6,
+    STRONG_UP/DOWN=-1.5) — net_return_pct <= effective_sl_pct이면 하드손절."""
+    return -abs(get_risk_profile_for_position(regime, position_symbol).get("sl_pct", RISK_PROFILES[RANGE]["sl_pct"]))
+
+
 # ── 지표 계산 헬퍼(hynix_primary_trend.py/dynamic_exit_engine.py와 동일 관례) ──
 
 def _ema_slope_pct(closes: pd.Series, span: int) -> Optional[float]:

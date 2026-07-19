@@ -198,28 +198,13 @@ class DynamicExitEngine:
     def get_profile(self, regime: str, position_symbol: Optional[str]) -> dict:
         """장세별 리스크 프로필을 공용 엔진(adaptive_market_regime.RISK_PROFILES)
         에서 조회한다. 인버스 보유 중에는 방향을 뒤집어 적용한다(하이닉스
-        STRONG_DOWN=인버스 유리이므로 STRONG_UP 프로필을 적용하는 식)."""
-        from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL
-        from app.trading.adaptive_market_regime import get_risk_profile, STRONG_UP, STRONG_DOWN
+        STRONG_DOWN=인버스 유리이므로 STRONG_UP 프로필을 적용하는 식). 손절
+        계산의 단일 입력(요구사항)을 위해 이 매핑은 app.trading.adaptive_market_
+        regime.get_risk_profile_for_position()에 위임한다 — legacy evaluate_tp_sl/
+        Big Trend Holding/SELL_ONLY_RECOVERY도 전부 같은 함수를 쓴다."""
+        from app.trading.adaptive_market_regime import get_risk_profile_for_position
 
-        inverse_flip = {STRONG_UP: STRONG_DOWN, STRONG_DOWN: STRONG_UP}
-        applied_regime = regime
-        if position_symbol == INVERSE_SYMBOL and regime in inverse_flip:
-            applied_regime = inverse_flip[regime]
-
-        profile = get_risk_profile(applied_regime)
-        profile["market_type"] = regime
-        profile["regime"] = regime
-        profile["applied_profile"] = applied_regime
-        # decide()의 나머지 로직(Profit Lock/Trailing/Exit Score/기존 테스트)이
-        # 참조하는 기존 필드명(tp_pct/sl_pct/trailing_pct/uses_trailing)을
-        # 공용 프로필(tp1_pct/tp2_pct)에서 매핑해 채운다 — 익절은 "일부"가 있으면
-        # 그 폭을, 없으면 최종 폭을 즉시청산 기준으로 쓴다.
-        profile["tp_pct"] = profile.get("tp2_pct") if profile.get("tp2_pct") is not None else profile.get("tp1_pct")
-        profile["sl_pct"] = profile.get("sl_pct")
-        profile["trailing_pct"] = profile.get("trailing_pct") or 1.0
-        profile["uses_trailing"] = bool(profile.get("uses_trailing"))
-        return profile
+        return get_risk_profile_for_position(regime, position_symbol)
 
     # ── 4. Profit Lock ───────────────────────────────────────────────────────
     def compute_profit_lock_floor(self, peak_profit_pct: float) -> Optional[float]:

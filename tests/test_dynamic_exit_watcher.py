@@ -387,3 +387,234 @@ def test_tick_returns_none_when_broker_has_no_position_despite_stale_state(tmp_p
     assert len(broker.sell_calls) == 0
     reloaded = state_module.load_state(mode="mock")
     assert reloaded["position"]["symbol"] is None  # 브로커 기준으로 정정되어야 함
+
+
+# ── 손절 계산 단일 입력(position_snapshot) — regime별 하드손절 + -3% 캐치올 ──────
+
+class TestUnifiedStopLossSnapshot:
+    """요구사항 — 구값 참조 문제 재검증/완전 수정. entry_price=KIS 실제 평단,
+    effective_sl_pct=confirmed adaptive regime 프로필 하나로만 계산되는 단일
+    스냅샷이 모든 손절 경로(legacy/Dynamic Exit/Big Trend Holding)를 지배한다."""
+
+    SYMBOL = "0197X0"
+    NAME = "SOL 인버스2X"
+    ENTRY_PRICE = 10_000.0
+    QTY = 100
+
+    def _setup(self, tmp_path, monkeypatch, current_price, confirmed_regime, big_trend_on=False):
+        broker = _setup_e2e_position(tmp_path, monkeypatch, self.SYMBOL, self.NAME, self.ENTRY_PRICE, self.QTY)
+        monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: current_price)
+        monkeypatch.setattr(watcher, "_load_daily_df", lambda symbol: None)
+        monkeypatch.setattr(watcher, "_load_minute_df", lambda symbol: None)
+        monkeypatch.setattr(watcher, "_EXIT_LOG_PATH", tmp_path / "exit_engine_log.csv")
+        monkeypatch.setattr(watcher.bte, "_LOG_PATH", tmp_path / "hynix_big_trend_log.csv")
+        monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
+
+        state = state_module.load_state(mode="mock")
+        state["adaptive_regime"] = {"confirmed_regime": confirmed_regime, "snapshot": {}}
+        state["big_trend_holding_enabled"] = big_trend_on
+        if big_trend_on:
+            state["last_cycle_ai_result"] = {
+                "probability": {"buy_probability": 20.0, "sell_probability": 80.0, "hold_probability": 0.0},
+                "cycle": {"cycle_phase": "TREND_DOWN", "turning_point": {}, "momentum": {}},
+                "decision_v2": {"final_action_v2": "INVERSE"},
+            }
+        state_module.save_state_atomic(state)
+        return broker
+
+    @pytest.mark.parametrize("regime,sl_pct", [("RANGE", 0.8), ("VOLATILE_RANGE", 0.6), ("STRONG_DOWN", 1.5)])
+    def test_regime_specific_sl_threshold_sells_all(self, tmp_path, monkeypatch, regime, sl_pct):
+        # SYMBOL이 인버스(0197X0)이므로 손실 방향은 가격 하락이다(보유 중인 ETF 자체의
+        # 가격이 내려가면 손실 — 인버스 레버리지는 이미 이 가격에 반영돼 있다).
+        # 임계보다 0.1%p 더 나쁜 지점으로 시뮬레이션한다. STRONG_UP은 인버스 보유
+        # 중 확정 시 별도의 "추세 반전 확정" 즉시청산 경로와 겹치므로 STRONG_DOWN만
+        # 검증한다(둘 다 sl_pct=1.5로 대칭이라 커버리지 손실 없음).
+        current_price = self.ENTRY_PRICE * (1 - (sl_pct + 0.1) / 100.0)
+        self._setup(tmp_path, monkeypatch, current_price, regime)
+
+        decision = watcher.tick(now=datetime.now())
+
+        assert decision["action"] == "SELL_ALL", f"{regime}(sl={sl_pct}%) 하드손절 미실행: {decision}"
+        reloaded = state_module.load_state(mode="mock")
+        assert reloaded["position"]["symbol"] is None
+        assert reloaded["stop_loss_snapshot"]["confirmed_regime"] == regime
+        assert reloaded["stop_loss_snapshot"]["effective_sl_pct"] == pytest.approx(-sl_pct)
+        assert reloaded["stop_loss_snapshot"]["hard_stop_triggered"] is True
+
+    @pytest.mark.parametrize("regime", ["RANGE", "VOLATILE_RANGE", "STRONG_DOWN", "DATA_INSUFFICIENT"])
+    def test_three_percent_loss_always_sells_regardless_of_regime(self, tmp_path, monkeypatch, regime):
+        current_price = self.ENTRY_PRICE * 0.97  # -3% 손실
+        self._setup(tmp_path, monkeypatch, current_price, regime)
+
+        decision = watcher.tick(now=datetime.now())
+
+        assert decision["action"] == "SELL_ALL", f"regime={regime}에서 -3% 손실인데 전량매도 실패: {decision}"
+        reloaded = state_module.load_state(mode="mock")
+        assert reloaded["position"]["symbol"] is None
+
+    def test_range_hard_stop_not_masked_by_big_trend_own_atr_ladder(self, tmp_path, monkeypatch):
+        """회귀 테스트(2026-07-20 실측 버그) — RANGE confirmed regime(-0.8%) 기준으로는
+        이미 손절인 -0.9% 손실이, Big Trend Holding 자체 ATR 변동성 등급 기준
+        effective_sl_pct(최소 -1.0%)로는 아직 트리거되지 않아 Big Trend 판단(HOLD)이
+        정상 손절을 뒤집었던 사고. 단일 스냅샷 하드손절 오버라이드로 재발하지 않아야 한다."""
+        current_price = self.ENTRY_PRICE * 0.991  # -0.9% 손실
+        self._setup(tmp_path, monkeypatch, current_price, "RANGE", big_trend_on=True)
+
+        decision = watcher.tick(now=datetime.now())
+
+        assert decision["action"] == "SELL_ALL"
+        reloaded = state_module.load_state(mode="mock")
+        assert reloaded["position"]["symbol"] is None
+        assert reloaded["stop_loss_source"] in ("HARD_STOP_SNAPSHOT", "BIG_TREND_HARD_STOP")
+
+    def test_big_trend_toggle_on_still_hard_stops_at_three_percent(self, tmp_path, monkeypatch):
+        current_price = self.ENTRY_PRICE * 0.97
+        self._setup(tmp_path, monkeypatch, current_price, "STRONG_DOWN", big_trend_on=True)
+
+        decision = watcher.tick(now=datetime.now())
+
+        assert decision["action"] == "SELL_ALL"
+        reloaded = state_module.load_state(mode="mock")
+        assert reloaded["position"]["symbol"] is None
+
+    def test_ui_snapshot_matches_executed_decision(self, tmp_path, monkeypatch):
+        """UI 표시값과 실제 주문 판단값 완전 일치 — state["stop_loss_snapshot"]이
+        실제 매도를 촉발한 값과 같아야 한다."""
+        current_price = self.ENTRY_PRICE * 0.97
+        self._setup(tmp_path, monkeypatch, current_price, "RANGE")
+
+        watcher.tick(now=datetime.now())
+
+        reloaded = state_module.load_state(mode="mock")
+        snapshot = reloaded["stop_loss_snapshot"]
+        assert snapshot["hard_stop_triggered"] is True
+        assert snapshot["effective_sl_pct"] == -0.8
+        assert snapshot["net_return_pct"] <= snapshot["effective_sl_pct"]
+        assert reloaded["stop_loss_source"] in ("HARD_STOP_SNAPSHOT", "DYNAMIC_EXIT_ENGINE")
+
+
+class TestSellOnlyRecovery:
+    """SELL_ONLY_RECOVERY — position_sync_status가 POSITION_SYNC_PENDING인 동안에도
+    (신규진입은 계속 차단된 채로) 실제 보유를 재확인해 하드손절만은 반드시 집행한다.
+
+    attempt_sell_only_recovery()를 직접 단위테스트한다 — 정상 broker를 쓰는 mock
+    모드의 HynixPositionManager.sync()는 매 틱 자체적으로 회복되므로(전체 tick()을
+    통하면 이 함수가 실행되기 전에 이미 SYNCED로 자가치유돼 버린다), 이 함수가
+    실제로 다루려는 시나리오(브로커 재조회 자체는 가능하지만 이전 주문의 체결
+    재확인이 계속 PENDING으로 남아있는 상태)를 직접 재현해야 한다."""
+
+    SYMBOL = HYNIX_SYMBOL
+    NAME = HYNIX_NAME
+    ENTRY_PRICE = 100_000.0
+    QTY = 10
+
+    def _pending_state(self, tmp_path, monkeypatch, confirmed_regime):
+        monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+        state = state_module.load_state(mode="mock")
+        state["mode"] = "mock"
+        state["position_sync_status"] = "POSITION_SYNC_PENDING"
+        state["adaptive_regime"] = {"confirmed_regime": confirmed_regime, "snapshot": {}}
+        state["position"] = {
+            **state["position"], "symbol": self.SYMBOL, "name": self.NAME,
+            "quantity": self.QTY, "avg_price": self.ENTRY_PRICE, "entry_price": self.ENTRY_PRICE,
+            "entry_time": datetime.now().isoformat(),
+        }
+        state_module.save_state_atomic(state)
+        return state
+
+    def test_hard_stop_executes_during_position_sync_pending(self, tmp_path, monkeypatch):
+        from app.trading.hynix_stop_loss_control import attempt_sell_only_recovery
+
+        state = self._pending_state(tmp_path, monkeypatch, "RANGE")
+        current_price = self.ENTRY_PRICE * 0.97  # -3% 손실
+        broker = _FakeSellBroker(positions=[Position(symbol=self.SYMBOL, name=self.NAME, quantity=self.QTY, avg_price=self.ENTRY_PRICE, current_price=current_price)])
+        monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
+        monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: current_price)
+
+        result = attempt_sell_only_recovery(state, "mock", now=datetime.now())
+
+        assert result is not None and result["attempted"] is True and result["sold"] is True
+        assert len(broker.sell_calls) == 1
+        assert state["stop_loss_snapshot"]["hard_stop_triggered"] is True
+        assert state["position"]["symbol"] is None
+
+    def test_no_sell_when_pending_but_still_within_threshold(self, tmp_path, monkeypatch):
+        from app.trading.hynix_stop_loss_control import attempt_sell_only_recovery
+
+        state = self._pending_state(tmp_path, monkeypatch, "STRONG_DOWN")
+        current_price = self.ENTRY_PRICE * 0.999  # -0.1%, 임계(-1.5%) 미도달
+        broker = _FakeSellBroker(positions=[Position(symbol=self.SYMBOL, name=self.NAME, quantity=self.QTY, avg_price=self.ENTRY_PRICE, current_price=current_price)])
+        monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
+        monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: current_price)
+
+        result = attempt_sell_only_recovery(state, "mock", now=datetime.now())
+
+        assert result is not None and result["sold"] is False
+        assert len(broker.sell_calls) == 0
+        assert state["position"]["symbol"] == self.SYMBOL  # 신규진입은 여전히 아니지만 보유 포지션은 그대로
+
+    def test_returns_none_when_not_pending(self, tmp_path, monkeypatch):
+        """정상(SYNCED) 상태에서는 이 함수가 아무 일도 하지 않는다 — 평소 tick() 흐름이 담당한다."""
+        from app.trading.hynix_stop_loss_control import attempt_sell_only_recovery
+
+        state = self._pending_state(tmp_path, monkeypatch, "RANGE")
+        state["position_sync_status"] = "SYNCED"
+
+        result = attempt_sell_only_recovery(state, "mock", now=datetime.now())
+
+        assert result is None
+
+    def test_no_sell_when_broker_confirms_flat(self, tmp_path, monkeypatch):
+        """PENDING 상태였지만 실제 재확인 결과 보유수량이 0이면(정상) 매도하지 않는다."""
+        from app.trading.hynix_stop_loss_control import attempt_sell_only_recovery
+
+        state = self._pending_state(tmp_path, monkeypatch, "RANGE")
+        broker = _FakeSellBroker(positions=[])
+        monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
+        monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: self.ENTRY_PRICE * 0.9)
+
+        result = attempt_sell_only_recovery(state, "mock", now=datetime.now())
+
+        assert result is not None and result["sold"] is False
+        assert len(broker.sell_calls) == 0
+
+    def test_full_tick_self_heals_pending_flag_without_needing_recovery(self, tmp_path, monkeypatch):
+        """브로커가 정상 응답하는 mock 모드에서는 tick() 최상단의 정상 sync가 매
+        틱 스스로 SYNCED로 회복시킨다 — 오래된 PENDING 플래그가 남아있어도 정상
+        흐름(Dynamic Exit/하드손절 오버라이드)이 그대로 이어져야 한다."""
+        broker = _setup_e2e_position(tmp_path, monkeypatch, self.SYMBOL, self.NAME, self.ENTRY_PRICE, self.QTY)
+        current_price = self.ENTRY_PRICE * 0.97  # -3% 손실
+        monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: current_price)
+        monkeypatch.setattr(watcher, "_load_daily_df", lambda symbol: None)
+        monkeypatch.setattr(watcher, "_load_minute_df", lambda symbol: None)
+        monkeypatch.setattr(watcher, "_EXIT_LOG_PATH", tmp_path / "exit_engine_log.csv")
+        monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
+
+        state = state_module.load_state(mode="mock")
+        state["position_sync_status"] = "POSITION_SYNC_PENDING"
+        state["adaptive_regime"] = {"confirmed_regime": "RANGE", "snapshot": {}}
+        state_module.save_state_atomic(state)
+
+        decision = watcher.tick(now=datetime.now())
+
+        assert decision is not None and decision["action"] == "SELL_ALL"
+        reloaded = state_module.load_state(mode="mock")
+        assert reloaded["position"]["symbol"] is None
+        assert reloaded["stop_loss_source"] != "SELL_ONLY_RECOVERY"  # 정상 경로로 처리됨(자가치유)
+
+    def test_no_sell_when_pending_flag_stale_but_broker_confirms_flat(self, tmp_path, monkeypatch):
+        """포지션 자체가 이미 없는데 POSITION_SYNC_PENDING 플래그만 낡게 남아있으면
+        정상적으로(아무 매도 없이) 통과해야 한다."""
+        monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+        state = state_module.load_state(mode="mock")
+        state["mode"] = "mock"
+        state["auto_trade_on"] = True
+        state["position_sync_status"] = "POSITION_SYNC_PENDING"
+        state["position"] = {
+            **state["position"], "symbol": None, "quantity": 0, "avg_price": None, "entry_price": None,
+        }
+        state_module.save_state_atomic(state)
+
+        decision = watcher.tick(now=datetime.now())
+
+        assert decision is None
