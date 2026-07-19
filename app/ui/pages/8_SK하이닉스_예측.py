@@ -20,6 +20,9 @@ if _PROJECT_ROOT not in sys.path:
 import pandas as pd
 import streamlit as st
 
+from app.ui.auth_gate import require_login
+require_login()
+
 # ── 모듈 임포트 ───────────────────────────────────────────────────────────────
 
 try:

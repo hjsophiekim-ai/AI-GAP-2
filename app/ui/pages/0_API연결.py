@@ -10,6 +10,9 @@ if _PROJECT_ROOT not in sys.path:
 import os
 import streamlit as st
 
+from app.ui.auth_gate import require_login
+require_login()
+
 try:
     from app.trading.kis_client import create_kis_client, KISTokenError
     from app.config import get_config, get_kis_account_config, reload_runtime_configuration

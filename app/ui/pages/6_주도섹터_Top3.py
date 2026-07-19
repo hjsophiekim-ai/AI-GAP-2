@@ -22,6 +22,9 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from app.ui.auth_gate import require_login
+require_login()
+
 # ── 모듈 임포트 ────────────────────────────────────────────────────────────
 try:
     from app.data.naver_nxt_turnover_collector import collect_nxt_turnover_stocks

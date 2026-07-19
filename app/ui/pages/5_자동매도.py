@@ -14,6 +14,9 @@ import io
 import pandas as pd
 import streamlit as st
 
+from app.ui.auth_gate import require_login
+require_login()
+
 try:
     from app.services.auto_sell_service import AutoSellService
     from app.config import get_config

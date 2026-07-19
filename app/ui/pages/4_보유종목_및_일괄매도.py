@@ -16,6 +16,9 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
+from app.ui.auth_gate import require_login
+require_login()
+
 try:
     from app.trading.order_manager import OrderManager
     from app.trading.kis_client import create_kis_client

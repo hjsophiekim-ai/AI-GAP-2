@@ -22,6 +22,9 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from app.ui.auth_gate import require_login
+require_login()
+
 try:
     from app.config import get_config, get_market_regime_config, get_trading_policy_config, real_order_triple_gate_ok
     from app.execution.auto_trader import AutoTrader

@@ -17,6 +17,9 @@ if _PROJECT_ROOT not in sys.path:
 import streamlit as st
 import pandas as pd
 
+from app.ui.auth_gate import require_login
+require_login()
+
 try:
     from streamlit_autorefresh import st_autorefresh
     _AUTOREFRESH_AVAILABLE = True

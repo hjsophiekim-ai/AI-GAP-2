@@ -18,6 +18,9 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from app.ui.auth_gate import require_login
+require_login()
+
 try:
     from app.data.naver_volume_spike_collector import collect_volume_spike_stocks
     from app.strategy.volume_spike_selector import VolumeSpikeSelector

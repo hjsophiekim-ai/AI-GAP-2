@@ -23,6 +23,9 @@ from datetime import time as dtime_cls
 
 import streamlit as st
 
+from app.ui.auth_gate import require_login
+require_login()
+
 from app.config import get_config
 from app.services.hynix_auto_trade_service import (
     generate_trade_proposal,
