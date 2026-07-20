@@ -939,6 +939,64 @@ def test_default_state_adaptive_regime_matches_auto_trade_on_default():
     assert state["adaptive_regime_mode"] == "LIVE"
 
 
+def test_signal_summary_separates_raw_inverse_leader_from_hold_block():
+    decision = {
+        "final_action": "INVERSE_BUY",
+        "enhanced_score": 42.0,
+        "inverse_pressure_score": 58.0,
+    }
+    trace = {
+        "prediction_signal": "INVERSE",
+        "entry_approved": False,
+        "entry_approved_reason": "PRIMARY_TREND=UP with VWAP/EMA confirmations",
+        "order_sent": False,
+    }
+    state = {
+        "last_live_hynix_trend": {
+            "above_vwap": True,
+            "returns": {"3m": 0.24, "5m": 0.38},
+            "ema_slope_pct": 0.07,
+        },
+    }
+
+    summary = engine._build_signal_summary(
+        decision=decision, trace=trace, state=state, now=_MID_SESSION_NOW,
+        new_entry_allowed_now=True, new_entry_window={"rule": "allowed"},
+    )
+
+    assert summary["raw_score_leader"] == "INVERSE"
+    assert summary["live_trade_direction"] == "UP"
+    assert summary["actionable_signal"] == "HOLD"
+    assert summary["final_action"] == "HOLD"
+    assert summary["block_reason"] == "LIVE_HYNIX_UPTREND"
+    assert "원점수는 INVERSE 우세" in summary["conclusion"]
+
+
+def test_signal_summary_prioritizes_new_entry_time_gate_after_1450():
+    decision = {
+        "final_action": "INVERSE_BUY",
+        "enhanced_score": 40.0,
+        "inverse_pressure_score": 60.0,
+    }
+    trace = {
+        "prediction_signal": "INVERSE",
+        "entry_approved": True,
+        "entry_approved_reason": "approved",
+        "order_sent": False,
+    }
+
+    summary = engine._build_signal_summary(
+        decision=decision, trace=trace, state={}, now=datetime(2026, 7, 15, 14, 55),
+        new_entry_allowed_now=False, new_entry_window={"rule": "14:50 이후 신규진입 금지"},
+    )
+
+    assert summary["raw_score_leader"] == "INVERSE"
+    assert summary["actionable_signal"] == "HOLD"
+    assert summary["final_action"] == "HOLD"
+    assert summary["block_reason"] == "NEW_ENTRY_TIME_CLOSED"
+    assert summary["conclusion"] == "14:50 이후 신호와 무관하게 신규진입 금지 → HOLD"
+
+
 # =============================================================================
 # 2026-07-16 — 큰 추세 수익 극대화: STRONG_UP 확정 중 인버스 신규매수 금지,
 # STRONG_DOWN 확정 중 레버리지(HYNIX) 신규매수 금지.

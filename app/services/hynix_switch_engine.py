@@ -125,6 +125,115 @@ def _blank_pipeline_trace() -> dict:
         "enhanced_direct_order_blocked": False,
         "early_decision": None,
         "early_order_result": None,
+        "signal_summary": None,
+    }
+
+
+def _raw_score_leader(decision: dict) -> str:
+    hynix_score = decision.get("enhanced_score")
+    inverse_score = decision.get("inverse_pressure_score")
+    try:
+        hynix_score_f = float(hynix_score)
+        inverse_score_f = float(inverse_score)
+    except Exception:
+        return "NEUTRAL"
+    if hynix_score_f > inverse_score_f:
+        return "HYNIX"
+    if inverse_score_f > hynix_score_f:
+        return "INVERSE"
+    return "NEUTRAL"
+
+
+def _live_trade_direction_label(state: dict) -> str:
+    live = state.get("live_trade_direction") or {}
+    direction = live.get("direction")
+    if direction not in ("UP", "DOWN"):
+        return "NONE"
+    if live.get("status") == "REVERSAL_CANDIDATE":
+        return f"REVERSAL_CANDIDATE_{direction}"
+    return direction
+
+
+def _is_hynix_live_uptrend_block(final_action: str, reason: str, state: dict) -> bool:
+    if final_action not in ("INVERSE_BUY", "INVERSE_STRONG_BUY"):
+        return False
+    text = str(reason or "").upper()
+    live_direction = (state.get("live_trade_direction") or {}).get("direction")
+    live_trend = state.get("last_live_hynix_trend") or {}
+    live_returns = live_trend.get("returns") or {}
+    primary = state.get("last_primary_trend") or {}
+    live_short_up = (
+        live_trend.get("above_vwap") is True
+        and (live_returns.get("3m") or 0.0) > 0.0
+        and (live_returns.get("5m") or 0.0) > 0.0
+        and (live_trend.get("ema_slope_pct") or 0.0) > 0.0
+    )
+    short_up = (
+        live_direction == "UP"
+        or ("PRIMARY_TREND=UP" in text)
+        or live_short_up
+        or (
+            primary.get("above_vwap") is True
+            and primary.get("above_ema20") is True
+            and str(primary.get("trend_5m") or "").upper() == "UP"
+        )
+    )
+    return bool(short_up)
+
+
+def _build_signal_summary(
+    *, decision: dict, trace: dict, state: dict, now: datetime, new_entry_allowed_now: bool,
+    new_entry_window: Optional[dict] = None,
+) -> dict:
+    raw_leader = _raw_score_leader(decision)
+    prediction_signal = trace.get("prediction_signal") or _map_prediction_signal(decision.get("final_action", "HOLD"))
+    decision_action = decision.get("final_action", "HOLD")
+    entry_reason = trace.get("entry_approved_reason") or ""
+    block_reason = None
+    if not new_entry_allowed_now:
+        block_reason = "NEW_ENTRY_TIME_CLOSED"
+    elif trace.get("entry_approved") is False:
+        block_reason = "LIVE_HYNIX_UPTREND" if _is_hynix_live_uptrend_block(decision_action, entry_reason, state) else (
+            trace.get("order_failure_code") or trace.get("stopped_stage") or "ENTRY_BLOCKED"
+        )
+    actionable_signal = prediction_signal
+    if decision_action == "HOLD" or block_reason or trace.get("entry_approved") is False:
+        actionable_signal = "HOLD"
+    if trace.get("order_sent"):
+        final_action = "BUY" if prediction_signal in ("BUY", "INVERSE") else prediction_signal
+    else:
+        final_action = "HOLD"
+    if block_reason == "LIVE_HYNIX_UPTREND":
+        live_label = _live_trade_direction_label(state)
+        if live_label == "NONE":
+            live_label = "UP"
+    else:
+        live_label = _live_trade_direction_label(state)
+
+    if not new_entry_allowed_now:
+        conclusion = "14:50 이후 신호와 무관하게 신규진입 금지 → HOLD"
+    elif block_reason == "LIVE_HYNIX_UPTREND" and raw_leader == "INVERSE":
+        conclusion = "원점수는 INVERSE 우세이나 하이닉스 단기상승 확인으로 인버스 진입 차단 → HOLD"
+    elif actionable_signal == "HOLD":
+        conclusion = f"원점수는 {raw_leader} 우세이나 실행 가능한 신규진입 신호 없음 → HOLD"
+    else:
+        conclusion = f"원점수 {raw_leader}, 실행신호 {actionable_signal} → {final_action}"
+
+    return {
+        "computed_at": now.isoformat(),
+        "raw_score_leader": raw_leader,
+        "hynix_score": decision.get("enhanced_score"),
+        "inverse_score": decision.get("inverse_pressure_score"),
+        "live_trade_direction": live_label,
+        "actionable_signal": actionable_signal,
+        "final_action": final_action,
+        "decision_final_action": decision_action,
+        "prediction_signal": prediction_signal,
+        "block_reason": block_reason,
+        "entry_approved_reason": entry_reason,
+        "new_entry_allowed": bool(new_entry_allowed_now),
+        "new_entry_rule": (new_entry_window or {}).get("rule"),
+        "conclusion": conclusion,
     }
 
 
@@ -3157,6 +3266,14 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     # stopped_stage와 같은 값을 가리키는 별칭이다.
     trace["risk_approved"] = trace["risk_manager_ok"]
     trace["blocking_reason"] = _build_blocking_reason(trace)
+    trace["signal_summary"] = _build_signal_summary(
+        decision=decision,
+        trace=trace,
+        state=state,
+        now=now,
+        new_entry_allowed_now=new_entry_allowed_now,
+        new_entry_window=new_entry_window,
+    )
 
     # 백그라운드 스레드에서만 사이클이 돌아도(=Streamlit 세션에 아무도 접속하지 않아도)
     # UI가 "사이클 미실행"을 보여주지 않도록, 이번 사이클 결과(최종 trace 포함)를
@@ -3169,6 +3286,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     state["last_inverse_price"] = inverse_price
     state["last_enhanced_result"] = enhanced_result
     state["last_decision"] = decision
+    state["last_signal_summary"] = trace["signal_summary"]
     save_state_atomic(state)
 
     # ── 로그 기록 ────────────────────────────────────────────────────────────

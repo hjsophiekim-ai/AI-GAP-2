@@ -893,6 +893,12 @@ if switch_state.get("mode") == "mock":
     _live_decision = switch_state.get("last_decision") or {}
     _live_enhanced = _live_decision.get("enhanced_score")
     _live_inverse = _live_decision.get("inverse_pressure_score")
+    _signal_summary = switch_state.get("last_signal_summary") or {}
+    if _signal_summary.get("conclusion"):
+        if _signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
+            st.error(_signal_summary["conclusion"])
+        else:
+            st.info(_signal_summary["conclusion"])
     if _live_enhanced is not None and _live_inverse is not None:
         if _live_enhanced > _live_inverse:
             _live_dominant = "HYNIX"
@@ -901,11 +907,17 @@ if switch_state.get("mode") == "mock":
         else:
             _live_dominant = "NEUTRAL"
         st.metric(
-            "현재 우세 방향(매 사이클 갱신, 라이브)",
+            "원점수 우세",
             f"{_live_dominant} (enhanced {_live_enhanced:.1f} vs inverse {_live_inverse:.1f})",
         )
     else:
-        st.metric("현재 우세 방향(매 사이클 갱신, 라이브)", "—")
+        st.metric("원점수 우세", "—")
+    if _signal_summary:
+        _ss1, _ss2, _ss3, _ss4 = st.columns(4)
+        _ss1.metric("Live Trade Direction", _signal_summary.get("live_trade_direction") or "NONE")
+        _ss2.metric("Actionable Signal", _signal_summary.get("actionable_signal") or "HOLD")
+        _ss3.metric("Final Action", _signal_summary.get("final_action") or "HOLD")
+        _ss4.metric("Block Reason", _signal_summary.get("block_reason") or "없음")
 
     # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
     # 최종합성확률, 문턱(원래/조정), 진입비중, HOLD·진입 사유, 오늘거래수/연속손실/
@@ -1639,6 +1651,12 @@ else:
     st.subheader("🔬 Signal → Order 파이프라인")
     trace = cycle_result.get("pipeline_trace") or {}
     stopped_stage = trace.get("stopped_stage")
+    _trace_signal_summary = trace.get("signal_summary") or switch_state.get("last_signal_summary") or {}
+    if _trace_signal_summary.get("conclusion"):
+        if _trace_signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
+            st.error(_trace_signal_summary["conclusion"])
+        else:
+            st.info(_trace_signal_summary["conclusion"])
 
     def _stage_line(stage_key: str, label: str, value, extra: str = "") -> None:
         if value is True:
