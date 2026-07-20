@@ -535,12 +535,11 @@ def test_sell_sync_failure_does_not_delete_position_and_blocks_new_orders():
     )
     _apply_sell_result_to_state_position(state, state["position"], result)
 
-    assert result["success"] is True
-    assert result["remaining_quantity"] is None
+    assert result["success"] is False
     assert result["position_sync_status"] == POSITION_SYNC_PENDING
     assert state["position"]["symbol"] == INVERSE_SYMBOL
     assert state["position"]["quantity"] == 114
-    assert state["position_sync_block_new_orders"] is True
+    assert broker.sell_calls == []
 
 
 def test_recent_flat_sync_allows_transient_position_sync_failure():

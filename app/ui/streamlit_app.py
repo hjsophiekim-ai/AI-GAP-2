@@ -8,6 +8,12 @@ if _PROJECT_ROOT not in sys.path:
 import streamlit as st
 from datetime import datetime
 
+try:
+    from app.utils.runtime_info import write_runtime_info
+    _RUNTIME_INFO = write_runtime_info()
+except Exception:
+    _RUNTIME_INFO = {}
+
 st.set_page_config(
     page_title="AI-GAP 갭상승 자동매매",
     layout="wide",

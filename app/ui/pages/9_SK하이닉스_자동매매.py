@@ -428,6 +428,30 @@ _rt_cols[4].metric("Fast watcher", _fw_signal.get("direction") or "-", delta=f"{
 if _fw_state.get("blocked_reason"):
     st.caption(f"Fast watcher block: {_fw_state.get('blocked_reason')}")
 
+try:
+    from app.utils.runtime_info import read_runtime_info
+    from app.trading.exit_order_coordinator import snapshot as _order_coord_snapshot
+
+    _runtime_info = read_runtime_info()
+    _coord = _order_coord_snapshot()
+    _sha_cols = st.columns(4)
+    _sha_cols[0].metric("Local SHA", str(_runtime_info.get("git_sha") or "-")[:8])
+    _sha_cols[1].metric("Origin SHA", str(_runtime_info.get("origin_main_sha") or "-")[:8])
+    _sha_cols[2].metric("Render SHA", str(_runtime_info.get("render_sha") or "-")[:8])
+    _sha_cols[3].metric("SHA Match", "YES" if _runtime_info.get("sha_all_match") else "NO")
+    _active_orders = _coord.get("active_orders") or []
+    _recent_order = (_coord.get("recent_orders") or [{}])[-1]
+    st.caption(
+        "OrderCoordinator "
+        f"active={len(_active_orders)} · blocked_duplicates={_coord.get('blocked_duplicate_count', 0)} · "
+        f"last_key={_recent_order.get('idempotency_key', '-')} · "
+        f"last_source={_recent_order.get('source', '-')} · "
+        f"qty={_recent_order.get('requested_qty', '-')}/{_recent_order.get('filled_qty', '-')}/"
+        f"{_recent_order.get('remaining_quantity', '-')}"
+    )
+except Exception:
+    pass
+
 # ── 데이터 저장 경로(Persistent Disk) 진단 — Render 등에서 컨테이너 로컬(휘발성)
 # 경로에 계속 쓰고 있으면 재배포/재시작마다 거래원장·계좌상태가 사라진다
 # (2026-07-16 실측). AI_GAP_DATA_DIR이 실제로 적용됐는지, 그 경로가 진짜로

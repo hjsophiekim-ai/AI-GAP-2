@@ -565,8 +565,6 @@ def _sell_all_or_ratio(
     isn't trusted — the broker is re-queried so remaining_quantity reflects the
     actual remaining shares (covers unfilled/partial fills).
     """
-    from app.trading.exit_order_coordinator import try_acquire_exit_lock
-
     symbol = position["symbol"]
     entry_price = position.get("entry_price")
     total_qty = int(position.get("quantity") or 0)
@@ -577,37 +575,72 @@ def _sell_all_or_ratio(
         _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, "sell quantity is 0")
         return {"success": False, "message": "sell quantity is 0"}
 
-    if exit_reason_type is None:
-        return _execute_sell(
-            broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining,
-            mode=mode, signal_source=signal_source, entry_price=entry_price, fusion_metadata=fusion_metadata,
-            position_manager=position_manager,
-        )
-
-    with try_acquire_exit_lock(mode, symbol, exit_reason_type) as lock:
-        if not lock:
-            message = "Exit Order Coordinator: concurrent sell blocked (already in progress elsewhere or filled within the last 30s)"
-            _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, message)
-            return {"success": False, "message": message, "blocked_by_coordinator": True}
-        result = _execute_sell(
-            broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining,
-            mode=mode, signal_source=signal_source, entry_price=entry_price, fusion_metadata=fusion_metadata,
-            position_manager=position_manager,
-        )
-        if result.get("success"):
-            lock.mark_executed()
-        return result
+    return _execute_sell(
+        broker, symbol, sell_qty, current_price, reason, orders, total_qty, expected_remaining,
+        mode=mode, signal_source=signal_source, entry_price=entry_price, fusion_metadata=fusion_metadata,
+        position_manager=position_manager, exit_reason_type=exit_reason_type, ratio=ratio,
+    )
 
 
 def _execute_sell(
     broker, symbol: str, sell_qty: int, current_price: float, reason: str, orders: list,
     before_qty: int, expected_remaining: int,
     mode: str = "mock", signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH, entry_price: Optional[float] = None,
-    fusion_metadata: Optional[dict] = None, position_manager=None,
+    fusion_metadata: Optional[dict] = None, position_manager=None, exit_reason_type: Optional[str] = None,
+    ratio: float = 1.0,
 ) -> dict:
     _assert_not_signal_symbol(symbol, "SELL")
-    with _POSITION_STATE_LOCK:
-        order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), sell_qty, current_price)
+    from app.trading import exit_order_coordinator as order_coord
+
+    meta = fusion_metadata or {}
+    episode_id = meta.get("episode_id") or meta.get("signal_id") or "NO_EPISODE"
+    exit_event_id = meta.get("exit_event_id") or f"{exit_reason_type or reason or 'SELL'}:{time.monotonic_ns()}"
+    severity = meta.get("severity") or ("HARD_STOP" if exit_reason_type == "stop_loss" else ("STRONG" if ratio >= 1.0 else "WEAK"))
+    account = order_coord.infer_account_id(broker, mode)
+
+    with order_coord.coordinated_order(
+        mode=mode, account=account, symbol=symbol, side="SELL",
+        episode_id=episode_id, exit_event_id=exit_event_id, target_qty=sell_qty,
+        source=signal_source, severity=severity, reason=reason,
+        detected_at=meta.get("detected_at"),
+    ) as coordinated:
+        if coordinated.blocked:
+            _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, coordinated.block_reason)
+            return {
+                "success": False, "message": coordinated.block_reason, "blocked_by_coordinator": True,
+                "idempotency_key": coordinated.idempotency_key,
+            }
+        broker_held_qty = order_coord.get_broker_held_quantity(broker, symbol)
+        if broker_held_qty is None and position_manager is not None:
+            try:
+                position_manager.sync(force=True)
+                pm_position = position_manager.current_position or {}
+                if pm_position.get("symbol") == symbol:
+                    broker_held_qty = int(pm_position.get("quantity") or 0)
+                elif not pm_position.get("symbol"):
+                    broker_held_qty = 0
+            except Exception:
+                broker_held_qty = None
+        if broker_held_qty is None:
+            message = "broker held quantity query failed before sell"
+            coordinated.mark(order_coord.ORDER_FAILED, error=message)
+            _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, message)
+            return {"success": False, "message": message, "position_sync_status": POSITION_SYNC_PENDING}
+        if int(broker_held_qty or 0) <= 0 and position_manager is None and mode != "real" and int(before_qty or 0) > 0:
+            broker_held_qty = int(before_qty or 0)
+        actual_before_qty = int(broker_held_qty)
+        actual_sell_qty = min(int(sell_qty or 0), actual_before_qty)
+        actual_expected_remaining = max(0, actual_before_qty - actual_sell_qty)
+        if actual_sell_qty <= 0:
+            message = "broker held quantity is 0 before sell"
+            coordinated.mark(order_coord.ORDER_CANCELLED, broker_held_qty=actual_before_qty, sent_qty=0)
+            _record_skipped(orders, "SELL_SKIPPED", symbol, current_price, reason, message)
+            return {
+                "success": False, "message": message, "sold_quantity": 0,
+                "remaining_quantity": actual_before_qty, "idempotency_key": coordinated.idempotency_key,
+            }
+        with _POSITION_STATE_LOCK:
+            order = broker.sell(symbol, _SYMBOL_NAME.get(symbol, symbol), actual_sell_qty, current_price)
         order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)
         confirmed = None
         confirmed_sell_qty = None
@@ -617,32 +650,51 @@ def _execute_sell(
             # 브로커 재조회로 실제 잔량을 확정한 뒤, before_qty와의 차이만큼만 "체결된
             # 매도수량"으로 인정한다.
             confirmed = _confirm_remaining_quantity_from_broker(
-                broker, symbol, position_manager=position_manager, retry_while_qty_equals=before_qty,
+                broker, symbol, position_manager=position_manager, retry_while_qty_equals=actual_before_qty,
             )
             if confirmed.get("ok"):
                 actual_remaining_qty = int(confirmed.get("quantity") or 0)
-                confirmed_sell_qty = max(0, int(before_qty or 0) - actual_remaining_qty)
+                confirmed_sell_qty = max(0, int(actual_before_qty or 0) - actual_remaining_qty)
         cost_breakdown = _record_order(
-            orders, order, "SELL", symbol, sell_qty, current_price, reason, before_qty=before_qty,
-            expected_remaining_qty=expected_remaining, mode=mode, signal_source=signal_source,
+            orders, order, "SELL", symbol, actual_sell_qty, current_price, reason, before_qty=actual_before_qty,
+            expected_remaining_qty=actual_expected_remaining, mode=mode, signal_source=signal_source,
             entry_price=entry_price, broker=broker, fusion_metadata=fusion_metadata,
             confirmed_executed_qty=confirmed_sell_qty,
         )
+        if order_dict.get("success") and confirmed is not None and confirmed.get("ok"):
+            coordinated.mark(
+                order_coord.ORDER_FILLED, broker_held_qty=actual_before_qty,
+                sent_qty=actual_sell_qty, filled_qty=confirmed_sell_qty,
+                remaining_quantity=actual_remaining_qty, broker_order_id=order_dict.get("order_id"),
+            )
+        elif order_dict.get("success"):
+            coordinated.mark(
+                order_coord.ORDER_ACCEPTED, broker_held_qty=actual_before_qty,
+                sent_qty=actual_sell_qty, broker_order_id=order_dict.get("order_id"),
+            )
+        else:
+            coordinated.mark(
+                order_coord.ORDER_FAILED, broker_held_qty=actual_before_qty,
+                sent_qty=actual_sell_qty, broker_error=order_dict.get("message"),
+            )
     result = order_dict
+    result["idempotency_key"] = coordinated.idempotency_key
     result["sold_quantity"] = confirmed_sell_qty if confirmed_sell_qty is not None else 0
     result["remaining_quantity"] = actual_remaining_qty
-    result["expected_remaining_qty"] = expected_remaining
+    result["expected_remaining_qty"] = actual_expected_remaining
+    result["broker_held_qty_before_order"] = actual_before_qty
+    result["sent_quantity"] = actual_sell_qty
     result["fill_confirmed"] = None
     if result.get("success"):
         result["position_sync"] = confirmed
         if confirmed is not None and confirmed.get("ok"):
             result["fill_confirmed"] = True
             result["position_sync_status"] = "SYNCED"
-            if actual_remaining_qty > expected_remaining:
+            if actual_remaining_qty > actual_expected_remaining:
                 result["partial_fill_detected"] = True
                 logger.warning(
                     "[SwitchPositionManager] sell partially filled or broker still holds shares: %s expected_remaining=%s actual_remaining=%s",
-                    symbol, expected_remaining, actual_remaining_qty,
+                    symbol, actual_expected_remaining, actual_remaining_qty,
                 )
         else:
             logger.warning(
