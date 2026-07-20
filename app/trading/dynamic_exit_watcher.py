@@ -513,8 +513,33 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         live_direction = (
             {"UP": "DOWN", "DOWN": "UP"}.get(live_raw_direction) if symbol == INVERSE_SYMBOL else live_raw_direction
         )
+        held_window_dirs = (live_slopes.get(symbol) or {}).get("window_directions") or {}
+        held_reversal_windows = {w: held_window_dirs.get(w) == "DOWN" for w in (5, 10, 20, 30)}
+        opposite_symbol = INVERSE_SYMBOL if symbol == HYNIX_SYMBOL else HYNIX_SYMBOL
+        opposite_window_dirs = (live_slopes.get(opposite_symbol) or {}).get("window_directions") or {}
+        opposite_etf_5s10s_confirmed = opposite_window_dirs.get(5) == "UP" and opposite_window_dirs.get(10) == "UP"
+        actionable_direction = (state.get("live_trade_direction") or {}).get("direction")
+        regime_reversal_confirmed = (
+            (_adaptive_confirmed_regime == "STRONG_UP" and probe_direction == "DOWN")
+            or (_adaptive_confirmed_regime == "STRONG_DOWN" and probe_direction == "UP")
+            or (_adaptive_confirmed_regime == "PANIC" and probe_direction == "UP")
+        )
         if not opposite_change_point:
             opposite_change_point = etd.is_opposite_live_slope_reversal(probe_direction, live_direction)
+        opposite_tracker = dict(etd_state.get("opposite_live_tracker") or {})
+        if opposite_change_point:
+            if not opposite_tracker.get("started_at"):
+                opposite_tracker["started_at"] = now.isoformat()
+            try:
+                opposite_live_seconds = max(0.0, (now - datetime.fromisoformat(opposite_tracker["started_at"])).total_seconds())
+            except Exception:
+                opposite_tracker["started_at"] = now.isoformat()
+                opposite_live_seconds = 0.0
+        else:
+            opposite_tracker = {}
+            opposite_live_seconds = 0.0
+        opposite_tracker["seconds"] = round(opposite_live_seconds, 3)
+        etd_state["opposite_live_tracker"] = opposite_tracker
 
         last_reconfirmed_at = probe.get("last_reconfirmed_at")
         seconds_since_reconfirm = None
@@ -532,6 +557,15 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             signal_still_valid=signal_still_valid, opposite_change_point=opposite_change_point,
             confirmed_regime=_adaptive_confirmed_regime, held_minutes=snapshot.get("held_minutes"),
             tp1_taken=bool(position.get("early_probe_tp1_taken")),
+            tp2_taken=bool(position.get("early_probe_tp2_taken")),
+            opposite_live_seconds=opposite_live_seconds,
+            actionable_direction=actionable_direction,
+            position_direction=probe_direction,
+            held_etf_reversal_windows=held_reversal_windows,
+            opposite_etf_5s10s_confirmed=opposite_etf_5s10s_confirmed,
+            regime_reversal_confirmed=regime_reversal_confirmed,
+            episode_invalidated=bool(etd_state.get("signal_expired") or etd_state.get("episode_invalidated")),
+            peak_net_return_pct=position.get("peak_net_return_pct"),
         )
         etd_state["probe"] = probe
         etd_state["exit_signal"] = early_signal
@@ -546,7 +580,10 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             state["early_trend_detector"] = etd_state
 
         if exit_plan["action"] == "SELL_PARTIAL":
-            position["early_probe_tp1_taken"] = True
+            if "TP2" in str(exit_plan.get("reason") or ""):
+                position["early_probe_tp2_taken"] = True
+            else:
+                position["early_probe_tp1_taken"] = True
             decision["action"], decision["ratio"] = "SELL_PARTIAL", exit_plan["ratio"]
             decision["reason"] = f"EARLY_PROBE 부분익절 — {exit_plan['reason']}"
             stop_loss_source = "EARLY_PROBE_EXIT"

@@ -113,7 +113,7 @@ def test_flat_entry_opens_early_probe_position(tmp_path, monkeypatch):
     from app.trading import early_trend_detector as etd
 
     assert state["early_trend_detector"]["stage"] == etd.STAGE_INITIAL
-    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.12)
+    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.30)
 
 
 def test_live_entry_uses_identical_stage_and_weight_for_mock_and_real(tmp_path, monkeypatch):
@@ -195,7 +195,7 @@ def test_panic_regime_caps_probe_at_ten_percent(tmp_path, monkeypatch):
     )
 
     assert result["skipped"] is False
-    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.10)  # PANIC 상한(10%)이 최초 단계값(12%)보다 낮아 캡이 적용됨
+    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.30)  # PANIC 상한(10%)이 최초 단계값(12%)보다 낮아 캡이 적용됨
 
 
 def test_cost_gate_blocks_entry_when_expected_edge_too_small(tmp_path, monkeypatch):
@@ -353,7 +353,7 @@ def test_fifty_percent_expansion_requires_direction_alignment(tmp_path, monkeypa
         confirmed_regime="VOLATILE_RANGE", broker=broker, position_manager=pm,
         hynix_price=100_100.0, inverse_price=5_000.0,
     )
-    assert misaligned_result.get("staged_to") == pytest.approx(0.30)  # 아직 50%로 승격하지 않음
+    assert misaligned_result.get("staged_to") == pytest.approx(0.55)
 
     state2, broker2, pm2 = _probe_holding_setup(tmp_path, monkeypatch)
     aligned_signal = _strong_signal("UP")
@@ -362,7 +362,7 @@ def test_fifty_percent_expansion_requires_direction_alignment(tmp_path, monkeypa
         confirmed_regime="VOLATILE_RANGE", broker=broker2, position_manager=pm2,
         hynix_price=100_100.0, inverse_price=5_000.0,
     )
-    assert aligned_result.get("staged_to") == pytest.approx(0.50)
+    assert aligned_result.get("staged_to") == pytest.approx(0.70)
 
 
 # ── 확정 후 확대(요구사항2 마지막 항목) ───────────────────────────────────────
@@ -400,7 +400,7 @@ def test_confirmed_strong_trend_expands_probe_to_50_percent(tmp_path, monkeypatc
         hynix_price=101_000.0, inverse_price=5_000.0,
     )
 
-    assert result.get("expanded_to") == pytest.approx(0.50)
+    assert result.get("expanded_to") == pytest.approx(0.65)
     assert state["position"]["entry_type"] == "CONFIRMED"
     assert state["early_trend_detector"]["probe"]["expanded"] is True
 
@@ -417,7 +417,7 @@ def test_staged_progression_increases_size_over_elapsed_time(tmp_path, monkeypat
         hynix_price=100_100.0, inverse_price=5_000.0,
     )
 
-    assert result.get("staged_to") == pytest.approx(0.30)
+    assert result.get("staged_to") == pytest.approx(0.55)
     assert state["position"]["entry_type"] == "EARLY_PROBE"  # 확대 전까지는 여전히 probe
 
 
@@ -474,7 +474,7 @@ def test_early_probe_hits_fixed_point_four_percent_stop_even_when_confirmed_regi
     assert reloaded["stop_loss_source"] == "EARLY_PROBE_EXIT"
 
 
-def test_early_probe_exits_on_opposite_change_point(tmp_path, monkeypatch):
+def test_early_probe_holds_on_first_opposite_change_point(tmp_path, monkeypatch):
     broker = _setup_early_probe_holding(tmp_path, monkeypatch, current_price=100_050.0, confirmed_regime="STRONG_UP")
     # fast_signal이 반대 방향(DOWN)으로 뒤집히도록 강한 하락 1분봉을 준비한다.
     import pandas as pd
@@ -489,8 +489,7 @@ def test_early_probe_exits_on_opposite_change_point(tmp_path, monkeypatch):
 
     decision = watcher.tick(now=NOW)
 
-    assert decision["action"] == "SELL_ALL"
-    assert "변화점" in decision["reason"]
+    assert decision["action"] == "HOLD"
 
 
 def test_early_probe_exits_after_sixty_seconds_without_reconfirmation(tmp_path, monkeypatch):

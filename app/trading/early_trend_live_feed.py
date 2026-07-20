@@ -95,14 +95,23 @@ def compute_live_direction(history: dict, symbol: str, now: datetime) -> dict:
     slopes = multi_window_slopes(history, symbol, now)
     available = {w: v for w, v in slopes.items() if v is not None}
     direction = None
-    if len(available) >= 2:
-        up_count = sum(1 for v in available.values() if v >= MIN_SLOPE_PCT_FOR_DIRECTION)
-        down_count = sum(1 for v in available.values() if v <= -MIN_SLOPE_PCT_FOR_DIRECTION)
-        if up_count == len(available):
-            direction = "UP"
-        elif down_count == len(available):
-            direction = "DOWN"
-    return {"slopes": slopes, "direction": direction, "windows_available": len(available)}
+    window_directions = {}
+    for w, value in available.items():
+        if value >= MIN_SLOPE_PCT_FOR_DIRECTION:
+            window_directions[w] = "UP"
+        elif value <= -MIN_SLOPE_PCT_FOR_DIRECTION:
+            window_directions[w] = "DOWN"
+    for candidate in ("UP", "DOWN"):
+        if window_directions.get(5) == candidate and window_directions.get(10) == candidate:
+            if sum(1 for d in window_directions.values() if d == candidate) >= 3:
+                direction = candidate
+                break
+    return {
+        "slopes": slopes,
+        "window_directions": window_directions,
+        "direction": direction,
+        "windows_available": len(available),
+    }
 
 
 def _implied_trade_direction(symbol: str, raw_direction: Optional[str], *, signal_symbol: str, long_symbol: str, inverse_symbol: str) -> Optional[str]:

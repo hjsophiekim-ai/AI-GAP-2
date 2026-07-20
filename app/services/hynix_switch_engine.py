@@ -11,6 +11,8 @@ hynix_switch_engine.py — 하이닉스⇄인버스 Enhanced 자동매매 오케
 from __future__ import annotations
 
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -61,6 +63,7 @@ _PIPELINE_STAGES = [
 
 
 _INVERSE_PRESSURE_BOOST_THRESHOLD = 70.0
+_EARLY_ORDER_LOCK = threading.Lock()
 
 
 def _boost_enhanced_score_with_inverse_pressure(enhanced_score: Optional[float], inverse_pressure_score: Optional[float]) -> Optional[float]:
@@ -1761,9 +1764,58 @@ def _load_etf_own_minute_cache(symbol: str):
     return None
 
 
+def _quote_timestamp(quote: dict, fallback: datetime) -> Optional[datetime]:
+    if not isinstance(quote, dict):
+        return None
+    for key in ("timestamp", "collected_at", "updated_at", "as_of", "last_update_time"):
+        raw = quote.get(key)
+        if not raw:
+            continue
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+    if quote.get("stale") or quote.get("status") == "stale_cache" or quote.get("source") == "cache":
+        return None
+    return fallback
+
+
+def _data_time_mismatch_status(quotes: dict[str, dict], fetched_at: dict[str, datetime], *, now: datetime) -> dict:
+    entries = {}
+    timestamps = []
+    for symbol, quote in quotes.items():
+        ts = _quote_timestamp(quote, fetched_at.get(symbol, now))
+        age = (now - ts).total_seconds() if ts is not None else None
+        entries[symbol] = {
+            "timestamp": ts.isoformat() if ts is not None else None,
+            "age_seconds": round(age, 3) if age is not None else None,
+            "source": (quote or {}).get("source"),
+            "status": (quote or {}).get("status"),
+            "stale": bool((quote or {}).get("stale")),
+        }
+        if ts is not None:
+            timestamps.append(ts)
+    max_delta = None
+    if len(timestamps) == len(quotes) and timestamps:
+        max_delta = (max(timestamps) - min(timestamps)).total_seconds()
+    blocked = len(timestamps) != len(quotes) or (max_delta is not None and max_delta > 10.0)
+    return {
+        "blocked": blocked,
+        "reason_code": "DATA_TIME_MISMATCH" if blocked else None,
+        "max_delta_seconds": round(max_delta, 3) if max_delta is not None else None,
+        "symbols": entries,
+    }
+
+
 def _early_reason_code(reason: Optional[str]) -> str:
     text = str(reason or "")
     upper = text.upper()
+    if "SIGNAL_EXPIRED" in upper:
+        return "SIGNAL_EXPIRED"
+    if "DATA_TIME_MISMATCH" in upper:
+        return "DATA_TIME_MISMATCH"
+    if "MICRO_CHOP" in upper:
+        return "MICRO_CHOP"
     if "COOLDOWN" in upper:
         return "REENTRY_COOLDOWN"
     if "BUYABLE_CASH" in upper or "ORDER_QTY_ZERO" in upper or "PRICE_UNAVAILABLE" in upper:
@@ -1891,6 +1943,7 @@ def _run_early_trend_detector_tick(
     etd_state["frequency"] = freq
     live = bool(state.get("early_trend_detector_live"))
     etd_state["engine_mode"] = "LIVE" if live else "SHADOW"
+    etd_state["order_worker_name"] = etd_state.get("order_worker_name") or "MAIN_CYCLE"
 
     if held_symbol and position.get("entry_type") != etd.ENTRY_TYPE_EARLY_PROBE:
         # 이미 이 엔진이 아닌 다른 경로로 만들어진 일반 포지션을 보유 중이다 —
@@ -1907,10 +1960,11 @@ def _run_early_trend_detector_tick(
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "REENTRY_COOLDOWN"}
 
-        if etd.daily_round_trip_cap_reached(today):
-            etd_state["last_block_reason"] = f"당일 조기진입 왕복거래 {etd.MAX_DAILY_ROUND_TRIPS}회 도달"
+        data_time_status = etd_state.get("data_time_status") or {}
+        if data_time_status.get("blocked"):
+            etd_state["last_block_reason"] = "DATA_TIME_MISMATCH"
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "REENTRY_COOLDOWN"}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "DATA_TIME_MISMATCH"}
 
         signal_symbol_agreement = _early_signal_symbol_agreement(etd_state, fast_signal, hynix_price, inverse_price)
 
@@ -1939,9 +1993,25 @@ def _run_early_trend_detector_tick(
         _candidate_direction_for_data = _vote_direction or _live_direction_for_data or _prev_signal_direction
         _probe_symbol = HYNIX_SYMBOL if _candidate_direction_for_data == "UP" else INVERSE_SYMBOL if _candidate_direction_for_data == "DOWN" else None
         _etf_df = _load_etf_own_minute_cache(_probe_symbol) if _probe_symbol else None
+        if _etf_df is not None and "datetime" in _etf_df.columns:
+            try:
+                _etf_df = _etf_df[_etf_df["datetime"] <= now].copy()
+                if _etf_df.empty:
+                    _etf_df = None
+            except Exception:
+                pass
         _etf_price_for_data = hynix_price if _probe_symbol == HYNIX_SYMBOL else inverse_price if _probe_symbol == INVERSE_SYMBOL else None
         _breakouts = compute_etf_breakouts(_etf_df, _etf_price_for_data, _candidate_direction_for_data) if _probe_symbol else {}
         _volume_surge = compute_etf_volume_surge(_etf_df) if _etf_df is not None else None
+        _micro_chop = etd.update_micro_chop_state(
+            etd_state.get("micro_chop"),
+            direction=_live_direction_for_data,
+            vwap_crossed=bool(_breakouts.get("vwap_breakout")),
+            reversal_exit=False,
+            move_efficiency=None,
+            now=now,
+        )
+        etd_state["micro_chop"] = _micro_chop
 
         early_signal = etd.compute_composite_early_signal(
             fast_signal=fast_signal, signal_symbol_agreement=signal_symbol_agreement,
@@ -1977,13 +2047,27 @@ def _run_early_trend_detector_tick(
             etd_state["last_block_reason"] = "ETF_DIRECTION_MISMATCH — 기초자산 신호와 실제 ETF 방향 불일치"
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "ETF_DIRECTION_MISMATCH", "signal": early_signal}
+        if _micro_chop.get("active") and not (_breakouts.get("vwap_breakout") or _breakouts.get("structure_breakout")):
+            etd_state["last_block_reason"] = "MICRO_CHOP: VWAP/swing 돌파 없는 박스권 신규진입 차단"
+            state["early_trend_detector"] = etd_state
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "MICRO_CHOP", "signal": early_signal}
 
         candidate = dict(etd_state.get("candidate") or {})
         if candidate.get("direction") != direction:
             candidate = {
                 "direction": direction, "first_detected_at": now.isoformat(), "reference_price": current_etf_price,
-                "change_point_detected_at": now.isoformat(),
+                "change_point_detected_at": now.isoformat(), "direction_confirmed_at": now.isoformat(),
             }
+        try:
+            _candidate_detected_at = datetime.fromisoformat(candidate["first_detected_at"])
+        except Exception:
+            _candidate_detected_at = now
+            candidate["first_detected_at"] = now.isoformat()
+        signal_id = candidate.get("signal_id") or etd.make_signal_id(direction, _candidate_detected_at)
+        episode_id = candidate.get("episode_id") or etd.make_episode_id(direction, _candidate_detected_at)
+        candidate["signal_id"] = signal_id
+        candidate["episode_id"] = episode_id
+        candidate["signal_age_seconds"] = round(max(0.0, (now - _candidate_detected_at).total_seconds()), 3)
         etd_state["candidate"] = candidate
 
         try:
@@ -1991,6 +2075,39 @@ def _run_early_trend_detector_tick(
         except Exception:
             first_detected_at = now
         elapsed = max(0.0, (now - first_detected_at).total_seconds())
+        latency = dict(etd_state.get("latency") or etd.default_latency_trace(
+            signal_id=signal_id, worker_name=etd_state.get("order_worker_name") or "MAIN_CYCLE"
+        ))
+        latency["signal_id"] = signal_id
+        latency["worker_name"] = etd_state.get("order_worker_name") or latency.get("worker_name") or "MAIN_CYCLE"
+        latency["detected_at"] = candidate.get("first_detected_at")
+        latency["direction_confirmed_at"] = candidate.get("direction_confirmed_at") or now.isoformat()
+        latency["main_cycle_waiting"] = latency.get("worker_name") != "EARLY_FAST_WORKER"
+        latency = etd.mark_latency(latency, "gates_started_at", now)
+        etd_state["latency"] = latency
+        etd_state["signal_id"] = signal_id
+        etd_state["episode_id"] = episode_id
+        etd_state["signal_age_seconds"] = candidate["signal_age_seconds"]
+
+        validity = etd.signal_validity(candidate.get("first_detected_at"), now)
+        etd_state["signal_validity"] = validity
+        if validity == "EXPIRED":
+            etd_state["last_block_reason"] = etd.SIGNAL_EXPIRED_CODE
+            etd_state["signal_expired"] = True
+            etd_state["candidate"] = {}
+            state["early_trend_detector"] = etd_state
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": etd.SIGNAL_EXPIRED_CODE, "signal": early_signal, "signal_id": signal_id, "episode_id": episode_id}
+        if validity == "REVALIDATE" and _live_direction_for_data != direction:
+            etd_state["last_block_reason"] = "SIGNAL_EXPIRED: 30~60초 신호 즉시 재검증 실패"
+            etd_state["signal_expired"] = True
+            etd_state["candidate"] = {}
+            state["early_trend_detector"] = etd_state
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": etd.SIGNAL_EXPIRED_CODE, "signal": early_signal, "signal_id": signal_id, "episode_id": episode_id}
+
+        if etd.episode_first_entry_done(etd_state, episode_id):
+            etd_state["last_block_reason"] = "TARGET_ALREADY_FILLED: trend_episode 최초 진입 이미 실행"
+            state["early_trend_detector"] = etd_state
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "TARGET_ALREADY_FILLED", "signal": early_signal, "signal_id": signal_id, "episode_id": episode_id}
 
         if etd.is_same_direction_cooldown_active(freq, direction, now):
             etd_state["last_block_reason"] = "동일 방향 재진입 쿨다운(3분)"
@@ -2027,12 +2144,27 @@ def _run_early_trend_detector_tick(
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "CHASE_BLOCK", "signal": early_signal}
 
-        expected_move_pct = abs((fast_signal.get("returns") or {}).get("3m") or 0.0)
+        _returns = fast_signal.get("returns") or {}
+        expected_move_pct = max(abs(float(_returns.get(k) or 0.0)) for k in ("1m", "3m", "5m"))
         cost_gate = etd.evaluate_cost_gate(desired_symbol, expected_move_pct)
         etd_state["cost_gate"] = cost_gate
         if cost_gate["blocked"]:
+            def _fmt_pct(value) -> str:
+                try:
+                    return f"{float(value):.2f}%"
+                except (TypeError, ValueError):
+                    return "n/a"
+
+            def _fmt_ratio(value) -> str:
+                try:
+                    return f"{float(value):.2f}x"
+                except (TypeError, ValueError):
+                    return "n/a"
+
             etd_state["last_block_reason"] = (
-                f"거래비용 게이트 — 예상순이익 {cost_gate['net_edge_pct']:.2f}% < {etd.COST_GATE_MIN_NET_EDGE_PCT}%"
+                f"거래비용 게이트 — 예상Gross {_fmt_pct(cost_gate.get('expected_gross_edge_pct'))}, "
+                f"비용 {_fmt_pct(cost_gate.get('cost_pct'))}, 예상순이익 {_fmt_pct(cost_gate.get('net_edge_pct'))}, "
+                f"Gross/비용 {_fmt_ratio(cost_gate.get('gross_to_cost_ratio'))}"
             )
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "COST_EDGE_BLOCK", "signal": early_signal}
@@ -2058,15 +2190,20 @@ def _run_early_trend_detector_tick(
         if candidate.get("reference_price") and current_etf_price:
             moved_pct_since_signal = round(abs(current_etf_price / candidate["reference_price"] - 1.0) * 100.0, 4)
         etd_state["etf_move_pct_since_signal"] = moved_pct_since_signal
+        latency = etd.mark_latency(etd_state.get("latency"), "gates_completed_at", now)
+        etd_state["latency"] = latency
 
         if not live:
             state["early_trend_detector"] = etd_state
             return {
                 "skipped": True, "reason": "SHADOW 모드 — 계산만 하고 실제 진입은 하지 않음",
                 "reason_code": "NO_EARLY_SIGNAL", "signal": early_signal, "stage": stage, "target_pct": target_pct,
+                "signal_id": signal_id, "episode_id": episode_id, "latency": latency,
             }
 
         final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
+        latency = etd.mark_latency(etd_state.get("latency"), "order_requested_at", now)
+        etd_state["latency"] = latency
         switch = run_switch_or_entry(
             state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
             reason=f"EARLY_TREND_DETECTOR 조기진입({stage})", position_manager=position_manager,
@@ -2074,6 +2211,8 @@ def _run_early_trend_detector_tick(
             signal_source=etd.signal_source_for_stage(stage),
         )
         if switch.get("acted") and any(bool(o.get("success")) for o in (switch.get("orders") or []) if isinstance(o, dict)):
+            latency = etd.mark_latency(latency, "broker_accepted_at", now)
+            latency = etd.mark_latency(latency, "fill_confirmed_at", now)
             probe = etd.default_probe_state()
             probe.update({
                 "active": True, "direction": direction, "detected_at": candidate["first_detected_at"],
@@ -2082,21 +2221,26 @@ def _run_early_trend_detector_tick(
                 "change_point_detected_at": candidate.get("change_point_detected_at", candidate["first_detected_at"]),
                 "initial_probe_entered_at": now.isoformat(),
                 "signal_to_fill_latency_seconds": round((now - first_detected_at).total_seconds(), 2),
+                "signal_id": signal_id, "episode_id": episode_id,
             })
             etd_state["probe"] = probe
             etd_state["frequency"] = etd.register_probe_entry(freq, direction, now)
+            etd_state = etd.register_episode_first_entry(etd_state, episode_id, signal_id, now)
             etd_state["candidate"] = {}
             state["actual_order_driver"] = "EARLY_TREND_DETECTOR"
             position_manager.sync(force=True)
+            latency = etd.mark_latency(latency, "position_synced_at", kst_now())
+            etd_state["latency"] = latency
             apply_position_manager_to_state(state, position_manager)
             state["early_trend_detector"] = etd_state
-            return {"skipped": False, "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct, "reason_code": None}
+            return {"skipped": False, "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct, "reason_code": None, "signal_id": signal_id, "episode_id": episode_id, "latency": latency}
         etd_state["last_block_reason"] = switch.get("message") or "TARGET_ALREADY_FILLED"
         state["early_trend_detector"] = etd_state
         return {
             "skipped": True, "reason": etd_state["last_block_reason"],
             "reason_code": _early_reason_code(switch.get("failure_code") or etd_state["last_block_reason"]),
             "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct,
+            "signal_id": signal_id, "episode_id": episode_id, "latency": etd_state.get("latency"),
         }
 
     # ── 이미 EARLY_PROBE 보유 중 — 단계 진행/확대만 판단(철수는 Dynamic Exit Watcher 담당) ──
@@ -2206,20 +2350,62 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         try:
             from app.data_sources.hynix_long_collector import collect_long_current
             from app.data_sources.hynix_inverse_collector import collect_inverse_current
-            from app.data_sources.auto_market_collector import _load_hynix_current_cache
+            from app.data_sources.auto_market_collector import _fetch_hynix_current_from_kis
 
-            long_quote = collect_long_current(mode=resolved_mode)
-            inverse_quote = collect_inverse_current(mode=resolved_mode)
-            signal_quote = _load_hynix_current_cache() or {}
+            def _fetch_signal_quote():
+                fetched_at = kst_now()
+                price = _fetch_hynix_current_from_kis(resolved_mode)
+                return fetched_at, {
+                    "symbol": SIGNAL_SYMBOL,
+                    "current_price": price,
+                    "source": "kis_direct",
+                    "status": "success" if price is not None else "unavailable",
+                    "timestamp": fetched_at.isoformat(),
+                    "stale": price is None,
+                }
+
+            def _fetch_long_quote():
+                quote = collect_long_current(mode=resolved_mode)
+                return kst_now(), quote
+
+            def _fetch_inverse_quote():
+                quote = collect_inverse_current(mode=resolved_mode)
+                return kst_now(), quote
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                fs = pool.submit(_fetch_signal_quote)
+                fl = pool.submit(_fetch_long_quote)
+                fi = pool.submit(_fetch_inverse_quote)
+                signal_fetched_at, signal_quote = fs.result()
+                long_fetched_at, long_quote = fl.result()
+                inverse_fetched_at, inverse_quote = fi.result()
+            signal_quote = {
+                **signal_quote,
+                "timestamp": signal_quote.get("timestamp") or signal_fetched_at.isoformat(),
+            }
         except Exception as exc:
             logger.debug("[EarlyTrendFastFeed] 현재가 조회 실패: %s", exc)
             return {"skipped": True, "reason": f"price fetch failed: {exc}"}
 
         long_price = long_quote.get("current_price")
         inverse_price = inverse_quote.get("current_price")
-        signal_price = signal_quote.get("current_price") or state.get("last_hynix_signal_price")
+        signal_price = signal_quote.get("current_price")
 
         etd_state = dict(state.get("early_trend_detector") or {})
+        data_time_status = _data_time_mismatch_status(
+            {
+                SIGNAL_SYMBOL: signal_quote,
+                HYNIX_SYMBOL: long_quote,
+                INVERSE_SYMBOL: inverse_quote,
+            },
+            {
+                SIGNAL_SYMBOL: signal_fetched_at,
+                HYNIX_SYMBOL: long_fetched_at,
+                INVERSE_SYMBOL: inverse_fetched_at,
+            },
+            now=now,
+        )
+        etd_state["data_time_status"] = data_time_status
         history = etd_state.get("price_history") or {}
         history = feed.record_price_sample(history, SIGNAL_SYMBOL, signal_price, now)
         history = feed.record_price_sample(history, HYNIX_SYMBOL, long_price, now)
@@ -2235,6 +2421,17 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         )
         previous_live_direction = (state.get("live_trade_direction") or {}).get("direction")
         cached_fast_signal = (state.get("fast_trend_watcher") or {}).get("last_signal") or {}
+        if live_trade.get("direction") in ("UP", "DOWN"):
+            live_direction = live_trade["direction"]
+            cached_fast_signal = {
+                **cached_fast_signal,
+                "direction": live_direction,
+                "signal_id": f"FAST_LIVE:{live_direction}:{now.strftime('%Y%m%d%H%M%S')}",
+                "up_votes": max(int(cached_fast_signal.get("up_votes") or 0), 6 if live_direction == "UP" else 0),
+                "down_votes": max(int(cached_fast_signal.get("down_votes") or 0), 6 if live_direction == "DOWN" else 0),
+                "returns": {"3m": max(abs((cached_fast_signal.get("returns") or {}).get("3m") or 0.0), 1.0)},
+                "top_factors": list(cached_fast_signal.get("top_factors") or []) + ["EARLY_FAST_WORKER actionable live direction"],
+            }
         factors = {
             "signal_slope_reversal": bool(
                 previous_live_direction
@@ -2304,15 +2501,28 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 save_state_atomic(state)
                 return {"skipped": True, "reason": "new entry window closed", "live_slopes": etd_state["live_slopes"]}
 
+        if not _EARLY_ORDER_LOCK.acquire(blocking=False):
+            etd_state["last_block_reason"] = "DUPLICATE_ORDER_LOCK: Early order worker already running"
+            state["early_trend_detector"] = etd_state
+            save_state_atomic(state)
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "live_slopes": etd_state["live_slopes"]}
+
         try:
             from app.config import get_config
-            from app.trading.broker_factory import create_broker
             from app.trading.hynix_position_common import HynixPositionManager
 
             cfg = get_config()
             broker = _create_strategy_broker(cfg, resolved_mode)
             position_manager = HynixPositionManager(broker, mode=resolved_mode)
+            etd_state["order_worker_name"] = "EARLY_FAST_WORKER"
+            etd_state["latency"] = etd.mark_latency(
+                etd.default_latency_trace(worker_name="EARLY_FAST_WORKER"), "account_query_started_at", now
+            )
+            state["early_trend_detector"] = etd_state
             position_manager.sync()
+            etd_state = dict(state.get("early_trend_detector") or etd_state)
+            etd_state["latency"] = etd.mark_latency(etd_state.get("latency"), "account_query_completed_at", kst_now())
+            state["early_trend_detector"] = etd_state
             apply_position_manager_to_state(state, position_manager)
 
             early_result = _run_early_trend_detector_tick(
@@ -2324,6 +2534,8 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             logger.error("[EarlyTrendFastFeed] tick 실패: %s", exc)
             save_state_atomic(state)
             return {"skipped": True, "reason": f"tick failed: {exc}", "live_slopes": etd_state["live_slopes"]}
+        finally:
+            _EARLY_ORDER_LOCK.release()
 
         save_state_atomic(state)
         return {"skipped": False, "early_result": early_result, "live_slopes": etd_state["live_slopes"]}
@@ -2408,6 +2620,23 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
                 state["adaptive_regime_confirmation"] = _etd_adaptive["confirmation_state"]
                 state["adaptive_regime"] = {k: v for k, v in _etd_adaptive.items() if k != "confirmation_state"}
                 _etd_confirmed_regime = _etd_adaptive.get("confirmed_regime")
+
+                if state.get("early_trend_detector_live"):
+                    _etd_state = dict(state.get("early_trend_detector") or {})
+                    _etd_state["order_worker_name"] = "EARLY_FAST_WORKER"
+                    _etd_state["main_cycle_waiting"] = False
+                    _etd_state["last_main_cycle_note"] = "Early LIVE 신규진입은 5초 Fast Worker가 직접 실행"
+                    state["early_trend_detector"] = _etd_state
+                    status["actual_order_driver"] = "EARLY_FAST_WORKER"
+                    status["blocked_reason"] = "Early LIVE entries handled by 5s Fast Worker"
+                    state["fast_trend_watcher"] = status
+                    save_state_atomic(state)
+                    return {
+                        "skipped": True,
+                        "reason": status["blocked_reason"],
+                        "fast_signal": fast_signal,
+                        "state": state,
+                    }
 
                 from app.config import get_config
                 from app.trading.broker_factory import create_broker

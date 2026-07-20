@@ -1641,3 +1641,38 @@ N회 왕복거래의 누적 거래비용이 누적 GrossPnL의 일정 비율을 
 - `PRIMARY_TREND=UP`이고 VWAP 상단, 15분 추세 UP, 30분 추세 UP, higher low, EMA20 상승 중 2개 이상이면 0197X0 신규매수를 금지한다.
 - UP/HYNIX 신호가 조건을 통과하면 실제 주문 종목은 반드시 `0193T0`이다. DOWN/INVERSE 신호가 조건을 통과하면 실제 주문 종목은 반드시 `0197X0`이다.
 - 백그라운드 자동매매 사이클 UI의 현재가 카드는 `KODEX 레버리지 현재가(0193T0)`로 표시하고 `last_long_price` 또는 `long_current_price`를 사용한다. 000660 신호가격은 별도 신호/추세 진단 값으로만 표시한다.
+## 2026-07-20 Fast Early Order And Exit Rules
+
+Early Trend Detector LIVE uses the 5-second Fast Worker as the direct new-entry order worker. The 3-minute main cycle must not re-submit the same Early entry; it only performs post-entry validation, scale approval, statistics, and UI reporting.
+
+Only `actionable_direction` may drive real orders. `raw_score_leader` and `structural_trend` are diagnostics and sizing/hold-time inputs; they must not create a 0193T0 or 0197X0 buy by themselves.
+
+Signal lifecycle rules:
+
+- Signals older than 60 seconds are discarded as `SIGNAL_EXPIRED`.
+- The first entry for the same `signal_id` or `trend_episode` is allowed once.
+- Scale-in requires a new `scale_event_id` from swing breakout, VWAP re-breakout, volatility expansion, or ETF volume re-expansion.
+- Expected net edge must be at least 0.15% of account value.
+- Expected gross profit must be at least 3x estimated round-trip cost.
+- `MICRO_CHOP` blocks entries without VWAP or swing breakout, but does not impose a hard trade-count cap.
+
+Fast entry sizing:
+
+- Initial actionable direction confirmation targets roughly 30%.
+- Ten seconds of persistence plus both ETF alignment targets roughly 55%.
+- Later expansion requires a fresh scale event and meaningful confidence improvement.
+- New scale-in is blocked after signal age exceeds 30 seconds.
+- `CHASE_BLOCK` applies when the ETF has already moved at least 0.6%, the signal is stale, the entry is near the 1-minute extreme, or the 5-second slope is slowing/reversing.
+
+Exit priority:
+
+- Full exit immediately for hard stop loss, opposite `actionable_direction`, held ETF 5/10/20-second reversal, opposite ETF 5/10-second confirmation, ETF VWAP plus swing structure reversal, PANIC or confirmed regime reversal, or invalidated signal/episode.
+- Partial reduction is allowed only for weak 5-second or 10-second opposite noise when 20/30-second direction, VWAP, and swing structure still support the held direction and the opposite ETF is not confirmed.
+- After partial reduction, keep the remainder if the original direction recovers within 10 seconds. Exit the remainder if the opposite signal persists for 10-15 seconds or structure breaks.
+- Do not immediately re-buy a partially reduced quantity with the old `signal_id`.
+- If unrealized net profit is at least +0.8%, lock at least 50% on the first weak opposite signal.
+- If giveback from peak profit reaches 0.4-0.6 percentage points, exit fully before the trade returns to flat.
+- In `FAST_REVERSAL_RANGE`, weak opposite signals may reduce partially, but strong opposite signals exit fully with a maximum confirmation wait of 10 seconds.
+- In `STRONG_TREND`, ignore isolated weak 5-second noise, but do not let structural trend block a full exit when 10/20-second ETF reversal plus VWAP/swing reversal is confirmed.
+
+UI and ledger fields must include `signal_id`, `episode_id`, `scale_event_id`, signal age, detect-to-order-to-fill latency, `MICRO_CHOP`, recent 30-minute PF and move efficiency, expected gross/cost/net edge, partial profit-taking reason, remaining-position hold reason, and final exit reason.

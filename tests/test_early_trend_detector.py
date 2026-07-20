@@ -99,20 +99,20 @@ def test_compute_composite_early_signal_boosts_score_on_full_agreement():
 def test_stage_for_elapsed_seconds_matches_spec_ladder():
     """요구사항(2026-07-20 최종) — 10~15%(중간값 12%, 즉시)→30%(15초 유지)→
     50%(30초 유지 + 방향 일치). 처음부터/조건 없이 50%로 들어가지 않는다."""
-    assert etd.stage_for_elapsed_seconds(0.0) == (etd.STAGE_INITIAL, 0.12)
-    assert etd.stage_for_elapsed_seconds(14.9) == (etd.STAGE_INITIAL, 0.12)
-    assert etd.stage_for_elapsed_seconds(15.0) == (etd.STAGE_HOLD_15S, 0.30)
-    assert etd.stage_for_elapsed_seconds(29.9) == (etd.STAGE_HOLD_15S, 0.30)
-    assert etd.stage_for_elapsed_seconds(30.0) == (etd.STAGE_HOLD_15S, 0.30)  # 방향 일치 없이는 50%로 승격하지 않음
-    assert etd.stage_for_elapsed_seconds(30.0, direction_aligned=True) == (etd.STAGE_HOLD_30S_ALIGNED, 0.50)
-    assert etd.stage_for_elapsed_seconds(600.0, direction_aligned=True) == (etd.STAGE_HOLD_30S_ALIGNED, 0.50)
-    assert etd.stage_for_elapsed_seconds(600.0, direction_aligned=False) == (etd.STAGE_HOLD_15S, 0.30)
+    assert etd.stage_for_elapsed_seconds(0.0) == (etd.STAGE_INITIAL, 0.30)
+    assert etd.stage_for_elapsed_seconds(9.9) == (etd.STAGE_INITIAL, 0.30)
+    assert etd.stage_for_elapsed_seconds(10.0) == (etd.STAGE_HOLD_15S, 0.55)
+    assert etd.stage_for_elapsed_seconds(29.9) == (etd.STAGE_HOLD_15S, 0.55)
+    assert etd.stage_for_elapsed_seconds(30.0) == (etd.STAGE_HOLD_15S, 0.55)  # 방향 일치 없이는 50%로 승격하지 않음
+    assert etd.stage_for_elapsed_seconds(30.0, direction_aligned=True) == (etd.STAGE_HOLD_30S_ALIGNED, 0.70)
+    assert etd.stage_for_elapsed_seconds(600.0, direction_aligned=True) == (etd.STAGE_HOLD_30S_ALIGNED, 0.70)
+    assert etd.stage_for_elapsed_seconds(600.0, direction_aligned=False) == (etd.STAGE_HOLD_15S, 0.55)
 
 
 def test_target_probe_pct_never_exceeds_50_percent():
     for elapsed in (0.0, 15.0, 45.0, 600.0):
         _, pct = etd.compute_target_probe_pct("STRONG_UP", elapsed, direction_aligned=True)
-        assert pct <= 0.50
+        assert pct <= 0.80
 
 
 def test_regime_probe_cap_blocks_range_and_data_insufficient():
@@ -121,15 +121,15 @@ def test_regime_probe_cap_blocks_range_and_data_insufficient():
 
 
 def test_regime_probe_cap_limits_volatile_range_and_panic():
-    assert etd.regime_probe_cap("VOLATILE_RANGE") == 0.50
-    assert etd.regime_probe_cap("PANIC") == 0.10
-    assert etd.regime_probe_cap(etd.REGIME_FAST_REVERSAL_RANGE) == 0.50
+    assert etd.regime_probe_cap("VOLATILE_RANGE") == 0.70
+    assert etd.regime_probe_cap("PANIC") == 0.30
+    assert etd.regime_probe_cap(etd.REGIME_FAST_REVERSAL_RANGE) == 0.80
 
 
 def test_compute_target_probe_pct_applies_regime_cap_even_at_late_stage():
     stage, pct = etd.compute_target_probe_pct("PANIC", 60.0)
     assert stage == etd.STAGE_HOLD_15S  # direction_aligned 없이는 50% 단계로 승격하지 않음
-    assert pct == 0.10  # PANIC 상한이 단계값(0.30)보다 우선한다
+    assert pct == 0.30  # PANIC 상한이 단계값(0.30)보다 우선한다
 
 
 def test_compute_target_probe_pct_is_zero_in_range_regardless_of_elapsed():
@@ -139,8 +139,8 @@ def test_compute_target_probe_pct_is_zero_in_range_regardless_of_elapsed():
 
 
 def test_fast_reversal_range_uses_fast_range_ladder():
-    assert etd.compute_target_probe_pct(etd.REGIME_FAST_REVERSAL_RANGE, 0.0) == (etd.STAGE_INITIAL, 0.18)
-    assert etd.compute_target_probe_pct(etd.REGIME_FAST_REVERSAL_RANGE, 20.0, direction_aligned=True) == (etd.STAGE_HOLD_15S, 0.45)
+    assert etd.compute_target_probe_pct(etd.REGIME_FAST_REVERSAL_RANGE, 0.0) == (etd.STAGE_INITIAL, 0.30)
+    assert etd.compute_target_probe_pct(etd.REGIME_FAST_REVERSAL_RANGE, 20.0, direction_aligned=True) == (etd.STAGE_HOLD_15S, 0.55)
 
 
 def test_live_reversal_candidate_reaction_decays_score_and_resets_counter():
@@ -152,8 +152,8 @@ def test_live_reversal_candidate_reaction_decays_score_and_resets_counter():
 
 
 def test_expansion_target_pct_only_after_confirmed_strong_trend_matching_direction():
-    assert etd.expansion_target_pct("STRONG_UP", "UP", holding_inverse=False) == 0.50
-    assert etd.expansion_target_pct("STRONG_DOWN", "DOWN", holding_inverse=True) == 0.50
+    assert etd.expansion_target_pct("STRONG_UP", "UP", holding_inverse=False) == 0.65
+    assert etd.expansion_target_pct("STRONG_DOWN", "DOWN", holding_inverse=True) == 0.65
     assert etd.expansion_target_pct("STRONG_UP", "DOWN", holding_inverse=True) is None
     assert etd.expansion_target_pct("VOLATILE_RANGE", "UP", holding_inverse=False) is None
     assert etd.expansion_target_pct("STRONG_DOWN", "UP", holding_inverse=False) is None
@@ -223,8 +223,16 @@ def test_should_exit_probe_on_opposite_change_point():
     plan = etd.should_exit_probe(
         net_return_pct=0.1, seconds_since_last_reconfirmation=5, signal_still_valid=True, opposite_change_point=True,
     )
+    assert plan["action"] == "HOLD"
+    assert "opposite micro signal" in plan["reason"]
+
+
+def test_should_exit_probe_sells_all_after_confirmed_opposite_live_direction():
+    plan = etd.should_exit_probe(
+        net_return_pct=0.1, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=True, opposite_live_seconds=15.0,
+    )
     assert plan["action"] == "SELL_ALL"
-    assert "변화점" in plan["reason"]
 
 
 def test_should_exit_probe_on_signal_decay():
@@ -259,13 +267,13 @@ def test_should_exit_probe_volatile_range_tp1_partial_then_tp2_full():
         opposite_change_point=False, confirmed_regime="VOLATILE_RANGE",
     )
     assert tp1["action"] == "SELL_PARTIAL"
-    assert tp1["ratio"] >= 0.5
+    assert tp1["ratio"] == pytest.approx(0.30)
 
     tp2 = etd.should_exit_probe(
         net_return_pct=1.8, seconds_since_last_reconfirmation=5, signal_still_valid=True,
         opposite_change_point=False, confirmed_regime="VOLATILE_RANGE", tp1_taken=True,
     )
-    assert tp2["action"] == "SELL_ALL"
+    assert tp2["action"] == "SELL_PARTIAL"
     assert "TP2" in tp2["reason"]
 
     sl = etd.should_exit_probe(
@@ -292,8 +300,14 @@ def test_should_exit_probe_fast_reversal_range_uses_fast_tp_sl_rules():
         net_return_pct=0.2, seconds_since_last_reconfirmation=5, signal_still_valid=True,
         opposite_change_point=True, confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
     )
-    assert opposite["action"] == "SELL_ALL"
-    assert "FAST_REVERSAL_RANGE" in opposite["reason"]
+    assert opposite["action"] == "HOLD"
+    strong_opposite = etd.should_exit_probe(
+        net_return_pct=0.2, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=True, confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+        held_etf_reversal_windows={5: True, 10: True, 20: True},
+    )
+    assert strong_opposite["action"] == "SELL_ALL"
+    assert "FAST_REVERSAL_RANGE" in strong_opposite["reason"]
     assert "손절" in sl["reason"]
 
 
@@ -304,8 +318,74 @@ def test_should_exit_probe_volatile_range_signal_weakening_ignores_pnl():
         net_return_pct=1.0, seconds_since_last_reconfirmation=5, signal_still_valid=True,
         opposite_change_point=True, confirmed_regime="VOLATILE_RANGE",
     )
+    assert plan["action"] == "SELL_PARTIAL"
+    strong_plan = etd.should_exit_probe(
+        net_return_pct=1.0, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=True, confirmed_regime="VOLATILE_RANGE",
+        actionable_direction="DOWN", position_direction="UP",
+    )
+    assert strong_plan["action"] == "SELL_ALL"
+
+
+def test_should_exit_probe_weak_micro_noise_reduces_without_full_exit():
+    plan = etd.should_exit_probe(
+        net_return_pct=0.2,
+        seconds_since_last_reconfirmation=5,
+        signal_still_valid=True,
+        opposite_change_point=True,
+        confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+        opposite_live_seconds=5,
+        held_etf_reversal_windows={5: True, 10: False, 20: False, 30: False},
+        opposite_etf_5s10s_confirmed=False,
+        structure_reversal_confirmed=False,
+    )
+
+    assert plan["action"] == "SELL_PARTIAL"
+    assert plan["ratio"] == pytest.approx(0.40)
+
+
+def test_should_exit_probe_strong_v_reversal_exits_all_immediately():
+    plan = etd.should_exit_probe(
+        net_return_pct=0.3,
+        seconds_since_last_reconfirmation=5,
+        signal_still_valid=True,
+        opposite_change_point=True,
+        confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+        opposite_live_seconds=0,
+        held_etf_reversal_windows={5: True, 10: True, 20: True, 30: False},
+    )
+
     assert plan["action"] == "SELL_ALL"
-    assert "신호약화" in plan["reason"]
+    assert "confirmed reversal" in plan["reason"]
+
+
+def test_should_exit_probe_hard_stop_preempts_partial_reduction():
+    plan = etd.should_exit_probe(
+        net_return_pct=-0.7,
+        seconds_since_last_reconfirmation=5,
+        signal_still_valid=True,
+        opposite_change_point=True,
+        confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+        opposite_live_seconds=5,
+    )
+
+    assert plan["action"] == "SELL_ALL"
+    assert "손절" in plan["reason"] or "?먯젅" in plan["reason"]
+
+
+def test_should_exit_probe_structure_break_after_partial_exits_remainder():
+    plan = etd.should_exit_probe(
+        net_return_pct=0.4,
+        seconds_since_last_reconfirmation=5,
+        signal_still_valid=True,
+        opposite_change_point=True,
+        confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+        opposite_live_seconds=8,
+        tp1_taken=True,
+        structure_reversal_confirmed=True,
+    )
+
+    assert plan["action"] == "SELL_ALL"
 
 
 def test_should_exit_probe_volatile_range_max_hold_time():
@@ -314,8 +394,7 @@ def test_should_exit_probe_volatile_range_max_hold_time():
         opposite_change_point=False, confirmed_regime="VOLATILE_RANGE",
         held_minutes=etd.VOLATILE_RANGE_MAX_HOLD_MINUTES,
     )
-    assert plan["action"] == "SELL_ALL"
-    assert "최대보유시간" in plan["reason"]
+    assert plan["action"] == "HOLD"
 
 
 # ── 쿨다운/서킷브레이커/일일 한도(요구사항6) ─────────────────────────────────

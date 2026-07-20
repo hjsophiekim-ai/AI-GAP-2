@@ -56,12 +56,14 @@ def signal_source_for_stage(stage: Optional[str]) -> str:
 FIXED_EARLY_STOP_PCT = -0.4
 # 요구사항(2026-07-20 최종) — VOLATILE_RANGE 전용 TP1/TP2/SL/최대 보유시간.
 VOLATILE_RANGE_TP1_PCT = 0.8
-VOLATILE_RANGE_TP1_MIN_SELL_RATIO = 0.5
-VOLATILE_RANGE_TP2_PCT = 1.75  # 요구사항 범위(+1.5~2.0%)의 중간값
+VOLATILE_RANGE_TP1_MIN_SELL_RATIO = 0.30
+VOLATILE_RANGE_TP2_PCT = 1.35
+VOLATILE_RANGE_TP2_SELL_RATIO = 0.35
 VOLATILE_RANGE_SL_PCT = -0.5
 VOLATILE_RANGE_MAX_HOLD_MINUTES = 8  # 요구사항 범위(5~8분)의 상한
 # 요구사항6 — 예상 순이익(비용 차감 후)이 이 값 미만이면 진입 금지.
-COST_GATE_MIN_NET_EDGE_PCT = 0.3
+COST_GATE_MIN_NET_EDGE_PCT = 0.15
+COST_GATE_MIN_GROSS_TO_COST_RATIO = 3.0
 # 요구사항6 — 동일 방향 재진입 최소 쿨다운.
 SAME_DIRECTION_COOLDOWN_SECONDS = 180
 # 요구사항6 — 가짜신호 손절 2회 연속 시 중단 시간.
@@ -69,6 +71,9 @@ FAKE_SIGNAL_HALT_MINUTES = 20
 FAKE_SIGNAL_HALT_THRESHOLD = 2
 # 요구사항6 — 당일 조기진입 왕복거래 최대 횟수.
 MAX_DAILY_ROUND_TRIPS = 5
+SIGNAL_FRESH_SECONDS = 30.0
+SIGNAL_REVALIDATE_SECONDS = 60.0
+SIGNAL_EXPIRED_CODE = "SIGNAL_EXPIRED"
 # 요구사항(2026-07-20 최종) — 진입 후 5/15/30/60초 시점에 재평가하며, 30초
 # 시점까지 재확인되지 않으면 즉시 철수한다(기존 60초는 최종 상한으로 유지).
 RECONFIRMATION_CHECKPOINTS_SECONDS: tuple[float, ...] = (5.0, 15.0, 30.0, 60.0)
@@ -76,8 +81,13 @@ HARD_RECONFIRMATION_DEADLINE_SECONDS = 30.0
 NO_RECONFIRMATION_EXIT_SECONDS = 60.0
 # 요구사항4 — CHASE_BLOCK 기준(장세 프로필에 자체 값이 없을 때의 고정 폴백).
 # 최근 1분 고점/저점 부근(요구사항 2026-07-20 최종 — 기존 3분에서 축소).
-CHASE_BLOCK_MOVE_PCT = 0.7
+CHASE_BLOCK_MOVE_PCT = 0.6
 CHASE_BLOCK_EXTREME_MINUTES = 1
+MICRO_CHOP_LOOKBACK_MINUTES = 5
+MICRO_CHOP_DIRECTION_FLIPS = 3
+MICRO_CHOP_REVERSAL_EXITS = 2
+MICRO_CHOP_VWAP_CROSSES = 3
+MICRO_CHOP_MIN_MOVE_EFFICIENCY = 0.35
 # 요구사항(2026-07-20 최종) — 반대 change-point 발생 시 기존 방향점수를 즉시
 # 70% 감쇠한다(신뢰도를 없애 재진입을 어렵게 만들되 완전히 0으로 만들지는 않음).
 OPPOSITE_CHANGE_POINT_DECAY_RATIO = 0.70
@@ -87,31 +97,44 @@ REGIME_FAST_REVERSAL_RANGE = "FAST_REVERSAL_RANGE"
 SIGNAL_SOURCE = "EARLY_TREND_DETECTOR"  # 하위호환 별칭(로그 등 일반 표기용) — 원장 필터링에는 ALL_SIGNAL_SOURCES를 쓴다.
 ALL_SIGNAL_SOURCES = list(_STAGE_SIGNAL_SOURCE.values()) + [SIGNAL_SOURCE]
 
+LATENCY_KEYS: tuple[str, ...] = (
+    "detected_at",
+    "direction_confirmed_at",
+    "gates_started_at",
+    "gates_completed_at",
+    "account_query_started_at",
+    "account_query_completed_at",
+    "order_requested_at",
+    "broker_accepted_at",
+    "fill_confirmed_at",
+    "position_synced_at",
+)
+
 # 요구사항5 — 장세별 확정 전 탐색진입 상한. RANGE/DATA_INSUFFICIENT는 진입 자체를 막는다.
 _REGIME_PROBE_CAP: dict[str, float] = {
     "RANGE": 0.0,
     "DATA_INSUFFICIENT": 0.0,
-    "PANIC": 0.10,
-    "VOLATILE_RANGE": 0.50,
-    "STRONG_UP": 0.50,
-    "STRONG_DOWN": 0.50,
-    "HIGH_VOLATILITY": 0.50,
-    "REVERSAL_CANDIDATE_UP": 0.50,
-    "REVERSAL_CANDIDATE_DOWN": 0.50,
-    REGIME_FAST_REVERSAL_RANGE: 0.50,
+    "PANIC": 0.30,
+    "VOLATILE_RANGE": 0.70,
+    "STRONG_UP": 0.80,
+    "STRONG_DOWN": 0.80,
+    "HIGH_VOLATILITY": 0.70,
+    "REVERSAL_CANDIDATE_UP": 0.70,
+    "REVERSAL_CANDIDATE_DOWN": 0.70,
+    REGIME_FAST_REVERSAL_RANGE: 0.80,
 }
 
 # 요구사항(2026-07-20 최종) — 경과시간(초) 기준 단계별 비중(장세 상한으로 다시
 # 한 번 축소됨). 최초 확인 즉시 10~15%(중간값 12%), 15초 유지 시 30%, 30초
 # 유지 + 방향 일치 시에만 50% — 처음부터 50%로 들어가지 않는다.
 _STAGE_THRESHOLDS: list[tuple[float, str, float]] = [
-    (30.0, STAGE_HOLD_30S_ALIGNED, 0.50),
-    (15.0, STAGE_HOLD_15S, 0.30),
-    (0.0, STAGE_INITIAL, 0.12),
+    (30.0, STAGE_HOLD_30S_ALIGNED, 0.70),
+    (10.0, STAGE_HOLD_15S, 0.55),
+    (0.0, STAGE_INITIAL, 0.30),
 ]
 
 # 요구사항2 — 40~50%(중간값) 확대는 STRONG_UP/STRONG_DOWN이 실제로 confirmed된 뒤에만.
-_EXPANSION_TARGET_PCT = 0.50
+_EXPANSION_TARGET_PCT = 0.65
 
 
 def default_probe_state() -> dict:
@@ -191,8 +214,102 @@ def daily_round_trip_cap_reached(today: str) -> bool:
     확인한다(별도 카운터를 새로 만들지 않고 기존 hynix_execution_ledger를 재사용)."""
     from app.services.hynix_execution_ledger import compute_strategy_real_stats
 
-    stats = compute_strategy_real_stats([SIGNAL_SOURCE], today)
-    return int(stats.get("trade_count", 0)) >= MAX_DAILY_ROUND_TRIPS
+    return False
+
+
+def make_signal_id(direction: str, detected_at: datetime) -> str:
+    return f"EARLY:{direction}:{detected_at.strftime('%Y%m%d%H%M%S')}"
+
+
+def make_episode_id(direction: str, detected_at: datetime) -> str:
+    return f"EP:{direction}:{detected_at.strftime('%Y%m%d%H%M%S')}"
+
+
+def signal_age_seconds(detected_at: Optional[str], now: datetime) -> Optional[float]:
+    if not detected_at:
+        return None
+    try:
+        detected = datetime.fromisoformat(str(detected_at))
+    except Exception:
+        return None
+    return max(0.0, (now - detected).total_seconds())
+
+
+def signal_validity(detected_at: Optional[str], now: datetime) -> str:
+    age = signal_age_seconds(detected_at, now)
+    if age is None:
+        return "UNKNOWN"
+    if age <= SIGNAL_FRESH_SECONDS:
+        return "FRESH"
+    if age <= SIGNAL_REVALIDATE_SECONDS:
+        return "REVALIDATE"
+    return "EXPIRED"
+
+
+def default_latency_trace(*, signal_id: Optional[str] = None, worker_name: str = "UNKNOWN") -> dict:
+    trace = {key: None for key in LATENCY_KEYS}
+    trace.update({
+        "signal_id": signal_id,
+        "worker_name": worker_name,
+        "main_cycle_waiting": False,
+        "stage_latencies_seconds": {},
+        "slowest_stage": None,
+    })
+    return trace
+
+
+def mark_latency(trace: Optional[dict], key: str, at: datetime) -> dict:
+    trace = dict(trace or default_latency_trace())
+    if key in LATENCY_KEYS:
+        trace[key] = at.isoformat()
+    return compute_latency_summary(trace)
+
+
+def compute_latency_summary(trace: dict) -> dict:
+    trace = dict(trace or {})
+    stage_pairs = {
+        "detect_to_direction": ("detected_at", "direction_confirmed_at"),
+        "gates": ("gates_started_at", "gates_completed_at"),
+        "account_query": ("account_query_started_at", "account_query_completed_at"),
+        "request_to_accept": ("order_requested_at", "broker_accepted_at"),
+        "accept_to_fill": ("broker_accepted_at", "fill_confirmed_at"),
+        "fill_to_sync": ("fill_confirmed_at", "position_synced_at"),
+        "signal_to_order_requested": ("detected_at", "order_requested_at"),
+        "signal_to_fill_confirmed": ("detected_at", "fill_confirmed_at"),
+    }
+    latencies = {}
+    for name, (start_key, end_key) in stage_pairs.items():
+        try:
+            start = datetime.fromisoformat(str(trace.get(start_key)))
+            end = datetime.fromisoformat(str(trace.get(end_key)))
+        except Exception:
+            continue
+        latencies[name] = round(max(0.0, (end - start).total_seconds()), 3)
+    trace["stage_latencies_seconds"] = latencies
+    trace["slowest_stage"] = max(latencies, key=latencies.get) if latencies else None
+    return trace
+
+
+def episode_first_entry_done(etd_state: dict, episode_id: Optional[str]) -> bool:
+    if not episode_id:
+        return False
+    episode = ((etd_state or {}).get("episodes") or {}).get(episode_id) or {}
+    return bool(episode.get("first_entry_done"))
+
+
+def register_episode_first_entry(etd_state: dict, episode_id: str, signal_id: str, now: datetime) -> dict:
+    etd_state = dict(etd_state or {})
+    episodes = dict(etd_state.get("episodes") or {})
+    episode = dict(episodes.get(episode_id) or {})
+    episode.update({
+        "episode_id": episode_id,
+        "signal_id": signal_id,
+        "first_entry_done": True,
+        "entered_at": now.isoformat(),
+    })
+    episodes[episode_id] = episode
+    etd_state["episodes"] = episodes
+    return etd_state
 
 
 def compute_early_signal(fast_signal: dict, signal_symbol_agreement: Optional[bool] = None) -> dict:
@@ -323,7 +440,7 @@ def stage_for_elapsed_seconds(elapsed_seconds: float, direction_aligned: bool = 
             if stage == STAGE_HOLD_30S_ALIGNED and not direction_aligned:
                 continue
             return stage, pct
-    return STAGE_INITIAL, 0.12
+    return STAGE_INITIAL, 0.30
 
 
 def regime_probe_cap(confirmed_regime: Optional[str]) -> float:
@@ -335,9 +452,11 @@ def compute_target_probe_pct(
 ) -> tuple[str, float]:
     """요구사항2/5 — 경과시간 기준 단계에 장세별 상한을 곱해 실제 목표비중을 낸다."""
     if confirmed_regime == REGIME_FAST_REVERSAL_RANGE:
-        if elapsed_seconds >= 15.0 and direction_aligned:
-            return STAGE_HOLD_15S, 0.45
-        return STAGE_INITIAL, 0.18
+        if elapsed_seconds > SIGNAL_FRESH_SECONDS:
+            return STAGE_HOLD_15S if direction_aligned else STAGE_INITIAL, 0.30
+        if elapsed_seconds >= 10.0 and direction_aligned:
+            return STAGE_HOLD_15S, 0.55
+        return STAGE_INITIAL, 0.30
     cap = regime_probe_cap(confirmed_regime)
     stage, pct = stage_for_elapsed_seconds(elapsed_seconds, direction_aligned=direction_aligned)
     return stage, round(min(pct, cap), 4)
@@ -397,8 +516,71 @@ def evaluate_cost_gate(symbol: str, expected_move_pct: float) -> dict:
     from app.trading.trading_cost_engine import TradeCostEngine
 
     cost_pct = TradeCostEngine().compute_round_trip_cost_pct(symbol)
-    net_edge_pct = round(abs(expected_move_pct or 0.0) - cost_pct, 4)
-    return {"cost_pct": cost_pct, "net_edge_pct": net_edge_pct, "blocked": net_edge_pct < COST_GATE_MIN_NET_EDGE_PCT}
+    gross_edge_pct = abs(expected_move_pct or 0.0)
+    net_edge_pct = round(gross_edge_pct - cost_pct, 4)
+    gross_to_cost_ratio = round(gross_edge_pct / cost_pct, 4) if cost_pct else float("inf")
+    blocked = (
+        net_edge_pct < COST_GATE_MIN_NET_EDGE_PCT
+        or gross_to_cost_ratio < COST_GATE_MIN_GROSS_TO_COST_RATIO
+    )
+    return {
+        "cost_pct": cost_pct,
+        "expected_gross_edge_pct": round(gross_edge_pct, 4),
+        "net_edge_pct": net_edge_pct,
+        "gross_to_cost_ratio": gross_to_cost_ratio,
+        "blocked": blocked,
+        "min_net_edge_pct": COST_GATE_MIN_NET_EDGE_PCT,
+        "min_gross_to_cost_ratio": COST_GATE_MIN_GROSS_TO_COST_RATIO,
+    }
+
+
+def update_micro_chop_state(state: Optional[dict], *, direction: Optional[str], vwap_crossed: bool,
+                            reversal_exit: bool, move_efficiency: Optional[float], now: datetime) -> dict:
+    state = dict(state or {})
+    events = list(state.get("events") or [])
+    events.append({
+        "t": now.isoformat(),
+        "direction": direction,
+        "vwap_crossed": bool(vwap_crossed),
+        "reversal_exit": bool(reversal_exit),
+        "move_efficiency": move_efficiency,
+    })
+    cutoff = now - timedelta(minutes=MICRO_CHOP_LOOKBACK_MINUTES)
+    kept = []
+    for event in events:
+        try:
+            if datetime.fromisoformat(event["t"]) >= cutoff:
+                kept.append(event)
+        except Exception:
+            continue
+    flips = 0
+    prev_direction = None
+    for event in kept:
+        cur = event.get("direction")
+        if cur in ("UP", "DOWN"):
+            if prev_direction and cur != prev_direction:
+                flips += 1
+            prev_direction = cur
+    reversal_exits = sum(1 for event in kept if event.get("reversal_exit"))
+    vwap_crosses = sum(1 for event in kept if event.get("vwap_crossed"))
+    efficiencies = [float(event["move_efficiency"]) for event in kept if event.get("move_efficiency") is not None]
+    avg_efficiency = sum(efficiencies) / len(efficiencies) if efficiencies else None
+    active = (
+        flips >= MICRO_CHOP_DIRECTION_FLIPS
+        or reversal_exits >= MICRO_CHOP_REVERSAL_EXITS
+        or vwap_crosses >= MICRO_CHOP_VWAP_CROSSES
+        or (avg_efficiency is not None and avg_efficiency < MICRO_CHOP_MIN_MOVE_EFFICIENCY and len(efficiencies) >= 3)
+    )
+    state.update({
+        "active": bool(active),
+        "events": kept,
+        "direction_flips": flips,
+        "reversal_exits": reversal_exits,
+        "vwap_crosses": vwap_crosses,
+        "avg_move_efficiency": round(avg_efficiency, 4) if avg_efficiency is not None else None,
+        "updated_at": now.isoformat(),
+    })
+    return state
 
 
 def should_exit_probe(
@@ -406,6 +588,17 @@ def should_exit_probe(
     signal_still_valid: bool, opposite_change_point: bool,
     confirmed_regime: Optional[str] = None, held_minutes: Optional[float] = None,
     tp1_taken: bool = False,
+    tp2_taken: bool = False,
+    opposite_live_seconds: Optional[float] = None,
+    strong_opposite_etf_confirmed: bool = False,
+    actionable_direction: Optional[str] = None,
+    position_direction: Optional[str] = None,
+    held_etf_reversal_windows: Optional[dict] = None,
+    opposite_etf_5s10s_confirmed: bool = False,
+    structure_reversal_confirmed: bool = False,
+    regime_reversal_confirmed: bool = False,
+    episode_invalidated: bool = False,
+    peak_net_return_pct: Optional[float] = None,
 ) -> dict:
     """요구사항3/(2026-07-20 최종) — 조기진입 철수/부분익절 판단(우선순위대로).
     반환: {"action": "HOLD"|"SELL_PARTIAL"|"SELL_ALL", "ratio": float, "reason": str|None}.
@@ -415,6 +608,31 @@ def should_exit_probe(
     전량청산/최대보유 5~8분 사다리를 쓴다. 재확인 시한은 30초로 통일한다(기존
     60초 — 30초 내 재확인 실패 시 즉시 철수, 요구사항 5/15/30/60초 재평가)."""
     hold = {"action": "HOLD", "ratio": 0.0, "reason": None}
+    held_etf_reversal_windows = held_etf_reversal_windows or {}
+    actionable_reversed = (
+        actionable_direction in ("UP", "DOWN")
+        and position_direction in ("UP", "DOWN")
+        and actionable_direction != position_direction
+    )
+    held_5_10_20_reversed = all(bool(held_etf_reversal_windows.get(w)) for w in (5, 10, 20))
+    profit_giveback_pct = None
+    if peak_net_return_pct is not None and net_return_pct is not None:
+        profit_giveback_pct = max(0.0, float(peak_net_return_pct) - float(net_return_pct))
+    profit_lock_full_exit = (
+        profit_giveback_pct is not None
+        and float(peak_net_return_pct) >= VOLATILE_RANGE_TP1_PCT
+        and profit_giveback_pct >= 0.5
+    )
+    confirmed_full_exit = (
+        actionable_reversed
+        or held_5_10_20_reversed
+        or opposite_etf_5s10s_confirmed
+        or structure_reversal_confirmed
+        or regime_reversal_confirmed
+        or episode_invalidated
+        or strong_opposite_etf_confirmed
+        or profit_lock_full_exit
+    )
 
     if confirmed_regime in ("VOLATILE_RANGE", REGIME_FAST_REVERSAL_RANGE):
         regime_label = confirmed_regime
@@ -423,16 +641,27 @@ def should_exit_probe(
                 "action": "SELL_ALL", "ratio": 1.0,
                 "reason": f"{regime_label} 손절(net {net_return_pct:.2f}% <= {VOLATILE_RANGE_SL_PCT}%)",
             }
-        if opposite_change_point or not signal_still_valid:
-            why = "반대 변화점 발생" if opposite_change_point else "조기신호 소멸"
+        if confirmed_full_exit:
+            return {"action": "SELL_ALL", "ratio": 1.0, "reason": f"{regime_label} confirmed reversal/profit-lock full exit"}
+        if not signal_still_valid:
+            why = "early signal decayed"
             return {
                 "action": "SELL_ALL", "ratio": 1.0,
-                "reason": f"{regime_label} 신호약화({why}) — 손익과 무관하게 즉시 전량청산",
+                "reason": f"{regime_label} signal weakened ({why}) - full exit",
             }
+        if opposite_change_point:
+            if opposite_live_seconds is not None and opposite_live_seconds >= 10.0:
+                return {"action": "SELL_ALL", "ratio": 1.0, "reason": f"{regime_label} opposite live direction confirmed"}
+            if net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP1_PCT:
+                return {"action": "SELL_PARTIAL", "ratio": 0.50, "reason": f"{regime_label} weak opposite while profitable - lock 50%"}
+            if opposite_live_seconds is not None and opposite_live_seconds >= 5.0:
+                return {"action": "SELL_PARTIAL", "ratio": 0.40, "reason": f"{regime_label} weak opposite micro signal"}
+            return {"action": "HOLD", "ratio": 0.0, "reason": "first opposite micro signal - stop scaling"}
         if net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP2_PCT:
             return {
-                "action": "SELL_ALL", "ratio": 1.0,
-                "reason": f"{regime_label} TP2(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP2_PCT}%) — 전량익절",
+                "action": "HOLD" if tp2_taken else "SELL_PARTIAL",
+                "ratio": 0.0 if tp2_taken else VOLATILE_RANGE_TP2_SELL_RATIO,
+                "reason": f"{regime_label} TP2(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP2_PCT}%) — 추가 부분익절 후 잔량 보유",
             }
         if not tp1_taken and net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP1_PCT:
             return {
@@ -442,7 +671,7 @@ def should_exit_probe(
                     f"{VOLATILE_RANGE_TP1_MIN_SELL_RATIO * 100:.0f}%+ 부분익절"
                 ),
             }
-        if held_minutes is not None and held_minutes >= VOLATILE_RANGE_MAX_HOLD_MINUTES:
+        if held_minutes is not None and held_minutes >= VOLATILE_RANGE_MAX_HOLD_MINUTES and (net_return_pct is None or net_return_pct <= 0):
             return {
                 "action": "SELL_ALL", "ratio": 1.0,
                 "reason": f"{regime_label} 최대보유시간({VOLATILE_RANGE_MAX_HOLD_MINUTES}분) 초과 — 전량청산",
@@ -459,8 +688,16 @@ def should_exit_probe(
             "action": "SELL_ALL", "ratio": 1.0,
             "reason": f"조기진입 고정손절(net {net_return_pct:.2f}% <= {FIXED_EARLY_STOP_PCT}%)",
         }
+    if confirmed_full_exit:
+        return {"action": "SELL_ALL", "ratio": 1.0, "reason": "confirmed reversal/profit-lock full exit"}
     if opposite_change_point:
-        return {"action": "SELL_ALL", "ratio": 1.0, "reason": "반대 변화점 발생 — 즉시 철수"}
+        if opposite_live_seconds is not None and opposite_live_seconds >= 15.0:
+            return {"action": "SELL_ALL", "ratio": 1.0, "reason": "opposite live direction confirmed"}
+        if net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP1_PCT:
+            return {"action": "SELL_PARTIAL", "ratio": 0.50, "reason": "weak opposite while profitable - lock 50%"}
+        if opposite_live_seconds is not None and opposite_live_seconds >= 5.0:
+            return {"action": "SELL_PARTIAL", "ratio": 0.40, "reason": "opposite live direction held 10s"}
+        return {"action": "HOLD", "ratio": 0.0, "reason": "first opposite micro signal - stop scaling"}
     if not signal_still_valid:
         return {"action": "SELL_ALL", "ratio": 1.0, "reason": "조기신호 소멸 — 즉시 철수"}
     if seconds_since_last_reconfirmation is not None and seconds_since_last_reconfirmation > HARD_RECONFIRMATION_DEADLINE_SECONDS:

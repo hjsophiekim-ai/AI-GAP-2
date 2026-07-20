@@ -2575,6 +2575,28 @@ else:
         _edge = _cost.get("net_edge_pct")
         st.metric("예상 순기대수익(비용차감후)", f"{_edge:.2f}%" if _edge is not None else "—")
 
+    et10, et11, et12 = st.columns(3)
+    with et10:
+        st.metric("Signal age", f"{_etd.get('signal_age_seconds'):.1f}s" if _etd.get("signal_age_seconds") is not None else "-")
+    with et11:
+        _lat = _etd.get("latency") or {}
+        _latencies = _lat.get("stage_latencies_seconds") or {}
+        st.metric("Signal->Order", f"{_latencies.get('signal_to_order_requested'):.1f}s" if _latencies.get("signal_to_order_requested") is not None else "-")
+    with et12:
+        _micro = _etd.get("micro_chop") or {}
+        st.metric("MICRO_CHOP", "ON" if _micro.get("active") else "OFF")
+
+    _lat = _etd.get("latency") or {}
+    _cost = _etd.get("cost_gate") or {}
+    st.caption(
+        f"worker={_lat.get('worker_name') or _etd.get('order_worker_name') or '-'} · "
+        f"slowest={_lat.get('slowest_stage') or '-'} · "
+        f"main_waiting={_lat.get('main_cycle_waiting')} · "
+        f"signal_id={_etd.get('signal_id') or (_etd.get('probe') or {}).get('signal_id') or '-'} · "
+        f"episode_id={_etd.get('episode_id') or (_etd.get('probe') or {}).get('episode_id') or '-'} · "
+        f"Gross/Cost={_cost.get('gross_to_cost_ratio') if _cost else '-'}x"
+    )
+
     _block_reason = _etd.get("last_block_reason")
     _exit_reason = _etd.get("last_exit_reason")
     if _exit_reason:
