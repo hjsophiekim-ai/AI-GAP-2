@@ -659,18 +659,62 @@ def compute_net_daily_return(
 
     starting_equity = result["starting_equity"]
     if starting_equity is None:
-        # 당일 첫 유효 조회 — 기준자산으로 확정한다. 조회 자체가 이미 실패
-        # 케이스(cash_fetch_ok=False)에서 걸러졌으므로 여기 도달했다면 신뢰할 수
-        # 있는 값이다.
+        # 요구사항(2026-07-20 실측) — 당일 "첫 유효 조회"가 반드시 장 시작 직후(오늘
+        # 거래가 전혀 없던 시점)에 일어난다는 보장이 없다. KIS 토큰 발급 지연/
+        # 레이트리밋(EGW00201/EGW00123 — 이 파일에 이미 여러 번 실측된 문제)이나
+        # 앱 재시작으로 첫 성공 조회가 오늘 이미 실현손익이 쌓였거나 포지션을 보유해
+        # 미실현손익이 있는 "이후" 시점에 일어나면, 그 순간의 current_equity를 그대로
+        # 기준자산으로 저장했다 — 그 결과 이후 매 사이클 원장 기준(net_daily_return)이
+        # 이미 기준자산에 반영된 그 손익을 다시 더해 이중계산하면서, 원장 기준과
+        # 현재자산 기준 수익률 사이에 "기준자산을 캡처한 시점까지의 손익"만큼 고정된
+        # 괴리가 생겼다. 이 괴리는 일시적 API 글리치가 아니라 구조적인 오차라서
+        # 재시도(3회)/정산지연 설명/5분 유예 중 어느 것으로도 해소되지 않고, 그날
+        # 남은 사이클 내내 ACCOUNT_EQUITY_MISMATCH로 신규주문이 계속 차단됐다.
+        # 수정: 기준자산을 "지금 시점의 current_equity"가 아니라 오늘 이미 발생한
+        # 실현+미실현 손익을 역산해서 뺀 값(=진짜 하루 시작 시점 자산)으로 설정한다.
         if current_equity is not None and current_equity > 0:
-            state["daily_pnl_baseline_equity"] = current_equity
-            result["starting_equity"] = current_equity
-            result["net_daily_return"] = 0.0
+            net_unrealized_pnl = _local_unrealized_pnl()
+            adjusted_baseline = current_equity - net_realized_pnl - net_unrealized_pnl
+            if adjusted_baseline > 0:
+                state["daily_pnl_baseline_equity"] = adjusted_baseline
+                result["starting_equity"] = adjusted_baseline
+                result["net_unrealized_pnl"] = net_unrealized_pnl
+                result["net_daily_return"] = round((net_realized_pnl + net_unrealized_pnl) / adjusted_baseline * 100.0, 4)
+                # 요구사항 — 방금 막 확정한 기준자산에서 도출된 수익률 하나만으로
+                # 곧바로 일일손실 강제중단(-2.5%)까지 실행하지는 않는다(호출부가
+                # 이 플래그를 보고 스킵). 첫 스냅샷은 아직 가격/잔고 데이터가 안정된
+                # 것으로 확인되지 않았고, 예전 코드가 net_daily_return=0.0으로
+                # 고정했던 것도 바로 이 "첫 표본의 노이즈로 즉시 조치하지 않는다"는
+                # 취지였다 — 다음 사이클에도 같은(이미 확정된) 기준자산으로 재계산해
+                # 여전히 -2.5% 이하면 그때는 정상적으로 차단된다.
+                result["baseline_just_established"] = True
+            else:
+                # 오늘 이미 발생한 손실이 현재자산 이상으로 극단적인 경우(이론상
+                # 방어) — 역산 기준자산이 0 이하로 나오면 대신 현재자산을 그대로
+                # 기준으로 삼는다(0/음수 기준자산으로 나눗셈하지 않도록).
+                state["daily_pnl_baseline_equity"] = current_equity
+                result["starting_equity"] = current_equity
+                result["net_daily_return"] = 0.0
+                result["baseline_just_established"] = True
         else:
             result["blocked_reason"] = DAILY_RETURN_UNKNOWN
         return result
 
     if starting_equity <= 0:
+        # 이전 버전의 버그(또는 수동 조작)로 이미 저장된 기준자산이 0/음수라면,
+        # 무한 차단 대신 "기준자산 없음"과 동일하게 취급해 위와 같은 방식으로
+        # 즉시 재계산(self-heal)한다 — 하루 종일 차단된 채로 남지 않는다.
+        if current_equity is not None and current_equity > 0:
+            net_unrealized_pnl = _local_unrealized_pnl()
+            adjusted_baseline = current_equity - net_realized_pnl - net_unrealized_pnl
+            if adjusted_baseline > 0:
+                state["daily_pnl_baseline_equity"] = adjusted_baseline
+                result["starting_equity"] = adjusted_baseline
+                result["net_unrealized_pnl"] = net_unrealized_pnl
+                result["net_daily_return"] = round((net_realized_pnl + net_unrealized_pnl) / adjusted_baseline * 100.0, 4)
+                result["baseline_rebased"] = True
+                result["baseline_just_established"] = True
+                return result
         result["blocked_reason"] = ACCOUNT_EQUITY_MISMATCH
         return result
 
@@ -2209,7 +2253,15 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 )
             else:
                 state["total_equity"] = total_equity
-                if daily_pnl_pct is not None and daily_pnl_pct <= -2.5 and mode == "real":
+                # 요구사항(2026-07-20) — 이번 사이클에 기준자산이 방금 (재)확정됐다면
+                # (baseline_just_established), 그 즉시 계산된 수익률만으로 자동매매를
+                # 강제 중단하지 않는다 — 아직 가격/잔고 데이터가 안정적인지 한 번도
+                # 확인되지 않은 첫 표본이다. 다음 사이클부터는 이미 확정된(같은)
+                # 기준자산으로 다시 계산되므로, 진짜 -2.5% 이하 손실이면 그때 정상
+                # 차단된다.
+                if net_return_result.get("baseline_just_established"):
+                    pass
+                elif daily_pnl_pct is not None and daily_pnl_pct <= -2.5 and mode == "real":
                     state["stopped"] = True
                     state["stopped_reason"] = f"일 누적 손실 {daily_pnl_pct:.2f}% ≤ -2.5% — REAL 자동매매 강제 중단"
                     logger.error(state["stopped_reason"])

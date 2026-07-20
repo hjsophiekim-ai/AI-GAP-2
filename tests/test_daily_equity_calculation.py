@@ -391,6 +391,107 @@ def test_broker_reporting_held_symbol_is_not_treated_as_sync_lag():
     assert result.get("calculation_warning") != "BROKER_POSITION_SYNC_LAG_LEDGER_FALLBACK"
 
 
+# ---------------------------------------------------------------------------
+# 9) 당일 첫 유효 계좌조회가 이미 거래가 있은 "이후"에 일어나는 경우 — 기준자산을
+#    역산해서 정확히 잡아야 한다(2026-07-20 실측: BUY 신호가 risk_manager에서
+#    ACCOUNT_EQUITY_MISMATCH로 계속 차단됨). 이전에는 그 순간의 current_equity를
+#    그대로 기준자산으로 저장해, 이미 반영된 손익을 원장이 다시 더하는 이중계산이
+#    발생했고, 이 괴리는 재시도/정산지연/유예 중 어느 것으로도 해소되지 않아
+#    그날 남은 사이클 내내 신규주문이 차단됐다.
+# ---------------------------------------------------------------------------
+
+def test_first_snapshot_of_day_after_a_realized_trade_backs_out_that_pnl_from_baseline():
+    """토큰 지연 등으로 첫 성공 조회가 오늘 이미 +50,000원을 실현한 뒤 일어난 경우 —
+    기준자산은 '지금 잔고'가 아니라 그 50,000원을 뺀 진짜 하루 시작 자산이어야 한다."""
+    state = _state(realized_pnl_krw=50_000.0, baseline=None)
+    empty_position = {"symbol": None, "quantity": 0, "avg_price": None, "entry_price": None}
+    result = engine.compute_net_daily_return(
+        state, position=empty_position, hynix_price=None, inverse_price=None,
+        cash=10_050_000.0, positions_from_broker=[], cash_fetch_ok=True,
+    )
+    assert result["blocked_reason"] is None
+    assert result["starting_equity"] == pytest.approx(10_000_000.0)
+    assert state["daily_pnl_baseline_equity"] == pytest.approx(10_000_000.0)
+    assert result["net_daily_return"] == pytest.approx(0.5)
+
+
+def test_first_snapshot_of_day_while_holding_a_position_backs_out_unrealized_pnl_too():
+    """첫 성공 조회 시점에 이미 포지션을 보유 중이고 미실현이익이 있다면, 그 미실현
+    손익까지 역산해서 기준자산을 잡아야 한다."""
+    state = _state(realized_pnl_krw=0.0, baseline=None)
+    held_position = {
+        "symbol": engine.HYNIX_SYMBOL, "quantity": 100, "avg_price": 100_000.0, "entry_price": 100_000.0,
+    }
+    # 보유 100주 @100,000원 진입, 현재가 100,500원 — 미실현이익 약 +50,000원(수수료 등 반영 전).
+    # cash는 매수에 쓴 1,000만원이 이미 빠진 상태 + 나머지 예수금이라고 가정.
+    result = engine.compute_net_daily_return(
+        state, position=held_position, hynix_price=100_500.0, inverse_price=9_000.0,
+        cash=50_000.0, positions_from_broker=[{"symbol": engine.HYNIX_SYMBOL, "quantity": 100, "market_value": 10_050_000.0}],
+        cash_fetch_ok=True,
+    )
+    assert result["blocked_reason"] is None
+    # current_equity = 50,000 + 10,050,000 = 10,100,000; 미실현손익만큼 역산해 기준자산을 잡는다.
+    # (이 포지션은 오늘 진입한 것이므로 미실현이익이 "오늘의 수익"이라는 점은 정상 —
+    # 검증할 것은 기준자산이 현재자산과 일치가 아니라 정확히 역산돼 있다는 점이다.)
+    expected_baseline = 10_100_000.0 - result["net_unrealized_pnl"]
+    assert result["starting_equity"] == pytest.approx(expected_baseline)
+    assert result["net_daily_return"] == pytest.approx(
+        result["net_unrealized_pnl"] / expected_baseline * 100.0, abs=0.001,
+    )
+
+
+def test_first_snapshot_baseline_falls_back_when_backed_out_value_would_be_non_positive():
+    """역산한 기준자산이 0 이하로 나오는 극단적 상황(이론상 방어)에서는 예외 없이
+    현재자산을 그대로 기준으로 잡고 0%로 시작한다(음수/0 기준자산으로 나누지 않음)."""
+    state = _state(realized_pnl_krw=20_000_000.0, baseline=None)  # 현재자산보다 큰 실현손익(비정상 입력 방어)
+    empty_position = {"symbol": None, "quantity": 0, "avg_price": None, "entry_price": None}
+    result = engine.compute_net_daily_return(
+        state, position=empty_position, hynix_price=None, inverse_price=None,
+        cash=10_000_000.0, positions_from_broker=[], cash_fetch_ok=True,
+    )
+    assert result["blocked_reason"] is None
+    assert result["starting_equity"] == pytest.approx(10_000_000.0)
+    assert result["net_daily_return"] == 0.0
+
+
+def test_baseline_just_established_flag_is_set_so_caller_can_skip_immediate_stop():
+    """요구사항(2026-07-20 실측) — 기준자산이 방금 (재)확정된 사이클에서, 그 하나의
+    표본만으로 계산된 극단적 수익률(예: 노이즈 낀 첫 가격 조회로 인한 큰 미실현
+    손실)을 근거로 곧바로 자동매매를 강제중단해서는 안 된다. 호출부
+    (_update_hynix_auto_trade_loop_locked)가 이 플래그를 보고 -2.5% 강제중단을
+    이번 사이클만 건너뛴다 — 이 함수 자체는 플래그만 세우고 중단 여부는 판단하지
+    않는다."""
+    state = _state(realized_pnl_krw=0.0, baseline=None)
+    held_position = {
+        "symbol": engine.HYNIX_SYMBOL, "quantity": 10, "avg_price": 100_000.0, "entry_price": 100_000.0,
+    }
+    # 첫 유효 조회 시점에 현재가가 크게(-95%) 벗어난 노이즈 낀 값이라고 가정 —
+    # 미실현손실이 매우 커도 이 사이클은 강제중단 판단에서 제외되어야 한다.
+    result = engine.compute_net_daily_return(
+        state, position=held_position, hynix_price=5_000.0, inverse_price=5_000.0,
+        cash=10_000_000.0, positions_from_broker=[{"symbol": engine.HYNIX_SYMBOL, "quantity": 10, "market_value": 50_000.0}],
+        cash_fetch_ok=True,
+    )
+    assert result["blocked_reason"] is None
+    assert result["baseline_just_established"] is True
+    assert result["net_daily_return"] < -2.5  # 실제로 극단적인 수치이되, 강제중단 판단은 호출부가 이번엔 건너뛴다
+
+
+def test_stale_zero_baseline_self_heals_instead_of_blocking_all_day():
+    """이전 버그로 이미 저장된 기준자산이 0/음수라면, 무한 차단 대신 즉시
+    재계산(self-heal)해 신규주문이 하루 종일 막히지 않게 한다."""
+    state = _state(realized_pnl_krw=10_000.0, baseline=0.0)
+    empty_position = {"symbol": None, "quantity": 0, "avg_price": None, "entry_price": None}
+    result = engine.compute_net_daily_return(
+        state, position=empty_position, hynix_price=None, inverse_price=None,
+        cash=10_010_000.0, positions_from_broker=[], cash_fetch_ok=True,
+    )
+    assert result["blocked_reason"] is None
+    assert result["baseline_rebased"] is True
+    assert result["baseline_just_established"] is True
+    assert state["daily_pnl_baseline_equity"] == pytest.approx(10_000_000.0)
+
+
 def test_risk_manager_and_ui_use_identical_return_value():
     state = _state(realized_pnl_krw=33_545.89, baseline=10_000_000.0)
     result = engine.compute_net_daily_return(
