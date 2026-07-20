@@ -252,6 +252,124 @@ def test_active_strategy_toggle_does_not_block_real_enhanced_regime_switch_entry
     assert result["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
 
 
+def test_early_live_receives_enhanced_inverse_approval_and_places_probe_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.adaptive_market_regime as regime_module
+    import app.trading.dry_run_broker as dry_run_broker_module
+    import app.trading.broker_factory as broker_factory_module
+    import app.data_sources.hynix_long_collector as long_collector_module
+
+    inverse_price = 5_000.0
+    enhanced = _fake_enhanced_result()
+    enhanced["inverse_current_price"] = inverse_price
+    enhanced["data_valid"]["hynix_signal_price"] = True
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: enhanced)
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "INVERSE_BUY", "enhanced_score": 30.0, "inverse_pressure_score": 80.0,
+            "score_gap": 120.0, "score_gap_below_forced_trade_threshold": False, "reasons": ["approved inverse"],
+        },
+    )
+    monkeypatch.setattr(
+        regime_module, "compute_and_confirm_regime",
+        lambda *a, **kw: {
+            "raw_regime": "STRONG_DOWN", "confirmed_regime": "STRONG_DOWN", "displayed_regime": "STRONG_DOWN",
+            "confidence": 90.0, "reasons": ["forced"], "profile": regime_module.get_risk_profile("STRONG_DOWN"),
+            "previous_regime": None, "transitioned_at": None,
+            "confirmation_state": regime_module.default_regime_confirmation_state(), "snapshot": {},
+        },
+    )
+    monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
+    monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 100_000.0, "stale": False})
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    monkeypatch.setattr(engine, "_run_shadow_cycle_ai_and_decision_v2", lambda *a, **kw: {})
+    _silence_prediction_tracker(monkeypatch)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["early_trend_detector_enabled"] = True
+    state["early_trend_detector_live"] = True
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["enhanced_direction_approval"]["final_action"] == "INVERSE_BUY"
+    assert trace["enhanced_direct_order_blocked"] is True
+    assert trace["entry_approved"] is True
+    assert trace["stopped_stage"] is None
+    assert trace["early_decision"]["skipped"] is False
+    assert trace["early_order_result"]["order_sent"] is True
+    assert trace["early_order_result"]["broker_executed"] is True
+    assert result["state"]["position"]["symbol"] == "0197X0"
+    assert result["state"]["position"]["entry_type"] == "EARLY_PROBE"
+
+
+def test_early_live_reports_specific_reason_when_gate_blocks_after_enhanced_approval(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.adaptive_market_regime as regime_module
+    import app.trading.early_trend_detector as early_module
+    import app.trading.dry_run_broker as dry_run_broker_module
+    import app.trading.broker_factory as broker_factory_module
+    import app.data_sources.hynix_long_collector as long_collector_module
+
+    enhanced = _fake_enhanced_result()
+    enhanced["inverse_current_price"] = 5_000.0
+    enhanced["data_valid"]["hynix_signal_price"] = True
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: enhanced)
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "INVERSE_BUY", "enhanced_score": 30.0, "inverse_pressure_score": 80.0,
+            "score_gap": 120.0, "score_gap_below_forced_trade_threshold": False, "reasons": ["approved inverse"],
+        },
+    )
+    monkeypatch.setattr(
+        regime_module, "compute_and_confirm_regime",
+        lambda *a, **kw: {
+            "raw_regime": "STRONG_DOWN", "confirmed_regime": "STRONG_DOWN", "displayed_regime": "STRONG_DOWN",
+            "confidence": 90.0, "reasons": ["forced"], "profile": regime_module.get_risk_profile("STRONG_DOWN"),
+            "previous_regime": None, "transitioned_at": None,
+            "confirmation_state": regime_module.default_regime_confirmation_state(), "snapshot": {},
+        },
+    )
+    monkeypatch.setattr(early_module, "evaluate_cost_gate", lambda *a, **kw: {"blocked": True, "net_edge_pct": -0.1})
+    monkeypatch.setattr(dry_run_broker_module, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: dry_run_broker_module.DryRunBroker())
+    monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 100_000.0, "stale": False})
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    monkeypatch.setattr(engine, "_run_shadow_cycle_ai_and_decision_v2", lambda *a, **kw: {})
+    _silence_prediction_tracker(monkeypatch)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["early_trend_detector_enabled"] = True
+    state["early_trend_detector_live"] = True
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["enhanced_direct_order_blocked"] is True
+    assert trace["entry_approved"] is True
+    assert trace["stopped_stage"] == "early_order"
+    assert trace["early_decision"]["reason_code"] == "COST_EDGE_BLOCK"
+    assert "ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지" not in (trace["blocking_reason"] or "")
+    assert trace["early_order_result"]["order_sent"] is False
+
+
 # =============================================================================
 # FinalExecutionDecision / 중복주문 방지 / real-mode 게이트 테스트 (섹션 13)
 # =============================================================================

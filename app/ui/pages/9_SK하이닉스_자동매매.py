@@ -1624,6 +1624,27 @@ else:
     elif trace.get("prediction_signal") != "HOLD":
         st.success("🟢 신호부터 UI 반영까지 전 단계 정상 완료.")
 
+    _enhanced_approval = trace.get("enhanced_direction_approval") or {}
+    _early_decision = trace.get("early_decision") or {}
+    _early_order = trace.get("early_order_result") or {}
+    if _enhanced_approval or _early_decision or _early_order:
+        with st.expander("🌱 같은 사이클 Early Detector 주문 흐름", expanded=True):
+            ea1, ea2, ea3 = st.columns(3)
+            ea1.metric("Enhanced 방향 승인", "YES" if _enhanced_approval.get("approved") else "NO")
+            ea2.metric("승인 방향", _enhanced_approval.get("direction") or "—", delta=_enhanced_approval.get("final_action") or "—")
+            ea3.metric("Enhanced 직접주문", "차단" if trace.get("enhanced_direct_order_blocked") else "허용")
+            ed1, ed2, ed3 = st.columns(3)
+            ed1.metric("Early 판단", "SKIP" if _early_decision.get("skipped") else ("RUN" if _early_decision else "—"))
+            ed2.metric("Early 사유코드", _early_decision.get("reason_code") or "—")
+            ed3.metric("목표비중", f"{float(_early_decision.get('target_pct')) * 100:.0f}%" if _early_decision.get("target_pct") is not None else "—")
+            st.caption(f"Early reason: {_early_decision.get('reason') or '—'}")
+            eo1, eo2, eo3, eo4 = st.columns(4)
+            eo1.metric("Early 주문전송", "YES" if _early_order.get("order_sent") else "NO")
+            eo2.metric("KIS/브로커 체결", "YES" if _early_order.get("broker_executed") else "NO")
+            eo3.metric("요청 종목", _early_order.get("requested_symbol") or "—")
+            eo4.metric("요청 수량", _early_order.get("requested_qty") if _early_order.get("requested_qty") is not None else "—")
+            st.caption(f"Early execution: {_early_order.get('execution_message') or '—'}")
+
     # 요구사항(2026-07-16) — 과거(직전 사이클까지) 스냅샷과 이번 사이클의 live 진입
     # 판단을 완전히 분리해 보여준다. "과거 가속진단엔 눌림목 대기가 남아 있는데
     # 실제로는 이미 진입이 승인됐다" 같은 혼동을 UI에서 바로 구분할 수 있게 한다.

@@ -121,6 +121,10 @@ def _blank_pipeline_trace() -> dict:
         "trade_counter": 0,
         "stopped_stage": None,
         "blocking_reason": None,
+        "enhanced_direction_approval": None,
+        "enhanced_direct_order_blocked": False,
+        "early_decision": None,
+        "early_order_result": None,
     }
 
 
@@ -135,6 +139,14 @@ def _first_blocked_stage(trace: dict) -> Optional[str]:
         return "entry_approved"
     if not trace["risk_manager_ok"]:
         return "risk_manager"
+    if trace.get("enhanced_direct_order_blocked"):
+        early_decision = trace.get("early_decision") or {}
+        early_order = trace.get("early_order_result") or {}
+        if early_order.get("broker_executed"):
+            return None
+        if early_decision.get("reason_code") == "TARGET_ALREADY_FILLED":
+            return None
+        return "early_order"
     if not trace["order_sent"]:
         # order_sent=False만으로는 "주문 전송 실패"로 단정하지 않는다 — 이미 목표
         # 종목을 보유해서 추가 진입이 필요 없었거나(entry), POSITION_SYNC_PENDING으로
@@ -196,6 +208,10 @@ def _build_blocking_reason(trace: dict) -> Optional[str]:
         "broker_executed": "주문은 전송됐으나 브로커 체결 실패",
         "position_confirmed": "체결 후 재조회한 포지션이 기대와 불일치",
         "ui_synced": "상태 저장(디스크 반영) 실패 — 다음 사이클에서 재시도됨",
+        "early_order": (
+            f"{((trace.get('early_decision') or {}).get('reason_code') or 'NO_EARLY_SIGNAL')}: "
+            f"{((trace.get('early_decision') or {}).get('reason') or 'Early Detector 주문 미실행')}"
+        ),
     }
     return f"[{stage}] {reason_map.get(stage) or '알 수 없음'}"
 
@@ -1630,6 +1646,101 @@ def _load_etf_own_minute_cache(symbol: str):
     return None
 
 
+def _early_reason_code(reason: Optional[str]) -> str:
+    text = str(reason or "")
+    upper = text.upper()
+    if "COOLDOWN" in upper:
+        return "REENTRY_COOLDOWN"
+    if "BUYABLE_CASH" in upper or "ORDER_QTY_ZERO" in upper or "PRICE_UNAVAILABLE" in upper:
+        return "ETF_DATA_INSUFFICIENT"
+    if "CHASE_BLOCK" in upper:
+        return "CHASE_BLOCK"
+    if "COST_EDGE" in upper:
+        return "COST_EDGE_BLOCK"
+    if "TARGET_ALREADY_FILLED" in upper:
+        return "TARGET_ALREADY_FILLED"
+    if "시간" in text or "09:" in text:
+        return "TIME_GATE_BLOCK"
+    if "CHASE_BLOCK" in text or "추격" in text or "고점" in text or "저점" in text:
+        return "CHASE_BLOCK"
+    if "거래비용" in text or "예상순이익" in text:
+        return "COST_EDGE_BLOCK"
+    if "쿨다운" in text or "재진입" in text:
+        return "REENTRY_COOLDOWN"
+    if "현재가" in text or "ETF" in text and "실패" in text:
+        return "ETF_DATA_INSUFFICIENT"
+    if "방향" in text and "불일치" in text:
+        return "ETF_DIRECTION_MISMATCH"
+    if "이미 목표" in text or "추가 진입이 필요" in text or "단계 유지" in text:
+        return "TARGET_ALREADY_FILLED"
+    return "NO_EARLY_SIGNAL"
+
+
+def _augment_fast_signal_with_enhanced_approval(fast_signal: dict, final_action: str, decision: dict) -> dict:
+    """Use the Enhanced direction approval as the same-cycle Early Detector direction input.
+
+    Early still applies its own ETF/time/chase/cost/cooldown/target gates. This only
+    prevents an approved Enhanced BUY/INVERSE direction from being lost when the
+    ENHANCED_REGIME_SWITCH direct order path is disabled by Early LIVE.
+    """
+    desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
+    if desired_symbol not in (HYNIX_SYMBOL, INVERSE_SYMBOL):
+        return dict(fast_signal or {})
+    direction = "UP" if desired_symbol == HYNIX_SYMBOL else "DOWN"
+    result = dict(fast_signal or {})
+    result["direction"] = direction
+    result["enhanced_direction_approved"] = True
+    result["enhanced_final_action"] = final_action
+    result["up_votes"] = max(int(result.get("up_votes") or 0), 6 if direction == "UP" else int(result.get("up_votes") or 0))
+    result["down_votes"] = max(int(result.get("down_votes") or 0), 6 if direction == "DOWN" else int(result.get("down_votes") or 0))
+    returns = dict(result.get("returns") or {})
+    if not returns.get("3m"):
+        score_gap = abs(float(decision.get("score_gap") or 0.0))
+        returns["3m"] = max(0.3, min(2.0, score_gap / 100.0))
+    result["returns"] = returns
+    return result
+
+
+def _record_early_result_on_trace(trace: dict, early_result: Optional[dict]) -> None:
+    if early_result is None:
+        trace["early_decision"] = {
+            "attempted": False, "skipped": True, "reason_code": "NO_EARLY_SIGNAL",
+            "reason": "Early Detector did not run for this cycle",
+        }
+        trace["early_order_result"] = None
+        return
+
+    switch = early_result.get("switch") or {}
+    orders = [o for o in (switch.get("orders") or []) if isinstance(o, dict)]
+    sent_orders = [o for o in orders if o.get("action") in ("BUY", "SELL")]
+    succeeded_orders = [o for o in sent_orders if o.get("success")]
+    reason_code = early_result.get("reason_code") or _early_reason_code(early_result.get("reason") or switch.get("message"))
+    trace["early_decision"] = {
+        "attempted": True,
+        "skipped": bool(early_result.get("skipped")),
+        "reason_code": reason_code,
+        "reason": early_result.get("reason") or switch.get("message"),
+        "stage": early_result.get("stage"),
+        "target_pct": early_result.get("target_pct") or early_result.get("expanded_to") or early_result.get("staged_to"),
+        "signal_direction": (early_result.get("signal") or {}).get("direction"),
+        "signal_score": (early_result.get("signal") or {}).get("score"),
+    }
+    trace["early_order_result"] = {
+        "order_sent": bool(sent_orders),
+        "broker_executed": bool(succeeded_orders),
+        "execution_stage": switch.get("stage"),
+        "execution_message": switch.get("message"),
+        "order_failure_code": switch.get("failure_code"),
+        "broker_error": switch.get("broker_error"),
+        "requested_symbol": switch.get("requested_symbol"),
+        "requested_qty": switch.get("requested_qty"),
+        "order_price": switch.get("order_price"),
+        "buyable_cash": switch.get("buyable_cash"),
+        "sized_cash": switch.get("sized_cash"),
+        "orders": orders,
+    }
+
+
 def _run_early_trend_detector_tick(
     *, state: dict, mode: str, now: datetime, fast_signal: dict, df_1min,
     confirmed_regime: Optional[str], broker, position_manager,
@@ -1679,12 +1790,12 @@ def _run_early_trend_detector_tick(
             etd_state["last_block_reason"] = f"가짜신호 서킷브레이커 — {remaining / 60.0:.0f}분 후 재개"
             etd_state["candidate"] = {}
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"]}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "REENTRY_COOLDOWN"}
 
         if etd.daily_round_trip_cap_reached(today):
             etd_state["last_block_reason"] = f"당일 조기진입 왕복거래 {etd.MAX_DAILY_ROUND_TRIPS}회 도달"
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"]}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "REENTRY_COOLDOWN"}
 
         signal_symbol_agreement = _early_signal_symbol_agreement(etd_state, fast_signal, hynix_price, inverse_price)
 
@@ -1739,10 +1850,18 @@ def _run_early_trend_detector_tick(
             etd_state["candidate"] = {}
             etd_state["last_block_reason"] = "조기신호 없음/약함"
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "signal": early_signal}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "NO_EARLY_SIGNAL", "signal": early_signal}
 
         desired_symbol = HYNIX_SYMBOL if direction == "UP" else INVERSE_SYMBOL
         current_etf_price = hynix_price if direction == "UP" else inverse_price
+        if not current_etf_price:
+            etd_state["last_block_reason"] = "ETF 현재가 조회 실패"
+            state["early_trend_detector"] = etd_state
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "ETF_DATA_INSUFFICIENT", "signal": early_signal}
+        if signal_symbol_agreement is False:
+            etd_state["last_block_reason"] = "ETF_DIRECTION_MISMATCH — 기초자산 신호와 실제 ETF 방향 불일치"
+            state["early_trend_detector"] = etd_state
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "ETF_DIRECTION_MISMATCH", "signal": early_signal}
 
         candidate = dict(etd_state.get("candidate") or {})
         if candidate.get("direction") != direction:
@@ -1761,7 +1880,7 @@ def _run_early_trend_detector_tick(
         if etd.is_same_direction_cooldown_active(freq, direction, now):
             etd_state["last_block_reason"] = "동일 방향 재진입 쿨다운(3분)"
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "signal": early_signal}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "REENTRY_COOLDOWN", "signal": early_signal}
 
         chase = etd.evaluate_chase_block(
             signal_reference_price=candidate.get("reference_price"), current_price=current_etf_price,
@@ -1771,7 +1890,7 @@ def _run_early_trend_detector_tick(
         if chase["blocked"]:
             etd_state["last_block_reason"] = "; ".join(chase["reasons"]) or "CHASE_BLOCK"
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "signal": early_signal}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "CHASE_BLOCK", "signal": early_signal}
 
         expected_move_pct = abs((fast_signal.get("returns") or {}).get("3m") or 0.0)
         cost_gate = etd.evaluate_cost_gate(desired_symbol, expected_move_pct)
@@ -1781,7 +1900,7 @@ def _run_early_trend_detector_tick(
                 f"거래비용 게이트 — 예상순이익 {cost_gate['net_edge_pct']:.2f}% < {etd.COST_GATE_MIN_NET_EDGE_PCT}%"
             )
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "signal": early_signal}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "COST_EDGE_BLOCK", "signal": early_signal}
 
         # 요구사항2 — 50% 단계는 30초 유지 "그리고" ETF/기초자산 방향 일치일 때만.
         direction_aligned = bool(signal_symbol_agreement)
@@ -1790,12 +1909,12 @@ def _run_early_trend_detector_tick(
         if target_pct <= 0.0:
             etd_state["last_block_reason"] = f"{confirmed_regime} 장세는 조기진입 금지"
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "signal": early_signal}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "NO_EARLY_SIGNAL", "signal": early_signal}
 
         if not current_etf_price:
             etd_state["last_block_reason"] = "ETF 현재가 조회 실패"
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"]}
+            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "ETF_DATA_INSUFFICIENT"}
 
         etd_state["signal_price"] = candidate.get("reference_price")
         etd_state["current_price"] = current_etf_price
@@ -1809,7 +1928,7 @@ def _run_early_trend_detector_tick(
             state["early_trend_detector"] = etd_state
             return {
                 "skipped": True, "reason": "SHADOW 모드 — 계산만 하고 실제 진입은 하지 않음",
-                "signal": early_signal, "stage": stage, "target_pct": target_pct,
+                "reason_code": "NO_EARLY_SIGNAL", "signal": early_signal, "stage": stage, "target_pct": target_pct,
             }
 
         final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
@@ -1835,8 +1954,15 @@ def _run_early_trend_detector_tick(
             state["actual_order_driver"] = "EARLY_TREND_DETECTOR"
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
+            state["early_trend_detector"] = etd_state
+            return {"skipped": False, "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct, "reason_code": None}
+        etd_state["last_block_reason"] = switch.get("message") or "TARGET_ALREADY_FILLED"
         state["early_trend_detector"] = etd_state
-        return {"skipped": False, "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct}
+        return {
+            "skipped": True, "reason": etd_state["last_block_reason"],
+            "reason_code": _early_reason_code(switch.get("failure_code") or etd_state["last_block_reason"]),
+            "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct,
+        }
 
     # ── 이미 EARLY_PROBE 보유 중 — 단계 진행/확대만 판단(철수는 Dynamic Exit Watcher 담당) ──
     probe = dict(etd_state.get("probe") or etd.default_probe_state())
@@ -1882,7 +2008,7 @@ def _run_early_trend_detector_tick(
             state["actual_order_driver"] = "EARLY_TREND_DETECTOR"
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
-            return {"skipped": False, "switch": switch, "expanded_to": expansion_pct}
+            return {"skipped": False, "switch": switch, "expanded_to": expansion_pct, "reason_code": None}
 
     # 요구사항2 — 50% 단계는 30초 유지 "그리고" 방향 일치일 때만(held_symbol이
     # 이미 그 방향으로 진입해 보유 중이므로, 실시간 기울기가 같은 방향을
@@ -1910,10 +2036,10 @@ def _run_early_trend_detector_tick(
             state["early_trend_detector"] = etd_state
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
-            return {"skipped": False, "switch": switch, "staged_to": new_target_pct}
+            return {"skipped": False, "switch": switch, "staged_to": new_target_pct, "reason_code": None}
 
     state["early_trend_detector"] = etd_state
-    return {"skipped": True, "reason": "단계 유지"}
+    return {"skipped": True, "reason": "단계 유지", "reason_code": "TARGET_ALREADY_FILLED"}
 
 
 def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
@@ -2596,6 +2722,13 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                     held_symbol = (state.get("position") or {}).get("symbol")
                     desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
                     is_new_entry = desired_symbol is not None and held_symbol != desired_symbol
+                    trace["enhanced_direction_approval"] = {
+                        "approved": bool(is_new_entry and desired_symbol),
+                        "final_action": final_action,
+                        "desired_symbol": desired_symbol,
+                        "direction": "UP" if desired_symbol == HYNIX_SYMBOL else "DOWN" if desired_symbol == INVERSE_SYMBOL else None,
+                        "reason": reason,
+                    }
 
                     # 요구사항(2026-07-16) — 이번 사이클이 갱신하기 전, "과거(직전 사이클까지)"
                     # 스냅샷을 먼저 떼어 UI에 별도로 보여준다. 예: 직전 사이클엔 눌림목
@@ -2629,11 +2762,34 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         # (Early Detector의 expansion_target_pct가 이 confirmed_regime을
                         # 그대로 참조한다), 실제 주문 실행은 Early Detector 전담이다.
                         proceed = False
-                        trace["entry_approved"] = False
+                        trace["entry_approved"] = True
                         trace["entry_approved_reason"] = (
                             "Early Trend Detector LIVE — ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지"
                             "(방향/50% 확대 승인만 담당, 실제 주문은 Early Detector 전담)"
                         )
+                        trace["enhanced_direct_order_blocked"] = True
+                        if not new_entry_allowed_now:
+                            early_result = {
+                                "skipped": True,
+                                "reason": new_entry_window["rule"],
+                                "reason_code": "TIME_GATE_BLOCK",
+                            }
+                        else:
+                            try:
+                                _early_base_fast_signal = compute_fast_trend_signal(df_1min, now=now)
+                            except Exception:
+                                _early_base_fast_signal = {}
+                            early_fast_signal = _augment_fast_signal_with_enhanced_approval(_early_base_fast_signal, final_action, decision)
+                            early_result = _run_early_trend_detector_tick(
+                                state=state, mode=mode, now=now, fast_signal=early_fast_signal, df_1min=df_1min,
+                                confirmed_regime=(state.get("adaptive_regime") or {}).get("confirmed_regime"),
+                                broker=broker, position_manager=position_manager,
+                                hynix_price=hynix_price, inverse_price=inverse_price,
+                                live_slopes=(state.get("early_trend_detector") or {}).get("live_slopes"),
+                            )
+                            if early_result and early_result.get("switch"):
+                                orders_this_cycle.extend((early_result.get("switch") or {}).get("orders", []))
+                        _record_early_result_on_trace(trace, early_result)
                     elif state.get("position_conflict"):
                         proceed = False
                         warnings.append("포지션 동기화 필요(0193T0/0197X0 동시 보유) — 신규매수 금지")
