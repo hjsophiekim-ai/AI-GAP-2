@@ -1,8 +1,21 @@
 """
-hynix_switch_risk_gate.py — 강제거래 시간창 판정 + VI/호가공백 감지 + 차단조건 통합.
+hynix_switch_risk_gate.py — 신규진입 시간창 판정 + VI/호가공백 감지 + 차단조건 통합.
 
-09:00~09:10 관망, 09:10~14:50 신규진입 가능, 14:50 이후 신규매수 금지,
-15:10 청산모드, 15:15 강제청산, 15:20 이후 신규주문 금지의 시간모델을 담당한다.
+요구사항(2026-07-20) — 기존 "09:00~09:10 관망(watch-only)" 규칙은 완전히
+삭제했다. 신규진입 허용/금지는 이제 다음 3구간으로만 판단한다:
+  09:00~09:15 신규진입 허용
+  09:15~09:30 신규진입 금지
+  09:30~14:50 신규진입 허용(기존과 동일)
+  그 외 시간대(장 시작 전/14:50 이후) 신규진입 금지
+15:10 청산모드, 15:15 강제청산, 15:20 이후 신규주문 금지의 시간모델은 그대로다.
+
+이 시간창은 신규진입에만 적용된다 — 기존 포지션의 손절/익절/반전청산/15:15
+강제청산(run_liquidation_if_needed/run_tp_sl_if_needed/
+run_reversal_switch_if_needed/Dynamic Exit Watcher)은 이 모듈의 게이트를 거치지
+않고 항상 실행된다. is_new_entry_allowed()가 모든 신규진입 경로(Early Trend
+Detector/ENHANCED_REGIME_SWITCH/Active Strategy/Fast Watcher)가 공유하는
+단일 판정 지점이다.
+
 VI/호가공백 감지는 참고할 기존 코드가 없어 가격·거래량 이상치 기반 휴리스틱으로
 구현했다(정밀도 낮을 수 있음 — 추후 KIS 응답 필드 확인 시 교체 가능하도록 분리).
 """
@@ -23,9 +36,11 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
 
 _DEFAULT_SCHEDULE = {
-    "watch_only_start": "09:00",
-    "watch_only_end": "09:10",
-    "forced_trade_windows": [["09:10", "09:30"], ["10:30", "11:00"], ["13:30", "14:30"]],
+    # 요구사항(2026-07-20) — 09:00~09:10 관망 규칙 삭제, 3구간 신규진입 규칙으로 대체.
+    "new_entry_morning_open": "09:00",
+    "new_entry_morning_blackout_start": "09:15",
+    "new_entry_morning_blackout_end": "09:30",
+    "forced_trade_windows": [["09:00", "09:15"], ["10:30", "11:00"], ["13:30", "14:30"]],
     "entry_cutoff_time": "14:50",
     "liquidation_prep_time": "15:05",
     "liquidation_mode_time": "15:10",
@@ -71,17 +86,51 @@ def is_within_operating_window(now: Optional[datetime] = None) -> bool:
     return _parse_hm(sched["operating_window_start"]) <= now.time() < _parse_hm(sched["operating_window_end"])
 
 
-def is_watch_only(now: Optional[datetime] = None) -> bool:
-    now = now or kst_now()
-    sched = _load_schedule()
-    return _parse_hm(sched["watch_only_start"]) <= now.time() < _parse_hm(sched["watch_only_end"])
-
-
 def is_new_entry_allowed(now: Optional[datetime] = None) -> bool:
-    """09:10~14:50 구간에서만 True (스위칭의 재매수 레그에도 동일 적용)."""
+    """신규진입 허용 여부(요구사항 2026-07-20) — 09:00~09:15, 09:30~14:50 구간만 True.
+
+    09:15~09:30은 신규진입 금지(구간 전체 — 확정 신뢰도/방향일치 등 예외 없음).
+    이 함수 하나가 Early Trend Detector/ENHANCED_REGIME_SWITCH/Active Strategy/
+    Fast Watcher 등 모든 신규진입 경로가 공유하는 단일 판정 지점이다(스위칭의
+    재매수 레그에도 동일 적용). 기존 포지션의 손절/익절/반전청산/15:15 강제청산은
+    이 함수를 거치지 않는다 — 시간대와 무관하게 항상 실행된다."""
     now = now or kst_now()
     sched = _load_schedule()
-    return _parse_hm(sched["watch_only_end"]) <= now.time() < _parse_hm(sched["entry_cutoff_time"])
+    t = now.time()
+    morning_open = _parse_hm(sched["new_entry_morning_open"])
+    blackout_start = _parse_hm(sched["new_entry_morning_blackout_start"])
+    blackout_end = _parse_hm(sched["new_entry_morning_blackout_end"])
+    cutoff = _parse_hm(sched["entry_cutoff_time"])
+    if morning_open <= t < blackout_start:
+        return True
+    if blackout_start <= t < blackout_end:
+        return False
+    return blackout_end <= t < cutoff
+
+
+def describe_new_entry_window(now: Optional[datetime] = None) -> dict:
+    """UI 표시용(요구사항) — 지금 신규진입이 허용되는지와 적용 중인 시간 규칙을
+    사람이 읽을 문장으로 함께 반환한다."""
+    now = now or kst_now()
+    sched = _load_schedule()
+    t = now.time()
+    morning_open_s, blackout_start_s = sched["new_entry_morning_open"], sched["new_entry_morning_blackout_start"]
+    blackout_end_s, cutoff_s = sched["new_entry_morning_blackout_end"], sched["entry_cutoff_time"]
+    morning_open, blackout_start = _parse_hm(morning_open_s), _parse_hm(blackout_start_s)
+    blackout_end, cutoff = _parse_hm(blackout_end_s), _parse_hm(cutoff_s)
+
+    allowed = is_new_entry_allowed(now)
+    if t < morning_open:
+        rule = f"장 시작 전 — {morning_open_s}부터 신규진입 허용"
+    elif morning_open <= t < blackout_start:
+        rule = f"{morning_open_s}~{blackout_start_s} 신규진입 허용"
+    elif blackout_start <= t < blackout_end:
+        rule = f"{blackout_start_s}~{blackout_end_s} 신규진입 금지(보유 포지션 손절·익절·반전청산·15:15 강제청산은 계속 실행)"
+    elif blackout_end <= t < cutoff:
+        rule = f"{blackout_end_s}~{cutoff_s} 신규진입 허용"
+    else:
+        rule = f"{cutoff_s} 이후 — 신규진입 금지(청산만 진행)"
+    return {"allowed": allowed, "rule": rule, "checked_at": now.isoformat(timespec="seconds")}
 
 
 def get_liquidation_phase(now: Optional[datetime] = None) -> str:
@@ -164,11 +213,8 @@ def should_force_trade(
     now = now or kst_now()
     result = {"should_force": False, "window": None, "forced_direction": None, "block_reason": None}
 
-    if is_watch_only(now):
-        result["block_reason"] = "09:00~09:10 관망 구간"
-        return result
     if not is_new_entry_allowed(now):
-        result["block_reason"] = "14:50 이후 — 신규 진입 강제거래 불가"
+        result["block_reason"] = describe_new_entry_window(now)["rule"]
         return result
 
     window = check_forced_trade_window(now, fired_windows)

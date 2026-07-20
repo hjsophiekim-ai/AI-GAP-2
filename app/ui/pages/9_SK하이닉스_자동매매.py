@@ -145,24 +145,31 @@ def _safe_real_gate_status(cfg_obj, current_mode: str = "real") -> dict:
 
 
 def _krx_order_window_status(now: datetime | None = None) -> dict:
-    """Approximate SK Hynix real-order timing used by the enhanced engine."""
+    """Approximate SK Hynix real-order timing used by the enhanced engine.
+
+    요구사항(2026-07-20) — 이 함수가 09:10~14:50 규칙을 직접 재구현하고 있었다
+    (실제 엔진이 쓰는 app.trading.hynix_switch_risk_gate.is_new_entry_allowed()와
+    별도 사본). 09:00~09:10 관망 규칙 삭제 + 09:15~09:30 신규진입 금지로 바뀐
+    지금, 엔진과 UI가 서로 다른 규칙을 표시하지 않도록 공용 함수 하나만 쓴다."""
     now = now or kst_now()
     t = now.time()
     is_weekday = now.weekday() < 5
     market_open = is_weekday and dtime_cls(9, 0) <= t <= dtime_cls(15, 30)
-    new_entry_allowed = is_weekday and dtime_cls(9, 10) <= t < dtime_cls(14, 50)
+    window = describe_new_entry_window(now)
+    new_entry_allowed = is_weekday and window["allowed"]
     liquidation_only = is_weekday and dtime_cls(14, 50) <= t < dtime_cls(15, 20)
     return {
         "market_open": market_open,
         "new_entry_allowed": new_entry_allowed,
         "liquidation_only": liquidation_only,
         "can_send_real_order_now": new_entry_allowed or liquidation_only,
+        "window_rule": window["rule"],
         "message": (
-            "KRX new entries allowed now (09:10-14:50)."
+            f"KRX new entries allowed now ({window['rule']})."
             if new_entry_allowed else
             "KRX liquidation/position-management window only (14:50-15:20)."
             if liquidation_only else
-            "Outside KRX real-order window. Real account gate can be ready, but orders should wait for the next session."
+            f"KRX new entries blocked ({window['rule']}). Existing-position exits still run normally."
         ),
     }
 
@@ -347,7 +354,7 @@ st.caption(
 
 from app.services.hynix_switch_state import load_state, save_state_atomic
 from app.services.hynix_switch_engine import update_hynix_auto_trade_loop, set_control, reset_mock_account
-from app.trading.hynix_switch_risk_gate import is_new_entry_allowed
+from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, describe_new_entry_window
 from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_scheduler import (
     ensure_cycle_thread_running,
@@ -635,6 +642,18 @@ with sc3:
 
 if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.get("mode"):
     switch_state = set_control(auto_trade_on=auto_on, mode=switch_mode)
+
+# ── 신규진입 시간창(요구사항 2026-07-20) — 모드와 무관하게 항상 표시한다.
+# Early Trend Detector/ENHANCED_REGIME_SWITCH/Active Strategy/Fast Watcher가
+# 모두 공유하는 단일 판정(app.trading.hynix_switch_risk_gate.is_new_entry_allowed)
+# 결과를 그대로 보여준다 — 09:00~09:10 관망 규칙은 삭제됐고, 09:15~09:30만
+# 신규진입이 금지된다. 기존 포지션의 손절·익절·반전청산·15:15 강제청산은 이
+# 시간창과 무관하게 항상 실행된다.
+_entry_window_now = describe_new_entry_window(kst_now())
+(st.success if _entry_window_now["allowed"] else st.warning)(
+    f"{'🟢 신규진입 허용' if _entry_window_now['allowed'] else '🟡 신규진입 금지'} — {_entry_window_now['rule']}"
+    + ("" if _entry_window_now["allowed"] else " (보유 포지션 손절·익절·반전청산·15:15 강제청산은 계속 정상 실행됩니다)")
+)
 
 # ── 현재 실행 모드 배너 — 항상 눈에 띄게 표시(REAL이면 빨간 경고) ────────────
 _active_switch_mode = switch_state.get("mode", "mock")

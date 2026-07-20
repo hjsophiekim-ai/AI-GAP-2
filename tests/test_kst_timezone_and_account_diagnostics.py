@@ -43,14 +43,14 @@ def test_render_utc_2312_maps_to_kst_0812(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_no_after_1450_block_at_0812_kst():
+    """요구사항(2026-07-20) — 09:00~09:10 관망(watch-only) 규칙은 완전히
+    삭제됐다. 08:12는 09:00 장 시작 전이라 신규진입은 아직 허용 안 되지만, 그
+    이유가 "14:50 이후"가 아니라 "장 시작 전"이어야 한다."""
     from app.trading.hynix_switch_risk_gate import (
-        is_watch_only, is_new_entry_allowed, get_liquidation_phase, is_within_operating_window,
+        is_new_entry_allowed, get_liquidation_phase, is_within_operating_window,
     )
 
     now = datetime(2026, 7, 16, 8, 12)
-    assert is_watch_only(now) is False
-    # 08:12는 09:10 이전이라 신규진입은 아직 허용 안 되지만, 그 이유가
-    # "14:50 이후"가 아니라 "장 시작 전"이어야 한다.
     assert is_new_entry_allowed(now) is False
     assert get_liquidation_phase(now) == "normal"
     # 운영창(08:50~15:30) 이전이므로 heartbeat-only 여야 한다.

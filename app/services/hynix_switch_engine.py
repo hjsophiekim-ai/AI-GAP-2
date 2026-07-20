@@ -20,7 +20,7 @@ from app.trading.hynix_symbols import SIGNAL_SYMBOL, LONG_SYMBOL as HYNIX_SYMBOL
 from app.services.hynix_switch_state import load_state, save_state_atomic, set_active_mode, reset_mock_state
 from app.services.hynix_switch_logger import log_enhanced_prediction, log_trade
 from app.trading.hynix_switch_risk_gate import (
-    is_watch_only, is_new_entry_allowed, get_liquidation_phase,
+    is_new_entry_allowed, describe_new_entry_window, get_liquidation_phase,
     should_force_trade, _parse_hm,
 )
 from app.trading.hynix_switch_position_manager import (
@@ -1806,11 +1806,12 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
         if not state.get("auto_trade_on") or state.get("stopped"):
             return {"skipped": True, "reason": "auto off or stopped"}
         if not is_new_entry_allowed(now):
+            _window_reason = describe_new_entry_window(now)["rule"]
             status = state.get("fast_trend_watcher") or {}
-            status.update({"last_checked_at": now.isoformat(), "blocked_reason": "new entries blocked after 14:50"})
+            status.update({"last_checked_at": now.isoformat(), "blocked_reason": _window_reason})
             state["fast_trend_watcher"] = status
             save_state_atomic(state)
-            return {"skipped": True, "reason": "new entries blocked after 14:50", "state": state}
+            return {"skipped": True, "reason": _window_reason, "state": state}
 
         enhanced_result = calculate_enhanced_hynix_prediction_score(mode=resolved_mode)
         df_1min = (enhanced_result.get("market_data") or {}).get("hynix_minute", {}).get("df_1min")
@@ -2281,11 +2282,18 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
     orders_this_cycle: list = []
     attempted_entry = False
+    # 요구사항(2026-07-20) — 신규진입 시간창(is_new_entry_allowed)은 더 이상 이
+    # 플래그에 포함하지 않는다. trading_allowed는 이제 "기존 포지션 손절/익절/
+    # 반전청산/15:15 강제청산을 이번 사이클에 시도해도 되는가"만 뜻하며, 신규
+    # 진입 가능 여부는 아래 new_entry_allowed_now로 별도 판단한다 — 그래야
+    # 09:15~09:30(신규진입 금지 구간)에도 보유 포지션 청산은 정상 실행된다.
     trading_allowed = (
         auto_trade_on and real_gate_ok and not state.get("stopped")
-        and not daily_return_blocked_this_cycle and not is_watch_only(now) and broker is not None
+        and not daily_return_blocked_this_cycle and broker is not None
         and not state.get("position_sync_block_new_orders")
     )
+    new_entry_window = describe_new_entry_window(now)
+    new_entry_allowed_now = new_entry_window["allowed"]
 
     if not trading_allowed:
         trace["risk_manager_ok"] = False
@@ -2306,13 +2314,14 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 )
             else:
                 trace["risk_manager_reason"] = "REAL_GATE_NOT_READY"
-        elif is_watch_only(now):
-            trace["risk_manager_reason"] = "관찰 전용 시간대(watch-only)"
         elif broker is None:
             trace["risk_manager_reason"] = "브로커 초기화 실패"
     elif state.get("position_conflict"):
         trace["risk_manager_ok"] = False
         trace["risk_manager_reason"] = state.get("critical_alert") or "0193T0/0197X0 동시 보유 — 포지션 동기화 필요"
+
+    if not new_entry_allowed_now:
+        warnings.append(f"신규진입 시간창: {new_entry_window['rule']}")
 
     if trading_allowed:
         try:
@@ -2803,8 +2812,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         "computed_at": now.isoformat(),
         "mode": mode,
         "auto_trade_on": auto_trade_on,
-        "watch_only": is_watch_only(now),
         "new_entry_allowed": is_new_entry_allowed(now),
+        "new_entry_window_rule": describe_new_entry_window(now)["rule"],
         "liquidation_phase": liquidation_phase,
         "hynix_current_price": hynix_price,
         "hynix_signal_price": hynix_signal_price,
