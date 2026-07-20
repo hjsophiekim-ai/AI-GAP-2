@@ -62,26 +62,7 @@ _PIPELINE_STAGES = [
 ]
 
 
-_INVERSE_PRESSURE_BOOST_THRESHOLD = 70.0
 _EARLY_ORDER_LOCK = threading.Lock()
-
-
-def _boost_enhanced_score_with_inverse_pressure(enhanced_score: Optional[float], inverse_pressure_score: Optional[float]) -> Optional[float]:
-    """ACTIVE_FUSION/Adaptive Fusion에 넘기는 enhanced_ai_score를 inverse_pressure_score로
-    보정한다(2026-07-14 실측 버그 수정).
-
-    calculate_fusion_score()(app/models/hynix_decision_v2.py)는 enhanced_ai_score만
-    입력받고 inverse_pressure_score는 그 계산 체인 어디에도 전달되지 않는다. 그 결과
-    레거시 판단(decide_hynix_or_inverse_action)이 inverse_pressure_score>=70을 근거로
-    "INVERSE_STRONG_BUY"를 표시해도, Active Strategy/Adaptive Fusion 앙상블은 이 강한
-    인버스 근거를 전혀 보지 못해 약한 신호로만 취급하고 매수하지 않는 일이 있었다.
-
-    inverse_pressure_score가 강한 인버스 근거(>=70)를 보이면 enhanced_ai_score를 그
-    방향(낮은 값)으로 더 강하게 보정한다 — min()을 써서 원래 enhanced_score보다
-    약해지는(반대 방향으로 밀리는) 경우는 없다. 하이닉스 쪽은 enhanced_score 자체가
-    이미 그 강도를 직접 반영하므로 별도 보정이 필요 없다(decision_thresholds의
-    strong_buy_enhanced_min이 enhanced_score에 직접 적용됨)."""
-    return enhanced_score
 
 
 def _map_prediction_signal(final_action: str) -> str:
@@ -1798,7 +1779,7 @@ def _data_time_mismatch_status(quotes: dict[str, dict], fetched_at: dict[str, da
     max_delta = None
     if len(timestamps) == len(quotes) and timestamps:
         max_delta = (max(timestamps) - min(timestamps)).total_seconds()
-    blocked = len(timestamps) != len(quotes) or (max_delta is not None and max_delta > 10.0)
+    blocked = len(timestamps) != len(quotes) or (max_delta is not None and max_delta > 5.0)
     return {
         "blocked": blocked,
         "reason_code": "DATA_TIME_MISMATCH" if blocked else None,
@@ -1844,27 +1825,22 @@ def _early_reason_code(reason: Optional[str]) -> str:
 
 
 def _augment_fast_signal_with_enhanced_approval(fast_signal: dict, final_action: str, decision: dict) -> dict:
-    """Use the Enhanced direction approval as the same-cycle Early Detector direction input.
+    """요구사항(2026-07-21 방향편향 수정) — Enhanced(raw_score_leader/final_action)는
+    더 이상 Early Detector의 실제 진입 방향(actionable_direction)을 덮어쓰지 않는다.
 
-    Early still applies its own ETF/time/chase/cost/cooldown/target gates. This only
-    prevents an approved Enhanced BUY/INVERSE direction from being lost when the
-    ENHANCED_REGIME_SWITCH direct order path is disabled by Early LIVE.
+    과거에는 여기서 final_action을 근거로 fast_signal의 direction/up_votes/down_votes/
+    returns를 강제로 갈아끼웠다 — 이는 "raw_score_leader는 참고 표시로만 사용하고
+    실제 주문 방향은 actionable_direction만 사용한다"는 원칙을 어기고, 원점수(raw
+    score)가 실시간 방향(actionable_direction)을 역전시킬 수 있는 방향편향의 원인이었다.
+
+    이제는 final_action을 참고용 표시 필드로만 첨부하고, fast_signal 본체(이번 틱에
+    실제 계산된 5/10/20/30초 기울기·투표 기반 direction/up_votes/down_votes/returns)는
+    전혀 건드리지 않는다 — 실제 진입 방향은 항상 Early Detector가 이번 틱에 직접
+    계산한 live fast_signal.direction(actionable_direction)만 따른다.
     """
-    desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
-    if desired_symbol not in (HYNIX_SYMBOL, INVERSE_SYMBOL):
-        return dict(fast_signal or {})
-    direction = "UP" if desired_symbol == HYNIX_SYMBOL else "DOWN"
     result = dict(fast_signal or {})
-    result["direction"] = direction
-    result["enhanced_direction_approved"] = True
-    result["enhanced_final_action"] = final_action
-    result["up_votes"] = max(int(result.get("up_votes") or 0), 6 if direction == "UP" else int(result.get("up_votes") or 0))
-    result["down_votes"] = max(int(result.get("down_votes") or 0), 6 if direction == "DOWN" else int(result.get("down_votes") or 0))
-    returns = dict(result.get("returns") or {})
-    if not returns.get("3m"):
-        score_gap = abs(float(decision.get("score_gap") or 0.0))
-        returns["3m"] = max(0.3, min(2.0, score_gap / 100.0))
-    result["returns"] = returns
+    result["raw_score_leader_final_action"] = final_action
+    result["raw_score_leader_reference_only"] = True
     return result
 
 
@@ -2204,6 +2180,11 @@ def _run_early_trend_detector_tick(
         final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
         latency = etd.mark_latency(etd_state.get("latency"), "order_requested_at", now)
         etd_state["latency"] = latency
+        # 요구사항7(2026-07-21) — detected→order_requested 등 latency를 실운영
+        # 기준으로 집계(median/p95/60초 이상 신호 건수)하려면 신호별 trace가
+        # 하루 단위로 남아 있어야 한다. 성공/실패와 무관하게 "주문을 실제로
+        # 시도한 시점"의 latency는 항상 기록한다.
+        etd.log_latency_trace(latency, now)
         switch = run_switch_or_entry(
             state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
             reason=f"EARLY_TREND_DETECTOR 조기진입({stage})", position_manager=position_manager,
@@ -3119,19 +3100,21 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 # 유지하되, 더 이상 아래 실제 진입 로직을 막지 않는다 — 항상 실행한다.
                 if state.get("active_strategy_enabled"):
                     try:
-                        _boosted_enhanced_score = _boost_enhanced_score_with_inverse_pressure(
-                            decision.get("enhanced_score"), decision.get("inverse_pressure_score"),
-                        )
+                        # 요구사항(2026-07-21) — inverse_pressure_score로 enhanced_ai_score를
+                        # 방향성 있게 보정하던 _boost_enhanced_score_with_inverse_pressure()는
+                        # 이미 항등함수(return enhanced_score)로 무력화돼 있었고, 그 비대칭
+                        # 의도가 담긴 죽은 코드였으므로 제거했다. enhanced_score를 그대로 쓴다.
+                        _enhanced_score_for_entry = decision.get("enhanced_score")
                         if state.get("adaptive_fusion_enabled"):
                             _run_adaptive_fusion_entry(
                                 state, broker, hynix_price, inverse_price, now, [],
-                                enhanced_ai_score=_boosted_enhanced_score, hynix_df_1min=df_1min,
+                                enhanced_ai_score=_enhanced_score_for_entry, hynix_df_1min=df_1min,
                                 position_manager=position_manager,
                             )
                         else:
                             _run_active_strategy_entry(
                                 state, broker, hynix_price, inverse_price, now, [],
-                                enhanced_ai_score=_boosted_enhanced_score, position_manager=position_manager,
+                                enhanced_ai_score=_enhanced_score_for_entry, position_manager=position_manager,
                             )
                     except Exception as exc:
                         logger.error("[HynixSwitchEngine] Active Strategy/Adaptive Fusion 진단 계산 실패(무해): %s", exc)

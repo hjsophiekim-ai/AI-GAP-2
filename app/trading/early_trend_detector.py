@@ -18,8 +18,11 @@ compute_fast_trend_signal()의 6-vote 방향판단이 뒤집히는 것을 "변�
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Optional
+
+from app.utils.data_paths import LOGS_DIR
 
 ENTRY_TYPE_EARLY_PROBE = "EARLY_PROBE"
 
@@ -288,6 +291,98 @@ def compute_latency_summary(trace: dict) -> dict:
     trace["stage_latencies_seconds"] = latencies
     trace["slowest_stage"] = max(latencies, key=latencies.get) if latencies else None
     return trace
+
+
+_LATENCY_LOG_DIR = LOGS_DIR / "early_trend_latency"
+
+
+def log_latency_trace(trace: dict, now: datetime) -> None:
+    """요구사항7(2026-07-21) — detected→order_requested 등 단계별 latency를 실운영
+    기준으로 집계하려면(median/p95/60초 이상 신호 건수) 신호별 trace가 남아 있어야
+    한다. order_requested_at이 실제로 찍힌(=주문을 실제로 시도한) trace만 남긴다 —
+    HOLD/스킵된 틱까지 전부 남기면 "신호→주문" 지연 통계가 아니라 무의미해진다."""
+    if not trace or not trace.get("order_requested_at"):
+        return
+    try:
+        _LATENCY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        path = _LATENCY_LOG_DIR / f"{now.strftime('%Y%m%d')}.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(trace, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def load_latency_traces_for_date(date_str: str) -> list[dict]:
+    path = _LATENCY_LOG_DIR / f"{date_str}.jsonl"
+    if not path.exists():
+        return []
+    traces: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    traces.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return traces
+
+
+LATENCY_TARGET_MEDIAN_SECONDS = 10.0
+LATENCY_TARGET_P95_SECONDS = 20.0
+LATENCY_TARGET_MAX_SECONDS = 60.0
+
+
+def compute_latency_stats_summary(traces: list[dict], *, stage: str = "signal_to_order_requested") -> dict:
+    """요구사항7 — detected→order_requested 등 단일 stage의 실운영 latency를
+    median/p95/60초 이상 신호 건수로 집계한다(목표: median<=10초, p95<=20초,
+    60초 이상 신호 0건). 표본이 없으면 통계는 None/0으로 반환하고 목표달성
+    여부도 None으로 둔다 — 표본부족을 "달성"으로 잘못 보고하지 않기 위함이다."""
+    values: list[float] = []
+    for trace in traces or []:
+        stage_latencies = (trace or {}).get("stage_latencies_seconds") or {}
+        value = stage_latencies.get(stage)
+        if value is None:
+            continue
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    values.sort()
+    n = len(values)
+    if n == 0:
+        return {
+            "stage": stage, "sample_count": 0, "median_seconds": None, "p95_seconds": None,
+            "max_seconds": None, "over_60s_count": 0, "meets_median_target": None,
+            "meets_p95_target": None, "meets_zero_over_60s_target": None,
+        }
+
+    def _percentile(sorted_values: list[float], pct: float) -> float:
+        if len(sorted_values) == 1:
+            return sorted_values[0]
+        rank = pct * (len(sorted_values) - 1)
+        low, high = int(rank), min(int(rank) + 1, len(sorted_values) - 1)
+        frac = rank - low
+        return sorted_values[low] + (sorted_values[high] - sorted_values[low]) * frac
+
+    median = _percentile(values, 0.5)
+    p95 = _percentile(values, 0.95)
+    over_60s = sum(1 for v in values if v >= LATENCY_TARGET_MAX_SECONDS)
+    return {
+        "stage": stage,
+        "sample_count": n,
+        "median_seconds": round(median, 3),
+        "p95_seconds": round(p95, 3),
+        "max_seconds": round(values[-1], 3),
+        "over_60s_count": over_60s,
+        "meets_median_target": median <= LATENCY_TARGET_MEDIAN_SECONDS,
+        "meets_p95_target": p95 <= LATENCY_TARGET_P95_SECONDS,
+        "meets_zero_over_60s_target": over_60s == 0,
+    }
 
 
 def episode_first_entry_done(etd_state: dict, episode_id: Optional[str]) -> bool:

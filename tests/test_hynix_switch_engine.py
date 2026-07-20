@@ -7,11 +7,25 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pandas as pd
+import pytest
 
 import app.services.hynix_switch_engine as engine
 import app.services.hynix_switch_state as state_module
+from app.trading import exit_order_coordinator as order_coord
 
 _MID_SESSION_NOW = datetime(2026, 7, 15, 10, 0, 0)  # 09:10~14:50 신규진입 허용 구간
+
+
+@pytest.fixture(autouse=True)
+def _reset_order_coordinator():
+    """요구사항(2026-07-21) — _buy_new()가 공용 OrderCoordinator(모듈 전역
+    _order_records)를 거치게 되면서, 이 파일의 여러 테스트가 동일한 고정
+    _MID_SESSION_NOW를 쓰는 탓에 idempotency key가 우연히 겹쳐 앞선 테스트의
+    주문기록이 뒤 테스트의 매수를 "중복주문"으로 차단할 수 있다. 매 테스트마다
+    초기화해 테스트 간 격리를 보장한다."""
+    order_coord.reset_for_tests()
+    yield
+    order_coord.reset_for_tests()
 
 
 class _FakeBroker:
@@ -252,7 +266,13 @@ def test_active_strategy_toggle_does_not_block_real_enhanced_regime_switch_entry
     assert result["state"]["last_final_execution_decision"]["signal_source"] == "SHADOW_ONLY"
 
 
-def test_early_live_receives_enhanced_inverse_approval_and_places_probe_order(tmp_path, monkeypatch):
+def test_early_live_enhanced_inverse_approval_alone_does_not_place_probe_order(tmp_path, monkeypatch):
+    """요구사항(2026-07-21 방향편향 수정) — raw_score_leader(final_action/Enhanced
+    approval)는 더 이상 Early Detector의 실제 진입 방향(actionable_direction)을
+    대신하지 않는다(_augment_fast_signal_with_enhanced_approval이 더 이상 direction/
+    up_votes/down_votes를 덮어쓰지 않음). Enhanced가 INVERSE를 승인해도, Early
+    Detector 자신의 실시간 기술적 신호(1분봉 6-vote 등)가 없으면 주문을 넣지
+    않아야 한다 — 과거에는 여기서 raw_score만으로 즉시 조기진입 주문이 나갔다."""
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
 
     import app.models.hynix_enhanced_score as enhanced_score_module
@@ -304,15 +324,20 @@ def test_early_live_receives_enhanced_inverse_approval_and_places_probe_order(tm
     assert trace["enhanced_direction_approval"]["final_action"] == "INVERSE_BUY"
     assert trace["enhanced_direct_order_blocked"] is True
     assert trace["entry_approved"] is True
-    assert trace["stopped_stage"] is None
-    assert trace["early_decision"]["skipped"] is False
-    assert trace["early_order_result"]["order_sent"] is True
-    assert trace["early_order_result"]["broker_executed"] is True
-    assert result["state"]["position"]["symbol"] == "0197X0"
-    assert result["state"]["position"]["entry_type"] == "EARLY_PROBE"
+    # Enhanced의 raw score 승인만으로는 조기진입 주문이 나가지 않는다 — Early
+    # Detector 자신의 실시간 신호가 없으므로 NO_EARLY_SIGNAL로 스킵되어야 한다.
+    assert trace["stopped_stage"] == "early_order"
+    assert trace["early_decision"]["reason_code"] == "NO_EARLY_SIGNAL"
+    assert trace["early_order_result"]["order_sent"] is False
+    assert result["state"]["position"]["symbol"] != "0197X0"
 
 
-def test_early_live_reports_specific_reason_when_gate_blocks_after_enhanced_approval(tmp_path, monkeypatch):
+def test_early_live_reports_no_early_signal_even_when_cost_gate_premocked(tmp_path, monkeypatch):
+    """요구사항(2026-07-21 방향편향 수정) — Enhanced 승인만으로 Early Detector의
+    direction을 더 이상 대신할 수 없으므로, cost gate를 미리 차단 상태로
+    monkeypatch해도(도달 자체를 안 함) 그보다 앞선 NO_EARLY_SIGNAL 단계에서
+    멈춰야 한다. cost gate 자체의 차단 로직은
+    test_early_trend_detector.py의 evaluate_cost_gate 단위테스트가 별도로 덮는다."""
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
 
     import app.models.hynix_enhanced_score as enhanced_score_module
@@ -365,7 +390,7 @@ def test_early_live_reports_specific_reason_when_gate_blocks_after_enhanced_appr
     assert trace["enhanced_direct_order_blocked"] is True
     assert trace["entry_approved"] is True
     assert trace["stopped_stage"] == "early_order"
-    assert trace["early_decision"]["reason_code"] == "COST_EDGE_BLOCK"
+    assert trace["early_decision"]["reason_code"] == "NO_EARLY_SIGNAL"
     assert "ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지" not in (trace["blocking_reason"] or "")
     assert trace["early_order_result"]["order_sent"] is False
 

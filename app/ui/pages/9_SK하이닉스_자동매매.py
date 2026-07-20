@@ -2621,6 +2621,35 @@ else:
         f"Gross/Cost={_cost.get('gross_to_cost_ratio') if _cost else '-'}x"
     )
 
+    # 요구사항7(2026-07-21) — 개별 신호 하나의 latency가 아니라, 오늘 하루 실제
+    # 신호→주문 latency 전체를 median/p95/60초 이상 건수로 집계해 목표(중앙값
+    # 10초 이하·95백분위 20초 이하·60초 이상 0건) 달성 여부를 바로 보여준다.
+    from app.trading import early_trend_detector as _etd_module
+
+    _today_traces = _etd_module.load_latency_traces_for_date(kst_now().strftime("%Y%m%d"))
+    _lat_stats = _etd_module.compute_latency_stats_summary(_today_traces)
+    if _lat_stats["sample_count"] > 0:
+        st.markdown("**오늘 Signal→Order latency 집계(실운영 기준)**")
+        lt1, lt2, lt3, lt4 = st.columns(4)
+        lt1.metric("표본수", f"{_lat_stats['sample_count']}건")
+        lt2.metric(
+            "중앙값(목표 10s 이하)", f"{_lat_stats['median_seconds']:.1f}s",
+            delta="달성" if _lat_stats["meets_median_target"] else "미달성",
+            delta_color="normal" if _lat_stats["meets_median_target"] else "inverse",
+        )
+        lt3.metric(
+            "95백분위(목표 20s 이하)", f"{_lat_stats['p95_seconds']:.1f}s",
+            delta="달성" if _lat_stats["meets_p95_target"] else "미달성",
+            delta_color="normal" if _lat_stats["meets_p95_target"] else "inverse",
+        )
+        lt4.metric(
+            "60초 이상 신호(목표 0건)", f"{_lat_stats['over_60s_count']}건",
+            delta="달성" if _lat_stats["meets_zero_over_60s_target"] else "미달성",
+            delta_color="normal" if _lat_stats["meets_zero_over_60s_target"] else "inverse",
+        )
+    else:
+        st.caption("오늘 Signal→Order latency 표본 없음(아직 실제 주문이 시도되지 않음)")
+
     _block_reason = _etd.get("last_block_reason")
     _exit_reason = _etd.get("last_exit_reason")
     if _exit_reason:

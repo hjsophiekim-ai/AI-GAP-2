@@ -269,31 +269,12 @@ def test_decide_is_mode_agnostic_same_inputs_same_output():
 
 
 # ---------------------------------------------------------------------------
-# 10) inverse_pressure_score가 강한 인버스 근거를 보이면 ACTIVE_FUSION에 넘기는
-# enhanced_ai_score를 그 방향으로 보정한다(2026-07-14 실측 버그: Adaptive Fusion이
-# inverse_pressure_score를 전혀 보지 못해 "INVERSE_STRONG_BUY"인데도 HOLD로 끝남).
+# 10) (2026-07-21 제거) inverse_pressure_score로 enhanced_ai_score를 방향성 있게
+# 보정하던 _boost_enhanced_score_with_inverse_pressure()는 이미 항등함수(return
+# enhanced_score)로 무력화돼 있었던 비대칭 의도의 죽은 코드였다 — 방향편향 수정의
+# 일환으로 함수 자체를 제거했다(hynix_switch_engine.py). 아래 3개 테스트는 그
+# 죽은 함수의 항등 동작만 검증하던 것이라 함께 제거한다.
 # ---------------------------------------------------------------------------
-
-def test_strong_inverse_pressure_boosts_enhanced_score_toward_inverse():
-    from app.services.hynix_switch_engine import _boost_enhanced_score_with_inverse_pressure
-
-    boosted = _boost_enhanced_score_with_inverse_pressure(42.78, 77.87)
-    assert boosted == 42.78
-
-
-def test_weak_inverse_pressure_does_not_change_enhanced_score():
-    from app.services.hynix_switch_engine import _boost_enhanced_score_with_inverse_pressure
-
-    assert _boost_enhanced_score_with_inverse_pressure(55.0, 40.0) == 55.0
-
-
-def test_boost_never_pushes_score_away_from_original_direction():
-    """이미 인버스 쪽으로 더 강하게 기울어진 enhanced_score라면(예: 15.0), 약한
-    inverse_pressure_score 보정이 오히려 그 신호를 약화시켜서는 안 된다(min() 사용)."""
-    from app.services.hynix_switch_engine import _boost_enhanced_score_with_inverse_pressure
-
-    boosted = _boost_enhanced_score_with_inverse_pressure(15.0, 70.0)
-    assert boosted <= 15.0
 
 
 # ---------------------------------------------------------------------------

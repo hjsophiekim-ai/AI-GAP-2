@@ -760,44 +760,83 @@ def _buy_new(
             "failure_code": ORDER_FAILURE_ORDER_QTY_ZERO, "requested_qty": quantity, **_diag_base,
         }
     _assert_not_signal_symbol(symbol, "BUY")
-    with _POSITION_STATE_LOCK:
-        try:
-            order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
-        except Exception as exc:
-            logger.error("[SwitchPositionManager] broker.buy() 예외: %s", exc)
+
+    # 요구사항(2026-07-21) — 매도(_execute_sell)만 공용 OrderCoordinator를 거치고
+    # 매수(_buy_new)는 broker.buy()를 직접 호출해, Fast Worker와 메인 사이클이
+    # 동시에 매수를 시도하면 중복주문/직렬화 보장이 매도 경로와 비대칭이었다.
+    # 매도와 동일하게 idempotency key 기반 직렬화·중복차단을 적용한다.
+    from app.trading import exit_order_coordinator as order_coord
+
+    meta = fusion_metadata or {}
+    episode_id = meta.get("episode_id") or meta.get("signal_id") or "NO_EPISODE"
+    entry_event_id = meta.get("entry_event_id") or meta.get("signal_id") or f"BUY:{time.monotonic_ns()}"
+    account = order_coord.infer_account_id(broker, mode)
+
+    with order_coord.coordinated_order(
+        mode=mode, account=account, symbol=symbol, side="BUY",
+        episode_id=episode_id, exit_event_id=entry_event_id, target_qty=quantity,
+        source=signal_source, severity=meta.get("severity"), reason=reason,
+        detected_at=meta.get("detected_at"),
+    ) as coordinated:
+        if coordinated.blocked:
+            _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, coordinated.block_reason)
             return {
-                "success": False, "message": f"broker.buy() exception: {exc}",
-                "failure_code": ORDER_FAILURE_EXECUTION_EXCEPTION, "broker_error": str(exc),
-                "requested_qty": quantity, **_diag_base,
+                "success": False, "message": coordinated.block_reason, "blocked_by_coordinator": True,
+                "idempotency_key": coordinated.idempotency_key, "requested_qty": quantity, **_diag_base,
             }
-        order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)
-        if not order_dict.get("success"):
-            order_dict["failure_code"] = ORDER_FAILURE_BROKER_REJECTED
-            order_dict["broker_error"] = ", ".join(
-                f"{k}={order_dict.get(k)}" for k in ("rt_cd", "msg_cd", "msg1") if order_dict.get(k) not in (None, "")
-            ) or order_dict.get("message") or "broker rejected order"
-        order_dict.update({"requested_qty": quantity, **_diag_base})
-        confirmed = None
-        confirmed_qty = None
-        # 요구사항2 — rt_cd=0(success) 또는 주문번호만으로 원장에 체결수량을 기록하지
-        # 않는다. position_manager가 주어지면(실거래 경로는 항상 준다) 브로커를
-        # 재조회해 실제 체결량을 확정한 뒤에만 원장에 넘긴다. position_manager가 없는
-        # 호출부(간단한 단위테스트 등, 체결 재확인 자체가 불가능)만 과거처럼 접수
-        # 성공을 곧 체결로 간주한다 — 실거래 경로는 이 분기를 타지 않는다.
-        if order_dict.get("success") and position_manager is not None:
-            confirmed = _confirm_remaining_quantity_from_broker(
-                broker, symbol, position_manager=position_manager, retry_while_qty_equals=before_qty,
+        with _POSITION_STATE_LOCK:
+            try:
+                order = broker.buy(symbol, _SYMBOL_NAME.get(symbol, symbol), quantity, current_price)
+            except Exception as exc:
+                logger.error("[SwitchPositionManager] broker.buy() 예외: %s", exc)
+                coordinated.mark(order_coord.ORDER_FAILED, error=str(exc))
+                return {
+                    "success": False, "message": f"broker.buy() exception: {exc}",
+                    "failure_code": ORDER_FAILURE_EXECUTION_EXCEPTION, "broker_error": str(exc),
+                    "requested_qty": quantity, "idempotency_key": coordinated.idempotency_key, **_diag_base,
+                }
+            order_dict = order.to_dict() if hasattr(order, "to_dict") else dict(order)
+            if not order_dict.get("success"):
+                order_dict["failure_code"] = ORDER_FAILURE_BROKER_REJECTED
+                order_dict["broker_error"] = ", ".join(
+                    f"{k}={order_dict.get(k)}" for k in ("rt_cd", "msg_cd", "msg1") if order_dict.get(k) not in (None, "")
+                ) or order_dict.get("message") or "broker rejected order"
+            order_dict.update({"requested_qty": quantity, **_diag_base})
+            confirmed = None
+            confirmed_qty = None
+            # 요구사항2 — rt_cd=0(success) 또는 주문번호만으로 원장에 체결수량을 기록하지
+            # 않는다. position_manager가 주어지면(실거래 경로는 항상 준다) 브로커를
+            # 재조회해 실제 체결량을 확정한 뒤에만 원장에 넘긴다. position_manager가 없는
+            # 호출부(간단한 단위테스트 등, 체결 재확인 자체가 불가능)만 과거처럼 접수
+            # 성공을 곧 체결로 간주한다 — 실거래 경로는 이 분기를 타지 않는다.
+            if order_dict.get("success") and position_manager is not None:
+                confirmed = _confirm_remaining_quantity_from_broker(
+                    broker, symbol, position_manager=position_manager, retry_while_qty_equals=before_qty,
+                )
+                if confirmed.get("ok"):
+                    confirmed_qty = max(0, int(confirmed.get("quantity") or 0) - int(before_qty or 0))
+            elif order_dict.get("success"):
+                confirmed_qty = quantity
+            _record_order(
+                orders, order, "BUY", symbol, quantity, current_price, reason,
+                before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
+                fusion_metadata=fusion_metadata, confirmed_executed_qty=confirmed_qty,
             )
-            if confirmed.get("ok"):
-                confirmed_qty = max(0, int(confirmed.get("quantity") or 0) - int(before_qty or 0))
-        elif order_dict.get("success"):
-            confirmed_qty = quantity
-        _record_order(
-            orders, order, "BUY", symbol, quantity, current_price, reason,
-            before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
-            fusion_metadata=fusion_metadata, confirmed_executed_qty=confirmed_qty,
-        )
+            if order_dict.get("success") and confirmed is not None and confirmed.get("ok"):
+                coordinated.mark(
+                    order_coord.ORDER_FILLED, sent_qty=quantity, filled_qty=confirmed_qty,
+                    broker_order_id=order_dict.get("order_id"),
+                )
+            elif order_dict.get("success"):
+                coordinated.mark(
+                    order_coord.ORDER_ACCEPTED, sent_qty=quantity, broker_order_id=order_dict.get("order_id"),
+                )
+            else:
+                coordinated.mark(
+                    order_coord.ORDER_FAILED, sent_qty=quantity, broker_error=order_dict.get("message"),
+                )
     result = order_dict
+    result["idempotency_key"] = coordinated.idempotency_key
     result["bought_quantity"] = confirmed_qty if confirmed_qty is not None else 0
     result["filled_quantity"] = confirmed_qty if position_manager is not None else None
     result["actual_quantity"] = int(confirmed.get("quantity") or 0) if confirmed and confirmed.get("ok") else None
