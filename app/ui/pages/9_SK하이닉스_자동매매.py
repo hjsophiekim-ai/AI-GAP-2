@@ -2472,6 +2472,38 @@ else:
     )
 
 st.divider()
+st.subheader("🔬 ETF 자체 확인(방향판단 vs 주문실행 데이터 분리)")
+st.caption(
+    "000660은 Adaptive Regime·큰 방향 판단에만 쓰고, 실제 신규진입은 그 ETF(0193T0/0197X0) 자신의 "
+    "1분봉으로 재확인한 뒤에만 실행됩니다 — 000660 신호만으로 ETF 주문을 내보내지 않습니다."
+)
+_etf_confirm = _etd_state_now.get("last_etf_entry_confirmation")
+if not _etf_confirm:
+    st.info("아직 신규진입을 시도한 적이 없습니다(확인 결과 없음).")
+else:
+    ec1, ec2, ec3 = st.columns(3)
+    with ec1:
+        st.metric("대상 ETF", _etf_confirm.get("symbol", "—"))
+    with ec2:
+        st.metric("데이터 출처", _etf_confirm.get("source") or "—")
+    with ec3:
+        st.metric("진짜 ETF 데이터 사용", "예" if _etf_confirm.get("using_genuine_etf_data") else "아니오(대체/오래됨)")
+
+    ec4, ec5, ec6 = st.columns(3)
+    with ec4:
+        st.metric("오래된 데이터(stale)", "예" if _etf_confirm.get("stale") else "아니오")
+    with ec5:
+        st.metric("마지막 캔들 시각", _etf_confirm.get("last_bar_time") or "—")
+    with ec6:
+        _vwap = _etf_confirm.get("vwap")
+        st.metric("ETF 자체 VWAP", f"{_vwap:,.0f}원" if _vwap else "—")
+
+    if _etf_confirm.get("approved"):
+        st.success(f"✅ 신규진입 승인 — {_etf_confirm.get('reason')}")
+    else:
+        st.error(f"⛔ 신규진입 차단[{_etf_confirm.get('block_code')}] — {_etf_confirm.get('reason')}")
+
+st.divider()
 st.subheader("🛡️ 손절 실행 방식")
 
 from app.trading.hynix_stop_loss_control import (

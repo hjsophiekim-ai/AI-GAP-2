@@ -30,6 +30,7 @@ from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, should_liqu
 from app.trading.hynix_position_common import (
     get_hynix_auto_position, is_buy_cooldown_active, POSITION_CONFLICT, MIN_SECONDS_BETWEEN_BUYS,
 )
+from app.trading.etf_entry_confirmation import confirm_etf_entry
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
@@ -1274,9 +1275,15 @@ def run_switch_or_entry(
     state: dict, broker, final_action: str, hynix_price: Optional[float], inverse_price: Optional[float],
     now: Optional[datetime] = None, forced: bool = False, reason: str = "", position_manager=None,
     target_position_pct: Optional[float] = None, entry_type: Optional[str] = None,
-    stop_loss_pct: Optional[float] = None,
+    stop_loss_pct: Optional[float] = None, signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH,
 ) -> dict:
-    """Execute switching or a new entry. After 14:50, only sells (no buying a new symbol) fire."""
+    """Execute switching or a new entry. After 14:50, only sells (no buying a new symbol) fire.
+
+    signal_source(요구사항 2026-07-20) — 이 함수 내부의 모든 buy/sell 호출(top-up,
+    switch-sell, fresh-entry)에 그대로 전달되어 원장에 기록된다. 이 파라미터가
+    없던 예전에는 호출부가 무엇을 넘기든 내부에서 _buy_new/_sell_all_or_ratio의
+    기본값(SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH)으로 고정 기록돼, Early Trend
+    Detector가 만든 주문도 원장에는 전부 ENHANCED_REGIME_SWITCH로만 남았다."""
     now = now or kst_now()
     orders: list = []
     desired_symbol = _ACTION_TO_SYMBOL.get(final_action)
@@ -1348,7 +1355,7 @@ def run_switch_or_entry(
                     broker, desired_symbol, current_price, add_cash,
                     f"TrendSwitchAccel target-weight increase {pct * 100:.0f}%", orders,
                     mode=state.get("mode", "mock"), before_qty=int(position.get("quantity") or 0),
-                    position_manager=position_manager,
+                    position_manager=position_manager, signal_source=signal_source,
                 )
                 if buy_result.get("success"):
                     if buy_result.get("position_sync_status") == POSITION_SYNC_PENDING:
@@ -1429,6 +1436,7 @@ def run_switch_or_entry(
         sell_result = _sell_all_or_ratio(
             broker, position, current_price, 1.0, f"switch sell ({reason})", orders,
             mode=state.get("mode", "mock"), exit_reason_type="switch", position_manager=position_manager,
+            signal_source=signal_source,
         )
         if not sell_result.get("success"):
             return {"acted": False, "orders": orders, "message": f"switch sell failed: {sell_result.get('message')}", "stage": "order_sent"}
@@ -1501,6 +1509,34 @@ def run_switch_or_entry(
             "stage": "entry", "failure_code": ORDER_FAILURE_PRICE_UNAVAILABLE, "requested_symbol": desired_symbol,
         }
 
+    # 요구사항(2026-07-20) — 방향판단(000660/Adaptive Regime)과 주문실행 데이터
+    # (0193T0/0197X0 실제 ETF)를 분리한다. 000660 신호만으로 ETF 주문을 내보내지
+    # 않는다 — 실제 매수 직전 그 ETF 자신의 1분봉으로 재확인하고, 데이터가
+    # 없거나 오래됐으면 ETF_DATA_INSUFFICIENT로 fail-closed 차단한다. 모든
+    # 신규진입 경로(ENHANCED_REGIME_SWITCH/Early Trend Detector/Active Strategy/
+    # Fast Watcher)가 이 run_switch_or_entry() 하나를 거치므로, 여기 한 곳에서만
+    # 확인해도 전체에 동일 적용된다.
+    try:
+        _etf_direction = "DOWN" if desired_symbol == INVERSE_SYMBOL else "UP"
+        _etf_confirmation = confirm_etf_entry(
+            symbol=desired_symbol, underlying_direction=_etf_direction, current_price=current_price,
+            mode=state.get("mode", "mock"),
+        )
+        state["last_etf_entry_confirmation"] = _etf_confirmation
+        if not _etf_confirmation["approved"]:
+            return {
+                "acted": bool(orders), "orders": orders,
+                "message": f"ETF entry confirmation failed: {_etf_confirmation['reason']}",
+                "stage": "entry", "failure_code": _etf_confirmation["block_code"], "requested_symbol": desired_symbol,
+                "etf_confirmation": _etf_confirmation,
+            }
+    except Exception as exc:
+        logger.error("[SwitchPositionManager] ETF 진입 확인 실패(안전을 위해 이번 진입은 보류): %s", exc)
+        return {
+            "acted": bool(orders), "orders": orders, "message": f"ETF entry confirmation error: {exc}",
+            "stage": "entry", "failure_code": "ETF_DATA_INSUFFICIENT", "requested_symbol": desired_symbol,
+        }
+
     sized_cash, full_cash = _sizing_cash_amount(
         broker, forced, target_position_pct=target_position_pct,
         symbol=desired_symbol, current_price=current_price, state=state,
@@ -1514,7 +1550,7 @@ def run_switch_or_entry(
 
     buy_result = _buy_new(
         broker, desired_symbol, current_price, cash_amount, buy_reason, orders,
-        mode=state.get("mode", "mock"), position_manager=position_manager,
+        mode=state.get("mode", "mock"), position_manager=position_manager, signal_source=signal_source,
     )
     if buy_result.get("success"):
         if buy_result.get("position_sync_status") == POSITION_SYNC_PENDING:

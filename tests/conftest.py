@@ -104,3 +104,28 @@ def _isolate_ai_gap_data_paths(tmp_path, monkeypatch):
             monkeypatch.setattr(
                 ledger_module, "_LEDGER_PATH", tmp_path / "hynix_execution_ledger.csv", raising=False,
             )
+
+
+@pytest.fixture(autouse=True)
+def _default_approve_etf_entry_confirmation(monkeypatch):
+    """요구사항(2026-07-20) — run_switch_or_entry()의 신규진입 직전 ETF 자체
+    데이터 재확인(app.trading.etf_entry_confirmation.confirm_etf_entry)은 실제
+    KIS/Naver 네트워크 호출을 시도한다(그 콜렉터들이 실패 시 캐시로 폴백하는
+    설계 자체는 정상이며 다른 모든 콜렉터와 동일한 패턴이다). 이 호출 하나 없이도
+    기존 테스트 대부분이 신규진입 성공을 가정하므로, 기본값으로 항상 승인되게
+    막아 매 테스트마다 느린/불안정한 실제 네트워크 호출과 무관하게 한다. ETF
+    확인 로직 자체(승인/차단 조건)를 검증하는 테스트는 tests/
+    test_etf_entry_confirmation.py처럼 confirm_etf_entry()를 직접 호출하거나,
+    이 fixture가 patch한 hynix_switch_position_manager.confirm_etf_entry를
+    테스트 본문에서 다시 monkeypatch해 원하는 시나리오로 덮어쓰면 된다."""
+    import app.trading.hynix_switch_position_manager as position_manager_module
+
+    def _approved(*, symbol, underlying_direction, current_price, **kwargs):
+        return {
+            "symbol": symbol, "approved": True, "block_code": None, "reason": "test default approve",
+            "source": "test_stub", "stale": False, "status": "success", "last_bar_time": None,
+            "using_genuine_etf_data": True, "vwap": current_price, "slope_direction": underlying_direction,
+            "moved_pct_since_signal": None, "recent_high": None, "recent_low": None,
+        }
+
+    monkeypatch.setattr(position_manager_module, "confirm_etf_entry", _approved, raising=False)
