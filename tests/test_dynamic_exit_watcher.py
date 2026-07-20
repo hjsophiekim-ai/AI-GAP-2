@@ -290,8 +290,8 @@ class TestBigTrendHoldingIntegration:
     ENTRY_PRICE = 10_680.0
     QTY = 468
 
-    def _setup(self, tmp_path, monkeypatch, current_price, inverse_probability=75.0):
-        broker = _setup_e2e_position(tmp_path, monkeypatch, self.SYMBOL, self.NAME, self.ENTRY_PRICE, self.QTY)
+    def _setup(self, tmp_path, monkeypatch, current_price, inverse_probability=75.0, mode="mock"):
+        broker = _setup_e2e_position(tmp_path, monkeypatch, self.SYMBOL, self.NAME, self.ENTRY_PRICE, self.QTY, mode=mode)
         monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: current_price)
         monkeypatch.setattr(watcher, "_load_daily_df", lambda symbol: None)
         monkeypatch.setattr(watcher, "_load_minute_df", lambda symbol: None)
@@ -299,7 +299,8 @@ class TestBigTrendHoldingIntegration:
         monkeypatch.setattr(watcher.bte, "_LOG_PATH", tmp_path / "hynix_big_trend_log.csv")
         monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
 
-        state = state_module.load_state(mode="mock")
+        state = state_module.load_state(mode=mode)
+        state["mode"] = mode
         state["big_trend_holding_enabled"] = True
         state["last_cycle_ai_result"] = {
             "probability": {"buy_probability": 100 - inverse_probability, "sell_probability": inverse_probability, "hold_probability": 0.0},
@@ -319,6 +320,19 @@ class TestBigTrendHoldingIntegration:
         assert decision["action"] == "HOLD"
         reloaded = state_module.load_state(mode="mock")
         assert reloaded["position"]["quantity"] == self.QTY  # 청산되지 않음
+        assert reloaded.get("last_big_trend_result") is not None
+        assert reloaded["last_big_trend_result"]["dominant_direction"] == "INVERSE"
+
+    def test_big_trend_holding_applies_same_exit_engine_in_real_mode(self, tmp_path, monkeypatch):
+        current_price = self.ENTRY_PRICE * 1.010
+        self._setup(tmp_path, monkeypatch, current_price, mode="real")
+        state_module.set_active_mode("real")
+
+        decision = watcher.tick(now=datetime.now())
+
+        assert decision["action"] == "HOLD"
+        reloaded = state_module.load_state(mode="real")
+        assert reloaded["position"]["quantity"] == self.QTY
         assert reloaded.get("last_big_trend_result") is not None
         assert reloaded["last_big_trend_result"]["dominant_direction"] == "INVERSE"
 

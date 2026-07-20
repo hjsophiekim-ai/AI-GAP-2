@@ -693,7 +693,7 @@ if switch_state.get("mode") == "mock":
         "실제 주문가능금액은 KIS 모의투자 계좌 조회 결과를 따릅니다."
     )
 
-    # ── Active Strategy(거래모드 기반 조기진입/Scale-in) — mock 전용 opt-in ──────
+    # ── Active Strategy(거래모드 기반 조기진입/Scale-in) — mock/real 공통 전략 토글 ──────
     from app.trading.hynix_trading_mode import ALL_MODES, DEFAULT_MODE
 
     # ── 추천 운영모드 배너(2026-07-13 사용자 요청) — mock은 기본 ACTIVE, real은 초기
@@ -723,7 +723,7 @@ if switch_state.get("mode") == "mock":
     if switch_state.get("trading_mode") == "AGGRESSIVE" and not _reco_aggressive_ready:
         st.warning("⚠️ 현재 `AGGRESSIVE` 모드가 선택되어 있으나 검증 요건(5거래일/100건)을 충족하지 못했습니다 — `BALANCED` 또는 `ACTIVE`로 되돌리는 것을 권고합니다.")
 
-    st.markdown("##### ⚡ Active Strategy (mock 전용, 거래 빈도·기대수익률 개선)")
+    st.markdown("##### ⚡ Common Strategy Profile")
     as1, as2 = st.columns([1, 2])
     with as1:
         trading_mode = st.selectbox(
@@ -755,7 +755,7 @@ if switch_state.get("mode") == "mock":
             save_state_atomic(switch_state)
         st.caption(
             "OFF면 기존과 완전히 동일하게 동작합니다(ENHANCED_REGIME_SWITCH). ON이어도 강제청산(15:15)과 "
-            "레거시 TP/SL 안전망은 항상 그대로 우선 적용됩니다. real 모드에서는 이 토글이 적용되지 않습니다."
+            "레거시 TP/SL 안전망은 항상 그대로 우선 적용됩니다. 이 토글은 mock/real 공통 전략 설정입니다."
         )
 
     if switch_state.get("active_strategy_enabled"):
@@ -796,7 +796,7 @@ if switch_state.get("mode") == "mock":
         save_state_atomic(switch_state)
     if early_detector_enabled:
         early_detector_live = st.checkbox(
-            "🌱 Early Trend Detector — LIVE(실제 소액 주문 실행, mock 전용)",
+            "🌱 Early Trend Detector — LIVE(실제 소액 주문 실행, mock/real 공통)",
             value=bool(switch_state.get("early_trend_detector_live", False)), key="hynix_early_detector_live_toggle",
         )
         if early_detector_live != switch_state.get("early_trend_detector_live", False):
@@ -804,32 +804,36 @@ if switch_state.get("mode") == "mock":
             save_state_atomic(switch_state)
     st.caption(
         "OFF면 계산 자체를 하지 않습니다. ON+SHADOW(LIVE 미체크)는 신호/단계/차단사유만 계산·기록하고 "
-        "실제 주문은 내지 않습니다. ON+LIVE(mock 전용)일 때만 최초 5%→15%→25% 단계별 탐색진입과 "
-        "STRONG_UP/DOWN 확정 후 40~50% 확대가 실제로 실행됩니다. 최종 주문권한/최대비중은 항상 "
+        "실제 주문은 내지 않습니다. ON+LIVE이면 mock/real 모두 최초 10~15%→30%→50% 단계별 탐색진입과 "
+        "STRONG_UP/DOWN 확정 후 50% 확대가 실제로 실행됩니다. 최종 주문권한/최대비중은 항상 "
         "Adaptive Regime이 결정하며, 조기진입 자체 고정손절(-0.4%)/신호소멸/반대 변화점/60초 미확인 "
         "철수는 Dynamic Exit Watcher가 담당합니다."
     )
 
-    # ── 체크박스별 실제 영향도 표(2026-07-13 사용자 요청) — "켜져 있다"와 "실제
-    # 주문/청산에 반영된다"는 다르다. 세 토글 모두 현재 구현상 mock 전용이고, real
-    # 모드에서는 ON으로 저장돼 있어도 실제로는 항상 Shadow(레거시 경로 그대로 사용)다.
+    # ── 체크박스별 실제 영향도 표 — 전략 토글은 mock/real 공통이고, real은 계좌
+    # 어댑터와 안전 게이트만 별도로 적용한다.
     _fx_active_on = bool(switch_state.get("active_strategy_enabled", False))
     _fx_fusion_on = bool(switch_state.get("adaptive_fusion_enabled", False))
     _fx_bigtrend_on = bool(switch_state.get("big_trend_holding_enabled", False))
     _fx_early_on = bool(switch_state.get("early_trend_detector_enabled", False))
     _fx_early_live = bool(switch_state.get("early_trend_detector_live", False))
-    _fx_mode = switch_state.get("mode", "mock")
     _fx_rows = [
-        ("Active Strategy", _fx_active_on, "실제 반영(mock)" if (_fx_active_on and _fx_mode == "mock") else "Shadow(적용 안 됨)", "mock 전용 — real은 항상 ENHANCED_REGIME_SWITCH"),
-        ("Adaptive Fusion", _fx_fusion_on, "실제 반영(mock, Active Strategy ON 시)" if (_fx_fusion_on and _fx_active_on and _fx_mode == "mock") else "Shadow(적용 안 됨)", "mock 전용 — Active Strategy가 꺼져 있으면 이 토글도 무효"),
-        ("Big Trend Holding AI", _fx_bigtrend_on, "실제 반영(mock, 청산 지배)" if (_fx_bigtrend_on and _fx_mode == "mock") else "Shadow(계산·기록만)", "mock 전용 — real은 항상 Dynamic Exit AI/레거시 TP-SL"),
-        ("Early Trend Detector", _fx_early_on, "실제 반영(mock, LIVE)" if (_fx_early_on and _fx_early_live and _fx_mode == "mock") else ("Shadow(계산·기록만)" if _fx_early_on else "OFF(계산 안 함)"), "mock 전용 — 최초 탐색진입만 담당, 확대는 Adaptive Regime 확인 후"),
+        ("Active Strategy", _fx_active_on, "공통 진단 반영" if _fx_active_on else "OFF", "mock/real 동일 전략"),
+        ("Adaptive Fusion", _fx_fusion_on, "공통 진단 반영" if (_fx_fusion_on and _fx_active_on) else ("Active Strategy OFF로 대기" if _fx_fusion_on else "OFF"), "mock/real 동일 전략"),
+        ("Big Trend Holding AI", _fx_bigtrend_on, "공통 청산 엔진" if _fx_bigtrend_on else "Dynamic Exit 공통 사용", "mock/real 동일 전략"),
+        ("Early Trend Detector", _fx_early_on, "공통 LIVE 신규진입" if (_fx_early_on and _fx_early_live) else ("SHADOW 계산" if _fx_early_on else "OFF"), "mock/real 동일 전략"),
     ]
-    st.markdown("**체크박스별 실제 영향도**")
-    _fx_table = "| 기능 | 현재 ON/OFF | 실제 주문 반영 여부 | 적용 대상 |\n|---|---|---|---|\n"
+    st.markdown("**공통 Strategy Profile**")
+    _fx_table = "| 기능 | 현재 ON/OFF | 실제 실행 역할 | 적용 대상 |\n|---|---|---|---|\n"
     for _name, _on, _impact, _scope in _fx_rows:
         _fx_table += f"| {_name} | {'ON' if _on else 'OFF'} | {_impact} | {_scope} |\n"
     st.markdown(_fx_table)
+    _actual_entry_engine = "EARLY_TREND_DETECTOR_LIVE" if (_fx_early_on and _fx_early_live) else "ENHANCED_REGIME_SWITCH"
+    _actual_exit_engine = "BIG_TREND_HOLDING_AI" if _fx_bigtrend_on else "DYNAMIC_EXIT_AI"
+    st.caption(
+        f"mock/real 전략 동일: YES · 실제 신규진입 엔진: `{_actual_entry_engine}` · "
+        f"실제 청산 엔진: `{_actual_exit_engine}` · 차이: KIS 브로커/계좌/REAL 안전 게이트"
+    )
 
     # 요구사항(2026-07-16 사용자 리포트) — "현재 우세 방향"이 last_trend_switch_plan에서
     # 읽혀왔는데, 이 필드는 STRONG_BUY 신호가 떴을 때만 갱신된다(hynix_switch_engine.py의
@@ -1545,7 +1549,7 @@ else:
     else:
         _governing_strategy = _last_signal_source or "ACTIVE_ONLY(대기)"
     st.info(
-        f"🎯 **현재 실제 mock 주문을 지배하는 전략: `{_governing_strategy}`** — 실제 체결 담당.  \n"
+        f"🎯 **현재 실제 신규진입을 지배하는 공통 전략: `{_governing_strategy}`** — mock/real 판단 동일.  \n"
         + (
             f"최근 체결 signal_source: `{_last_signal_source}`  \n" if (_adaptive_fusion_enabled_now and _last_signal_source) else ""
         )
@@ -2259,7 +2263,7 @@ st.caption(f"백그라운드 감시 스레드: {'🟢 실행 중' if is_watcher_
 # ── 청산 엔진 현재 상태 요약 — "지금 실제로 무엇이 청산을 결정하는가"를 한 곳에서
 # 명확히 표시한다(2026-07-13 사용자 요청). 우선순위: 감시 스레드가 죽어있으면
 # 레거시 TP/SL fallback이 담당하고(run_tp_sl_if_needed 참고), 살아있으면 Big Trend
-# Holding AI가 켜져 있을 때만(mock 전용) 그 결과가 실제 action/ratio를 대체하며,
+# Holding AI가 켜져 있을 때 mock/real 공통으로 그 결과가 실제 action/ratio를 대체하며,
 # 그 외에는 Dynamic Exit AI(고정 프로필 기반)가 담당한다. 초기 손절 안전장치는
 # 어느 엔진이 담당하든 항상 최우선 적용된다.
 _ee_watcher_alive = is_watcher_running()
@@ -2314,7 +2318,7 @@ with ee5:
 with ee6:
     st.metric("trailing_policy", trailing_policy)
 st.caption(
-    "우선순위: 감시 스레드 정지 → LEGACY_TP_SL_FALLBACK 담당 / 스레드 정상 + Big Trend ON(mock 전용) → "
+    "우선순위: 감시 스레드 정지 → LEGACY_TP_SL_FALLBACK 담당 / 스레드 정상 + Big Trend ON → "
     "BIG_TREND_HOLDING_AI가 실제 action·ratio 대체 / 그 외 → DYNAMIC_EXIT_AI. 초기 손절 안전장치(effective_sl_pct)는 "
     "어느 엔진이 담당하든 토글과 무관하게 항상 최우선 적용됩니다."
 )
@@ -2561,6 +2565,12 @@ if _daily_loss_override_choice != _daily_loss_override_current:
     st.rerun()
 elif _daily_loss_override_current:
     st.warning("🔓 일 손실 -2.0% 신규진입 차단이 현재 해제되어 있습니다.")
+
+if st.button("매매제한 해제", key="hynix_daily_loss_block_override_button", type="primary"):
+    switch_state["daily_loss_block_override"] = True
+    save_state_atomic(switch_state)
+    st.warning("일 손실 -2.0% 신규진입 차단을 수동 해제했습니다. 오늘 손익과 무관하게 신규진입이 다시 허용됩니다.")
+    st.rerun()
 
 st.caption("아래 버튼은 손절 방식과 무관하게 언제든 즉시 전량 청산을 실행합니다(현재 모드의 실제 계좌/브로커 기준).")
 mb1, mb2, mb3 = st.columns(3)

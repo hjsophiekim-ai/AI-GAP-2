@@ -38,6 +38,8 @@ class _RepeatableBuyBroker:
     def __init__(self, quantity: int = 0, avg_price: float = 0.0, cash: float = 10_000_000.0):
         self.quantity = quantity
         self.avg_price = avg_price
+        self.symbol = HYNIX_SYMBOL
+        self.name = HYNIX_NAME
         self.cash = cash
         self.buy_calls: list = []
         self.sell_calls: list = []
@@ -45,6 +47,8 @@ class _RepeatableBuyBroker:
     def buy(self, symbol, name, quantity, price, order_type="limit"):
         self.buy_calls.append((symbol, quantity, price))
         total_cost = self.avg_price * self.quantity + price * quantity
+        self.symbol = symbol
+        self.name = name
         self.quantity += quantity
         self.avg_price = total_cost / self.quantity if self.quantity else price
         self.cash -= price * quantity
@@ -63,7 +67,7 @@ class _RepeatableBuyBroker:
     def get_positions(self):
         if self.quantity <= 0:
             return []
-        return [{"symbol": HYNIX_SYMBOL, "name": HYNIX_NAME, "quantity": self.quantity, "avg_price": self.avg_price}]
+        return [{"symbol": self.symbol, "name": self.name, "quantity": self.quantity, "avg_price": self.avg_price}]
 
     def get_buyable_cash(self):
         return self.cash
@@ -77,13 +81,13 @@ def _strong_signal(direction: str = "UP") -> dict:
             "returns": {"1m": -0.3, "3m": -0.8, "5m": -1.0}, "top_factors": []}
 
 
-def _flat_state(tmp_path, monkeypatch, *, live: bool = True) -> tuple[dict, DryRunBroker, HynixPositionManager]:
+def _flat_state(tmp_path, monkeypatch, *, live: bool = True, mode: str = "mock") -> tuple[dict, _RepeatableBuyBroker, HynixPositionManager]:
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
-    broker = DryRunBroker(initial_balance=10_000_000.0)
-    pm = HynixPositionManager(broker, mode="mock")
+    broker = _RepeatableBuyBroker(cash=10_000_000.0)
+    pm = HynixPositionManager(broker, mode=mode)
     pm.sync(force=True)
-    state = default_state()
-    state["mode"] = "mock"
+    state = default_state(mode)
+    state["mode"] = mode
     state["auto_trade_on"] = True
     state["early_trend_detector_enabled"] = True
     state["early_trend_detector_live"] = live
@@ -92,7 +96,8 @@ def _flat_state(tmp_path, monkeypatch, *, live: bool = True) -> tuple[dict, DryR
 
 # ── 최초 탐색진입(요구사항2) ──────────────────────────────────────────────────
 
-def test_flat_entry_opens_five_percent_early_probe_position(tmp_path, monkeypatch):
+def test_flat_entry_opens_early_probe_position(tmp_path, monkeypatch):
+    """요구사항(2026-07-20 최종) — 최초 확인 즉시 10~15%(중간값 12%)."""
     state, broker, pm = _flat_state(tmp_path, monkeypatch)
 
     result = engine_module._run_early_trend_detector_tick(
@@ -105,8 +110,33 @@ def test_flat_entry_opens_five_percent_early_probe_position(tmp_path, monkeypatc
     assert state["position"]["symbol"] == HYNIX_SYMBOL
     assert state["position"]["entry_type"] == "EARLY_PROBE"
     assert state["position"]["quantity"] > 0
-    assert state["early_trend_detector"]["stage"] == "PROBE_5"
-    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.05)
+    from app.trading import early_trend_detector as etd
+
+    assert state["early_trend_detector"]["stage"] == etd.STAGE_INITIAL
+    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.12)
+
+
+def test_live_entry_uses_identical_stage_and_weight_for_mock_and_real(tmp_path, monkeypatch):
+    results = {}
+
+    for mode in ("mock", "real"):
+        state, broker, pm = _flat_state(tmp_path / mode, monkeypatch, live=True, mode=mode)
+
+        result = engine_module._run_early_trend_detector_tick(
+            state=state, mode=mode, now=NOW, fast_signal=_strong_signal("UP"), df_1min=None,
+            confirmed_regime="STRONG_UP", broker=broker, position_manager=pm,
+            hynix_price=100_000.0, inverse_price=5_000.0,
+        )
+
+        results[mode] = {
+            "skipped": result["skipped"],
+            "symbol": state["position"]["symbol"],
+            "quantity": state["position"]["quantity"],
+            "stage": state["early_trend_detector"]["stage"],
+            "target_pct": state["early_trend_detector"]["target_pct"],
+        }
+
+    assert results["real"] == results["mock"]
 
 
 def test_shadow_mode_computes_diagnostics_without_placing_order(tmp_path, monkeypatch):
@@ -122,7 +152,9 @@ def test_shadow_mode_computes_diagnostics_without_placing_order(tmp_path, monkey
     assert "SHADOW" in result["reason"]
     assert state["position"].get("symbol") is None
     assert len(broker.buy_calls if hasattr(broker, "buy_calls") else []) == 0
-    assert state["early_trend_detector"]["stage"] == "PROBE_5"
+    from app.trading import early_trend_detector as etd
+
+    assert state["early_trend_detector"]["stage"] == etd.STAGE_INITIAL
 
 
 def test_weak_or_flat_signal_does_not_enter(tmp_path, monkeypatch):
@@ -163,7 +195,7 @@ def test_panic_regime_caps_probe_at_ten_percent(tmp_path, monkeypatch):
     )
 
     assert result["skipped"] is False
-    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.05)  # 최초 단계는 5%(PANIC 상한 10%보다 낮음)
+    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.10)  # PANIC 상한(10%)이 최초 단계값(12%)보다 낮아 캡이 적용됨
 
 
 def test_cost_gate_blocks_entry_when_expected_edge_too_small(tmp_path, monkeypatch):
@@ -220,6 +252,91 @@ def test_chase_block_prevents_late_entry_after_reference_price_moved(tmp_path, m
     assert state["position"].get("symbol") is None
 
 
+# ── 5초 주기 실시간 기울기(요구사항1, 2026-07-20 최종 필수 테스트) ────────────
+
+def test_live_slope_reversal_triggers_probe_entry_within_thirty_seconds(tmp_path, monkeypatch):
+    """10:27류 반전 재현 — 1분봉 vote는 아직 방향을 확정하지 못했지만(FLAT),
+    5초 주기로 쌓은 실시간 기울기(live_slopes)가 인버스 ETF 자체 상승(=기초자산
+    하락)을 이미 확정했다. 이 경우 vote 확정을 기다리지 않고 즉시(elapsed=0,
+    30초 이내) 인버스 탐색진입이 시작돼야 한다."""
+    state, broker, pm = _flat_state(tmp_path, monkeypatch)
+    flat_vote_signal = {
+        "direction": "FLAT", "up_votes": 3, "down_votes": 3,
+        "returns": {"1m": 0.0, "3m": -0.5, "5m": -0.8}, "top_factors": [],
+    }
+    # INVERSE_SYMBOL 자체 가격이 오르는 중(direction=UP) = 기초자산은 내리는 중.
+    live_slopes = {
+        INVERSE_SYMBOL: {"direction": "UP", "slopes": {5: 0.05, 10: 0.08, 20: 0.12, 30: 0.15}, "windows_available": 4},
+    }
+
+    result = engine_module._run_early_trend_detector_tick(
+        state=state, mode="mock", now=NOW, fast_signal=flat_vote_signal, df_1min=None,
+        confirmed_regime="STRONG_DOWN", broker=broker, position_manager=pm,
+        hynix_price=100_000.0, inverse_price=5_000.0, live_slopes=live_slopes,
+    )
+
+    assert result["skipped"] is False
+    assert state["position"]["symbol"] == INVERSE_SYMBOL
+    assert state["position"]["entry_type"] == "EARLY_PROBE"
+    latency = state["early_trend_detector"]["probe"]["signal_to_fill_latency_seconds"]
+    assert latency < 30.0
+
+
+def test_stale_direction_signal_never_buys_opposite_etf(tmp_path, monkeypatch):
+    """요구사항4 — 기존 후보가 UP이었는데 실시간 기울기가 반대(DOWN)로 확정되면,
+    그 틱은 절대 예전(UP) 방향 ETF(레버리지)를 사지 않는다 — 후보 자체가 즉시
+    DOWN으로 교체되고, 실제 매수도 인버스(DOWN)로 나가야 한다."""
+    state, broker, pm = _flat_state(tmp_path, monkeypatch)
+    state["early_trend_detector"] = {
+        "candidate": {"direction": "UP", "first_detected_at": (NOW - timedelta(seconds=20)).isoformat(), "reference_price": 100_000.0},
+        "last_signal": {"direction": "UP", "score": 80.0},
+    }
+    flat_vote_signal = {"direction": "FLAT", "up_votes": 3, "down_votes": 3, "returns": {"3m": -0.5}, "top_factors": []}
+    live_slopes = {
+        INVERSE_SYMBOL: {"direction": "UP", "slopes": {5: 0.05, 10: 0.08, 20: 0.12, 30: 0.15}, "windows_available": 4},
+    }
+
+    result = engine_module._run_early_trend_detector_tick(
+        state=state, mode="mock", now=NOW, fast_signal=flat_vote_signal, df_1min=None,
+        confirmed_regime="STRONG_DOWN", broker=broker, position_manager=pm,
+        hynix_price=100_000.0, inverse_price=5_000.0, live_slopes=live_slopes,
+    )
+
+    assert result["skipped"] is False
+    assert state["position"]["symbol"] == INVERSE_SYMBOL  # 절대 HYNIX_SYMBOL(옛 UP 방향)을 사지 않음
+    assert state["position"]["quantity"] > 0
+    # 반대 change-point 자체의 70% 감쇠/재진입 차단 메커니즘은
+    # test_apply_opposite_change_point_reaction_decays_score_and_blocks_old_direction
+    # (단위테스트)에서 별도로 검증한다 — 이 틱은 감쇠 직후 실제로 DOWN 진입까지
+    # 성공해 frequency의 last_entry_direction이 DOWN으로 다시 갱신되므로(정상
+    # 동작 — 이미 반대 포지션을 보유하게 됐으니 UP 쿨다운을 별도로 유지할 필요가
+    # 없다), 여기서는 그 최종 상태까지 다시 검증하지 않는다.
+
+
+def test_fifty_percent_expansion_requires_direction_alignment(tmp_path, monkeypatch):
+    """요구사항2 — 30초가 지나도 방향이 정렬돼 있지 않으면 50% 단계로 승격하지
+    않고 30% 단계에 머문다. 방향이 정렬되면(live_slopes 또는 vote 일치) 그제야
+    50%로 승격한다."""
+    state, broker, pm = _probe_holding_setup(tmp_path, monkeypatch)
+    misaligned_signal = {"direction": "DOWN", "up_votes": 0, "down_votes": 6, "volume_ratio": 1.0, "top_factors": []}
+
+    misaligned_result = engine_module._run_early_trend_detector_tick(
+        state=state, mode="mock", now=NOW + timedelta(seconds=35), fast_signal=misaligned_signal, df_1min=None,
+        confirmed_regime="VOLATILE_RANGE", broker=broker, position_manager=pm,
+        hynix_price=100_100.0, inverse_price=5_000.0,
+    )
+    assert misaligned_result.get("staged_to") == pytest.approx(0.30)  # 아직 50%로 승격하지 않음
+
+    state2, broker2, pm2 = _probe_holding_setup(tmp_path, monkeypatch)
+    aligned_signal = _strong_signal("UP")
+    aligned_result = engine_module._run_early_trend_detector_tick(
+        state=state2, mode="mock", now=NOW + timedelta(seconds=35), fast_signal=aligned_signal, df_1min=None,
+        confirmed_regime="VOLATILE_RANGE", broker=broker2, position_manager=pm2,
+        hynix_price=100_100.0, inverse_price=5_000.0,
+    )
+    assert aligned_result.get("staged_to") == pytest.approx(0.50)
+
+
 # ── 확정 후 확대(요구사항2 마지막 항목) ───────────────────────────────────────
 
 def _probe_holding_setup(tmp_path, monkeypatch, *, initial_qty: int = 5, initial_avg: float = 100_000.0):
@@ -246,7 +363,7 @@ def _probe_holding_setup(tmp_path, monkeypatch, *, initial_qty: int = 5, initial
     return state, broker, pm
 
 
-def test_confirmed_strong_trend_expands_probe_to_45_percent(tmp_path, monkeypatch):
+def test_confirmed_strong_trend_expands_probe_to_50_percent(tmp_path, monkeypatch):
     state, broker, pm = _probe_holding_setup(tmp_path, monkeypatch)
 
     result = engine_module._run_early_trend_detector_tick(
@@ -255,12 +372,15 @@ def test_confirmed_strong_trend_expands_probe_to_45_percent(tmp_path, monkeypatc
         hynix_price=101_000.0, inverse_price=5_000.0,
     )
 
-    assert result.get("expanded_to") == pytest.approx(0.45)
+    assert result.get("expanded_to") == pytest.approx(0.50)
     assert state["position"]["entry_type"] == "CONFIRMED"
     assert state["early_trend_detector"]["probe"]["expanded"] is True
 
 
 def test_staged_progression_increases_size_over_elapsed_time(tmp_path, monkeypatch):
+    """요구사항(2026-07-20 최종) — 15초 유지 시 30% 단계로 진행한다(fast_signal이
+    보유 방향과 일치해 direction_aligned=True가 되므로 30% 단계까지는 도달하되,
+    아직 30초가 안 지나 50% 단계로는 승격하지 않는다)."""
     state, broker, pm = _probe_holding_setup(tmp_path, monkeypatch)
 
     result = engine_module._run_early_trend_detector_tick(
@@ -269,7 +389,7 @@ def test_staged_progression_increases_size_over_elapsed_time(tmp_path, monkeypat
         hynix_price=100_100.0, inverse_price=5_000.0,
     )
 
-    assert result.get("staged_to") == pytest.approx(0.15)
+    assert result.get("staged_to") == pytest.approx(0.30)
     assert state["position"]["entry_type"] == "EARLY_PROBE"  # 확대 전까지는 여전히 probe
 
 
@@ -355,7 +475,7 @@ def test_early_probe_exits_after_sixty_seconds_without_reconfirmation(tmp_path, 
     decision = watcher.tick(now=NOW)
 
     assert decision["action"] == "SELL_ALL"
-    assert ("60초" in decision["reason"]) or ("소멸" in decision["reason"])
+    assert ("60초" in decision["reason"]) or ("30초" in decision["reason"]) or ("소멸" in decision["reason"])
 
 
 def test_early_probe_holds_when_still_within_all_thresholds(tmp_path, monkeypatch):

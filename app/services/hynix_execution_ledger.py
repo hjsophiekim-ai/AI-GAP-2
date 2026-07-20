@@ -496,7 +496,7 @@ def compute_realized_pnl_breakdown(date_str: Optional[str] = None) -> dict:
 
 def compute_strategy_real_stats(signal_sources, date_str: Optional[str] = None) -> dict:
     """실제로 체결된(원장 기준) 특정 signal_source(들)의 성과를 hynix_strategy_shadow_tracker의
-    가상 포트폴리오 통계와 같은 스키마로 반환한다 — ADAPTIVE_FUSION처럼 실제 mock 주문이
+    가상 포트폴리오 통계와 같은 스키마로 반환한다 — ADAPTIVE_FUSION처럼 실제 공통 주문이
     나가는 전략을 가상 전략들과 나란히 비교하기 위함(섹션 18/19)."""
     if isinstance(signal_sources, str):
         signal_sources = [signal_sources]

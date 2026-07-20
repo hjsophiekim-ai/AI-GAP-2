@@ -417,6 +417,33 @@ def _load_inverse_1min_for_pullback(mode: str):
         return None
 
 
+def _create_strategy_broker(cfg, mode: str):
+    """Create the account adapter for the selected mode while keeping strategy logic common.
+
+    mock/real must share signals, gates and sizing. The only branch here is the
+    broker adapter and real-order safety confirmation required before a real KIS
+    order-capable broker can be constructed.
+    """
+    from app.trading.broker_factory import create_broker
+
+    if mode == "real":
+        gate_status = (
+            cfg.enhanced_real_gate_status(current_mode=mode)
+            if hasattr(cfg, "enhanced_real_gate_status")
+            else {"ready": cfg.full_auto_real_confirm_ok(), "blocking_reasons": [], "checks": {}}
+        )
+        if not bool(gate_status.get("ready")):
+            raise RuntimeError(
+                "REAL gate blocked: "
+                + ", ".join(gate_status.get("blocking_reasons") or ["UNKNOWN"])
+            )
+        return create_broker(
+            cfg, mode="real", confirm_text=cfg.full_auto_real_confirm_text(),
+            runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
+        )
+    return create_broker(cfg, mode=mode)
+
+
 def set_control(
     auto_trade_on: Optional[bool] = None, mode: Optional[str] = None,
     allow_mock_loss_override: Optional[bool] = None, mock_budget_krw: Optional[float] = None,
@@ -870,13 +897,11 @@ def _run_active_strategy_entry(
     now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
     position_manager=None,
 ) -> dict:
-    """ACTIVE STRATEGY(거래모드 기반 조기진입/Scale-in/빠른전환) — mock 전용 opt-in.
+    """ACTIVE STRATEGY diagnostics for the common mock/real strategy profile.
 
-    state["active_strategy_enabled"]가 True이고 mode=="mock"일 때만 호출부에서
-    호출된다(real 모드에서는 절대 호출되지 않음 — 호출부에서 이미 mode=="mock"을
-    확인). 기존 ENHANCED_REGIME_SWITCH 진입 로직(run_switch_or_entry)을 이번 사이클만
-    대체하며, 같은 브로커/포지션 파이프라인(_buy_new/_sell_all_or_ratio → 실행
-    원장)을 그대로 사용하되 signal_source="ACTIVE_ONLY"으로 구분 기록한다.
+    This path is evaluated identically in mock and real when the common toggle is
+    enabled. Actual order ownership remains with the common execution engines
+    below, so broker/account differences do not alter the decision surface.
     """
     final_decision = {"executable": False, "order_sent": False, "signal_source": "SHADOW_ONLY"}
     state["last_final_execution_decision"] = final_decision
@@ -1081,8 +1106,7 @@ def _run_adaptive_fusion_entry(
     now: datetime, orders_this_cycle: list, enhanced_ai_score: Optional[float] = None,
     hynix_df_1min=None, position_manager=None,
 ) -> dict:
-    """ADAPTIVE FUSION — Prediction AI V2를 실제 mock 주문에 반영하되 ACTIVE_FUSION을
-    완전히 대체하지 않는 성과기반 융합 엔진(mock 전용 opt-in, state["adaptive_fusion_enabled"]).
+    """ADAPTIVE FUSION diagnostics for the common mock/real strategy profile.
 
     2026-07-13 사용자 검증: 이전에는 Prediction V2가 buy_probability/sell_probability
     "값"만 _run_active_strategy_entry의 입력으로 흘러들어갔을 뿐, V2 자신의 독자 판단
@@ -1588,32 +1612,58 @@ def _early_signal_symbol_agreement(etd_state: dict, fast_signal: dict, hynix_pri
     return (inverse_price >= prev_inverse) if (prev_inverse and inverse_price) else None
 
 
+def _load_etf_own_minute_cache(symbol: str):
+    """desired_symbol(0193T0/0197X0) 자신의 1분봉을 로컬 캐시에서만 읽는다(새
+    KIS 호출 없음) — 5초 주기 Early Detector 피드가 VWAP/구조돌파/거래량 급증을
+    판단할 때 매 틱 새로 분봉 API를 부르지 않기 위함(요구사항1, KIS 호출량 안전)."""
+    try:
+        if symbol == HYNIX_SYMBOL:
+            from app.data_sources.hynix_long_collector import _load_long_minute_cache
+
+            return _load_long_minute_cache()
+        if symbol == INVERSE_SYMBOL:
+            from app.data_sources.hynix_inverse_collector import _load_inverse_minute_cache
+
+            return _load_inverse_minute_cache()
+    except Exception:
+        return None
+    return None
+
+
 def _run_early_trend_detector_tick(
     *, state: dict, mode: str, now: datetime, fast_signal: dict, df_1min,
     confirmed_regime: Optional[str], broker, position_manager,
     hynix_price: Optional[float], inverse_price: Optional[float],
+    live_slopes: Optional[dict] = None,
 ) -> Optional[dict]:
     """Early Trend Detector — Adaptive Market Regime 하위의 제한적 탐색진입 엔진.
 
     최종 주문권한/최대비중은 항상 Adaptive Regime(confirmed_regime)이 결정한다 —
-    이 함수는 (a) 무포지션일 때 최초 탐색진입(5%→15%→25%)만 시작하거나,
+    이 함수는 (a) 무포지션일 때 최초 탐색진입(10~15%→30%→50%)만 시작하거나,
     (b) 이미 이 엔진이 만든 EARLY_PROBE 포지션을 들고 있을 때 단계 진행 또는
-    STRONG_UP/DOWN 확정 후 확대(40~50%)만 판단한다. 조기진입의 철수(고정
-    -0.4%/신호소멸/반대변화점/60초 미확인)는 1초 주기 Dynamic Exit Watcher가
-    담당한다(이 함수는 30초 주기라 철수 반응이 느리다).
+    STRONG_UP/DOWN 확정 후 확대(50%)만 판단한다. 조기진입의 철수(고정 -0.4%
+    또는 VOLATILE_RANGE TP1/TP2/SL/신호약화/30초 미확인)는 1초 주기 Dynamic
+    Exit Watcher가 담당한다(이 함수는 5초 주기 피드에서 호출돼도 철수는 항상
+    가장 빠른 워처가 전담한다).
+
+    live_slopes: app.trading.early_trend_live_feed로 5초 주기로 쌓은
+    {symbol: {"direction": ..., "slopes": {...}}} — 1분봉 vote보다 먼저 반전을
+    잡기 위한 입력(요구사항1).
 
     반환값이 None이면 "이 틱에서 관여하지 않음"을 뜻하며, 호출부는 기존 레거시
     로직(PRIMARY_TREND 기반 Fast Watcher)을 그대로 이어서 실행해야 한다.
     """
     from app.trading import early_trend_detector as etd
+    from app.trading.etf_entry_confirmation import compute_etf_breakouts, compute_etf_volume_surge
 
+    live_slopes = live_slopes or {}
     position = state.get("position") or {}
     held_symbol = position.get("symbol")
     today = now.strftime("%Y%m%d")
     etd_state = dict(state.get("early_trend_detector") or {})
     freq = etd.reset_frequency_state_if_new_day(etd_state.get("frequency"), today)
     etd_state["frequency"] = freq
-    live = mode == "mock" and bool(state.get("early_trend_detector_live"))
+    live = bool(state.get("early_trend_detector_live"))
     etd_state["engine_mode"] = "LIVE" if live else "SHADOW"
 
     if held_symbol and position.get("entry_type") != etd.ENTRY_TYPE_EARLY_PROBE:
@@ -1637,9 +1687,53 @@ def _run_early_trend_detector_tick(
             return {"skipped": True, "reason": etd_state["last_block_reason"]}
 
         signal_symbol_agreement = _early_signal_symbol_agreement(etd_state, fast_signal, hynix_price, inverse_price)
-        early_signal = etd.compute_early_signal(fast_signal, signal_symbol_agreement=signal_symbol_agreement)
+
+        # 요구사항1 — live_slopes는 종목별(HYNIX_SYMBOL/INVERSE_SYMBOL) 자기 자신의
+        # 가격 기울기다. INVERSE_SYMBOL은 기초자산과 반대로 움직이므로, "기초자산
+        # 방향" 기준 단일 판단으로 정규화한다(레버리지 상승=기초자산 UP, 인버스
+        # 상승=기초자산 DOWN). 두 심볼의 함의가 서로 다르면(둘 다 있는데 불일치)
+        # 아직 불확실로 본다 — 한쪽만 있으면 그 값을 그대로 쓴다.
+        _prev_signal_direction = (etd_state.get("last_signal") or {}).get("direction")
+        _prev_signal_score = (etd_state.get("last_signal") or {}).get("score")
+        _live_hynix_dir = (live_slopes.get(HYNIX_SYMBOL) or {}).get("direction")
+        _live_inverse_dir = (live_slopes.get(INVERSE_SYMBOL) or {}).get("direction")
+        _live_inverse_implied = {"UP": "DOWN", "DOWN": "UP"}.get(_live_inverse_dir)
+        _live_direction_candidates = [d for d in (_live_hynix_dir, _live_inverse_implied) if d]
+        _live_direction_for_data = (
+            _live_direction_candidates[0]
+            if _live_direction_candidates and len(set(_live_direction_candidates)) == 1
+            else None
+        )
+
+        # 두 후보 방향(UP=HYNIX_SYMBOL, DOWN=INVERSE_SYMBOL) 중 지금 판단 대상이
+        # 되는 쪽의 ETF 자체 VWAP 이탈/1분봉 구조돌파/거래량 급증을 미리 계산한다
+        # — 1분봉 vote가 아직 확정하지 못했어도 실시간 기울기가 먼저 확정되면
+        # 그 방향으로 조기신호를 만들 수 있게 한다(요구사항1).
+        _vote_direction = fast_signal.get("direction") if fast_signal.get("direction") in ("UP", "DOWN") else None
+        _candidate_direction_for_data = _vote_direction or _live_direction_for_data or _prev_signal_direction
+        _probe_symbol = HYNIX_SYMBOL if _candidate_direction_for_data == "UP" else INVERSE_SYMBOL if _candidate_direction_for_data == "DOWN" else None
+        _etf_df = _load_etf_own_minute_cache(_probe_symbol) if _probe_symbol else None
+        _etf_price_for_data = hynix_price if _probe_symbol == HYNIX_SYMBOL else inverse_price if _probe_symbol == INVERSE_SYMBOL else None
+        _breakouts = compute_etf_breakouts(_etf_df, _etf_price_for_data, _candidate_direction_for_data) if _probe_symbol else {}
+        _volume_surge = compute_etf_volume_surge(_etf_df) if _etf_df is not None else None
+
+        early_signal = etd.compute_composite_early_signal(
+            fast_signal=fast_signal, signal_symbol_agreement=signal_symbol_agreement,
+            live_direction=_live_direction_for_data, etf_vwap_breakout=_breakouts.get("vwap_breakout"),
+            etf_structure_breakout=_breakouts.get("structure_breakout"), etf_volume_surge=_volume_surge,
+        )
         direction = early_signal.get("direction")
         etd_state["last_signal"] = early_signal
+
+        # 요구사항4 — 이전 후보 방향과 반대로 확정되면(1분봉 vote 또는 실시간
+        # 기울기 어느 쪽이든) 즉시 기존 방향 점수를 70% 감쇠하고 그 방향 재진입을
+        # 지금부터 다시 쿨다운 처리한다 — 확인 스트릭은 아래에서 candidate가 새로
+        # 만들어지며 자연히 리셋된다.
+        _prev_candidate = etd_state.get("candidate") or {}
+        _prev_candidate_direction = _prev_candidate.get("direction")
+        if direction in ("UP", "DOWN") and _prev_candidate_direction and direction != _prev_candidate_direction:
+            freq = etd.apply_opposite_change_point_reaction(freq, _prev_candidate_direction, _prev_signal_score, now)
+            etd_state["frequency"] = freq
 
         if direction not in ("UP", "DOWN") or early_signal["score"] < 50.0:
             etd_state["candidate"] = {}
@@ -1652,7 +1746,10 @@ def _run_early_trend_detector_tick(
 
         candidate = dict(etd_state.get("candidate") or {})
         if candidate.get("direction") != direction:
-            candidate = {"direction": direction, "first_detected_at": now.isoformat(), "reference_price": current_etf_price}
+            candidate = {
+                "direction": direction, "first_detected_at": now.isoformat(), "reference_price": current_etf_price,
+                "change_point_detected_at": now.isoformat(),
+            }
         etd_state["candidate"] = candidate
 
         try:
@@ -1686,7 +1783,9 @@ def _run_early_trend_detector_tick(
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "signal": early_signal}
 
-        stage, target_pct = etd.compute_target_probe_pct(confirmed_regime, elapsed)
+        # 요구사항2 — 50% 단계는 30초 유지 "그리고" ETF/기초자산 방향 일치일 때만.
+        direction_aligned = bool(signal_symbol_agreement)
+        stage, target_pct = etd.compute_target_probe_pct(confirmed_regime, elapsed, direction_aligned=direction_aligned)
         etd_state["stage"], etd_state["target_pct"] = stage, target_pct
         if target_pct <= 0.0:
             etd_state["last_block_reason"] = f"{confirmed_regime} 장세는 조기진입 금지"
@@ -1701,6 +1800,10 @@ def _run_early_trend_detector_tick(
         etd_state["signal_price"] = candidate.get("reference_price")
         etd_state["current_price"] = current_etf_price
         etd_state["last_block_reason"] = None
+        moved_pct_since_signal = None
+        if candidate.get("reference_price") and current_etf_price:
+            moved_pct_since_signal = round(abs(current_etf_price / candidate["reference_price"] - 1.0) * 100.0, 4)
+        etd_state["etf_move_pct_since_signal"] = moved_pct_since_signal
 
         if not live:
             state["early_trend_detector"] = etd_state
@@ -1714,6 +1817,7 @@ def _run_early_trend_detector_tick(
             state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
             reason=f"EARLY_TREND_DETECTOR 조기진입({stage})", position_manager=position_manager,
             target_position_pct=target_pct, entry_type=etd.ENTRY_TYPE_EARLY_PROBE, stop_loss_pct=etd.FIXED_EARLY_STOP_PCT,
+            signal_source=etd.signal_source_for_stage(stage),
         )
         if switch.get("acted") and any(bool(o.get("success")) for o in (switch.get("orders") or []) if isinstance(o, dict)):
             probe = etd.default_probe_state()
@@ -1721,10 +1825,14 @@ def _run_early_trend_detector_tick(
                 "active": True, "direction": direction, "detected_at": candidate["first_detected_at"],
                 "signal_reference_price": candidate.get("reference_price"), "stage": stage, "position_pct": target_pct,
                 "last_reconfirmed_at": now.isoformat(),
+                "change_point_detected_at": candidate.get("change_point_detected_at", candidate["first_detected_at"]),
+                "initial_probe_entered_at": now.isoformat(),
+                "signal_to_fill_latency_seconds": round((now - first_detected_at).total_seconds(), 2),
             })
             etd_state["probe"] = probe
             etd_state["frequency"] = etd.register_probe_entry(freq, direction, now)
             etd_state["candidate"] = {}
+            state["actual_order_driver"] = "EARLY_TREND_DETECTOR"
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
         state["early_trend_detector"] = etd_state
@@ -1745,6 +1853,8 @@ def _run_early_trend_detector_tick(
     etd_state["current_price"] = current_etf_price
     etd_state["stage"] = probe.get("stage")
     etd_state["target_pct"] = probe.get("position_pct")
+    if probe.get("signal_reference_price") and current_etf_price:
+        etd_state["etf_move_pct_since_signal"] = round(abs(current_etf_price / probe["signal_reference_price"] - 1.0) * 100.0, 4)
 
     if not live:
         state["early_trend_detector"] = etd_state
@@ -1763,22 +1873,36 @@ def _run_early_trend_detector_tick(
             state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
             reason=f"EARLY_TREND_DETECTOR 확대(confirmed {confirmed_regime})", position_manager=position_manager,
             target_position_pct=expansion_pct, entry_type="CONFIRMED",
+            signal_source=etd.signal_source_for_stage(etd.STAGE_CONFIRMED_EXPANDED),
         )
         if _order_succeeded(switch):
             probe.update({"stage": etd.STAGE_CONFIRMED_EXPANDED, "position_pct": expansion_pct, "expanded": True})
             etd_state["probe"] = probe
             state["early_trend_detector"] = etd_state
+            state["actual_order_driver"] = "EARLY_TREND_DETECTOR"
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
             return {"skipped": False, "switch": switch, "expanded_to": expansion_pct}
 
-    new_stage, new_target_pct = etd.compute_target_probe_pct(confirmed_regime, elapsed)
+    # 요구사항2 — 50% 단계는 30초 유지 "그리고" 방향 일치일 때만(held_symbol이
+    # 이미 그 방향으로 진입해 보유 중이므로, 실시간 기울기가 같은 방향을
+    # 가리키는지로 "지금도 정렬돼 있는지"를 재확인한다). INVERSE_SYMBOL은
+    # 기초자산과 반대로 움직이므로 "기초자산 방향" 기준으로 정규화해서 비교한다.
+    _held_live_raw_direction = (live_slopes.get(held_symbol) or {}).get("direction")
+    _held_live_direction = (
+        {"UP": "DOWN", "DOWN": "UP"}.get(_held_live_raw_direction) if holding_inverse else _held_live_raw_direction
+    )
+    direction_aligned = (
+        _held_live_direction == direction if _held_live_direction else fast_signal.get("direction") == direction
+    )
+    new_stage, new_target_pct = etd.compute_target_probe_pct(confirmed_regime, elapsed, direction_aligned=direction_aligned)
     if new_target_pct > (probe.get("position_pct") or 0.0):
         final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
         switch = run_switch_or_entry(
             state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
             reason=f"EARLY_TREND_DETECTOR 단계진행({new_stage})", position_manager=position_manager,
             target_position_pct=new_target_pct, entry_type=etd.ENTRY_TYPE_EARLY_PROBE, stop_loss_pct=etd.FIXED_EARLY_STOP_PCT,
+            signal_source=etd.signal_source_for_stage(new_stage),
         )
         if _order_succeeded(switch):
             probe.update({"stage": new_stage, "position_pct": new_target_pct, "last_reconfirmed_at": now.isoformat()})
@@ -1790,6 +1914,95 @@ def _run_early_trend_detector_tick(
 
     state["early_trend_detector"] = etd_state
     return {"skipped": True, "reason": "단계 유지"}
+
+
+def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
+    """요구사항(2026-07-20 최종) — Early Trend Detector 전용 5초 주기 경량 틱.
+
+    calculate_enhanced_hynix_prediction_score() 등 무거운 전체 재계산(30초
+    주기 run_fast_trend_watcher_tick이 계속 담당)은 다시 하지 않는다 — KIS
+    분봉/계좌 API를 새로 늘리지 않기 위해서다. 이 함수는 오직:
+      (a) 가벼운 현재가 조회 2건(collect_long_current/collect_inverse_current)만으로
+          진짜 5/10/20/30초 기울기(app.trading.early_trend_live_feed)를 쌓고,
+      (b) 최근(최대 30초 전) 계산된 fast_signal/confirmed_regime을 그대로 재사용해
+          Early Trend Detector의 신규진입/단계진행/확대 판단만 더 빠른 주기로 수행한다.
+    반대 change-point 발생 시의 즉시 철수는 1초 주기 Dynamic Exit Watcher가 이
+    live_slopes를 읽어 담당한다(app.trading.dynamic_exit_watcher._tick_locked)."""
+    from app.services.hynix_switch_state import with_state_lock
+    from app.trading import early_trend_live_feed as feed
+    from app.trading import early_trend_detector as etd
+
+    now = now or kst_now()
+    resolved_mode = mode or load_state(mode=None).get("mode", "mock")
+    with with_state_lock(resolved_mode):
+        state = load_state(mode=resolved_mode)
+        state["mode"] = resolved_mode
+        if not state.get("auto_trade_on") or state.get("stopped"):
+            return {"skipped": True, "reason": "auto off or stopped"}
+        if not state.get("early_trend_detector_enabled"):
+            return {"skipped": True, "reason": "early trend detector disabled"}
+
+        try:
+            from app.data_sources.hynix_long_collector import collect_long_current
+            from app.data_sources.hynix_inverse_collector import collect_inverse_current
+
+            long_quote = collect_long_current(mode=resolved_mode)
+            inverse_quote = collect_inverse_current(mode=resolved_mode)
+        except Exception as exc:
+            logger.debug("[EarlyTrendFastFeed] 현재가 조회 실패: %s", exc)
+            return {"skipped": True, "reason": f"price fetch failed: {exc}"}
+
+        long_price = long_quote.get("current_price")
+        inverse_price = inverse_quote.get("current_price")
+
+        etd_state = dict(state.get("early_trend_detector") or {})
+        history = etd_state.get("price_history") or {}
+        history = feed.record_price_sample(history, HYNIX_SYMBOL, long_price, now)
+        history = feed.record_price_sample(history, INVERSE_SYMBOL, inverse_price, now)
+        etd_state["price_history"] = history
+        etd_state["live_slopes"] = {
+            HYNIX_SYMBOL: feed.compute_live_direction(history, HYNIX_SYMBOL, now),
+            INVERSE_SYMBOL: feed.compute_live_direction(history, INVERSE_SYMBOL, now),
+        }
+        state["early_trend_detector"] = etd_state
+
+        live = bool(state.get("early_trend_detector_live"))
+        if not live:
+            save_state_atomic(state)
+            return {"skipped": True, "reason": "SHADOW/실전 — 가격 샘플만 갱신", "live_slopes": etd_state["live_slopes"]}
+
+        if not is_new_entry_allowed(now):
+            position = state.get("position") or {}
+            if position.get("entry_type") != etd.ENTRY_TYPE_EARLY_PROBE:
+                save_state_atomic(state)
+                return {"skipped": True, "reason": "new entry window closed", "live_slopes": etd_state["live_slopes"]}
+
+        cached_fast_signal = (state.get("fast_trend_watcher") or {}).get("last_signal") or {}
+        cached_confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+
+        try:
+            from app.config import get_config
+            from app.trading.broker_factory import create_broker
+            from app.trading.hynix_position_common import HynixPositionManager
+
+            cfg = get_config()
+            broker = _create_strategy_broker(cfg, resolved_mode)
+            position_manager = HynixPositionManager(broker, mode=resolved_mode)
+            position_manager.sync()
+            apply_position_manager_to_state(state, position_manager)
+
+            early_result = _run_early_trend_detector_tick(
+                state=state, mode=resolved_mode, now=now, fast_signal=cached_fast_signal, df_1min=None,
+                confirmed_regime=cached_confirmed_regime, broker=broker, position_manager=position_manager,
+                hynix_price=long_price, inverse_price=inverse_price, live_slopes=etd_state["live_slopes"],
+            )
+        except Exception as exc:
+            logger.error("[EarlyTrendFastFeed] tick 실패: %s", exc)
+            save_state_atomic(state)
+            return {"skipped": True, "reason": f"tick failed: {exc}", "live_slopes": etd_state["live_slopes"]}
+
+        save_state_atomic(state)
+        return {"skipped": False, "early_result": early_result, "live_slopes": etd_state["live_slopes"]}
 
 
 def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
@@ -1876,20 +2089,7 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
                 from app.trading.broker_factory import create_broker
 
                 cfg = get_config()
-                if resolved_mode == "real":
-                    real_gate_status = (
-                        cfg.enhanced_real_gate_status(current_mode=resolved_mode)
-                        if hasattr(cfg, "enhanced_real_gate_status")
-                        else {"ready": cfg.full_auto_real_confirm_ok(), "blocking_reasons": []}
-                    )
-                    if not bool(real_gate_status.get("ready")):
-                        raise RuntimeError("REAL gate blocked: " + ", ".join(real_gate_status.get("blocking_reasons") or ["UNKNOWN"]))
-                    _etd_broker = create_broker(
-                        cfg, mode="real", confirm_text=cfg.full_auto_real_confirm_text(),
-                        runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
-                    )
-                else:
-                    _etd_broker = create_broker(cfg, mode=resolved_mode)
+                _etd_broker = _create_strategy_broker(cfg, resolved_mode)
                 _etd_position_manager = HynixPositionManager(_etd_broker, mode=resolved_mode)
                 _etd_position_manager.sync(force=True)
                 apply_position_manager_to_state(state, _etd_position_manager)
@@ -1904,6 +2104,7 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
                     state=state, mode=resolved_mode, now=now, fast_signal=fast_signal, df_1min=df_1min,
                     confirmed_regime=_etd_confirmed_regime, broker=_etd_broker, position_manager=_etd_position_manager,
                     hynix_price=_etd_long_quote.get("current_price"), inverse_price=_etd_inverse_quote.get("current_price"),
+                    live_slopes=(state.get("early_trend_detector") or {}).get("live_slopes"),
                 )
                 if early_result is not None:
                     save_state_atomic(state)
@@ -1971,26 +2172,9 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
 
         try:
             from app.config import get_config
-            from app.trading.broker_factory import create_broker
 
             cfg = get_config()
-            if resolved_mode == "real":
-                real_gate_status = (
-                    cfg.enhanced_real_gate_status(current_mode=resolved_mode)
-                    if hasattr(cfg, "enhanced_real_gate_status")
-                    else {"ready": cfg.full_auto_real_confirm_ok(), "blocking_reasons": [], "checks": {}}
-                )
-                if not bool(real_gate_status.get("ready")):
-                    status["blocked_reason"] = "REAL gate blocked: " + ", ".join(real_gate_status.get("blocking_reasons") or ["UNKNOWN"])
-                    state["fast_trend_watcher"] = status
-                    save_state_atomic(state)
-                    return {"skipped": True, "reason": status["blocked_reason"], "fast_signal": fast_signal, "state": state}
-                broker = create_broker(
-                    cfg, mode="real", confirm_text=cfg.full_auto_real_confirm_text(),
-                    runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
-                )
-            else:
-                broker = create_broker(cfg, mode=resolved_mode)
+            broker = _create_strategy_broker(cfg, resolved_mode)
             position_manager = HynixPositionManager(broker, mode=resolved_mode)
             position_manager.sync(force=True)
             apply_position_manager_to_state(state, position_manager)
@@ -2178,11 +2362,10 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     position_manager = None
     if auto_trade_on:
         try:
-            if mode == "real":
-                from app.config import get_config
-                from app.trading.broker_factory import create_broker
+            from app.config import get_config
 
-                cfg = get_config()
+            cfg = get_config()
+            if mode == "real":
                 real_gate_status = (
                     cfg.enhanced_real_gate_status(current_mode=mode)
                     if hasattr(cfg, "enhanced_real_gate_status")
@@ -2196,16 +2379,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         + ", ".join(real_gate_status.get("blocking_reasons") or ["UNKNOWN"])
                         + " — 주문 실행 생략"
                     )
-                if real_gate_ok:
-                    broker = create_broker(
-                        cfg, mode="real", confirm_text=cfg.full_auto_real_confirm_text(),
-                        runtime_real_mode=True, runtime_enable_real_buy=True, runtime_enable_real_sell=True,
-                    )
-            else:
-                from app.config import get_config
-                from app.trading.broker_factory import create_broker
-
-                broker = create_broker(get_config(), mode="mock")
+            if real_gate_ok:
+                broker = _create_strategy_broker(cfg, mode)
 
             if broker is not None:
                 # Broker가 유일한 Source of Truth — position_manager.sync()로 실제 포지션을
@@ -2389,7 +2564,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 # 보이는 메시지만 남고 사실은 아무도 처리하지 않았다. 진단용 shadow
                 # 계산(state["last_final_execution_decision"] 등 UI 표시용)은 그대로
                 # 유지하되, 더 이상 아래 실제 진입 로직을 막지 않는다 — 항상 실행한다.
-                if mode == "mock" and state.get("active_strategy_enabled"):
+                if state.get("active_strategy_enabled"):
                     try:
                         _boosted_enhanced_score = _boost_enhanced_score_with_inverse_pressure(
                             decision.get("enhanced_score"), decision.get("inverse_pressure_score"),
@@ -2440,9 +2615,25 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         trace["snapshot_pullback_status"] = None
 
                     proceed = True
+                    _early_detector_live_exclusive = bool(
+                        state.get("early_trend_detector_enabled")
+                        and state.get("early_trend_detector_live")
+                    )
                     if not is_new_entry:
                         trace["entry_approved"] = True
                         trace["entry_approved_reason"] = "이미 목표 종목 보유 중 — 추가 진입 불필요"
+                    elif _early_detector_live_exclusive:
+                        # 요구사항(2026-07-20 최종) — Early Trend Detector가 LIVE인 동안
+                        # ENHANCED_REGIME_SWITCH는 신규매수를 직접 실행하지 않는다.
+                        # 방향(confirmed_regime) 승인과 50% 확대 승인만 계속 제공하고
+                        # (Early Detector의 expansion_target_pct가 이 confirmed_regime을
+                        # 그대로 참조한다), 실제 주문 실행은 Early Detector 전담이다.
+                        proceed = False
+                        trace["entry_approved"] = False
+                        trace["entry_approved_reason"] = (
+                            "Early Trend Detector LIVE — ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지"
+                            "(방향/50% 확대 승인만 담당, 실제 주문은 Early Detector 전담)"
+                        )
                     elif state.get("position_conflict"):
                         proceed = False
                         warnings.append("포지션 동기화 필요(0193T0/0197X0 동시 보유) — 신규매수 금지")

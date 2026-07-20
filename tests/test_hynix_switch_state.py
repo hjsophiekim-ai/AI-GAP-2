@@ -206,6 +206,37 @@ def test_mock_and_real_states_are_separate_files(tmp_path, monkeypatch):
     assert (tmp_path / "hynix_auto_state_real.json").exists()
 
 
+def test_strategy_profile_toggles_are_shared_between_mock_and_real(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    mock_state = default_state("mock")
+    mock_state["mode"] = "mock"
+    mock_state["active_strategy_enabled"] = True
+    mock_state["adaptive_fusion_enabled"] = True
+    mock_state["big_trend_holding_enabled"] = True
+    mock_state["early_trend_detector_enabled"] = True
+    mock_state["early_trend_detector_live"] = True
+    mock_state["adaptive_regime_enabled"] = True
+    mock_state["adaptive_regime_mode"] = "LIVE"
+    mock_state["daily_loss_block_override"] = True
+    save_state_atomic(mock_state)
+
+    real_state = load_state(mode="real")
+
+    for key in (
+        "active_strategy_enabled",
+        "adaptive_fusion_enabled",
+        "big_trend_holding_enabled",
+        "early_trend_detector_enabled",
+        "early_trend_detector_live",
+        "adaptive_regime_enabled",
+        "daily_loss_block_override",
+    ):
+        assert real_state[key] is True
+    assert real_state["adaptive_regime_mode"] == "LIVE"
+    assert real_state["mode"] == "real"
+
+
 def test_signal_symbol_is_not_recognized_as_actual_position(tmp_path, monkeypatch):
     monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
 

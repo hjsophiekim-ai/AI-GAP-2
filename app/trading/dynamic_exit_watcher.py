@@ -424,7 +424,7 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
 
     # ── Big Trend Holding AI(섹션 1~13 — 장중 큰 추세 추종) ────────────────────
     # 항상 계산·로그(Shadow)하고, state["big_trend_holding_enabled"]가 켜져 있을 때만
-    # (mock 전용) 실제 청산 action/ratio를 이 엔진 결과로 대체한다. 초기 손절
+    # Big Trend Holding ON이면 mock/real 공통으로 실제 청산 action/ratio를 이 엔진 결과로 대체한다. 초기 손절
     # 안전장치(effective_sl_pct)는 토글과 무관하게 항상 최우선으로 적용된다.
     big_trend_result = None
     try:
@@ -434,7 +434,7 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
 
     if big_trend_result:
         state["last_big_trend_result"] = {k: v for k, v in big_trend_result.items() if k != "reversal_confirmation"}
-        if mode == "mock" and state.get("big_trend_holding_enabled"):
+        if state.get("big_trend_holding_enabled"):
             hard_stop = big_trend_result["hard_stop_triggered"]
             action_map = {
                 bte.ACTION_TAKE_PROFIT_25: ("SELL_PARTIAL", 0.25),
@@ -483,11 +483,13 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         stop_loss_source = "HARD_STOP_SNAPSHOT"
         state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
 
-    # ── Early Trend Detector 조기진입 철수(요구사항3) ───────────────────────────
+    # ── Early Trend Detector 조기진입 철수(요구사항3, 2026-07-20 최종) ──────────
     # EARLY_PROBE로 태그된 포지션에는 confirmed regime 기준 손절과 별개로 더
-    # 타이트한 고정 -0.4% 손절/신호소멸/반대 변화점/60초 미확인 조건을 추가로
-    # 적용한다. 1초 주기로 도는 이 워처가 담당해야 반응이 빠르다(30초 Fast
-    # Watcher는 최초 진입/단계진행/확대만 담당).
+    # 타이트한 조건을 추가 적용한다(일반 장세: 고정 -0.4% 손절/신호소멸/반대
+    # 변화점/30초 미확인, VOLATILE_RANGE: TP1 +0.8%(50%+ 부분익절)/TP2
+    # +1.5~2.0%(전량)/SL -0.5%/신호약화 시 손익무관 즉시전량청산/최대보유
+    # 5~8분). 1초 주기로 도는 이 워처가 담당해야 반응이 빠르다(5초 Early
+    # Detector 피드는 신규진입/단계진행/확대만 담당).
     if position.get("entry_type") == "EARLY_PROBE" and snapshot is not None:
         from app.trading import early_trend_detector as etd
         from app.trading.hynix_fast_trend import compute_fast_trend_signal
@@ -501,6 +503,19 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         signal_still_valid = early_signal.get("direction") == probe_direction and early_signal.get("score", 0) >= 50.0
         opposite_change_point = etd.is_opposite_change_point(probe_direction, early_signal)
 
+        # 요구사항1/4 — 5초 주기 실시간 기울기(app.trading.early_trend_live_feed)가
+        # 이미 반대로 확정됐으면, 아직 1분봉 vote가 뒤집히지 않았어도 즉시 반대
+        # change-point로 취급한다(10:27류 반전을 30~90초 이상 뒤늦게 잡는 문제 완화).
+        # INVERSE_SYMBOL은 기초자산과 반대로 움직이므로, probe_direction(기초자산
+        # 방향 기준)과 비교하려면 "기초자산 방향" 기준으로 정규화해야 한다.
+        live_slopes = etd_state.get("live_slopes") or {}
+        live_raw_direction = (live_slopes.get(symbol) or {}).get("direction")
+        live_direction = (
+            {"UP": "DOWN", "DOWN": "UP"}.get(live_raw_direction) if symbol == INVERSE_SYMBOL else live_raw_direction
+        )
+        if not opposite_change_point:
+            opposite_change_point = etd.is_opposite_live_slope_reversal(probe_direction, live_direction)
+
         last_reconfirmed_at = probe.get("last_reconfirmed_at")
         seconds_since_reconfirm = None
         if last_reconfirmed_at:
@@ -512,18 +527,33 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             probe["last_reconfirmed_at"] = now.isoformat()
             seconds_since_reconfirm = 0.0
 
-        exit_reason = etd.should_exit_probe(
+        exit_plan = etd.should_exit_probe(
             net_return_pct=snapshot["net_return_pct"], seconds_since_last_reconfirmation=seconds_since_reconfirm,
             signal_still_valid=signal_still_valid, opposite_change_point=opposite_change_point,
+            confirmed_regime=_adaptive_confirmed_regime, held_minutes=snapshot.get("held_minutes"),
+            tp1_taken=bool(position.get("early_probe_tp1_taken")),
         )
         etd_state["probe"] = probe
         etd_state["exit_signal"] = early_signal
-        etd_state["last_exit_reason"] = exit_reason
+        etd_state["last_exit_plan"] = exit_plan
         state["early_trend_detector"] = etd_state
 
-        if exit_reason:
+        if opposite_change_point:
+            etd_state["frequency"] = etd.apply_opposite_change_point_reaction(
+                etd_state.get("frequency") or etd.default_frequency_state(),
+                probe_direction, early_signal.get("score"), now,
+            )
+            state["early_trend_detector"] = etd_state
+
+        if exit_plan["action"] == "SELL_PARTIAL":
+            position["early_probe_tp1_taken"] = True
+            decision["action"], decision["ratio"] = "SELL_PARTIAL", exit_plan["ratio"]
+            decision["reason"] = f"EARLY_PROBE 부분익절 — {exit_plan['reason']}"
+            stop_loss_source = "EARLY_PROBE_EXIT"
+            state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
+        elif exit_plan["action"] == "SELL_ALL":
             decision["action"], decision["ratio"] = "SELL_ALL", 1.0
-            decision["reason"] = f"EARLY_PROBE 철수 — {exit_reason}"
+            decision["reason"] = f"EARLY_PROBE 철수 — {exit_plan['reason']}"
             stop_loss_source = "EARLY_PROBE_EXIT"
             state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
             was_fake_signal_loss = (snapshot["net_return_pct"] or 0.0) <= 0.0

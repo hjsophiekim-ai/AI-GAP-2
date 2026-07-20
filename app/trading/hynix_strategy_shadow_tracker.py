@@ -2,7 +2,7 @@
 ADAPTIVE_FUSION/CYCLE_ONLY 4개 전략을 동일 시장 데이터로 병행 시뮬레이션해 손익을
 독립적으로 집계한다.
 
-실제로는 ADAPTIVE_FUSION(또는 ACTIVE_FUSION, 토글에 따라) 하나만 실제 mock 주문을
+실제로는 ADAPTIVE_FUSION(또는 ACTIVE_FUSION, 토글에 따라) 하나만 실제 공통 주문을
 실행한다 — 나머지 전략은 "이 전략의 신호대로만 거래했다면 어땠을지"를 가상 포트폴리오
 (Virtual Portfolio)로 시뮬레이션한다. 000660/0197X0 둘 다 그 자체로 매수·매도 가능한
 종목이므로(0197X0 자체가 인버스 ETN), 부호 반전 없이 일반적인 롱 포지션 손익 계산을
@@ -208,7 +208,7 @@ def _stats_from_trades(trades: pd.DataFrame) -> dict:
 def compute_strategy_comparison_stats(days: Optional[list] = None, adaptive_fusion_real_stats: Optional[dict] = None) -> dict:
     """섹션 18 — 전략별(거래횟수/승률/수익률/PF/MDD/평균보유시간/MFE·MAE/종목별손익) 비교.
 
-    ADAPTIVE_FUSION은 실제 mock 주문(execution ledger)이 있으면 그 값을 우선 사용하고,
+    ADAPTIVE_FUSION은 실제 공통 주문(execution ledger)이 있으면 그 값을 우선 사용하고,
     (adaptive_fusion_real_stats로 주입) 없으면 이 shadow 원장의 값으로 대체한다.
     """
     df = load_shadow_ledger(days)

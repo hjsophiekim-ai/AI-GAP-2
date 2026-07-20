@@ -42,7 +42,10 @@ ETF_EXTREME_BLOCK = "ETF_EXTREME_BLOCK"
 MIN_BARS_FOR_CONFIRMATION = 5
 CHASE_BLOCK_MOVE_PCT = 0.7
 EXTREME_ZONE_PCT = 0.2
-EXTREME_LOOKBACK_MINUTES = 3
+# 요구사항(2026-07-20 최종) — CHASE_BLOCK 극값 기준을 최근 3분에서 1분으로 축소.
+EXTREME_LOOKBACK_MINUTES = 1
+VOLUME_SURGE_RATIO = 1.5
+VOLUME_SURGE_LOOKBACK_BARS = 5
 
 
 def fetch_etf_minute_bars(symbol: str, mode: Optional[str] = None) -> dict:
@@ -109,6 +112,46 @@ def compute_etf_recent_extreme(df_1min: pd.DataFrame, lookback_minutes: int = EX
     if recent.empty:
         return None, None
     return round(float(recent["high"].max()), 4), round(float(recent["low"].min()), 4)
+
+
+def compute_etf_volume_surge(df_1min: pd.DataFrame, lookback_bars: int = VOLUME_SURGE_LOOKBACK_BARS) -> Optional[bool]:
+    """요구사항1(2026-07-20 최종) — ETF 자체 거래량 급증. 직전 lookback_bars개
+    평균 대비 마지막 봉 거래량이 VOLUME_SURGE_RATIO배 이상이면 True. 데이터가
+    부족하면 판단하지 않는다(None)."""
+    if df_1min is None or df_1min.empty or "volume" not in df_1min.columns or len(df_1min) < lookback_bars + 1:
+        return None
+    work = df_1min.sort_values("datetime")
+    try:
+        recent_vol = float(work["volume"].iloc[-1])
+        baseline = work["volume"].iloc[-(lookback_bars + 1):-1]
+        baseline_avg = float(baseline.mean())
+    except Exception:
+        return None
+    if baseline_avg <= 0:
+        return None
+    return (recent_vol / baseline_avg) >= VOLUME_SURGE_RATIO
+
+
+def compute_etf_breakouts(df_1min: pd.DataFrame, current_price: Optional[float], direction: str) -> dict:
+    """요구사항1(2026-07-20 최종) — ETF 자체 VWAP 이탈/최근 1분봉 고점·저점
+    돌파를 하나로 묶어 반환한다(Early Trend Detector 조기신호 입력용)."""
+    vwap = compute_etf_vwap(df_1min)
+    vwap_breakout = None
+    if vwap is not None and current_price is not None:
+        vwap_breakout = (current_price > vwap) if direction == "UP" else (current_price < vwap)
+
+    recent_high, recent_low = compute_etf_recent_extreme(df_1min, lookback_minutes=EXTREME_LOOKBACK_MINUTES)
+    structure_breakout = None
+    if current_price is not None:
+        if direction == "UP" and recent_high:
+            structure_breakout = current_price > recent_high
+        elif direction == "DOWN" and recent_low:
+            structure_breakout = current_price < recent_low
+
+    return {
+        "vwap": vwap, "vwap_breakout": vwap_breakout, "structure_breakout": structure_breakout,
+        "recent_high": recent_high, "recent_low": recent_low,
+    }
 
 
 def confirm_etf_entry(

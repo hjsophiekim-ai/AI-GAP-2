@@ -54,21 +54,65 @@ def test_is_opposite_change_point_detects_direction_flip():
     assert etd.is_opposite_change_point("UP", {"direction": None}) is False
 
 
+def test_is_opposite_live_slope_reversal_detects_flip_independent_of_vote():
+    """요구사항1/4(2026-07-20 최종) — 1분봉 vote와 별개로 ETF 자체 실시간
+    기울기가 반대로 확정되면 그 자체로 반대 change-point로 본다."""
+    assert etd.is_opposite_live_slope_reversal("UP", "DOWN") is True
+    assert etd.is_opposite_live_slope_reversal("UP", "UP") is False
+    assert etd.is_opposite_live_slope_reversal(None, "DOWN") is False
+    assert etd.is_opposite_live_slope_reversal("UP", None) is False
+
+
+def test_apply_opposite_change_point_reaction_decays_score_and_blocks_old_direction():
+    now = datetime(2026, 7, 20, 10, 27, 0)
+    freq = etd.default_frequency_state()
+    freq = etd.apply_opposite_change_point_reaction(freq, "UP", 80.0, now)
+
+    assert freq["last_opposite_change_point_decayed_score"] == pytest.approx(80.0 * 0.30)
+    # 기존(UP) 방향으로의 재진입은 지금부터 다시 쿨다운된다(요구사항4).
+    assert etd.is_same_direction_cooldown_active(freq, "UP", now + timedelta(seconds=10)) is True
+    assert etd.is_same_direction_cooldown_active(freq, "DOWN", now + timedelta(seconds=10)) is False
+
+
+def test_compute_composite_early_signal_uses_live_slope_when_vote_undecided():
+    """요구사항1(2026-07-20 최종) — 1분봉 vote가 아직 방향을 확정하지 못했어도
+    실시간 기울기 단독으로 최소 신뢰도 후보를 만든다."""
+    flat_fast_signal = {"direction": "FLAT", "up_votes": 3, "down_votes": 3, "top_factors": []}
+    signal = etd.compute_composite_early_signal(fast_signal=flat_fast_signal, live_direction="DOWN")
+    assert signal["direction"] == "DOWN"
+    assert signal["score"] >= 50.0
+
+
+def test_compute_composite_early_signal_boosts_score_on_full_agreement():
+    weak_up = {"direction": "UP", "up_votes": 4, "down_votes": 2, "volume_ratio": 1.0, "top_factors": []}
+    base = etd.compute_early_signal(weak_up)
+    boosted = etd.compute_composite_early_signal(
+        fast_signal=weak_up, live_direction="UP", etf_vwap_breakout=True,
+        etf_structure_breakout=True, etf_volume_surge=True,
+    )
+    assert boosted["score"] > base["score"]
+    assert boosted["direction"] == "UP"
+
+
 # ── 단계별 진입(요구사항2) ───────────────────────────────────────────────────
 
 def test_stage_for_elapsed_seconds_matches_spec_ladder():
-    assert etd.stage_for_elapsed_seconds(0.0) == (etd.STAGE_PROBE_5, 0.05)
-    assert etd.stage_for_elapsed_seconds(9.9) == (etd.STAGE_PROBE_5, 0.05)
-    assert etd.stage_for_elapsed_seconds(10.0) == (etd.STAGE_PROBE_15, 0.15)
-    assert etd.stage_for_elapsed_seconds(29.9) == (etd.STAGE_PROBE_15, 0.15)
-    assert etd.stage_for_elapsed_seconds(30.0) == (etd.STAGE_PROBE_25, 0.25)
-    assert etd.stage_for_elapsed_seconds(600.0) == (etd.STAGE_PROBE_25, 0.25)
+    """요구사항(2026-07-20 최종) — 10~15%(중간값 12%, 즉시)→30%(15초 유지)→
+    50%(30초 유지 + 방향 일치). 처음부터/조건 없이 50%로 들어가지 않는다."""
+    assert etd.stage_for_elapsed_seconds(0.0) == (etd.STAGE_INITIAL, 0.12)
+    assert etd.stage_for_elapsed_seconds(14.9) == (etd.STAGE_INITIAL, 0.12)
+    assert etd.stage_for_elapsed_seconds(15.0) == (etd.STAGE_HOLD_15S, 0.30)
+    assert etd.stage_for_elapsed_seconds(29.9) == (etd.STAGE_HOLD_15S, 0.30)
+    assert etd.stage_for_elapsed_seconds(30.0) == (etd.STAGE_HOLD_15S, 0.30)  # 방향 일치 없이는 50%로 승격하지 않음
+    assert etd.stage_for_elapsed_seconds(30.0, direction_aligned=True) == (etd.STAGE_HOLD_30S_ALIGNED, 0.50)
+    assert etd.stage_for_elapsed_seconds(600.0, direction_aligned=True) == (etd.STAGE_HOLD_30S_ALIGNED, 0.50)
+    assert etd.stage_for_elapsed_seconds(600.0, direction_aligned=False) == (etd.STAGE_HOLD_15S, 0.30)
 
 
-def test_target_probe_pct_never_exceeds_25_percent_before_confirmation():
+def test_target_probe_pct_never_exceeds_50_percent():
     for elapsed in (0.0, 15.0, 45.0, 600.0):
-        _, pct = etd.compute_target_probe_pct("STRONG_UP", elapsed)
-        assert pct <= 0.25
+        _, pct = etd.compute_target_probe_pct("STRONG_UP", elapsed, direction_aligned=True)
+        assert pct <= 0.50
 
 
 def test_regime_probe_cap_blocks_range_and_data_insufficient():
@@ -77,14 +121,14 @@ def test_regime_probe_cap_blocks_range_and_data_insufficient():
 
 
 def test_regime_probe_cap_limits_volatile_range_and_panic():
-    assert etd.regime_probe_cap("VOLATILE_RANGE") == 0.25
+    assert etd.regime_probe_cap("VOLATILE_RANGE") == 0.50
     assert etd.regime_probe_cap("PANIC") == 0.10
 
 
 def test_compute_target_probe_pct_applies_regime_cap_even_at_late_stage():
     stage, pct = etd.compute_target_probe_pct("PANIC", 60.0)
-    assert stage == etd.STAGE_PROBE_25
-    assert pct == 0.10  # PANIC 상한이 단계값(0.25)보다 우선한다
+    assert stage == etd.STAGE_HOLD_15S  # direction_aligned 없이는 50% 단계로 승격하지 않음
+    assert pct == 0.10  # PANIC 상한이 단계값(0.30)보다 우선한다
 
 
 def test_compute_target_probe_pct_is_zero_in_range_regardless_of_elapsed():
@@ -94,8 +138,8 @@ def test_compute_target_probe_pct_is_zero_in_range_regardless_of_elapsed():
 
 
 def test_expansion_target_pct_only_after_confirmed_strong_trend_matching_direction():
-    assert etd.expansion_target_pct("STRONG_UP", "UP", holding_inverse=False) == 0.45
-    assert etd.expansion_target_pct("STRONG_DOWN", "DOWN", holding_inverse=True) == 0.45
+    assert etd.expansion_target_pct("STRONG_UP", "UP", holding_inverse=False) == 0.50
+    assert etd.expansion_target_pct("STRONG_DOWN", "DOWN", holding_inverse=True) == 0.50
     assert etd.expansion_target_pct("STRONG_UP", "DOWN", holding_inverse=True) is None
     assert etd.expansion_target_pct("VOLATILE_RANGE", "UP", holding_inverse=False) is None
     assert etd.expansion_target_pct("STRONG_DOWN", "UP", holding_inverse=False) is None
@@ -151,41 +195,92 @@ def test_cost_gate_allows_when_expected_net_edge_clears_threshold():
     assert result["net_edge_pct"] >= etd.COST_GATE_MIN_NET_EDGE_PCT
 
 
-# ── 조기진입 철수(요구사항3) ──────────────────────────────────────────────────
+# ── 조기진입 철수(요구사항3, 2026-07-20 최종 — dict 반환) ────────────────────
 
 def test_should_exit_probe_on_fixed_stop_loss():
-    reason = etd.should_exit_probe(
+    plan = etd.should_exit_probe(
         net_return_pct=-0.5, seconds_since_last_reconfirmation=5, signal_still_valid=True, opposite_change_point=False,
     )
-    assert reason is not None and "고정손절" in reason
+    assert plan["action"] == "SELL_ALL" and plan["ratio"] == 1.0
+    assert "고정손절" in plan["reason"]
 
 
 def test_should_exit_probe_on_opposite_change_point():
-    reason = etd.should_exit_probe(
+    plan = etd.should_exit_probe(
         net_return_pct=0.1, seconds_since_last_reconfirmation=5, signal_still_valid=True, opposite_change_point=True,
     )
-    assert reason is not None and "변화점" in reason
+    assert plan["action"] == "SELL_ALL"
+    assert "변화점" in plan["reason"]
 
 
 def test_should_exit_probe_on_signal_decay():
-    reason = etd.should_exit_probe(
+    plan = etd.should_exit_probe(
         net_return_pct=0.1, seconds_since_last_reconfirmation=5, signal_still_valid=False, opposite_change_point=False,
     )
-    assert reason is not None and "소멸" in reason
+    assert plan["action"] == "SELL_ALL"
+    assert "소멸" in plan["reason"]
 
 
 def test_should_exit_probe_on_reconfirmation_timeout():
-    reason = etd.should_exit_probe(
-        net_return_pct=0.1, seconds_since_last_reconfirmation=61, signal_still_valid=True, opposite_change_point=False,
+    """요구사항(2026-07-20 최종) — 재확인 시한이 60초에서 30초로 단축됐다."""
+    plan = etd.should_exit_probe(
+        net_return_pct=0.1, seconds_since_last_reconfirmation=31, signal_still_valid=True, opposite_change_point=False,
     )
-    assert reason is not None and "60초" in reason
+    assert plan["action"] == "SELL_ALL"
+    assert "30초" in plan["reason"]
 
 
 def test_should_exit_probe_holds_when_all_conditions_clear():
-    reason = etd.should_exit_probe(
-        net_return_pct=0.1, seconds_since_last_reconfirmation=30, signal_still_valid=True, opposite_change_point=False,
+    plan = etd.should_exit_probe(
+        net_return_pct=0.1, seconds_since_last_reconfirmation=20, signal_still_valid=True, opposite_change_point=False,
     )
-    assert reason is None
+    assert plan["action"] == "HOLD"
+
+
+def test_should_exit_probe_volatile_range_tp1_partial_then_tp2_full():
+    """요구사항(2026-07-20 최종) — VOLATILE_RANGE 확정 중에는 TP1(+0.8%)에서
+    50%+ 부분익절, TP2(+1.5~2.0%)에서 전량익절, SL(-0.5%)에서 손절한다."""
+    tp1 = etd.should_exit_probe(
+        net_return_pct=0.9, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=False, confirmed_regime="VOLATILE_RANGE",
+    )
+    assert tp1["action"] == "SELL_PARTIAL"
+    assert tp1["ratio"] >= 0.5
+
+    tp2 = etd.should_exit_probe(
+        net_return_pct=1.8, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=False, confirmed_regime="VOLATILE_RANGE", tp1_taken=True,
+    )
+    assert tp2["action"] == "SELL_ALL"
+    assert "TP2" in tp2["reason"]
+
+    sl = etd.should_exit_probe(
+        net_return_pct=-0.6, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=False, confirmed_regime="VOLATILE_RANGE",
+    )
+    assert sl["action"] == "SELL_ALL"
+    assert "손절" in sl["reason"]
+
+
+def test_should_exit_probe_volatile_range_signal_weakening_ignores_pnl():
+    """요구사항(2026-07-20 최종) — VOLATILE_RANGE에서 신호가 약해지면(반대
+    change-point/신호소멸) 수익 중이어도 손익과 무관하게 즉시 전량청산한다."""
+    plan = etd.should_exit_probe(
+        net_return_pct=1.0, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=True, confirmed_regime="VOLATILE_RANGE",
+    )
+    assert plan["action"] == "SELL_ALL"
+    assert "신호약화" in plan["reason"]
+
+
+def test_should_exit_probe_volatile_range_max_hold_time():
+    plan = etd.should_exit_probe(
+        net_return_pct=0.1, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=False, confirmed_regime="VOLATILE_RANGE",
+        held_minutes=etd.VOLATILE_RANGE_MAX_HOLD_MINUTES,
+    )
+    assert plan["action"] == "SELL_ALL"
+    assert "최대보유시간" in plan["reason"]
 
 
 # ── 쿨다운/서킷브레이커/일일 한도(요구사항6) ─────────────────────────────────

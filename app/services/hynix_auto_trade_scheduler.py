@@ -31,6 +31,13 @@ from app.utils.data_paths import SCHEDULER_HEARTBEAT_PATH
 
 DEFAULT_INTERVAL_SECONDS = 180.0
 FAST_WATCHER_INTERVAL_SECONDS = 30.0
+# 요구사항(2026-07-20 최종) — Early Trend Detector가 LIVE인 동안에는 이 워처
+# 자체가 5초 주기로 돈다(오늘 원장 기준 10:27류 반전을 30초 주기로는 놓치는
+# 문제). 별도의 새 스레드/락/heartbeat 인프라를 또 만들지 않고, 기존 30초
+# 워처의 대기시간만 상태에 따라 동적으로 줄인다 — 무거운 전체 재계산(30초 주기
+# run_fast_trend_watcher_tick)은 그대로 유지하고, 그 사이 5초 틱은 가벼운
+# 가격 샘플링(run_early_trend_fast_feed_tick)만 수행해 KIS 호출량을 안전하게 유지한다.
+EARLY_DETECTOR_FAST_INTERVAL_SECONDS = 5.0
 # 요구사항(2026-07-16) — 장 마감 후에도 오늘 저장된 1분봉으로 EOD regime 분석을
 # 계속 표시하되(요구사항3), 장외 heartbeat마다(수 초~수 분 간격) 매번 KIS를 다시
 # 조회하는 것은 불필요한 API 호출이므로 최소 이 간격(초)만큼은 재사용한다.
@@ -232,21 +239,39 @@ class HynixFastTrendWatcherThread(threading.Thread):
         super().__init__(daemon=True, name="HynixFastTrendWatcher")
         self.interval_seconds = interval_seconds
         self._stop_event = threading.Event()
+        self._last_full_tick_at: Optional[object] = None
 
     def stop(self) -> None:
         self._stop_event.set()
 
     def run(self) -> None:
-        logger.info("[HynixFastTrendWatcher] start (%.0fs interval)", self.interval_seconds)
+        logger.info("[HynixFastTrendWatcher] start (%.0fs interval, %.0fs when Early Detector LIVE)",
+                    self.interval_seconds, EARLY_DETECTOR_FAST_INTERVAL_SECONDS)
         while not self._stop_event.is_set():
             self._run_if_enabled()
+            next_interval = self._next_interval_seconds()
             with _status_lock:
-                _fast_status["next_run_at"] = (kst_now() + timedelta(seconds=self.interval_seconds)).isoformat()
-            self._stop_event.wait(self.interval_seconds)
+                _fast_status["next_run_at"] = (kst_now() + timedelta(seconds=next_interval)).isoformat()
+            self._stop_event.wait(next_interval)
         logger.info("[HynixFastTrendWatcher] stopped")
 
+    def _fast_cadence_active(self, state: dict) -> bool:
+        return bool(
+            state.get("early_trend_detector_enabled")
+            and state.get("early_trend_detector_live")
+        )
+
+    def _next_interval_seconds(self) -> float:
+        try:
+            state = load_state()
+        except Exception:
+            return self.interval_seconds
+        if self._fast_cadence_active(state):
+            return EARLY_DETECTOR_FAST_INTERVAL_SECONDS
+        return self.interval_seconds
+
     def _run_if_enabled(self) -> None:
-        from app.services.hynix_switch_engine import run_fast_trend_watcher_tick
+        from app.services.hynix_switch_engine import run_fast_trend_watcher_tick, run_early_trend_fast_feed_tick
         from app.trading.hynix_switch_risk_gate import is_within_operating_window
 
         now = kst_now()
@@ -266,16 +291,38 @@ class HynixFastTrendWatcherThread(threading.Thread):
             _write_heartbeat_file()
             return
 
+        # 요구사항(2026-07-20 최종) — Early Detector가 LIVE인 동안에는 이 워처가
+        # 5초마다 깨어나지만, calculate_enhanced_hynix_prediction_score() 등
+        # 무거운 전체 재계산은 여전히 최소 FAST_WATCHER_INTERVAL_SECONDS(30초)
+        # 간격으로만 수행한다 — KIS 분봉/계좌 API 호출량을 그대로 유지하기 위함.
+        # 그 사이 5초 틱은 가벼운 현재가 2건 조회로 실시간 기울기만 갱신한다.
+        fast_cadence_active = self._fast_cadence_active(state)
+        due_for_full_tick = (
+            not fast_cadence_active
+            or self._last_full_tick_at is None
+            or (now - self._last_full_tick_at).total_seconds() >= FAST_WATCHER_INTERVAL_SECONDS
+        )
+
         started_at = now
         with _status_lock:
             _fast_status["last_started_at"] = started_at.isoformat()
         try:
-            result = run_fast_trend_watcher_tick(mode=state.get("mode"))
-            summary = {
-                "skipped": bool(result.get("skipped", False)),
-                "reason": result.get("reason"),
-                "direction": (result.get("fast_signal") or {}).get("direction"),
-            }
+            if due_for_full_tick:
+                result = run_fast_trend_watcher_tick(mode=state.get("mode"))
+                self._last_full_tick_at = now
+                summary = {
+                    "skipped": bool(result.get("skipped", False)),
+                    "reason": result.get("reason"),
+                    "direction": (result.get("fast_signal") or {}).get("direction"),
+                    "tick_kind": "full",
+                }
+            else:
+                result = run_early_trend_fast_feed_tick(mode=state.get("mode"), now=now)
+                summary = {
+                    "skipped": bool(result.get("skipped", False)),
+                    "reason": result.get("reason"),
+                    "tick_kind": "fast_feed",
+                }
         except Exception as exc:  # noqa: BLE001
             logger.error("[HynixFastTrendWatcher] run failed: %s", exc)
             summary = {"error": str(exc)}

@@ -209,11 +209,12 @@ def run_comparison_backtest(
                         early_position["last_reconfirmed_at"] = now_ts
                     seconds_since_reconfirm = (now_ts - early_position["last_reconfirmed_at"]).total_seconds()
                     opposite_cp = etd.is_opposite_change_point(direction, early_signal)
-                    exit_reason = etd.should_exit_probe(
+                    exit_plan = etd.should_exit_probe(
                         net_return_pct=net_pct, seconds_since_last_reconfirmation=seconds_since_reconfirm,
                         signal_still_valid=signal_still_valid, opposite_change_point=opposite_cp,
+                        confirmed_regime=confirmed_regime,
                     )
-                    if exit_reason:
+                    if exit_plan["action"] != "HOLD":
                         early_trades.append(_close_trade(early_position, current_price, now_ts, is_false_signal=True))
                         early_realized_pct += early_trades[-1]["net_pnl_pct"]
                         early_position = None

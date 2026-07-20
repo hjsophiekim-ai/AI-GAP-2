@@ -29,6 +29,20 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 
 _DEFAULT_MOCK_BUDGET_KRW = 10_000_000.0
 
+_COMMON_STRATEGY_KEYS = (
+    "auto_trade_on",
+    "trading_mode",
+    "active_strategy_enabled",
+    "adaptive_fusion_enabled",
+    "big_trend_holding_enabled",
+    "early_trend_detector_enabled",
+    "early_trend_detector_live",
+    "adaptive_regime_enabled",
+    "adaptive_regime_mode",
+    "daily_loss_block_override",
+    "stop_loss_mode",
+)
+
 # mode별 상태 read-modify-write 전용 락. 백그라운드 3분 사이클 스레드, 1초 주기
 # Dynamic Exit Watcher 스레드, Streamlit 요청 스레드(수동 실행 버튼)가 모두 같은
 # mode의 state 파일을 동시에 load_state() → 필드 수정 → save_state_atomic() 할 수
@@ -164,6 +178,40 @@ def _active_mode_pointer_path() -> Path:
     return _STATE_DIR / "hynix_auto_state_active_mode.json"
 
 
+def _common_strategy_profile_path() -> Path:
+    return _STATE_DIR / "hynix_strategy_profile_common.json"
+
+
+def _load_common_strategy_profile() -> dict:
+    try:
+        path = _common_strategy_profile_path()
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {k: data[k] for k in _COMMON_STRATEGY_KEYS if k in data}
+    except Exception as exc:
+        logger.debug("[HynixSwitchState] common strategy profile load failed: %s", exc)
+    return {}
+
+
+def _save_common_strategy_profile(state: dict) -> None:
+    try:
+        profile = _load_common_strategy_profile()
+        changed = False
+        for key in _COMMON_STRATEGY_KEYS:
+            if key in state and profile.get(key) != state.get(key):
+                profile[key] = state.get(key)
+                changed = True
+        if changed:
+            _STATE_DIR.mkdir(parents=True, exist_ok=True)
+            _common_strategy_profile_path().write_text(
+                json.dumps(profile, ensure_ascii=False, default=str, indent=2),
+                encoding="utf-8",
+            )
+    except Exception as exc:
+        logger.debug("[HynixSwitchState] common strategy profile save failed: %s", exc)
+
+
 def get_active_mode() -> str:
     """UI가 마지막으로 선택한 mode(mock/real). 포인터가 없으면 mock."""
     try:
@@ -230,6 +278,11 @@ def default_state(mode: str = "mock") -> dict:
         # 새 계좌/state 초기화 시에만 적용되며, 사용자가 화면에서 명시적으로 끈
         # 이후에는 그 선택(False)이 그대로 저장·유지된다(이 기본값이 되돌리지 않음).
         "auto_trade_on": True,
+        "active_strategy_enabled": False,
+        "adaptive_fusion_enabled": False,
+        "big_trend_holding_enabled": False,
+        "early_trend_detector_enabled": False,
+        "early_trend_detector_live": False,
         "weight_auto_apply_enabled": False,
         "daily_report_generated_date": None,
         "stopped": False,
@@ -409,13 +462,17 @@ def load_state(mode: Optional[str] = None) -> dict:
     path = _state_path(mode)
     try:
         if not path.exists():
-            return default_state(mode)
+            state = default_state(mode)
+            state.update(_load_common_strategy_profile())
+            state["mode"] = mode
+            return state
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("state 파일이 dict 형식이 아님")
 
         defaults = default_state(mode)
         state = {**defaults, **raw}
+        state.update(_load_common_strategy_profile())
         state["mode"] = mode
         state["position"] = {**_empty_position(), **(raw.get("position") or {})}
 
@@ -509,6 +566,7 @@ def save_state_atomic(state: dict) -> bool:
     """
     try:
         _sync_flat_fields(state)
+        _save_common_strategy_profile(state)
         mode = state.get("mode", "mock")
         path = _state_path(mode)
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
