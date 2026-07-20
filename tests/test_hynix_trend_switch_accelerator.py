@@ -147,3 +147,37 @@ def test_unconfirmed_sell_blocks_opposite_buy():
     assert result["acted"] is True
     assert broker.sell_calls
     assert broker.buy_calls == []
+
+
+def test_daily_loss_below_threshold_blocks_new_entry(monkeypatch):
+    """요구사항(2026-07-20) — 일 손실이 daily_loss_block_pct(-2.0%) 이하이면
+    신규진입이 즉시 차단된다(사용자 실측: -2.19% <= -2.0%)."""
+    monkeypatch.setattr(switch_engine, "detect_pullback", lambda df: {"is_pullback": False, "reason": "wait"})
+    state = default_state()
+    state["realized_pnl_today_pct"] = -2.19
+    now = datetime(2026, 7, 14, 10, 0)
+
+    gate = switch_engine.evaluate_pullback_gate(state, LONG_SYMBOL, "HYNIX_BUY", now, {}, None, "mock")
+
+    assert gate["proceed"] is False
+    assert "일 손실" in gate["message"]
+    assert "-2.19" in gate["message"]
+
+
+def test_daily_loss_block_override_resumes_trading(monkeypatch):
+    """요구사항(2026-07-20) — 사용자가 daily_loss_block_override 토글을 켜면
+    같은 -2.19% 일손실 상황에서도 신규진입 차단 사유에 더 이상 '일 손실'이
+    나타나지 않고(다른 정상 눌림목 대기 흐름으로 진행), 일손실과 무관하게
+    거래가 재개된다."""
+    monkeypatch.setattr(switch_engine, "detect_pullback", lambda df: {"is_pullback": False, "reason": "wait"})
+    state = default_state()
+    state["realized_pnl_today_pct"] = -2.19
+    state["daily_loss_block_override"] = True
+    now = datetime(2026, 7, 14, 10, 0)
+
+    gate = switch_engine.evaluate_pullback_gate(state, LONG_SYMBOL, "HYNIX_BUY", now, {}, None, "mock")
+
+    assert "일 손실" not in (gate["message"] or "")
+    # 오버라이드가 켜지면 일손실이 전혀 없을 때와 동일한 정상 눌림목 대기 흐름으로
+    # 진행된다(최대 2분 대기 - test_general_signal_waits_no_more_than_two_minutes와 동일 경로).
+    assert gate["pullback_wait_remaining_seconds"] == 120

@@ -2537,6 +2537,31 @@ if _pending_alert:
         f"{_pending_alert.get('reason', '—')} (감지시각: {_pending_alert.get('detected_at', '—')})"
     )
 
+st.divider()
+st.subheader("⚠️ 일 손실 한도 수동 해제")
+st.caption(
+    "일 손실이 -2.0% 이하가 되면 신규진입(TrendSwitchAccel 눌림목 게이트/강제거래창)이 "
+    "자동으로 차단됩니다. 아래를 켜면 이 -2.0% 신규진입 차단을 무시하고 오늘 손익과 "
+    "무관하게 다시 거래를 허용합니다 — 판단은 사용자 책임입니다. (전량청산을 강제하는 "
+    "-2.5% MOCK 자동중단 안전장치와는 별개이며, 이 토글은 그것까지 해제하지 않습니다.)"
+)
+_daily_loss_override_current = bool(switch_state.get("daily_loss_block_override"))
+_daily_loss_override_choice = st.toggle(
+    "일 손실 -2.0% 신규진입 차단 무시하고 거래 재개",
+    value=_daily_loss_override_current,
+    key="hynix_daily_loss_block_override_toggle",
+)
+if _daily_loss_override_choice != _daily_loss_override_current:
+    switch_state["daily_loss_block_override"] = _daily_loss_override_choice
+    save_state_atomic(switch_state)
+    if _daily_loss_override_choice:
+        st.warning("일 손실 -2.0% 신규진입 차단을 해제했습니다 — 오늘 손익과 무관하게 신규진입이 다시 허용됩니다.")
+    else:
+        st.success("일 손실 -2.0% 신규진입 차단을 다시 활성화했습니다.")
+    st.rerun()
+elif _daily_loss_override_current:
+    st.warning("🔓 일 손실 -2.0% 신규진입 차단이 현재 해제되어 있습니다.")
+
 st.caption("아래 버튼은 손절 방식과 무관하게 언제든 즉시 전량 청산을 실행합니다(현재 모드의 실제 계좌/브로커 기준).")
 mb1, mb2, mb3 = st.columns(3)
 with mb1:

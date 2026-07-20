@@ -258,6 +258,7 @@ def evaluate_pullback_gate(
         has_unconfirmed_order=has_unconfirmed_order,
         daily_return_pct=state.get("realized_pnl_today_pct"),
         atr_pct=None,
+        override_daily_loss_block=bool(state.get("daily_loss_block_override")),
     )
     state["last_trend_switch_plan"] = {
         **pre_plan,
@@ -317,6 +318,7 @@ def evaluate_pullback_gate(
             has_unconfirmed_order=has_unconfirmed_order,
             daily_return_pct=state.get("realized_pnl_today_pct"),
             atr_pct=None,
+            override_daily_loss_block=bool(state.get("daily_loss_block_override")),
         )
         state["last_trend_switch_plan"] = {
             **deadline_plan,
@@ -369,6 +371,7 @@ def evaluate_pullback_gate(
             has_unconfirmed_order=has_unconfirmed_order,
             daily_return_pct=state.get("realized_pnl_today_pct"),
             atr_pct=None,
+            override_daily_loss_block=bool(state.get("daily_loss_block_override")),
         )
         state["last_trend_switch_plan"] = {
             **pullback_plan,
@@ -2276,6 +2279,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     fired_windows = state.get("fired_windows", [])
     forced_info = should_force_trade(
         decision, fired_windows, price_data_ok, order_api_ok, df_1min, daily_pnl_pct, now=now,
+        override_daily_loss_block=bool(state.get("daily_loss_block_override")),
     )
 
     liquidation_phase_now = get_liquidation_phase(now)
@@ -2479,6 +2483,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                                 has_unconfirmed_order=bool(state.get("order_in_flight") or state.get("pending_order")),
                                 daily_return_pct=state.get("realized_pnl_today_pct"),
                                 atr_pct=None,
+                                override_daily_loss_block=bool(state.get("daily_loss_block_override")),
                             )
                             proceed = bool(trend_plan.get("proceed"))
                             # 강한 신호(STRONG_BUY)도 PRIMARY_TREND 차단은 무시할 수 없다 — "강한

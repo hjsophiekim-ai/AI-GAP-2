@@ -177,6 +177,7 @@ def plan_entry(
     confirm_tracker: dict, frequency_state: dict, pullback_result: Optional[dict],
     now: datetime, data_ok: bool, has_unconfirmed_order: bool,
     daily_return_pct: Optional[float], atr_pct: Optional[float] = None,
+    override_daily_loss_block: bool = False,
 ) -> dict:
     """반환: proceed, position_pct(0~1 비율 또는 None=기존 사이징 유지), entry_type,
     immediate_switch(bool), stop_loss_pct(포지션에 태깅할 손절 기준), block_reason,
@@ -203,7 +204,11 @@ def plan_entry(
     if int(frequency_state.get("consecutive_losses", 0)) >= cfg["consecutive_loss_block_threshold"]:
         result["block_reason"] = f"연속손실 {frequency_state.get('consecutive_losses')}회 — 신규진입 중단"
         return result
-    if daily_return_pct is not None and daily_return_pct <= cfg["daily_loss_block_pct"]:
+    if (
+        not override_daily_loss_block
+        and daily_return_pct is not None
+        and daily_return_pct <= cfg["daily_loss_block_pct"]
+    ):
         result["block_reason"] = f"일 손실 {daily_return_pct:.2f}% ≤ {cfg['daily_loss_block_pct']}% — 신규진입 중단"
         return result
     if int(frequency_state.get("round_trips_today", 0)) >= cfg["max_daily_round_trips"]:

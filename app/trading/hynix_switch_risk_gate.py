@@ -208,6 +208,7 @@ def should_force_trade(
     df_1min: Optional[pd.DataFrame],
     daily_pnl_pct: Optional[float],
     now: Optional[datetime] = None,
+    override_daily_loss_block: bool = False,
 ) -> dict:
     """강제거래(하루 최소 2회 보장) 수행 여부 종합 판단."""
     now = now or kst_now()
@@ -237,7 +238,7 @@ def should_force_trade(
         result["block_reason"] = f"호가 공백 과다: {vi_gap['reason']}"
         return result
 
-    if daily_pnl_pct is not None and daily_pnl_pct <= _DAILY_LOSS_LIMIT_PCT:
+    if not override_daily_loss_block and daily_pnl_pct is not None and daily_pnl_pct <= _DAILY_LOSS_LIMIT_PCT:
         result["block_reason"] = f"일 누적 손실 {daily_pnl_pct:.2f}% ≤ {_DAILY_LOSS_LIMIT_PCT:.1f}% — 강제거래 중단"
         return result
 
