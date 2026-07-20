@@ -84,3 +84,48 @@ def test_compute_live_direction_ignores_noise_below_threshold():
     history = _seed_history(prices, now)
     result = feed.compute_live_direction(history, "X", now)
     assert result["direction"] is None
+
+
+def test_live_trade_direction_normalizes_inverse_etf_direction():
+    now = datetime(2026, 7, 20, 10, 0, 30)
+    history = {}
+    for symbol, prices in {
+        "000660": [1000, 1002, 1004, 1006],
+        "0193T0": [5000, 5010, 5020, 5030],
+        "0197X0": [10000, 9980, 9960, 9940],
+    }.items():
+        start = now - timedelta(seconds=15)
+        for i, price in enumerate(prices):
+            history = feed.record_price_sample(history, symbol, price, start + timedelta(seconds=5 * i))
+
+    result = feed.compute_live_trade_direction(
+        history, now, signal_symbol="000660", long_symbol="0193T0", inverse_symbol="0197X0",
+    )
+
+    assert result["direction"] == "UP"
+    assert result["up_votes"] >= 2
+
+
+def test_reversal_candidate_requires_three_factors_for_fifteen_seconds():
+    now = datetime(2026, 7, 20, 10, 0, 0)
+    weak = feed.update_reversal_candidate_state(
+        {}, live_direction="UP", previous_direction="DOWN",
+        factors={"signal_slope_reversal": True}, now=now,
+    )
+    assert weak["status"] == "NONE"
+
+    first = feed.update_reversal_candidate_state(
+        {}, live_direction="UP", previous_direction="DOWN",
+        factors={"signal_slope_reversal": True, "etf_pair_direction_confirmed": True, "volume_increase": True},
+        now=now,
+    )
+    assert first["status"] == "OBSERVING"
+
+    confirmed = feed.update_reversal_candidate_state(
+        first, live_direction="UP", previous_direction="DOWN",
+        factors={"signal_slope_reversal": True, "etf_pair_direction_confirmed": True, "volume_increase": True},
+        now=now + timedelta(seconds=16),
+    )
+    assert confirmed["status"] == "REVERSAL_CANDIDATE"
+    assert confirmed["existing_direction_blocked"] is True
+    assert confirmed["detection_to_confirmation_delay_seconds"] >= 15

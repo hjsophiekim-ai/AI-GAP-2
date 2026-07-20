@@ -224,8 +224,14 @@ def evaluate_pullback_gate(
     held_symbol = (state.get("position") or {}).get("symbol")
     ptrend = primary_trend_result or {}
     primary_trend = ptrend.get("primary_trend", PRIMARY_TREND_RANGE)
+    live_trade = state.get("live_trade_direction") or {}
+    live_direction_for_desired = "UP" if desired_symbol == HYNIX_SYMBOL else "DOWN" if desired_symbol == INVERSE_SYMBOL else None
+    live_reversal_allows_direction = (
+        live_trade.get("status") == "REVERSAL_CANDIDATE"
+        and live_trade.get("direction") == live_direction_for_desired
+    )
     trend_blocked_reason = None
-    if final_action in ("INVERSE_BUY", "INVERSE_STRONG_BUY") and new_inverse_entry_blocked(
+    if not live_reversal_allows_direction and final_action in ("INVERSE_BUY", "INVERSE_STRONG_BUY") and new_inverse_entry_blocked(
         primary_trend, ptrend.get("above_vwap"), ptrend.get("above_ema20"), ptrend,
     ):
         votes, vote_reasons = inverse_block_vote_count(ptrend)
@@ -234,7 +240,7 @@ def evaluate_pullback_gate(
             f"(short-term move classified as {classify_short_term_move(primary_trend, None)}"
             "; requires 2x-confirmed VWAP/15m-trend/swing-low breakdown to flip)"
         )
-    elif final_action in ("HYNIX_BUY", "HYNIX_STRONG_BUY") and new_hynix_entry_blocked(
+    elif not live_reversal_allows_direction and final_action in ("HYNIX_BUY", "HYNIX_STRONG_BUY") and new_hynix_entry_blocked(
         primary_trend, ptrend.get("above_vwap"), ptrend.get("above_ema20"),
     ):
         trend_blocked_reason = (
@@ -2071,25 +2077,91 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         try:
             from app.data_sources.hynix_long_collector import collect_long_current
             from app.data_sources.hynix_inverse_collector import collect_inverse_current
+            from app.data_sources.auto_market_collector import _load_hynix_current_cache
 
             long_quote = collect_long_current(mode=resolved_mode)
             inverse_quote = collect_inverse_current(mode=resolved_mode)
+            signal_quote = _load_hynix_current_cache() or {}
         except Exception as exc:
             logger.debug("[EarlyTrendFastFeed] 현재가 조회 실패: %s", exc)
             return {"skipped": True, "reason": f"price fetch failed: {exc}"}
 
         long_price = long_quote.get("current_price")
         inverse_price = inverse_quote.get("current_price")
+        signal_price = signal_quote.get("current_price") or state.get("last_hynix_signal_price")
 
         etd_state = dict(state.get("early_trend_detector") or {})
         history = etd_state.get("price_history") or {}
+        history = feed.record_price_sample(history, SIGNAL_SYMBOL, signal_price, now)
         history = feed.record_price_sample(history, HYNIX_SYMBOL, long_price, now)
         history = feed.record_price_sample(history, INVERSE_SYMBOL, inverse_price, now)
         etd_state["price_history"] = history
         etd_state["live_slopes"] = {
+            SIGNAL_SYMBOL: feed.compute_live_direction(history, SIGNAL_SYMBOL, now),
             HYNIX_SYMBOL: feed.compute_live_direction(history, HYNIX_SYMBOL, now),
             INVERSE_SYMBOL: feed.compute_live_direction(history, INVERSE_SYMBOL, now),
         }
+        live_trade = feed.compute_live_trade_direction(
+            history, now, signal_symbol=SIGNAL_SYMBOL, long_symbol=HYNIX_SYMBOL, inverse_symbol=INVERSE_SYMBOL,
+        )
+        previous_live_direction = (state.get("live_trade_direction") or {}).get("direction")
+        cached_fast_signal = (state.get("fast_trend_watcher") or {}).get("last_signal") or {}
+        factors = {
+            "signal_slope_reversal": bool(
+                previous_live_direction
+                and (etd_state["live_slopes"].get(SIGNAL_SYMBOL) or {}).get("direction")
+                and (etd_state["live_slopes"].get(SIGNAL_SYMBOL) or {}).get("direction") != previous_live_direction
+            ),
+            "etf_pair_direction_confirmed": bool(live_trade.get("direction")),
+            "volume_increase": float(cached_fast_signal.get("volume_ratio") or 0.0) >= 1.2,
+            "macd_short_reversal": (cached_fast_signal.get("direction") in ("UP", "DOWN") and cached_fast_signal.get("direction") == live_trade.get("direction")),
+            "higher_low_lower_high": bool(live_trade.get("direction") and max(live_trade.get("up_votes", 0), live_trade.get("down_votes", 0)) >= 2),
+            "vwap_reclaim_break": bool((state.get("last_primary_trend") or {}).get("above_vwap") is not None and live_trade.get("direction")),
+        }
+        reversal_candidate = feed.update_reversal_candidate_state(
+            etd_state.get("reversal_candidate"),
+            live_direction=live_trade.get("direction"),
+            previous_direction=previous_live_direction,
+            factors=factors,
+            now=now,
+        )
+        if reversal_candidate.get("status") == "REVERSAL_CANDIDATE":
+            freq = etd.reset_frequency_state_if_new_day(etd_state.get("frequency"), now.strftime("%Y%m%d"))
+            prev_signal = (etd_state.get("last_signal") or {})
+            etd_state["frequency"] = etd.apply_live_reversal_candidate_reaction(
+                freq, previous_live_direction, prev_signal.get("score"), now,
+            )
+            state["live_trade_direction"] = {
+                **live_trade,
+                "direction": reversal_candidate.get("candidate_direction") or live_trade.get("direction"),
+                "status": "REVERSAL_CANDIDATE",
+                "structural_trend": (state.get("last_primary_trend") or {}).get("primary_trend"),
+                "existing_direction_blocked": True,
+                "first_detected_at": reversal_candidate.get("first_detected_at"),
+                "confirmed_at": reversal_candidate.get("confirmed_at"),
+                "detection_to_confirmation_delay_seconds": reversal_candidate.get("detection_to_confirmation_delay_seconds"),
+            }
+            cached_fast_signal = {
+                **cached_fast_signal,
+                "direction": state["live_trade_direction"]["direction"],
+                "up_votes": 6 if state["live_trade_direction"]["direction"] == "UP" else 0,
+                "down_votes": 6 if state["live_trade_direction"]["direction"] == "DOWN" else 0,
+                "returns": {"3m": 0.9},
+                "top_factors": reversal_candidate.get("active_factors") or [],
+            }
+            cached_confirmed_regime = etd.REGIME_FAST_REVERSAL_RANGE
+        else:
+            state["live_trade_direction"] = {
+                **live_trade,
+                "status": reversal_candidate.get("status"),
+                "structural_trend": (state.get("last_primary_trend") or {}).get("primary_trend"),
+                "existing_direction_blocked": bool(reversal_candidate.get("existing_direction_blocked")),
+                "first_detected_at": reversal_candidate.get("first_detected_at"),
+                "confirmed_at": reversal_candidate.get("confirmed_at"),
+                "detection_to_confirmation_delay_seconds": reversal_candidate.get("detection_to_confirmation_delay_seconds"),
+            }
+            cached_confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
+        etd_state["reversal_candidate"] = reversal_candidate
         state["early_trend_detector"] = etd_state
 
         live = bool(state.get("early_trend_detector_live"))
@@ -2102,9 +2174,6 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             if position.get("entry_type") != etd.ENTRY_TYPE_EARLY_PROBE:
                 save_state_atomic(state)
                 return {"skipped": True, "reason": "new entry window closed", "live_slopes": etd_state["live_slopes"]}
-
-        cached_fast_signal = (state.get("fast_trend_watcher") or {}).get("last_signal") or {}
-        cached_confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
 
         try:
             from app.config import get_config
@@ -2798,6 +2867,9 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                     elif (
                         (desired_symbol == INVERSE_SYMBOL and (state.get("adaptive_regime") or {}).get("confirmed_regime") == "STRONG_UP")
                         or (desired_symbol == HYNIX_SYMBOL and (state.get("adaptive_regime") or {}).get("confirmed_regime") == "STRONG_DOWN")
+                    ) and not (
+                        (state.get("live_trade_direction") or {}).get("status") == "REVERSAL_CANDIDATE"
+                        and (state.get("live_trade_direction") or {}).get("direction") == ("UP" if desired_symbol == HYNIX_SYMBOL else "DOWN")
                     ):
                         # 요구사항(2026-07-16, 큰 추세 수익 극대화판) — STRONG_UP 확정 중에는
                         # 0197X0(인버스) 신규매수를, STRONG_DOWN 확정 중에는 0193T0(레버리지)

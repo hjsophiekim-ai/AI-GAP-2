@@ -379,6 +379,25 @@ def ensure_fast_trend_watcher_running(interval_seconds: float = FAST_WATCHER_INT
         return _fast_instance
 
 
+def ensure_auto_trade_background_threads(
+    cycle_interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+    fast_interval_seconds: float = FAST_WATCHER_INTERVAL_SECONDS,
+) -> dict:
+    """Start both Hynix auto-trade background loops and return their liveness.
+
+    The Streamlit page has several controls that can call st.rerun() before the
+    lower-page bootstrap block is reached. Keeping a single top-level helper
+    prevents a manual resume from only changing state while the actual cycle
+    threads remain absent.
+    """
+    cycle = ensure_cycle_thread_running(interval_seconds=cycle_interval_seconds)
+    fast = ensure_fast_trend_watcher_running(interval_seconds=fast_interval_seconds)
+    return {
+        "cycle_thread_alive": cycle.is_alive(),
+        "fast_thread_alive": fast.is_alive(),
+    }
+
+
 def stop_fast_trend_watcher() -> None:
     global _fast_instance
     with _fast_lock:

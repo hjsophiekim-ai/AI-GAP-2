@@ -59,3 +59,42 @@ def test_maybe_refresh_eod_regime_skips_when_auto_trade_off(monkeypatch):
     scheduler._maybe_refresh_eod_regime(datetime(2026, 7, 16, 15, 45), state)
 
     assert len(calls) == 0
+
+
+def test_ensure_auto_trade_background_threads_starts_both_loops(monkeypatch):
+    class _FakeThread:
+        def __init__(self, interval_seconds=0):
+            self.interval_seconds = interval_seconds
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def is_alive(self):
+            return self.started
+
+        def stop(self):
+            self.started = False
+
+    try:
+        scheduler.stop_cycle_thread()
+        scheduler.stop_fast_trend_watcher()
+        monkeypatch.setattr(scheduler, "HynixAutoTradeCycleThread", _FakeThread)
+        monkeypatch.setattr(scheduler, "HynixFastTrendWatcherThread", _FakeThread)
+
+        result = scheduler.ensure_auto_trade_background_threads(
+            cycle_interval_seconds=999,
+            fast_interval_seconds=999,
+        )
+        second = scheduler.ensure_auto_trade_background_threads(
+            cycle_interval_seconds=999,
+            fast_interval_seconds=999,
+        )
+
+        assert result["cycle_thread_alive"] is True
+        assert result["fast_thread_alive"] is True
+        assert second["cycle_thread_alive"] is True
+        assert second["fast_thread_alive"] is True
+    finally:
+        scheduler.stop_cycle_thread()
+        scheduler.stop_fast_trend_watcher()

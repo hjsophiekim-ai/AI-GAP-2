@@ -123,6 +123,7 @@ def test_regime_probe_cap_blocks_range_and_data_insufficient():
 def test_regime_probe_cap_limits_volatile_range_and_panic():
     assert etd.regime_probe_cap("VOLATILE_RANGE") == 0.50
     assert etd.regime_probe_cap("PANIC") == 0.10
+    assert etd.regime_probe_cap(etd.REGIME_FAST_REVERSAL_RANGE) == 0.50
 
 
 def test_compute_target_probe_pct_applies_regime_cap_even_at_late_stage():
@@ -135,6 +136,19 @@ def test_compute_target_probe_pct_is_zero_in_range_regardless_of_elapsed():
     for elapsed in (0.0, 30.0, 600.0):
         _, pct = etd.compute_target_probe_pct("RANGE", elapsed)
         assert pct == 0.0
+
+
+def test_fast_reversal_range_uses_fast_range_ladder():
+    assert etd.compute_target_probe_pct(etd.REGIME_FAST_REVERSAL_RANGE, 0.0) == (etd.STAGE_INITIAL, 0.18)
+    assert etd.compute_target_probe_pct(etd.REGIME_FAST_REVERSAL_RANGE, 20.0, direction_aligned=True) == (etd.STAGE_HOLD_15S, 0.45)
+
+
+def test_live_reversal_candidate_reaction_decays_score_and_resets_counter():
+    now = datetime(2026, 7, 20, 10, 0, 0)
+    freq = etd.apply_live_reversal_candidate_reaction(etd.default_frequency_state(), "DOWN", 100.0, now)
+    assert freq["last_live_reversal_decayed_score"] == pytest.approx(20.0)
+    assert freq["confirmation_count_reset_at"] == now.isoformat()
+    assert etd.is_same_direction_cooldown_active(freq, "DOWN", now + timedelta(seconds=10)) is True
 
 
 def test_expansion_target_pct_only_after_confirmed_strong_trend_matching_direction():
@@ -259,6 +273,27 @@ def test_should_exit_probe_volatile_range_tp1_partial_then_tp2_full():
         opposite_change_point=False, confirmed_regime="VOLATILE_RANGE",
     )
     assert sl["action"] == "SELL_ALL"
+
+
+def test_should_exit_probe_fast_reversal_range_uses_fast_tp_sl_rules():
+    sl = etd.should_exit_probe(
+        net_return_pct=-0.6, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=False, confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+    )
+    assert sl["action"] == "SELL_ALL"
+
+    tp = etd.should_exit_probe(
+        net_return_pct=0.9, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=False, confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+    )
+    assert tp["action"] == "SELL_PARTIAL"
+
+    opposite = etd.should_exit_probe(
+        net_return_pct=0.2, seconds_since_last_reconfirmation=5, signal_still_valid=True,
+        opposite_change_point=True, confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
+    )
+    assert opposite["action"] == "SELL_ALL"
+    assert "FAST_REVERSAL_RANGE" in opposite["reason"]
     assert "손절" in sl["reason"]
 
 

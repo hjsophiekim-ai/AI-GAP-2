@@ -19,6 +19,8 @@ MAX_HISTORY_SECONDS = 90.0
 LOOKBACK_WINDOWS_SECONDS: tuple[float, ...] = (5.0, 10.0, 20.0, 30.0)
 # 호가 흔들림(노이즈)을 방향전환으로 오판하지 않기 위한 최소 변동폭.
 MIN_SLOPE_PCT_FOR_DIRECTION = 0.02
+REVERSAL_MIN_FACTORS = 3
+REVERSAL_HOLD_SECONDS = 15.0
 
 
 def record_price_sample(history: Optional[dict], symbol: str, price: Optional[float], now: datetime) -> dict:
@@ -101,3 +103,99 @@ def compute_live_direction(history: dict, symbol: str, now: datetime) -> dict:
         elif down_count == len(available):
             direction = "DOWN"
     return {"slopes": slopes, "direction": direction, "windows_available": len(available)}
+
+
+def _implied_trade_direction(symbol: str, raw_direction: Optional[str], *, signal_symbol: str, long_symbol: str, inverse_symbol: str) -> Optional[str]:
+    if raw_direction not in ("UP", "DOWN"):
+        return None
+    if symbol in (signal_symbol, long_symbol):
+        return raw_direction
+    if symbol == inverse_symbol:
+        return {"UP": "DOWN", "DOWN": "UP"}.get(raw_direction)
+    return None
+
+
+def compute_live_trade_direction(
+    history: dict, now: datetime, *, signal_symbol: str, long_symbol: str, inverse_symbol: str,
+) -> dict:
+    """Return the fast trade direction decoupled from 15/30m structural trend.
+
+    UP means favor the leveraged long ETF, DOWN means favor the inverse ETF. The
+    inverse ETF's own price direction is normalized back to the underlying trade
+    direction, so long DOWN + inverse UP both vote DOWN.
+    """
+    per_symbol = {
+        symbol: compute_live_direction(history, symbol, now)
+        for symbol in (signal_symbol, long_symbol, inverse_symbol)
+    }
+    votes: list[str] = []
+    for symbol, result in per_symbol.items():
+        implied = _implied_trade_direction(
+            symbol, result.get("direction"),
+            signal_symbol=signal_symbol, long_symbol=long_symbol, inverse_symbol=inverse_symbol,
+        )
+        if implied:
+            votes.append(implied)
+    up_votes = votes.count("UP")
+    down_votes = votes.count("DOWN")
+    direction = None
+    if max(up_votes, down_votes) >= 2 and up_votes != down_votes:
+        direction = "UP" if up_votes > down_votes else "DOWN"
+    return {
+        "direction": direction,
+        "up_votes": up_votes,
+        "down_votes": down_votes,
+        "per_symbol": per_symbol,
+        "updated_at": now.isoformat(),
+    }
+
+
+def update_reversal_candidate_state(
+    state: Optional[dict], *, live_direction: Optional[str], previous_direction: Optional[str],
+    factors: dict, now: datetime,
+) -> dict:
+    """Detect short reversals without waiting for the 3-minute/main cycle.
+
+    A REVERSAL_CANDIDATE requires at least 3 active factors to persist for 15s.
+    Single rebound bars therefore create only an observing candidate, not a
+    confirmed live direction change.
+    """
+    state = dict(state or {})
+    active = [name for name, ok in (factors or {}).items() if ok]
+    factor_count = len(active)
+    opposite = bool(previous_direction and live_direction and previous_direction != live_direction)
+    candidate_direction = live_direction if (live_direction in ("UP", "DOWN") and (opposite or not previous_direction)) else None
+
+    if not candidate_direction or factor_count < REVERSAL_MIN_FACTORS:
+        state.update({
+            "status": "NONE", "candidate_direction": candidate_direction,
+            "factor_count": factor_count, "active_factors": active,
+            "existing_direction_blocked": False,
+        })
+        return state
+
+    if state.get("candidate_direction") != candidate_direction or state.get("status") not in ("OBSERVING", "REVERSAL_CANDIDATE"):
+        state.update({
+            "status": "OBSERVING",
+            "candidate_direction": candidate_direction,
+            "first_detected_at": now.isoformat(),
+            "confirmed_at": None,
+        })
+
+    try:
+        first_dt = datetime.fromisoformat(state["first_detected_at"])
+    except Exception:
+        first_dt = now
+        state["first_detected_at"] = now.isoformat()
+    delay = max(0.0, (now - first_dt).total_seconds())
+    if delay >= REVERSAL_HOLD_SECONDS:
+        state["status"] = "REVERSAL_CANDIDATE"
+        state["confirmed_at"] = state.get("confirmed_at") or now.isoformat()
+        state["existing_direction_blocked"] = True
+    state.update({
+        "factor_count": factor_count,
+        "active_factors": active,
+        "detection_to_confirmation_delay_seconds": delay if state.get("status") == "REVERSAL_CANDIDATE" else None,
+        "updated_at": now.isoformat(),
+    })
+    return state

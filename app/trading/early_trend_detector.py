@@ -81,6 +81,8 @@ CHASE_BLOCK_EXTREME_MINUTES = 1
 # 요구사항(2026-07-20 최종) — 반대 change-point 발생 시 기존 방향점수를 즉시
 # 70% 감쇠한다(신뢰도를 없애 재진입을 어렵게 만들되 완전히 0으로 만들지는 않음).
 OPPOSITE_CHANGE_POINT_DECAY_RATIO = 0.70
+LIVE_REVERSAL_DECAY_RATIO = 0.80
+REGIME_FAST_REVERSAL_RANGE = "FAST_REVERSAL_RANGE"
 
 SIGNAL_SOURCE = "EARLY_TREND_DETECTOR"  # 하위호환 별칭(로그 등 일반 표기용) — 원장 필터링에는 ALL_SIGNAL_SOURCES를 쓴다.
 ALL_SIGNAL_SOURCES = list(_STAGE_SIGNAL_SOURCE.values()) + [SIGNAL_SOURCE]
@@ -96,6 +98,7 @@ _REGIME_PROBE_CAP: dict[str, float] = {
     "HIGH_VOLATILITY": 0.50,
     "REVERSAL_CANDIDATE_UP": 0.50,
     "REVERSAL_CANDIDATE_DOWN": 0.50,
+    REGIME_FAST_REVERSAL_RANGE: 0.50,
 }
 
 # 요구사항(2026-07-20 최종) — 경과시간(초) 기준 단계별 비중(장세 상한으로 다시
@@ -296,6 +299,20 @@ def apply_opposite_change_point_reaction(freq: dict, previous_direction: Optiona
     return freq
 
 
+def apply_live_reversal_candidate_reaction(freq: dict, previous_direction: Optional[str], previous_score: Optional[float], now: datetime) -> dict:
+    """Short-reversal reaction: block the stale direction and decay its score by 80%."""
+    freq = dict(freq)
+    if previous_direction:
+        freq = register_probe_entry(freq, previous_direction, now)
+    freq["last_live_reversal_candidate_at"] = now.isoformat()
+    freq["last_live_reversal_decayed_score"] = (
+        round((previous_score or 0.0) * (1.0 - LIVE_REVERSAL_DECAY_RATIO), 4)
+        if previous_score is not None else None
+    )
+    freq["confirmation_count_reset_at"] = now.isoformat()
+    return freq
+
+
 def stage_for_elapsed_seconds(elapsed_seconds: float, direction_aligned: bool = False) -> tuple[str, float]:
     """요구사항(2026-07-20 최종) — 10~15%(즉시, 중간값 12%) → 30%(15초 유지) →
     50%(30초 유지 + ETF/기초자산 방향 일치). 30초가 지났어도 direction_aligned가
@@ -317,6 +334,10 @@ def compute_target_probe_pct(
     confirmed_regime: Optional[str], elapsed_seconds: float, direction_aligned: bool = False,
 ) -> tuple[str, float]:
     """요구사항2/5 — 경과시간 기준 단계에 장세별 상한을 곱해 실제 목표비중을 낸다."""
+    if confirmed_regime == REGIME_FAST_REVERSAL_RANGE:
+        if elapsed_seconds >= 15.0 and direction_aligned:
+            return STAGE_HOLD_15S, 0.45
+        return STAGE_INITIAL, 0.18
     cap = regime_probe_cap(confirmed_regime)
     stage, pct = stage_for_elapsed_seconds(elapsed_seconds, direction_aligned=direction_aligned)
     return stage, round(min(pct, cap), 4)
@@ -395,35 +416,36 @@ def should_exit_probe(
     60초 — 30초 내 재확인 실패 시 즉시 철수, 요구사항 5/15/30/60초 재평가)."""
     hold = {"action": "HOLD", "ratio": 0.0, "reason": None}
 
-    if confirmed_regime == "VOLATILE_RANGE":
+    if confirmed_regime in ("VOLATILE_RANGE", REGIME_FAST_REVERSAL_RANGE):
+        regime_label = confirmed_regime
         if net_return_pct is not None and net_return_pct <= VOLATILE_RANGE_SL_PCT:
             return {
                 "action": "SELL_ALL", "ratio": 1.0,
-                "reason": f"VOLATILE_RANGE 손절(net {net_return_pct:.2f}% <= {VOLATILE_RANGE_SL_PCT}%)",
+                "reason": f"{regime_label} 손절(net {net_return_pct:.2f}% <= {VOLATILE_RANGE_SL_PCT}%)",
             }
         if opposite_change_point or not signal_still_valid:
             why = "반대 변화점 발생" if opposite_change_point else "조기신호 소멸"
             return {
                 "action": "SELL_ALL", "ratio": 1.0,
-                "reason": f"VOLATILE_RANGE 신호약화({why}) — 손익과 무관하게 즉시 전량청산",
+                "reason": f"{regime_label} 신호약화({why}) — 손익과 무관하게 즉시 전량청산",
             }
         if net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP2_PCT:
             return {
                 "action": "SELL_ALL", "ratio": 1.0,
-                "reason": f"VOLATILE_RANGE TP2(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP2_PCT}%) — 전량익절",
+                "reason": f"{regime_label} TP2(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP2_PCT}%) — 전량익절",
             }
         if not tp1_taken and net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP1_PCT:
             return {
                 "action": "SELL_PARTIAL", "ratio": VOLATILE_RANGE_TP1_MIN_SELL_RATIO,
                 "reason": (
-                    f"VOLATILE_RANGE TP1(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP1_PCT}%) — "
+                    f"{regime_label} TP1(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP1_PCT}%) — "
                     f"{VOLATILE_RANGE_TP1_MIN_SELL_RATIO * 100:.0f}%+ 부분익절"
                 ),
             }
         if held_minutes is not None and held_minutes >= VOLATILE_RANGE_MAX_HOLD_MINUTES:
             return {
                 "action": "SELL_ALL", "ratio": 1.0,
-                "reason": f"VOLATILE_RANGE 최대보유시간({VOLATILE_RANGE_MAX_HOLD_MINUTES}분) 초과 — 전량청산",
+                "reason": f"{regime_label} 최대보유시간({VOLATILE_RANGE_MAX_HOLD_MINUTES}분) 초과 — 전량청산",
             }
         if seconds_since_last_reconfirmation is not None and seconds_since_last_reconfirmation > HARD_RECONFIRMATION_DEADLINE_SECONDS:
             return {

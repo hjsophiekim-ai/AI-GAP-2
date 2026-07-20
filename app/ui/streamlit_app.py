@@ -14,8 +14,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 로그인 게이트 — 다른 어떤 코드(설정 로드, 백그라운드 자동매매 시작, 계좌조회 등)
-# 보다도 먼저 실행되어야 한다. 인증되지 않으면 여기서 st.stop()으로 멈춘다.
+# The Hynix scheduler must survive browser/login state, so bootstrap it before
+# the auth gate. Account/config-heavy UI work still stays behind require_login().
+try:
+    from app.services.hynix_auto_trade_scheduler import ensure_auto_trade_background_threads
+    ensure_auto_trade_background_threads()
+except Exception:
+    pass
+
 from app.ui.auth_gate import require_login
 require_login()
 

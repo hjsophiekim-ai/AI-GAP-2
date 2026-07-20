@@ -23,6 +23,12 @@ from datetime import time as dtime_cls
 
 import streamlit as st
 
+try:
+    from app.services.hynix_auto_trade_scheduler import ensure_auto_trade_background_threads
+    ensure_auto_trade_background_threads()
+except Exception:
+    pass
+
 from app.ui.auth_gate import require_login
 require_login()
 
@@ -357,6 +363,7 @@ from app.services.hynix_switch_engine import update_hynix_auto_trade_loop, set_c
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, describe_new_entry_window
 from app.utils.time_utils import kst_now
 from app.services.hynix_auto_trade_scheduler import (
+    ensure_auto_trade_background_threads,
     ensure_cycle_thread_running,
     ensure_fast_trend_watcher_running,
     get_status as get_cycle_status,
@@ -369,7 +376,30 @@ try:
 except Exception:
     pass
 
+try:
+    _auto_trade_threads = ensure_auto_trade_background_threads()
+except Exception as _thread_exc:
+    _auto_trade_threads = {"error": str(_thread_exc)}
+
 switch_state = load_state()
+
+
+def _resume_daily_loss_limited_trading(state: dict) -> dict:
+    """Allow new entries after the -2% daily-loss block and wake the loops."""
+    state["daily_loss_block_override"] = True
+    state["auto_trade_on"] = True
+    stopped_reason = str(state.get("stopped_reason") or "")
+    if state.get("stopped") and ("일 누적 손실" in stopped_reason or "daily" in stopped_reason.lower()):
+        state["stopped"] = False
+        state["stopped_reason"] = None
+    save_state_atomic(state)
+    try:
+        state["auto_trade_thread_resume_status"] = ensure_auto_trade_background_threads()
+        save_state_atomic(state)
+    except Exception as exc:
+        state["auto_trade_thread_resume_status"] = {"error": str(exc)}
+        save_state_atomic(state)
+    return state
 
 try:
     import os as _os
@@ -477,6 +507,22 @@ except Exception as _recon_exc:
     st.warning(f"원장 재조정 진단 실패: {_recon_exc}")
 
 _pt = switch_state.get("last_primary_trend") or {}
+_live_trade = switch_state.get("live_trade_direction") or {}
+if _pt or _live_trade:
+    st.subheader("⚡ Structural Trend vs Live Trade Direction")
+    _lt_cols = st.columns(7)
+    _lt_cols[0].metric("Structural Trend", _pt.get("primary_trend", "-"))
+    _lt_cols[1].metric("15분/30분", f"{_pt.get('trend_15m', '-')}/{_pt.get('trend_30m', '-')}")
+    _lt_cols[2].metric("Live Direction", _live_trade.get("direction") or "-")
+    _lt_cols[3].metric("Live Status", _live_trade.get("status") or "-")
+    _lt_cols[4].metric("반전 감지", _live_trade.get("first_detected_at") or "-")
+    _lt_cols[5].metric("방향 확정", _live_trade.get("confirmed_at") or "-")
+    _lt_cols[6].metric("지연(초)", _live_trade.get("detection_to_confirmation_delay_seconds") if _live_trade.get("detection_to_confirmation_delay_seconds") is not None else "-")
+    st.caption(
+        "기존 방향 신규진입 차단: "
+        + ("YES" if _live_trade.get("existing_direction_blocked") else "NO")
+        + " · structural trend는 비중/보유시간 조정값이고, range장 신규진입·청산은 live_trade_direction 우선입니다."
+    )
 if _pt:
     _pt_cols = st.columns(5)
     _pt_cols[0].metric("PRIMARY_TREND", _pt.get("primary_trend", "-"))
@@ -975,10 +1021,11 @@ with _dl_top_cols[1]:
         use_container_width=True,
     )
 if _dl_top_choice != _dl_top_current or _dl_resume_clicked:
-    switch_state["daily_loss_block_override"] = bool(_dl_top_choice or _dl_resume_clicked)
-    if _dl_resume_clicked:
-        switch_state["auto_trade_on"] = True
-    save_state_atomic(switch_state)
+    if _dl_top_choice or _dl_resume_clicked:
+        switch_state = _resume_daily_loss_limited_trading(switch_state)
+    else:
+        switch_state["daily_loss_block_override"] = False
+        save_state_atomic(switch_state)
     if switch_state["daily_loss_block_override"]:
         st.warning("일 손실 -2.0% 신규진입 차단을 해제했습니다. 자동매매가 켜져 있으면 신규진입을 다시 판단합니다.")
     else:
@@ -2607,8 +2654,11 @@ _daily_loss_override_choice = st.toggle(
     key="hynix_daily_loss_block_override_toggle",
 )
 if _daily_loss_override_choice != _daily_loss_override_current:
-    switch_state["daily_loss_block_override"] = _daily_loss_override_choice
-    save_state_atomic(switch_state)
+    if _daily_loss_override_choice:
+        switch_state = _resume_daily_loss_limited_trading(switch_state)
+    else:
+        switch_state["daily_loss_block_override"] = False
+        save_state_atomic(switch_state)
     if _daily_loss_override_choice:
         st.warning("일 손실 -2.0% 신규진입 차단을 해제했습니다 — 오늘 손익과 무관하게 신규진입이 다시 허용됩니다.")
     else:
@@ -2618,8 +2668,7 @@ elif _daily_loss_override_current:
     st.warning("🔓 일 손실 -2.0% 신규진입 차단이 현재 해제되어 있습니다.")
 
 if st.button("매매제한 해제", key="hynix_daily_loss_block_override_button", type="primary"):
-    switch_state["daily_loss_block_override"] = True
-    save_state_atomic(switch_state)
+    switch_state = _resume_daily_loss_limited_trading(switch_state)
     st.warning("일 손실 -2.0% 신규진입 차단을 수동 해제했습니다. 오늘 손익과 무관하게 신규진입이 다시 허용됩니다.")
     st.rerun()
 
