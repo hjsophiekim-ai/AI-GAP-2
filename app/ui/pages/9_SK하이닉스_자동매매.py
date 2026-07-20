@@ -768,17 +768,43 @@ if switch_state.get("mode") == "mock":
         "청산을 대신 결정하되, 초기 손절 안전장치(effective_sl_pct)는 토글과 무관하게 항상 최우선 적용됩니다."
     )
 
+    early_detector_enabled = st.checkbox(
+        "🌱 Early Trend Detector — 3분봉 확정 전 소액 선진입(Adaptive Regime 하위 탐색진입)",
+        value=bool(switch_state.get("early_trend_detector_enabled", False)), key="hynix_early_detector_toggle",
+    )
+    if early_detector_enabled != switch_state.get("early_trend_detector_enabled", False):
+        switch_state["early_trend_detector_enabled"] = early_detector_enabled
+        save_state_atomic(switch_state)
+    if early_detector_enabled:
+        early_detector_live = st.checkbox(
+            "🌱 Early Trend Detector — LIVE(실제 소액 주문 실행, mock 전용)",
+            value=bool(switch_state.get("early_trend_detector_live", False)), key="hynix_early_detector_live_toggle",
+        )
+        if early_detector_live != switch_state.get("early_trend_detector_live", False):
+            switch_state["early_trend_detector_live"] = early_detector_live
+            save_state_atomic(switch_state)
+    st.caption(
+        "OFF면 계산 자체를 하지 않습니다. ON+SHADOW(LIVE 미체크)는 신호/단계/차단사유만 계산·기록하고 "
+        "실제 주문은 내지 않습니다. ON+LIVE(mock 전용)일 때만 최초 5%→15%→25% 단계별 탐색진입과 "
+        "STRONG_UP/DOWN 확정 후 40~50% 확대가 실제로 실행됩니다. 최종 주문권한/최대비중은 항상 "
+        "Adaptive Regime이 결정하며, 조기진입 자체 고정손절(-0.4%)/신호소멸/반대 변화점/60초 미확인 "
+        "철수는 Dynamic Exit Watcher가 담당합니다."
+    )
+
     # ── 체크박스별 실제 영향도 표(2026-07-13 사용자 요청) — "켜져 있다"와 "실제
     # 주문/청산에 반영된다"는 다르다. 세 토글 모두 현재 구현상 mock 전용이고, real
     # 모드에서는 ON으로 저장돼 있어도 실제로는 항상 Shadow(레거시 경로 그대로 사용)다.
     _fx_active_on = bool(switch_state.get("active_strategy_enabled", False))
     _fx_fusion_on = bool(switch_state.get("adaptive_fusion_enabled", False))
     _fx_bigtrend_on = bool(switch_state.get("big_trend_holding_enabled", False))
+    _fx_early_on = bool(switch_state.get("early_trend_detector_enabled", False))
+    _fx_early_live = bool(switch_state.get("early_trend_detector_live", False))
     _fx_mode = switch_state.get("mode", "mock")
     _fx_rows = [
         ("Active Strategy", _fx_active_on, "실제 반영(mock)" if (_fx_active_on and _fx_mode == "mock") else "Shadow(적용 안 됨)", "mock 전용 — real은 항상 ENHANCED_REGIME_SWITCH"),
         ("Adaptive Fusion", _fx_fusion_on, "실제 반영(mock, Active Strategy ON 시)" if (_fx_fusion_on and _fx_active_on and _fx_mode == "mock") else "Shadow(적용 안 됨)", "mock 전용 — Active Strategy가 꺼져 있으면 이 토글도 무효"),
         ("Big Trend Holding AI", _fx_bigtrend_on, "실제 반영(mock, 청산 지배)" if (_fx_bigtrend_on and _fx_mode == "mock") else "Shadow(계산·기록만)", "mock 전용 — real은 항상 Dynamic Exit AI/레거시 TP-SL"),
+        ("Early Trend Detector", _fx_early_on, "실제 반영(mock, LIVE)" if (_fx_early_on and _fx_early_live and _fx_mode == "mock") else ("Shadow(계산·기록만)" if _fx_early_on else "OFF(계산 안 함)"), "mock 전용 — 최초 탐색진입만 담당, 확대는 Adaptive Regime 확인 후"),
     ]
     st.markdown("**체크박스별 실제 영향도**")
     _fx_table = "| 기능 | 현재 ON/OFF | 실제 주문 반영 여부 | 적용 대상 |\n|---|---|---|---|\n"
@@ -2367,6 +2393,63 @@ else:
         f"computed_at: {_sl_snapshot.get('computed_at')} · "
         f"entry_price_source: {_sl_snapshot.get('entry_price_source')} · "
         f"current_price_source: {_sl_snapshot.get('current_price_source') or '—'}"
+    )
+
+st.divider()
+st.subheader("🌱 Early Trend Detector (제한적 탐색진입)")
+_etd_state_now = load_state()
+_etd = _etd_state_now.get("early_trend_detector") or {}
+if not _etd:
+    st.info("아직 계산된 조기신호가 없습니다(토글 OFF이거나 첫 계산 전).")
+else:
+    et1, et2, et3 = st.columns(3)
+    with et1:
+        st.metric("모드", _etd.get("engine_mode", "—"))
+    with et2:
+        _sig = _etd.get("last_signal") or _etd.get("exit_signal") or {}
+        st.metric("조기신호 점수", f"{_sig.get('score', 0):.0f}/100" if _sig else "—")
+    with et3:
+        st.metric("조기신호 방향", (_etd.get("last_signal") or {}).get("direction") or (_etd.get("probe") or {}).get("direction") or "—")
+
+    et4, et5, et6 = st.columns(3)
+    with et4:
+        _sp = _etd.get("signal_price")
+        st.metric("신호 발생가", f"{_sp:,.0f}원" if _sp else "—")
+    with et5:
+        _cp = _etd.get("current_price")
+        st.metric("현재가", f"{_cp:,.0f}원" if _cp else "—")
+    with et6:
+        _chase = _etd.get("chase") or {}
+        _moved = _chase.get("moved_pct")
+        st.metric("추격폭(신호가 대비)", f"{_moved:.2f}%" if _moved is not None else "—")
+
+    et7, et8, et9 = st.columns(3)
+    with et7:
+        st.metric("탐색/확대 단계", _etd.get("stage") or (_etd.get("probe") or {}).get("stage") or "—")
+    with et8:
+        _pct = _etd.get("target_pct")
+        if _pct is None:
+            _pct = (_etd.get("probe") or {}).get("position_pct")
+        st.metric("탐색/확대 비중", f"{_pct * 100:.0f}%" if _pct is not None else "—")
+    with et9:
+        _cost = _etd.get("cost_gate") or {}
+        _edge = _cost.get("net_edge_pct")
+        st.metric("예상 순기대수익(비용차감후)", f"{_edge:.2f}%" if _edge is not None else "—")
+
+    _block_reason = _etd.get("last_block_reason")
+    _exit_reason = _etd.get("last_exit_reason")
+    if _exit_reason:
+        st.error(f"철수 사유: {_exit_reason}")
+    elif _block_reason:
+        st.warning(f"진입 미실행 사유: {_block_reason}")
+    else:
+        st.caption("진입 미실행/철수 사유: 없음")
+
+    _freq = _etd.get("frequency") or {}
+    st.caption(
+        f"오늘 조기진입 왕복거래: {_freq.get('round_trips_today', 0)}/5 · "
+        f"가짜신호 연속손절: {_freq.get('consecutive_fake_signal_losses', 0)}회 · "
+        f"서킷브레이커 잠금: {'ON — ' + str(_freq.get('halted_until')) if _freq.get('halted_until') else 'OFF'}"
     )
 
 st.divider()

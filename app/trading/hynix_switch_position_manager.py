@@ -1317,7 +1317,15 @@ def run_switch_or_entry(
 
     if held_symbol == desired_symbol:
         current_price = _current_price(desired_symbol, hynix_price, inverse_price)
-        if target_position_pct and current_price and trend_plan.get("entry_type") in ("NORMAL", "CONFIRMED"):
+        # 요구사항(Early Trend Detector 통합) — 여기서는 trend_plan.get("entry_type")
+        # (state["last_trend_switch_plan"], 레거시 accelerator 전용 캐시)가 아니라
+        # 이 함수 상단에서 이미 trend_plan 폴백까지 반영된 로컬 entry_type을 확인한다
+        # — 호출부가 entry_type을 명시적으로 넘기면(예: Early Trend Detector의 단계
+        # 진행/확대 top-up) 그 값 그대로 게이트를 통과해야 하며, entry_type이 None이라
+        # trend_plan에서 채워진 경우도 값이 동일해 기존 동작과 차이가 없다.
+        # "EARLY_PROBE"는 문자열로만 참조한다(hynix_switch_position_manager.py가
+        # early_trend_detector.py를 임포트하지 않도록 결합도를 낮춘다).
+        if target_position_pct and current_price and entry_type in ("NORMAL", "CONFIRMED", "EARLY_PROBE"):
             full_cash, cash_source = _query_buyable_cash(
                 broker, symbol=desired_symbol, current_price=current_price, state=state,
             )

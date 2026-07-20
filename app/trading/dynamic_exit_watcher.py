@@ -483,6 +483,55 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         stop_loss_source = "HARD_STOP_SNAPSHOT"
         state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
 
+    # ── Early Trend Detector 조기진입 철수(요구사항3) ───────────────────────────
+    # EARLY_PROBE로 태그된 포지션에는 confirmed regime 기준 손절과 별개로 더
+    # 타이트한 고정 -0.4% 손절/신호소멸/반대 변화점/60초 미확인 조건을 추가로
+    # 적용한다. 1초 주기로 도는 이 워처가 담당해야 반응이 빠르다(30초 Fast
+    # Watcher는 최초 진입/단계진행/확대만 담당).
+    if position.get("entry_type") == "EARLY_PROBE" and snapshot is not None:
+        from app.trading import early_trend_detector as etd
+        from app.trading.hynix_fast_trend import compute_fast_trend_signal
+
+        etd_state = dict(state.get("early_trend_detector") or {})
+        probe = dict(etd_state.get("probe") or etd.default_probe_state())
+        probe_direction = probe.get("direction")
+
+        fast_signal = compute_fast_trend_signal(df_1min, now=now)
+        early_signal = etd.compute_early_signal(fast_signal)
+        signal_still_valid = early_signal.get("direction") == probe_direction and early_signal.get("score", 0) >= 50.0
+        opposite_change_point = etd.is_opposite_change_point(probe_direction, early_signal)
+
+        last_reconfirmed_at = probe.get("last_reconfirmed_at")
+        seconds_since_reconfirm = None
+        if last_reconfirmed_at:
+            try:
+                seconds_since_reconfirm = (now - datetime.fromisoformat(last_reconfirmed_at)).total_seconds()
+            except Exception:
+                seconds_since_reconfirm = None
+        if signal_still_valid:
+            probe["last_reconfirmed_at"] = now.isoformat()
+            seconds_since_reconfirm = 0.0
+
+        exit_reason = etd.should_exit_probe(
+            net_return_pct=snapshot["net_return_pct"], seconds_since_last_reconfirmation=seconds_since_reconfirm,
+            signal_still_valid=signal_still_valid, opposite_change_point=opposite_change_point,
+        )
+        etd_state["probe"] = probe
+        etd_state["exit_signal"] = early_signal
+        etd_state["last_exit_reason"] = exit_reason
+        state["early_trend_detector"] = etd_state
+
+        if exit_reason:
+            decision["action"], decision["ratio"] = "SELL_ALL", 1.0
+            decision["reason"] = f"EARLY_PROBE 철수 — {exit_reason}"
+            stop_loss_source = "EARLY_PROBE_EXIT"
+            state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
+            was_fake_signal_loss = (snapshot["net_return_pct"] or 0.0) <= 0.0
+            etd_state["frequency"] = etd.register_probe_round_trip_closed(
+                etd_state.get("frequency") or etd.default_frequency_state(), now, was_fake_signal_loss,
+            )
+            state["early_trend_detector"] = etd_state
+
     state["stop_loss_source"] = stop_loss_source
     state["stop_loss_block_reason"] = None
 
