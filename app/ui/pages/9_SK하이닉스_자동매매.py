@@ -957,6 +957,36 @@ if switch_state.get("mode") == "mock":
                     f"grace={_equity.get('settlement_grace_active')} rebased={_equity.get('baseline_rebased')}"
                 )
 
+st.markdown("**일손실 제한 거래재개**")
+_dl_top_current = bool(switch_state.get("daily_loss_block_override"))
+_dl_top_cols = st.columns([2, 1])
+with _dl_top_cols[0]:
+    _dl_top_choice = st.toggle(
+        "일 손실 -2.0% 신규진입 차단 해제",
+        value=_dl_top_current,
+        key="hynix_daily_loss_resume_toggle_top",
+        help="-2.0% 일손실 신규진입 차단만 무시합니다. -2.5% 강제중단 안전장치는 해제하지 않습니다.",
+    )
+with _dl_top_cols[1]:
+    _dl_resume_clicked = st.button(
+        "거래재개",
+        key="hynix_daily_loss_resume_button_top",
+        type="primary",
+        use_container_width=True,
+    )
+if _dl_top_choice != _dl_top_current or _dl_resume_clicked:
+    switch_state["daily_loss_block_override"] = bool(_dl_top_choice or _dl_resume_clicked)
+    if _dl_resume_clicked:
+        switch_state["auto_trade_on"] = True
+    save_state_atomic(switch_state)
+    if switch_state["daily_loss_block_override"]:
+        st.warning("일 손실 -2.0% 신규진입 차단을 해제했습니다. 자동매매가 켜져 있으면 신규진입을 다시 판단합니다.")
+    else:
+        st.success("일 손실 -2.0% 신규진입 차단을 다시 활성화했습니다.")
+    st.rerun()
+if _dl_top_current:
+    st.warning("현재 일 손실 -2.0% 신규진입 차단이 수동 해제되어 있습니다.")
+
 if switch_state.get("mode") == "mock" and switch_state.get("stopped") and "일 누적 손실" in (switch_state.get("stopped_reason") or ""):
     mock_override = st.checkbox(
         "모의계좌 손실제한 무시하고 계속 테스트",
