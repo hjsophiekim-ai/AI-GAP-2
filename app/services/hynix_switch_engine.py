@@ -1890,11 +1890,31 @@ def _run_early_trend_detector_tick(
 
         chase = etd.evaluate_chase_block(
             signal_reference_price=candidate.get("reference_price"), current_price=current_etf_price,
-            confirmed_regime=confirmed_regime, df_1min=df_1min, direction=direction,
+            confirmed_regime=confirmed_regime, df_1min=_etf_df, direction="UP",
         )
         etd_state["chase"] = chase
         if chase["blocked"]:
-            etd_state["last_block_reason"] = "; ".join(chase["reasons"]) or "CHASE_BLOCK"
+            _chase_reason = "; ".join(chase["reasons"]) or "CHASE_BLOCK"
+            try:
+                if _etf_df is not None and current_etf_price:
+                    _recent = _etf_df.sort_values("datetime").iloc[-1:]
+                    _recent_high = float(_recent["high"].max())
+                    _recent_low = float(_recent["low"].min())
+                    _distance_to_high_pct = round((_recent_high - float(current_etf_price)) / _recent_high * 100.0, 4) if _recent_high else None
+                    _chase_reason = (
+                        f"{_chase_reason} | ETF={desired_symbol} price={current_etf_price} "
+                        f"recent_1m_high={_recent_high} recent_1m_low={_recent_low} "
+                        f"distance_to_high_pct={_distance_to_high_pct}"
+                    )
+                    chase.update({
+                        "symbol": desired_symbol,
+                        "recent_1m_high": _recent_high,
+                        "recent_1m_low": _recent_low,
+                        "distance_to_high_pct": _distance_to_high_pct,
+                    })
+            except Exception:
+                pass
+            etd_state["last_block_reason"] = _chase_reason
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "CHASE_BLOCK", "signal": early_signal}
 

@@ -254,6 +254,34 @@ def test_chase_block_prevents_late_entry_after_reference_price_moved(tmp_path, m
 
 # ── 5초 주기 실시간 기울기(요구사항1, 2026-07-20 최종 필수 테스트) ────────────
 
+def test_inverse_chase_block_uses_inverse_etf_bars_not_underlying_bars(tmp_path, monkeypatch):
+    import pandas as pd
+
+    state, broker, pm = _flat_state(tmp_path, monkeypatch)
+    state["early_trend_detector"] = {
+        "candidate": {"direction": "DOWN", "first_detected_at": (NOW - timedelta(seconds=5)).isoformat(), "reference_price": 5_000.0},
+    }
+    underlying_df = pd.DataFrame([
+        {"datetime": NOW - timedelta(seconds=50), "open": 1_850_000.0, "high": 1_850_000.0, "low": 1_840_000.0, "close": 1_845_000.0, "volume": 1_000},
+        {"datetime": NOW, "open": 1_845_000.0, "high": 1_846_000.0, "low": 1_839_000.0, "close": 1_840_000.0, "volume": 1_000},
+    ])
+    inverse_df = pd.DataFrame([
+        {"datetime": NOW - timedelta(seconds=50), "open": 5_000.0, "high": 5_120.0, "low": 4_980.0, "close": 5_000.0, "volume": 1_000},
+        {"datetime": NOW, "open": 5_000.0, "high": 5_060.0, "low": 4_990.0, "close": 5_010.0, "volume": 1_000},
+    ])
+    monkeypatch.setattr(engine_module, "_load_etf_own_minute_cache", lambda symbol: inverse_df if symbol == INVERSE_SYMBOL else None)
+
+    result = engine_module._run_early_trend_detector_tick(
+        state=state, mode="mock", now=NOW, fast_signal=_strong_signal("DOWN"), df_1min=underlying_df,
+        confirmed_regime="STRONG_DOWN", broker=broker, position_manager=pm,
+        hynix_price=100_000.0, inverse_price=5_010.0,
+    )
+
+    assert result["skipped"] is False
+    assert state["position"]["symbol"] == INVERSE_SYMBOL
+    assert state["early_trend_detector"]["chase"]["blocked"] is False
+
+
 def test_live_slope_reversal_triggers_probe_entry_within_thirty_seconds(tmp_path, monkeypatch):
     """10:27류 반전 재현 — 1분봉 vote는 아직 방향을 확정하지 못했지만(FLAT),
     5초 주기로 쌓은 실시간 기울기(live_slopes)가 인버스 ETF 자체 상승(=기초자산
