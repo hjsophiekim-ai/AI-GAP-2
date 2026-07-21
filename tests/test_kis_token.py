@@ -353,3 +353,87 @@ class TestModeSeparation:
                 client.get_access_token()
         called_url = mock_post.call_args[0][0]
         assert BASE_URL_REAL in called_url
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestTokenExpiredMidSessionAutoRetry — 2026-07-21 실측 수정
+#
+# 로컬 캐시(메모리/파일)는 여전히 "만료 전"이라고 믿지만, KIS 모의투자 서버가
+# 그 토큰을 이미 무효 처리한 경우(msg_cd=EGW00123 "기간이 만료된 token 입니다")
+# get_balance()/get_buyable_cash_raw()가 재발급 없이 계속 같은 죽은 토큰으로
+# 실패했다(2026-07-16 로그에 40분 이상 반복 관측 — 잔고조회 영구 실패로 이어져
+# DAILY_RETURN_UNKNOWN이 risk_manager에서 신규주문을 계속 차단했다).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTokenExpiredMidSessionAutoRetry:
+    def _client_with_valid_looking_cached_token(self, tmp_path, monkeypatch) -> KISClient:
+        from app.utils import data_paths
+        monkeypatch.setattr(data_paths, "CACHE_DIR", tmp_path)
+        import app.trading.kis_client as kis_client_module
+        monkeypatch.setattr(kis_client_module, "_TOKEN_CACHE_DIR", tmp_path)
+        client = _make_client("mock")
+        client._token = "stale-but-locally-valid-token"
+        client._token_expires_at = datetime.now() + timedelta(hours=1)
+        return client
+
+    def test_get_balance_retries_once_after_server_side_token_expiry(self, tmp_path, monkeypatch):
+        client = self._client_with_valid_looking_cached_token(tmp_path, monkeypatch)
+        expired_body = {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "기간이 만료된 token 입니다."}
+        success_body = {
+            "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상처리 되었습니다.",
+            "output1": [], "output2": [{"dnca_tot_amt": "10000000", "ord_psbl_cash": "10000000"}],
+        }
+        reissue_body = {
+            "rt_cd": "0", "msg_cd": "OK", "msg1": "정상",
+            "access_token": "fresh-token", "expires_in": 86400,
+        }
+        # 실측 로그와 동일하게 만료 응답은 HTTP 500으로 온다(2026-07-16 관측).
+        get_responses = [_mock_resp(500, expired_body), _mock_resp(200, success_body)]
+        with patch.object(client._session, "get", side_effect=get_responses) as mock_get, \
+                patch.object(client._session, "post", return_value=_mock_resp(200, reissue_body)) as mock_post, \
+                patch.object(client, "_save_token_cache"):
+            result = client.get_balance()
+
+        assert mock_get.call_count == 2  # 만료 응답 1회 + 재시도 1회
+        assert mock_post.call_count == 1  # 무효화 후 딱 1번만 재발급
+        assert client._token == "fresh-token"  # 새 토큰으로 교체됨
+        assert result["cash"] == 10_000_000.0
+        assert result.get("error") is None
+
+        # 두 번째 GET 호출은 재발급된 새 토큰을 Authorization 헤더로 사용해야 한다.
+        second_call_headers = mock_get.call_args_list[1].kwargs["headers"]
+        assert second_call_headers["authorization"] == "Bearer fresh-token"
+
+    def test_get_buyable_cash_raw_retries_once_after_server_side_token_expiry(self, tmp_path, monkeypatch):
+        client = self._client_with_valid_looking_cached_token(tmp_path, monkeypatch)
+        expired_body = {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "기간이 만료된 token 입니다."}
+        success_body = {
+            "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상처리 되었습니다.",
+            "output": {"ord_psbl_cash": "5000000", "nrcvb_buy_amt": "5000000", "psbl_qty": "10"},
+        }
+        reissue_body = {
+            "rt_cd": "0", "msg_cd": "OK", "msg1": "정상",
+            "access_token": "fresh-token-2", "expires_in": 86400,
+        }
+        get_responses = [_mock_resp(500, expired_body), _mock_resp(200, success_body)]
+        with patch.object(client._session, "get", side_effect=get_responses) as mock_get, \
+                patch.object(client._session, "post", return_value=_mock_resp(200, reissue_body)), \
+                patch.object(client, "_save_token_cache"):
+            result = client.get_buyable_cash_raw()
+
+        assert mock_get.call_count == 2
+        assert result["ord_psbl_cash"] == 5_000_000.0
+        assert result.get("error") is None
+
+    def test_non_token_error_does_not_trigger_retry(self, tmp_path, monkeypatch):
+        """다른 오류(예: 레이트리밋 EGW00201)는 토큰 재발급 대상이 아니므로 재시도하지 않는다."""
+        client = self._client_with_valid_looking_cached_token(tmp_path, monkeypatch)
+        rate_limit_body = {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}
+        with patch.object(client._session, "get", return_value=_mock_resp(500, rate_limit_body)) as mock_get, \
+                patch.object(client._session, "post") as mock_post:
+            result = client.get_balance()
+
+        assert mock_get.call_count == 1  # 토큰 문제가 아니므로 재시도 없음
+        mock_post.assert_not_called()
+        assert client._token == "stale-but-locally-valid-token"  # 토큰 무효화되지 않음
+        assert result["error"] is not None

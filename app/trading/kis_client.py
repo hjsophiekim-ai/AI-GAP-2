@@ -426,6 +426,58 @@ class KISClient:
             "custtype": "P",
         }
 
+    # ── 토큰 만료(서버측) 감지 후 자동 재발급 재시도 ─────────────────────────
+    # 요구사항(2026-07-21 실측) — get_access_token()은 "로컬에 캐시된 만료시각"만
+    # 보고 토큰을 재사용한다. 그런데 KIS 모의투자 서버가 그 토큰을 실제로는 이미
+    # 무효 처리한 경우(msg_cd=EGW00123 "기간이 만료된 token 입니다" — 다른 프로세스가
+    # 같은 appkey로 새 토큰을 발급해 이전 토큰이 선점 무효화되는 경우 등), 로컬
+    # 캐시는 여전히 "유효"라고 믿고 같은 죽은 토큰을 계속 재사용해 잔고/매수가능금액
+    # 조회가 앱 재시작 전까지 영구적으로 실패했다(2026-07-16 로그에 40분 이상 반복
+    # 관측). API 응답 본문에서 이 특정 오류를 감지하면 토큰을 즉시 무효화하고
+    # 새로 발급받아 같은 요청을 1회 재시도한다.
+    _TOKEN_EXPIRED_MSG_CODES = {"EGW00123"}
+
+    @classmethod
+    def _is_token_expired_response(cls, data: dict) -> bool:
+        if not isinstance(data, dict):
+            return False
+        msg_cd = str(data.get("msg_cd") or "")
+        msg1 = str(data.get("msg1") or "")
+        return bool(
+            msg_cd in cls._TOKEN_EXPIRED_MSG_CODES
+            or "만료된 token" in msg1
+            or "유효하지 않은 token" in msg1
+        )
+
+    def _invalidate_token(self) -> None:
+        self._token = ""
+        self._token_expires_at = datetime.min
+        try:
+            path = self._token_cache_path()
+            if path.exists():
+                path.unlink()
+        except Exception as e:
+            logger.debug(f"[KIS-{self.mode.upper()}] 토큰 캐시 파일 삭제 실패(무해): {e}")
+
+    def _request_with_token_retry(self, method: str, url: str, tr_id: str, **kwargs):
+        """공통 GET/POST 요청 + 서버측 토큰 만료 감지 시 재발급 후 1회 재시도."""
+        request_fn = self._get if method == "GET" else self._post
+        headers = self._auth_headers(tr_id)
+        resp = request_fn(url, headers=headers, **kwargs)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        if self._is_token_expired_response(data):
+            logger.warning(
+                f"[KIS-{self.mode.upper()}] 토큰이 서버측에서 이미 만료/무효 처리됨"
+                f"(msg_cd={data.get('msg_cd')!r}) — 재발급 후 1회 재시도"
+            )
+            self._invalidate_token()
+            headers = self._auth_headers(tr_id)
+            resp = request_fn(url, headers=headers, **kwargs)
+        return resp
+
     # ── hashkey ────────────────────────────────────────────────────────────
 
     def get_hashkey(self, body: dict) -> str:
@@ -487,7 +539,6 @@ class KISClient:
         """
         tr_id = TR_BALANCE_MOCK if self.mode == "mock" else TR_BALANCE_REAL
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
-        headers = self._auth_headers(tr_id)
         params = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.product_code,
@@ -502,7 +553,7 @@ class KISClient:
             "CTX_AREA_NK100": "",
         }
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(3, 15))
+            resp = self._request_with_token_retry("GET", url, tr_id, params=params, timeout=(3, 15))
             # raise_for_status() 전에 본문 파싱 — KIS 500/4xx 응답에도 rt_cd/msg_cd가 들어 있음
             try:
                 data = resp.json()
@@ -754,7 +805,6 @@ class KISClient:
         """
         tr_id = TR_BUYABLE_MOCK if self.mode == "mock" else TR_BUYABLE_REAL
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
-        headers = self._auth_headers(tr_id)
         _ord_dvsn = ord_dvsn if ord_dvsn is not None else (ORD_DVSN_MARKET if price == 0 else ORD_DVSN_LIMIT)
         params = {
             "CANO": self.account_no,
@@ -766,7 +816,7 @@ class KISClient:
             "OVRS_ICLD_YN": "N",
         }
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._request_with_token_retry("GET", url, tr_id, params=params, timeout=(3, 10))
             try:
                 data = resp.json()
             except Exception:
