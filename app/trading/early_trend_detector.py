@@ -130,7 +130,7 @@ LATENCY_KEYS: tuple[str, ...] = (
 
 # 요구사항5 — 장세별 확정 전 탐색진입 상한. RANGE/DATA_INSUFFICIENT는 진입 자체를 막는다.
 _REGIME_PROBE_CAP: dict[str, float] = {
-    "RANGE": 0.0,
+    "RANGE": 0.30,
     "DATA_INSUFFICIENT": 0.0,
     "PANIC": 0.30,
     "VOLATILE_RANGE": 0.70,

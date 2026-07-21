@@ -1695,3 +1695,175 @@ def test_range_weighted_entry_hard_blocks_both_entry_etf_5s_10s_opposite():
 
     assert result["action"] == "HOLD"
     assert result["reason_code"] == "ETF_5S_10S_BOTH_OPPOSITE"
+
+
+def test_range_weighted_fixed_a_continuation_buy_order_conditions():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 75.5, "inverse_pressure_score": 50.5},
+        direction="UP",
+        live_direction="UP",
+        live_direction_held_seconds=20.0,
+        signal_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "DOWN"},
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "DOWN"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "UP"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=0.32,
+        cost_pct=0.07,
+        expected_mfe_pct=0.54,
+        expected_mae_pct=0.30,
+    )
+
+    assert result["action"] == "ENTER"
+    assert result["entry_path"] == "CONTINUATION"
+    assert result["reason_code"] == "CONTINUATION_ENTRY_APPROVED"
+    assert result["expected_net_edge_pct"] >= 0.15
+
+
+def test_range_regime_probe_cap_is_not_zero_hard_block():
+    from app.trading import early_trend_detector as etd
+
+    stage, target_pct = etd.compute_target_probe_pct("RANGE", 0.0, direction_aligned=False)
+
+    assert stage == etd.STAGE_INITIAL
+    assert target_pct > 0.0
+
+
+def test_range_weighted_fixed_b_pullback_buy_order_conditions():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 85.0, "inverse_pressure_score": 50.0},
+        direction="UP",
+        live_direction="UP",
+        live_direction_held_seconds=20.0,
+        signal_window_directions={5: "DOWN", 10: "UP", 20: "UP", 30: "UP"},
+        confirm_window_directions={5: "DOWN", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=0.50,
+        cost_pct=0.08,
+        expected_mfe_pct=0.60,
+        expected_mae_pct=0.30,
+    )
+
+    assert result["action"] == "ENTER"
+    assert result["entry_path"] == "PULLBACK"
+    assert result["reason_code"] == "PULLBACK_ENTRY"
+
+
+def test_range_weighted_fixed_c_low_net_edge_hold():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 80.0, "inverse_pressure_score": 50.0},
+        direction="UP",
+        live_direction="UP",
+        signal_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=0.15,
+        cost_pct=0.05,
+        expected_mfe_pct=0.45,
+        expected_mae_pct=0.25,
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["reason_code"] == "LOW_NET_EDGE"
+
+
+def test_range_weighted_fixed_d_live_direction_conflict_hold():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 75.5, "inverse_pressure_score": 24.5},
+        direction="UP",
+        live_direction="DOWN",
+        signal_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=0.80,
+        cost_pct=0.08,
+        expected_mfe_pct=0.80,
+        expected_mae_pct=0.30,
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["reason_code"] == "LIVE_DIRECTION_CONFLICT"
+
+
+def test_range_weighted_missing_edge_is_data_insufficient_not_low_net_edge():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 75.5, "inverse_pressure_score": 24.5},
+        direction="UP",
+        live_direction="UP",
+        signal_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=None,
+        cost_pct=0.08,
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["reason_code"] == "DATA_INSUFFICIENT"
+    assert "LOW_NET_EDGE" not in result["hard_blocks"]
+
+
+def test_early_fast_feed_no_early_signal_runs_continuation_order_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.data_sources.auto_market_collector as auto_collector_module
+    import app.data_sources.hynix_long_collector as long_collector_module
+    import app.data_sources.hynix_inverse_collector as inverse_collector_module
+    from app.trading import early_trend_live_feed as feed
+    import app.trading.etf_entry_confirmation as etf_confirmation_module
+
+    broker = _BuyingBroker()
+    monkeypatch.setattr(engine, "_create_strategy_broker", lambda *a, **kw: broker)
+    monkeypatch.setattr(auto_collector_module, "_fetch_hynix_current_from_kis", lambda mode=None: 100_030.0)
+    monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 10_030.0, "stale": False})
+    monkeypatch.setattr(inverse_collector_module, "collect_inverse_current", lambda mode=None: {"current_price": 19_940.0, "stale": False})
+    monkeypatch.setattr(engine, "_load_etf_own_minute_cache", lambda symbol: pd.DataFrame({"close": [9_900.0, 9_950.0], "volume": [1000, 1000]}))
+    monkeypatch.setattr(etf_confirmation_module, "compute_etf_vwap", lambda df: 9_950.0)
+    monkeypatch.setattr(
+        engine,
+        "_run_early_trend_detector_tick",
+        lambda **kwargs: {"skipped": True, "reason": "NO_EARLY_SIGNAL", "reason_code": "NO_EARLY_SIGNAL"},
+    )
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["early_trend_detector_enabled"] = True
+    state["early_trend_detector_live"] = True
+    state["last_decision"] = {"final_action": "HYNIX_STRONG_BUY", "enhanced_score": 75.5, "inverse_pressure_score": 24.5}
+    state["last_enhanced_result"] = {"intraday_momentum_score": 70.0}
+    state["adaptive_regime"] = {"confirmed_regime": "RANGE", "confidence": 80.0}
+    history = {}
+    for seconds, signal_price, long_price, inverse_price in (
+        (30, 100_000.0, 10_000.0, 20_000.0),
+        (20, 100_010.0, 10_010.0, 19_980.0),
+        (10, 100_020.0, 10_020.0, 19_960.0),
+    ):
+        ts = _MID_SESSION_NOW - timedelta(seconds=seconds)
+        history = feed.record_price_sample(history, engine.SIGNAL_SYMBOL, signal_price, ts)
+        history = feed.record_price_sample(history, engine.HYNIX_SYMBOL, long_price, ts)
+        history = feed.record_price_sample(history, engine.INVERSE_SYMBOL, inverse_price, ts)
+    state["early_trend_detector"] = {"price_history": history}
+    state["live_trade_direction"] = {
+        "direction": "UP",
+        "direction_held_since": (_MID_SESSION_NOW - timedelta(seconds=20)).isoformat(),
+        "direction_held_seconds": 20.0,
+    }
+    state_module.save_state_atomic(state)
+
+    result = engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID_SESSION_NOW)
+    updated = state_module.load_state(mode="mock")
+    continuation = updated.get("trend_continuation_entry") or {}
+
+    assert result["skipped"] is False
+    assert continuation["last_result"]["action"] == "ENTER"
+    assert continuation["last_result"]["entry_path"] in ("CONTINUATION", "PULLBACK")
+    assert continuation.get("last_switch", {}).get("orders")
+    assert updated.get("actual_entry_engine") == "EARLY_TREND_DETECTOR_LIVE"

@@ -841,13 +841,26 @@ if switch_state.get("mode") == "mock":
         )
         if active_enabled != switch_state.get("active_strategy_enabled", False):
             switch_state["active_strategy_enabled"] = active_enabled
+            if not active_enabled:
+                switch_state["adaptive_fusion_enabled"] = False
             save_state_atomic(switch_state)
         st.caption(
             "OFF면 기존과 완전히 동일하게 동작합니다(ENHANCED_REGIME_SWITCH). ON이어도 강제청산(15:15)과 "
             "레거시 TP/SL 안전망은 항상 그대로 우선 적용됩니다. 이 토글은 mock/real 공통 전략 설정입니다."
         )
 
-    if switch_state.get("active_strategy_enabled"):
+    if not switch_state.get("active_strategy_enabled"):
+        if switch_state.get("adaptive_fusion_enabled", False):
+            switch_state["adaptive_fusion_enabled"] = False
+            save_state_atomic(switch_state)
+        st.checkbox(
+            "?쭬 Adaptive Fusion ??Prediction AI V2/Cycle AI/Micron Proxy瑜??ㅼ젣 ?좉퇋吏꾩엯 ?먮떒???듯빀",
+            value=False,
+            key=f"hynix_adaptive_fusion_toggle_disabled_{_toggle_gen}",
+            disabled=True,
+        )
+        st.caption("Active Strategy ON일 때만 사용 가능")
+    else:
         adaptive_fusion_enabled = st.checkbox(
             "🧠 Adaptive Fusion — Prediction AI V2/Cycle AI/Micron Proxy를 실제 신규진입 판단에 융합",
             value=bool(switch_state.get("adaptive_fusion_enabled", False)),
@@ -917,7 +930,9 @@ if switch_state.get("mode") == "mock":
     for _name, _on, _impact, _scope in _fx_rows:
         _fx_table += f"| {_name} | {'ON' if _on else 'OFF'} | {_impact} | {_scope} |\n"
     st.markdown(_fx_table)
-    _actual_entry_engine = "EARLY_TREND_DETECTOR_LIVE" if (_fx_early_on and _fx_early_live) else "ENHANCED_REGIME_SWITCH"
+    _configured_entry_engine = "EARLY_TREND_DETECTOR" if _fx_early_on else "ENHANCED_REGIME_SWITCH"
+    _actual_entry_engine = switch_state.get("actual_entry_engine") or ("EARLY_TREND_DETECTOR_LIVE" if (_fx_early_on and _fx_early_live) else ("SHADOW_ONLY" if _fx_early_on else "ENHANCED_REGIME_SWITCH"))
+    _entry_orchestrator = switch_state.get("entry_orchestrator") or {}
     _actual_exit_engine = "BIG_TREND_HOLDING_AI" if _fx_bigtrend_on else "DYNAMIC_EXIT_AI"
     st.caption(
         f"mock/real 전략 동일: YES · 실제 신규진입 엔진: `{_actual_entry_engine}` · "
@@ -976,6 +991,23 @@ if switch_state.get("mode") == "mock":
     # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
     # 최종합성확률, 문턱(원래/조정), 진입비중, HOLD·진입 사유, 오늘거래수/연속손실/
     # 남은거래한도, 모델불일치지수를 매 사이클 표시한다.
+    if _signal_summary:
+        with st.expander("Entry decision diagnostics", expanded=True):
+            _ed1, _ed2, _ed3, _ed4 = st.columns(4)
+            _ed1.metric("Entry Path", snapshot_field(_decision_snapshot, "entry_path", "NONE"))
+            _ed2.metric("Weighted Evidence", snapshot_field(_decision_snapshot, "range_evidence_score", "-"))
+            _ed3.metric("Expected Net Edge", snapshot_field(_decision_snapshot, "expected_net_edge_pct", "-"))
+            _ed4.metric("Primary Block", snapshot_field(_decision_snapshot, "primary_block_reason", _signal_summary.get("block_reason") or "-"))
+            _ed5, _ed6, _ed7, _ed8 = st.columns(4)
+            _ed5.metric("Live Held Sec", snapshot_field(_decision_snapshot, "live_direction_held_seconds", "-"))
+            _ed6.metric("Expected Move", snapshot_field(_decision_snapshot, "expected_move_pct", "-"))
+            _ed7.metric("Round-trip Cost", snapshot_field(_decision_snapshot, "cost_pct", "-"))
+            _ed8.metric("Reward/Risk", snapshot_field(_decision_snapshot, "reward_risk", "-"))
+            _ed9, _ed10 = st.columns(2)
+            _ed9.metric("Gross/Cost", snapshot_field(_decision_snapshot, "gross_cost_ratio", "-"))
+            _ed10.metric("ETF 5/10/20/30", str(snapshot_field(_decision_snapshot, "etf_window_directions", {}) or {}))
+            st.caption(f"secondary_reasons={snapshot_field(_decision_snapshot, 'secondary_reasons', []) or []}")
+
     _last_trend_plan = switch_state.get("last_trend_switch_plan") or {}
     _trend_freq = switch_state.get("trend_switch_frequency_state") or {}
     if _last_trend_plan:

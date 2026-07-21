@@ -414,6 +414,9 @@ def evaluate_range_weighted_entry(
     if moved_pct_since_signal is not None and float(moved_pct_since_signal) >= 0.6:
         hard_blocks.append("CHASE_BLOCK")
 
+    missing_edge_input = expected_move_pct is None
+    if missing_edge_input:
+        hard_blocks.append("DATA_INSUFFICIENT")
     expected_move = float(expected_move_pct or 0.0)
     cost = float(cost_pct if cost_pct is not None else 0.0)
     safety_buffer = 0.05
@@ -422,9 +425,9 @@ def evaluate_range_weighted_entry(
     mfe = float(expected_mfe_pct if expected_mfe_pct is not None else expected_move)
     mae = float(expected_mae_pct if expected_mae_pct is not None else (stop_loss_distance_pct or 0.4))
     reward_risk = (mfe / mae) if mae > 0 else 0.0
-    if net_edge < 0.15:
+    if not missing_edge_input and net_edge < 0.15:
         hard_blocks.append("LOW_NET_EDGE")
-    if gross_cost_ratio < 3.0 or reward_risk < 1.5:
+    if not missing_edge_input and (gross_cost_ratio < 3.0 or reward_risk < 1.5):
         hard_blocks.append("POOR_REWARD_RISK")
 
     contributions["live_direction"] = 18.0 if live == desired else 0.0
@@ -450,10 +453,17 @@ def evaluate_range_weighted_entry(
             "action": "HOLD", "entry_path": "NONE", "reason_code": reason,
             "evidence_score": evidence_score, "contributions": contributions,
             "soft_adjustments": soft_adjustments, "target_pct": 0.0,
-            "score_gap": score_gap, "expected_move_pct": expected_move, "cost_pct": cost,
+            "score_gap": score_gap, "expected_move_pct": expected_move, "expected_gross_edge_pct": expected_move, "cost_pct": cost,
             "expected_net_edge_pct": round(net_edge, 4), "gross_cost_ratio": round(gross_cost_ratio, 4) if gross_cost_ratio != float("inf") else gross_cost_ratio,
             "reward_risk": round(reward_risk, 4), "hard_blocks": hard_blocks,
         }
+    pullback_shape = (
+        confirm_above_vwap is True
+        and confirm_dirs.get(20) == "UP"
+        and confirm_dirs.get(30) == "UP"
+        and (confirm_dirs.get(5) == "DOWN" or confirm_dirs.get(10) == "DOWN")
+        and not (confirm_dirs.get(5) == "DOWN" and confirm_dirs.get(10) == "DOWN")
+    )
     if evidence_score < 45.0:
         reason = "CONTINUATION_TOO_WEAK"
         action = "HOLD"
@@ -467,11 +477,11 @@ def evaluate_range_weighted_entry(
         action = "ENTER"
         low, high = 0.20, 0.30
     elif evidence_score < 75.0:
-        reason = "CONTINUATION_ENTRY_APPROVED"
+        reason = "PULLBACK_ENTRY" if pullback_shape else "CONTINUATION_ENTRY_APPROVED"
         action = "ENTER"
         low, high = 0.30, 0.50
     else:
-        reason = "CONTINUATION_ENTRY_APPROVED"
+        reason = "PULLBACK_ENTRY" if pullback_shape else "CONTINUATION_ENTRY_APPROVED"
         action = "ENTER"
         low, high = (0.50, 0.70) if net_edge >= 0.30 else (0.30, 0.50)
     if micro_chop_active and action == "ENTER":
@@ -485,7 +495,7 @@ def evaluate_range_weighted_entry(
         "action": action, "entry_path": "PULLBACK" if reason == "PULLBACK_ENTRY" else "CONTINUATION",
         "reason_code": reason, "evidence_score": evidence_score, "contributions": contributions,
         "soft_adjustments": soft_adjustments, "target_pct": target_pct,
-        "score_gap": score_gap, "expected_move_pct": expected_move, "cost_pct": cost,
+        "score_gap": score_gap, "expected_move_pct": expected_move, "expected_gross_edge_pct": expected_move, "cost_pct": cost,
         "expected_net_edge_pct": round(net_edge, 4), "gross_cost_ratio": round(gross_cost_ratio, 4) if gross_cost_ratio != float("inf") else gross_cost_ratio,
         "reward_risk": round(reward_risk, 4), "hard_blocks": [],
     }
@@ -612,6 +622,17 @@ def _build_completed_decision_snapshot(
     block_reason = signal_summary.get("block_reason")
     early_decision = trace.get("early_decision") or {}
     early_reason = early_decision.get("reason") or early_decision.get("reason_code")
+    continuation_result = (state.get("trend_continuation_entry") or {}).get("last_result", {})
+    continuation_state = state.get("trend_continuation_entry") or {}
+    primary_block_reason = block_reason or continuation_result.get("reason_code") or early_reason
+    secondary_reasons = [
+        reason for reason in (
+            early_reason,
+            continuation_result.get("reason_code"),
+            signal_summary.get("entry_approved_reason"),
+        )
+        if reason and reason != primary_block_reason
+    ]
     momentum_score = enhanced_result.get("intraday_momentum_score")
     explanation = signal_summary.get("conclusion")
     try:
@@ -647,12 +668,20 @@ def _build_completed_decision_snapshot(
         "block_reason": _snapshot_field(block_reason, snapshot_id, calculated_at),
         "momentum_score": _snapshot_field(momentum_score, snapshot_id, calculated_at),
         "early_reason": _snapshot_field(early_reason, snapshot_id, calculated_at),
-        "entry_path": _snapshot_field((state.get("trend_continuation_entry") or {}).get("last_result", {}).get("entry_path") or "NONE", snapshot_id, calculated_at),
+        "primary_block_reason": _snapshot_field(primary_block_reason, snapshot_id, calculated_at),
+        "secondary_reasons": _snapshot_field(secondary_reasons, snapshot_id, calculated_at),
+        "entry_path": _snapshot_field(continuation_result.get("entry_path") or "NONE", snapshot_id, calculated_at),
         "continuation_reason": _snapshot_field((state.get("trend_continuation_entry") or {}).get("last_reason_code"), snapshot_id, calculated_at),
         "score_gap": _snapshot_field(_score_gap_from_decision(decision), snapshot_id, calculated_at),
-        "range_evidence_score": _snapshot_field((state.get("trend_continuation_entry") or {}).get("last_result", {}).get("evidence_score"), snapshot_id, calculated_at),
-        "expected_net_edge_pct": _snapshot_field((state.get("trend_continuation_entry") or {}).get("last_result", {}).get("expected_net_edge_pct"), snapshot_id, calculated_at),
-        "reward_risk": _snapshot_field((state.get("trend_continuation_entry") or {}).get("last_result", {}).get("reward_risk"), snapshot_id, calculated_at),
+        "range_evidence_score": _snapshot_field(continuation_result.get("evidence_score"), snapshot_id, calculated_at),
+        "live_direction_held_seconds": _snapshot_field(continuation_state.get("live_direction_held_seconds"), snapshot_id, calculated_at),
+        "etf_window_directions": _snapshot_field(continuation_state.get("confirm_window_directions"), snapshot_id, calculated_at),
+        "expected_move_pct": _snapshot_field(continuation_result.get("expected_move_pct"), snapshot_id, calculated_at),
+        "expected_gross_edge_pct": _snapshot_field(continuation_result.get("expected_gross_edge_pct"), snapshot_id, calculated_at),
+        "cost_pct": _snapshot_field(continuation_result.get("cost_pct"), snapshot_id, calculated_at),
+        "expected_net_edge_pct": _snapshot_field(continuation_result.get("expected_net_edge_pct"), snapshot_id, calculated_at),
+        "gross_cost_ratio": _snapshot_field(continuation_result.get("gross_cost_ratio"), snapshot_id, calculated_at),
+        "reward_risk": _snapshot_field(continuation_result.get("reward_risk"), snapshot_id, calculated_at),
         "explanation": explanation,
         "enhanced_result": {**(enhanced_result or {})},
         "decision": {**(decision or {})},
@@ -672,6 +701,12 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     live = state.get("live_trade_direction") or {}
     action = "BUY" if continuation_result.get("action") == "ENTER" else "HOLD"
     block_reason = None if action == "BUY" else continuation_result.get("reason_code")
+    early_reason = (early_result or {}).get("reason_code") or (early_result or {}).get("reason")
+    primary_block_reason = block_reason or (None if action == "BUY" else early_reason)
+    secondary_reasons = [
+        reason for reason in (early_reason, continuation_result.get("reason_code"))
+        if reason and reason != primary_block_reason
+    ]
     snapshot = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
@@ -683,12 +718,20 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "final_action": _snapshot_field(action, snapshot_id, calculated_at),
         "block_reason": _snapshot_field(block_reason, snapshot_id, calculated_at),
         "momentum_score": _snapshot_field((state.get("last_enhanced_result") or {}).get("intraday_momentum_score"), snapshot_id, calculated_at),
-        "early_reason": _snapshot_field((early_result or {}).get("reason_code") or (early_result or {}).get("reason"), snapshot_id, calculated_at),
+        "early_reason": _snapshot_field(early_reason, snapshot_id, calculated_at),
+        "primary_block_reason": _snapshot_field(primary_block_reason, snapshot_id, calculated_at),
+        "secondary_reasons": _snapshot_field(secondary_reasons, snapshot_id, calculated_at),
         "entry_path": _snapshot_field(continuation_result.get("entry_path") or "NONE", snapshot_id, calculated_at),
         "continuation_reason": _snapshot_field(continuation_result.get("reason_code"), snapshot_id, calculated_at),
         "score_gap": _snapshot_field(continuation_result.get("score_gap") or _score_gap_from_decision(decision), snapshot_id, calculated_at),
         "range_evidence_score": _snapshot_field(continuation_result.get("evidence_score"), snapshot_id, calculated_at),
+        "live_direction_held_seconds": _snapshot_field(continuation_state.get("live_direction_held_seconds"), snapshot_id, calculated_at),
+        "etf_window_directions": _snapshot_field(continuation_state.get("confirm_window_directions"), snapshot_id, calculated_at),
+        "expected_move_pct": _snapshot_field(continuation_result.get("expected_move_pct"), snapshot_id, calculated_at),
+        "expected_gross_edge_pct": _snapshot_field(continuation_result.get("expected_gross_edge_pct"), snapshot_id, calculated_at),
+        "cost_pct": _snapshot_field(continuation_result.get("cost_pct"), snapshot_id, calculated_at),
         "expected_net_edge_pct": _snapshot_field(continuation_result.get("expected_net_edge_pct"), snapshot_id, calculated_at),
+        "gross_cost_ratio": _snapshot_field(continuation_result.get("gross_cost_ratio"), snapshot_id, calculated_at),
         "reward_risk": _snapshot_field(continuation_result.get("reward_risk"), snapshot_id, calculated_at),
         "signal_detected_at": continuation_state.get("first_detected_at"),
         "snapshot_calculated_at": calculated_at,
@@ -707,6 +750,8 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
             "actionable_signal": action,
             "final_action": action,
             "block_reason": block_reason,
+            "primary_block_reason": primary_block_reason,
+            "secondary_reasons": secondary_reasons,
             "conclusion": "TREND_CONTINUATION_ENTRY 승인" if action == "BUY" else f"Continuation 차단: {block_reason}",
         },
         "pipeline_trace": {"snapshot_id": snapshot_id, "calculated_at": calculated_at, "early_decision": early_result or {}, "continuation": continuation_result},
@@ -2771,7 +2816,7 @@ def _run_early_trend_detector_tick(
         stage, target_pct = etd.compute_target_probe_pct(confirmed_regime, elapsed, direction_aligned=direction_aligned)
         etd_state["stage"], etd_state["target_pct"] = stage, target_pct
         if target_pct <= 0.0:
-            etd_state["last_block_reason"] = f"{confirmed_regime} 장세는 조기진입 금지"
+            etd_state["last_block_reason"] = f"NO_PROBE_TARGET: confirmed_regime={confirmed_regime}, stage={stage}"
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "NO_EARLY_SIGNAL", "signal": early_signal}
 
@@ -2938,6 +2983,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
     from app.services.hynix_switch_state import with_state_lock
     from app.trading import early_trend_live_feed as feed
     from app.trading import early_trend_detector as etd
+    from app.trading.etf_entry_confirmation import resolve_window_directions
 
     now = now or kst_now()
     resolved_mode = mode or load_state(mode=None).get("mode", "mock")
@@ -3130,6 +3176,14 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
 
         live = bool(early_enabled and state.get("early_trend_detector_live"))
         if not live:
+            state["configured_entry_engine"] = "EARLY_TREND_DETECTOR" if early_enabled else "ENHANCED_REGIME_SWITCH"
+            state["actual_entry_engine"] = "SHADOW_ONLY" if early_enabled else "ENHANCED_REGIME_SWITCH"
+            state["entry_orchestrator"] = {
+                "name": "OrderCoordinator",
+                "mode": "SHADOW_ONLY" if early_enabled else "ENHANCED_REGIME_SWITCH",
+                "reason": "Early LIVE is off" if early_enabled else "Early detector is off",
+                "updated_at": now.isoformat(),
+            }
             save_state_atomic(state)
             reason = "EARLY_DISABLED_PRICE_FEED_ONLY" if not early_enabled else "SHADOW_PRICE_FEED_ONLY"
             return {
@@ -3158,6 +3212,14 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             cfg = get_config()
             broker = _create_strategy_broker(cfg, resolved_mode)
             position_manager = HynixPositionManager(broker, mode=resolved_mode)
+            state["configured_entry_engine"] = "EARLY_TREND_DETECTOR"
+            state["actual_entry_engine"] = "EARLY_TREND_DETECTOR_LIVE"
+            state["entry_orchestrator"] = {
+                "name": "OrderCoordinator",
+                "mode": "SINGLE_ENTRY_ORCHESTRATOR",
+                "reason": "Early LIVE owns REVERSAL/CONTINUATION/PULLBACK entry orders",
+                "updated_at": now.isoformat(),
+            }
             etd_state["order_worker_name"] = "EARLY_FAST_WORKER"
             etd_state["latency"] = etd.mark_latency(
                 etd.default_latency_trace(worker_name="EARLY_FAST_WORKER"), "account_query_started_at", now
@@ -3169,6 +3231,13 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             state["early_trend_detector"] = etd_state
             apply_position_manager_to_state(state, position_manager)
 
+            def _fast_order_succeeded(switch_result: dict) -> bool:
+                return bool(
+                    switch_result
+                    and switch_result.get("acted")
+                    and any(bool(o.get("success")) for o in (switch_result.get("orders") or []) if isinstance(o, dict))
+                )
+
             early_result = _run_early_trend_detector_tick(
                 state=state, mode=resolved_mode, now=now, fast_signal=cached_fast_signal, df_1min=None,
                 confirmed_regime=cached_confirmed_regime, broker=broker, position_manager=position_manager,
@@ -3178,6 +3247,16 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             continuation_state["last_evaluated_at"] = now.isoformat()
             continuation_state["evaluation_count_today"] = int(continuation_state.get("evaluation_count_today") or 0) + 1
             desired_live_direction = live_trade.get("direction")
+            decision_for_continuation = state.get("last_decision") or {}
+            if desired_live_direction not in ("UP", "DOWN"):
+                _gap = _score_gap_from_decision(decision_for_continuation)
+                if _gap >= 30.0:
+                    try:
+                        _hynix_score = float(decision_for_continuation.get("enhanced_score") or 50.0)
+                        _inverse_score = float(decision_for_continuation.get("inverse_pressure_score") or 50.0)
+                    except Exception:
+                        _hynix_score, _inverse_score = 50.0, 50.0
+                    desired_live_direction = "UP" if _hynix_score >= _inverse_score else "DOWN"
             desired_symbol = HYNIX_SYMBOL if desired_live_direction == "UP" else (INVERSE_SYMBOL if desired_live_direction == "DOWN" else None)
             current_etf_price = long_price if desired_symbol == HYNIX_SYMBOL else (inverse_price if desired_symbol == INVERSE_SYMBOL else None)
             confirm_dirs = resolve_window_directions(etd_state["live_slopes"].get(desired_symbol)) if desired_symbol else {}
@@ -3213,15 +3292,9 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 expected_move_pct = 0.0
             cost_gate = etd.evaluate_cost_gate(desired_symbol, expected_move_pct) if desired_symbol else {"blocked": True}
             _cost_pct = cost_gate.get("cost_pct")
-            _expected_net_edge = cost_gate.get("net_edge_pct")
             _expected_move_for_edge = expected_move_pct
-            if _expected_net_edge is not None and _cost_pct is not None:
-                try:
-                    _expected_move_for_edge = float(_expected_net_edge) + float(_cost_pct) + 0.05
-                except Exception:
-                    _expected_move_for_edge = expected_move_pct
             continuation_eval = evaluate_range_weighted_entry(
-                decision=state.get("last_decision") or {},
+                decision=decision_for_continuation,
                 direction=desired_live_direction,
                 live_direction=desired_live_direction,
                 live_direction_held_seconds=(state.get("live_trade_direction") or {}).get("direction_held_seconds"),
@@ -3249,6 +3322,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 "oppose_window_directions": oppose_dirs,
                 "moved_pct_since_signal": moved_pct,
                 "cost_gate": cost_gate,
+                "expected_move_basis": "max_abs_fast_return_1m_3m_5m",
             })
             if continuation_eval.get("action") == "ENTER" and desired_symbol:
                 held_symbol = (state.get("position") or {}).get("symbol")
@@ -3263,7 +3337,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     )
                     continuation_state["last_order_key"] = order_key
                     continuation_state["last_switch"] = switch
-                    if _order_succeeded(switch):
+                    if _fast_order_succeeded(switch):
                         continuation_state["approved_entry_count_today"] = int(continuation_state.get("approved_entry_count_today") or 0) + 1
                         position_manager.sync(force=True)
                         apply_position_manager_to_state(state, position_manager)
@@ -3793,6 +3867,21 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
             ),
         }
     new_entry_allowed_now = new_entry_window["allowed"]
+    _early_configured = bool(state.get("early_trend_detector_enabled"))
+    _early_live = bool(_early_configured and state.get("early_trend_detector_live"))
+    state["configured_entry_engine"] = "EARLY_TREND_DETECTOR" if _early_configured else "ENHANCED_REGIME_SWITCH"
+    state["actual_entry_engine"] = (
+        "EARLY_TREND_DETECTOR_LIVE" if _early_live else ("SHADOW_ONLY" if _early_configured else "ENHANCED_REGIME_SWITCH")
+    )
+    state["entry_orchestrator"] = {
+        "name": "OrderCoordinator",
+        "mode": "SINGLE_ENTRY_ORCHESTRATOR" if _early_live else state["actual_entry_engine"],
+        "reason": (
+            "Early LIVE owns REVERSAL/CONTINUATION/PULLBACK entry orders"
+            if _early_live else ("Early LIVE is off" if _early_configured else "Enhanced regime switch owns entries")
+        ),
+        "updated_at": now.isoformat(),
+    }
 
     if not trading_allowed:
         trace["risk_manager_ok"] = False

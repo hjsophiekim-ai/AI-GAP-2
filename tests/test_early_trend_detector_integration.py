@@ -172,7 +172,7 @@ def test_weak_or_flat_signal_does_not_enter(tmp_path, monkeypatch):
     assert state["position"].get("symbol") is None
 
 
-def test_range_regime_blocks_early_entry_entirely(tmp_path, monkeypatch):
+def test_range_regime_allows_early_entry_probe(tmp_path, monkeypatch):
     state, broker, pm = _flat_state(tmp_path, monkeypatch)
 
     result = engine_module._run_early_trend_detector_tick(
@@ -181,9 +181,9 @@ def test_range_regime_blocks_early_entry_entirely(tmp_path, monkeypatch):
         hynix_price=100_000.0, inverse_price=5_000.0,
     )
 
-    assert result["skipped"] is True
-    assert "RANGE" in result["reason"]
-    assert state["position"].get("symbol") is None
+    assert result["skipped"] is False
+    assert state["early_trend_detector"]["target_pct"] == pytest.approx(0.30)
+    assert state["position"].get("symbol") is not None
 
 
 def test_panic_regime_caps_probe_at_ten_percent(tmp_path, monkeypatch):

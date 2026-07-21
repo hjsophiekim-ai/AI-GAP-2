@@ -115,8 +115,8 @@ def test_target_probe_pct_never_exceeds_50_percent():
         assert pct <= 0.80
 
 
-def test_regime_probe_cap_blocks_range_and_data_insufficient():
-    assert etd.regime_probe_cap("RANGE") == 0.0
+def test_regime_probe_cap_allows_range_and_blocks_data_insufficient():
+    assert etd.regime_probe_cap("RANGE") == 0.30
     assert etd.regime_probe_cap("DATA_INSUFFICIENT") == 0.0
 
 
@@ -132,10 +132,10 @@ def test_compute_target_probe_pct_applies_regime_cap_even_at_late_stage():
     assert pct == 0.30  # PANIC 상한이 단계값(0.30)보다 우선한다
 
 
-def test_compute_target_probe_pct_is_zero_in_range_regardless_of_elapsed():
+def test_compute_target_probe_pct_allows_range_initial_probe():
     for elapsed in (0.0, 30.0, 600.0):
         _, pct = etd.compute_target_probe_pct("RANGE", elapsed)
-        assert pct == 0.0
+        assert pct == 0.30
 
 
 def test_fast_reversal_range_uses_fast_range_ladder():
