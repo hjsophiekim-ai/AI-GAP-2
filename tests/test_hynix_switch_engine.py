@@ -1547,3 +1547,151 @@ def test_early_fast_feed_records_live_samples_even_when_early_detector_disabled(
     assert detector_state.get("price_history")
     assert updated.get("live_trade_direction")
     assert updated.get("position", {}).get("symbol") is None
+
+
+def test_continuation_entry_after_missed_early_reversal_in_sustained_uptrend():
+    result = engine.evaluate_trend_continuation_entry(
+        decision={"final_action": "HYNIX_BUY", "enhanced_score": 73.0, "inverse_pressure_score": 50.0},
+        live_direction="UP",
+        live_direction_held_seconds=30.0,
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        moved_pct_since_signal=0.2,
+        expected_net_edge_ok=True,
+    )
+
+    assert result["action"] == "ENTER"
+    assert result["reason_code"] == "CONTINUATION_ENTRY_APPROVED"
+    assert result["entry_path"] == "CONTINUATION"
+    assert 0.20 <= result["target_pct"] <= 0.30
+
+
+def test_continuation_entry_gap_45_uses_immediate_ladder():
+    result = engine.evaluate_trend_continuation_entry(
+        decision={"final_action": "HYNIX_BUY", "enhanced_score": 95.0, "inverse_pressure_score": 50.0},
+        live_direction="UP",
+        live_direction_held_seconds=20.0,
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        moved_pct_since_signal=0.1,
+        expected_net_edge_ok=True,
+        confidence=90.0,
+    )
+
+    assert result["action"] == "ENTER"
+    assert 0.40 <= result["target_pct"] <= 0.60
+
+
+def test_continuation_holds_when_raw_hynix_strong_but_live_down():
+    result = engine.evaluate_trend_continuation_entry(
+        decision={"final_action": "HYNIX_BUY", "enhanced_score": 73.6, "inverse_pressure_score": 26.4},
+        live_direction="DOWN",
+        live_direction_held_seconds=30.0,
+        desired_direction="UP",
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["reason_code"] == "LIVE_DIRECTION_CONFLICT"
+
+
+def test_continuation_blocks_chasing_after_etf_moves_too_far():
+    result = engine.evaluate_trend_continuation_entry(
+        decision={"final_action": "HYNIX_BUY", "enhanced_score": 73.0, "inverse_pressure_score": 50.0},
+        live_direction="UP",
+        live_direction_held_seconds=30.0,
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        moved_pct_since_signal=0.6,
+        expected_net_edge_ok=True,
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["reason_code"] == "CHASE_BLOCK"
+
+
+def test_range_weighted_entry_enters_with_evidence_65_and_net_edge():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 72.0, "inverse_pressure_score": 50.0},
+        direction="UP",
+        live_direction="UP",
+        signal_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "DOWN"},
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "DOWN"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "UP"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        moved_pct_since_signal=0.2,
+        expected_move_pct=0.65,
+        cost_pct=0.12,
+        expected_mfe_pct=0.65,
+        expected_mae_pct=0.35,
+    )
+
+    assert result["action"] == "ENTER"
+    assert result["evidence_score"] >= 65.0
+    assert 0.30 <= result["target_pct"] <= 0.50
+
+
+def test_range_weighted_entry_blocks_low_net_edge_even_with_direction():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 80.0, "inverse_pressure_score": 50.0},
+        direction="UP",
+        live_direction="UP",
+        signal_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=0.20,
+        cost_pct=0.10,
+        expected_mfe_pct=0.20,
+        expected_mae_pct=0.20,
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["reason_code"] in ("LOW_NET_EDGE", "POOR_REWARD_RISK")
+
+
+def test_range_weighted_entry_does_not_veto_single_5s_or_vwap_failure():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 75.0, "inverse_pressure_score": 50.0},
+        direction="UP",
+        live_direction="UP",
+        signal_window_directions={5: "DOWN", 10: "UP", 20: "UP", 30: "UP"},
+        confirm_window_directions={5: "DOWN", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "UP", 30: "DOWN"},
+        confirm_above_vwap=False,
+        data_age_seconds=2.0,
+        expected_move_pct=0.80,
+        cost_pct=0.12,
+        expected_mfe_pct=0.80,
+        expected_mae_pct=0.35,
+    )
+
+    assert result["action"] == "ENTER"
+    assert result["reason_code"] == "CONTINUATION_ENTRY_APPROVED"
+
+
+def test_range_weighted_entry_hard_blocks_both_entry_etf_5s_10s_opposite():
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 80.0, "inverse_pressure_score": 50.0},
+        direction="UP",
+        live_direction="UP",
+        signal_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        confirm_window_directions={5: "DOWN", 10: "DOWN", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=0.80,
+        cost_pct=0.12,
+        expected_mfe_pct=0.80,
+        expected_mae_pct=0.35,
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["reason_code"] == "ETF_5S_10S_BOTH_OPPOSITE"

@@ -11,6 +11,7 @@ from app.trading.etf_entry_confirmation import (
     DATA_TIME_MISMATCH,
     ETF_CONFIRM_DOWN,
     ETF_CONFIRM_UP,
+    ETF_CONFIRMATION_PENDING,
     ETF_DATA_INSUFFICIENT,
     ETF_DIRECTION_MISMATCH,
     classify_etf_direction_confirmation,
@@ -189,3 +190,13 @@ def test_evidence_always_includes_full_diagnostic_fields():
         "data_ages_seconds", "moved_pct_since_signal",
     ):
         assert key in evidence
+
+
+def test_unmet_confirmation_is_pending_not_hard_mismatch():
+    result = _classify(
+        "UP",
+        confirm={5: "UP", 10: "FLAT", 20: "UP", 30: "FLAT"},
+        oppose={5: "DOWN", 10: "FLAT", 20: "DOWN", 30: "FLAT"},
+    )
+    assert result["state"] == ETF_CONFIRMATION_PENDING
+    assert result["state"] != ETF_DIRECTION_MISMATCH

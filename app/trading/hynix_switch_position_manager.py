@@ -33,7 +33,7 @@ from app.trading.hynix_position_common import (
 from app.trading.etf_entry_confirmation import (
     confirm_etf_entry, classify_etf_direction_confirmation,
     resolve_window_directions, has_any_slope_data,
-    ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ALIGNED_PULLBACK,
+    ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ALIGNED_PULLBACK, ETF_CONFIRMATION_PENDING,
 )
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -1659,7 +1659,7 @@ def run_switch_or_entry(
                 ),
             )
             state["last_etf_entry_confirmation"] = _etf_confirmation
-            if _etf_confirmation["state"] not in (ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ALIGNED_PULLBACK):
+            if _etf_confirmation["state"] not in (ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ALIGNED_PULLBACK, ETF_CONFIRMATION_PENDING):
                 return {
                     "acted": bool(orders), "orders": orders,
                     "message": f"ETF entry confirmation failed: {_etf_confirmation['reason']}",

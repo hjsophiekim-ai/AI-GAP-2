@@ -75,6 +75,7 @@ VOLUME_SURGE_LOOKBACK_BARS = 5
 ETF_CONFIRM_UP = "ETF_CONFIRM_UP"
 ETF_CONFIRM_DOWN = "ETF_CONFIRM_DOWN"
 ALIGNED_PULLBACK = "ALIGNED_PULLBACK"
+ETF_CONFIRMATION_PENDING = "ETF_CONFIRMATION_PENDING"
 DATA_TIME_MISMATCH = "DATA_TIME_MISMATCH"
 
 MAX_CONFIRMATION_DATA_AGE_SECONDS = 5.0
@@ -251,8 +252,8 @@ def classify_etf_direction_confirmation(
         }
 
     return {
-        "state": ETF_DIRECTION_MISMATCH,
-        "reason": "위 확인/눌림 조건 모두 불충족 — evidence 참고",
+        "state": ETF_CONFIRMATION_PENDING,
+        "reason": "ETF 확인 대기 — 명확한 반대 방향은 아니지만 완전확인/눌림 조건은 아직 미충족",
         "evidence": evidence,
     }
 

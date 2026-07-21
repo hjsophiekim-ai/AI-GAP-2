@@ -237,6 +237,34 @@ def test_strategy_profile_toggles_are_shared_between_mock_and_real(tmp_path, mon
     assert real_state["mode"] == "real"
 
 
+def test_active_mode_restores_execution_toggles_from_stale_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+    profile_path = tmp_path / "hynix_strategy_profile_common.json"
+    profile_path.write_text(
+        json.dumps({
+            "auto_trade_on": True,
+            "trading_mode": "ACTIVE",
+            "active_strategy_enabled": False,
+            "adaptive_fusion_enabled": False,
+            "early_trend_detector_enabled": False,
+            "early_trend_detector_live": False,
+            "adaptive_regime_enabled": False,
+            "adaptive_regime_mode": "SHADOW",
+        }),
+        encoding="utf-8",
+    )
+
+    state = load_state(mode="mock")
+
+    assert state["trading_mode"] == "ACTIVE"
+    assert state["active_strategy_enabled"] is True
+    assert state["adaptive_fusion_enabled"] is True
+    assert state["early_trend_detector_enabled"] is True
+    assert state["early_trend_detector_live"] is True
+    assert state["adaptive_regime_enabled"] is True
+    assert state["adaptive_regime_mode"] == "LIVE"
+
+
 def test_signal_symbol_is_not_recognized_as_actual_position(tmp_path, monkeypatch):
     monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
 

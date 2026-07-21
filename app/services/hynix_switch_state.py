@@ -454,6 +454,26 @@ def _sanitize_position_sync_flags(state: dict) -> None:
         _clear_stale_position_sync_critical_alert(state)
 
 
+def _normalize_trading_mode_execution_profile(state: dict) -> None:
+    """Make ACTIVE/AGGRESSIVE mode actually run the active execution stack.
+
+    A stale common strategy profile can store all execution toggles as false
+    while `trading_mode` remains ACTIVE. That combination presents the UI as an
+    active intraday system but disables the fast/early paths that create the
+    intended 4 round-trip/day behavior.
+    """
+    if not state.get("auto_trade_on") or state.get("stopped"):
+        return
+    if str(state.get("trading_mode") or "").upper() not in ("ACTIVE", "AGGRESSIVE"):
+        return
+    state["active_strategy_enabled"] = True
+    state["adaptive_fusion_enabled"] = True
+    state["early_trend_detector_enabled"] = True
+    state["early_trend_detector_live"] = True
+    state["adaptive_regime_enabled"] = True
+    state["adaptive_regime_mode"] = "LIVE"
+
+
 def load_state(mode: Optional[str] = None) -> dict:
     """상태 로드. mode를 지정하지 않으면 활성 모드(active_mode 포인터)를 사용.
 
@@ -466,6 +486,7 @@ def load_state(mode: Optional[str] = None) -> dict:
             state = default_state(mode)
             state.update(_load_common_strategy_profile())
             state["mode"] = mode
+            _normalize_trading_mode_execution_profile(state)
             return state
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
@@ -522,6 +543,7 @@ def load_state(mode: Optional[str] = None) -> dict:
         # 경우) — 날짜 롤오버 여부와 무관하게 매 로드마다 확인해 자동 복구한다.
         _sanitize_intraday_state_dates(state, today)
         _sanitize_position_sync_flags(state)
+        _normalize_trading_mode_execution_profile(state)
 
         if state.get("liquidation_done"):
             try:
