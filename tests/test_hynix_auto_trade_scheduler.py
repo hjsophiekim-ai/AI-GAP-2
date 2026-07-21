@@ -98,3 +98,20 @@ def test_ensure_auto_trade_background_threads_starts_both_loops(monkeypatch):
     finally:
         scheduler.stop_cycle_thread()
         scheduler.stop_fast_trend_watcher()
+
+
+def test_fast_watcher_uses_five_second_cadence_when_auto_trade_on_even_if_early_live_off():
+    watcher = scheduler.HynixFastTrendWatcherThread()
+
+    assert watcher._fast_cadence_active({
+        "auto_trade_on": True,
+        "stopped": False,
+        "early_trend_detector_enabled": False,
+        "early_trend_detector_live": False,
+    }) is True
+    assert watcher._fast_cadence_active({
+        "auto_trade_on": True,
+        "stopped": True,
+        "early_trend_detector_enabled": True,
+        "early_trend_detector_live": True,
+    }) is False

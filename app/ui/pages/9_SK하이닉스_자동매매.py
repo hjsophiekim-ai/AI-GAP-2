@@ -369,6 +369,11 @@ from app.services.hynix_auto_trade_scheduler import (
     ensure_fast_trend_watcher_running,
     get_status as get_cycle_status,
 )
+from app.ui.trading_decision_snapshot import (
+    selected_completed_decision_snapshot,
+    snapshot_field,
+    snapshot_field_meta,
+)
 import app.trading.hynix_big_trend_engine as bte
 
 try:
@@ -383,6 +388,10 @@ except Exception as _thread_exc:
     _auto_trade_threads = {"error": str(_thread_exc)}
 
 switch_state = load_state()
+_cyc_status = get_cycle_status()
+_decision_snapshot, _decision_snapshot_meta = selected_completed_decision_snapshot(switch_state, _cyc_status)
+if _decision_snapshot_meta.get("is_running"):
+    st.info(_decision_snapshot_meta["status_message"])
 
 
 def _resume_daily_loss_limited_trading(state: dict) -> dict:
@@ -924,10 +933,14 @@ if switch_state.get("mode") == "mock":
     # 실제로는 매 사이클 갱신되는 last_decision(enhanced_score/inverse_pressure_score)
     # 이 아니라 이 stale 스냅샷을 보여준 UI 버그였다. 매 사이클(HOLD 포함) 갱신되는
     # last_decision 기준으로 별도의 "라이브" 우세 방향을 계산해 보여준다.
-    _live_decision = switch_state.get("last_decision") or {}
-    _live_enhanced = _live_decision.get("enhanced_score")
-    _live_inverse = _live_decision.get("inverse_pressure_score")
-    _signal_summary = switch_state.get("last_signal_summary") or {}
+    _live_decision = (_decision_snapshot or {}).get("decision") or {}
+    _raw_leader = snapshot_field(_decision_snapshot, "raw_score_leader")
+    _raw_meta = snapshot_field_meta(_decision_snapshot, "raw_score_leader")
+    _final_score = snapshot_field(_decision_snapshot, "enhanced_score")
+    _final_meta = snapshot_field_meta(_decision_snapshot, "enhanced_score")
+    _live_enhanced = _raw_meta.get("hynix_score")
+    _live_inverse = _raw_meta.get("inverse_score")
+    _signal_summary = (_decision_snapshot or {}).get("signal_summary") or {}
     if _signal_summary.get("conclusion"):
         if _signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
             st.error(_signal_summary["conclusion"])
@@ -946,11 +959,18 @@ if switch_state.get("mode") == "mock":
         )
     else:
         st.metric("원점수 우세", "—")
+    if _decision_snapshot.get("explanation"):
+        st.info(_decision_snapshot["explanation"])
+    st.metric(
+        "Final enhanced decision score",
+        f"{_num(_final_score):.1f}/100" if _final_score is not None else "-",
+        delta=f"INVERSE {_num(_final_meta.get('inverse_score')):.1f}" if _final_meta.get("inverse_score") is not None else None,
+    )
     if _signal_summary:
         _ss1, _ss2, _ss3, _ss4 = st.columns(4)
-        _ss1.metric("Live Trade Direction", _signal_summary.get("live_trade_direction") or "NONE")
-        _ss2.metric("Actionable Signal", _signal_summary.get("actionable_signal") or "HOLD")
-        _ss3.metric("Final Action", _signal_summary.get("final_action") or "HOLD")
+        _ss1.metric("Live Trade Direction", snapshot_field(_decision_snapshot, "live_trade_direction", "NONE"))
+        _ss2.metric("Actionable Signal", snapshot_field(_decision_snapshot, "actionable_signal", "HOLD"))
+        _ss3.metric("Final Action", snapshot_field(_decision_snapshot, "final_action", "HOLD"))
         _ss4.metric("Block Reason", _signal_summary.get("block_reason") or "없음")
 
     # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
@@ -1375,7 +1395,6 @@ if st.button("🔍 Broker Debug Panel", key="hynix_broker_debug_panel"):
 
 # ── 백그라운드 자동매매 사이클 상태 (브라우저 세션과 무관하게 서버에서 계속 도는 스레드) ──
 st.subheader("⚙️ 백그라운드 자동매매 사이클")
-_cyc_status = get_cycle_status()
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.metric("auto_trade_enabled", "YES" if switch_state.get("auto_trade_on") else "NO")
@@ -1421,20 +1440,21 @@ if switch_run_clicked:
 # pipeline_trace를 사용한다 — session_state를 그대로 쓰면 마지막 클릭 시점 스냅샷에
 # 고정되어 이후 백그라운드 스레드가 갱신한 최신 결과가 화면에 반영되지 않는다.
 cycle_result = _manual_cycle_result
-if not cycle_result and switch_state.get("last_pipeline_trace") is not None:
+if not cycle_result and _decision_snapshot:
     cycle_result = {
-        "skipped": False, "computed_at": switch_state.get("last_cycle_computed_at"),
-        "mode": switch_state.get("mode"), "new_entry_allowed": is_new_entry_allowed(kst_now()),
+        "skipped": False, "computed_at": _decision_snapshot.get("calculated_at"),
+        "mode": switch_state.get("mode"), "new_entry_allowed": _decision_snapshot.get("new_entry_allowed", is_new_entry_allowed(kst_now())),
         "hynix_current_price": switch_state.get("last_hynix_signal_price"),
         "hynix_signal_price": switch_state.get("last_hynix_signal_price"),
         "long_current_price": switch_state.get("last_long_price") or switch_state.get("last_hynix_price"),
         "inverse_current_price": switch_state.get("last_inverse_price"),
-        "enhanced_result": switch_state.get("last_enhanced_result") or {},
-        "decision": switch_state.get("last_decision") or {},
-        "orders_this_cycle": [],
+        "enhanced_result": _decision_snapshot.get("enhanced_result") or {},
+        "decision": _decision_snapshot.get("decision") or {},
+        "orders_this_cycle": _decision_snapshot.get("orders_this_cycle") or [],
         "state": switch_state,
         "position_manager": {"position": switch_state.get("position"), "position_conflict": switch_state.get("position_conflict")},
-        "pipeline_trace": switch_state.get("last_pipeline_trace"),
+        "pipeline_trace": _decision_snapshot.get("pipeline_trace") or {},
+        "decision_snapshot": _decision_snapshot,
         "cycle_ai_shadow_result": switch_state.get("last_cycle_ai_result"),
     }
 
@@ -1681,7 +1701,7 @@ else:
     st.subheader("🔬 Signal → Order 파이프라인")
     trace = cycle_result.get("pipeline_trace") or {}
     stopped_stage = trace.get("stopped_stage")
-    _trace_signal_summary = trace.get("signal_summary") or switch_state.get("last_signal_summary") or {}
+    _trace_signal_summary = trace.get("signal_summary") or (_decision_snapshot or {}).get("signal_summary") or {}
     if _trace_signal_summary.get("conclusion"):
         if _trace_signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
             st.error(_trace_signal_summary["conclusion"])

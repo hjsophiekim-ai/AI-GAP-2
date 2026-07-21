@@ -329,6 +329,7 @@ def _build_signal_summary(
 
     return {
         "computed_at": now.isoformat(),
+        "calculated_at": now.isoformat(),
         "raw_score_leader": raw_leader,
         "hynix_score": decision.get("enhanced_score"),
         "inverse_score": decision.get("inverse_pressure_score"),
@@ -343,6 +344,102 @@ def _build_signal_summary(
         "new_entry_rule": (new_entry_window or {}).get("rule"),
         "conclusion": conclusion,
     }
+
+
+def _snapshot_field(value, snapshot_id: str, calculated_at: str, **extra) -> dict:
+    field = {"value": value, "snapshot_id": snapshot_id, "calculated_at": calculated_at}
+    field.update(extra)
+    return field
+
+
+def _decision_snapshot_id(now: datetime) -> str:
+    return f"hynix-decision-{now.strftime('%Y%m%dT%H%M%S')}"
+
+
+def _recent_1m_momentum_declining(enhanced_result: dict) -> bool:
+    detail = enhanced_result.get("momentum_detail") or {}
+    candidates = (
+        detail.get("recent_1m_momentum"),
+        detail.get("momentum_1m"),
+        detail.get("return_1m"),
+        detail.get("price_change_1m_pct"),
+        enhanced_result.get("recent_1m_momentum"),
+    )
+    for value in candidates:
+        try:
+            return float(value) < 0.0
+        except Exception:
+            continue
+    try:
+        return float(enhanced_result.get("intraday_momentum_score")) < 50.0
+    except Exception:
+        return False
+
+
+def _build_completed_decision_snapshot(
+    *,
+    enhanced_result: dict,
+    decision: dict,
+    trace: dict,
+    state: dict,
+    now: datetime,
+    orders_this_cycle: list,
+    new_entry_allowed_now: bool,
+) -> dict:
+    calculated_at = now.isoformat()
+    snapshot_id = _decision_snapshot_id(now)
+    signal_summary = trace.get("signal_summary") or {}
+    raw_leader = signal_summary.get("raw_score_leader") or _raw_score_leader(decision)
+    live_direction = signal_summary.get("live_trade_direction") or _live_trade_direction_label(state)
+    actionable_signal = signal_summary.get("actionable_signal") or "HOLD"
+    final_action = signal_summary.get("final_action") or "HOLD"
+    block_reason = signal_summary.get("block_reason")
+    early_decision = trace.get("early_decision") or {}
+    early_reason = early_decision.get("reason") or early_decision.get("reason_code")
+    momentum_score = enhanced_result.get("intraday_momentum_score")
+    explanation = signal_summary.get("conclusion")
+    try:
+        final_score = float(decision.get("enhanced_score"))
+    except Exception:
+        final_score = None
+    if (
+        final_action == "HOLD"
+        and live_direction == "NONE"
+        and final_score is not None
+        and _recent_1m_momentum_declining(enhanced_result)
+    ):
+        explanation = f"최신 최종점수 {final_score:.1f}, 단기 방향 미확정 및 최근 1분 모멘텀 하락 → HOLD"
+
+    snapshot = {
+        "snapshot_id": snapshot_id,
+        "calculated_at": calculated_at,
+        "cycle_status": "COMPLETED",
+        "raw_score_leader": _snapshot_field(
+            raw_leader, snapshot_id, calculated_at,
+            hynix_score=decision.get("enhanced_score"),
+            inverse_score=decision.get("inverse_pressure_score"),
+            label="raw component score",
+        ),
+        "enhanced_score": _snapshot_field(
+            decision.get("enhanced_score"), snapshot_id, calculated_at,
+            inverse_score=decision.get("inverse_pressure_score"),
+            label="final enhanced decision score",
+        ),
+        "live_trade_direction": _snapshot_field(live_direction, snapshot_id, calculated_at),
+        "actionable_signal": _snapshot_field(actionable_signal, snapshot_id, calculated_at),
+        "final_action": _snapshot_field(final_action, snapshot_id, calculated_at),
+        "block_reason": _snapshot_field(block_reason, snapshot_id, calculated_at),
+        "momentum_score": _snapshot_field(momentum_score, snapshot_id, calculated_at),
+        "early_reason": _snapshot_field(early_reason, snapshot_id, calculated_at),
+        "explanation": explanation,
+        "enhanced_result": {**(enhanced_result or {})},
+        "decision": {**(decision or {})},
+        "signal_summary": {**signal_summary, "snapshot_id": snapshot_id, "calculated_at": calculated_at},
+        "pipeline_trace": {**(trace or {}), "snapshot_id": snapshot_id, "calculated_at": calculated_at},
+        "orders_this_cycle": list(orders_this_cycle or []),
+        "new_entry_allowed": bool(new_entry_allowed_now),
+    }
+    return snapshot
 
 
 def _first_blocked_stage(trace: dict) -> Optional[str]:
@@ -2574,8 +2671,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         state["mode"] = resolved_mode
         if not state.get("auto_trade_on") or state.get("stopped"):
             return {"skipped": True, "reason": "auto off or stopped"}
-        if not state.get("early_trend_detector_enabled"):
-            return {"skipped": True, "reason": "early trend detector disabled"}
+        early_enabled = bool(state.get("early_trend_detector_enabled"))
 
         try:
             from app.data_sources.hynix_long_collector import collect_long_current
@@ -2757,10 +2853,16 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         etd_state["reversal_candidate"] = reversal_candidate
         state["early_trend_detector"] = etd_state
 
-        live = bool(state.get("early_trend_detector_live"))
+        live = bool(early_enabled and state.get("early_trend_detector_live"))
         if not live:
             save_state_atomic(state)
-            return {"skipped": True, "reason": "SHADOW/실전 — 가격 샘플만 갱신", "live_slopes": etd_state["live_slopes"]}
+            reason = "EARLY_DISABLED_PRICE_FEED_ONLY" if not early_enabled else "SHADOW_PRICE_FEED_ONLY"
+            return {
+                "skipped": True,
+                "reason": reason,
+                "live_trade_direction": state.get("live_trade_direction"),
+                "live_slopes": etd_state["live_slopes"],
+            }
 
         if not is_new_entry_allowed(now):
             position = state.get("position") or {}
@@ -3857,6 +3959,15 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         new_entry_allowed_now=new_entry_allowed_now,
         new_entry_window=new_entry_window,
     )
+    completed_decision_snapshot = _build_completed_decision_snapshot(
+        enhanced_result=enhanced_result,
+        decision=decision,
+        trace=trace,
+        state=state,
+        now=now,
+        orders_this_cycle=orders_this_cycle,
+        new_entry_allowed_now=new_entry_allowed_now,
+    )
 
     # 백그라운드 스레드에서만 사이클이 돌아도(=Streamlit 세션에 아무도 접속하지 않아도)
     # UI가 "사이클 미실행"을 보여주지 않도록, 이번 사이클 결과(최종 trace 포함)를
@@ -3870,6 +3981,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     state["last_enhanced_result"] = enhanced_result
     state["last_decision"] = decision
     state["last_signal_summary"] = trace["signal_summary"]
+    state["last_completed_decision_snapshot"] = completed_decision_snapshot
     save_state_atomic(state)
 
     # ── 로그 기록 ────────────────────────────────────────────────────────────
@@ -3974,6 +4086,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         "position_manager": position_manager.to_cache_dict() if position_manager is not None else None,
         "warnings": warnings + (enhanced_result.get("warnings") or []),
         "pipeline_trace": trace,
+        "decision_snapshot": completed_decision_snapshot,
         # SHADOW MODE 전용 — 실제 주문에 영향 없음(비교/검증 목적).
         "cycle_ai_shadow_result": state.get("last_cycle_ai_result"),
     }

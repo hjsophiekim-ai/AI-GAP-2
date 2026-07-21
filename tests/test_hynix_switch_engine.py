@@ -1518,3 +1518,32 @@ def test_score_gap_47_live_down_holds_in_loop(tmp_path, monkeypatch):
     assert not broker.buy_calls
     assert result["pipeline_trace"]["entry_approved"] is False
     assert "LIVE_DIRECTION_CONFLICT" in result["pipeline_trace"]["entry_approved_reason"]
+
+
+def test_early_fast_feed_records_live_samples_even_when_early_detector_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.data_sources.auto_market_collector as auto_collector_module
+    import app.data_sources.hynix_long_collector as long_collector_module
+    import app.data_sources.hynix_inverse_collector as inverse_collector_module
+
+    monkeypatch.setattr(auto_collector_module, "_fetch_hynix_current_from_kis", lambda mode=None: 100_000.0)
+    monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 10_000.0, "stale": False})
+    monkeypatch.setattr(inverse_collector_module, "collect_inverse_current", lambda mode=None: {"current_price": 20_000.0, "stale": False})
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["early_trend_detector_enabled"] = False
+    state["early_trend_detector_live"] = False
+    state_module.save_state_atomic(state)
+
+    result = engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID_SESSION_NOW)
+    updated = state_module.load_state(mode="mock")
+    detector_state = updated.get("early_trend_detector") or {}
+
+    assert result["skipped"] is True
+    assert result["reason"] == "EARLY_DISABLED_PRICE_FEED_ONLY"
+    assert detector_state.get("price_history")
+    assert updated.get("live_trade_direction")
+    assert updated.get("position", {}).get("symbol") is None

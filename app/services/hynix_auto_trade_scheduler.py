@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import timedelta, time as _dtime
+from datetime import datetime, timedelta, time as _dtime
 from typing import Optional
 
 from app.logger import logger
@@ -73,6 +73,15 @@ def get_status() -> dict:
     """UI가 표시할 상태 스냅샷. cycle_thread_alive는 항상 스레드 객체에서 실시간으로 확인한다."""
     with _status_lock:
         snap = {k: v for k, v in _status.items() if not k.startswith("_")}
+    try:
+        started = datetime.fromisoformat(str(snap.get("last_cycle_started_at"))) if snap.get("last_cycle_started_at") else None
+    except Exception:
+        started = None
+    try:
+        completed = datetime.fromisoformat(str(snap.get("last_cycle_completed_at"))) if snap.get("last_cycle_completed_at") else None
+    except Exception:
+        completed = None
+    snap["cycle_status"] = "RUNNING" if started and (completed is None or started > completed) else "IDLE"
     snap["cycle_thread_alive"] = is_cycle_thread_running()
     snap["fast_trend_watcher"] = get_fast_status()
     return snap
@@ -257,8 +266,8 @@ class HynixFastTrendWatcherThread(threading.Thread):
 
     def _fast_cadence_active(self, state: dict) -> bool:
         return bool(
-            state.get("early_trend_detector_enabled")
-            and state.get("early_trend_detector_live")
+            state.get("auto_trade_on")
+            and not state.get("stopped")
         )
 
     def _next_interval_seconds(self) -> float:

@@ -381,6 +381,7 @@ def _clear_intraday_decision_state(state: dict) -> None:
         "last_big_trend_result",
         "last_final_execution_decision",
         "last_pipeline_trace",
+        "last_completed_decision_snapshot",
         "daily_return_calculation",
         "last_account_equity_snapshot",
         "dynamic_exit_last_decision",
