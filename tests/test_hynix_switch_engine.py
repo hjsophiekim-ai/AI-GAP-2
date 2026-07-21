@@ -2100,3 +2100,93 @@ def test_macd_williams_confirmation_up_when_macd_rising_and_williams_exits_overs
     assert result["confirmed"] is True
     assert result["reason"] == "MACD_UP_WILLIAMS_OVERSOLD_EXIT"
 
+
+def test_range_episode_blocks_second_reversal_probe():
+    cont: dict = {}
+    now = datetime(2026, 7, 21, 10, 0, 0)
+    engine.reset_range_episode_probe_state(cont, now=now, direction="UP", episode_id="UP:1")
+    engine.mark_range_reversal_probe_entered(cont, now=now, entry_path="REVERSAL")
+    allows, reason = engine.range_episode_allows_entry(
+        cont, entry_path="REVERSAL", swing_breakout=False, vwap_reclaim=False, direction_changed=False,
+    )
+    assert allows is False
+    assert reason == "REVERSAL_PROBE_ONCE_PER_EPISODE"
+
+
+def test_probe_failed_locks_until_structural_unlock():
+    cont: dict = {}
+    now = datetime(2026, 7, 21, 10, 0, 0)
+    engine.reset_range_episode_probe_state(cont, now=now, direction="UP", episode_id="UP:1")
+    engine.mark_range_probe_failed(cont, now=now, reason="MACD miss")
+    allows, reason = engine.range_episode_allows_entry(
+        cont, entry_path="CONTINUATION", swing_breakout=False, vwap_reclaim=False, direction_changed=False,
+    )
+    assert allows is False
+    assert reason == "PROBE_FAILED_LOCKED"
+    engine.update_range_episode_structural_events(
+        cont, now=now + timedelta(seconds=30), swing_breakout=True, vwap_reclaim=False,
+    )
+    allows2, _ = engine.range_episode_allows_entry(
+        cont, entry_path="CONTINUATION", swing_breakout=True, vwap_reclaim=False, direction_changed=False,
+    )
+    assert allows2 is True
+    assert cont.get("episode_status") is None
+
+
+def test_weighted_probe_exit_holds_before_30s_without_macd():
+    cont = {"probe_entered_at": datetime(2026, 7, 21, 10, 0, 0).isoformat()}
+    plan = engine.evaluate_weighted_range_probe_exit(
+        continuation=cont,
+        probe_direction="UP",
+        structure_reversal_confirmed=False,
+        held_window_dirs={5: "DOWN", 10: "UP"},
+        macd_confirmed=False,
+        etf_direction_aligned=True,
+        now=datetime(2026, 7, 21, 10, 0, 15),
+    )
+    assert plan["action"] == "HOLD"
+
+
+def test_weighted_probe_exit_fails_after_45s_without_macd():
+    cont = {"probe_entered_at": datetime(2026, 7, 21, 10, 0, 0).isoformat()}
+    plan = engine.evaluate_weighted_range_probe_exit(
+        continuation=cont,
+        probe_direction="UP",
+        structure_reversal_confirmed=False,
+        held_window_dirs={5: "UP", 10: "UP"},
+        macd_confirmed=False,
+        etf_direction_aligned=True,
+        now=datetime(2026, 7, 21, 10, 0, 46),
+    )
+    assert plan["action"] == "SELL_ALL"
+    assert plan["probe_failed"] is True
+
+
+def test_weighted_probe_exit_ignores_5s_alone_opposite():
+    cont = {"probe_entered_at": datetime(2026, 7, 21, 10, 0, 0).isoformat()}
+    plan = engine.evaluate_weighted_range_probe_exit(
+        continuation=cont,
+        probe_direction="UP",
+        structure_reversal_confirmed=False,
+        held_window_dirs={5: "DOWN", 10: "UP"},
+        macd_confirmed=False,
+        etf_direction_aligned=True,
+        now=datetime(2026, 7, 21, 10, 0, 20),
+    )
+    assert plan["action"] == "HOLD"
+
+
+def test_weighted_probe_exit_on_5s_10s_opposite():
+    cont = {"probe_entered_at": datetime(2026, 7, 21, 10, 0, 0).isoformat()}
+    plan = engine.evaluate_weighted_range_probe_exit(
+        continuation=cont,
+        probe_direction="UP",
+        structure_reversal_confirmed=False,
+        held_window_dirs={5: "DOWN", 10: "DOWN"},
+        macd_confirmed=True,
+        etf_direction_aligned=True,
+        now=datetime(2026, 7, 21, 10, 0, 20),
+    )
+    assert plan["action"] == "SELL_ALL"
+    assert plan.get("probe_failed") is False
+

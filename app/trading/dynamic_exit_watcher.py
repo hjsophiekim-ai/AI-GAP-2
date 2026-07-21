@@ -553,24 +553,49 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         _weighted_probe = position.get("entry_type") in ("WEIGHTED_RANGE_ENTRY", "WEIGHTED_ORDER_CONTROLLER_SCALE_IN")
         _macd_conf = continuation.get("macd_williams_confirmation") or {}
         try:
+            _probe_entered_at = continuation.get("probe_entered_at") or continuation.get("first_detected_at")
             _probe_elapsed = (
-                now - datetime.fromisoformat(continuation.get("first_detected_at") or now.isoformat())
+                now - datetime.fromisoformat(_probe_entered_at or now.isoformat())
             ).total_seconds()
         except Exception:
             _probe_elapsed = None
-        _probe_liquidate = False
-        _probe_liquidate_reason = None
-        if _weighted_probe and continuation.get("entry_path") == "REVERSAL" and not continuation.get("scale_in_done"):
-            if structure_reversal_confirmed:
-                _probe_liquidate = True
-                _probe_liquidate_reason = "WEIGHTED_RANGE structure invalidated — probe liquidation"
-            elif _probe_elapsed is not None and _probe_elapsed > 20.0 and not _macd_conf.get("confirmed"):
-                _probe_liquidate = True
-                _probe_liquidate_reason = "MACD/Williams confirmation failed within 20s — probe liquidation"
 
         exit_plan = {"action": "HOLD", "ratio": 0.0, "reason": None}
-        if _probe_liquidate:
-            exit_plan = {"action": "SELL_ALL", "ratio": 1.0, "reason": _probe_liquidate_reason}
+        if _weighted_probe and continuation.get("entry_path") == "REVERSAL" and not continuation.get("scale_in_done"):
+            from app.services.hynix_switch_engine import evaluate_weighted_range_probe_exit
+
+            _etf_aligned = (
+                held_window_dirs.get(5) == probe_direction and held_window_dirs.get(10) == probe_direction
+            )
+            exit_plan = evaluate_weighted_range_probe_exit(
+                continuation=continuation,
+                probe_direction=probe_direction or "UP",
+                structure_reversal_confirmed=structure_reversal_confirmed,
+                held_window_dirs=held_window_dirs,
+                macd_confirmed=bool(_macd_conf.get("confirmed")),
+                etf_direction_aligned=_etf_aligned,
+                now=now,
+                net_return_pct=snapshot["net_return_pct"],
+                hard_stop_pct=float(etd.FIXED_EARLY_STOP_PCT),
+            )
+            state["trend_continuation_entry"] = continuation
+        elif _weighted_probe:
+            exit_plan = etd.should_exit_probe(
+                net_return_pct=snapshot["net_return_pct"], seconds_since_last_reconfirmation=seconds_since_reconfirm,
+                signal_still_valid=signal_still_valid, opposite_change_point=opposite_change_point,
+                confirmed_regime=_adaptive_confirmed_regime, held_minutes=snapshot.get("held_minutes"),
+                tp1_taken=bool(position.get("early_probe_tp1_taken")),
+                tp2_taken=bool(position.get("early_probe_tp2_taken")),
+                opposite_live_seconds=opposite_live_seconds,
+                actionable_direction=actionable_direction,
+                position_direction=probe_direction,
+                held_etf_reversal_windows=held_reversal_windows,
+                opposite_etf_5s10s_confirmed=opposite_etf_5s10s_confirmed,
+                structure_reversal_confirmed=structure_reversal_confirmed,
+                regime_reversal_confirmed=regime_reversal_confirmed,
+                episode_invalidated=bool(etd_state.get("signal_expired") or etd_state.get("episode_invalidated")),
+                peak_net_return_pct=position.get("peak_net_return_pct"),
+            )
         else:
             exit_plan = etd.should_exit_probe(
                 net_return_pct=snapshot["net_return_pct"], seconds_since_last_reconfirmation=seconds_since_reconfirm,
@@ -615,6 +640,26 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             decision["reason"] = f"{_exit_label} 철수 — {exit_plan['reason']}"
             stop_loss_source = f"{_exit_label}_EXIT"
             state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
+            if _weighted_probe and continuation.get("entry_path") == "REVERSAL":
+                from app.services.hynix_switch_engine import mark_range_probe_exit
+
+                mark_range_probe_exit(
+                    continuation,
+                    now=now,
+                    entry_path=continuation.get("entry_path"),
+                    reason=str(exit_plan.get("reason") or ""),
+                    probe_failed=bool(exit_plan.get("probe_failed")),
+                )
+                state["trend_continuation_entry"] = continuation
+            elif _weighted_probe and exit_plan["action"] == "SELL_ALL":
+                from app.services.hynix_switch_engine import mark_range_episode_exit_awaiting_structure
+
+                mark_range_episode_exit_awaiting_structure(
+                    continuation,
+                    now=now,
+                    reason=str(exit_plan.get("reason") or ""),
+                )
+                state["trend_continuation_entry"] = continuation
             was_fake_signal_loss = (snapshot["net_return_pct"] or 0.0) <= 0.0
             etd_state["frequency"] = etd.register_probe_round_trip_closed(
                 etd_state.get("frequency") or etd.default_frequency_state(), now, was_fake_signal_loss,

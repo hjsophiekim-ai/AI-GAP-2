@@ -888,6 +888,229 @@ def _macd_williams_confirmation(df_1min, direction: Optional[str]) -> dict:
         return {"confirmed": False, "macd": None, "williams_r": None, "reason": f"ERROR:{exc}"}
 
 
+RANGE_PROBE_HOLD_MIN_SECONDS = 30.0
+RANGE_PROBE_HOLD_MAX_SECONDS = 45.0
+RANGE_MACD_CONFIRM_WINDOW_SECONDS = 20.0
+
+
+def _range_episode_probe_defaults() -> dict:
+    return {
+        "episode_status": None,
+        "reversal_probe_done": False,
+        "probe_entered_at": None,
+        "probe_exit_at": None,
+        "probe_macd_confirmed": False,
+        "awaiting_structural_reentry": False,
+        "last_swing_breakout_at": None,
+        "last_vwap_reclaim_at": None,
+        "prev_above_vwap": None,
+    }
+
+
+def reset_range_episode_probe_state(
+    continuation_state: dict,
+    *,
+    now: datetime,
+    direction: str,
+    episode_id: str,
+    reference_price: float | None = None,
+) -> None:
+    """방향 episode가 바뀔 때 probe 잠금·카운터를 초기화한다."""
+    continuation_state.update(_range_episode_probe_defaults())
+    continuation_state.update({
+        "direction": direction,
+        "direction_episode_id": episode_id,
+        "first_detected_at": now.isoformat(),
+        "reference_price": reference_price,
+        "entry_done": False,
+        "scale_in_done": False,
+        "entry_path": None,
+        "last_block_reason": None,
+    })
+
+
+def _structural_event_after_probe_exit(continuation_state: dict, event_at_key: str) -> bool:
+    exit_at = continuation_state.get("probe_exit_at")
+    event_at = continuation_state.get(event_at_key)
+    if not exit_at or not event_at:
+        return bool(event_at)
+    try:
+        return datetime.fromisoformat(event_at) >= datetime.fromisoformat(exit_at)
+    except Exception:
+        return False
+
+
+def update_range_episode_structural_events(
+    continuation_state: dict,
+    *,
+    now: datetime,
+    swing_breakout: bool,
+    vwap_reclaim: bool,
+) -> None:
+    """swing/VWAP 구조 이벤트를 기록하고 PROBE_FAILED·재진입 대기를 해제한다."""
+    if swing_breakout:
+        continuation_state["last_swing_breakout_at"] = now.isoformat()
+    if vwap_reclaim:
+        continuation_state["last_vwap_reclaim_at"] = now.isoformat()
+
+    needs_unlock = (
+        continuation_state.get("episode_status") == "PROBE_FAILED"
+        or continuation_state.get("awaiting_structural_reentry")
+    )
+    if needs_unlock and (swing_breakout or vwap_reclaim):
+        after_exit = (
+            _structural_event_after_probe_exit(continuation_state, "last_swing_breakout_at")
+            if swing_breakout
+            else _structural_event_after_probe_exit(continuation_state, "last_vwap_reclaim_at")
+        )
+        if after_exit or not continuation_state.get("probe_exit_at"):
+            continuation_state["episode_status"] = None
+            continuation_state["awaiting_structural_reentry"] = False
+            continuation_state["entry_done"] = False
+            continuation_state["last_block_reason"] = None
+
+
+def range_episode_allows_entry(
+    continuation_state: dict,
+    *,
+    entry_path: str | None,
+    swing_breakout: bool,
+    vwap_reclaim: bool,
+    direction_changed: bool,
+) -> tuple[bool, str | None]:
+    """동일 episode 내 과매매 방지 — REVERSAL probe 1회, PROBE_FAILED 잠금."""
+    if direction_changed:
+        return True, None
+
+    structural_unlock = swing_breakout or vwap_reclaim
+    if continuation_state.get("episode_status") == "PROBE_FAILED":
+        if not structural_unlock:
+            return False, "PROBE_FAILED_LOCKED"
+    if entry_path == "REVERSAL" and continuation_state.get("reversal_probe_done"):
+        return False, "REVERSAL_PROBE_ONCE_PER_EPISODE"
+    if continuation_state.get("awaiting_structural_reentry") and not structural_unlock:
+        return False, "AWAITING_STRUCTURAL_REENTRY"
+    if continuation_state.get("entry_done"):
+        return False, "ENTRY_DONE_FOR_EPISODE"
+    return True, None
+
+
+def mark_range_reversal_probe_entered(
+    continuation_state: dict,
+    *,
+    now: datetime,
+    entry_path: str | None,
+) -> None:
+    if entry_path == "REVERSAL":
+        continuation_state["reversal_probe_done"] = True
+        continuation_state["probe_entered_at"] = now.isoformat()
+        continuation_state["awaiting_structural_reentry"] = False
+
+
+def mark_range_probe_failed(continuation_state: dict, *, now: datetime, reason: str) -> None:
+    continuation_state["episode_status"] = "PROBE_FAILED"
+    continuation_state["probe_failed_at"] = now.isoformat()
+    continuation_state["probe_failed_reason"] = reason
+    continuation_state["awaiting_structural_reentry"] = True
+    continuation_state["probe_exit_at"] = now.isoformat()
+
+
+def mark_range_probe_exit(
+    continuation_state: dict,
+    *,
+    now: datetime,
+    entry_path: str | None,
+    reason: str,
+    probe_failed: bool = False,
+) -> None:
+    continuation_state["probe_exit_at"] = now.isoformat()
+    continuation_state["last_probe_exit_reason"] = reason
+    continuation_state["awaiting_structural_reentry"] = True
+    if probe_failed:
+        mark_range_probe_failed(continuation_state, now=now, reason=reason)
+
+
+def mark_range_episode_exit_awaiting_structure(
+    continuation_state: dict,
+    *,
+    now: datetime,
+    reason: str,
+) -> None:
+    """episode 내 완결 청산 후 구조 이벤트 전 재진입을 대기한다(REVERSAL probe 1회 규칙 유지)."""
+    continuation_state["probe_exit_at"] = now.isoformat()
+    continuation_state["last_probe_exit_reason"] = reason
+    continuation_state["awaiting_structural_reentry"] = True
+
+
+def evaluate_weighted_range_probe_exit(
+    *,
+    continuation: dict,
+    probe_direction: str,
+    structure_reversal_confirmed: bool,
+    held_window_dirs: dict,
+    macd_confirmed: bool,
+    etf_direction_aligned: bool,
+    now: datetime,
+    net_return_pct: float | None = None,
+    hard_stop_pct: float | None = None,
+) -> dict:
+    """REVERSAL probe 보유·청산 — 30~45초 홀드, 5초 단독 역행 무시."""
+    if hard_stop_pct is not None and net_return_pct is not None and net_return_pct <= hard_stop_pct:
+        return {
+            "action": "SELL_ALL",
+            "ratio": 1.0,
+            "reason": "hard stop",
+            "probe_failed": False,
+        }
+
+    if structure_reversal_confirmed:
+        return {
+            "action": "SELL_ALL",
+            "ratio": 1.0,
+            "reason": "swing structure invalidated",
+            "probe_failed": True,
+        }
+
+    required_opp = "DOWN" if probe_direction == "UP" else "UP"
+    held_5_10_opposite = (
+        held_window_dirs.get(5) == required_opp and held_window_dirs.get(10) == required_opp
+    )
+    if held_5_10_opposite:
+        return {
+            "action": "SELL_ALL",
+            "ratio": 1.0,
+            "reason": "5s+10s opposite confirmed",
+            "probe_failed": False,
+        }
+
+    probe_entered_at = continuation.get("probe_entered_at") or continuation.get("first_detected_at")
+    try:
+        elapsed = (now - datetime.fromisoformat(probe_entered_at)).total_seconds() if probe_entered_at else 0.0
+    except Exception:
+        elapsed = 0.0
+
+    if etf_direction_aligned and not structure_reversal_confirmed and elapsed < RANGE_PROBE_HOLD_MAX_SECONDS:
+        return {"action": "HOLD", "ratio": 0.0, "reason": "probe hold window", "probe_failed": False}
+
+    if elapsed >= RANGE_PROBE_HOLD_MAX_SECONDS and not macd_confirmed:
+        return {
+            "action": "SELL_ALL",
+            "ratio": 1.0,
+            "reason": "MACD/Williams not confirmed within hold window",
+            "probe_failed": True,
+        }
+
+    if elapsed >= RANGE_PROBE_HOLD_MIN_SECONDS and not etf_direction_aligned:
+        return {
+            "action": "SELL_ALL",
+            "ratio": 1.0,
+            "reason": "ETF direction lost during probe hold",
+            "probe_failed": True,
+        }
+
+    return {"action": "HOLD", "ratio": 0.0, "reason": None, "probe_failed": False}
+
+
 def _first_blocked_stage(trace: dict) -> Optional[str]:
     """Signal이 BUY/SELL/INVERSE인데 실제로 어느 단계에서 멈췄는지 첫 번째로 찾는다.
 
@@ -3485,16 +3708,31 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 and confirm_dirs.get(10) == desired_live_direction
                 and bool(confirm_swing_breakout)
             )
+            _direction_episode_changed = False
             if continuation_state.get("direction") != desired_live_direction and (
                 not _existing_episode_direction or _opposite_episode_confirmed
             ):
-                continuation_state.update({
-                    "direction": desired_live_direction,
-                    "first_detected_at": now.isoformat(),
-                    "reference_price": current_etf_price,
-                    "direction_episode_id": f"{desired_live_direction}:{now.isoformat()}",
-                    "entry_done": False,
-                })
+                _direction_episode_changed = True
+                reset_range_episode_probe_state(
+                    continuation_state,
+                    now=now,
+                    direction=desired_live_direction,
+                    episode_id=f"{desired_live_direction}:{now.isoformat()}",
+                    reference_price=current_etf_price,
+                )
+            _prev_above_vwap = continuation_state.get("prev_above_vwap")
+            _vwap_reclaim = bool(
+                confirm_above_vwap
+                and _prev_above_vwap is False
+                and confirm_dirs.get(5) == desired_live_direction
+            )
+            continuation_state["prev_above_vwap"] = confirm_above_vwap
+            update_range_episode_structural_events(
+                continuation_state,
+                now=now,
+                swing_breakout=bool(confirm_swing_breakout),
+                vwap_reclaim=_vwap_reclaim,
+            )
             moved_pct = None
             try:
                 if continuation_state.get("reference_price") and current_etf_price:
@@ -3573,31 +3811,46 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 )
                 if _opposite_switch and not _opposite_switch_allowed:
                     continuation_state["last_block_reason"] = "OPPOSITE_EPISODE_NOT_CONFIRMED"
-                elif held_symbol != desired_symbol and not continuation_state.get("entry_done") and continuation_state.get("last_order_key") != order_key:
-                    final_action = "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
-                    switch = run_switch_or_entry(
-                        state, broker, final_action, long_price, inverse_price, now=now,
-                        forced=True, reason=continuation_eval.get("reason_code") or "WEIGHTED_ORDER_CONTROLLER",
-                        position_manager=position_manager, target_position_pct=continuation_eval["target_pct"],
-                        entry_type="WEIGHTED_RANGE_ENTRY",
-                        signal_source="WEIGHTED_ORDER_CONTROLLER",
+                else:
+                    _allows_entry, _entry_block = range_episode_allows_entry(
+                        continuation_state,
+                        entry_path=_entry_path_for_key,
+                        swing_breakout=bool(confirm_swing_breakout),
+                        vwap_reclaim=_vwap_reclaim,
+                        direction_changed=_direction_episode_changed,
                     )
-                    continuation_state["last_order_key"] = order_key
-                    continuation_state["last_switch"] = switch
-                    if _fast_order_succeeded(switch):
-                        continuation_state["entry_done"] = True
-                        continuation_state["entry_path"] = continuation_eval.get("entry_path")
-                        continuation_state["last_entry_episode_id"] = _episode_id_for_order
-                        continuation_state["approved_entry_count_today"] = int(continuation_state.get("approved_entry_count_today") or 0) + 1
-                        position_manager.sync(force=True)
-                        apply_position_manager_to_state(state, position_manager)
-                        early_result = {
-                            "skipped": False,
-                            "reason_code": continuation_eval.get("reason_code"),
-                            "entry_path": continuation_eval.get("entry_path"),
-                            "switch": switch,
-                            "continuation": continuation_eval,
-                                }
+                    if not _allows_entry:
+                        continuation_state["last_block_reason"] = _entry_block
+                    elif held_symbol != desired_symbol and not continuation_state.get("entry_done") and continuation_state.get("last_order_key") != order_key:
+                        final_action = "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                        switch = run_switch_or_entry(
+                            state, broker, final_action, long_price, inverse_price, now=now,
+                            forced=True, reason=continuation_eval.get("reason_code") or "WEIGHTED_ORDER_CONTROLLER",
+                            position_manager=position_manager, target_position_pct=continuation_eval["target_pct"],
+                            entry_type="WEIGHTED_RANGE_ENTRY",
+                            signal_source="WEIGHTED_ORDER_CONTROLLER",
+                        )
+                        continuation_state["last_order_key"] = order_key
+                        continuation_state["last_switch"] = switch
+                        if _fast_order_succeeded(switch):
+                            continuation_state["entry_done"] = True
+                            continuation_state["entry_path"] = continuation_eval.get("entry_path")
+                            continuation_state["last_entry_episode_id"] = _episode_id_for_order
+                            continuation_state["approved_entry_count_today"] = int(continuation_state.get("approved_entry_count_today") or 0) + 1
+                            mark_range_reversal_probe_entered(
+                                continuation_state,
+                                now=now,
+                                entry_path=continuation_eval.get("entry_path"),
+                            )
+                            position_manager.sync(force=True)
+                            apply_position_manager_to_state(state, position_manager)
+                            early_result = {
+                                "skipped": False,
+                                "reason_code": continuation_eval.get("reason_code"),
+                                "entry_path": continuation_eval.get("entry_path"),
+                                "switch": switch,
+                                "continuation": continuation_eval,
+                            }
             _held_for_scale = (state.get("position") or {}).get("symbol")
             if (
                 desired_symbol
