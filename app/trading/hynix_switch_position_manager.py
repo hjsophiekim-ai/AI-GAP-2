@@ -391,6 +391,10 @@ def _record_order(
                 prediction_v2_weight=fm.get("prediction_v2_weight"), dominant_model=fm.get("dominant_model"),
                 model_agreement=fm.get("model_agreement"), expected_value=fm.get("expected_value"),
                 target_position_pct=fm.get("target_position_pct"),
+                actual_entry_engine=fm.get("actual_entry_engine"), entry_path=fm.get("entry_path"),
+                weighted_evidence=fm.get("weighted_evidence"), expected_net_edge=fm.get("expected_net_edge"),
+                reward_risk=fm.get("reward_risk"), direction_episode_id=fm.get("direction_episode_id"),
+                decision_snapshot_id=fm.get("decision_snapshot_id"), deployed_git_sha=fm.get("deployed_git_sha"),
             )
             if outcome.get("error"):
                 orders[-1]["ledger_write_failed"] = True
@@ -420,6 +424,10 @@ def _record_order(
                 prediction_v2_weight=fm.get("prediction_v2_weight"), dominant_model=fm.get("dominant_model"),
                 model_agreement=fm.get("model_agreement"), expected_value=fm.get("expected_value"),
                 target_position_pct=fm.get("target_position_pct"),
+                actual_entry_engine=fm.get("actual_entry_engine"), entry_path=fm.get("entry_path"),
+                weighted_evidence=fm.get("weighted_evidence"), expected_net_edge=fm.get("expected_net_edge"),
+                reward_risk=fm.get("reward_risk"), direction_episode_id=fm.get("direction_episode_id"),
+                decision_snapshot_id=fm.get("decision_snapshot_id"), deployed_git_sha=fm.get("deployed_git_sha"),
             )
         if action == "SELL" and realized_pnl is not None:
             return {"gross_pnl": gross_pnl, "net_pnl": net_pnl, "total_cost": round(fees_total + tax_total + slippage_cost, 2)}
@@ -1410,6 +1418,7 @@ def run_switch_or_entry(
     now: Optional[datetime] = None, forced: bool = False, reason: str = "", position_manager=None,
     target_position_pct: Optional[float] = None, entry_type: Optional[str] = None,
     stop_loss_pct: Optional[float] = None, signal_source: str = SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH,
+    fusion_metadata: Optional[dict] = None,
 ) -> dict:
     """Execute switching or a new entry. After 14:50, only sells (no buying a new symbol) fire.
 
@@ -1506,6 +1515,7 @@ def run_switch_or_entry(
                     f"TrendSwitchAccel target-weight increase {pct * 100:.0f}%", orders,
                     mode=state.get("mode", "mock"), before_qty=int(position.get("quantity") or 0),
                     position_manager=position_manager, signal_source=signal_source,
+                    fusion_metadata=fusion_metadata,
                 )
                 if buy_result.get("success"):
                     if buy_result.get("position_sync_status") == POSITION_SYNC_PENDING:
@@ -1768,6 +1778,7 @@ def run_switch_or_entry(
     buy_result = _buy_new(
         broker, desired_symbol, current_price, cash_amount, buy_reason, orders,
         mode=state.get("mode", "mock"), position_manager=position_manager, signal_source=signal_source,
+        fusion_metadata=fusion_metadata,
     )
     if buy_result.get("success"):
         if buy_result.get("position_sync_status") == POSITION_SYNC_PENDING:

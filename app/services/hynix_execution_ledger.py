@@ -50,9 +50,13 @@ LEDGER_COLUMNS = [
     # 체결(BUY/SELL 모두)에 항상 숫자(0.0 포함)로 기록되어야 하며 NaN/빈 값을 허용하지
     # 않는다(2026-07-13 사용자 검증 — 이전에는 이 필드들이 전부 비어 있었다).
     "gross_pnl", "buy_fee", "sell_fee", "transaction_tax", "slippage_cost", "net_pnl",
+    # 2026-07-22 — WEIGHTED_ORDER_CONTROLLER 신규 BUY 감사 필드 (전략 A 일치 검증용)
+    "actual_entry_engine", "entry_path", "weighted_evidence", "expected_net_edge",
+    "reward_risk", "direction_episode_id", "decision_snapshot_id", "deployed_git_sha",
 ]
 
 SIGNAL_SOURCE_ENHANCED_REGIME_SWITCH = "ENHANCED_REGIME_SWITCH"
+SIGNAL_SOURCE_WEIGHTED_ORDER_CONTROLLER = "WEIGHTED_ORDER_CONTROLLER"
 SIGNAL_SOURCE_PREDICTION_V2 = "PREDICTION_V2"
 SIGNAL_SOURCE_CYCLE_AI = "CYCLE_AI"
 SIGNAL_SOURCE_DYNAMIC_EXIT = "DYNAMIC_EXIT"
@@ -137,6 +141,10 @@ def record_execution(
     gross_pnl: float = 0.0, buy_fee: float = 0.0, sell_fee: float = 0.0,
     transaction_tax: float = 0.0, slippage_cost: float = 0.0, net_pnl: float = 0.0,
     raise_on_failure: bool = False,
+    actual_entry_engine: Optional[str] = None, entry_path: Optional[str] = None,
+    weighted_evidence: Optional[str] = None, expected_net_edge: Optional[float] = None,
+    reward_risk: Optional[float] = None, direction_episode_id: Optional[str] = None,
+    decision_snapshot_id: Optional[str] = None, deployed_git_sha: Optional[str] = None,
 ) -> str:
     """단일 체결/시도를 원장에 append하고 새로 발급한 trade_id를 반환한다.
 
@@ -178,6 +186,14 @@ def record_execution(
         "target_position_pct": target_position_pct,
         "gross_pnl": gross_pnl, "buy_fee": buy_fee, "sell_fee": sell_fee,
         "transaction_tax": transaction_tax, "slippage_cost": slippage_cost, "net_pnl": net_pnl,
+        "actual_entry_engine": actual_entry_engine or "",
+        "entry_path": entry_path or "",
+        "weighted_evidence": weighted_evidence or "",
+        "expected_net_edge": expected_net_edge if expected_net_edge is not None else "",
+        "reward_risk": reward_risk if reward_risk is not None else "",
+        "direction_episode_id": direction_episode_id or "",
+        "decision_snapshot_id": decision_snapshot_id or "",
+        "deployed_git_sha": deployed_git_sha or "",
     }
     try:
         _LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +319,10 @@ def record_confirmed_fill(
     prediction_v2_weight: Optional[float] = None, dominant_model: Optional[str] = None,
     model_agreement: Optional[float] = None, expected_value: Optional[float] = None,
     target_position_pct: Optional[float] = None,
+    actual_entry_engine: Optional[str] = None, entry_path: Optional[str] = None,
+    weighted_evidence: Optional[str] = None, expected_net_edge: Optional[float] = None,
+    reward_risk: Optional[float] = None, direction_episode_id: Optional[str] = None,
+    decision_snapshot_id: Optional[str] = None, deployed_git_sha: Optional[str] = None,
 ) -> dict:
     """모든 실제 체결 확정 경로(신규매수/부분매도/전량매도/스위칭/Dynamic Exit/
     Big Trend Holding/KIS 잔고 재조회로 체결이 확인되는 경로)가 반드시 거쳐야 하는
@@ -347,6 +367,10 @@ def record_confirmed_fill(
             prediction_v2_weight=prediction_v2_weight, dominant_model=dominant_model,
             model_agreement=model_agreement, expected_value=expected_value,
             target_position_pct=target_position_pct,
+            actual_entry_engine=actual_entry_engine, entry_path=entry_path,
+            weighted_evidence=weighted_evidence, expected_net_edge=expected_net_edge,
+            reward_risk=reward_risk, direction_episode_id=direction_episode_id,
+            decision_snapshot_id=decision_snapshot_id, deployed_git_sha=deployed_git_sha,
             raise_on_failure=True,
         )
         return {"recorded": True, "duplicate": False, "trade_id": trade_id, "error": None}

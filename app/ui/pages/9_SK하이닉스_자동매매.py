@@ -923,7 +923,7 @@ if switch_state.get("mode") == "mock":
         ("Active Strategy", _fx_active_on, "공통 진단 반영" if _fx_active_on else "OFF", "mock/real 동일 전략"),
         ("Adaptive Fusion", _fx_fusion_on, "공통 진단 반영" if (_fx_fusion_on and _fx_active_on) else ("Active Strategy OFF로 대기" if _fx_fusion_on else "OFF"), "mock/real 동일 전략"),
         ("Big Trend Holding AI", _fx_bigtrend_on, "공통 청산 엔진" if _fx_bigtrend_on else "Dynamic Exit 공통 사용", "mock/real 동일 전략"),
-        ("Early Trend Detector", _fx_early_on, "공통 LIVE 신규진입" if (_fx_early_on and _fx_early_live) else ("SHADOW 계산" if _fx_early_on else "OFF"), "mock/real 동일 전략"),
+        ("Early Trend Detector", _fx_early_on, "조기신호 입력(SHADOW)" if _fx_early_on else "OFF", "mock/real 동일 전략"),
     ]
     st.markdown("**공통 Strategy Profile**")
     _fx_table = "| 기능 | 현재 ON/OFF | 실제 실행 역할 | 적용 대상 |\n|---|---|---|---|\n"
@@ -935,7 +935,8 @@ if switch_state.get("mode") == "mock":
     _entry_orchestrator = switch_state.get("entry_orchestrator") or {}
     _actual_exit_engine = "BIG_TREND_HOLDING_AI" if _fx_bigtrend_on else "DYNAMIC_EXIT_AI"
     st.caption(
-        f"mock/real 전략 동일: YES · 실제 신규진입 엔진: `{_actual_entry_engine}` · "
+        f"configured entry engine = `{_configured_entry_engine}` · "
+        f"actual entry engine = `{_actual_entry_engine}` · "
         f"실제 청산 엔진: `{_actual_exit_engine}` · 차이: KIS 브로커/계좌/REAL 안전 게이트"
     )
 

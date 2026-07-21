@@ -163,11 +163,12 @@ def update_reversal_candidate_state(
     state: Optional[dict], *, live_direction: Optional[str], previous_direction: Optional[str],
     factors: dict, now: datetime,
 ) -> dict:
-    """Detect short reversals without waiting for the 3-minute/main cycle.
+    """Detect short reversals for SHADOW/diagnostics only (2026-07-22).
 
-    A REVERSAL_CANDIDATE requires at least 3 active factors to persist for 15s.
-    Single rebound bars therefore create only an observing candidate, not a
-    confirmed live direction change.
+    LIVE broker orders must not use REVERSAL_CANDIDATE as an entry path.
+    Price-action early entry (strategy D) is isolated to SHADOW; real orders
+    go only through weighted RANGE (strategy A). A REVERSAL_CANDIDATE still
+    requires at least 3 active factors to persist for 15s for UI/diagnostics.
     """
     state = dict(state or {})
     active = [name for name, ok in (factors or {}).items() if ok]

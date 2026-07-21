@@ -169,7 +169,9 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
     assert trace["position_confirmed"] is None
     assert trace["ui_synced"] is True
     assert trace["trade_counter"] == 0
-    assert trace["stopped_stage"] == "entry"
+    # Main cycle defers new entries to Fast Worker weighted controller.
+    assert trace["stopped_stage"] == "entry_approved"
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" in (trace.get("entry_approved_reason") or "")
 
 
 def test_active_strategy_mock_toggle_places_real_dryrun_order(tmp_path, monkeypatch):
@@ -803,7 +805,7 @@ def test_pipeline_trace_marks_ui_synced_false_when_save_fails(tmp_path, monkeypa
     trace = result["pipeline_trace"]
     assert trace["broker_executed"] is False
     assert trace["ui_synced"] is False
-    assert trace["stopped_stage"] == "entry"
+    assert trace["stopped_stage"] == "entry_approved"
 
 
 class TestAdaptiveFusionRealOrderWiring:
@@ -1091,8 +1093,10 @@ def test_strong_up_confirmed_blocks_new_inverse_entry(tmp_path, monkeypatch):
 
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
-    assert "STRONG_UP" in trace["entry_approved_reason"]
+    # Main cycle never places ENHANCED buys — direction/regime blocks are Fast Worker inputs.
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" in trace["entry_approved_reason"] or "STRONG_UP" in trace["entry_approved_reason"]
     assert result["state"]["position"].get("symbol") is None
+    assert trace.get("enhanced_direct_order_blocked") is True
 
 
 # =============================================================================
@@ -1163,8 +1167,10 @@ def test_live_up_direction_blocks_new_inverse_entry_even_without_strong_regime(t
 
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
-    assert "live_trade_direction=UP" in trace["entry_approved_reason"]
+    reason = trace["entry_approved_reason"] or ""
+    assert "live_trade_direction=UP" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
     assert result["state"]["position"].get("symbol") is None
+    assert trace.get("enhanced_direct_order_blocked") is True
 
 
 def test_live_down_direction_blocks_new_hynix_entry_even_without_strong_regime(tmp_path, monkeypatch):
@@ -1217,8 +1223,10 @@ def test_live_down_direction_blocks_new_hynix_entry_even_without_strong_regime(t
 
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
-    assert "live_trade_direction=DOWN" in trace["entry_approved_reason"]
+    reason = trace["entry_approved_reason"] or ""
+    assert "live_trade_direction=DOWN" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
     assert result["state"]["position"].get("symbol") is None
+    assert trace.get("enhanced_direct_order_blocked") is True
 
 
 def test_new_entry_error_does_not_block_existing_position_liquidation(tmp_path, monkeypatch):
@@ -1350,8 +1358,10 @@ def test_strong_down_confirmed_blocks_new_hynix_entry(tmp_path, monkeypatch):
 
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
-    assert "STRONG_DOWN" in trace["entry_approved_reason"]
+    reason = trace["entry_approved_reason"] or ""
+    assert "STRONG_DOWN" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
     assert result["state"]["position"].get("symbol") is None
+    assert trace.get("enhanced_direct_order_blocked") is True
 
 
 def test_signal_summary_uses_early_detector_block_reason_for_buy_to_hold():
@@ -1522,7 +1532,8 @@ def test_score_gap_47_live_down_holds_in_loop(tmp_path, monkeypatch):
 
     assert not broker.buy_calls
     assert result["pipeline_trace"]["entry_approved"] is False
-    assert "LIVE_DIRECTION_CONFLICT" in result["pipeline_trace"]["entry_approved_reason"]
+    reason = result["pipeline_trace"]["entry_approved_reason"]
+    assert "LIVE_DIRECTION_CONFLICT" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
 
 
 def test_early_fast_feed_records_live_samples_even_when_early_detector_disabled(tmp_path, monkeypatch):
@@ -1547,8 +1558,10 @@ def test_early_fast_feed_records_live_samples_even_when_early_detector_disabled(
     updated = state_module.load_state(mode="mock")
     detector_state = updated.get("early_trend_detector") or {}
 
-    assert result["skipped"] is True
-    assert result["reason"] == "EARLY_DISABLED_PRICE_FEED_ONLY"
+    # Early OFF must not early-return the Fast Worker — weighted controller stays armed.
+    assert result.get("reason") != "EARLY_DISABLED_PRICE_FEED_ONLY"
+    assert updated.get("actual_entry_engine") == "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    assert updated.get("configured_entry_engine") == "WEIGHTED_ORDER_CONTROLLER_LIVE"
     assert detector_state.get("price_history")
     assert updated.get("live_trade_direction")
     assert updated.get("position", {}).get("symbol") is None

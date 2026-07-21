@@ -1,0 +1,42 @@
+{
+  "promote_e_to_live": false,
+  "episode_gate_mode": "SHADOW",
+  "walkforward_days": 20,
+  "metrics": {
+    "A": {
+      "days": 20,
+      "total_net_pnl": 15483339.023003854,
+      "avg_daily_return_pct": 7.741669511501927,
+      "median_pf": 13.281021253225182,
+      "worst_mdd_pct": -1.6654005892003831,
+      "entries": 120,
+      "wrong_dir_rate": 0.5583333333333333,
+      "cost_gross_pct": 2.4444282681825893,
+      "positive_days": 20
+    },
+    "C": {
+      "days": 20,
+      "total_net_pnl": -119266.13533748448,
+      "avg_daily_return_pct": -0.05963306766874224,
+      "median_pf": 99.0,
+      "worst_mdd_pct": -0.6730275499999938,
+      "entries": 31,
+      "wrong_dir_rate": 1.0,
+      "cost_gross_pct": 13.830236646964211,
+      "positive_days": 7
+    },
+    "E": {
+      "days": 20,
+      "total_net_pnl": 3839288.526342536,
+      "avg_daily_return_pct": 1.919644263171268,
+      "median_pf": 3.5874349893807675,
+      "worst_mdd_pct": -1.4669965499999549,
+      "entries": 40,
+      "wrong_dir_rate": 1.0,
+      "cost_gross_pct": 3.031882163516228,
+      "positive_days": 7
+    }
+  },
+  "e_beats_a": false,
+  "note": "하루 데이터로 임계값 최적화 금지. E>A 안정 우위 시에만 LIVE 승격."
+}

@@ -386,6 +386,8 @@ def evaluate_range_weighted_entry(
     soft_reason_codes: Optional[list[str]] = None,
     structure_confirmed: Optional[bool] = None,
     structural_direction: Optional[str] = None,
+    day_regime: Optional[str] = None,
+    range_config: Optional["RangeWeightedConfig"] = None,
 ) -> dict:
     """Weighted RANGE entry evidence with profitability gate.
 
@@ -393,6 +395,17 @@ def evaluate_range_weighted_entry(
     leverage ETF, DOWN buys the inverse ETF. The traded ETF should move UP for
     both directions, while the opposite ETF should not show strong UP pressure.
     """
+    from app.trading.range_weighted_optimize import (
+        RangeWeightedConfig,
+        evidence_thresholds_for_regime,
+        get_range_weighted_config,
+        min_net_edge_for_regime,
+    )
+
+    cfg = range_config or get_range_weighted_config()
+    regime = str(day_regime or "NORMAL").upper()
+    thresholds = evidence_thresholds_for_regime(regime, cfg)
+    min_net_edge_required = min_net_edge_for_regime(regime, cfg)
     desired = _normalize_direction(direction)
     live = _normalize_direction(live_direction)
     signal_dirs = dict(signal_window_directions or {})
@@ -422,16 +435,18 @@ def evaluate_range_weighted_entry(
         hard_blocks.append("DATA_INSUFFICIENT")
     expected_move = float(expected_move_pct or 0.0)
     cost = float(cost_pct if cost_pct is not None else 0.0)
-    safety_buffer = 0.05
+    safety_buffer = cfg.safety_buffer
     net_edge = expected_move - cost - safety_buffer
     gross_cost_ratio = (expected_move / cost) if cost > 0 else float("inf")
     mfe = float(expected_mfe_pct if expected_mfe_pct is not None else expected_move)
     mae = float(expected_mae_pct if expected_mae_pct is not None else (stop_loss_distance_pct or 0.4))
     reward_risk = (mfe / mae) if mae > 0 else 0.0
-    if not missing_edge_input and net_edge < 0.15:
+    if not missing_edge_input and net_edge < min_net_edge_required:
         hard_blocks.append("LOW_NET_EDGE")
-    if not missing_edge_input and reward_risk < 1.5:
+    if not missing_edge_input and reward_risk < cfg.min_reward_risk:
         hard_blocks.append("POOR_REWARD_RISK")
+    if regime == "AMBIGUOUS" and score_gap < cfg.min_score_gap_ambiguous:
+        hard_blocks.append("AMBIGUOUS_LOW_SCORE_GAP")
 
     contributions["live_direction"] = 18.0 if live == desired else 0.0
     required_signal = "UP" if desired == "UP" else "DOWN"
@@ -454,6 +469,14 @@ def evaluate_range_weighted_entry(
         if code and code not in hard_blocks and code not in soft_adjustments:
             soft_adjustments.append(str(code))
 
+    normalized_hint = str(entry_path_hint or "").upper()
+    if (
+        regime == "AMBIGUOUS"
+        and cfg.ambiguous_block_reversal
+        and normalized_hint == "REVERSAL"
+        and not structure_ok
+    ):
+        hard_blocks.append("AMBIGUOUS_REVERSAL_BLOCKED")
     if hard_blocks:
         reason = hard_blocks[0]
         return {
@@ -467,8 +490,8 @@ def evaluate_range_weighted_entry(
             "structural_direction": _normalize_direction(structural_direction),
             "strong_structure_confirmed": False,
             "structural_signal_label": "HOLD",
+            "day_regime": regime,
         }
-    normalized_hint = str(entry_path_hint or "").upper()
     original_action_label = str(decision.get("final_action") or "").upper()
     strong_requested = original_action_label.endswith("_STRONG_BUY")
     pullback_shape = (
@@ -478,19 +501,19 @@ def evaluate_range_weighted_entry(
         and (confirm_dirs.get(5) == "DOWN" or confirm_dirs.get(10) == "DOWN")
         and not (confirm_dirs.get(5) == "DOWN" and confirm_dirs.get(10) == "DOWN")
     )
-    if evidence_score < 45.0:
+    if evidence_score < thresholds["weak"]:
         reason = "CONTINUATION_TOO_WEAK"
         action = "HOLD"
         low = high = 0.0
-    elif evidence_score < 55.0:
+    elif evidence_score < thresholds["neutral"]:
         reason = "RANGE_EVIDENCE_NEUTRAL"
         action = "HOLD"
         low = high = 0.0
-    elif evidence_score < 65.0:
+    elif evidence_score < thresholds["mid"]:
         reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if confirm_matches >= 2 else "CONTINUATION_ENTRY_APPROVED")
         action = "ENTER"
         low, high = 0.20, 0.30
-    elif evidence_score < 75.0:
+    elif evidence_score < thresholds["strong"]:
         reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if pullback_shape else "CONTINUATION_ENTRY_APPROVED")
         action = "ENTER"
         low, high = 0.30, 0.50
@@ -529,6 +552,8 @@ def evaluate_range_weighted_entry(
         stop_loss_distance_pct=stop_loss_distance_pct, buyable_cash=buyable_cash,
         current_price=current_price,
     )
+    if regime == "STRONG_TREND" and action == "ENTER":
+        target_pct = min(0.70, float(target_pct) + cfg.trend_day_size_boost)
     return {
         "action": action, "entry_path": "REVERSAL" if reason == "REVERSAL_ENTRY" else ("PULLBACK" if reason == "PULLBACK_ENTRY" else "CONTINUATION"),
         "reason_code": reason, "evidence_score": evidence_score, "contributions": contributions,
@@ -540,6 +565,7 @@ def evaluate_range_weighted_entry(
         "structural_direction": structural_dir,
         "strong_structure_confirmed": strong_structure_confirmed,
         "structural_signal_label": structural_signal_label,
+        "day_regime": regime,
     }
 
 
@@ -622,6 +648,36 @@ def _snapshot_field(value, snapshot_id: str, calculated_at: str, **extra) -> dic
 
 def _decision_snapshot_id(now: datetime) -> str:
     return f"hynix-decision-{now.strftime('%Y%m%dT%H%M%S')}"
+
+
+def _weighted_entry_fusion_metadata(state: dict, continuation_eval: dict) -> dict:
+    """원장·OrderCoordinator에 넣을 WEIGHTED 신규 BUY 감사 메타데이터."""
+    import json
+
+    cont = state.get("trend_continuation_entry") or {}
+    snap = state.get("last_completed_decision_snapshot") or {}
+    evidence = continuation_eval.get("contributions") or continuation_eval.get("weighted_evidence") or {}
+    if isinstance(evidence, dict):
+        try:
+            evidence_str = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            evidence_str = str(evidence)
+    else:
+        evidence_str = str(evidence or "")
+    episode_id = cont.get("direction_episode_id") or cont.get("last_entry_episode_id") or ""
+    runtime = read_runtime_info() or {}
+    return {
+        "actual_entry_engine": "WEIGHTED_ORDER_CONTROLLER_LIVE",
+        "entry_path": continuation_eval.get("entry_path") or "",
+        "weighted_evidence": evidence_str,
+        "expected_net_edge": continuation_eval.get("expected_net_edge_pct"),
+        "reward_risk": continuation_eval.get("reward_risk"),
+        "direction_episode_id": episode_id,
+        "decision_snapshot_id": snap.get("snapshot_id") or "",
+        "deployed_git_sha": runtime.get("git_sha") or "",
+        "episode_id": episode_id,
+        "target_position_pct": continuation_eval.get("target_pct"),
+    }
 
 
 def _recent_1m_momentum_declining(enhanced_result: dict) -> bool:
@@ -3285,62 +3341,25 @@ def _run_early_trend_detector_tick(
         latency = etd.mark_latency(etd_state.get("latency"), "gates_completed_at", now)
         etd_state["latency"] = latency
 
-        if not live:
-            state["early_trend_detector"] = etd_state
-            return {
-                "skipped": True, "reason": "SHADOW 모드 — 계산만 하고 실제 진입은 하지 않음",
-                "reason_code": "NO_EARLY_SIGNAL", "signal": early_signal, "stage": stage, "target_pct": target_pct,
-                "signal_id": signal_id, "episode_id": episode_id, "latency": latency,
-            }
-
-        final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
-        latency = etd.mark_latency(etd_state.get("latency"), "order_requested_at", now)
-        etd_state["latency"] = latency
-        # 요구사항7(2026-07-21) — detected→order_requested 등 latency를 실운영
-        # 기준으로 집계(median/p95/60초 이상 신호 건수)하려면 신호별 trace가
-        # 하루 단위로 남아 있어야 한다. 성공/실패와 무관하게 "주문을 실제로
-        # 시도한 시점"의 latency는 항상 기록한다.
-        etd.log_latency_trace(latency, now)
-        switch = run_switch_or_entry(
-            state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
-            reason=f"EARLY_TREND_DETECTOR 조기진입({stage})", position_manager=position_manager,
-            target_position_pct=target_pct, entry_type=etd.ENTRY_TYPE_EARLY_PROBE, stop_loss_pct=etd.FIXED_EARLY_STOP_PCT,
-            signal_source=etd.signal_source_for_stage(stage),
-        )
-        if switch.get("acted") and any(bool(o.get("success")) for o in (switch.get("orders") or []) if isinstance(o, dict)):
-            latency = etd.mark_latency(latency, "broker_accepted_at", now)
-            latency = etd.mark_latency(latency, "fill_confirmed_at", now)
-            probe = etd.default_probe_state()
-            probe.update({
-                "active": True, "direction": direction, "detected_at": candidate["first_detected_at"],
-                "signal_reference_price": candidate.get("reference_price"), "stage": stage, "position_pct": target_pct,
-                "last_reconfirmed_at": now.isoformat(),
-                "change_point_detected_at": candidate.get("change_point_detected_at", candidate["first_detected_at"]),
-                "initial_probe_entered_at": now.isoformat(),
-                "signal_to_fill_latency_seconds": round((now - first_detected_at).total_seconds(), 2),
-                "signal_id": signal_id, "episode_id": episode_id,
-            })
-            etd_state["probe"] = probe
-            etd_state["frequency"] = etd.register_probe_entry(freq, direction, now)
-            etd_state = etd.register_episode_first_entry(etd_state, episode_id, signal_id, now)
-            etd_state["candidate"] = {}
-            state["actual_order_driver"] = "EARLY_TREND_DETECTOR"
-            position_manager.sync(force=True)
-            latency = etd.mark_latency(latency, "position_synced_at", kst_now())
-            etd_state["latency"] = latency
-            apply_position_manager_to_state(state, position_manager)
-            state["early_trend_detector"] = etd_state
-            return {"skipped": False, "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct, "reason_code": None, "signal_id": signal_id, "episode_id": episode_id, "latency": latency}
-        etd_state["last_block_reason"] = switch.get("message") or "TARGET_ALREADY_FILLED"
+        # Early Detector는 입력·SHADOW만 — LIVE 주문은 WEIGHTED_ORDER_CONTROLLER 전용.
+        # early_trend_detector_live=True여도 EARLY_PROBE/ENHANCED fallback BUY를 내지 않는다.
         state["early_trend_detector"] = etd_state
+        state["configured_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+        state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
         return {
-            "skipped": True, "reason": etd_state["last_block_reason"],
-            "reason_code": _early_reason_code(switch.get("failure_code") or etd_state["last_block_reason"]),
-            "signal": early_signal, "switch": switch, "stage": stage, "target_pct": target_pct,
-            "signal_id": signal_id, "episode_id": episode_id, "latency": etd_state.get("latency"),
+            "skipped": True,
+            "reason": (
+                "SHADOW 모드 — 계산만 하고 실제 진입은 하지 않음"
+                if not live
+                else "SHADOW — Early Detector provides inputs only; WEIGHTED_ORDER_CONTROLLER owns live entries"
+            ),
+            "reason_code": "EARLY_INPUT_ONLY" if live else "NO_EARLY_SIGNAL",
+            "signal": early_signal, "stage": stage, "target_pct": target_pct,
+            "signal_id": signal_id, "episode_id": episode_id, "latency": latency,
+            "order_permission": "DIAGNOSTIC_ONLY",
         }
 
-    # ── 이미 EARLY_PROBE 보유 중 — 단계 진행/확대만 판단(철수는 Dynamic Exit Watcher 담당) ──
+    # ── 이미 EARLY_PROBE 보유 중 — Early 확대/단계진행 BUY 금지(청산만 Dynamic Exit) ──
     probe = dict(etd_state.get("probe") or etd.default_probe_state())
     direction = probe.get("direction")
     try:
@@ -3358,64 +3377,20 @@ def _run_early_trend_detector_tick(
     if probe.get("signal_reference_price") and current_etf_price:
         etd_state["etf_move_pct_since_signal"] = round(abs(current_etf_price / probe["signal_reference_price"] - 1.0) * 100.0, 4)
 
-    if not live:
-        state["early_trend_detector"] = etd_state
-        return None  # SHADOW 모드에서는 확대/단계진행도 실행하지 않고 기존 로직에 맡긴다.
-
-    def _order_succeeded(switch_result: dict) -> bool:
-        # 요구사항 — run_switch_or_entry()는 주문이 브로커에 거부돼도(예: 당일
-        # 중복매수 등) "acted": True를 반환할 수 있다("시도했다"는 뜻이지 "성공했다"는
-        # 뜻이 아니다) — 실제 체결 성공 여부는 orders[].success로만 판단한다.
-        return any(bool(o.get("success")) for o in (switch_result.get("orders") or []) if isinstance(o, dict))
-
-    expansion_pct = etd.expansion_target_pct(confirmed_regime, direction, holding_inverse)
-    if expansion_pct and expansion_pct > (probe.get("position_pct") or 0.0):
-        final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
-        switch = run_switch_or_entry(
-            state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
-            reason=f"EARLY_TREND_DETECTOR 확대(confirmed {confirmed_regime})", position_manager=position_manager,
-            target_position_pct=expansion_pct, entry_type="CONFIRMED",
-            signal_source=etd.signal_source_for_stage(etd.STAGE_CONFIRMED_EXPANDED),
-        )
-        if _order_succeeded(switch):
-            probe.update({"stage": etd.STAGE_CONFIRMED_EXPANDED, "position_pct": expansion_pct, "expanded": True})
-            etd_state["probe"] = probe
-            state["early_trend_detector"] = etd_state
-            state["actual_order_driver"] = "EARLY_TREND_DETECTOR"
-            position_manager.sync(force=True)
-            apply_position_manager_to_state(state, position_manager)
-            return {"skipped": False, "switch": switch, "expanded_to": expansion_pct, "reason_code": None}
-
-    # 요구사항2 — 50% 단계는 30초 유지 "그리고" 방향 일치일 때만(held_symbol이
-    # 이미 그 방향으로 진입해 보유 중이므로, 실시간 기울기가 같은 방향을
-    # 가리키는지로 "지금도 정렬돼 있는지"를 재확인한다). INVERSE_SYMBOL은
-    # 기초자산과 반대로 움직이므로 "기초자산 방향" 기준으로 정규화해서 비교한다.
-    _held_live_raw_direction = (live_slopes.get(held_symbol) or {}).get("direction")
-    _held_live_direction = (
-        {"UP": "DOWN", "DOWN": "UP"}.get(_held_live_raw_direction) if holding_inverse else _held_live_raw_direction
-    )
-    direction_aligned = (
-        _held_live_direction == direction if _held_live_direction else fast_signal.get("direction") == direction
-    )
-    new_stage, new_target_pct = etd.compute_target_probe_pct(confirmed_regime, elapsed, direction_aligned=direction_aligned)
-    if new_target_pct > (probe.get("position_pct") or 0.0):
-        final_action = "HYNIX_BUY" if direction == "UP" else "INVERSE_BUY"
-        switch = run_switch_or_entry(
-            state, broker, final_action, hynix_price, inverse_price, now=now, forced=True,
-            reason=f"EARLY_TREND_DETECTOR 단계진행({new_stage})", position_manager=position_manager,
-            target_position_pct=new_target_pct, entry_type=etd.ENTRY_TYPE_EARLY_PROBE, stop_loss_pct=etd.FIXED_EARLY_STOP_PCT,
-            signal_source=etd.signal_source_for_stage(new_stage),
-        )
-        if _order_succeeded(switch):
-            probe.update({"stage": new_stage, "position_pct": new_target_pct, "last_reconfirmed_at": now.isoformat()})
-            etd_state["probe"] = probe
-            state["early_trend_detector"] = etd_state
-            position_manager.sync(force=True)
-            apply_position_manager_to_state(state, position_manager)
-            return {"skipped": False, "switch": switch, "staged_to": new_target_pct, "reason_code": None}
-
     state["early_trend_detector"] = etd_state
-    return {"skipped": True, "reason": "단계 유지", "reason_code": "TARGET_ALREADY_FILLED"}
+    state["configured_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    if not live:
+        return None
+    return {
+        "skipped": True,
+        "reason": "SHADOW — Early Detector expansion blocked; WEIGHTED_ORDER_CONTROLLER owns live entries",
+        "reason_code": "EARLY_INPUT_ONLY",
+        "order_permission": "DIAGNOSTIC_ONLY",
+        "probe": probe,
+        "elapsed_seconds": elapsed,
+    }
+
 
 
 def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
@@ -3434,7 +3409,14 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
     from app.trading import early_trend_live_feed as feed
     from app.trading import early_trend_detector as etd
     from app.trading.etf_entry_confirmation import resolve_window_directions
+    from app.trading.range_weighted_optimize import (
+        daily_loss_limit_reached_from_pct,
+        get_range_weighted_config,
+        load_optimized_config,
+        resolve_day_regime_from_cache,
+    )
 
+    load_optimized_config()
     now = now or kst_now()
     resolved_mode = mode or load_state(mode=None).get("mode", "mock")
     with with_state_lock(resolved_mode):
@@ -3579,16 +3561,47 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 and _pa_oppose_dirs.get(10) == "DOWN"
             ),
         }
+        # 2026-07-22: 가격행동 조기진입(D)은 SHADOW 격리 — LIVE 주문에 쓰지 않는다.
+        # 1분봉 선형보간 리플레이로는 활성화하지 않으며, 실 5초 틱만 SHADOW 기록.
+        from app.trading.strategy_architecture import (
+            price_action_shadow_payload,
+            get_episode_gate_mode,
+        )
+        from app.trading.macd_williams_episode import confirm_episode_direction
+
+        _pa_factor_count = sum(1 for ok in factors.values() if ok)
         etd_state["price_action_reversal"] = {
             "direction": _price_action_direction,
             "factors": factors,
-            "factor_count": sum(1 for ok in factors.values() if ok),
+            "factor_count": _pa_factor_count,
             "confirm_window_directions": _pa_confirm_dirs,
             "oppose_window_directions": _pa_oppose_dirs,
             "confirm_above_vwap": _pa_confirm_above_vwap,
             "swing_breakout": _pa_swing_breakout,
             "macd_williams_confirmation": _pa_macd_williams,
+            "shadow": price_action_shadow_payload(
+                direction=_price_action_direction,
+                factors=factors,
+                factor_count=_pa_factor_count,
+                macd_williams=_pa_macd_williams,
+                source="live_5s_tick",
+            ),
+            "live_order_forbidden": True,
         }
+        # C: 3분봉 MACD+Williams episode 확인기 (broker 주문 금지)
+        try:
+            from app.data_sources.auto_market_collector import _load_hynix_minute_cache
+
+            _signal_1m = _load_hynix_minute_cache()
+        except Exception:
+            _signal_1m = None
+        _episode_confirm = confirm_episode_direction(
+            _signal_1m,
+            proposed_direction=live_trade.get("direction"),
+            now=now,
+        )
+        etd_state["macd_williams_episode"] = _episode_confirm
+        state["macd_williams_episode_gate_mode"] = get_episode_gate_mode(state)
         reversal_candidate = feed.update_reversal_candidate_state(
             etd_state.get("reversal_candidate"),
             live_direction=live_trade.get("direction"),
@@ -3678,23 +3691,19 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         state["early_trend_detector"] = etd_state
 
         live = bool(early_enabled and state.get("early_trend_detector_live"))
-        if not live:
-            state["configured_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-            state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-            state["entry_orchestrator"] = {
-                "name": "OrderCoordinator",
-                "mode": "WEIGHTED_ORDER_CONTROLLER_LIVE",
-                "reason": "Fast Worker input feed is not live",
-                "updated_at": now.isoformat(),
-            }
-            save_state_atomic(state)
-            reason = "EARLY_DISABLED_PRICE_FEED_ONLY" if not early_enabled else "SHADOW_PRICE_FEED_ONLY"
-            return {
-                "skipped": True,
-                "reason": reason,
-                "live_trade_direction": state.get("live_trade_direction"),
-                "live_slopes": etd_state["live_slopes"],
-            }
+        # Early ON/OFF·LIVE는 조기신호 입력(SHADOW) 여부만 바꾼다. auto_trade_on이면
+        # WEIGHTED_ORDER_CONTROLLER_LIVE가 항상 신규진입을 소유하며, Early 토글로
+        # Fast Worker를 early-return 시켜서는 안 된다.
+        state["configured_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+        state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+        state["entry_orchestrator"] = {
+            "name": "OrderCoordinator",
+            "mode": "WEIGHTED_ORDER_CONTROLLER_LIVE",
+            "reason": "evaluate_range_weighted_entry owns REVERSAL/CONTINUATION/PULLBACK entry orders",
+            "updated_at": now.isoformat(),
+        }
+        etd_state["early_live_input"] = live
+        etd_state["early_enabled_input"] = early_enabled
 
         if not is_new_entry_allowed(now):
             position = state.get("position") or {}
@@ -3719,7 +3728,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
             state["entry_orchestrator"] = {
                 "name": "OrderCoordinator",
-                "mode": "SINGLE_ENTRY_ORCHESTRATOR",
+                "mode": "WEIGHTED_ORDER_CONTROLLER_LIVE",
                 "reason": "evaluate_range_weighted_entry owns REVERSAL/CONTINUATION/PULLBACK entry orders",
                 "updated_at": now.isoformat(),
             }
@@ -3748,47 +3757,72 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 etf_vwap_breakout=None,
                 etf_structure_breakout=None,
                 etf_volume_surge=None,
+            ) if early_enabled else {"direction": None, "score": 0.0}
+            _early_reason_code = (
+                None
+                if early_enabled and _early_signal.get("direction") in ("UP", "DOWN") and _early_signal.get("score", 0.0) >= 50.0
+                else ("EARLY_INPUT_DISABLED" if not early_enabled else "NO_EARLY_SIGNAL")
             )
-            _early_reason_code = None if _early_signal.get("direction") in ("UP", "DOWN") and _early_signal.get("score", 0.0) >= 50.0 else "NO_EARLY_SIGNAL"
             early_result = {
                 "skipped": bool(_early_reason_code),
                 "reason": _early_reason_code or "EARLY_SIGNAL_DIAGNOSTIC_ONLY",
                 "reason_code": _early_reason_code,
                 "signal": _early_signal,
-                "entry_path": "REVERSAL" if reversal_candidate.get("status") == "REVERSAL_CANDIDATE" else None,
+                # D 가격행동 REVERSAL은 SHADOW — LIVE entry_path로 쓰지 않음
+                "entry_path": None,
                 "order_permission": "DIAGNOSTIC_ONLY",
+                "price_action_shadow": True,
             }
             continuation_state = dict(state.get("trend_continuation_entry") or {})
             continuation_state["last_evaluated_at"] = now.isoformat()
             continuation_state["evaluation_count_today"] = int(continuation_state.get("evaluation_count_today") or 0) + 1
             desired_live_direction = live_trade.get("direction")
             decision_for_continuation = state.get("last_decision") or {}
+            _episode_confirm = etd_state.get("macd_williams_episode") or {}
             if desired_live_direction not in ("UP", "DOWN"):
+                # C 확인기가 반대면 enhanced가 방향을 덮어쓰지 못함
+                from app.trading.macd_williams_episode import enhanced_may_set_direction
+
                 _gap = _score_gap_from_decision(decision_for_continuation)
-                if _gap >= 30.0:
-                    try:
-                        _hynix_score = float(decision_for_continuation.get("enhanced_score") or 50.0)
-                        _inverse_score = float(decision_for_continuation.get("inverse_pressure_score") or 50.0)
-                    except Exception:
-                        _hynix_score, _inverse_score = 50.0, 50.0
-                    desired_live_direction = "UP" if _hynix_score >= _inverse_score else "DOWN"
+                try:
+                    _hynix_score = float(decision_for_continuation.get("enhanced_score") or 50.0)
+                    _inverse_score = float(decision_for_continuation.get("inverse_pressure_score") or 50.0)
+                except Exception:
+                    _hynix_score, _inverse_score = 50.0, 50.0
+                _enhanced_leader = "UP" if _hynix_score >= _inverse_score else "DOWN"
+                if (
+                    _gap >= 30.0
+                    and enhanced_may_set_direction(
+                        _episode_confirm,
+                        enhanced_leader=_enhanced_leader,
+                        live_direction=desired_live_direction,
+                    )
+                ):
+                    desired_live_direction = _enhanced_leader
+                elif _episode_confirm.get("indicator_direction") in ("UP", "DOWN"):
+                    # enhanced 차단 시 episode 지표 방향을 참고(주문은 A만)
+                    desired_live_direction = _episode_confirm["indicator_direction"]
             desired_symbol = HYNIX_SYMBOL if desired_live_direction == "UP" else (INVERSE_SYMBOL if desired_live_direction == "DOWN" else None)
             current_etf_price = long_price if desired_symbol == HYNIX_SYMBOL else (inverse_price if desired_symbol == INVERSE_SYMBOL else None)
             from app.trading.etf_entry_confirmation import resolve_window_directions, trade_aligned_window_directions
 
-            confirm_dirs = (
-                trade_aligned_window_directions(
-                    resolve_window_directions(etd_state["live_slopes"].get(desired_symbol)),
-                    symbol=desired_symbol,
-                )
+            confirm_dirs_raw = (
+                resolve_window_directions(etd_state["live_slopes"].get(desired_symbol))
                 if desired_symbol else {}
             )
             oppose_symbol = INVERSE_SYMBOL if desired_symbol == HYNIX_SYMBOL else HYNIX_SYMBOL
+            oppose_dirs_raw = (
+                resolve_window_directions(etd_state["live_slopes"].get(oppose_symbol))
+                if desired_symbol else {}
+            )
+            # episode/반대전환 로직은 trade-aligned(인버스 반전) 방향을 쓰고,
+            # evaluate_range_weighted_entry는 진입 ETF 가격공간(상승=UP)을 기대한다.
+            confirm_dirs = (
+                trade_aligned_window_directions(confirm_dirs_raw, symbol=desired_symbol)
+                if desired_symbol else {}
+            )
             oppose_dirs = (
-                trade_aligned_window_directions(
-                    resolve_window_directions(etd_state["live_slopes"].get(oppose_symbol)),
-                    symbol=oppose_symbol,
-                )
+                trade_aligned_window_directions(oppose_dirs_raw, symbol=oppose_symbol)
                 if desired_symbol else {}
             )
             confirm_above_vwap = None
@@ -3880,14 +3914,16 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             cost_gate = etd.evaluate_cost_gate(desired_symbol, expected_move_pct) if desired_symbol else {"blocked": True}
             _cost_pct = cost_gate.get("cost_pct")
             _expected_move_for_edge = expected_move_pct
+            _day_regime = resolve_day_regime_from_cache()
+            _range_cfg = get_range_weighted_config()
             continuation_eval = evaluate_range_weighted_entry(
                 decision=decision_for_continuation,
                 direction=desired_live_direction,
                 live_direction=desired_live_direction,
                 live_direction_held_seconds=(state.get("live_trade_direction") or {}).get("direction_held_seconds"),
                 signal_window_directions=resolve_window_directions(etd_state["live_slopes"].get(SIGNAL_SYMBOL)),
-                confirm_window_directions=confirm_dirs,
-                oppose_window_directions=oppose_dirs,
+                confirm_window_directions=confirm_dirs_raw,
+                oppose_window_directions=oppose_dirs_raw,
                 confirm_above_vwap=confirm_above_vwap,
                 moved_pct_since_signal=moved_pct,
                 expected_move_pct=_expected_move_for_edge,
@@ -3903,16 +3939,19 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 stop_loss_distance_pct=abs(float(etd.FIXED_EARLY_STOP_PCT)),
                 buyable_cash=broker.get_buyable_cash() if hasattr(broker, "get_buyable_cash") else None,
                 current_price=current_etf_price,
-                entry_path_hint="REVERSAL" if reversal_candidate.get("status") == "REVERSAL_CANDIDATE" else None,
-                structure_confirmed=bool(confirm_swing_breakout or (etd_state.get("price_action_reversal") or {}).get("swing_breakout")),
+                # D REVERSAL hint 제거 — A weighted RANGE만 CONTINUATION/PULLBACK 경로
+                entry_path_hint=None,
+                structure_confirmed=bool(confirm_swing_breakout),
                 structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
                 soft_reason_codes=[
                     code for code in (
-                        _early_reason_code,
+                        (_early_reason_code if early_enabled else None),
                         ((etd_state.get("etf_confirmation") or {}).get("state")),
                         "MICRO_CHOP" if bool((etd_state.get("micro_chop") or {}).get("active")) else None,
                     ) if code
                 ],
+                day_regime=_day_regime,
+                range_config=_range_cfg,
             )
             continuation_state.update({
                 "last_result": continuation_eval,
@@ -3930,60 +3969,86 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 "macd_williams_confirmation": (etd_state.get("price_action_reversal") or {}).get("macd_williams_confirmation"),
             })
             if continuation_eval.get("action") == "ENTER" and desired_symbol:
-                held_symbol = (state.get("position") or {}).get("symbol")
-                _entry_path_for_key = continuation_eval.get("entry_path") or "CONTINUATION"
-                _episode_id_for_order = continuation_state.get("direction_episode_id") or f"{desired_live_direction}:{continuation_state.get('first_detected_at')}"
-                order_key = f"{_episode_id_for_order}:ENTRY"
-                _opposite_switch = bool(held_symbol and held_symbol != desired_symbol)
-                _opposite_switch_allowed = (
-                    live_trade.get("direction") == desired_live_direction
-                    and confirm_dirs.get(5) == desired_live_direction
-                    and confirm_dirs.get(10) == desired_live_direction
-                    and bool(confirm_swing_breakout)
-                    and _opposite_episode_confirmed
+                from app.trading.strategy_architecture import (
+                    chase_hard_block,
+                    entry_timing_ok,
+                    episode_gate_blocks_entry,
+                    get_episode_gate_mode,
                 )
-                if _opposite_switch and not _opposite_switch_allowed:
-                    continuation_state["last_block_reason"] = "OPPOSITE_EPISODE_NOT_CONFIRMED"
+
+                _daily_ret = state.get("realized_pnl_today_pct")
+                _gate_mode = get_episode_gate_mode(state)
+                _ep_confirm = etd_state.get("macd_williams_episode") or {}
+                _held_sec = (state.get("live_trade_direction") or {}).get("direction_held_seconds")
+                _timing_ok, _timing_reason = entry_timing_ok(_held_sec)
+                if daily_loss_limit_reached_from_pct(_daily_ret, _range_cfg):
+                    continuation_state["last_block_reason"] = "DAILY_LOSS_LIMIT"
+                elif chase_hard_block(moved_pct):
+                    continuation_state["last_block_reason"] = "CHASE_BLOCK"
+                elif not _timing_ok:
+                    continuation_state["last_block_reason"] = _timing_reason
+                elif episode_gate_blocks_entry(_gate_mode, _ep_confirm):
+                    continuation_state["last_block_reason"] = "MACD_WILLIAMS_EPISODE_NOT_CONFIRMED"
+                    continuation_state["episode_gate_mode"] = _gate_mode
                 else:
-                    _allows_entry, _entry_block = range_episode_allows_entry(
-                        continuation_state,
-                        entry_path=_entry_path_for_key,
-                        swing_breakout=bool(confirm_swing_breakout),
-                        vwap_reclaim=_vwap_reclaim,
-                        direction_changed=_direction_episode_changed,
+                    held_symbol = (state.get("position") or {}).get("symbol")
+                    _entry_path_for_key = continuation_eval.get("entry_path") or "CONTINUATION"
+                    _episode_id_for_order = continuation_state.get("direction_episode_id") or f"{desired_live_direction}:{continuation_state.get('first_detected_at')}"
+                    order_key = f"{_episode_id_for_order}:ENTRY"
+                    _opposite_switch = bool(held_symbol and held_symbol != desired_symbol)
+                    _opposite_switch_allowed = (
+                        live_trade.get("direction") == desired_live_direction
+                        and confirm_dirs.get(5) == desired_live_direction
+                        and confirm_dirs.get(10) == desired_live_direction
+                        and bool(confirm_swing_breakout)
+                        and _opposite_episode_confirmed
                     )
-                    if not _allows_entry:
-                        continuation_state["last_block_reason"] = _entry_block
-                    elif held_symbol != desired_symbol and not continuation_state.get("entry_done") and continuation_state.get("last_order_key") != order_key:
-                        final_action = "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
-                        switch = run_switch_or_entry(
-                            state, broker, final_action, long_price, inverse_price, now=now,
-                            forced=True, reason=continuation_eval.get("reason_code") or "WEIGHTED_ORDER_CONTROLLER",
-                            position_manager=position_manager, target_position_pct=continuation_eval["target_pct"],
-                            entry_type="WEIGHTED_RANGE_ENTRY",
-                            signal_source="WEIGHTED_ORDER_CONTROLLER",
+                    if _opposite_switch and not _opposite_switch_allowed:
+                        continuation_state["last_block_reason"] = "OPPOSITE_EPISODE_NOT_CONFIRMED"
+                    else:
+                        _allows_entry, _entry_block = range_episode_allows_entry(
+                            continuation_state,
+                            entry_path=_entry_path_for_key,
+                            swing_breakout=bool(confirm_swing_breakout),
+                            vwap_reclaim=_vwap_reclaim,
+                            direction_changed=_direction_episode_changed,
                         )
-                        continuation_state["last_order_key"] = order_key
-                        continuation_state["last_switch"] = switch
-                        if _fast_order_succeeded(switch):
-                            continuation_state["entry_done"] = True
-                            continuation_state["entry_path"] = continuation_eval.get("entry_path")
-                            continuation_state["last_entry_episode_id"] = _episode_id_for_order
-                            continuation_state["approved_entry_count_today"] = int(continuation_state.get("approved_entry_count_today") or 0) + 1
-                            mark_range_reversal_probe_entered(
-                                continuation_state,
-                                now=now,
-                                entry_path=continuation_eval.get("entry_path"),
+                        if not _allows_entry:
+                            continuation_state["last_block_reason"] = _entry_block
+                        elif held_symbol != desired_symbol and not continuation_state.get("entry_done") and continuation_state.get("last_order_key") != order_key:
+                            final_action = "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                            _entry_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
+                            _entry_audit["direction_episode_id"] = _episode_id_for_order
+                            _entry_audit["episode_id"] = _episode_id_for_order
+                            switch = run_switch_or_entry(
+                                state, broker, final_action, long_price, inverse_price, now=now,
+                                forced=True, reason=continuation_eval.get("reason_code") or "WEIGHTED_ORDER_CONTROLLER",
+                                position_manager=position_manager, target_position_pct=continuation_eval["target_pct"],
+                                entry_type="WEIGHTED_RANGE_ENTRY",
+                                signal_source="WEIGHTED_ORDER_CONTROLLER",
+                                fusion_metadata=_entry_audit,
                             )
-                            position_manager.sync(force=True)
-                            apply_position_manager_to_state(state, position_manager)
-                            early_result = {
-                                "skipped": False,
-                                "reason_code": continuation_eval.get("reason_code"),
-                                "entry_path": continuation_eval.get("entry_path"),
-                                "switch": switch,
-                                "continuation": continuation_eval,
-                            }
+                            continuation_state["last_order_key"] = order_key
+                            continuation_state["last_switch"] = switch
+                            if _fast_order_succeeded(switch):
+                                continuation_state["entry_done"] = True
+                                continuation_state["entry_path"] = continuation_eval.get("entry_path")
+                                continuation_state["last_entry_episode_id"] = _episode_id_for_order
+                                continuation_state["approved_entry_count_today"] = int(continuation_state.get("approved_entry_count_today") or 0) + 1
+                                mark_range_reversal_probe_entered(
+                                    continuation_state,
+                                    now=now,
+                                    entry_path=continuation_eval.get("entry_path"),
+                                )
+                                position_manager.sync(force=True)
+                                apply_position_manager_to_state(state, position_manager)
+                                early_result = {
+                                    "skipped": False,
+                                    "reason_code": continuation_eval.get("reason_code"),
+                                    "entry_path": continuation_eval.get("entry_path"),
+                                    "switch": switch,
+                                    "continuation": continuation_eval,
+                                }
             _held_for_scale = (state.get("position") or {}).get("symbol")
             if (
                 desired_symbol
@@ -4012,12 +4077,18 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     _scale_key = f"{_episode_id_for_scale}:SCALE_IN"
                     if _scale_target > 0 and continuation_state.get("last_order_key") != _scale_key:
                         final_action = "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                        _scale_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
+                        _scale_audit["direction_episode_id"] = _episode_id_for_scale
+                        _scale_audit["episode_id"] = _episode_id_for_scale
+                        _scale_audit["entry_path"] = continuation_state.get("entry_path") or _scale_audit.get("entry_path")
+                        _scale_audit["target_position_pct"] = _scale_target
                         switch = run_switch_or_entry(
                             state, broker, final_action, long_price, inverse_price, now=now,
                             forced=True, reason="MACD_WILLIAMS_CONFIRMED_SCALE_IN",
                             position_manager=position_manager, target_position_pct=_scale_target,
                             entry_type="WEIGHTED_ORDER_CONTROLLER_SCALE_IN",
                             signal_source="WEIGHTED_ORDER_CONTROLLER",
+                            fusion_metadata=_scale_audit,
                         )
                         continuation_state["last_order_key"] = _scale_key
                         continuation_state["last_scale_switch"] = switch
@@ -4570,10 +4641,10 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
     state["entry_orchestrator"] = {
         "name": "OrderCoordinator",
-        "mode": "SINGLE_ENTRY_ORCHESTRATOR" if _early_live else state["actual_entry_engine"],
+        "mode": "WEIGHTED_ORDER_CONTROLLER_LIVE",
         "reason": (
-            "evaluate_range_weighted_entry owns REVERSAL/CONTINUATION/PULLBACK entry orders"
-            if _early_live else ("Early LIVE is off" if _early_configured else "Enhanced regime switch owns entries")
+            "evaluate_range_weighted_entry owns all live new entries; "
+            f"Early={'LIVE_INPUT' if _early_live else ('SHADOW_INPUT' if _early_configured else 'OFF')}"
         ),
         "updated_at": now.isoformat(),
     }
@@ -4730,18 +4801,13 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
                     proceed = True
                     _score_gap_target_pct = None
-                    _early_detector_live_exclusive = bool(
-                        state.get("early_trend_detector_enabled")
-                        and state.get("early_trend_detector_live")
-                    )
+                    # Early/Active/Fusion 토글과 무관 — 메인 3분 사이클은 신규매수를
+                    # 직접 실행하지 않는다. 실진입은 Fast Worker의
+                    # evaluate_range_weighted_entry -> run_switch_or_entry(WEIGHTED)만.
                     if not is_new_entry:
                         trace["entry_approved"] = True
                         trace["entry_approved_reason"] = "이미 목표 종목 보유 중 — 추가 진입 불필요"
-                    elif _early_detector_live_exclusive:
-                        # Early LIVE가 켜진 동안 메인 3분 사이클은 신규매수를 직접 실행하지
-                        # 않는다. 실제 신규진입은 5초 Fast Worker의
-                        # evaluate_range_weighted_entry -> run_switch_or_entry 단일 경로가
-                        # 전담한다.
+                    else:
                         proceed = False
                         trace["enhanced_direct_order_blocked"] = True
                         if not new_entry_allowed_now:
@@ -4758,14 +4824,6 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                                 "order_permission": "DIAGNOSTIC_ONLY",
                             }
                         _record_early_result_on_trace(trace, early_result)
-                        # 요구사항(2026-07-21 실측 버그 수정) — "Enhanced가 방향을
-                        # 승인했다"는 사실만으로 entry_approved=True를 무조건 세팅하지
-                        # 않는다. Early Detector 내부가 실제로 주문을 내지 못했으면
-                        # (TARGET_ALREADY_FILLED/브로커 체결 성공 제외) 그 실제 차단
-                        # 사유를 entry_approved_reason에 그대로 반영한다 — 그래야
-                        # _build_signal_summary의 block_reason이 "없음"으로 비지 않고
-                        # actionable_signal=BUY인데 final_action=HOLD가 되는 모순이
-                        # 사라진다.
                         _early_order_sent = bool((trace.get("early_order_result") or {}).get("order_sent"))
                         _early_broker_executed = bool((trace.get("early_order_result") or {}).get("broker_executed"))
                         _early_reason_code = (trace.get("early_decision") or {}).get("reason_code")
@@ -4778,163 +4836,6 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             trace["entry_approved"] = False
                             _early_reason_text = (trace.get("early_decision") or {}).get("reason") or _early_reason_code or "NO_EARLY_SIGNAL"
                             trace["entry_approved_reason"] = f"MAIN_CYCLE_ENTRY_DEFERRED: {_early_reason_text}"
-                    elif state.get("position_conflict"):
-                        proceed = False
-                        warnings.append("포지션 동기화 필요(0193T0/0197X0 동시 보유) — 신규매수 금지")
-                        trace["entry_approved"] = False
-                        trace["entry_approved_reason"] = "포지션 동기화 필요(동시 보유) — 신규매수 금지"
-                    elif (
-                        (desired_symbol == INVERSE_SYMBOL and (state.get("adaptive_regime") or {}).get("confirmed_regime") == "STRONG_UP")
-                        or (desired_symbol == HYNIX_SYMBOL and (state.get("adaptive_regime") or {}).get("confirmed_regime") == "STRONG_DOWN")
-                    ) and not (
-                        (state.get("live_trade_direction") or {}).get("status") == "REVERSAL_CANDIDATE"
-                        and (state.get("live_trade_direction") or {}).get("direction") == ("UP" if desired_symbol == HYNIX_SYMBOL else "DOWN")
-                    ):
-                        # 요구사항(2026-07-16, 큰 추세 수익 극대화판) — STRONG_UP 확정 중에는
-                        # 0197X0(인버스) 신규매수를, STRONG_DOWN 확정 중에는 0193T0(레버리지)
-                        # 신규매수를 금지한다. Adaptive Regime(2연속 사이클로 이미 확정된
-                        # confirmed_regime — 매 사이클 재분류하지 않고 공용 결과만 참조)만
-                        # 사용한다.
-                        proceed = False
-                        _ar_confirmed_for_block = (state.get("adaptive_regime") or {}).get("confirmed_regime")
-                        trace["entry_approved"] = False
-                        trace["entry_approved_reason"] = (
-                            f"Adaptive Regime={_ar_confirmed_for_block} 확정 중 — 반대방향 신규진입 금지"
-                        )
-                        warnings.append(trace["entry_approved_reason"])
-                    elif (
-                        (desired_symbol == INVERSE_SYMBOL and (state.get("live_trade_direction") or {}).get("direction") == "UP")
-                        or (desired_symbol == HYNIX_SYMBOL and (state.get("live_trade_direction") or {}).get("direction") == "DOWN")
-                    ):
-                        # 요구사항(2026-07-21 실운영 검증) — Adaptive Regime(STRONG_UP/DOWN,
-                        # 위 분기)은 2연속 사이클 확정을 요구하는 느린 신호라 이 게이트를
-                        # 아직 통과 못 한 순간에도, 더 빠른 live_trade_direction(5/10/20/30초
-                        # 기울기 + VWAP + ETF 상호확인, app.trading.early_trend_live_feed)이
-                        # 이미 명확히 반대방향을 가리키면 그 방향의 신규진입을 금지한다.
-                        # live UP → INVERSE 금지, live DOWN → 레버리지(HYNIX) 금지를 완전히
-                        # 대칭 적용하며(동일 필드·동일 조건), 어느 한쪽에도 REVERSAL_CANDIDATE
-                        # 같은 예외/완화조건을 두지 않는다.
-                        proceed = False
-                        _live_dir_for_block = (state.get("live_trade_direction") or {}).get("direction")
-                        trace["entry_approved"] = False
-                        trace["entry_approved_reason"] = (
-                            f"LIVE_DIRECTION_CONFLICT: live_trade_direction={_live_dir_for_block} — "
-                            "실시간 반대방향 신규진입 금지"
-                        )
-                        warnings.append(trace["entry_approved_reason"])
-                    elif (
-                        _score_gap_ladder_result := evaluate_score_gap_entry_ladder(
-                            score_gap=float(decision.get("score_gap") or 0.0),
-                            desired_direction="UP" if desired_symbol == HYNIX_SYMBOL else "DOWN",
-                            live_direction=(state.get("live_trade_direction") or {}).get("direction"),
-                            structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
-                            etf_mid_term_aligned=_etf_mid_term_aligned_for_ladder(
-                                state, desired_symbol, "UP" if desired_symbol == HYNIX_SYMBOL else "DOWN",
-                            ),
-                            etf_confirmation_state=(
-                                ((state.get("early_trend_detector") or {}).get("etf_confirmation") or {}).get("state")
-                            ),
-                            confidence=(state.get("adaptive_regime") or {}).get("confidence"),
-                            stop_loss_distance_pct=abs(float((state.get("last_trend_switch_plan") or {}).get("stop_loss_pct") or 0.8)),
-                            buyable_cash=state.get("last_buyable_cash_used"),
-                            current_price=hynix_price if desired_symbol == HYNIX_SYMBOL else inverse_price,
-                        )
-                    )["action"] is not None:
-                        # 요구사항(2026-07-21) — 원점수 격차(score_gap)와 실시간 방향을 결합한
-                        # 진입비중 사다리(우선순위: hard risk/data mismatch/time gate → live
-                        # direction conflict(위 elif) → 이 사다리 → MICRO_CHOP 보조 게이트).
-                        proceed = True
-                        _score_gap_target_pct = _score_gap_ladder_result["target_pct"]
-                        trace["entry_approved"] = True
-                        trace["entry_approved_reason"] = (
-                            f"SCORE_GAP_LADDER({_score_gap_ladder_result['reason_code']}): "
-                            f"score_gap={decision.get('score_gap')}, target_pct={_score_gap_target_pct}"
-                        )
-                    else:
-                        if str(final_action).endswith("_STRONG_BUY"):
-                            confirm_tracker = update_confirm_tracker(
-                                state.get("trend_switch_confirm_tracker") or default_confirm_state(),
-                                final_action, held_symbol, desired_symbol, now,
-                            )
-                            state["trend_switch_confirm_tracker"] = confirm_tracker
-                            trend_plan = plan_trend_switch_entry(
-                                final_action=final_action,
-                                held_symbol=held_symbol,
-                                desired_symbol=desired_symbol,
-                                confirm_tracker=confirm_tracker,
-                                frequency_state=state.get("trend_switch_frequency_state") or default_trend_frequency_state(),
-                                pullback_result=None,
-                                now=now,
-                                data_ok=bool(hynix_price and inverse_price),
-                                has_unconfirmed_order=bool(state.get("order_in_flight") or state.get("pending_order")),
-                                daily_return_pct=state.get("realized_pnl_today_pct"),
-                                atr_pct=None,
-                                override_daily_loss_block=bool(state.get("daily_loss_block_override")),
-                            )
-                            proceed = bool(trend_plan.get("proceed"))
-                            # 강한 신호(STRONG_BUY)도 PRIMARY_TREND 차단은 무시할 수 없다 — "강한
-                            # 신호니까 눌림목 대기 생략"이 단기 조정을 실제 추세전환으로 오판하게
-                            # 두지 않는다.
-                            # 요구사항(2026-07-16, 남은 통합 작업1) — 별도로 compute_primary_trend()를
-                            # 다시 호출해 재분류하지 않는다. 이번 사이클에 이미 한 번만 계산된 공용
-                            # state["adaptive_regime"] 결과에서만 파생시킨다.
-                            strong_primary_trend_result = adaptive_regime_to_primary_trend_result(state.get("adaptive_regime"))
-                            state["last_primary_trend"] = strong_primary_trend_result
-                            strong_ptrend = strong_primary_trend_result.get("primary_trend", PRIMARY_TREND_RANGE)
-                            trend_block_reason = None
-                            if final_action == "INVERSE_STRONG_BUY" and new_inverse_entry_blocked(
-                                strong_ptrend, strong_primary_trend_result.get("above_vwap"),
-                                strong_primary_trend_result.get("above_ema20"), strong_primary_trend_result,
-                            ):
-                                votes, vote_reasons = inverse_block_vote_count(strong_primary_trend_result)
-                                trend_block_reason = (
-                                    f"PRIMARY_TREND=UP with {votes} uptrend confirmations({', '.join(vote_reasons)}) - even a strong INVERSE "
-                                    "signal is blocked without 2x-confirmed VWAP/15m-trend/swing-low breakdown"
-                                )
-                            elif final_action == "HYNIX_STRONG_BUY" and new_hynix_entry_blocked(
-                                strong_ptrend, strong_primary_trend_result.get("above_vwap"), strong_primary_trend_result.get("above_ema20"),
-                            ):
-                                trend_block_reason = (
-                                    "PRIMARY_TREND=DOWN and price below VWAP/EMA20 - even a strong HYNIX "
-                                    "signal is blocked without 2x-confirmed VWAP/15m-trend/swing-high breakout"
-                                )
-                            if trend_block_reason:
-                                proceed = False
-                            trace["entry_approved"] = proceed
-                            trace["entry_approved_reason"] = (
-                                f"{final_action} 강한 신호 — 눌림목 대기 생략"
-                                if proceed else (trend_block_reason or trend_plan.get("block_reason") or "강한 신호 차단")
-                            )
-                            if not proceed:
-                                warnings.append(trace["entry_approved_reason"])
-                            state["last_trend_switch_plan"] = {
-                                **trend_plan,
-                                "dominant_direction": "HYNIX" if desired_symbol == HYNIX_SYMBOL else "INVERSE",
-                                "desired_symbol": desired_symbol,
-                                "pullback_wait_remaining_seconds": 0,
-                                "primary_trend": strong_ptrend,
-                                **({"block_reason": trend_block_reason} if trend_block_reason else {}),
-                            }
-                        else:
-                            try:
-                                # 요구사항(2026-07-16, 남은 통합 작업1) — 여기서도 재분류하지 않고
-                                # 이번 사이클의 공용 adaptive_regime 결과에서만 파생시킨다.
-                                primary_trend_result = adaptive_regime_to_primary_trend_result(state.get("adaptive_regime"))
-                                state["last_primary_trend"] = primary_trend_result
-                                gate = evaluate_pullback_gate(
-                                    state, desired_symbol, final_action, now, forced_info, df_1min, mode,
-                                    primary_trend_result=primary_trend_result,
-                                )
-                                proceed = gate["proceed"]
-                                trace["entry_approved"] = proceed
-                                trace["entry_approved_reason"] = gate["message"]
-                                if not proceed:
-                                    warnings.append(gate["message"])
-                            except Exception as exc:
-                                logger.error("[HynixSwitchEngine] 눌림목 게이트 판단 실패, 즉시 진입으로 폴백: %s", exc)
-                                proceed = True
-                                trace["entry_approved"] = True
-                                trace["entry_approved_reason"] = f"눌림목 게이트 오류로 즉시 진입 폴백: {exc}"
 
                     # 요구사항(2026-07-16) — 이번 사이클에 새로 계산된 live 상태(위
                     # snapshot_*와 명확히 구분됨). same_direction_streak(연속 확인
