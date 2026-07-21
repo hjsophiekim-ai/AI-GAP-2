@@ -364,6 +364,21 @@ def compute_etf_breakouts(df_1min: pd.DataFrame, current_price: Optional[float],
     }
 
 
+def is_swing_structure_broken_against(
+    df_1min: Optional[pd.DataFrame], current_price: Optional[float], direction: str,
+) -> bool:
+    """True when price breaks recent swing structure against the held direction."""
+    direction = str(direction or "").upper()
+    if df_1min is None or getattr(df_1min, "empty", True) or current_price is None or direction not in ("UP", "DOWN"):
+        return False
+    breakouts = compute_etf_breakouts(df_1min, current_price, direction)
+    if direction == "UP" and breakouts.get("recent_low"):
+        return float(current_price) < float(breakouts["recent_low"])
+    if direction == "DOWN" and breakouts.get("recent_high"):
+        return float(current_price) > float(breakouts["recent_high"])
+    return False
+
+
 def confirm_etf_entry(
     *, symbol: str, underlying_direction: str, current_price: Optional[float],
     signal_reference_price: Optional[float] = None, mode: Optional[str] = None,

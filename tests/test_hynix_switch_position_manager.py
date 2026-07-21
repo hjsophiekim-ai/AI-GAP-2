@@ -35,15 +35,33 @@ from app.utils.time_utils import kst_now
 
 
 class DummyBroker:
-    def __init__(self, buy_success: bool = True, sell_success: bool = True, buyable_cash: float = 10_000_000):
+    def __init__(
+        self,
+        buy_success: bool = True,
+        sell_success: bool = True,
+        buyable_cash: float = 10_000_000,
+        confirm_buy_positions: bool = True,
+    ):
         self.buy_success = buy_success
         self.sell_success = sell_success
         self.buyable_cash = buyable_cash
+        self.confirm_buy_positions = confirm_buy_positions
+        self.holdings: dict[str, dict] = {}
         self.buy_calls: list = []
         self.sell_calls: list = []
 
     def buy(self, symbol, name, quantity, price, order_type="limit"):
         self.buy_calls.append((symbol, quantity, price))
+        if self.buy_success and self.confirm_buy_positions:
+            existing = self.holdings.get(symbol, {"symbol": symbol, "name": name, "quantity": 0, "avg_price": price})
+            before_qty = int(existing.get("quantity") or 0)
+            bought_qty = int(quantity or 0)
+            after_qty = before_qty + bought_qty
+            avg_price = (
+                ((float(existing.get("avg_price") or price) * before_qty) + (float(price) * bought_qty)) / after_qty
+                if after_qty > 0 else price
+            )
+            self.holdings[symbol] = {"symbol": symbol, "name": name, "quantity": after_qty, "avg_price": avg_price}
         return OrderResult(
             success=self.buy_success, mode="dry_run", account_type="dry_run", symbol=symbol, name=name,
             side="buy", quantity=quantity, price=price, order_type=order_type,
@@ -52,6 +70,12 @@ class DummyBroker:
 
     def sell(self, symbol, name, quantity, price, order_type="limit"):
         self.sell_calls.append((symbol, quantity, price))
+        if self.sell_success and symbol in self.holdings:
+            remaining = max(0, int(self.holdings[symbol].get("quantity") or 0) - int(quantity or 0))
+            if remaining > 0:
+                self.holdings[symbol]["quantity"] = remaining
+            else:
+                self.holdings.pop(symbol, None)
         return OrderResult(
             success=self.sell_success, mode="dry_run", account_type="dry_run", symbol=symbol, name=name,
             side="sell", quantity=quantity, price=price, order_type=order_type,
@@ -59,7 +83,7 @@ class DummyBroker:
         )
 
     def get_positions(self):
-        return []
+        return list(self.holdings.values())
 
     def get_balance(self):
         return self.buyable_cash
@@ -144,6 +168,23 @@ def test_hynix_buy_signal_trades_long_symbol_not_signal_symbol():
     assert state["position"]["symbol"] == LONG_SYMBOL
 
 
+def test_weighted_controller_mode_blocks_legacy_buy_sources():
+    state = default_state()
+    state["weighted_entry_controller_only"] = True
+    broker = DummyBroker()
+    now = datetime(2026, 7, 21, 10, 0)
+
+    result = run_switch_or_entry(
+        state, broker, "HYNIX_BUY", 101_000, 5_000, now=now,
+        signal_source="ENHANCED_REGIME_SWITCH", entry_type="EARLY_PROBE_INITIAL",
+    )
+
+    assert result["acted"] is False
+    assert result["failure_code"] == "LEGACY_ENTRY_SOURCE_BLOCKED"
+    assert broker.buy_calls == []
+    assert state["position"]["symbol"] is None
+
+
 def test_target_weight_increase_failure_reports_real_reason_not_generic_message():
     """요구사항(2026-07-16 사용자 리포트) — 이미 목표 종목을 보유 중인데 목표비중
     증액(target-weight increase) 매수가 실제로 실패하면, 그 실패 사유를 그대로
@@ -179,6 +220,7 @@ def test_target_weight_increase_updates_entry_price_not_just_avg_price():
         "desired_symbol": LONG_SYMBOL, "proceed": True, "position_pct": 0.50, "entry_type": "CONFIRMED",
     }
     broker = DummyBroker(buy_success=True, buyable_cash=10_000_000.0)
+    broker.holdings[LONG_SYMBOL] = {"symbol": LONG_SYMBOL, "name": LONG_NAME, "quantity": 10, "avg_price": 100_000.0}
     now = datetime(2026, 7, 16, 10, 0)
 
     # 현재가(110,000)가 최초 진입가(100,000)보다 높은 시점에 추가매수(top-up)한다 —
@@ -518,6 +560,26 @@ def test_buy_success_uses_broker_confirmed_filled_quantity():
     assert result["actual_quantity"] == 114
 
 
+def test_buy_success_without_visible_broker_fill_skips_ledger():
+    from app.trading.hynix_switch_position_manager import _buy_new
+    from app.services.hynix_execution_ledger import load_ledger
+
+    broker = DummyBroker(buy_success=True, buyable_cash=10_000_000.0, confirm_buy_positions=False)
+    orders = []
+
+    result = _buy_new(
+        broker, LONG_SYMBOL, current_price=100_000.0, cash_amount=1_000_000.0,
+        reason="buy accepted only", orders=orders, mode="mock",
+    )
+
+    assert len(broker.buy_calls) == 1
+    assert result["success"] is True
+    assert result["filled_quantity"] == 0
+    assert result["fill_confirmed"] is False
+    assert orders[-1]["ledger_skipped"] is True
+    assert load_ledger().empty
+
+
 def test_sell_sync_failure_does_not_delete_position_and_blocks_new_orders():
     state = _holding_state(INVERSE_SYMBOL, quantity=114, entry_price=5_000.0)
     broker = PositionSyncBroker([], fail_positions=True)
@@ -540,6 +602,61 @@ def test_sell_sync_failure_does_not_delete_position_and_blocks_new_orders():
     assert state["position"]["symbol"] == INVERSE_SYMBOL
     assert state["position"]["quantity"] == 114
     assert broker.sell_calls == []
+
+
+def test_broker_flat_ledger_positive_reports_mismatch_without_fake_backfill():
+    from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
+    from app.services.hynix_execution_ledger import compute_ledger_net_quantity, record_confirmed_fill
+
+    state = default_state()
+    state["mode"] = "real"
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "name": LONG_NAME, "quantity": 129,
+        "avg_price": 18_500.0, "entry_price": 18_500.0,
+    }
+    today = kst_now()
+    record_confirmed_fill(
+        action="BUY", symbol=LONG_SYMBOL, executed_qty=129, executed_price=18_500.0,
+        mode="real", before_qty=0, after_qty=129, order_id="ORD-1", now=today,
+    )
+
+    class _FlatPositionManager:
+        last_sync_ok = True
+        mode = "real"
+        broker = object()
+        current_position = {"symbol": None, "quantity": 0, "avg_price": None, "conflict": False}
+
+    apply_position_manager_to_state(state, _FlatPositionManager())
+
+    result = state["ledger_reconciliation"]["results"][LONG_SYMBOL]
+    assert result["mismatch_code"] == "LEDGER_BROKER_MISMATCH"
+    assert result["backfilled"] == []
+    assert compute_ledger_net_quantity(LONG_SYMBOL, "real", today.strftime("%Y%m%d")) == 129
+    assert state["position"]["symbol"] is None
+
+
+def test_broker_flat_clears_hard_stop_snapshot_diagnostics():
+    from app.trading.hynix_switch_position_manager import apply_position_manager_to_state
+
+    state = default_state()
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "name": LONG_NAME, "quantity": 10,
+        "avg_price": 100_000.0, "entry_price": 100_000.0,
+    }
+    state["stop_loss_snapshot"] = {"hard_stop_triggered": True, "calculated_at": "2026-07-20T11:00:00"}
+    state["last_stop_loss_signature"] = "old-stop"
+
+    class _FlatPositionManager:
+        last_sync_ok = True
+        mode = "mock"
+        broker = object()
+        current_position = {"symbol": None, "quantity": 0, "avg_price": None, "conflict": False}
+
+    apply_position_manager_to_state(state, _FlatPositionManager())
+
+    assert state["position"]["symbol"] is None
+    assert state["stop_loss_snapshot"] is None
+    assert state["last_stop_loss_signature"] is None
 
 
 def test_recent_flat_sync_allows_transient_position_sync_failure():

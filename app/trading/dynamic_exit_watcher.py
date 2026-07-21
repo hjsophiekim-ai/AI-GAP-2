@@ -483,31 +483,28 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         stop_loss_source = "HARD_STOP_SNAPSHOT"
         state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
 
-    # ── Early Trend Detector 조기진입 철수(요구사항3, 2026-07-20 최종) ──────────
-    # EARLY_PROBE로 태그된 포지션에는 confirmed regime 기준 손절과 별개로 더
-    # 타이트한 조건을 추가 적용한다(일반 장세: 고정 -0.4% 손절/신호소멸/반대
-    # 변화점/30초 미확인, VOLATILE_RANGE: TP1 +0.8%(50%+ 부분익절)/TP2
-    # +1.5~2.0%(전량)/SL -0.5%/신호약화 시 손익무관 즉시전량청산/최대보유
-    # 5~8분). 1초 주기로 도는 이 워처가 담당해야 반응이 빠르다(5초 Early
-    # Detector 피드는 신규진입/단계진행/확대만 담당).
-    if position.get("entry_type") == "EARLY_PROBE" and snapshot is not None:
+    # ── Early Trend Detector / Weighted RANGE 조기진입 철수 ─────────────────────
+    # EARLY_PROBE 또는 WEIGHTED_RANGE_ENTRY 포지션에는 confirmed regime 기준
+    # 손절과 별개로 타이트한 조건을 추가 적용한다. 5초 단독 반대신호로는 전량
+    # 청산하지 않고, 5초·10초 동시 반대 + swing 구조 이탈 시에만 전량 청산한다.
+    _probe_entry_types = ("EARLY_PROBE", "WEIGHTED_RANGE_ENTRY", "WEIGHTED_ORDER_CONTROLLER_SCALE_IN")
+    if position.get("entry_type") in _probe_entry_types and snapshot is not None:
         from app.trading import early_trend_detector as etd
+        from app.trading.etf_entry_confirmation import is_swing_structure_broken_against
         from app.trading.hynix_fast_trend import compute_fast_trend_signal
 
         etd_state = dict(state.get("early_trend_detector") or {})
+        continuation = state.get("trend_continuation_entry") or {}
         probe = dict(etd_state.get("probe") or etd.default_probe_state())
         probe_direction = probe.get("direction")
+        if position.get("entry_type") != "EARLY_PROBE":
+            probe_direction = continuation.get("direction") or probe_direction
 
         fast_signal = compute_fast_trend_signal(df_1min, now=now)
         early_signal = etd.compute_early_signal(fast_signal)
         signal_still_valid = early_signal.get("direction") == probe_direction and early_signal.get("score", 0) >= 50.0
         opposite_change_point = etd.is_opposite_change_point(probe_direction, early_signal)
 
-        # 요구사항1/4 — 5초 주기 실시간 기울기(app.trading.early_trend_live_feed)가
-        # 이미 반대로 확정됐으면, 아직 1분봉 vote가 뒤집히지 않았어도 즉시 반대
-        # change-point로 취급한다(10:27류 반전을 30~90초 이상 뒤늦게 잡는 문제 완화).
-        # INVERSE_SYMBOL은 기초자산과 반대로 움직이므로, probe_direction(기초자산
-        # 방향 기준)과 비교하려면 "기초자산 방향" 기준으로 정규화해야 한다.
         live_slopes = etd_state.get("live_slopes") or {}
         live_raw_direction = (live_slopes.get(symbol) or {}).get("direction")
         live_direction = (
@@ -524,6 +521,7 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             or (_adaptive_confirmed_regime == "STRONG_DOWN" and probe_direction == "UP")
             or (_adaptive_confirmed_regime == "PANIC" and probe_direction == "UP")
         )
+        structure_reversal_confirmed = is_swing_structure_broken_against(df_1min, current_price, probe_direction)
         if not opposite_change_point:
             opposite_change_point = etd.is_opposite_live_slope_reversal(probe_direction, live_direction)
         opposite_tracker = dict(etd_state.get("opposite_live_tracker") or {})
@@ -552,21 +550,44 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             probe["last_reconfirmed_at"] = now.isoformat()
             seconds_since_reconfirm = 0.0
 
-        exit_plan = etd.should_exit_probe(
-            net_return_pct=snapshot["net_return_pct"], seconds_since_last_reconfirmation=seconds_since_reconfirm,
-            signal_still_valid=signal_still_valid, opposite_change_point=opposite_change_point,
-            confirmed_regime=_adaptive_confirmed_regime, held_minutes=snapshot.get("held_minutes"),
-            tp1_taken=bool(position.get("early_probe_tp1_taken")),
-            tp2_taken=bool(position.get("early_probe_tp2_taken")),
-            opposite_live_seconds=opposite_live_seconds,
-            actionable_direction=actionable_direction,
-            position_direction=probe_direction,
-            held_etf_reversal_windows=held_reversal_windows,
-            opposite_etf_5s10s_confirmed=opposite_etf_5s10s_confirmed,
-            regime_reversal_confirmed=regime_reversal_confirmed,
-            episode_invalidated=bool(etd_state.get("signal_expired") or etd_state.get("episode_invalidated")),
-            peak_net_return_pct=position.get("peak_net_return_pct"),
-        )
+        _weighted_probe = position.get("entry_type") in ("WEIGHTED_RANGE_ENTRY", "WEIGHTED_ORDER_CONTROLLER_SCALE_IN")
+        _macd_conf = continuation.get("macd_williams_confirmation") or {}
+        try:
+            _probe_elapsed = (
+                now - datetime.fromisoformat(continuation.get("first_detected_at") or now.isoformat())
+            ).total_seconds()
+        except Exception:
+            _probe_elapsed = None
+        _probe_liquidate = False
+        _probe_liquidate_reason = None
+        if _weighted_probe and continuation.get("entry_path") == "REVERSAL" and not continuation.get("scale_in_done"):
+            if structure_reversal_confirmed:
+                _probe_liquidate = True
+                _probe_liquidate_reason = "WEIGHTED_RANGE structure invalidated — probe liquidation"
+            elif _probe_elapsed is not None and _probe_elapsed > 20.0 and not _macd_conf.get("confirmed"):
+                _probe_liquidate = True
+                _probe_liquidate_reason = "MACD/Williams confirmation failed within 20s — probe liquidation"
+
+        exit_plan = {"action": "HOLD", "ratio": 0.0, "reason": None}
+        if _probe_liquidate:
+            exit_plan = {"action": "SELL_ALL", "ratio": 1.0, "reason": _probe_liquidate_reason}
+        else:
+            exit_plan = etd.should_exit_probe(
+                net_return_pct=snapshot["net_return_pct"], seconds_since_last_reconfirmation=seconds_since_reconfirm,
+                signal_still_valid=signal_still_valid, opposite_change_point=opposite_change_point,
+                confirmed_regime=_adaptive_confirmed_regime, held_minutes=snapshot.get("held_minutes"),
+                tp1_taken=bool(position.get("early_probe_tp1_taken")),
+                tp2_taken=bool(position.get("early_probe_tp2_taken")),
+                opposite_live_seconds=opposite_live_seconds,
+                actionable_direction=actionable_direction,
+                position_direction=probe_direction,
+                held_etf_reversal_windows=held_reversal_windows,
+                opposite_etf_5s10s_confirmed=opposite_etf_5s10s_confirmed,
+                structure_reversal_confirmed=structure_reversal_confirmed,
+                regime_reversal_confirmed=regime_reversal_confirmed,
+                episode_invalidated=bool(etd_state.get("signal_expired") or etd_state.get("episode_invalidated")),
+                peak_net_return_pct=position.get("peak_net_return_pct"),
+            )
         etd_state["probe"] = probe
         etd_state["exit_signal"] = early_signal
         etd_state["last_exit_plan"] = exit_plan
@@ -579,19 +600,20 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             )
             state["early_trend_detector"] = etd_state
 
+        _exit_label = "WEIGHTED_RANGE" if _weighted_probe else "EARLY_PROBE"
         if exit_plan["action"] == "SELL_PARTIAL":
             if "TP2" in str(exit_plan.get("reason") or ""):
                 position["early_probe_tp2_taken"] = True
             else:
                 position["early_probe_tp1_taken"] = True
             decision["action"], decision["ratio"] = "SELL_PARTIAL", exit_plan["ratio"]
-            decision["reason"] = f"EARLY_PROBE 부분익절 — {exit_plan['reason']}"
-            stop_loss_source = "EARLY_PROBE_EXIT"
+            decision["reason"] = f"{_exit_label} 부분익절 — {exit_plan['reason']}"
+            stop_loss_source = f"{_exit_label}_EXIT"
             state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
         elif exit_plan["action"] == "SELL_ALL":
             decision["action"], decision["ratio"] = "SELL_ALL", 1.0
-            decision["reason"] = f"EARLY_PROBE 철수 — {exit_plan['reason']}"
-            stop_loss_source = "EARLY_PROBE_EXIT"
+            decision["reason"] = f"{_exit_label} 철수 — {exit_plan['reason']}"
+            stop_loss_source = f"{_exit_label}_EXIT"
             state["dynamic_exit_last_decision"] = {k: v for k, v in decision.items() if k != "snapshot"}
             was_fake_signal_loss = (snapshot["net_return_pct"] or 0.0) <= 0.0
             etd_state["frequency"] = etd.register_probe_round_trip_closed(

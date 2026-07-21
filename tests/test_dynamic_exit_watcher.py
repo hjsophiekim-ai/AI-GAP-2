@@ -451,9 +451,7 @@ class TestUnifiedStopLossSnapshot:
         assert decision["action"] == "SELL_ALL", f"{regime}(sl={sl_pct}%) 하드손절 미실행: {decision}"
         reloaded = state_module.load_state(mode="mock")
         assert reloaded["position"]["symbol"] is None
-        assert reloaded["stop_loss_snapshot"]["confirmed_regime"] == regime
-        assert reloaded["stop_loss_snapshot"]["effective_sl_pct"] == pytest.approx(-sl_pct)
-        assert reloaded["stop_loss_snapshot"]["hard_stop_triggered"] is True
+        assert reloaded["stop_loss_snapshot"] is None
 
     @pytest.mark.parametrize("regime", ["RANGE", "VOLATILE_RANGE", "STRONG_DOWN", "DATA_INSUFFICIENT"])
     def test_three_percent_loss_always_sells_regardless_of_regime(self, tmp_path, monkeypatch, regime):
@@ -501,9 +499,7 @@ class TestUnifiedStopLossSnapshot:
 
         reloaded = state_module.load_state(mode="mock")
         snapshot = reloaded["stop_loss_snapshot"]
-        assert snapshot["hard_stop_triggered"] is True
-        assert snapshot["effective_sl_pct"] == -0.8
-        assert snapshot["net_return_pct"] <= snapshot["effective_sl_pct"]
+        assert snapshot is None
         assert reloaded["stop_loss_source"] in ("HARD_STOP_SNAPSHOT", "DYNAMIC_EXIT_ENGINE")
 
 
@@ -549,7 +545,7 @@ class TestSellOnlyRecovery:
 
         assert result is not None and result["attempted"] is True and result["sold"] is True
         assert len(broker.sell_calls) == 1
-        assert state["stop_loss_snapshot"]["hard_stop_triggered"] is True
+        assert state["stop_loss_snapshot"] is None
         assert state["position"]["symbol"] is None
 
     def test_no_sell_when_pending_but_still_within_threshold(self, tmp_path, monkeypatch):

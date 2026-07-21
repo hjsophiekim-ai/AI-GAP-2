@@ -332,6 +332,8 @@ def _sync_flat_fields(state: dict) -> None:
     state["quantity"] = qty if symbol else 0
     state["entry_time"] = pos.get("entry_time") if symbol else None
     state["realized_pnl"] = state.get("realized_pnl_today_krw", 0.0)
+    if not symbol:
+        _clear_flat_position_diagnostics(state)
 
     # "오늘 마지막 주문"(날짜 바뀌면 초기화)과 별개로 "전체 마지막 주문"(영구 보존)을
     # 항상 최신으로 미러링한다 — 오늘 값이 있을 때만 갱신하고, 없다고 지우지 않는다.
@@ -368,6 +370,23 @@ def _dict_state_date(value: dict, *timestamp_keys: str) -> Optional[str]:
         if parsed:
             return parsed
     return None
+
+
+def _clear_flat_position_diagnostics(state: dict) -> None:
+    state["stop_loss_snapshot"] = None
+    state["last_stop_loss_signature"] = None
+    state["pending_manual_stop_loss_alert"] = None
+
+
+def _sanitize_position_snapshot_date(state: dict, today: str) -> None:
+    snapshot_date = _dict_state_date(
+        state.get("stop_loss_snapshot"),
+        "calculated_at",
+        "timestamp",
+        "entry_time",
+    )
+    if snapshot_date and snapshot_date != today:
+        _clear_flat_position_diagnostics(state)
 
 
 def _clear_intraday_decision_state(state: dict) -> None:
@@ -535,6 +554,7 @@ def load_state(mode: Optional[str] = None) -> dict:
             state["fast_trend_watcher"] = None
             state["trend_switch_unconfirmed_order"] = None
             state["pending_manual_stop_loss_alert"] = None
+            _clear_flat_position_diagnostics(state)
             if mode == "mock":
                 state["cash"] = state.get("mock_budget_krw", _DEFAULT_MOCK_BUDGET_KRW)
 
@@ -542,6 +562,7 @@ def load_state(mode: Optional[str] = None) -> dict:
         # (테스트/E2E 스크립트가 실제 state를 직접 건드렸거나 다른 버그로 잘못 세팅된
         # 경우) — 날짜 롤오버 여부와 무관하게 매 로드마다 확인해 자동 복구한다.
         _sanitize_intraday_state_dates(state, today)
+        _sanitize_position_snapshot_date(state, today)
         _sanitize_position_sync_flags(state)
         _normalize_trading_mode_execution_profile(state)
 

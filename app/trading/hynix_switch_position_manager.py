@@ -66,6 +66,9 @@ ORDER_FAILURE_COOLDOWN_ACTIVE = "COOLDOWN_ACTIVE"
 ORDER_FAILURE_ORDER_IN_FLIGHT = "ORDER_IN_FLIGHT"
 ORDER_FAILURE_BROKER_REJECTED = "BROKER_REJECTED"
 ORDER_FAILURE_EXECUTION_EXCEPTION = "EXECUTION_EXCEPTION"
+ORDER_FAILURE_MIN_ORDER_NOTIONAL = "MIN_ORDER_NOTIONAL"
+MIN_ORDER_NOTIONAL_KRW = 100_000.0
+WEIGHTED_ORDER_CONTROLLER_SOURCE = "WEIGHTED_ORDER_CONTROLLER"
 _POSITION_SYNC_RETRY_ATTEMPTS = 3
 _POSITION_SYNC_RETRY_DELAY_SECONDS = 2
 _POSITION_STATE_LOCK = threading.RLock()
@@ -396,6 +399,9 @@ def _record_order(
                     "[SwitchPositionManager] LEDGER_WRITE_FAILED symbol=%s action=%s qty=%s: %s",
                     symbol, action, executed_qty, outcome["error"],
                 )
+        elif action == "BUY" and executed_qty <= 0:
+            orders[-1]["ledger_skipped"] = True
+            orders[-1]["ledger_skip_reason"] = "BUY fill not broker-confirmed"
         else:
             # 실패한 시도/미확정 체결(executed_qty=0)/E2E 테스트 주문은 dedup 대상이
             # 아니므로(같은 초에 반복 재시도돼도 각각 남아야 진단에 유용) 기존
@@ -486,6 +492,15 @@ def _confirm_remaining_quantity_from_broker(
             if position_manager is not None:
                 try:
                     position_manager.sync(force=True)
+                    pm_position = position_manager.current_position or {}
+                    pm_qty = _position_qty(pm_position, symbol)
+                    if pm_qty > 0:
+                        # Treat a still-visible position-manager balance as real until
+                        # it disappears. This prevents an opposite buy after an accepted
+                        # sell when the broker/ledger state has not fully converged.
+                        qty = max(qty, pm_qty)
+                        matched = pm_position
+                        avg_price = _position_avg_price(pm_position) or avg_price
                 except Exception:
                     pass
             if (
@@ -763,6 +778,12 @@ def _buy_new(
             "success": False, "message": "buy amount insufficient for 1 share",
             "failure_code": ORDER_FAILURE_ORDER_QTY_ZERO, "requested_qty": quantity, **_diag_base,
         }
+    if quantity * current_price < MIN_ORDER_NOTIONAL_KRW:
+        _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, "order notional below minimum")
+        return {
+            "success": False, "message": "order notional below minimum",
+            "failure_code": ORDER_FAILURE_MIN_ORDER_NOTIONAL, "requested_qty": quantity, **_diag_base,
+        }
     _assert_not_signal_symbol(symbol, "BUY")
 
     # 요구사항(2026-07-21) — 매도(_execute_sell)만 공용 OrderCoordinator를 거치고
@@ -813,14 +834,14 @@ def _buy_new(
             # 재조회해 실제 체결량을 확정한 뒤에만 원장에 넘긴다. position_manager가 없는
             # 호출부(간단한 단위테스트 등, 체결 재확인 자체가 불가능)만 과거처럼 접수
             # 성공을 곧 체결로 간주한다 — 실거래 경로는 이 분기를 타지 않는다.
-            if order_dict.get("success") and position_manager is not None:
+            if order_dict.get("success") and hasattr(broker, "get_positions"):
                 confirmed = _confirm_remaining_quantity_from_broker(
                     broker, symbol, position_manager=position_manager, retry_while_qty_equals=before_qty,
                 )
                 if confirmed.get("ok"):
                     confirmed_qty = max(0, int(confirmed.get("quantity") or 0) - int(before_qty or 0))
             elif order_dict.get("success"):
-                confirmed_qty = quantity
+                confirmed_qty = None
             _record_order(
                 orders, order, "BUY", symbol, quantity, current_price, reason,
                 before_qty=before_qty, mode=mode, signal_source=signal_source, broker=broker,
@@ -842,14 +863,14 @@ def _buy_new(
     result = order_dict
     result["idempotency_key"] = coordinated.idempotency_key
     result["bought_quantity"] = confirmed_qty if confirmed_qty is not None else 0
-    result["filled_quantity"] = confirmed_qty if position_manager is not None else None
+    result["filled_quantity"] = confirmed_qty
     result["actual_quantity"] = int(confirmed.get("quantity") or 0) if confirmed and confirmed.get("ok") else None
     result["fill_confirmed"] = None
     if result.get("success"):
-        if position_manager is None:
+        if confirmed is None:
             result["fill_confirmed"] = None
             result["position_sync_status"] = None
-        elif confirmed is None or not confirmed.get("ok"):
+        elif not confirmed.get("ok"):
             result["fill_confirmed"] = False
             result["position_sync_status"] = POSITION_SYNC_PENDING
             result["message"] = (result.get("message") or "order accepted") + " / broker balance confirmation failed"
@@ -887,6 +908,9 @@ def _clear_stale_buy_state_when_flat(state: dict) -> None:
         state["last_order_cycle_bucket"] = None
     state["last_big_trend_result"] = None
     state["big_trend_state"] = {}
+    state["stop_loss_snapshot"] = None
+    state["last_stop_loss_signature"] = None
+    state["pending_manual_stop_loss_alert"] = None
 
 
 def _apply_buy_result_to_state_position(
@@ -948,7 +972,7 @@ def _reconcile_ledger_with_kis(state: dict, position_manager, pos_info: dict, pr
     backfill한다(요구사항 2026-07-16). UI 표시를 위해 결과를 state["ledger_reconciliation"]
     에 남긴다 — 이 함수 자체는 예외를 밖으로 던지지 않는다(포지션 동기화 자체를
     막으면 안 됨)."""
-    from app.services.hynix_execution_ledger import reconcile_symbol_with_kis
+    from app.services.hynix_execution_ledger import compute_ledger_net_quantity, reconcile_symbol_with_kis
 
     mode = getattr(position_manager, "mode", None) or state.get("mode", "mock")
     broker = getattr(position_manager, "broker", None)
@@ -961,17 +985,32 @@ def _reconcile_ledger_with_kis(state: dict, position_manager, pos_info: dict, pr
         if avg_price is None and previous_position.get("symbol") == symbol:
             avg_price = previous_position.get("avg_price") or previous_position.get("entry_price")
         try:
-            result = reconcile_symbol_with_kis(
-                symbol, mode, broker_qty=int(broker_qty or 0), avg_price=avg_price, broker=broker, now=now,
-            )
+            broker_qty_int = int(broker_qty or 0)
+            ledger_qty = compute_ledger_net_quantity(symbol, mode, now.strftime("%Y%m%d"))
+            if broker_qty_int <= 0 and ledger_qty > 0:
+                result = {
+                    "symbol": symbol,
+                    "kis_quantity": broker_qty_int,
+                    "ledger_quantity": int(ledger_qty),
+                    "mismatch": True,
+                    "mismatch_code": "LEDGER_BROKER_MISMATCH",
+                    "backfilled": [],
+                    "error": None,
+                    "requires_fill_query": True,
+                }
+            else:
+                result = reconcile_symbol_with_kis(
+                    symbol, mode, broker_qty=broker_qty_int, avg_price=avg_price, broker=broker, now=now,
+                )
         except Exception as exc:
             logger.error("[SwitchPositionManager] 원장-KIS 재조정 실패(%s): %s", symbol, exc)
             result = {"symbol": symbol, "error": str(exc), "mismatch": None, "backfilled": []}
         reconciliations[symbol] = result
         if result.get("mismatch"):
+            code = result.get("mismatch_code") or "LEDGER_POSITION_MISMATCH"
             logger.warning(
-                "[SwitchPositionManager] LEDGER_POSITION_MISMATCH symbol=%s kis_qty=%s ledger_qty=%s backfilled=%d건",
-                symbol, result.get("kis_quantity"), result.get("ledger_quantity"), len(result.get("backfilled") or []),
+                "[SwitchPositionManager] %s symbol=%s kis_qty=%s ledger_qty=%s backfilled=%d",
+                code, symbol, result.get("kis_quantity"), result.get("ledger_quantity"), len(result.get("backfilled") or []),
             )
     state["ledger_reconciliation"] = {"checked_at": now.isoformat(timespec="seconds"), "results": reconciliations}
 
@@ -1393,6 +1432,20 @@ def run_switch_or_entry(
     if desired_symbol is None:
         return {"acted": False, "orders": orders, "message": "HOLD - no new entry/switch", "stage": "entry"}
 
+    weighted_controller_entry = (
+        entry_type in ("WEIGHTED_RANGE_ENTRY", "WEIGHTED_ORDER_CONTROLLER", "WEIGHTED_ORDER_CONTROLLER_SCALE_IN")
+        or signal_source in ("WEIGHTED_RANGE_ENTRY", WEIGHTED_ORDER_CONTROLLER_SOURCE)
+    )
+    if state.get("weighted_entry_controller_only") and not weighted_controller_entry:
+        return {
+            "acted": False,
+            "orders": orders,
+            "message": "weighted order controller owns new entries; legacy source blocked",
+            "stage": "entry",
+            "failure_code": "LEGACY_ENTRY_SOURCE_BLOCKED",
+            "requested_symbol": desired_symbol,
+        }
+
     bucket = _cycle_bucket(now)
     signature = f"{final_action}:{desired_symbol}"
     if state.get("last_order_cycle_bucket") == bucket and state.get("last_order_signature") == signature:
@@ -1427,7 +1480,9 @@ def run_switch_or_entry(
         # trend_plan에서 채워진 경우도 값이 동일해 기존 동작과 차이가 없다.
         # "EARLY_PROBE"는 문자열로만 참조한다(hynix_switch_position_manager.py가
         # early_trend_detector.py를 임포트하지 않도록 결합도를 낮춘다).
-        if target_position_pct and current_price and entry_type in ("NORMAL", "CONFIRMED", "EARLY_PROBE"):
+        if target_position_pct and current_price and entry_type in (
+            "NORMAL", "CONFIRMED", "EARLY_PROBE", "WEIGHTED_ORDER_CONTROLLER_SCALE_IN"
+        ):
             full_cash, cash_source = _query_buyable_cash(
                 broker, symbol=desired_symbol, current_price=current_price, state=state,
             )
@@ -1612,6 +1667,17 @@ def run_switch_or_entry(
     # Fast Watcher)가 이 run_switch_or_entry() 하나를 거치므로, 여기 한 곳에서만
     # 확인해도 전체에 동일 적용된다.
     try:
+        _weighted_controller_entry = (
+            entry_type in ("WEIGHTED_RANGE_ENTRY", "WEIGHTED_ORDER_CONTROLLER", "WEIGHTED_ORDER_CONTROLLER_SCALE_IN")
+            or signal_source in ("WEIGHTED_RANGE_ENTRY", WEIGHTED_ORDER_CONTROLLER_SOURCE)
+        )
+        if _weighted_controller_entry:
+            state["last_etf_entry_confirmation"] = {
+                "approved": True,
+                "state": "WEIGHTED_CONTROLLER_APPROVED",
+                "reason": "ETF/live/profitability gates already evaluated by evaluate_range_weighted_entry",
+            }
+            raise StopIteration
         _etf_direction = "DOWN" if desired_symbol == INVERSE_SYMBOL else "UP"
         _other_symbol = LONG_SYMBOL if desired_symbol == INVERSE_SYMBOL else INVERSE_SYMBOL
 
@@ -1679,6 +1745,8 @@ def run_switch_or_entry(
                     "stage": "entry", "failure_code": _etf_confirmation["block_code"], "requested_symbol": desired_symbol,
                     "etf_confirmation": _etf_confirmation,
                 }
+    except StopIteration:
+        pass
     except Exception as exc:
         logger.error("[SwitchPositionManager] ETF 진입 확인 실패(안전을 위해 이번 진입은 보류): %s", exc)
         return {

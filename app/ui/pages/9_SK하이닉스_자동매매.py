@@ -930,8 +930,8 @@ if switch_state.get("mode") == "mock":
     for _name, _on, _impact, _scope in _fx_rows:
         _fx_table += f"| {_name} | {'ON' if _on else 'OFF'} | {_impact} | {_scope} |\n"
     st.markdown(_fx_table)
-    _configured_entry_engine = "EARLY_TREND_DETECTOR" if _fx_early_on else "ENHANCED_REGIME_SWITCH"
-    _actual_entry_engine = switch_state.get("actual_entry_engine") or ("EARLY_TREND_DETECTOR_LIVE" if (_fx_early_on and _fx_early_live) else ("SHADOW_ONLY" if _fx_early_on else "ENHANCED_REGIME_SWITCH"))
+    _configured_entry_engine = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    _actual_entry_engine = switch_state.get("actual_entry_engine") or "WEIGHTED_ORDER_CONTROLLER_LIVE"
     _entry_orchestrator = switch_state.get("entry_orchestrator") or {}
     _actual_exit_engine = "BIG_TREND_HOLDING_AI" if _fx_bigtrend_on else "DYNAMIC_EXIT_AI"
     st.caption(
@@ -1003,9 +1003,10 @@ if switch_state.get("mode") == "mock":
             _ed6.metric("Expected Move", snapshot_field(_decision_snapshot, "expected_move_pct", "-"))
             _ed7.metric("Round-trip Cost", snapshot_field(_decision_snapshot, "cost_pct", "-"))
             _ed8.metric("Reward/Risk", snapshot_field(_decision_snapshot, "reward_risk", "-"))
-            _ed9, _ed10 = st.columns(2)
+            _ed9, _ed10, _ed11 = st.columns(3)
             _ed9.metric("Gross/Cost", snapshot_field(_decision_snapshot, "gross_cost_ratio", "-"))
             _ed10.metric("ETF 5/10/20/30", str(snapshot_field(_decision_snapshot, "etf_window_directions", {}) or {}))
+            _ed11.metric("Structural Label", snapshot_field(_decision_snapshot, "structural_signal_label", "-"))
             st.caption(f"secondary_reasons={snapshot_field(_decision_snapshot, 'secondary_reasons', []) or []}")
 
     _last_trend_plan = switch_state.get("last_trend_switch_plan") or {}

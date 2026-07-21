@@ -68,6 +68,27 @@ class TestTradeCounters:
         assert counters["live_order_count"] == 0
         assert counters["test_order_count"] == 2
 
+    def test_zero_qty_and_reconcile_backfill_excluded_from_trade_counters(self):
+        ledger.record_execution(
+            action="BUY", symbol="0197X0", requested_qty=1, executed_qty=0,
+            requested_price=9000.0, executed_price=None, success=True, mode="mock",
+            before_qty=0, after_qty=0, now=datetime(2026, 7, 10, 11, 15),
+        )
+        ledger.record_execution(
+            action="BUY", symbol="0197X0", requested_qty=100, executed_qty=100,
+            requested_price=9000.0, executed_price=9000.0, success=True, mode="mock",
+            before_qty=0, after_qty=100, signal_source=ledger.SIGNAL_SOURCE_KIS_RECONCILE_BACKFILL,
+            now=datetime(2026, 7, 10, 11, 16),
+        )
+
+        df = ledger.load_ledger("20260710")
+        assert bool(df.iloc[0]["success"]) is False
+
+        counters = ledger.compute_trade_counters("20260710")
+        stats = ledger.compute_performance_stats("20260710")
+        assert counters["live_order_count"] == 0
+        assert stats["order_fill_count"] == 0
+
 
 class TestRealizedPnlBreakdown:
     def test_sums_realized_pnl_from_sells_only(self):
@@ -663,6 +684,27 @@ class TestLedgerNetQuantityReconciliation:
         )
         assert result["mismatch"] is False
         assert result["backfilled"] == []
+
+    def test_reconcile_broker_flat_ledger_positive_does_not_create_fake_sell(self):
+        ledger.record_confirmed_fill(
+            action="BUY", symbol="0193T0", executed_qty=129, executed_price=18_500.0,
+            mode="real", before_qty=0, after_qty=129, order_id="ORD-1",
+            now=datetime(2026, 7, 16, 10, 0, 0),
+        )
+
+        class _Broker:
+            def get_today_fills(self, symbol=""):
+                return {"ok": False, "error": "fills unavailable", "fills": []}
+
+        result = ledger.reconcile_symbol_with_kis(
+            "0193T0", "real", broker_qty=0, avg_price=None, broker=_Broker(),
+            now=datetime(2026, 7, 16, 10, 5, 0),
+        )
+
+        assert result["mismatch"] is True
+        assert result["mismatch_code"] == "LEDGER_BROKER_MISMATCH"
+        assert result["backfilled"] == []
+        assert ledger.compute_ledger_net_quantity("0193T0", "real", "20260716") == 129
 
     def test_reconcile_does_not_duplicate_backfill_across_cycles(self):
         """한 사이클에서 backfill된 뒤, 다음 사이클에서 KIS 수량이 그대로면 다시

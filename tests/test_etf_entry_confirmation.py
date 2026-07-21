@@ -270,3 +270,10 @@ def test_full_confirmation_passes_when_all_conditions_clear():
     )
     assert result["approved"] is True
     assert result["block_code"] is None
+
+
+def test_is_swing_structure_broken_against_detects_up_break_below_recent_low():
+    df = _bars([10_000.0, 10_050.0, 10_100.0, 10_080.0, 10_060.0])
+    assert confirm.is_swing_structure_broken_against(df, 9_950.0, "UP") is True
+    assert confirm.is_swing_structure_broken_against(df, 10_090.0, "UP") is False
+

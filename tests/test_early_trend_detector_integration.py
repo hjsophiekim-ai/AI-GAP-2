@@ -515,7 +515,7 @@ def test_early_probe_exits_after_sixty_seconds_without_reconfirmation(tmp_path, 
 
 def test_early_probe_holds_when_still_within_all_thresholds(tmp_path, monkeypatch):
     broker = _setup_early_probe_holding(
-        tmp_path, monkeypatch, current_price=100_050.0, confirmed_regime="STRONG_UP",
+        tmp_path, monkeypatch, current_price=100_550.0, confirmed_regime="STRONG_UP",
         last_reconfirmed_seconds_ago=5.0,
     )
     # signal_still_valid=True가 되려면 fast_signal이 계속 probe 방향(UP)과 일치해야

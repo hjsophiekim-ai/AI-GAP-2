@@ -92,6 +92,26 @@ def test_last_trade_fields_reset_on_new_day(tmp_path, monkeypatch):
     assert reloaded["pending_manual_stop_loss_alert"] is None
 
 
+def test_previous_day_position_snapshot_is_dropped_on_load(tmp_path, monkeypatch):
+    monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
+
+    stale_state = default_state("mock")
+    stale_state["date"] = switch_state_module._today_str()
+    stale_state["position"] = {**stale_state["position"], "symbol": None, "quantity": 0}
+    stale_state["stop_loss_snapshot"] = {
+        "position_snapshot_id": "old",
+        "calculated_at": "2026-07-20T11:00:00",
+        "hard_stop_triggered": True,
+    }
+    stale_state["last_stop_loss_signature"] = "old-stop"
+    save_state_atomic(stale_state)
+
+    reloaded = load_state(mode="mock")
+
+    assert reloaded["stop_loss_snapshot"] is None
+    assert reloaded["last_stop_loss_signature"] is None
+
+
 def test_stale_nested_intraday_cache_is_cleared_even_when_top_level_date_is_today(tmp_path, monkeypatch):
     monkeypatch.setattr(switch_state_module, "_STATE_DIR", tmp_path)
     today = switch_state_module._today_str()

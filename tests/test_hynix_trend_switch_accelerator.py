@@ -15,6 +15,7 @@ class Broker:
         self.cash = cash
         self.buy_calls = []
         self.sell_calls = []
+        self.positions = []
 
     def get_buyable_cash(self):
         return self.cash
@@ -22,6 +23,7 @@ class Broker:
     def buy(self, symbol, name, quantity, price, order_type="limit"):
         self.buy_calls.append((symbol, quantity, price))
         self.cash -= quantity * price
+        self.positions = [{"symbol": symbol, "name": name, "quantity": quantity, "avg_price": price}]
         return OrderResult(
             success=True, mode="mock", account_type="mock", symbol=symbol, name=name,
             side="buy", quantity=quantity, price=price, order_type=order_type,
@@ -31,11 +33,15 @@ class Broker:
     def sell(self, symbol, name, quantity, price, order_type="limit"):
         self.sell_calls.append((symbol, quantity, price))
         self.cash += quantity * price
+        self.positions = []
         return OrderResult(
             success=True, mode="mock", account_type="mock", symbol=symbol, name=name,
             side="sell", quantity=quantity, price=price, order_type=order_type,
             order_id=f"S{len(self.sell_calls)}", message="ok",
         )
+
+    def get_positions(self):
+        return list(self.positions)
 
 
 def test_strong_buy_enters_immediately_with_exploratory_size(monkeypatch):
@@ -138,6 +144,7 @@ def test_unconfirmed_sell_blocks_opposite_buy():
     switch_engine.evaluate_pullback_gate(state, INVERSE_SYMBOL, "INVERSE_BUY", now + timedelta(minutes=1), {}, None, "mock")
 
     broker = Broker()
+    broker.positions = [{"symbol": LONG_SYMBOL, "name": LONG_NAME, "quantity": 2, "avg_price": 100_000.0}]
     pm = _FakePositionManager(remaining_symbol=LONG_SYMBOL, remaining_qty=2)
     result = run_switch_or_entry(
         state, broker, "INVERSE_BUY", 100_000.0, 5_000.0,

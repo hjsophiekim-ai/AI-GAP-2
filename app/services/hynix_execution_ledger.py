@@ -154,6 +154,10 @@ def record_execution(
     _migrate_ledger_schema_if_needed()
     trade_id = _new_trade_id()
     now = now or kst_now()
+    try:
+        effective_success = bool(success) and int(executed_qty or 0) > 0
+    except Exception:
+        effective_success = False
     row = {
         "trade_id": trade_id, "parent_trade_id": parent_trade_id or "",
         "timestamp": now.isoformat(timespec="seconds"), "mode": mode,
@@ -165,7 +169,7 @@ def record_execution(
         "before_qty": before_qty, "after_qty": after_qty,
         "cash_before": cash_before, "cash_after": cash_after,
         "realized_pnl": realized_pnl, "fees": fees, "tax": tax,
-        "success": bool(success), "order_id": order_id or "",
+        "success": effective_success, "order_id": order_id or "",
         "position_confirmed": position_confirmed, "is_test_order": bool(is_test_order),
         "active_probability": active_probability, "prediction_v2_probability": prediction_v2_probability,
         "cycle_probability": cycle_probability, "fused_probability": fused_probability,
@@ -313,6 +317,8 @@ def record_confirmed_fill(
     LEDGER_WRITE_FAILED critical alert를 세팅해야 한다(체결 자체는 취소하지 않음).
     """
     now = now or kst_now()
+    if int(executed_qty or 0) <= 0:
+        return {"recorded": False, "duplicate": False, "trade_id": None, "error": "ZERO_QTY_FILL"}
     position_delta = None
     try:
         position_delta = int(after_qty) - int(before_qty)
@@ -429,6 +435,11 @@ def reconcile_symbol_with_kis(
         # 맞춘다. 다음 사이클에 같은 delta가 이미 해소돼 있으므로 재실행돼도
         # dedup(timestamp+qty+price+position_delta)이 겹치지 않게 before/after를
         # 그대로 재사용해도 안전하다.
+        if action == "SELL" and int(broker_qty) <= 0 and int(ledger_qty) > 0:
+            result["mismatch_code"] = "LEDGER_BROKER_MISMATCH"
+            result["requires_fill_query"] = True
+            result["error"] = result.get("error") or "broker flat but ledger still has positive net quantity"
+            return result
         before = ledger_qty
         after = before + remaining if action == "BUY" else before - remaining
         outcome = record_confirmed_fill(
@@ -455,7 +466,11 @@ def compute_trade_counters(date_str: Optional[str] = None, include_test: bool = 
             "order_fill_count": 0, "buy_fill_count": 0, "sell_fill_count": 0,
             "round_trip_count": 0, "test_order_count": 0, "live_order_count": 0,
         }
-    filled = df[df["success"] == True]  # noqa: E712
+    filled = df[df["success"] == True].copy()  # noqa: E712
+    if "executed_qty" in filled.columns:
+        filled = filled[pd.to_numeric(filled["executed_qty"], errors="coerce").fillna(0) > 0]
+    if "signal_source" in filled.columns:
+        filled = filled[filled["signal_source"] != SIGNAL_SOURCE_KIS_RECONCILE_BACKFILL]
     if not include_test:
         live = filled[filled["is_test_order"] != True]  # noqa: E712
     else:
@@ -485,7 +500,7 @@ def compute_realized_pnl_breakdown(date_str: Optional[str] = None) -> dict:
     df = load_ledger(date_str)
     if df.empty:
         return {"total_realized_pnl": 0.0, "trades": []}
-    live = df[(df["success"] == True) & (df["is_test_order"] != True)]  # noqa: E712
+    live = _successful_operating_trades(df)
     live = live[live["action"] == "SELL"].copy()
     live["realized_pnl"] = pd.to_numeric(live["realized_pnl"], errors="coerce").fillna(0.0)
     trades = live[[
@@ -507,7 +522,8 @@ def compute_strategy_real_stats(signal_sources, date_str: Optional[str] = None) 
     df = load_ledger(date_str)
     if df.empty:
         return empty
-    live = df[(df["success"] == True) & (df["is_test_order"] != True) & (df["signal_source"].isin(signal_sources))].copy()  # noqa: E712
+    live = _successful_operating_trades(df)
+    live = live[live["signal_source"].isin(signal_sources)].copy()
     sells = live[live["action"] == "SELL"].copy()
     if sells.empty:
         return empty
@@ -554,7 +570,7 @@ def compute_performance_stats(date_str: Optional[str] = None) -> dict:
     if df.empty:
         return empty
 
-    live = df[(df["success"] == True) & (df["is_test_order"] != True)].copy()  # noqa: E712
+    live = _successful_operating_trades(df)
     if live.empty:
         return empty
     live["realized_pnl"] = pd.to_numeric(live["realized_pnl"], errors="coerce")
@@ -634,7 +650,9 @@ def _successful_operating_trades(df: pd.DataFrame) -> pd.DataFrame:
         return df.copy()
     success = _bool_series(df["success"]) if "success" in df.columns else pd.Series(False, index=df.index)
     is_test = _bool_series(df["is_test_order"]) if "is_test_order" in df.columns else pd.Series(False, index=df.index)
-    return df[success & ~is_test].copy()
+    qty_ok = pd.to_numeric(df["executed_qty"], errors="coerce").fillna(0) > 0 if "executed_qty" in df.columns else pd.Series(False, index=df.index)
+    source_ok = df["signal_source"] != SIGNAL_SOURCE_KIS_RECONCILE_BACKFILL if "signal_source" in df.columns else pd.Series(True, index=df.index)
+    return df[success & ~is_test & qty_ok & source_ok].copy()
 
 
 def calculate_daily_net_pnl_from_ledger(

@@ -28,12 +28,16 @@ class DummyBroker:
 
     def buy(self, symbol, name, quantity, price, order_type="limit"):
         self.buy_calls.append((symbol, quantity, price))
+        if self.buy_success:
+            self._positions = [{"symbol": symbol, "name": name, "quantity": quantity, "avg_price": price}]
         return OrderResult(success=self.buy_success, mode="mock", account_type="mock", symbol=symbol, name=name,
                             side="buy", quantity=quantity, price=price, order_type=order_type,
                             order_id="B1" if self.buy_success else "", message="ok" if self.buy_success else "실패")
 
     def sell(self, symbol, name, quantity, price, order_type="limit"):
         self.sell_calls.append((symbol, quantity, price))
+        if self.sell_success:
+            self._positions = []
         return OrderResult(success=self.sell_success, mode="mock", account_type="mock", symbol=symbol, name=name,
                             side="sell", quantity=quantity, price=price, order_type=order_type,
                             order_id="S1" if self.sell_success else "", message="ok" if self.sell_success else "실패")
