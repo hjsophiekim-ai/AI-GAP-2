@@ -47,6 +47,215 @@ EXTREME_LOOKBACK_MINUTES = 1
 VOLUME_SURGE_RATIO = 1.5
 VOLUME_SURGE_LOOKBACK_BARS = 5
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 요구사항(2026-07-21 실측 버그 수정) — 위 confirm_etf_entry()의 VWAP/기울기
+# 판정은 "1분봉 종가 단 1개"만 보고 방향을 근사한다. 000660이 30분 넘게 상승
+# 중이어도, 그 1분봉 하나가 잠깐 눌리거나 VWAP을 살짝 밑돌면 즉시
+# ETF_DIRECTION_MISMATCH로 전체 신규진입(레버리지 포함)이 막혔다 — 단일 표본의
+# 노이즈를 "방향 불일치"로 오판하는 근본 결함이었다.
+#
+# classify_etf_direction_confirmation()은 5/10/20/30초 다중 구간(가능하면
+# app.trading.early_trend_live_feed의 실제 초단위 기울기, 없으면 상위 호출부가
+# 다른 근사치를 넘길 수 있음) + VWAP 위치 + swing 구조를 함께 보고, 아래 6개
+# 상태 중 하나로 분류한다. "진입ETF"(entry target)는 UP 방향이면 레버리지
+# (0193T0), DOWN 방향이면 인버스(0197X0)이며, "반대ETF"는 그 나머지 하나다 —
+# 이 매핑 덕분에 아래 판정 규칙 자체는 방향과 무관하게 완전히 대칭이다(코드를
+# 방향별로 복제하지 않는다).
+#
+#   ETF_CONFIRM_UP / ETF_CONFIRM_DOWN — 완전 확인(즉시 정상 진입)
+#   ALIGNED_PULLBACK                  — 구조적으로는 정렬됐지만 5/10초만 일시
+#                                        눌림(축소 진입 허용, 재정렬/청산은
+#                                        호출부의 시간창 로직이 담당)
+#   ETF_DIRECTION_MISMATCH            — 데이터는 정상이지만 실제로 방향이
+#                                        어긋남(방향 무관 동일 조건)
+#   ETF_DATA_INSUFFICIENT             — 필요한 데이터 자체가 없음
+#   DATA_TIME_MISMATCH                — 데이터는 있지만 허용 시차(5초)를 초과함
+# ─────────────────────────────────────────────────────────────────────────────
+
+ETF_CONFIRM_UP = "ETF_CONFIRM_UP"
+ETF_CONFIRM_DOWN = "ETF_CONFIRM_DOWN"
+ALIGNED_PULLBACK = "ALIGNED_PULLBACK"
+DATA_TIME_MISMATCH = "DATA_TIME_MISMATCH"
+
+MAX_CONFIRMATION_DATA_AGE_SECONDS = 5.0
+SLOPE_WINDOWS_SECONDS = (5, 10, 20, 30)
+MIN_SLOPE_PCT_FOR_DIRECTION = 0.02
+
+
+def resolve_window_directions(live_slope_entry: Optional[dict]) -> dict:
+    """app.trading.early_trend_live_feed.compute_live_direction()이 반환하는
+    live_slopes[symbol] 항목에서 5/10/20/30초 방향 dict를 얻는다.
+
+    이미 "window_directions"가 계산돼 있으면 그대로 쓰고, 없고 raw
+    "slopes"(퍼센트)만 있으면 같은 임계값(MIN_SLOPE_PCT_FOR_DIRECTION)으로
+    즉석 계산한다 — 호출부가 구버전 형태의 live_slopes를 넘겨도 동작한다."""
+    entry = live_slope_entry or {}
+    window_directions = entry.get("window_directions")
+    if window_directions:
+        return dict(window_directions)
+    slopes = entry.get("slopes") or {}
+    derived = {}
+    for w, value in slopes.items():
+        if value is None:
+            continue
+        if value >= MIN_SLOPE_PCT_FOR_DIRECTION:
+            derived[w] = "UP"
+        elif value <= -MIN_SLOPE_PCT_FOR_DIRECTION:
+            derived[w] = "DOWN"
+    return derived
+
+
+def has_any_slope_data(live_slope_entry: Optional[dict]) -> bool:
+    """live_slopes[symbol] 항목에 방향 판단에 쓸 데이터가 조금이라도 있는지."""
+    entry = live_slope_entry or {}
+    if entry.get("window_directions"):
+        return True
+    return bool(entry.get("slopes"))
+
+
+def classify_etf_direction_confirmation(
+    *,
+    direction: str,
+    signal_direction: Optional[str],
+    confirm_window_directions: Optional[dict],
+    oppose_window_directions: Optional[dict],
+    confirm_above_vwap: Optional[bool],
+    confirm_swing_broken_against: Optional[bool] = None,
+    structural_direction: Optional[str] = None,
+    data_ages_seconds: Optional[dict] = None,
+    moved_pct_since_signal: Optional[float] = None,
+) -> dict:
+    """000660/레버리지/인버스 3종목의 5/10/20/30초 기울기 + VWAP + swing 구조로
+    ETF 진입 확인 상태를 판정한다(방향 무관 완전 대칭 — 파라미터 이름의
+    confirm/oppose는 direction에 따라 호출부가 이미 올바른 종목(레버리지 또는
+    인버스)의 값을 넘긴 것으로 취급한다).
+
+    Parameters
+    ----------
+    direction : "UP" | "DOWN" — 지금 확인하려는 신규진입 방향.
+    signal_direction : 000660의 실시간(5/10/20/30초 기반) 방향. None이면 미확정.
+    confirm_window_directions : 진입 대상 ETF(레버리지 if UP else 인버스) 자신의
+        {5,10,20,30: "UP"|"DOWN"|None} 기울기.
+    oppose_window_directions : 반대 ETF 자신의 같은 형식 기울기.
+    confirm_above_vwap : 진입 대상 ETF가 자기 자신의 VWAP 위에 있는지.
+    confirm_swing_broken_against : 진입 대상 ETF가 최근 swing 저점(구조)을
+        방향에 반해 이탈했는지.
+    structural_direction : Adaptive Regime/Primary Trend 등 더 느린 구조적
+        방향(ALIGNED_PULLBACK 판정에만 쓰인다).
+    data_ages_seconds : {"signal":, "confirm":, "oppose": 초단위 age}. 키가
+        없거나 값이 None이면 데이터 없음, MAX_CONFIRMATION_DATA_AGE_SECONDS(5초)
+        초과면 시차 초과로 취급한다.
+    moved_pct_since_signal : 진입 대상 ETF가 신호 발생가 대비 이동한 절대값(%).
+    """
+    confirm = dict(confirm_window_directions or {})
+    oppose = dict(oppose_window_directions or {})
+    # 요구사항(2026-07-21) — data_ages_seconds는 "이 호출부가 실제로 초단위
+    # timestamp를 추적하고 있을 때만" 검증에 쓴다. 이미 상위(5초 Fast Worker의
+    # _data_time_mismatch_status)에서 세 종목 시세의 동시성을 별도로 검증하는
+    # 경로도 있으므로, 이 함수 호출부가 age를 아예 넘기지 않으면(None) — 예:
+    # live_slopes는 있지만 개별 age 추적이 없는 호출부 — 신선도 검증은
+    # 건너뛰고 순수 방향/기울기 데이터 유무만으로 판정한다. age를 명시적으로
+    # 넘긴 호출부에 한해서만 결측/시차초과를 구분한다(item2).
+    ages = dict(data_ages_seconds) if data_ages_seconds is not None else None
+    evidence = {
+        "direction": direction,
+        "signal_direction": signal_direction,
+        "confirm_window_directions": confirm,
+        "oppose_window_directions": oppose,
+        "confirm_above_vwap": confirm_above_vwap,
+        "confirm_swing_broken_against": confirm_swing_broken_against,
+        "structural_direction": structural_direction,
+        "data_ages_seconds": ages,
+        "moved_pct_since_signal": moved_pct_since_signal,
+    }
+
+    # ── 1/2. 데이터 없음/오래됨은 절대 MISMATCH로 취급하지 않는다 ──────────────
+    if not confirm:
+        return {
+            "state": ETF_DATA_INSUFFICIENT,
+            "reason": "진입대상 ETF 기울기 데이터 없음",
+            "evidence": evidence,
+        }
+    if ages is not None:
+        missing_keys = [k for k in ("signal", "confirm", "oppose") if ages.get(k) is None]
+        if missing_keys:
+            return {
+                "state": ETF_DATA_INSUFFICIENT,
+                "reason": f"필수 데이터 없음: {missing_keys}",
+                "evidence": evidence,
+            }
+        stale_keys = [k for k, age in ages.items() if age is not None and age > MAX_CONFIRMATION_DATA_AGE_SECONDS]
+        if stale_keys:
+            return {
+                "state": DATA_TIME_MISMATCH,
+                "reason": (
+                    f"데이터 시각차 {MAX_CONFIRMATION_DATA_AGE_SECONDS}초 초과: {stale_keys} "
+                    f"(ages={ {k: ages.get(k) for k in stale_keys} })"
+                ),
+                "evidence": evidence,
+            }
+
+    confirm_up_count = sum(1 for w in SLOPE_WINDOWS_SECONDS if confirm.get(w) == "UP")
+
+    # ── 7. 하드 차단(방향과 무관하게 완전히 동일한 조건 — 어느 쪽에도 완화 없음) ──
+    if confirm.get(5) == "DOWN" and confirm.get(10) == "DOWN":
+        return {
+            "state": ETF_DIRECTION_MISMATCH,
+            "reason": "진입대상 ETF 5초·10초 모두 하락",
+            "evidence": evidence,
+        }
+    if confirm_above_vwap is False and confirm_swing_broken_against is True:
+        return {
+            "state": ETF_DIRECTION_MISMATCH,
+            "reason": "진입대상 ETF가 VWAP 아래이면서 swing 구조 이탈",
+            "evidence": evidence,
+        }
+    if oppose.get(5) == "UP" and oppose.get(10) == "UP":
+        return {
+            "state": ETF_DIRECTION_MISMATCH,
+            "reason": "반대 ETF 5초·10초 모두 상승(반대방향 강하게 확정)",
+            "evidence": evidence,
+        }
+    if moved_pct_since_signal is not None and moved_pct_since_signal >= CHASE_BLOCK_MOVE_PCT:
+        return {
+            "state": ETF_DIRECTION_MISMATCH,
+            "reason": f"CHASE: 신호가 대비 {moved_pct_since_signal}%(≥{CHASE_BLOCK_MOVE_PCT}%) 이동한 추격 구간",
+            "evidence": evidence,
+        }
+
+    # ── 3/4. 완전 확인(대칭) — 5·10초 필수 + 3/4 구간 확인 + 반대ETF 약세 확인 ──
+    if (
+        signal_direction == direction
+        and confirm.get(5) == "UP" and confirm.get(10) == "UP"
+        and confirm_up_count >= 3
+        and (oppose.get(5) == "DOWN" or oppose.get(10) == "DOWN")
+    ):
+        return {
+            "state": ETF_CONFIRM_UP if direction == "UP" else ETF_CONFIRM_DOWN,
+            "reason": "5·10초 필수 UP + 5/10/20/30초 중 3개 이상 UP + 반대ETF 약세 확인",
+            "evidence": evidence,
+        }
+
+    # ── 5. ALIGNED_PULLBACK(대칭) — 구조/실시간 방향은 정렬됐는데 5·10초만 일시 눌림 ──
+    if (
+        structural_direction == direction
+        and signal_direction == direction
+        and confirm_above_vwap is True
+        and confirm.get(20) == "UP" and confirm.get(30) == "UP"
+        and not (confirm.get(5) == "UP" and confirm.get(10) == "UP")
+    ):
+        return {
+            "state": ALIGNED_PULLBACK,
+            "reason": "구조/20·30초 방향 유지, 5·10초만 일시 눌림 — 축소진입 허용",
+            "evidence": evidence,
+        }
+
+    return {
+        "state": ETF_DIRECTION_MISMATCH,
+        "reason": "위 확인/눌림 조건 모두 불충족 — evidence 참고",
+        "evidence": evidence,
+    }
+
 
 def fetch_etf_minute_bars(symbol: str, mode: Optional[str] = None) -> dict:
     """symbol(0193T0/0197X0)의 진짜 자기 자신 1분봉을 가져온다 — 절대 000660으로
