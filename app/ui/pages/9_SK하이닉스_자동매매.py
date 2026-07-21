@@ -405,7 +405,6 @@ def _resume_daily_loss_limited_trading(state: dict) -> dict:
 try:
     import os as _os
     import sys as _sys
-    import subprocess as _sp
 
     _runtime_port = _os.environ.get("STREAMLIT_SERVER_PORT")
     for _i, _arg in enumerate(_sys.argv):
@@ -413,10 +412,18 @@ try:
             _runtime_port = _sys.argv[_i + 1]
         elif _arg.startswith("--server.port="):
             _runtime_port = _arg.split("=", 1)[1]
-    _runtime_sha = _sp.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=_PROJECT_ROOT, timeout=5).decode().strip()
 except Exception:
     _runtime_port = _runtime_port if "_runtime_port" in locals() else "unknown"
-    _runtime_sha = "unknown"
+
+# 요구사항(2026-07-21) — Git SHA 표시는 app.utils.runtime_info.read_runtime_info()
+# 하나만 단일 진실 공급원으로 쓴다(과거에는 이 자리에서 별도 subprocess로 매번
+# 새로 조회한 SHA와, 아래 "SHA Match" 블록이 읽는 캐시된 SHA가 서로 어긋날 수
+# 있었다 — 재시작 없이 코드가 갱신되면 "상단 Git SHA"만 최신이고 "SHA Match"는
+# 여전히 YES로 남는 모순이 생겼다).
+from app.utils.runtime_info import read_runtime_info as _read_runtime_info_top
+
+_runtime_info_top = _read_runtime_info_top()
+_runtime_sha = str(_runtime_info_top.get("git_sha") or "unknown")[:8]
 
 _fw_state = switch_state.get("fast_trend_watcher") or {}
 _fw_signal = _fw_state.get("last_signal") or {}
@@ -430,10 +437,11 @@ if _fw_state.get("blocked_reason"):
     st.caption(f"Fast watcher block: {_fw_state.get('blocked_reason')}")
 
 try:
-    from app.utils.runtime_info import read_runtime_info
     from app.trading.exit_order_coordinator import snapshot as _order_coord_snapshot
 
-    _runtime_info = read_runtime_info()
+    # 요구사항(2026-07-21) — 위 "Git SHA"와 같은 read_runtime_info() 호출 결과를
+    # 재사용한다(같은 렌더링 내에서 서로 다른 값이 나올 수 없게).
+    _runtime_info = _runtime_info_top
     _coord = _order_coord_snapshot()
     _sha_cols = st.columns(4)
     _sha_cols[0].metric("Local SHA", str(_runtime_info.get("git_sha") or "-")[:8])
@@ -1096,14 +1104,10 @@ if switch_state.get("critical_alert"):
 with st.expander("🩺 REAL 게이트 / 계좌 / 종목코드 진단", expanded=(switch_state.get("mode") == "real")):
     _diag_col1, _diag_col2 = st.columns(2)
     with _diag_col1:
-        try:
-            import subprocess as _sp
-            _git_sha = _sp.check_output(
-                ["git", "rev-parse", "--short", "HEAD"], cwd=_PROJECT_ROOT, timeout=5,
-            ).decode().strip()
-        except Exception:
-            _git_sha = "조회 실패"
-        st.markdown(f"**Git commit SHA**: `{_git_sha}`")
+        # 요구사항(2026-07-21) — 여기도 별도 subprocess로 다시 조회하지 않고
+        # 페이지 상단과 같은 read_runtime_info() 결과를 재사용한다(단일 진실
+        # 공급원 — 여러 곳에서 서로 다른 시점의 SHA가 표시되지 않게 한다).
+        st.markdown(f"**Git commit SHA**: `{str(_runtime_info_top.get('git_sha') or '조회 실패')[:8]}`")
         try:
             from app.config import _CONFIG_PATH as _CFG_PATH
             st.markdown(f"**config.yaml 경로**: `{_CFG_PATH}`")
@@ -2611,6 +2615,39 @@ else:
     with et12:
         _micro = _etd.get("micro_chop") or {}
         st.metric("MICRO_CHOP", "ON" if _micro.get("active") else "OFF")
+
+    # 요구사항(2026-07-21 재수정) — MICRO_CHOP 상세 근거를 UI에 반드시 표시한다:
+    # 활성화 시각/경과/TTL, 방향전환·VWAP교차·swing실패 횟수, 이동효율,
+    # 해제조건별 TRUE/FALSE, 이번 사이클 재계산 여부, 최종 차단 근거.
+    _micro = _etd.get("micro_chop") or {}
+    _release_check = _etd.get("micro_chop_release_check") or {}
+    if _micro.get("active") or _micro.get("activated_at"):
+        with st.expander("🔲 MICRO_CHOP 상세", expanded=bool(_micro.get("active"))):
+            try:
+                _mc_age = (
+                    (kst_now() - datetime.fromisoformat(_micro["activated_at"])).total_seconds()
+                    if _micro.get("activated_at") else None
+                )
+            except Exception:
+                _mc_age = None
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("발생시각", _micro.get("activated_at") or "—")
+            mc2.metric("경과/TTL", f"{_mc_age:.0f}s / {_micro.get('ttl_seconds')}s" if _mc_age is not None else "—")
+            mc3.metric("방향전환/VWAP교차", f"{_micro.get('direction_flips', 0)}회 / {_micro.get('vwap_crosses', 0)}회")
+            mc4.metric("이동효율", _micro.get("avg_move_efficiency") if _micro.get("avg_move_efficiency") is not None else "—")
+            _criteria = _micro.get("criteria_met") or {}
+            st.caption(
+                f"활성화 기준 충족 {_micro.get('criteria_met_count', 0)}/4 — " +
+                ", ".join(f"{k}={'TRUE' if v else 'FALSE'}" for k, v in _criteria.items())
+            )
+            if _release_check:
+                st.caption(
+                    ("✅ 이번 사이클 재계산: 해제됨 — " + str(_release_check.get("reason")))
+                    if _release_check.get("release")
+                    else "🔴 이번 사이클 재계산: 해제 조건 미충족(계속 차단)"
+                )
+            if _micro.get("active"):
+                st.warning(_etd.get("last_block_reason") or "MICRO_CHOP 차단 중")
 
     _lat = _etd.get("latency") or {}
     _cost = _etd.get("cost_gate") or {}

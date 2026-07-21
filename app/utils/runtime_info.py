@@ -68,9 +68,40 @@ def write_runtime_info() -> dict:
 
 
 def read_runtime_info() -> dict:
+    """요구사항(2026-07-21) — UI 여러 곳(상단 "Git SHA", "Local/Origin/Render SHA"
+    블록, 별도 "Git commit SHA" 표시)이 각자 다른 방식으로 SHA를 구해 표시했다
+    (일부는 프로세스 시작 시 캐시된 파일, 일부는 렌더링마다 새 subprocess 호출).
+    그 결과 프로세스를 재시작하지 않고 같은 배포 위에서 코드가 갱신되면(예:
+    수동 git pull) 캐시된 값과 실제 값이 어긋나는데도 "SHA Match=YES"가 계속
+    표시될 수 있었다. 이제 이 함수 하나만 "runtime SHA"의 단일 진실 공급원으로
+    쓰고, git_sha는 캐시 여부와 무관하게 항상 이번 호출 시점에 새로 조회해
+    sha_all_match도 그 최신값 기준으로 재계산한다."""
+    cached: dict = {}
     try:
         if RUNTIME_INFO_PATH.exists():
-            return json.loads(RUNTIME_INFO_PATH.read_text(encoding="utf-8"))
+            cached = json.loads(RUNTIME_INFO_PATH.read_text(encoding="utf-8"))
     except Exception:
-        pass
-    return collect_runtime_info()
+        cached = {}
+
+    fresh_local_sha = _git_sha("rev-parse", "HEAD")
+    origin_sha = cached.get("origin_main_sha") or _git_sha("rev-parse", "origin/main")
+    render_sha = (
+        os.environ.get("RENDER_GIT_COMMIT")
+        or os.environ.get("RENDER_COMMIT_SHA")
+        or os.environ.get("GIT_SHA")
+        or cached.get("render_sha")
+        or fresh_local_sha
+    )
+    sha_all_match = bool(fresh_local_sha and origin_sha and render_sha and fresh_local_sha == origin_sha == render_sha)
+    info = {
+        **cached,
+        "git_sha": fresh_local_sha or cached.get("git_sha"),
+        "origin_main_sha": origin_sha,
+        "render_sha": render_sha,
+        "sha_all_match": sha_all_match,
+        "orders_enabled_by_deployment": sha_all_match,
+        "checked_at": datetime.now().isoformat(),
+    }
+    if not cached:
+        return collect_runtime_info()
+    return info

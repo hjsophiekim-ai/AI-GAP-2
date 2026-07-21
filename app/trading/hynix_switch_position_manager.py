@@ -30,7 +30,11 @@ from app.trading.hynix_switch_risk_gate import is_new_entry_allowed, should_liqu
 from app.trading.hynix_position_common import (
     get_hynix_auto_position, is_buy_cooldown_active, POSITION_CONFLICT, MIN_SECONDS_BETWEEN_BUYS,
 )
-from app.trading.etf_entry_confirmation import confirm_etf_entry
+from app.trading.etf_entry_confirmation import (
+    confirm_etf_entry, classify_etf_direction_confirmation,
+    resolve_window_directions, has_any_slope_data,
+    ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ALIGNED_PULLBACK,
+)
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
@@ -1609,18 +1613,72 @@ def run_switch_or_entry(
     # 확인해도 전체에 동일 적용된다.
     try:
         _etf_direction = "DOWN" if desired_symbol == INVERSE_SYMBOL else "UP"
-        _etf_confirmation = confirm_etf_entry(
-            symbol=desired_symbol, underlying_direction=_etf_direction, current_price=current_price,
-            mode=state.get("mode", "mock"),
-        )
-        state["last_etf_entry_confirmation"] = _etf_confirmation
-        if not _etf_confirmation["approved"]:
-            return {
-                "acted": bool(orders), "orders": orders,
-                "message": f"ETF entry confirmation failed: {_etf_confirmation['reason']}",
-                "stage": "entry", "failure_code": _etf_confirmation["block_code"], "requested_symbol": desired_symbol,
-                "etf_confirmation": _etf_confirmation,
-            }
+        _other_symbol = LONG_SYMBOL if desired_symbol == INVERSE_SYMBOL else INVERSE_SYMBOL
+
+        # 요구사항(2026-07-21 실측 버그 수정) — 아래 confirm_etf_entry()는 1분봉
+        # 종가 단 1개로 방향을 근사해, 000660이 30분 넘게 상승 중이어도 그 1분봉
+        # 하나가 잠깐 눌리면 즉시 ETF_DIRECTION_MISMATCH로 신규진입 전체를
+        # 막았다(Early Trend Detector 5초 피드가 이미 만들어 둔 live_slopes가
+        # 있으면 그 5/10/20/30초 다중 구간+VWAP+swing 기준으로 재확인하고,
+        # ALIGNED_PULLBACK(일시 눌림)까지 허용한다). live_slopes가 아직 없는
+        # 구성(Early Trend Detector 비활성 등)에서는 기존 1분봉 기준
+        # confirm_etf_entry()로 안전하게 폴백한다 — 이 폴백 경로 자체는 그대로 둔다.
+        _etd_state = state.get("early_trend_detector") or {}
+        _live_slopes = _etd_state.get("live_slopes") or {}
+        _dt_symbols = (_etd_state.get("data_time_status") or {}).get("symbols") or {}
+        _has_live_slope_data = has_any_slope_data(_live_slopes.get(desired_symbol))
+
+        if _has_live_slope_data:
+            from app.trading.etf_entry_confirmation import compute_etf_breakouts
+            from app.data_sources.hynix_long_collector import _load_long_minute_cache
+            from app.data_sources.hynix_inverse_collector import _load_inverse_minute_cache
+
+            _confirm_df = _load_long_minute_cache() if desired_symbol == LONG_SYMBOL else _load_inverse_minute_cache()
+            _confirm_breakouts = compute_etf_breakouts(_confirm_df, current_price, _etf_direction)
+            _swing_broken = None
+            if _confirm_df is not None:
+                if _etf_direction == "UP" and _confirm_breakouts.get("recent_low"):
+                    _swing_broken = current_price < _confirm_breakouts["recent_low"]
+                elif _etf_direction == "DOWN" and _confirm_breakouts.get("recent_high"):
+                    _swing_broken = current_price > _confirm_breakouts["recent_high"]
+            _etf_confirmation = classify_etf_direction_confirmation(
+                direction=_etf_direction,
+                signal_direction=(_live_slopes.get(SIGNAL_SYMBOL) or {}).get("direction"),
+                confirm_window_directions=resolve_window_directions(_live_slopes.get(desired_symbol)),
+                oppose_window_directions=resolve_window_directions(_live_slopes.get(_other_symbol)),
+                confirm_above_vwap=_confirm_breakouts.get("vwap_breakout"),
+                confirm_swing_broken_against=_swing_broken,
+                structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
+                data_ages_seconds=(
+                    {
+                        "signal": (_dt_symbols.get(SIGNAL_SYMBOL) or {}).get("age_seconds"),
+                        "confirm": (_dt_symbols.get(desired_symbol) or {}).get("age_seconds"),
+                        "oppose": (_dt_symbols.get(_other_symbol) or {}).get("age_seconds"),
+                    }
+                    if _dt_symbols else None
+                ),
+            )
+            state["last_etf_entry_confirmation"] = _etf_confirmation
+            if _etf_confirmation["state"] not in (ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ALIGNED_PULLBACK):
+                return {
+                    "acted": bool(orders), "orders": orders,
+                    "message": f"ETF entry confirmation failed: {_etf_confirmation['reason']}",
+                    "stage": "entry", "failure_code": _etf_confirmation["state"], "requested_symbol": desired_symbol,
+                    "etf_confirmation": _etf_confirmation,
+                }
+        else:
+            _etf_confirmation = confirm_etf_entry(
+                symbol=desired_symbol, underlying_direction=_etf_direction, current_price=current_price,
+                mode=state.get("mode", "mock"),
+            )
+            state["last_etf_entry_confirmation"] = _etf_confirmation
+            if not _etf_confirmation["approved"]:
+                return {
+                    "acted": bool(orders), "orders": orders,
+                    "message": f"ETF entry confirmation failed: {_etf_confirmation['reason']}",
+                    "stage": "entry", "failure_code": _etf_confirmation["block_code"], "requested_symbol": desired_symbol,
+                    "etf_confirmation": _etf_confirmation,
+                }
     except Exception as exc:
         logger.error("[SwitchPositionManager] ETF 진입 확인 실패(안전을 위해 이번 진입은 보류): %s", exc)
         return {

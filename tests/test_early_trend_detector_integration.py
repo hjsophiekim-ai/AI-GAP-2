@@ -20,6 +20,7 @@ import app.services.hynix_switch_engine as engine_module
 import app.trading.dynamic_exit_watcher as watcher
 from app.data_sources.hynix_long_collector import LONG_SYMBOL as HYNIX_SYMBOL, LONG_NAME as HYNIX_NAME
 from app.data_sources.hynix_inverse_collector import INVERSE_SYMBOL, INVERSE_NAME
+from app.trading.hynix_symbols import SIGNAL_SYMBOL
 from app.models import OrderResult
 from app.services.hynix_switch_state import default_state, save_state_atomic, load_state
 from app.trading.dry_run_broker import DryRunBroker
@@ -293,8 +294,13 @@ def test_live_slope_reversal_triggers_probe_entry_within_thirty_seconds(tmp_path
         "returns": {"1m": 0.0, "3m": -0.5, "5m": -0.8}, "top_factors": [],
     }
     # INVERSE_SYMBOL 자체 가격이 오르는 중(direction=UP) = 기초자산은 내리는 중.
+    # 요구사항(2026-07-21) — ETF_CONFIRM_DOWN은 000660 자체 live direction과
+    # 반대 ETF(레버리지)의 약세도 함께 요구한다(현실에서도 5초 피드가 세 종목을
+    # 동시에 조회하므로 셋 다 값이 있는 게 정상이다).
     live_slopes = {
+        SIGNAL_SYMBOL: {"direction": "DOWN", "slopes": {5: -0.05, 10: -0.08, 20: -0.12, 30: -0.15}, "windows_available": 4},
         INVERSE_SYMBOL: {"direction": "UP", "slopes": {5: 0.05, 10: 0.08, 20: 0.12, 30: 0.15}, "windows_available": 4},
+        HYNIX_SYMBOL: {"direction": "DOWN", "slopes": {5: -0.05, 10: -0.08, 20: -0.12, 30: -0.15}, "windows_available": 4},
     }
 
     result = engine_module._run_early_trend_detector_tick(
@@ -321,7 +327,9 @@ def test_stale_direction_signal_never_buys_opposite_etf(tmp_path, monkeypatch):
     }
     flat_vote_signal = {"direction": "FLAT", "up_votes": 3, "down_votes": 3, "returns": {"3m": -0.5}, "top_factors": []}
     live_slopes = {
+        SIGNAL_SYMBOL: {"direction": "DOWN", "slopes": {5: -0.05, 10: -0.08, 20: -0.12, 30: -0.15}, "windows_available": 4},
         INVERSE_SYMBOL: {"direction": "UP", "slopes": {5: 0.05, 10: 0.08, 20: 0.12, 30: 0.15}, "windows_available": 4},
+        HYNIX_SYMBOL: {"direction": "DOWN", "slopes": {5: -0.05, 10: -0.08, 20: -0.12, 30: -0.15}, "windows_available": 4},
     }
 
     result = engine_module._run_early_trend_detector_tick(

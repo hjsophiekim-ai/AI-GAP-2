@@ -166,6 +166,131 @@ def _is_hynix_live_uptrend_block(final_action: str, reason: str, state: dict) ->
     return bool(short_up)
 
 
+def _trace_block_reason(trace: dict, decision_action: str, entry_reason: str, state: dict) -> str:
+    if _is_hynix_live_uptrend_block(decision_action, entry_reason, state):
+        return "LIVE_HYNIX_UPTREND"
+    early_decision = trace.get("early_decision") or {}
+    early_reason_code = early_decision.get("reason_code")
+    if early_reason_code and early_reason_code != "TARGET_ALREADY_FILLED":
+        return str(early_reason_code)
+    return str(trace.get("order_failure_code") or trace.get("stopped_stage") or "ENTRY_BLOCKED")
+
+
+def _normalize_direction(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").upper()
+    if text in ("UP", "HYNIX", "LONG", HYNIX_SYMBOL):
+        return "UP"
+    if text in ("DOWN", "INVERSE", "SHORT", INVERSE_SYMBOL):
+        return "DOWN"
+    return None
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _score_gap_dynamic_pct(
+    *,
+    score_gap: float,
+    low: float,
+    high: float,
+    confidence: Optional[float] = None,
+    stop_loss_distance_pct: Optional[float] = None,
+    buyable_cash: Optional[float] = None,
+    current_price: Optional[float] = None,
+) -> float:
+    # Base moves through the requested range as the score gap widens beyond 30.
+    span_position = _clamp((float(score_gap) - 30.0) / 30.0, 0.0, 1.0)
+    target = low + (high - low) * span_position
+
+    if confidence is not None:
+        conf = _clamp(float(confidence), 50.0, 95.0)
+        target *= 0.85 + ((conf - 50.0) / 45.0) * 0.30
+    if stop_loss_distance_pct is not None:
+        stop_distance = abs(float(stop_loss_distance_pct))
+        if stop_distance > 1.2:
+            target *= 0.85
+        elif stop_distance <= 0.6:
+            target *= 1.05
+    if buyable_cash is not None and current_price:
+        # Do not surface an entry size that cannot buy even one ETF share.
+        if float(buyable_cash) < float(current_price):
+            return 0.0
+
+    return round(_clamp(target, low, high), 4)
+
+
+def evaluate_score_gap_entry_ladder(
+    *,
+    score_gap: float,
+    desired_direction: str,
+    live_direction: Optional[str],
+    structural_direction: Optional[str] = None,
+    etf_mid_term_aligned: bool = False,
+    etf_confirmation_state: Optional[str] = None,
+    confidence: Optional[float] = None,
+    stop_loss_distance_pct: Optional[float] = None,
+    buyable_cash: Optional[float] = None,
+    current_price: Optional[float] = None,
+) -> dict:
+    desired = _normalize_direction(desired_direction)
+    live = _normalize_direction(live_direction)
+    structural = _normalize_direction(structural_direction)
+    score_gap = float(score_gap or 0.0)
+
+    if desired is None:
+        return {"action": None, "target_pct": None, "reason_code": "NO_DIRECTION"}
+    if live and live != desired:
+        return {"action": "HOLD", "target_pct": 0.0, "reason_code": "LIVE_DIRECTION_CONFLICT"}
+    if score_gap < 30.0:
+        return {"action": None, "target_pct": None, "reason_code": "SMALL_SCORE_GAP"}
+
+    confirm_state = str(etf_confirmation_state or "").upper()
+    if live == desired:
+        fully_reconfirmed = confirm_state in ("ETF_CONFIRM_UP", "ETF_CONFIRM_DOWN")
+        low, high, code = (0.40, 0.60, "RECONFIRM_EXPAND") if score_gap >= 40.0 and fully_reconfirmed else (0.30, 0.50, "LIVE_ALIGNED")
+        return {
+            "action": "ENTER",
+            "target_pct": _score_gap_dynamic_pct(
+                score_gap=score_gap, low=low, high=high, confidence=confidence,
+                stop_loss_distance_pct=stop_loss_distance_pct, buyable_cash=buyable_cash,
+                current_price=current_price,
+            ),
+            "reason_code": code,
+        }
+
+    if score_gap >= 40.0 and confirm_state in ("ALIGNED_PULLBACK", "NONE", "") and (
+        structural == desired or etf_mid_term_aligned
+    ):
+        return {
+            "action": "ENTER",
+            "target_pct": _score_gap_dynamic_pct(
+                score_gap=score_gap, low=0.20, high=0.30, confidence=confidence,
+                stop_loss_distance_pct=stop_loss_distance_pct, buyable_cash=buyable_cash,
+                current_price=current_price,
+            ),
+            "reason_code": "PULLBACK_PROBE",
+        }
+
+    return {"action": None, "target_pct": None, "reason_code": "WAIT_FOR_CONFIRMATION"}
+
+
+def _etf_mid_term_aligned_for_ladder(state: dict, desired_symbol: str, desired_direction: str) -> bool:
+    desired = _normalize_direction(desired_direction)
+    primary = state.get("last_primary_trend") or {}
+    if _normalize_direction(primary.get("primary_trend")) == desired:
+        return True
+
+    confirmation = (state.get("early_trend_detector") or {}).get("etf_confirmation") or {}
+    evidence = confirmation.get("evidence") or {}
+    confirm_dirs = evidence.get("confirm_window_directions") or {}
+    if desired == "UP":
+        return confirm_dirs.get(20) == "UP" and confirm_dirs.get(30) == "UP"
+    if desired == "DOWN":
+        return confirm_dirs.get(20) == "UP" and confirm_dirs.get(30) == "UP" and desired_symbol == INVERSE_SYMBOL
+    return False
+
+
 def _build_signal_summary(
     *, decision: dict, trace: dict, state: dict, now: datetime, new_entry_allowed_now: bool,
     new_entry_window: Optional[dict] = None,
@@ -178,9 +303,7 @@ def _build_signal_summary(
     if not new_entry_allowed_now:
         block_reason = "NEW_ENTRY_TIME_CLOSED"
     elif trace.get("entry_approved") is False:
-        block_reason = "LIVE_HYNIX_UPTREND" if _is_hynix_live_uptrend_block(decision_action, entry_reason, state) else (
-            trace.get("order_failure_code") or trace.get("stopped_stage") or "ENTRY_BLOCKED"
-        )
+        block_reason = _trace_block_reason(trace, decision_action, entry_reason, state)
     actionable_signal = prediction_signal
     if decision_action == "HOLD" or block_reason or trace.get("entry_approved") is False:
         actionable_signal = "HOLD"
@@ -1909,7 +2032,11 @@ def _run_early_trend_detector_tick(
     로직(PRIMARY_TREND 기반 Fast Watcher)을 그대로 이어서 실행해야 한다.
     """
     from app.trading import early_trend_detector as etd
-    from app.trading.etf_entry_confirmation import compute_etf_breakouts, compute_etf_volume_surge
+    from app.trading.etf_entry_confirmation import (
+        compute_etf_breakouts, compute_etf_volume_surge, classify_etf_direction_confirmation,
+        resolve_window_directions, has_any_slope_data,
+        ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ALIGNED_PULLBACK as ETF_ALIGNED_PULLBACK,
+    )
 
     live_slopes = live_slopes or {}
     position = state.get("position") or {}
@@ -2015,20 +2142,83 @@ def _run_early_trend_detector_tick(
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "NO_EARLY_SIGNAL", "signal": early_signal}
 
         desired_symbol = HYNIX_SYMBOL if direction == "UP" else INVERSE_SYMBOL
+        _other_symbol_for_confirm = INVERSE_SYMBOL if direction == "UP" else HYNIX_SYMBOL
         current_etf_price = hynix_price if direction == "UP" else inverse_price
         if not current_etf_price:
             etd_state["last_block_reason"] = "ETF 현재가 조회 실패"
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "ETF_DATA_INSUFFICIENT", "signal": early_signal}
-        if signal_symbol_agreement is False:
-            etd_state["last_block_reason"] = "ETF_DIRECTION_MISMATCH — 기초자산 신호와 실제 ETF 방향 불일치"
-            state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "ETF_DIRECTION_MISMATCH", "signal": early_signal}
-        if _micro_chop.get("active") and not (_breakouts.get("vwap_breakout") or _breakouts.get("structure_breakout")):
-            etd_state["last_block_reason"] = "MICRO_CHOP: VWAP/swing 돌파 없는 박스권 신규진입 차단"
-            state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "MICRO_CHOP", "signal": early_signal}
 
+        # 요구사항(2026-07-21 실측 버그 수정) — 1분봉 단일 표본 비교
+        # (signal_symbol_agreement)가 아니라 5/10/20/30초 다중 구간(live_slopes) +
+        # VWAP + swing 구조로 판정한다. 000660이 30분 넘게 상승 중이어도 한 틱
+        # 눌림/VWAP 순간 이탈 하나만으로 레버리지 신규진입 전체가 막히던 문제의
+        # 근본 원인이었다. ETF_CONFIRM_UP/DOWN·ALIGNED_PULLBACK은 통과시키고,
+        # ETF_DIRECTION_MISMATCH/ETF_DATA_INSUFFICIENT/DATA_TIME_MISMATCH만 차단한다.
+        #
+        # live_slopes 자체가 아직 없는 경우(Fast Worker가 이번 세션에 한 번도
+        # 안 돌았거나 막 시작한 직후)에는 이 새 게이트가 기존에 없던 차단을 새로
+        # 만들면 안 되므로, 그럴 때만 기존(2026-07-20) signal_symbol_agreement
+        # 단일표본 비교로 되돌아간다 — "데이터가 이미 있는데 노이즈로 오판"하는
+        # 경우만 고치고, "데이터가 아예 아직 없는" 경우의 기존 동작은 바꾸지 않는다.
+        _confirm_df = _load_etf_own_minute_cache(desired_symbol)
+        if _confirm_df is not None and "datetime" in _confirm_df.columns:
+            try:
+                _confirm_df = _confirm_df[_confirm_df["datetime"] <= now].copy()
+                if _confirm_df.empty:
+                    _confirm_df = None
+            except Exception:
+                pass
+        _confirm_breakouts = compute_etf_breakouts(_confirm_df, current_etf_price, direction)
+        _confirm_swing_broken = None
+        if _confirm_df is not None:
+            if direction == "UP" and _confirm_breakouts.get("recent_low"):
+                _confirm_swing_broken = current_etf_price < _confirm_breakouts["recent_low"]
+            elif direction == "DOWN" and _confirm_breakouts.get("recent_high"):
+                _confirm_swing_broken = current_etf_price > _confirm_breakouts["recent_high"]
+
+        if has_any_slope_data(live_slopes.get(desired_symbol)):
+            _dt_symbols = (etd_state.get("data_time_status") or {}).get("symbols") or {}
+            _confirmation = classify_etf_direction_confirmation(
+                direction=direction,
+                signal_direction=(live_slopes.get(SIGNAL_SYMBOL) or {}).get("direction"),
+                confirm_window_directions=resolve_window_directions(live_slopes.get(desired_symbol)),
+                oppose_window_directions=resolve_window_directions(live_slopes.get(_other_symbol_for_confirm)),
+                confirm_above_vwap=_confirm_breakouts.get("vwap_breakout"),
+                confirm_swing_broken_against=_confirm_swing_broken,
+                structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
+                # data_time_status가 아직 계산되지 않은 호출에는 age 검증 자체를
+                # 건너뛴다(None) — 위에서 data_time_status.blocked를 이미 별도로
+                # 확인했으므로 중복 검증이다.
+                data_ages_seconds=(
+                    {
+                        "signal": (_dt_symbols.get(SIGNAL_SYMBOL) or {}).get("age_seconds"),
+                        "confirm": (_dt_symbols.get(desired_symbol) or {}).get("age_seconds"),
+                        "oppose": (_dt_symbols.get(_other_symbol_for_confirm) or {}).get("age_seconds"),
+                    }
+                    if _dt_symbols else None
+                ),
+            )
+            etd_state["etf_confirmation"] = _confirmation
+            _confirm_state = _confirmation["state"]
+            if _confirm_state not in (ETF_CONFIRM_UP, ETF_CONFIRM_DOWN, ETF_ALIGNED_PULLBACK):
+                etd_state["last_block_reason"] = f"{_confirm_state}: {_confirmation['reason']}"
+                state["early_trend_detector"] = etd_state
+                return {
+                    "skipped": True, "reason": etd_state["last_block_reason"], "reason_code": _confirm_state,
+                    "signal": early_signal, "etf_confirmation": _confirmation,
+                }
+        else:
+            _confirm_state = None
+            if signal_symbol_agreement is False:
+                etd_state["last_block_reason"] = "ETF_DIRECTION_MISMATCH — 기초자산 신호와 실제 ETF 방향 불일치"
+                state["early_trend_detector"] = etd_state
+                return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "ETF_DIRECTION_MISMATCH", "signal": early_signal}
+        # 요구사항6(2026-07-21 재수정) — MICRO_CHOP은 DATA_TIME_MISMATCH/
+        # ETF_DATA_INSUFFICIENT(이미 위에서 확인함)/CHASE_BLOCK/신규진입 금지시간
+        # (상위 호출부에서 이미 확인함)보다 낮은 우선순위의 보조 게이트다. 아래
+        # candidate 생성 + CHASE_BLOCK 확인이 먼저 끝난 뒤에야 MICRO_CHOP을
+        # 평가한다(더 근본적인 차단 사유가 있으면 그게 먼저 보고돼야 한다).
         candidate = dict(etd_state.get("candidate") or {})
         if candidate.get("direction") != direction:
             candidate = {
@@ -2121,6 +2311,53 @@ def _run_early_trend_detector_tick(
             state["early_trend_detector"] = etd_state
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "CHASE_BLOCK", "signal": early_signal}
 
+        # 요구사항(2026-07-21 재수정) — MICRO_CHOP은 위 DATA_TIME_MISMATCH/
+        # ETF_DATA_INSUFFICIENT/CHASE_BLOCK보다 낮은 우선순위 보조 게이트다.
+        # 저장된 micro_chop=True를 그대로 읽고 차단하지 않는다 — 매 틱 최신
+        # live_slopes/VWAP/구조 데이터로 해제 조건을 다시 계산한다(요구사항8).
+        _vwap_alignment_tracker = dict((etd_state.get("vwap_alignment") or {}).get(desired_symbol) or {})
+        _vwap_alignment_tracker = etd.update_vwap_alignment_tracker(
+            _vwap_alignment_tracker, aligned=bool(_confirm_breakouts.get("vwap_breakout")), now=now,
+        )
+        _vwap_alignment_all = dict(etd_state.get("vwap_alignment") or {})
+        _vwap_alignment_all[desired_symbol] = _vwap_alignment_tracker
+        etd_state["vwap_alignment"] = _vwap_alignment_all
+        _confirm_vwap_aligned_seconds = etd.vwap_alignment_seconds(_vwap_alignment_tracker, now)
+
+        if _micro_chop.get("active"):
+            _confirm_window_dirs_for_release = resolve_window_directions(live_slopes.get(desired_symbol))
+            _release = etd.evaluate_micro_chop_release(
+                live_direction=(state.get("live_trade_direction") or {}).get("direction"),
+                live_direction_held_seconds=(state.get("live_trade_direction") or {}).get("direction_held_seconds"),
+                structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
+                confirm_window_directions=_confirm_window_dirs_for_release,
+                confirm_vwap_aligned_seconds=_confirm_vwap_aligned_seconds,
+                new_swing_breakout=_confirm_breakouts.get("structure_breakout"),
+                actionable_signal=fast_signal.get("raw_score_leader_final_action"),
+                etf_mutual_confirmed=(_confirm_state in (ETF_CONFIRM_UP, ETF_CONFIRM_DOWN)) if _confirm_state is not None else None,
+                data_time_mismatch=bool((etd_state.get("data_time_status") or {}).get("blocked")),
+            )
+            etd_state["micro_chop_release_check"] = _release
+            if _release["release"]:
+                _micro_chop["active"] = False
+                _micro_chop["released_at"] = now.isoformat()
+                _micro_chop["release_reason"] = _release["reason"]
+                etd_state["micro_chop"] = _micro_chop
+            else:
+                try:
+                    _mc_elapsed = (now - datetime.fromisoformat(_micro_chop["activated_at"])).total_seconds()
+                except Exception:
+                    _mc_elapsed = None
+                etd_state["last_block_reason"] = (
+                    f"MICRO_CHOP: 박스권 신규진입 차단(발생 {_micro_chop.get('activated_at') or '-'}, "
+                    f"경과 {_mc_elapsed:.0f}초, TTL {_micro_chop.get('ttl_seconds')}초, "
+                    f"방향전환 {_micro_chop.get('direction_flips')}회, VWAP교차 {_micro_chop.get('vwap_crosses')}회, "
+                    f"이동효율 {_micro_chop.get('avg_move_efficiency')}, 미해제 사유=조건 미충족)"
+                    if _mc_elapsed is not None else "MICRO_CHOP: 박스권 신규진입 차단"
+                )
+                state["early_trend_detector"] = etd_state
+                return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "MICRO_CHOP", "signal": early_signal, "micro_chop": _micro_chop}
+
         _returns = fast_signal.get("returns") or {}
         expected_move_pct = max(abs(float(_returns.get(k) or 0.0)) for k in ("1m", "3m", "5m"))
         cost_gate = etd.evaluate_cost_gate(desired_symbol, expected_move_pct)
@@ -2147,7 +2384,18 @@ def _run_early_trend_detector_tick(
             return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "COST_EDGE_BLOCK", "signal": early_signal}
 
         # 요구사항2 — 50% 단계는 30초 유지 "그리고" ETF/기초자산 방향 일치일 때만.
-        direction_aligned = bool(signal_symbol_agreement)
+        # 요구사항(2026-07-21) — ALIGNED_PULLBACK(5·10초만 일시 눌림)은 완전 확인이
+        # 아니므로 direction_aligned=False로 취급해 30% 단계에 머문다(item5의
+        # "최초 20~30% 진입"과 동일한 효과) — 이후 재확인되어 ETF_CONFIRM_*로
+        # 바뀌면 direction_aligned=True가 되어 기존 시간창 로직대로 자연히
+        # 50%/70%까지 확대된다. 새 상태머신을 추가하지 않고 기존 사다리를 그대로 쓴다.
+        # _confirm_state가 None이면(live_slopes 데이터 자체가 아직 없어 위에서
+        # 구버전 signal_symbol_agreement 폴백으로 처리한 경우) 기존(2026-07-20)
+        # 방식 그대로 signal_symbol_agreement를 direction_aligned으로 쓴다.
+        direction_aligned = (
+            _confirm_state in (ETF_CONFIRM_UP, ETF_CONFIRM_DOWN)
+            if _confirm_state is not None else bool(signal_symbol_agreement)
+        )
         stage, target_pct = etd.compute_target_probe_pct(confirmed_regime, elapsed, direction_aligned=direction_aligned)
         etd_state["stage"], etd_state["target_pct"] = stage, target_pct
         if target_pct <= 0.0:
@@ -2402,6 +2650,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             history, now, signal_symbol=SIGNAL_SYMBOL, long_symbol=HYNIX_SYMBOL, inverse_symbol=INVERSE_SYMBOL,
         )
         previous_live_direction = (state.get("live_trade_direction") or {}).get("direction")
+        _prev_direction_held_since = (state.get("live_trade_direction") or {}).get("direction_held_since")
         cached_fast_signal = (state.get("fast_trend_watcher") or {}).get("last_signal") or {}
         if live_trade.get("direction") in ("UP", "DOWN"):
             live_direction = live_trade["direction"]
@@ -2433,6 +2682,23 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             factors=factors,
             now=now,
         )
+        # 요구사항(2026-07-21) — live_trade_direction이 몇 초째 같은 방향을
+        # 유지 중인지 추적한다(MICRO_CHOP 해제 조건 "20초 이상 유지"에 사용).
+        # 방향이 바뀌거나 미확정이면 리셋한다.
+        if previous_live_direction == live_trade.get("direction") and live_trade.get("direction") in ("UP", "DOWN") and _prev_direction_held_since:
+            _direction_held_since = _prev_direction_held_since
+        elif live_trade.get("direction") in ("UP", "DOWN"):
+            _direction_held_since = now.isoformat()
+        else:
+            _direction_held_since = None
+        try:
+            _direction_held_seconds = (
+                (now - datetime.fromisoformat(_direction_held_since)).total_seconds()
+                if _direction_held_since else None
+            )
+        except Exception:
+            _direction_held_seconds = None
+
         if reversal_candidate.get("status") == "REVERSAL_CANDIDATE":
             freq = etd.reset_frequency_state_if_new_day(etd_state.get("frequency"), now.strftime("%Y%m%d"))
             prev_signal = (etd_state.get("last_signal") or {})
@@ -2448,6 +2714,8 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 "first_detected_at": reversal_candidate.get("first_detected_at"),
                 "confirmed_at": reversal_candidate.get("confirmed_at"),
                 "detection_to_confirmation_delay_seconds": reversal_candidate.get("detection_to_confirmation_delay_seconds"),
+                "direction_held_since": _direction_held_since,
+                "direction_held_seconds": _direction_held_seconds,
             }
             cached_fast_signal = {
                 **cached_fast_signal,
@@ -2459,14 +2727,31 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             }
             cached_confirmed_regime = etd.REGIME_FAST_REVERSAL_RANGE
         else:
+            # 요구사항6(2026-07-21) — live direction=UP/DOWN인데 status가 별개
+            # 필드(reversal_candidate.status)로만 결정돼 "NONE"으로 남는 불일치가
+            # 있었다. direction이 확정돼 있으면 status를 그로부터 직접 도출해
+            # 항상 서로 일치하게 만든다. MICRO_CHOP 여부는 이 함수 호출 뒤
+            # _run_early_trend_detector_tick에서 다시 덮어쓴다(그쪽이 실제
+            # micro_chop 판정을 갖고 있다).
+            _live_dir_now = live_trade.get("direction")
+            if _live_dir_now == "UP":
+                _status_now = "ALIGNED_UP"
+            elif _live_dir_now == "DOWN":
+                _status_now = "ALIGNED_DOWN"
+            elif not live_trade.get("windows_available"):
+                _status_now = "DATA_INSUFFICIENT"
+            else:
+                _status_now = reversal_candidate.get("status") or "DATA_INSUFFICIENT"
             state["live_trade_direction"] = {
                 **live_trade,
-                "status": reversal_candidate.get("status"),
+                "status": _status_now,
                 "structural_trend": (state.get("last_primary_trend") or {}).get("primary_trend"),
                 "existing_direction_blocked": bool(reversal_candidate.get("existing_direction_blocked")),
                 "first_detected_at": reversal_candidate.get("first_detected_at"),
                 "confirmed_at": reversal_candidate.get("confirmed_at"),
                 "detection_to_confirmation_delay_seconds": reversal_candidate.get("detection_to_confirmation_delay_seconds"),
+                "direction_held_since": _direction_held_since,
+                "direction_held_seconds": _direction_held_seconds,
             }
             cached_confirmed_regime = (state.get("adaptive_regime") or {}).get("confirmed_regime")
         etd_state["reversal_candidate"] = reversal_candidate
@@ -3175,6 +3460,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         trace["snapshot_pullback_status"] = None
 
                     proceed = True
+                    _score_gap_target_pct = None
                     _early_detector_live_exclusive = bool(
                         state.get("early_trend_detector_enabled")
                         and state.get("early_trend_detector_live")
@@ -3189,11 +3475,6 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         # (Early Detector의 expansion_target_pct가 이 confirmed_regime을
                         # 그대로 참조한다), 실제 주문 실행은 Early Detector 전담이다.
                         proceed = False
-                        trace["entry_approved"] = True
-                        trace["entry_approved_reason"] = (
-                            "Early Trend Detector LIVE — ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지"
-                            "(방향/50% 확대 승인만 담당, 실제 주문은 Early Detector 전담)"
-                        )
                         trace["enhanced_direct_order_blocked"] = True
                         if not new_entry_allowed_now:
                             early_result = {
@@ -3217,6 +3498,27 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             if early_result and early_result.get("switch"):
                                 orders_this_cycle.extend((early_result.get("switch") or {}).get("orders", []))
                         _record_early_result_on_trace(trace, early_result)
+                        # 요구사항(2026-07-21 실측 버그 수정) — "Enhanced가 방향을
+                        # 승인했다"는 사실만으로 entry_approved=True를 무조건 세팅하지
+                        # 않는다. Early Detector 내부가 실제로 주문을 내지 못했으면
+                        # (TARGET_ALREADY_FILLED/브로커 체결 성공 제외) 그 실제 차단
+                        # 사유를 entry_approved_reason에 그대로 반영한다 — 그래야
+                        # _build_signal_summary의 block_reason이 "없음"으로 비지 않고
+                        # actionable_signal=BUY인데 final_action=HOLD가 되는 모순이
+                        # 사라진다.
+                        _early_order_sent = bool((trace.get("early_order_result") or {}).get("order_sent"))
+                        _early_broker_executed = bool((trace.get("early_order_result") or {}).get("broker_executed"))
+                        _early_reason_code = (trace.get("early_decision") or {}).get("reason_code")
+                        if _early_broker_executed or _early_reason_code == "TARGET_ALREADY_FILLED":
+                            trace["entry_approved"] = True
+                            trace["entry_approved_reason"] = (
+                                "Early Trend Detector LIVE — ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지"
+                                "(방향/50% 확대 승인만 담당, 실제 주문은 Early Detector 전담)"
+                            )
+                        else:
+                            trace["entry_approved"] = False
+                            _early_reason_text = (trace.get("early_decision") or {}).get("reason") or _early_reason_code or "NO_EARLY_SIGNAL"
+                            trace["entry_approved_reason"] = f"Early Trend Detector 차단: {_early_reason_text}"
                     elif state.get("position_conflict"):
                         proceed = False
                         warnings.append("포지션 동기화 필요(0193T0/0197X0 동시 보유) — 신규매수 금지")
@@ -3257,9 +3559,38 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         _live_dir_for_block = (state.get("live_trade_direction") or {}).get("direction")
                         trace["entry_approved"] = False
                         trace["entry_approved_reason"] = (
-                            f"live_trade_direction={_live_dir_for_block} — 실시간 반대방향 신규진입 금지"
+                            f"LIVE_DIRECTION_CONFLICT: live_trade_direction={_live_dir_for_block} — "
+                            "실시간 반대방향 신규진입 금지"
                         )
                         warnings.append(trace["entry_approved_reason"])
+                    elif (
+                        _score_gap_ladder_result := evaluate_score_gap_entry_ladder(
+                            score_gap=float(decision.get("score_gap") or 0.0),
+                            desired_direction="UP" if desired_symbol == HYNIX_SYMBOL else "DOWN",
+                            live_direction=(state.get("live_trade_direction") or {}).get("direction"),
+                            structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
+                            etf_mid_term_aligned=_etf_mid_term_aligned_for_ladder(
+                                state, desired_symbol, "UP" if desired_symbol == HYNIX_SYMBOL else "DOWN",
+                            ),
+                            etf_confirmation_state=(
+                                ((state.get("early_trend_detector") or {}).get("etf_confirmation") or {}).get("state")
+                            ),
+                            confidence=(state.get("adaptive_regime") or {}).get("confidence"),
+                            stop_loss_distance_pct=abs(float((state.get("last_trend_switch_plan") or {}).get("stop_loss_pct") or 0.8)),
+                            buyable_cash=state.get("last_buyable_cash_used"),
+                            current_price=hynix_price if desired_symbol == HYNIX_SYMBOL else inverse_price,
+                        )
+                    )["action"] is not None:
+                        # 요구사항(2026-07-21) — 원점수 격차(score_gap)와 실시간 방향을 결합한
+                        # 진입비중 사다리(우선순위: hard risk/data mismatch/time gate → live
+                        # direction conflict(위 elif) → 이 사다리 → MICRO_CHOP 보조 게이트).
+                        proceed = True
+                        _score_gap_target_pct = _score_gap_ladder_result["target_pct"]
+                        trace["entry_approved"] = True
+                        trace["entry_approved_reason"] = (
+                            f"SCORE_GAP_LADDER({_score_gap_ladder_result['reason_code']}): "
+                            f"score_gap={decision.get('score_gap')}, target_pct={_score_gap_target_pct}"
+                        )
                     else:
                         if str(final_action).endswith("_STRONG_BUY"):
                             confirm_tracker = update_confirm_tracker(
@@ -3363,6 +3694,10 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                             switch = run_switch_or_entry(
                                 state, broker, final_action, hynix_price, inverse_price,
                                 now=now, forced=forced, reason=reason, position_manager=position_manager,
+                                # 요구사항(2026-07-21) — score-gap 사다리가 정한 비중이 있으면
+                                # 그대로 쓴다(30~50%/20~30% 등). 없으면 None으로 기존 기본
+                                # 사이징 로직(run_switch_or_entry 내부 기본값)을 그대로 쓴다.
+                                target_position_pct=_score_gap_target_pct,
                             )
                             orders_this_cycle.extend(switch.get("orders", []))
                             trace["execution_stage"] = switch.get("stage")

@@ -91,6 +91,21 @@ MICRO_CHOP_DIRECTION_FLIPS = 3
 MICRO_CHOP_REVERSAL_EXITS = 2
 MICRO_CHOP_VWAP_CROSSES = 3
 MICRO_CHOP_MIN_MOVE_EFFICIENCY = 0.35
+# 요구사항(2026-07-21 실측 버그 수정) — 예전에는 위 4개 기준 중 "단 하나"만
+# 충족해도(OR) MICRO_CHOP이 활성화됐다. 상승/하락 신호가 이미 완전히 정렬됐는데도
+# 5분 롤링창에 남아 있던 과거 횡보장 이벤트(예: vwap_crosses>=3) 하나만으로
+# 하루 종일 거래가 0건이 되는 근본 원인이었다. 이제 "진짜 박스권"은 아래 4개
+# 기준 중 최소 3개를 동시에 충족해야만 활성화된다(item5).
+MICRO_CHOP_MIN_CRITERIA_COUNT = 3
+# 요구사항(2026-07-21 재수정) — live_direction/VWAP 정렬이 이 초 이상 유지되면
+# MICRO_CHOP을 즉시 해제한다(최초 20초에서 15초로 단축 — 더 빠른 해제).
+MICRO_CHOP_RELEASE_SUSTAINED_SECONDS = 15.0
+MICRO_CHOP_VWAP_ALIGNMENT_MIN_SECONDS = 15.0
+# ETF 자체 기울기 구간(5/10/20초) 중 최소 이만큼 방향과 일치하면 해제한다.
+MICRO_CHOP_RELEASE_MIN_WINDOW_AGREEMENT = 3
+# 요구사항(2026-07-21 재수정) — MICRO_CHOP 상태 자체의 유효기간(TTL). 이 시간이
+# 지나면 재평가 없이도 만료 처리해, 과거 판정이 무기한 남지 않게 한다.
+MICRO_CHOP_STATE_TTL_SECONDS = 60.0
 # 요구사항(2026-07-20 최종) — 반대 change-point 발생 시 기존 방향점수를 즉시
 # 70% 감쇠한다(신뢰도를 없애 재진입을 어렵게 만들되 완전히 0으로 만들지는 않음).
 OPPOSITE_CHANGE_POINT_DECAY_RATIO = 0.70
@@ -629,9 +644,56 @@ def evaluate_cost_gate(symbol: str, expected_move_pct: float) -> dict:
     }
 
 
+def default_micro_chop_state() -> dict:
+    return {
+        "active": False, "events": [], "direction_flips": 0, "reversal_exits": 0,
+        "vwap_crosses": 0, "avg_move_efficiency": None, "criteria_met": {},
+        "criteria_met_count": 0, "created_at": None, "activated_at": None,
+        "updated_at": None, "last_evaluated_at": None, "expires_at": None,
+        "released_at": None, "_state_date": None,
+    }
+
+
+def reset_micro_chop_state_if_stale(state: Optional[dict], now: datetime) -> dict:
+    """요구사항(2026-07-21 재수정) — 프로세스 재시작 등으로 읽어들인 persistent
+    MICRO_CHOP 상태가 오늘 날짜가 아니거나(어제 이전 세션의 잔여 상태) TTL이
+    지났으면(expires_at 경과) 시작 시 자동으로 버린다. expires_at 필드 자체가
+    없는 구버전 활성 상태도 안전하게 버린다(과거 어느 시점부터 활성화됐는지
+    알 수 없으므로)."""
+    state = dict(state or {})
+    if not state:
+        return default_micro_chop_state()
+    today = now.strftime("%Y%m%d")
+    if state.get("_state_date") and state.get("_state_date") != today:
+        return default_micro_chop_state()
+    expires_at = state.get("expires_at")
+    if state.get("active"):
+        if not expires_at:
+            return default_micro_chop_state()
+        try:
+            if now >= datetime.fromisoformat(expires_at):
+                return default_micro_chop_state()
+        except Exception:
+            return default_micro_chop_state()
+    return state
+
+
 def update_micro_chop_state(state: Optional[dict], *, direction: Optional[str], vwap_crossed: bool,
                             reversal_exit: bool, move_efficiency: Optional[float], now: datetime) -> dict:
-    state = dict(state or {})
+    """요구사항(2026-07-21 실측 버그 수정) — 상승/하락 신호가 이미 완전히
+    정렬됐는데도(structural=live=ETF 방향 UP 등) 5분 롤링창에 남아 있던 과거
+    횡보장 이벤트 "단 하나"만으로 하루 종일 신규진입이 막히던 문제를 고친다.
+
+    (a) 4개 기준(방향전환/VWAP교차/이동효율저하/swing 돌파 실패) 중 최소
+        MICRO_CHOP_MIN_CRITERIA_COUNT(3)개를 동시에 충족해야만 활성화한다
+        (기존에는 OR 1개만으로 활성화됐다).
+    (b) 최초 활성화 시각(activated_at)/생성 시각(created_at)을 기록하고,
+        TTL(MICRO_CHOP_STATE_TTL_SECONDS=60초) 기준 expires_at을 매 틱 갱신한다
+        — 재평가 없이 오래 방치된 상태가 무기한 살아남지 않게 한다.
+    (c) 날짜가 바뀌면(_state_date) 완전히 초기화한다.
+    """
+    state = reset_micro_chop_state_if_stale(state, now)
+    today = now.strftime("%Y%m%d")
     events = list(state.get("events") or [])
     events.append({
         "t": now.isoformat(),
@@ -660,22 +722,120 @@ def update_micro_chop_state(state: Optional[dict], *, direction: Optional[str], 
     vwap_crosses = sum(1 for event in kept if event.get("vwap_crossed"))
     efficiencies = [float(event["move_efficiency"]) for event in kept if event.get("move_efficiency") is not None]
     avg_efficiency = sum(efficiencies) / len(efficiencies) if efficiencies else None
-    active = (
-        flips >= MICRO_CHOP_DIRECTION_FLIPS
-        or reversal_exits >= MICRO_CHOP_REVERSAL_EXITS
-        or vwap_crosses >= MICRO_CHOP_VWAP_CROSSES
-        or (avg_efficiency is not None and avg_efficiency < MICRO_CHOP_MIN_MOVE_EFFICIENCY and len(efficiencies) >= 3)
-    )
+    criteria = {
+        "direction_flips": flips >= MICRO_CHOP_DIRECTION_FLIPS,
+        "vwap_crosses": vwap_crosses >= MICRO_CHOP_VWAP_CROSSES,
+        "low_move_efficiency": bool(avg_efficiency is not None and avg_efficiency < MICRO_CHOP_MIN_MOVE_EFFICIENCY and len(efficiencies) >= 3),
+        # "swing 돌파 실패 2회 이상"의 근사 — reversal_exit 이벤트(조기진입 반전청산)를
+        # swing 돌파 실패의 대리지표로 재사용한다(별도 swing-실패 이벤트 스트림이 없음).
+        "swing_breakout_failures": reversal_exits >= MICRO_CHOP_REVERSAL_EXITS,
+    }
+    criteria_met_count = sum(1 for v in criteria.values() if v)
+    active = criteria_met_count >= MICRO_CHOP_MIN_CRITERIA_COUNT
+    was_active = bool(state.get("active"))
+    created_at = state.get("created_at")
+    activated_at = state.get("activated_at")
+    if active and not was_active:
+        activated_at = now.isoformat()
+        created_at = created_at or activated_at
+    elif not active:
+        activated_at = None
+    expires_at = (now + timedelta(seconds=MICRO_CHOP_STATE_TTL_SECONDS)).isoformat() if active else None
     state.update({
         "active": bool(active),
+        "created_at": created_at,
+        "activated_at": activated_at,
+        "expires_at": expires_at,
+        "ttl_seconds": MICRO_CHOP_STATE_TTL_SECONDS,
         "events": kept,
         "direction_flips": flips,
         "reversal_exits": reversal_exits,
         "vwap_crosses": vwap_crosses,
         "avg_move_efficiency": round(avg_efficiency, 4) if avg_efficiency is not None else None,
+        "criteria_met": criteria,
+        "criteria_met_count": criteria_met_count,
         "updated_at": now.isoformat(),
+        "last_evaluated_at": now.isoformat(),
+        "released_at": None if active else (now.isoformat() if was_active else state.get("released_at")),
+        "_state_date": today,
     })
     return state
+
+
+def update_vwap_alignment_tracker(tracker: Optional[dict], *, aligned: bool, now: datetime) -> dict:
+    """요구사항5(2026-07-21) — VWAP "돌파 이벤트"(이번 틱에 막 교차)와 "정렬
+    상태"(현재 올바른 쪽에서 유지 중인 시간)를 분리 추적한다. MICRO_CHOP 해제는
+    신규 돌파 이벤트가 아니라 이 유지시간(aligned_since 기준)으로도 인정한다."""
+    tracker = dict(tracker or {})
+    if aligned:
+        if not tracker.get("aligned_since"):
+            tracker["aligned_since"] = now.isoformat()
+    else:
+        tracker["aligned_since"] = None
+    tracker["aligned"] = bool(aligned)
+    tracker["checked_at"] = now.isoformat()
+    return tracker
+
+
+def vwap_alignment_seconds(tracker: Optional[dict], now: datetime) -> Optional[float]:
+    since = (tracker or {}).get("aligned_since")
+    if not since:
+        return None
+    try:
+        return max(0.0, (now - datetime.fromisoformat(since)).total_seconds())
+    except Exception:
+        return None
+
+
+def evaluate_micro_chop_release(
+    *,
+    live_direction: Optional[str] = None,
+    live_direction_held_seconds: Optional[float] = None,
+    structural_direction: Optional[str] = None,
+    confirm_window_directions: Optional[dict] = None,
+    confirm_vwap_aligned_seconds: Optional[float] = None,
+    new_swing_breakout: Optional[bool] = None,
+    actionable_signal: Optional[str] = None,
+    etf_mutual_confirmed: Optional[bool] = None,
+    data_time_mismatch: bool = False,
+) -> dict:
+    """요구사항(2026-07-21 재수정) — MICRO_CHOP 즉시 해제 조건(방향과 무관하게
+    완전히 대칭). 아래 중 하나라도 충족되면 해제한다(반환 {"release": bool,
+    "reason": str|None}). data_time_mismatch가 True면(결측/시차초과 데이터)
+    절대 해제하지 않는다 — 나쁜 데이터로 안전장치를 풀면 안 되기 때문이다."""
+    if data_time_mismatch:
+        return {"release": False, "reason": None}
+
+    if (
+        structural_direction in ("UP", "DOWN") and structural_direction == live_direction
+        and live_direction_held_seconds is not None
+        and live_direction_held_seconds >= MICRO_CHOP_RELEASE_SUSTAINED_SECONDS
+    ):
+        return {
+            "release": True,
+            "reason": f"structural/live 방향 일치({live_direction}) {live_direction_held_seconds:.0f}초 지속",
+        }
+
+    confirm = confirm_window_directions or {}
+    if live_direction in ("UP", "DOWN") and all(confirm.get(w) == live_direction for w in (5, 10, 20)):
+        return {"release": True, "reason": "매수ETF 5·10·20초 모두 방향과 일치"}
+
+    if (
+        confirm_vwap_aligned_seconds is not None
+        and confirm_vwap_aligned_seconds >= MICRO_CHOP_VWAP_ALIGNMENT_MIN_SECONDS
+    ):
+        return {
+            "release": True,
+            "reason": f"매수ETF VWAP 정렬 {confirm_vwap_aligned_seconds:.0f}초 유지",
+        }
+
+    if new_swing_breakout:
+        return {"release": True, "reason": "신규 swing 고점/저점 갱신"}
+
+    if actionable_signal in ("HYNIX_STRONG_BUY", "INVERSE_STRONG_BUY") and etf_mutual_confirmed:
+        return {"release": True, "reason": f"actionable_signal={actionable_signal} + ETF 상호확인"}
+
+    return {"release": False, "reason": None}
 
 
 def should_exit_probe(

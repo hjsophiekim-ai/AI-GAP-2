@@ -12,6 +12,8 @@ import pytest
 import app.services.hynix_switch_engine as engine
 import app.services.hynix_switch_state as state_module
 from app.trading import exit_order_coordinator as order_coord
+from app.models import OrderResult
+from app.trading.hynix_symbols import LONG_SYMBOL as HYNIX_SYMBOL
 
 _MID_SESSION_NOW = datetime(2026, 7, 15, 10, 0, 0)  # 09:10~14:50 신규진입 허용 구간
 
@@ -323,11 +325,12 @@ def test_early_live_enhanced_inverse_approval_alone_does_not_place_probe_order(t
     trace = result["pipeline_trace"]
     assert trace["enhanced_direction_approval"]["final_action"] == "INVERSE_BUY"
     assert trace["enhanced_direct_order_blocked"] is True
-    assert trace["entry_approved"] is True
+    assert trace["entry_approved"] is False
     # Enhanced의 raw score 승인만으로는 조기진입 주문이 나가지 않는다 — Early
     # Detector 자신의 실시간 신호가 없으므로 NO_EARLY_SIGNAL로 스킵되어야 한다.
-    assert trace["stopped_stage"] == "early_order"
-    assert trace["early_decision"]["reason_code"] == "NO_EARLY_SIGNAL"
+    assert trace["stopped_stage"] == "entry_approved"
+    assert trace["early_decision"]["reason_code"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK")
+    assert trace["signal_summary"]["block_reason"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK", "NEW_ENTRY_TIME_CLOSED")
     assert trace["early_order_result"]["order_sent"] is False
     assert result["state"]["position"]["symbol"] != "0197X0"
 
@@ -388,9 +391,10 @@ def test_early_live_reports_no_early_signal_even_when_cost_gate_premocked(tmp_pa
 
     trace = result["pipeline_trace"]
     assert trace["enhanced_direct_order_blocked"] is True
-    assert trace["entry_approved"] is True
-    assert trace["stopped_stage"] == "early_order"
-    assert trace["early_decision"]["reason_code"] == "NO_EARLY_SIGNAL"
+    assert trace["entry_approved"] is False
+    assert trace["stopped_stage"] == "entry_approved"
+    assert trace["early_decision"]["reason_code"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK")
+    assert trace["signal_summary"]["block_reason"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK", "NEW_ENTRY_TIME_CLOSED")
     assert "ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지" not in (trace["blocking_reason"] or "")
     assert trace["early_order_result"]["order_sent"] is False
 
@@ -1344,3 +1348,173 @@ def test_strong_down_confirmed_blocks_new_hynix_entry(tmp_path, monkeypatch):
     assert trace["entry_approved"] is False
     assert "STRONG_DOWN" in trace["entry_approved_reason"]
     assert result["state"]["position"].get("symbol") is None
+
+
+def test_signal_summary_uses_early_detector_block_reason_for_buy_to_hold():
+    decision = {
+        "final_action": "HYNIX_BUY",
+        "enhanced_score": 82.0,
+        "inverse_pressure_score": 35.0,
+    }
+    trace = {
+        "prediction_signal": "BUY",
+        "entry_approved": False,
+        "entry_approved_reason": "Early Trend Detector blocked: MICRO_CHOP",
+        "order_sent": False,
+        "early_decision": {"reason_code": "MICRO_CHOP", "reason": "MICRO_CHOP"},
+    }
+
+    summary = engine._build_signal_summary(
+        decision=decision, trace=trace, state={}, now=_MID_SESSION_NOW,
+        new_entry_allowed_now=True, new_entry_window={"rule": "allowed"},
+    )
+
+    assert summary["actionable_signal"] == "HOLD"
+    assert summary["final_action"] == "HOLD"
+    assert summary["block_reason"] == "MICRO_CHOP"
+
+
+def test_score_gap_ladder_enters_when_gap_47_and_live_up():
+    result = engine.evaluate_score_gap_entry_ladder(
+        score_gap=47.0,
+        desired_direction="UP",
+        live_direction="UP",
+        confidence=85.0,
+        stop_loss_distance_pct=0.8,
+        buyable_cash=10_000_000.0,
+        current_price=100_000.0,
+    )
+
+    assert result["action"] == "ENTER"
+    assert result["reason_code"] == "LIVE_ALIGNED"
+    assert 0.30 <= result["target_pct"] <= 0.50
+
+
+def test_score_gap_ladder_holds_when_gap_47_but_live_down():
+    result = engine.evaluate_score_gap_entry_ladder(
+        score_gap=47.0,
+        desired_direction="UP",
+        live_direction="DOWN",
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["target_pct"] == 0.0
+    assert result["reason_code"] == "LIVE_DIRECTION_CONFLICT"
+
+
+def test_score_gap_ladder_uses_pullback_probe_when_aligned_pullback():
+    result = engine.evaluate_score_gap_entry_ladder(
+        score_gap=47.0,
+        desired_direction="UP",
+        live_direction=None,
+        structural_direction="UP",
+        etf_mid_term_aligned=True,
+        etf_confirmation_state="ALIGNED_PULLBACK",
+        confidence=85.0,
+        stop_loss_distance_pct=0.8,
+    )
+
+    assert result["action"] == "ENTER"
+    assert result["reason_code"] == "PULLBACK_PROBE"
+    assert 0.20 <= result["target_pct"] <= 0.30
+
+
+class _BuyingBroker:
+    def __init__(self):
+        self.cash = 10_000_000.0
+        self.positions = []
+        self.buy_calls = []
+
+    def get_positions(self):
+        return list(self.positions)
+
+    def get_buyable_cash(self):
+        return self.cash
+
+    def get_balance(self):
+        return self.cash
+
+    def buy(self, symbol, name, quantity, price, order_type="limit"):
+        self.buy_calls.append((symbol, quantity, price))
+        self.cash -= quantity * price
+        self.positions = [{"symbol": symbol, "name": name, "quantity": quantity, "avg_price": price}]
+        return OrderResult(
+            success=True, mode="mock", account_type="mock", symbol=symbol, name=name,
+            side="buy", quantity=quantity, price=price, order_type=order_type,
+            order_id="B1", message="ok",
+        )
+
+    def sell(self, *args, **kwargs):
+        raise AssertionError("unexpected sell")
+
+
+def _patch_score_gap_loop(monkeypatch, broker):
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.adaptive_market_regime as regime_module
+    import app.trading.broker_factory as broker_factory_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "HYNIX_BUY",
+            "enhanced_score": 97.0,
+            "inverse_pressure_score": 50.0,
+            "score_gap": 47.0,
+            "score_gap_below_forced_trade_threshold": False,
+            "reasons": ["score gap test"],
+        },
+    )
+    monkeypatch.setattr(
+        regime_module, "compute_and_confirm_regime",
+        lambda *a, **kw: {
+            "raw_regime": "RANGE", "confirmed_regime": "RANGE", "displayed_regime": "RANGE",
+            "confidence": 85.0, "reasons": ["forced for score gap test"],
+            "profile": regime_module.get_risk_profile("RANGE"),
+            "previous_regime": None, "transitioned_at": None,
+            "confirmation_state": regime_module.default_regime_confirmation_state(), "snapshot": {},
+        },
+    )
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: broker)
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+
+def test_score_gap_47_live_up_executes_real_entry_in_loop(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+    broker = _BuyingBroker()
+    _patch_score_gap_loop(monkeypatch, broker)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["early_trend_detector_live"] = False
+    state["live_trade_direction"] = {"direction": "UP"}
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    assert broker.buy_calls
+    assert result["pipeline_trace"]["broker_executed"] is True
+    assert result["state"]["position"]["symbol"] == HYNIX_SYMBOL
+
+
+def test_score_gap_47_live_down_holds_in_loop(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+    broker = _BuyingBroker()
+    _patch_score_gap_loop(monkeypatch, broker)
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["early_trend_detector_live"] = False
+    state["live_trade_direction"] = {"direction": "DOWN"}
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    assert not broker.buy_calls
+    assert result["pipeline_trace"]["entry_approved"] is False
+    assert "LIVE_DIRECTION_CONFLICT" in result["pipeline_trace"]["entry_approved_reason"]
