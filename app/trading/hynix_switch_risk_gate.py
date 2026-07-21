@@ -1,11 +1,9 @@
 """
 hynix_switch_risk_gate.py — 신규진입 시간창 판정 + VI/호가공백 감지 + 차단조건 통합.
 
-요구사항(2026-07-20) — 기존 "09:00~09:10 관망(watch-only)" 규칙은 완전히
-삭제했다. 신규진입 허용/금지는 이제 다음 3구간으로만 판단한다:
-  09:00~09:15 신규진입 허용
-  09:15~09:30 신규진입 금지
-  09:30~14:50 신규진입 허용(기존과 동일)
+요구사항(2026-07-21) — 2026-07-20에 도입했던 "09:15~09:30 신규진입 금지" 블랙아웃
+구간을 폐지했다. 신규진입 허용/금지는 이제 다음 2구간으로만 판단한다:
+  09:00~14:50 신규진입 허용(중간 블랙아웃 없음)
   그 외 시간대(장 시작 전/14:50 이후) 신규진입 금지
 15:10 청산모드, 15:15 강제청산, 15:20 이후 신규주문 금지의 시간모델은 그대로다.
 
@@ -36,10 +34,9 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = ROOT / "config" / "hynix_enhanced_weights.json"
 
 _DEFAULT_SCHEDULE = {
-    # 요구사항(2026-07-20) — 09:00~09:10 관망 규칙 삭제, 3구간 신규진입 규칙으로 대체.
+    # 요구사항(2026-07-21) — 09:15~09:30 신규진입 금지 블랙아웃 폐지, 09:00~14:50
+    # 단일 구간 허용으로 단순화.
     "new_entry_morning_open": "09:00",
-    "new_entry_morning_blackout_start": "09:15",
-    "new_entry_morning_blackout_end": "09:30",
     "forced_trade_windows": [["09:00", "09:15"], ["10:30", "11:00"], ["13:30", "14:30"]],
     "entry_cutoff_time": "14:50",
     "liquidation_prep_time": "15:05",
@@ -87,9 +84,9 @@ def is_within_operating_window(now: Optional[datetime] = None) -> bool:
 
 
 def is_new_entry_allowed(now: Optional[datetime] = None) -> bool:
-    """신규진입 허용 여부(요구사항 2026-07-20) — 09:00~09:15, 09:30~14:50 구간만 True.
+    """신규진입 허용 여부(요구사항 2026-07-21 — 09:15~09:30 블랙아웃 폐지) —
+    09:00~14:50 구간 전체 True(중간 금지 구간 없음).
 
-    09:15~09:30은 신규진입 금지(구간 전체 — 확정 신뢰도/방향일치 등 예외 없음).
     이 함수 하나가 Early Trend Detector/ENHANCED_REGIME_SWITCH/Active Strategy/
     Fast Watcher 등 모든 신규진입 경로가 공유하는 단일 판정 지점이다(스위칭의
     재매수 레그에도 동일 적용). 기존 포지션의 손절/익절/반전청산/15:15 강제청산은
@@ -98,14 +95,8 @@ def is_new_entry_allowed(now: Optional[datetime] = None) -> bool:
     sched = _load_schedule()
     t = now.time()
     morning_open = _parse_hm(sched["new_entry_morning_open"])
-    blackout_start = _parse_hm(sched["new_entry_morning_blackout_start"])
-    blackout_end = _parse_hm(sched["new_entry_morning_blackout_end"])
     cutoff = _parse_hm(sched["entry_cutoff_time"])
-    if morning_open <= t < blackout_start:
-        return True
-    if blackout_start <= t < blackout_end:
-        return False
-    return blackout_end <= t < cutoff
+    return morning_open <= t < cutoff
 
 
 def describe_new_entry_window(now: Optional[datetime] = None) -> dict:
@@ -114,20 +105,14 @@ def describe_new_entry_window(now: Optional[datetime] = None) -> dict:
     now = now or kst_now()
     sched = _load_schedule()
     t = now.time()
-    morning_open_s, blackout_start_s = sched["new_entry_morning_open"], sched["new_entry_morning_blackout_start"]
-    blackout_end_s, cutoff_s = sched["new_entry_morning_blackout_end"], sched["entry_cutoff_time"]
-    morning_open, blackout_start = _parse_hm(morning_open_s), _parse_hm(blackout_start_s)
-    blackout_end, cutoff = _parse_hm(blackout_end_s), _parse_hm(cutoff_s)
+    morning_open_s, cutoff_s = sched["new_entry_morning_open"], sched["entry_cutoff_time"]
+    morning_open, cutoff = _parse_hm(morning_open_s), _parse_hm(cutoff_s)
 
     allowed = is_new_entry_allowed(now)
     if t < morning_open:
         rule = f"장 시작 전 — {morning_open_s}부터 신규진입 허용"
-    elif morning_open <= t < blackout_start:
-        rule = f"{morning_open_s}~{blackout_start_s} 신규진입 허용"
-    elif blackout_start <= t < blackout_end:
-        rule = f"{blackout_start_s}~{blackout_end_s} 신규진입 금지(보유 포지션 손절·익절·반전청산·15:15 강제청산은 계속 실행)"
-    elif blackout_end <= t < cutoff:
-        rule = f"{blackout_end_s}~{cutoff_s} 신규진입 허용"
+    elif morning_open <= t < cutoff:
+        rule = f"{morning_open_s}~{cutoff_s} 신규진입 허용"
     else:
         rule = f"{cutoff_s} 이후 — 신규진입 금지(청산만 진행)"
     return {"allowed": allowed, "rule": rule, "checked_at": now.isoformat(timespec="seconds")}

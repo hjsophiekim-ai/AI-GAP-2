@@ -1,11 +1,11 @@
 """
-test_opening_session_entry_window.py — 장초반 신규진입 시간창 규칙 검증(2026-07-20).
+test_opening_session_entry_window.py — 장초반 신규진입 시간창 규칙 검증.
 
-기존 09:00~09:10 관망(watch-only) 규칙은 완전히 삭제되고, 아래 3구간 규칙으로
-대체됐다:
-  09:00~09:15 신규진입 허용
-  09:15~09:30 신규진입 금지
-  09:30~14:50 신규진입 허용(기존과 동일)
+기존 09:00~09:10 관망(watch-only) 규칙은 2026-07-20에 삭제되고 09:00~09:15
+허용/09:15~09:30 금지/09:30~14:50 허용의 3구간 규칙으로 대체됐었다. 2026-07-21
+요구사항으로 그 09:15~09:30 블랙아웃도 폐지되어, 이제 아래 2구간 규칙만 남는다:
+  09:00~14:50 신규진입 허용(중간 금지 구간 없음)
+  그 외 시간대(장 시작 전/14:50 이후) 신규진입 금지
 기존 포지션의 손절/익절/반전청산/15:15 강제청산은 이 시간창과 무관하게 항상
 실행되어야 한다.
 """
@@ -21,21 +21,21 @@ from app.trading.hynix_switch_risk_gate import (
 )
 
 
-# ── 신규진입 허용/금지 3구간 ──────────────────────────────────────────────────
+# ── 신규진입 허용/금지 2구간 ──────────────────────────────────────────────────
 
 @pytest.mark.parametrize("hm,expected", [
     ((8, 59), False),   # 장 시작 전
     ((9, 0), True),     # 09:00 — 허용 시작
     ((9, 14), True),
-    ((9, 15), False),   # 09:15 — 금지 시작
-    ((9, 29), False),
-    ((9, 30), True),    # 09:30 — 허용 재개
+    ((9, 15), True),    # 요구사항(2026-07-21) — 09:15~09:30 블랙아웃 폐지, 계속 허용
+    ((9, 29), True),
+    ((9, 30), True),
     ((10, 0), True),
     ((14, 49), True),
     ((14, 50), False),  # 기존 컷오프는 유지
     ((15, 0), False),
 ])
-def test_is_new_entry_allowed_matches_three_window_rule(hm, expected):
+def test_is_new_entry_allowed_matches_single_window_rule(hm, expected):
     now = datetime(2026, 7, 20, *hm)
     assert is_new_entry_allowed(now) is expected
 
@@ -47,10 +47,25 @@ def test_old_0900_0910_watch_only_rule_is_gone():
     assert is_new_entry_allowed(now) is True
 
 
+def test_0915_0930_blackout_rule_is_gone():
+    """요구사항(2026-07-21) — 09:15~09:30 신규진입 금지 블랙아웃은 완전히
+    폐지한다. 09:20은 이제 신규진입이 허용되어야 한다(과거에는 금지였음)."""
+    now = datetime(2026, 7, 20, 9, 20)
+    assert is_new_entry_allowed(now) is True
+
+
 def test_is_watch_only_no_longer_exists():
     import app.trading.hynix_switch_risk_gate as risk_gate
 
     assert not hasattr(risk_gate, "is_watch_only")
+
+
+def test_blackout_schedule_keys_no_longer_exist():
+    """요구사항(2026-07-21) — 블랙아웃 관련 스케줄 키 자체를 제거했다."""
+    import app.trading.hynix_switch_risk_gate as risk_gate
+
+    assert "new_entry_morning_blackout_start" not in risk_gate._DEFAULT_SCHEDULE
+    assert "new_entry_morning_blackout_end" not in risk_gate._DEFAULT_SCHEDULE
 
 
 # ── UI 표시용 규칙 설명 ───────────────────────────────────────────────────────
@@ -58,12 +73,12 @@ def test_is_watch_only_no_longer_exists():
 def test_describe_new_entry_window_reports_allowed_and_rule_text():
     allowed_case = describe_new_entry_window(datetime(2026, 7, 20, 9, 5))
     assert allowed_case["allowed"] is True
-    assert "09:00" in allowed_case["rule"] and "09:15" in allowed_case["rule"]
+    assert "09:00" in allowed_case["rule"] and "14:50" in allowed_case["rule"]
 
-    blocked_case = describe_new_entry_window(datetime(2026, 7, 20, 9, 20))
-    assert blocked_case["allowed"] is False
-    assert "09:15" in blocked_case["rule"] and "09:30" in blocked_case["rule"]
-    assert "청산" in blocked_case["rule"]  # 청산은 계속 실행된다는 안내 포함
+    # 요구사항(2026-07-21) — 과거 블랙아웃 구간이었던 09:20도 이제 허용이다.
+    formerly_blocked_case = describe_new_entry_window(datetime(2026, 7, 20, 9, 20))
+    assert formerly_blocked_case["allowed"] is True
+    assert "09:00" in formerly_blocked_case["rule"] and "14:50" in formerly_blocked_case["rule"]
 
     reopened_case = describe_new_entry_window(datetime(2026, 7, 20, 10, 0))
     assert reopened_case["allowed"] is True
@@ -80,7 +95,7 @@ def test_describe_new_entry_window_reports_allowed_and_rule_text():
 # ── 기존 포지션 청산은 시간창과 무관 ──────────────────────────────────────────
 
 def test_liquidation_and_tp_sl_are_not_gated_by_new_entry_window(tmp_path, monkeypatch):
-    """요구사항 — 09:15~09:30(신규진입 금지 구간)에도 보유 포지션의 손절/익절/
+    """요구사항 — 14:50 이후(신규진입 금지 구간)에도 보유 포지션의 손절/익절/
     반전청산/15:15 강제청산은 정상 실행되어야 한다. main 3분 사이클의
     trading_allowed(청산 실행 게이트)가 신규진입 시간창과 분리됐는지 확인한다."""
     import app.services.hynix_switch_state as state_module
@@ -153,18 +168,20 @@ def test_liquidation_and_tp_sl_are_not_gated_by_new_entry_window(tmp_path, monke
     }
     state_module.save_state_atomic(state)
 
-    # 09:20 — 신규진입 금지 구간이지만 손절(TP/SL)은 정상 실행되어야 한다.
-    now = datetime(2026, 7, 20, 9, 20, 0)
+    # 15:00 — 신규진입 금지 구간(14:50 이후)이지만 손절(TP/SL)은 정상 실행되어야 한다.
+    now = datetime(2026, 7, 20, 15, 0, 0)
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=now)
 
-    assert len(broker.sell_calls) == 1, "09:15~09:30 신규진입 금지 구간에도 보유 포지션 손절은 실행되어야 한다"
+    assert len(broker.sell_calls) == 1, "신규진입 금지 구간에도 보유 포지션 손절은 실행되어야 한다"
     trace = result["pipeline_trace"]
     assert trace["risk_manager_ok"] is True, "신규진입 시간창은 risk_manager(청산 게이트)를 막으면 안 된다"
 
 
 # ── 모든 신규진입 경로(Fast Watcher 포함)에 동일 적용 ─────────────────────────
 
-def test_fast_watcher_skips_during_0915_0930_blackout(tmp_path, monkeypatch):
+def test_fast_watcher_no_longer_blocked_during_former_0915_0930_blackout(tmp_path, monkeypatch):
+    """요구사항(2026-07-21) — 09:15~09:30 블랙아웃이 폐지됐으므로, Fast Watcher도
+    더 이상 이 시간대를 신규진입 금지 사유로 스킵하면 안 된다."""
     import app.services.hynix_switch_state as state_module
     import app.services.hynix_switch_engine as engine
 
@@ -175,11 +192,12 @@ def test_fast_watcher_skips_during_0915_0930_blackout(tmp_path, monkeypatch):
     state_module.save_state_atomic(state)
 
     result = engine.run_fast_trend_watcher_tick(mode="mock", now=datetime(2026, 7, 20, 9, 20, 0))
-    assert result["skipped"] is True
-    assert "09:15" in result["reason"] and "09:30" in result["reason"]
+    if result.get("skipped"):
+        reason = result.get("reason") or ""
+        assert "09:15" not in reason and "09:30" not in reason
 
 
-def test_fast_watcher_runs_during_0900_0915_window(tmp_path, monkeypatch):
+def test_fast_watcher_runs_during_0900_1450_window(tmp_path, monkeypatch):
     import app.services.hynix_switch_state as state_module
     import app.services.hynix_switch_engine as engine
     import app.models.hynix_enhanced_score as enhanced_score_module

@@ -155,8 +155,9 @@ def _krx_order_window_status(now: datetime | None = None) -> dict:
 
     요구사항(2026-07-20) — 이 함수가 09:10~14:50 규칙을 직접 재구현하고 있었다
     (실제 엔진이 쓰는 app.trading.hynix_switch_risk_gate.is_new_entry_allowed()와
-    별도 사본). 09:00~09:10 관망 규칙 삭제 + 09:15~09:30 신규진입 금지로 바뀐
-    지금, 엔진과 UI가 서로 다른 규칙을 표시하지 않도록 공용 함수 하나만 쓴다."""
+    별도 사본). 엔진과 UI가 서로 다른 규칙을 표시하지 않도록 공용 함수 하나만
+    쓴다(요구사항 2026-07-21 — 09:15~09:30 신규진입 금지 블랙아웃은 폐지됨,
+    09:00~14:50 전체 허용)."""
     now = now or kst_now()
     t = now.time()
     is_weekday = now.weekday() < 5
@@ -713,12 +714,13 @@ with sc3:
 if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.get("mode"):
     switch_state = set_control(auto_trade_on=auto_on, mode=switch_mode)
 
-# ── 신규진입 시간창(요구사항 2026-07-20) — 모드와 무관하게 항상 표시한다.
-# Early Trend Detector/ENHANCED_REGIME_SWITCH/Active Strategy/Fast Watcher가
-# 모두 공유하는 단일 판정(app.trading.hynix_switch_risk_gate.is_new_entry_allowed)
-# 결과를 그대로 보여준다 — 09:00~09:10 관망 규칙은 삭제됐고, 09:15~09:30만
-# 신규진입이 금지된다. 기존 포지션의 손절·익절·반전청산·15:15 강제청산은 이
-# 시간창과 무관하게 항상 실행된다.
+# ── 신규진입 시간창(요구사항 2026-07-21 — 09:15~09:30 블랙아웃 폐지) — 모드와
+# 무관하게 항상 표시한다. Early Trend Detector/ENHANCED_REGIME_SWITCH/Active
+# Strategy/Fast Watcher가 모두 공유하는 단일 판정
+# (app.trading.hynix_switch_risk_gate.is_new_entry_allowed) 결과를 그대로
+# 보여준다 — 09:00~14:50 전체가 신규진입 허용 구간이다(중간 금지 구간 없음).
+# 기존 포지션의 손절·익절·반전청산·15:15 강제청산은 이 시간창과 무관하게 항상
+# 실행된다.
 _entry_window_now = describe_new_entry_window(kst_now())
 (st.success if _entry_window_now["allowed"] else st.warning)(
     f"{'🟢 신규진입 허용' if _entry_window_now['allowed'] else '🟡 신규진입 금지'} — {_entry_window_now['rule']}"

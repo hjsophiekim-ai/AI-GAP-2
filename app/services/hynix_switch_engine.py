@@ -2999,8 +2999,8 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     # 요구사항(2026-07-20) — 신규진입 시간창(is_new_entry_allowed)은 더 이상 이
     # 플래그에 포함하지 않는다. trading_allowed는 이제 "기존 포지션 손절/익절/
     # 반전청산/15:15 강제청산을 이번 사이클에 시도해도 되는가"만 뜻하며, 신규
-    # 진입 가능 여부는 아래 new_entry_allowed_now로 별도 판단한다 — 그래야
-    # 09:15~09:30(신규진입 금지 구간)에도 보유 포지션 청산은 정상 실행된다.
+    # 진입 가능 여부는 아래 new_entry_allowed_now로 별도 판단한다 — 그래야 신규
+    # 진입 금지 구간(14:50 이후 등)에도 보유 포지션 청산은 정상 실행된다.
     trading_allowed = (
         auto_trade_on and real_gate_ok and not state.get("stopped")
         and not daily_return_blocked_this_cycle and broker is not None
