@@ -1087,6 +1087,132 @@ def test_strong_up_confirmed_blocks_new_inverse_entry(tmp_path, monkeypatch):
     assert result["state"]["position"].get("symbol") is None
 
 
+# =============================================================================
+# 2026-07-21 실운영 검증 — live_trade_direction(5/10/20/30초 기울기+VWAP+ETF
+# 상호확인, app.trading.early_trend_live_feed)만으로도 완전히 대칭으로 신규진입을
+# 금지한다: live UP → INVERSE 금지, live DOWN → 레버리지(HYNIX) 금지. Adaptive
+# Regime이 아직 STRONG_UP/DOWN으로 확정되지 않은 상태(RANGE)에서도 이 더 빠른
+# 신호만으로 반대방향 신규진입이 막혀야 한다.
+# =============================================================================
+
+def _neutral_regime(*a, **kw):
+    import app.trading.adaptive_market_regime as regime_module
+
+    return {
+        "raw_regime": "RANGE", "confirmed_regime": "RANGE", "displayed_regime": "RANGE",
+        "confidence": 50.0, "reasons": ["neutral for test"], "profile": regime_module.get_risk_profile("RANGE"),
+        "previous_regime": None, "transitioned_at": None,
+        "confirmation_state": regime_module.default_regime_confirmation_state(), "snapshot": {},
+    }
+
+
+def test_live_up_direction_blocks_new_inverse_entry_even_without_strong_regime(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.adaptive_market_regime as regime_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "INVERSE_BUY", "enhanced_score": 40.0, "inverse_pressure_score": 65.0,
+            "score_gap": 25.0, "score_gap_below_forced_trade_threshold": False, "reasons": [],
+        },
+    )
+    monkeypatch.setattr(regime_module, "compute_and_confirm_regime", _neutral_regime)
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    class _AssertNoBuyBroker:
+        def get_positions(self):
+            return []
+
+        def get_buyable_cash(self):
+            return 10_000_000.0
+
+        def get_balance(self):
+            return 10_000_000.0
+
+        def buy(self, *a, **k):
+            raise AssertionError("live UP 중에는 인버스 신규매수가 금지돼야 한다")
+
+        def sell(self, *a, **k):
+            raise AssertionError("이 테스트에서는 매도가 발생하면 안 됩니다.")
+
+    import app.trading.broker_factory as broker_factory_module
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: _AssertNoBuyBroker())
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["live_trade_direction"] = {"direction": "UP", "status": "CONFIRMED"}
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["entry_approved"] is False
+    assert "live_trade_direction=UP" in trace["entry_approved_reason"]
+    assert result["state"]["position"].get("symbol") is None
+
+
+def test_live_down_direction_blocks_new_hynix_entry_even_without_strong_regime(tmp_path, monkeypatch):
+    """live UP이 INVERSE를 막는 것과 완전히 대칭 — live DOWN은 레버리지(HYNIX)를 막는다."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+
+    import app.models.hynix_enhanced_score as enhanced_score_module
+    import app.models.hynix_action_decider as decider_module
+    import app.trading.adaptive_market_regime as regime_module
+
+    monkeypatch.setattr(enhanced_score_module, "calculate_enhanced_hynix_prediction_score", lambda mode=None: _fake_enhanced_result())
+    monkeypatch.setattr(
+        decider_module, "decide_hynix_or_inverse_action",
+        lambda enhanced, current_position=None: {
+            "final_action": "HYNIX_BUY", "enhanced_score": 65.0, "inverse_pressure_score": 40.0,
+            "score_gap": 25.0, "score_gap_below_forced_trade_threshold": False, "reasons": [],
+        },
+    )
+    monkeypatch.setattr(regime_module, "compute_and_confirm_regime", _neutral_regime)
+    monkeypatch.setattr(engine, "log_trade", lambda record: None)
+    monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
+    _silence_prediction_tracker(monkeypatch)
+
+    class _AssertNoBuyBroker:
+        def get_positions(self):
+            return []
+
+        def get_buyable_cash(self):
+            return 10_000_000.0
+
+        def get_balance(self):
+            return 10_000_000.0
+
+        def buy(self, *a, **k):
+            raise AssertionError("live DOWN 중에는 레버리지(HYNIX) 신규매수가 금지돼야 한다")
+
+        def sell(self, *a, **k):
+            raise AssertionError("이 테스트에서는 매도가 발생하면 안 됩니다.")
+
+    import app.trading.broker_factory as broker_factory_module
+    monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: _AssertNoBuyBroker())
+
+    state = state_module.load_state(mode="mock")
+    state["mode"] = "mock"
+    state["auto_trade_on"] = True
+    state["live_trade_direction"] = {"direction": "DOWN", "status": "CONFIRMED"}
+    state_module.save_state_atomic(state)
+
+    result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID_SESSION_NOW)
+
+    trace = result["pipeline_trace"]
+    assert trace["entry_approved"] is False
+    assert "live_trade_direction=DOWN" in trace["entry_approved_reason"]
+    assert result["state"]["position"].get("symbol") is None
+
+
 def test_new_entry_error_does_not_block_existing_position_liquidation(tmp_path, monkeypatch):
     """요구사항7 — 신규진입 오류가 기존 포지션 청산을 막지 않는다.
     run_liquidation_if_needed()는 entry-decision 블록보다 먼저 실행되고, entry

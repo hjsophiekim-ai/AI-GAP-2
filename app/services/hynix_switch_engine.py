@@ -18,6 +18,7 @@ from typing import Optional
 
 from app.logger import logger
 from app.utils.time_utils import kst_now
+from app.utils.runtime_info import read_runtime_info
 from app.trading.hynix_symbols import SIGNAL_SYMBOL, LONG_SYMBOL as HYNIX_SYMBOL, SHORT_SYMBOL as INVERSE_SYMBOL
 from app.services.hynix_switch_state import load_state, save_state_atomic, set_active_mode, reset_mock_state
 from app.services.hynix_switch_logger import log_enhanced_prediction, log_trade
@@ -3006,6 +3007,22 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         and not state.get("position_sync_block_new_orders")
     )
     new_entry_window = describe_new_entry_window(now)
+    # 요구사항(2026-07-21 실운영 검증) — Render 배포 SHA가 origin/main과 어긋나면
+    # (자동배포 지연/실패 등) 실제 운영 중인 코드가 방금 검증·푸시한 코드와 다를 수
+    # 있으므로, 그 불일치가 해소되기 전까지는 신규진입만 차단한다(기존 포지션
+    # 손절/익절/청산은 계속 정상 실행 — 안전을 위해 막지 않는다). runtime_info는
+    # app/ui/streamlit_app.py 시작 시 기록되며, "SHA Match" UI 지표와 같은 값이다.
+    _runtime_info = read_runtime_info()
+    if not _runtime_info.get("orders_enabled_by_deployment", True):
+        new_entry_window = {
+            **new_entry_window,
+            "allowed": False,
+            "rule": (
+                f"DEPLOYMENT_SHA_MISMATCH(local={_runtime_info.get('git_sha')}, "
+                f"origin={_runtime_info.get('origin_main_sha')}, render={_runtime_info.get('render_sha')}) "
+                "— 배포 SHA 불일치로 신규진입 차단"
+            ),
+        }
     new_entry_allowed_now = new_entry_window["allowed"]
 
     if not trading_allowed:
@@ -3222,6 +3239,25 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         trace["entry_approved"] = False
                         trace["entry_approved_reason"] = (
                             f"Adaptive Regime={_ar_confirmed_for_block} 확정 중 — 반대방향 신규진입 금지"
+                        )
+                        warnings.append(trace["entry_approved_reason"])
+                    elif (
+                        (desired_symbol == INVERSE_SYMBOL and (state.get("live_trade_direction") or {}).get("direction") == "UP")
+                        or (desired_symbol == HYNIX_SYMBOL and (state.get("live_trade_direction") or {}).get("direction") == "DOWN")
+                    ):
+                        # 요구사항(2026-07-21 실운영 검증) — Adaptive Regime(STRONG_UP/DOWN,
+                        # 위 분기)은 2연속 사이클 확정을 요구하는 느린 신호라 이 게이트를
+                        # 아직 통과 못 한 순간에도, 더 빠른 live_trade_direction(5/10/20/30초
+                        # 기울기 + VWAP + ETF 상호확인, app.trading.early_trend_live_feed)이
+                        # 이미 명확히 반대방향을 가리키면 그 방향의 신규진입을 금지한다.
+                        # live UP → INVERSE 금지, live DOWN → 레버리지(HYNIX) 금지를 완전히
+                        # 대칭 적용하며(동일 필드·동일 조건), 어느 한쪽에도 REVERSAL_CANDIDATE
+                        # 같은 예외/완화조건을 두지 않는다.
+                        proceed = False
+                        _live_dir_for_block = (state.get("live_trade_direction") or {}).get("direction")
+                        trace["entry_approved"] = False
+                        trace["entry_approved_reason"] = (
+                            f"live_trade_direction={_live_dir_for_block} — 실시간 반대방향 신규진입 금지"
                         )
                         warnings.append(trace["entry_approved_reason"])
                     else:
