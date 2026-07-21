@@ -277,3 +277,11 @@ def test_is_swing_structure_broken_against_detects_up_break_below_recent_low():
     assert confirm.is_swing_structure_broken_against(df, 9_950.0, "UP") is True
     assert confirm.is_swing_structure_broken_against(df, 10_090.0, "UP") is False
 
+
+def test_trade_aligned_window_directions_inverts_inverse_slopes():
+    aligned = confirm.trade_aligned_window_directions({5: "UP", 10: "DOWN"}, symbol=confirm.INVERSE_SYMBOL)
+    assert aligned[5] == "DOWN"
+    assert aligned[10] == "UP"
+    long_aligned = confirm.trade_aligned_window_directions({5: "UP"}, symbol=confirm.LONG_SYMBOL)
+    assert long_aligned[5] == "UP"
+

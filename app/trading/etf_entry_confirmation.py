@@ -106,6 +106,21 @@ def resolve_window_directions(live_slope_entry: Optional[dict]) -> dict:
     return derived
 
 
+def trade_aligned_window_directions(window_dirs: dict, *, symbol: str) -> dict:
+    """ETF 가격 기울기 방향을 UP/DOWN trade direction으로 정렬한다(인버스는 반전)."""
+    if symbol == LONG_SYMBOL:
+        return dict(window_dirs or {})
+    flipped: dict = {}
+    for key, value in (window_dirs or {}).items():
+        if value == "UP":
+            flipped[key] = "DOWN"
+        elif value == "DOWN":
+            flipped[key] = "UP"
+        else:
+            flipped[key] = value
+    return flipped
+
+
 def has_any_slope_data(live_slope_entry: Optional[dict]) -> bool:
     """live_slopes[symbol] 항목에 방향 판단에 쓸 데이터가 조금이라도 있는지."""
     entry = live_slope_entry or {}

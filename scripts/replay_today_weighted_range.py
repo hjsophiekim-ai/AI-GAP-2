@@ -34,6 +34,7 @@ from app.trading.etf_entry_confirmation import (  # noqa: E402
     compute_etf_vwap,
     is_swing_structure_broken_against,
     resolve_window_directions,
+    trade_aligned_window_directions,
 )
 from app.trading.hynix_fast_trend import compute_fast_trend_signal  # noqa: E402
 from app.trading.hynix_symbols import (  # noqa: E402
@@ -48,15 +49,15 @@ INITIAL_CASH = 10_000_000.0
 CONSERVATIVE_SLIPPAGE_PCT = 0.05
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
-# 수정 전(20초 MACD 청산 + entry_done 리셋) 기준선 — 동일 데이터·구간 비교용
+# 수정 직전(probe 잠금만, trade-align 미적용) 기준선
 BASELINE_BEFORE = {
-    "entries": 32,
-    "round_trips": 32,
-    "sub20_round_trips": 17,
-    "duplicate_episode": 0,
-    "net_pnl_krw": 373_406,
-    "return_pct": 3.73,
-    "profit_factor": 45.04,
+    "entries": 5,
+    "round_trips": 5,
+    "sub20_round_trips": 0,
+    "net_pnl_krw": 69_219,
+    "net_pnl_conservative_krw": -10_443,
+    "return_pct": 0.692,
+    "profit_factor": 4.85,
 }
 HOUR_ANCHORS = [
     f"{h:02d}{m:02d}00"
@@ -238,9 +239,15 @@ def run_replay(
         h_slice = _slice_to(hynix_1m, ts)
         etf_slice = _slice_to(long_1m if desired_symbol == LONG_SYMBOL else inverse_1m, ts)
 
-        confirm_dirs = resolve_window_directions(feed.compute_live_direction(history, desired_symbol, ts))
+        confirm_dirs = trade_aligned_window_directions(
+            resolve_window_directions(feed.compute_live_direction(history, desired_symbol, ts)),
+            symbol=desired_symbol,
+        )
         oppose_symbol = INVERSE_SYMBOL if desired_symbol == LONG_SYMBOL else LONG_SYMBOL
-        oppose_dirs = resolve_window_directions(feed.compute_live_direction(history, oppose_symbol, ts))
+        oppose_dirs = trade_aligned_window_directions(
+            resolve_window_directions(feed.compute_live_direction(history, oppose_symbol, ts)),
+            symbol=oppose_symbol,
+        )
         signal_dirs = resolve_window_directions(feed.compute_live_direction(history, SIGNAL_SYMBOL, ts))
 
         vwap = compute_etf_vwap(etf_slice) if len(etf_slice) >= 3 else None
@@ -276,12 +283,30 @@ def run_replay(
         macd_conf = engine._macd_williams_confirmation(etf_slice, live_dir)
 
         _existing_episode_direction = continuation.get("direction")
-        _opposite_episode_confirmed = (
-            bool(_existing_episode_direction)
-            and _existing_episode_direction != live_dir
+        _vwap_by_symbol = dict(continuation.get("prev_above_vwap_by_symbol") or {})
+        _prev_above_vwap = _vwap_by_symbol.get(desired_symbol)
+        vwap_reclaim = bool(
+            confirm_above_vwap
+            and _prev_above_vwap is False
             and confirm_dirs.get(5) == live_dir
             and confirm_dirs.get(10) == live_dir
-            and swing_breakout
+        )
+        _existing_structure_broken = False
+        if _existing_episode_direction and _existing_episode_direction != live_dir:
+            existing_df = long_1m if _existing_episode_direction == "UP" else inverse_1m
+            existing_price = lp if _existing_episode_direction == "UP" else ip
+            existing_slice = _slice_to(existing_df, ts)
+            if existing_price and len(existing_slice) >= 3:
+                _existing_structure_broken = is_swing_structure_broken_against(
+                    existing_slice, existing_price, _existing_episode_direction,
+                )
+        _opposite_episode_confirmed = engine.detect_opposite_episode_transition(
+            existing_direction=_existing_episode_direction,
+            new_direction=live_dir,
+            live_direction_matches=True,
+            confirm_dirs=confirm_dirs,
+            existing_structure_broken=_existing_structure_broken,
+            new_etf_vwap_reclaim=vwap_reclaim,
         )
         direction_episode_changed = False
         if continuation.get("direction") != live_dir and (
@@ -296,13 +321,9 @@ def run_replay(
                 reference_price=current_etf_price,
             )
 
-        prev_above_vwap = continuation.get("prev_above_vwap")
-        vwap_reclaim = bool(
-            confirm_above_vwap
-            and prev_above_vwap is False
-            and confirm_dirs.get(5) == live_dir
-        )
         continuation["prev_above_vwap"] = confirm_above_vwap
+        _vwap_by_symbol[desired_symbol] = confirm_above_vwap
+        continuation["prev_above_vwap_by_symbol"] = _vwap_by_symbol
         engine.update_range_episode_structural_events(
             continuation,
             now=ts,
@@ -341,16 +362,28 @@ def run_replay(
             held_slice = _slice_to(held_df, ts)
             net_ret = (held_price / position["entry_price"] - 1.0) * 100.0
             position["peak_net"] = max(position.get("peak_net", 0.0), net_ret)
-            held_dirs = resolve_window_directions(
-                feed.compute_live_direction(history, position["symbol"], ts)
+            held_dirs = trade_aligned_window_directions(
+                resolve_window_directions(
+                    feed.compute_live_direction(history, position["symbol"], ts)
+                ),
+                symbol=position["symbol"],
             )
             structure_broken = is_swing_structure_broken_against(held_slice, held_price, position["direction"])
             etf_aligned = held_dirs.get(5) == position["direction"] and held_dirs.get(10) == position["direction"]
+            h_fast = compute_fast_trend_signal(h_slice, now=ts)
+            regime_reversal = (
+                h_fast.get("direction") in ("UP", "DOWN")
+                and h_fast.get("direction") != position["direction"]
+                and held_dirs.get(5) != position["direction"]
+                and held_dirs.get(10) != position["direction"]
+            )
 
-            if (
+            _is_reversal_probe = (
                 continuation.get("entry_path") == "REVERSAL"
                 and not continuation.get("scale_in_done")
-            ):
+                and not continuation.get("probe_promoted_at")
+            )
+            if _is_reversal_probe:
                 exit_plan = engine.evaluate_weighted_range_probe_exit(
                     continuation=continuation,
                     probe_direction=position["direction"],
@@ -361,6 +394,23 @@ def run_replay(
                     now=ts,
                     net_return_pct=net_ret,
                     hard_stop_pct=float(etd.FIXED_EARLY_STOP_PCT),
+                )
+                if exit_plan.get("action") == "PROMOTE_CONTINUATION":
+                    engine.promote_reversal_probe_to_continuation(continuation, now=ts)
+                    position["entry_path"] = "CONTINUATION"
+                    continuation["entry_path"] = "CONTINUATION"
+                    exit_plan = {"action": "HOLD", "ratio": 0.0, "reason": exit_plan.get("reason")}
+            elif continuation.get("entry_path") == "CONTINUATION" or continuation.get("probe_promoted_at"):
+                exit_plan = engine.evaluate_weighted_continuation_exit(
+                    net_return_pct=net_ret,
+                    hard_stop_pct=float(etd.FIXED_EARLY_STOP_PCT),
+                    structure_reversal_confirmed=structure_broken,
+                    regime_reversal_confirmed=regime_reversal,
+                    held_window_dirs=held_dirs,
+                    position_direction=position["direction"],
+                    tp1_taken=bool(position.get("tp1_taken")),
+                    tp2_taken=bool(position.get("tp2_taken")),
+                    confirmed_regime=etd.REGIME_FAST_REVERSAL_RANGE,
                 )
             else:
                 held_rev = {w: held_dirs.get(w) == "DOWN" for w in (5, 10, 20, 30)}
@@ -380,6 +430,11 @@ def run_replay(
                 )
 
             if exit_plan["action"] in ("SELL_ALL", "SELL_PARTIAL"):
+                if exit_plan["action"] == "SELL_PARTIAL":
+                    if "TP2" in str(exit_plan.get("reason") or ""):
+                        position["tp2_taken"] = True
+                    else:
+                        position["tp1_taken"] = True
                 sell_qty = position["qty"] if exit_plan["action"] == "SELL_ALL" else max(1, int(position["qty"] * exit_plan["ratio"]))
                 gross = (held_price - position["entry_price"]) * sell_qty
                 cost = cost_engine.compute_round_trip_cost_pct(position["symbol"]) / 100.0 * position["entry_price"] * sell_qty

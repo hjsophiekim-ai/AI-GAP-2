@@ -511,6 +511,9 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             {"UP": "DOWN", "DOWN": "UP"}.get(live_raw_direction) if symbol == INVERSE_SYMBOL else live_raw_direction
         )
         held_window_dirs = (live_slopes.get(symbol) or {}).get("window_directions") or {}
+        from app.trading.etf_entry_confirmation import trade_aligned_window_directions
+
+        held_window_dirs = trade_aligned_window_directions(held_window_dirs, symbol=symbol)
         held_reversal_windows = {w: held_window_dirs.get(w) == "DOWN" for w in (5, 10, 20, 30)}
         opposite_symbol = INVERSE_SYMBOL if symbol == HYNIX_SYMBOL else HYNIX_SYMBOL
         opposite_window_dirs = (live_slopes.get(opposite_symbol) or {}).get("window_directions") or {}
@@ -561,8 +564,17 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
             _probe_elapsed = None
 
         exit_plan = {"action": "HOLD", "ratio": 0.0, "reason": None}
-        if _weighted_probe and continuation.get("entry_path") == "REVERSAL" and not continuation.get("scale_in_done"):
-            from app.services.hynix_switch_engine import evaluate_weighted_range_probe_exit
+        _is_reversal_probe = (
+            _weighted_probe
+            and continuation.get("entry_path") == "REVERSAL"
+            and not continuation.get("scale_in_done")
+            and not continuation.get("probe_promoted_at")
+        )
+        if _is_reversal_probe:
+            from app.services.hynix_switch_engine import (
+                evaluate_weighted_range_probe_exit,
+                promote_reversal_probe_to_continuation,
+            )
 
             _etf_aligned = (
                 held_window_dirs.get(5) == probe_direction and held_window_dirs.get(10) == probe_direction
@@ -578,7 +590,30 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
                 net_return_pct=snapshot["net_return_pct"],
                 hard_stop_pct=float(etd.FIXED_EARLY_STOP_PCT),
             )
-            state["trend_continuation_entry"] = continuation
+            if exit_plan.get("action") == "PROMOTE_CONTINUATION":
+                promote_reversal_probe_to_continuation(continuation, now=now)
+                state["trend_continuation_entry"] = continuation
+                exit_plan = {"action": "HOLD", "ratio": 0.0, "reason": exit_plan.get("reason"), "probe_failed": False}
+            else:
+                state["trend_continuation_entry"] = continuation
+        elif _weighted_probe and (
+            continuation.get("entry_path") == "CONTINUATION"
+            or continuation.get("probe_promoted_at")
+            or continuation.get("scale_in_done")
+        ):
+            from app.services.hynix_switch_engine import evaluate_weighted_continuation_exit
+
+            exit_plan = evaluate_weighted_continuation_exit(
+                net_return_pct=snapshot["net_return_pct"],
+                hard_stop_pct=float(etd.FIXED_EARLY_STOP_PCT),
+                structure_reversal_confirmed=structure_reversal_confirmed,
+                regime_reversal_confirmed=regime_reversal_confirmed,
+                held_window_dirs=held_window_dirs,
+                position_direction=probe_direction or "UP",
+                tp1_taken=bool(position.get("early_probe_tp1_taken")),
+                tp2_taken=bool(position.get("early_probe_tp2_taken")),
+                confirmed_regime=_adaptive_confirmed_regime,
+            )
         elif _weighted_probe:
             exit_plan = etd.should_exit_probe(
                 net_return_pct=snapshot["net_return_pct"], seconds_since_last_reconfirmation=seconds_since_reconfirm,

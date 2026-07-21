@@ -904,6 +904,7 @@ def _range_episode_probe_defaults() -> dict:
         "last_swing_breakout_at": None,
         "last_vwap_reclaim_at": None,
         "prev_above_vwap": None,
+        "prev_above_vwap_by_symbol": {},
     }
 
 
@@ -953,10 +954,7 @@ def update_range_episode_structural_events(
     if vwap_reclaim:
         continuation_state["last_vwap_reclaim_at"] = now.isoformat()
 
-    needs_unlock = (
-        continuation_state.get("episode_status") == "PROBE_FAILED"
-        or continuation_state.get("awaiting_structural_reentry")
-    )
+    needs_unlock = continuation_state.get("awaiting_structural_reentry")
     if needs_unlock and (swing_breakout or vwap_reclaim):
         after_exit = (
             _structural_event_after_probe_exit(continuation_state, "last_swing_breakout_at")
@@ -970,6 +968,27 @@ def update_range_episode_structural_events(
             continuation_state["last_block_reason"] = None
 
 
+def detect_opposite_episode_transition(
+    *,
+    existing_direction: str | None,
+    new_direction: str,
+    live_direction_matches: bool,
+    confirm_dirs: dict,
+    existing_structure_broken: bool,
+    new_etf_vwap_reclaim: bool,
+) -> bool:
+    """opposite episode 전환: swing 구조 이탈 또는 반대 ETF VWAP 재돌파 + 5/10 정렬(5초 단독 불가)."""
+    if not existing_direction:
+        return True
+    if existing_direction == new_direction:
+        return False
+    if not live_direction_matches:
+        return False
+    if confirm_dirs.get(5) != new_direction or confirm_dirs.get(10) != new_direction:
+        return False
+    return bool(existing_structure_broken or new_etf_vwap_reclaim)
+
+
 def range_episode_allows_entry(
     continuation_state: dict,
     *,
@@ -978,14 +997,13 @@ def range_episode_allows_entry(
     vwap_reclaim: bool,
     direction_changed: bool,
 ) -> tuple[bool, str | None]:
-    """동일 episode 내 과매매 방지 — REVERSAL probe 1회, PROBE_FAILED 잠금."""
+    """동일 episode 내 과매매 방지 — REVERSAL probe 1회, PROBE_FAILED는 REVERSAL만 차단."""
     if direction_changed:
         return True, None
 
     structural_unlock = swing_breakout or vwap_reclaim
-    if continuation_state.get("episode_status") == "PROBE_FAILED":
-        if not structural_unlock:
-            return False, "PROBE_FAILED_LOCKED"
+    if continuation_state.get("episode_status") == "PROBE_FAILED" and entry_path == "REVERSAL":
+        return False, "PROBE_FAILED_REVERSAL_BLOCKED"
     if entry_path == "REVERSAL" and continuation_state.get("reversal_probe_done"):
         return False, "REVERSAL_PROBE_ONCE_PER_EPISODE"
     if continuation_state.get("awaiting_structural_reentry") and not structural_unlock:
@@ -1042,6 +1060,15 @@ def mark_range_episode_exit_awaiting_structure(
     continuation_state["awaiting_structural_reentry"] = True
 
 
+def promote_reversal_probe_to_continuation(continuation_state: dict, *, now: datetime) -> None:
+    """45초 후 구조·방향·순이익 유지 시 REVERSAL probe를 CONTINUATION으로 승격."""
+    continuation_state["entry_path"] = "CONTINUATION"
+    continuation_state["episode_status"] = None
+    continuation_state["awaiting_structural_reentry"] = False
+    continuation_state["probe_promoted_at"] = now.isoformat()
+    continuation_state["last_block_reason"] = None
+
+
 def evaluate_weighted_range_probe_exit(
     *,
     continuation: dict,
@@ -1093,6 +1120,18 @@ def evaluate_weighted_range_probe_exit(
         return {"action": "HOLD", "ratio": 0.0, "reason": "probe hold window", "probe_failed": False}
 
     if elapsed >= RANGE_PROBE_HOLD_MAX_SECONDS and not macd_confirmed:
+        if (
+            etf_direction_aligned
+            and not structure_reversal_confirmed
+            and net_return_pct is not None
+            and net_return_pct > 0.0
+        ):
+            return {
+                "action": "PROMOTE_CONTINUATION",
+                "ratio": 0.0,
+                "reason": "REVERSAL probe promoted to CONTINUATION",
+                "probe_failed": False,
+            }
         return {
             "action": "SELL_ALL",
             "ratio": 1.0,
@@ -1109,6 +1148,67 @@ def evaluate_weighted_range_probe_exit(
         }
 
     return {"action": "HOLD", "ratio": 0.0, "reason": None, "probe_failed": False}
+
+
+def evaluate_weighted_continuation_exit(
+    *,
+    net_return_pct: float | None,
+    hard_stop_pct: float,
+    structure_reversal_confirmed: bool,
+    regime_reversal_confirmed: bool,
+    held_window_dirs: dict,
+    position_direction: str,
+    tp1_taken: bool = False,
+    tp2_taken: bool = False,
+    confirmed_regime: str | None = None,
+) -> dict:
+    """CONTINUATION 청산 — 5초 단독 역행 무시, hard stop·regime 반전은 즉시."""
+    from app.trading.early_trend_detector import (
+        REGIME_FAST_REVERSAL_RANGE,
+        VOLATILE_RANGE_SL_PCT,
+        VOLATILE_RANGE_TP1_MIN_SELL_RATIO,
+        VOLATILE_RANGE_TP1_PCT,
+        VOLATILE_RANGE_TP2_PCT,
+        VOLATILE_RANGE_TP2_SELL_RATIO,
+    )
+
+    hold = {"action": "HOLD", "ratio": 0.0, "reason": None}
+    if net_return_pct is not None and net_return_pct <= hard_stop_pct:
+        return {"action": "SELL_ALL", "ratio": 1.0, "reason": "hard stop"}
+
+    if regime_reversal_confirmed:
+        return {"action": "SELL_ALL", "ratio": 1.0, "reason": "regime reversal confirmed"}
+
+    if structure_reversal_confirmed:
+        return {"action": "SELL_ALL", "ratio": 1.0, "reason": "swing structure invalidated"}
+
+    required_opp = "DOWN" if position_direction == "UP" else "UP"
+    if held_window_dirs.get(5) == required_opp and held_window_dirs.get(10) == required_opp:
+        return {"action": "SELL_ALL", "ratio": 1.0, "reason": "5s+10s opposite confirmed"}
+
+    regime_label = confirmed_regime or REGIME_FAST_REVERSAL_RANGE
+    if net_return_pct is not None and net_return_pct <= VOLATILE_RANGE_SL_PCT:
+        return {
+            "action": "SELL_ALL",
+            "ratio": 1.0,
+            "reason": f"{regime_label} 손절(net {net_return_pct:.2f}% <= {VOLATILE_RANGE_SL_PCT}%)",
+        }
+    if not tp2_taken and net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP2_PCT:
+        return {
+            "action": "SELL_PARTIAL",
+            "ratio": VOLATILE_RANGE_TP2_SELL_RATIO,
+            "reason": f"{regime_label} TP2(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP2_PCT}%)",
+        }
+    if not tp1_taken and net_return_pct is not None and net_return_pct >= VOLATILE_RANGE_TP1_PCT:
+        return {
+            "action": "SELL_PARTIAL",
+            "ratio": VOLATILE_RANGE_TP1_MIN_SELL_RATIO,
+            "reason": (
+                f"{regime_label} TP1(net {net_return_pct:.2f}% >= {VOLATILE_RANGE_TP1_PCT}%) — "
+                f"{VOLATILE_RANGE_TP1_MIN_SELL_RATIO * 100:.0f}%+ 부분익절"
+            ),
+        }
+    return hold
 
 
 def _first_blocked_stage(trace: dict) -> Optional[str]:
@@ -3674,9 +3774,23 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     desired_live_direction = "UP" if _hynix_score >= _inverse_score else "DOWN"
             desired_symbol = HYNIX_SYMBOL if desired_live_direction == "UP" else (INVERSE_SYMBOL if desired_live_direction == "DOWN" else None)
             current_etf_price = long_price if desired_symbol == HYNIX_SYMBOL else (inverse_price if desired_symbol == INVERSE_SYMBOL else None)
-            confirm_dirs = resolve_window_directions(etd_state["live_slopes"].get(desired_symbol)) if desired_symbol else {}
+            from app.trading.etf_entry_confirmation import resolve_window_directions, trade_aligned_window_directions
+
+            confirm_dirs = (
+                trade_aligned_window_directions(
+                    resolve_window_directions(etd_state["live_slopes"].get(desired_symbol)),
+                    symbol=desired_symbol,
+                )
+                if desired_symbol else {}
+            )
             oppose_symbol = INVERSE_SYMBOL if desired_symbol == HYNIX_SYMBOL else HYNIX_SYMBOL
-            oppose_dirs = resolve_window_directions(etd_state["live_slopes"].get(oppose_symbol)) if desired_symbol else {}
+            oppose_dirs = (
+                trade_aligned_window_directions(
+                    resolve_window_directions(etd_state["live_slopes"].get(oppose_symbol)),
+                    symbol=oppose_symbol,
+                )
+                if desired_symbol else {}
+            )
             confirm_above_vwap = None
             confirm_swing_breakout = None
             if desired_symbol and current_etf_price:
@@ -3700,13 +3814,35 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 except Exception:
                     confirm_above_vwap = None
             _existing_episode_direction = continuation_state.get("direction")
-            _opposite_episode_confirmed = (
-                bool(_existing_episode_direction)
-                and _existing_episode_direction != desired_live_direction
-                and live_trade.get("direction") == desired_live_direction
+            _vwap_by_symbol = dict(continuation_state.get("prev_above_vwap_by_symbol") or {})
+            _prev_above_vwap = _vwap_by_symbol.get(desired_symbol) if desired_symbol else continuation_state.get("prev_above_vwap")
+            _vwap_reclaim = bool(
+                confirm_above_vwap
+                and _prev_above_vwap is False
                 and confirm_dirs.get(5) == desired_live_direction
                 and confirm_dirs.get(10) == desired_live_direction
-                and bool(confirm_swing_breakout)
+            )
+            _existing_structure_broken = False
+            if _existing_episode_direction and _existing_episode_direction != desired_live_direction:
+                try:
+                    from app.trading.etf_entry_confirmation import is_swing_structure_broken_against
+
+                    _existing_symbol = HYNIX_SYMBOL if _existing_episode_direction == "UP" else INVERSE_SYMBOL
+                    _existing_df = _load_etf_own_minute_cache(_existing_symbol)
+                    _existing_price = long_price if _existing_symbol == HYNIX_SYMBOL else inverse_price
+                    if _existing_df is not None and _existing_price:
+                        _existing_structure_broken = is_swing_structure_broken_against(
+                            _existing_df, float(_existing_price), _existing_episode_direction,
+                        )
+                except Exception:
+                    _existing_structure_broken = False
+            _opposite_episode_confirmed = detect_opposite_episode_transition(
+                existing_direction=_existing_episode_direction,
+                new_direction=desired_live_direction,
+                live_direction_matches=live_trade.get("direction") == desired_live_direction,
+                confirm_dirs=confirm_dirs,
+                existing_structure_broken=_existing_structure_broken,
+                new_etf_vwap_reclaim=_vwap_reclaim,
             )
             _direction_episode_changed = False
             if continuation_state.get("direction") != desired_live_direction and (
@@ -3720,13 +3856,10 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     episode_id=f"{desired_live_direction}:{now.isoformat()}",
                     reference_price=current_etf_price,
                 )
-            _prev_above_vwap = continuation_state.get("prev_above_vwap")
-            _vwap_reclaim = bool(
-                confirm_above_vwap
-                and _prev_above_vwap is False
-                and confirm_dirs.get(5) == desired_live_direction
-            )
             continuation_state["prev_above_vwap"] = confirm_above_vwap
+            if desired_symbol:
+                _vwap_by_symbol[desired_symbol] = confirm_above_vwap
+                continuation_state["prev_above_vwap_by_symbol"] = _vwap_by_symbol
             update_range_episode_structural_events(
                 continuation_state,
                 now=now,
