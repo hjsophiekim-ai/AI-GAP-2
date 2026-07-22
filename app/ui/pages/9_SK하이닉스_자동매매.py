@@ -370,6 +370,8 @@ from app.services.hynix_auto_trade_scheduler import (
     get_status as get_cycle_status,
 )
 from app.ui.trading_decision_snapshot import (
+    completed_snapshot_decision_fields,
+    format_reward_risk_display,
     selected_completed_decision_snapshot,
     snapshot_field,
     snapshot_field_meta,
@@ -965,8 +967,9 @@ if switch_state.get("mode") == "mock":
     _live_enhanced = _raw_meta.get("hynix_score")
     _live_inverse = _raw_meta.get("inverse_score")
     _signal_summary = (_decision_snapshot or {}).get("signal_summary") or {}
+    _snap_fields = completed_snapshot_decision_fields(_decision_snapshot)
     if _signal_summary.get("conclusion"):
-        if _signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
+        if _snap_fields.get("primary_block_reason") == "NEW_ENTRY_TIME_CLOSED" or _signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
             st.error(_signal_summary["conclusion"])
         else:
             st.info(_signal_summary["conclusion"])
@@ -990,33 +993,34 @@ if switch_state.get("mode") == "mock":
         f"{_num(_final_score):.1f}/100" if _final_score is not None else "-",
         delta=f"INVERSE {_num(_final_meta.get('inverse_score')):.1f}" if _final_meta.get("inverse_score") is not None else None,
     )
-    if _signal_summary:
+    if _decision_snapshot:
         _ss1, _ss2, _ss3, _ss4 = st.columns(4)
         _ss1.metric("Live Trade Direction", snapshot_field(_decision_snapshot, "resolved_direction", snapshot_field(_decision_snapshot, "live_trade_direction", "NONE")))
         _ss2.metric("Actionable Signal", snapshot_field(_decision_snapshot, "actionable_signal", "HOLD"))
-        _ss3.metric("Final Action", snapshot_field(_decision_snapshot, "final_action", "HOLD"))
-        _ss4.metric("Block Reason", snapshot_field(_decision_snapshot, "primary_block_reason", _signal_summary.get("primary_block_reason") or _signal_summary.get("block_reason") or "없음"))
+        _ss3.metric("Final Action", _snap_fields.get("final_action") or "HOLD")
+        _ss4.metric("Block Reason", _snap_fields.get("primary_block_reason") or "없음")
 
     # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
     # 최종합성확률, 문턱(원래/조정), 진입비중, HOLD·진입 사유, 오늘거래수/연속손실/
     # 남은거래한도, 모델불일치지수를 매 사이클 표시한다.
-    if _signal_summary:
+    # Diagnostics + order pipeline must read the same completed snapshot fields.
+    if _decision_snapshot:
         with st.expander("Entry decision diagnostics", expanded=True):
             _ed1, _ed2, _ed3, _ed4 = st.columns(4)
             _ed1.metric("Entry Path", snapshot_field(_decision_snapshot, "entry_path", "NONE"))
-            _ed2.metric("Weighted Evidence", snapshot_field(_decision_snapshot, "range_evidence_score", "-"))
-            _ed3.metric("Expected Net Edge", snapshot_field(_decision_snapshot, "expected_net_edge_pct", "-"))
-            _ed4.metric("Primary Block", snapshot_field(_decision_snapshot, "primary_block_reason", _signal_summary.get("block_reason") or "-"))
+            _ed2.metric("Weighted Evidence", _snap_fields.get("range_evidence_score") if _snap_fields.get("range_evidence_score") is not None else "-")
+            _ed3.metric("Expected Net Edge", _snap_fields.get("expected_net_edge_pct") if _snap_fields.get("expected_net_edge_pct") is not None else "-")
+            _ed4.metric("Primary Block", _snap_fields.get("primary_block_reason") or "-")
             _ed5, _ed6, _ed7, _ed8 = st.columns(4)
             _ed5.metric("Live Held Sec", snapshot_field(_decision_snapshot, "live_direction_held_seconds", "-"))
             _ed6.metric("Expected Move", snapshot_field(_decision_snapshot, "expected_move_pct", "-"))
             _ed7.metric("Round-trip Cost", snapshot_field(_decision_snapshot, "cost_pct", "-"))
-            _ed8.metric("Reward/Risk", snapshot_field(_decision_snapshot, "reward_risk", "-"))
+            _ed8.metric("Reward/Risk", format_reward_risk_display(_decision_snapshot))
             _ed9, _ed10, _ed11 = st.columns(3)
             _ed9.metric("Gross/Cost", snapshot_field(_decision_snapshot, "gross_cost_ratio", "-"))
             _ed10.metric("ETF 5/10/20/30", str(snapshot_field(_decision_snapshot, "etf_window_directions", {}) or {}))
             _ed11.metric("Structural Label", snapshot_field(_decision_snapshot, "structural_signal_label", "-"))
-            st.caption(f"secondary_reasons={snapshot_field(_decision_snapshot, 'secondary_reasons', []) or []}")
+            st.caption(f"secondary_reasons={_snap_fields.get('secondary_reasons') or []}")
 
     _last_trend_plan = switch_state.get("last_trend_switch_plan") or {}
     _trend_freq = switch_state.get("trend_switch_frequency_state") or {}
@@ -1749,12 +1753,28 @@ else:
     )
 
     # ── Signal → Order 파이프라인: 예측 신호와 실제 체결을 단계별로 분리 표시 ──
+    # Primary block / final_action / evidence / edge / RR come from the same
+    # completed snapshot as the diagnostics panel (no cross-source divergence).
     st.subheader("🔬 Signal → Order 파이프라인")
-    trace = cycle_result.get("pipeline_trace") or {}
+    _pipeline_snap = (_decision_snapshot or {}).get("pipeline_trace") or {}
+    trace = {**(cycle_result.get("pipeline_trace") or {}), **_pipeline_snap} if _pipeline_snap else (cycle_result.get("pipeline_trace") or {})
+    # Prefer completed-snapshot pipeline when present so cycle_id fields match diagnostics.
+    if _decision_snapshot:
+        trace = {**trace, **(_decision_snapshot.get("pipeline_trace") or {})}
+        _pipeline_fields = completed_snapshot_decision_fields(_decision_snapshot)
+        if _pipeline_fields.get("primary_block_reason") is not None:
+            trace["primary_block_reason"] = _pipeline_fields["primary_block_reason"]
+        if _pipeline_fields.get("final_action") is not None:
+            trace["final_action"] = _pipeline_fields["final_action"]
     stopped_stage = trace.get("stopped_stage")
-    _trace_signal_summary = trace.get("signal_summary") or (_decision_snapshot or {}).get("signal_summary") or {}
+    _pipeline_fields = completed_snapshot_decision_fields(_decision_snapshot) if _decision_snapshot else {}
+    _trace_signal_summary = (
+        (_decision_snapshot or {}).get("signal_summary")
+        or trace.get("signal_summary")
+        or {}
+    )
     if _trace_signal_summary.get("conclusion"):
-        if _trace_signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
+        if _pipeline_fields.get("primary_block_reason") == "NEW_ENTRY_TIME_CLOSED" or _trace_signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
             st.error(_trace_signal_summary["conclusion"])
         else:
             st.info(_trace_signal_summary["conclusion"])
@@ -1786,8 +1806,12 @@ else:
         _stage_line("position_confirmed", "Position Confirmed", trace.get("position_confirmed"))
         _stage_line("ui_synced", "UI Synced", trace.get("ui_synced"))
         st.markdown(f"**Trade Counter**: {trace.get('trade_counter', 0)}")
-        if trace.get("primary_block_reason"):
-            st.markdown(f"**Primary Block**: `{trace.get('primary_block_reason')}`")
+        _pipeline_primary = (
+            completed_snapshot_decision_fields(_decision_snapshot).get("primary_block_reason")
+            if _decision_snapshot else trace.get("primary_block_reason")
+        )
+        if _pipeline_primary:
+            st.markdown(f"**Primary Block**: `{_pipeline_primary}`")
         if trace.get("execution_error"):
             st.caption(f"execution_error: {trace.get('execution_error')}")
 

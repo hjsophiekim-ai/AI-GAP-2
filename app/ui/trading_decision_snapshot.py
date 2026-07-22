@@ -47,9 +47,59 @@ def snapshot_field(snapshot: dict, key: str, default=None):
     value = (snapshot or {}).get(key)
     if isinstance(value, dict) and "value" in value:
         return value.get("value")
-    return default
+    if value is None:
+        return default
+    return value
 
 
 def snapshot_field_meta(snapshot: dict, key: str) -> dict:
     value = (snapshot or {}).get(key)
     return value if isinstance(value, dict) else {}
+
+
+def completed_snapshot_decision_fields(snapshot: dict) -> dict:
+    """Read final decision fields from one completed snapshot only.
+
+    UI diagnostics and the order-pipeline panel must use this same view so they
+    cannot diverge for the same cycle_id / snapshot_id.
+    """
+    snap = snapshot or {}
+    pipeline = snap.get("pipeline_trace") or {}
+    signal = snap.get("signal_summary") or {}
+    return {
+        "cycle_id": snap.get("cycle_id") or pipeline.get("cycle_id") or signal.get("cycle_id"),
+        "snapshot_id": snap.get("snapshot_id"),
+        "final_action": snapshot_field(snap, "final_action"),
+        "primary_block_reason": snapshot_field(snap, "primary_block_reason"),
+        "secondary_reasons": list(snapshot_field(snap, "secondary_reasons", []) or []),
+        "range_evidence_score": snapshot_field(snap, "range_evidence_score"),
+        "expected_net_edge_pct": snapshot_field(snap, "expected_net_edge_pct"),
+        "reward_risk": snapshot_field(snap, "reward_risk"),
+        "reward_risk_threshold": (
+            snapshot_field(snap, "reward_risk_threshold")
+            if snapshot_field(snap, "reward_risk_threshold") is not None
+            else snapshot_field(snap, "min_reward_risk")
+        ),
+        "pipeline_primary_block_reason": (
+            pipeline.get("primary_block_reason")
+            if pipeline.get("primary_block_reason") is not None
+            else signal.get("primary_block_reason")
+        ),
+    }
+
+
+def format_reward_risk_display(snapshot: dict) -> str:
+    """Show computed RR together with applied threshold when POOR_REWARD_RISK."""
+    fields = completed_snapshot_decision_fields(snapshot)
+    rr = fields.get("reward_risk")
+    thr = fields.get("reward_risk_threshold")
+    primary = fields.get("primary_block_reason")
+    if rr is None and thr is None:
+        return "-"
+    if primary == "POOR_REWARD_RISK" and rr is not None and thr is not None:
+        return f"{rr} (threshold {thr})"
+    if rr is not None and thr is not None and primary == "POOR_REWARD_RISK":
+        return f"{rr} (threshold {thr})"
+    if rr is not None:
+        return str(rr)
+    return "-"
