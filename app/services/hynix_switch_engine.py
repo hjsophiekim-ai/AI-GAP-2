@@ -181,9 +181,14 @@ _CONFIRMATION_PENDING_REASON = "CONFIRMATION_PENDING"
 # Main-cycle deferral markers only — Fast Worker owns live new-entry orders.
 # Real Fast Worker execution outcomes (ORDER_NOT_SENT / ENTRY_NOT_EXECUTED /
 # SNAPSHOT_TIMEOUT / …) remain valid primary_block_reason values.
+# FAST_WORKER_OWNS_ENTRY is an intermediate main-cycle deferral marker and must
+# never become the final user-facing primary_block_reason / Entry Approved text.
 _FAST_WORKER_NON_OWNER_REASONS = frozenset({
     "FAST_WORKER_DIAGNOSTIC_ONLY",
+    "FAST_WORKER_OWNS_ENTRY",
+    "MAIN_CYCLE_ENTRY_DEFERRED",
 })
+_FAST_WORKER_TICK_HISTORY_MAX = 11  # 10 intervals require 11 timestamps
 WOC_ENTRY_OWNER = "WEIGHTED_ORDER_CONTROLLER"
 
 
@@ -194,7 +199,68 @@ def _is_fast_worker_non_owner_reason(value) -> bool:
     upper = code.upper()
     if upper in _FAST_WORKER_NON_OWNER_REASONS:
         return True
+    # MAIN_CYCLE_ENTRY_DEFERRED: FAST_WORKER_OWNS_ENTRY style compound strings.
+    if "FAST_WORKER_OWNS_ENTRY" in upper or "MAIN_CYCLE_ENTRY_DEFERRED" in upper:
+        return True
     return False
+
+
+def _build_chase_diagnostics(
+    *,
+    resolved_direction: Optional[str] = None,
+    target_symbol: Optional[str] = None,
+    signal_price: Optional[float] = None,
+    current_price: Optional[float] = None,
+    chase_pct: Optional[float] = None,
+    signal_age_sec: Optional[float] = None,
+    first_detected_at: Optional[str] = None,
+    now: Optional[datetime] = None,
+    calculation_basis_etf: Optional[str] = None,
+) -> dict:
+    """Diagnostic-only chase payload for CHASE_BLOCK UI (thresholds unchanged)."""
+    from app.trading.strategy_architecture import CHASE_HARD_BLOCK_PCT
+
+    age = signal_age_sec
+    if age is None and first_detected_at and now is not None:
+        try:
+            age = round(
+                max(0.0, (now - datetime.fromisoformat(str(first_detected_at))).total_seconds()),
+                3,
+            )
+        except Exception:
+            age = None
+    basis = calculation_basis_etf or target_symbol
+    return {
+        "resolved_direction": resolved_direction,
+        "target_symbol": target_symbol,
+        "signal_price": signal_price,
+        "current_price": current_price,
+        "chase_pct": chase_pct,
+        "allowed_chase_pct": float(CHASE_HARD_BLOCK_PCT),
+        "signal_age_sec": age,
+        "calculation_basis_etf": basis,
+    }
+
+
+def _record_fast_worker_tick(state: dict, *, now: datetime) -> None:
+    """Persist last_tick_at and recent ~10 inter-tick intervals on state."""
+    tick_iso = now.isoformat()
+    history = list(state.get("fast_worker_tick_at_history") or [])
+    history.append(tick_iso)
+    history = history[-_FAST_WORKER_TICK_HISTORY_MAX:]
+    intervals: list[float] = []
+    for i in range(1, len(history)):
+        try:
+            delta = (
+                datetime.fromisoformat(str(history[i]))
+                - datetime.fromisoformat(str(history[i - 1]))
+            ).total_seconds()
+            intervals.append(round(float(delta), 3))
+        except Exception:
+            continue
+    state["last_fast_worker_tick_at"] = tick_iso
+    state["fast_worker_tick_at_history"] = history
+    state["fast_worker_recent_tick_intervals_sec"] = intervals[-10:]
 
 
 def _filter_non_owner_block_candidates(candidates: Optional[list]) -> list:
@@ -283,8 +349,11 @@ def _finalize_primary_and_secondary_block_reasons(
     Forbids POOR_REWARD_RISK as primary when the same snapshot's reward_risk
     already meets/exceeds the applied threshold (stale / mismatched field bug).
     The demoted competing code still appears in secondary_reasons when present.
+    Intermediate main-cycle markers (FAST_WORKER_OWNS_ENTRY) never become primary.
     """
     primary_code = _normalize_reason_code(primary)
+    if primary_code and _is_fast_worker_non_owner_reason(primary_code):
+        primary_code = None
     secondary: list[str] = []
     ordered: list[str] = []
     if primary_code:
@@ -296,7 +365,7 @@ def _finalize_primary_and_secondary_block_reasons(
             values = [raw]
         for item in values:
             code = _normalize_reason_code(item)
-            if not code:
+            if not code or _is_fast_worker_non_owner_reason(code):
                 continue
             if code not in ordered:
                 ordered.append(code)
@@ -1836,6 +1905,24 @@ def _build_completed_decision_snapshot(
         "reward_risk": reward_risk_value,
         "reward_risk_threshold": min_reward_risk,
     }
+    chase_diagnostics = continuation_state.get("chase_diagnostics")
+    if primary_block_reason == "CHASE_BLOCK" and not chase_diagnostics:
+        _dir = _normalize_direction((state.get("live_trade_direction") or {}).get("direction")) or "NONE"
+        _sym = symbol_for_live_direction(_dir)
+        chase_diagnostics = _build_chase_diagnostics(
+            resolved_direction=_dir,
+            target_symbol=_sym,
+            signal_price=continuation_state.get("reference_price"),
+            current_price=None,
+            chase_pct=continuation_state.get("moved_pct_since_signal"),
+            first_detected_at=continuation_state.get("first_detected_at"),
+            now=now,
+            calculation_basis_etf=_sym,
+        )
+    if chase_diagnostics:
+        synced_signal_summary["chase_diagnostics"] = chase_diagnostics
+        synced_pipeline_trace["chase_diagnostics"] = chase_diagnostics
+        synced_pipeline_trace["signal_summary"] = synced_signal_summary
 
     snapshot = {
         "snapshot_id": snapshot_id,
@@ -1883,6 +1970,7 @@ def _build_completed_decision_snapshot(
         "pipeline_trace": synced_pipeline_trace,
         "orders_this_cycle": _orders_are_today(list(orders_this_cycle or []), today=now.strftime("%Y%m%d")),
         "new_entry_allowed": bool(new_entry_allowed_now),
+        "chase_diagnostics": chase_diagnostics,
     }
     return snapshot
 
@@ -1963,6 +2051,34 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         or (early_result or {}).get("requested_symbol")
         or symbol_for_live_direction(resolved_direction)
     )
+    chase_diagnostics = (
+        (early_result or {}).get("chase_diagnostics")
+        or continuation_state.get("chase_diagnostics")
+    )
+    if primary_block_reason == "CHASE_BLOCK" and not chase_diagnostics:
+        chase_diagnostics = _build_chase_diagnostics(
+            resolved_direction=resolved_direction,
+            target_symbol=target_symbol,
+            signal_price=continuation_state.get("reference_price"),
+            current_price=None,
+            chase_pct=continuation_state.get("moved_pct_since_signal"),
+            first_detected_at=continuation_state.get("first_detected_at"),
+            now=now,
+            calculation_basis_etf=target_symbol,
+        )
+    if chase_diagnostics:
+        # Always align direction/symbol with the resolved snapshot mapping.
+        chase_diagnostics = {
+            **chase_diagnostics,
+            "resolved_direction": chase_diagnostics.get("resolved_direction") or resolved_direction,
+            "target_symbol": chase_diagnostics.get("target_symbol") or target_symbol,
+            "calculation_basis_etf": (
+                chase_diagnostics.get("calculation_basis_etf")
+                or chase_diagnostics.get("target_symbol")
+                or target_symbol
+            ),
+        }
+        continuation_state["chase_diagnostics"] = chase_diagnostics
     ratio = (
         sizing_audit.get("effective_target_pct")
         if sizing_audit.get("effective_target_pct") is not None
@@ -2008,6 +2124,12 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         if action == "BUY" else f"Continuation 차단: {primary_block_reason or block_reason}"
     )
     cycle_id = now.strftime("%Y%m%d%H%M")
+    entry_approved = action == "BUY"
+    entry_approved_reason = (
+        continuation_reason
+        if entry_approved
+        else (primary_block_reason or block_reason or "HOLD")
+    )
     synced_signal_summary = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
@@ -2033,9 +2155,13 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "reward_risk": reward_risk_value,
         "reward_risk_threshold": min_reward_risk,
         "min_reward_risk": min_reward_risk,
+        "entry_approved": entry_approved,
+        "entry_approved_reason": entry_approved_reason,
         # Enhanced HYNIX_BUY stays diagnostic-only — never overwrites execution direction.
         "enhanced_final_action_diagnostic": decision.get("final_action"),
     }
+    if chase_diagnostics:
+        synced_signal_summary["chase_diagnostics"] = chase_diagnostics
     synced_pipeline_trace = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
@@ -2052,7 +2178,17 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "reward_risk_threshold": min_reward_risk,
         "coordinator_result": coordinator_result,
         "broker_result": broker_result,
+        "entry_approved": entry_approved,
+        "entry_approved_reason": entry_approved_reason,
+        "blocking_reason": None if entry_approved else (primary_block_reason or block_reason),
+        "entry_owner": WOC_ENTRY_OWNER,
+        "actual_entry_engine": WEIGHTED_LIVE_ENTRY_ENGINE,
+        "configured_entry_engine": WEIGHTED_LIVE_ENTRY_ENGINE,
+        "order_sent": order_ok,
+        "broker_executed": order_ok,
     }
+    if chase_diagnostics:
+        synced_pipeline_trace["chase_diagnostics"] = chase_diagnostics
     snapshot = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
@@ -2106,6 +2242,9 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "signal_summary": synced_signal_summary,
         "pipeline_trace": synced_pipeline_trace,
         "orders_this_cycle": today_orders,
+        "chase_diagnostics": chase_diagnostics,
+        "entry_approved": entry_approved,
+        "entry_approved_reason": entry_approved_reason,
     }
     state["last_fast_worker_decision_snapshot"] = snapshot
     state["last_completed_decision_snapshot"] = snapshot
@@ -4545,6 +4684,17 @@ def _run_early_trend_detector_tick(
         etd_state["chase"] = chase
         if chase["blocked"]:
             _chase_reason = "; ".join(chase["reasons"]) or "CHASE_BLOCK"
+            _chase_diag = _build_chase_diagnostics(
+                resolved_direction=direction,
+                target_symbol=desired_symbol,
+                signal_price=candidate.get("reference_price"),
+                current_price=current_etf_price,
+                chase_pct=chase.get("moved_pct"),
+                signal_age_sec=candidate.get("signal_age_seconds"),
+                first_detected_at=candidate.get("first_detected_at"),
+                now=now,
+                calculation_basis_etf=desired_symbol,
+            )
             try:
                 if _etf_df is not None and current_etf_price:
                     _recent = _etf_df.sort_values("datetime").iloc[-1:]
@@ -4564,9 +4714,18 @@ def _run_early_trend_detector_tick(
                     })
             except Exception:
                 pass
+            chase["chase_diagnostics"] = _chase_diag
+            etd_state["chase"] = chase
+            etd_state["chase_diagnostics"] = _chase_diag
             etd_state["last_block_reason"] = _chase_reason
             state["early_trend_detector"] = etd_state
-            return {"skipped": True, "reason": etd_state["last_block_reason"], "reason_code": "CHASE_BLOCK", "signal": early_signal}
+            return {
+                "skipped": True,
+                "reason": etd_state["last_block_reason"],
+                "reason_code": "CHASE_BLOCK",
+                "signal": early_signal,
+                "chase_diagnostics": _chase_diag,
+            }
 
         # 요구사항(2026-07-21 재수정) — MICRO_CHOP은 위 DATA_TIME_MISMATCH/
         # ETF_DATA_INSUFFICIENT/CHASE_BLOCK보다 낮은 우선순위 보조 게이트다.
@@ -5304,9 +5463,11 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 _sizing["calculated_quantity"] = max(0, int(_calc_qty or 0))
                 continuation_state["order_sizing_audit"] = _sizing
 
-                def _mark_fast_entry_block(code: str) -> None:
+                def _mark_fast_entry_block(code: str, *, chase_diagnostics: Optional[dict] = None) -> None:
                     nonlocal early_result
                     continuation_state["last_block_reason"] = code
+                    if chase_diagnostics:
+                        continuation_state["chase_diagnostics"] = chase_diagnostics
                     early_result = {
                         "skipped": True,
                         "reason": code,
@@ -5317,6 +5478,8 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                         "order_permission": "BLOCKED",
                         "entry_owner": WOC_ENTRY_OWNER,
                     }
+                    if chase_diagnostics:
+                        early_result["chase_diagnostics"] = chase_diagnostics
 
                 if _sizing.get("order_skip_reason") == "DATA_INSUFFICIENT_POSITION_CAP_ZERO":
                     # DATA_INSUFFICIENT policy: no exploratory live entry (cap=0).
@@ -5324,7 +5487,17 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 elif daily_loss_limit_reached_from_pct(_daily_ret, _range_cfg):
                     _mark_fast_entry_block("DAILY_LOSS_LIMIT")
                 elif chase_hard_block(moved_pct):
-                    _mark_fast_entry_block("CHASE_BLOCK")
+                    _chase_diag = _build_chase_diagnostics(
+                        resolved_direction=desired_live_direction,
+                        target_symbol=desired_symbol,
+                        signal_price=continuation_state.get("reference_price"),
+                        current_price=current_etf_price,
+                        chase_pct=moved_pct,
+                        first_detected_at=continuation_state.get("first_detected_at"),
+                        now=now,
+                        calculation_basis_etf=desired_symbol,
+                    )
+                    _mark_fast_entry_block("CHASE_BLOCK", chase_diagnostics=_chase_diag)
                 elif not _timing_ok:
                     _mark_fast_entry_block(_timing_reason or "ENTRY_TIMING_BLOCK")
                 elif episode_gate_blocks_entry(_gate_mode, _ep_confirm):
@@ -5519,7 +5692,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                                 "entry_owner": WOC_ENTRY_OWNER,
                             }
             state["trend_continuation_entry"] = continuation_state
-            state["last_fast_worker_tick_at"] = now.isoformat()
+            _record_fast_worker_tick(state, now=now)
             _update_fast_worker_decision_snapshot(state, now=now, continuation_state=continuation_state, early_result=early_result)
         except Exception as exc:
             logger.error("[EarlyTrendFastFeed] tick 실패: %s", exc)

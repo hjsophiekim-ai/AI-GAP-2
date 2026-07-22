@@ -371,6 +371,7 @@ from app.services.hynix_auto_trade_scheduler import (
 )
 from app.ui.trading_decision_snapshot import (
     completed_snapshot_decision_fields,
+    format_chase_diagnostics_caption,
     format_reward_risk_display,
     selected_completed_decision_snapshot,
     snapshot_field,
@@ -1021,6 +1022,22 @@ if switch_state.get("mode") == "mock":
             _ed10.metric("ETF 5/10/20/30", str(snapshot_field(_decision_snapshot, "etf_window_directions", {}) or {}))
             _ed11.metric("Structural Label", snapshot_field(_decision_snapshot, "structural_signal_label", "-"))
             st.caption(f"secondary_reasons={_snap_fields.get('secondary_reasons') or []}")
+            _chase_diag = _snap_fields.get("chase_diagnostics") or {}
+            if _snap_fields.get("primary_block_reason") == "CHASE_BLOCK" or _chase_diag:
+                st.markdown("**CHASE_BLOCK diagnostics**")
+                _cd1, _cd2, _cd3, _cd4 = st.columns(4)
+                _cd1.metric("resolved_direction", _chase_diag.get("resolved_direction") or _snap_fields.get("resolved_direction") or "-")
+                _cd2.metric("target_symbol", _chase_diag.get("target_symbol") or _snap_fields.get("target_symbol") or "-")
+                _cd3.metric("signal_price", _chase_diag.get("signal_price") if _chase_diag.get("signal_price") is not None else "-")
+                _cd4.metric("current_price", _chase_diag.get("current_price") if _chase_diag.get("current_price") is not None else "-")
+                _cd5, _cd6, _cd7, _cd8 = st.columns(4)
+                _cd5.metric("chase_pct", f"{_chase_diag.get('chase_pct')}%" if _chase_diag.get("chase_pct") is not None else "-")
+                _cd6.metric("allowed_chase_pct", f"{_chase_diag.get('allowed_chase_pct')}%" if _chase_diag.get("allowed_chase_pct") is not None else "-")
+                _cd7.metric("signal_age_sec", f"{_chase_diag.get('signal_age_sec')}s" if _chase_diag.get("signal_age_sec") is not None else "-")
+                _cd8.metric("basis ETF", _chase_diag.get("calculation_basis_etf") or "-")
+                _chase_caption = format_chase_diagnostics_caption(_chase_diag)
+                if _chase_caption:
+                    st.caption(_chase_caption)
 
     _last_trend_plan = switch_state.get("last_trend_switch_plan") or {}
     _trend_freq = switch_state.get("trend_switch_frequency_state") or {}
@@ -1469,6 +1486,31 @@ st.markdown(
 if _within_window is False and _cyc_status.get("last_heartbeat_only_at"):
     st.caption(f"마지막 heartbeat-only 틱: {_cyc_status['last_heartbeat_only_at']}")
 
+# 5s Fast Worker cadence — last_tick_at + recent ~10 intervals (confirm ~5s).
+_fast_watch = _cyc_status.get("fast_trend_watcher") or {}
+_fw_tick_at = (
+    _fast_watch.get("last_tick_at")
+    or switch_state.get("last_fast_worker_tick_at")
+)
+_fw_intervals = (
+    _fast_watch.get("recent_tick_intervals_sec")
+    or switch_state.get("fast_worker_recent_tick_intervals_sec")
+    or []
+)
+fw1, fw2, fw3 = st.columns(3)
+with fw1:
+    st.metric("5s Worker alive", "🟢 YES" if _fast_watch.get("thread_alive") else "🔴 NO")
+with fw2:
+    st.metric("last_fast_worker_tick_at", _fw_tick_at or "—")
+with fw3:
+    _avg_iv = (sum(_fw_intervals) / len(_fw_intervals)) if _fw_intervals else None
+    st.metric("avg tick interval", f"{_avg_iv:.2f}s" if _avg_iv is not None else "—")
+st.caption(
+    f"recent ~10 tick intervals (sec): `{_fw_intervals or '—'}` · "
+    f"run_count_today={_fast_watch.get('run_count_today', 0)} · "
+    f"next_run_at=`{_fast_watch.get('next_run_at') or '—'}`"
+)
+
 _manual_cycle_result = None
 if switch_run_clicked:
     # 주의: auto_on이 True라고 해서 여기서도 매 rerun마다 전체 사이클을 다시 돌리지 않는다.
@@ -1766,6 +1808,22 @@ else:
             trace["primary_block_reason"] = _pipeline_fields["primary_block_reason"]
         if _pipeline_fields.get("final_action") is not None:
             trace["final_action"] = _pipeline_fields["final_action"]
+        # Final Entry Approved / blocking_reason come from Fast Worker completed
+        # snapshot — never leave FAST_WORKER_OWNS_ENTRY as the user-facing final.
+        if _pipeline_fields.get("source") == "FAST_WORKER" or _pipeline_fields.get("entry_approved") is not None:
+            if _pipeline_fields.get("entry_approved") is not None:
+                trace["entry_approved"] = _pipeline_fields["entry_approved"]
+            if _pipeline_fields.get("entry_approved_reason") is not None:
+                trace["entry_approved_reason"] = _pipeline_fields["entry_approved_reason"]
+            if _pipeline_fields.get("blocking_reason") is not None:
+                trace["blocking_reason"] = _pipeline_fields["blocking_reason"]
+            elif _pipeline_fields.get("primary_block_reason"):
+                # Avoid intermediate deferral text as final blocking_reason.
+                _br = str(trace.get("blocking_reason") or "")
+                if "FAST_WORKER_OWNS_ENTRY" in _br or "MAIN_CYCLE_ENTRY_DEFERRED" in _br:
+                    trace["blocking_reason"] = _pipeline_fields["primary_block_reason"]
+        if _pipeline_fields.get("chase_diagnostics"):
+            trace["chase_diagnostics"] = _pipeline_fields["chase_diagnostics"]
     stopped_stage = trace.get("stopped_stage")
     _pipeline_fields = completed_snapshot_decision_fields(_decision_snapshot) if _decision_snapshot else {}
     _trace_signal_summary = (
@@ -1798,7 +1856,22 @@ else:
             f"(configured=`{trace.get('configured_entry_engine') or state_now.get('configured_entry_engine') or 'WEIGHTED_ORDER_CONTROLLER_LIVE'}`)"
         )
         st.markdown(f"**Entry Owner**: `{trace.get('entry_owner') or '—'}`")
-        _stage_line("entry_approved", "Entry Approved", trace.get("entry_approved"), trace.get("entry_approved_reason") or "")
+        _entry_approved_display = (
+            _pipeline_fields.get("entry_approved")
+            if _pipeline_fields.get("entry_approved") is not None
+            else trace.get("entry_approved")
+        )
+        _entry_reason_display = (
+            _pipeline_fields.get("entry_approved_reason")
+            or trace.get("entry_approved_reason")
+            or ""
+        )
+        if _pipeline_fields.get("primary_block_reason") and (
+            "FAST_WORKER_OWNS_ENTRY" in str(_entry_reason_display)
+            or "MAIN_CYCLE_ENTRY_DEFERRED" in str(_entry_reason_display)
+        ):
+            _entry_reason_display = _pipeline_fields["primary_block_reason"]
+        _stage_line("entry_approved", "Entry Approved", _entry_approved_display, _entry_reason_display)
         _stage_line("risk_manager", "Risk Manager 승인", trace.get("risk_manager_ok"), trace.get("risk_manager_reason") or "")
         _stage_line("order_sent", "Order Sent", trace.get("order_sent"), trace.get("order_reservation") or "")
     with pp2:
@@ -1812,8 +1885,22 @@ else:
         )
         if _pipeline_primary:
             st.markdown(f"**Primary Block**: `{_pipeline_primary}`")
+        _blocking_display = (
+            _pipeline_fields.get("blocking_reason")
+            or (
+                _pipeline_primary
+                if _pipeline_primary and "FAST_WORKER_OWNS_ENTRY" in str(trace.get("blocking_reason") or "")
+                else trace.get("blocking_reason")
+            )
+        )
+        if _blocking_display:
+            st.markdown(f"**blocking_reason**: `{_blocking_display}`")
         if trace.get("execution_error"):
             st.caption(f"execution_error: {trace.get('execution_error')}")
+    if (_pipeline_fields.get("primary_block_reason") == "CHASE_BLOCK") or (_pipeline_fields.get("chase_diagnostics")):
+        _chase_cap = format_chase_diagnostics_caption(_pipeline_fields.get("chase_diagnostics") or {})
+        if _chase_cap:
+            st.caption(_chase_cap)
 
     if stopped_stage:
         st.error(

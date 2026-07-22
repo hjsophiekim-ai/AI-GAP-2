@@ -66,11 +66,37 @@ def completed_snapshot_decision_fields(snapshot: dict) -> dict:
     snap = snapshot or {}
     pipeline = snap.get("pipeline_trace") or {}
     signal = snap.get("signal_summary") or {}
+    chase = (
+        snap.get("chase_diagnostics")
+        or pipeline.get("chase_diagnostics")
+        or signal.get("chase_diagnostics")
+        or {}
+    )
+    primary = snapshot_field(snap, "primary_block_reason")
+    final_action = snapshot_field(snap, "final_action")
+    # Fast Worker completed snapshot owns final Entry Approved / blocking_reason.
+    # Main-cycle FAST_WORKER_OWNS_ENTRY is intermediate only.
+    entry_approved = pipeline.get("entry_approved")
+    if entry_approved is None:
+        entry_approved = signal.get("entry_approved")
+    if entry_approved is None and snap.get("source") == "FAST_WORKER":
+        entry_approved = final_action == "BUY"
+    entry_approved_reason = (
+        pipeline.get("entry_approved_reason")
+        or signal.get("entry_approved_reason")
+        or snap.get("entry_approved_reason")
+    )
+    if entry_approved_reason is None and snap.get("source") == "FAST_WORKER":
+        entry_approved_reason = None if entry_approved else primary
+    blocking_reason = pipeline.get("blocking_reason")
+    if blocking_reason is None and snap.get("source") == "FAST_WORKER" and not entry_approved:
+        blocking_reason = primary
     return {
         "cycle_id": snap.get("cycle_id") or pipeline.get("cycle_id") or signal.get("cycle_id"),
         "snapshot_id": snap.get("snapshot_id"),
-        "final_action": snapshot_field(snap, "final_action"),
-        "primary_block_reason": snapshot_field(snap, "primary_block_reason"),
+        "source": snap.get("source"),
+        "final_action": final_action,
+        "primary_block_reason": primary,
         "secondary_reasons": list(snapshot_field(snap, "secondary_reasons", []) or []),
         "range_evidence_score": snapshot_field(snap, "range_evidence_score"),
         "expected_net_edge_pct": snapshot_field(snap, "expected_net_edge_pct"),
@@ -85,7 +111,34 @@ def completed_snapshot_decision_fields(snapshot: dict) -> dict:
             if pipeline.get("primary_block_reason") is not None
             else signal.get("primary_block_reason")
         ),
+        "entry_approved": entry_approved,
+        "entry_approved_reason": entry_approved_reason,
+        "blocking_reason": blocking_reason,
+        "resolved_direction": (
+            snapshot_field(snap, "resolved_direction")
+            or snapshot_field(snap, "live_trade_direction")
+            or signal.get("resolved_direction")
+        ),
+        "target_symbol": snapshot_field(snap, "target_symbol") or signal.get("target_symbol"),
+        "chase_diagnostics": chase if isinstance(chase, dict) else {},
     }
+
+
+def format_chase_diagnostics_caption(chase: dict) -> str:
+    """One-line chase diagnostic caption for CHASE_BLOCK UI."""
+    if not chase:
+        return ""
+    parts = [
+        f"dir={chase.get('resolved_direction') or '-'}",
+        f"symbol={chase.get('target_symbol') or '-'}",
+        f"signal={chase.get('signal_price') if chase.get('signal_price') is not None else '-'}",
+        f"current={chase.get('current_price') if chase.get('current_price') is not None else '-'}",
+        f"chase={chase.get('chase_pct') if chase.get('chase_pct') is not None else '-'}%",
+        f"allowed={chase.get('allowed_chase_pct') if chase.get('allowed_chase_pct') is not None else '-'}%",
+        f"age={chase.get('signal_age_sec') if chase.get('signal_age_sec') is not None else '-'}s",
+        f"basis_etf={chase.get('calculation_basis_etf') or '-'}",
+    ]
+    return "CHASE_BLOCK · " + " · ".join(parts)
 
 
 def format_reward_risk_display(snapshot: dict) -> str:

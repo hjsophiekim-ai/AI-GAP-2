@@ -66,7 +66,34 @@ _fast_status = {
     "restart_count": 0,
     "last_heartbeat_at": None,
     "within_operating_window": None,
+    # 5s Worker cadence diagnostics (last_tick_at + recent ~10 intervals).
+    "last_tick_at": None,
+    "recent_tick_intervals_sec": [],
+    "_tick_at_history": [],
 }
+
+_FAST_TICK_HISTORY_MAX = 11  # 10 intervals require 11 timestamps
+
+
+def _record_fast_status_tick(completed_at: datetime) -> None:
+    """Update in-memory Fast Worker last_tick_at and recent interval history."""
+    tick_iso = completed_at.isoformat()
+    history = list(_fast_status.get("_tick_at_history") or [])
+    history.append(tick_iso)
+    history = history[-_FAST_TICK_HISTORY_MAX:]
+    intervals: list[float] = []
+    for i in range(1, len(history)):
+        try:
+            delta = (
+                datetime.fromisoformat(str(history[i]))
+                - datetime.fromisoformat(str(history[i - 1]))
+            ).total_seconds()
+            intervals.append(round(float(delta), 3))
+        except Exception:
+            continue
+    _fast_status["_tick_at_history"] = history
+    _fast_status["last_tick_at"] = tick_iso
+    _fast_status["recent_tick_intervals_sec"] = intervals[-10:]
 
 
 def get_status() -> dict:
@@ -357,6 +384,7 @@ class HynixFastTrendWatcherThread(threading.Thread):
             _fast_status["last_completed_at"] = completed_at.isoformat()
             _fast_status["last_result_summary"] = summary
             _fast_status["run_count_today"] += 1
+            _record_fast_status_tick(completed_at)
         _write_heartbeat_file()
 
 
