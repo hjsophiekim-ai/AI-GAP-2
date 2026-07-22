@@ -1,0 +1,1904 @@
+{
+  "generated_at": "2026-07-22T15:03:27.994703",
+  "day": "2026-07-21",
+  "verdict": "IMPLEMENTATION_MISMATCH",
+  "count_reconcile": {
+    "signals": 17,
+    "round_trips": 16,
+    "note": "17 signals / 16 RT: last signal 15:15 after ENTRY_CUTOFF 14:55 — no entry; prior position already force-closed at 15:00",
+    "orphan_signal": {
+      "time": "2026-07-21T15:15:00",
+      "direction": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T15:12:00",
+      "hist_last3": [
+        2201.074137,
+        1947.289807,
+        1834.669943
+      ]
+    }
+  },
+  "day_summary": {
+    "net_pnl": -956616.2,
+    "ret_pct": -9.566,
+    "win_rate_pct": 31.25,
+    "mdd_pct": 10.099,
+    "total_gross": -817970.55,
+    "total_cost": 138645.65
+  },
+  "old_B_jul21_signals": [
+    {
+      "time": "2026-07-21T10:36:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        380.242,
+        1309.945,
+        1459.078
+      ]
+    },
+    {
+      "time": "2026-07-21T10:57:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        90.887,
+        -712.487,
+        -1685.373
+      ]
+    },
+    {
+      "time": "2026-07-21T11:12:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        -2312.525,
+        -2918.34,
+        -3496.986
+      ]
+    },
+    {
+      "time": "2026-07-21T11:48:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        -278.542,
+        387.425,
+        691.661
+      ]
+    },
+    {
+      "time": "2026-07-21T12:03:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        293.059,
+        380.154,
+        826.36
+      ]
+    },
+    {
+      "time": "2026-07-21T12:36:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        1190.279,
+        1277.787,
+        1643.798
+      ]
+    },
+    {
+      "time": "2026-07-21T12:54:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        2170.036,
+        2297.683,
+        2796.588
+      ]
+    },
+    {
+      "time": "2026-07-21T13:15:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        180.019,
+        -328.419,
+        -746.097
+      ]
+    },
+    {
+      "time": "2026-07-21T13:57:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        -2039.504,
+        -2606.806,
+        -3120.839
+      ]
+    },
+    {
+      "time": "2026-07-21T14:15:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        -2364.408,
+        -2419.04,
+        -2837.793
+      ]
+    },
+    {
+      "time": "2026-07-21T14:51:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        -13.764,
+        495.197,
+        639.175
+      ]
+    },
+    {
+      "time": "2026-07-21T15:00:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        353.931,
+        515.8,
+        629.16
+      ]
+    }
+  ],
+  "old_B_jul21_signal_count": 12,
+  "new_B_jul21_signal_count": 17,
+  "old_B_jul22_signals": [
+    {
+      "time": "2026-07-22T10:42:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        335.026,
+        -35.702,
+        -896.934
+      ]
+    },
+    {
+      "time": "2026-07-22T11:03:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        -574.591,
+        -873.467,
+        -1217.158
+      ]
+    },
+    {
+      "time": "2026-07-22T11:36:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        -168.789,
+        -317.893,
+        -476.99
+      ]
+    },
+    {
+      "time": "2026-07-22T11:57:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        -1526.893,
+        -1582.831,
+        -1947.928
+      ]
+    },
+    {
+      "time": "2026-07-22T12:12:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN",
+      "hist": [
+        -2289.863,
+        -2390.235,
+        -3226.121
+      ]
+    },
+    {
+      "time": "2026-07-22T12:33:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        -737.557,
+        650.958,
+        755.115
+      ]
+    },
+    {
+      "time": "2026-07-22T12:42:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        749.076,
+        991.665,
+        1502.747
+      ]
+    },
+    {
+      "time": "2026-07-22T13:06:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        1982.997,
+        1994.847,
+        2140.71
+      ]
+    },
+    {
+      "time": "2026-07-22T13:24:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        1653.868,
+        1735.434,
+        2104.021
+      ]
+    },
+    {
+      "time": "2026-07-22T14:00:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN",
+      "hist": [
+        25.505,
+        33.311,
+        46.0
+      ]
+    }
+  ],
+  "old_B_jul22_signal_count": 10,
+  "old_compare_B_jul22_delay_1m_cons": {
+    "round_trips": 2,
+    "net_pnl": 440239.0,
+    "return_pct": 4.4024,
+    "trades": [
+      {
+        "strategy": "B: Hist 2-turn",
+        "scenario": "delay_1m_cons",
+        "symbol": "0197X0",
+        "direction": "DOWN",
+        "signal_time": "2026-07-22 10:42:00",
+        "order_time": "2026-07-22 10:43:00",
+        "fill_price": 9504.75,
+        "exit_signal_time": "2026-07-22 12:33:00",
+        "exit_time": "2026-07-22 12:34:00",
+        "exit_price": 9915.04,
+        "exit_reason": "OPPOSITE:HIST_2UP_TURN",
+        "qty": 1052,
+        "gross_pnl": 431625.0800000009,
+        "cost": 4999.4985,
+        "net_pnl": 426625.5815000009,
+        "held_seconds": 6660.0,
+        "wrong_direction": false,
+        "size_pct": 1.0
+      },
+      {
+        "strategy": "B: Hist 2-turn",
+        "scenario": "delay_1m_cons",
+        "symbol": "0193T0",
+        "direction": "UP",
+        "signal_time": "2026-07-22 12:33:00",
+        "order_time": "2026-07-22 12:34:00",
+        "fill_price": 16028.009999999998,
+        "exit_signal_time": "2026-07-22 15:15:00",
+        "exit_time": "2026-07-22 15:16:00",
+        "exit_price": 16056.9675,
+        "exit_reason": "15:15_FORCE_CLOSE",
+        "qty": 650,
+        "gross_pnl": 18822.375000001466,
+        "cost": 5209.103249999999,
+        "net_pnl": 13613.271750001466,
+        "held_seconds": 9720.0,
+        "wrong_direction": false,
+        "size_pct": 1.0
+      }
+    ]
+  },
+  "new_module_jul22_delay_1m_cons": {
+    "signals": 14,
+    "round_trips": 14,
+    "net_pnl": 87133.4,
+    "ret_pct": 0.871
+  },
+  "loss_decomposition": {
+    "true_macd_direction_flip": {
+      "n": 6,
+      "net": -151137.4,
+      "gross": -99395.74,
+      "cost": 51741.66
+    },
+    "false_hist_wiggle": {
+      "n": 10,
+      "net": -805478.8,
+      "gross": -718574.81,
+      "cost": 86903.99
+    },
+    "same_direction_reentry": {
+      "n": 0,
+      "net": 0.0,
+      "gross": 0.0,
+      "cost": 0.0
+    },
+    "reentry_after_SL": {
+      "n": 0,
+      "net": 0.0,
+      "gross": 0.0,
+      "cost": 0.0
+    },
+    "late_fast_opposite_switch": {
+      "n": 10,
+      "net": -1276656.25,
+      "gross": -1190063.68,
+      "cost": 86592.57
+    },
+    "trading_costs_all_trades": {
+      "n": 16,
+      "net": -956616.2,
+      "gross": -817970.55,
+      "cost": 138645.65
+    }
+  },
+  "wiggle_vs_sign_ok": {
+    "wiggle_n": 10,
+    "wiggle_net": -805478.8,
+    "sign_ok_n": 6,
+    "sign_ok_net": -151137.4
+  },
+  "trades": [
+    {
+      "rt_index": 1,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T10:27:00",
+      "entry_time": "2026-07-21 10:27:00",
+      "entry_price": 11650.8225,
+      "exit_time": "2026-07-21 10:36:00",
+      "exit_price": 11329.3325,
+      "qty": 858,
+      "gross_pnl": -275838.42,
+      "cost": 8872.64,
+      "net_pnl": -284711.06,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 9.0,
+      "prev_direction_state": "NONE",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T10:24:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T10:24:00",
+      "is_true_first_flip": false,
+      "is_initial_entry": true,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        2729.9028,
+        1975.252415,
+        2131.831432,
+        1314.860448,
+        629.511623
+      ],
+      "hist_deltas_last4": [
+        -754.650385,
+        156.579017,
+        -816.970984,
+        -685.348825
+      ],
+      "hist_last3": [
+        2131.831432,
+        1314.860448,
+        629.511623
+      ],
+      "hist_deltas_last2": [
+        -816.970984,
+        -685.348826
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 2,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T10:36:00",
+      "entry_time": "2026-07-21 10:36:00",
+      "entry_price": 14262.127499999999,
+      "exit_time": "2026-07-21 10:45:00",
+      "exit_price": 14257.8675,
+      "qty": 681,
+      "gross_pnl": -2901.06,
+      "cost": 8739.95,
+      "net_pnl": -11641.01,
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 9.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T10:33:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T10:33:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        1314.860448,
+        629.511623,
+        380.241668,
+        1309.945291,
+        1459.078213
+      ],
+      "hist_deltas_last4": [
+        -685.348825,
+        -249.269955,
+        929.703623,
+        149.132922
+      ],
+      "hist_last3": [
+        380.241668,
+        1309.945291,
+        1459.078213
+      ],
+      "hist_deltas_last2": [
+        929.703623,
+        149.132922
+      ],
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 3,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T10:45:00",
+      "entry_time": "2026-07-21 10:45:00",
+      "entry_price": 11325.66,
+      "exit_time": "2026-07-21 11:27:00",
+      "exit_price": 11579.2075,
+      "qty": 856,
+      "gross_pnl": 217036.66,
+      "cost": 8822.95,
+      "net_pnl": 208213.71,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 42.0,
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T10:42:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T10:42:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        1309.945291,
+        1459.078213,
+        1809.815515,
+        1753.862062,
+        1250.485497
+      ],
+      "hist_deltas_last4": [
+        149.132922,
+        350.737302,
+        -55.953453,
+        -503.376565
+      ],
+      "hist_last3": [
+        1809.815515,
+        1753.862062,
+        1250.485497
+      ],
+      "hist_deltas_last2": [
+        -55.953453,
+        -503.376565
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle"
+      ]
+    },
+    {
+      "rt_index": 4,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T11:27:00",
+      "entry_time": "2026-07-21 11:27:00",
+      "entry_price": 13991.992499999998,
+      "exit_time": "2026-07-21 11:57:00",
+      "exit_price": 14212.890000000001,
+      "qty": 708,
+      "gross_pnl": 156395.43,
+      "cost": 8986.08,
+      "net_pnl": 147409.35,
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 30.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T11:24:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T11:24:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        -3573.57527,
+        -3770.04873,
+        -4405.677225,
+        -4060.661849,
+        -3556.552746
+      ],
+      "hist_deltas_last4": [
+        -196.47346,
+        -635.628495,
+        345.015376,
+        504.109103
+      ],
+      "hist_last3": [
+        -4405.677225,
+        -4060.661849,
+        -3556.552746
+      ],
+      "hist_deltas_last2": [
+        345.015376,
+        504.109103
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle"
+      ]
+    },
+    {
+      "rt_index": 5,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T11:57:00",
+      "entry_time": "2026-07-21 11:57:00",
+      "entry_price": 11360.6775,
+      "exit_time": "2026-07-21 12:03:00",
+      "exit_price": 11214.390000000001,
+      "qty": 885,
+      "gross_pnl": -129464.44,
+      "cost": 8990.52,
+      "net_pnl": -138454.96,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 6.0,
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T11:54:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T11:54:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        387.425186,
+        691.661029,
+        943.098885,
+        380.30172,
+        293.058747
+      ],
+      "hist_deltas_last4": [
+        304.235843,
+        251.437856,
+        -562.797165,
+        -87.242973
+      ],
+      "hist_last3": [
+        943.098885,
+        380.30172,
+        293.058747
+      ],
+      "hist_deltas_last2": [
+        -562.797166,
+        -87.242973
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 6,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T12:03:00",
+      "entry_time": "2026-07-21 12:03:00",
+      "entry_price": 14357.175,
+      "exit_time": "2026-07-21 12:27:00",
+      "exit_price": 14482.755000000001,
+      "qty": 691,
+      "gross_pnl": 86775.78,
+      "cost": 8967.78,
+      "net_pnl": 77808.0,
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 24.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T12:00:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T12:00:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        943.098885,
+        380.30172,
+        293.058747,
+        380.154082,
+        826.359817
+      ],
+      "hist_deltas_last4": [
+        -562.797165,
+        -87.242973,
+        87.095335,
+        446.205735
+      ],
+      "hist_last3": [
+        293.058747,
+        380.154082,
+        826.359817
+      ],
+      "hist_deltas_last2": [
+        87.095335,
+        446.205735
+      ],
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip"
+      ]
+    },
+    {
+      "rt_index": 7,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T12:27:00",
+      "entry_time": "2026-07-21 12:27:00",
+      "entry_price": 11085.539999999999,
+      "exit_time": "2026-07-21 12:36:00",
+      "exit_price": 10839.577500000001,
+      "qty": 901,
+      "gross_pnl": -221612.21,
+      "cost": 8889.54,
+      "net_pnl": -230501.75,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 9.0,
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T12:24:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T12:24:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        1430.96097,
+        1771.368977,
+        2223.763379,
+        1760.300059,
+        1253.619605
+      ],
+      "hist_deltas_last4": [
+        340.408007,
+        452.394402,
+        -463.46332,
+        -506.680454
+      ],
+      "hist_last3": [
+        2223.763379,
+        1760.300059,
+        1253.619605
+      ],
+      "hist_deltas_last2": [
+        -463.46332,
+        -506.680454
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 8,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T12:36:00",
+      "entry_time": "2026-07-21 12:36:00",
+      "entry_price": 14772.3825,
+      "exit_time": "2026-07-21 12:48:00",
+      "exit_price": 14882.555,
+      "qty": 661,
+      "gross_pnl": 72824.02,
+      "cost": 8820.86,
+      "net_pnl": 64003.16,
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 12.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T12:33:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T12:33:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        1760.300059,
+        1253.619605,
+        1190.27891,
+        1277.787197,
+        1643.79803
+      ],
+      "hist_deltas_last4": [
+        -506.680454,
+        -63.340695,
+        87.508287,
+        366.010833
+      ],
+      "hist_last3": [
+        1190.27891,
+        1277.787197,
+        1643.79803
+      ],
+      "hist_deltas_last2": [
+        87.508287,
+        366.010833
+      ],
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 9,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T12:48:00",
+      "entry_time": "2026-07-21 12:48:00",
+      "entry_price": 10720.3575,
+      "exit_time": "2026-07-21 12:54:00",
+      "exit_price": 10464.765000000001,
+      "qty": 917,
+      "gross_pnl": -234378.32,
+      "cost": 8742.05,
+      "net_pnl": -243120.37,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 6.0,
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T12:45:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T12:45:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        1643.79803,
+        2161.435422,
+        2550.594657,
+        2450.106598,
+        2170.03589
+      ],
+      "hist_deltas_last4": [
+        517.637392,
+        389.159235,
+        -100.488059,
+        -280.070708
+      ],
+      "hist_last3": [
+        2550.594657,
+        2450.106598,
+        2170.03589
+      ],
+      "hist_deltas_last2": [
+        -100.488059,
+        -280.070708
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 10,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T12:54:00",
+      "entry_time": "2026-07-21 12:54:00",
+      "entry_price": 15152.572499999998,
+      "exit_time": "2026-07-21 13:00:00",
+      "exit_price": 14982.505000000001,
+      "qty": 632,
+      "gross_pnl": -107482.66,
+      "cost": 8570.41,
+      "net_pnl": -116053.07,
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 6.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T12:51:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T12:51:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        2550.594657,
+        2450.106598,
+        2170.03589,
+        2297.683386,
+        2796.587703
+      ],
+      "hist_deltas_last4": [
+        -100.488059,
+        -280.070708,
+        127.647496,
+        498.904317
+      ],
+      "hist_last3": [
+        2170.03589,
+        2297.683386,
+        2796.587703
+      ],
+      "hist_deltas_last2": [
+        127.647496,
+        498.904317
+      ],
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 11,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T13:00:00",
+      "entry_time": "2026-07-21 13:00:00",
+      "entry_price": 10630.3125,
+      "exit_time": "2026-07-21 13:39:00",
+      "exit_price": 10764.615,
+      "qty": 891,
+      "gross_pnl": 119663.53,
+      "cost": 8578.29,
+      "net_pnl": 111085.23,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 39.0,
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T12:57:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T12:57:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        2170.03589,
+        2297.683386,
+        2796.587703,
+        2219.307949,
+        1535.150718
+      ],
+      "hist_deltas_last4": [
+        127.647496,
+        498.904317,
+        -577.279754,
+        -684.157231
+      ],
+      "hist_last3": [
+        2796.587703,
+        2219.307949,
+        1535.150718
+      ],
+      "hist_deltas_last2": [
+        -577.279754,
+        -684.157231
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle"
+      ]
+    },
+    {
+      "rt_index": 12,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T13:39:00",
+      "entry_time": "2026-07-21 13:39:00",
+      "entry_price": 14847.42,
+      "exit_time": "2026-07-21 13:57:00",
+      "exit_price": 14587.702500000001,
+      "qty": 645,
+      "gross_pnl": -167517.79,
+      "cost": 8543.55,
+      "net_pnl": -176061.33,
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 18.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T13:36:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T13:36:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        -2816.567802,
+        -3111.532669,
+        -3287.406455,
+        -3180.471009,
+        -3086.086002
+      ],
+      "hist_deltas_last4": [
+        -294.964867,
+        -175.873786,
+        106.935446,
+        94.385007
+      ],
+      "hist_last3": [
+        -3287.406455,
+        -3180.471009,
+        -3086.086002
+      ],
+      "hist_deltas_last2": [
+        106.935446,
+        94.385006
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle"
+      ]
+    },
+    {
+      "rt_index": 13,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T13:57:00",
+      "entry_time": "2026-07-21 13:57:00",
+      "entry_price": 11005.5,
+      "exit_time": "2026-07-21 14:06:00",
+      "exit_price": 10914.54,
+      "qty": 854,
+      "gross_pnl": -77679.84,
+      "cost": 8423.86,
+      "net_pnl": -86103.7,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 9.0,
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T13:54:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T13:54:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        -2805.386283,
+        -2258.685479,
+        -2039.504096,
+        -2606.805924,
+        -3120.838544
+      ],
+      "hist_deltas_last4": [
+        546.700804,
+        219.181383,
+        -567.301828,
+        -514.03262
+      ],
+      "hist_last3": [
+        -2039.504096,
+        -2606.805924,
+        -3120.838544
+      ],
+      "hist_deltas_last2": [
+        -567.301828,
+        -514.03262
+      ],
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 14,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T14:06:00",
+      "entry_time": "2026-07-21 14:06:00",
+      "entry_price": 14677.335,
+      "exit_time": "2026-07-21 14:15:00",
+      "exit_price": 14452.77,
+      "qty": 635,
+      "gross_pnl": -142598.77,
+      "cost": 8323.94,
+      "net_pnl": -150922.71,
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 9.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T14:03:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T14:03:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        -2606.805924,
+        -3120.838544,
+        -3248.335275,
+        -3183.289261,
+        -2802.262653
+      ],
+      "hist_deltas_last4": [
+        -514.03262,
+        -127.496731,
+        65.046014,
+        381.026608
+      ],
+      "hist_last3": [
+        -3248.335275,
+        -3183.289261,
+        -2802.262653
+      ],
+      "hist_deltas_last2": [
+        65.046014,
+        381.026608
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 15,
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T14:15:00",
+      "entry_time": "2026-07-21 14:15:00",
+      "entry_price": 11125.56,
+      "exit_time": "2026-07-21 14:27:00",
+      "exit_price": 11039.4775,
+      "qty": 824,
+      "gross_pnl": -70931.98,
+      "cost": 8218.8,
+      "net_pnl": -79150.78,
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 12.0,
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T14:12:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T14:12:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        -3183.289261,
+        -2802.262653,
+        -2364.407978,
+        -2419.039984,
+        -2837.793383
+      ],
+      "hist_deltas_last4": [
+        381.026608,
+        437.854675,
+        -54.632006,
+        -418.753399
+      ],
+      "hist_last3": [
+        -2364.407978,
+        -2419.039984,
+        -2837.793383
+      ],
+      "hist_deltas_last2": [
+        -54.632006,
+        -418.753399
+      ],
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true,
+      "eval_reason": "DOWN_BLUE_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "late_or_fast_opposite_switch"
+      ]
+    },
+    {
+      "rt_index": 16,
+      "day": "2026-07-21",
+      "direction": "UP_RED",
+      "symbol": "0193T0",
+      "signal_time": "2026-07-21T14:27:00",
+      "entry_time": "2026-07-21 14:27:00",
+      "entry_price": 14552.2725,
+      "exit_time": "2026-07-21 15:00:00",
+      "exit_price": 14487.7525,
+      "qty": 624,
+      "gross_pnl": -40260.48,
+      "cost": 8154.43,
+      "net_pnl": -48414.91,
+      "exit_reason": "15:00_FORCE",
+      "delay_label": "delay_1m_cons",
+      "hold_min": 33.0,
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T14:24:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T14:24:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "hist_last5": [
+        -2837.793383,
+        -3583.986695,
+        -3786.13338,
+        -3245.149971,
+        -2323.16757
+      ],
+      "hist_deltas_last4": [
+        -746.193312,
+        -202.146685,
+        540.983409,
+        921.982401
+      ],
+      "hist_last3": [
+        -3786.13338,
+        -3245.149971,
+        -2323.16757
+      ],
+      "hist_deltas_last2": [
+        540.983409,
+        921.982401
+      ],
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true,
+      "eval_reason": "UP_RED_FIRST_TURN",
+      "loss_buckets": [
+        "true_direction_flip",
+        "false_hist_wiggle"
+      ]
+    }
+  ],
+  "signals_enriched": [
+    {
+      "signal_close_ts": "2026-07-21T10:27:00",
+      "bar_ts": "2026-07-21T10:24:00",
+      "bar_close_ts": "2026-07-21T10:27:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "NONE",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T10:24:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T10:24:00",
+      "is_true_first_flip": false,
+      "is_initial_entry": true,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2131.831432,
+        1314.860448,
+        629.511623
+      ],
+      "hist_deltas_last2": [
+        -816.970984,
+        -685.348826
+      ],
+      "hist_last5": [
+        2729.9028,
+        1975.252415,
+        2131.831432,
+        1314.860448,
+        629.511623
+      ],
+      "hist_deltas_last4": [
+        -754.650385,
+        156.579017,
+        -816.970984,
+        -685.348825
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T10:36:00",
+      "bar_ts": "2026-07-21T10:33:00",
+      "bar_close_ts": "2026-07-21T10:36:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T10:33:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T10:33:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        380.241668,
+        1309.945291,
+        1459.078213
+      ],
+      "hist_deltas_last2": [
+        929.703623,
+        149.132922
+      ],
+      "hist_last5": [
+        1314.860448,
+        629.511623,
+        380.241668,
+        1309.945291,
+        1459.078213
+      ],
+      "hist_deltas_last4": [
+        -685.348825,
+        -249.269955,
+        929.703623,
+        149.132922
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T10:45:00",
+      "bar_ts": "2026-07-21T10:42:00",
+      "bar_close_ts": "2026-07-21T10:45:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T10:42:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T10:42:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        1809.815515,
+        1753.862062,
+        1250.485497
+      ],
+      "hist_deltas_last2": [
+        -55.953453,
+        -503.376565
+      ],
+      "hist_last5": [
+        1309.945291,
+        1459.078213,
+        1809.815515,
+        1753.862062,
+        1250.485497
+      ],
+      "hist_deltas_last4": [
+        149.132922,
+        350.737302,
+        -55.953453,
+        -503.376565
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T11:27:00",
+      "bar_ts": "2026-07-21T11:24:00",
+      "bar_close_ts": "2026-07-21T11:27:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T11:24:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T11:24:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        -4405.677225,
+        -4060.661849,
+        -3556.552746
+      ],
+      "hist_deltas_last2": [
+        345.015376,
+        504.109103
+      ],
+      "hist_last5": [
+        -3573.57527,
+        -3770.04873,
+        -4405.677225,
+        -4060.661849,
+        -3556.552746
+      ],
+      "hist_deltas_last4": [
+        -196.47346,
+        -635.628495,
+        345.015376,
+        504.109103
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T11:57:00",
+      "bar_ts": "2026-07-21T11:54:00",
+      "bar_close_ts": "2026-07-21T11:57:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T11:54:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T11:54:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        943.098885,
+        380.30172,
+        293.058747
+      ],
+      "hist_deltas_last2": [
+        -562.797166,
+        -87.242973
+      ],
+      "hist_last5": [
+        387.425186,
+        691.661029,
+        943.098885,
+        380.30172,
+        293.058747
+      ],
+      "hist_deltas_last4": [
+        304.235843,
+        251.437856,
+        -562.797165,
+        -87.242973
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T12:03:00",
+      "bar_ts": "2026-07-21T12:00:00",
+      "bar_close_ts": "2026-07-21T12:03:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T12:00:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T12:00:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        293.058747,
+        380.154082,
+        826.359817
+      ],
+      "hist_deltas_last2": [
+        87.095335,
+        446.205735
+      ],
+      "hist_last5": [
+        943.098885,
+        380.30172,
+        293.058747,
+        380.154082,
+        826.359817
+      ],
+      "hist_deltas_last4": [
+        -562.797165,
+        -87.242973,
+        87.095335,
+        446.205735
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T12:27:00",
+      "bar_ts": "2026-07-21T12:24:00",
+      "bar_close_ts": "2026-07-21T12:27:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T12:24:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T12:24:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2223.763379,
+        1760.300059,
+        1253.619605
+      ],
+      "hist_deltas_last2": [
+        -463.46332,
+        -506.680454
+      ],
+      "hist_last5": [
+        1430.96097,
+        1771.368977,
+        2223.763379,
+        1760.300059,
+        1253.619605
+      ],
+      "hist_deltas_last4": [
+        340.408007,
+        452.394402,
+        -463.46332,
+        -506.680454
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T12:36:00",
+      "bar_ts": "2026-07-21T12:33:00",
+      "bar_close_ts": "2026-07-21T12:36:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T12:33:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T12:33:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        1190.27891,
+        1277.787197,
+        1643.79803
+      ],
+      "hist_deltas_last2": [
+        87.508287,
+        366.010833
+      ],
+      "hist_last5": [
+        1760.300059,
+        1253.619605,
+        1190.27891,
+        1277.787197,
+        1643.79803
+      ],
+      "hist_deltas_last4": [
+        -506.680454,
+        -63.340695,
+        87.508287,
+        366.010833
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T12:48:00",
+      "bar_ts": "2026-07-21T12:45:00",
+      "bar_close_ts": "2026-07-21T12:48:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T12:45:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T12:45:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2550.594657,
+        2450.106598,
+        2170.03589
+      ],
+      "hist_deltas_last2": [
+        -100.488059,
+        -280.070708
+      ],
+      "hist_last5": [
+        1643.79803,
+        2161.435422,
+        2550.594657,
+        2450.106598,
+        2170.03589
+      ],
+      "hist_deltas_last4": [
+        517.637392,
+        389.159235,
+        -100.488059,
+        -280.070708
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T12:54:00",
+      "bar_ts": "2026-07-21T12:51:00",
+      "bar_close_ts": "2026-07-21T12:54:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T12:51:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T12:51:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        2170.03589,
+        2297.683386,
+        2796.587703
+      ],
+      "hist_deltas_last2": [
+        127.647496,
+        498.904317
+      ],
+      "hist_last5": [
+        2550.594657,
+        2450.106598,
+        2170.03589,
+        2297.683386,
+        2796.587703
+      ],
+      "hist_deltas_last4": [
+        -100.488059,
+        -280.070708,
+        127.647496,
+        498.904317
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T13:00:00",
+      "bar_ts": "2026-07-21T12:57:00",
+      "bar_close_ts": "2026-07-21T13:00:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T12:57:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T12:57:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2796.587703,
+        2219.307949,
+        1535.150718
+      ],
+      "hist_deltas_last2": [
+        -577.279754,
+        -684.157231
+      ],
+      "hist_last5": [
+        2170.03589,
+        2297.683386,
+        2796.587703,
+        2219.307949,
+        1535.150718
+      ],
+      "hist_deltas_last4": [
+        127.647496,
+        498.904317,
+        -577.279754,
+        -684.157231
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T13:39:00",
+      "bar_ts": "2026-07-21T13:36:00",
+      "bar_close_ts": "2026-07-21T13:39:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T13:36:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T13:36:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        -3287.406455,
+        -3180.471009,
+        -3086.086002
+      ],
+      "hist_deltas_last2": [
+        106.935446,
+        94.385006
+      ],
+      "hist_last5": [
+        -2816.567802,
+        -3111.532669,
+        -3287.406455,
+        -3180.471009,
+        -3086.086002
+      ],
+      "hist_deltas_last4": [
+        -294.964867,
+        -175.873786,
+        106.935446,
+        94.385007
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T13:57:00",
+      "bar_ts": "2026-07-21T13:54:00",
+      "bar_close_ts": "2026-07-21T13:57:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T13:54:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T13:54:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        -2039.504096,
+        -2606.805924,
+        -3120.838544
+      ],
+      "hist_deltas_last2": [
+        -567.301828,
+        -514.03262
+      ],
+      "hist_last5": [
+        -2805.386283,
+        -2258.685479,
+        -2039.504096,
+        -2606.805924,
+        -3120.838544
+      ],
+      "hist_deltas_last4": [
+        546.700804,
+        219.181383,
+        -567.301828,
+        -514.03262
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T14:06:00",
+      "bar_ts": "2026-07-21T14:03:00",
+      "bar_close_ts": "2026-07-21T14:06:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T14:03:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T14:03:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        -3248.335275,
+        -3183.289261,
+        -2802.262653
+      ],
+      "hist_deltas_last2": [
+        65.046014,
+        381.026608
+      ],
+      "hist_last5": [
+        -2606.805924,
+        -3120.838544,
+        -3248.335275,
+        -3183.289261,
+        -2802.262653
+      ],
+      "hist_deltas_last4": [
+        -514.03262,
+        -127.496731,
+        65.046014,
+        381.026608
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T14:15:00",
+      "bar_ts": "2026-07-21T14:12:00",
+      "bar_close_ts": "2026-07-21T14:15:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T14:12:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T14:12:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        -2364.407978,
+        -2419.039984,
+        -2837.793383
+      ],
+      "hist_deltas_last2": [
+        -54.632006,
+        -418.753399
+      ],
+      "hist_last5": [
+        -3183.289261,
+        -2802.262653,
+        -2364.407978,
+        -2419.039984,
+        -2837.793383
+      ],
+      "hist_deltas_last4": [
+        381.026608,
+        437.854675,
+        -54.632006,
+        -418.753399
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": true,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T14:27:00",
+      "bar_ts": "2026-07-21T14:24:00",
+      "bar_close_ts": "2026-07-21T14:27:00",
+      "direction": "UP_RED",
+      "prev_direction_state": "DOWN_BLUE",
+      "new_direction_state": "UP_RED",
+      "signal_id": "MACD3M:UP_RED:2026-07-21T14:24:00",
+      "direction_episode_id": "EP:UP_RED:2026-07-21T14:24:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        -3786.13338,
+        -3245.149971,
+        -2323.16757
+      ],
+      "hist_deltas_last2": [
+        540.983409,
+        921.982401
+      ],
+      "hist_last5": [
+        -2837.793383,
+        -3583.986695,
+        -3786.13338,
+        -3245.149971,
+        -2323.16757
+      ],
+      "hist_deltas_last4": [
+        -746.193312,
+        -202.146685,
+        540.983409,
+        921.982401
+      ],
+      "display_direction": "UP_RED",
+      "pattern": "UP_RED",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    },
+    {
+      "signal_close_ts": "2026-07-21T15:15:00",
+      "bar_ts": "2026-07-21T15:12:00",
+      "bar_close_ts": "2026-07-21T15:15:00",
+      "direction": "DOWN_BLUE",
+      "prev_direction_state": "UP_RED",
+      "new_direction_state": "DOWN_BLUE",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T15:12:00",
+      "direction_episode_id": "EP:DOWN_BLUE:2026-07-21T15:12:00",
+      "is_true_first_flip": true,
+      "is_initial_entry": false,
+      "is_same_direction_repeat": false,
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2201.074137,
+        1947.289807,
+        1834.669943
+      ],
+      "hist_deltas_last2": [
+        -253.78433,
+        -112.619864
+      ],
+      "hist_last5": [
+        1087.64694,
+        2055.026321,
+        2201.074137,
+        1947.289807,
+        1834.669943
+      ],
+      "hist_deltas_last4": [
+        967.379381,
+        146.047816,
+        -253.78433,
+        -112.619864
+      ],
+      "display_direction": "DOWN_BLUE",
+      "pattern": "DOWN_BLUE",
+      "old_B_sign_ok": false,
+      "new_B_slope_ok": true
+    }
+  ]
+}

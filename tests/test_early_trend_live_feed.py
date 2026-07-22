@@ -129,3 +129,270 @@ def test_reversal_candidate_requires_three_factors_for_fifteen_seconds():
     assert confirmed["status"] == "REVERSAL_CANDIDATE"
     assert confirmed["existing_direction_blocked"] is True
     assert confirmed["detection_to_confirmation_delay_seconds"] >= 15
+
+
+def _synthetic_1m_down(n: int = 40, start: float = 100.0, step: float = -0.15):
+    import pandas as pd
+
+    rows = []
+    price = start
+    t0 = datetime(2026, 7, 22, 10, 0, 0)
+    for i in range(n):
+        o = price
+        c = price + step
+        h = max(o, c) + 0.02
+        l = min(o, c) - 0.02
+        rows.append({
+            "datetime": t0 + timedelta(minutes=i),
+            "open": o, "high": h, "low": l, "close": c, "volume": 1000 + i,
+        })
+        price = c
+    return pd.DataFrame(rows)
+
+
+def test_structural_live_direction_down_with_three_of_four_factors():
+    df = _synthetic_1m_down()
+    now = datetime(2026, 7, 22, 10, 40, 0)
+    result = feed.compute_structural_live_direction(
+        df,
+        etf_window_directions={5: "DOWN", 10: "DOWN", 20: "UP", 30: "UP"},
+        now=now,
+    )
+    assert result["down_count"] >= 3
+    assert result["direction"] == "DOWN"
+    assert result["down_factors"]["lh_ll_3m"] is True
+    assert result["down_factors"]["returns_10m_15m_neg"] is True
+    assert result["down_factors"]["below_vwap_or_ema"] is True
+    assert result["down_factors"]["etf_windows_down_ge2"] is True
+
+
+def test_structural_live_direction_up_symmetric():
+    import pandas as pd
+
+    rows = []
+    price = 100.0
+    t0 = datetime(2026, 7, 22, 10, 0, 0)
+    for i in range(40):
+        o = price
+        c = price + 0.15
+        rows.append({
+            "datetime": t0 + timedelta(minutes=i),
+            "open": o, "high": max(o, c) + 0.02, "low": min(o, c) - 0.02,
+            "close": c, "volume": 1000 + i,
+        })
+        price = c
+    df = pd.DataFrame(rows)
+    result = feed.compute_structural_live_direction(
+        df,
+        etf_window_directions={5: "UP", 10: "UP", 20: "DOWN"},
+        now=datetime(2026, 7, 22, 10, 40, 0),
+    )
+    assert result["direction"] == "UP"
+    assert result["up_count"] >= 3
+
+
+def test_merge_prefers_structural_over_etf_seconds_and_enhanced():
+    etf = {"direction": "UP", "up_votes": 2, "down_votes": 0}
+    structural = {"direction": "DOWN", "down_count": 3, "up_count": 1, "status": "STRUCTURAL_DOWN"}
+    merged = feed.merge_live_trade_direction(etf, structural)
+    assert merged["direction"] == "DOWN"
+    assert merged["direction_source"] == "structural_minute"
+    assert merged["day_bias_excluded"] is True
+    assert merged["etf_seconds_direction"] == "UP"
+
+
+def test_drawdown_gates_forbid_hynix_buy_and_episode_candidate():
+    # Peak then drop >1.5% with LH/LL
+    import pandas as pd
+
+    rows = []
+    t0 = datetime(2026, 7, 22, 10, 0, 0)
+    # climb to 100
+    for i in range(20):
+        p = 90 + i * 0.5
+        rows.append({"datetime": t0 + timedelta(minutes=i), "open": p, "high": p + 0.2, "low": p - 0.2, "close": p, "volume": 1000})
+    # drop to ~98 (from high 99.5+ → >1.5%)
+    high_price = rows[-1]["close"]
+    for j in range(20):
+        p = high_price * (1.0 - 0.002 * (j + 1))  # gradual decline
+        rows.append({
+            "datetime": t0 + timedelta(minutes=20 + j),
+            "open": p + 0.1, "high": p + 0.15, "low": p - 0.2, "close": p, "volume": 1000,
+        })
+    df = pd.DataFrame(rows)
+    gates = feed.compute_session_drawdown_gates(df, now=t0 + timedelta(minutes=39))
+    assert gates["drawdown_from_high_pct"] is not None
+    assert gates["drawdown_from_high_pct"] <= -1.0
+    assert gates["down_episode_candidate"] is True or gates["forbid_hynix_buy"] is True
+
+
+def test_event_bonus_expires_after_two_3m_bars():
+    now = datetime(2026, 7, 22, 10, 0, 0)
+    state = feed.update_event_bonus_state(
+        {},
+        active_event_keys=["볼린저 하단 이탈 후 회복"],
+        now=now,
+        completed_3m_index=10,
+    )
+    assert feed.event_bonus_scale(state, "볼린저 하단 이탈 후 회복") == 1.0
+
+    later = feed.update_event_bonus_state(
+        state,
+        active_event_keys=["볼린저 하단 이탈 후 회복"],
+        now=now + timedelta(minutes=7),
+        completed_3m_index=12,  # +2 bars
+    )
+    assert feed.event_bonus_scale(later, "볼린저 하단 이탈 후 회복") == 0.0
+    assert later["events"]["볼린저 하단 이탈 후 회복"]["expired"] is True
+
+    points = [(12.0, "볼린저 하단 이탈 후 회복"), (10.0, "현재가 VWAP 상회")]
+    scaled, keys = feed.scale_event_bonus_points(points, later)
+    assert keys == ["볼린저 하단 이탈 후 회복"]
+    assert scaled == [(10.0, "현재가 VWAP 상회")]
+
+
+def test_event_bonus_hard_stop_at_ten_minutes():
+    now = datetime(2026, 7, 22, 10, 0, 0)
+    state = feed.update_event_bonus_state(
+        {},
+        active_event_keys=["RSI(14) 30 이하 이탈 후 재돌파"],
+        now=now,
+        completed_3m_index=1,
+    )
+    # Same 3m index but 11 minutes later → hard decay
+    expired = feed.update_event_bonus_state(
+        state,
+        active_event_keys=["RSI(14) 30 이하 이탈 후 재돌파"],
+        now=now + timedelta(minutes=11),
+        completed_3m_index=1,
+    )
+    assert feed.event_bonus_scale(expired, "RSI(14) 30 이하 이탈 후 재돌파") == 0.0
+
+
+def _synthetic_1m_decline(start: datetime, bars: int = 40, start_price: float = 2_000_000.0):
+    import pandas as pd
+
+    rows = []
+    price = start_price
+    for i in range(bars):
+        # Steady decline with LH/LL on 3m structure.
+        open_p = price
+        close_p = price * (1.0 - 0.0012)
+        high_p = open_p * 1.0002
+        low_p = close_p * 0.9995
+        rows.append({
+            "datetime": start + timedelta(minutes=i),
+            "open": open_p, "high": high_p, "low": low_p, "close": close_p,
+            "volume": 5000 + i * 10,
+        })
+        price = close_p
+    return pd.DataFrame(rows)
+
+
+def test_structural_live_direction_down_with_three_of_four_factors():
+    now = datetime(2026, 7, 22, 10, 50, 0)
+    df = _synthetic_1m_decline(datetime(2026, 7, 22, 10, 10, 0), bars=40)
+    result = feed.compute_structural_live_direction(
+        df,
+        etf_window_directions={5: "DOWN", 10: "DOWN", 20: "UP", 30: "UP"},
+        now=now,
+    )
+    assert result["down_count"] >= 3
+    assert result["direction"] == "DOWN"
+    assert result["down_factors"]["lh_ll_3m"] is True
+    assert result["down_factors"]["returns_10m_15m_neg"] is True
+    assert result["down_factors"]["below_vwap_or_ema"] is True
+    assert result["down_factors"]["etf_windows_down_ge2"] is True
+
+
+def test_structural_live_direction_up_symmetric():
+    now = datetime(2026, 7, 22, 10, 50, 0)
+    import pandas as pd
+
+    rows = []
+    price = 1_900_000.0
+    start = datetime(2026, 7, 22, 10, 10, 0)
+    for i in range(40):
+        open_p = price
+        close_p = price * (1.0 + 0.0012)
+        rows.append({
+            "datetime": start + timedelta(minutes=i),
+            "open": open_p, "high": close_p * 1.0003, "low": open_p * 0.9997,
+            "close": close_p, "volume": 5000,
+        })
+        price = close_p
+    df = pd.DataFrame(rows)
+    result = feed.compute_structural_live_direction(
+        df, etf_window_directions={5: "UP", 10: "UP", 20: "DOWN"}, now=now,
+    )
+    assert result["direction"] == "UP"
+    assert result["up_count"] >= 3
+
+
+def test_merge_prefers_structural_over_etf_seconds_and_ignores_enhanced():
+    etf = {"direction": "UP", "up_votes": 2, "down_votes": 0}
+    structural = {"direction": "DOWN", "down_count": 3, "up_count": 0, "status": "STRUCTURAL_DOWN"}
+    merged = feed.merge_live_trade_direction(etf, structural)
+    assert merged["direction"] == "DOWN"
+    assert merged["direction_source"] == "structural_minute"
+    assert merged["day_bias_excluded"] is True
+    assert merged["etf_seconds_direction"] == "UP"
+
+
+def test_drawdown_gates_forbid_hynix_buy_and_episode_candidate():
+    now = datetime(2026, 7, 22, 11, 0, 0)
+    df = _synthetic_1m_decline(datetime(2026, 7, 22, 10, 0, 0), bars=50, start_price=2_000_000.0)
+    gates = feed.compute_session_drawdown_gates(df, now=now)
+    assert gates["drawdown_from_high_pct"] is not None
+    assert gates["drawdown_from_high_pct"] <= -1.0
+    assert gates["forbid_hynix_buy"] is True
+    assert gates["down_episode_candidate"] is True
+
+
+def test_event_bonus_decays_after_two_3m_bars():
+    now = datetime(2026, 7, 22, 10, 30, 0)
+    state = feed.update_event_bonus_state(
+        {},
+        active_event_keys=["볼린저 하단 이탈 후 회복"],
+        now=now,
+        completed_3m_index=10,
+    )
+    assert feed.event_bonus_scale(state, "볼린저 하단 이탈 후 회복") == 1.0
+
+    later = feed.update_event_bonus_state(
+        state,
+        active_event_keys=["볼린저 하단 이탈 후 회복"],
+        now=now + timedelta(minutes=7),
+        completed_3m_index=12,  # +2 completed 3m bars
+    )
+    assert feed.event_bonus_scale(later, "볼린저 하단 이탈 후 회복") == 0.0
+    scaled, _ = feed.scale_event_bonus_points(
+        [(12.0, "볼린저 하단 이탈 후 회복"), (10.0, "현재가 VWAP 상회")],
+        later,
+    )
+    assert scaled == [(10.0, "현재가 VWAP 상회")]
+
+
+def test_event_bonus_hard_stop_at_ten_minutes_no_rearm():
+    now = datetime(2026, 7, 22, 10, 30, 0)
+    state = feed.update_event_bonus_state(
+        {},
+        active_event_keys=["RSI(14) 30 이하 이탈 후 재돌파"],
+        now=now,
+        completed_3m_index=5,
+    )
+    expired = feed.update_event_bonus_state(
+        state,
+        active_event_keys=["RSI(14) 30 이하 이탈 후 재돌파"],
+        now=now + timedelta(minutes=11),
+        completed_3m_index=8,
+    )
+    assert feed.event_bonus_scale(expired, "RSI(14) 30 이하 이탈 후 재돌파") == 0.0
+    # Still active on daily signal — must not re-arm a fresh bonus.
+    still = feed.update_event_bonus_state(
+        expired,
+        active_event_keys=["RSI(14) 30 이하 이탈 후 재돌파"],
+        now=now + timedelta(minutes=12),
+        completed_3m_index=9,
+    )
+    assert feed.event_bonus_scale(still, "RSI(14) 30 이하 이탈 후 재돌파") == 0.0

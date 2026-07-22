@@ -1,0 +1,167 @@
+{
+  "auto_trade_on": false,
+  "mode": "mock",
+  "budget": 10000000,
+  "stopped": false,
+  "stopped_reason": null,
+  "display_direction": "HOLD",
+  "last_signal_direction": null,
+  "last_signal_bar_ts": null,
+  "last_signal_id": null,
+  "last_signal_at": null,
+  "pending_signal_id": null,
+  "pending_signal_direction": null,
+  "pending_signal_at": null,
+  "pending_entry_kind": null,
+  "pending_signal_source": null,
+  "order_requested_at": null,
+  "broker_executed_at": null,
+  "last_order_at": null,
+  "position": {
+    "symbol": null,
+    "quantity": 0,
+    "avg_price": 0.0,
+    "entry_at": null,
+    "signal_id": null,
+    "entry_kind": null,
+    "direction_episode_id": null,
+    "size_fraction": 1.0,
+    "opening_probe": false
+  },
+  "direction_episode": {
+    "id": null,
+    "direction": null,
+    "started_at": null,
+    "initial_entry_used": false,
+    "continuation_reentry_used": false,
+    "sl_lock": false,
+    "tp_at": null,
+    "tp_bar_ts": null,
+    "tp_hist_max_abs": 0.0,
+    "tp_hynix_price": null,
+    "tp_pivot_price": null,
+    "last_exit_reason": null
+  },
+  "reentry": {
+    "eligible": false,
+    "block_reason": null,
+    "bars_since_tp": 0,
+    "hist_contracted": false,
+    "hist_last3": [],
+    "enabled": false
+  },
+  "last_event": null,
+  "prices": {
+    "hynix": null,
+    "long": null,
+    "inverse": null,
+    "updated_at": null
+  },
+  "macd": {
+    "macd": null,
+    "signal": null,
+    "hist": null,
+    "hist_last3": [],
+    "hist_deltas": [],
+    "reason": null
+  },
+  "quote_errors": [],
+  "pipeline": {
+    "Signal": {
+      "ok": null,
+      "at": null,
+      "message": ""
+    },
+    "Sell Requested": {
+      "ok": null,
+      "at": null,
+      "message": ""
+    },
+    "Sell Executed": {
+      "ok": null,
+      "at": null,
+      "message": ""
+    },
+    "Buy Requested": {
+      "ok": null,
+      "at": null,
+      "message": ""
+    },
+    "Buy Executed": {
+      "ok": null,
+      "at": null,
+      "message": ""
+    },
+    "Position Confirmed": {
+      "ok": null,
+      "at": null,
+      "message": ""
+    },
+    "Ledger Recorded": {
+      "ok": null,
+      "at": null,
+      "message": ""
+    }
+  },
+  "order_block_reason": null,
+  "next_action": "대기",
+  "processed_signal_ids": [],
+  "worker": {
+    "alive": true,
+    "last_tick_at": "2026-07-23T07:56:16.079648",
+    "tick_intervals": [
+      5.013,
+      4.981,
+      5.008,
+      4.992,
+      5.003,
+      5.003,
+      5.0,
+      5.003,
+      4.998,
+      4.997
+    ],
+    "avg_interval": 4.999,
+    "p95_interval": 5.009,
+    "signal_detected_at": null,
+    "order_requested_at": null,
+    "broker_executed_at": null
+  },
+  "scheduler_alive": true,
+  "strategy_enabled": false,
+  "market_data_active": false,
+  "signal_calculation_active": false,
+  "order_execution_enabled": false,
+  "primary_block_reason": "STRATEGY_OFF",
+  "legacy_truth_debug": {},
+  "force_liquidate_pending": false,
+  "force_liquidate_done_date": null,
+  "session_date": "2026-07-23",
+  "real_confirm_ok": false,
+  "masked_account": "",
+  "continuation_reentry_enabled": false,
+  "opening_probe_enabled": false,
+  "opening_probe": {
+    "warmup_ready": false,
+    "warmup_reason": null,
+    "warmup_hist_last2": [],
+    "warmup_hist_deltas": [],
+    "day_open_price": null,
+    "window_active": false,
+    "window_abandoned": false,
+    "immediate_fired_today": false,
+    "immediate_direction": null,
+    "immediate_signal_id": null,
+    "immediate_at": null,
+    "awaiting_09_03_confirm": false,
+    "scaled_to_full": false,
+    "unconfirmed_exit_at": null,
+    "last_eval_at": null,
+    "last_eval_reason": null,
+    "last_eval_signal": null,
+    "price_samples_5s": [],
+    "confirm_checked": false
+  },
+  "updated_at": "2026-07-23T07:56:16.081283",
+  "git_sha": "e41fc53"
+}

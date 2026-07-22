@@ -36,6 +36,14 @@ from app.trading.etf_entry_confirmation import compute_etf_breakouts, resolve_wi
 from app.trading.hynix_fast_trend import compute_fast_trend_signal  # noqa: E402
 from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL as INVERSE_SYMBOL  # noqa: E402
 from app.trading.trading_cost_engine import TradeCostEngine  # noqa: E402
+from app.trading.range_weighted_optimize import (  # noqa: E402
+    classify_intraday_regime,
+    compute_objective,
+    constraints_satisfied,
+    daily_loss_limit_reached,
+    get_range_weighted_config,
+    load_optimized_config,
+)
 from scripts.backtest_switch_engine_synthetic_day import (  # noqa: E402
     _load_daily_returns_and_df,
     generate_synthetic_day,
@@ -56,6 +64,8 @@ def _simulate_day(day: dict, day_index: int) -> dict:
     inverse = day["inverse"]
     times = day["times"]
     cost_engine = TradeCostEngine()
+    cfg = get_range_weighted_config()
+    day_regime = classify_intraday_regime(underlying)
 
     cash = INITIAL_CASH
     position = None
@@ -66,7 +76,8 @@ def _simulate_day(day: dict, day_index: int) -> dict:
     sub_20s_round_trips = 0
     latency_seconds: list[float] = []
     daily_pnl = 0.0
-    max_daily_loss = 0.0
+    peak_equity = INITIAL_CASH
+    daily_loss_breached = False
 
     true_direction = "UP" if day["true_direction"] > 0 else "DOWN"
     continuation: dict = {}
@@ -113,10 +124,14 @@ def _simulate_day(day: dict, day_index: int) -> dict:
             structure_confirmed=structure_confirmed,
             structural_direction=true_direction,
             entry_path_hint="REVERSAL" if i % 17 == 0 else None,
+            day_regime=day_regime,
+            range_config=cfg,
         )
 
         episode_id = f"{live_direction}:{now.isoformat()}"
         if result.get("action") == "ENTER" and position is None:
+            if daily_loss_breached or daily_loss_limit_reached(daily_pnl, INITIAL_CASH, cfg):
+                continue
             if episode_id in episode_entries:
                 duplicate_episode_entries += 1
             episode_entries.add(episode_id)
@@ -177,9 +192,11 @@ def _simulate_day(day: dict, day_index: int) -> dict:
                     "held_seconds": held_seconds,
                 })
                 daily_pnl += net
+                peak_equity = max(peak_equity, cash)
+                if daily_loss_limit_reached(daily_pnl, INITIAL_CASH, cfg):
+                    daily_loss_breached = True
                 position = None
 
-    max_daily_loss = min(max_daily_loss, daily_pnl)
     gross_profit = sum(t["gross_pnl"] for t in trades if t["gross_pnl"] > 0)
     gross_loss = -sum(t["gross_pnl"] for t in trades if t["gross_pnl"] < 0)
     total_cost = sum(t["cost"] for t in trades)
@@ -188,21 +205,27 @@ def _simulate_day(day: dict, day_index: int) -> dict:
     entries = len(episode_entries)
     return {
         "day_index": day_index,
-        "regime": day["regime_label"],
+        "regime": day_regime,
         "trades": len(trades),
         "entries": entries,
         "profit_factor": pf,
         "cost_over_gross": (total_cost / gross_profit) if gross_profit > 0 else None,
+        "wrong_direction_entries": wrong_direction_entries,
         "wrong_direction_rate": (wrong_direction_entries / entries) if entries else 0.0,
         "duplicate_episode_entries": duplicate_episode_entries,
         "sub_20s_round_trips": sub_20s_round_trips,
         "latency_median_seconds": _median(latency_seconds),
-        "max_daily_loss_krw": max_daily_loss,
         "net_pnl_krw": sum(net_pnls),
+        "gross_profit_krw": gross_profit,
+        "total_cost_krw": total_cost,
+        "return_pct": (sum(net_pnls) / INITIAL_CASH) * 100.0,
+        "max_intraday_dd_pct": ((cash / peak_equity - 1.0) * 100.0) if peak_equity else 0.0,
+        "daily_loss_breached": daily_loss_breached,
     }
 
 
 def main() -> int:
+    load_optimized_config()
     daily_rets, _ = _load_daily_returns_and_df()
     day_results = []
     for day_idx in range(N_DAYS):
@@ -210,20 +233,27 @@ def main() -> int:
         day = generate_synthetic_day(daily_rets)
         day_results.append(_simulate_day(day, day_idx))
 
+    from app.trading.range_weighted_optimize import aggregate_metrics  # noqa: E402
+
+    agg = aggregate_metrics(day_results, initial_cash=INITIAL_CASH)
+    objective = compute_objective(agg)
+
     total_trades = sum(d["trades"] for d in day_results)
     total_entries = sum(d["entries"] for d in day_results)
-    total_wrong = sum(round(d["wrong_direction_rate"] * d["entries"]) for d in day_results)
+    total_wrong = sum(d.get("wrong_direction_entries", 0) for d in day_results)
     total_dup = sum(d["duplicate_episode_entries"] for d in day_results)
     total_sub20 = sum(d["sub_20s_round_trips"] for d in day_results)
     latencies = [d["latency_median_seconds"] for d in day_results if d["latency_median_seconds"] is not None]
     pfs = [d["profit_factor"] for d in day_results if d["profit_factor"] not in (None, float("inf"))]
     cost_ratios = [d["cost_over_gross"] for d in day_results if d["cost_over_gross"] is not None]
-    max_losses = [d["max_daily_loss_krw"] for d in day_results]
+    loss_breaches = sum(1 for d in day_results if d.get("daily_loss_breached"))
 
     print("=" * 72)
     print("RANGE weighted-entry mock validation — 20 trading days")
     print("=" * 72)
     print(f"거래일 수: {N_DAYS}")
+    print(f"목적함수: {objective:.3f}  제약충족: {constraints_satisfied(agg)}")
+    print(f"총 수익률: {agg.get('total_return_pct', 0):.3f}%  평균 일수익: {agg.get('avg_daily_return_pct', 0):.3f}%")
     print(f"총 라운드트립: {total_trades}")
     print(f"총 신규진입: {total_entries}")
     print(f"PF (median): {_median(pfs):.2f}" if pfs else "PF (median): n/a")
@@ -232,7 +262,8 @@ def main() -> int:
     print(f"동일 episode 중복진입: {total_dup}")
     print(f"20초 미만 왕복: {total_sub20}")
     print(f"신호→주문 latency median: {_median(latencies):.1f}s" if latencies else "신호→주문 latency median: n/a")
-    print(f"일 최대손실 (worst day): {min(max_losses):,.0f} KRW" if max_losses else "일 최대손실: n/a")
+    print(f"일손실한도(-0.8%) 도달 일수: {loss_breaches}")
+    print(f"추세일 median 수익: {agg.get('trend_day_median_return_pct')}")
     print("-" * 72)
     for row in day_results:
         pf_txt = f"{row['profit_factor']:.2f}" if row["profit_factor"] not in (None, float("inf")) else "∞"

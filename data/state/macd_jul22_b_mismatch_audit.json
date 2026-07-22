@@ -1,0 +1,2834 @@
+{
+  "verdict": "IMPLEMENTATION_MISMATCH",
+  "day": "2026-07-22",
+  "headline": {
+    "prior_B_delay_1m_cons": {
+      "round_trips": 2,
+      "net_pnl": 440239.0,
+      "return_pct": 4.4024,
+      "signals": [
+        {
+          "time": "2026-07-22 10:42:00",
+          "dir": "DOWN",
+          "kind": "HIST_2DN_TURN"
+        },
+        {
+          "time": "2026-07-22 11:03:00",
+          "dir": "DOWN",
+          "kind": "HIST_2DN_TURN"
+        },
+        {
+          "time": "2026-07-22 11:36:00",
+          "dir": "DOWN",
+          "kind": "HIST_2DN_TURN"
+        },
+        {
+          "time": "2026-07-22 11:57:00",
+          "dir": "DOWN",
+          "kind": "HIST_2DN_TURN"
+        },
+        {
+          "time": "2026-07-22 12:12:00",
+          "dir": "DOWN",
+          "kind": "HIST_2DN_TURN"
+        },
+        {
+          "time": "2026-07-22 12:33:00",
+          "dir": "UP",
+          "kind": "HIST_2UP_TURN"
+        },
+        {
+          "time": "2026-07-22 12:42:00",
+          "dir": "UP",
+          "kind": "HIST_2UP_TURN"
+        },
+        {
+          "time": "2026-07-22 13:06:00",
+          "dir": "UP",
+          "kind": "HIST_2UP_TURN"
+        },
+        {
+          "time": "2026-07-22 13:24:00",
+          "dir": "UP",
+          "kind": "HIST_2UP_TURN"
+        },
+        {
+          "time": "2026-07-22 14:00:00",
+          "dir": "UP",
+          "kind": "HIST_2UP_TURN"
+        }
+      ]
+    },
+    "new_macd_hynix_delay_1m_cons": {
+      "round_trips": 14,
+      "net_pnl": 87133.4,
+      "return_pct": 0.871,
+      "signals": 14
+    }
+  },
+  "data_parity": {
+    "both_use_same_cache_files": true,
+    "files": {
+      "000660": {
+        "path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\replay_20260722_hynix_1m.csv",
+        "rows": 391,
+        "min": "2026-07-22 09:00:00",
+        "max": "2026-07-22 15:30:00",
+        "sample": {
+          "10:42": {
+            "open": 1981000.0,
+            "high": 1985000.0,
+            "low": 1976000.0,
+            "close": 1976000.0
+          },
+          "12:33": {
+            "open": 1941000.0,
+            "high": 1944000.0,
+            "low": 1940000.0,
+            "close": 1942500.0
+          },
+          "15:00": {
+            "open": 1949000.0,
+            "high": 1949000.0,
+            "low": 1949000.0,
+            "close": 1949000.0
+          }
+        }
+      },
+      "0193T0": {
+        "path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\replay_20260722_long_1m.csv",
+        "rows": 391,
+        "min": "2026-07-22 09:00:00",
+        "max": "2026-07-22 15:30:00",
+        "sample": {
+          "10:42": {
+            "open": 16585.0,
+            "high": 16635.0,
+            "low": 16500.0,
+            "close": 16510.0
+          },
+          "12:33": {
+            "open": 15995.0,
+            "high": 16040.0,
+            "low": 15980.0,
+            "close": 16020.0
+          },
+          "15:00": {
+            "open": 16065.0,
+            "high": 16065.0,
+            "low": 16065.0,
+            "close": 16065.0
+          }
+        }
+      },
+      "0197X0": {
+        "path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\replay_20260722_inverse_1m.csv",
+        "rows": 391,
+        "min": "2026-07-22 09:00:00",
+        "max": "2026-07-22 15:30:00",
+        "sample": {
+          "10:42": {
+            "open": 9435.0,
+            "high": 9510.0,
+            "low": 9405.0,
+            "close": 9500.0
+          },
+          "12:33": {
+            "open": 9935.0,
+            "high": 9945.0,
+            "low": 9900.0,
+            "close": 9920.0
+          },
+          "15:00": {
+            "open": 9900.0,
+            "high": 9900.0,
+            "low": 9900.0,
+            "close": 9900.0
+          }
+        }
+      }
+    },
+    "resample": {
+      "prior_resample_3m_full3_required": 130,
+      "prior_build_indicator_frame": 130,
+      "new_resample_completed_3m": 131,
+      "incomplete_3m_buckets_count_lt_3": 1,
+      "incomplete_buckets": [
+        {
+          "ts": "2026-07-22 15:30:00",
+          "count": 1
+        }
+      ],
+      "max_abs_hist_diff_aligned_bars": 0.0
+    }
+  },
+  "definition_diff": {
+    "prior_signals_B": "Requires last TWO hist same sign (color) AND two consecutive same-sign deltas; fires only on pattern ONSET (prev bar not already qualifying).",
+    "new_evaluate_macd_direction": "Requires last THREE hist strictly monotonic (2 consecutive deltas same sign); NO hist sign/color gate. Fires on FIRST TURN into UP_RED/DOWN_BLUE vs last_signal_direction (persists across day; not reset on flat/TP/SL)."
+  },
+  "prior_signals": [
+    {
+      "time": "2026-07-22 10:42:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN"
+    },
+    {
+      "time": "2026-07-22 11:03:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN"
+    },
+    {
+      "time": "2026-07-22 11:36:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN"
+    },
+    {
+      "time": "2026-07-22 11:57:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN"
+    },
+    {
+      "time": "2026-07-22 12:12:00",
+      "dir": "DOWN",
+      "kind": "HIST_2DN_TURN"
+    },
+    {
+      "time": "2026-07-22 12:33:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN"
+    },
+    {
+      "time": "2026-07-22 12:42:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN"
+    },
+    {
+      "time": "2026-07-22 13:06:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN"
+    },
+    {
+      "time": "2026-07-22 13:24:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN"
+    },
+    {
+      "time": "2026-07-22 14:00:00",
+      "dir": "UP",
+      "kind": "HIST_2UP_TURN"
+    }
+  ],
+  "new_signals": [
+    {
+      "close_time": "2026-07-22 10:18:00",
+      "direction": "UP_RED",
+      "prev_last_dir": null,
+      "hist_last3": [
+        218.003817,
+        785.417962,
+        1480.423736
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "UP_RED_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 10:33:00",
+      "direction": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "hist_last3": [
+        2042.689985,
+        1535.057938,
+        859.313199
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "DOWN_BLUE_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 10:51:00",
+      "direction": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "hist_last3": [
+        -1284.510006,
+        -969.056221,
+        -865.461716
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "UP_RED_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 11:03:00",
+      "direction": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "hist_last3": [
+        -574.591212,
+        -873.466862,
+        -1217.158064
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": true,
+      "class": "matches_prior_B",
+      "reason": "DOWN_BLUE_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 11:15:00",
+      "direction": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "hist_last3": [
+        -1473.12376,
+        -1425.859018,
+        -1351.575376
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "UP_RED_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 11:36:00",
+      "direction": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "hist_last3": [
+        -168.78862,
+        -317.893038,
+        -476.989876
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": true,
+      "class": "matches_prior_B",
+      "reason": "DOWN_BLUE_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 12:21:00",
+      "direction": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "hist_last3": [
+        -4025.118674,
+        -3792.671143,
+        -3491.633844
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "UP_RED_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 12:57:00",
+      "direction": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "hist_last3": [
+        3007.457917,
+        2541.274978,
+        1989.566019
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "DOWN_BLUE_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 13:06:00",
+      "direction": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "hist_last3": [
+        1982.996854,
+        1994.847147,
+        2140.709855
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": true,
+      "class": "matches_prior_B",
+      "reason": "UP_RED_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 13:15:00",
+      "direction": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "hist_last3": [
+        2166.590482,
+        1983.338535,
+        1737.909945
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "DOWN_BLUE_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 13:24:00",
+      "direction": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "hist_last3": [
+        1653.867956,
+        1735.433746,
+        2104.021056
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": true,
+      "class": "matches_prior_B",
+      "reason": "UP_RED_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 13:30:00",
+      "direction": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "hist_last3": [
+        2104.021056,
+        1734.943156,
+        1493.263355
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "DOWN_BLUE_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 14:00:00",
+      "direction": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "hist_last3": [
+        25.504942,
+        33.310618,
+        46.000373
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": true,
+      "class": "matches_prior_B",
+      "reason": "UP_RED_FIRST_TURN"
+    },
+    {
+      "close_time": "2026-07-22 14:39:00",
+      "direction": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "hist_last3": [
+        145.243451,
+        144.480184,
+        142.617975
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "same_sign_last2": true,
+      "in_prior_signals": false,
+      "class": "same_sign_but_not_prior_onset",
+      "reason": "DOWN_BLUE_FIRST_TURN"
+    }
+  ],
+  "new_signal_class_counts": {
+    "matches_prior_B": 5,
+    "same_sign_but_not_prior_onset": 9
+  },
+  "extra_trades": [
+    {
+      "signal_time": "2026-07-22 10:18:00",
+      "direction": "UP_RED",
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "net_pnl": -101771.04,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 10:33:00",
+      "direction": "DOWN_BLUE",
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "net_pnl": 2399.31,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 10:51:00",
+      "direction": "UP_RED",
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "net_pnl": -83859.18,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 11:03:00",
+      "direction": "DOWN_BLUE",
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "net_pnl": 9419.65,
+      "in_prior_trades": false,
+      "signal_class": "matches_prior_B",
+      "bucket": "aligned_with_prior"
+    },
+    {
+      "signal_time": "2026-07-22 11:15:00",
+      "direction": "UP_RED",
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "net_pnl": -30466.69,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 11:36:00",
+      "direction": "DOWN_BLUE",
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "net_pnl": 569092.92,
+      "in_prior_trades": false,
+      "signal_class": "matches_prior_B",
+      "bucket": "aligned_with_prior"
+    },
+    {
+      "signal_time": "2026-07-22 12:21:00",
+      "direction": "UP_RED",
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "net_pnl": 87977.58,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 12:57:00",
+      "direction": "DOWN_BLUE",
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "net_pnl": -140940.64,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 13:06:00",
+      "direction": "UP_RED",
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "net_pnl": -45014.25,
+      "in_prior_trades": false,
+      "signal_class": "matches_prior_B",
+      "bucket": "aligned_with_prior"
+    },
+    {
+      "signal_time": "2026-07-22 13:15:00",
+      "direction": "DOWN_BLUE",
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "net_pnl": -155070.05,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 13:24:00",
+      "direction": "UP_RED",
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "net_pnl": -74936.63,
+      "in_prior_trades": false,
+      "signal_class": "matches_prior_B",
+      "bucket": "aligned_with_prior"
+    },
+    {
+      "signal_time": "2026-07-22 13:30:00",
+      "direction": "DOWN_BLUE",
+      "exit_reason": "SWITCH_TO_UP_RED",
+      "net_pnl": 88687.9,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    },
+    {
+      "signal_time": "2026-07-22 14:00:00",
+      "direction": "UP_RED",
+      "exit_reason": "SWITCH_TO_DOWN_BLUE",
+      "net_pnl": -19199.28,
+      "in_prior_trades": false,
+      "signal_class": "matches_prior_B",
+      "bucket": "aligned_with_prior"
+    },
+    {
+      "signal_time": "2026-07-22 14:39:00",
+      "direction": "DOWN_BLUE",
+      "exit_reason": "15:00_FORCE",
+      "net_pnl": -19186.2,
+      "in_prior_trades": false,
+      "signal_class": "same_sign_but_not_prior_onset",
+      "bucket": "extra_due_to_onset_vs_first_turn_diff"
+    }
+  ],
+  "extra_trade_bucket_counts": {
+    "aligned_with_prior": 5,
+    "extra_due_to_onset_vs_first_turn_diff": 9
+  },
+  "pattern_bars_of_interest": [
+    {
+      "close_time": "2026-07-22 10:21:00",
+      "hist3_prior": [
+        785.418,
+        1480.4237,
+        1641.235
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        695.0058,
+        160.8112
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 1641.234961,
+      "hist_new": 1641.234961,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 10:24:00",
+      "hist3_prior": [
+        1480.4237,
+        1641.235,
+        1837.9587
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        160.8112,
+        196.7237
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 1837.958677,
+      "hist_new": 1837.958677,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 10:27:00",
+      "hist3_prior": [
+        1641.235,
+        1837.9587,
+        2042.69
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        196.7237,
+        204.7313
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 2042.689985,
+      "hist_new": 2042.689985,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 10:33:00",
+      "hist3_prior": [
+        2042.69,
+        1535.0579,
+        859.3132
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -507.632,
+        -675.7447
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 859.313199,
+      "hist_new": 859.313199,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 10:36:00",
+      "hist3_prior": [
+        1535.0579,
+        859.3132,
+        335.0256
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -675.7447,
+        -524.2876
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 335.025612,
+      "hist_new": 335.025612,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 10:39:00",
+      "hist3_prior": [
+        859.3132,
+        335.0256,
+        -35.7023
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "neg"
+      ],
+      "deltas": [
+        -524.2876,
+        -370.7279
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -35.702304,
+      "hist_new": -35.702304,
+      "hist_diff": 0.0,
+      "bucket": "new_only_missing_sign_gate"
+    },
+    {
+      "close_time": "2026-07-22 10:42:00",
+      "hist3_prior": [
+        335.0256,
+        -35.7023,
+        -896.9343
+      ],
+      "signs": [
+        "pos",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -370.7279,
+        -861.232
+      ],
+      "prior_fire": "DOWN",
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -896.934257,
+      "hist_new": -896.934257,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 10:45:00",
+      "hist3_prior": [
+        -35.7023,
+        -896.9343,
+        -1284.51
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -861.232,
+        -387.5757
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1284.510006,
+      "hist_new": -1284.510006,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 10:51:00",
+      "hist3_prior": [
+        -1284.51,
+        -969.0562,
+        -865.4617
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        315.4538,
+        103.5945
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -865.461716,
+      "hist_new": -865.461716,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 10:54:00",
+      "hist3_prior": [
+        -969.0562,
+        -865.4617,
+        -579.0262
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        103.5945,
+        286.4355
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -579.026217,
+      "hist_new": -579.026217,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 10:57:00",
+      "hist3_prior": [
+        -865.4617,
+        -579.0262,
+        -574.5912
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        286.4355,
+        4.435
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -574.591212,
+      "hist_new": -574.591212,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 11:03:00",
+      "hist3_prior": [
+        -574.5912,
+        -873.4669,
+        -1217.1581
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -298.8756,
+        -343.6912
+      ],
+      "prior_fire": "DOWN",
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1217.158064,
+      "hist_new": -1217.158064,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:06:00",
+      "hist3_prior": [
+        -873.4669,
+        -1217.1581,
+        -1376.6948
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -343.6912,
+        -159.5367
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1376.694783,
+      "hist_new": -1376.694783,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:09:00",
+      "hist3_prior": [
+        -1217.1581,
+        -1376.6948,
+        -1473.1238
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -159.5367,
+        -96.429
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1473.12376,
+      "hist_new": -1473.12376,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:15:00",
+      "hist3_prior": [
+        -1473.1238,
+        -1425.859,
+        -1351.5754
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        47.2647,
+        74.2836
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -1351.575376,
+      "hist_new": -1351.575376,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 11:24:00",
+      "hist3_prior": [
+        -1356.8969,
+        -962.0181,
+        -526.262
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        394.8788,
+        435.756
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -526.262006,
+      "hist_new": -526.262006,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 11:27:00",
+      "hist3_prior": [
+        -962.0181,
+        -526.262,
+        -405.6168
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        435.756,
+        120.6452
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -405.616814,
+      "hist_new": -405.616814,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 11:30:00",
+      "hist3_prior": [
+        -526.262,
+        -405.6168,
+        -168.7886
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        120.6452,
+        236.8282
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -168.78862,
+      "hist_new": -168.78862,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 11:36:00",
+      "hist3_prior": [
+        -168.7886,
+        -317.893,
+        -476.9899
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -149.1044,
+        -159.0968
+      ],
+      "prior_fire": "DOWN",
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -476.989876,
+      "hist_new": -476.989876,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:39:00",
+      "hist3_prior": [
+        -317.893,
+        -476.9899,
+        -888.1931
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -159.0968,
+        -411.2033
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -888.193148,
+      "hist_new": -888.193148,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:42:00",
+      "hist3_prior": [
+        -476.9899,
+        -888.1931,
+        -1146.652
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -411.2033,
+        -258.4589
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1146.652036,
+      "hist_new": -1146.652036,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:45:00",
+      "hist3_prior": [
+        -888.1931,
+        -1146.652,
+        -1612.2997
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -258.4589,
+        -465.6477
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1612.299727,
+      "hist_new": -1612.299727,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:48:00",
+      "hist3_prior": [
+        -1146.652,
+        -1612.2997,
+        -1669.1833
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -465.6477,
+        -56.8835
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1669.183258,
+      "hist_new": -1669.183258,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 11:57:00",
+      "hist3_prior": [
+        -1526.8927,
+        -1582.8309,
+        -1947.9282
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -55.9382,
+        -365.0973
+      ],
+      "prior_fire": "DOWN",
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -1947.928179,
+      "hist_new": -1947.928179,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:00:00",
+      "hist3_prior": [
+        -1582.8309,
+        -1947.9282,
+        -2100.3156
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -365.0973,
+        -152.3875
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -2100.315631,
+      "hist_new": -2100.315631,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:03:00",
+      "hist3_prior": [
+        -1947.9282,
+        -2100.3156,
+        -2361.8759
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -152.3875,
+        -261.5603
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -2361.875896,
+      "hist_new": -2361.875896,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:12:00",
+      "hist3_prior": [
+        -2289.863,
+        -2390.2348,
+        -3226.1212
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -100.3718,
+        -835.8864
+      ],
+      "prior_fire": "DOWN",
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -3226.121176,
+      "hist_new": -3226.121176,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:15:00",
+      "hist3_prior": [
+        -2390.2348,
+        -3226.1212,
+        -4025.1187
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        -835.8864,
+        -798.9975
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": -4025.118674,
+      "hist_new": -4025.118674,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:21:00",
+      "hist3_prior": [
+        -4025.1187,
+        -3792.6711,
+        -3491.6338
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        232.4475,
+        301.0373
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -3491.633844,
+      "hist_new": -3491.633844,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 12:24:00",
+      "hist3_prior": [
+        -3792.6711,
+        -3491.6338,
+        -2325.7989
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        301.0373,
+        1165.8349
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -2325.79891,
+      "hist_new": -2325.79891,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 12:27:00",
+      "hist3_prior": [
+        -3491.6338,
+        -2325.7989,
+        -737.5573
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "neg"
+      ],
+      "deltas": [
+        1165.8349,
+        1588.2416
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": -737.557264,
+      "hist_new": -737.557264,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 12:30:00",
+      "hist3_prior": [
+        -2325.7989,
+        -737.5573,
+        650.9575
+      ],
+      "signs": [
+        "neg",
+        "neg",
+        "pos"
+      ],
+      "deltas": [
+        1588.2416,
+        1388.5148
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 650.957534,
+      "hist_new": 650.957534,
+      "hist_diff": 0.0,
+      "bucket": "new_only_missing_sign_gate"
+    },
+    {
+      "close_time": "2026-07-22 12:33:00",
+      "hist3_prior": [
+        -737.5573,
+        650.9575,
+        755.1152
+      ],
+      "signs": [
+        "neg",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        1388.5148,
+        104.1577
+      ],
+      "prior_fire": "UP",
+      "new_pattern": "UP_RED",
+      "hist_prior": 755.115223,
+      "hist_new": 755.115223,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:42:00",
+      "hist3_prior": [
+        749.0759,
+        991.6648,
+        1502.7473
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        242.5889,
+        511.0825
+      ],
+      "prior_fire": "UP",
+      "new_pattern": "UP_RED",
+      "hist_prior": 1502.74729,
+      "hist_new": 1502.74729,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:45:00",
+      "hist3_prior": [
+        991.6648,
+        1502.7473,
+        1896.6289
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        511.0825,
+        393.8816
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 1896.628852,
+      "hist_new": 1896.628852,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:48:00",
+      "hist3_prior": [
+        1502.7473,
+        1896.6289,
+        2798.3482
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        393.8816,
+        901.7194
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 2798.348223,
+      "hist_new": 2798.348223,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:51:00",
+      "hist3_prior": [
+        1896.6289,
+        2798.3482,
+        3007.4579
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        901.7194,
+        209.1097
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 3007.457917,
+      "hist_new": 3007.457917,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 12:57:00",
+      "hist3_prior": [
+        3007.4579,
+        2541.275,
+        1989.566
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -466.1829,
+        -551.709
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 1989.566019,
+      "hist_new": 1989.566019,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:00:00",
+      "hist3_prior": [
+        2541.275,
+        1989.566,
+        1982.9969
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -551.709,
+        -6.5692
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 1982.996854,
+      "hist_new": 1982.996854,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:06:00",
+      "hist3_prior": [
+        1982.9969,
+        1994.8471,
+        2140.7099
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        11.8503,
+        145.8627
+      ],
+      "prior_fire": "UP",
+      "new_pattern": "UP_RED",
+      "hist_prior": 2140.709855,
+      "hist_new": 2140.709855,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 13:09:00",
+      "hist3_prior": [
+        1994.8471,
+        2140.7099,
+        2166.5905
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        145.8627,
+        25.8806
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 2166.590482,
+      "hist_new": 2166.590482,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 13:15:00",
+      "hist3_prior": [
+        2166.5905,
+        1983.3385,
+        1737.9099
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -183.2519,
+        -245.4286
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 1737.909945,
+      "hist_new": 1737.909945,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:18:00",
+      "hist3_prior": [
+        1983.3385,
+        1737.9099,
+        1653.868
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -245.4286,
+        -84.042
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 1653.867956,
+      "hist_new": 1653.867956,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:24:00",
+      "hist3_prior": [
+        1653.868,
+        1735.4337,
+        2104.0211
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        81.5658,
+        368.5873
+      ],
+      "prior_fire": "UP",
+      "new_pattern": "UP_RED",
+      "hist_prior": 2104.021056,
+      "hist_new": 2104.021056,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 13:30:00",
+      "hist3_prior": [
+        2104.0211,
+        1734.9432,
+        1493.2634
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -369.0779,
+        -241.6798
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 1493.263355,
+      "hist_new": 1493.263355,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:33:00",
+      "hist3_prior": [
+        1734.9432,
+        1493.2634,
+        670.6145
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -241.6798,
+        -822.6488
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 670.614549,
+      "hist_new": 670.614549,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:36:00",
+      "hist3_prior": [
+        1493.2634,
+        670.6145,
+        418.8691
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -822.6488,
+        -251.7455
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 418.869063,
+      "hist_new": 418.869063,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:39:00",
+      "hist3_prior": [
+        670.6145,
+        418.8691,
+        250.0175
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -251.7455,
+        -168.8516
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 250.017458,
+      "hist_new": 250.017458,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:42:00",
+      "hist3_prior": [
+        418.8691,
+        250.0175,
+        141.4038
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -168.8516,
+        -108.6137
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 141.403771,
+      "hist_new": 141.403771,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:45:00",
+      "hist3_prior": [
+        250.0175,
+        141.4038,
+        75.9175
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -108.6137,
+        -65.4863
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 75.917466,
+      "hist_new": 75.917466,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:48:00",
+      "hist3_prior": [
+        141.4038,
+        75.9175,
+        40.7224
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -65.4863,
+        -35.195
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 40.722436,
+      "hist_new": 40.722436,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:51:00",
+      "hist3_prior": [
+        75.9175,
+        40.7224,
+        26.2656
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -35.195,
+        -14.4569
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 26.265559,
+      "hist_new": 26.265559,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 13:54:00",
+      "hist3_prior": [
+        40.7224,
+        26.2656,
+        25.5049
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -14.4569,
+        -0.7606
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 25.504942,
+      "hist_new": 25.504942,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 14:00:00",
+      "hist3_prior": [
+        25.5049,
+        33.3106,
+        46.0004
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        7.8057,
+        12.6898
+      ],
+      "prior_fire": "UP",
+      "new_pattern": "UP_RED",
+      "hist_prior": 46.000373,
+      "hist_new": 46.000373,
+      "hist_diff": 0.0,
+      "bucket": "both_pattern_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:03:00",
+      "hist3_prior": [
+        33.3106,
+        46.0004,
+        60.9813
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        12.6898,
+        14.9809
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 60.981311,
+      "hist_new": 60.981311,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:06:00",
+      "hist3_prior": [
+        46.0004,
+        60.9813,
+        76.474
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        14.9809,
+        15.4927
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 76.474004,
+      "hist_new": 76.474004,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:09:00",
+      "hist3_prior": [
+        60.9813,
+        76.474,
+        91.301
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        15.4927,
+        14.827
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 91.301003,
+      "hist_new": 91.301003,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:12:00",
+      "hist3_prior": [
+        76.474,
+        91.301,
+        104.7254
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        14.827,
+        13.4244
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 104.725409,
+      "hist_new": 104.725409,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:15:00",
+      "hist3_prior": [
+        91.301,
+        104.7254,
+        116.3283
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        13.4244,
+        11.6029
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 116.328276,
+      "hist_new": 116.328276,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:18:00",
+      "hist3_prior": [
+        104.7254,
+        116.3283,
+        125.9161
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        11.6029,
+        9.5878
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 125.916062,
+      "hist_new": 125.916062,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:21:00",
+      "hist3_prior": [
+        116.3283,
+        125.9161,
+        133.4512
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        9.5878,
+        7.5352
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 133.451237,
+      "hist_new": 133.451237,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:24:00",
+      "hist3_prior": [
+        125.9161,
+        133.4512,
+        139.0007
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        7.5352,
+        5.5495
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 139.000708,
+      "hist_new": 139.000708,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:27:00",
+      "hist3_prior": [
+        133.4512,
+        139.0007,
+        142.6979
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        5.5495,
+        3.6971
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 142.697853,
+      "hist_new": 142.697853,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:30:00",
+      "hist3_prior": [
+        139.0007,
+        142.6979,
+        144.715
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        3.6971,
+        2.0171
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 144.71495,
+      "hist_new": 144.71495,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:33:00",
+      "hist3_prior": [
+        142.6979,
+        144.715,
+        145.2435
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        2.0171,
+        0.5285
+      ],
+      "prior_fire": null,
+      "new_pattern": "UP_RED",
+      "hist_prior": 145.243451,
+      "hist_new": 145.243451,
+      "hist_diff": 0.0,
+      "bucket": "new_only_continuation_not_onset"
+    },
+    {
+      "close_time": "2026-07-22 14:39:00",
+      "hist3_prior": [
+        145.2435,
+        144.4802,
+        142.618
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -0.7633,
+        -1.8622
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 142.617975,
+      "hist_new": 142.617975,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 14:42:00",
+      "hist3_prior": [
+        144.4802,
+        142.618,
+        139.8395
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -1.8622,
+        -2.7784
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 139.839534,
+      "hist_new": 139.839534,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 14:45:00",
+      "hist3_prior": [
+        142.618,
+        139.8395,
+        136.3137
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -2.7784,
+        -3.5258
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 136.313746,
+      "hist_new": 136.313746,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 14:48:00",
+      "hist3_prior": [
+        139.8395,
+        136.3137,
+        132.1937
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -3.5258,
+        -4.1201
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 132.193675,
+      "hist_new": 132.193675,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 14:51:00",
+      "hist3_prior": [
+        136.3137,
+        132.1937,
+        127.6158
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -4.1201,
+        -4.5779
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 127.615804,
+      "hist_new": 127.615804,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 14:54:00",
+      "hist3_prior": [
+        132.1937,
+        127.6158,
+        122.7001
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -4.5779,
+        -4.9157
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 122.700111,
+      "hist_new": 122.700111,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 14:57:00",
+      "hist3_prior": [
+        127.6158,
+        122.7001,
+        117.5507
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -4.9157,
+        -5.1494
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 117.550707,
+      "hist_new": 117.550707,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:00:00",
+      "hist3_prior": [
+        122.7001,
+        117.5507,
+        112.2568
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -5.1494,
+        -5.2939
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 112.256837,
+      "hist_new": 112.256837,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:03:00",
+      "hist3_prior": [
+        117.5507,
+        112.2568,
+        106.8941
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -5.2939,
+        -5.3628
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 106.894075,
+      "hist_new": 106.894075,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:06:00",
+      "hist3_prior": [
+        112.2568,
+        106.8941,
+        101.5256
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -5.3628,
+        -5.3685
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 101.525625,
+      "hist_new": 101.525625,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:09:00",
+      "hist3_prior": [
+        106.8941,
+        101.5256,
+        96.2036
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -5.3685,
+        -5.322
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 96.203635,
+      "hist_new": 96.203635,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:12:00",
+      "hist3_prior": [
+        101.5256,
+        96.2036,
+        90.9705
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -5.322,
+        -5.2331
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 90.970486,
+      "hist_new": 90.970486,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:15:00",
+      "hist3_prior": [
+        96.2036,
+        90.9705,
+        85.86
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -5.2331,
+        -5.1105
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 85.86001,
+      "hist_new": 85.86001,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:18:00",
+      "hist3_prior": [
+        90.9705,
+        85.86,
+        80.8986
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -5.1105,
+        -4.9614
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 80.898631,
+      "hist_new": 80.898631,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:21:00",
+      "hist3_prior": [
+        85.86,
+        80.8986,
+        76.1064
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -4.9614,
+        -4.7922
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 76.106402,
+      "hist_new": 76.106402,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:24:00",
+      "hist3_prior": [
+        80.8986,
+        76.1064,
+        71.4979
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -4.7922,
+        -4.6085
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 71.497948,
+      "hist_new": 71.497948,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:27:00",
+      "hist3_prior": [
+        76.1064,
+        71.4979,
+        67.0833
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -4.6085,
+        -4.4146
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 67.083305,
+      "hist_new": 67.083305,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    },
+    {
+      "close_time": "2026-07-22 15:30:00",
+      "hist3_prior": [
+        71.4979,
+        67.0833,
+        62.8687
+      ],
+      "signs": [
+        "pos",
+        "pos",
+        "pos"
+      ],
+      "deltas": [
+        -4.4146,
+        -4.2146
+      ],
+      "prior_fire": null,
+      "new_pattern": "DOWN_BLUE",
+      "hist_prior": 62.868665,
+      "hist_new": 62.868665,
+      "hist_diff": 0.0,
+      "bucket": "new_only_other_rule"
+    }
+  ],
+  "new_pattern_timeline_new_signals_only": [
+    {
+      "close_time": "2026-07-22 10:18:00",
+      "bar_ts": "2026-07-22T10:15:00",
+      "pattern": "UP_RED",
+      "prev_last_dir": null,
+      "new_signal": true,
+      "signal_direction": "UP_RED",
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        218.003817,
+        785.417962,
+        1480.423736
+      ],
+      "hist_deltas": [
+        567.414145,
+        695.005774
+      ]
+    },
+    {
+      "close_time": "2026-07-22 10:33:00",
+      "bar_ts": "2026-07-22T10:30:00",
+      "pattern": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "new_signal": true,
+      "signal_direction": "DOWN_BLUE",
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2042.689985,
+        1535.057938,
+        859.313199
+      ],
+      "hist_deltas": [
+        -507.632047,
+        -675.744739
+      ]
+    },
+    {
+      "close_time": "2026-07-22 10:51:00",
+      "bar_ts": "2026-07-22T10:48:00",
+      "pattern": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "new_signal": true,
+      "signal_direction": "UP_RED",
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        -1284.510006,
+        -969.056221,
+        -865.461716
+      ],
+      "hist_deltas": [
+        315.453785,
+        103.594505
+      ]
+    },
+    {
+      "close_time": "2026-07-22 11:03:00",
+      "bar_ts": "2026-07-22T11:00:00",
+      "pattern": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "new_signal": true,
+      "signal_direction": "DOWN_BLUE",
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        -574.591212,
+        -873.466862,
+        -1217.158064
+      ],
+      "hist_deltas": [
+        -298.87565,
+        -343.691202
+      ]
+    },
+    {
+      "close_time": "2026-07-22 11:15:00",
+      "bar_ts": "2026-07-22T11:12:00",
+      "pattern": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "new_signal": true,
+      "signal_direction": "UP_RED",
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        -1473.12376,
+        -1425.859018,
+        -1351.575376
+      ],
+      "hist_deltas": [
+        47.264742,
+        74.283643
+      ]
+    },
+    {
+      "close_time": "2026-07-22 11:36:00",
+      "bar_ts": "2026-07-22T11:33:00",
+      "pattern": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "new_signal": true,
+      "signal_direction": "DOWN_BLUE",
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        -168.78862,
+        -317.893038,
+        -476.989876
+      ],
+      "hist_deltas": [
+        -149.104419,
+        -159.096838
+      ]
+    },
+    {
+      "close_time": "2026-07-22 12:21:00",
+      "bar_ts": "2026-07-22T12:18:00",
+      "pattern": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "new_signal": true,
+      "signal_direction": "UP_RED",
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        -4025.118674,
+        -3792.671143,
+        -3491.633844
+      ],
+      "hist_deltas": [
+        232.447531,
+        301.037299
+      ]
+    },
+    {
+      "close_time": "2026-07-22 12:57:00",
+      "bar_ts": "2026-07-22T12:54:00",
+      "pattern": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "new_signal": true,
+      "signal_direction": "DOWN_BLUE",
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        3007.457917,
+        2541.274978,
+        1989.566019
+      ],
+      "hist_deltas": [
+        -466.182939,
+        -551.708959
+      ]
+    },
+    {
+      "close_time": "2026-07-22 13:06:00",
+      "bar_ts": "2026-07-22T13:03:00",
+      "pattern": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "new_signal": true,
+      "signal_direction": "UP_RED",
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        1982.996854,
+        1994.847147,
+        2140.709855
+      ],
+      "hist_deltas": [
+        11.850293,
+        145.862708
+      ]
+    },
+    {
+      "close_time": "2026-07-22 13:15:00",
+      "bar_ts": "2026-07-22T13:12:00",
+      "pattern": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "new_signal": true,
+      "signal_direction": "DOWN_BLUE",
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2166.590482,
+        1983.338535,
+        1737.909945
+      ],
+      "hist_deltas": [
+        -183.251947,
+        -245.42859
+      ]
+    },
+    {
+      "close_time": "2026-07-22 13:24:00",
+      "bar_ts": "2026-07-22T13:21:00",
+      "pattern": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "new_signal": true,
+      "signal_direction": "UP_RED",
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        1653.867956,
+        1735.433746,
+        2104.021056
+      ],
+      "hist_deltas": [
+        81.56579,
+        368.58731
+      ]
+    },
+    {
+      "close_time": "2026-07-22 13:30:00",
+      "bar_ts": "2026-07-22T13:27:00",
+      "pattern": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "new_signal": true,
+      "signal_direction": "DOWN_BLUE",
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        2104.021056,
+        1734.943156,
+        1493.263355
+      ],
+      "hist_deltas": [
+        -369.0779,
+        -241.679801
+      ]
+    },
+    {
+      "close_time": "2026-07-22 14:00:00",
+      "bar_ts": "2026-07-22T13:57:00",
+      "pattern": "UP_RED",
+      "prev_last_dir": "DOWN_BLUE",
+      "new_signal": true,
+      "signal_direction": "UP_RED",
+      "reason": "UP_RED_FIRST_TURN",
+      "hist_last3": [
+        25.504942,
+        33.310618,
+        46.000373
+      ],
+      "hist_deltas": [
+        7.805676,
+        12.689754
+      ]
+    },
+    {
+      "close_time": "2026-07-22 14:39:00",
+      "bar_ts": "2026-07-22T14:36:00",
+      "pattern": "DOWN_BLUE",
+      "prev_last_dir": "UP_RED",
+      "new_signal": true,
+      "signal_direction": "DOWN_BLUE",
+      "reason": "DOWN_BLUE_FIRST_TURN",
+      "hist_last3": [
+        145.243451,
+        144.480184,
+        142.617975
+      ],
+      "hist_deltas": [
+        -0.763267,
+        -1.862209
+      ]
+    }
+  ],
+  "fill_cost_diff_notes": {
+    "prior": "resolve_fill: delay_1m_cons = next 1m open STRICTLY after signal minute + 0.05% adverse; RT_COST_PCT=0.05% of entry notional",
+    "new": "_fill_price: delay_1m = first 1m bar with datetime >= signal_close_ts open + 0.05% adverse; TradeCostEngine market costs; avg_signal_to_fill_sec observed 0.0 (fills at signal close minute open, not +1m)",
+    "force_exit": "prior FORCE 15:15; new FORCE 15:00",
+    "entry_cutoff": "prior 14:50; new 14:55",
+    "TP_SL": "neither Jul22 B replay uses TP/SL exits in these artifacts (new module has TP/SL helpers but jul21_22 replay switches on every opposite first-turn)"
+  },
+  "ranked_causes": [
+    {
+      "rank": 1,
+      "cause": "missing_hist_sign_color_gate",
+      "impact_signals": 8,
+      "detail": "Prior requires h>0 for UP / h<0 for DOWN on last 2 hist; new fires on monotonic hist only"
+    },
+    {
+      "rank": 2,
+      "cause": "flip_executor_semantics",
+      "impact": "amplifies to +12 RT",
+      "detail": "Prior 10 onset signals but same-dir ignored while held (2 RT); new switches on every opposite first-turn (14 RT)"
+    },
+    {
+      "rank": 3,
+      "cause": "warmup_i_lt_26_vs_len_ge_26",
+      "impact_signals": 1,
+      "detail": "Prior skips i<26 so misses 10:15 onset; new fires UP at 10:18 and starts cascade"
+    },
+    {
+      "rank": 4,
+      "cause": "fill_cost_force_exit",
+      "impact": "PnL only not trade count",
+      "detail": "new fills at signal minute open; prior +1m; force 15:00 vs 15:15"
+    }
+  ],
+  "not_causes": [
+    "different_csv_sources",
+    "macd_ema_formula",
+    "resample_label_closed",
+    "tp_sl_reentry"
+  ],
+  "new_signal_class_counts_corrected": {
+    "NO_SIGN_GATE": 8,
+    "WARMUP_PRIOR_SKIPS_i_lt_26": 1,
+    "MATCH_PRIOR_ONSET": 5
+  }
+}

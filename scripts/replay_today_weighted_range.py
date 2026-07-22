@@ -44,6 +44,12 @@ from app.trading.hynix_symbols import (  # noqa: E402
 )
 from app.trading.hynix_switch_risk_gate import is_new_entry_allowed  # noqa: E402
 from app.trading.trading_cost_engine import TradeCostEngine  # noqa: E402
+from app.trading.range_weighted_optimize import (  # noqa: E402
+    classify_intraday_regime,
+    daily_loss_limit_reached,
+    get_range_weighted_config,
+    load_optimized_config,
+)
 
 INITIAL_CASH = 10_000_000.0
 CONSERVATIVE_SLIPPAGE_PCT = 0.05
@@ -194,9 +200,16 @@ def run_replay(
     start = start.replace(second=0, microsecond=0) + timedelta(minutes=1)
     end = end.replace(second=0, microsecond=0)
 
+    day_regime = classify_intraday_regime(hynix_1m)
+    cfg = get_range_weighted_config()
     cost_engine = TradeCostEngine()
     cash = INITIAL_CASH
     cash_conservative = INITIAL_CASH
+    peak_equity = INITIAL_CASH
+    peak_equity_conservative = INITIAL_CASH
+    realized_pnl = 0.0
+    realized_pnl_conservative = 0.0
+    daily_loss_breached = False
     position = None
     position_conservative = None
     history: dict = {}
@@ -239,15 +252,17 @@ def run_replay(
         h_slice = _slice_to(hynix_1m, ts)
         etf_slice = _slice_to(long_1m if desired_symbol == LONG_SYMBOL else inverse_1m, ts)
 
-        confirm_dirs = trade_aligned_window_directions(
-            resolve_window_directions(feed.compute_live_direction(history, desired_symbol, ts)),
-            symbol=desired_symbol,
+        # Match production: episode/opposite helpers use trade-aligned dirs;
+        # evaluate_range_weighted_entry expects price-space (raw) dirs.
+        confirm_dirs_raw = resolve_window_directions(
+            feed.compute_live_direction(history, desired_symbol, ts)
         )
+        confirm_dirs = trade_aligned_window_directions(confirm_dirs_raw, symbol=desired_symbol)
         oppose_symbol = INVERSE_SYMBOL if desired_symbol == LONG_SYMBOL else LONG_SYMBOL
-        oppose_dirs = trade_aligned_window_directions(
-            resolve_window_directions(feed.compute_live_direction(history, oppose_symbol, ts)),
-            symbol=oppose_symbol,
+        oppose_dirs_raw = resolve_window_directions(
+            feed.compute_live_direction(history, oppose_symbol, ts)
         )
+        oppose_dirs = trade_aligned_window_directions(oppose_dirs_raw, symbol=oppose_symbol)
         signal_dirs = resolve_window_directions(feed.compute_live_direction(history, SIGNAL_SYMBOL, ts))
 
         vwap = compute_etf_vwap(etf_slice) if len(etf_slice) >= 3 else None
@@ -265,21 +280,6 @@ def run_replay(
         cost_gate = etd.evaluate_cost_gate(desired_symbol, expected_move)
         decision = _enhanced_decision(h_slice, live_dir)
 
-        reversal_hint = None
-        pa_dirs = resolve_window_directions(feed.compute_live_direction(history, desired_symbol, ts))
-        pa_opp = resolve_window_directions(feed.compute_live_direction(history, oppose_symbol, ts))
-        pa_slopes = feed.compute_live_direction(history, desired_symbol, ts).get("slopes") or {}
-        accel = all(float(pa_slopes.get(w) or 0.0) > 0 for w in (5, 10, 20))
-        factors = {
-            "slope_5s_10s_reversal": pa_dirs.get(5) == live_dir and pa_dirs.get(10) == live_dir,
-            "vwap_reclaim_with_slope": confirm_above_vwap and (pa_dirs.get(5) == "UP" or pa_dirs.get(10) == "UP"),
-            "swing_high_low_breakout": swing_breakout,
-            "acceleration_5_10_20_strengthening": accel,
-            "etf_mutual_direction_confirmed": pa_dirs.get(5) == "UP" and pa_dirs.get(10) == "UP" and pa_opp.get(5) == "DOWN" and pa_opp.get(10) == "DOWN",
-        }
-        if sum(1 for ok in factors.values() if ok) >= 3:
-            reversal_hint = "REVERSAL"
-
         macd_conf = engine._macd_williams_confirmation(etf_slice, live_dir)
 
         _existing_episode_direction = continuation.get("direction")
@@ -293,12 +293,15 @@ def run_replay(
         )
         _existing_structure_broken = False
         if _existing_episode_direction and _existing_episode_direction != live_dir:
-            existing_df = long_1m if _existing_episode_direction == "UP" else inverse_1m
-            existing_price = lp if _existing_episode_direction == "UP" else ip
+            existing_symbol = LONG_SYMBOL if _existing_episode_direction == "UP" else INVERSE_SYMBOL
+            existing_df = long_1m if existing_symbol == LONG_SYMBOL else inverse_1m
+            existing_price = lp if existing_symbol == LONG_SYMBOL else ip
             existing_slice = _slice_to(existing_df, ts)
             if existing_price and len(existing_slice) >= 3:
+                # Inverse is held long for market DOWN — use trade-aligned UP.
+                structure_dir = "UP" if existing_symbol == INVERSE_SYMBOL else _existing_episode_direction
                 _existing_structure_broken = is_swing_structure_broken_against(
-                    existing_slice, existing_price, _existing_episode_direction,
+                    existing_slice, existing_price, structure_dir,
                 )
         _opposite_episode_confirmed = engine.detect_opposite_episode_transition(
             existing_direction=_existing_episode_direction,
@@ -307,6 +310,7 @@ def run_replay(
             confirm_dirs=confirm_dirs,
             existing_structure_broken=_existing_structure_broken,
             new_etf_vwap_reclaim=vwap_reclaim,
+            new_swing_breakout=swing_breakout,
         )
         direction_episode_changed = False
         if continuation.get("direction") != live_dir and (
@@ -340,8 +344,8 @@ def run_replay(
             direction=live_dir,
             live_direction=live_dir,
             signal_window_directions=signal_dirs,
-            confirm_window_directions=confirm_dirs,
-            oppose_window_directions=oppose_dirs,
+            confirm_window_directions=confirm_dirs_raw,
+            oppose_window_directions=oppose_dirs_raw,
             confirm_above_vwap=confirm_above_vwap,
             data_age_seconds=2.0,
             moved_pct_since_signal=moved_pct,
@@ -352,7 +356,9 @@ def run_replay(
             ema_slope_aligned=True,
             structure_confirmed=swing_breakout,
             structural_direction=compute_fast_trend_signal(h_slice, now=ts).get("direction"),
-            entry_path_hint=reversal_hint,
+            entry_path_hint=None,
+            day_regime=day_regime,
+            range_config=cfg,
         )
 
         # ── 청산 ──
@@ -440,6 +446,7 @@ def run_replay(
                 cost = cost_engine.compute_round_trip_cost_pct(position["symbol"]) / 100.0 * position["entry_price"] * sell_qty
                 net = gross - cost
                 cash += sell_qty * held_price
+                realized_pnl += net
                 held_sec = (ts - position["entry_time"]).total_seconds()
                 trades.append({
                     "side": "SELL",
@@ -459,6 +466,7 @@ def run_replay(
                     cost_c = cost_engine.compute_round_trip_cost_pct(position["symbol"]) / 100.0 * position_conservative["entry_price"] * sell_qty
                     net_c = gross_c - cost_c
                     cash_conservative += sell_qty * cons_price
+                    realized_pnl_conservative += net_c
                     trades_conservative.append({
                         "side": "SELL", "symbol": position["symbol"], "time": ts,
                         "price": cons_price, "qty": sell_qty, "net_pnl": net_c,
@@ -494,9 +502,20 @@ def run_replay(
                             now=ts,
                             reason=exit_reason,
                         )
+            peak_equity = max(peak_equity, cash)
+            peak_equity_conservative = max(peak_equity_conservative, cash_conservative)
+            # Match live: daily loss uses actual realized PnL, not conservative-fill stress PnL.
+            daily_loss_breached = daily_loss_limit_reached(
+                realized_pnl, INITIAL_CASH, cfg
+            )
 
         # ── 신규 진입 ──
         if position is None and entry_eval.get("action") == "ENTER":
+            if daily_loss_limit_reached(realized_pnl, INITIAL_CASH, cfg):
+                daily_loss_breached = True
+                ts += timedelta(seconds=5)
+                continue
+            daily_loss_breached = False
             if (
                 continuation.get("direction")
                 and live_dir != continuation.get("direction")
@@ -656,10 +675,17 @@ def run_replay(
         "hynix_1m_rows": len(hynix_1m),
         "hynix_3m_rows": len(hynix_3m),
         "period": (start, end),
+        "day_regime": day_regime,
+        "daily_loss_breached": daily_loss_breached,
+        "max_intraday_dd_pct": ((min(cash, peak_equity) / peak_equity - 1.0) * 100.0) if peak_equity else 0.0,
+        "max_intraday_dd_pct_conservative": (
+            ((cash_conservative / peak_equity_conservative - 1.0) * 100.0) if peak_equity_conservative else 0.0
+        ),
     }
 
 
 def main() -> int:
+    load_optimized_config()
     print("=" * 72)
     print(f"오늘({TODAY}) weighted RANGE 시나리오 재현")
     print("=" * 72)
@@ -713,6 +739,7 @@ def main() -> int:
     print(f"  순손익: {result['net_pnl_conservative_krw']:+,.0f} KRW")
     print(f"  수익률: {result['return_pct_conservative']:+.3f}%")
     print(f"  Profit Factor: {pf_c_txt}")
+    print(f"  당일 regime: {result.get('day_regime')}  일손실한도(-0.8%) 도달: {result.get('daily_loss_breached')}")
     print("-" * 72)
     print("수정 전 vs 수정 후 비교")
     print("-" * 72)

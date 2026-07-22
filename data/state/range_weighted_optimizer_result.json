@@ -1,0 +1,34 @@
+{
+  "config": {
+    "min_net_edge": 0.17006179042749073,
+    "min_reward_risk": 1.3270374310605846,
+    "safety_buffer": 0.04617884842780304,
+    "evidence_weak": 49.911065904674146,
+    "evidence_neutral": 56.922835880618265,
+    "evidence_mid": 63.02623571330076,
+    "evidence_strong": 72.99414765604263,
+    "evidence_ambiguous_boost": 9.377333610075334,
+    "ambiguous_block_reversal": false,
+    "trend_day_size_boost": 0.0921138802873411,
+    "min_score_gap_ambiguous": 21.69405415917793,
+    "daily_loss_limit_pct": -0.8
+  },
+  "metrics": {
+    "days": 20,
+    "total_net_pnl_krw": 6484560.3549999995,
+    "total_return_pct": 64.84560354999999,
+    "avg_daily_return_pct": 3.2422801774999996,
+    "median_pf": 5.7376000677707655,
+    "median_cost_over_gross": 0.06900158415841584,
+    "wrong_direction_rate": 0.39849624060150374,
+    "duplicate_episode_entries": 0,
+    "max_drawdown_pct": -70.09055,
+    "trend_day_count": 20,
+    "trend_day_median_return_pct": 5.2977341000000004,
+    "trend_day_miss_3pct": 10,
+    "daily_loss_breaches": 0,
+    "total_cost_krw": 446914.645,
+    "total_gross_profit_krw": 8094345.0,
+    "cost_over_gross_total": 0.05521319452037194
+  }
+}

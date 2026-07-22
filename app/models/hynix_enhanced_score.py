@@ -149,8 +149,17 @@ def _score_contribution_rows(scores: dict, weights: dict) -> list[dict]:
     return rows
 
 
-def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dict:
-    """개선된 최종점수 산출. mode(mock/real/None)는 데이터 수집 계좌 컨텍스트."""
+def calculate_enhanced_hynix_prediction_score(
+    mode: Optional[str] = None,
+    *,
+    event_bonus_state: Optional[dict] = None,
+    now: Optional[datetime] = None,
+) -> dict:
+    """개선된 최종점수 산출. mode(mock/real/None)는 데이터 수집 계좌 컨텍스트.
+
+    event_bonus_state — RSI/Bollinger 회복 보너스 TTL(2×3분봉 후 감쇠). Day Bias
+    점수가 단기 하락 Live Direction을 덮지 않도록 이벤트 가점만 시간 제한한다.
+    """
     from app.data_sources.auto_market_collector import collect_all
     from app.data_sources.hynix_inverse_collector import collect_inverse_current
     from app.features.hynix_auto_features import build_auto_features
@@ -163,6 +172,7 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
 
     warnings: list[str] = []
     data_valid = {"base_prediction": True, "existing_micron": True, "hynix_technical": True, "intraday_momentum": True}
+    now = now or kst_now()
 
     market_data = collect_all(mode=mode)
     auto_features = build_auto_features(market_data)
@@ -217,7 +227,9 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
 
     # ── hynix_technical_score ─────────────────────────────────────────────────
     try:
-        tech_result = calculate_hynix_technical_score(df_daily, df_1min)
+        tech_result = calculate_hynix_technical_score(
+            df_daily, df_1min, event_bonus_state=event_bonus_state, now=now,
+        )
     except Exception as exc:
         warnings.append(f"hynix_technical_score 계산 실패: {exc}")
         tech_result = {"hynix_technical_score": 50.0, "reason_top5": [], "warnings": [str(exc)], "detail": {}}
@@ -312,6 +324,7 @@ def calculate_enhanced_hynix_prediction_score(mode: Optional[str] = None) -> dic
         "live_order_weights": weights,
         "fast_live_trend": fast_live_trend,
         "tech_detail": tech_result,
+        "event_bonus_state": tech_result.get("event_bonus_state") or event_bonus_state or {},
         "momentum_detail": momentum_result,
         "inverse_detail": inverse_result,
         "market_data": market_data,

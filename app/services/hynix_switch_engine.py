@@ -955,6 +955,7 @@ def evaluate_range_weighted_entry(
     structural_direction: Optional[str] = None,
     day_regime: Optional[str] = None,
     range_config: Optional["RangeWeightedConfig"] = None,
+    drawdown_gates: Optional[dict] = None,
 ) -> dict:
     """Weighted RANGE entry evidence with profitability gate.
 
@@ -985,6 +986,7 @@ def evaluate_range_weighted_entry(
     contributions: dict[str, float] = {}
     hard_blocks: list[str] = []
     soft_adjustments: list[str] = []
+    dd_gates = dict(drawdown_gates or {})
 
     if desired not in ("UP", "DOWN"):
         hard_blocks.append("DATA_INSUFFICIENT")
@@ -994,6 +996,11 @@ def evaluate_range_weighted_entry(
         hard_blocks.append("LIVE_DIRECTION_CONFLICT")
     if confirm_dirs.get(5) == "DOWN" and confirm_dirs.get(10) == "DOWN":
         hard_blocks.append("ETF_5S_10S_BOTH_OPPOSITE")
+    # 고점 대비 -1.0% + LH/LL → HYNIX_BUY 금지 / 저점 대비 +1.0% + HH/HL → INVERSE 금지
+    if desired == "UP" and dd_gates.get("forbid_hynix_buy"):
+        hard_blocks.append("DRAWDOWN_FORBID_HYNIX_BUY")
+    if desired == "DOWN" and dd_gates.get("forbid_inverse_buy"):
+        hard_blocks.append("RALLY_FORBID_INVERSE_BUY")
     if moved_pct_since_signal is not None and float(moved_pct_since_signal) >= 0.6:
         soft_adjustments.append("CHASE_RISK_SIZE_REDUCED")
 
@@ -1515,6 +1522,7 @@ def _woc_live_entry_inputs_from_state(
         structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
         day_regime=_day_regime,
         range_config=_range_cfg,
+        drawdown_gates=etd_state.get("session_drawdown_gates"),
     )
     continuation_state.update({
         "last_result": continuation_eval,
@@ -5134,6 +5142,55 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         live_trade = feed.compute_live_trade_direction(
             history, now, signal_symbol=SIGNAL_SYMBOL, long_symbol=HYNIX_SYMBOL, inverse_symbol=INVERSE_SYMBOL,
         )
+        # Day Bias(당일 등락·Micron·Enhanced)는 방향 소유권이 없다. Live direction은
+        # 3/5/10/15/30분 구조 + ETF 초단위 창으로만 확정한다(≥3/4 → override).
+        _structural_etf_dirs = {}
+        try:
+            from app.trading.etf_entry_confirmation import resolve_window_directions
+
+            _structural_etf_dirs = resolve_window_directions(
+                etd_state["live_slopes"].get(SIGNAL_SYMBOL)
+            ) or {}
+            # Prefer long-ETF windows when available (trade-aligned underlying).
+            _long_dirs = resolve_window_directions(etd_state["live_slopes"].get(HYNIX_SYMBOL)) or {}
+            if sum(1 for w in (5, 10, 20) if _long_dirs.get(w)) >= sum(
+                1 for w in (5, 10, 20) if _structural_etf_dirs.get(w)
+            ):
+                _structural_etf_dirs = _long_dirs or _structural_etf_dirs
+        except Exception:
+            _structural_etf_dirs = {}
+        try:
+            from app.data_sources.auto_market_collector import _load_hynix_minute_cache
+
+            _signal_1m_for_dir = _load_hynix_minute_cache()
+        except Exception:
+            _signal_1m_for_dir = None
+        _structural_live = feed.compute_structural_live_direction(
+            _signal_1m_for_dir,
+            etf_window_directions=_structural_etf_dirs,
+            now=now,
+        )
+        live_trade = feed.merge_live_trade_direction(live_trade, _structural_live)
+        _drawdown_gates = feed.compute_session_drawdown_gates(_signal_1m_for_dir, now=now)
+        etd_state["structural_live_direction"] = _structural_live
+        etd_state["session_drawdown_gates"] = _drawdown_gates
+        # ≥ -1.5% from high → immediate DOWN episode candidate (symmetric UP).
+        if _drawdown_gates.get("down_episode_candidate") and live_trade.get("direction") != "DOWN":
+            if (_structural_live.get("down_count") or 0) >= 2 or _drawdown_gates.get("lh_ll"):
+                live_trade = {
+                    **live_trade,
+                    "direction": "DOWN",
+                    "direction_source": "drawdown_episode_candidate",
+                    "drawdown_override": True,
+                }
+        elif _drawdown_gates.get("up_episode_candidate") and live_trade.get("direction") != "UP":
+            if (_structural_live.get("up_count") or 0) >= 2 or _drawdown_gates.get("hh_hl"):
+                live_trade = {
+                    **live_trade,
+                    "direction": "UP",
+                    "direction_source": "drawdown_episode_candidate",
+                    "drawdown_override": True,
+                }
         previous_live_direction = (state.get("live_trade_direction") or {}).get("direction")
         _prev_direction_held_since = (state.get("live_trade_direction") or {}).get("direction_held_since")
         cached_fast_signal = (state.get("fast_trend_watcher") or {}).get("last_signal") or {}
@@ -5224,12 +5281,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             "live_order_forbidden": True,
         }
         # C: 3분봉 MACD+Williams episode 확인기 (broker 주문 금지)
-        try:
-            from app.data_sources.auto_market_collector import _load_hynix_minute_cache
-
-            _signal_1m = _load_hynix_minute_cache()
-        except Exception:
-            _signal_1m = None
+        _signal_1m = _signal_1m_for_dir
         _episode_confirm = confirm_episode_direction(
             _signal_1m,
             proposed_direction=live_trade.get("direction"),
@@ -5266,17 +5318,38 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         )
 
         if reversal_candidate.get("status") == "REVERSAL_CANDIDATE":
+            _rev_dir = reversal_candidate.get("candidate_direction")
+            # Structural ≥3/4 confirmation owns live direction — 1~2봉 반등만으로
+            # REVERSAL_CANDIDATE가 레버리지로 뒤집지 못하게 한다(2026-07-22).
+            _struct_dir = (_structural_live or {}).get("direction")
+            _struct_strength = (
+                int((_structural_live or {}).get("down_count") or 0)
+                if _struct_dir == "DOWN"
+                else int((_structural_live or {}).get("up_count") or 0)
+            )
+            _block_rev_flip = bool(
+                _struct_dir in ("UP", "DOWN")
+                and _rev_dir in ("UP", "DOWN")
+                and _rev_dir != _struct_dir
+                and _struct_strength >= feed.STRUCTURAL_FACTOR_MIN
+            )
             freq = etd.reset_frequency_state_if_new_day(etd_state.get("frequency"), now.strftime("%Y%m%d"))
             prev_signal = (etd_state.get("last_signal") or {})
             etd_state["frequency"] = etd.apply_live_reversal_candidate_reaction(
                 freq, previous_live_direction, prev_signal.get("score"), now,
             )
+            _kept_direction = (
+                _struct_dir if _block_rev_flip else (_rev_dir or live_trade.get("direction"))
+            )
             state["live_trade_direction"] = {
                 **live_trade,
-                "direction": reversal_candidate.get("candidate_direction") or live_trade.get("direction"),
-                "status": "REVERSAL_CANDIDATE",
+                "direction": _kept_direction,
+                "status": "REVERSAL_CANDIDATE" if not _block_rev_flip else (
+                    "ALIGNED_DOWN" if _kept_direction == "DOWN" else "ALIGNED_UP"
+                ),
                 "structural_trend": (state.get("last_primary_trend") or {}).get("primary_trend"),
                 "existing_direction_blocked": True,
+                "reversal_flip_blocked_by_structure": _block_rev_flip,
                 "first_detected_at": reversal_candidate.get("first_detected_at"),
                 "confirmed_at": reversal_candidate.get("confirmed_at"),
                 "detection_to_confirmation_delay_seconds": reversal_candidate.get("detection_to_confirmation_delay_seconds"),
@@ -5615,6 +5688,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 ],
                 day_regime=_day_regime,
                 range_config=_range_cfg,
+                drawdown_gates=etd_state.get("session_drawdown_gates"),
             )
             continuation_state.update({
                 "last_result": continuation_eval,
@@ -5925,9 +5999,14 @@ def run_fast_trend_watcher_tick(mode: Optional[str] = None, now: Optional[dateti
             save_state_atomic(state)
             return {"skipped": True, "reason": _window_reason, "state": state}
 
-        enhanced_result = calculate_enhanced_hynix_prediction_score(mode=resolved_mode)
+        enhanced_result = calculate_enhanced_hynix_prediction_score(
+            mode=resolved_mode,
+            event_bonus_state=state.get("event_bonus_state"),
+            now=now,
+        )
         fast_decision = decide_hynix_or_inverse_action(enhanced_result, current_position=state.get("current_position"))
         state["last_enhanced_result"] = enhanced_result
+        state["event_bonus_state"] = enhanced_result.get("event_bonus_state") or state.get("event_bonus_state") or {}
         state["last_decision"] = fast_decision
         df_1min = (enhanced_result.get("market_data") or {}).get("hynix_minute", {}).get("df_1min")
         fast_signal = compute_fast_trend_signal(df_1min, now=now)
@@ -6209,7 +6288,12 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     try:
         from app.models.hynix_enhanced_score import calculate_enhanced_hynix_prediction_score
 
-        enhanced_result = calculate_enhanced_hynix_prediction_score(mode=mode)
+        enhanced_result = calculate_enhanced_hynix_prediction_score(
+            mode=mode,
+            event_bonus_state=state.get("event_bonus_state"),
+            now=now,
+        )
+        state["event_bonus_state"] = enhanced_result.get("event_bonus_state") or state.get("event_bonus_state") or {}
     except Exception as exc:
         logger.error("[HynixSwitchEngine] enhanced_score 계산 실패: %s", exc)
         warnings.append(f"enhanced_score 계산 실패: {exc}")

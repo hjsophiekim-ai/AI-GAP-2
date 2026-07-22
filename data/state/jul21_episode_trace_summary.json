@@ -1,0 +1,154 @@
+{
+  "data_source": "cache",
+  "analysis_tree": "current_working_tree",
+  "run_replay_entries": 2,
+  "after_entries": 2,
+  "before_entries": 2,
+  "after_buys": [
+    {
+      "time": "09:05:00",
+      "action": "매수",
+      "symbol": "레버리지",
+      "price": 13300.0,
+      "qty": 515,
+      "pct": 68.5,
+      "path": "REVERSAL",
+      "label": "BUY",
+      "evidence": 86.0,
+      "episode_id": "UP:2026-07-21T09:01:15"
+    },
+    {
+      "time": "09:12:55",
+      "action": "매수",
+      "symbol": "레버리지",
+      "price": 13073.559322033898,
+      "qty": 523,
+      "pct": 68.5,
+      "path": "REVERSAL",
+      "label": "BUY",
+      "evidence": 86.0,
+      "episode_id": "UP:2026-07-21T09:12:55"
+    }
+  ],
+  "before_buys": [
+    {
+      "time": "09:05:00",
+      "action": "매수",
+      "symbol": "레버리지",
+      "price": 13300.0,
+      "qty": 515,
+      "pct": 68.5,
+      "path": "REVERSAL",
+      "label": "BUY",
+      "evidence": 86.0,
+      "episode_id": "UP:2026-07-21T09:01:15"
+    },
+    {
+      "time": "09:12:55",
+      "action": "매수",
+      "symbol": "레버리지",
+      "price": 13073.559322033898,
+      "qty": 523,
+      "pct": 68.5,
+      "path": "REVERSAL",
+      "label": "BUY",
+      "evidence": 86.0,
+      "episode_id": "UP:2026-07-21T09:12:55"
+    }
+  ],
+  "vanished": [],
+  "gained": [],
+  "transitions_dump_window": [],
+  "missed_windows": {
+    "down_13_22_14_17": {
+      "minutes_logged": 78,
+      "live_dir_hits": 16,
+      "enter_signals": 0,
+      "orders": 0,
+      "block_histogram": {
+        "ETF_5S_10S_BOTH_OPPOSITE": 16
+      },
+      "opposite_candidate_blocked": 0,
+      "opposite_transitions": [],
+      "sample": {
+        "timestamp": "2026-07-21 13:54:00",
+        "current_episode": "DOWN",
+        "candidate_episode": "",
+        "episode_id": "DOWN:2026-07-21T09:15:05",
+        "episode_status": null,
+        "probe_failed": false,
+        "reversal_probe_done": false,
+        "swing_break": false,
+        "vwap_cross_reclaim": false,
+        "above_vwap": false,
+        "prev_above_vwap": false,
+        "etf_5s": "DOWN",
+        "etf_10s": "DOWN",
+        "existing_structure_broken": false,
+        "opposite_confirmed": false,
+        "entry_action": "HOLD",
+        "entry_path": "NONE",
+        "evidence_score": 64.0,
+        "expected_net_edge": 0.758,
+        "reward_risk": 2.1355,
+        "final_block_reason": "ETF_5S_10S_BOTH_OPPOSITE",
+        "order_placed": "N",
+        "episode_change_reason": ""
+      }
+    },
+    "up_after_14_18": {
+      "minutes_logged": 35,
+      "live_dir_hits": 28,
+      "enter_signals": 13,
+      "orders": 0,
+      "block_histogram": {
+        "BOUNCE_UP": 1,
+        "POOR_REWARD_RISK": 14,
+        "OPPOSITE_EPISODE_NOT_CONFIRMED": 13
+      },
+      "opposite_candidate_blocked": 28,
+      "opposite_transitions": [],
+      "sample": {
+        "timestamp": "2026-07-21 14:24:05",
+        "current_episode": "DOWN",
+        "candidate_episode": "UP",
+        "episode_id": "DOWN:2026-07-21T09:15:05",
+        "episode_status": null,
+        "probe_failed": false,
+        "reversal_probe_done": false,
+        "swing_break": true,
+        "vwap_cross_reclaim": false,
+        "above_vwap": true,
+        "prev_above_vwap": true,
+        "etf_5s": "UP",
+        "etf_10s": "UP",
+        "existing_structure_broken": false,
+        "opposite_confirmed": false,
+        "entry_action": "ENTER",
+        "entry_path": "REVERSAL",
+        "evidence_score": 82.0,
+        "expected_net_edge": 0.6138,
+        "reward_risk": 1.775,
+        "final_block_reason": "OPPOSITE_EPISODE_NOT_CONFIRMED",
+        "order_placed": "N",
+        "episode_change_reason": "OPPOSITE_CANDIDATE_BLOCKED"
+      }
+    }
+  },
+  "production_replay_shared_funcs": [
+    "detect_opposite_episode_transition",
+    "range_episode_allows_entry",
+    "reset_range_episode_probe_state",
+    "update_range_episode_structural_events",
+    "evaluate_range_weighted_entry",
+    "mark_range_reversal_probe_entered",
+    "mark_range_probe_exit",
+    "mark_range_episode_exit_awaiting_structure",
+    "evaluate_weighted_range_probe_exit",
+    "evaluate_weighted_continuation_exit",
+    "promote_reversal_probe_to_continuation"
+  ],
+  "csv_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\jul21_episode_minute_dump.csv",
+  "inverse_vwap_reclaims_in_down_window": 0,
+  "inverse_above_vwap_in_down_window": 0
+}

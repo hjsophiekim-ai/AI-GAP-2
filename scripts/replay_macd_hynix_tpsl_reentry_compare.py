@@ -173,6 +173,7 @@ def replay_variant(
     *,
     allow_continuation: bool,
     variant: str,
+    delay_min: int = DELAY_MIN,
 ) -> VariantResult:
     cost_engine = TradeCostEngine()
     out = VariantResult(variant=variant, days=list(days))
@@ -203,7 +204,7 @@ def replay_variant(
             # Force liquidate
             if hm >= FORCE_HM and position is not None:
                 etf = long_df if position["symbol"] == LONG_SYMBOL else inv_df
-                xts, xpx = _fill_price(etf, day_force, "SELL")
+                xts, xpx = _fill_price(etf, day_force, "SELL", delay_min=delay_min)
                 if xpx is None:
                     xpx = float(position["entry_price"])
                     xts = day_force
@@ -234,7 +235,7 @@ def replay_variant(
                         position["symbol"], position["entry_price"], cur, position["qty"],
                     )
                     if hit:
-                        xts, xpx = _fill_price(etf, ts, "SELL")
+                        xts, xpx = _fill_price(etf, ts, "SELL", delay_min=delay_min)
                         if xpx is None:
                             xpx = cur
                             xts = ts
@@ -308,7 +309,7 @@ def replay_variant(
                         target = LONG_SYMBOL if direction == DIR_UP else INVERSE_SYMBOL
                         etf_df = long_df if target == LONG_SYMBOL else inv_df
                         equity = INITIAL_CASH + realized
-                        ets, epx = _fill_price(etf_df, ts, "BUY")
+                        ets, epx = _fill_price(etf_df, ts, "BUY", delay_min=delay_min)
                         if epx and epx > 0:
                             qty = int(equity // epx)
                             if qty >= 1:
@@ -399,7 +400,7 @@ def replay_variant(
                     target = LONG_SYMBOL if direction == DIR_UP else INVERSE_SYMBOL
                     etf_df = long_df if target == LONG_SYMBOL else inv_df
                     equity = INITIAL_CASH + realized
-                    ets, epx = _fill_price(etf_df, ts, "BUY")
+                    ets, epx = _fill_price(etf_df, ts, "BUY", delay_min=delay_min)
                     if epx and epx > 0:
                         qty = int(equity // epx)
                         if qty >= 1:
@@ -447,7 +448,7 @@ def replay_variant(
 
             if position is not None and position["symbol"] != target:
                 exit_etf = long_df if position["symbol"] == LONG_SYMBOL else inv_df
-                xts, xpx = _fill_price(exit_etf, ts, "SELL")
+                xts, xpx = _fill_price(exit_etf, ts, "SELL", delay_min=delay_min)
                 if xpx is None:
                     xpx = float(position["entry_price"])
                     xts = ts
@@ -472,7 +473,7 @@ def replay_variant(
                 continue
 
             equity = INITIAL_CASH + realized
-            ets, epx = _fill_price(etf_df, ts, "BUY")
+            ets, epx = _fill_price(etf_df, ts, "BUY", delay_min=delay_min)
             if epx is None or epx <= 0:
                 continue
             qty = int(equity // epx)
@@ -507,7 +508,7 @@ def replay_variant(
 
         if position is not None:
             etf = long_df if position["symbol"] == LONG_SYMBOL else inv_df
-            xts, xpx = _fill_price(etf, day_force, "SELL")
+            xts, xpx = _fill_price(etf, day_force, "SELL", delay_min=delay_min)
             if xpx is None:
                 xpx = float(position["entry_price"])
                 xts = day_force

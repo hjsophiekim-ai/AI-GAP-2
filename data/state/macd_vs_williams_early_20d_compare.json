@@ -1,0 +1,1950 @@
+{
+  "generated_at": "2026-07-22T15:00:55",
+  "dates": [
+    "2026-06-24",
+    "2026-06-25",
+    "2026-06-26",
+    "2026-06-29",
+    "2026-06-30",
+    "2026-07-01",
+    "2026-07-02",
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-07",
+    "2026-07-08",
+    "2026-07-09",
+    "2026-07-10",
+    "2026-07-13",
+    "2026-07-14",
+    "2026-07-15",
+    "2026-07-16",
+    "2026-07-20",
+    "2026-07-21",
+    "2026-07-22"
+  ],
+  "date_sources": {
+    "2026-06-24": "synthetic_cached_1m",
+    "2026-06-25": "synthetic_cached_1m",
+    "2026-06-26": "synthetic_cached_1m",
+    "2026-06-29": "synthetic_cached_1m",
+    "2026-06-30": "synthetic_cached_1m",
+    "2026-07-01": "synthetic_cached_1m",
+    "2026-07-02": "synthetic_cached_1m",
+    "2026-07-03": "synthetic_cached_1m",
+    "2026-07-06": "synthetic_cached_1m",
+    "2026-07-07": "synthetic_cached_1m",
+    "2026-07-08": "naver_fchart",
+    "2026-07-09": "naver_fchart",
+    "2026-07-10": "naver_fchart",
+    "2026-07-13": "naver_fchart",
+    "2026-07-14": "naver_fchart",
+    "2026-07-15": "naver_fchart",
+    "2026-07-16": "naver_fchart",
+    "2026-07-20": "naver_fchart",
+    "2026-07-21": "naver_fchart",
+    "2026-07-22": "naver_fchart"
+  },
+  "n_days": 20,
+  "rules": {
+    "capital": 10000000.0,
+    "entry_window": "09:00-14:55",
+    "flatten": "15:00",
+    "tp_sl_net_pct": [
+      3.0,
+      -1.5
+    ],
+    "fill": "next 1m open after signal + adverse + TradeCostEngine",
+    "no_same_dir_repeat": true,
+    "no_continuation_reentry_after_tp": true,
+    "williams": "%R(14), signal=EMA(9), no abs -20/-80",
+    "explore_pct": 0.2,
+    "explore_confirm_sec": 120
+  },
+  "baseline": {
+    "A": {
+      "strategy": "A",
+      "n_days": 20,
+      "daily_pnl": [
+        {
+          "day": "2026-06-24",
+          "net_pnl": -493856.81,
+          "ret_pct": -4.9386,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-25",
+          "net_pnl": -216781.51,
+          "ret_pct": -2.1678,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-26",
+          "net_pnl": -476920.69,
+          "ret_pct": -4.7692,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-29",
+          "net_pnl": -472031.71,
+          "ret_pct": -4.7203,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-30",
+          "net_pnl": -473250.62,
+          "ret_pct": -4.7325,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-01",
+          "net_pnl": -491181.65,
+          "ret_pct": -4.9118,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-02",
+          "net_pnl": -160535.87,
+          "ret_pct": -1.6054,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-03",
+          "net_pnl": -517046.84,
+          "ret_pct": -5.1705,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-06",
+          "net_pnl": -472060.59,
+          "ret_pct": -4.7206,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-07",
+          "net_pnl": -164027.69,
+          "ret_pct": -1.6403,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-08",
+          "net_pnl": 698567.71,
+          "ret_pct": 6.9857,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-09",
+          "net_pnl": 728091.01,
+          "ret_pct": 7.2809,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-10",
+          "net_pnl": -214191.02,
+          "ret_pct": -2.1419,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-13",
+          "net_pnl": -699753.31,
+          "ret_pct": -6.9975,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-14",
+          "net_pnl": 399057.11,
+          "ret_pct": 3.9906,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-15",
+          "net_pnl": -257370.41,
+          "ret_pct": -2.5737,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-16",
+          "net_pnl": -754547.73,
+          "ret_pct": -7.5455,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-20",
+          "net_pnl": 310277.48,
+          "ret_pct": 3.1028,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-21",
+          "net_pnl": -707819.0,
+          "ret_pct": -7.0782,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-22",
+          "net_pnl": -41639.17,
+          "ret_pct": -0.4164,
+          "regime": "RANGE"
+        }
+      ],
+      "cum_net_pnl": -4477021.31,
+      "cum_ret_pct": -44.7702,
+      "mean_daily_ret_pct": -2.2385,
+      "median_daily_ret_pct": -3.647,
+      "win_days": 4,
+      "loss_days": 16,
+      "flat_days": 0,
+      "round_trips": 163,
+      "avg_trades_per_day": 8.15,
+      "win_rate_pct": 33.13,
+      "pf": 0.792,
+      "mdd_pct": 48.653,
+      "total_cost": 1453821.44,
+      "cost_gross_ratio_pct": 12.61,
+      "lev_pnl": -4461533.85,
+      "inv_pnl": -15487.46,
+      "exit_counts": {
+        "TP": 28,
+        "SL": 80,
+        "OPPOSITE": 50,
+        "FORCE_1500": 5,
+        "EXPLORE_EXIT": 0
+      },
+      "worst_day": "2026-07-16",
+      "worst_day_pnl": -754547.73,
+      "ex_best_trade_net": -4921406.74,
+      "range_vs_trend": {
+        "RANGE": {
+          "days": 10,
+          "net_pnl": -2881600.75,
+          "mean_ret_pct": -2.8816
+        },
+        "TREND": {
+          "days": 10,
+          "net_pnl": -1595420.56,
+          "mean_ret_pct": -1.5954
+        },
+        "median_day_range_pct": 8.549
+      },
+      "avg_signal_to_fill_sec": 60.0,
+      "explore": null,
+      "regime_definition": "TREND if day (high-low)/open% >= sample median else RANGE",
+      "day_results_light": [
+        {
+          "day": "2026-06-24",
+          "strategy": "A",
+          "net_pnl": -493856.81,
+          "ret_pct": -4.9386,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 4.939,
+          "total_cost": 26321.18,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -311948.09,
+          "inv_pnl": -181908.72,
+          "lev_trades": 2,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 3,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 9.896,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-25",
+          "strategy": "A",
+          "net_pnl": -216781.51,
+          "ret_pct": -2.1678,
+          "round_trips": 5,
+          "win_rate_pct": 20.0,
+          "pf": 0.646,
+          "mdd_pct": 3.42,
+          "total_cost": 44664.41,
+          "cost_gross_ratio_pct": 14.21,
+          "lev_pnl": -190760.59,
+          "inv_pnl": -26020.92,
+          "lev_trades": 2,
+          "inv_trades": 3,
+          "exit_counts": {
+            "TP": 1,
+            "SL": 3,
+            "OPPOSITE": 1,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 8.447,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-26",
+          "strategy": "A",
+          "net_pnl": -476920.69,
+          "ret_pct": -4.7692,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 4.769,
+          "total_cost": 26332.48,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -312333.33,
+          "inv_pnl": -164587.36,
+          "lev_trades": 2,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 3,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 10.105,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-29",
+          "strategy": "A",
+          "net_pnl": -472031.71,
+          "ret_pct": -4.7203,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 4.72,
+          "total_cost": 26356.65,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -305660.27,
+          "inv_pnl": -166371.44,
+          "lev_trades": 2,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 3,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 6.866,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-30",
+          "strategy": "A",
+          "net_pnl": -473250.62,
+          "ret_pct": -4.7325,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 4.733,
+          "total_cost": 26351.4,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -162543.27,
+          "inv_pnl": -310707.35,
+          "lev_trades": 1,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 3,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 7.899,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-01",
+          "strategy": "A",
+          "net_pnl": -491181.65,
+          "ret_pct": -4.9118,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 4.912,
+          "total_cost": 26328.21,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -318854.86,
+          "inv_pnl": -172326.79,
+          "lev_trades": 2,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 3,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 8.627,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-02",
+          "strategy": "A",
+          "net_pnl": -160535.87,
+          "ret_pct": -1.6054,
+          "round_trips": 5,
+          "win_rate_pct": 40.0,
+          "pf": 0.756,
+          "mdd_pct": 3.403,
+          "total_cost": 44844.11,
+          "cost_gross_ratio_pct": 12.48,
+          "lev_pnl": -5814.01,
+          "inv_pnl": -154721.86,
+          "lev_trades": 3,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 1,
+            "SL": 3,
+            "OPPOSITE": 1,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 11.404,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-03",
+          "strategy": "A",
+          "net_pnl": -517046.84,
+          "ret_pct": -5.1705,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 5.17,
+          "total_cost": 26316.46,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -167426.13,
+          "inv_pnl": -349620.71,
+          "lev_trades": 1,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 3,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 18.852,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-06",
+          "strategy": "A",
+          "net_pnl": -472060.59,
+          "ret_pct": -4.7206,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 4.721,
+          "total_cost": 26353.75,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -319117.77,
+          "inv_pnl": -152942.82,
+          "lev_trades": 2,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 3,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 8.534,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-07",
+          "strategy": "A",
+          "net_pnl": -164027.69,
+          "ret_pct": -1.6403,
+          "round_trips": 5,
+          "win_rate_pct": 40.0,
+          "pf": 0.752,
+          "mdd_pct": 3.351,
+          "total_cost": 44790.48,
+          "cost_gross_ratio_pct": 12.4,
+          "lev_pnl": -14628.33,
+          "inv_pnl": -149399.36,
+          "lev_trades": 3,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 1,
+            "SL": 3,
+            "OPPOSITE": 1,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 11.577,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-08",
+          "strategy": "A",
+          "net_pnl": 698567.71,
+          "ret_pct": 6.9857,
+          "round_trips": 14,
+          "win_rate_pct": 50.0,
+          "pf": 1.699,
+          "mdd_pct": 5.3,
+          "total_cost": 132118.59,
+          "cost_gross_ratio_pct": 6.55,
+          "lev_pnl": -176074.96,
+          "inv_pnl": 874642.67,
+          "lev_trades": 7,
+          "inv_trades": 7,
+          "exit_counts": {
+            "TP": 5,
+            "SL": 6,
+            "OPPOSITE": 3,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 12.008,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-09",
+          "strategy": "A",
+          "net_pnl": 728091.01,
+          "ret_pct": 7.2809,
+          "round_trips": 11,
+          "win_rate_pct": 45.45,
+          "pf": 2.074,
+          "mdd_pct": 4.877,
+          "total_cost": 103244.08,
+          "cost_gross_ratio_pct": 6.43,
+          "lev_pnl": -296898.34,
+          "inv_pnl": 1024989.35,
+          "lev_trades": 6,
+          "inv_trades": 5,
+          "exit_counts": {
+            "TP": 4,
+            "SL": 4,
+            "OPPOSITE": 3,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 7.875,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-10",
+          "strategy": "A",
+          "net_pnl": -214191.02,
+          "ret_pct": -2.1419,
+          "round_trips": 13,
+          "win_rate_pct": 38.46,
+          "pf": 0.892,
+          "mdd_pct": 6.306,
+          "total_cost": 113699.39,
+          "cost_gross_ratio_pct": 13.72,
+          "lev_pnl": -240790.18,
+          "inv_pnl": 26599.16,
+          "lev_trades": 6,
+          "inv_trades": 7,
+          "exit_counts": {
+            "TP": 2,
+            "SL": 4,
+            "OPPOSITE": 7,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 4.95,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-13",
+          "strategy": "A",
+          "net_pnl": -699753.31,
+          "ret_pct": -6.9975,
+          "round_trips": 10,
+          "win_rate_pct": 20.0,
+          "pf": 0.377,
+          "mdd_pct": 7.293,
+          "total_cost": 87787.17,
+          "cost_gross_ratio_pct": 23.7,
+          "lev_pnl": -712677.24,
+          "inv_pnl": 12923.93,
+          "lev_trades": 5,
+          "inv_trades": 5,
+          "exit_counts": {
+            "TP": 1,
+            "SL": 6,
+            "OPPOSITE": 2,
+            "FORCE_1500": 1,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 13.759,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-14",
+          "strategy": "A",
+          "net_pnl": 399057.11,
+          "ret_pct": 3.9906,
+          "round_trips": 9,
+          "win_rate_pct": 55.56,
+          "pf": 1.496,
+          "mdd_pct": 4.784,
+          "total_cost": 81967.63,
+          "cost_gross_ratio_pct": 5.65,
+          "lev_pnl": 498807.79,
+          "inv_pnl": -99750.68,
+          "lev_trades": 4,
+          "inv_trades": 5,
+          "exit_counts": {
+            "TP": 5,
+            "SL": 4,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 13.629,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-15",
+          "strategy": "A",
+          "net_pnl": -257370.41,
+          "ret_pct": -2.5737,
+          "round_trips": 15,
+          "win_rate_pct": 33.33,
+          "pf": 0.902,
+          "mdd_pct": 7.309,
+          "total_cost": 137839.92,
+          "cost_gross_ratio_pct": 12.47,
+          "lev_pnl": -560945.36,
+          "inv_pnl": 303574.95,
+          "lev_trades": 8,
+          "inv_trades": 7,
+          "exit_counts": {
+            "TP": 2,
+            "SL": 8,
+            "OPPOSITE": 5,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 4.712,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-16",
+          "strategy": "A",
+          "net_pnl": -754547.73,
+          "ret_pct": -7.5455,
+          "round_trips": 13,
+          "win_rate_pct": 23.08,
+          "pf": 0.392,
+          "mdd_pct": 10.889,
+          "total_cost": 109519.5,
+          "cost_gross_ratio_pct": 26.36,
+          "lev_pnl": -241826.17,
+          "inv_pnl": -512721.56,
+          "lev_trades": 6,
+          "inv_trades": 7,
+          "exit_counts": {
+            "TP": 1,
+            "SL": 6,
+            "OPPOSITE": 5,
+            "FORCE_1500": 1,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 4.715,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-20",
+          "strategy": "A",
+          "net_pnl": 310277.48,
+          "ret_pct": 3.1028,
+          "round_trips": 13,
+          "win_rate_pct": 53.85,
+          "pf": 1.559,
+          "mdd_pct": 3.562,
+          "total_cost": 115613.22,
+          "cost_gross_ratio_pct": 9.73,
+          "lev_pnl": -245471.31,
+          "inv_pnl": 555748.79,
+          "lev_trades": 7,
+          "inv_trades": 6,
+          "exit_counts": {
+            "TP": 3,
+            "SL": 3,
+            "OPPOSITE": 6,
+            "FORCE_1500": 1,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 8.563,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-21",
+          "strategy": "A",
+          "net_pnl": -707819.0,
+          "ret_pct": -7.0782,
+          "round_trips": 16,
+          "win_rate_pct": 37.5,
+          "pf": 0.552,
+          "mdd_pct": 7.539,
+          "total_cost": 138408.22,
+          "cost_gross_ratio_pct": 19.73,
+          "lev_pnl": -25470.43,
+          "inv_pnl": -682348.57,
+          "lev_trades": 8,
+          "inv_trades": 8,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 8,
+            "OPPOSITE": 7,
+            "FORCE_1500": 1,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 8.433,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-22",
+          "strategy": "A",
+          "net_pnl": -41639.17,
+          "ret_pct": -0.4164,
+          "round_trips": 13,
+          "win_rate_pct": 30.77,
+          "pf": 1.1,
+          "mdd_pct": 4.559,
+          "total_cost": 114964.59,
+          "cost_gross_ratio_pct": 14.22,
+          "lev_pnl": -351101.0,
+          "inv_pnl": 309461.83,
+          "lev_trades": 7,
+          "inv_trades": 6,
+          "exit_counts": {
+            "TP": 2,
+            "SL": 1,
+            "OPPOSITE": 9,
+            "FORCE_1500": 1,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 7.517,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": null,
+          "regime": "RANGE"
+        }
+      ]
+    },
+    "B": {
+      "strategy": "B",
+      "n_days": 20,
+      "daily_pnl": [
+        {
+          "day": "2026-06-24",
+          "net_pnl": 134.35,
+          "ret_pct": 0.0013,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-25",
+          "net_pnl": -9018.44,
+          "ret_pct": -0.0902,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-26",
+          "net_pnl": 4830.05,
+          "ret_pct": 0.0483,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-29",
+          "net_pnl": 0,
+          "ret_pct": 0.0,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-30",
+          "net_pnl": -7642.06,
+          "ret_pct": -0.0764,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-01",
+          "net_pnl": -2629.27,
+          "ret_pct": -0.0263,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-02",
+          "net_pnl": -162680.43,
+          "ret_pct": -1.6268,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-03",
+          "net_pnl": 5291.12,
+          "ret_pct": 0.0529,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-06",
+          "net_pnl": -13664.94,
+          "ret_pct": -0.1366,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-07",
+          "net_pnl": -4752.01,
+          "ret_pct": -0.0475,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-08",
+          "net_pnl": 52361.0,
+          "ret_pct": 0.5236,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-09",
+          "net_pnl": -4937.69,
+          "ret_pct": -0.0494,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-10",
+          "net_pnl": -10278.55,
+          "ret_pct": -0.1028,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-13",
+          "net_pnl": 5636.29,
+          "ret_pct": 0.0564,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-14",
+          "net_pnl": 653.64,
+          "ret_pct": 0.0065,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-15",
+          "net_pnl": -8884.92,
+          "ret_pct": -0.0888,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-16",
+          "net_pnl": 5514.45,
+          "ret_pct": 0.0551,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-20",
+          "net_pnl": 0,
+          "ret_pct": 0.0,
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-21",
+          "net_pnl": -21326.87,
+          "ret_pct": -0.2133,
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-22",
+          "net_pnl": 0,
+          "ret_pct": 0.0,
+          "regime": "RANGE"
+        }
+      ],
+      "cum_net_pnl": -171394.28,
+      "cum_ret_pct": -1.7139,
+      "mean_daily_ret_pct": -0.0857,
+      "median_daily_ret_pct": -0.0132,
+      "win_days": 7,
+      "loss_days": 10,
+      "flat_days": 3,
+      "round_trips": 44,
+      "avg_trades_per_day": 2.2,
+      "win_rate_pct": 27.27,
+      "pf": 0.589,
+      "mdd_pct": 1.932,
+      "total_cost": 86020.71,
+      "cost_gross_ratio_pct": 70.39,
+      "lev_pnl": -183988.13,
+      "inv_pnl": 12593.85,
+      "exit_counts": {
+        "TP": 0,
+        "SL": 1,
+        "OPPOSITE": 1,
+        "FORCE_1500": 0,
+        "EXPLORE_EXIT": 42
+      },
+      "worst_day": "2026-07-02",
+      "worst_day_pnl": -162680.43,
+      "ex_best_trade_net": -202080.07,
+      "range_vs_trend": {
+        "RANGE": {
+          "days": 10,
+          "net_pnl": -70239.02,
+          "mean_ret_pct": -0.0702
+        },
+        "TREND": {
+          "days": 10,
+          "net_pnl": -101155.26,
+          "mean_ret_pct": -0.1012
+        },
+        "median_day_range_pct": 8.549
+      },
+      "avg_signal_to_fill_sec": 60.0,
+      "explore": {
+        "explore_starts": 43,
+        "explore_scaled": 0,
+        "explore_success_rate_pct": 0.0,
+        "explore_invalidated": 35,
+        "explore_timeout": 7,
+        "explore_pnl": -16220.09,
+        "avg_minutes_earlier_than_A": 95.09,
+        "wrong_explores_count": 12,
+        "wrong_explores": [
+          {
+            "time": "2026-06-25T12:59:00",
+            "direction": "DOWN",
+            "true_dir": "UP"
+          },
+          {
+            "time": "2026-06-25T13:26:00",
+            "direction": "DOWN",
+            "true_dir": "UP"
+          },
+          {
+            "time": "2026-06-26T13:17:00",
+            "direction": "UP",
+            "true_dir": "DOWN"
+          },
+          {
+            "time": "2026-06-26T13:20:00",
+            "direction": "UP",
+            "true_dir": "DOWN"
+          },
+          {
+            "time": "2026-06-30T13:00:00",
+            "direction": "DOWN",
+            "true_dir": "UP"
+          },
+          {
+            "time": "2026-06-30T13:25:00",
+            "direction": "DOWN",
+            "true_dir": "UP"
+          },
+          {
+            "time": "2026-07-07T13:24:00",
+            "direction": "UP",
+            "true_dir": "DOWN"
+          },
+          {
+            "time": "2026-07-08T10:47:00",
+            "direction": "UP",
+            "true_dir": "DOWN"
+          },
+          {
+            "time": "2026-07-10T12:40:00",
+            "direction": "UP",
+            "true_dir": "DOWN"
+          },
+          {
+            "time": "2026-07-15T11:37:00",
+            "direction": "UP",
+            "true_dir": "DOWN"
+          },
+          {
+            "time": "2026-07-16T11:50:00",
+            "direction": "UP",
+            "true_dir": "DOWN"
+          },
+          {
+            "time": "2026-07-21T09:53:00",
+            "direction": "DOWN",
+            "true_dir": "UP"
+          }
+        ]
+      },
+      "regime_definition": "TREND if day (high-low)/open% >= sample median else RANGE",
+      "day_results_light": [
+        {
+          "day": "2026-06-24",
+          "strategy": "B",
+          "net_pnl": 134.35,
+          "ret_pct": 0.0013,
+          "round_trips": 1,
+          "win_rate_pct": 100.0,
+          "pf": null,
+          "mdd_pct": 0.0,
+          "total_cost": 1795.58,
+          "cost_gross_ratio_pct": 93.04,
+          "lev_pnl": 0,
+          "inv_pnl": 134.35,
+          "lev_trades": 0,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 1
+          },
+          "day_range_pct": 9.896,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 1,
+            "explore_scaled": 0,
+            "explore_invalidated": 0,
+            "explore_timeout": 1,
+            "explore_pnl": 134.35,
+            "minutes_earlier_vs_a": [
+              159.0,
+              158.0
+            ],
+            "wrong_explores": []
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-25",
+          "strategy": "B",
+          "net_pnl": -9018.44,
+          "ret_pct": -0.0902,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.09,
+          "mdd_pct": 0.09,
+          "total_cost": 5382.68,
+          "cost_gross_ratio_pct": 1502.07,
+          "lev_pnl": -2300.71,
+          "inv_pnl": -6717.73,
+          "lev_trades": 1,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 3
+          },
+          "day_range_pct": 8.447,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 3,
+            "explore_scaled": 0,
+            "explore_invalidated": 3,
+            "explore_timeout": 0,
+            "explore_pnl": -9018.44,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": [
+              {
+                "time": "2026-06-25T12:59:00",
+                "direction": "DOWN",
+                "true_dir": "UP"
+              },
+              {
+                "time": "2026-06-25T13:26:00",
+                "direction": "DOWN",
+                "true_dir": "UP"
+              }
+            ]
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-26",
+          "strategy": "B",
+          "net_pnl": 4830.05,
+          "ret_pct": 0.0483,
+          "round_trips": 4,
+          "win_rate_pct": 25.0,
+          "pf": 23.637,
+          "mdd_pct": 0.047,
+          "total_cost": 7183.4,
+          "cost_gross_ratio_pct": 57.26,
+          "lev_pnl": 8715.9,
+          "inv_pnl": -3885.85,
+          "lev_trades": 2,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 4
+          },
+          "day_range_pct": 10.105,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 4,
+            "explore_scaled": 0,
+            "explore_invalidated": 3,
+            "explore_timeout": 1,
+            "explore_pnl": 4830.05,
+            "minutes_earlier_vs_a": [
+              126.0,
+              125.0,
+              110.0
+            ],
+            "wrong_explores": [
+              {
+                "time": "2026-06-26T13:17:00",
+                "direction": "UP",
+                "true_dir": "DOWN"
+              },
+              {
+                "time": "2026-06-26T13:20:00",
+                "direction": "UP",
+                "true_dir": "DOWN"
+              }
+            ]
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-06-29",
+          "strategy": "B",
+          "net_pnl": 0,
+          "ret_pct": 0.0,
+          "round_trips": 0,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 0.0,
+          "total_cost": 0,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": 0,
+          "inv_pnl": 0,
+          "lev_trades": 0,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 6.866,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": null,
+          "explore": {
+            "explore_starts": 0,
+            "explore_scaled": 0,
+            "explore_invalidated": 0,
+            "explore_timeout": 0,
+            "explore_pnl": 0.0,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": []
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-06-30",
+          "strategy": "B",
+          "net_pnl": -7642.06,
+          "ret_pct": -0.0764,
+          "round_trips": 4,
+          "win_rate_pct": 25.0,
+          "pf": 0.903,
+          "mdd_pct": 0.098,
+          "total_cost": 7172.55,
+          "cost_gross_ratio_pct": 163.52,
+          "lev_pnl": -159.19,
+          "inv_pnl": -7482.87,
+          "lev_trades": 2,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 4
+          },
+          "day_range_pct": 7.899,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 4,
+            "explore_scaled": 0,
+            "explore_invalidated": 3,
+            "explore_timeout": 1,
+            "explore_pnl": -7642.06,
+            "minutes_earlier_vs_a": [
+              165.0
+            ],
+            "wrong_explores": [
+              {
+                "time": "2026-06-30T13:00:00",
+                "direction": "DOWN",
+                "true_dir": "UP"
+              },
+              {
+                "time": "2026-06-30T13:25:00",
+                "direction": "DOWN",
+                "true_dir": "UP"
+              }
+            ]
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-01",
+          "strategy": "B",
+          "net_pnl": -2629.27,
+          "ret_pct": -0.0263,
+          "round_trips": 5,
+          "win_rate_pct": 20.0,
+          "pf": 14.97,
+          "mdd_pct": 0.031,
+          "total_cost": 8975.97,
+          "cost_gross_ratio_pct": 131.98,
+          "lev_pnl": 0,
+          "inv_pnl": -2629.27,
+          "lev_trades": 0,
+          "inv_trades": 5,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 5
+          },
+          "day_range_pct": 8.627,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 5,
+            "explore_scaled": 0,
+            "explore_invalidated": 3,
+            "explore_timeout": 2,
+            "explore_pnl": -2629.27,
+            "minutes_earlier_vs_a": [
+              144.0,
+              96.0,
+              93.0,
+              92.0,
+              69.0,
+              68.0,
+              67.0,
+              66.0
+            ],
+            "wrong_explores": []
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-02",
+          "strategy": "B",
+          "net_pnl": -162680.43,
+          "ret_pct": -1.6268,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 1.627,
+          "total_cost": 12477.05,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -155174.19,
+          "inv_pnl": -7506.24,
+          "lev_trades": 1,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 1,
+            "OPPOSITE": 1,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 1
+          },
+          "day_range_pct": 11.404,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 2,
+            "explore_scaled": 0,
+            "explore_invalidated": 1,
+            "explore_timeout": 0,
+            "explore_pnl": -7506.24,
+            "minutes_earlier_vs_a": [
+              81.0,
+              40.0
+            ],
+            "wrong_explores": []
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-03",
+          "strategy": "B",
+          "net_pnl": 5291.12,
+          "ret_pct": 0.0529,
+          "round_trips": 2,
+          "win_rate_pct": 100.0,
+          "pf": null,
+          "mdd_pct": 0.0,
+          "total_cost": 3587.62,
+          "cost_gross_ratio_pct": 40.41,
+          "lev_pnl": 5291.12,
+          "inv_pnl": 0,
+          "lev_trades": 2,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 2
+          },
+          "day_range_pct": 18.852,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 2,
+            "explore_scaled": 0,
+            "explore_invalidated": 2,
+            "explore_timeout": 0,
+            "explore_pnl": 5291.12,
+            "minutes_earlier_vs_a": [
+              150.0,
+              129.0,
+              128.0
+            ],
+            "wrong_explores": []
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-06",
+          "strategy": "B",
+          "net_pnl": -13664.94,
+          "ret_pct": -0.1366,
+          "round_trips": 7,
+          "win_rate_pct": 0.0,
+          "pf": 0.552,
+          "mdd_pct": 0.137,
+          "total_cost": 12540.78,
+          "cost_gross_ratio_pct": 906.87,
+          "lev_pnl": 0,
+          "inv_pnl": -13664.94,
+          "lev_trades": 0,
+          "inv_trades": 7,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 7
+          },
+          "day_range_pct": 8.534,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 7,
+            "explore_scaled": 0,
+            "explore_invalidated": 7,
+            "explore_timeout": 0,
+            "explore_pnl": -13664.939999999999,
+            "minutes_earlier_vs_a": [
+              144.0,
+              115.0,
+              105.0,
+              101.0,
+              90.0,
+              89.0,
+              61.0
+            ],
+            "wrong_explores": []
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-07",
+          "strategy": "B",
+          "net_pnl": -4752.01,
+          "ret_pct": -0.0475,
+          "round_trips": 3,
+          "win_rate_pct": 0.0,
+          "pf": 1.229,
+          "mdd_pct": 0.048,
+          "total_cost": 5374.89,
+          "cost_gross_ratio_pct": 160.84,
+          "lev_pnl": -210.46,
+          "inv_pnl": -4541.55,
+          "lev_trades": 1,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 3
+          },
+          "day_range_pct": 11.577,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 3,
+            "explore_scaled": 0,
+            "explore_invalidated": 2,
+            "explore_timeout": 1,
+            "explore_pnl": -4752.01,
+            "minutes_earlier_vs_a": [
+              86.0,
+              85.0,
+              59.0
+            ],
+            "wrong_explores": [
+              {
+                "time": "2026-07-07T13:24:00",
+                "direction": "UP",
+                "true_dir": "DOWN"
+              }
+            ]
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-08",
+          "strategy": "B",
+          "net_pnl": 52361.0,
+          "ret_pct": 0.5236,
+          "round_trips": 3,
+          "win_rate_pct": 66.67,
+          "pf": 51.435,
+          "mdd_pct": 0.029,
+          "total_cost": 5404.26,
+          "cost_gross_ratio_pct": 9.17,
+          "lev_pnl": -2932.15,
+          "inv_pnl": 55293.15,
+          "lev_trades": 1,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 3
+          },
+          "day_range_pct": 12.008,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 3,
+            "explore_scaled": 0,
+            "explore_invalidated": 2,
+            "explore_timeout": 1,
+            "explore_pnl": 52361.0,
+            "minutes_earlier_vs_a": [
+              4.0
+            ],
+            "wrong_explores": [
+              {
+                "time": "2026-07-08T10:47:00",
+                "direction": "UP",
+                "true_dir": "DOWN"
+              }
+            ]
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-09",
+          "strategy": "B",
+          "net_pnl": -4937.69,
+          "ret_pct": -0.0494,
+          "round_trips": 1,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 0.049,
+          "total_cost": 1794.17,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": 0,
+          "inv_pnl": -4937.69,
+          "lev_trades": 0,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 1
+          },
+          "day_range_pct": 7.875,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 1,
+            "explore_scaled": 0,
+            "explore_invalidated": 1,
+            "explore_timeout": 0,
+            "explore_pnl": -4937.69,
+            "minutes_earlier_vs_a": [
+              4.0
+            ],
+            "wrong_explores": []
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-10",
+          "strategy": "B",
+          "net_pnl": -10278.55,
+          "ret_pct": -0.1028,
+          "round_trips": 1,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 0.103,
+          "total_cost": 1778.0,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -10278.55,
+          "inv_pnl": 0,
+          "lev_trades": 1,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 1
+          },
+          "day_range_pct": 4.95,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 1,
+            "explore_scaled": 0,
+            "explore_invalidated": 1,
+            "explore_timeout": 0,
+            "explore_pnl": -10278.55,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": [
+              {
+                "time": "2026-07-10T12:40:00",
+                "direction": "UP",
+                "true_dir": "DOWN"
+              }
+            ]
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-13",
+          "strategy": "B",
+          "net_pnl": 5636.29,
+          "ret_pct": 0.0564,
+          "round_trips": 2,
+          "win_rate_pct": 50.0,
+          "pf": null,
+          "mdd_pct": 0.004,
+          "total_cost": 3587.54,
+          "cost_gross_ratio_pct": 38.89,
+          "lev_pnl": 0,
+          "inv_pnl": 5636.29,
+          "lev_trades": 0,
+          "inv_trades": 2,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 2
+          },
+          "day_range_pct": 13.759,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 2,
+            "explore_scaled": 0,
+            "explore_invalidated": 2,
+            "explore_timeout": 0,
+            "explore_pnl": 5636.29,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": []
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-14",
+          "strategy": "B",
+          "net_pnl": 653.64,
+          "ret_pct": 0.0065,
+          "round_trips": 1,
+          "win_rate_pct": 100.0,
+          "pf": null,
+          "mdd_pct": 0.0,
+          "total_cost": 1793.54,
+          "cost_gross_ratio_pct": 73.29,
+          "lev_pnl": 653.64,
+          "inv_pnl": 0,
+          "lev_trades": 1,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 1
+          },
+          "day_range_pct": 13.629,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 1,
+            "explore_scaled": 0,
+            "explore_invalidated": 1,
+            "explore_timeout": 0,
+            "explore_pnl": 653.64,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": []
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-15",
+          "strategy": "B",
+          "net_pnl": -8884.92,
+          "ret_pct": -0.0888,
+          "round_trips": 1,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 0.089,
+          "total_cost": 1792.86,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": -8884.92,
+          "inv_pnl": 0,
+          "lev_trades": 1,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 1
+          },
+          "day_range_pct": 4.712,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 1,
+            "explore_scaled": 0,
+            "explore_invalidated": 1,
+            "explore_timeout": 0,
+            "explore_pnl": -8884.92,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": [
+              {
+                "time": "2026-07-15T11:37:00",
+                "direction": "UP",
+                "true_dir": "DOWN"
+              }
+            ]
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-16",
+          "strategy": "B",
+          "net_pnl": 5514.45,
+          "ret_pct": 0.0551,
+          "round_trips": 1,
+          "win_rate_pct": 100.0,
+          "pf": null,
+          "mdd_pct": 0.0,
+          "total_cost": 1797.89,
+          "cost_gross_ratio_pct": 24.59,
+          "lev_pnl": 5514.45,
+          "inv_pnl": 0,
+          "lev_trades": 1,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 1
+          },
+          "day_range_pct": 4.715,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 1,
+            "explore_scaled": 0,
+            "explore_invalidated": 1,
+            "explore_timeout": 0,
+            "explore_pnl": 5514.45,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": [
+              {
+                "time": "2026-07-16T11:50:00",
+                "direction": "UP",
+                "true_dir": "DOWN"
+              }
+            ]
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-20",
+          "strategy": "B",
+          "net_pnl": 0,
+          "ret_pct": 0.0,
+          "round_trips": 0,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 0.0,
+          "total_cost": 0,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": 0,
+          "inv_pnl": 0,
+          "lev_trades": 0,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 8.563,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": null,
+          "explore": {
+            "explore_starts": 0,
+            "explore_scaled": 0,
+            "explore_invalidated": 0,
+            "explore_timeout": 0,
+            "explore_pnl": 0.0,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": []
+          },
+          "regime": "TREND"
+        },
+        {
+          "day": "2026-07-21",
+          "strategy": "B",
+          "net_pnl": -21326.87,
+          "ret_pct": -0.2133,
+          "round_trips": 2,
+          "win_rate_pct": 50.0,
+          "pf": 0.209,
+          "mdd_pct": 0.242,
+          "total_cost": 3581.93,
+          "cost_gross_ratio_pct": 76.4,
+          "lev_pnl": -24223.07,
+          "inv_pnl": 2896.2,
+          "lev_trades": 1,
+          "inv_trades": 1,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 2
+          },
+          "day_range_pct": 8.433,
+          "true_dir": "UP",
+          "avg_signal_to_fill_sec": 60.0,
+          "explore": {
+            "explore_starts": 2,
+            "explore_scaled": 0,
+            "explore_invalidated": 2,
+            "explore_timeout": 0,
+            "explore_pnl": -21326.87,
+            "minutes_earlier_vs_a": [
+              34.0
+            ],
+            "wrong_explores": [
+              {
+                "time": "2026-07-21T09:53:00",
+                "direction": "DOWN",
+                "true_dir": "UP"
+              }
+            ]
+          },
+          "regime": "RANGE"
+        },
+        {
+          "day": "2026-07-22",
+          "strategy": "B",
+          "net_pnl": 0,
+          "ret_pct": 0.0,
+          "round_trips": 0,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "mdd_pct": 0.0,
+          "total_cost": 0,
+          "cost_gross_ratio_pct": null,
+          "lev_pnl": 0,
+          "inv_pnl": 0,
+          "lev_trades": 0,
+          "inv_trades": 0,
+          "exit_counts": {
+            "TP": 0,
+            "SL": 0,
+            "OPPOSITE": 0,
+            "FORCE_1500": 0,
+            "EXPLORE_EXIT": 0
+          },
+          "day_range_pct": 7.517,
+          "true_dir": "DOWN",
+          "avg_signal_to_fill_sec": null,
+          "explore": {
+            "explore_starts": 0,
+            "explore_scaled": 0,
+            "explore_invalidated": 0,
+            "explore_timeout": 0,
+            "explore_pnl": 0.0,
+            "minutes_earlier_vs_a": [],
+            "wrong_explores": []
+          },
+          "regime": "RANGE"
+        }
+      ]
+    }
+  },
+  "stress": {
+    "A": {
+      "baseline": {
+        "cum_net_pnl": -4477021.31,
+        "pf": 0.792,
+        "mdd_pct": 48.653,
+        "round_trips": 163
+      },
+      "plus_1m_delay": {
+        "cum_net_pnl": -3749153.37,
+        "pf": 0.847,
+        "mdd_pct": 41.386,
+        "round_trips": 163
+      },
+      "plus_2m_slip10": {
+        "cum_net_pnl": -5676286.93,
+        "pf": 0.727,
+        "mdd_pct": 65.12,
+        "round_trips": 163
+      }
+    },
+    "B": {
+      "baseline": {
+        "cum_net_pnl": -171394.28,
+        "pf": 0.589,
+        "mdd_pct": 1.932,
+        "round_trips": 44
+      },
+      "plus_1m_delay": {
+        "cum_net_pnl": -138185.82,
+        "pf": 0.769,
+        "mdd_pct": 2.306,
+        "round_trips": 43
+      },
+      "plus_2m_slip10": {
+        "cum_net_pnl": -270503.16,
+        "pf": 0.329,
+        "mdd_pct": 2.767,
+        "round_trips": 43
+      }
+    }
+  },
+  "verdict": {
+    "verdict": "NO_CLEAR_WINNER",
+    "score_A": 1,
+    "score_B": 6,
+    "reasons": [
+      "Net favors B by 4,305,627",
+      "PF A 0.792 > B 0.589",
+      "MDD better for B (1.932% vs 48.653%)",
+      "Loss days/worst favor B",
+      "A higher costs/trades",
+      "A more delay-sensitive",
+      "Early capture weak/noisy (earlier=95.09, success=0.0, wrong=12)",
+      "THESIS: explore→confirm success=0% — B mainly avoids A's overtrading, not validated early capture"
+    ]
+  },
+  "real_naver_dates": [
+    "2026-07-08",
+    "2026-07-09",
+    "2026-07-10",
+    "2026-07-13",
+    "2026-07-14",
+    "2026-07-15",
+    "2026-07-16",
+    "2026-07-20",
+    "2026-07-21",
+    "2026-07-22"
+  ],
+  "synthetic_dates": [
+    "2026-06-24",
+    "2026-06-25",
+    "2026-06-26",
+    "2026-06-29",
+    "2026-06-30",
+    "2026-07-01",
+    "2026-07-02",
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-07"
+  ],
+  "note": "Naver fchart provides ~10 overlapping real 1m sessions; remaining days are daily-anchored synthetic 1m cached under data/cache/replay_*.csv to reach >=20. Sibling reentry compare should reuse dates."
+}

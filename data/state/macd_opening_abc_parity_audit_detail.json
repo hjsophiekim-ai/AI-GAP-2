@@ -1,0 +1,446 @@
+{
+  "generated_at": "2026-07-22T16:32:32",
+  "compare_source": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_opening_abc_20d_compare.json",
+  "a_count": 95,
+  "c_count": 92,
+  "only_a": [
+    {
+      "strategy": "NEW_TURN_ONLY",
+      "day": "2026-07-13",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-13T09:03:00",
+      "entry_time": "2026-07-13 09:04:00",
+      "entry_price": 9719.8575,
+      "exit_time": "2026-07-13 09:19:00",
+      "exit_price": 10234.880000000001,
+      "qty": 1028,
+      "gross_pnl": 529443.13,
+      "cost": 9231.06,
+      "net_pnl": 520212.07,
+      "exit_reason": "TP_EXIT",
+      "entry_kind": "INITIAL_ENTRY",
+      "size_pct": 1.0
+    },
+    {
+      "strategy": "NEW_TURN_ONLY",
+      "day": "2026-07-16",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-16T09:03:00",
+      "entry_time": "2026-07-16 09:04:00",
+      "entry_price": 10885.439999999999,
+      "exit_time": "2026-07-16 09:07:00",
+      "exit_price": 10804.595000000001,
+      "qty": 918,
+      "gross_pnl": -74215.71,
+      "cost": 8960.16,
+      "net_pnl": -83175.87,
+      "exit_reason": "SL_EXIT",
+      "entry_kind": "INITIAL_ENTRY",
+      "size_pct": 1.0
+    },
+    {
+      "strategy": "NEW_TURN_ONLY",
+      "day": "2026-07-21",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "signal_time": "2026-07-21T09:03:00",
+      "entry_time": "2026-07-21 09:04:00",
+      "entry_price": 12266.13,
+      "exit_time": "2026-07-21 09:22:00",
+      "exit_price": 12183.905,
+      "qty": 815,
+      "gross_pnl": -67013.37,
+      "cost": 8967.04,
+      "net_pnl": -75980.42,
+      "exit_reason": "OPPOSITE_SWITCH",
+      "entry_kind": "INITIAL_ENTRY",
+      "size_pct": 1.0
+    }
+  ],
+  "only_c": [],
+  "net_a_only": 361055.78,
+  "net_c_only": 0,
+  "explained_delta": 361055.78,
+  "total_net_delta": 328924.2000000002,
+  "per_day": [
+    {
+      "day": "2026-06-24",
+      "a_rt": 2,
+      "c_rt": 2,
+      "delta_rt": 0,
+      "a_net": 637482.24,
+      "c_net": 637482.24,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-06-25",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 370703.57,
+      "c_net": 370703.57,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-06-26",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 1036384.35,
+      "c_net": 1036384.35,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-06-29",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 233780.44,
+      "c_net": 233780.44,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-06-30",
+      "a_rt": 4,
+      "c_rt": 4,
+      "delta_rt": 0,
+      "a_net": 778556.54,
+      "c_net": 778556.54,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-01",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 984505.89,
+      "c_net": 984505.89,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-02",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 443282.44,
+      "c_net": 443282.44,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-03",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 1144578.6,
+      "c_net": 1144578.6,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-06",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 998800.72,
+      "c_net": 998800.72,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-07",
+      "a_rt": 3,
+      "c_rt": 3,
+      "delta_rt": 0,
+      "a_net": 464410.37,
+      "c_net": 464410.37,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-08",
+      "a_rt": 7,
+      "c_rt": 7,
+      "delta_rt": 0,
+      "a_net": 1200065.63,
+      "c_net": 1200065.63,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-09",
+      "a_rt": 6,
+      "c_rt": 6,
+      "delta_rt": 0,
+      "a_net": -428017.73,
+      "c_net": -428017.73,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-10",
+      "a_rt": 8,
+      "c_rt": 8,
+      "delta_rt": 0,
+      "a_net": 403300.15,
+      "c_net": 403300.15,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-13",
+      "a_rt": 6,
+      "c_rt": 5,
+      "delta_rt": 1,
+      "a_net": -8138.95,
+      "c_net": -502097.65,
+      "net_delta": 493958.7,
+      "only_a": [
+        {
+          "strategy": "NEW_TURN_ONLY",
+          "day": "2026-07-13",
+          "direction": "DOWN_BLUE",
+          "symbol": "0197X0",
+          "signal_time": "2026-07-13T09:03:00",
+          "entry_time": "2026-07-13 09:04:00",
+          "entry_price": 9719.8575,
+          "exit_time": "2026-07-13 09:19:00",
+          "exit_price": 10234.880000000001,
+          "qty": 1028,
+          "gross_pnl": 529443.13,
+          "cost": 9231.06,
+          "net_pnl": 520212.07,
+          "exit_reason": "TP_EXIT",
+          "entry_kind": "INITIAL_ENTRY",
+          "size_pct": 1.0
+        }
+      ],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-14",
+      "a_rt": 7,
+      "c_rt": 7,
+      "delta_rt": 0,
+      "a_net": -1214621.74,
+      "c_net": -1214621.74,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-15",
+      "a_rt": 6,
+      "c_rt": 6,
+      "delta_rt": 0,
+      "a_net": 598397.29,
+      "c_net": 598397.29,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-16",
+      "a_rt": 7,
+      "c_rt": 6,
+      "delta_rt": 1,
+      "a_net": -193540.79,
+      "c_net": -111199.75,
+      "net_delta": -82341.04,
+      "only_a": [
+        {
+          "strategy": "NEW_TURN_ONLY",
+          "day": "2026-07-16",
+          "direction": "DOWN_BLUE",
+          "symbol": "0197X0",
+          "signal_time": "2026-07-16T09:03:00",
+          "entry_time": "2026-07-16 09:04:00",
+          "entry_price": 10885.439999999999,
+          "exit_time": "2026-07-16 09:07:00",
+          "exit_price": 10804.595000000001,
+          "qty": 918,
+          "gross_pnl": -74215.71,
+          "cost": 8960.16,
+          "net_pnl": -83175.87,
+          "exit_reason": "SL_EXIT",
+          "entry_kind": "INITIAL_ENTRY",
+          "size_pct": 1.0
+        }
+      ],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-20",
+      "a_rt": 8,
+      "c_rt": 8,
+      "delta_rt": 0,
+      "a_net": -464031.39,
+      "c_net": -464031.39,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-21",
+      "a_rt": 6,
+      "c_rt": 5,
+      "delta_rt": 1,
+      "a_net": 795823.04,
+      "c_net": 878516.5,
+      "net_delta": -82693.46,
+      "only_a": [
+        {
+          "strategy": "NEW_TURN_ONLY",
+          "day": "2026-07-21",
+          "direction": "DOWN_BLUE",
+          "symbol": "0197X0",
+          "signal_time": "2026-07-21T09:03:00",
+          "entry_time": "2026-07-21 09:04:00",
+          "entry_price": 12266.13,
+          "exit_time": "2026-07-21 09:22:00",
+          "exit_price": 12183.905,
+          "qty": 815,
+          "gross_pnl": -67013.37,
+          "cost": 8967.04,
+          "net_pnl": -75980.42,
+          "exit_reason": "OPPOSITE_SWITCH",
+          "entry_kind": "INITIAL_ENTRY",
+          "size_pct": 1.0
+        }
+      ],
+      "only_c": []
+    },
+    {
+      "day": "2026-07-22",
+      "a_rt": 4,
+      "c_rt": 4,
+      "delta_rt": 0,
+      "a_net": -31147.97,
+      "c_net": -31147.97,
+      "net_delta": 0.0,
+      "only_a": [],
+      "only_c": []
+    }
+  ],
+  "probe_diagnostics": {
+    "2026-07-13": {
+      "day": "2026-07-13",
+      "warmup_ok": true,
+      "probe_would_fire": false,
+      "probe_detail": null,
+      "open_probe_fired_c": false,
+      "signals_at_903": [
+        {
+          "close_ts": "2026-07-13T09:03:00",
+          "new_signal": true,
+          "signal_direction": "DOWN_BLUE",
+          "display_direction": "DOWN_BLUE"
+        }
+      ],
+      "a_trades": 6,
+      "c_trades": 5,
+      "a_trade_signals": [
+        "2026-07-13T09:03:00",
+        "2026-07-13T10:09:00",
+        "2026-07-13T12:06:00",
+        "2026-07-13T12:42:00",
+        "2026-07-13T14:30:00",
+        "2026-07-13T14:42:00"
+      ],
+      "c_trade_signals": [
+        "2026-07-13T10:09:00",
+        "2026-07-13T12:06:00",
+        "2026-07-13T12:42:00",
+        "2026-07-13T14:30:00",
+        "2026-07-13T14:42:00"
+      ]
+    },
+    "2026-07-16": {
+      "day": "2026-07-16",
+      "warmup_ok": true,
+      "probe_would_fire": false,
+      "probe_detail": null,
+      "open_probe_fired_c": false,
+      "signals_at_903": [
+        {
+          "close_ts": "2026-07-16T09:03:00",
+          "new_signal": true,
+          "signal_direction": "DOWN_BLUE",
+          "display_direction": "DOWN_BLUE"
+        }
+      ],
+      "a_trades": 7,
+      "c_trades": 6,
+      "a_trade_signals": [
+        "2026-07-16T09:03:00",
+        "2026-07-16T09:54:00",
+        "2026-07-16T12:24:00",
+        "2026-07-16T13:06:00",
+        "2026-07-16T13:24:00",
+        "2026-07-16T13:57:00",
+        "2026-07-16T14:48:00"
+      ],
+      "c_trade_signals": [
+        "2026-07-16T09:54:00",
+        "2026-07-16T12:24:00",
+        "2026-07-16T13:06:00",
+        "2026-07-16T13:24:00",
+        "2026-07-16T13:57:00",
+        "2026-07-16T14:48:00"
+      ]
+    },
+    "2026-07-21": {
+      "day": "2026-07-21",
+      "warmup_ok": true,
+      "probe_would_fire": false,
+      "probe_detail": null,
+      "open_probe_fired_c": false,
+      "signals_at_903": [
+        {
+          "close_ts": "2026-07-21T09:03:00",
+          "new_signal": true,
+          "signal_direction": "DOWN_BLUE",
+          "display_direction": "DOWN_BLUE"
+        }
+      ],
+      "a_trades": 6,
+      "c_trades": 5,
+      "a_trade_signals": [
+        "2026-07-21T09:03:00",
+        "2026-07-21T09:21:00",
+        "2026-07-21T10:57:00",
+        "2026-07-21T11:48:00",
+        "2026-07-21T13:15:00",
+        "2026-07-21T14:51:00"
+      ],
+      "c_trade_signals": [
+        "2026-07-21T09:21:00",
+        "2026-07-21T10:57:00",
+        "2026-07-21T11:48:00",
+        "2026-07-21T13:15:00",
+        "2026-07-21T14:51:00"
+      ]
+    }
+  }
+}

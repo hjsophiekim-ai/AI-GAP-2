@@ -10,6 +10,7 @@ hynix_technical_score.py — SK하이닉스 정밀 기술점수 (calculate_hynix
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd
@@ -18,6 +19,11 @@ from app.logger import logger
 from app.models.hynix_swing_flag import compute_hynix_tech_indicators
 
 _RECOVERY_LOOKBACK = 6
+_EVENT_BONUS_LABELS = {
+    "RSI(14) 30 이하 이탈 후 재돌파",
+    "볼린저 하단 이탈 후 회복",
+    "Williams %R -80 이하 이탈 후 회복",
+}
 
 
 def _rsi_series(closes: pd.Series, period: int = 14) -> pd.Series:
@@ -115,17 +121,34 @@ def _resample(df_1min: pd.DataFrame, minutes: int) -> Optional[pd.DataFrame]:
         return None
 
 
-def calculate_hynix_technical_score(df_daily: Optional[pd.DataFrame], df_1min: Optional[pd.DataFrame] = None) -> dict:
+def calculate_hynix_technical_score(
+    df_daily: Optional[pd.DataFrame],
+    df_1min: Optional[pd.DataFrame] = None,
+    *,
+    event_bonus_state: Optional[dict] = None,
+    now: Optional[datetime] = None,
+) -> dict:
     """SK하이닉스 기술점수(0~100) + 판단 사유 Top5.
 
     Parameters
     ----------
     df_daily : 일봉 OHLCV DataFrame [datetime, open, high, low, close, volume]
     df_1min  : 당일 1분봉 DataFrame (VWAP·1/3/5분 방향·장중 고저 갱신에 사용, 선택)
+    event_bonus_state : RSI/Bollinger 회복 이벤트 TTL 상태(2×3분봉 후 즉시 감쇠)
+    now : 이벤트 보너스 만료 판정 시각
     """
+    from datetime import datetime as _dt
+
+    from app.trading.early_trend_live_feed import (
+        completed_3m_bar_index,
+        scale_event_bonus_points,
+        update_event_bonus_state,
+    )
+
     points: list[tuple[float, str]] = []
     warnings: list[str] = []
     detail: dict = {}
+    now = now or _dt.now()
 
     if df_daily is None or len(df_daily) < 5:
         return {
@@ -273,6 +296,23 @@ def calculate_hynix_technical_score(df_daily: Optional[pd.DataFrame], df_1min: O
     except Exception as exc:
         warnings.append(f"분봉 방향/고저갱신 계산 실패: {exc}")
 
+    # RSI/Bollinger/Williams 회복 이벤트 보너스는 발생 후 2×3분봉만 유효하고
+    # 즉시 감쇠한다. 10분 이상 누적되지 않게 한다(장기 강세점수가 단기 하락을
+    # 덮지 못하도록).
+    from app.trading.early_trend_live_feed import collect_event_bonus_keys
+
+    _3m_idx = completed_3m_bar_index(df_1min, now)
+    active_event_keys = collect_event_bonus_keys(points, event_labels=_EVENT_BONUS_LABELS)
+    updated_event_state = update_event_bonus_state(
+        dict(event_bonus_state or {}),
+        active_event_keys=active_event_keys,
+        now=now,
+        completed_3m_index=_3m_idx,
+    )
+    points, _ = scale_event_bonus_points(
+        points, updated_event_state, event_labels=_EVENT_BONUS_LABELS,
+    )
+
     raw_sum = sum(p for p, _ in points)
     score = round(max(0.0, min(100.0, 50.0 + max(-50.0, min(50.0, raw_sum)))), 2)
 
@@ -285,4 +325,6 @@ def calculate_hynix_technical_score(df_daily: Optional[pd.DataFrame], df_1min: O
         "reason_top5": reason_top5,
         "warnings": warnings,
         "detail": detail,
+        "event_bonus_state": updated_event_state,
+        "event_bonus_active_keys": active_event_keys,
     }

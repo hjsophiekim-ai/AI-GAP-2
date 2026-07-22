@@ -6,9 +6,9 @@
     "trailing_used": false,
     "profit_lock_used": true
   },
-  "avg_profit_pct": 1.92,
-  "sample_size": 6,
-  "total_trades_analyzed": 66,
-  "reason": "최근 66건 중 TP 3.0%/SL 1.5%/Trailing 미사용/ProfitLock 사용 조합이 평균 수익률 +1.92%로 가장 우수(샘플 6건).",
-  "created_at": "2026-07-13T15:39:53.428410"
+  "avg_profit_pct": 2.2775,
+  "sample_size": 11,
+  "total_trades_analyzed": 81,
+  "reason": "최근 81건 중 TP 3.0%/SL 1.5%/Trailing 미사용/ProfitLock 사용 조합이 평균 수익률 +2.28%로 가장 우수(샘플 11건).",
+  "created_at": "2026-07-22T16:45:52.906757"
 }

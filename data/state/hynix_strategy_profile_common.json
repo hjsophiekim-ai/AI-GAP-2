@@ -1,0 +1,13 @@
+{
+  "auto_trade_on": true,
+  "trading_mode": "ACTIVE",
+  "active_strategy_enabled": false,
+  "adaptive_fusion_enabled": false,
+  "big_trend_holding_enabled": true,
+  "early_trend_detector_enabled": false,
+  "early_trend_detector_live": false,
+  "adaptive_regime_enabled": true,
+  "adaptive_regime_mode": "LIVE",
+  "daily_loss_block_override": true,
+  "stop_loss_mode": "AUTO"
+}

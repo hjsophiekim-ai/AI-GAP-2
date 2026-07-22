@@ -1,0 +1,160 @@
+{
+  "generated_at": "2026-07-22T16:45:00",
+  "verdict": "IMPLEMENTATION_MISMATCH",
+  "summary": {
+    "a_round_trips": 95,
+    "c_round_trips": 92,
+    "rt_delta": 3,
+    "a_net": 7750572.7,
+    "c_net": 7421648.5,
+    "net_delta": 328924.2,
+    "open_probe_attempts_c": 0,
+    "open_probe_success_c": 0,
+    "unconfirmed_exit_pnl_c": 0.0,
+    "days_with_rt_mismatch": [
+      "2026-07-13",
+      "2026-07-16",
+      "2026-07-21"
+    ],
+    "days_with_0903_new_signal": 3
+  },
+  "ranked_root_causes": [
+    {
+      "rank": 1,
+      "cause": "C replay unconditionally skips 09:03 new_signal bar",
+      "location": "scripts/compare_macd_opening_abc_20d.py:414-416",
+      "code": "if ev.get('new_signal') and not (close_ts.hour == 9 and close_ts.minute == 3):",
+      "impact": "3 missing round-trips (all 09:03 DOWN_BLUE on Jul 13/16/21); +361,056 net from A-only trades",
+      "probe_related": false
+    },
+    {
+      "rank": 2,
+      "cause": "Intraday equity cascade on mismatch days",
+      "location": "scripts/compare_macd_opening_abc_20d.py:456 (equity = INITIAL_CASH + realized)",
+      "impact": "Matched later trades on same day differ in qty/PnL; net delta 328,924 vs 361,056 from A-only trades alone (−32,132 cascade)",
+      "probe_related": false
+    },
+    {
+      "rank": 3,
+      "cause": "open_probe_attempts counter is correct (not a bug)",
+      "location": "scripts/compare_macd_opening_abc_20d.py:534-541",
+      "impact": "0 attempts reflects evaluate_opening_probe never returning ok_to_trade across 20 days",
+      "probe_related": true
+    }
+  ],
+  "only_in_a_trades": [
+    {
+      "day": "2026-07-13",
+      "signal_time": "2026-07-13T09:03:00",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "entry_time": "2026-07-13 09:04:00",
+      "exit_time": "2026-07-13 09:49:00",
+      "exit_reason": "TP_EXIT",
+      "net_pnl": 520212.0
+    },
+    {
+      "day": "2026-07-16",
+      "signal_time": "2026-07-16T09:03:00",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "entry_time": "2026-07-16 09:04:00",
+      "exit_time": "2026-07-16 09:34:00",
+      "exit_reason": "SL_EXIT",
+      "net_pnl": -83176.0
+    },
+    {
+      "day": "2026-07-21",
+      "signal_time": "2026-07-21T09:03:00",
+      "direction": "DOWN_BLUE",
+      "symbol": "0197X0",
+      "entry_time": "2026-07-21 09:04:00",
+      "exit_time": "2026-07-21 09:20:00",
+      "exit_reason": "OPPOSITE_SWITCH",
+      "net_pnl": -75980.0
+    }
+  ],
+  "only_in_c_trades": [],
+  "code_path_comparison": {
+    "signed_b_signal": {
+      "same": true,
+      "detail": "Both use evaluate_macd_direction from app.trading.macd_hynix_strategy (same import, same event pre-pass)"
+    },
+    "warmup_data": {
+      "same": true,
+      "detail": "Both call _warmup_hist → tail_prior_day_1m + compute_warmup_macd"
+    },
+    "direction_state_init": {
+      "same": true,
+      "detail": "Events built in identical loop; last_dir only set from probe when open_probe_fired (never in 20d run)"
+    },
+    "tp_sl_opposite": {
+      "same": true,
+      "detail": "Same check_tp_sl, EXIT_OPPOSITE handling, ENTRY_CUTOFF 14:55, FORCE 15:00"
+    },
+    "fill_slippage_costs": {
+      "same": true,
+      "detail": "Same _fill (1m delay, 0.05% adverse) and TradeCostEngine"
+    },
+    "daily_capital_reset": {
+      "same": true,
+      "detail": "Per-day realized starts at 0; equity = INITIAL_CASH + realized within day"
+    },
+    "1500_flatten": {
+      "same": true,
+      "detail": "Same day_force 15:00 EOD_FLAT exit"
+    },
+    "entry_signal_gate": {
+      "same": false,
+      "detail": "A: all new_signal; C: new_signal except 09:03 bar (always, even when probe off)"
+    }
+  },
+  "probe_counter_verification": {
+    "counter_field": "open_probe_attempts",
+    "count_logic": "sum(day_stats.open_probe_fired for C strategy days)",
+    "open_probe_fired_set_when": "_simulate_open_probe_at_900 returns hit with ok_to_trade and qty>=1",
+    "probe_would_fire_20d": 0,
+    "open_probe_fired_20d": 0,
+    "counter_correct": true,
+    "can_skip_trades_without_logging_probe": true,
+    "skip_without_probe_note": "09:03 new_signal skip is unrelated to probe counter; no probe attempt logged because evaluate_opening_probe never passed"
+  },
+  "per_day_timeline": [
+    {
+      "day": "2026-07-13",
+      "a_rt": 6,
+      "c_rt": 5,
+      "net_delta": 493959.0,
+      "probe_fired": false,
+      "signal_0903_new": true,
+      "signal_0903_dir": "DOWN_BLUE",
+      "only_a": ["2026-07-13T09:03:00 DOWN_BLUE TP_EXIT +520,212"],
+      "matched_pnl_drift": "5 later trades differ (qty cascade after A's 09:03 win)"
+    },
+    {
+      "day": "2026-07-16",
+      "a_rt": 7,
+      "c_rt": 6,
+      "net_delta": -82341.0,
+      "probe_fired": false,
+      "signal_0903_new": true,
+      "signal_0903_dir": "DOWN_BLUE",
+      "only_a": ["2026-07-16T09:03:00 DOWN_BLUE SL_EXIT -83,176"],
+      "matched_pnl_drift": "6 later trades differ"
+    },
+    {
+      "day": "2026-07-21",
+      "a_rt": 6,
+      "c_rt": 5,
+      "net_delta": -82693.0,
+      "probe_fired": false,
+      "signal_0903_new": true,
+      "signal_0903_dir": "DOWN_BLUE",
+      "only_a": ["2026-07-21T09:03:00 DOWN_BLUE OPPOSITE_SWITCH -75,980"],
+      "matched_pnl_drift": "5 later trades differ"
+    }
+  ],
+  "recommended_fix_direction": "Gate the 09:03 new_signal skip on open_probe_fired (or partial_await_confirm) so C degenerates to A when probe does not fire",
+  "compare_source": "data/state/macd_opening_abc_20d_compare.json",
+  "detail_json": "data/state/macd_opening_abc_parity_audit_detail.json"
+}
