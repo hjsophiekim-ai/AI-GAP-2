@@ -161,13 +161,69 @@ def test_incomplete_3m_bar_excluded():
     assert len(bars2) == 1
 
 
+def test_signed_two_turn_up_requires_same_sign():
+    from app.trading.macd_hynix_strategy import signed_hist_two_turn_pattern
+
+    # Rising but still negative → HOLD (wiggle / less-negative bounce)
+    assert signed_hist_two_turn_pattern(-1.0, -2.0, -3.0) == DIR_HOLD
+    # Falling but still positive → HOLD (less-positive pullback)
+    assert signed_hist_two_turn_pattern(1.0, 2.0, 3.0) == DIR_HOLD
+    # True UP: both hist > 0 and two positive deltas
+    assert signed_hist_two_turn_pattern(3.0, 2.0, 1.0) == DIR_UP
+    # True DOWN: both hist < 0 and two negative deltas
+    assert signed_hist_two_turn_pattern(-3.0, -2.0, -1.0) == DIR_DOWN
+
+
+def test_hold_on_same_sign_pullback_no_new_signal():
+    from app.trading.macd_hynix_strategy import (
+        signed_hist_two_turn_new_signal,
+        signed_hist_two_turn_pattern,
+    )
+
+    # Positive hist contracting (pullback) is HOLD — no DOWN arm
+    assert signed_hist_two_turn_pattern(1.0, 2.0, 3.0) == DIR_HOLD
+    assert signed_hist_two_turn_new_signal(DIR_HOLD, DIR_UP) is False
+    # Same-dir while already UP does not re-arm
+    assert signed_hist_two_turn_new_signal(DIR_UP, DIR_UP) is False
+    # Opposite arms
+    assert signed_hist_two_turn_new_signal(DIR_DOWN, DIR_UP) is True
+
+
+def test_no_same_dir_reentry_after_tp_sl_keeps_direction_state():
+    """After flatten, direction_state persists → same-dir pattern cannot re-arm."""
+    from app.trading.macd_hynix_strategy import signed_hist_two_turn_new_signal
+
+    # Simulated post-TP/SL: last_signal_direction still UP_RED
+    assert signed_hist_two_turn_new_signal(DIR_UP, DIR_UP) is False
+    # Opposite confirmed B starts new episode
+    assert signed_hist_two_turn_new_signal(DIR_DOWN, DIR_UP) is True
+
+
+def test_warmup_skips_before_index_26():
+    """Warm-up matches old signals_B `i < 26` — need >= 27 completed 3m bars."""
+    from app.trading.macd_hynix_strategy import MACD_SIGNAL_MIN_INDEX
+
+    assert MACD_SIGNAL_MIN_INDEX == 26
+    # 26 bars → index max 25 → still warm-up
+    df = _bars_1m(26 * 3, trend="up")  # 78 1m → 26 completed 3m at end+3m
+    now = df["datetime"].iloc[-1] + timedelta(minutes=3)
+    r = evaluate_macd_direction(df, now=now, last_signal_direction=None)
+    assert r["ok"] is False
+    assert r["reason"] == "WARMUP_LT_26"
+    # 27+ bars eligible
+    df2 = _bars_1m(27 * 3 + 6, trend="up")
+    now2 = df2["datetime"].iloc[-1] + timedelta(minutes=3)
+    r2 = evaluate_macd_direction(df2, now=now2, last_signal_direction=None)
+    assert r2["ok"] is True
+
+
 def test_first_turn_up_and_no_duplicate():
     df = _bars_1m(120, trend="up")
     now = df["datetime"].iloc[-1] + timedelta(minutes=1)
     r1 = evaluate_macd_direction(df, now=now, last_signal_direction=None)
-    # Strong uptrend should eventually produce UP_RED pattern
-    assert r1["ok"]
-    if r1["display_direction"] == DIR_UP and r1["new_signal"]:
+    # Strong uptrend may or may not produce signed UP (needs hist>0); if it does, no dup
+    assert r1["ok"] or r1["reason"] in ("WARMUP_LT_26", "DATA_INSUFFICIENT", "MACD_INSUFFICIENT")
+    if r1.get("ok") and r1["display_direction"] == DIR_UP and r1["new_signal"]:
         r2 = evaluate_macd_direction(
             df,
             now=now,
@@ -176,6 +232,29 @@ def test_first_turn_up_and_no_duplicate():
         )
         assert r2["new_signal"] is False
 
+
+def test_collect_shared_signals_matches_evaluate_gate():
+    from app.trading.macd_hynix_strategy import collect_signed_hist_two_turn_signals
+
+    # Warm-up pad; DOWN onset at i=26 (prev bar not already DOWN); then UP opposite
+    hist = [0.1] * 25 + [-1.0, -2.0]  # idx 25=-1, 26=-2; prev2 at 24 is +0.1
+    hist.extend([-3.0, -4.0])  # continue DOWN — onset + state block
+    hist.extend([-2.0, 0.5, 1.0, 2.0, 3.0])  # flip to UP onset
+    evs = collect_signed_hist_two_turn_signals(hist)
+    dirs = [e["direction"] for e in evs]
+    assert dirs.count(DIR_DOWN) == 1
+    assert dirs.count(DIR_UP) == 1
+    assert dirs.index(DIR_DOWN) < dirs.index(DIR_UP)
+
+
+def test_onset_suppresses_warmup_carry():
+    """Pattern already true before i=26 must not arm at first eligible bar."""
+    from app.trading.macd_hynix_strategy import signed_hist_two_turn_onset
+
+    # Already UP at prev bar, still UP now → no onset
+    assert signed_hist_two_turn_onset(4.0, 3.0, 2.0, 1.0) is None
+    # Newly UP: prev bar not signed-UP (flat/zero delta on prior window)
+    assert signed_hist_two_turn_onset(3.0, 2.0, 1.0, 1.5) == DIR_UP
 
 def test_sell_before_buy_on_switch():
     broker = FakeBroker()

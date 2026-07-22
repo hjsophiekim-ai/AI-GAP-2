@@ -1,0 +1,400 @@
+{
+  "generated_at": "2026-07-22T15:17:58.770613",
+  "verdict": "MATCH",
+  "ready_for_mock": true,
+  "shared_function": "app.trading.macd_hynix_strategy.signed_hist_two_turn_pattern / collect_signed_hist_two_turn_signals / evaluate_macd_direction",
+  "economics_note": "Replay comparison uses old A–F B clocks: fill=strict+1m open, RT_COST_PCT=0.05%, force=15:15, cutoff=14:50. Live worker keeps 15:00 flatten.",
+  "days": {
+    "2026-07-21": {
+      "day": "2026-07-21",
+      "signals_before_slope_only": 17,
+      "signals_after_signed": 5,
+      "removed_wiggle_signals": [
+        {
+          "time": "2026-07-21 10:27:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 10:45:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 11:27:00",
+          "dir": "UP",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 11:57:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 12:27:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 12:48:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 13:00:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 13:39:00",
+          "dir": "UP",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 14:06:00",
+          "dir": "UP",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 14:27:00",
+          "dir": "UP",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-21 15:15:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        }
+      ],
+      "old_af_b_signals": [
+        {
+          "time": "2026-07-21 10:36:00",
+          "dir": "UP"
+        },
+        {
+          "time": "2026-07-21 10:57:00",
+          "dir": "DOWN"
+        },
+        {
+          "time": "2026-07-21 11:48:00",
+          "dir": "UP"
+        },
+        {
+          "time": "2026-07-21 13:15:00",
+          "dir": "DOWN"
+        },
+        {
+          "time": "2026-07-21 14:51:00",
+          "dir": "UP"
+        }
+      ],
+      "new_module_signals": [
+        {
+          "time": "2026-07-21 10:36:00",
+          "dir": "UP"
+        },
+        {
+          "time": "2026-07-21 10:57:00",
+          "dir": "DOWN"
+        },
+        {
+          "time": "2026-07-21 11:48:00",
+          "dir": "UP"
+        },
+        {
+          "time": "2026-07-21 13:15:00",
+          "dir": "DOWN"
+        },
+        {
+          "time": "2026-07-21 14:51:00",
+          "dir": "UP"
+        }
+      ],
+      "timeline_diff": {
+        "only_old_af": [],
+        "only_new_module": []
+      },
+      "old_af_b": {
+        "signals": 5,
+        "round_trips": 4,
+        "net_pnl": 478069.0,
+        "return_pct": 4.7807,
+        "pf": 2.105,
+        "mdd_pct": -4.6015,
+        "trades": [
+          {
+            "strategy": "B: Hist 2-turn",
+            "scenario": "delay_1m_cons",
+            "symbol": "0193T0",
+            "direction": "UP",
+            "signal_time": "2026-07-21 10:36:00",
+            "order_time": "2026-07-21 10:37:00",
+            "fill_price": 14367.179999999998,
+            "exit_signal_time": "2026-07-21 10:57:00",
+            "exit_time": "2026-07-21 10:58:00",
+            "exit_price": 14012.990000000002,
+            "exit_reason": "OPPOSITE:HIST_2DN_TURN",
+            "qty": 696,
+            "gross_pnl": -246516.23999999784,
+            "cost": 4999.7786399999995,
+            "net_pnl": -251516.01863999784,
+            "held_seconds": 1260.0,
+            "wrong_direction": true,
+            "size_pct": 1.0
+          },
+          {
+            "strategy": "B: Hist 2-turn",
+            "scenario": "delay_1m_cons",
+            "symbol": "0197X0",
+            "direction": "DOWN",
+            "signal_time": "2026-07-21 10:57:00",
+            "order_time": "2026-07-21 10:58:00",
+            "fill_price": 11545.769999999999,
+            "exit_signal_time": "2026-07-21 11:48:00",
+            "exit_time": "2026-07-21 11:49:00",
+            "exit_price": 11304.345000000001,
+            "exit_reason": "OPPOSITE:HIST_2UP_TURN",
+            "qty": 844,
+            "gross_pnl": -203762.69999999786,
+            "cost": 4872.314939999999,
+            "net_pnl": -208635.01493999787,
+            "held_seconds": 3060.0,
+            "wrong_direction": true,
+            "size_pct": 1.0
+          },
+          {
+            "strategy": "B: Hist 2-turn",
+            "scenario": "delay_1m_cons",
+            "symbol": "0193T0",
+            "direction": "UP",
+            "signal_time": "2026-07-21 11:48:00",
+            "order_time": "2026-07-21 11:49:00",
+            "fill_price": 14267.13,
+            "exit_signal_time": "2026-07-21 13:15:00",
+            "exit_time": "2026-07-21 13:16:00",
+            "exit_price": 14992.5,
+            "exit_reason": "OPPOSITE:HIST_2DN_TURN",
+            "qty": 669,
+            "gross_pnl": 485272.53000000055,
+            "cost": 4772.354985,
+            "net_pnl": 480500.17501500057,
+            "held_seconds": 5220.0,
+            "wrong_direction": false,
+            "size_pct": 1.0
+          },
+          {
+            "strategy": "B: Hist 2-turn",
+            "scenario": "delay_1m_cons",
+            "symbol": "0197X0",
+            "direction": "DOWN",
+            "signal_time": "2026-07-21 13:15:00",
+            "order_time": "2026-07-21 13:16:00",
+            "fill_price": 10605.3,
+            "exit_signal_time": "2026-07-21 14:51:00",
+            "exit_time": "2026-07-21 14:52:00",
+            "exit_price": 11094.45,
+            "exit_reason": "OPPOSITE:HIST_2UP_TURN",
+            "qty": 946,
+            "gross_pnl": 462735.90000000136,
+            "cost": 5016.3069,
+            "net_pnl": 457719.59310000134,
+            "held_seconds": 5760.0,
+            "wrong_direction": false,
+            "size_pct": 1.0
+          }
+        ]
+      },
+      "new_module": {
+        "signals": 5,
+        "round_trips": 4,
+        "net_pnl": 478068.73,
+        "return_pct": 4.781,
+        "pf": 2.039,
+        "mdd_pct": 4.602,
+        "trades": [
+          {
+            "signal_time": "2026-07-21T10:36:00",
+            "direction": "UP",
+            "symbol": "0193T0",
+            "net_pnl": -251516.02,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE"
+          },
+          {
+            "signal_time": "2026-07-21T10:57:00",
+            "direction": "DOWN",
+            "symbol": "0197X0",
+            "net_pnl": -208635.01,
+            "exit_reason": "SWITCH_TO_UP_RED"
+          },
+          {
+            "signal_time": "2026-07-21T11:48:00",
+            "direction": "UP",
+            "symbol": "0193T0",
+            "net_pnl": 480500.18,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE"
+          },
+          {
+            "signal_time": "2026-07-21T13:15:00",
+            "direction": "DOWN",
+            "symbol": "0197X0",
+            "net_pnl": 457719.59,
+            "exit_reason": "SWITCH_TO_UP_RED"
+          }
+        ]
+      },
+      "signal_times_match": true,
+      "round_trips_match": true,
+      "pnl_match": true,
+      "day_verdict": "MATCH"
+    },
+    "2026-07-22": {
+      "day": "2026-07-22",
+      "signals_before_slope_only": 14,
+      "signals_after_signed": 2,
+      "removed_wiggle_signals": [
+        {
+          "time": "2026-07-22 10:33:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-22 10:51:00",
+          "dir": "UP",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-22 11:15:00",
+          "dir": "UP",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-22 12:21:00",
+          "dir": "UP",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-22 12:57:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-22 13:15:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-22 13:30:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        },
+        {
+          "time": "2026-07-22 14:39:00",
+          "dir": "DOWN",
+          "signed_ok": false
+        }
+      ],
+      "old_af_b_signals": [
+        {
+          "time": "2026-07-22 10:42:00",
+          "dir": "DOWN"
+        },
+        {
+          "time": "2026-07-22 12:33:00",
+          "dir": "UP"
+        }
+      ],
+      "new_module_signals": [
+        {
+          "time": "2026-07-22 10:42:00",
+          "dir": "DOWN"
+        },
+        {
+          "time": "2026-07-22 12:33:00",
+          "dir": "UP"
+        }
+      ],
+      "timeline_diff": {
+        "only_old_af": [],
+        "only_new_module": []
+      },
+      "old_af_b": {
+        "signals": 2,
+        "round_trips": 2,
+        "net_pnl": 440239.0,
+        "return_pct": 4.4024,
+        "pf": 999.0,
+        "mdd_pct": 0.0,
+        "trades": [
+          {
+            "strategy": "B: Hist 2-turn",
+            "scenario": "delay_1m_cons",
+            "symbol": "0197X0",
+            "direction": "DOWN",
+            "signal_time": "2026-07-22 10:42:00",
+            "order_time": "2026-07-22 10:43:00",
+            "fill_price": 9504.75,
+            "exit_signal_time": "2026-07-22 12:33:00",
+            "exit_time": "2026-07-22 12:34:00",
+            "exit_price": 9915.04,
+            "exit_reason": "OPPOSITE:HIST_2UP_TURN",
+            "qty": 1052,
+            "gross_pnl": 431625.0800000009,
+            "cost": 4999.4985,
+            "net_pnl": 426625.5815000009,
+            "held_seconds": 6660.0,
+            "wrong_direction": false,
+            "size_pct": 1.0
+          },
+          {
+            "strategy": "B: Hist 2-turn",
+            "scenario": "delay_1m_cons",
+            "symbol": "0193T0",
+            "direction": "UP",
+            "signal_time": "2026-07-22 12:33:00",
+            "order_time": "2026-07-22 12:34:00",
+            "fill_price": 16028.009999999998,
+            "exit_signal_time": "2026-07-22 15:15:00",
+            "exit_time": "2026-07-22 15:16:00",
+            "exit_price": 16056.9675,
+            "exit_reason": "15:15_FORCE_CLOSE",
+            "qty": 650,
+            "gross_pnl": 18822.375000001466,
+            "cost": 5209.103249999999,
+            "net_pnl": 13613.271750001466,
+            "held_seconds": 9720.0,
+            "wrong_direction": false,
+            "size_pct": 1.0
+          }
+        ]
+      },
+      "new_module": {
+        "signals": 2,
+        "round_trips": 2,
+        "net_pnl": 440238.85,
+        "return_pct": 4.402,
+        "pf": 999.0,
+        "mdd_pct": 0.0,
+        "trades": [
+          {
+            "signal_time": "2026-07-22T10:42:00",
+            "direction": "DOWN",
+            "symbol": "0197X0",
+            "net_pnl": 426625.58,
+            "exit_reason": "SWITCH_TO_UP_RED"
+          },
+          {
+            "signal_time": "2026-07-22T12:33:00",
+            "direction": "UP",
+            "symbol": "0193T0",
+            "net_pnl": 13613.27,
+            "exit_reason": "15:15_FORCE"
+          }
+        ]
+      },
+      "signal_times_match": true,
+      "round_trips_match": true,
+      "pnl_match": true,
+      "day_verdict": "MATCH"
+    }
+  }
+}

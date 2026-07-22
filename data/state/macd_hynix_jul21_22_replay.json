@@ -1,0 +1,684 @@
+{
+  "generated_at": "2026-07-22T15:18:01.102439",
+  "strategy": "B: signed hist 2-turn (shared)",
+  "scenarios": {
+    "delay_1m_cons": {
+      "2026-07-21": {
+        "day": "2026-07-21",
+        "delay_label": "delay_1m_cons",
+        "signals": 5,
+        "round_trips": 4,
+        "long_trades": 2,
+        "inverse_trades": 2,
+        "win_rate_pct": 50.0,
+        "profit_factor": 2.039,
+        "net_pnl": 478068.73,
+        "ret_pct": 4.781,
+        "mdd_pct": 4.602,
+        "avg_signal_to_fill_sec": 60.0,
+        "pnl_by_direction": {
+          "UP_RED": 228984.15637500273,
+          "DOWN_BLUE": 249084.57816000347
+        },
+        "signal_list": [
+          {
+            "time": "2026-07-21T10:36:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T10:33:00",
+            "hist_last3": [
+              380.241668,
+              1309.945291,
+              1459.078213
+            ]
+          },
+          {
+            "time": "2026-07-21T10:57:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T10:54:00",
+            "hist_last3": [
+              90.886607,
+              -712.486989,
+              -1685.373354
+            ]
+          },
+          {
+            "time": "2026-07-21T11:48:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T11:45:00",
+            "hist_last3": [
+              -278.54168,
+              387.425186,
+              691.661029
+            ]
+          },
+          {
+            "time": "2026-07-21T13:15:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T13:12:00",
+            "hist_last3": [
+              180.018787,
+              -328.419376,
+              -746.096931
+            ]
+          },
+          {
+            "time": "2026-07-21T14:51:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T14:48:00",
+            "hist_last3": [
+              -13.7638,
+              495.197203,
+              639.174945
+            ]
+          }
+        ],
+        "trades": [
+          {
+            "day": "2026-07-21",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-21T10:36:00",
+            "entry_time": "2026-07-21 10:37:00",
+            "entry_price": 14367.179999999998,
+            "exit_time": "2026-07-21 10:58:00",
+            "exit_price": 14012.990000000002,
+            "qty": 696,
+            "gross_pnl": -246516.23999999784,
+            "cost": 4999.7786399999995,
+            "net_pnl": -251516.01863999784,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE",
+            "delay_label": "delay_1m_cons"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-21T10:57:00",
+            "entry_time": "2026-07-21 10:58:00",
+            "entry_price": 11545.769999999999,
+            "exit_time": "2026-07-21 11:49:00",
+            "exit_price": 11304.345000000001,
+            "qty": 844,
+            "gross_pnl": -203762.69999999786,
+            "cost": 4872.314939999999,
+            "net_pnl": -208635.01493999787,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_1m_cons"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-21T11:48:00",
+            "entry_time": "2026-07-21 11:49:00",
+            "entry_price": 14267.13,
+            "exit_time": "2026-07-21 13:16:00",
+            "exit_price": 14992.5,
+            "qty": 669,
+            "gross_pnl": 485272.53000000055,
+            "cost": 4772.354985,
+            "net_pnl": 480500.17501500057,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE",
+            "delay_label": "delay_1m_cons"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-21T13:15:00",
+            "entry_time": "2026-07-21 13:16:00",
+            "entry_price": 10605.3,
+            "exit_time": "2026-07-21 14:52:00",
+            "exit_price": 11094.45,
+            "qty": 946,
+            "gross_pnl": 462735.90000000136,
+            "cost": 5016.3069,
+            "net_pnl": 457719.59310000134,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_1m_cons"
+          }
+        ],
+        "economics": {
+          "fill": "strict_next_1m_open_after_signal_minute",
+          "rt_cost_pct": 0.05,
+          "force_exit": "15:15",
+          "entry_cutoff": "14:50",
+          "live_force_note": "Live worker flattens at 15:00 (product rule); this replay uses 15:15 to match old A–F B."
+        }
+      },
+      "2026-07-22": {
+        "day": "2026-07-22",
+        "delay_label": "delay_1m_cons",
+        "signals": 2,
+        "round_trips": 2,
+        "long_trades": 1,
+        "inverse_trades": 1,
+        "win_rate_pct": 100.0,
+        "profit_factor": 999.0,
+        "net_pnl": 440238.85,
+        "ret_pct": 4.402,
+        "mdd_pct": 0.0,
+        "avg_signal_to_fill_sec": 60.0,
+        "pnl_by_direction": {
+          "UP_RED": 13613.271750001466,
+          "DOWN_BLUE": 426625.5815000009
+        },
+        "signal_list": [
+          {
+            "time": "2026-07-22T10:42:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-22T10:39:00",
+            "hist_last3": [
+              335.025612,
+              -35.702304,
+              -896.934257
+            ]
+          },
+          {
+            "time": "2026-07-22T12:33:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-22T12:30:00",
+            "hist_last3": [
+              -737.557264,
+              650.957534,
+              755.115223
+            ]
+          }
+        ],
+        "trades": [
+          {
+            "day": "2026-07-22",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-22T10:42:00",
+            "entry_time": "2026-07-22 10:43:00",
+            "entry_price": 9504.75,
+            "exit_time": "2026-07-22 12:34:00",
+            "exit_price": 9915.04,
+            "qty": 1052,
+            "gross_pnl": 431625.0800000009,
+            "cost": 4999.4985,
+            "net_pnl": 426625.5815000009,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_1m_cons"
+          },
+          {
+            "day": "2026-07-22",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-22T12:33:00",
+            "entry_time": "2026-07-22 12:34:00",
+            "entry_price": 16028.009999999998,
+            "exit_time": "2026-07-22 15:16:00",
+            "exit_price": 16056.9675,
+            "qty": 650,
+            "gross_pnl": 18822.375000001466,
+            "cost": 5209.103249999999,
+            "net_pnl": 13613.271750001466,
+            "exit_reason": "15:15_FORCE",
+            "delay_label": "delay_1m_cons"
+          }
+        ],
+        "economics": {
+          "fill": "strict_next_1m_open_after_signal_minute",
+          "rt_cost_pct": 0.05,
+          "force_exit": "15:15",
+          "entry_cutoff": "14:50",
+          "live_force_note": "Live worker flattens at 15:00 (product rule); this replay uses 15:15 to match old A–F B."
+        }
+      }
+    },
+    "delay_1m": {
+      "2026-07-21": {
+        "day": "2026-07-21",
+        "delay_label": "delay_1m",
+        "signals": 5,
+        "round_trips": 4,
+        "long_trades": 2,
+        "inverse_trades": 2,
+        "win_rate_pct": 50.0,
+        "profit_factor": 2.179,
+        "net_pnl": 520127.37,
+        "ret_pct": 5.201,
+        "mdd_pct": 4.411,
+        "avg_signal_to_fill_sec": 60.0,
+        "pnl_by_direction": {
+          "UP_RED": 250118.49000000002,
+          "DOWN_BLUE": 270008.88
+        },
+        "signal_list": [
+          {
+            "time": "2026-07-21T10:36:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T10:33:00",
+            "hist_last3": [
+              380.241668,
+              1309.945291,
+              1459.078213
+            ]
+          },
+          {
+            "time": "2026-07-21T10:57:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T10:54:00",
+            "hist_last3": [
+              90.886607,
+              -712.486989,
+              -1685.373354
+            ]
+          },
+          {
+            "time": "2026-07-21T11:48:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T11:45:00",
+            "hist_last3": [
+              -278.54168,
+              387.425186,
+              691.661029
+            ]
+          },
+          {
+            "time": "2026-07-21T13:15:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T13:12:00",
+            "hist_last3": [
+              180.018787,
+              -328.419376,
+              -746.096931
+            ]
+          },
+          {
+            "time": "2026-07-21T14:51:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T14:48:00",
+            "hist_last3": [
+              -13.7638,
+              495.197203,
+              639.174945
+            ]
+          }
+        ],
+        "trades": [
+          {
+            "day": "2026-07-21",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-21T10:36:00",
+            "entry_time": "2026-07-21 10:37:00",
+            "entry_price": 14360.0,
+            "exit_time": "2026-07-21 10:58:00",
+            "exit_price": 14020.0,
+            "qty": 696,
+            "gross_pnl": -236640.0,
+            "cost": 4997.28,
+            "net_pnl": -241637.28,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE",
+            "delay_label": "delay_1m"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-21T10:57:00",
+            "entry_time": "2026-07-21 10:58:00",
+            "entry_price": 11540.0,
+            "exit_time": "2026-07-21 11:49:00",
+            "exit_price": 11310.0,
+            "qty": 846,
+            "gross_pnl": -194580.0,
+            "cost": 4881.42,
+            "net_pnl": -199461.42,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_1m"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-21T11:48:00",
+            "entry_time": "2026-07-21 11:49:00",
+            "entry_price": 14260.0,
+            "exit_time": "2026-07-21 13:16:00",
+            "exit_price": 15000.0,
+            "qty": 671,
+            "gross_pnl": 496540.0,
+            "cost": 4784.2300000000005,
+            "net_pnl": 491755.77,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE",
+            "delay_label": "delay_1m"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-21T13:15:00",
+            "entry_time": "2026-07-21 13:16:00",
+            "entry_price": 10600.0,
+            "exit_time": "2026-07-21 14:52:00",
+            "exit_price": 11100.0,
+            "qty": 949,
+            "gross_pnl": 474500.0,
+            "cost": 5029.7,
+            "net_pnl": 469470.3,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_1m"
+          }
+        ],
+        "economics": {
+          "fill": "strict_next_1m_open_after_signal_minute",
+          "rt_cost_pct": 0.05,
+          "force_exit": "15:15",
+          "entry_cutoff": "14:50",
+          "live_force_note": "Live worker flattens at 15:00 (product rule); this replay uses 15:15 to match old A–F B."
+        }
+      },
+      "2026-07-22": {
+        "day": "2026-07-22",
+        "delay_label": "delay_1m",
+        "signals": 2,
+        "round_trips": 2,
+        "long_trades": 1,
+        "inverse_trades": 1,
+        "win_rate_pct": 100.0,
+        "profit_factor": 999.0,
+        "net_pnl": 460923.49,
+        "ret_pct": 4.609,
+        "mdd_pct": 0.0,
+        "avg_signal_to_fill_sec": 60.0,
+        "pnl_by_direction": {
+          "UP_RED": 24080.489999999998,
+          "DOWN_BLUE": 436843.0
+        },
+        "signal_list": [
+          {
+            "time": "2026-07-22T10:42:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-22T10:39:00",
+            "hist_last3": [
+              335.025612,
+              -35.702304,
+              -896.934257
+            ]
+          },
+          {
+            "time": "2026-07-22T12:33:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-22T12:30:00",
+            "hist_last3": [
+              -737.557264,
+              650.957534,
+              755.115223
+            ]
+          }
+        ],
+        "trades": [
+          {
+            "day": "2026-07-22",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-22T10:42:00",
+            "entry_time": "2026-07-22 10:43:00",
+            "entry_price": 9500.0,
+            "exit_time": "2026-07-22 12:34:00",
+            "exit_price": 9920.0,
+            "qty": 1052,
+            "gross_pnl": 441840.0,
+            "cost": 4997.0,
+            "net_pnl": 436843.0,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_1m"
+          },
+          {
+            "day": "2026-07-22",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-22T12:33:00",
+            "entry_time": "2026-07-22 12:34:00",
+            "entry_price": 16020.0,
+            "exit_time": "2026-07-22 15:16:00",
+            "exit_price": 16065.0,
+            "qty": 651,
+            "gross_pnl": 29295.0,
+            "cost": 5214.51,
+            "net_pnl": 24080.489999999998,
+            "exit_reason": "15:15_FORCE",
+            "delay_label": "delay_1m"
+          }
+        ],
+        "economics": {
+          "fill": "strict_next_1m_open_after_signal_minute",
+          "rt_cost_pct": 0.05,
+          "force_exit": "15:15",
+          "entry_cutoff": "14:50",
+          "live_force_note": "Live worker flattens at 15:00 (product rule); this replay uses 15:15 to match old A–F B."
+        }
+      }
+    },
+    "delay_2m_stress": {
+      "2026-07-21": {
+        "day": "2026-07-21",
+        "delay_label": "delay_2m_stress",
+        "signals": 5,
+        "round_trips": 4,
+        "long_trades": 2,
+        "inverse_trades": 2,
+        "win_rate_pct": 50.0,
+        "profit_factor": 1.797,
+        "net_pnl": 446187.65,
+        "ret_pct": 4.462,
+        "mdd_pct": 5.599,
+        "avg_signal_to_fill_sec": 120.0,
+        "pnl_by_direction": {
+          "UP_RED": 186787.87913250283,
+          "DOWN_BLUE": 259399.76916750232
+        },
+        "signal_list": [
+          {
+            "time": "2026-07-21T10:36:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T10:33:00",
+            "hist_last3": [
+              380.241668,
+              1309.945291,
+              1459.078213
+            ]
+          },
+          {
+            "time": "2026-07-21T10:57:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T10:54:00",
+            "hist_last3": [
+              90.886607,
+              -712.486989,
+              -1685.373354
+            ]
+          },
+          {
+            "time": "2026-07-21T11:48:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T11:45:00",
+            "hist_last3": [
+              -278.54168,
+              387.425186,
+              691.661029
+            ]
+          },
+          {
+            "time": "2026-07-21T13:15:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-21T13:12:00",
+            "hist_last3": [
+              180.018787,
+              -328.419376,
+              -746.096931
+            ]
+          },
+          {
+            "time": "2026-07-21T14:51:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-21T14:48:00",
+            "hist_last3": [
+              -13.7638,
+              495.197203,
+              639.174945
+            ]
+          }
+        ],
+        "trades": [
+          {
+            "day": "2026-07-21",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-21T10:36:00",
+            "entry_time": "2026-07-21 10:38:00",
+            "entry_price": 14444.429999999998,
+            "exit_time": "2026-07-21 10:59:00",
+            "exit_price": 13966.02,
+            "qty": 692,
+            "gross_pnl": -331059.71999999863,
+            "cost": 4997.772779999999,
+            "net_pnl": -336057.49277999863,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE",
+            "delay_label": "delay_2m_stress"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-21T10:57:00",
+            "entry_time": "2026-07-21 10:59:00",
+            "entry_price": 11596.585,
+            "exit_time": "2026-07-21 11:50:00",
+            "exit_price": 11333.655,
+            "qty": 833,
+            "gross_pnl": -219020.68999999872,
+            "cost": 4829.9776525,
+            "net_pnl": -223850.66765249873,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_2m_stress"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-21T11:48:00",
+            "entry_time": "2026-07-21 11:50:00",
+            "entry_price": 14239.224999999999,
+            "exit_time": "2026-07-21 13:17:00",
+            "exit_price": 15034.95,
+            "qty": 663,
+            "gross_pnl": 527565.6750000014,
+            "cost": 4720.3030874999995,
+            "net_pnl": 522845.37191250146,
+            "exit_reason": "SWITCH_TO_DOWN_BLUE",
+            "delay_label": "delay_2m_stress"
+          },
+          {
+            "day": "2026-07-21",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-21T13:15:00",
+            "entry_time": "2026-07-21 13:17:00",
+            "entry_price": 10590.579999999998,
+            "exit_time": "2026-07-21 14:53:00",
+            "exit_price": 11108.88,
+            "qty": 942,
+            "gross_pnl": 488238.600000001,
+            "cost": 4988.163179999999,
+            "net_pnl": 483250.43682000105,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_2m_stress"
+          }
+        ],
+        "economics": {
+          "fill": "strict_next_1m_open_after_signal_minute",
+          "rt_cost_pct": 0.05,
+          "force_exit": "15:15",
+          "entry_cutoff": "14:50",
+          "live_force_note": "Live worker flattens at 15:00 (product rule); this replay uses 15:15 to match old A–F B."
+        }
+      },
+      "2026-07-22": {
+        "day": "2026-07-22",
+        "delay_label": "delay_2m_stress",
+        "signals": 2,
+        "round_trips": 2,
+        "long_trades": 1,
+        "inverse_trades": 1,
+        "win_rate_pct": 100.0,
+        "profit_factor": 999.0,
+        "net_pnl": 626866.83,
+        "ret_pct": 6.269,
+        "mdd_pct": 0.0,
+        "avg_signal_to_fill_sec": 120.0,
+        "pnl_by_direction": {
+          "UP_RED": 52966.30720500106,
+          "DOWN_BLUE": 573900.5179949998
+        },
+        "signal_list": [
+          {
+            "time": "2026-07-22T10:42:00",
+            "direction": "DOWN_BLUE",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-22T10:39:00",
+            "hist_last3": [
+              335.025612,
+              -35.702304,
+              -896.934257
+            ]
+          },
+          {
+            "time": "2026-07-22T12:33:00",
+            "direction": "UP_RED",
+            "signal_id": "MACD3M:UP_RED:2026-07-22T12:30:00",
+            "hist_last3": [
+              -737.557264,
+              650.957534,
+              755.115223
+            ]
+          }
+        ],
+        "trades": [
+          {
+            "day": "2026-07-22",
+            "direction": "DOWN_BLUE",
+            "symbol": "0197X0",
+            "signal_time": "2026-07-22T10:42:00",
+            "entry_time": "2026-07-22 10:44:00",
+            "entry_price": 9419.41,
+            "exit_time": "2026-07-22 12:35:00",
+            "exit_price": 9965.025,
+            "qty": 1061,
+            "gross_pnl": 578897.5149999998,
+            "cost": 4996.997005,
+            "net_pnl": 573900.5179949998,
+            "exit_reason": "SWITCH_TO_UP_RED",
+            "delay_label": "delay_2m_stress"
+          },
+          {
+            "day": "2026-07-22",
+            "direction": "UP_RED",
+            "symbol": "0193T0",
+            "signal_time": "2026-07-22T12:33:00",
+            "entry_time": "2026-07-22 12:35:00",
+            "entry_price": 15960.944999999998,
+            "exit_time": "2026-07-22 15:17:00",
+            "exit_price": 16048.935,
+            "qty": 662,
+            "gross_pnl": 58249.38000000106,
+            "cost": 5283.072794999999,
+            "net_pnl": 52966.30720500106,
+            "exit_reason": "15:15_FORCE",
+            "delay_label": "delay_2m_stress"
+          }
+        ],
+        "economics": {
+          "fill": "strict_next_1m_open_after_signal_minute",
+          "rt_cost_pct": 0.05,
+          "force_exit": "15:15",
+          "entry_cutoff": "14:50",
+          "live_force_note": "Live worker flattens at 15:00 (product rule); this replay uses 15:15 to match old A–F B."
+        }
+      }
+    }
+  }
+}

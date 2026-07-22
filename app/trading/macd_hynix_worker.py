@@ -417,12 +417,9 @@ def run_once(
                     if not exit_res.get("success"):
                         return result
 
-        # After SL: if pattern breaks to HOLD, clear last_dir so a later first-turn
-        # can open a *new* episode (does not unlock CONTINUATION_REENTRY).
+        # Keep last_signal_direction after TP/SL/flat — same-dir re-entry forbidden;
+        # a new episode arms only on opposite confirmed B signal.
         ep = state.get("direction_episode") or {}
-        if ep.get("sl_lock") and eval_res.get("display_direction") == DIR_HOLD:
-            if state.get("last_signal_direction") in (DIR_UP, DIR_DOWN):
-                state["last_signal_direction"] = DIR_HOLD
 
         pos = state.get("position") or {}
         flat = not pos.get("symbol") or int(pos.get("quantity") or 0) <= 0

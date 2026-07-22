@@ -3,13 +3,13 @@
 Does not call Enhanced / WOC / Early / Active / Fusion / Regime / Prediction.
 Orders are never placed from this module — direction only.
 
-TP/SL and continuation re-entry helpers live here; Strategy B signal detection
-(`evaluate_macd_direction`) is unchanged.
+Strategy B = signed histogram two-turn (same-sign/color + 2 deltas), shared with
+A–F compare `signals_B`. Warm-up matches old `i < 26` skip.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import pandas as pd
 
@@ -30,6 +30,9 @@ SYMBOL_NAME = {
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
+# Old A–F `signals_B`: `if i < 26: continue` → first eligible bar index is 26
+# (requires len(bars) >= 27). Shared by live + all B replays.
+MACD_SIGNAL_MIN_INDEX = 26
 
 DIR_UP = "UP_RED"
 DIR_DOWN = "DOWN_BLUE"
@@ -96,15 +99,118 @@ def macd_components(closes: pd.Series) -> dict[str, Optional[pd.Series]]:
     return {"macd": macd, "signal": signal, "hist": hist}
 
 
-def _pattern_direction(h1: float, h2: float, h3: float) -> str:
-    """Classify the last three completed histogram values (newest=h1)."""
-    d1 = h1 - h2
-    d2 = h2 - h3
-    if h1 > h2 > h3 and d1 > 0 and d2 > 0:
+def signed_hist_two_turn_pattern(
+    hist_curr: float,
+    hist_prev: float,
+    hist_prev2: float,
+) -> str:
+    """Strategy B pattern: same-sign hist (color) + two consecutive deltas.
+
+    Newest = hist_curr. UP requires both hist > 0 and both deltas > 0.
+    DOWN requires both hist < 0 and both deltas < 0.
+    Same-sign pullbacks / opposite-color slopes → HOLD (no wiggle flips).
+    """
+    d1 = float(hist_curr) - float(hist_prev)
+    d2 = float(hist_prev) - float(hist_prev2)
+    if hist_curr > 0 and hist_prev > 0 and d1 > 0 and d2 > 0:
         return DIR_UP
-    if h1 < h2 < h3 and d1 < 0 and d2 < 0:
+    if hist_curr < 0 and hist_prev < 0 and d1 < 0 and d2 < 0:
         return DIR_DOWN
     return DIR_HOLD
+
+
+def signed_hist_two_turn_onset(
+    hist_curr: float,
+    hist_prev: float,
+    hist_prev2: float,
+    hist_prev3: Optional[float] = None,
+) -> Optional[str]:
+    """Return UP/DOWN only when the signed pattern *newly* becomes true.
+
+    Matches old A–F `signals_B` prev_ok gate: if the prior bar already
+    qualified for the same side, do not fire again (critical after warm-up
+    so a pattern already true at i=25 does not arm at i=26).
+    """
+    pattern = signed_hist_two_turn_pattern(hist_curr, hist_prev, hist_prev2)
+    if pattern == DIR_HOLD:
+        return None
+    if hist_prev3 is None:
+        return pattern
+    prev_pattern = signed_hist_two_turn_pattern(hist_prev, hist_prev2, float(hist_prev3))
+    if prev_pattern == pattern:
+        return None
+    return pattern
+
+
+def normalize_direction_state(direction: Optional[str]) -> Optional[str]:
+    """Map UP/DOWN aliases onto DIR_UP / DIR_DOWN; else None / HOLD."""
+    text = str(direction or "").upper().strip()
+    if not text or text in ("NONE", "NULL"):
+        return None
+    if text in (DIR_UP, "UP", "UP_RED"):
+        return DIR_UP
+    if text in (DIR_DOWN, "DOWN", "DOWN_BLUE"):
+        return DIR_DOWN
+    if text == DIR_HOLD:
+        return DIR_HOLD
+    return None
+
+
+def signed_hist_two_turn_new_signal(
+    pattern: str,
+    direction_state: Optional[str],
+) -> bool:
+    """Arm only when pattern is UP/DOWN and direction_state is not already that side.
+
+    After TP/SL/session flatten, keep direction_state so same-dir cannot re-enter;
+    a new episode starts only on the opposite confirmed B signal.
+    """
+    state = normalize_direction_state(direction_state)
+    if pattern == DIR_UP and state != DIR_UP:
+        return True
+    if pattern == DIR_DOWN and state != DIR_DOWN:
+        return True
+    return False
+
+
+def collect_signed_hist_two_turn_signals(
+    hist: Sequence[float],
+    *,
+    close_times: Optional[Sequence[Any]] = None,
+    min_index: int = MACD_SIGNAL_MIN_INDEX,
+    direction_state: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Walk a hist series with old B warm-up + onset + direction_state gate.
+
+    Shared by A–F `signals_B` and compare scripts so live/replay cannot drift.
+    """
+    events: list[dict[str, Any]] = []
+    state = normalize_direction_state(direction_state)
+    n = len(hist)
+    for i in range(2, n):
+        if i < min_index:
+            continue
+        prev3 = float(hist[i - 3]) if i >= 3 else None
+        onset = signed_hist_two_turn_onset(
+            float(hist[i]), float(hist[i - 1]), float(hist[i - 2]), prev3
+        )
+        if onset is None:
+            continue
+        if not signed_hist_two_turn_new_signal(onset, state):
+            continue
+        ct = None
+        if close_times is not None and i < len(close_times):
+            ct = close_times[i]
+        events.append({
+            "index": i,
+            "direction": onset,
+            "close_time": ct,
+            "hist_curr": float(hist[i]),
+            "hist_prev": float(hist[i - 1]),
+            "hist_prev2": float(hist[i - 2]),
+        })
+        state = onset
+    return events
 
 
 def evaluate_macd_direction(
@@ -116,8 +222,8 @@ def evaluate_macd_direction(
 ) -> dict[str, Any]:
     """Evaluate Strategy B on completed 3m MACD histogram of 000660.
 
-    Returns light color (display_direction) and whether a *new* armed signal fired.
-    New signals only on first turn (DOWN→UP or UP→DOWN) for a newly completed 3m bar.
+    Signed same-sign two-turn + onset (old prev_ok) + persistent direction_state.
+    Warm-up: bar index must be >= MACD_SIGNAL_MIN_INDEX (old `i < 26` skip).
     """
     empty = {
         "ok": False,
@@ -136,8 +242,13 @@ def evaluate_macd_direction(
         "signal_id": None,
     }
     bars = resample_completed_3m(df_1m, now=now)
-    if len(bars) < MACD_SLOW:
-        return {**empty, "completed_3m_count": int(len(bars))}
+    # Need index >= 26 → at least 27 completed 3m bars (matches old signals_B).
+    if len(bars) <= MACD_SIGNAL_MIN_INDEX:
+        return {
+            **empty,
+            "completed_3m_count": int(len(bars)),
+            "reason": "WARMUP_LT_26" if len(bars) >= 3 else "DATA_INSUFFICIENT",
+        }
 
     closes = pd.to_numeric(bars["close"], errors="coerce").dropna()
     comps = macd_components(closes)
@@ -148,29 +259,35 @@ def evaluate_macd_direction(
     macd = comps["macd"]
     signal = comps["signal"]
     h1, h2, h3 = float(hist.iloc[-1]), float(hist.iloc[-2]), float(hist.iloc[-3])
-    pattern = _pattern_direction(h1, h2, h3)
+    h4 = float(hist.iloc[-4]) if len(hist) >= 4 else None
+    pattern = signed_hist_two_turn_pattern(h1, h2, h3)
+    onset = signed_hist_two_turn_onset(h1, h2, h3, h4)
     bar_ts = bars["datetime"].iloc[-1]
     bar_ts_iso = pd.Timestamp(bar_ts).isoformat()
     bar_close_ts = pd.Timestamp(bar_ts) + timedelta(minutes=3)
 
-    last_dir = str(last_signal_direction or "").upper() or None
-    if last_dir in ("UP", "DOWN"):
-        last_dir = DIR_UP if last_dir == "UP" else DIR_DOWN
-    if last_dir not in (DIR_UP, DIR_DOWN, DIR_HOLD, None):
-        last_dir = None
+    last_dir = normalize_direction_state(last_signal_direction)
 
     new_signal = False
     signal_direction = None
     reason = "HOLD"
     if pattern == DIR_UP:
         reason = "UP_RED_PATTERN"
-        if last_dir != DIR_UP and bar_ts_iso != str(last_signal_bar_ts or ""):
+        if (
+            onset == DIR_UP
+            and signed_hist_two_turn_new_signal(onset, last_dir)
+            and bar_ts_iso != str(last_signal_bar_ts or "")
+        ):
             new_signal = True
             signal_direction = DIR_UP
             reason = "UP_RED_FIRST_TURN"
     elif pattern == DIR_DOWN:
         reason = "DOWN_BLUE_PATTERN"
-        if last_dir != DIR_DOWN and bar_ts_iso != str(last_signal_bar_ts or ""):
+        if (
+            onset == DIR_DOWN
+            and signed_hist_two_turn_new_signal(onset, last_dir)
+            and bar_ts_iso != str(last_signal_bar_ts or "")
+        ):
             new_signal = True
             signal_direction = DIR_DOWN
             reason = "DOWN_BLUE_FIRST_TURN"
@@ -420,7 +537,7 @@ def evaluate_continuation_reentry(
 
     # Display direction must still match episode (no opposite pattern)
     h1, h2, h3 = hist_vals[-1], hist_vals[-2], hist_vals[-3]
-    pattern = _pattern_direction(h1, h2, h3)
+    pattern = signed_hist_two_turn_pattern(h1, h2, h3)
     if pattern != direction:
         out["block_reason"] = f"NOT_SAME_COLOR:{pattern}"
         return out
