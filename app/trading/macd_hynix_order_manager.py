@@ -20,13 +20,19 @@ from app.trading.macd_hynix_strategy import (
     CONTINUATION_REENTRY_ENABLED,
     ENTRY_CONTINUATION,
     ENTRY_INITIAL,
+    ENTRY_OPEN_IMMEDIATE,
+    ENTRY_OPEN_SCALE,
     EXIT_OPPOSITE,
+    EXIT_OPEN_UNCONFIRMED,
     EXIT_SESSION,
     EXIT_SL,
     EXIT_TP,
     INVERSE_SYMBOL,
     LONG_SYMBOL,
+    OPEN_IMMEDIATE_BUDGET_FRACTION,
+    OPENING_PROBE_ENABLED,
     SIGNAL_SOURCE_CONTINUATION,
+    SIGNAL_SOURCE_OPEN_IMMEDIATE,
     SYMBOL_NAME,
     TRADE_SYMBOLS,
     make_direction_episode_id,
@@ -113,6 +119,8 @@ def default_state() -> dict[str, Any]:
             "signal_id": None,
             "entry_kind": None,
             "direction_episode_id": None,
+            "size_fraction": 1.0,
+            "opening_probe": False,
         },
         "direction_episode": {
             "id": None,
@@ -180,6 +188,28 @@ def default_state() -> dict[str, Any]:
         "real_confirm_ok": False,
         "masked_account": "",
         "continuation_reentry_enabled": CONTINUATION_REENTRY_ENABLED,
+        "opening_probe_enabled": OPENING_PROBE_ENABLED,
+        "opening_probe": {
+            "warmup_ready": False,
+            "warmup_reason": None,
+            "warmup_hist_last2": [],
+            "warmup_hist_deltas": [],
+            "day_open_price": None,
+            "window_active": False,
+            "window_abandoned": False,
+            "immediate_fired_today": False,
+            "immediate_direction": None,
+            "immediate_signal_id": None,
+            "immediate_at": None,
+            "awaiting_09_03_confirm": False,
+            "scaled_to_full": False,
+            "unconfirmed_exit_at": None,
+            "last_eval_at": None,
+            "last_eval_reason": None,
+            "last_eval_signal": None,
+            "price_samples_5s": [],
+            "confirm_checked": False,
+        },
         "updated_at": None,
         "git_sha": _git_sha(),
     }
@@ -225,6 +255,14 @@ def load_state() -> dict[str, Any]:
                 base["reentry"] = merged_re
             if "continuation_reentry_enabled" not in base:
                 base["continuation_reentry_enabled"] = CONTINUATION_REENTRY_ENABLED
+            if "opening_probe_enabled" not in base:
+                base["opening_probe_enabled"] = OPENING_PROBE_ENABLED
+            if not isinstance(base.get("opening_probe"), dict):
+                base["opening_probe"] = default_state()["opening_probe"]
+            else:
+                merged_op = default_state()["opening_probe"]
+                merged_op.update(base["opening_probe"])
+                base["opening_probe"] = merged_op
             return base
         except Exception as exc:
             logger.error("[MACDHynix] state load failed: %s", exc)
@@ -1196,6 +1234,8 @@ def switch_to_direction(
     entry_kind: str = ENTRY_INITIAL,
     signal_source: str = SIGNAL_SOURCE,
     sell_reason: Optional[str] = None,
+    budget_fraction: float = 1.0,
+    allow_same_direction_add: bool = False,
 ) -> dict[str, Any]:
     """Full switch: sell opposite (if any) → confirm 0 → buy target. Never buy before sell confirm."""
     with _ORDER_PROCESS_LOCK:
@@ -1215,7 +1255,11 @@ def switch_to_direction(
 
         pos = state.get("position") or {}
         held_symbol = pos.get("symbol")
-        if held_symbol == target and int(pos.get("quantity") or 0) > 0:
+        if (
+            held_symbol == target
+            and int(pos.get("quantity") or 0) > 0
+            and not allow_same_direction_add
+        ):
             return {"success": True, "message": "same direction — no add", "skipped_same_direction": True}
 
         # Re-check live holdings
@@ -1225,7 +1269,11 @@ def switch_to_direction(
         if live_target is None or (live_other_sym and live_other is None):
             return {"success": False, "message": "ORDER_DATA_INVALID: holdings query failed"}
 
-        if int(live_target or 0) > 0 and int(live_other or 0) == 0:
+        if (
+            int(live_target or 0) > 0
+            and int(live_other or 0) == 0
+            and not allow_same_direction_add
+        ):
             # Already on target
             state["processed_signal_ids"] = (processed + [signal_id])[-50:]
             return {"success": True, "message": "already holding target", "skipped_same_direction": True}
@@ -1253,63 +1301,69 @@ def switch_to_direction(
             EXIT_OPPOSITE if (held_symbol and held_symbol != target) else f"SWITCH_TO_{direction}"
         )
 
-        # 1) Sell opposite / any non-target holdings first
-        sell_symbols = []
-        if live_other_sym and int(live_other or 0) > 0:
-            sell_symbols.append(live_other_sym)
-        for sell_sym in sell_symbols:
-            price_key = "long" if sell_sym == LONG_SYMBOL else "inverse"
-            sell_price = float((quotes.get(price_key) or {}).get("price") or 0)
-            if sell_price <= 0:
-                msg = f"ORDER_DATA_INVALID: missing sell price for {sell_sym}"
-                set_pipeline_stage(state, "Sell Requested", False, msg)
-                return {"success": False, "message": msg, "order_data_invalid": True}
-            set_pipeline_stage(state, "Sell Requested", True, sell_sym)
-            sell_res = None
-            for attempt in range(1, MAX_ORDER_ATTEMPTS + 1):
-                sell_res = execute_sell_all(
-                    broker,
-                    sell_sym,
-                    sell_price,
-                    mode=mode,
-                    signal_id=signal_id,
-                    macd_signal=macd_signal,
-                    reason=exit_reason,
-                    entry_price=float(pos.get("avg_price") or 0) or None,
-                    entry_at=pos.get("entry_at"),
-                    attempt=attempt,
-                    entry_kind=str(pos.get("entry_kind") or ""),
-                    direction_episode_id=str(pos.get("direction_episode_id") or ep_id),
-                    signal_source=signal_source,
-                )
-                if sell_res.get("success") and (sell_res.get("fill_confirmed") or sell_res.get("already_flat")):
-                    break
-            if not sell_res or not sell_res.get("success"):
-                msg = (sell_res or {}).get("message") or "sell failed"
-                set_pipeline_stage(state, "Sell Executed", False, msg)
-                return {"success": False, "message": msg, "sell": sell_res}
-            set_pipeline_stage(state, "Sell Executed", True, f"{sell_sym} flat")
-            confirm = confirm_quantity(broker, sell_sym)
-            if not confirm.get("ok") or int(confirm.get("quantity") or 0) != 0:
-                msg = f"sell confirm failed; remaining={confirm.get('quantity')}"
-                set_pipeline_stage(state, "Sell Executed", False, msg)
-                return {"success": False, "message": msg, "sell": sell_res}
-            if exit_reason == EXIT_OPPOSITE:
-                mark_episode_after_exit(state, EXIT_OPPOSITE)
+        # 1) Sell opposite / any non-target holdings first (skip when scaling same dir)
+        if not allow_same_direction_add:
+            sell_symbols = []
+            if live_other_sym and int(live_other or 0) > 0:
+                sell_symbols.append(live_other_sym)
+            for sell_sym in sell_symbols:
+                price_key = "long" if sell_sym == LONG_SYMBOL else "inverse"
+                sell_price = float((quotes.get(price_key) or {}).get("price") or 0)
+                if sell_price <= 0:
+                    msg = f"ORDER_DATA_INVALID: missing sell price for {sell_sym}"
+                    set_pipeline_stage(state, "Sell Requested", False, msg)
+                    return {"success": False, "message": msg, "order_data_invalid": True}
+                set_pipeline_stage(state, "Sell Requested", True, sell_sym)
+                sell_res = None
+                for attempt in range(1, MAX_ORDER_ATTEMPTS + 1):
+                    sell_res = execute_sell_all(
+                        broker,
+                        sell_sym,
+                        sell_price,
+                        mode=mode,
+                        signal_id=signal_id,
+                        macd_signal=macd_signal,
+                        reason=exit_reason,
+                        entry_price=float(pos.get("avg_price") or 0) or None,
+                        entry_at=pos.get("entry_at"),
+                        attempt=attempt,
+                        entry_kind=str(pos.get("entry_kind") or ""),
+                        direction_episode_id=str(pos.get("direction_episode_id") or ep_id),
+                        signal_source=signal_source,
+                    )
+                    if sell_res.get("success") and (sell_res.get("fill_confirmed") or sell_res.get("already_flat")):
+                        break
+                if not sell_res or not sell_res.get("success"):
+                    msg = (sell_res or {}).get("message") or "sell failed"
+                    set_pipeline_stage(state, "Sell Executed", False, msg)
+                    return {"success": False, "message": msg, "sell": sell_res}
+                set_pipeline_stage(state, "Sell Executed", True, f"{sell_sym} flat")
+                confirm = confirm_quantity(broker, sell_sym)
+                if not confirm.get("ok") or int(confirm.get("quantity") or 0) != 0:
+                    msg = f"sell confirm failed; remaining={confirm.get('quantity')}"
+                    set_pipeline_stage(state, "Sell Executed", False, msg)
+                    return {"success": False, "message": msg, "sell": sell_res}
+                if exit_reason == EXIT_OPPOSITE:
+                    mark_episode_after_exit(state, EXIT_OPPOSITE)
 
-        state["position"] = {
-            "symbol": None,
-            "quantity": 0,
-            "avg_price": 0.0,
-            "entry_at": None,
-            "signal_id": None,
-            "entry_kind": None,
-            "direction_episode_id": None,
-        }
+            state["position"] = {
+                "symbol": None,
+                "quantity": 0,
+                "avg_price": 0.0,
+                "entry_at": None,
+                "signal_id": None,
+                "entry_kind": None,
+                "direction_episode_id": None,
+                "size_fraction": 1.0,
+                "opening_probe": False,
+            }
 
-        # New episode on initial MACD first-turn (not continuation)
-        if entry_kind == ENTRY_INITIAL:
+        # New episode on initial MACD first-turn (not continuation / not scale add)
+        if entry_kind == ENTRY_INITIAL or entry_kind == ENTRY_OPEN_IMMEDIATE:
             ep = start_direction_episode(state, direction, bar_ts=signal_id.split(":")[-1] if signal_id else None)
+            ep_id = str(ep.get("id") or "")
+        elif entry_kind == ENTRY_OPEN_SCALE:
+            ep = state.get("direction_episode") or {}
             ep_id = str(ep.get("id") or "")
         else:
             ep = state.get("direction_episode") or {}
@@ -1324,6 +1378,11 @@ def switch_to_direction(
             return {"success": False, "message": msg, "order_data_invalid": True}
 
         buy_reason = ENTRY_CONTINUATION if entry_kind == ENTRY_CONTINUATION else ENTRY_INITIAL
+        if entry_kind == ENTRY_OPEN_IMMEDIATE:
+            buy_reason = ENTRY_OPEN_IMMEDIATE
+        elif entry_kind == ENTRY_OPEN_SCALE:
+            buy_reason = ENTRY_OPEN_SCALE
+        effective_budget = float(budget) * max(0.0, min(1.0, float(budget_fraction)))
         set_pipeline_stage(state, "Buy Requested", True, target)
         buy_res = None
         for attempt in range(1, MAX_ORDER_ATTEMPTS + 1):
@@ -1331,7 +1390,7 @@ def switch_to_direction(
                 broker,
                 target,
                 buy_price,
-                budget,
+                effective_budget,
                 mode=mode,
                 signal_id=signal_id,
                 macd_signal=macd_signal,
@@ -1356,21 +1415,40 @@ def switch_to_direction(
         set_pipeline_stage(state, "Ledger Recorded", True, signal_id)
 
         now_iso = datetime.now().isoformat()
+        prev_qty = int(pos.get("quantity") or 0) if allow_same_direction_add else 0
+        prev_avg = float(pos.get("avg_price") or 0) if allow_same_direction_add else 0.0
+        bought = int(buy_res.get("bought_quantity") or 0)
+        new_avg = float(buy_res.get("avg_price") or buy_price)
+        if allow_same_direction_add and prev_qty > 0 and bought > 0:
+            total_qty = prev_qty + bought
+            new_avg = (prev_avg * prev_qty + new_avg * bought) / total_qty
+        else:
+            total_qty = bought
+        prev_frac = float(pos.get("size_fraction") or 0.0) if allow_same_direction_add else 0.0
+        add_frac = max(0.0, min(1.0, float(budget_fraction)))
+        size_fraction = min(1.0, prev_frac + add_frac) if allow_same_direction_add else add_frac
         state["position"] = {
             "symbol": target,
-            "quantity": int(buy_res.get("bought_quantity") or 0),
-            "avg_price": float(buy_res.get("avg_price") or buy_price),
-            "entry_at": now_iso,
+            "quantity": int(total_qty),
+            "avg_price": float(new_avg),
+            "entry_at": pos.get("entry_at") or now_iso,
             "signal_id": signal_id,
             "entry_kind": entry_kind,
             "direction_episode_id": ep_id,
+            "size_fraction": size_fraction if size_fraction > 0 else 1.0,
+            "opening_probe": entry_kind in (ENTRY_OPEN_IMMEDIATE, ENTRY_OPEN_SCALE)
+            or bool(pos.get("opening_probe")),
         }
         ep = state.setdefault("direction_episode", default_state()["direction_episode"])
         if entry_kind == ENTRY_CONTINUATION:
             ep["continuation_reentry_used"] = True
             ep["tp_at"] = None  # consumed TP window
-        else:
+        elif entry_kind in (ENTRY_INITIAL, ENTRY_OPEN_IMMEDIATE):
             ep["initial_entry_used"] = True
+        elif entry_kind == ENTRY_OPEN_SCALE:
+            op = state.setdefault("opening_probe", default_state()["opening_probe"])
+            op["scaled_to_full"] = True
+            op["awaiting_09_03_confirm"] = False
         state["broker_executed_at"] = now_iso
         state["last_order_at"] = now_iso
         state["last_event"] = entry_kind
@@ -1386,6 +1464,73 @@ def switch_to_direction(
             "entry_kind": entry_kind,
             "message": "switch complete",
         }
+
+
+def scale_opening_probe(
+    broker,
+    direction: str,
+    *,
+    mode: str,
+    budget: float,
+    quotes: dict[str, Any],
+    signal_id: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Add remaining 50% after 09:03 B confirm (same direction)."""
+    return switch_to_direction(
+        broker,
+        direction,
+        mode=mode,
+        budget=budget,
+        quotes=quotes,
+        signal_id=signal_id,
+        state=state,
+        entry_kind=ENTRY_OPEN_SCALE,
+        signal_source=SIGNAL_SOURCE_OPEN_IMMEDIATE,
+        budget_fraction=OPEN_IMMEDIATE_BUDGET_FRACTION,
+        allow_same_direction_add=True,
+    )
+
+
+def flatten_opening_probe_unconfirmed(
+    broker,
+    *,
+    mode: str,
+    quotes: dict[str, Any],
+    state: dict[str, Any],
+    signal_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Flatten partial opening-probe position when 09:03 B does not confirm."""
+    op = state.setdefault("opening_probe", default_state()["opening_probe"])
+    pos = state.get("position") or {}
+    if not pos.get("opening_probe") or float(pos.get("size_fraction") or 1.0) >= 1.0:
+        op["awaiting_09_03_confirm"] = False
+        op["confirm_checked"] = True
+        return {"success": True, "skipped": "not_partial_probe"}
+    sid = signal_id or f"OPEN_UNCONF:{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    res = exit_position_full(
+        broker,
+        mode=mode,
+        quotes=quotes,
+        state=state,
+        reason=EXIT_OPEN_UNCONFIRMED,
+        signal_id=sid,
+    )
+    if res.get("success"):
+        op["awaiting_09_03_confirm"] = False
+        op["confirm_checked"] = True
+        op["unconfirmed_exit_at"] = datetime.now().isoformat()
+        op["scaled_to_full"] = False
+        # Keep last_signal_direction — wait for new B flip
+    return res
+
+
+def reset_opening_probe_daily(state: dict[str, Any], *, session_date: str) -> None:
+    """Clear per-day opening probe flags (retain enabled flag)."""
+    op = default_state()["opening_probe"]
+    op["day_open_price"] = state.get("opening_probe", {}).get("day_open_price")
+    state["opening_probe"] = op
+    state["session_date"] = session_date
 
 
 def force_liquidate_all(

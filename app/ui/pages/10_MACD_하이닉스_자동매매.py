@@ -23,6 +23,7 @@ require_login()
 from app.config import get_config, get_kis_account_config, mask_account  # noqa: E402
 from app.trading import macd_hynix_order_manager as om  # noqa: E402
 from app.trading import macd_hynix_worker as worker  # noqa: E402
+from app.trading.macd_hynix_ledger import summarize_daily_trading  # noqa: E402
 from app.trading.macd_hynix_strategy import (  # noqa: E402
     DIR_DOWN,
     DIR_HOLD,
@@ -31,6 +32,7 @@ from app.trading.macd_hynix_strategy import (  # noqa: E402
     LONG_SYMBOL,
     SIGNAL_SYMBOL,
 )
+from app.utils.time_utils import kst_now  # noqa: E402
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -208,6 +210,28 @@ st.write(
 st.write(f"**다음 예상 행동**: {state.get('next_action') or '대기'}")
 if state.get("order_block_reason"):
     st.warning(f"주문 보류: {state.get('order_block_reason')}")
+
+# ── Opening probe ─────────────────────────────────────────────────────────
+st.subheader("Opening probe (09:00 immediate)")
+op = state.get("opening_probe") or {}
+probe_on = bool(state.get("opening_probe_enabled"))
+p1, p2, p3, p4 = st.columns(4)
+p1.metric("Probe live flag", "ON" if probe_on else "OFF(기본)")
+p2.metric("Warm-up ready", "YES" if op.get("warmup_ready") else "NO")
+p3.metric("09:00 fired", "YES" if op.get("immediate_fired_today") else "NO")
+p4.metric("Await 09:03", "YES" if op.get("awaiting_09_03_confirm") else "NO")
+st.write(
+    f"warmup_reason=`{op.get('warmup_reason')}` · hist_last2=`{op.get('warmup_hist_last2')}` · "
+    f"deltas=`{op.get('warmup_hist_deltas')}` · day_open=`{op.get('day_open_price')}` · "
+    f"window_active=`{op.get('window_active')}` · abandoned=`{op.get('window_abandoned')}` · "
+    f"last_eval=`{op.get('last_eval_signal')}`/`{op.get('last_eval_reason')}` · "
+    f"scaled=`{op.get('scaled_to_full')}` · unconf_exit=`{op.get('unconfirmed_exit_at')}`"
+)
+st.caption(
+    "09:00:05–09:00:15 immediate 50% (warm-up MACD + price/slope) · "
+    "09:03 first 3m bar confirm → scale 100% or flatten · "
+    f"OPENING_PROBE_ENABLED={probe_on} (replay ADOPT gates apply)"
+)
 
 # ── TP/SL / Continuation re-entry ─────────────────────────────────────────
 st.subheader("TP/SL · 연속재진입")

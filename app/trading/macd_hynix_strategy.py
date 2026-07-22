@@ -56,7 +56,22 @@ EXIT_OPPOSITE = "OPPOSITE_SWITCH"
 EXIT_SESSION = "15:00_FORCE_LIQUIDATE"
 ENTRY_INITIAL = "INITIAL_ENTRY"
 ENTRY_CONTINUATION = "CONTINUATION_REENTRY"
+ENTRY_OPEN_IMMEDIATE = "OPEN_IMMEDIATE"
+ENTRY_OPEN_SCALE = "OPEN_SCALE"
 SIGNAL_SOURCE_CONTINUATION = "MACD_CONTINUATION_REENTRY"
+SIGNAL_SOURCE_OPEN_IMMEDIATE = "OPEN_IMMEDIATE"
+
+# Opening probe: live disabled until ≥20d replay passes adoption gates.
+OPENING_PROBE_ENABLED = False
+WARMUP_3M_BARS = 100
+WARMUP_1M_BARS = WARMUP_3M_BARS * 3  # ≥100 completed 3m → last 300 1m of prior day
+OPEN_IMMEDIATE_MIN_RETURN_PCT = 0.15
+OPEN_IMMEDIATE_BUDGET_FRACTION = 0.50
+OPEN_PROBE_WINDOW_START_SEC = 5   # 09:00:05
+OPEN_PROBE_WINDOW_END_SEC = 15    # 09:00:15
+OPEN_IMMEDIATE_UP = "OPEN_IMMEDIATE_UP"
+OPEN_IMMEDIATE_DOWN = "OPEN_IMMEDIATE_DOWN"
+EXIT_OPEN_UNCONFIRMED = "OPEN_UNCONFIRMED_EXIT"
 
 
 def resample_completed_3m(
@@ -657,3 +672,243 @@ def snapshot_tp_context(
         "tp_pivot_low": pivot_low,
         "hist_last3": [round(x, 6) for x in hist_vals[-3:]] if hist_vals else [],
     }
+
+
+def tail_prior_day_1m(
+    df_1m: Optional[pd.DataFrame],
+    *,
+    min_bars: int = WARMUP_1M_BARS,
+) -> pd.DataFrame:
+    """Last ``min_bars`` 1m rows from a prior-day regular session (warm-up feed)."""
+    if df_1m is None or getattr(df_1m, "empty", True):
+        return pd.DataFrame()
+    work = df_1m.copy()
+    if "datetime" not in work.columns:
+        return pd.DataFrame()
+    work["datetime"] = pd.to_datetime(work["datetime"], errors="coerce")
+    work = work.dropna(subset=["datetime"]).sort_values("datetime")
+    if work.empty:
+        return pd.DataFrame()
+    return work.tail(int(min_bars)).reset_index(drop=True)
+
+
+def compute_warmup_macd(
+    df_warmup_1m: Optional[pd.DataFrame],
+    *,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """MACD/Signal/Histogram from prior-day warm-up only (ready before 09:00).
+
+    Requires ≥ ``WARMUP_3M_BARS`` completed 3m bars from the warm-up 1m series.
+    Does not arm or reuse yesterday's direction as a trading signal.
+    """
+    empty: dict[str, Any] = {
+        "ok": False,
+        "macd": None,
+        "signal": None,
+        "hist": None,
+        "hist_last2": [],
+        "hist_deltas": [],
+        "completed_3m_count": 0,
+        "reason": "DATA_INSUFFICIENT",
+    }
+    end = now
+    if end is None and df_warmup_1m is not None and not df_warmup_1m.empty:
+        end = pd.Timestamp(df_warmup_1m["datetime"].iloc[-1]).to_pydatetime() + timedelta(minutes=1)
+    bars = resample_completed_3m(df_warmup_1m, now=end)
+    if len(bars) < WARMUP_3M_BARS:
+        return {
+            **empty,
+            "completed_3m_count": int(len(bars)),
+            "reason": (
+                f"WARMUP_LT_{WARMUP_3M_BARS}"
+                if len(bars) >= 3
+                else "DATA_INSUFFICIENT"
+            ),
+        }
+    closes = pd.to_numeric(bars["close"], errors="coerce").dropna()
+    comps = macd_components(closes)
+    hist = comps.get("hist")
+    if hist is None or len(hist) < 2:
+        return {**empty, "completed_3m_count": int(len(bars)), "reason": "MACD_INSUFFICIENT"}
+    h1, h2 = float(hist.iloc[-1]), float(hist.iloc[-2])
+    d1 = h1 - h2
+    d0 = float(hist.iloc[-2]) - float(hist.iloc[-3]) if len(hist) >= 3 else d1
+    return {
+        "ok": True,
+        "macd": round(float(comps["macd"].iloc[-1]), 6),
+        "signal": round(float(comps["signal"].iloc[-1]), 6),
+        "hist": round(h1, 6),
+        "hist_last2": [round(h2, 6), round(h1, 6)],
+        "hist_deltas": [round(d0, 6), round(d1, 6)],
+        "completed_3m_count": int(len(bars)),
+        "reason": "WARMUP_READY",
+    }
+
+
+def quote_is_normal(quote: Optional[dict[str, Any]]) -> tuple[bool, str]:
+    """ETF quote ok for opening probe (price + optional bid/ask sanity)."""
+    if not quote or not quote.get("ok"):
+        err = (quote or {}).get("error_message") or "quote unavailable"
+        return False, f"QUOTE_BAD:{err}"
+    try:
+        px = float(quote.get("price") or 0)
+    except Exception:
+        return False, "QUOTE_BAD:price_parse"
+    if px <= 0:
+        return False, "QUOTE_BAD:non_positive_price"
+    bid = quote.get("bid")
+    ask = quote.get("ask")
+    if bid is not None and ask is not None:
+        try:
+            bf, af = float(bid), float(ask)
+            if bf <= 0 or af <= 0 or af < bf:
+                return False, "QUOTE_BAD:bid_ask"
+        except Exception:
+            return False, "QUOTE_BAD:bid_ask_parse"
+    return True, "OK"
+
+
+def price_slope_5s(
+    samples: Sequence[tuple[Any, float]],
+    *,
+    rising: bool,
+    min_samples: int = 2,
+) -> bool:
+    """True when recent ~5s price samples slope up (rising) or down (falling)."""
+    if not samples or len(samples) < min_samples:
+        return False
+    pts = [(pd.Timestamp(t).to_pydatetime(), float(p)) for t, p in samples[-4:]]
+    if len(pts) < min_samples:
+        return False
+    p0 = pts[-2][1]
+    p1 = pts[-1][1]
+    if rising:
+        return p1 > p0
+    return p1 < p0
+
+
+def in_open_probe_window(now: datetime) -> bool:
+    """09:00:05 … 09:00:15 inclusive."""
+    if now.hour != 9 or now.minute != 0:
+        return False
+    return OPEN_PROBE_WINDOW_START_SEC <= now.second <= OPEN_PROBE_WINDOW_END_SEC
+
+
+def open_probe_window_expired(now: datetime) -> bool:
+    """Past 09:00:15 on a trading day."""
+    if now.hour > 9:
+        return True
+    if now.hour == 9 and now.minute == 0 and now.second > OPEN_PROBE_WINDOW_END_SEC:
+        return True
+    if now.hour == 9 and now.minute > 0:
+        return True
+    return False
+
+
+def first_regular_3m_bar_closed(now: datetime) -> bool:
+    """First regular-session 3m bar (09:00–09:02) completes at 09:03."""
+    if now.hour > 9:
+        return True
+    if now.hour == 9 and now.minute >= 3:
+        return True
+    return False
+
+
+def evaluate_opening_probe(
+    warmup_macd: dict[str, Any],
+    *,
+    hynix_price: float,
+    day_open_price: float,
+    long_quote: Optional[dict[str, Any]],
+    inverse_quote: Optional[dict[str, Any]],
+    price_samples_5s: Sequence[tuple[Any, float]],
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """09:00 immediate probe — pattern from warm-up hist + live 000660/ETF checks."""
+    out: dict[str, Any] = {
+        "signal": None,
+        "direction": None,
+        "target_symbol": None,
+        "reason": "NO_SIGNAL",
+        "checks": {},
+        "ok_to_trade": False,
+    }
+    if not warmup_macd.get("ok"):
+        out["reason"] = f"WARMUP_NOT_READY:{warmup_macd.get('reason')}"
+        return out
+    if hynix_price <= 0 or day_open_price <= 0:
+        out["reason"] = "MISSING_OPEN_OR_PRICE"
+        return out
+
+    hist_last2 = warmup_macd.get("hist_last2") or []
+    hist_deltas = warmup_macd.get("hist_deltas") or []
+    if len(hist_last2) < 2 or len(hist_deltas) < 2:
+        out["reason"] = "HIST_INSUFFICIENT"
+        return out
+
+    ret_vs_open_pct = (float(hynix_price) / float(day_open_price) - 1.0) * 100.0
+    checks_up = {
+        "hist_both_pos": hist_last2[0] > 0 and hist_last2[1] > 0,
+        "deltas_both_pos": hist_deltas[0] > 0 and hist_deltas[1] > 0,
+        "price_ge_open": hynix_price >= day_open_price,
+        "ret_ge_min": ret_vs_open_pct >= OPEN_IMMEDIATE_MIN_RETURN_PCT,
+        "slope_rising": price_slope_5s(price_samples_5s, rising=True),
+    }
+    long_ok, long_reason = quote_is_normal(long_quote)
+    checks_up["etf_quote_ok"] = long_ok
+    out["checks_up"] = {**checks_up, "ret_vs_open_pct": round(ret_vs_open_pct, 4), "etf_reason": long_reason}
+
+    checks_down = {
+        "hist_both_neg": hist_last2[0] < 0 and hist_last2[1] < 0,
+        "deltas_both_neg": hist_deltas[0] < 0 and hist_deltas[1] < 0,
+        "price_le_open": hynix_price <= day_open_price,
+        "ret_le_min": ret_vs_open_pct <= -OPEN_IMMEDIATE_MIN_RETURN_PCT,
+        "slope_falling": price_slope_5s(price_samples_5s, rising=False),
+    }
+    inv_ok, inv_reason = quote_is_normal(inverse_quote)
+    checks_down["etf_quote_ok"] = inv_ok
+    out["checks_down"] = {**checks_down, "ret_vs_open_pct": round(ret_vs_open_pct, 4), "etf_reason": inv_reason}
+
+    if all(checks_up.values()):
+        out.update({
+            "signal": OPEN_IMMEDIATE_UP,
+            "direction": DIR_UP,
+            "target_symbol": LONG_SYMBOL,
+            "reason": OPEN_IMMEDIATE_UP,
+            "ok_to_trade": True,
+            "checks": checks_up,
+        })
+        return out
+    if all(checks_down.values()):
+        out.update({
+            "signal": OPEN_IMMEDIATE_DOWN,
+            "direction": DIR_DOWN,
+            "target_symbol": INVERSE_SYMBOL,
+            "reason": OPEN_IMMEDIATE_DOWN,
+            "ok_to_trade": True,
+            "checks": checks_down,
+        })
+        return out
+
+    if checks_up["hist_both_pos"] and checks_up["deltas_both_pos"]:
+        out["reason"] = "UP_PARTIAL_FAIL"
+    elif checks_down["hist_both_neg"] and checks_down["deltas_both_neg"]:
+        out["reason"] = "DOWN_PARTIAL_FAIL"
+    else:
+        out["reason"] = "NO_STRONG_PATTERN"
+    return out
+
+
+def opening_probe_b_confirms(
+    eval_res: dict[str, Any],
+    probe_direction: str,
+) -> bool:
+    """True when signed B display/onset matches the opening-probe direction at 09:03."""
+    if not eval_res.get("ok"):
+        return False
+    display = normalize_direction_state(eval_res.get("display_direction"))
+    if display != probe_direction:
+        return False
+    # Same-direction signed two-turn pattern (not necessarily a *new* turn vs prior day)
+    return display in (DIR_UP, DIR_DOWN) and display == probe_direction

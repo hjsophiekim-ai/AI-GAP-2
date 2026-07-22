@@ -21,17 +21,29 @@ from app.trading.macd_hynix_strategy import (
     DIR_UP,
     ENTRY_CONTINUATION,
     ENTRY_INITIAL,
+    ENTRY_OPEN_IMMEDIATE,
+    ENTRY_OPEN_SCALE,
     EXIT_OPPOSITE,
     EXIT_SL,
     EXIT_TP,
     INVERSE_SYMBOL,
     LONG_SYMBOL,
+    OPEN_IMMEDIATE_BUDGET_FRACTION,
+    OPENING_PROBE_ENABLED,
     SIGNAL_SOURCE_CONTINUATION,
+    SIGNAL_SOURCE_OPEN_IMMEDIATE,
     SIGNAL_SYMBOL,
     check_tp_sl,
+    compute_warmup_macd,
     evaluate_continuation_reentry,
     evaluate_macd_direction,
+    evaluate_opening_probe,
+    first_regular_3m_bar_closed,
+    in_open_probe_window,
+    open_probe_window_expired,
+    opening_probe_b_confirms,
     snapshot_tp_context,
+    tail_prior_day_1m,
     target_symbol_for_direction,
 )
 from app.trading.macd_hynix_order_manager import SIGNAL_SOURCE
@@ -155,6 +167,52 @@ def _load_minute_df(mode: str, count: int = 120) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _load_prior_day_minute_df(mode: str, day: str) -> pd.DataFrame:
+    """Prior trading day 000660 1m from replay cache (warm-up)."""
+    from app.utils.data_paths import CACHE_DIR
+
+    tag = day.replace("-", "")
+    path = CACHE_DIR / f"replay_{tag}_hynix_1m.csv"
+    if path.exists():
+        try:
+            df = pd.read_csv(path)
+            if "datetime" in df.columns:
+                df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+                return df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+        except Exception as exc:
+            logger.warning("[MACDHynix] prior-day cache read failed: %s", exc)
+    return pd.DataFrame()
+
+
+def _prior_session_date(today: datetime) -> str:
+    return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _refresh_opening_warmup(state: dict[str, Any], df_1m: pd.DataFrame, now: datetime, mode: str) -> None:
+    """Pre-09:00 warm-up MACD from prior day (≥100 completed 3m bars)."""
+    op = state.setdefault("opening_probe", {})
+    if op.get("warmup_ready"):
+        return
+    prior_day = _prior_session_date(now)
+    prev_df = _load_prior_day_minute_df(mode, prior_day)
+    warmup_1m = tail_prior_day_1m(prev_df)
+    warm = compute_warmup_macd(warmup_1m, now=None)
+    op["warmup_ready"] = bool(warm.get("ok"))
+    op["warmup_reason"] = warm.get("reason")
+    op["warmup_hist_last2"] = warm.get("hist_last2") or []
+    op["warmup_hist_deltas"] = warm.get("hist_deltas") or []
+    state["opening_warmup_macd"] = warm
+
+
+def _record_hynix_sample(state: dict[str, Any], now: datetime, price: Optional[float]) -> None:
+    if price is None or price <= 0:
+        return
+    op = state.setdefault("opening_probe", {})
+    samples = list(op.get("price_samples_5s") or [])
+    samples.append([now.isoformat(), float(price)])
+    op["price_samples_5s"] = samples[-12:]
+
+
 def _quote_from_broker(broker, symbol: str, *, retries: int = 2) -> dict[str, Any]:
     """Fetch one symbol quote; on failure return concrete error fields (never silent None-only)."""
     price = None
@@ -274,6 +332,11 @@ def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
 def _next_action_label(state: dict[str, Any]) -> str:
     if state.get("force_liquidate_pending"):
         return "청산 대기"
+    op = state.get("opening_probe") or {}
+    if op.get("awaiting_09_03_confirm"):
+        return "09:03 B 확인 대기"
+    if op.get("window_active") and not op.get("immediate_fired_today"):
+        return "09:00 개시 프로브"
     direction = state.get("pending_signal_direction") or state.get("display_direction")
     pos = state.get("position") or {}
     held = pos.get("symbol")
@@ -324,6 +387,12 @@ def run_once(
         else CONTINUATION_REENTRY_ENABLED
     )
     state["continuation_reentry_enabled"] = reentry_enabled
+    probe_enabled = bool(
+        state.get("opening_probe_enabled")
+        if state.get("opening_probe_enabled") is not None
+        else OPENING_PROBE_ENABLED
+    )
+    state["opening_probe_enabled"] = probe_enabled
 
     if not state.get("auto_trade_on") and not state.get("force_liquidate_pending"):
         result["skipped"] = "auto_trade_off"
@@ -372,6 +441,10 @@ def run_once(
         result["macd"] = eval_res
         om.refresh_runtime_status(state, worker_alive=True)
 
+        # Pre-open warm-up (prior-day MACD) — ready by 08:59; no direction reuse
+        if probe_enabled and now.hour < 9:
+            _refresh_opening_warmup(state, df_1m, now, mode)
+
         # 15:00 force liquidate — always highest priority
         if should_force_liquidate(now, state.get("force_liquidate_done_date")) or state.get("force_liquidate_pending"):
             state["force_liquidate_pending"] = True
@@ -389,12 +462,58 @@ def run_once(
             om.save_state(state)
             return result
 
-        # TP/SL every tick while in position (before arming new switches)
+        op = state.setdefault("opening_probe", {})
+        hynix_px = (quotes.get("hynix") or {}).get("price")
+        try:
+            hynix_px_f = float(hynix_px) if hynix_px is not None else None
+        except Exception:
+            hynix_px_f = None
+
+        if probe_enabled:
+            if now.hour == 9 and now.minute == 0 and hynix_px_f and hynix_px_f > 0:
+                if op.get("day_open_price") is None:
+                    op["day_open_price"] = hynix_px_f
+            if not op.get("warmup_ready"):
+                _refresh_opening_warmup(state, df_1m, now, mode)
+            if in_open_probe_window(now):
+                op["window_active"] = True
+                _record_hynix_sample(state, now, hynix_px_f)
+            elif open_probe_window_expired(now) and op.get("window_active") and not op.get("immediate_fired_today"):
+                op["window_abandoned"] = True
+                op["window_active"] = False
+
         pos = state.get("position") or {}
         held_symbol = pos.get("symbol")
         held_qty = int(pos.get("quantity") or 0)
         entry_px = float(pos.get("avg_price") or 0)
-        if held_symbol and held_qty > 0 and entry_px > 0:
+
+        # Opposite MACD B confirm — priority over TP/SL
+        opposite_pending = False
+        if eval_res.get("new_signal") and eval_res.get("signal_direction") and held_symbol and held_qty > 0:
+            new_dir = eval_res["signal_direction"]
+            new_target = target_symbol_for_direction(new_dir)
+            if new_target and new_target != held_symbol:
+                sid = eval_res["signal_id"]
+                processed = set(state.get("processed_signal_ids") or [])
+                if sid not in processed:
+                    state["pending_signal_id"] = sid
+                    state["pending_signal_direction"] = new_dir
+                    state["pending_signal_at"] = now.isoformat()
+                    state["pending_entry_kind"] = ENTRY_INITIAL
+                    state["pending_signal_source"] = SIGNAL_SOURCE
+                    state["last_signal_at"] = now.isoformat()
+                    state["last_signal_bar_ts"] = eval_res.get("bar_ts")
+                    state["last_signal_direction"] = new_dir
+                    state["last_signal_id"] = sid
+                    om.set_pipeline_stage(state, "Signal", True, sid)
+                    result["actions"].append({"opposite_signal": sid, "direction": new_dir})
+                    opposite_pending = True
+                    if op.get("awaiting_09_03_confirm"):
+                        op["awaiting_09_03_confirm"] = False
+                        op["confirm_checked"] = True
+
+        # TP/SL every tick while in position (skip when opposite armed this tick)
+        if not opposite_pending and held_symbol and held_qty > 0 and entry_px > 0:
             cur_px = _held_etf_price(quotes, held_symbol)
             if cur_px is not None:
                 exit_hit = check_tp_sl(held_symbol, entry_px, cur_px, held_qty)
@@ -443,8 +562,82 @@ def run_once(
         }
         result["reentry"] = state["reentry"]
 
+        # ── Opening probe: 09:00 immediate 50% ─────────────────────────────
+        if (
+            probe_enabled
+            and in_open_probe_window(now)
+            and not op.get("immediate_fired_today")
+            and flat
+            and not state.get("pending_signal_id")
+            and (quotes.get("hynix") or {}).get("ok")
+        ):
+            warm = state.get("opening_warmup_macd") or {}
+            day_open = op.get("day_open_price")
+            if day_open and hynix_px_f and warm.get("ok"):
+                samples = [(s[0], s[1]) for s in (op.get("price_samples_5s") or [])]
+                probe = evaluate_opening_probe(
+                    warm,
+                    hynix_price=hynix_px_f,
+                    day_open_price=float(day_open),
+                    long_quote=quotes.get("long"),
+                    inverse_quote=quotes.get("inverse"),
+                    price_samples_5s=samples,
+                    now=now,
+                )
+                op["last_eval_at"] = now.isoformat()
+                op["last_eval_reason"] = probe.get("reason")
+                op["last_eval_signal"] = probe.get("signal")
+                result["opening_probe"] = probe
+                if probe.get("ok_to_trade") and probe.get("direction"):
+                    sid = f"OPEN_IMM:{probe['signal']}:{now.strftime('%Y%m%d%H%M%S')}"
+                    state["pending_signal_id"] = sid
+                    state["pending_signal_direction"] = probe["direction"]
+                    state["pending_signal_at"] = now.isoformat()
+                    state["pending_entry_kind"] = ENTRY_OPEN_IMMEDIATE
+                    state["pending_signal_source"] = SIGNAL_SOURCE_OPEN_IMMEDIATE
+                    state["pending_budget_fraction"] = OPEN_IMMEDIATE_BUDGET_FRACTION
+                    state.setdefault("worker", {})["signal_detected_at"] = now.isoformat()
+                    om.set_pipeline_stage(state, "Signal", True, sid)
+                    result["actions"].append({"opening_probe": sid, "direction": probe["direction"]})
+
+        # ── 09:03 first completed 3m bar: confirm scale or flatten ───────────
+        if (
+            probe_enabled
+            and op.get("awaiting_09_03_confirm")
+            and not op.get("confirm_checked")
+            and first_regular_3m_bar_closed(now)
+            and held_symbol
+            and held_qty > 0
+            and pos.get("opening_probe")
+            and not state.get("pending_signal_id")
+        ):
+            probe_dir = op.get("immediate_direction") or state.get("direction_episode", {}).get("direction")
+            if probe_dir and opening_probe_b_confirms(eval_res, probe_dir):
+                sid = f"OPEN_SCALE:{probe_dir}:{now.strftime('%Y%m%d%H%M%S')}"
+                state["pending_signal_id"] = sid
+                state["pending_signal_direction"] = probe_dir
+                state["pending_signal_at"] = now.isoformat()
+                state["pending_entry_kind"] = ENTRY_OPEN_SCALE
+                state["pending_signal_source"] = SIGNAL_SOURCE_OPEN_IMMEDIATE
+                state["pending_budget_fraction"] = OPEN_IMMEDIATE_BUDGET_FRACTION
+                state["pending_open_scale"] = True
+                result["actions"].append({"opening_scale": sid, "direction": probe_dir})
+            else:
+                flat_res = om.flatten_opening_probe_unconfirmed(
+                    broker, mode=mode, quotes=quotes, state=state,
+                )
+                result["actions"].append({"opening_unconfirmed_exit": flat_res})
+                op["confirm_checked"] = True
+                pos = state.get("position") or {}
+                flat = not pos.get("symbol") or int(pos.get("quantity") or 0) <= 0
+
         # Arm new MACD first-turn signal (Strategy B unchanged)
-        if eval_res.get("new_signal") and eval_res.get("signal_id"):
+        if (
+            eval_res.get("new_signal")
+            and eval_res.get("signal_id")
+            and not opposite_pending
+            and not (probe_enabled and op.get("awaiting_09_03_confirm") and not op.get("confirm_checked"))
+        ):
             sid = eval_res["signal_id"]
             processed = set(state.get("processed_signal_ids") or [])
             if sid not in processed and sid != state.get("pending_signal_id"):
@@ -491,6 +684,8 @@ def run_once(
         pending_at = state.get("pending_signal_at")
         pending_kind = state.get("pending_entry_kind") or ENTRY_INITIAL
         pending_src = state.get("pending_signal_source") or SIGNAL_SOURCE
+        pending_frac = float(state.get("pending_budget_fraction") or 1.0)
+        pending_scale = bool(state.get("pending_open_scale"))
         execute_now = False
         if pending_id and pending_dir:
             try:
@@ -512,28 +707,52 @@ def run_once(
                 cur_held = cur_pos.get("symbol")
                 target = target_symbol_for_direction(pending_dir)
                 sell_reason = None
-                if cur_held and target and cur_held != target and pending_kind == ENTRY_INITIAL:
+                if cur_held and target and cur_held != target and pending_kind in (ENTRY_INITIAL, ENTRY_OPEN_IMMEDIATE):
                     sell_reason = EXIT_OPPOSITE
-                switch_res = om.switch_to_direction(
-                    broker,
-                    pending_dir,
-                    mode=mode,
-                    budget=float(state.get("budget") or 10_000_000),
-                    quotes=quotes,
-                    signal_id=pending_id,
-                    state=state,
-                    entry_kind=pending_kind,
-                    signal_source=pending_src,
-                    sell_reason=sell_reason,
-                )
+                if pending_scale and pending_kind == ENTRY_OPEN_SCALE:
+                    switch_res = om.scale_opening_probe(
+                        broker,
+                        pending_dir,
+                        mode=mode,
+                        budget=float(state.get("budget") or 10_000_000),
+                        quotes=quotes,
+                        signal_id=pending_id,
+                        state=state,
+                    )
+                else:
+                    switch_res = om.switch_to_direction(
+                        broker,
+                        pending_dir,
+                        mode=mode,
+                        budget=float(state.get("budget") or 10_000_000),
+                        quotes=quotes,
+                        signal_id=pending_id,
+                        state=state,
+                        entry_kind=pending_kind,
+                        signal_source=pending_src,
+                        sell_reason=sell_reason,
+                        budget_fraction=pending_frac,
+                    )
                 result["actions"].append({"switch": switch_res})
                 if switch_res.get("success") or switch_res.get("duplicate") or switch_res.get("skipped_same_direction"):
+                    if pending_kind == ENTRY_OPEN_IMMEDIATE:
+                        op["immediate_fired_today"] = True
+                        op["immediate_direction"] = pending_dir
+                        op["immediate_signal_id"] = pending_id
+                        op["immediate_at"] = now.isoformat()
+                        op["awaiting_09_03_confirm"] = True
+                        op["window_active"] = False
+                        state["last_signal_direction"] = pending_dir
+                        state["last_signal_id"] = pending_id
                     state["pending_signal_id"] = None
                     state["pending_signal_direction"] = None
                     state["pending_entry_kind"] = None
                     state["pending_signal_source"] = None
-                    state["last_signal_direction"] = pending_dir
-                    state["last_signal_id"] = pending_id
+                    state["pending_budget_fraction"] = None
+                    state["pending_open_scale"] = None
+                    if pending_kind not in (ENTRY_OPEN_IMMEDIATE,):
+                        state["last_signal_direction"] = pending_dir
+                        state["last_signal_id"] = pending_id
                 elif switch_res.get("order_data_invalid"):
                     state["order_block_reason"] = switch_res.get("message")
 
@@ -582,7 +801,9 @@ def _worker_loop() -> None:
                 # Day change: clear mutex ownership if strategy is off
                 if not state.get("auto_trade_on"):
                     om.clear_mutex(mode=str(state.get("mode") or "mock"), reason="day_change")
-                state["session_date"] = today
+                om.reset_opening_probe_daily(state, session_date=today)
+                state["last_signal_direction"] = None
+                state["last_signal_bar_ts"] = None
             elif not state.get("session_date"):
                 state["session_date"] = today
             with _status_lock:

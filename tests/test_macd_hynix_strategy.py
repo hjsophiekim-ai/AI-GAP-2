@@ -19,6 +19,7 @@ from app.trading.macd_hynix_strategy import (
     DIR_UP,
     ENTRY_CONTINUATION,
     ENTRY_INITIAL,
+    ENTRY_OPEN_IMMEDIATE,
     EXIT_OPPOSITE,
     EXIT_SL,
     EXIT_TP,
@@ -888,3 +889,110 @@ def test_worker_tp_exit_then_no_immediate_rebuy(monkeypatch):
 def test_episode_id_helper():
     eid = make_direction_episode_id(DIR_UP, "2026-07-21T10:00:00")
     assert eid.startswith("EP:UP_RED:")
+
+
+def test_opening_probe_up_conditions():
+    from app.trading.macd_hynix_strategy import (
+        OPEN_IMMEDIATE_UP,
+        evaluate_opening_probe,
+    )
+
+    warm = {
+        "ok": True,
+        "hist_last2": [1.0, 2.0],
+        "hist_deltas": [0.5, 1.0],
+    }
+    long_q = {"ok": True, "price": 10000.0, "bid": 9990.0, "ask": 10010.0}
+    inv_q = {"ok": True, "price": 10000.0}
+    samples = [
+        ("2026-07-22T09:00:05", 100.0),
+        ("2026-07-22T09:00:10", 100.5),
+    ]
+    r = evaluate_opening_probe(
+        warm,
+        hynix_price=100.5,
+        day_open_price=100.0,
+        long_quote=long_q,
+        inverse_quote=inv_q,
+        price_samples_5s=samples,
+    )
+    assert r["ok_to_trade"] is True
+    assert r["signal"] == OPEN_IMMEDIATE_UP
+    assert r["direction"] == DIR_UP
+
+
+def test_opening_probe_down_conditions():
+    from app.trading.macd_hynix_strategy import (
+        OPEN_IMMEDIATE_DOWN,
+        evaluate_opening_probe,
+    )
+
+    warm = {
+        "ok": True,
+        "hist_last2": [-1.0, -2.0],
+        "hist_deltas": [-0.5, -1.0],
+    }
+    long_q = {"ok": True, "price": 10000.0}
+    inv_q = {"ok": True, "price": 10000.0, "bid": 9990.0, "ask": 10010.0}
+    samples = [
+        ("2026-07-22T09:00:05", 100.0),
+        ("2026-07-22T09:00:10", 99.5),
+    ]
+    r = evaluate_opening_probe(
+        warm,
+        hynix_price=99.5,
+        day_open_price=100.0,
+        long_quote=long_q,
+        inverse_quote=inv_q,
+        price_samples_5s=samples,
+    )
+    assert r["ok_to_trade"] is True
+    assert r["signal"] == OPEN_IMMEDIATE_DOWN
+
+
+def test_warmup_macd_requires_100_bars():
+    from app.trading.macd_hynix_strategy import WARMUP_3M_BARS, compute_warmup_macd
+
+    df = _bars_1m(WARMUP_3M_BARS * 3 - 3, trend="up")
+    r = compute_warmup_macd(df)
+    assert r["ok"] is False
+    df2 = _bars_1m(WARMUP_3M_BARS * 3 + 6, trend="up")
+    r2 = compute_warmup_macd(df2)
+    assert r2["ok"] is True
+    assert len(r2["hist_last2"]) == 2
+
+
+def test_open_probe_window():
+    from app.trading.macd_hynix_strategy import in_open_probe_window, open_probe_window_expired
+
+    assert in_open_probe_window(datetime(2026, 7, 22, 9, 0, 10))
+    assert not in_open_probe_window(datetime(2026, 7, 22, 9, 0, 4))
+    assert open_probe_window_expired(datetime(2026, 7, 22, 9, 0, 16))
+
+
+def test_scale_opening_probe_adds_same_direction():
+    broker = FakeBroker()
+    state = om.default_state()
+    broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "quantity": 5, "avg_price": 10000.0,
+        "entry_at": datetime.now().isoformat(), "signal_id": "OPEN-1",
+        "entry_kind": ENTRY_OPEN_IMMEDIATE, "direction_episode_id": "EP:UP",
+        "size_fraction": 0.5, "opening_probe": True,
+    }
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP", "direction": DIR_UP,
+    }
+    quotes = {
+        "long": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+        "inverse": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+    }
+    buys_before = len(broker.buys)
+    res = om.scale_opening_probe(
+        broker, DIR_UP, mode="mock", budget=10_000_000, quotes=quotes,
+        signal_id="OPEN-SCALE-1", state=state,
+    )
+    assert res["success"]
+    assert len(broker.buys) > buys_before
+    assert state["position"]["size_fraction"] >= 0.9
