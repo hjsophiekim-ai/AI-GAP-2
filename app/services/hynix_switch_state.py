@@ -204,12 +204,45 @@ def _save_common_strategy_profile(state: dict) -> None:
                 changed = True
         if changed:
             _STATE_DIR.mkdir(parents=True, exist_ok=True)
-            _common_strategy_profile_path().write_text(
+            path = _common_strategy_profile_path()
+            tmp_path = path.with_suffix(".json.tmp")
+            tmp_path.write_text(
                 json.dumps(profile, ensure_ascii=False, default=str, indent=2),
                 encoding="utf-8",
             )
+            os.replace(tmp_path, path)
     except Exception as exc:
         logger.debug("[HynixSwitchState] common strategy profile save failed: %s", exc)
+
+
+def _effective_disk_auto_trade_on(mode: Optional[str] = None) -> Optional[bool]:
+    """Effective auto_trade_on on disk (common overlay wins), or None if unset."""
+    mode = mode if mode in ("mock", "real") else (mode or get_active_mode())
+    mode_val: Optional[bool] = None
+    path = _state_path(mode)
+    try:
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and "auto_trade_on" in raw:
+                mode_val = bool(raw.get("auto_trade_on"))
+    except Exception:
+        pass
+    common = _load_common_strategy_profile()
+    if "auto_trade_on" in common:
+        return bool(common.get("auto_trade_on"))
+    return mode_val
+
+
+def state_file_mtime_iso(mode: Optional[str] = None) -> Optional[str]:
+    """Absolute-path companion: mtime of mode state file as ISO string."""
+    mode = mode if mode in ("mock", "real") else (mode or get_active_mode())
+    path = _state_path(mode)
+    try:
+        if path.exists():
+            return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    except Exception:
+        pass
+    return None
 
 
 def get_active_mode() -> str:
@@ -612,7 +645,7 @@ _SAVE_RETRY_ATTEMPTS = 8
 _SAVE_RETRY_BASE_SLEEP_SEC = 0.03
 
 
-def save_state_atomic(state: dict) -> bool:
+def save_state_atomic(state: dict, *, allow_enable_auto_trade: bool = False) -> bool:
     """상태를 원자적으로 저장(임시파일 write 후 os.replace). mode별 파일에 저장.
 
     Windows에서는 대상 파일이 다른 프로세스/스레드(예: Dynamic Exit 감시 스레드나
@@ -622,14 +655,28 @@ def save_state_atomic(state: dict) -> bool:
     재시도한다. 그래도 전부 실패하면(디스크/권한 문제 등 지속적 오류) 기존과
     동일하게 예외를 삼키고 로그만 남긴다 — 사이클 자체가 죽지는 않게 한다.
 
+    Guard — ``auto_trade_on`` False→True is refused unless
+    ``allow_enable_auto_trade=True`` (only ``set_control`` / explicit Start /
+    mock reset). Background cycles, page-rerun saves, and stale in-memory
+    snapshots must not restore Enhanced ON after the user turned it OFF.
+
     Returns:
         True — 실제로 디스크에 반영됨. False — 재시도까지 모두 실패해 반영되지
         않음(UI의 "UI Synced" 표시가 이 값을 그대로 사용한다).
     """
     try:
+        mode = state.get("mode", "mock")
+        if not allow_enable_auto_trade and bool(state.get("auto_trade_on")):
+            disk_on = _effective_disk_auto_trade_on(mode)
+            if disk_on is False:
+                logger.warning(
+                    "[HynixSwitchState] refusing stale auto_trade_on True overwrite "
+                    "(disk effective=False, mode=%s) — only explicit Start may enable",
+                    mode,
+                )
+                state["auto_trade_on"] = False
         _sync_flat_fields(state)
         _save_common_strategy_profile(state)
-        mode = state.get("mode", "mock")
         path = _state_path(mode)
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(".json.tmp")
@@ -658,7 +705,7 @@ def reset_mock_state(budget_krw: Optional[float] = None) -> dict:
     if budget_krw is not None:
         state["mock_budget_krw"] = float(budget_krw)
         state["cash"] = float(budget_krw)
-    save_state_atomic(state)
+    save_state_atomic(state, allow_enable_auto_trade=True)
 
     try:
         from app.trading.dry_run_broker import _DATA_DIR

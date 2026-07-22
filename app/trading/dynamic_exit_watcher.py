@@ -327,7 +327,7 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
     engine = engine or _engine
     state = load_state()
 
-    if not state.get("auto_trade_on") or state.get("stopped"):
+    if state.get("stopped"):
         return None
 
     mode = state.get("mode", "mock")
@@ -338,6 +338,10 @@ def _tick_locked(now: Optional[datetime] = None, engine: Optional[DynamicExitEng
         and not position.get("entry_price")
         and not position.get("entry_time")
     )
+    # Enhanced OFF: stop new entries (caller cycles skip), but keep exit /
+    # liquidation monitoring while a position (or recovery bookkeeping) exists.
+    if not state.get("auto_trade_on") and flat_without_recovery_context:
+        return None
     if flat_without_recovery_context:
         # Dynamic Exit는 보유 포지션 청산 전용이다. 보유가 없는데도 1초마다
         # KIS 잔고를 조회하면 EGW00201/tokenP 제한으로 Enhanced 신규진입까지 막힌다.

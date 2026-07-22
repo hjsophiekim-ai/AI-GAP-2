@@ -52,7 +52,7 @@ def is_stopped() -> bool:
     return _STOP_FLAG_PATH.exists()
 
 
-def stop_auto_trade() -> None:
+def stop_auto_trade() -> dict:
     """Stop kill-switch for proposal auto-trade AND Enhanced live orders.
 
     Critical: UI "자동매매 정지" must set the same ``auto_trade_on=False`` that
@@ -60,24 +60,39 @@ def stop_auto_trade() -> None:
     ``hynix_switch_state.load_state()`` / ``set_control``. Writing only
     ``hynix_auto_trade_stopped.flag`` left Enhanced ON and caused MACD Start
     false positives (LEGACY_STRATEGY_ACTIVE).
+
+    Returns the set_control verify payload (before/after/path/mtime/ok).
     """
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     _STOP_FLAG_PATH.write_text(kst_now().isoformat(), encoding="utf-8")
     logger.warning("[HYNIX_AUTO] 자동매매 정지 요청됨")
+    verify: dict = {"ok": False, "after": None, "path": None, "mtime": None, "before": None}
     try:
         # Same write path as Enhanced checkbox OFF:
         # set_control → save_state_atomic → hynix_auto_state_{mode}.json
         # + hynix_strategy_profile_common.json under STATE_DIR (AI_GAP_DATA_DIR).
         from app.services.hynix_switch_engine import set_control
 
-        set_control(auto_trade_on=False)
+        state = set_control(auto_trade_on=False)
+        verify = dict(state.get("_control_verify") or {})
         logger.warning(
-            "[HYNIX_AUTO] Enhanced auto_trade_on=False via set_control "
-            "(path=%s)",
-            _STATE_DIR / "hynix_auto_state_*.json",
+            "[HYNIX_AUTO] Enhanced auto_trade_on OFF verify before=%s after=%s "
+            "ok=%s path=%s mtime=%s",
+            verify.get("before"),
+            verify.get("after"),
+            verify.get("ok"),
+            verify.get("path"),
+            verify.get("mtime"),
         )
+        if not verify.get("ok") or verify.get("after") is not False:
+            logger.error(
+                "[HYNIX_AUTO] OFF persist failed — load_state still True; "
+                "do not treat stop as success"
+            )
     except Exception as exc:
         logger.error("[HYNIX_AUTO] Failed to set Enhanced auto_trade_on=False: %s", exc)
+        verify = {**verify, "ok": False, "error": str(exc)}
+    return verify
 
 
 def resume_auto_trade() -> None:

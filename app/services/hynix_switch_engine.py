@@ -3105,22 +3105,62 @@ def set_control(
     auto_trade_on: Optional[bool] = None, mode: Optional[str] = None,
     allow_mock_loss_override: Optional[bool] = None, mock_budget_krw: Optional[float] = None,
 ) -> dict:
-    """UI에서 자동매매 ON/OFF, mock/real 모드, mock 예산을 설정할 때 사용."""
+    """UI에서 자동매매 ON/OFF, mock/real 모드, mock 예산을 설정할 때 사용.
+
+    Uses the same mode lock as background cycles so OFF cannot be lost to a
+    stale in-memory save. Only this path (and mock reset) may flip
+    auto_trade_on False→True via allow_enable_auto_trade.
+    """
+    from app.services.hynix_switch_state import (
+        with_state_lock,
+        get_active_mode,
+        _state_path,
+        state_file_mtime_iso,
+    )
+
     if mode is not None:
         set_active_mode(mode)
-    state = load_state(mode=mode)
-    if auto_trade_on is not None:
-        state["auto_trade_on"] = bool(auto_trade_on)
-    if mode is not None:
-        state["mode"] = mode
-    if allow_mock_loss_override is not None:
-        state["allow_mock_loss_override"] = bool(allow_mock_loss_override)
-    if mock_budget_krw is not None:
-        state["mock_budget_krw"] = float(mock_budget_krw)
-        if state.get("mode") == "mock" and not (state.get("position") or {}).get("symbol"):
-            state["cash"] = float(mock_budget_krw)
-    save_state_atomic(state)
-    return state
+    resolved = mode if mode in ("mock", "real") else get_active_mode()
+    with with_state_lock(resolved):
+        state = load_state(mode=resolved)
+        before = bool(state.get("auto_trade_on"))
+        if auto_trade_on is not None:
+            state["auto_trade_on"] = bool(auto_trade_on)
+        if mode is not None:
+            state["mode"] = mode
+        if allow_mock_loss_override is not None:
+            state["allow_mock_loss_override"] = bool(allow_mock_loss_override)
+        if mock_budget_krw is not None:
+            state["mock_budget_krw"] = float(mock_budget_krw)
+            if state.get("mode") == "mock" and not (state.get("position") or {}).get("symbol"):
+                state["cash"] = float(mock_budget_krw)
+        save_ok = save_state_atomic(
+            state,
+            allow_enable_auto_trade=bool(auto_trade_on) if auto_trade_on is True else False,
+        )
+        verified = load_state(mode=resolved)
+        after = bool(verified.get("auto_trade_on"))
+        path = _state_path(resolved)
+        verify = {
+            "before": before,
+            "requested": auto_trade_on,
+            "after": after,
+            "save_ok": save_ok,
+            "path": str(path.resolve()),
+            "mtime": state_file_mtime_iso(resolved),
+            "ok": (
+                auto_trade_on is None
+                or after == bool(auto_trade_on)
+            ),
+        }
+        verified["_control_verify"] = verify
+        if auto_trade_on is False and after:
+            logger.error(
+                "[HynixSwitchEngine] set_control OFF failed verify — still True "
+                "(path=%s mtime=%s)",
+                verify["path"], verify["mtime"],
+            )
+        return verified
 
 
 def reset_mock_account(budget_krw: Optional[float] = None) -> dict:

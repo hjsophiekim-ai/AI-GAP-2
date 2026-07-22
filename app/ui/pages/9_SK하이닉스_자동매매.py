@@ -194,7 +194,23 @@ with c2:
     if st.button("자동매매 정지", use_container_width=True):
         # Writes hynix_auto_trade_stopped.flag AND set_control(auto_trade_on=False)
         # so MACD Start immediately sees Enhanced OFF via load_state().
-        stop_auto_trade()
+        _stop_verify = stop_auto_trade()
+        # Prevent Streamlit sticky checkbox from re-enabling on the next rerun.
+        st.session_state["hynix_switch_auto_on"] = False
+        st.session_state["_hynix_auto_disk_sync"] = False
+        st.session_state["hynix_auto_off_verify"] = _stop_verify
+        if _stop_verify.get("ok") and _stop_verify.get("after") is False:
+            st.success(
+                f"Enhanced OFF 저장 확인 — before={_stop_verify.get('before')} "
+                f"after={_stop_verify.get('after')} path=`{_stop_verify.get('path')}` "
+                f"mtime=`{_stop_verify.get('mtime')}`"
+            )
+        else:
+            st.error(
+                f"Enhanced OFF 저장 실패 — load_state 재확인 결과가 True입니다. "
+                f"before={_stop_verify.get('before')} after={_stop_verify.get('after')} "
+                f"path=`{_stop_verify.get('path')}` mtime=`{_stop_verify.get('mtime')}`"
+            )
         st.rerun()
 with c3:
     if st.button("자동매매 재개", use_container_width=True):
@@ -400,9 +416,13 @@ if _decision_snapshot_meta.get("is_running"):
 
 
 def _resume_daily_loss_limited_trading(state: dict) -> dict:
-    """Allow new entries after the -2% daily-loss block and wake the loops."""
+    """Clear the -2% daily-loss new-entry block and wake background loops.
+
+    Does NOT flip auto_trade_on to True — only explicit Enhanced Start / checkbox
+    ON may enable trading (prevents daily-loss resume from restoring Enhanced ON
+    after the user turned it OFF).
+    """
     state["daily_loss_block_override"] = True
-    state["auto_trade_on"] = True
     stopped_reason = str(state.get("stopped_reason") or "")
     if state.get("stopped") and ("일 누적 손실" in stopped_reason or "daily" in stopped_reason.lower()):
         state["stopped"] = False
@@ -696,7 +716,18 @@ with st.expander("Adaptive Regime 판단 근거 / VOLATILE_RANGE 진단", expand
 
 sc1, sc2, sc3 = st.columns([1, 1, 2])
 with sc1:
-    auto_on = st.checkbox("Enhanced 자동매매 ON", value=switch_state.get("auto_trade_on", True), key="hynix_switch_auto_on")
+    # Keep Streamlit widget in sync with disk when OFF was set externally
+    # (Stop button / another process). Without this, a sticky session_state
+    # True re-calls set_control(True) on the next rerun and undoes OFF.
+    _disk_auto_on = bool(switch_state.get("auto_trade_on"))
+    if st.session_state.get("_hynix_auto_disk_sync") != _disk_auto_on:
+        st.session_state["hynix_switch_auto_on"] = _disk_auto_on
+        st.session_state["_hynix_auto_disk_sync"] = _disk_auto_on
+    auto_on = st.checkbox(
+        "Enhanced 자동매매 ON",
+        value=_disk_auto_on,
+        key="hynix_switch_auto_on",
+    )
 with sc2:
     switch_mode = st.radio(
         "모드", ["mock", "real"],
@@ -741,7 +772,47 @@ if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.g
             st.error("MACD 하이닉스 자동매매가 ON 상태입니다. MACD를 중지한 뒤 Enhanced를 시작하세요.")
             auto_on = False
             st.session_state["hynix_switch_auto_on"] = False
+    _ctrl_before = bool(switch_state.get("auto_trade_on"))
     switch_state = set_control(auto_trade_on=auto_on, mode=switch_mode)
+    _verify = dict(switch_state.pop("_control_verify", None) or {})
+    st.session_state["_hynix_auto_disk_sync"] = bool(switch_state.get("auto_trade_on"))
+    st.session_state["hynix_switch_auto_on"] = bool(switch_state.get("auto_trade_on"))
+    if auto_on is False or _ctrl_before and not auto_on:
+        if _verify.get("ok") and _verify.get("after") is False:
+            st.success(
+                f"Enhanced OFF 저장 확인 — before={_verify.get('before', _ctrl_before)} "
+                f"after={_verify.get('after')} path=`{_verify.get('path')}` "
+                f"mtime=`{_verify.get('mtime')}`"
+            )
+        else:
+            st.error(
+                f"Enhanced OFF 저장 실패 — 디스크 재확인이 여전히 True입니다. "
+                f"before={_verify.get('before', _ctrl_before)} after={_verify.get('after')} "
+                f"path=`{_verify.get('path')}` mtime=`{_verify.get('mtime')}` "
+                f"(OFF 성공으로 표시하지 않음)"
+            )
+            # Keep UI/widget aligned with failed persist (still ON).
+            st.session_state["hynix_switch_auto_on"] = True
+            st.session_state["_hynix_auto_disk_sync"] = True
+    elif _verify:
+        st.caption(
+            f"auto_trade_on persist: before={_verify.get('before')} after={_verify.get('after')} "
+            f"path=`{_verify.get('path')}` mtime=`{_verify.get('mtime')}`"
+        )
+
+_off_verify_banner = st.session_state.pop("hynix_auto_off_verify", None)
+if _off_verify_banner:
+    if _off_verify_banner.get("ok") and _off_verify_banner.get("after") is False:
+        st.success(
+            f"정지 버튼 OFF 확인 — before={_off_verify_banner.get('before')} "
+            f"after={_off_verify_banner.get('after')} path=`{_off_verify_banner.get('path')}` "
+            f"mtime=`{_off_verify_banner.get('mtime')}`"
+        )
+    else:
+        st.error(
+            f"정지 버튼 OFF 실패 — after={_off_verify_banner.get('after')} "
+            f"path=`{_off_verify_banner.get('path')}`"
+        )
 
 # ── 신규진입 시간창(요구사항 2026-07-21 — 09:15~09:30 블랙아웃 폐지) — 모드와
 # 무관하게 항상 표시한다. Early Trend Detector/ENHANCED_REGIME_SWITCH/Active

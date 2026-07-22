@@ -63,6 +63,7 @@ def _setup_state_with_entry_bookkeeping(tmp_path, monkeypatch, entry_price=100_0
 
 
 def test_tick_does_nothing_when_auto_trade_off(tmp_path, monkeypatch):
+    """Flat + Enhanced OFF → Dynamic Exit idle (no broker calls)."""
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
     state = state_module.load_state(mode="mock")
     state["mode"] = "mock"
@@ -71,6 +72,32 @@ def test_tick_does_nothing_when_auto_trade_off(tmp_path, monkeypatch):
 
     result = watcher.tick(now=datetime.now())
     assert result is None
+
+
+def test_tick_still_monitors_exit_when_auto_off_but_position_held(tmp_path, monkeypatch):
+    """Enhanced OFF must still allow exit monitoring while a position is held."""
+    _setup_state_with_entry_bookkeeping(tmp_path, monkeypatch, entry_price=100_000.0)
+    state = state_module.load_state(mode="mock")
+    state["auto_trade_on"] = False
+    state_module.save_state_atomic(state)
+
+    monkeypatch.setattr(watcher, "_fetch_current_price", lambda symbol, mode: 103_100.0)
+    monkeypatch.setattr(watcher, "_load_daily_df", lambda symbol: None)
+    monkeypatch.setattr(watcher, "_load_minute_df", lambda symbol: None)
+    fake_exit_log = tmp_path / "exit_engine_log.csv"
+    monkeypatch.setattr(watcher, "_EXIT_LOG_PATH", fake_exit_log)
+
+    hynix_position = Position(
+        symbol=HYNIX_SYMBOL, name=HYNIX_NAME, quantity=10,
+        avg_price=100_000.0, current_price=103_100.0,
+    )
+    broker = _FakeSellBroker(positions=[hynix_position])
+    monkeypatch.setattr(watcher, "_get_cached_broker", lambda mode, budget: broker)
+
+    decision = watcher.tick(now=datetime.now())
+    assert decision is not None
+    assert decision["action"] == "SELL_ALL"
+    assert len(broker.sell_calls) == 1
 
 
 def test_tick_executes_sell_on_take_profit(tmp_path, monkeypatch):
