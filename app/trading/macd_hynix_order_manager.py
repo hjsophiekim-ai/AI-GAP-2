@@ -65,7 +65,21 @@ LEDGER_COLUMNS = [
     "position_confirmed", "signal_id", "idempotency_key", "pipeline_stage",
     "git_sha", "message", "entry_kind", "direction_episode_id", "signal_source",
     "peak_net_return", "current_net_return", "giveback_pct", "profit_lock_active",
+    # Order latency instrumentation (ISO timestamps + segment seconds)
+    "completed_3m_bar_at", "signal_detected_at", "order_requested_at",
+    "kis_order_accepted_at", "broker_executed_at", "position_confirmed_at",
+    "lat_bar_to_signal_s", "lat_signal_to_request_s", "lat_request_to_kis_s",
+    "lat_kis_to_fill_s", "lat_signal_to_fill_s",
 ]
+
+LATENCY_TS_KEYS = (
+    "completed_3m_bar_at",
+    "signal_detected_at",
+    "order_requested_at",
+    "kis_order_accepted_at",
+    "broker_executed_at",
+    "position_confirmed_at",
+)
 
 PIPELINE_STAGES = [
     "Signal",
@@ -111,7 +125,13 @@ def default_state() -> dict[str, Any]:
         "pending_entry_kind": None,
         "pending_signal_source": None,
         "order_requested_at": None,
+        "kis_order_accepted_at": None,
         "broker_executed_at": None,
+        "position_confirmed_at": None,
+        "completed_3m_bar_at": None,
+        "order_latency": {},
+        "order_latency_last": None,
+        "order_latency_history": [],
         "last_order_at": None,
         "position": {
             "symbol": None,
@@ -178,9 +198,14 @@ def default_state() -> dict[str, Any]:
             "tick_intervals": [],
             "avg_interval": None,
             "p95_interval": None,
+            # MACD module is 5s-worker only — never defers to Enhanced 3m main cycle.
+            "main_cycle_3m_wait_count": 0,
+            "completed_3m_bar_at": None,
             "signal_detected_at": None,
             "order_requested_at": None,
+            "kis_order_accepted_at": None,
             "broker_executed_at": None,
+            "position_confirmed_at": None,
         },
         # Clear status split — worker alive ≠ strategy running
         "scheduler_alive": False,
@@ -249,6 +274,14 @@ def load_state() -> dict[str, Any]:
                 base["position"] = merged_pos
             if not isinstance(base.get("worker"), dict):
                 base["worker"] = default_state()["worker"]
+            else:
+                merged_w = default_state()["worker"]
+                merged_w.update(base["worker"])
+                base["worker"] = merged_w
+            if not isinstance(base.get("order_latency"), dict):
+                base["order_latency"] = {}
+            if not isinstance(base.get("order_latency_history"), list):
+                base["order_latency_history"] = []
             if not isinstance(base.get("direction_episode"), dict):
                 base["direction_episode"] = default_state()["direction_episode"]
             else:
@@ -314,6 +347,108 @@ def set_pipeline_stage(state: dict[str, Any], stage: str, ok: bool, message: str
         "at": datetime.now().isoformat(),
         "message": str(message or ""),
     }
+
+
+def begin_order_latency(
+    state: dict[str, Any],
+    *,
+    signal_id: str,
+    completed_3m_bar_at: Optional[str] = None,
+    signal_detected_at: Optional[str] = None,
+) -> dict[str, Any]:
+    """Start a per-signal latency event (instrumentation only — no trading side effects)."""
+    detected = signal_detected_at or datetime.now().isoformat()
+    event = {
+        "signal_id": str(signal_id),
+        "completed_3m_bar_at": completed_3m_bar_at,
+        "signal_detected_at": detected,
+        "order_requested_at": None,
+        "kis_order_accepted_at": None,
+        "broker_executed_at": None,
+        "position_confirmed_at": None,
+        "segments_sec": {},
+    }
+    state["order_latency"] = event
+    state["completed_3m_bar_at"] = completed_3m_bar_at
+    state["signal_detected_at"] = detected
+    for k in ("order_requested_at", "kis_order_accepted_at", "broker_executed_at", "position_confirmed_at"):
+        state[k] = None
+    w = state.setdefault("worker", {})
+    w["completed_3m_bar_at"] = completed_3m_bar_at
+    w["signal_detected_at"] = detected
+    for k in ("order_requested_at", "kis_order_accepted_at", "broker_executed_at", "position_confirmed_at"):
+        w[k] = None
+    # MACD never waits on Enhanced 3-minute main cycle.
+    w["main_cycle_3m_wait_count"] = int(w.get("main_cycle_3m_wait_count") or 0)
+    return event
+
+
+def stamp_order_latency(
+    state: dict[str, Any],
+    key: str,
+    at: Optional[str] = None,
+    *,
+    overwrite: bool = False,
+) -> str:
+    """Stamp one latency timestamp onto the in-flight event + worker mirrors."""
+    if key not in LATENCY_TS_KEYS:
+        raise ValueError(f"unknown latency key: {key}")
+    ts = at or datetime.now().isoformat()
+    event = state.setdefault("order_latency", {})
+    if overwrite or not event.get(key):
+        event[key] = ts
+    state[key] = event.get(key) or ts
+    state.setdefault("worker", {})[key] = state[key]
+    return str(state[key])
+
+
+def latency_fields_from_state(state: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Ledger column payload for the current (or last) order-latency event."""
+    from app.trading.macd_hynix_ledger import compute_latency_segments
+
+    event = dict((state or {}).get("order_latency") or {})
+    if not event.get("signal_id"):
+        event = dict((state or {}).get("order_latency_last") or {})
+    segs = compute_latency_segments(event) if event else {}
+    return {
+        "completed_3m_bar_at": event.get("completed_3m_bar_at") or "",
+        "signal_detected_at": event.get("signal_detected_at") or "",
+        "order_requested_at": event.get("order_requested_at") or "",
+        "kis_order_accepted_at": event.get("kis_order_accepted_at") or "",
+        "broker_executed_at": event.get("broker_executed_at") or "",
+        "position_confirmed_at": event.get("position_confirmed_at") or "",
+        "lat_bar_to_signal_s": segs.get("bar_complete_to_signal_detect")
+        if segs.get("bar_complete_to_signal_detect") is not None
+        else "",
+        "lat_signal_to_request_s": segs.get("signal_detect_to_order_request")
+        if segs.get("signal_detect_to_order_request") is not None
+        else "",
+        "lat_request_to_kis_s": segs.get("order_request_to_kis_accept")
+        if segs.get("order_request_to_kis_accept") is not None
+        else "",
+        "lat_kis_to_fill_s": segs.get("kis_accept_to_fill_confirm")
+        if segs.get("kis_accept_to_fill_confirm") is not None
+        else "",
+        "lat_signal_to_fill_s": segs.get("signal_detect_to_final_fill")
+        if segs.get("signal_detect_to_final_fill") is not None
+        else "",
+    }
+
+
+def finalize_order_latency(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Close the in-flight latency event into history (after fill confirm)."""
+    from app.trading.macd_hynix_ledger import compute_latency_segments
+
+    event = dict(state.get("order_latency") or {})
+    if not event.get("signal_id") or not event.get("signal_detected_at"):
+        return None
+    event["segments_sec"] = compute_latency_segments(event)
+    event["finalized_at"] = datetime.now().isoformat()
+    hist = list(state.get("order_latency_history") or [])
+    hist.append(event)
+    state["order_latency_history"] = hist[-100:]
+    state["order_latency_last"] = event
+    return event
 
 
 def write_mutex(*, macd_on: bool, mode: str, reason: str = "") -> None:
@@ -775,6 +910,7 @@ def _record_fill(
     current_net_return: Optional[float] = None,
     giveback_pct: Optional[float] = None,
     profit_lock_active: Optional[bool] = None,
+    latency_fields: Optional[dict[str, Any]] = None,
 ) -> str:
     """Record ledger only after broker confirmation when success=True."""
     cost_engine = TradeCostEngine()
@@ -810,7 +946,7 @@ def _record_fill(
         success = False
         message = (message or "") + " | LEDGER_BLOCKED_UNCONFIRMED"
 
-    return _append_ledger({
+    row = {
         "timestamp": datetime.now().isoformat(),
         "mode": mode,
         "macd_signal": macd_signal,
@@ -840,7 +976,10 @@ def _record_fill(
         "current_net_return": "" if current_net_return is None else round(float(current_net_return), 6),
         "giveback_pct": "" if giveback_pct is None else round(float(giveback_pct), 6),
         "profit_lock_active": "" if profit_lock_active is None else bool(profit_lock_active),
-    })
+    }
+    if latency_fields:
+        row.update(latency_fields)
+    return _append_ledger(row)
 
 
 def execute_sell_all(
@@ -862,6 +1001,7 @@ def execute_sell_all(
     current_net_return: Optional[float] = None,
     giveback_pct: Optional[float] = None,
     profit_lock_active: Optional[bool] = None,
+    state: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if symbol not in TRADE_SYMBOLS:
         return {"success": False, "message": f"invalid trade symbol {symbol}"}
@@ -903,6 +1043,11 @@ def execute_sell_all(
             }
         order = broker.sell(symbol, SYMBOL_NAME.get(symbol, symbol), before, float(price), order_type="market")
         od = _order_to_dict(order)
+        kis_accepted_at = None
+        if od.get("success"):
+            kis_accepted_at = datetime.now().isoformat()
+            if state is not None:
+                stamp_order_latency(state, "kis_order_accepted_at", kis_accepted_at, overwrite=False)
         if not od.get("success"):
             coordinated.mark(order_coord.ORDER_FAILED, broker_error=od.get("message"))
             return {
@@ -910,6 +1055,7 @@ def execute_sell_all(
                 "message": od.get("message") or "sell failed",
                 "idempotency_key": coordinated.idempotency_key,
                 "order": od,
+                "kis_order_accepted_at": kis_accepted_at,
             }
         confirmed = confirm_quantity(broker, symbol, retry_while_qty_equals=before)
         remaining = confirmed.get("quantity") if confirmed.get("ok") else None
@@ -929,6 +1075,7 @@ def execute_sell_all(
                 remaining_quantity=remaining,
                 broker_order_id=od.get("order_id"),
             )
+            broker_at = datetime.now().isoformat()
             _record_fill(
                 mode=mode,
                 macd_signal=macd_signal,
@@ -954,6 +1101,7 @@ def execute_sell_all(
                 current_net_return=current_net_return,
                 giveback_pct=giveback_pct,
                 profit_lock_active=profit_lock_active,
+                latency_fields=latency_fields_from_state(state) if state is not None else None,
             )
             return {
                 "success": True,
@@ -962,6 +1110,8 @@ def execute_sell_all(
                 "fill_confirmed": True,
                 "idempotency_key": coordinated.idempotency_key,
                 "order": od,
+                "kis_order_accepted_at": kis_accepted_at,
+                "broker_executed_at": broker_at,
             }
 
         coordinated.mark(
@@ -1025,6 +1175,7 @@ def execute_buy(
     entry_kind: str = ENTRY_INITIAL,
     direction_episode_id: str = "",
     signal_source: str = SIGNAL_SOURCE,
+    state: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if symbol not in TRADE_SYMBOLS:
         return {"success": False, "message": f"invalid trade symbol {symbol}"}
@@ -1076,6 +1227,12 @@ def execute_buy(
             }
         order = broker.buy(symbol, SYMBOL_NAME.get(symbol, symbol), qty, float(price), order_type="market")
         od = _order_to_dict(order)
+        kis_accepted_at = None
+        if od.get("success"):
+            kis_accepted_at = datetime.now().isoformat()
+            if state is not None:
+                # Prefer buy accept when sell did not already stamp; else keep first.
+                stamp_order_latency(state, "kis_order_accepted_at", kis_accepted_at, overwrite=False)
         if not od.get("success"):
             coordinated.mark(order_coord.ORDER_FAILED, broker_error=od.get("message"))
             return {
@@ -1083,6 +1240,7 @@ def execute_buy(
                 "message": od.get("message") or "buy failed",
                 "idempotency_key": coordinated.idempotency_key,
                 "order": od,
+                "kis_order_accepted_at": kis_accepted_at,
             }
         confirmed = confirm_quantity(broker, symbol, retry_while_qty_equals=before)
         after = confirmed.get("quantity") if confirmed.get("ok") else None
@@ -1095,6 +1253,10 @@ def execute_buy(
                 remaining_quantity=after,
                 broker_order_id=od.get("order_id"),
             )
+            fill_at = datetime.now().isoformat()
+            if state is not None:
+                stamp_order_latency(state, "broker_executed_at", fill_at, overwrite=True)
+                stamp_order_latency(state, "position_confirmed_at", fill_at, overwrite=True)
             _record_fill(
                 mode=mode,
                 macd_signal=macd_signal,
@@ -1114,6 +1276,7 @@ def execute_buy(
                 entry_kind=entry_kind,
                 direction_episode_id=direction_episode_id,
                 signal_source=signal_source,
+                latency_fields=latency_fields_from_state(state) if state is not None else None,
             )
             return {
                 "success": True,
@@ -1123,6 +1286,9 @@ def execute_buy(
                 "fill_confirmed": True,
                 "idempotency_key": coordinated.idempotency_key,
                 "order": od,
+                "kis_order_accepted_at": kis_accepted_at,
+                "broker_executed_at": fill_at,
+                "position_confirmed_at": fill_at,
             }
 
         coordinated.mark(order_coord.ORDER_ACCEPTED, sent_qty=qty, broker_order_id=od.get("order_id"))
@@ -1152,6 +1318,7 @@ def execute_buy(
             "entry_kind": entry_kind,
             "direction_episode_id": direction_episode_id,
             "signal_source": signal_source,
+            **(latency_fields_from_state(state) if state is not None else {}),
         })
         return {
             "success": False,
@@ -1159,6 +1326,7 @@ def execute_buy(
             "fill_confirmed": False,
             "idempotency_key": coordinated.idempotency_key,
             "order": od,
+            "kis_order_accepted_at": kis_accepted_at,
         }
 
 
@@ -1358,8 +1526,7 @@ def switch_to_direction(
 
         macd_signal = direction
         set_pipeline_stage(state, "Signal", True, signal_id)
-        state["order_requested_at"] = datetime.now().isoformat()
-        state.setdefault("worker", {})["order_requested_at"] = state["order_requested_at"]
+        stamp_order_latency(state, "order_requested_at", overwrite=True)
 
         ep = state.get("direction_episode") or {}
         ep_id = str(ep.get("id") or "")
@@ -1401,6 +1568,7 @@ def switch_to_direction(
                         current_net_return=pl.get("current_net_return"),
                         giveback_pct=pl.get("giveback_pct"),
                         profit_lock_active=pl.get("profit_lock_active"),
+                        state=state,
                     )
                     if sell_res.get("success") and (sell_res.get("fill_confirmed") or sell_res.get("already_flat")):
                         break
@@ -1470,6 +1638,7 @@ def switch_to_direction(
                 entry_kind=entry_kind,
                 direction_episode_id=ep_id,
                 signal_source=signal_source,
+                state=state,
             )
             if buy_res.get("success") and buy_res.get("fill_confirmed"):
                 break
@@ -1485,7 +1654,18 @@ def switch_to_direction(
         set_pipeline_stage(state, "Position Confirmed", True, f"qty={buy_res.get('bought_quantity')}")
         set_pipeline_stage(state, "Ledger Recorded", True, signal_id)
 
-        now_iso = datetime.now().isoformat()
+        now_iso = (
+            buy_res.get("position_confirmed_at")
+            or buy_res.get("broker_executed_at")
+            or datetime.now().isoformat()
+        )
+        if buy_res.get("kis_order_accepted_at"):
+            stamp_order_latency(
+                state, "kis_order_accepted_at", buy_res["kis_order_accepted_at"], overwrite=False
+            )
+        stamp_order_latency(state, "broker_executed_at", now_iso, overwrite=True)
+        stamp_order_latency(state, "position_confirmed_at", now_iso, overwrite=True)
+        finalize_order_latency(state)
         prev_qty = int(pos.get("quantity") or 0) if allow_same_direction_add else 0
         prev_avg = float(pos.get("avg_price") or 0) if allow_same_direction_add else 0.0
         bought = int(buy_res.get("bought_quantity") or 0)
@@ -1526,6 +1706,7 @@ def switch_to_direction(
         state["last_order_at"] = now_iso
         state["last_event"] = entry_kind
         state.setdefault("worker", {})["broker_executed_at"] = now_iso
+        state.setdefault("worker", {})["position_confirmed_at"] = now_iso
         state["processed_signal_ids"] = (processed + [signal_id])[-50:]
         state["order_block_reason"] = None
         state["last_signal_direction"] = direction
@@ -1536,6 +1717,7 @@ def switch_to_direction(
             "target": target,
             "entry_kind": entry_kind,
             "message": "switch complete",
+            "order_latency": state.get("order_latency_last"),
         }
 
 

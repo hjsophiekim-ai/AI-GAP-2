@@ -63,6 +63,7 @@ _status: dict[str, Any] = {
     "tick_intervals": [],
     "started_at": None,
     "last_error": None,
+    "main_cycle_3m_wait_count": 0,
 }
 
 
@@ -114,9 +115,10 @@ def get_worker_status() -> dict[str, Any]:
         intervals = list(_status.get("tick_intervals") or [])
         return {
             **dict(_status),
-            "tick_intervals": intervals[-10:],
+            "tick_intervals": intervals[-40:],
             "avg_interval": _avg(intervals[-20:]),
             "p95_interval": _p95(intervals[-20:]),
+            "main_cycle_3m_wait_count": int(_status.get("main_cycle_3m_wait_count") or 0),
             "thread_alive": bool(_worker_thread and _worker_thread.is_alive()),
         }
 
@@ -147,23 +149,42 @@ def _load_minute_df(mode: str, count: int = 120) -> pd.DataFrame:
     except Exception as exc:
         logger.warning("[MACDHynix] minute fetch failed: %s", exc)
 
+    df = pd.DataFrame()
     if rows:
         df = pd.DataFrame(rows).drop_duplicates("datetime").sort_values("datetime")
-        return df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
 
-    # Cache fallback (read-only)
-    from app.utils.data_paths import CACHE_DIR
+    # Cache fallback (read-only) when KIS returned nothing (typical pre-open).
+    if df.empty:
+        from app.utils.data_paths import CACHE_DIR
 
-    cache = CACHE_DIR / "hynix_minute_1m.csv"
-    if cache.exists():
-        try:
-            df = pd.read_csv(cache)
-            if "datetime" in df.columns:
-                df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
-                return df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
-        except Exception as exc:
-            logger.warning("[MACDHynix] cache read failed: %s", exc)
-    return pd.DataFrame()
+        cache = CACHE_DIR / "hynix_minute_1m.csv"
+        if cache.exists():
+            try:
+                cached = pd.read_csv(cache)
+                if "datetime" in cached.columns:
+                    cached["datetime"] = pd.to_datetime(cached["datetime"], errors="coerce")
+                    df = (
+                        cached.dropna(subset=["datetime"])
+                        .sort_values("datetime")
+                        .reset_index(drop=True)
+                    )
+            except Exception as exc:
+                logger.warning("[MACDHynix] cache read failed: %s", exc)
+
+    # Pre-open / thin feed: merge prior-session 1m so UI MACD can leave WARMUP_LT_26.
+    # Need >26 completed 3m bars ≈ >80 1m bars.
+    if len(df) < 90:
+        prior_day = _prior_session_date(_now_kst())
+        prior = _load_prior_day_minute_df(mode, prior_day)
+        if prior is not None and len(prior) > 0:
+            df = (
+                pd.concat([prior, df], ignore_index=True)
+                .drop_duplicates("datetime")
+                .sort_values("datetime")
+                .reset_index(drop=True)
+            )
+    return df if df is not None else pd.DataFrame()
 
 
 def _load_prior_day_minute_df(mode: str, day: str) -> pd.DataFrame:
@@ -401,14 +422,26 @@ def run_once(
     own_broker = False
     if broker is None:
         try:
+            # UI stores real_confirm_ok after phrase match; worker must pass the
+            # configured confirm text into KisRealBroker gate 4 (empty string fails).
+            real_ready = bool(state.get("real_confirm_ok"))
+            confirm_text = ""
+            if mode == "real" and real_ready:
+                from app.config import get_config
+
+                confirm_text = str(get_config().real_confirm_text() or "")
             broker = om.create_macd_broker(
                 mode,
-                real_confirm_text="",
-                real_ready=bool(state.get("real_confirm_ok")),
+                real_confirm_text=confirm_text,
+                real_ready=real_ready,
             )
             own_broker = True
+            # Clear stale gate errors from a prior failed create / session.
+            if state.get("order_block_reason"):
+                state["order_block_reason"] = None
         except Exception as exc:
             state["order_block_reason"] = f"broker create failed: {exc}"
+            om.refresh_runtime_status(state, worker_alive=True)
             om.save_state(state)
             result["ok"] = False
             result["error"] = str(exc)
@@ -458,6 +491,10 @@ def run_once(
             result["skipped"] = "outside_session"
             state["next_action"] = _next_action_label(state)
             om.refresh_runtime_status(state, worker_alive=True)
+            # Pre-open / after-close: orders are gated; surface MARKET_CLOSED clearly.
+            if state.get("strategy_enabled") and not state.get("force_liquidate_pending"):
+                state["primary_block_reason"] = "MARKET_CLOSED"
+                state["order_execution_enabled"] = False
             om.save_state(state)
             return result
 
@@ -504,6 +541,12 @@ def run_once(
                     state["last_signal_bar_ts"] = eval_res.get("bar_ts")
                     state["last_signal_direction"] = new_dir
                     state["last_signal_id"] = sid
+                    om.begin_order_latency(
+                        state,
+                        signal_id=sid,
+                        completed_3m_bar_at=eval_res.get("bar_close_ts"),
+                        signal_detected_at=now.isoformat(),
+                    )
                     om.set_pipeline_stage(state, "Signal", True, sid)
                     result["actions"].append({"opposite_signal": sid, "direction": new_dir})
                     opposite_pending = True
@@ -610,7 +653,12 @@ def run_once(
                     state["pending_entry_kind"] = ENTRY_OPEN_IMMEDIATE
                     state["pending_signal_source"] = SIGNAL_SOURCE_OPEN_IMMEDIATE
                     state["pending_budget_fraction"] = OPEN_IMMEDIATE_BUDGET_FRACTION
-                    state.setdefault("worker", {})["signal_detected_at"] = now.isoformat()
+                    om.begin_order_latency(
+                        state,
+                        signal_id=sid,
+                        completed_3m_bar_at=None,
+                        signal_detected_at=now.isoformat(),
+                    )
                     om.set_pipeline_stage(state, "Signal", True, sid)
                     result["actions"].append({"opening_probe": sid, "direction": probe["direction"]})
 
@@ -635,6 +683,12 @@ def run_once(
                 state["pending_signal_source"] = SIGNAL_SOURCE_OPEN_IMMEDIATE
                 state["pending_budget_fraction"] = OPEN_IMMEDIATE_BUDGET_FRACTION
                 state["pending_open_scale"] = True
+                om.begin_order_latency(
+                    state,
+                    signal_id=sid,
+                    completed_3m_bar_at=eval_res.get("bar_close_ts"),
+                    signal_detected_at=now.isoformat(),
+                )
                 result["actions"].append({"opening_scale": sid, "direction": probe_dir})
             else:
                 flat_res = om.flatten_opening_probe_unconfirmed(
@@ -665,7 +719,12 @@ def run_once(
                 # Arm direction immediately so the same UP/DOWN streak cannot re-fire.
                 state["last_signal_direction"] = eval_res["signal_direction"]
                 state["last_signal_id"] = sid
-                state.setdefault("worker", {})["signal_detected_at"] = now.isoformat()
+                om.begin_order_latency(
+                    state,
+                    signal_id=sid,
+                    completed_3m_bar_at=eval_res.get("bar_close_ts"),
+                    signal_detected_at=now.isoformat(),
+                )
                 om.set_pipeline_stage(state, "Signal", True, sid)
                 result["actions"].append({"signal": sid, "direction": eval_res["signal_direction"]})
 
@@ -685,7 +744,12 @@ def run_once(
                 state["pending_signal_at"] = now.isoformat()
                 state["pending_entry_kind"] = ENTRY_CONTINUATION
                 state["pending_signal_source"] = SIGNAL_SOURCE_CONTINUATION
-                state.setdefault("worker", {})["signal_detected_at"] = now.isoformat()
+                om.begin_order_latency(
+                    state,
+                    signal_id=sid,
+                    completed_3m_bar_at=eval_res.get("bar_close_ts"),
+                    signal_detected_at=now.isoformat(),
+                )
                 om.set_pipeline_stage(state, "Signal", True, sid)
                 result["actions"].append({
                     "continuation_reentry": sid,
@@ -822,11 +886,14 @@ def _worker_loop() -> None:
                 state["session_date"] = today
             with _status_lock:
                 intervals = list(_status.get("tick_intervals") or [])
-                state["worker"]["tick_intervals"] = [round(x, 3) for x in intervals[-10:]]
+                state["worker"]["tick_intervals"] = [round(x, 3) for x in intervals[-40:]]
                 state["worker"]["avg_interval"] = _avg(intervals[-20:])
                 state["worker"]["p95_interval"] = _p95(intervals[-20:])
+                # Confirm: MACD uses fixed 5s worker only — never waits on 3m main cycle.
+                state["worker"]["main_cycle_3m_wait_count"] = 0
                 _status["alive"] = True
                 _status["last_tick_at"] = state["worker"]["last_tick_at"]
+                _status["main_cycle_3m_wait_count"] = 0
             if state.get("auto_trade_on") or state.get("force_liquidate_pending"):
                 run_once(state=state)
             else:
@@ -901,6 +968,7 @@ def start_auto_trade(
     state["masked_account"] = masked_account
     state["session_date"] = _now_kst().strftime("%Y-%m-%d")
     state["primary_block_reason"] = None
+    state["order_block_reason"] = None
     state["legacy_truth_debug"] = om.legacy_auto_trade_truth(force_disk=True)
     om.write_mutex(macd_on=True, mode=mode, reason="macd_started")
     om.refresh_runtime_status(state, worker_alive=True)

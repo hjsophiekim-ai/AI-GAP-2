@@ -23,7 +23,7 @@ require_login()
 from app.config import get_config, get_kis_account_config, mask_account  # noqa: E402
 from app.trading import macd_hynix_order_manager as om  # noqa: E402
 from app.trading import macd_hynix_worker as worker  # noqa: E402
-from app.trading.macd_hynix_ledger import summarize_daily_trading  # noqa: E402
+from app.trading.macd_hynix_ledger import summarize_daily_trading, summarize_order_latency  # noqa: E402
 from app.trading.macd_hynix_strategy import (  # noqa: E402
     DIR_DOWN,
     DIR_HOLD,
@@ -319,8 +319,69 @@ st.write(
 st.write(
     f"signal_detected_at=`{ww.get('signal_detected_at')}` · "
     f"order_requested_at=`{ww.get('order_requested_at') or state.get('order_requested_at')}` · "
-    f"broker_executed_at=`{ww.get('broker_executed_at') or state.get('broker_executed_at')}`"
+    f"kis_order_accepted_at=`{ww.get('kis_order_accepted_at') or state.get('kis_order_accepted_at')}` · "
+    f"broker_executed_at=`{ww.get('broker_executed_at') or state.get('broker_executed_at')}` · "
+    f"position_confirmed_at=`{ww.get('position_confirmed_at') or state.get('position_confirmed_at')}`"
 )
+
+# ── Order latency instrumentation ─────────────────────────────────────────
+st.subheader("주문 지연 계측")
+lat = summarize_order_latency(
+    state=state,
+    tick_intervals=list(ww.get("tick_intervals") or wstatus.get("tick_intervals") or []),
+    main_cycle_3m_wait_count=int(
+        ww.get("main_cycle_3m_wait_count")
+        if ww.get("main_cycle_3m_wait_count") is not None
+        else (wstatus.get("main_cycle_3m_wait_count") or 0)
+    ),
+)
+verdict = lat.get("verdict") or "NOT_MEASURED"
+st.metric("Latency verdict", verdict)
+st.caption(
+    f"samples n=`{lat.get('sample_count')}` · "
+    f"3m-cycle waits=`{lat.get('main_cycle_3m_wait_count')}` "
+    f"(MACD는 5초 worker 전용 — Enhanced 3분 메인사이클 대기 없음) · "
+    f"ledger=`{lat.get('ledger_path')}`"
+)
+
+_seg_labels = {
+    "bar_complete_to_signal_detect": "1) 3m bar complete → signal detect",
+    "signal_detect_to_order_request": "2) signal detect → order request",
+    "order_request_to_kis_accept": "3) order request → KIS accept",
+    "kis_accept_to_fill_confirm": "4) KIS accept → fill confirm",
+    "signal_detect_to_final_fill": "5) signal detect → final fill (E2E)",
+}
+seg_rows = []
+for key, label in _seg_labels.items():
+    s = (lat.get("segments") or {}).get(key) or {}
+    seg_rows.append({
+        "segment": label,
+        "n": s.get("n") or 0,
+        "median_s": s.get("median"),
+        "p95_s": s.get("p95"),
+        "max_s": s.get("maximum"),
+        "over_10s": s.get("over_10s_count") or 0,
+    })
+# Extra: signal→KIS (gate)
+sk = lat.get("signal_detect_to_kis_accept") or {}
+seg_rows.append({
+    "segment": "signal detect → KIS accept (gate)",
+    "n": sk.get("n") or 0,
+    "median_s": sk.get("median"),
+    "p95_s": sk.get("p95"),
+    "max_s": sk.get("maximum"),
+    "over_10s": sk.get("over_10s_count") or 0,
+})
+st.dataframe(pd.DataFrame(seg_rows), use_container_width=True, hide_index=True)
+
+tick = lat.get("worker_tick") or {}
+t1, t2, t3, t4 = st.columns(4)
+t1.metric("Worker tick n", tick.get("n") or 0)
+t2.metric("Worker tick mean (≤5.5s)", tick.get("mean"))
+t3.metric("Worker tick p95 (≤7s)", tick.get("p95"))
+t4.metric("Worker tick max", tick.get("maximum"))
+if verdict == "NOT_MEASURED":
+    st.info("실신호 latency 샘플이 없어 게이트 판정은 NOT_MEASURED 입니다. 계측 코드는 배포됨.")
 
 # ── Pipeline ──────────────────────────────────────────────────────────────
 st.subheader("실행 파이프라인")
@@ -348,6 +409,10 @@ if rows:
             "peak_net_return", "current_net_return", "giveback_pct", "profit_lock_active",
             "entry_kind", "direction_episode_id", "signal_source", "mode", "git_sha",
             "success", "signal_id",
+            "completed_3m_bar_at", "signal_detected_at", "order_requested_at",
+            "kis_order_accepted_at", "broker_executed_at", "position_confirmed_at",
+            "lat_bar_to_signal_s", "lat_signal_to_request_s", "lat_request_to_kis_s",
+            "lat_kis_to_fill_s", "lat_signal_to_fill_s",
         ] if c in df.columns
     ]
     st.dataframe(df[show_cols].iloc[::-1], use_container_width=True, height=360)
