@@ -87,7 +87,8 @@ def test_fast_worker_deferral_requires_completed_snapshot_fields():
         "live_trade_direction": {"direction": "UP"},
     }
     engine._mark_fast_worker_deferral(state, now=now)
-    assert state["pending_fast_worker_deferral"]["reason_code"] == "FAST_WORKER_OWNS_ENTRY"
+    # Deferral marker may still exist for advisory wake, but must not own orders.
+    assert "pending_fast_worker_deferral" in state
 
     continuation_state = {
         "last_result": {
@@ -100,18 +101,18 @@ def test_fast_worker_deferral_requires_completed_snapshot_fields():
             "structural_signal_label": "PULLBACK",
             "target_pct": 0.30,
         },
-        "last_block_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+        "last_block_reason": "CHASE_BLOCK",
         "order_sizing_audit": {
             "position_cap": 1.0,
             "target_ratio": 0.30,
             "effective_target_pct": 0.30,
             "calculated_quantity": 0,
-            "order_skip_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+            "order_skip_reason": "CHASE_BLOCK",
         },
     }
     engine._update_fast_worker_decision_snapshot(
         state, now=now + timedelta(seconds=5), continuation_state=continuation_state,
-        early_result={"skipped": True, "reason_code": "FAST_WORKER_OWNS_ENTRY"},
+        early_result={"skipped": True, "reason_code": "FAST_WORKER_DIAGNOSTIC_ONLY", "order_permission": "DIAGNOSTIC_ONLY"},
     )
     snap = state["last_completed_decision_snapshot"]
     for key in engine._FAST_WORKER_SNAPSHOT_REQUIRED_FIELDS:
@@ -119,10 +120,10 @@ def test_fast_worker_deferral_requires_completed_snapshot_fields():
     assert snap["final_action"]["value"] == "HOLD"
     assert snap["block_reason"]["value"]
     assert snap["primary_block_reason"]["value"]
+    assert not engine._is_fast_worker_non_owner_reason(snap["primary_block_reason"]["value"])
     assert "coordinator_result" in snap and isinstance(snap["coordinator_result"], dict)
     assert "broker_result" in snap and isinstance(snap["broker_result"], dict)
     assert engine._fast_worker_snapshot_is_complete(snap)
-    assert "pending_fast_worker_deferral" not in state
 
 
 def test_actual_entry_engine_display_unified_to_weighted_live():
@@ -195,7 +196,7 @@ def test_enhanced_score_does_not_overwrite_live_direction_in_resolver():
 
 
 def test_deferral_completed_snapshot_within_15s_has_required_fields():
-    """After MAIN_CYCLE_ENTRY_DEFERRED, Fast Worker snapshot within 15s is BUY or clear HOLD."""
+    """Fast Worker advisory snapshot within 15s is BUY or clear HOLD — never FW ownership."""
     from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
 
     now = datetime(2026, 7, 22, 10, 50, 0)
@@ -237,11 +238,11 @@ def test_deferral_completed_snapshot_within_15s_has_required_fields():
     assert snap["final_action"]["value"] in ("BUY", "HOLD")
     if snap["final_action"]["value"] == "HOLD":
         assert snap["primary_block_reason"]["value"]
+        assert not engine._is_fast_worker_non_owner_reason(snap["primary_block_reason"]["value"])
     assert snap["resolved_direction"]["value"] == "UP"
     assert snap["target_symbol"]["value"] == LONG_SYMBOL == "0193T0"
     assert "coordinator_result" in snap and "broker_result" in snap
     assert engine._fast_worker_snapshot_is_complete(snap)
-    assert "pending_fast_worker_deferral" not in state
 
     # DOWN → 0197X0
     state_down = {
@@ -326,13 +327,13 @@ def test_continuation_candidate_not_approved_without_order():
                 "structural_signal_label": "BUY",
                 "target_pct": 0.30,
             },
-            "last_block_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+            "last_block_reason": "ORDER_NOT_EXECUTED",
             "order_sizing_audit": {
                 "position_cap": 1.0,
                 "target_ratio": 0.30,
                 "effective_target_pct": 0.30,
                 "calculated_quantity": 0,
-                "order_skip_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+                "order_skip_reason": "ORDER_NOT_EXECUTED",
             },
         },
     )
@@ -340,6 +341,7 @@ def test_continuation_candidate_not_approved_without_order():
     assert snap["continuation_reason"]["value"] == "CONTINUATION_CANDIDATE"
     assert snap["final_action"]["value"] == "HOLD"
     assert snap["primary_block_reason"]["value"]
+    assert not engine._is_fast_worker_non_owner_reason(snap["primary_block_reason"]["value"])
     # Zero “approved” with neither order nor block result
     assert not (
         snap["continuation_reason"]["value"] == "CONTINUATION_ENTRY_APPROVED"

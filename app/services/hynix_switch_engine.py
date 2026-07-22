@@ -86,6 +86,12 @@ def _blank_pipeline_trace() -> dict:
     return {
         "prediction_signal": "HOLD",
         "entry_approved": None, "entry_approved_reason": "",
+        "entry_owner": None,
+        "primary_block_reason": None,
+        "order_reservation": None,
+        "execution_error": None,
+        "configured_entry_engine": WEIGHTED_LIVE_ENTRY_ENGINE,
+        "actual_entry_engine": WEIGHTED_LIVE_ENTRY_ENGINE,
         "risk_manager_ok": True, "risk_manager_reason": "정상",
         "risk_approved": True,
         "order_sent": False,
@@ -167,6 +173,38 @@ _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS = 15.0
 _CONTINUATION_APPROVED_REASON = "CONTINUATION_ENTRY_APPROVED"
 _CONTINUATION_CANDIDATE_REASON = "CONTINUATION_CANDIDATE"
 _CONFIRMATION_PENDING_REASON = "CONFIRMATION_PENDING"
+# Fast Worker / snapshot deferral codes must never own live orders or be
+# primary HOLD / block reasons when WOC LIVE is the entry engine.
+_FAST_WORKER_NON_OWNER_REASONS = frozenset({
+    "FAST_WORKER_OWNS_ENTRY",
+    "MAIN_CYCLE_ENTRY_DEFERRED",
+    "FAST_WORKER_SNAPSHOT_PENDING",
+    "FAST_WORKER_SNAPSHOT_TIMEOUT",
+    "FAST_WORKER_SNAPSHOT_STALE",
+    "FAST_WORKER_ENTRY_NOT_EXECUTED",
+    "FAST_WORKER_ENTRY_ALREADY_ATTEMPTED",
+    "FAST_WORKER_ORDER_NOT_SENT",
+    "FAST_WORKER_DIAGNOSTIC_ONLY",
+})
+WOC_ENTRY_OWNER = "WEIGHTED_ORDER_CONTROLLER"
+
+
+def _is_fast_worker_non_owner_reason(value) -> bool:
+    code = _normalize_reason_code(value)
+    if not code:
+        return False
+    upper = code.upper()
+    if upper in _FAST_WORKER_NON_OWNER_REASONS:
+        return True
+    if upper.startswith("FAST_WORKER_"):
+        return True
+    if "MAIN_CYCLE_ENTRY_DEFERRED" in upper:
+        return True
+    return False
+
+
+def _filter_non_owner_block_candidates(candidates: Optional[list]) -> list:
+    return [c for c in (candidates or []) if c and not _is_fast_worker_non_owner_reason(c)]
 
 
 def _set_live_entry_engine_state(state: dict, *, now: datetime, reason: str) -> None:
@@ -216,26 +254,32 @@ def _resolve_consistent_final_action(
     - ETF_5S_10S_BOTH_OPPOSITE or CHASE_BLOCK → HOLD + primary_block_reason
     - Structural Label=HOLD → Final Action cannot be BUY
     - Forbid BUY + empty block reason (BUY only when order actually succeeded)
+    - FAST_WORKER_* / MAIN_CYCLE_ENTRY_DEFERRED never become primary_block_reason
     """
     cont = continuation_result or {}
     structural = _normalize_reason_code(structural_label or cont.get("structural_signal_label"))
+    filtered_candidates = _filter_non_owner_block_candidates(block_candidates)
     hard = _first_hard_hold_reason(
         cont.get("reason_code"),
-        *((block_candidates or [])),
+        *filtered_candidates,
         *list(cont.get("hard_blocks") or []),
     )
-    if hard:
+    if hard and not _is_fast_worker_non_owner_reason(hard):
         return "HOLD", hard, hard
     if structural == "HOLD":
         reason = _normalize_reason_code(cont.get("reason_code")) or "STRUCTURAL_HOLD"
+        if _is_fast_worker_non_owner_reason(reason):
+            reason = "STRUCTURAL_HOLD"
         return "HOLD", reason, reason
     if order_ok:
         return "BUY", None, None
-    for raw in (block_candidates or []):
+    for raw in filtered_candidates:
         code = _normalize_reason_code(raw)
-        if code:
+        if code and not _is_fast_worker_non_owner_reason(code):
             return "HOLD", code, code
     fallback = _normalize_reason_code(cont.get("reason_code")) or "ORDER_NOT_EXECUTED"
+    if _is_fast_worker_non_owner_reason(fallback):
+        fallback = "ORDER_NOT_EXECUTED"
     return "HOLD", fallback, fallback
 
 
@@ -274,13 +318,13 @@ def _fast_worker_snapshot_is_complete(snapshot: Optional[dict]) -> bool:
 
 
 def _mark_fast_worker_deferral(state: dict, *, now: datetime) -> None:
+    """Advisory Fast Worker wake only — never grants order ownership."""
     state["pending_fast_worker_deferral"] = {
-        "reason_code": "FAST_WORKER_OWNS_ENTRY",
+        "reason_code": "FAST_WORKER_SNAPSHOT_ADVISORY",
         "deferred_at": now.isoformat(),
         "deadline_seconds": _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS,
     }
-    # Ask Fast Worker to run ASAP so a completed snapshot lands within 15s.
-    _request_fast_worker_wake(state, reason="MAIN_CYCLE_ENTRY_DEFERRED")
+    _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_ADVISORY")
 
 
 def _clear_fast_worker_deferral(state: dict) -> None:
@@ -990,6 +1034,506 @@ def _weighted_entry_fusion_metadata(state: dict, continuation_eval: dict) -> dic
     }
 
 
+def _woc_live_entry_inputs_from_state(
+    state: dict,
+    *,
+    decision: dict,
+    hynix_price: Optional[float],
+    inverse_price: Optional[float],
+    now: datetime,
+    broker=None,
+) -> Optional[dict]:
+    """Build evaluate_range_weighted_entry inputs from latest main-cycle / Fast Worker state.
+
+    Missing Fast Worker snapshot is advisory only — we continue with whatever
+    live slopes / continuation state the main cycle already has.
+    """
+    from app.trading import early_trend_detector as etd
+    from app.trading.etf_entry_confirmation import resolve_window_directions, trade_aligned_window_directions
+    from app.trading.range_weighted_optimize import (
+        daily_loss_limit_reached_from_pct,
+        get_range_weighted_config,
+        resolve_day_regime_from_cache,
+    )
+    from app.trading.strategy_architecture import (
+        chase_hard_block,
+        entry_timing_ok,
+        episode_gate_blocks_entry,
+        get_episode_gate_mode,
+    )
+
+    live_trade = state.get("live_trade_direction") or {}
+    desired_live_direction = _normalize_direction(live_trade.get("direction"))
+    if desired_live_direction not in ("UP", "DOWN"):
+        return {
+            "ok": False,
+            "block_reason": "NO_LIVE_DIRECTION",
+            "missing_fields": ["live_trade_direction.direction"],
+            "continuation_eval": None,
+            "continuation_state": dict(state.get("trend_continuation_entry") or {}),
+            "desired_live_direction": desired_live_direction,
+            "desired_symbol": None,
+        }
+
+    desired_symbol = symbol_for_live_direction(desired_live_direction)
+    etd_state = dict(state.get("early_trend_detector") or {})
+    live_slopes = etd_state.get("live_slopes") or {}
+    current_etf_price = (
+        hynix_price if desired_symbol == HYNIX_SYMBOL
+        else (inverse_price if desired_symbol == INVERSE_SYMBOL else None)
+    )
+    missing = []
+    if current_etf_price is None:
+        missing.append("current_etf_price")
+    if not live_slopes and not (state.get("trend_continuation_entry") or {}).get("last_result"):
+        # Still evaluable with empty windows — DATA_INSUFFICIENT comes from evaluate itself.
+        pass
+
+    continuation_state = dict(state.get("trend_continuation_entry") or {})
+    continuation_state["last_evaluated_at"] = now.isoformat()
+    continuation_state["evaluation_count_today"] = int(continuation_state.get("evaluation_count_today") or 0) + 1
+
+    confirm_dirs_raw = resolve_window_directions(live_slopes.get(desired_symbol)) if desired_symbol else {}
+    oppose_symbol = INVERSE_SYMBOL if desired_symbol == HYNIX_SYMBOL else HYNIX_SYMBOL
+    oppose_dirs_raw = resolve_window_directions(live_slopes.get(oppose_symbol)) if desired_symbol else {}
+    confirm_dirs = (
+        trade_aligned_window_directions(confirm_dirs_raw, symbol=desired_symbol) if desired_symbol else {}
+    )
+    oppose_dirs = (
+        trade_aligned_window_directions(oppose_dirs_raw, symbol=oppose_symbol) if desired_symbol else {}
+    )
+
+    confirm_above_vwap = None
+    confirm_swing_breakout = None
+    if desired_symbol and current_etf_price:
+        try:
+            from app.trading.etf_entry_confirmation import compute_etf_vwap, compute_etf_breakouts
+
+            _confirm_df = _load_etf_own_minute_cache(desired_symbol)
+            _vwap = compute_etf_vwap(_confirm_df) if _confirm_df is not None else None
+            confirm_above_vwap = bool(_vwap is not None and float(current_etf_price) >= float(_vwap))
+            try:
+                _breakouts = (
+                    compute_etf_breakouts(_confirm_df, current_etf_price, desired_live_direction)
+                    if _confirm_df is not None else {}
+                )
+                if desired_live_direction == "UP":
+                    confirm_swing_breakout = bool(
+                        _breakouts.get("recent_high") and float(current_etf_price) > float(_breakouts["recent_high"])
+                    )
+                elif desired_live_direction == "DOWN":
+                    confirm_swing_breakout = bool(
+                        _breakouts.get("recent_low") and float(current_etf_price) < float(_breakouts["recent_low"])
+                    )
+            except Exception:
+                confirm_swing_breakout = None
+            continuation_state["vwap"] = _vwap
+        except Exception:
+            confirm_above_vwap = None
+
+    _existing_episode_direction = continuation_state.get("direction")
+    _vwap_by_symbol = dict(continuation_state.get("prev_above_vwap_by_symbol") or {})
+    _prev_above_vwap = (
+        _vwap_by_symbol.get(desired_symbol) if desired_symbol else continuation_state.get("prev_above_vwap")
+    )
+    _vwap_reclaim = bool(
+        confirm_above_vwap
+        and _prev_above_vwap is False
+        and confirm_dirs.get(5) == desired_live_direction
+        and confirm_dirs.get(10) == desired_live_direction
+    )
+    _existing_structure_broken = False
+    if _existing_episode_direction and _existing_episode_direction != desired_live_direction:
+        try:
+            from app.trading.etf_entry_confirmation import is_swing_structure_broken_against
+
+            _existing_symbol = symbol_for_live_direction(_existing_episode_direction) or HYNIX_SYMBOL
+            _existing_df = _load_etf_own_minute_cache(_existing_symbol)
+            _existing_price = hynix_price if _existing_symbol == HYNIX_SYMBOL else inverse_price
+            if _existing_df is not None and _existing_price:
+                _structure_dir = (
+                    "UP" if _existing_symbol == INVERSE_SYMBOL else _existing_episode_direction
+                )
+                _existing_structure_broken = is_swing_structure_broken_against(
+                    _existing_df, float(_existing_price), _structure_dir,
+                )
+        except Exception:
+            _existing_structure_broken = False
+
+    _opposite_episode_confirmed = detect_opposite_episode_transition(
+        existing_direction=_existing_episode_direction,
+        new_direction=desired_live_direction,
+        live_direction_matches=live_trade.get("direction") == desired_live_direction,
+        confirm_dirs=confirm_dirs,
+        existing_structure_broken=_existing_structure_broken,
+        new_etf_vwap_reclaim=_vwap_reclaim,
+        new_swing_breakout=bool(confirm_swing_breakout),
+    )
+    _direction_episode_changed = False
+    if continuation_state.get("direction") != desired_live_direction and (
+        not _existing_episode_direction or _opposite_episode_confirmed
+    ):
+        _direction_episode_changed = True
+        reset_range_episode_probe_state(
+            continuation_state,
+            now=now,
+            direction=desired_live_direction,
+            episode_id=f"{desired_live_direction}:{now.isoformat()}",
+            reference_price=current_etf_price,
+        )
+    continuation_state["prev_above_vwap"] = confirm_above_vwap
+    if desired_symbol:
+        _vwap_by_symbol[desired_symbol] = confirm_above_vwap
+        continuation_state["prev_above_vwap_by_symbol"] = _vwap_by_symbol
+    update_range_episode_structural_events(
+        continuation_state,
+        now=now,
+        swing_breakout=bool(confirm_swing_breakout),
+        vwap_reclaim=_vwap_reclaim,
+    )
+
+    moved_pct = None
+    try:
+        if continuation_state.get("reference_price") and current_etf_price:
+            moved_pct = round(
+                abs(float(current_etf_price) / float(continuation_state["reference_price"]) - 1.0) * 100.0, 4
+            )
+    except Exception:
+        moved_pct = None
+
+    cached_fast_signal = ((state.get("fast_trend_watcher") or {}).get("last_signal") or {})
+    _returns = cached_fast_signal.get("returns") or {}
+    try:
+        expected_move_pct = max(abs(float(_returns.get(k) or 0.0)) for k in ("1m", "3m", "5m"))
+    except Exception:
+        expected_move_pct = 0.0
+    if expected_move_pct <= 0.0 and continuation_state.get("last_result"):
+        # Fall back to prior Fast Worker evaluation edge inputs when present.
+        try:
+            expected_move_pct = float((continuation_state.get("last_result") or {}).get("expected_move_pct") or 0.0)
+        except Exception:
+            expected_move_pct = 0.0
+
+    cost_gate = etd.evaluate_cost_gate(desired_symbol, expected_move_pct) if desired_symbol else {"blocked": True}
+    _cost_pct = cost_gate.get("cost_pct")
+    _day_regime = resolve_day_regime_from_cache()
+    _range_cfg = get_range_weighted_config()
+    continuation_eval = evaluate_range_weighted_entry(
+        decision=decision or state.get("last_decision") or {},
+        direction=desired_live_direction,
+        live_direction=desired_live_direction,
+        live_direction_held_seconds=live_trade.get("direction_held_seconds"),
+        signal_window_directions=resolve_window_directions(live_slopes.get(SIGNAL_SYMBOL)),
+        confirm_window_directions=confirm_dirs_raw,
+        oppose_window_directions=oppose_dirs_raw,
+        confirm_above_vwap=confirm_above_vwap,
+        moved_pct_since_signal=moved_pct,
+        expected_move_pct=expected_move_pct,
+        cost_pct=_cost_pct,
+        expected_mfe_pct=expected_move_pct,
+        expected_mae_pct=abs(float(etd.FIXED_EARLY_STOP_PCT)),
+        ema_slope_aligned=(
+            (desired_live_direction == "UP" and float(cached_fast_signal.get("ema_slope_pct") or 0.0) >= 0.0)
+            or (desired_live_direction == "DOWN" and float(cached_fast_signal.get("ema_slope_pct") or 0.0) <= 0.0)
+        ),
+        micro_chop_active=bool((etd_state.get("micro_chop") or {}).get("active")),
+        confidence=(state.get("adaptive_regime") or {}).get("confidence"),
+        stop_loss_distance_pct=abs(float(etd.FIXED_EARLY_STOP_PCT)),
+        buyable_cash=broker.get_buyable_cash() if broker is not None and hasattr(broker, "get_buyable_cash") else None,
+        current_price=current_etf_price,
+        entry_path_hint=None,
+        structure_confirmed=bool(confirm_swing_breakout),
+        structural_direction=(state.get("last_primary_trend") or {}).get("primary_trend"),
+        day_regime=_day_regime,
+        range_config=_range_cfg,
+    )
+    continuation_state.update({
+        "last_result": continuation_eval,
+        "last_reason_code": continuation_eval.get("reason_code"),
+        "score_gap": continuation_eval.get("score_gap"),
+        "live_direction_held_seconds": live_trade.get("direction_held_seconds"),
+        "confirm_window_directions": confirm_dirs,
+        "oppose_window_directions": oppose_dirs,
+        "confirm_swing_breakout": confirm_swing_breakout,
+        "structure_confirmed": continuation_eval.get("structure_confirmed"),
+        "structural_signal_label": continuation_eval.get("structural_signal_label"),
+        "moved_pct_since_signal": moved_pct,
+        "cost_gate": cost_gate,
+    })
+
+    gate_helpers = {
+        "chase_hard_block": chase_hard_block,
+        "entry_timing_ok": entry_timing_ok,
+        "episode_gate_blocks_entry": episode_gate_blocks_entry,
+        "get_episode_gate_mode": get_episode_gate_mode,
+        "range_episode_allows_entry": range_episode_allows_entry,
+        "daily_loss_limit_reached_from_pct": daily_loss_limit_reached_from_pct,
+        "mark_range_reversal_probe_entered": mark_range_reversal_probe_entered,
+        "range_cfg": _range_cfg,
+        "confirm_swing_breakout": confirm_swing_breakout,
+        "vwap_reclaim": _vwap_reclaim,
+        "direction_episode_changed": _direction_episode_changed,
+        "opposite_episode_confirmed": _opposite_episode_confirmed,
+        "moved_pct": moved_pct,
+        "current_etf_price": current_etf_price,
+    }
+    return {
+        "ok": True,
+        "missing_fields": missing,
+        "continuation_eval": continuation_eval,
+        "continuation_state": continuation_state,
+        "desired_live_direction": desired_live_direction,
+        "desired_symbol": desired_symbol,
+        "gate_helpers": gate_helpers,
+        "secondary_warning": (
+            "FAST_WORKER_SNAPSHOT_DELAY" if not state.get("last_fast_worker_decision_snapshot") else None
+        ),
+    }
+
+
+def _execute_weighted_order_controller_entry(
+    *,
+    state: dict,
+    broker,
+    decision: dict,
+    hynix_price: Optional[float],
+    inverse_price: Optional[float],
+    now: datetime,
+    position_manager=None,
+) -> dict:
+    """Same-cycle WOC LIVE new-entry path: evaluate → gates → reserve → broker.
+
+    Fast Worker must never call this for live orders — diagnostics only.
+    """
+    _set_live_entry_engine_state(
+        state, now=now,
+        reason="WEIGHTED_ORDER_CONTROLLER_LIVE owns same-cycle new-entry orders",
+    )
+    result = {
+        "entry_owner": WOC_ENTRY_OWNER,
+        "entry_approved": False,
+        "entry_approved_reason": "",
+        "primary_block_reason": None,
+        "secondary_warning": None,
+        "order_reservation": None,
+        "order_sent": False,
+        "broker_executed": False,
+        "position_confirmed": None,
+        "execution_error": None,
+        "switch": None,
+        "orders": [],
+        "continuation_eval": None,
+        "configured_entry_engine": WEIGHTED_LIVE_ENTRY_ENGINE,
+        "actual_entry_engine": WEIGHTED_LIVE_ENTRY_ENGINE,
+    }
+    if not is_new_entry_allowed(now):
+        window = describe_new_entry_window(now)
+        result["primary_block_reason"] = "NEW_ENTRY_CUTOFF"
+        result["entry_approved_reason"] = window.get("rule") or "NEW_ENTRY_CUTOFF"
+        return result
+
+    built = _woc_live_entry_inputs_from_state(
+        state, decision=decision, hynix_price=hynix_price, inverse_price=inverse_price, now=now, broker=broker,
+    )
+    if not built:
+        result["primary_block_reason"] = "DATA_INSUFFICIENT"
+        result["entry_approved_reason"] = "DATA_INSUFFICIENT: unable to build WOC inputs"
+        result["execution_error"] = result["entry_approved_reason"]
+        return result
+
+    result["secondary_warning"] = built.get("secondary_warning")
+    if built.get("missing_fields"):
+        # Advisory list — only hard-fail when evaluate itself lacks critical data.
+        result["secondary_warning"] = (
+            (result["secondary_warning"] + "; " if result["secondary_warning"] else "")
+            + "MISSING_OPTIONAL_FIELDS=" + ",".join(built["missing_fields"])
+        )
+
+    if not built.get("ok"):
+        block = built.get("block_reason") or "DATA_INSUFFICIENT"
+        missing = built.get("missing_fields") or []
+        result["primary_block_reason"] = block
+        result["entry_approved_reason"] = (
+            f"{block}: missing={','.join(missing)}" if missing else block
+        )
+        state["trend_continuation_entry"] = built.get("continuation_state") or {}
+        return result
+
+    continuation_eval = built["continuation_eval"]
+    continuation_state = built["continuation_state"]
+    desired_symbol = built["desired_symbol"]
+    desired_live_direction = built["desired_live_direction"]
+    helpers = built["gate_helpers"]
+    result["continuation_eval"] = continuation_eval
+
+    if continuation_eval.get("action") != "ENTER":
+        block = continuation_eval.get("reason_code") or "WEIGHTED_ENTRY_HOLD"
+        if _is_fast_worker_non_owner_reason(block):
+            block = "WEIGHTED_ENTRY_HOLD"
+        result["primary_block_reason"] = block
+        result["entry_approved_reason"] = block
+        continuation_state["last_block_reason"] = block
+        state["trend_continuation_entry"] = continuation_state
+        return result
+
+    _sizing = _effective_target_pct_with_adaptive_cap(continuation_eval.get("target_pct"), state)
+    current_etf_price = helpers["current_etf_price"]
+    try:
+        _calc_qty = int(
+            (_sizing["effective_target_pct"] * float(broker.get_buyable_cash() or 0.0))
+            // float(current_etf_price)
+        ) if current_etf_price else 0
+    except Exception:
+        _calc_qty = 0
+    _sizing["calculated_quantity"] = max(0, int(_calc_qty or 0))
+    continuation_state["order_sizing_audit"] = _sizing
+
+    def _block(code: str) -> dict:
+        continuation_state["last_block_reason"] = code
+        state["trend_continuation_entry"] = continuation_state
+        result["primary_block_reason"] = code
+        result["entry_approved_reason"] = code
+        result["entry_approved"] = False
+        return result
+
+    if _sizing.get("order_skip_reason") == "DATA_INSUFFICIENT_POSITION_CAP_ZERO":
+        return _block("DATA_INSUFFICIENT_POSITION_CAP_ZERO")
+    _daily_ret = state.get("realized_pnl_today_pct")
+    if helpers["daily_loss_limit_reached_from_pct"](_daily_ret, helpers["range_cfg"]):
+        return _block("DAILY_LOSS_LIMIT")
+    if helpers["chase_hard_block"](helpers["moved_pct"]):
+        return _block("CHASE_BLOCK")
+    _held_sec = (state.get("live_trade_direction") or {}).get("direction_held_seconds")
+    _timing_ok, _timing_reason = helpers["entry_timing_ok"](_held_sec)
+    if not _timing_ok:
+        return _block(_timing_reason or "ENTRY_TIMING_BLOCK")
+    _gate_mode = helpers["get_episode_gate_mode"](state)
+    _ep_confirm = (state.get("early_trend_detector") or {}).get("macd_williams_episode") or {}
+    if helpers["episode_gate_blocks_entry"](_gate_mode, _ep_confirm):
+        continuation_state["episode_gate_mode"] = _gate_mode
+        return _block("MACD_WILLIAMS_EPISODE_NOT_CONFIRMED")
+
+    held_symbol = (state.get("position") or {}).get("symbol")
+    _entry_path_for_key = continuation_eval.get("entry_path") or "CONTINUATION"
+    _episode_id_for_order = (
+        continuation_state.get("direction_episode_id")
+        or f"{desired_live_direction}:{continuation_state.get('first_detected_at')}"
+    )
+    order_key = f"{_episode_id_for_order}:ENTRY"
+    _opposite_switch = bool(held_symbol and held_symbol != desired_symbol)
+    _opposite_switch_allowed = (
+        (state.get("live_trade_direction") or {}).get("direction") == desired_live_direction
+        and helpers["opposite_episode_confirmed"]
+    )
+    if _opposite_switch and not _opposite_switch_allowed:
+        return _block("OPPOSITE_EPISODE_NOT_CONFIRMED")
+    _allows_entry, _entry_block = helpers["range_episode_allows_entry"](
+        continuation_state,
+        entry_path=_entry_path_for_key,
+        swing_breakout=bool(helpers["confirm_swing_breakout"]),
+        vwap_reclaim=helpers["vwap_reclaim"],
+        direction_changed=helpers["direction_episode_changed"],
+    )
+    if not _allows_entry:
+        return _block(_entry_block or "RANGE_EPISODE_ENTRY_BLOCKED")
+    if held_symbol == desired_symbol or continuation_state.get("entry_done") or continuation_state.get("last_order_key") == order_key:
+        return _block("TARGET_ALREADY_FILLED" if held_symbol == desired_symbol else "WOC_ENTRY_ALREADY_ATTEMPTED")
+
+    # All safety/strategy gates passed — entry approved; send order in this cycle.
+    result["entry_approved"] = True
+    result["entry_approved_reason"] = (
+        _promote_continuation_reason_for_order(continuation_eval.get("reason_code"))
+        or continuation_eval.get("reason_code")
+        or "WEIGHTED_ORDER_CONTROLLER"
+    )
+    final_action = action_for_live_direction(desired_live_direction) or (
+        "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+    )
+    _order_reason = result["entry_approved_reason"]
+    if _order_reason != continuation_eval.get("reason_code"):
+        continuation_eval = {**continuation_eval, "reason_code": _order_reason}
+        continuation_state["last_result"] = continuation_eval
+        continuation_state["last_reason_code"] = _order_reason
+    _entry_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
+    _entry_audit["direction_episode_id"] = _episode_id_for_order
+    _entry_audit["episode_id"] = _episode_id_for_order
+    _entry_audit["entry_event_id"] = order_key
+    _entry_audit["signal_id"] = order_key
+    _entry_audit["target_position_pct"] = _sizing["effective_target_pct"]
+    _entry_audit["position_cap"] = _sizing["position_cap"]
+    _entry_audit["entry_owner"] = WOC_ENTRY_OWNER
+
+    switch = run_switch_or_entry(
+        state, broker, final_action, hynix_price, inverse_price, now=now,
+        forced=True, reason=_order_reason or "WEIGHTED_ORDER_CONTROLLER",
+        position_manager=position_manager,
+        target_position_pct=_sizing["effective_target_pct"],
+        entry_type="WEIGHTED_RANGE_ENTRY",
+        signal_source="WEIGHTED_ORDER_CONTROLLER",
+        fusion_metadata=_entry_audit,
+    )
+    continuation_state["last_order_key"] = order_key
+    continuation_state["last_switch"] = switch
+    _sizing["calculated_quantity"] = int(switch.get("requested_qty") or _sizing.get("calculated_quantity") or 0)
+    if switch.get("failure_code") or switch.get("order_skip_reason"):
+        _sizing["order_skip_reason"] = switch.get("failure_code") or switch.get("order_skip_reason")
+    continuation_state["order_sizing_audit"] = _sizing
+    result["switch"] = switch
+    result["orders"] = list(switch.get("orders") or [])
+    result["execution_error"] = switch.get("broker_error") or switch.get("failure_code") or switch.get("message")
+
+    orders = result["orders"]
+    sent = [o for o in orders if isinstance(o, dict) and o.get("action") in ("BUY", "SELL")]
+    succeeded = [o for o in sent if o.get("success")]
+    result["order_sent"] = bool(sent)
+    result["broker_executed"] = bool(succeeded)
+    if any(o.get("blocked_by_coordinator") for o in orders if isinstance(o, dict)):
+        result["order_reservation"] = "DUPLICATE_ORDER_BLOCKED"
+        result["primary_block_reason"] = "DUPLICATE_ORDER_BLOCKED"
+    elif sent:
+        result["order_reservation"] = "RESERVED"
+    else:
+        result["order_reservation"] = "NOT_RESERVED"
+        fail = (
+            switch.get("failure_code")
+            or switch.get("order_skip_reason")
+            or switch.get("message")
+            or "ORDER_NOT_EXECUTED"
+        )
+        if not _is_fast_worker_non_owner_reason(fail):
+            result["primary_block_reason"] = str(fail)
+
+    if _switch_order_succeeded(switch):
+        continuation_state["entry_done"] = True
+        continuation_state["entry_path"] = continuation_eval.get("entry_path")
+        continuation_state["last_entry_episode_id"] = _episode_id_for_order
+        continuation_state["approved_entry_count_today"] = int(
+            continuation_state.get("approved_entry_count_today") or 0
+        ) + 1
+        helpers["mark_range_reversal_probe_entered"](
+            continuation_state, now=now, entry_path=continuation_eval.get("entry_path"),
+        )
+        if position_manager is not None:
+            try:
+                position_manager.sync(force=True)
+                apply_position_manager_to_state(state, position_manager)
+            except Exception as exc:
+                logger.error("[WOC] post-fill position sync failed: %s", exc)
+                result["execution_error"] = f"position sync failed: {exc}"
+        pos_now = state.get("position") or {}
+        result["position_confirmed"] = (
+            pos_now.get("symbol") == desired_symbol and (pos_now.get("quantity") or 0) > 0
+        )
+        result["primary_block_reason"] = None
+        result["execution_error"] = None
+    elif result["entry_approved"] and not result["order_sent"]:
+        # Keep entry_approved=True (gates passed) but surface real execution block.
+        continuation_state["last_block_reason"] = result.get("primary_block_reason") or "ORDER_NOT_EXECUTED"
+
+    state["trend_continuation_entry"] = continuation_state
+    return result
+
+
 def _recent_1m_momentum_declining(enhanced_result: dict) -> bool:
     detail = enhanced_result.get("momentum_detail") or {}
     candidates = (
@@ -1151,8 +1695,10 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         controller_enter and float(sizing_audit.get("position_cap") or 1.0) <= 0.0
     ):
         block_candidates.insert(0, "DATA_INSUFFICIENT_POSITION_CAP_ZERO")
-    if controller_enter and not order_ok and not any(block_candidates):
-        block_candidates.append("FAST_WORKER_ENTRY_NOT_EXECUTED")
+    if controller_enter and not order_ok and not any(_filter_non_owner_block_candidates(block_candidates)):
+        # Diagnostics-only Fast Worker never owns the order — do not invent a
+        # FAST_WORKER_* primary block; leave ORDER_NOT_EXECUTED for main cycle.
+        block_candidates.append("ORDER_NOT_EXECUTED")
 
     action, block_reason, primary_block_reason = _resolve_consistent_final_action(
         order_ok=order_ok,
@@ -1163,17 +1709,30 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     # Absolute forbid: BUY with empty block when no broker success.
     if action == "BUY" and not order_ok:
         action = "HOLD"
-        block_reason = primary_block_reason or "FAST_WORKER_ENTRY_NOT_EXECUTED"
+        block_reason = primary_block_reason or "ORDER_NOT_EXECUTED"
+        if _is_fast_worker_non_owner_reason(block_reason):
+            block_reason = "ORDER_NOT_EXECUTED"
         primary_block_reason = block_reason
     if action == "BUY" and structural_label == "HOLD":
         action = "HOLD"
         block_reason = primary_block_reason or "STRUCTURAL_HOLD"
         primary_block_reason = block_reason
+    if _is_fast_worker_non_owner_reason(primary_block_reason):
+        primary_block_reason = "ORDER_NOT_EXECUTED" if action == "HOLD" else None
+        block_reason = primary_block_reason
+    if _is_fast_worker_non_owner_reason(block_reason):
+        block_reason = primary_block_reason
 
     secondary_reasons = [
         reason for reason in (early_reason, continuation_result.get("reason_code"), last_block, sizing_audit.get("order_skip_reason"))
         if reason and reason != primary_block_reason
     ]
+    # Snapshot delay / Fast Worker diagnostics are advisory only.
+    if (early_result or {}).get("order_permission") == "DIAGNOSTIC_ONLY":
+        secondary_reasons.append("FAST_WORKER_DIAGNOSTIC_ONLY")
+    if state.get("pending_fast_worker_deferral"):
+        secondary_reasons.append("FAST_WORKER_SNAPSHOT_DELAY")
+        _clear_fast_worker_deferral(state)
     today_orders = _orders_are_today(
         ((last_switch or {}).get("orders") or [])
         or (((early_result or {}).get("switch") or {}).get("orders") or [])
@@ -1746,13 +2305,16 @@ def _first_blocked_stage(trace: dict) -> Optional[str]:
     if not trace["risk_manager_ok"]:
         return "risk_manager"
     if trace.get("enhanced_direct_order_blocked"):
-        early_decision = trace.get("early_decision") or {}
-        early_order = trace.get("early_order_result") or {}
-        if early_order.get("broker_executed"):
-            return None
-        if early_decision.get("reason_code") == "TARGET_ALREADY_FILLED":
-            return None
-        return "early_order"
+        # WOC LIVE owns the real order path; Enhanced block is expected and must
+        # not masquerade as the stop reason when entry_owner=WOC.
+        if trace.get("entry_owner") != WOC_ENTRY_OWNER:
+            early_decision = trace.get("early_decision") or {}
+            early_order = trace.get("early_order_result") or {}
+            if early_order.get("broker_executed"):
+                return None
+            if early_decision.get("reason_code") == "TARGET_ALREADY_FILLED":
+                return None
+            return "early_order"
     if not trace["order_sent"]:
         # order_sent=False만으로는 "주문 전송 실패"로 단정하지 않는다 — 이미 목표
         # 종목을 보유해서 추가 진입이 필요 없었거나(entry), POSITION_SYNC_PENDING으로
@@ -4524,8 +5086,6 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     _episode_id_for_order = continuation_state.get("direction_episode_id") or f"{desired_live_direction}:{continuation_state.get('first_detected_at')}"
                     order_key = f"{_episode_id_for_order}:ENTRY"
                     _opposite_switch = bool(held_symbol and held_symbol != desired_symbol)
-                    # Preserve whatever opposite-episode confirmation the surrounding
-                    # Fast Worker tick already computed (_opposite_episode_confirmed).
                     _opposite_switch_allowed = (
                         live_trade.get("direction") == desired_live_direction
                         and _opposite_episode_confirmed
@@ -4544,75 +5104,28 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                             _mark_fast_entry_block(_entry_block or "RANGE_EPISODE_ENTRY_BLOCKED")
                         elif held_symbol == desired_symbol or continuation_state.get("entry_done") or continuation_state.get("last_order_key") == order_key:
                             _mark_fast_entry_block(
-                                "TARGET_ALREADY_FILLED" if held_symbol == desired_symbol else "FAST_WORKER_ENTRY_ALREADY_ATTEMPTED"
+                                "TARGET_ALREADY_FILLED" if held_symbol == desired_symbol else "WOC_ENTRY_ALREADY_ATTEMPTED"
                             )
                         else:
-                            final_action = action_for_live_direction(desired_live_direction) or (
-                                "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
-                            )
-                            _order_reason = _promote_continuation_reason_for_order(
-                                continuation_eval.get("reason_code")
-                            )
-                            if _order_reason != continuation_eval.get("reason_code"):
-                                continuation_eval = {**continuation_eval, "reason_code": _order_reason}
-                                continuation_state["last_result"] = continuation_eval
-                                continuation_state["last_reason_code"] = _order_reason
-                            _entry_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
-                            _entry_audit["direction_episode_id"] = _episode_id_for_order
-                            _entry_audit["episode_id"] = _episode_id_for_order
-                            _entry_audit["target_position_pct"] = _sizing["effective_target_pct"]
-                            _entry_audit["position_cap"] = _sizing["position_cap"]
-                            switch = run_switch_or_entry(
-                                state, broker, final_action, long_price, inverse_price, now=now,
-                                forced=True, reason=_order_reason or "WEIGHTED_ORDER_CONTROLLER",
-                                position_manager=position_manager, target_position_pct=_sizing["effective_target_pct"],
-                                entry_type="WEIGHTED_RANGE_ENTRY",
-                                signal_source="WEIGHTED_ORDER_CONTROLLER",
-                                fusion_metadata=_entry_audit,
-                            )
-                            continuation_state["last_order_key"] = order_key
-                            continuation_state["last_switch"] = switch
-                            _sizing["calculated_quantity"] = int(switch.get("requested_qty") or _sizing.get("calculated_quantity") or 0)
-                            if switch.get("failure_code") or switch.get("order_skip_reason"):
-                                _sizing["order_skip_reason"] = switch.get("failure_code") or switch.get("order_skip_reason")
-                            continuation_state["order_sizing_audit"] = _sizing
-                            if _fast_order_succeeded(switch):
-                                continuation_state["entry_done"] = True
-                                continuation_state["entry_path"] = continuation_eval.get("entry_path")
-                                continuation_state["last_entry_episode_id"] = _episode_id_for_order
-                                continuation_state["approved_entry_count_today"] = int(continuation_state.get("approved_entry_count_today") or 0) + 1
-                                mark_range_reversal_probe_entered(
-                                    continuation_state,
-                                    now=now,
-                                    entry_path=continuation_eval.get("entry_path"),
-                                )
-                                position_manager.sync(force=True)
-                                apply_position_manager_to_state(state, position_manager)
-                                early_result = {
-                                    "skipped": False,
-                                    "reason_code": continuation_eval.get("reason_code"),
-                                    "entry_path": continuation_eval.get("entry_path"),
-                                    "switch": switch,
-                                    "continuation": continuation_eval,
-                                    "order_sizing_audit": _sizing,
-                                }
-                            else:
-                                _fail = (
-                                    switch.get("failure_code")
-                                    or switch.get("order_skip_reason")
-                                    or switch.get("message")
-                                    or "FAST_WORKER_ORDER_NOT_SENT"
-                                )
-                                continuation_state["last_block_reason"] = str(_fail)
-                                early_result = {
-                                    "skipped": True,
-                                    "reason": str(_fail),
-                                    "reason_code": str(_fail),
-                                    "switch": switch,
-                                    "continuation": continuation_eval,
-                                    "order_sizing_audit": _sizing,
-                                    "order_permission": "BLOCKED",
-                                }
+                            # Diagnostics/snapshot only — WOC LIVE (main cycle) owns orders.
+                            # Never call run_switch_or_entry from Fast Worker.
+                            early_result = {
+                                "skipped": True,
+                                "reason": "FAST_WORKER_DIAGNOSTIC_ONLY",
+                                "reason_code": "FAST_WORKER_DIAGNOSTIC_ONLY",
+                                "continuation": continuation_eval,
+                                "order_sizing_audit": _sizing,
+                                "order_permission": "DIAGNOSTIC_ONLY",
+                                "entry_owner": None,
+                            }
+                            continuation_state["last_block_reason"] = None
+                            continuation_state["diagnostic_enter_candidate"] = {
+                                "reason_code": continuation_eval.get("reason_code"),
+                                "entry_path": continuation_eval.get("entry_path"),
+                                "target_pct": _sizing.get("effective_target_pct"),
+                                "order_key": order_key,
+                                "evaluated_at": now.isoformat(),
+                            }
             elif continuation_eval.get("action") == "ENTER" and not desired_symbol:
                 continuation_state["last_block_reason"] = "NO_LIVE_DIRECTION_SYMBOL"
                 early_result = {
@@ -4622,6 +5135,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     "continuation": continuation_eval,
                     "order_permission": "BLOCKED",
                 }
+            # Scale-in also diagnostics-only — main-cycle WOC owns live buys.
             _held_for_scale = (state.get("position") or {}).get("symbol")
             if (
                 desired_symbol
@@ -4629,53 +5143,10 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 and continuation_state.get("entry_done")
                 and not continuation_state.get("scale_in_done")
             ):
-                _episode_id_for_scale = continuation_state.get("direction_episode_id") or f"{desired_live_direction}:{continuation_state.get('first_detected_at')}"
-                _macd_conf = (etd_state.get("price_action_reversal") or {}).get("macd_williams_confirmation") or {}
-                try:
-                    _confirm_elapsed = (
-                        now - datetime.fromisoformat(continuation_state.get("first_detected_at") or now.isoformat())
-                    ).total_seconds()
-                except Exception:
-                    _confirm_elapsed = None
-                if _macd_conf.get("confirmed") and _confirm_elapsed is not None and 10.0 <= _confirm_elapsed <= 20.0:
-                    _scale_target = _score_gap_dynamic_pct(
-                        score_gap=float(continuation_state.get("score_gap") or continuation_eval.get("score_gap") or 30.0),
-                        low=0.40,
-                        high=0.60,
-                        confidence=(state.get("adaptive_regime") or {}).get("confidence"),
-                        stop_loss_distance_pct=abs(float(etd.FIXED_EARLY_STOP_PCT)),
-                        buyable_cash=broker.get_buyable_cash() if hasattr(broker, "get_buyable_cash") else None,
-                        current_price=current_etf_price,
-                    )
-                    _scale_key = f"{_episode_id_for_scale}:SCALE_IN"
-                    if _scale_target > 0 and continuation_state.get("last_order_key") != _scale_key:
-                        final_action = action_for_live_direction(desired_live_direction) or ("HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY")
-                        _scale_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
-                        _scale_audit["direction_episode_id"] = _episode_id_for_scale
-                        _scale_audit["episode_id"] = _episode_id_for_scale
-                        _scale_audit["entry_path"] = continuation_state.get("entry_path") or _scale_audit.get("entry_path")
-                        _scale_audit["target_position_pct"] = _scale_target
-                        switch = run_switch_or_entry(
-                            state, broker, final_action, long_price, inverse_price, now=now,
-                            forced=True, reason="MACD_WILLIAMS_CONFIRMED_SCALE_IN",
-                            position_manager=position_manager, target_position_pct=_scale_target,
-                            entry_type="WEIGHTED_ORDER_CONTROLLER_SCALE_IN",
-                            signal_source="WEIGHTED_ORDER_CONTROLLER",
-                            fusion_metadata=_scale_audit,
-                        )
-                        continuation_state["last_order_key"] = _scale_key
-                        continuation_state["last_scale_switch"] = switch
-                        if _fast_order_succeeded(switch):
-                            continuation_state["scale_in_done"] = True
-                            position_manager.sync(force=True)
-                            apply_position_manager_to_state(state, position_manager)
-                            early_result = {
-                                "skipped": False,
-                                "reason_code": "MACD_WILLIAMS_SCALE_IN",
-                                "entry_path": continuation_state.get("entry_path"),
-                                "switch": switch,
-                                "continuation": continuation_eval,
-                            }
+                continuation_state["diagnostic_scale_in_candidate"] = {
+                    "evaluated_at": now.isoformat(),
+                    "order_permission": "DIAGNOSTIC_ONLY",
+                }
             state["trend_continuation_entry"] = continuation_state
             _update_fast_worker_decision_snapshot(state, now=now, continuation_state=continuation_state, early_result=early_result)
         except Exception as exc:
@@ -5370,42 +5841,75 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
                     proceed = True
                     _score_gap_target_pct = None
-                    # Early/Active/Fusion 토글과 무관 — 메인 3분 사이클은 신규매수를
-                    # 직접 실행하지 않는다. 실진입은 Fast Worker의
-                    # evaluate_range_weighted_entry -> run_switch_or_entry(WEIGHTED)만.
+                    # WOC LIVE is the sole new-entry owner. Main cycle executes
+                    # evaluate_range_weighted_entry → run_switch_or_entry in the
+                    # SAME cycle — never defer to Fast Worker (diagnostics-only).
                     if not is_new_entry:
                         trace["entry_approved"] = True
                         trace["entry_approved_reason"] = "이미 목표 종목 보유 중 — 추가 진입 불필요"
+                        trace["entry_owner"] = WOC_ENTRY_OWNER
+                        proceed = False
                     else:
                         proceed = False
+                        # Enhanced legacy direct path stays blocked; WOC owns BUY.
                         trace["enhanced_direct_order_blocked"] = True
+                        _clear_fast_worker_deferral(state)
                         if not new_entry_allowed_now:
-                            early_result = {
+                            cutoff = "NEW_ENTRY_CUTOFF"
+                            trace["entry_approved"] = False
+                            trace["entry_approved_reason"] = new_entry_window["rule"]
+                            trace["primary_block_reason"] = cutoff
+                            trace["entry_owner"] = WOC_ENTRY_OWNER
+                            trace["order_reservation"] = "NOT_RESERVED"
+                            _record_early_result_on_trace(trace, {
                                 "skipped": True,
                                 "reason": new_entry_window["rule"],
-                                "reason_code": "TIME_GATE_BLOCK",
-                            }
-                        else:
-                            early_result = {
-                                "skipped": True,
-                                "reason": "FAST_WORKER_OWNS_ENTRY",
-                                "reason_code": "FAST_WORKER_OWNS_ENTRY",
+                                "reason_code": cutoff,
                                 "order_permission": "DIAGNOSTIC_ONLY",
-                            }
-                            _mark_fast_worker_deferral(state, now=now)
-                        _record_early_result_on_trace(trace, early_result)
-                        _early_order_sent = bool((trace.get("early_order_result") or {}).get("order_sent"))
-                        _early_broker_executed = bool((trace.get("early_order_result") or {}).get("broker_executed"))
-                        _early_reason_code = (trace.get("early_decision") or {}).get("reason_code")
-                        if _early_broker_executed or _early_reason_code == "TARGET_ALREADY_FILLED":
-                            trace["entry_approved"] = True
-                            trace["entry_approved_reason"] = (
-                                "Fast Worker weighted controller owns entries"
-                            )
+                            })
                         else:
-                            trace["entry_approved"] = False
-                            _early_reason_text = (trace.get("early_decision") or {}).get("reason") or _early_reason_code or "NO_EARLY_SIGNAL"
-                            trace["entry_approved_reason"] = f"MAIN_CYCLE_ENTRY_DEFERRED: {_early_reason_text}"
+                            woc = _execute_weighted_order_controller_entry(
+                                state=state,
+                                broker=broker,
+                                decision=decision,
+                                hynix_price=hynix_price,
+                                inverse_price=inverse_price,
+                                now=now,
+                                position_manager=position_manager,
+                            )
+                            orders_this_cycle.extend(woc.get("orders") or [])
+                            attempted_entry = True
+                            trace["entry_owner"] = woc.get("entry_owner") or WOC_ENTRY_OWNER
+                            trace["entry_approved"] = bool(woc.get("entry_approved"))
+                            trace["entry_approved_reason"] = woc.get("entry_approved_reason") or ""
+                            trace["primary_block_reason"] = woc.get("primary_block_reason")
+                            trace["order_reservation"] = woc.get("order_reservation")
+                            trace["execution_error"] = woc.get("execution_error")
+                            trace["configured_entry_engine"] = WEIGHTED_LIVE_ENTRY_ENGINE
+                            trace["actual_entry_engine"] = WEIGHTED_LIVE_ENTRY_ENGINE
+                            switch = woc.get("switch") or {}
+                            trace["execution_stage"] = switch.get("stage")
+                            trace["execution_message"] = switch.get("message")
+                            trace["order_failure_code"] = switch.get("failure_code")
+                            trace["broker_error"] = switch.get("broker_error")
+                            trace["requested_symbol"] = switch.get("requested_symbol")
+                            trace["requested_qty"] = switch.get("requested_qty")
+                            trace["order_price"] = switch.get("order_price")
+                            trace["buyable_cash"] = switch.get("buyable_cash")
+                            trace["sized_cash"] = switch.get("sized_cash")
+                            if woc.get("secondary_warning"):
+                                warnings.append(f"secondary_warning: {woc['secondary_warning']}")
+                            _record_early_result_on_trace(trace, {
+                                "skipped": not bool(woc.get("broker_executed")),
+                                "reason": woc.get("entry_approved_reason") or woc.get("primary_block_reason"),
+                                "reason_code": woc.get("primary_block_reason") or (
+                                    "WOC_ORDER_SENT" if woc.get("order_sent") else "WOC_NO_ORDER"
+                                ),
+                                "switch": switch,
+                                "continuation": woc.get("continuation_eval"),
+                                "order_permission": "WOC_LIVE",
+                                "order_sizing_audit": (state.get("trend_continuation_entry") or {}).get("order_sizing_audit"),
+                            })
 
                     # 요구사항(2026-07-16) — 이번 사이클에 새로 계산된 live 상태(위
                     # snapshot_*와 명확히 구분됨). same_direction_streak(연속 확인
@@ -5612,117 +6116,59 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     pending_deferral = state.get("pending_fast_worker_deferral")
     fw_snap = state.get("last_fast_worker_decision_snapshot")
     wake_fast_worker = False
-    if pending_deferral and _fast_worker_snapshot_is_complete(fw_snap):
-        # Fast Worker already produced the required completed snapshot within the window.
-        age = _deferral_age_seconds(pending_deferral, now)
-        if age is None or age <= _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:
-            state["last_completed_decision_snapshot"] = fw_snap
-            _clear_fast_worker_deferral(state)
-        else:
-            # Stale completed snap after deadline — record error, clear pending.
-            _record_fast_worker_snapshot_error(
-                state,
-                now=now,
-                code="FAST_WORKER_SNAPSHOT_STALE",
-                detail=f"Completed snapshot arrived after {_FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:.0f}s deferral window",
-            )
-            completed_decision_snapshot = {
-                **completed_decision_snapshot,
-                "source": "MAIN_CYCLE_DEFERRED",
-                "resolved_direction": _snapshot_field(
-                    _normalize_direction((state.get("live_trade_direction") or {}).get("direction")) or "NONE",
-                    completed_decision_snapshot["snapshot_id"],
-                    completed_decision_snapshot["calculated_at"],
-                ),
-                "block_reason": _snapshot_field(
-                    "FAST_WORKER_SNAPSHOT_STALE",
-                    completed_decision_snapshot["snapshot_id"],
-                    completed_decision_snapshot["calculated_at"],
-                ),
-                "primary_block_reason": _snapshot_field(
-                    "FAST_WORKER_SNAPSHOT_STALE",
-                    completed_decision_snapshot["snapshot_id"],
-                    completed_decision_snapshot["calculated_at"],
-                ),
-                "final_action": _snapshot_field(
-                    "HOLD",
-                    completed_decision_snapshot["snapshot_id"],
-                    completed_decision_snapshot["calculated_at"],
-                ),
-                "target_symbol": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
-                "target_ratio": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
-                "ratio": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
-                "qty": _snapshot_field(0, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
-                "order_requested": False,
-                "coordinator_result": {"status": "DEFERRED_STALE"},
-                "broker_result": {"status": "NOT_REQUESTED"},
-            }
-            state["last_completed_decision_snapshot"] = completed_decision_snapshot
-            _clear_fast_worker_deferral(state)
-            wake_fast_worker = True
-            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_STALE")
-    elif pending_deferral:
-        # No silent incomplete deferral — HOLD placeholder until Fast Worker completes.
-        defer_reason = "FAST_WORKER_SNAPSHOT_PENDING"
+    # WOC LIVE owns orders — never overwrite main-cycle BUY/HOLD with
+    # FAST_WORKER_SNAPSHOT_PENDING / FAST_WORKER_OWNS_ENTRY. Snapshot delay is
+    # advisory (secondary_warning) only.
+    if pending_deferral:
         age = _deferral_age_seconds(pending_deferral, now)
         overdue = age is not None and age > _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS
+        secondary = list(_snapshot_field_value(completed_decision_snapshot, "secondary_reasons") or [])
+        if not isinstance(secondary, list):
+            secondary = [secondary] if secondary else []
+        secondary.append("FAST_WORKER_SNAPSHOT_DELAY")
+        sid = completed_decision_snapshot["snapshot_id"]
+        cat = completed_decision_snapshot["calculated_at"]
+        completed_decision_snapshot = {
+            **completed_decision_snapshot,
+            "secondary_reasons": _snapshot_field(secondary, sid, cat),
+            "secondary_warning": _snapshot_field("FAST_WORKER_SNAPSHOT_DELAY", sid, cat),
+        }
         if overdue:
-            defer_reason = "FAST_WORKER_SNAPSHOT_TIMEOUT"
             _record_fast_worker_snapshot_error(
                 state,
                 now=now,
                 code="FAST_WORKER_SNAPSHOT_TIMEOUT",
                 detail=(
-                    f"FAST_WORKER_SNAPSHOT_PENDING exceeded "
+                    f"Fast Worker snapshot delay exceeded "
                     f"{_FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:.0f}s (age={age:.1f}s) — "
-                    "waking Fast Worker and clearing indefinite pending"
+                    "advisory only; main-cycle decision retained"
                 ),
             )
             wake_fast_worker = True
             _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_TIMEOUT")
-        sid = completed_decision_snapshot["snapshot_id"]
-        cat = completed_decision_snapshot["calculated_at"]
-        resolved_direction = _normalize_direction((state.get("live_trade_direction") or {}).get("direction")) or "NONE"
-        target_symbol = symbol_for_live_direction(resolved_direction)
-        completed_decision_snapshot = {
-            **completed_decision_snapshot,
-            "source": "MAIN_CYCLE_DEFERRED",
-            "resolved_direction": _snapshot_field(resolved_direction, sid, cat),
-            "live_trade_direction": _snapshot_field(resolved_direction, sid, cat),
-            "final_action": _snapshot_field("HOLD", sid, cat),
-            "actionable_signal": _snapshot_field("HOLD", sid, cat),
-            "block_reason": _snapshot_field(defer_reason, sid, cat),
-            "primary_block_reason": _snapshot_field(defer_reason, sid, cat),
-            "structural_signal_label": _snapshot_field("HOLD", sid, cat),
-            "target_symbol": _snapshot_field(target_symbol, sid, cat),
-            "target_ratio": _snapshot_field(None, sid, cat),
-            "ratio": _snapshot_field(None, sid, cat),
-            "qty": _snapshot_field(0, sid, cat),
-            "order_requested": False,
-            "coordinator_result": {"status": "DEFERRED", "reason_code": "FAST_WORKER_OWNS_ENTRY"},
-            "broker_result": {"status": "NOT_REQUESTED"},
-        }
-        completed_decision_snapshot["signal_summary"] = {
-            **(completed_decision_snapshot.get("signal_summary") or {}),
-            "final_action": "HOLD",
-            "resolved_direction": resolved_direction,
-            "live_trade_direction": resolved_direction,
-            "block_reason": defer_reason,
-            "primary_block_reason": defer_reason,
-            "target_symbol": target_symbol,
-            # Enhanced HYNIX_BUY is diagnostic-only.
-            "enhanced_final_action_diagnostic": (decision or {}).get("final_action"),
-        }
-        state["last_completed_decision_snapshot"] = completed_decision_snapshot
-        if overdue:
-            # Forbid indefinite pending: clear after recording timeout error + wake request.
             _clear_fast_worker_deferral(state)
-        elif not state.get("force_fast_worker_tick"):
-            # Still inside the 15s window — ensure Fast Worker is nudged.
+        elif _fast_worker_snapshot_is_complete(fw_snap):
+            # Keep main-cycle snapshot as authority; store FW snap as advisory.
+            state["last_fast_worker_advisory_snapshot"] = fw_snap
+            _clear_fast_worker_deferral(state)
+        else:
             wake_fast_worker = True
-            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_PENDING")
-    else:
-        state["last_completed_decision_snapshot"] = completed_decision_snapshot
+            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_ADVISORY")
+            # Do not leave indefinite pending that blocks future cycles.
+            if age is not None and age > _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS / 2:
+                _clear_fast_worker_deferral(state)
+    state["last_completed_decision_snapshot"] = completed_decision_snapshot
+    # Strip any accidental Fast Worker ownership markers from the live snapshot.
+    for key in ("primary_block_reason", "block_reason"):
+        field = completed_decision_snapshot.get(key)
+        val = _snapshot_field_value(completed_decision_snapshot, key)
+        if _is_fast_worker_non_owner_reason(val) and isinstance(field, dict):
+            field["value"] = None if completed_decision_snapshot.get("order_requested") else (
+                _snapshot_field_value(completed_decision_snapshot, "primary_block_reason")
+                if key == "block_reason" else "ORDER_NOT_EXECUTED"
+            )
+            if key == "primary_block_reason" and _is_fast_worker_non_owner_reason(field.get("value")):
+                field["value"] = "ORDER_NOT_EXECUTED"
     if wake_fast_worker or state.get("force_fast_worker_tick"):
         state["_wake_fast_worker_after_cycle"] = True
     save_state_atomic(state)

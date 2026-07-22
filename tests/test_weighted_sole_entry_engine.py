@@ -149,24 +149,61 @@ def isolated_ledger(tmp_path, monkeypatch):
 
 def test_valid_up_input_places_one_weighted_buy(isolated_ledger, monkeypatch):
     broker = _BuyingBroker()
-    _patch_fast_feed(monkeypatch, broker, long_price=10_030.0, inverse_price=19_940.0, signal_price=100_030.0)
+    monkeypatch.setattr(engine, "_create_strategy_broker", lambda *a, **kw: broker)
+    monkeypatch.setattr(engine, "evaluate_range_weighted_entry", lambda **kwargs: {
+        "action": "ENTER", "entry_path": "CONTINUATION", "reason_code": "CONTINUATION_CANDIDATE",
+        "evidence_score": 70, "expected_net_edge_pct": 0.8, "reward_risk": 2.0,
+        "structural_signal_label": "BUY", "target_pct": 0.30, "score_gap": 40.0,
+        "contributions": {"live_direction": 18.0},
+    })
+    monkeypatch.setattr(engine, "_effective_target_pct_with_adaptive_cap", lambda target, state: {
+        "position_cap": 1.0, "target_ratio": 0.30, "effective_target_pct": 0.30, "order_skip_reason": None,
+    })
+    monkeypatch.setattr(engine, "range_episode_allows_entry", lambda *a, **k: (True, None))
+    monkeypatch.setattr(engine, "detect_opposite_episode_transition", lambda **k: True)
+    monkeypatch.setattr(engine, "reset_range_episode_probe_state", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "update_range_episode_structural_events", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "mark_range_reversal_probe_entered", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_load_etf_own_minute_cache", lambda symbol: None)
+    import app.trading.strategy_architecture as sa
+    monkeypatch.setattr(sa, "chase_hard_block", lambda moved: False)
+    monkeypatch.setattr(sa, "entry_timing_ok", lambda held: (True, None))
+    monkeypatch.setattr(sa, "episode_gate_blocks_entry", lambda *a, **k: False)
+    monkeypatch.setattr(sa, "get_episode_gate_mode", lambda state: "OFF")
+    import app.trading.range_weighted_optimize as rwo
+    monkeypatch.setattr(rwo, "daily_loss_limit_reached_from_pct", lambda *a, **k: False)
+    monkeypatch.setattr(rwo, "resolve_day_regime_from_cache", lambda: "NORMAL")
+    _cfg = rwo.get_range_weighted_config()
+    monkeypatch.setattr(rwo, "get_range_weighted_config", lambda: _cfg)
+    import app.trading.early_trend_detector as etd
+    monkeypatch.setattr(etd, "evaluate_cost_gate", lambda *a, **k: {"blocked": False, "cost_pct": 0.12})
 
     state = state_module.load_state(mode="mock")
     state["mode"] = "mock"
     state["auto_trade_on"] = True
-    state["early_trend_detector_enabled"] = True
-    state["early_trend_detector_live"] = True
     state["last_decision"] = {"final_action": "HYNIX_STRONG_BUY", "enhanced_score": 75.5, "inverse_pressure_score": 24.5}
     state["last_enhanced_result"] = {"intraday_momentum_score": 70.0}
     state["adaptive_regime"] = {"confirmed_regime": "RANGE", "confidence": 80.0}
     state["last_completed_decision_snapshot"] = {"snapshot_id": "snap-up-1"}
-    _seed_up_history(state, _MID)
+    state["live_trade_direction"] = {
+        "direction": "UP",
+        "direction_held_since": (_MID - timedelta(seconds=20)).isoformat(),
+        "direction_held_seconds": 20.0,
+        "direction_episode_id": "UP:ep-up-1",
+    }
+    state["trend_continuation_entry"] = {
+        "direction": "UP", "direction_episode_id": "UP:ep-up-1",
+        "reference_price": 10_000.0, "first_detected_at": (_MID - timedelta(seconds=20)).isoformat(),
+    }
     state_module.save_state_atomic(state)
 
-    result = engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID)
-    updated = state_module.load_state(mode="mock")
+    result = engine._execute_weighted_order_controller_entry(
+        state=state, broker=broker, decision=state["last_decision"],
+        hynix_price=10_030.0, inverse_price=19_940.0, now=_MID,
+    )
+    updated = state
 
-    assert result.get("skipped") is False or (updated.get("trend_continuation_entry") or {}).get("entry_done")
+    assert result.get("broker_executed") is True
     assert len(broker.buy_calls) == 1
     assert broker.buy_calls[0]["symbol"] == LONG_SYMBOL
     assert updated["actual_entry_engine"] == "WEIGHTED_ORDER_CONTROLLER_LIVE"
@@ -184,22 +221,57 @@ def test_valid_up_input_places_one_weighted_buy(isolated_ledger, monkeypatch):
 
 def test_valid_down_input_places_one_weighted_inverse_buy(isolated_ledger, monkeypatch):
     broker = _BuyingBroker()
-    _patch_fast_feed(monkeypatch, broker, long_price=9_970.0, inverse_price=20_060.0, signal_price=99_970.0)
+    monkeypatch.setattr(engine, "evaluate_range_weighted_entry", lambda **kwargs: {
+        "action": "ENTER", "entry_path": "CONTINUATION", "reason_code": "CONTINUATION_CANDIDATE",
+        "evidence_score": 70, "expected_net_edge_pct": 0.8, "reward_risk": 2.0,
+        "structural_signal_label": "BUY", "target_pct": 0.30, "score_gap": 40.0,
+        "contributions": {"live_direction": 18.0},
+    })
+    monkeypatch.setattr(engine, "_effective_target_pct_with_adaptive_cap", lambda target, state: {
+        "position_cap": 1.0, "target_ratio": 0.30, "effective_target_pct": 0.30, "order_skip_reason": None,
+    })
+    monkeypatch.setattr(engine, "range_episode_allows_entry", lambda *a, **k: (True, None))
+    monkeypatch.setattr(engine, "detect_opposite_episode_transition", lambda **k: True)
+    monkeypatch.setattr(engine, "reset_range_episode_probe_state", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "update_range_episode_structural_events", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "mark_range_reversal_probe_entered", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_load_etf_own_minute_cache", lambda symbol: None)
+    import app.trading.strategy_architecture as sa
+    monkeypatch.setattr(sa, "chase_hard_block", lambda moved: False)
+    monkeypatch.setattr(sa, "entry_timing_ok", lambda held: (True, None))
+    monkeypatch.setattr(sa, "episode_gate_blocks_entry", lambda *a, **k: False)
+    monkeypatch.setattr(sa, "get_episode_gate_mode", lambda state: "OFF")
+    import app.trading.range_weighted_optimize as rwo
+    monkeypatch.setattr(rwo, "daily_loss_limit_reached_from_pct", lambda *a, **k: False)
+    monkeypatch.setattr(rwo, "resolve_day_regime_from_cache", lambda: "NORMAL")
+    _cfg = rwo.get_range_weighted_config()
+    monkeypatch.setattr(rwo, "get_range_weighted_config", lambda: _cfg)
+    import app.trading.early_trend_detector as etd
+    monkeypatch.setattr(etd, "evaluate_cost_gate", lambda *a, **k: {"blocked": False, "cost_pct": 0.12})
 
     state = state_module.load_state(mode="mock")
     state["mode"] = "mock"
     state["auto_trade_on"] = True
-    state["early_trend_detector_enabled"] = True
-    state["early_trend_detector_live"] = True
     state["last_decision"] = {"final_action": "INVERSE_STRONG_BUY", "enhanced_score": 24.5, "inverse_pressure_score": 75.5}
-    state["last_enhanced_result"] = {"intraday_momentum_score": 30.0}
     state["adaptive_regime"] = {"confirmed_regime": "RANGE", "confidence": 80.0}
     state["last_completed_decision_snapshot"] = {"snapshot_id": "snap-down-1"}
-    _seed_down_history(state, _MID)
+    state["live_trade_direction"] = {
+        "direction": "DOWN",
+        "direction_held_since": (_MID - timedelta(seconds=20)).isoformat(),
+        "direction_held_seconds": 20.0,
+        "direction_episode_id": "DOWN:ep-1",
+    }
+    state["trend_continuation_entry"] = {
+        "direction": "DOWN", "direction_episode_id": "DOWN:ep-1",
+        "reference_price": 20_000.0, "first_detected_at": (_MID - timedelta(seconds=20)).isoformat(),
+    }
     state_module.save_state_atomic(state)
 
-    engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID)
-    updated = state_module.load_state(mode="mock")
+    engine._execute_weighted_order_controller_entry(
+        state=state, broker=broker, decision=state["last_decision"],
+        hynix_price=9_970.0, inverse_price=20_060.0, now=_MID,
+    )
+    updated = state
 
     assert len(broker.buy_calls) == 1
     assert broker.buy_calls[0]["symbol"] == INVERSE_SYMBOL
@@ -211,7 +283,33 @@ def test_valid_down_input_places_one_weighted_inverse_buy(isolated_ledger, monke
 
 def test_early_off_still_allows_weighted_buy(isolated_ledger, monkeypatch):
     broker = _BuyingBroker()
-    _patch_fast_feed(monkeypatch, broker, long_price=10_030.0, inverse_price=19_940.0, signal_price=100_030.0)
+    monkeypatch.setattr(engine, "evaluate_range_weighted_entry", lambda **kwargs: {
+        "action": "ENTER", "entry_path": "PULLBACK", "reason_code": "PULLBACK_ENTRY",
+        "evidence_score": 72, "expected_net_edge_pct": 0.9, "reward_risk": 2.5,
+        "structural_signal_label": "PULLBACK", "target_pct": 0.30, "score_gap": 40.0,
+        "contributions": {"live_direction": 18.0},
+    })
+    monkeypatch.setattr(engine, "_effective_target_pct_with_adaptive_cap", lambda target, state: {
+        "position_cap": 1.0, "target_ratio": 0.30, "effective_target_pct": 0.30, "order_skip_reason": None,
+    })
+    monkeypatch.setattr(engine, "range_episode_allows_entry", lambda *a, **k: (True, None))
+    monkeypatch.setattr(engine, "detect_opposite_episode_transition", lambda **k: True)
+    monkeypatch.setattr(engine, "reset_range_episode_probe_state", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "update_range_episode_structural_events", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "mark_range_reversal_probe_entered", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_load_etf_own_minute_cache", lambda symbol: None)
+    import app.trading.strategy_architecture as sa
+    monkeypatch.setattr(sa, "chase_hard_block", lambda moved: False)
+    monkeypatch.setattr(sa, "entry_timing_ok", lambda held: (True, None))
+    monkeypatch.setattr(sa, "episode_gate_blocks_entry", lambda *a, **k: False)
+    monkeypatch.setattr(sa, "get_episode_gate_mode", lambda state: "OFF")
+    import app.trading.range_weighted_optimize as rwo
+    monkeypatch.setattr(rwo, "daily_loss_limit_reached_from_pct", lambda *a, **k: False)
+    monkeypatch.setattr(rwo, "resolve_day_regime_from_cache", lambda: "NORMAL")
+    _cfg = rwo.get_range_weighted_config()
+    monkeypatch.setattr(rwo, "get_range_weighted_config", lambda: _cfg)
+    import app.trading.early_trend_detector as etd
+    monkeypatch.setattr(etd, "evaluate_cost_gate", lambda *a, **k: {"blocked": False, "cost_pct": 0.12})
 
     state = state_module.load_state(mode="mock")
     state["mode"] = "mock"
@@ -219,14 +317,25 @@ def test_early_off_still_allows_weighted_buy(isolated_ledger, monkeypatch):
     state["early_trend_detector_enabled"] = False
     state["early_trend_detector_live"] = False
     state["last_decision"] = {"final_action": "HYNIX_STRONG_BUY", "enhanced_score": 75.5, "inverse_pressure_score": 24.5}
-    state["last_enhanced_result"] = {"intraday_momentum_score": 70.0}
     state["adaptive_regime"] = {"confirmed_regime": "RANGE", "confidence": 80.0}
     state["last_completed_decision_snapshot"] = {"snapshot_id": "snap-early-off"}
-    _seed_up_history(state, _MID)
+    state["live_trade_direction"] = {
+        "direction": "UP",
+        "direction_held_since": (_MID - timedelta(seconds=20)).isoformat(),
+        "direction_held_seconds": 20.0,
+        "direction_episode_id": "UP:ep-early-off",
+    }
+    state["trend_continuation_entry"] = {
+        "direction": "UP", "direction_episode_id": "UP:ep-early-off",
+        "reference_price": 10_000.0, "first_detected_at": (_MID - timedelta(seconds=20)).isoformat(),
+    }
     state_module.save_state_atomic(state)
 
-    result = engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID)
-    updated = state_module.load_state(mode="mock")
+    result = engine._execute_weighted_order_controller_entry(
+        state=state, broker=broker, decision=state["last_decision"],
+        hynix_price=10_030.0, inverse_price=19_940.0, now=_MID,
+    )
+    updated = state
 
     assert result.get("reason") != "EARLY_DISABLED_PRICE_FEED_ONLY"
     assert updated["actual_entry_engine"] == "WEIGHTED_ORDER_CONTROLLER_LIVE"

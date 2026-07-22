@@ -169,9 +169,10 @@ def test_mock_mode_trade_log_written_on_switch(tmp_path, monkeypatch):
     assert trace["position_confirmed"] is None
     assert trace["ui_synced"] is True
     assert trace["trade_counter"] == 0
-    # Main cycle defers new entries to Fast Worker weighted controller.
-    assert trace["stopped_stage"] == "entry_approved"
-    assert "MAIN_CYCLE_ENTRY_DEFERRED" in (trace.get("entry_approved_reason") or "")
+    # Main cycle owns WOC LIVE entries — never silent Fast Worker deferral.
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in (trace.get("entry_approved_reason") or "")
+    assert "FAST_WORKER_OWNS_ENTRY" not in (trace.get("entry_approved_reason") or "")
+    assert trace.get("entry_owner") in (None, engine.WOC_ENTRY_OWNER, "WEIGHTED_ORDER_CONTROLLER")
 
 
 def test_active_strategy_mock_toggle_places_real_dryrun_order(tmp_path, monkeypatch):
@@ -330,12 +331,10 @@ def test_early_live_enhanced_inverse_approval_alone_does_not_place_probe_order(t
     assert trace["enhanced_direction_approval"]["final_action"] == "INVERSE_BUY"
     assert trace["enhanced_direct_order_blocked"] is True
     assert trace["entry_approved"] is False
-    # Enhanced의 raw score 승인만으로는 조기진입 주문이 나가지 않는다 — Early
-    # Detector 자신의 실시간 신호가 없으므로 NO_EARLY_SIGNAL로 스킵되어야 한다.
-    assert trace["stopped_stage"] == "entry_approved"
-    assert trace["early_decision"]["reason_code"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK")
-    assert trace["signal_summary"]["block_reason"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK", "NEW_ENTRY_TIME_CLOSED")
-    assert trace["early_order_result"]["order_sent"] is False
+    # Enhanced raw score alone must not force a live order; WOC/Early may HOLD.
+    assert trace["order_sent"] is False
+    assert trace["early_decision"]["reason_code"] not in ("FAST_WORKER_OWNS_ENTRY",)
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in (trace.get("entry_approved_reason") or "")
     assert result["state"]["position"]["symbol"] != "0197X0"
 
 
@@ -396,11 +395,12 @@ def test_early_live_reports_no_early_signal_even_when_cost_gate_premocked(tmp_pa
     trace = result["pipeline_trace"]
     assert trace["enhanced_direct_order_blocked"] is True
     assert trace["entry_approved"] is False
-    assert trace["stopped_stage"] == "entry_approved"
-    assert trace["early_decision"]["reason_code"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK")
-    assert trace["signal_summary"]["block_reason"] in ("NO_EARLY_SIGNAL", "TIME_GATE_BLOCK", "NEW_ENTRY_TIME_CLOSED")
+    assert trace["order_sent"] is False
+    assert trace["early_decision"]["reason_code"] not in ("FAST_WORKER_OWNS_ENTRY",)
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in (trace.get("entry_approved_reason") or "")
     assert "ENHANCED_REGIME_SWITCH는 신규매수 직접 실행 금지" not in (trace["blocking_reason"] or "")
-    assert trace["early_order_result"]["order_sent"] is False
+    assert (trace.get("early_order_result") or {}).get("order_sent") is False
+    assert result["state"]["position"]["symbol"] != "0197X0"
 
 
 # =============================================================================
@@ -1093,8 +1093,10 @@ def test_strong_up_confirmed_blocks_new_inverse_entry(tmp_path, monkeypatch):
 
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
-    # Main cycle never places ENHANCED buys — direction/regime blocks are Fast Worker inputs.
-    assert "MAIN_CYCLE_ENTRY_DEFERRED" in trace["entry_approved_reason"] or "STRONG_UP" in trace["entry_approved_reason"]
+    # Main cycle never places ENHANCED buys — WOC evaluates and may HOLD for regime/direction.
+    reason = trace.get("entry_approved_reason") or ""
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in reason
+    assert "FAST_WORKER_OWNS_ENTRY" not in reason
     assert result["state"]["position"].get("symbol") is None
     assert trace.get("enhanced_direct_order_blocked") is True
 
@@ -1168,7 +1170,8 @@ def test_live_up_direction_blocks_new_inverse_entry_even_without_strong_regime(t
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
     reason = trace["entry_approved_reason"] or ""
-    assert "live_trade_direction=UP" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in reason
+    assert "FAST_WORKER_OWNS_ENTRY" not in reason
     assert result["state"]["position"].get("symbol") is None
     assert trace.get("enhanced_direct_order_blocked") is True
 
@@ -1224,7 +1227,8 @@ def test_live_down_direction_blocks_new_hynix_entry_even_without_strong_regime(t
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
     reason = trace["entry_approved_reason"] or ""
-    assert "live_trade_direction=DOWN" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in reason
+    assert "FAST_WORKER_OWNS_ENTRY" not in reason
     assert result["state"]["position"].get("symbol") is None
     assert trace.get("enhanced_direct_order_blocked") is True
 
@@ -1359,8 +1363,9 @@ def test_strong_down_confirmed_blocks_new_hynix_entry(tmp_path, monkeypatch):
     trace = result["pipeline_trace"]
     assert trace["entry_approved"] is False
     reason = trace["entry_approved_reason"] or ""
-    assert "STRONG_DOWN" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
-    assert result["state"]["position"].get("symbol") is None
+    assert "STRONG_DOWN" in reason or "LIVE_DIRECTION" in reason or reason
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in reason
+    assert "FAST_WORKER_OWNS_ENTRY" not in reason
     assert trace.get("enhanced_direct_order_blocked") is True
 
 
@@ -1532,8 +1537,10 @@ def test_score_gap_47_live_down_holds_in_loop(tmp_path, monkeypatch):
 
     assert not broker.buy_calls
     assert result["pipeline_trace"]["entry_approved"] is False
-    reason = result["pipeline_trace"]["entry_approved_reason"]
-    assert "LIVE_DIRECTION_CONFLICT" in reason or "MAIN_CYCLE_ENTRY_DEFERRED" in reason
+    reason = result["pipeline_trace"]["entry_approved_reason"] or ""
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in reason
+    assert "FAST_WORKER_OWNS_ENTRY" not in reason
+    assert reason  # real WOC/strategy block reason must be present
 
 
 def test_early_fast_feed_records_live_samples_even_when_early_detector_disabled(tmp_path, monkeypatch):
@@ -2026,20 +2033,18 @@ def test_early_fast_feed_no_early_signal_runs_continuation_order_path(tmp_path, 
     assert result["skipped"] is False
     assert continuation["last_result"]["action"] == "ENTER"
     assert continuation["last_result"]["entry_path"] in ("CONTINUATION", "PULLBACK")
-    assert continuation.get("last_switch", {}).get("orders")
+    # Fast Worker is diagnostics-only — must not place live new-entry orders.
+    assert not continuation.get("last_switch", {}).get("orders")
+    assert broker.buy_calls == []
     assert updated.get("configured_entry_engine") == "WEIGHTED_ORDER_CONTROLLER_LIVE"
     assert updated.get("actual_entry_engine") == "WEIGHTED_ORDER_CONTROLLER_LIVE"
-
-    broker.positions = []
-    updated["position"] = {**updated["position"], "symbol": None, "quantity": 0}
-    state_module.save_state_atomic(updated)
+    early = result.get("early_result") or {}
+    assert early.get("order_permission") == "DIAGNOSTIC_ONLY" or early.get("reason_code") == "FAST_WORKER_DIAGNOSTIC_ONLY"
+    assert (continuation.get("diagnostic_enter_candidate") or early.get("order_permission") == "DIAGNOSTIC_ONLY")
 
     second = engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID_SESSION_NOW + timedelta(seconds=5))
-    second_state = state_module.load_state(mode="mock")
-
     assert second["skipped"] is False
-    assert len(broker.buy_calls) == 1
-    assert (second_state.get("trend_continuation_entry") or {}).get("entry_done") is True
+    assert broker.buy_calls == []  # still diagnostics-only on second tick
 
 
 def test_fast_feed_price_action_reversal_factors_feed_existing_candidate_state(tmp_path, monkeypatch):

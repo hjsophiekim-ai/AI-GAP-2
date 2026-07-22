@@ -404,10 +404,10 @@ def ensure_fast_trend_watcher_running(interval_seconds: float = FAST_WATCHER_INT
 
 
 def wake_fast_trend_watcher() -> bool:
-    """Wake the Fast Worker sleep wait so the next tick runs immediately.
+    """Wake the Fast Worker sleep wait so the next diagnostics tick runs ASAP.
 
-    Used when Main Cycle defers entry (`MAIN_CYCLE_ENTRY_DEFERRED`) or when
-    `FAST_WORKER_SNAPSHOT_PENDING` exceeds the 15s deadline.
+    Used for advisory snapshot refresh only — Fast Worker never owns live
+    new-entry orders when actual_entry_engine is WEIGHTED_ORDER_CONTROLLER_LIVE.
     """
     with _fast_lock:
         if _fast_instance is None or not _fast_instance.is_alive():

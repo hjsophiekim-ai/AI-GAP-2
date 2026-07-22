@@ -804,17 +804,24 @@ def _buy_new(
     episode_id = meta.get("episode_id") or meta.get("signal_id") or "NO_EPISODE"
     entry_event_id = meta.get("entry_event_id") or meta.get("signal_id") or f"BUY:{time.monotonic_ns()}"
     account = order_coord.infer_account_id(broker, mode)
+    # Same episode BUY must collide even if sized qty differs slightly across
+    # concurrent main-cycle / watcher races — qty is not part of the identity.
+    idem_qty = 0 if episode_id not in (None, "", "NO_EPISODE") else quantity
 
     with order_coord.coordinated_order(
         mode=mode, account=account, symbol=symbol, side="BUY",
-        episode_id=episode_id, exit_event_id=entry_event_id, target_qty=quantity,
+        episode_id=episode_id, exit_event_id=entry_event_id, target_qty=idem_qty,
         source=signal_source, severity=meta.get("severity"), reason=reason,
         detected_at=meta.get("detected_at"),
     ) as coordinated:
         if coordinated.blocked:
-            _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, coordinated.block_reason)
+            block_msg = coordinated.block_reason or "DUPLICATE_ORDER_BLOCKED"
+            if "DUPLICATE_ORDER_BLOCKED" not in str(block_msg):
+                block_msg = f"DUPLICATE_ORDER_BLOCKED: {block_msg}"
+            _record_skipped(orders, "BUY_SKIPPED", symbol, current_price, reason, block_msg)
             return {
-                "success": False, "message": coordinated.block_reason, "blocked_by_coordinator": True,
+                "success": False, "message": block_msg, "blocked_by_coordinator": True,
+                "failure_code": "DUPLICATE_ORDER_BLOCKED",
                 "idempotency_key": coordinated.idempotency_key, "requested_qty": quantity, **_diag_base,
             }
         with _POSITION_STATE_LOCK:

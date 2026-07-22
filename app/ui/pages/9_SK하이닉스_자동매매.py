@@ -1773,14 +1773,23 @@ else:
     pp1, pp2 = st.columns(2)
     with pp1:
         st.markdown(f"**Prediction Signal**: :blue[{trace.get('prediction_signal', 'HOLD')}]")
+        st.markdown(
+            f"**Entry Engine**: `{trace.get('actual_entry_engine') or state_now.get('actual_entry_engine') or 'WEIGHTED_ORDER_CONTROLLER_LIVE'}` "
+            f"(configured=`{trace.get('configured_entry_engine') or state_now.get('configured_entry_engine') or 'WEIGHTED_ORDER_CONTROLLER_LIVE'}`)"
+        )
+        st.markdown(f"**Entry Owner**: `{trace.get('entry_owner') or '—'}`")
         _stage_line("entry_approved", "Entry Approved", trace.get("entry_approved"), trace.get("entry_approved_reason") or "")
         _stage_line("risk_manager", "Risk Manager 승인", trace.get("risk_manager_ok"), trace.get("risk_manager_reason") or "")
-        _stage_line("order_sent", "Order Sent", trace.get("order_sent"))
+        _stage_line("order_sent", "Order Sent", trace.get("order_sent"), trace.get("order_reservation") or "")
     with pp2:
         _stage_line("broker_executed", "Broker Executed", trace.get("broker_executed"))
         _stage_line("position_confirmed", "Position Confirmed", trace.get("position_confirmed"))
         _stage_line("ui_synced", "UI Synced", trace.get("ui_synced"))
         st.markdown(f"**Trade Counter**: {trace.get('trade_counter', 0)}")
+        if trace.get("primary_block_reason"):
+            st.markdown(f"**Primary Block**: `{trace.get('primary_block_reason')}`")
+        if trace.get("execution_error"):
+            st.caption(f"execution_error: {trace.get('execution_error')}")
 
     if stopped_stage:
         st.error(

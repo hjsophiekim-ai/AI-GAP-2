@@ -221,7 +221,7 @@ def coordinated_order(
                 detected_at=detected_at,
                 attempt=int(existing.get("attempt") or 1),
                 blocked=True,
-                block_reason=f"duplicate order blocked: status={existing.get('status')}",
+                block_reason=f"DUPLICATE_ORDER_BLOCKED: status={existing.get('status')}",
             )
             return
         attempt = int(existing.get("attempt") or 0) + 1 if existing else 1
