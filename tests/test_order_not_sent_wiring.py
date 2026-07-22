@@ -198,9 +198,15 @@ def test_fast_worker_deferral_not_silent_noop():
         "last_result": {
             "action": "ENTER", "entry_path": "PULLBACK", "reason_code": "PULLBACK_ENTRY",
             "evidence_score": 72, "expected_net_edge_pct": 0.9, "reward_risk": 2.5,
+            "structural_signal_label": "PULLBACK", "target_pct": 0.30,
         },
         "last_block_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+        "order_sizing_audit": {
+            "position_cap": 1.0, "target_ratio": 0.30, "effective_target_pct": 0.30,
+            "calculated_quantity": 0, "order_skip_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+        },
     }
+    engine._mark_fast_worker_deferral(state, now=now)
     engine._update_fast_worker_decision_snapshot(
         state, now=now, continuation_state=continuation_state,
         early_result={"skipped": True, "reason_code": "FAST_WORKER_OWNS_ENTRY"},
@@ -209,6 +215,10 @@ def test_fast_worker_deferral_not_silent_noop():
     assert snap["final_action"]["value"] == "HOLD"
     assert snap["primary_block_reason"]["value"]
     assert snap["block_reason"]["value"]
+    for key in ("final_action", "target_symbol", "ratio", "qty", "block_reason", "order_requested", "coordinator_result", "broker_result"):
+        assert key in snap
+    assert engine._fast_worker_snapshot_is_complete(snap)
+    assert "pending_fast_worker_deferral" not in state
 
 
 def test_yesterday_execution_message_not_shown_as_today():

@@ -145,6 +145,152 @@ def _live_trade_direction_label(state: dict) -> str:
     return direction
 
 
+# Single live entry-engine identity for state + UI (never SHADOW_ONLY as live).
+WEIGHTED_LIVE_ENTRY_ENGINE = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+_EXECUTION_HARD_HOLD_REASONS = frozenset({
+    "ETF_5S_10S_BOTH_OPPOSITE",
+    "CHASE_BLOCK",
+})
+_FAST_WORKER_SNAPSHOT_REQUIRED_FIELDS = (
+    "final_action",
+    "target_symbol",
+    "ratio",
+    "qty",
+    "block_reason",
+    "order_requested",
+    "coordinator_result",
+    "broker_result",
+)
+_FAST_WORKER_DEFERRAL_DEADLINE_SECONDS = 15.0
+
+
+def _set_live_entry_engine_state(state: dict, *, now: datetime, reason: str) -> None:
+    """configured/actual entry engine always share one live value."""
+    state["configured_entry_engine"] = WEIGHTED_LIVE_ENTRY_ENGINE
+    state["actual_entry_engine"] = WEIGHTED_LIVE_ENTRY_ENGINE
+    state["entry_orchestrator"] = {
+        "name": "OrderCoordinator",
+        "mode": WEIGHTED_LIVE_ENTRY_ENGINE,
+        "reason": reason,
+        "updated_at": now.isoformat(),
+    }
+    state["weighted_entry_controller_only"] = True
+
+
+def _normalize_reason_code(value) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _first_hard_hold_reason(*candidates) -> Optional[str]:
+    for raw in candidates:
+        code = _normalize_reason_code(raw)
+        if not code:
+            continue
+        upper = code.upper()
+        for hard in _EXECUTION_HARD_HOLD_REASONS:
+            if hard in upper:
+                return hard
+        if code in _EXECUTION_HARD_HOLD_REASONS:
+            return code
+    return None
+
+
+def _resolve_consistent_final_action(
+    *,
+    order_ok: bool,
+    continuation_result: Optional[dict] = None,
+    structural_label: Optional[str] = None,
+    block_candidates: Optional[list] = None,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Single weighted-execution final action for UI / orders / ledger.
+
+    Invariants:
+    - ETF_5S_10S_BOTH_OPPOSITE or CHASE_BLOCK → HOLD + primary_block_reason
+    - Structural Label=HOLD → Final Action cannot be BUY
+    - Forbid BUY + empty block reason (BUY only when order actually succeeded)
+    """
+    cont = continuation_result or {}
+    structural = _normalize_reason_code(structural_label or cont.get("structural_signal_label"))
+    hard = _first_hard_hold_reason(
+        cont.get("reason_code"),
+        *((block_candidates or [])),
+        *list(cont.get("hard_blocks") or []),
+    )
+    if hard:
+        return "HOLD", hard, hard
+    if structural == "HOLD":
+        reason = _normalize_reason_code(cont.get("reason_code")) or "STRUCTURAL_HOLD"
+        return "HOLD", reason, reason
+    if order_ok:
+        return "BUY", None, None
+    for raw in (block_candidates or []):
+        code = _normalize_reason_code(raw)
+        if code:
+            return "HOLD", code, code
+    fallback = _normalize_reason_code(cont.get("reason_code")) or "ORDER_NOT_EXECUTED"
+    return "HOLD", fallback, fallback
+
+
+def _snapshot_field_value(snapshot: Optional[dict], key: str):
+    if not snapshot:
+        return None
+    field = snapshot.get(key)
+    if isinstance(field, dict) and "value" in field:
+        return field.get("value")
+    return field
+
+
+def _fast_worker_snapshot_is_complete(snapshot: Optional[dict]) -> bool:
+    if not snapshot or snapshot.get("cycle_status") != "COMPLETED":
+        return False
+    if snapshot.get("source") not in (None, "FAST_WORKER", "WEIGHTED_ORDER_CONTROLLER"):
+        # Main-cycle placeholders are not a Fast Worker completion.
+        if snapshot.get("source") == "MAIN_CYCLE_DEFERRED":
+            return False
+    for key in _FAST_WORKER_SNAPSHOT_REQUIRED_FIELDS:
+        if key not in snapshot:
+            return False
+    final_action = _snapshot_field_value(snapshot, "final_action")
+    block_reason = _snapshot_field_value(snapshot, "block_reason")
+    primary = _snapshot_field_value(snapshot, "primary_block_reason")
+    if final_action == "BUY" and not (block_reason is None and primary is None):
+        # BUY may only appear with empty block reasons when an order succeeded.
+        pass
+    if final_action == "BUY" and block_reason:
+        return False
+    if final_action == "BUY" and not snapshot.get("order_requested") and not _snapshot_field_value(snapshot, "qty"):
+        # BUY without any order request / qty is incomplete.
+        if not snapshot.get("broker_result"):
+            return False
+    return True
+
+
+def _mark_fast_worker_deferral(state: dict, *, now: datetime) -> None:
+    state["pending_fast_worker_deferral"] = {
+        "reason_code": "FAST_WORKER_OWNS_ENTRY",
+        "deferred_at": now.isoformat(),
+        "deadline_seconds": _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS,
+    }
+
+
+def _clear_fast_worker_deferral(state: dict) -> None:
+    state.pop("pending_fast_worker_deferral", None)
+
+
+def _deferral_age_seconds(pending: Optional[dict], now: datetime) -> Optional[float]:
+    if not pending:
+        return None
+    raw = pending.get("deferred_at")
+    if not raw:
+        return None
+    try:
+        return max(0.0, (now - datetime.fromisoformat(str(raw))).total_seconds())
+    except Exception:
+        return None
+
 
 def _adaptive_position_cap_info(state: Optional[dict]) -> dict:
     """Adaptive Regime position-cap for new entries (DATA_INSUFFICIENT → 0%).
@@ -679,18 +825,38 @@ def _build_signal_summary(
     prediction_signal = trace.get("prediction_signal") or _map_prediction_signal(decision.get("final_action", "HOLD"))
     decision_action = decision.get("final_action", "HOLD")
     entry_reason = trace.get("entry_approved_reason") or ""
+    continuation_result = (state.get("trend_continuation_entry") or {}).get("last_result") or {}
+    structural_label = continuation_result.get("structural_signal_label")
     block_reason = None
     if not new_entry_allowed_now:
         block_reason = "NEW_ENTRY_TIME_CLOSED"
     elif trace.get("entry_approved") is False:
         block_reason = _trace_block_reason(trace, decision_action, entry_reason, state)
+    hard = _first_hard_hold_reason(
+        block_reason,
+        continuation_result.get("reason_code"),
+        *list(continuation_result.get("hard_blocks") or []),
+        (state.get("trend_continuation_entry") or {}).get("last_block_reason"),
+    )
+    if hard:
+        block_reason = hard
     actionable_signal = prediction_signal
     if decision_action == "HOLD" or block_reason or trace.get("entry_approved") is False:
         actionable_signal = "HOLD"
-    if trace.get("order_sent"):
-        final_action = "BUY" if prediction_signal in ("BUY", "INVERSE") else prediction_signal
-    else:
-        final_action = "HOLD"
+    order_ok = bool(trace.get("order_sent")) and bool(
+        trace.get("broker_executed")
+        or trace.get("order_executed")
+        or _switch_order_succeeded({"acted": True, "orders": trace.get("orders") or []})
+    )
+    final_action, resolved_block, primary_block = _resolve_consistent_final_action(
+        order_ok=bool(order_ok and not hard and structural_label != "HOLD"),
+        continuation_result=continuation_result,
+        structural_label=structural_label,
+        block_candidates=[block_reason, entry_reason, (trace.get("early_decision") or {}).get("reason_code")],
+    )
+    if final_action != "BUY":
+        actionable_signal = "HOLD"
+        block_reason = resolved_block or block_reason
     if block_reason == "LIVE_HYNIX_UPTREND":
         live_label = _live_trade_direction_label(state)
         if live_label == "NONE":
@@ -702,8 +868,10 @@ def _build_signal_summary(
         conclusion = "14:50 이후 신호와 무관하게 신규진입 금지 → HOLD"
     elif block_reason == "LIVE_HYNIX_UPTREND" and raw_leader == "INVERSE":
         conclusion = "원점수는 INVERSE 우세이나 하이닉스 단기상승 확인으로 인버스 진입 차단 → HOLD"
-    elif actionable_signal == "HOLD":
+    elif actionable_signal == "HOLD" or final_action == "HOLD":
         conclusion = f"원점수는 {raw_leader} 우세이나 실행 가능한 신규진입 신호 없음 → HOLD"
+        if primary_block or block_reason:
+            conclusion = f"{conclusion} ({primary_block or block_reason})"
     else:
         conclusion = f"원점수 {raw_leader}, 실행신호 {actionable_signal} → {final_action}"
 
@@ -717,13 +885,16 @@ def _build_signal_summary(
         "actionable_signal": actionable_signal,
         "final_action": final_action,
         "decision_final_action": decision_action,
+        "structural_signal_label": structural_label or ("HOLD" if final_action == "HOLD" else None),
         "prediction_signal": prediction_signal,
         "block_reason": block_reason,
+        "primary_block_reason": primary_block or block_reason,
         "entry_approved_reason": entry_reason,
         "new_entry_allowed": bool(new_entry_allowed_now),
         "new_entry_rule": (new_entry_window or {}).get("rule"),
         "conclusion": conclusion,
     }
+
 
 
 def _snapshot_field(value, snapshot_id: str, calculated_at: str, **extra) -> dict:
@@ -801,14 +972,32 @@ def _build_completed_decision_snapshot(
     signal_summary = trace.get("signal_summary") or {}
     raw_leader = signal_summary.get("raw_score_leader") or _raw_score_leader(decision)
     live_direction = signal_summary.get("live_trade_direction") or _live_trade_direction_label(state)
-    actionable_signal = signal_summary.get("actionable_signal") or "HOLD"
-    final_action = signal_summary.get("final_action") or "HOLD"
-    block_reason = signal_summary.get("block_reason")
     early_decision = trace.get("early_decision") or {}
     early_reason = early_decision.get("reason") or early_decision.get("reason_code")
     continuation_result = (state.get("trend_continuation_entry") or {}).get("last_result", {})
     continuation_state = state.get("trend_continuation_entry") or {}
-    primary_block_reason = block_reason or continuation_result.get("reason_code") or early_reason
+    structural_label = (
+        signal_summary.get("structural_signal_label")
+        or continuation_result.get("structural_signal_label")
+    )
+    order_ok = bool(trace.get("order_sent")) and bool(
+        trace.get("broker_executed")
+        or trace.get("order_executed")
+        or _switch_order_succeeded({"acted": True, "orders": orders_this_cycle or []})
+    )
+    final_action, block_reason, primary_block_reason = _resolve_consistent_final_action(
+        order_ok=order_ok,
+        continuation_result=continuation_result,
+        structural_label=structural_label,
+        block_candidates=[
+            signal_summary.get("block_reason"),
+            signal_summary.get("primary_block_reason"),
+            continuation_state.get("last_block_reason"),
+            early_reason,
+            continuation_result.get("reason_code"),
+        ],
+    )
+    actionable_signal = "BUY" if final_action == "BUY" else "HOLD"
     secondary_reasons = [
         reason for reason in (
             early_reason,
@@ -855,6 +1044,7 @@ def _build_completed_decision_snapshot(
         "primary_block_reason": _snapshot_field(primary_block_reason, snapshot_id, calculated_at),
         "secondary_reasons": _snapshot_field(secondary_reasons, snapshot_id, calculated_at),
         "entry_path": _snapshot_field(continuation_result.get("entry_path") or "NONE", snapshot_id, calculated_at),
+        "structural_signal_label": _snapshot_field(structural_label or ("HOLD" if final_action == "HOLD" else None), snapshot_id, calculated_at),
         "continuation_reason": _snapshot_field((state.get("trend_continuation_entry") or {}).get("last_reason_code"), snapshot_id, calculated_at),
         "score_gap": _snapshot_field(_score_gap_from_decision(decision), snapshot_id, calculated_at),
         "range_evidence_score": _snapshot_field(continuation_result.get("evidence_score"), snapshot_id, calculated_at),
@@ -886,7 +1076,7 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     early_reason = (early_result or {}).get("reason_code") or (early_result or {}).get("reason")
     last_block = continuation_state.get("last_block_reason")
     last_switch = continuation_state.get("last_switch") or (early_result or {}).get("switch") or {}
-    sizing_audit = continuation_state.get("order_sizing_audit") or {}
+    sizing_audit = continuation_state.get("order_sizing_audit") or (early_result or {}).get("order_sizing_audit") or {}
     order_skip = (
         sizing_audit.get("order_skip_reason")
         or last_switch.get("failure_code")
@@ -895,31 +1085,37 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     )
     controller_enter = continuation_result.get("action") == "ENTER"
     order_ok = _switch_order_succeeded(last_switch) or _switch_order_succeeded((early_result or {}).get("switch"))
-    # Never display BUY + empty block when Adaptive cap / sizing / Fast Worker
-    # gates prevented an actual order. Cap=0 → explicit HOLD.
-    if order_ok:
-        action = "BUY"
-        block_reason = None
-        primary_block_reason = None
-    elif order_skip == "DATA_INSUFFICIENT_POSITION_CAP_ZERO" or (
+    structural_label = continuation_result.get("structural_signal_label") or continuation_state.get("structural_signal_label")
+
+    block_candidates = [
+        last_block,
+        early_reason,
+        order_skip,
+        continuation_result.get("reason_code"),
+    ]
+    if order_skip == "DATA_INSUFFICIENT_POSITION_CAP_ZERO" or (
         controller_enter and float(sizing_audit.get("position_cap") or 1.0) <= 0.0
     ):
+        block_candidates.insert(0, "DATA_INSUFFICIENT_POSITION_CAP_ZERO")
+    if controller_enter and not order_ok and not any(block_candidates):
+        block_candidates.append("FAST_WORKER_ENTRY_NOT_EXECUTED")
+
+    action, block_reason, primary_block_reason = _resolve_consistent_final_action(
+        order_ok=order_ok,
+        continuation_result=continuation_result,
+        structural_label=structural_label,
+        block_candidates=block_candidates,
+    )
+    # Absolute forbid: BUY with empty block when no broker success.
+    if action == "BUY" and not order_ok:
         action = "HOLD"
-        block_reason = "DATA_INSUFFICIENT_POSITION_CAP_ZERO"
-        primary_block_reason = "DATA_INSUFFICIENT_POSITION_CAP_ZERO"
-    elif controller_enter and order_skip:
-        action = "HOLD"
-        block_reason = str(order_skip)
-        primary_block_reason = str(order_skip)
-    elif controller_enter and not order_ok:
-        # ENTER approved but Fast Worker did not complete the broker path — no silent BUY.
-        action = "HOLD"
-        block_reason = str(last_block or early_reason or "FAST_WORKER_ENTRY_NOT_EXECUTED")
+        block_reason = primary_block_reason or "FAST_WORKER_ENTRY_NOT_EXECUTED"
         primary_block_reason = block_reason
-    else:
+    if action == "BUY" and structural_label == "HOLD":
         action = "HOLD"
-        block_reason = continuation_result.get("reason_code")
-        primary_block_reason = block_reason or early_reason
+        block_reason = primary_block_reason or "STRUCTURAL_HOLD"
+        primary_block_reason = block_reason
+
     secondary_reasons = [
         reason for reason in (early_reason, continuation_result.get("reason_code"), last_block, sizing_audit.get("order_skip_reason"))
         if reason and reason != primary_block_reason
@@ -928,10 +1124,50 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         ((last_switch or {}).get("orders") or [])
         or (((early_result or {}).get("switch") or {}).get("orders") or [])
     )
+    target_symbol = (
+        last_switch.get("requested_symbol")
+        or (early_result or {}).get("requested_symbol")
+        or symbol_for_live_direction(live.get("direction"))
+    )
+    ratio = (
+        sizing_audit.get("effective_target_pct")
+        if sizing_audit.get("effective_target_pct") is not None
+        else sizing_audit.get("target_ratio")
+    )
+    if ratio is None:
+        ratio = continuation_result.get("target_pct")
+    qty = sizing_audit.get("calculated_quantity")
+    if qty is None:
+        qty = last_switch.get("requested_qty")
+    order_requested = bool(today_orders) or bool(last_switch.get("acted")) or bool(last_switch.get("orders"))
+    coordinator_result = {
+        "blocked_by_coordinator": bool(last_switch.get("blocked_by_coordinator")),
+        "failure_code": last_switch.get("failure_code") or last_switch.get("order_skip_reason"),
+        "message": last_switch.get("message"),
+        "stage": last_switch.get("stage"),
+    }
+    broker_result = {
+        "acted": bool(last_switch.get("acted")),
+        "success": order_ok,
+        "requested_symbol": last_switch.get("requested_symbol") or target_symbol,
+        "requested_qty": last_switch.get("requested_qty") if last_switch.get("requested_qty") is not None else qty,
+        "order_price": last_switch.get("order_price"),
+        "broker_error": last_switch.get("broker_error"),
+        "orders": today_orders,
+    }
+    if structural_label == "HOLD" or action == "HOLD":
+        display_structural = structural_label or "HOLD"
+    else:
+        display_structural = structural_label or action
+    explanation = (
+        f"{display_structural or 'TREND_CONTINUATION_ENTRY'} 승인"
+        if action == "BUY" else f"Continuation 차단: {primary_block_reason or block_reason}"
+    )
     snapshot = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
         "cycle_status": "COMPLETED",
+        "source": "FAST_WORKER",
         "raw_score_leader": _snapshot_field(_raw_score_leader(decision), snapshot_id, calculated_at, hynix_score=decision.get("enhanced_score"), inverse_score=decision.get("inverse_pressure_score"), label="raw component score"),
         "enhanced_score": _snapshot_field(decision.get("enhanced_score"), snapshot_id, calculated_at, inverse_score=decision.get("inverse_pressure_score"), label="final enhanced decision score"),
         "live_trade_direction": _snapshot_field(live.get("direction") or "NONE", snapshot_id, calculated_at),
@@ -943,7 +1179,7 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "primary_block_reason": _snapshot_field(primary_block_reason, snapshot_id, calculated_at),
         "secondary_reasons": _snapshot_field(secondary_reasons, snapshot_id, calculated_at),
         "entry_path": _snapshot_field(continuation_result.get("entry_path") or "NONE", snapshot_id, calculated_at),
-        "structural_signal_label": _snapshot_field(continuation_result.get("structural_signal_label") or action, snapshot_id, calculated_at),
+        "structural_signal_label": _snapshot_field(display_structural, snapshot_id, calculated_at),
         "structure_confirmed": _snapshot_field(continuation_result.get("structure_confirmed"), snapshot_id, calculated_at),
         "strong_structure_confirmed": _snapshot_field(continuation_result.get("strong_structure_confirmed"), snapshot_id, calculated_at),
         "continuation_reason": _snapshot_field(continuation_result.get("reason_code"), snapshot_id, calculated_at),
@@ -959,15 +1195,18 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "reward_risk": _snapshot_field(continuation_result.get("reward_risk"), snapshot_id, calculated_at),
         "position_cap": _snapshot_field(sizing_audit.get("position_cap"), snapshot_id, calculated_at),
         "target_ratio": _snapshot_field(sizing_audit.get("target_ratio"), snapshot_id, calculated_at),
-        "calculated_quantity": _snapshot_field(sizing_audit.get("calculated_quantity"), snapshot_id, calculated_at),
+        "target_symbol": _snapshot_field(target_symbol, snapshot_id, calculated_at),
+        "ratio": _snapshot_field(ratio, snapshot_id, calculated_at),
+        "qty": _snapshot_field(qty, snapshot_id, calculated_at),
+        "calculated_quantity": _snapshot_field(qty, snapshot_id, calculated_at),
         "order_skip_reason": _snapshot_field(sizing_audit.get("order_skip_reason") or order_skip, snapshot_id, calculated_at),
+        "order_requested": order_requested,
+        "coordinator_result": coordinator_result,
+        "broker_result": broker_result,
         "signal_detected_at": continuation_state.get("first_detected_at"),
         "snapshot_calculated_at": calculated_at,
         "order_requested_at": ((last_switch or {}).get("orders") or [{}])[0].get("timestamp") if (last_switch or {}).get("orders") else None,
-        "explanation": (
-            f"{continuation_result.get('structural_signal_label') or 'TREND_CONTINUATION_ENTRY'} 승인"
-            if action == "BUY" else f"Continuation 차단: {primary_block_reason or block_reason}"
-        ),
+        "explanation": explanation,
         "enhanced_result": dict(state.get("last_enhanced_result") or {}),
         "decision": dict(decision),
         "signal_summary": {
@@ -977,20 +1216,23 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
             "live_trade_direction": live.get("direction") or "NONE",
             "actionable_signal": action,
             "final_action": action,
-            "structural_signal_label": continuation_result.get("structural_signal_label") or action,
+            "structural_signal_label": display_structural,
             "block_reason": block_reason,
             "primary_block_reason": primary_block_reason,
             "secondary_reasons": secondary_reasons,
-            "conclusion": (
-                f"{continuation_result.get('structural_signal_label') or 'TREND_CONTINUATION_ENTRY'} 승인"
-                if action == "BUY" else f"Continuation 차단: {primary_block_reason or block_reason}"
-            ),
+            "target_symbol": target_symbol,
+            "ratio": ratio,
+            "qty": qty,
+            "order_requested": order_requested,
+            "conclusion": explanation,
         },
         "pipeline_trace": {"snapshot_id": snapshot_id, "calculated_at": calculated_at, "early_decision": early_result or {}, "continuation": continuation_result},
         "orders_this_cycle": today_orders,
     }
+    state["last_fast_worker_decision_snapshot"] = snapshot
     state["last_completed_decision_snapshot"] = snapshot
     state["last_signal_summary"] = snapshot["signal_summary"]
+    _clear_fast_worker_deferral(state)
 
 
 def _downgrade_unconfirmed_strong_decision(decision: dict, state: dict) -> dict:
@@ -3846,14 +4088,11 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
         # Early ON/OFF·LIVE는 조기신호 입력(SHADOW) 여부만 바꾼다. auto_trade_on이면
         # WEIGHTED_ORDER_CONTROLLER_LIVE가 항상 신규진입을 소유하며, Early 토글로
         # Fast Worker를 early-return 시켜서는 안 된다.
-        state["configured_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-        state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-        state["entry_orchestrator"] = {
-            "name": "OrderCoordinator",
-            "mode": "WEIGHTED_ORDER_CONTROLLER_LIVE",
-            "reason": "evaluate_range_weighted_entry owns REVERSAL/CONTINUATION/PULLBACK entry orders",
-            "updated_at": now.isoformat(),
-        }
+        _set_live_entry_engine_state(
+            state,
+            now=now,
+            reason="evaluate_range_weighted_entry owns REVERSAL/CONTINUATION/PULLBACK entry orders",
+        )
         etd_state["early_live_input"] = live
         etd_state["early_enabled_input"] = early_enabled
 
@@ -3876,14 +4115,11 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             cfg = get_config()
             broker = _create_strategy_broker(cfg, resolved_mode)
             position_manager = HynixPositionManager(broker, mode=resolved_mode)
-            state["configured_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-            state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-            state["entry_orchestrator"] = {
-                "name": "OrderCoordinator",
-                "mode": "WEIGHTED_ORDER_CONTROLLER_LIVE",
-                "reason": "evaluate_range_weighted_entry owns REVERSAL/CONTINUATION/PULLBACK entry orders",
-                "updated_at": now.isoformat(),
-            }
+            _set_live_entry_engine_state(
+                state,
+                now=now,
+                reason="evaluate_range_weighted_entry owns REVERSAL/CONTINUATION/PULLBACK entry orders",
+            )
             etd_state["order_worker_name"] = "EARLY_FAST_WORKER"
             etd_state["latency"] = etd.mark_latency(
                 etd.default_latency_trace(worker_name="EARLY_FAST_WORKER"), "account_query_started_at", now
@@ -3928,32 +4164,10 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
             continuation_state = dict(state.get("trend_continuation_entry") or {})
             continuation_state["last_evaluated_at"] = now.isoformat()
             continuation_state["evaluation_count_today"] = int(continuation_state.get("evaluation_count_today") or 0) + 1
+            # Enhanced score is diagnostic input only — never overwrite live
+            # direction or ETF 5/10 opposite state for order ownership.
             desired_live_direction = live_trade.get("direction")
             decision_for_continuation = state.get("last_decision") or {}
-            _episode_confirm = etd_state.get("macd_williams_episode") or {}
-            if desired_live_direction not in ("UP", "DOWN"):
-                # C 확인기가 반대면 enhanced가 방향을 덮어쓰지 못함
-                from app.trading.macd_williams_episode import enhanced_may_set_direction
-
-                _gap = _score_gap_from_decision(decision_for_continuation)
-                try:
-                    _hynix_score = float(decision_for_continuation.get("enhanced_score") or 50.0)
-                    _inverse_score = float(decision_for_continuation.get("inverse_pressure_score") or 50.0)
-                except Exception:
-                    _hynix_score, _inverse_score = 50.0, 50.0
-                _enhanced_leader = "UP" if _hynix_score >= _inverse_score else "DOWN"
-                if (
-                    _gap >= 30.0
-                    and enhanced_may_set_direction(
-                        _episode_confirm,
-                        enhanced_leader=_enhanced_leader,
-                        live_direction=desired_live_direction,
-                    )
-                ):
-                    desired_live_direction = _enhanced_leader
-                elif _episode_confirm.get("indicator_direction") in ("UP", "DOWN"):
-                    # enhanced 차단 시 episode 지표 방향을 참고(주문은 A만)
-                    desired_live_direction = _episode_confirm["indicator_direction"]
             desired_symbol = symbol_for_live_direction(desired_live_direction)
             current_etf_price = long_price if desired_symbol == HYNIX_SYMBOL else (inverse_price if desired_symbol == INVERSE_SYMBOL else None)
             from app.trading.etf_entry_confirmation import resolve_window_directions, trade_aligned_window_directions
@@ -4858,18 +5072,14 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     new_entry_allowed_now = new_entry_window["allowed"]
     _early_configured = bool(state.get("early_trend_detector_enabled"))
     _early_live = bool(_early_configured and state.get("early_trend_detector_live"))
-    state["configured_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-    state["actual_entry_engine"] = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-    state["entry_orchestrator"] = {
-        "name": "OrderCoordinator",
-        "mode": "WEIGHTED_ORDER_CONTROLLER_LIVE",
-        "reason": (
+    _set_live_entry_engine_state(
+        state,
+        now=now,
+        reason=(
             "evaluate_range_weighted_entry owns all live new entries; "
             f"Early={'LIVE_INPUT' if _early_live else ('SHADOW_INPUT' if _early_configured else 'OFF')}"
         ),
-        "updated_at": now.isoformat(),
-    }
-    state["weighted_entry_controller_only"] = True
+    )
 
     if not trading_allowed:
         trace["risk_manager_ok"] = False
@@ -5044,6 +5254,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                                 "reason_code": "FAST_WORKER_OWNS_ENTRY",
                                 "order_permission": "DIAGNOSTIC_ONLY",
                             }
+                            _mark_fast_worker_deferral(state, now=now)
                         _record_early_result_on_trace(trace, early_result)
                         _early_order_sent = bool((trace.get("early_order_result") or {}).get("order_sent"))
                         _early_broker_executed = bool((trace.get("early_order_result") or {}).get("broker_executed"))
@@ -5260,7 +5471,73 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     state["last_enhanced_result"] = enhanced_result
     state["last_decision"] = decision
     state["last_signal_summary"] = trace["signal_summary"]
-    state["last_completed_decision_snapshot"] = completed_decision_snapshot
+    pending_deferral = state.get("pending_fast_worker_deferral")
+    fw_snap = state.get("last_fast_worker_decision_snapshot")
+    if pending_deferral and _fast_worker_snapshot_is_complete(fw_snap):
+        # Fast Worker already produced the required completed snapshot within the window.
+        age = _deferral_age_seconds(pending_deferral, now)
+        if age is None or age <= _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:
+            state["last_completed_decision_snapshot"] = fw_snap
+            _clear_fast_worker_deferral(state)
+        else:
+            completed_decision_snapshot = {
+                **completed_decision_snapshot,
+                "source": "MAIN_CYCLE_DEFERRED",
+                "block_reason": _snapshot_field(
+                    "FAST_WORKER_SNAPSHOT_STALE",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
+                "primary_block_reason": _snapshot_field(
+                    "FAST_WORKER_SNAPSHOT_STALE",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
+                "final_action": _snapshot_field(
+                    "HOLD",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
+                "target_symbol": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "ratio": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "qty": _snapshot_field(0, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "order_requested": False,
+                "coordinator_result": {"status": "DEFERRED_STALE"},
+                "broker_result": {"status": "NOT_REQUESTED"},
+            }
+            state["last_completed_decision_snapshot"] = completed_decision_snapshot
+    elif pending_deferral:
+        # No silent incomplete deferral — HOLD placeholder until Fast Worker completes.
+        defer_reason = "FAST_WORKER_SNAPSHOT_PENDING"
+        age = _deferral_age_seconds(pending_deferral, now)
+        if age is not None and age > _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:
+            defer_reason = "FAST_WORKER_SNAPSHOT_INCOMPLETE"
+        sid = completed_decision_snapshot["snapshot_id"]
+        cat = completed_decision_snapshot["calculated_at"]
+        completed_decision_snapshot = {
+            **completed_decision_snapshot,
+            "source": "MAIN_CYCLE_DEFERRED",
+            "final_action": _snapshot_field("HOLD", sid, cat),
+            "actionable_signal": _snapshot_field("HOLD", sid, cat),
+            "block_reason": _snapshot_field(defer_reason, sid, cat),
+            "primary_block_reason": _snapshot_field(defer_reason, sid, cat),
+            "structural_signal_label": _snapshot_field("HOLD", sid, cat),
+            "target_symbol": _snapshot_field(None, sid, cat),
+            "ratio": _snapshot_field(None, sid, cat),
+            "qty": _snapshot_field(0, sid, cat),
+            "order_requested": False,
+            "coordinator_result": {"status": "DEFERRED", "reason_code": "FAST_WORKER_OWNS_ENTRY"},
+            "broker_result": {"status": "NOT_REQUESTED"},
+        }
+        completed_decision_snapshot["signal_summary"] = {
+            **(completed_decision_snapshot.get("signal_summary") or {}),
+            "final_action": "HOLD",
+            "block_reason": defer_reason,
+            "primary_block_reason": defer_reason,
+        }
+        state["last_completed_decision_snapshot"] = completed_decision_snapshot
+    else:
+        state["last_completed_decision_snapshot"] = completed_decision_snapshot
     save_state_atomic(state)
 
     # ── 로그 기록 ────────────────────────────────────────────────────────────

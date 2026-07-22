@@ -1715,6 +1715,34 @@ def test_range_weighted_entry_hard_blocks_both_entry_etf_5s_10s_opposite():
     assert result["reason_code"] == "ETF_5S_10S_BOTH_OPPOSITE"
 
 
+def test_range_weighted_entry_uses_price_space_dirs_for_down_inverse():
+    """DOWN inverse: rising price-space dirs (UP/UP) must not trip BOTH_OPPOSITE.
+
+    Production passes raw (price-space) dirs into evaluate_range_weighted_entry.
+    Trade-aligned DOWN/DOWN would falsely hard-block on ETF_5S_10S_BOTH_OPPOSITE.
+    """
+    result = engine.evaluate_range_weighted_entry(
+        decision={"enhanced_score": 28.0, "inverse_pressure_score": 72.0},
+        direction="DOWN",
+        live_direction="DOWN",
+        live_direction_held_seconds=20.0,
+        signal_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        # Raw price-space: inverse ETF rising while DOWN trade aligns as DOWN/DOWN.
+        confirm_window_directions={5: "UP", 10: "UP", 20: "UP", 30: "UP"},
+        oppose_window_directions={5: "DOWN", 10: "DOWN", 20: "DOWN", 30: "DOWN"},
+        confirm_above_vwap=True,
+        data_age_seconds=2.0,
+        expected_move_pct=0.80,
+        cost_pct=0.12,
+        expected_mfe_pct=0.80,
+        expected_mae_pct=0.35,
+        structure_confirmed=True,
+    )
+
+    assert "ETF_5S_10S_BOTH_OPPOSITE" not in (result.get("hard_blocks") or [])
+    assert result["reason_code"] != "ETF_5S_10S_BOTH_OPPOSITE"
+
+
 def test_range_weighted_fixed_a_continuation_buy_order_conditions():
     result = engine.evaluate_range_weighted_entry(
         decision={"enhanced_score": 75.5, "inverse_pressure_score": 50.5},
@@ -2160,6 +2188,111 @@ def test_opposite_episode_transition_vwap_reclaim():
         existing_structure_broken=False,
         new_etf_vwap_reclaim=True,
     )
+
+
+def test_opposite_episode_transition_swing_or_vwap():
+    """Opposite episode switches on swing break OR (VWAP reclaim + 5/10 confirm)."""
+    # Path 1a: existing structure break alone (5/10 need not align yet).
+    assert engine.detect_opposite_episode_transition(
+        existing_direction="UP",
+        new_direction="DOWN",
+        live_direction_matches=True,
+        confirm_dirs={5: "UP", 10: "DOWN"},
+        existing_structure_broken=True,
+        new_etf_vwap_reclaim=False,
+    )
+    # Path 1b: new-direction swing breakout alone is sufficient.
+    assert engine.detect_opposite_episode_transition(
+        existing_direction="UP",
+        new_direction="DOWN",
+        live_direction_matches=True,
+        confirm_dirs={5: "UP", 10: "DOWN"},
+        existing_structure_broken=False,
+        new_etf_vwap_reclaim=False,
+        new_swing_breakout=True,
+    )
+    # Path 2: VWAP reclaim requires both 5s and 10s in the new direction.
+    assert engine.detect_opposite_episode_transition(
+        existing_direction="UP",
+        new_direction="DOWN",
+        live_direction_matches=True,
+        confirm_dirs={5: "DOWN", 10: "DOWN"},
+        existing_structure_broken=False,
+        new_etf_vwap_reclaim=True,
+    )
+    # Neither path satisfied.
+    assert not engine.detect_opposite_episode_transition(
+        existing_direction="UP",
+        new_direction="DOWN",
+        live_direction_matches=True,
+        confirm_dirs={5: "DOWN", 10: "DOWN"},
+        existing_structure_broken=False,
+        new_etf_vwap_reclaim=False,
+        new_swing_breakout=False,
+    )
+    # VWAP without 5/10 alignment is insufficient.
+    assert not engine.detect_opposite_episode_transition(
+        existing_direction="UP",
+        new_direction="DOWN",
+        live_direction_matches=True,
+        confirm_dirs={5: "DOWN", 10: "UP"},
+        existing_structure_broken=False,
+        new_etf_vwap_reclaim=True,
+    )
+
+
+def test_inverse_structure_break_uses_trade_aligned_up():
+    """DOWN episode on inverse invalidates when inverse breaks below recent low (long-ETF UP)."""
+    import pandas as pd
+    from app.trading.etf_entry_confirmation import is_swing_structure_broken_against
+
+    base = pd.Timestamp("2026-07-21 10:00:00")
+    df = pd.DataFrame(
+        {
+            "datetime": [base + pd.Timedelta(minutes=i) for i in range(6)],
+            "open": [100.0, 101.0, 102.0, 101.0, 100.0, 99.0],
+            "high": [101.0, 102.0, 103.0, 102.0, 101.0, 100.0],
+            "low": [99.0, 100.0, 101.0, 100.0, 99.0, 98.0],
+            "close": [100.0, 101.0, 102.0, 101.0, 100.0, 99.0],
+            "volume": [1, 1, 1, 1, 1, 1],
+        }
+    )
+    assert is_swing_structure_broken_against(df, 98.5, "DOWN") is False
+    assert is_swing_structure_broken_against(df, 98.5, "UP") is True
+    assert engine.detect_opposite_episode_transition(
+        existing_direction="DOWN",
+        new_direction="UP",
+        live_direction_matches=True,
+        confirm_dirs={5: "UP", 10: "DOWN"},
+        existing_structure_broken=True,
+        new_etf_vwap_reclaim=False,
+    )
+
+
+def test_probe_failed_blocks_same_reversal_allows_continuation():
+    """PROBE_FAILED blocks repeating REVERSAL but allows CONTINUATION with new structure."""
+    cont: dict = {}
+    now = datetime(2026, 7, 21, 10, 0, 0)
+    engine.reset_range_episode_probe_state(cont, now=now, direction="UP", episode_id="UP:1")
+    engine.mark_range_reversal_probe_entered(cont, now=now, entry_path="REVERSAL")
+    cont["entry_done"] = True
+    engine.mark_range_probe_failed(cont, now=now, reason="MACD miss")
+
+    allows_rev, reason_rev = engine.range_episode_allows_entry(
+        cont, entry_path="REVERSAL", swing_breakout=True, vwap_reclaim=False, direction_changed=False,
+    )
+    assert allows_rev is False
+    assert reason_rev == "PROBE_FAILED_REVERSAL_BLOCKED"
+
+    allows_cont, reason_cont = engine.range_episode_allows_entry(
+        cont, entry_path="CONTINUATION", swing_breakout=True, vwap_reclaim=False, direction_changed=False,
+    )
+    assert allows_cont is True
+    assert reason_cont is None
+    # PROBE_FAILED status retained (still blocks REVERSAL), but entry_done unlocked for CONTINUATION.
+    assert cont.get("episode_status") == "PROBE_FAILED"
+    assert cont.get("entry_done") is False
+    assert cont.get("awaiting_structural_reentry") is False
 
 
 def test_probe_promoted_to_continuation_after_45s():

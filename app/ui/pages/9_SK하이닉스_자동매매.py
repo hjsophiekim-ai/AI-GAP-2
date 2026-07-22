@@ -930,8 +930,16 @@ if switch_state.get("mode") == "mock":
     for _name, _on, _impact, _scope in _fx_rows:
         _fx_table += f"| {_name} | {'ON' if _on else 'OFF'} | {_impact} | {_scope} |\n"
     st.markdown(_fx_table)
-    _configured_entry_engine = "WEIGHTED_ORDER_CONTROLLER_LIVE"
-    _actual_entry_engine = switch_state.get("actual_entry_engine") or "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    _configured_entry_engine = switch_state.get("configured_entry_engine") or switch_state.get("actual_entry_engine") or "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    if _configured_entry_engine in ("SHADOW_ONLY", "EARLY_TREND_DETECTOR", "ENHANCED_LEGACY", "ACTIVE_ONLY", "ACTIVE_FUSION"):
+        _configured_entry_engine = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    _actual_entry_engine = switch_state.get("actual_entry_engine") or _configured_entry_engine
+    if _actual_entry_engine in ("SHADOW_ONLY", "EARLY_TREND_DETECTOR", "ENHANCED_LEGACY", "ACTIVE_ONLY", "ACTIVE_FUSION"):
+        _actual_entry_engine = _configured_entry_engine
+    # Keep both fields on one live identity for display.
+    if switch_state.get("configured_entry_engine") != _configured_entry_engine or switch_state.get("actual_entry_engine") != _actual_entry_engine:
+        switch_state["configured_entry_engine"] = _configured_entry_engine
+        switch_state["actual_entry_engine"] = _actual_entry_engine
     _entry_orchestrator = switch_state.get("entry_orchestrator") or {}
     _actual_exit_engine = "BIG_TREND_HOLDING_AI" if _fx_bigtrend_on else "DYNAMIC_EXIT_AI"
     st.caption(
@@ -987,7 +995,7 @@ if switch_state.get("mode") == "mock":
         _ss1.metric("Live Trade Direction", snapshot_field(_decision_snapshot, "live_trade_direction", "NONE"))
         _ss2.metric("Actionable Signal", snapshot_field(_decision_snapshot, "actionable_signal", "HOLD"))
         _ss3.metric("Final Action", snapshot_field(_decision_snapshot, "final_action", "HOLD"))
-        _ss4.metric("Block Reason", _signal_summary.get("block_reason") or "없음")
+        _ss4.metric("Block Reason", snapshot_field(_decision_snapshot, "primary_block_reason", _signal_summary.get("primary_block_reason") or _signal_summary.get("block_reason") or "없음"))
 
     # ── Adaptive Fusion 진단(요구사항 6절) — 모델별 방향/확률/가중치/데이터신선도,
     # 최종합성확률, 문턱(원래/조정), 진입비중, HOLD·진입 사유, 오늘거래수/연속손실/
@@ -1715,26 +1723,28 @@ else:
                 st.markdown(":green[경고 없음]")
 
     # ── 현재 실제 주문을 지배하는 전략 명시 ────────────────────────────────────
-    # 실제 원장(ledger)의 마지막 주문 signal_source를 그대로 보여준다 — 화면에 "적용됨"
-    # 이라고 미리 단정하지 않고, 실제로 기록된 값을 근거로 표시한다(2026-07-13 사용자
-    # 검증: Prediction V2가 SHADOW인데 적용됐다고 표시하면 안 된다는 요구 반영).
-    _active_enabled_now = bool(state_now.get("active_strategy_enabled", False))
-    _adaptive_fusion_enabled_now = bool(state_now.get("adaptive_fusion_enabled", False))
+    # Live 신규진입 엔진은 state의 configured/actual_entry_engine 단일 값만 사용한다.
+    # SHADOW_ONLY / Active Fusion signal_source는 진단용이며 실제 신규진입 엔진으로
+    # 표시하지 않는다.
+    _live_entry_engine = (
+        state_now.get("actual_entry_engine")
+        or state_now.get("configured_entry_engine")
+        or "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    )
+    if _live_entry_engine in ("SHADOW_ONLY", "EARLY_TREND_DETECTOR", "ENHANCED_LEGACY", "ACTIVE_ONLY", "ACTIVE_FUSION"):
+        _live_entry_engine = "WEIGHTED_ORDER_CONTROLLER_LIVE"
+    _governing_strategy = _live_entry_engine
     _last_fd = state_now.get("last_final_execution_decision") or {}
     _last_signal_source = _last_fd.get("signal_source")
-    if not _active_enabled_now:
-        _governing_strategy = "ENHANCED_REGIME_SWITCH"
-    elif not _adaptive_fusion_enabled_now:
-        _governing_strategy = "ACTIVE_FUSION"
-    else:
-        _governing_strategy = _last_signal_source or "ACTIVE_ONLY(대기)"
     st.info(
         f"🎯 **현재 실제 신규진입을 지배하는 공통 전략: `{_governing_strategy}`** — mock/real 판단 동일.  \n"
         + (
-            f"최근 체결 signal_source: `{_last_signal_source}`  \n" if (_adaptive_fusion_enabled_now and _last_signal_source) else ""
+            f"진단 signal_source(SHADOW/비진입): `{_last_signal_source}`  \n"
+            if _last_signal_source and _last_signal_source != _governing_strategy
+            else ""
         )
-        + "`CYCLE_AI`는 항상 SHADOW MODE — 계산·기록만 하며, `PREDICTION_V2`는 Adaptive Fusion이 켜져있고 "
-        "성능검증을 통과(ADVISORY/LIVE_VALIDATED)했을 때만 실제 주문에 반영됩니다(SHADOW 상태면 반영되지 않습니다).",
+        + "`CYCLE_AI`/`PREDICTION_V2`/`SHADOW_ONLY`는 진단·기록만 하며, 실제 신규진입 주문은 "
+        "`WEIGHTED_ORDER_CONTROLLER_LIVE`만 소유합니다.",
         icon="🎯",
     )
 
