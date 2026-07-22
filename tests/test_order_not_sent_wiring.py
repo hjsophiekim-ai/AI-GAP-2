@@ -209,7 +209,7 @@ def test_fast_worker_deferral_not_silent_noop():
     engine._mark_fast_worker_deferral(state, now=now)
     engine._update_fast_worker_decision_snapshot(
         state, now=now, continuation_state=continuation_state,
-        early_result={"skipped": True, "reason_code": "FAST_WORKER_DIAGNOSTIC_ONLY", "order_permission": "DIAGNOSTIC_ONLY"},
+        early_result={"skipped": True, "reason_code": "ORDER_NOT_EXECUTED", "order_permission": "BLOCKED"},
     )
     snap = state["last_completed_decision_snapshot"]
     assert snap["final_action"]["value"] == "HOLD"

@@ -31,12 +31,12 @@ from app.utils.data_paths import SCHEDULER_HEARTBEAT_PATH
 
 DEFAULT_INTERVAL_SECONDS = 180.0
 FAST_WATCHER_INTERVAL_SECONDS = 30.0
-# 요구사항(2026-07-20 최종) — Early Trend Detector가 LIVE인 동안에는 이 워처
-# 자체가 5초 주기로 돈다(오늘 원장 기준 10:27류 반전을 30초 주기로는 놓치는
-# 문제). 별도의 새 스레드/락/heartbeat 인프라를 또 만들지 않고, 기존 30초
+# 요구사항(2026-07-20 최종) — auto_trade_on이면 이 워처가 5초 주기로 돈다.
+# 5초 틱(run_early_trend_fast_feed_tick)이 WOC LIVE 신규진입을 소유한다.
+# 별도의 새 스레드/락/heartbeat 인프라를 또 만들지 않고, 기존 30초
 # 워처의 대기시간만 상태에 따라 동적으로 줄인다 — 무거운 전체 재계산(30초 주기
-# run_fast_trend_watcher_tick)은 그대로 유지하고, 그 사이 5초 틱은 가벼운
-# 가격 샘플링(run_early_trend_fast_feed_tick)만 수행해 KIS 호출량을 안전하게 유지한다.
+# run_fast_trend_watcher_tick)은 진단 전용으로 유지하고, 그 사이 5초 틱은
+# 시세 갱신 + evaluate_range_weighted_entry → run_switch_or_entry를 수행한다.
 EARLY_DETECTOR_FAST_INTERVAL_SECONDS = 5.0
 # 요구사항(2026-07-16) — 장 마감 후에도 오늘 저장된 1분봉으로 EOD regime 분석을
 # 계속 표시하되(요구사항3), 장외 heartbeat마다(수 초~수 분 간격) 매번 KIS를 다시
@@ -344,8 +344,10 @@ class HynixFastTrendWatcherThread(threading.Thread):
                 result = run_early_trend_fast_feed_tick(mode=state.get("mode"), now=now)
                 summary = {
                     "skipped": bool(result.get("skipped", False)),
-                    "reason": result.get("reason"),
+                    "reason": result.get("reason") or ((result.get("early_result") or {}).get("reason_code")),
                     "tick_kind": "fast_feed",
+                    "entry_owner": ((result.get("early_result") or {}).get("entry_owner")),
+                    "order_permission": ((result.get("early_result") or {}).get("order_permission")),
                 }
         except Exception as exc:  # noqa: BLE001
             logger.error("[HynixFastTrendWatcher] run failed: %s", exc)

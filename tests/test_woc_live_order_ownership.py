@@ -1,8 +1,9 @@
-"""Regression A–F: WOC LIVE owns new-entry orders; Fast Worker is diagnostics-only."""
+"""Regression A–F: WOC LIVE owns new-entry orders via the 5s Fast Worker."""
 
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -146,52 +147,12 @@ def _base_state():
     }
 
 
-def test_a_woc_live_buy_risk_ok_flat_no_snapshot_buys_once(monkeypatch):
-    """A: WOC LIVE + BUY + Risk OK + flat + session + no FW snapshot → not blocked by FW; buy once."""
-    _patch_woc_gates(monkeypatch, enter=True)
-    broker = _BuyingBroker()
-    state = _base_state()
-    # Explicitly no Fast Worker snapshot.
-    assert "last_fast_worker_decision_snapshot" not in state
-
-    result = engine._execute_weighted_order_controller_entry(
-        state=state,
-        broker=broker,
-        decision=state["last_decision"],
-        hynix_price=10_030.0,
-        inverse_price=19_940.0,
-        now=_MID,
-    )
-
-    assert result["entry_owner"] == engine.WOC_ENTRY_OWNER
-    assert result["configured_entry_engine"] == engine.WEIGHTED_LIVE_ENTRY_ENGINE
-    assert result["actual_entry_engine"] == engine.WEIGHTED_LIVE_ENTRY_ENGINE
-    assert result["entry_approved"] is True
-    assert result["order_sent"] is True
-    assert result["broker_executed"] is True
-    assert result["order_reservation"] == "RESERVED"
-    assert result.get("primary_block_reason") not in (
-        "FAST_WORKER_OWNS_ENTRY",
-        "FAST_WORKER_SNAPSHOT_PENDING",
-        "MAIN_CYCLE_ENTRY_DEFERRED",
-    )
-    assert "MAIN_CYCLE_ENTRY_DEFERRED" not in (result.get("entry_approved_reason") or "")
-    assert len(broker.buy_calls) == 1
-    assert broker.buy_calls[0]["symbol"] == LONG_SYMBOL
-    assert state.get("pending_fast_worker_deferral") is None
-
-
-def test_b_fast_worker_diagnostics_only_zero_buys(monkeypatch, tmp_path):
-    """B: Fast Worker diagnostics-only → 0 buys, 0 order ownership claims."""
-    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
-    _patch_woc_gates(monkeypatch, enter=True)
-    broker = _BuyingBroker()
-    monkeypatch.setattr(engine, "_create_strategy_broker", lambda *a, **kw: broker)
-
+def _patch_fast_feed_prices(monkeypatch, broker):
     import app.data_sources.auto_market_collector as auto_collector_module
     import app.data_sources.hynix_long_collector as long_collector_module
     import app.data_sources.hynix_inverse_collector as inverse_collector_module
 
+    monkeypatch.setattr(engine, "_create_strategy_broker", lambda *a, **kw: broker)
     monkeypatch.setattr(auto_collector_module, "_fetch_hynix_current_from_kis", lambda mode=None: 100_030.0)
     monkeypatch.setattr(long_collector_module, "collect_long_current", lambda mode=None: {"current_price": 10_030.0, "stale": False})
     monkeypatch.setattr(inverse_collector_module, "collect_inverse_current", lambda mode=None: {"current_price": 19_940.0, "stale": False})
@@ -201,54 +162,99 @@ def test_b_fast_worker_diagnostics_only_zero_buys(monkeypatch, tmp_path):
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("Early direct-order path must not run")),
     )
 
+
+def test_a_fast_worker_buy_risk_ok_flat_buys_once(monkeypatch, tmp_path):
+    """A: Fast Worker WOC LIVE + BUY + Risk OK + flat → buy once (≤10s path)."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+    _patch_woc_gates(monkeypatch, enter=True)
+    broker = _BuyingBroker()
+    _patch_fast_feed_prices(monkeypatch, broker)
+    runtime = {"git_sha": "deadbeef", "orders_enabled_by_deployment": True, "origin_main_sha": "deadbeef", "render_sha": "deadbeef"}
+    monkeypatch.setattr(engine, "read_runtime_info", lambda: runtime)
+    monkeypatch.setattr("app.utils.runtime_info.read_runtime_info", lambda: runtime)
+
+    from app.trading import early_trend_live_feed as feed
+    from datetime import timedelta
+
     state = state_module.load_state(mode="mock")
     state.update(_base_state())
     state["early_trend_detector_enabled"] = True
     state["early_trend_detector_live"] = True
+    history = {}
+    for seconds, signal_price, long_price, inverse_price in (
+        (30, 100_000.0, 10_000.0, 20_000.0),
+        (20, 100_010.0, 10_010.0, 19_980.0),
+        (10, 100_020.0, 10_020.0, 19_960.0),
+    ):
+        ts = _MID - timedelta(seconds=seconds)
+        history = feed.record_price_sample(history, engine.SIGNAL_SYMBOL, signal_price, ts)
+        history = feed.record_price_sample(history, engine.HYNIX_SYMBOL, long_price, ts)
+        history = feed.record_price_sample(history, engine.INVERSE_SYMBOL, inverse_price, ts)
+    state["early_trend_detector"] = {
+        **(state.get("early_trend_detector") or {}),
+        "price_history": history,
+        "macd_williams_episode": {"confirmed": True},
+    }
+    state_module.save_state_atomic(state)
+
+    t0 = time.perf_counter()
+    result = engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID)
+    elapsed_s = time.perf_counter() - t0
+    early = result.get("early_result") or {}
+
+    assert result.get("skipped") is False
+    assert early.get("entry_owner") == engine.WOC_ENTRY_OWNER
+    assert early.get("order_permission") == "WOC_LIVE"
+    assert len(broker.buy_calls) == 1
+    assert broker.buy_calls[0]["symbol"] == LONG_SYMBOL
+    assert elapsed_s <= 10.0  # median target ≤10s after valid signal
+    updated = state_module.load_state(mode="mock")
+    assert updated.get("actual_entry_engine") == engine.WEIGHTED_LIVE_ENTRY_ENGINE
+    assert updated.get("last_fast_worker_tick_at")
+
+
+def test_b_fast_worker_hold_zero_buys_concrete_reason(monkeypatch, tmp_path):
+    """B: Fast Worker HOLD → 0 buys + concrete primary_block_reason."""
+    monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+    _patch_woc_gates(monkeypatch, enter=False)
+    broker = _BuyingBroker()
+    _patch_fast_feed_prices(monkeypatch, broker)
+
+    from app.trading import early_trend_live_feed as feed
+    from datetime import timedelta
+
+    state = state_module.load_state(mode="mock")
+    state.update(_base_state())
+    state["early_trend_detector_enabled"] = True
+    state["early_trend_detector_live"] = True
+    history = {}
+    for seconds, signal_price, long_price, inverse_price in (
+        (30, 100_000.0, 10_000.0, 20_000.0),
+        (20, 100_010.0, 10_010.0, 19_980.0),
+        (10, 100_020.0, 10_020.0, 19_960.0),
+    ):
+        ts = _MID - timedelta(seconds=seconds)
+        history = feed.record_price_sample(history, engine.SIGNAL_SYMBOL, signal_price, ts)
+        history = feed.record_price_sample(history, engine.HYNIX_SYMBOL, long_price, ts)
+        history = feed.record_price_sample(history, engine.INVERSE_SYMBOL, inverse_price, ts)
+    state["early_trend_detector"] = {
+        **(state.get("early_trend_detector") or {}),
+        "price_history": history,
+        "macd_williams_episode": {"confirmed": True},
+    }
     state_module.save_state_atomic(state)
 
     result = engine.run_early_trend_fast_feed_tick(mode="mock", now=_MID)
     early = result.get("early_result") or {}
     assert broker.buy_calls == []
-    assert early.get("order_permission") in ("DIAGNOSTIC_ONLY", "BLOCKED", None) or early.get("skipped") is not False
-    assert early.get("entry_owner") in (None, "")
-    assert "FAST_WORKER_OWNS_ENTRY" not in str(early.get("reason_code") or "")
+    assert early.get("primary_block_reason") or early.get("reason_code")
+    block = early.get("primary_block_reason") or early.get("reason_code")
+    assert block not in (None, "", "FAST_WORKER_DIAGNOSTIC_ONLY")
+    assert "CONTINUATION_TOO_WEAK" in str(block) or "HOLD" in str(block) or "WEAK" in str(block)
 
 
-def test_c_main_and_watcher_concurrent_exactly_one_order(monkeypatch):
-    """C: main + watcher concurrent → exactly 1 order (OrderCoordinator)."""
-    _patch_woc_gates(monkeypatch, enter=True)
-    broker = _BuyingBroker()
-    state = _base_state()
-    state["trend_continuation_entry"]["direction_episode_id"] = "UP:shared-ep"
-
-    def _run_woc():
-        local = dict(state)
-        local["trend_continuation_entry"] = dict(state["trend_continuation_entry"])
-        return engine._execute_weighted_order_controller_entry(
-            state=local,
-            broker=broker,
-            decision=state["last_decision"],
-            hynix_price=10_030.0,
-            inverse_price=19_940.0,
-            now=_MID,
-        )
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f1 = pool.submit(_run_woc)
-        f2 = pool.submit(_run_woc)
-        r1, r2 = f1.result(), f2.result()
-
-    assert len(broker.buy_calls) == 1
-    winners = [r for r in (r1, r2) if r.get("broker_executed")]
-    blocked = [r for r in (r1, r2) if r.get("order_reservation") == "DUPLICATE_ORDER_BLOCKED" or r.get("primary_block_reason") == "DUPLICATE_ORDER_BLOCKED"]
-    assert len(winners) == 1
-    # Loser may be blocked by coordinator or by WOC_ENTRY_ALREADY_ATTEMPTED after first fill.
-    assert len(blocked) + sum(1 for r in (r1, r2) if r.get("primary_block_reason") in ("WOC_ENTRY_ALREADY_ATTEMPTED", "TARGET_ALREADY_FILLED")) >= 1
-
-
-def test_d_risk_reject_zero_orders_real_reason(monkeypatch, tmp_path):
-    """D: Risk reject → 0 orders, primary_block_reason = real risk reason."""
+def test_c_main_defers_new_entry_zero_buys(monkeypatch, tmp_path):
+    """C: main 3-min cycle must NOT place new-entry buys (defers to Fast Worker)."""
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
 
     import app.models.hynix_enhanced_score as enhanced_score_module
@@ -257,6 +263,9 @@ def test_d_risk_reject_zero_orders_real_reason(monkeypatch, tmp_path):
 
     broker = _BuyingBroker()
     monkeypatch.setattr(broker_factory_module, "create_broker", lambda *a, **kw: broker)
+    runtime = {"git_sha": "deadbeef", "orders_enabled_by_deployment": True, "origin_main_sha": "deadbeef", "render_sha": "deadbeef"}
+    monkeypatch.setattr(engine, "read_runtime_info", lambda: runtime)
+    monkeypatch.setattr("app.utils.runtime_info.read_runtime_info", lambda: runtime)
     monkeypatch.setattr(
         enhanced_score_module,
         "calculate_enhanced_hynix_prediction_score",
@@ -286,22 +295,65 @@ def test_d_risk_reject_zero_orders_real_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "log_trade", lambda record: None)
     monkeypatch.setattr(engine, "log_enhanced_prediction", lambda record: None)
     monkeypatch.setattr(engine, "_run_shadow_cycle_ai_and_decision_v2", lambda *a, **kw: {})
+    monkeypatch.setattr(
+        engine,
+        "_execute_weighted_order_controller_entry",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("main must not call WOC entry helper")),
+    )
 
     state = state_module.load_state(mode="mock")
     state["mode"] = "mock"
     state["auto_trade_on"] = True
-    state["stopped"] = True
-    state["stopped_reason"] = "RISK_DAILY_LOSS_LIMIT"
     state_module.save_state_atomic(state)
 
     result = engine.update_hynix_auto_trade_loop(mode="mock", now=_MID)
     trace = result["pipeline_trace"]
     assert broker.buy_calls == []
     assert trace["order_sent"] is False
-    assert trace["risk_manager_ok"] is False
-    reason = (trace.get("risk_manager_reason") or trace.get("primary_block_reason") or "")
-    assert "RISK" in reason.upper() or "중단" in reason or "stopped" in reason.lower() or "자동매매" in reason
-    assert "FAST_WORKER" not in (trace.get("primary_block_reason") or "")
+    assert "MAIN_CYCLE_ENTRY_DEFERRED" in (trace.get("entry_approved_reason") or "") or (
+        (trace.get("early_decision") or {}).get("reason_code") == "FAST_WORKER_OWNS_ENTRY"
+    )
+    assert (result.get("state") or {}).get("pending_fast_worker_deferral") or (
+        (trace.get("early_decision") or {}).get("reason_code") == "FAST_WORKER_OWNS_ENTRY"
+    )
+
+
+def test_d_concurrent_fast_worker_exactly_one_order(monkeypatch):
+    """D: concurrent Fast Worker / WOC helper → exactly 1 order (OrderCoordinator)."""
+    _patch_woc_gates(monkeypatch, enter=True)
+    broker = _BuyingBroker()
+    state = _base_state()
+    state["trend_continuation_entry"]["direction_episode_id"] = "UP:shared-ep"
+
+    def _run_woc():
+        local = dict(state)
+        local["trend_continuation_entry"] = dict(state["trend_continuation_entry"])
+        return engine._execute_weighted_order_controller_entry(
+            state=local,
+            broker=broker,
+            decision=state["last_decision"],
+            hynix_price=10_030.0,
+            inverse_price=19_940.0,
+            now=_MID,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(_run_woc)
+        f2 = pool.submit(_run_woc)
+        r1, r2 = f1.result(), f2.result()
+
+    assert len(broker.buy_calls) == 1
+    winners = [r for r in (r1, r2) if r.get("broker_executed")]
+    blocked = [
+        r for r in (r1, r2)
+        if r.get("order_reservation") == "DUPLICATE_ORDER_BLOCKED"
+        or r.get("primary_block_reason") == "DUPLICATE_ORDER_BLOCKED"
+    ]
+    assert len(winners) == 1
+    assert len(blocked) + sum(
+        1 for r in (r1, r2)
+        if r.get("primary_block_reason") in ("WOC_ENTRY_ALREADY_ATTEMPTED", "TARGET_ALREADY_FILLED", "FAST_WORKER_ENTRY_ALREADY_ATTEMPTED")
+    ) >= 1
 
 
 def test_e_after_1450_zero_orders_new_entry_cutoff(monkeypatch):
@@ -324,8 +376,8 @@ def test_e_after_1450_zero_orders_new_entry_cutoff(monkeypatch):
     assert result["entry_owner"] == engine.WOC_ENTRY_OWNER
 
 
-def test_f_buy_all_safety_pass_final_not_hold_or_fw_pending(monkeypatch):
-    """F: BUY + all safety pass → Final Action not HOLD / not FAST_WORKER_SNAPSHOT_PENDING."""
+def test_f_buy_all_safety_pass_final_not_hold(monkeypatch):
+    """F: BUY + all safety pass → Final Action BUY (not HOLD)."""
     _patch_woc_gates(monkeypatch, enter=True)
     broker = _BuyingBroker()
     state = _base_state()
@@ -343,13 +395,11 @@ def test_f_buy_all_safety_pass_final_not_hold_or_fw_pending(monkeypatch):
         order_ok=True,
         continuation_result=result.get("continuation_eval") or _enter_eval(),
         structural_label="PULLBACK",
-        block_candidates=[result.get("primary_block_reason"), "FAST_WORKER_SNAPSHOT_PENDING"],
+        block_candidates=[result.get("primary_block_reason")],
     )
     assert action == "BUY"
     assert block is None
     assert primary is None
-    assert primary != "FAST_WORKER_SNAPSHOT_PENDING"
-    assert not engine._is_fast_worker_non_owner_reason(primary)
 
 
 def test_mock_integration_evidence_fields(monkeypatch):
@@ -419,26 +469,13 @@ def test_broker_reject_still_logs_request_and_error(monkeypatch):
     assert result.get("execution_error") or result.get("switch", {}).get("broker_error") or result.get("switch", {}).get("failure_code")
 
 
-def test_never_defer_with_fast_worker_owns_entry():
-    """Ownership invariant: marking deferral must not be required for WOC LIVE orders."""
+def test_main_defers_with_fast_worker_owns_entry():
+    """Ownership invariant: main marks FAST_WORKER_OWNS_ENTRY deferral for live buys."""
     now = _MID
     state = {}
-    # Helper still exists for advisory wake, but reason must not gate WOC.
     engine._mark_fast_worker_deferral(state, now=now)
-    assert state["pending_fast_worker_deferral"]["reason_code"] == "FAST_WORKER_SNAPSHOT_ADVISORY"
-    # Resolve must never promote that to primary when filtered.
-    action, block, primary = engine._resolve_consistent_final_action(
-        order_ok=False,
-        continuation_result=_enter_eval(),
-        structural_label="PULLBACK",
-        block_candidates=["FAST_WORKER_OWNS_ENTRY", "MAIN_CYCLE_ENTRY_DEFERRED: FAST_WORKER_OWNS_ENTRY", "FAST_WORKER_SNAPSHOT_PENDING"],
-    )
-    assert action == "HOLD"
-    assert not engine._is_fast_worker_non_owner_reason(primary)
-    assert primary not in (
-        "FAST_WORKER_OWNS_ENTRY",
-        "FAST_WORKER_SNAPSHOT_PENDING",
-        "MAIN_CYCLE_ENTRY_DEFERRED",
-    )
-    assert not engine._is_fast_worker_non_owner_reason(None)
-    assert engine._is_fast_worker_non_owner_reason("FAST_WORKER_SNAPSHOT_PENDING")
+    assert state["pending_fast_worker_deferral"]["reason_code"] == "FAST_WORKER_OWNS_ENTRY"
+    assert state.get("force_fast_worker_tick") is True
+    assert engine._is_fast_worker_non_owner_reason("FAST_WORKER_DIAGNOSTIC_ONLY")
+    assert not engine._is_fast_worker_non_owner_reason("FAST_WORKER_ORDER_NOT_SENT")
+    assert not engine._is_fast_worker_non_owner_reason("FAST_WORKER_SNAPSHOT_PENDING")

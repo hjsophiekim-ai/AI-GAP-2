@@ -112,7 +112,7 @@ def test_fast_worker_deferral_requires_completed_snapshot_fields():
     }
     engine._update_fast_worker_decision_snapshot(
         state, now=now + timedelta(seconds=5), continuation_state=continuation_state,
-        early_result={"skipped": True, "reason_code": "FAST_WORKER_DIAGNOSTIC_ONLY", "order_permission": "DIAGNOSTIC_ONLY"},
+        early_result={"skipped": True, "reason_code": "CHASE_BLOCK", "order_permission": "BLOCKED"},
     )
     snap = state["last_completed_decision_snapshot"]
     for key in engine._FAST_WORKER_SNAPSHOT_REQUIRED_FIELDS:

@@ -157,6 +157,11 @@ _EXECUTION_HARD_HOLD_REASONS = frozenset({
     "ETF_5S_10S_BOTH_OPPOSITE",
     "CHASE_BLOCK",
 })
+# Competing profitability / chase codes: at most one may be primary_block_reason.
+_COMPETING_PRIMARY_BLOCK_REASONS = frozenset({
+    "CHASE_BLOCK",
+    "POOR_REWARD_RISK",
+})
 _FAST_WORKER_SNAPSHOT_REQUIRED_FIELDS = (
     "resolved_direction",
     "final_action",
@@ -173,17 +178,10 @@ _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS = 15.0
 _CONTINUATION_APPROVED_REASON = "CONTINUATION_ENTRY_APPROVED"
 _CONTINUATION_CANDIDATE_REASON = "CONTINUATION_CANDIDATE"
 _CONFIRMATION_PENDING_REASON = "CONFIRMATION_PENDING"
-# Fast Worker / snapshot deferral codes must never own live orders or be
-# primary HOLD / block reasons when WOC LIVE is the entry engine.
+# Main-cycle deferral markers only — Fast Worker owns live new-entry orders.
+# Real Fast Worker execution outcomes (ORDER_NOT_SENT / ENTRY_NOT_EXECUTED /
+# SNAPSHOT_TIMEOUT / …) remain valid primary_block_reason values.
 _FAST_WORKER_NON_OWNER_REASONS = frozenset({
-    "FAST_WORKER_OWNS_ENTRY",
-    "MAIN_CYCLE_ENTRY_DEFERRED",
-    "FAST_WORKER_SNAPSHOT_PENDING",
-    "FAST_WORKER_SNAPSHOT_TIMEOUT",
-    "FAST_WORKER_SNAPSHOT_STALE",
-    "FAST_WORKER_ENTRY_NOT_EXECUTED",
-    "FAST_WORKER_ENTRY_ALREADY_ATTEMPTED",
-    "FAST_WORKER_ORDER_NOT_SENT",
     "FAST_WORKER_DIAGNOSTIC_ONLY",
 })
 WOC_ENTRY_OWNER = "WEIGHTED_ORDER_CONTROLLER"
@@ -195,10 +193,6 @@ def _is_fast_worker_non_owner_reason(value) -> bool:
         return False
     upper = code.upper()
     if upper in _FAST_WORKER_NON_OWNER_REASONS:
-        return True
-    if upper.startswith("FAST_WORKER_"):
-        return True
-    if "MAIN_CYCLE_ENTRY_DEFERRED" in upper:
         return True
     return False
 
@@ -241,6 +235,143 @@ def _first_hard_hold_reason(*candidates) -> Optional[str]:
     return None
 
 
+def _extract_competing_block_reason(value) -> Optional[str]:
+    code = _normalize_reason_code(value)
+    if not code:
+        return None
+    upper = code.upper()
+    for name in _COMPETING_PRIMARY_BLOCK_REASONS:
+        if name in upper or code == name:
+            return name
+    return None
+
+
+def _poor_reward_risk_matches_computed(
+    reward_risk,
+    min_reward_risk,
+) -> bool:
+    """True when POOR_REWARD_RISK is consistent with computed RR vs applied threshold."""
+    if reward_risk is None or min_reward_risk is None:
+        return True
+    try:
+        return float(reward_risk) < float(min_reward_risk)
+    except (TypeError, ValueError):
+        return True
+
+
+def _reward_risk_threshold_from_result(cont: Optional[dict]) -> Optional[float]:
+    cont = cont or {}
+    for key in ("reward_risk_threshold", "min_reward_risk"):
+        raw = cont.get(key)
+        if raw is None:
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _finalize_primary_and_secondary_block_reasons(
+    primary: Optional[str],
+    *extra_candidates,
+    reward_risk=None,
+    min_reward_risk=None,
+) -> tuple[Optional[str], list]:
+    """Keep a single primary; demote competing CHASE/POOR codes to secondary.
+
+    Forbids POOR_REWARD_RISK as primary when the same snapshot's reward_risk
+    already meets/exceeds the applied threshold (stale / mismatched field bug).
+    The demoted competing code still appears in secondary_reasons when present.
+    """
+    primary_code = _normalize_reason_code(primary)
+    secondary: list[str] = []
+    ordered: list[str] = []
+    if primary_code:
+        ordered.append(primary_code)
+    for raw in extra_candidates:
+        if isinstance(raw, (list, tuple, set)):
+            values = list(raw)
+        else:
+            values = [raw]
+        for item in values:
+            code = _normalize_reason_code(item)
+            if not code:
+                continue
+            if code not in ordered:
+                ordered.append(code)
+
+    poor_consistent = _poor_reward_risk_matches_computed(reward_risk, min_reward_risk)
+    chosen_competing: Optional[str] = None
+
+    # Prefer an already-selected primary when valid.
+    if primary_code:
+        competing = _extract_competing_block_reason(primary_code)
+        if competing == "POOR_REWARD_RISK" and not poor_consistent:
+            primary_code = None
+        elif competing:
+            chosen_competing = competing
+            primary_code = competing
+
+    for code in ordered:
+        competing = _extract_competing_block_reason(code)
+        if competing:
+            if competing == "POOR_REWARD_RISK" and not poor_consistent:
+                # Cannot be primary, but keep as secondary diagnostic if another primary wins.
+                if chosen_competing and competing != chosen_competing and competing not in secondary:
+                    secondary.append(competing)
+                elif chosen_competing is None:
+                    # Look ahead: if another competing/hard reason exists, demote POOR to secondary.
+                    continue
+                continue
+            if chosen_competing is None:
+                chosen_competing = competing
+                if primary_code is None or _extract_competing_block_reason(primary_code):
+                    primary_code = competing
+            elif competing != chosen_competing and competing not in secondary:
+                secondary.append(competing)
+            continue
+        if primary_code is None:
+            primary_code = code
+        elif code != primary_code and code not in secondary:
+            secondary.append(code)
+
+    # Second pass: if primary is set and a competing peer was skipped (inconsistent POOR
+    # or alternate competing code), ensure it lands in secondary.
+    if primary_code:
+        for code in ordered:
+            competing = _extract_competing_block_reason(code)
+            if not competing or competing == primary_code:
+                continue
+            if competing not in secondary:
+                secondary.append(competing)
+            # Also surface non-competing extras already handled above.
+        for code in ordered:
+            if (
+                code
+                and code != primary_code
+                and _extract_competing_block_reason(code) is None
+                and code not in secondary
+            ):
+                secondary.append(code)
+
+    # If still no primary and inconsistent POOR was the only competing claim, fall through
+    # to first non-POOR code.
+    if primary_code is None:
+        for code in ordered:
+            competing = _extract_competing_block_reason(code)
+            if competing == "POOR_REWARD_RISK" and not poor_consistent:
+                continue
+            primary_code = competing or code
+            break
+
+    deduped: list[str] = []
+    for code in secondary:
+        if code and code != primary_code and code not in deduped:
+            deduped.append(code)
+    return primary_code, deduped
+
+
 def _resolve_consistent_final_action(
     *,
     order_ok: bool,
@@ -254,30 +385,67 @@ def _resolve_consistent_final_action(
     - ETF_5S_10S_BOTH_OPPOSITE or CHASE_BLOCK → HOLD + primary_block_reason
     - Structural Label=HOLD → Final Action cannot be BUY
     - Forbid BUY + empty block reason (BUY only when order actually succeeded)
-    - FAST_WORKER_* / MAIN_CYCLE_ENTRY_DEFERRED never become primary_block_reason
+    - FAST_WORKER_DIAGNOSTIC_ONLY never becomes primary_block_reason
+    - Among CHASE_BLOCK / POOR_REWARD_RISK only the actual final gate is primary
     """
     cont = continuation_result or {}
     structural = _normalize_reason_code(structural_label or cont.get("structural_signal_label"))
     filtered_candidates = _filter_non_owner_block_candidates(block_candidates)
+    reward_risk = cont.get("reward_risk")
+    min_rr = _reward_risk_threshold_from_result(cont)
+
+    # Actual final gate preference: first block_candidate (callers put last_block first),
+    # then continuation reason_code / hard_blocks — never invent POOR when RR passes.
+    preferred_final = None
+    for raw in filtered_candidates:
+        code = _normalize_reason_code(raw)
+        if not code or _is_fast_worker_non_owner_reason(code):
+            continue
+        competing = _extract_competing_block_reason(code)
+        if competing == "POOR_REWARD_RISK" and not _poor_reward_risk_matches_computed(reward_risk, min_rr):
+            continue
+        preferred_final = competing or code
+        break
+
     hard = _first_hard_hold_reason(
+        preferred_final,
         cont.get("reason_code"),
         *filtered_candidates,
         *list(cont.get("hard_blocks") or []),
     )
+    if hard == "CHASE_BLOCK" or (hard and hard in _EXECUTION_HARD_HOLD_REASONS):
+        if not _is_fast_worker_non_owner_reason(hard):
+            return "HOLD", hard, hard
+
+    cont_reason = _normalize_reason_code(cont.get("reason_code"))
+    if cont_reason == "POOR_REWARD_RISK" and not _poor_reward_risk_matches_computed(reward_risk, min_rr):
+        cont_reason = None
+
+    if preferred_final and preferred_final in _COMPETING_PRIMARY_BLOCK_REASONS:
+        return "HOLD", preferred_final, preferred_final
+
     if hard and not _is_fast_worker_non_owner_reason(hard):
         return "HOLD", hard, hard
     if structural == "HOLD":
-        reason = _normalize_reason_code(cont.get("reason_code")) or "STRUCTURAL_HOLD"
+        reason = cont_reason or preferred_final or "STRUCTURAL_HOLD"
         if _is_fast_worker_non_owner_reason(reason):
             reason = "STRUCTURAL_HOLD"
+        if reason == "POOR_REWARD_RISK" and not _poor_reward_risk_matches_computed(reward_risk, min_rr):
+            reason = preferred_final or "STRUCTURAL_HOLD"
         return "HOLD", reason, reason
     if order_ok:
         return "BUY", None, None
+    if preferred_final and not _is_fast_worker_non_owner_reason(preferred_final):
+        return "HOLD", preferred_final, preferred_final
     for raw in filtered_candidates:
         code = _normalize_reason_code(raw)
         if code and not _is_fast_worker_non_owner_reason(code):
+            if _extract_competing_block_reason(code) == "POOR_REWARD_RISK" and not _poor_reward_risk_matches_computed(
+                reward_risk, min_rr
+            ):
+                continue
             return "HOLD", code, code
-    fallback = _normalize_reason_code(cont.get("reason_code")) or "ORDER_NOT_EXECUTED"
+    fallback = cont_reason or "ORDER_NOT_EXECUTED"
     if _is_fast_worker_non_owner_reason(fallback):
         fallback = "ORDER_NOT_EXECUTED"
     return "HOLD", fallback, fallback
@@ -318,13 +486,14 @@ def _fast_worker_snapshot_is_complete(snapshot: Optional[dict]) -> bool:
 
 
 def _mark_fast_worker_deferral(state: dict, *, now: datetime) -> None:
-    """Advisory Fast Worker wake only — never grants order ownership."""
+    """Main cycle defers new-entry buys to the 5s Fast Worker (WOC LIVE)."""
     state["pending_fast_worker_deferral"] = {
-        "reason_code": "FAST_WORKER_SNAPSHOT_ADVISORY",
+        "reason_code": "FAST_WORKER_OWNS_ENTRY",
         "deferred_at": now.isoformat(),
         "deadline_seconds": _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS,
     }
-    _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_ADVISORY")
+    # Ask Fast Worker to run ASAP so a completed snapshot lands within 15s.
+    _request_fast_worker_wake(state, reason="MAIN_CYCLE_ENTRY_DEFERRED")
 
 
 def _clear_fast_worker_deferral(state: dict) -> None:
@@ -814,7 +983,11 @@ def evaluate_range_weighted_entry(
             "soft_adjustments": soft_adjustments, "target_pct": 0.0,
             "score_gap": score_gap, "expected_move_pct": expected_move, "expected_gross_edge_pct": expected_move, "cost_pct": cost,
             "expected_net_edge_pct": round(net_edge, 4), "gross_cost_ratio": round(gross_cost_ratio, 4) if gross_cost_ratio != float("inf") else gross_cost_ratio,
-            "reward_risk": round(reward_risk, 4), "hard_blocks": hard_blocks,
+            "reward_risk": round(reward_risk, 4),
+            "min_reward_risk": float(cfg.min_reward_risk),
+            "reward_risk_threshold": float(cfg.min_reward_risk),
+            "min_net_edge_required": float(min_net_edge_required),
+            "hard_blocks": hard_blocks,
             "structure_confirmed": bool(structure_confirmed),
             "structural_direction": _normalize_direction(structural_direction),
             "strong_structure_confirmed": False,
@@ -889,7 +1062,11 @@ def evaluate_range_weighted_entry(
         "soft_adjustments": soft_adjustments, "target_pct": target_pct,
         "score_gap": score_gap, "expected_move_pct": expected_move, "expected_gross_edge_pct": expected_move, "cost_pct": cost,
         "expected_net_edge_pct": round(net_edge, 4), "gross_cost_ratio": round(gross_cost_ratio, 4) if gross_cost_ratio != float("inf") else gross_cost_ratio,
-        "reward_risk": round(reward_risk, 4), "hard_blocks": [],
+        "reward_risk": round(reward_risk, 4),
+        "min_reward_risk": float(cfg.min_reward_risk),
+        "reward_risk_threshold": float(cfg.min_reward_risk),
+        "min_net_edge_required": float(min_net_edge_required),
+        "hard_blocks": [],
         "structure_confirmed": structure_ok,
         "structural_direction": structural_dir,
         "strong_structure_confirmed": strong_structure_confirmed,
@@ -1301,13 +1478,15 @@ def _execute_weighted_order_controller_entry(
     now: datetime,
     position_manager=None,
 ) -> dict:
-    """Same-cycle WOC LIVE new-entry path: evaluate → gates → reserve → broker.
+    """Shared WOC LIVE new-entry path: evaluate → gates → reserve → broker.
 
-    Fast Worker must never call this for live orders — diagnostics only.
+    Live production ownership is the 5s Fast Worker (`run_early_trend_fast_feed_tick`),
+    which calls `run_switch_or_entry` directly after the same gates. Main 3-min cycle
+    must not place new-entry buys via this helper.
     """
     _set_live_entry_engine_state(
         state, now=now,
-        reason="WEIGHTED_ORDER_CONTROLLER_LIVE owns same-cycle new-entry orders",
+        reason="WEIGHTED_ORDER_CONTROLLER_LIVE owns Fast Worker new-entry orders",
     )
     result = {
         "entry_owner": WOC_ENTRY_OWNER,
@@ -1587,22 +1766,31 @@ def _build_completed_decision_snapshot(
         continuation_result=continuation_result,
         structural_label=structural_label,
         block_candidates=[
-            signal_summary.get("block_reason"),
-            signal_summary.get("primary_block_reason"),
+            # Prefer the gate that actually stopped execution, then diagnostics.
             continuation_state.get("last_block_reason"),
+            signal_summary.get("primary_block_reason"),
+            signal_summary.get("block_reason"),
             early_reason,
             continuation_result.get("reason_code"),
+            *(list(continuation_result.get("hard_blocks") or [])),
         ],
     )
+    reward_risk_value = continuation_result.get("reward_risk")
+    min_reward_risk = _reward_risk_threshold_from_result(continuation_result)
+    primary_block_reason, secondary_reasons = _finalize_primary_and_secondary_block_reasons(
+        primary_block_reason,
+        block_reason,
+        early_reason,
+        continuation_result.get("reason_code"),
+        signal_summary.get("entry_approved_reason"),
+        continuation_state.get("last_block_reason"),
+        list(continuation_result.get("hard_blocks") or []),
+        reward_risk=reward_risk_value,
+        min_reward_risk=min_reward_risk,
+    )
+    if final_action != "BUY":
+        block_reason = primary_block_reason or block_reason
     actionable_signal = "BUY" if final_action == "BUY" else "HOLD"
-    secondary_reasons = [
-        reason for reason in (
-            early_reason,
-            continuation_result.get("reason_code"),
-            signal_summary.get("entry_approved_reason"),
-        )
-        if reason and reason != primary_block_reason
-    ]
     momentum_score = enhanced_result.get("intraday_momentum_score")
     explanation = signal_summary.get("conclusion")
     try:
@@ -1617,9 +1805,42 @@ def _build_completed_decision_snapshot(
     ):
         explanation = f"최신 최종점수 {final_score:.1f}, 단기 방향 미확정 및 최근 1분 모멘텀 하락 → HOLD"
 
+    cycle_id = now.strftime("%Y%m%d%H%M")
+    synced_signal_summary = {
+        **signal_summary,
+        "snapshot_id": snapshot_id,
+        "calculated_at": calculated_at,
+        "cycle_id": cycle_id,
+        "final_action": final_action,
+        "actionable_signal": actionable_signal,
+        "block_reason": block_reason,
+        "primary_block_reason": primary_block_reason,
+        "secondary_reasons": secondary_reasons,
+        "range_evidence_score": continuation_result.get("evidence_score"),
+        "expected_net_edge_pct": continuation_result.get("expected_net_edge_pct"),
+        "reward_risk": reward_risk_value,
+        "reward_risk_threshold": min_reward_risk,
+        "min_reward_risk": min_reward_risk,
+    }
+    synced_pipeline_trace = {
+        **(trace or {}),
+        "snapshot_id": snapshot_id,
+        "calculated_at": calculated_at,
+        "cycle_id": cycle_id,
+        "final_action": final_action,
+        "primary_block_reason": primary_block_reason,
+        "secondary_reasons": secondary_reasons,
+        "signal_summary": synced_signal_summary,
+        "range_evidence_score": continuation_result.get("evidence_score"),
+        "expected_net_edge_pct": continuation_result.get("expected_net_edge_pct"),
+        "reward_risk": reward_risk_value,
+        "reward_risk_threshold": min_reward_risk,
+    }
+
     snapshot = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
+        "cycle_id": cycle_id,
         "cycle_status": "COMPLETED",
         "raw_score_leader": _snapshot_field(
             raw_leader, snapshot_id, calculated_at,
@@ -1652,12 +1873,14 @@ def _build_completed_decision_snapshot(
         "cost_pct": _snapshot_field(continuation_result.get("cost_pct"), snapshot_id, calculated_at),
         "expected_net_edge_pct": _snapshot_field(continuation_result.get("expected_net_edge_pct"), snapshot_id, calculated_at),
         "gross_cost_ratio": _snapshot_field(continuation_result.get("gross_cost_ratio"), snapshot_id, calculated_at),
-        "reward_risk": _snapshot_field(continuation_result.get("reward_risk"), snapshot_id, calculated_at),
+        "reward_risk": _snapshot_field(reward_risk_value, snapshot_id, calculated_at),
+        "reward_risk_threshold": _snapshot_field(min_reward_risk, snapshot_id, calculated_at),
+        "min_reward_risk": _snapshot_field(min_reward_risk, snapshot_id, calculated_at),
         "explanation": explanation,
         "enhanced_result": {**(enhanced_result or {})},
         "decision": {**(decision or {})},
-        "signal_summary": {**signal_summary, "snapshot_id": snapshot_id, "calculated_at": calculated_at},
-        "pipeline_trace": {**(trace or {}), "snapshot_id": snapshot_id, "calculated_at": calculated_at},
+        "signal_summary": synced_signal_summary,
+        "pipeline_trace": synced_pipeline_trace,
         "orders_this_cycle": _orders_are_today(list(orders_this_cycle or []), today=now.strftime("%Y%m%d")),
         "new_entry_allowed": bool(new_entry_allowed_now),
     }
@@ -1695,10 +1918,8 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         controller_enter and float(sizing_audit.get("position_cap") or 1.0) <= 0.0
     ):
         block_candidates.insert(0, "DATA_INSUFFICIENT_POSITION_CAP_ZERO")
-    if controller_enter and not order_ok and not any(_filter_non_owner_block_candidates(block_candidates)):
-        # Diagnostics-only Fast Worker never owns the order — do not invent a
-        # FAST_WORKER_* primary block; leave ORDER_NOT_EXECUTED for main cycle.
-        block_candidates.append("ORDER_NOT_EXECUTED")
+    if controller_enter and not order_ok and not any(block_candidates):
+        block_candidates.append("FAST_WORKER_ENTRY_NOT_EXECUTED")
 
     action, block_reason, primary_block_reason = _resolve_consistent_final_action(
         order_ok=order_ok,
@@ -1709,30 +1930,28 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     # Absolute forbid: BUY with empty block when no broker success.
     if action == "BUY" and not order_ok:
         action = "HOLD"
-        block_reason = primary_block_reason or "ORDER_NOT_EXECUTED"
-        if _is_fast_worker_non_owner_reason(block_reason):
-            block_reason = "ORDER_NOT_EXECUTED"
+        block_reason = primary_block_reason or "FAST_WORKER_ENTRY_NOT_EXECUTED"
         primary_block_reason = block_reason
     if action == "BUY" and structural_label == "HOLD":
         action = "HOLD"
         block_reason = primary_block_reason or "STRUCTURAL_HOLD"
         primary_block_reason = block_reason
-    if _is_fast_worker_non_owner_reason(primary_block_reason):
-        primary_block_reason = "ORDER_NOT_EXECUTED" if action == "HOLD" else None
-        block_reason = primary_block_reason
-    if _is_fast_worker_non_owner_reason(block_reason):
-        block_reason = primary_block_reason
 
-    secondary_reasons = [
-        reason for reason in (early_reason, continuation_result.get("reason_code"), last_block, sizing_audit.get("order_skip_reason"))
-        if reason and reason != primary_block_reason
-    ]
-    # Snapshot delay / Fast Worker diagnostics are advisory only.
-    if (early_result or {}).get("order_permission") == "DIAGNOSTIC_ONLY":
-        secondary_reasons.append("FAST_WORKER_DIAGNOSTIC_ONLY")
-    if state.get("pending_fast_worker_deferral"):
-        secondary_reasons.append("FAST_WORKER_SNAPSHOT_DELAY")
-        _clear_fast_worker_deferral(state)
+    reward_risk_value = continuation_result.get("reward_risk")
+    min_reward_risk = _reward_risk_threshold_from_result(continuation_result)
+    primary_block_reason, secondary_reasons = _finalize_primary_and_secondary_block_reasons(
+        primary_block_reason,
+        block_reason,
+        early_reason,
+        continuation_result.get("reason_code"),
+        last_block,
+        sizing_audit.get("order_skip_reason"),
+        list(continuation_result.get("hard_blocks") or []),
+        reward_risk=reward_risk_value,
+        min_reward_risk=min_reward_risk,
+    )
+    if action != "BUY":
+        block_reason = primary_block_reason or block_reason
     today_orders = _orders_are_today(
         ((last_switch or {}).get("orders") or [])
         or (((early_result or {}).get("switch") or {}).get("orders") or [])
@@ -1788,9 +2007,56 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         f"{display_structural or 'TREND_CONTINUATION_ENTRY'} 승인"
         if action == "BUY" else f"Continuation 차단: {primary_block_reason or block_reason}"
     )
+    cycle_id = now.strftime("%Y%m%d%H%M")
+    synced_signal_summary = {
+        "snapshot_id": snapshot_id,
+        "calculated_at": calculated_at,
+        "cycle_id": cycle_id,
+        "raw_score_leader": _raw_score_leader(decision),
+        "live_trade_direction": resolved_direction,
+        "resolved_direction": resolved_direction,
+        "actionable_signal": action,
+        "final_action": action,
+        "structural_signal_label": display_structural,
+        "block_reason": block_reason,
+        "primary_block_reason": primary_block_reason,
+        "secondary_reasons": secondary_reasons,
+        "continuation_reason": continuation_reason,
+        "target_symbol": target_symbol,
+        "target_ratio": target_ratio,
+        "ratio": ratio,
+        "qty": qty,
+        "order_requested": order_requested,
+        "conclusion": explanation,
+        "range_evidence_score": continuation_result.get("evidence_score"),
+        "expected_net_edge_pct": continuation_result.get("expected_net_edge_pct"),
+        "reward_risk": reward_risk_value,
+        "reward_risk_threshold": min_reward_risk,
+        "min_reward_risk": min_reward_risk,
+        # Enhanced HYNIX_BUY stays diagnostic-only — never overwrites execution direction.
+        "enhanced_final_action_diagnostic": decision.get("final_action"),
+    }
+    synced_pipeline_trace = {
+        "snapshot_id": snapshot_id,
+        "calculated_at": calculated_at,
+        "cycle_id": cycle_id,
+        "final_action": action,
+        "primary_block_reason": primary_block_reason,
+        "secondary_reasons": secondary_reasons,
+        "early_decision": early_result or {},
+        "continuation": continuation_result,
+        "signal_summary": synced_signal_summary,
+        "range_evidence_score": continuation_result.get("evidence_score"),
+        "expected_net_edge_pct": continuation_result.get("expected_net_edge_pct"),
+        "reward_risk": reward_risk_value,
+        "reward_risk_threshold": min_reward_risk,
+        "coordinator_result": coordinator_result,
+        "broker_result": broker_result,
+    }
     snapshot = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
+        "cycle_id": cycle_id,
         "cycle_status": "COMPLETED",
         "source": "FAST_WORKER",
         "raw_score_leader": _snapshot_field(_raw_score_leader(decision), snapshot_id, calculated_at, hynix_score=decision.get("enhanced_score"), inverse_score=decision.get("inverse_pressure_score"), label="raw component score"),
@@ -1818,7 +2084,9 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "cost_pct": _snapshot_field(continuation_result.get("cost_pct"), snapshot_id, calculated_at),
         "expected_net_edge_pct": _snapshot_field(continuation_result.get("expected_net_edge_pct"), snapshot_id, calculated_at),
         "gross_cost_ratio": _snapshot_field(continuation_result.get("gross_cost_ratio"), snapshot_id, calculated_at),
-        "reward_risk": _snapshot_field(continuation_result.get("reward_risk"), snapshot_id, calculated_at),
+        "reward_risk": _snapshot_field(reward_risk_value, snapshot_id, calculated_at),
+        "reward_risk_threshold": _snapshot_field(min_reward_risk, snapshot_id, calculated_at),
+        "min_reward_risk": _snapshot_field(min_reward_risk, snapshot_id, calculated_at),
         "position_cap": _snapshot_field(sizing_audit.get("position_cap"), snapshot_id, calculated_at),
         "target_ratio": _snapshot_field(target_ratio, snapshot_id, calculated_at),
         "target_symbol": _snapshot_field(target_symbol, snapshot_id, calculated_at),
@@ -1835,29 +2103,8 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "explanation": explanation,
         "enhanced_result": dict(state.get("last_enhanced_result") or {}),
         "decision": dict(decision),
-        "signal_summary": {
-            "snapshot_id": snapshot_id,
-            "calculated_at": calculated_at,
-            "raw_score_leader": _raw_score_leader(decision),
-            "live_trade_direction": resolved_direction,
-            "resolved_direction": resolved_direction,
-            "actionable_signal": action,
-            "final_action": action,
-            "structural_signal_label": display_structural,
-            "block_reason": block_reason,
-            "primary_block_reason": primary_block_reason,
-            "secondary_reasons": secondary_reasons,
-            "continuation_reason": continuation_reason,
-            "target_symbol": target_symbol,
-            "target_ratio": target_ratio,
-            "ratio": ratio,
-            "qty": qty,
-            "order_requested": order_requested,
-            "conclusion": explanation,
-            # Enhanced HYNIX_BUY stays diagnostic-only — never overwrites execution direction.
-            "enhanced_final_action_diagnostic": decision.get("final_action"),
-        },
-        "pipeline_trace": {"snapshot_id": snapshot_id, "calculated_at": calculated_at, "early_decision": early_result or {}, "continuation": continuation_result},
+        "signal_summary": synced_signal_summary,
+        "pipeline_trace": synced_pipeline_trace,
         "orders_this_cycle": today_orders,
     }
     state["last_fast_worker_decision_snapshot"] = snapshot
@@ -4481,17 +4728,18 @@ def _run_early_trend_detector_tick(
 
 
 def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
-    """요구사항(2026-07-20 최종) — Early Trend Detector 전용 5초 주기 경량 틱.
+    """5초 Fast Worker — live 시세 갱신 + WOC 신규진입 소유 틱.
 
     calculate_enhanced_hynix_prediction_score() 등 무거운 전체 재계산(30초
     주기 run_fast_trend_watcher_tick이 계속 담당)은 다시 하지 않는다 — KIS
-    분봉/계좌 API를 새로 늘리지 않기 위해서다. 이 함수는 오직:
-      (a) 가벼운 현재가 조회 2건(collect_long_current/collect_inverse_current)만으로
-          진짜 5/10/20/30초 기울기(app.trading.early_trend_live_feed)를 쌓고,
-      (b) 최근(최대 30초 전) 계산된 fast_signal/confirmed_regime을 그대로 재사용해
-          Early Trend Detector의 신규진입/단계진행/확대 판단만 더 빠른 주기로 수행한다.
-    반대 change-point 발생 시의 즉시 철수는 1초 주기 Dynamic Exit Watcher가 이
-    live_slopes를 읽어 담당한다(app.trading.dynamic_exit_watcher._tick_locked)."""
+    분봉/계좌 API를 새로 늘리지 않기 위해서다. 이 함수는:
+      (a) 가벼운 현재가 조회로 5/10/20/30초 기울기를 쌓고,
+      (b) evaluate_range_weighted_entry → sizing → run_switch_or_entry
+          (entry_type=WEIGHTED_RANGE_ENTRY, signal_source=WEIGHTED_ORDER_CONTROLLER)
+          로 신규진입을 실행한다.
+    메인 3분 사이클은 신규매수를 직접 내지 않는다. 반대 change-point 철수는
+    1초 Dynamic Exit Watcher가 담당한다.
+    """
     from app.services.hynix_switch_state import with_state_lock
     from app.trading import early_trend_live_feed as feed
     from app.trading import early_trend_detector as etd
@@ -5063,9 +5311,11 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                         "skipped": True,
                         "reason": code,
                         "reason_code": code,
+                        "primary_block_reason": code,
                         "continuation": continuation_eval,
                         "order_sizing_audit": _sizing,
                         "order_permission": "BLOCKED",
+                        "entry_owner": WOC_ENTRY_OWNER,
                     }
 
                 if _sizing.get("order_skip_reason") == "DATA_INSUFFICIENT_POSITION_CAP_ZERO":
@@ -5104,28 +5354,85 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                             _mark_fast_entry_block(_entry_block or "RANGE_EPISODE_ENTRY_BLOCKED")
                         elif held_symbol == desired_symbol or continuation_state.get("entry_done") or continuation_state.get("last_order_key") == order_key:
                             _mark_fast_entry_block(
-                                "TARGET_ALREADY_FILLED" if held_symbol == desired_symbol else "WOC_ENTRY_ALREADY_ATTEMPTED"
+                                "TARGET_ALREADY_FILLED" if held_symbol == desired_symbol else "FAST_WORKER_ENTRY_ALREADY_ATTEMPTED"
                             )
                         else:
-                            # Diagnostics/snapshot only — WOC LIVE (main cycle) owns orders.
-                            # Never call run_switch_or_entry from Fast Worker.
-                            early_result = {
-                                "skipped": True,
-                                "reason": "FAST_WORKER_DIAGNOSTIC_ONLY",
-                                "reason_code": "FAST_WORKER_DIAGNOSTIC_ONLY",
-                                "continuation": continuation_eval,
-                                "order_sizing_audit": _sizing,
-                                "order_permission": "DIAGNOSTIC_ONLY",
-                                "entry_owner": None,
-                            }
-                            continuation_state["last_block_reason"] = None
-                            continuation_state["diagnostic_enter_candidate"] = {
-                                "reason_code": continuation_eval.get("reason_code"),
-                                "entry_path": continuation_eval.get("entry_path"),
-                                "target_pct": _sizing.get("effective_target_pct"),
-                                "order_key": order_key,
-                                "evaluated_at": now.isoformat(),
-                            }
+                            # 5s Fast Worker owns live WOC new-entry buys.
+                            final_action = action_for_live_direction(desired_live_direction) or (
+                                "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                            )
+                            _order_reason = _promote_continuation_reason_for_order(
+                                continuation_eval.get("reason_code")
+                            )
+                            if _order_reason != continuation_eval.get("reason_code"):
+                                continuation_eval = {**continuation_eval, "reason_code": _order_reason}
+                                continuation_state["last_result"] = continuation_eval
+                                continuation_state["last_reason_code"] = _order_reason
+                            _entry_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
+                            _entry_audit["direction_episode_id"] = _episode_id_for_order
+                            _entry_audit["episode_id"] = _episode_id_for_order
+                            _entry_audit["entry_event_id"] = order_key
+                            _entry_audit["signal_id"] = order_key
+                            _entry_audit["target_position_pct"] = _sizing["effective_target_pct"]
+                            _entry_audit["position_cap"] = _sizing["position_cap"]
+                            _entry_audit["entry_owner"] = WOC_ENTRY_OWNER
+                            switch = run_switch_or_entry(
+                                state, broker, final_action, long_price, inverse_price, now=now,
+                                forced=True, reason=_order_reason or "WEIGHTED_ORDER_CONTROLLER",
+                                position_manager=position_manager,
+                                target_position_pct=_sizing["effective_target_pct"],
+                                entry_type="WEIGHTED_RANGE_ENTRY",
+                                signal_source="WEIGHTED_ORDER_CONTROLLER",
+                                fusion_metadata=_entry_audit,
+                            )
+                            continuation_state["last_order_key"] = order_key
+                            continuation_state["last_switch"] = switch
+                            _sizing["calculated_quantity"] = int(switch.get("requested_qty") or _sizing.get("calculated_quantity") or 0)
+                            if switch.get("failure_code") or switch.get("order_skip_reason"):
+                                _sizing["order_skip_reason"] = switch.get("failure_code") or switch.get("order_skip_reason")
+                            continuation_state["order_sizing_audit"] = _sizing
+                            if _fast_order_succeeded(switch):
+                                continuation_state["entry_done"] = True
+                                continuation_state["entry_path"] = continuation_eval.get("entry_path")
+                                continuation_state["last_entry_episode_id"] = _episode_id_for_order
+                                continuation_state["approved_entry_count_today"] = int(
+                                    continuation_state.get("approved_entry_count_today") or 0
+                                ) + 1
+                                mark_range_reversal_probe_entered(
+                                    continuation_state,
+                                    now=now,
+                                    entry_path=continuation_eval.get("entry_path"),
+                                )
+                                position_manager.sync(force=True)
+                                apply_position_manager_to_state(state, position_manager)
+                                early_result = {
+                                    "skipped": False,
+                                    "reason_code": continuation_eval.get("reason_code"),
+                                    "entry_path": continuation_eval.get("entry_path"),
+                                    "switch": switch,
+                                    "continuation": continuation_eval,
+                                    "order_sizing_audit": _sizing,
+                                    "order_permission": "WOC_LIVE",
+                                    "entry_owner": WOC_ENTRY_OWNER,
+                                }
+                            else:
+                                _fail = (
+                                    switch.get("failure_code")
+                                    or switch.get("order_skip_reason")
+                                    or switch.get("message")
+                                    or "FAST_WORKER_ORDER_NOT_SENT"
+                                )
+                                continuation_state["last_block_reason"] = str(_fail)
+                                early_result = {
+                                    "skipped": True,
+                                    "reason": str(_fail),
+                                    "reason_code": str(_fail),
+                                    "switch": switch,
+                                    "continuation": continuation_eval,
+                                    "order_sizing_audit": _sizing,
+                                    "order_permission": "BLOCKED",
+                                    "entry_owner": WOC_ENTRY_OWNER,
+                                }
             elif continuation_eval.get("action") == "ENTER" and not desired_symbol:
                 continuation_state["last_block_reason"] = "NO_LIVE_DIRECTION_SYMBOL"
                 early_result = {
@@ -5135,7 +5442,23 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     "continuation": continuation_eval,
                     "order_permission": "BLOCKED",
                 }
-            # Scale-in also diagnostics-only — main-cycle WOC owns live buys.
+            else:
+                # HOLD / non-ENTER — surface concrete primary_block_reason on the tick.
+                _hold_reason = (
+                    continuation_eval.get("reason_code")
+                    or continuation_state.get("last_block_reason")
+                    or "WEIGHTED_ENTRY_HOLD"
+                )
+                continuation_state["last_block_reason"] = _hold_reason
+                early_result = {
+                    "skipped": True,
+                    "reason": _hold_reason,
+                    "reason_code": _hold_reason,
+                    "continuation": continuation_eval,
+                    "order_permission": "BLOCKED",
+                    "primary_block_reason": _hold_reason,
+                    "entry_owner": WOC_ENTRY_OWNER,
+                }
             _held_for_scale = (state.get("position") or {}).get("symbol")
             if (
                 desired_symbol
@@ -5143,11 +5466,60 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 and continuation_state.get("entry_done")
                 and not continuation_state.get("scale_in_done")
             ):
-                continuation_state["diagnostic_scale_in_candidate"] = {
-                    "evaluated_at": now.isoformat(),
-                    "order_permission": "DIAGNOSTIC_ONLY",
-                }
+                _episode_id_for_scale = continuation_state.get("direction_episode_id") or f"{desired_live_direction}:{continuation_state.get('first_detected_at')}"
+                _macd_conf = (etd_state.get("price_action_reversal") or {}).get("macd_williams_confirmation") or {}
+                try:
+                    _confirm_elapsed = (
+                        now - datetime.fromisoformat(continuation_state.get("first_detected_at") or now.isoformat())
+                    ).total_seconds()
+                except Exception:
+                    _confirm_elapsed = None
+                if _macd_conf.get("confirmed") and _confirm_elapsed is not None and 10.0 <= _confirm_elapsed <= 20.0:
+                    _scale_target = _score_gap_dynamic_pct(
+                        score_gap=float(continuation_state.get("score_gap") or continuation_eval.get("score_gap") or 30.0),
+                        low=0.40,
+                        high=0.60,
+                        confidence=(state.get("adaptive_regime") or {}).get("confidence"),
+                        stop_loss_distance_pct=abs(float(etd.FIXED_EARLY_STOP_PCT)),
+                        buyable_cash=broker.get_buyable_cash() if hasattr(broker, "get_buyable_cash") else None,
+                        current_price=current_etf_price,
+                    )
+                    _scale_key = f"{_episode_id_for_scale}:SCALE_IN"
+                    if _scale_target > 0 and continuation_state.get("last_order_key") != _scale_key:
+                        final_action = action_for_live_direction(desired_live_direction) or (
+                            "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                        )
+                        _scale_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
+                        _scale_audit["direction_episode_id"] = _episode_id_for_scale
+                        _scale_audit["episode_id"] = _episode_id_for_scale
+                        _scale_audit["entry_path"] = continuation_state.get("entry_path") or _scale_audit.get("entry_path")
+                        _scale_audit["target_position_pct"] = _scale_target
+                        _scale_audit["entry_owner"] = WOC_ENTRY_OWNER
+                        switch = run_switch_or_entry(
+                            state, broker, final_action, long_price, inverse_price, now=now,
+                            forced=True, reason="MACD_WILLIAMS_CONFIRMED_SCALE_IN",
+                            position_manager=position_manager, target_position_pct=_scale_target,
+                            entry_type="WEIGHTED_ORDER_CONTROLLER_SCALE_IN",
+                            signal_source="WEIGHTED_ORDER_CONTROLLER",
+                            fusion_metadata=_scale_audit,
+                        )
+                        continuation_state["last_order_key"] = _scale_key
+                        continuation_state["last_scale_switch"] = switch
+                        if _fast_order_succeeded(switch):
+                            continuation_state["scale_in_done"] = True
+                            position_manager.sync(force=True)
+                            apply_position_manager_to_state(state, position_manager)
+                            early_result = {
+                                "skipped": False,
+                                "reason_code": "MACD_WILLIAMS_SCALE_IN",
+                                "entry_path": continuation_state.get("entry_path"),
+                                "switch": switch,
+                                "continuation": continuation_eval,
+                                "order_permission": "WOC_LIVE",
+                                "entry_owner": WOC_ENTRY_OWNER,
+                            }
             state["trend_continuation_entry"] = continuation_state
+            state["last_fast_worker_tick_at"] = now.isoformat()
             _update_fast_worker_decision_snapshot(state, now=now, continuation_state=continuation_state, early_result=early_result)
         except Exception as exc:
             logger.error("[EarlyTrendFastFeed] tick 실패: %s", exc)
@@ -5685,7 +6057,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         state,
         now=now,
         reason=(
-            "evaluate_range_weighted_entry owns all live new entries; "
+            "5s Fast Worker evaluate_range_weighted_entry owns live new entries; "
             f"Early={'LIVE_INPUT' if _early_live else ('SHADOW_INPUT' if _early_configured else 'OFF')}"
         ),
     )
@@ -5841,9 +6213,9 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
 
                     proceed = True
                     _score_gap_target_pct = None
-                    # WOC LIVE is the sole new-entry owner. Main cycle executes
-                    # evaluate_range_weighted_entry → run_switch_or_entry in the
-                    # SAME cycle — never defer to Fast Worker (diagnostics-only).
+                    # Early/Active/Fusion 진단과 무관 — 메인 3분 사이클은 신규매수를
+                    # 직접 실행하지 않는다. 진입은 5초 Fast Worker의
+                    # evaluate_range_weighted_entry -> run_switch_or_entry(WEIGHTED)다.
                     if not is_new_entry:
                         trace["entry_approved"] = True
                         trace["entry_approved_reason"] = "이미 목표 종목 보유 중 — 추가 진입 불필요"
@@ -5851,65 +6223,53 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                         proceed = False
                     else:
                         proceed = False
-                        # Enhanced legacy direct path stays blocked; WOC owns BUY.
+                        # Enhanced legacy direct path stays blocked; Fast Worker owns BUY.
                         trace["enhanced_direct_order_blocked"] = True
-                        _clear_fast_worker_deferral(state)
                         if not new_entry_allowed_now:
-                            cutoff = "NEW_ENTRY_CUTOFF"
+                            cutoff = "NEW_ENTRY_CUTOFF" if "14:50" in str(new_entry_window.get("rule") or "") or "CUTOFF" in str(new_entry_window.get("rule") or "").upper() else (
+                                "DEPLOYMENT_SHA_MISMATCH" if "DEPLOYMENT_SHA" in str(new_entry_window.get("rule") or "") else "NEW_ENTRY_WINDOW_CLOSED"
+                            )
+                            early_result = {
+                                "skipped": True,
+                                "reason": new_entry_window["rule"],
+                                "reason_code": cutoff,
+                                "order_permission": "DIAGNOSTIC_ONLY",
+                            }
                             trace["entry_approved"] = False
                             trace["entry_approved_reason"] = new_entry_window["rule"]
                             trace["primary_block_reason"] = cutoff
                             trace["entry_owner"] = WOC_ENTRY_OWNER
                             trace["order_reservation"] = "NOT_RESERVED"
-                            _record_early_result_on_trace(trace, {
-                                "skipped": True,
-                                "reason": new_entry_window["rule"],
-                                "reason_code": cutoff,
-                                "order_permission": "DIAGNOSTIC_ONLY",
-                            })
+                            _record_early_result_on_trace(trace, early_result)
                         else:
-                            woc = _execute_weighted_order_controller_entry(
-                                state=state,
-                                broker=broker,
-                                decision=decision,
-                                hynix_price=hynix_price,
-                                inverse_price=inverse_price,
-                                now=now,
-                                position_manager=position_manager,
-                            )
-                            orders_this_cycle.extend(woc.get("orders") or [])
-                            attempted_entry = True
-                            trace["entry_owner"] = woc.get("entry_owner") or WOC_ENTRY_OWNER
-                            trace["entry_approved"] = bool(woc.get("entry_approved"))
-                            trace["entry_approved_reason"] = woc.get("entry_approved_reason") or ""
-                            trace["primary_block_reason"] = woc.get("primary_block_reason")
-                            trace["order_reservation"] = woc.get("order_reservation")
-                            trace["execution_error"] = woc.get("execution_error")
+                            early_result = {
+                                "skipped": True,
+                                "reason": "FAST_WORKER_OWNS_ENTRY",
+                                "reason_code": "FAST_WORKER_OWNS_ENTRY",
+                                "order_permission": "DIAGNOSTIC_ONLY",
+                            }
+                            _mark_fast_worker_deferral(state, now=now)
+                            _record_early_result_on_trace(trace, early_result)
+                            _early_order_sent = bool((trace.get("early_order_result") or {}).get("order_sent"))
+                            _early_broker_executed = bool((trace.get("early_order_result") or {}).get("broker_executed"))
+                            _early_reason_code = (trace.get("early_decision") or {}).get("reason_code")
+                            if _early_broker_executed or _early_reason_code == "TARGET_ALREADY_FILLED":
+                                trace["entry_approved"] = True
+                                trace["entry_approved_reason"] = (
+                                    "Fast Worker weighted controller owns entries"
+                                )
+                            else:
+                                trace["entry_approved"] = False
+                                _early_reason_text = (
+                                    (trace.get("early_decision") or {}).get("reason")
+                                    or _early_reason_code
+                                    or "NO_EARLY_SIGNAL"
+                                )
+                                trace["entry_approved_reason"] = f"MAIN_CYCLE_ENTRY_DEFERRED: {_early_reason_text}"
+                            trace["entry_owner"] = WOC_ENTRY_OWNER
                             trace["configured_entry_engine"] = WEIGHTED_LIVE_ENTRY_ENGINE
                             trace["actual_entry_engine"] = WEIGHTED_LIVE_ENTRY_ENGINE
-                            switch = woc.get("switch") or {}
-                            trace["execution_stage"] = switch.get("stage")
-                            trace["execution_message"] = switch.get("message")
-                            trace["order_failure_code"] = switch.get("failure_code")
-                            trace["broker_error"] = switch.get("broker_error")
-                            trace["requested_symbol"] = switch.get("requested_symbol")
-                            trace["requested_qty"] = switch.get("requested_qty")
-                            trace["order_price"] = switch.get("order_price")
-                            trace["buyable_cash"] = switch.get("buyable_cash")
-                            trace["sized_cash"] = switch.get("sized_cash")
-                            if woc.get("secondary_warning"):
-                                warnings.append(f"secondary_warning: {woc['secondary_warning']}")
-                            _record_early_result_on_trace(trace, {
-                                "skipped": not bool(woc.get("broker_executed")),
-                                "reason": woc.get("entry_approved_reason") or woc.get("primary_block_reason"),
-                                "reason_code": woc.get("primary_block_reason") or (
-                                    "WOC_ORDER_SENT" if woc.get("order_sent") else "WOC_NO_ORDER"
-                                ),
-                                "switch": switch,
-                                "continuation": woc.get("continuation_eval"),
-                                "order_permission": "WOC_LIVE",
-                                "order_sizing_audit": (state.get("trend_continuation_entry") or {}).get("order_sizing_audit"),
-                            })
+                            trace["order_reservation"] = "NOT_RESERVED"
 
                     # 요구사항(2026-07-16) — 이번 사이클에 새로 계산된 live 상태(위
                     # snapshot_*와 명확히 구분됨). same_direction_streak(연속 확인
@@ -6116,59 +6476,117 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     pending_deferral = state.get("pending_fast_worker_deferral")
     fw_snap = state.get("last_fast_worker_decision_snapshot")
     wake_fast_worker = False
-    # WOC LIVE owns orders — never overwrite main-cycle BUY/HOLD with
-    # FAST_WORKER_SNAPSHOT_PENDING / FAST_WORKER_OWNS_ENTRY. Snapshot delay is
-    # advisory (secondary_warning) only.
-    if pending_deferral:
+    if pending_deferral and _fast_worker_snapshot_is_complete(fw_snap):
+        # Fast Worker already produced the required completed snapshot within the window.
+        age = _deferral_age_seconds(pending_deferral, now)
+        if age is None or age <= _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:
+            state["last_completed_decision_snapshot"] = fw_snap
+            _clear_fast_worker_deferral(state)
+        else:
+            # Stale completed snap after deadline — record error, clear pending.
+            _record_fast_worker_snapshot_error(
+                state,
+                now=now,
+                code="FAST_WORKER_SNAPSHOT_STALE",
+                detail=f"Completed snapshot arrived after {_FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:.0f}s deferral window",
+            )
+            completed_decision_snapshot = {
+                **completed_decision_snapshot,
+                "source": "MAIN_CYCLE_DEFERRED",
+                "resolved_direction": _snapshot_field(
+                    _normalize_direction((state.get("live_trade_direction") or {}).get("direction")) or "NONE",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
+                "block_reason": _snapshot_field(
+                    "FAST_WORKER_SNAPSHOT_STALE",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
+                "primary_block_reason": _snapshot_field(
+                    "FAST_WORKER_SNAPSHOT_STALE",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
+                "final_action": _snapshot_field(
+                    "HOLD",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
+                "target_symbol": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "target_ratio": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "ratio": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "qty": _snapshot_field(0, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "order_requested": False,
+                "coordinator_result": {"status": "DEFERRED_STALE"},
+                "broker_result": {"status": "NOT_REQUESTED"},
+            }
+            state["last_completed_decision_snapshot"] = completed_decision_snapshot
+            _clear_fast_worker_deferral(state)
+            wake_fast_worker = True
+            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_STALE")
+    elif pending_deferral:
+        # No silent incomplete deferral — HOLD placeholder until Fast Worker completes.
+        defer_reason = "FAST_WORKER_SNAPSHOT_PENDING"
         age = _deferral_age_seconds(pending_deferral, now)
         overdue = age is not None and age > _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS
-        secondary = list(_snapshot_field_value(completed_decision_snapshot, "secondary_reasons") or [])
-        if not isinstance(secondary, list):
-            secondary = [secondary] if secondary else []
-        secondary.append("FAST_WORKER_SNAPSHOT_DELAY")
-        sid = completed_decision_snapshot["snapshot_id"]
-        cat = completed_decision_snapshot["calculated_at"]
-        completed_decision_snapshot = {
-            **completed_decision_snapshot,
-            "secondary_reasons": _snapshot_field(secondary, sid, cat),
-            "secondary_warning": _snapshot_field("FAST_WORKER_SNAPSHOT_DELAY", sid, cat),
-        }
         if overdue:
+            defer_reason = "FAST_WORKER_SNAPSHOT_TIMEOUT"
             _record_fast_worker_snapshot_error(
                 state,
                 now=now,
                 code="FAST_WORKER_SNAPSHOT_TIMEOUT",
                 detail=(
-                    f"Fast Worker snapshot delay exceeded "
+                    f"FAST_WORKER_SNAPSHOT_PENDING exceeded "
                     f"{_FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:.0f}s (age={age:.1f}s) — "
-                    "advisory only; main-cycle decision retained"
+                    "waking Fast Worker and clearing indefinite pending"
                 ),
             )
             wake_fast_worker = True
             _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_TIMEOUT")
+        sid = completed_decision_snapshot["snapshot_id"]
+        cat = completed_decision_snapshot["calculated_at"]
+        resolved_direction = _normalize_direction((state.get("live_trade_direction") or {}).get("direction")) or "NONE"
+        target_symbol = symbol_for_live_direction(resolved_direction)
+        completed_decision_snapshot = {
+            **completed_decision_snapshot,
+            "source": "MAIN_CYCLE_DEFERRED",
+            "resolved_direction": _snapshot_field(resolved_direction, sid, cat),
+            "live_trade_direction": _snapshot_field(resolved_direction, sid, cat),
+            "final_action": _snapshot_field("HOLD", sid, cat),
+            "actionable_signal": _snapshot_field("HOLD", sid, cat),
+            "block_reason": _snapshot_field(defer_reason, sid, cat),
+            "primary_block_reason": _snapshot_field(defer_reason, sid, cat),
+            "structural_signal_label": _snapshot_field("HOLD", sid, cat),
+            "target_symbol": _snapshot_field(target_symbol, sid, cat),
+            "target_ratio": _snapshot_field(None, sid, cat),
+            "ratio": _snapshot_field(None, sid, cat),
+            "qty": _snapshot_field(0, sid, cat),
+            "order_requested": False,
+            "coordinator_result": {"status": "DEFERRED", "reason_code": "FAST_WORKER_OWNS_ENTRY"},
+            "broker_result": {"status": "NOT_REQUESTED"},
+        }
+        completed_decision_snapshot["signal_summary"] = {
+            **(completed_decision_snapshot.get("signal_summary") or {}),
+            "final_action": "HOLD",
+            "resolved_direction": resolved_direction,
+            "live_trade_direction": resolved_direction,
+            "block_reason": defer_reason,
+            "primary_block_reason": defer_reason,
+            "target_symbol": target_symbol,
+            # Enhanced HYNIX_BUY is diagnostic-only.
+            "enhanced_final_action_diagnostic": (decision or {}).get("final_action"),
+        }
+        state["last_completed_decision_snapshot"] = completed_decision_snapshot
+        if overdue:
+            # Forbid indefinite pending: clear after recording timeout error + wake request.
             _clear_fast_worker_deferral(state)
-        elif _fast_worker_snapshot_is_complete(fw_snap):
-            # Keep main-cycle snapshot as authority; store FW snap as advisory.
-            state["last_fast_worker_advisory_snapshot"] = fw_snap
-            _clear_fast_worker_deferral(state)
-        else:
+        elif not state.get("force_fast_worker_tick"):
+            # Still inside the 15s window — ensure Fast Worker is nudged.
             wake_fast_worker = True
-            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_ADVISORY")
-            # Do not leave indefinite pending that blocks future cycles.
-            if age is not None and age > _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS / 2:
-                _clear_fast_worker_deferral(state)
-    state["last_completed_decision_snapshot"] = completed_decision_snapshot
-    # Strip any accidental Fast Worker ownership markers from the live snapshot.
-    for key in ("primary_block_reason", "block_reason"):
-        field = completed_decision_snapshot.get(key)
-        val = _snapshot_field_value(completed_decision_snapshot, key)
-        if _is_fast_worker_non_owner_reason(val) and isinstance(field, dict):
-            field["value"] = None if completed_decision_snapshot.get("order_requested") else (
-                _snapshot_field_value(completed_decision_snapshot, "primary_block_reason")
-                if key == "block_reason" else "ORDER_NOT_EXECUTED"
-            )
-            if key == "primary_block_reason" and _is_fast_worker_non_owner_reason(field.get("value")):
-                field["value"] = "ORDER_NOT_EXECUTED"
+            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_PENDING")
+    else:
+        state["last_completed_decision_snapshot"] = completed_decision_snapshot
     if wake_fast_worker or state.get("force_fast_worker_tick"):
         state["_wake_fast_worker_after_cycle"] = True
     save_state_atomic(state)
