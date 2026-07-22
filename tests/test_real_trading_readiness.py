@@ -41,7 +41,7 @@ class _FakeKIS:
         return {"success": True, "order_id": "T1", "message": "OK", "raw": {}, "http_status": 200}
 
 
-def _real_ready_cfg(confirm_text: str = "I_UNDERSTAND_REAL_TRADING_RISK") -> Config:
+def _real_ready_cfg(confirm_text: str = "LIVE") -> Config:
     cfg = Config()
     cfg._raw.setdefault("safety", {})
     cfg._raw["safety"]["enable_real_trading"] = True
@@ -60,9 +60,9 @@ def _real_ready_cfg(confirm_text: str = "I_UNDERSTAND_REAL_TRADING_RISK") -> Con
 
 class TestFullAutoConfirmTextWiring:
     def test_full_auto_real_confirm_text_reads_env(self, monkeypatch):
-        monkeypatch.setenv("FULL_AUTO_REAL_CONFIRM_TEXT", "I_UNDERSTAND_REAL_TRADING_RISK")
+        monkeypatch.setenv("FULL_AUTO_REAL_CONFIRM_TEXT", "LIVE")
         cfg = Config()
-        assert cfg.full_auto_real_confirm_text() == "I_UNDERSTAND_REAL_TRADING_RISK"
+        assert cfg.full_auto_real_confirm_text() == "LIVE"
 
     def test_kis_real_broker_rejects_empty_confirm_text(self):
         """수정 전 버그 재현: confirm_text=""(기본값)이면 gate4가 항상 실패해야 한다."""
@@ -77,7 +77,7 @@ class TestFullAutoConfirmTextWiring:
         넘겨주면 gate4를 통과해 브로커가 정상 생성돼야 한다(=REAL 주문이 실제로 나갈 수 있음)."""
         from app.trading.kis_real_broker import KisRealBroker
 
-        monkeypatch.setenv("FULL_AUTO_REAL_CONFIRM_TEXT", "I_UNDERSTAND_REAL_TRADING_RISK")
+        monkeypatch.setenv("FULL_AUTO_REAL_CONFIRM_TEXT", "LIVE")
         monkeypatch.setenv("KIS_REAL_ACCOUNT_NO", "12345678-01")
         monkeypatch.delenv("KIS_REAL_CANO", raising=False)
         monkeypatch.delenv("KIS_ACCOUNT_NO", raising=False)
@@ -95,7 +95,7 @@ class TestFullAutoConfirmTextWiring:
         호출 인자를 가로채 확인한다(회귀 방지 — 과거엔 이 인자가 누락되어 있었다)."""
         import app.services.hynix_switch_engine as engine
 
-        monkeypatch.setenv("FULL_AUTO_REAL_CONFIRM_TEXT", "I_UNDERSTAND_REAL_TRADING_RISK")
+        monkeypatch.setenv("FULL_AUTO_REAL_CONFIRM_TEXT", "LIVE")
         captured = {}
 
         def _fake_create_broker(cfg, mode=None, confirm_text="", **kwargs):
@@ -126,7 +126,7 @@ class TestFullAutoConfirmTextWiring:
             pass
 
         assert captured.get("mode") == "real"
-        assert captured.get("confirm_text") == "I_UNDERSTAND_REAL_TRADING_RISK"
+        assert captured.get("confirm_text") == "LIVE"
         assert captured.get("confirm_text") != ""
 
 

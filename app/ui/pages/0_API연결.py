@@ -458,7 +458,7 @@ else:
             "ACCOUNT_NO": "KIS_ACCOUNT_NO",
             "PRODUCT_CODE": "KIS_ACCOUNT_PRODUCT_CODE",
         }
-        _expected_confirm = "REAL_ORDER_CONFIRMED"
+        _expected_confirm = "LIVE"
 
     with st.expander("환경변수 사전 확인", expanded=True):
         all_env_ok = True

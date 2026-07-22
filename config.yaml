@@ -89,7 +89,7 @@ safety:
 
   # ── 확인 문구 ──────────────────────────────────────────────────────────────
   require_real_order_confirm_text: true
-  real_order_confirm_text: "I_UNDERSTAND_REAL_TRADING_RISK"
+  real_order_confirm_text: "LIVE"
   real_trading_start_date: "2026-07-14"
 
   # ── 주문 한도 ──────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ safety:
 
   # ── 하위 호환 (기존 키 유지) ───────────────────────────────────────────────
   require_real_confirm: true
-  real_confirm_text: "I_UNDERSTAND_REAL_TRADING_RISK"
+  real_confirm_text: "LIVE"
   max_real_order_amount: 10000000
   max_real_daily_budget: 10000000
 

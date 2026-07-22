@@ -83,7 +83,7 @@ if selected_mode == "real":
         cfg_tmp = get_config()
         expected_text = cfg_tmp.real_confirm_text()
     except Exception:
-        expected_text = "I_UNDERSTAND_REAL_TRADING_RISK"
+        expected_text = "LIVE"
     confirm_text = st.text_input(
         f"실전투자 확인 문구 ('{expected_text}') — 매도 실행 시 필요 (조회는 불필요)",
         type="password",

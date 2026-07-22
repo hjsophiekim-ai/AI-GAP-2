@@ -59,7 +59,7 @@ https://ai-gap.onrender.com
 | 키 | 설명 | 기본값 |
 |----|------|--------|
 | `APP_PASSWORD` | 앱 접근 비밀번호 (선택) | 없음 |
-| `REAL_ORDER_CONFIRM_TEXT` | 실전주문 확인 문구 | `REAL_ORDER_CONFIRMED` |
+| `REAL_ORDER_CONFIRM_TEXT` | 실전주문 확인 문구 | `LIVE` |
 | `ENABLE_REAL_TRADING` | 실전투자 마스터 스위치 | `false` |
 | `ENABLE_REAL_BUY` | 실전 매수 허용 | `false` |
 | `ENABLE_REAL_SELL` | 실전 매도 허용 | `false` |

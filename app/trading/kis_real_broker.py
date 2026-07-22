@@ -5,7 +5,7 @@ SAFETY: 6가지 안전 조건.
   1. mode == "real"
   2. config.yaml kis.real.enabled == true  OR  runtime_real_mode == True
   3. config.yaml safety.enable_real_trading == true  OR  runtime_real_mode == True
-  4. 확인 문구 "REAL_ORDER_CONFIRMED" 일치  (항상 필요)
+  4. 확인 문구 "LIVE" 일치  (항상 필요)
   5. 매수 전: enable_real_buy == true  OR  runtime_real_mode == True  + 주문금액 한도
   6. 매도 전: enable_real_sell == true  OR  runtime_real_mode == True
 

@@ -78,7 +78,7 @@ class TestAccountNumberParsing:
 
 
 class TestEnhancedRealGate:
-    def _set_real_env(self, monkeypatch, confirm="I_UNDERSTAND_REAL_TRADING_RISK"):
+    def _set_real_env(self, monkeypatch, confirm="LIVE"):
         values = {
             "ENABLE_FULL_AUTO": "true",
             "ENABLE_REAL_TRADING": "true",
@@ -100,8 +100,8 @@ class TestEnhancedRealGate:
         cfg._raw["safety"]["enable_real_trading"] = True
         cfg._raw["safety"]["require_real_confirm"] = True
         cfg._raw["safety"]["require_real_order_confirm_text"] = True
-        cfg._raw["safety"]["real_confirm_text"] = "I_UNDERSTAND_REAL_TRADING_RISK"
-        cfg._raw["safety"]["real_order_confirm_text"] = "I_UNDERSTAND_REAL_TRADING_RISK"
+        cfg._raw["safety"]["real_confirm_text"] = "LIVE"
+        cfg._raw["safety"]["real_order_confirm_text"] = "LIVE"
         cfg._raw["safety"]["real_trading_start_date"] = "2000-01-01"
         cfg._raw["kis"]["real"]["account_no_env"] = "KIS_REAL_ACCOUNT_NO"
         cfg._raw["kis"]["real"]["product_code_env"] = "KIS_REAL_ACCOUNT_PRODUCT_CODE"
@@ -125,7 +125,7 @@ class TestEnhancedRealGate:
         assert status["checks"]["real_trading_start_date_allowed"] is True
 
     def test_confirm_text_mismatch_blocks_real_gate(self, monkeypatch):
-        self._set_real_env(monkeypatch, confirm="live")
+        self._set_real_env(monkeypatch, confirm="WRONG")
         status = self._cfg().enhanced_real_gate_status(current_mode="real")
         assert status["ready"] is False
         assert "FULL_AUTO_REAL_CONFIRM_TEXT_MISMATCH" in status["blocking_reasons"]

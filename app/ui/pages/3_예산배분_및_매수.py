@@ -300,7 +300,7 @@ if selected_mode == "real":
     try:
         expected_text = get_config().real_confirm_text()
     except Exception:
-        expected_text = "I_UNDERSTAND_REAL_TRADING_RISK"
+        expected_text = "LIVE"
     confirm_text = st.text_input(f"실전투자 확인 문구 입력 ('{expected_text}')",
                                   type="password", placeholder=expected_text)
     if confirm_text and confirm_text != expected_text:
@@ -309,7 +309,7 @@ if selected_mode == "real":
 real_confirm_ok = (
     selected_mode != "real"
     or (confirm_text and confirm_text == (
-        get_config().real_confirm_text() if callable(getattr(get_config(), "real_confirm_text", None)) else "I_UNDERSTAND_REAL_TRADING_RISK"
+        get_config().real_confirm_text() if callable(getattr(get_config(), "real_confirm_text", None)) else "LIVE"
     ))
 )
 

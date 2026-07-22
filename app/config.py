@@ -120,13 +120,13 @@ _DEFAULT_CONFIG = {
         "enable_real_buy": False,
         "enable_real_sell": False,
         "require_real_order_confirm_text": True,
-        "real_order_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "live"),
+        "real_order_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "LIVE"),
         "real_trading_start_date": "2026-07-14",
         "max_order_amount": 10000000,
         "max_daily_order_amount": 10000000,
         "max_daily_loss_rate": -5.0,
         "require_real_confirm": True,
-        "real_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "live"),
+        "real_confirm_text": os.getenv("REAL_ORDER_CONFIRM_TEXT", "LIVE"),
         "max_real_order_amount": 10000000,
         "max_real_daily_budget": 10000000,
     },
@@ -291,7 +291,7 @@ class Config:
         """REAL 확인 문구. safety.real_confirm_text를 기준값으로 사용한다."""
         return (
             self.safety.get("real_confirm_text")
-            or self.safety.get("real_order_confirm_text", "live")
+            or self.safety.get("real_order_confirm_text", "LIVE")
         )
 
     def real_trading_start_date(self) -> str:

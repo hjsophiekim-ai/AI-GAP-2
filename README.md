@@ -197,7 +197,7 @@ ml:
 safety:
   enable_real_trading: false   # 실전투자 활성화 여부 (기본: false)
   require_real_confirm: true   # 실전투자 시 확인 문구 입력 요구
-  real_confirm_text: "I_UNDERSTAND_REAL_TRADING_RISK"
+  real_confirm_text: "LIVE"
   max_real_order_amount: 1000000    # 실전 1회 최대 주문금액
   max_real_daily_budget: 1000000    # 실전 일일 최대 투자금액
   max_daily_loss_rate: -5.0         # 일일 최대 손실률 (%)
@@ -360,7 +360,7 @@ safety:
 실전 모드 실행 전, 다음 문구를 직접 입력해야 합니다:
 
 ```
-I_UNDERSTAND_REAL_TRADING_RISK
+LIVE
 ```
 
 추가 안전 장치:

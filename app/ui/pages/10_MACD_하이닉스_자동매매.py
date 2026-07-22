@@ -83,7 +83,7 @@ with c4:
 real_confirm_ok = False
 if mode == "real":
     st.error("REAL(실전) 모드 — 확인 문구 입력 후에만 시작 가능")
-    expected = str(cfg.real_confirm_text() or "live")
+    expected = str(cfg.real_confirm_text() or "LIVE")
     confirm_in = st.text_input("REAL 확인 문구", type="password", key="macd_real_confirm")
     real_toggle = st.checkbox("REAL 주문 활성화", key="macd_real_toggle")
     real_confirm_ok = bool(real_toggle and confirm_in == expected)
