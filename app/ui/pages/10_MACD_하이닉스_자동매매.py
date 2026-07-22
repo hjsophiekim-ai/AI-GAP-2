@@ -270,9 +270,10 @@ st.caption(
 )
 
 # ── TP/SL / Continuation re-entry ─────────────────────────────────────────
-st.subheader("TP/SL · 연속재진입")
+st.subheader("Profit lock · SL · 연속재진입")
 ep = state.get("direction_episode") or {}
 re = state.get("reentry") or {}
+pl = state.get("profit_lock") or {}
 e1, e2, e3, e4 = st.columns(4)
 e1.metric("마지막 이벤트", state.get("last_event") or "-")
 e2.metric("에피소드 재진입 사용", "YES" if ep.get("continuation_reentry_used") else "NO")
@@ -281,6 +282,11 @@ e4.metric(
     "재진입 기능",
     "ON" if state.get("continuation_reentry_enabled") else "OFF(기본)",
 )
+p1, p2, p3, p4 = st.columns(4)
+p1.metric("Lock active", "YES" if pl.get("profit_lock_active") else "NO")
+p2.metric("Peak net %", f"{float(pl.get('peak_net_return') or 0):.3f}")
+p3.metric("Current net %", f"{float(pl.get('current_net_return') or 0):.3f}")
+p4.metric("Giveback pp", f"{float(pl.get('giveback_pct') or 0):.3f}")
 st.write(
     f"episode=`{ep.get('id')}` · dir=`{ep.get('direction')}` · "
     f"entry_kind=`{(pos.get('entry_kind') if pos else None) or '-'}` · "
@@ -292,8 +298,9 @@ st.write(
     f"hist_last3=`{re.get('hist_last3')}`"
 )
 st.caption(
-    "Exit: TP +3% / SL -1.5% (net vs ETF entry) · 15:00 강제청산 최우선 · "
-    "반대 MACD → OPPOSITE_SWITCH · CONTINUATION_REENTRY는 플래그 ON일 때만"
+    "Exit: PROFIT_LOCK (activate ≥+1.5% net, giveback ≥0.8pp from peak) / SL −1.5% · "
+    "15:00 강제청산 최우선 · 반대 MACD → OPPOSITE_SWITCH · 고정 +3% TP 없음 · "
+    "CONTINUATION_REENTRY는 플래그 ON일 때만"
 )
 
 st.write(
@@ -337,8 +344,9 @@ if rows:
         c for c in [
             "timestamp", "macd_signal", "action", "symbol", "executed_qty",
             "order_price", "executed_price", "order_id", "hold_seconds",
-            "gross_pnl", "cost", "net_pnl", "exit_reason", "entry_kind",
-            "direction_episode_id", "signal_source", "mode", "git_sha",
+            "gross_pnl", "cost", "net_pnl", "exit_reason",
+            "peak_net_return", "current_net_return", "giveback_pct", "profit_lock_active",
+            "entry_kind", "direction_episode_id", "signal_source", "mode", "git_sha",
             "success", "signal_id",
         ] if c in df.columns
     ]

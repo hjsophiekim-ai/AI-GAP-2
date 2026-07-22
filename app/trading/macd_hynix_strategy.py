@@ -39,8 +39,12 @@ DIR_DOWN = "DOWN_BLUE"
 DIR_HOLD = "HOLD"
 
 # ── Exit / continuation (net PnL vs actual ETF entry) ──────────────────────
-TP_NET_PCT = 3.0
+# Live exit = C PROFIT_LOCK (no fixed +3% TP). LEGACY_TP retained for replay A only.
+LEGACY_TP_NET_PCT = 3.0
+TP_NET_PCT = LEGACY_TP_NET_PCT  # alias for compare/replay scripts
 SL_NET_PCT = -1.5
+PROFIT_LOCK_ACTIVATE_PCT = 1.5
+PROFIT_LOCK_GIVEBACK_PP = 0.8
 # Re-entry requires |hist| ≥ this fraction of max |hist| observed just before TP.
 HIST_RECOVERY_RATIO = 0.70
 # Chase gate: block if price is more than this % beyond the TP-time pivot
@@ -50,8 +54,9 @@ CHASE_MAX_PCT = 1.5
 # Feature remains implemented; enable only via state.continuation_reentry_enabled.
 CONTINUATION_REENTRY_ENABLED = False
 
-EXIT_TP = "TP_EXIT"
+EXIT_TP = "TP_EXIT"  # legacy / replay A only — not used by live worker
 EXIT_SL = "SL_EXIT"
+EXIT_PROFIT_LOCK = "PROFIT_LOCK"
 EXIT_OPPOSITE = "OPPOSITE_SWITCH"
 EXIT_SESSION = "15:00_FORCE_LIQUIDATE"
 ENTRY_INITIAL = "INITIAL_ENTRY"
@@ -382,16 +387,80 @@ def check_tp_sl(
     current_price: float,
     quantity: int,
     *,
-    tp_pct: float = TP_NET_PCT,
+    tp_pct: Optional[float] = TP_NET_PCT,
     sl_pct: float = SL_NET_PCT,
 ) -> Optional[str]:
-    """Return TP_EXIT / SL_EXIT when net PnL vs entry crosses thresholds, else None."""
+    """Return SL_EXIT / legacy TP_EXIT when net PnL vs entry crosses thresholds.
+
+    Live worker does **not** use this for exits — it uses ``evaluate_position_exits``
+    (SL + PROFIT_LOCK, no fixed +3% TP). Pass ``tp_pct=None`` to disable TP.
+    Replay scripts may keep the default ``tp_pct=TP_NET_PCT`` (variant A).
+    """
     pct = net_pnl_pct_vs_entry(symbol, entry_price, current_price, quantity)
     if pct <= sl_pct:
         return EXIT_SL
-    if pct >= tp_pct:
+    if tp_pct is not None and pct >= float(tp_pct):
         return EXIT_TP
     return None
+
+
+def update_profit_lock_tracker(
+    *,
+    current_net_return: float,
+    peak_net_return: float = 0.0,
+    profit_lock_active: bool = False,
+    activate_pct: float = PROFIT_LOCK_ACTIVATE_PCT,
+    giveback_pp: float = PROFIT_LOCK_GIVEBACK_PP,
+) -> dict[str, Any]:
+    """Update peak/current/giveback and decide PROFIT_LOCK exit.
+
+    Lock activates when net return vs ETF entry ≥ ``activate_pct``.
+    After lock is active, exit when giveback from peak ≥ ``giveback_pp`` percentage points.
+    """
+    cur = float(current_net_return or 0.0)
+    peak = max(float(peak_net_return or 0.0), cur)
+    active = bool(profit_lock_active) or cur >= float(activate_pct)
+    giveback = max(0.0, peak - cur) if active else 0.0
+    exit_hit = active and giveback >= float(giveback_pp)
+    return {
+        "peak_net_return": round(peak, 6),
+        "current_net_return": round(cur, 6),
+        "giveback_pct": round(giveback, 6),
+        "profit_lock_active": active,
+        "exit_reason": EXIT_PROFIT_LOCK if exit_hit else None,
+    }
+
+
+def evaluate_position_exits(
+    symbol: str,
+    entry_price: float,
+    current_price: float,
+    quantity: int,
+    *,
+    peak_net_return: float = 0.0,
+    profit_lock_active: bool = False,
+    sl_pct: float = SL_NET_PCT,
+    activate_pct: float = PROFIT_LOCK_ACTIVATE_PCT,
+    giveback_pp: float = PROFIT_LOCK_GIVEBACK_PP,
+) -> dict[str, Any]:
+    """Live exit helper: SL first, then profit-lock giveback. No fixed +3% TP."""
+    current = net_pnl_pct_vs_entry(symbol, entry_price, current_price, quantity)
+    tracker = update_profit_lock_tracker(
+        current_net_return=current,
+        peak_net_return=peak_net_return,
+        profit_lock_active=profit_lock_active,
+        activate_pct=activate_pct,
+        giveback_pp=giveback_pp,
+    )
+    exit_reason: Optional[str] = None
+    if current <= float(sl_pct):
+        exit_reason = EXIT_SL
+    elif tracker.get("exit_reason"):
+        exit_reason = EXIT_PROFIT_LOCK
+    return {
+        **tracker,
+        "exit_reason": exit_reason,
+    }
 
 
 def _session_vwap(bars: pd.DataFrame) -> Optional[float]:

@@ -14,6 +14,7 @@ from app.trading import exit_order_coordinator as order_coord
 from app.trading import macd_hynix_order_manager as om
 from app.trading import macd_hynix_worker as worker
 from app.trading.macd_hynix_strategy import (
+    CONTINUATION_REENTRY_ENABLED,
     DIR_DOWN,
     DIR_HOLD,
     DIR_UP,
@@ -21,20 +22,26 @@ from app.trading.macd_hynix_strategy import (
     ENTRY_INITIAL,
     ENTRY_OPEN_IMMEDIATE,
     EXIT_OPPOSITE,
+    EXIT_PROFIT_LOCK,
     EXIT_SL,
     EXIT_TP,
     INVERSE_SYMBOL,
     LONG_SYMBOL,
+    OPENING_PROBE_ENABLED,
+    PROFIT_LOCK_ACTIVATE_PCT,
+    PROFIT_LOCK_GIVEBACK_PP,
     SIGNAL_SOURCE_CONTINUATION,
     SL_NET_PCT,
     TP_NET_PCT,
     check_tp_sl,
     evaluate_continuation_reentry,
     evaluate_macd_direction,
+    evaluate_position_exits,
     make_direction_episode_id,
     net_pnl_pct_vs_entry,
     resample_completed_3m,
     target_symbol_for_direction,
+    update_profit_lock_tracker,
 )
 
 
@@ -683,18 +690,75 @@ def test_buy_blocked_while_opposite_held():
 
 
 def test_tp_sl_thresholds_net_pnl():
-    # At flat price after costs, net % is slightly negative (fees) — not TP/SL
+    # Legacy helper still defaults to +3% TP (replay A); live uses evaluate_position_exits.
     assert check_tp_sl(LONG_SYMBOL, 10000.0, 10000.0, 10) is None
-    # +3% gross still needs to clear costs; use larger move
     assert check_tp_sl(LONG_SYMBOL, 10000.0, 10400.0, 10) == EXIT_TP
     assert check_tp_sl(LONG_SYMBOL, 10000.0, 9800.0, 10) == EXIT_SL
+    assert check_tp_sl(LONG_SYMBOL, 10000.0, 10400.0, 10, tp_pct=None) is None
     pct_up = net_pnl_pct_vs_entry(LONG_SYMBOL, 10000.0, 10400.0, 10)
     pct_dn = net_pnl_pct_vs_entry(LONG_SYMBOL, 10000.0, 9800.0, 10)
     assert pct_up >= TP_NET_PCT
     assert pct_dn <= SL_NET_PCT
 
 
-def test_exit_position_tp_records_reason():
+def test_profit_lock_activates_at_1_5_pct():
+    # Find a mark price that clears +1.5% net after costs
+    entry = 10000.0
+    qty = 10
+    # Start from ~+2% gross and climb until net >= activate
+    mark = entry * 1.02
+    activated = False
+    for _ in range(40):
+        pct = net_pnl_pct_vs_entry(LONG_SYMBOL, entry, mark, qty)
+        tr = update_profit_lock_tracker(current_net_return=pct)
+        if pct >= PROFIT_LOCK_ACTIVATE_PCT:
+            assert tr["profit_lock_active"] is True
+            activated = True
+            break
+        mark *= 1.002
+    assert activated, "expected to find a mark that activates profit lock"
+
+
+def test_profit_lock_giveback_0_8pp_exits():
+    tr = update_profit_lock_tracker(
+        current_net_return=2.5,
+        peak_net_return=2.5,
+        profit_lock_active=False,
+    )
+    assert tr["profit_lock_active"] is True
+    assert tr["exit_reason"] is None
+    # Peak 2.5, current 1.6 → giveback 0.9pp ≥ 0.8
+    tr2 = update_profit_lock_tracker(
+        current_net_return=1.6,
+        peak_net_return=tr["peak_net_return"],
+        profit_lock_active=True,
+    )
+    assert tr2["giveback_pct"] >= PROFIT_LOCK_GIVEBACK_PP
+    assert tr2["exit_reason"] == EXIT_PROFIT_LOCK
+
+
+def test_evaluate_position_exits_sl_before_profit_lock():
+    # Large loss → SL wins even if lock fields present
+    ev = evaluate_position_exits(
+        LONG_SYMBOL, 10000.0, 9800.0, 10,
+        peak_net_return=3.0,
+        profit_lock_active=True,
+    )
+    assert ev["exit_reason"] == EXIT_SL
+
+
+def test_evaluate_position_exits_no_fixed_tp_at_3pct():
+    # Price that would have been legacy TP must NOT exit without giveback
+    pct = net_pnl_pct_vs_entry(LONG_SYMBOL, 10000.0, 10400.0, 10)
+    assert pct >= TP_NET_PCT
+    ev = evaluate_position_exits(LONG_SYMBOL, 10000.0, 10400.0, 10)
+    assert ev["profit_lock_active"] is True  # above 1.5
+    assert ev["exit_reason"] is None  # no giveback yet
+    assert CONTINUATION_REENTRY_ENABLED is False
+    assert OPENING_PROBE_ENABLED is False
+
+
+def test_exit_position_profit_lock_records_reason():
     broker = FakeBroker()
     broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
     state = om.default_state()
@@ -707,21 +771,28 @@ def test_exit_position_tp_records_reason():
         **om.default_state()["direction_episode"],
         "id": "EP:UP", "direction": DIR_UP, "initial_entry_used": True,
     }
+    state["profit_lock"] = {
+        "peak_net_return": 2.4,
+        "current_net_return": 1.5,
+        "giveback_pct": 0.9,
+        "profit_lock_active": True,
+    }
     quotes = {
-        "long": {"price": 10400.0, "updated_at": datetime.now().isoformat()},
+        "long": {"price": 10200.0, "updated_at": datetime.now().isoformat()},
         "inverse": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
     }
     res = om.exit_position_full(
-        broker, mode="mock", quotes=quotes, state=state, reason=EXIT_TP,
-        tp_context={"tp_bar_ts": "2026-07-21T10:00:00", "tp_hist_max_abs": 1.5,
-                    "tp_hynix_price": 180000.0, "tp_pivot_high": 181000.0},
+        broker, mode="mock", quotes=quotes, state=state, reason=EXIT_PROFIT_LOCK,
     )
     assert res["success"]
     assert state["position"]["symbol"] is None
-    assert state["direction_episode"]["tp_at"]
-    assert state["direction_episode"]["last_exit_reason"] == EXIT_TP
+    assert state["direction_episode"]["last_exit_reason"] == EXIT_PROFIT_LOCK
+    assert state["profit_lock"]["profit_lock_active"] is False
     rows = om.load_ledger()
-    assert any(r.get("exit_reason") == EXIT_TP for r in rows)
+    sell = next(r for r in rows if r.get("exit_reason") == EXIT_PROFIT_LOCK)
+    assert float(sell.get("peak_net_return") or 0) == pytest.approx(2.4)
+    assert float(sell.get("giveback_pct") or 0) == pytest.approx(0.9)
+    assert str(sell.get("profit_lock_active")).lower() in ("true", "1", "yes")
 
 
 def test_sl_lock_blocks_continuation_reentry():
@@ -842,10 +913,11 @@ def test_continuation_reentry_idempotent_signal_id():
     assert r2.get("duplicate")
 
 
-def test_worker_tp_exit_then_no_immediate_rebuy(monkeypatch):
+def test_worker_profit_lock_exit_then_no_immediate_rebuy(monkeypatch):
     broker = FakeBroker()
     broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
-    broker.prices[LONG_SYMBOL] = 10400.0
+    # Mark still profitable but giveback from peak triggers lock exit
+    broker.prices[LONG_SYMBOL] = 10200.0
     state = om.default_state()
     state["auto_trade_on"] = True
     state["position"] = {
@@ -858,6 +930,13 @@ def test_worker_tp_exit_then_no_immediate_rebuy(monkeypatch):
         "id": "EP:UP", "direction": DIR_UP, "initial_entry_used": True,
     }
     state["continuation_reentry_enabled"] = False
+    # Peak was high enough that current giveback ≥ 0.8pp
+    state["profit_lock"] = {
+        "peak_net_return": 3.0,
+        "current_net_return": 1.5,
+        "giveback_pct": 1.5,
+        "profit_lock_active": True,
+    }
     df = _bars_1m(150, trend="up")
     now = datetime(2026, 7, 21, 11, 0, 0)
 
@@ -879,9 +958,149 @@ def test_worker_tp_exit_then_no_immediate_rebuy(monkeypatch):
     wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
     try:
         r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
-        assert any(a.get("reason") == EXIT_TP for a in r["actions"] if "exit" in a or "reason" in a)
+        assert any(a.get("reason") == EXIT_PROFIT_LOCK for a in r["actions"] if "exit" in a or "reason" in a)
         assert state["position"]["symbol"] is None
         assert state["pending_signal_id"] is None  # no immediate rebuy (reentry disabled)
+        assert CONTINUATION_REENTRY_ENABLED is False
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_worker_no_fixed_tp_at_plus_3pct(monkeypatch):
+    """Legacy +3% net move must NOT force exit without profit-lock giveback."""
+    broker = FakeBroker()
+    broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
+    broker.prices[LONG_SYMBOL] = 10400.0
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "quantity": 5, "avg_price": 10000.0,
+        "entry_at": datetime.now().isoformat(), "signal_id": "SIG",
+        "entry_kind": ENTRY_INITIAL, "direction_episode_id": "EP:UP",
+    }
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP", "direction": DIR_UP, "initial_entry_used": True,
+    }
+    state["continuation_reentry_enabled"] = False
+    df = _bars_1m(150, trend="up")
+    now = datetime(2026, 7, 21, 11, 0, 0)
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": False,
+        "signal_direction": None,
+        "macd": 1.0, "signal": 0.5, "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5], "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-21T10:57:00",
+        "bar_close_ts": "2026-07-21T11:00:00",
+        "reason": "UP_RED_PATTERN",
+        "signal_id": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        assert not any(a.get("reason") == EXIT_TP for a in r["actions"])
+        assert state["position"]["symbol"] == LONG_SYMBOL
+        assert state["profit_lock"]["profit_lock_active"] is True
+        assert state["profit_lock"]["peak_net_return"] >= PROFIT_LOCK_ACTIVATE_PCT
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_worker_opposite_priority_over_profit_lock(monkeypatch):
+    broker = FakeBroker()
+    broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
+    broker.prices[LONG_SYMBOL] = 10200.0
+    broker.prices[INVERSE_SYMBOL] = 10000.0
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "quantity": 5, "avg_price": 10000.0,
+        "entry_at": datetime.now().isoformat(), "signal_id": "SIG",
+        "entry_kind": ENTRY_INITIAL, "direction_episode_id": "EP:UP",
+    }
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP", "direction": DIR_UP, "initial_entry_used": True,
+    }
+    # Would exit on profit lock if opposite were not pending
+    state["profit_lock"] = {
+        "peak_net_return": 3.0,
+        "current_net_return": 1.5,
+        "giveback_pct": 1.5,
+        "profit_lock_active": True,
+    }
+    df = _bars_1m(150, trend="down")
+    now = datetime(2026, 7, 21, 11, 0, 0)
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_DOWN,
+        "new_signal": True,
+        "signal_direction": DIR_DOWN,
+        "macd": -1.0, "signal": -0.5, "hist": -0.5,
+        "hist_last3": [-0.1, -0.3, -0.5], "hist_deltas": [-0.2, -0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-21T10:57:00",
+        "bar_close_ts": "2026-07-21T11:00:00",
+        "reason": "DOWN_BLUE_PATTERN",
+        "signal_id": "MACD:DOWN:2026-07-21T10:57:00",
+    }
+    import app.trading.macd_hynix_worker as wmod
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        assert any("opposite_signal" in a for a in r["actions"])
+        assert not any(a.get("reason") == EXIT_PROFIT_LOCK for a in r["actions"])
+        # Pending opposite armed; profit-lock exit skipped this tick
+        assert state.get("pending_signal_id") == fake_eval["signal_id"]
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_worker_sl_still_works(monkeypatch):
+    broker = FakeBroker()
+    broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
+    broker.prices[LONG_SYMBOL] = 9800.0
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "quantity": 5, "avg_price": 10000.0,
+        "entry_at": datetime.now().isoformat(), "signal_id": "SIG",
+        "entry_kind": ENTRY_INITIAL, "direction_episode_id": "EP:UP",
+    }
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP", "direction": DIR_UP, "initial_entry_used": True,
+    }
+    df = _bars_1m(150, trend="down")
+    now = datetime(2026, 7, 21, 11, 0, 0)
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": False,
+        "signal_direction": None,
+        "macd": 1.0, "signal": 0.5, "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5], "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-21T10:57:00",
+        "bar_close_ts": "2026-07-21T11:00:00",
+        "reason": "UP_RED_PATTERN",
+        "signal_id": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        assert any(a.get("reason") == EXIT_SL for a in r["actions"])
+        assert state["position"]["symbol"] is None
+        assert state["direction_episode"]["sl_lock"] is True
     finally:
         wmod.evaluate_macd_direction = original  # type: ignore
 

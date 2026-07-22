@@ -10,6 +10,8 @@
 
 | 버전 | 날짜 | 내용 |
 |------|------|------|
+| 2.6 | 2026-07-23 | MACD 하이닉스 자동매매 청산: 고정 +3% TP 제거, C PROFIT_LOCK 채택(락 +1.5% net / giveback 0.8pp). MOCK·REAL 동일. CONTINUATION_REENTRY·OPENING_PROBE 기본 OFF 유지 |
+| 2.5 | 2026-07-22 | 하이닉스 전략 구조 단순화: A(weighted RANGE)=유일 LIVE 주문, C(MACD+Williams 3분)=episode 확인기(단독 주문 금지), D(가격행동 조기진입)=SHADOW 격리, E=C확인+A주문은 20일 walk-forward에서 A를 이길 때만 LIVE 승격. 하루 데이터 임계값 최적화 금지 |
 | 2.4 | 2026-07-21 | 장초반 09:15~09:30 신규진입 금지 블랙아웃 폐지 — 09:00~14:50 전체를 신규진입 허용 구간으로 단순화(중간 금지 구간 없음). 기존 포지션 손절·익절·반전청산·15:15 강제청산은 이전과 동일하게 시간창과 무관하게 항상 실행 |
 | 2.3 | 2026-07-20 | 방향판단(000660)과 주문실행 데이터(0193T0/0197X0 실제 ETF) 분리 — 0193T0 전용 1분봉 콜렉터 연결, 신규진입 직전 ETF 자체 데이터 재확인(ETF_DATA_INSUFFICIENT/ETF_DIRECTION_MISMATCH/CHASE_BLOCK/ETF_EXTREME_BLOCK) 게이트 추가 |
 | 2.2 | 2026-07-20 | 하이닉스 Enhanced 자동매매 장초반 신규진입 시간창 변경: 09:00~09:10 관망(watch-only) 규칙 삭제, 09:00~09:15 신규진입 허용/09:15~09:30 신규진입 금지/09:30 이후 신규진입 허용으로 대체. 기존 포지션 손절·익절·반전청산·15:15 강제청산은 이 시간창과 무관하게 항상 실행 |
@@ -1677,3 +1679,114 @@ Exit priority:
 - In `STRONG_TREND`, ignore isolated weak 5-second noise, but do not let structural trend block a full exit when 10/20-second ETF reversal plus VWAP/swing reversal is confirmed.
 
 UI and ledger fields must include `signal_id`, `episode_id`, `scale_event_id`, signal age, detect-to-order-to-fill latency, `MICRO_CHOP`, recent 30-minute PF and move efficiency, expected gross/cost/net edge, partial profit-taking reason, remaining-position hold reason, and final exit reason.
+
+## 2026-07-22 전략 구조 단순화 (A / C / D / E)
+
+4전략 비교(weighted RANGE / MACD 3분 / MACD+Williams / 가격행동 조기진입) 결과를
+바탕으로 **새 전략을 추가하지 않고** 역할을 분리한다.
+
+### 역할 분리
+
+| 코드 | 이름 | LIVE 실주문 | 역할 |
+|------|------|-------------|------|
+| **A** | weighted RANGE | **유일 허용** | 진입·비중·청산의 유일한 broker 결정자 (`evaluate_range_weighted_entry` → `run_switch_or_entry`, `entry_type=WEIGHTED_RANGE_ENTRY`) |
+| **C** | 3분봉 MACD + Williams %R | **금지** | `direction_episode` 확인기만. `app.trading.macd_williams_episode.confirm_episode_direction`. 미완성 3분봉 사용 금지 |
+| **D** | 가격행동 조기진입 | **금지 (SHADOW)** | 5/10초 slope·VWAP·swing·ETF 상호확인 기반 조기진입은 SHADOW 격리. **실제 5초 틱이 없는 1분봉 선형보간 리플레이로는 활성화하지 않는다** |
+| **E** | C 확인 + A 주문 | 조건부 | C로 episode 방향 확인 후 A로 주문·비중·청산. 20거래일 walk-forward에서 A를 안정적으로 이길 때만 LIVE 게이트 승격 |
+
+### C (MACD+Williams) episode 확인 규칙
+
+- MACD histogram(12/26/9)과 Williams %R(14)이 **같은 방향**이면 episode 확인.
+- **반대 방향**이면 enhanced 누적점수(`enhanced_score` / `inverse_pressure_score`)가
+  해당 episode 방향을 덮어쓰지 못한다 (`enhanced_may_set_direction` = false).
+- `broker_order_allowed`는 항상 false — C 단독으로 0193T0/0197X0 주문을 내지 않는다.
+- LIVE 게이트 모드: `SHADOW`(기본, 계산·로그만) / `LIVE`(미확인 시 신규진입 차단).
+  기본값은 SHADOW이며 `data/state/strategy_e_promotion.json`의 `promote_e_to_live`
+  또는 state `macd_williams_episode_gate_mode`로만 LIVE 승격한다.
+
+### D (가격행동) SHADOW 규칙
+
+- `price_action_reversal` / `REVERSAL_CANDIDATE`는 UI·진단·SHADOW 원장용이다.
+- LIVE `entry_path_hint`로 `REVERSAL`을 넣지 않는다. Early Probe 단독 broker 경로 금지.
+- 가격행동 정보는 **방향 결정에 쓰지 않고** 다음에만 사용한다:
+  1. 진입 시점 **5~15초** 미세 조정 (`entry_timing_ok`)
+  2. **추격(chase)** 여부 — 0.6% 이상 이동 시 `CHASE_BLOCK` hard block
+  3. **ETF 방향 확인** (VWAP / 5·10초 confirm dirs / structure)
+
+### E 승격 조건 (walk-forward)
+
+- 스크립트: `scripts/walkforward_strategy_a_c_e.py` (최소 20거래일).
+- 시나리오 비교: **A 단독 / C 단독 / E(C확인+A주문)**.
+- **하루 데이터로 임계값을 최적화하지 않는다.**
+- 평가 우선순위:
+  1. 보수적 Net PnL
+  2. PF
+  3. MDD
+  4. 방향 오류
+  5. 거래비용/Gross
+  6. 거래 횟수
+  7. 15/30초 지연·슬리피지 민감도
+- E가 A를 **안정적으로** 이길 때만 `--promote-if-win`으로 LIVE 반영.
+  그 전에는 프로덕션 주문은 A만, C는 SHADOW 확인기.
+
+### 구현 모듈
+
+| 파일 | 역할 |
+|------|------|
+| `app/trading/strategy_architecture.py` | 게이트 모드, SHADOW 페이로드, timing/chase 헬퍼 |
+| `app/trading/macd_williams_episode.py` | 3분봉 episode 확인, enhanced override 차단 |
+| `scripts/walkforward_strategy_a_c_e.py` | A/C/E 20일 비교 및 승격 파일 기록 |
+| `data/state/strategy_e_promotion.json` | `promote_e_to_live` / `episode_gate_mode` |
+
+### 금지 사항
+
+- D 가격행동 조기진입을 LIVE Fast Worker 주문 경로에 다시 연결하는 것.
+- C를 단독 실주문 결정자로 승격하는 것.
+- 1분봉 선형보간 리플레이로 D를 “검증 통과”로 간주하는 것.
+- 당일(또는 1거래일) 결과만으로 E LIVE 승격·임계값 튜닝.
+
+## MACD 하이닉스 자동매매 (Strategy B · MOCK/REAL)
+
+독립 모듈 `app/trading/macd_hynix_*` — signed-B MACD histogram 진입, 전용 워커·원장.
+Enhanced / RANGE / Williams episode 게이트와 주문 경로를 공유하지 않는다.
+
+### 진입
+
+- 신호: completed 3분봉 MACD histogram **signed B** (`evaluate_macd_direction`, NEW_TURN_ONLY).
+- ETF: UP→`0193T0`, DOWN→`0197X0`. 주문은 sell-confirm-then-buy.
+- `CONTINUATION_REENTRY_ENABLED=False` (기본 OFF; 플래그로만 켜짐).
+- `OPENING_PROBE_ENABLED=False` (기본 OFF).
+
+### 청산 = C PROFIT_LOCK (고정 +3% TP 없음)
+
+MOCK·REAL 동일 규칙. 워커 틱(≈5초)마다 보유 ETF **실제 시세(mark)** 로 net 수익률을 갱신한다.
+
+| 우선순위 | 조건 | 동작 | `exit_reason` |
+|----------|------|------|---------------|
+| 1 | 15:00 | 전량 강제청산 | `15:00_FORCE_LIQUIDATE` |
+| 2 | 반대 signed-B 신호 | 전량 청산 후 반대 ETF 스위칭 | `OPPOSITE_SWITCH` |
+| 3 | net ≤ −1.5% | 전량 손절 | `SL_EXIT` |
+| 4 | profit lock | 아래 | `PROFIT_LOCK` |
+
+**Profit lock**
+
+1. net return(vs ETF 진입가, 왕복비용 반영) ≥ **+1.5%** → lock 활성화.
+2. lock 활성 후, **peak net return** 대비 giveback ≥ **0.8 percentage points** → 전량 청산 (`PROFIT_LOCK`).
+3. 고정 +3.0% take-profit은 **사용하지 않는다**.
+
+원장·UI 필드: `peak_net_return`, `current_net_return`, `giveback_pct`, `profit_lock_active`.
+
+### 구현 모듈
+
+| 파일 | 역할 |
+|------|------|
+| `app/trading/macd_hynix_strategy.py` | signed B 방향 + profit-lock/SL 헬퍼 |
+| `app/trading/macd_hynix_worker.py` | 5초 틱, 청산 우선순위 |
+| `app/trading/macd_hynix_order_manager.py` | 주문·state·전용 ledger |
+| `app/ui/pages/10_MACD_하이닉스_자동매매.py` | peak/current/giveback/lock UI |
+
+### 금지 사항
+
+- 고정 +3% TP를 live MOCK/REAL에 재도입하는 것.
+- 기본값으로 continuation re-entry 또는 opening probe를 다시 켜는 것.
+

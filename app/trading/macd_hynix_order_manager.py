@@ -24,6 +24,7 @@ from app.trading.macd_hynix_strategy import (
     ENTRY_OPEN_SCALE,
     EXIT_OPPOSITE,
     EXIT_OPEN_UNCONFIRMED,
+    EXIT_PROFIT_LOCK,
     EXIT_SESSION,
     EXIT_SL,
     EXIT_TP,
@@ -63,6 +64,7 @@ LEDGER_COLUMNS = [
     "hold_seconds", "gross_pnl", "cost", "net_pnl", "exit_reason", "success",
     "position_confirmed", "signal_id", "idempotency_key", "pipeline_stage",
     "git_sha", "message", "entry_kind", "direction_episode_id", "signal_source",
+    "peak_net_return", "current_net_return", "giveback_pct", "profit_lock_active",
 ]
 
 PIPELINE_STAGES = [
@@ -143,6 +145,12 @@ def default_state() -> dict[str, Any]:
             "hist_contracted": False,
             "hist_last3": [],
             "enabled": CONTINUATION_REENTRY_ENABLED,
+        },
+        "profit_lock": {
+            "peak_net_return": 0.0,
+            "current_net_return": 0.0,
+            "giveback_pct": 0.0,
+            "profit_lock_active": False,
         },
         "last_event": None,
         "prices": {
@@ -253,6 +261,12 @@ def load_state() -> dict[str, Any]:
                 merged_re = default_state()["reentry"]
                 merged_re.update(base["reentry"])
                 base["reentry"] = merged_re
+            if not isinstance(base.get("profit_lock"), dict):
+                base["profit_lock"] = default_state()["profit_lock"]
+            else:
+                merged_pl = default_state()["profit_lock"]
+                merged_pl.update(base["profit_lock"])
+                base["profit_lock"] = merged_pl
             if "continuation_reentry_enabled" not in base:
                 base["continuation_reentry_enabled"] = CONTINUATION_REENTRY_ENABLED
             if "opening_probe_enabled" not in base:
@@ -712,6 +726,28 @@ def _order_to_dict(order: Any) -> dict:
     }
 
 
+def reset_profit_lock(state: dict[str, Any]) -> dict[str, Any]:
+    """Clear peak/current/giveback tracker (new entry or flat)."""
+    pl = {
+        "peak_net_return": 0.0,
+        "current_net_return": 0.0,
+        "giveback_pct": 0.0,
+        "profit_lock_active": False,
+    }
+    state["profit_lock"] = pl
+    return pl
+
+
+def snapshot_profit_lock(state: dict[str, Any]) -> dict[str, Any]:
+    pl = state.get("profit_lock") or {}
+    return {
+        "peak_net_return": float(pl.get("peak_net_return") or 0.0),
+        "current_net_return": float(pl.get("current_net_return") or 0.0),
+        "giveback_pct": float(pl.get("giveback_pct") or 0.0),
+        "profit_lock_active": bool(pl.get("profit_lock_active")),
+    }
+
+
 def _record_fill(
     *,
     mode: str,
@@ -735,6 +771,10 @@ def _record_fill(
     entry_kind: str = "",
     direction_episode_id: str = "",
     signal_source: str = SIGNAL_SOURCE,
+    peak_net_return: Optional[float] = None,
+    current_net_return: Optional[float] = None,
+    giveback_pct: Optional[float] = None,
+    profit_lock_active: Optional[bool] = None,
 ) -> str:
     """Record ledger only after broker confirmation when success=True."""
     cost_engine = TradeCostEngine()
@@ -796,6 +836,10 @@ def _record_fill(
         "entry_kind": entry_kind,
         "direction_episode_id": direction_episode_id,
         "signal_source": signal_source,
+        "peak_net_return": "" if peak_net_return is None else round(float(peak_net_return), 6),
+        "current_net_return": "" if current_net_return is None else round(float(current_net_return), 6),
+        "giveback_pct": "" if giveback_pct is None else round(float(giveback_pct), 6),
+        "profit_lock_active": "" if profit_lock_active is None else bool(profit_lock_active),
     })
 
 
@@ -814,6 +858,10 @@ def execute_sell_all(
     entry_kind: str = "",
     direction_episode_id: str = "",
     signal_source: str = SIGNAL_SOURCE,
+    peak_net_return: Optional[float] = None,
+    current_net_return: Optional[float] = None,
+    giveback_pct: Optional[float] = None,
+    profit_lock_active: Optional[bool] = None,
 ) -> dict[str, Any]:
     if symbol not in TRADE_SYMBOLS:
         return {"success": False, "message": f"invalid trade symbol {symbol}"}
@@ -902,6 +950,10 @@ def execute_sell_all(
                 entry_kind=entry_kind,
                 direction_episode_id=direction_episode_id,
                 signal_source=signal_source,
+                peak_net_return=peak_net_return,
+                current_net_return=current_net_return,
+                giveback_pct=giveback_pct,
+                profit_lock_active=profit_lock_active,
             )
             return {
                 "success": True,
@@ -944,6 +996,10 @@ def execute_sell_all(
             "entry_kind": entry_kind,
             "direction_episode_id": direction_episode_id,
             "signal_source": signal_source,
+            "peak_net_return": "" if peak_net_return is None else round(float(peak_net_return), 6),
+            "current_net_return": "" if current_net_return is None else round(float(current_net_return), 6),
+            "giveback_pct": "" if giveback_pct is None else round(float(giveback_pct), 6),
+            "profit_lock_active": "" if profit_lock_active is None else bool(profit_lock_active),
         })
         return {
             "success": False,
@@ -1132,10 +1188,11 @@ def mark_episode_after_exit(
     *,
     tp_context: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Update episode bookkeeping after a full exit (TP/SL/opposite/session)."""
+    """Update episode bookkeeping after a full exit (SL/profit-lock/opposite/session)."""
     ep = state.setdefault("direction_episode", default_state()["direction_episode"])
     ep["last_exit_reason"] = reason
     if reason == EXIT_TP:
+        # Legacy TP path (replay / disabled live); kept for continuation bookkeeping.
         ep["tp_at"] = datetime.now().isoformat()
         ctx = tp_context or {}
         ep["tp_bar_ts"] = ctx.get("tp_bar_ts") or ep.get("tp_bar_ts")
@@ -1146,6 +1203,9 @@ def mark_episode_after_exit(
             ep["tp_pivot_price"] = ctx.get("tp_pivot_low") or ctx.get("tp_hynix_price")
         else:
             ep["tp_pivot_price"] = ctx.get("tp_pivot_high") or ctx.get("tp_hynix_price")
+    elif reason == EXIT_PROFIT_LOCK:
+        # Winning trail exit — no continuation arm (re-entry stays OFF by default).
+        ep["tp_at"] = None
     elif reason == EXIT_SL:
         # Same episode: forbid continuation re-entry; do not unlock by time alone.
         ep["sl_lock"] = True
@@ -1154,6 +1214,7 @@ def mark_episode_after_exit(
         # Opposite / session ends episode rights
         state["direction_episode"] = default_state()["direction_episode"]
         state["direction_episode"]["last_exit_reason"] = reason
+    reset_profit_lock(state)
 
 
 def exit_position_full(
@@ -1166,7 +1227,7 @@ def exit_position_full(
     signal_id: Optional[str] = None,
     tp_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Full flatten of current MACD position (TP/SL/session). No buy."""
+    """Full flatten of current MACD position (SL/profit-lock/session). No buy."""
     with _ORDER_PROCESS_LOCK:
         pos = state.get("position") or {}
         symbol = pos.get("symbol")
@@ -1181,6 +1242,7 @@ def exit_position_full(
 
         sid = signal_id or f"{reason}:{datetime.now().strftime('%Y%m%d%H%M%S')}"
         ep = state.get("direction_episode") or {}
+        pl = snapshot_profit_lock(state)
         set_pipeline_stage(state, "Sell Requested", True, reason)
         sell_res = None
         for attempt in range(1, MAX_ORDER_ATTEMPTS + 1):
@@ -1198,6 +1260,10 @@ def exit_position_full(
                 entry_kind=str(pos.get("entry_kind") or ""),
                 direction_episode_id=str(pos.get("direction_episode_id") or ep.get("id") or ""),
                 signal_source=SIGNAL_SOURCE,
+                peak_net_return=pl.get("peak_net_return"),
+                current_net_return=pl.get("current_net_return"),
+                giveback_pct=pl.get("giveback_pct"),
+                profit_lock_active=pl.get("profit_lock_active"),
             )
             if sell_res.get("success") and (sell_res.get("fill_confirmed") or sell_res.get("already_flat")):
                 break
@@ -1315,6 +1381,7 @@ def switch_to_direction(
                     return {"success": False, "message": msg, "order_data_invalid": True}
                 set_pipeline_stage(state, "Sell Requested", True, sell_sym)
                 sell_res = None
+                pl = snapshot_profit_lock(state)
                 for attempt in range(1, MAX_ORDER_ATTEMPTS + 1):
                     sell_res = execute_sell_all(
                         broker,
@@ -1330,6 +1397,10 @@ def switch_to_direction(
                         entry_kind=str(pos.get("entry_kind") or ""),
                         direction_episode_id=str(pos.get("direction_episode_id") or ep_id),
                         signal_source=signal_source,
+                        peak_net_return=pl.get("peak_net_return"),
+                        current_net_return=pl.get("current_net_return"),
+                        giveback_pct=pl.get("giveback_pct"),
+                        profit_lock_active=pl.get("profit_lock_active"),
                     )
                     if sell_res.get("success") and (sell_res.get("fill_confirmed") or sell_res.get("already_flat")):
                         break
@@ -1439,6 +1510,8 @@ def switch_to_direction(
             "opening_probe": entry_kind in (ENTRY_OPEN_IMMEDIATE, ENTRY_OPEN_SCALE)
             or bool(pos.get("opening_probe")),
         }
+        if not allow_same_direction_add:
+            reset_profit_lock(state)
         ep = state.setdefault("direction_episode", default_state()["direction_episode"])
         if entry_kind == ENTRY_CONTINUATION:
             ep["continuation_reentry_used"] = True
@@ -1562,6 +1635,7 @@ def force_liquidate_all(
                 price = float((state.get("position") or {}).get("avg_price") or 1)
             pos = state.get("position") or {}
             ep = state.get("direction_episode") or {}
+            pl = snapshot_profit_lock(state)
             res = execute_sell_all(
                 broker,
                 symbol,
@@ -1575,6 +1649,10 @@ def force_liquidate_all(
                 entry_kind=str(pos.get("entry_kind") or ""),
                 direction_episode_id=str(pos.get("direction_episode_id") or ep.get("id") or ""),
                 signal_source=SIGNAL_SOURCE,
+                peak_net_return=pl.get("peak_net_return"),
+                current_net_return=pl.get("current_net_return"),
+                giveback_pct=pl.get("giveback_pct"),
+                profit_lock_active=pl.get("profit_lock_active"),
             )
             results[symbol] = res
             if not res.get("success"):

@@ -24,8 +24,8 @@ from app.trading.macd_hynix_strategy import (
     ENTRY_OPEN_IMMEDIATE,
     ENTRY_OPEN_SCALE,
     EXIT_OPPOSITE,
+    EXIT_PROFIT_LOCK,
     EXIT_SL,
-    EXIT_TP,
     INVERSE_SYMBOL,
     LONG_SYMBOL,
     OPEN_IMMEDIATE_BUDGET_FRACTION,
@@ -33,16 +33,15 @@ from app.trading.macd_hynix_strategy import (
     SIGNAL_SOURCE_CONTINUATION,
     SIGNAL_SOURCE_OPEN_IMMEDIATE,
     SIGNAL_SYMBOL,
-    check_tp_sl,
-    compute_warmup_macd,
     evaluate_continuation_reentry,
     evaluate_macd_direction,
     evaluate_opening_probe,
+    evaluate_position_exits,
     first_regular_3m_bar_closed,
     in_open_probe_window,
     open_probe_window_expired,
     opening_probe_b_confirms,
-    snapshot_tp_context,
+    compute_warmup_macd,
     tail_prior_day_1m,
     target_symbol_for_direction,
 )
@@ -487,7 +486,7 @@ def run_once(
         held_qty = int(pos.get("quantity") or 0)
         entry_px = float(pos.get("avg_price") or 0)
 
-        # Opposite MACD B confirm — priority over TP/SL
+        # Opposite MACD B confirm — priority over SL / profit lock
         opposite_pending = False
         if eval_res.get("new_signal") and eval_res.get("signal_direction") and held_symbol and held_qty > 0:
             new_dir = eval_res["signal_direction"]
@@ -512,13 +511,29 @@ def run_once(
                         op["awaiting_09_03_confirm"] = False
                         op["confirm_checked"] = True
 
-        # TP/SL every tick while in position (skip when opposite armed this tick)
+        # SL / profit-lock every tick while in position (skip when opposite armed this tick)
+        # Priority after 15:00 + opposite: SL then PROFIT_LOCK (no fixed +3% TP)
         if not opposite_pending and held_symbol and held_qty > 0 and entry_px > 0:
             cur_px = _held_etf_price(quotes, held_symbol)
             if cur_px is not None:
-                exit_hit = check_tp_sl(held_symbol, entry_px, cur_px, held_qty)
+                pl_prev = state.get("profit_lock") or {}
+                exit_eval = evaluate_position_exits(
+                    held_symbol,
+                    entry_px,
+                    cur_px,
+                    held_qty,
+                    peak_net_return=float(pl_prev.get("peak_net_return") or 0.0),
+                    profit_lock_active=bool(pl_prev.get("profit_lock_active")),
+                )
+                state["profit_lock"] = {
+                    "peak_net_return": exit_eval["peak_net_return"],
+                    "current_net_return": exit_eval["current_net_return"],
+                    "giveback_pct": exit_eval["giveback_pct"],
+                    "profit_lock_active": exit_eval["profit_lock_active"],
+                }
+                result["profit_lock"] = state["profit_lock"]
+                exit_hit = exit_eval.get("exit_reason")
                 if exit_hit:
-                    tp_ctx = snapshot_tp_context(df_1m, now=now) if exit_hit == EXIT_TP else None
                     exit_res = om.exit_position_full(
                         broker,
                         mode=mode,
@@ -526,17 +541,16 @@ def run_once(
                         state=state,
                         reason=exit_hit,
                         signal_id=f"{exit_hit}:{pos.get('signal_id') or now.isoformat()}",
-                        tp_context=tp_ctx,
                     )
                     result["actions"].append({"exit": exit_res, "reason": exit_hit})
                     state["next_action"] = _next_action_label(state)
                     om.refresh_runtime_status(state, worker_alive=True)
                     om.save_state(state)
-                    # After TP/SL, continue tick for re-entry eval / signals (no return)
+                    # After SL / profit-lock, continue tick for signals (no return)
                     if not exit_res.get("success"):
                         return result
 
-        # Keep last_signal_direction after TP/SL/flat — same-dir re-entry forbidden;
+        # Keep last_signal_direction after SL/profit-lock/flat — same-dir re-entry forbidden;
         # a new episode arms only on opposite confirmed B signal.
         ep = state.get("direction_episode") or {}
 
