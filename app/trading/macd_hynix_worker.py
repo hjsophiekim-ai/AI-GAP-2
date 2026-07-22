@@ -155,39 +155,83 @@ def _load_minute_df(mode: str, count: int = 120) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _quote_from_broker(broker, symbol: str) -> dict[str, Any]:
+def _quote_from_broker(broker, symbol: str, *, retries: int = 2) -> dict[str, Any]:
+    """Fetch one symbol quote; on failure return concrete error fields (never silent None-only)."""
     price = None
     change_pct = None
     bid = None
     ask = None
-    try:
-        if hasattr(broker, "get_current_price"):
-            raw = broker.get_current_price(symbol)
-            if isinstance(raw, dict):
-                price = float(raw.get("current_price") or raw.get("price") or 0)
-                change_pct = raw.get("change_pct")
-                bid = raw.get("bid") or raw.get("bid_price")
-                ask = raw.get("ask") or raw.get("ask_price")
-            elif raw is not None:
-                price = float(raw)
-    except Exception:
-        price = None
-    # Kis brokers often expose kis client
-    if (price is None or price <= 0) and hasattr(broker, "kis"):
+    last_error: Optional[str] = None
+    api_fn = "broker.get_current_price"
+    response_code: Optional[str] = None
+    attempts = 0
+
+    for attempt in range(1, max(1, retries) + 1):
+        attempts = attempt
         try:
-            raw = broker.kis.get_current_price(symbol)
-            if isinstance(raw, dict):
-                price = float(raw.get("current_price") or raw.get("price") or 0)
-                change_pct = raw.get("change_rate") or raw.get("change_pct")
-        except Exception:
-            pass
-    return {
-        "price": price,
+            if hasattr(broker, "get_current_price"):
+                api_fn = f"{type(broker).__name__}.get_current_price"
+                raw = broker.get_current_price(symbol)
+                if isinstance(raw, dict):
+                    response_code = str(
+                        raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
+                    ) or None
+                    price = float(raw.get("current_price") or raw.get("price") or 0)
+                    change_pct = raw.get("change_pct")
+                    bid = raw.get("bid") or raw.get("bid_price")
+                    ask = raw.get("ask") or raw.get("ask_price")
+                    if raw.get("error") or raw.get("message"):
+                        last_error = str(raw.get("error") or raw.get("message"))
+                elif raw is not None:
+                    price = float(raw)
+            if price is not None and price > 0:
+                break
+            if price is not None and price <= 0:
+                last_error = f"non-positive price={price}"
+                price = None
+        except Exception as exc:
+            last_error = str(exc)
+            price = None
+
+        if (price is None or price <= 0) and hasattr(broker, "kis"):
+            try:
+                api_fn = "broker.kis.get_current_price"
+                raw = broker.kis.get_current_price(symbol)
+                if isinstance(raw, dict):
+                    response_code = str(
+                        raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
+                    ) or None
+                    price = float(raw.get("current_price") or raw.get("price") or 0)
+                    change_pct = raw.get("change_rate") or raw.get("change_pct")
+                    if raw.get("msg1") or raw.get("message"):
+                        last_error = str(raw.get("msg1") or raw.get("message"))
+                if price is not None and price > 0:
+                    break
+                if price is not None and price <= 0:
+                    last_error = f"non-positive price={price}"
+                    price = None
+            except Exception as exc:
+                last_error = str(exc)
+                price = None
+
+        if attempt < retries:
+            time.sleep(0.15)
+
+    ok = price is not None and price > 0
+    result = {
+        "price": price if ok else None,
         "change_pct": change_pct,
         "bid": bid,
         "ask": ask,
         "updated_at": datetime.now().isoformat(),
+        "ok": ok,
+        "api_function": api_fn,
+        "symbol": symbol,
+        "response_code": response_code,
+        "error_message": None if ok else (last_error or "quote unavailable"),
+        "retry_count": attempts,
     }
+    return result
 
 
 def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
@@ -201,7 +245,30 @@ def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
         "inverse": inv_q.get("price"),
         "updated_at": datetime.now().isoformat(),
     }
+    errors = []
+    for key, q in quotes.items():
+        if not q.get("ok"):
+            errors.append({
+                "api_function": q.get("api_function"),
+                "symbol": q.get("symbol"),
+                "response_code": q.get("response_code"),
+                "error_message": q.get("error_message"),
+                "retry_count": q.get("retry_count"),
+                "slot": key,
+            })
+    state["quote_errors"] = errors
+    if errors:
+        # Surface concrete quote failure — do not leave silent Nones only.
+        state["order_block_reason"] = (
+            state.get("order_block_reason")
+            or f"QUOTE_ERROR: {errors[0].get('symbol')} via {errors[0].get('api_function')}: "
+               f"{errors[0].get('error_message')} (code={errors[0].get('response_code')}, "
+               f"retries={errors[0].get('retry_count')})"
+        )
+    elif str(state.get("order_block_reason") or "").startswith("QUOTE_ERROR:"):
+        state["order_block_reason"] = None
     return quotes
+
 
 
 def _next_action_label(state: dict[str, Any]) -> str:
@@ -282,22 +349,45 @@ def run_once(
     try:
         quotes = _refresh_quotes(broker, state)
 
+        # Always compute MACD/direction for UI display (even outside session).
+        # Orders remain gated by session / allow_new_switch below.
+        if df_1m is None:
+            df_1m = _load_minute_df(mode)
+        eval_res = evaluate_macd_direction(
+            df_1m,
+            now=now,
+            last_signal_direction=state.get("last_signal_direction"),
+            last_signal_bar_ts=state.get("last_signal_bar_ts"),
+        )
+        state["display_direction"] = eval_res.get("display_direction") or DIR_HOLD
+        state["macd"] = {
+            "macd": eval_res.get("macd"),
+            "signal": eval_res.get("signal"),
+            "hist": eval_res.get("hist"),
+            "hist_last3": eval_res.get("hist_last3") or [],
+            "hist_deltas": eval_res.get("hist_deltas") or [],
+            "reason": eval_res.get("reason"),
+            "bar_ts": eval_res.get("bar_ts"),
+        }
+        result["macd"] = eval_res
+        om.refresh_runtime_status(state, worker_alive=True)
+
         # 15:00 force liquidate — always highest priority
         if should_force_liquidate(now, state.get("force_liquidate_done_date")) or state.get("force_liquidate_pending"):
             state["force_liquidate_pending"] = True
             liq = om.force_liquidate_all(broker, mode=mode, quotes=quotes, state=state)
             result["actions"].append({"force_liquidate": liq})
             state["next_action"] = "청산 대기" if not liq.get("success") else "청산 완료"
+            om.refresh_runtime_status(state, worker_alive=True)
             om.save_state(state)
             return result
 
         if not in_trading_session(now):
             result["skipped"] = "outside_session"
+            state["next_action"] = _next_action_label(state)
+            om.refresh_runtime_status(state, worker_alive=True)
             om.save_state(state)
             return result
-
-        if df_1m is None:
-            df_1m = _load_minute_df(mode)
 
         # TP/SL every tick while in position (before arming new switches)
         pos = state.get("position") or {}
@@ -321,28 +411,11 @@ def run_once(
                     )
                     result["actions"].append({"exit": exit_res, "reason": exit_hit})
                     state["next_action"] = _next_action_label(state)
+                    om.refresh_runtime_status(state, worker_alive=True)
                     om.save_state(state)
                     # After TP/SL, continue tick for re-entry eval / signals (no return)
                     if not exit_res.get("success"):
                         return result
-
-        eval_res = evaluate_macd_direction(
-            df_1m,
-            now=now,
-            last_signal_direction=state.get("last_signal_direction"),
-            last_signal_bar_ts=state.get("last_signal_bar_ts"),
-        )
-        state["display_direction"] = eval_res.get("display_direction") or DIR_HOLD
-        state["macd"] = {
-            "macd": eval_res.get("macd"),
-            "signal": eval_res.get("signal"),
-            "hist": eval_res.get("hist"),
-            "hist_last3": eval_res.get("hist_last3") or [],
-            "hist_deltas": eval_res.get("hist_deltas") or [],
-            "reason": eval_res.get("reason"),
-            "bar_ts": eval_res.get("bar_ts"),
-        }
-        result["macd"] = eval_res
 
         # After SL: if pattern breaks to HOLD, clear last_dir so a later first-turn
         # can open a *new* episode (does not unlock CONTINUATION_REENTRY).
@@ -468,6 +541,7 @@ def run_once(
                     state["order_block_reason"] = switch_res.get("message")
 
         state["next_action"] = _next_action_label(state)
+        om.refresh_runtime_status(state, worker_alive=True)
         om.save_state(state)
         return result
     finally:
@@ -506,6 +580,14 @@ def _worker_loop() -> None:
             state.setdefault("worker", {})
             state["worker"]["alive"] = True
             state["worker"]["last_tick_at"] = datetime.now().isoformat()
+            today = _now_kst().strftime("%Y-%m-%d")
+            if state.get("session_date") and state.get("session_date") != today:
+                # Day change: clear mutex ownership if strategy is off
+                if not state.get("auto_trade_on"):
+                    om.clear_mutex(mode=str(state.get("mode") or "mock"), reason="day_change")
+                state["session_date"] = today
+            elif not state.get("session_date"):
+                state["session_date"] = today
             with _status_lock:
                 intervals = list(_status.get("tick_intervals") or [])
                 state["worker"]["tick_intervals"] = [round(x, 3) for x in intervals[-10:]]
@@ -516,6 +598,7 @@ def _worker_loop() -> None:
             if state.get("auto_trade_on") or state.get("force_liquidate_pending"):
                 run_once(state=state)
             else:
+                om.refresh_runtime_status(state, worker_alive=True)
                 om.save_state(state)
         except Exception as exc:
             logger.exception("[MACDHynix] tick error: %s", exc)
@@ -566,9 +649,15 @@ def start_auto_trade(
     if mode == "real" and not real_confirm_ok:
         return {"ok": False, "message": "REAL requires confirm phrase"}
 
+    # Force disk re-read of Enhanced auto_trade_on (no stale OR-scan of profile files).
     ok, reason = om.can_start_macd(mode)
     if not ok:
-        return {"ok": False, "message": reason}
+        state = om.load_state()
+        state["primary_block_reason"] = reason
+        state["legacy_truth_debug"] = om.legacy_auto_trade_truth(force_disk=True)
+        om.refresh_runtime_status(state)
+        om.save_state(state)
+        return {"ok": False, "message": reason, "primary_block_reason": reason}
 
     state = om.load_state()
     state["auto_trade_on"] = True
@@ -578,11 +667,24 @@ def start_auto_trade(
     state["stopped_reason"] = None
     state["real_confirm_ok"] = bool(real_confirm_ok) if mode == "real" else False
     state["masked_account"] = masked_account
+    state["session_date"] = _now_kst().strftime("%Y-%m-%d")
+    state["primary_block_reason"] = None
+    state["legacy_truth_debug"] = om.legacy_auto_trade_truth(force_disk=True)
     om.write_mutex(macd_on=True, mode=mode, reason="macd_started")
+    om.refresh_runtime_status(state, worker_alive=True)
     om.save_state(state)
     ensure_worker_running()
+    # First tick immediately after start: fetch quotes + compute MACD (do not wait 5s).
+    try:
+        run_once(state=state)
+    except Exception as exc:
+        logger.warning("[MACDHynix] immediate first tick failed: %s", exc)
+        state = om.load_state()
+        state["order_block_reason"] = state.get("order_block_reason") or f"first_tick_error: {exc}"
+        om.refresh_runtime_status(state, worker_alive=True)
+        om.save_state(state)
     _wake_event.set()
-    return {"ok": True, "state": state}
+    return {"ok": True, "state": om.load_state()}
 
 
 def stop_auto_trade(reason: str = "user_stop") -> dict[str, Any]:
@@ -592,7 +694,8 @@ def stop_auto_trade(reason: str = "user_stop") -> dict[str, Any]:
     state["stopped_reason"] = reason
     state["pending_signal_id"] = None
     state["pending_signal_direction"] = None
-    om.write_mutex(macd_on=False, mode=str(state.get("mode") or "mock"), reason=reason)
+    om.clear_mutex(mode=str(state.get("mode") or "mock"), reason=reason)
+    om.refresh_runtime_status(state, worker_alive=True)
     om.save_state(state)
     return {"ok": True, "state": state}
 

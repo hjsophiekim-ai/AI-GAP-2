@@ -116,18 +116,40 @@ with b3:
         st.rerun()
 
 old_on, old_src = om.read_old_auto_trade_on()
+legacy_dbg = om.legacy_auto_trade_truth(force_disk=True)
 if old_on:
-    st.error(f"기존 하이닉스 자동매매 ON 감지 (`{old_src}`). MACD 시작이 차단됩니다.")
+    st.error(
+        f"LEGACY_STRATEGY_ACTIVE — Enhanced auto_trade_on=True "
+        f"(truth=`{legacy_dbg.get('truth_helper')}`, path=`{legacy_dbg.get('enhanced_save_path')}`). "
+        f"MACD 시작이 차단됩니다."
+    )
 if state.get("auto_trade_on"):
     st.success(f"MACD 자동매매 ON · mode={state.get('mode')} · budget={int(state.get('budget') or 0):,}")
 else:
     st.info("MACD 자동매매 OFF")
 
 st.caption(
-    "상호배타: MACD는 기존 `auto_trade_on`을 읽어 시작을 차단하고 "
-    "`data/state/macd_hynix_mutex.json`을 기록합니다. "
-    "기존 UI가 MACD ON을 막으려면 향후 기존 페이지에 mutex 읽기 1줄이 필요합니다."
+    "상호배타: MACD Start는 Enhanced와 동일하게 "
+    "`hynix_switch_state.load_state()`의 `auto_trade_on`만 본다 "
+    f"(OFF write=`{legacy_dbg.get('enhanced_save_path')}` · "
+    f"common=`{legacy_dbg.get('enhanced_common_path')}` · "
+    f"AI_GAP_DATA_DIR=`{legacy_dbg.get('AI_GAP_DATA_DIR')}`). "
+    "mutex 파일 존재만으로는 차단하지 않습니다."
 )
+
+# Clear status split — worker alive ≠ strategy running
+st.subheader("상태 분리")
+s1, s2, s3, s4, s5, s6 = st.columns(6)
+s1.metric("scheduler_alive", "YES" if (state.get("scheduler_alive") or (state.get("worker") or {}).get("alive") or wstatus.get("alive")) else "NO")
+s2.metric("strategy_enabled", "YES" if state.get("strategy_enabled") or state.get("auto_trade_on") else "NO")
+s3.metric("market_data_active", "YES" if state.get("market_data_active") else "NO")
+s4.metric("signal_calculation_active", "YES" if state.get("signal_calculation_active") else "NO")
+s5.metric("order_execution_enabled", "YES" if state.get("order_execution_enabled") else "NO")
+s6.metric("primary_block_reason", str(state.get("primary_block_reason") or "-")[:40])
+if state.get("auto_trade_on"):
+    st.caption("전략 실행 중 (strategy_enabled=YES). Worker alive만으로는 자동매매 실행으로 표시하지 않습니다.")
+else:
+    st.caption("전략 OFF — Worker가 살아 있어도 자동매매 실행 중이 아닙니다.")
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
 st.subheader("현재 진단")
@@ -157,6 +179,15 @@ st.write(
     f"최근 3 Histogram: `{macd.get('hist_last3')}` · "
     f"변화량: `{macd.get('hist_deltas')}` · reason=`{macd.get('reason')}`"
 )
+quote_errors = state.get("quote_errors") or []
+if quote_errors:
+    st.error("시세 조회 오류:")
+    for err in quote_errors:
+        st.code(
+            f"api={err.get('api_function')} symbol={err.get('symbol')} "
+            f"code={err.get('response_code')} retries={err.get('retry_count')} "
+            f"msg={err.get('error_message')}"
+        )
 
 held_sym = pos.get("symbol") or "-"
 qty = int(pos.get("quantity") or 0)

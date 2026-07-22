@@ -310,12 +310,214 @@ def test_duplicate_signal_blocked_after_restart():
 
 
 def test_mutex_blocks_when_old_auto_on(tmp_path, monkeypatch):
-    old = tmp_path / "hynix_auto_state_mock.json"
-    old.write_text(json.dumps({"auto_trade_on": True}), encoding="utf-8")
+    """Enhanced ON via load_state truth → MACD start blocked."""
+    from app.services import hynix_switch_state as hss
+
+    monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(om, "STATE_DIR", tmp_path)
+    (tmp_path / "hynix_auto_state_active_mode.json").write_text(
+        json.dumps({"mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_auto_state_mock.json").write_text(
+        json.dumps({"auto_trade_on": True, "mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": True}), encoding="utf-8"
+    )
     ok, msg = om.can_start_macd("mock")
     assert ok is False
-    assert "기존" in msg or "ON" in msg
+    assert "LEGACY_STRATEGY_ACTIVE" in msg
+
+
+def test_enhanced_stop_then_macd_start_sees_off(tmp_path, monkeypatch):
+    """Stop path (set_control False) must make MACD Start succeed immediately."""
+    from app.services import hynix_switch_state as hss
+    from app.services.hynix_switch_engine import set_control
+    from app.services import hynix_auto_trade_service as hats
+
+    monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(hats, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(hats, "_STOP_FLAG_PATH", tmp_path / "hynix_auto_trade_stopped.flag")
+    monkeypatch.setattr(om, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "MUTEX_PATH", tmp_path / "macd_hynix_mutex.json")
+    monkeypatch.setattr(om, "STATE_PATH", tmp_path / "macd_hynix_state.json")
+
+    (tmp_path / "hynix_auto_state_active_mode.json").write_text(
+        json.dumps({"mode": "mock"}), encoding="utf-8"
+    )
+    # Stale: mode file True but user will Stop
+    (tmp_path / "hynix_auto_state_mock.json").write_text(
+        json.dumps({"auto_trade_on": True, "mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": True}), encoding="utf-8"
+    )
+    # Stale mutex file must NOT count as legacy ON
+    (tmp_path / "macd_hynix_mutex.json").write_text(
+        json.dumps({"macd_auto_trade_on": False, "owner": "NONE"}), encoding="utf-8"
+    )
+
+    assert om.can_start_macd("mock")[0] is False
+    # Enhanced Stop button → stop_auto_trade → set_control(False)
+    hats.stop_auto_trade()
+    dump = om.legacy_auto_trade_truth(force_disk=True)
+    assert dump["auto_trade_on"] is False
+    assert dump["enhanced_save_path"].endswith("hynix_auto_state_mock.json")
+    ok, msg = om.can_start_macd("mock")
+    assert ok is True, msg
+    res = worker.start_auto_trade(mode="mock", budget=1_000_000)
+    assert res["ok"] is True
+    assert om.read_mutex().get("enabled") is True
+    worker.stop_auto_trade("test")
+    assert om.read_mutex().get("enabled") is False
+
+
+def test_stale_common_true_mode_false_uses_load_state_truth(tmp_path, monkeypatch):
+    """Do not OR-scan files: effective truth is load_state overlay (common wins)."""
+    from app.services import hynix_switch_state as hss
+
+    monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "STATE_DIR", tmp_path)
+    (tmp_path / "hynix_auto_state_active_mode.json").write_text(
+        json.dumps({"mode": "mock"}), encoding="utf-8"
+    )
+    # Mode file OFF, common ON → load_state returns ON (common overlay)
+    (tmp_path / "hynix_auto_state_mock.json").write_text(
+        json.dumps({"auto_trade_on": False, "mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": True}), encoding="utf-8"
+    )
+    ok, msg = om.can_start_macd("mock")
+    assert ok is False
+    assert "LEGACY_STRATEGY_ACTIVE" in msg
+
+    # Common OFF, mode ON → load_state returns OFF → MACD may start
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": False}), encoding="utf-8"
+    )
+    ok2, msg2 = om.can_start_macd("mock")
+    assert ok2 is True, msg2
+
+
+def test_macd_on_blocks_enhanced_enable(tmp_path, monkeypatch):
+    from app.services import hynix_switch_state as hss
+
+    monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "MUTEX_PATH", tmp_path / "macd_hynix_mutex.json")
+    monkeypatch.setattr(om, "STATE_PATH", tmp_path / "macd_hynix_state.json")
+    (tmp_path / "hynix_auto_state_active_mode.json").write_text(
+        json.dumps({"mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_auto_state_mock.json").write_text(
+        json.dumps({"auto_trade_on": False, "mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": False}), encoding="utf-8"
+    )
+    om.save_state({**om.default_state(), "auto_trade_on": True})
+    om.write_mutex(macd_on=True, mode="mock", reason="test")
+    assert om.is_macd_strategy_on() is True
+
+
+def test_quote_error_surfaces_fields(monkeypatch):
+    broker = FakeBroker()
+
+    def boom(symbol):
+        raise RuntimeError(f"KIS fail {symbol}")
+
+    broker.get_current_price = boom  # type: ignore
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    quotes = worker._refresh_quotes(broker, state)
+    assert state.get("quote_errors")
+    err = state["quote_errors"][0]
+    assert err.get("api_function")
+    assert err.get("symbol")
+    assert err.get("error_message")
+    assert err.get("retry_count")
+    assert "QUOTE_ERROR" in str(state.get("order_block_reason") or "")
+    assert quotes["hynix"].get("ok") is False
+
+
+def test_start_populates_prices_and_macd_within_budget(monkeypatch, tmp_path):
+    """Within first tick after start: three prices + MACD numbers (mocked broker/bars)."""
+    from app.services import hynix_switch_state as hss
+
+    monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "MUTEX_PATH", tmp_path / "macd_hynix_mutex.json")
+    monkeypatch.setattr(om, "STATE_PATH", tmp_path / "macd_hynix_state.json")
+    (tmp_path / "hynix_auto_state_active_mode.json").write_text(
+        json.dumps({"mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_auto_state_mock.json").write_text(
+        json.dumps({"auto_trade_on": False, "mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": False}), encoding="utf-8"
+    )
+
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    now = datetime(2026, 7, 21, 11, 0, 0)
+
+    monkeypatch.setattr(om, "create_macd_broker", lambda *a, **k: broker)
+    monkeypatch.setattr(worker, "_load_minute_df", lambda *a, **k: df)
+    monkeypatch.setattr(worker, "in_trading_session", lambda *a, **k: True)
+    monkeypatch.setattr(worker, "allow_new_switch", lambda *a, **k: True)
+
+    ok, _ = om.can_start_macd("mock")
+    assert ok
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    om.save_state(state)
+    om.write_mutex(macd_on=True, mode="mock", reason="test")
+    r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+    assert state["prices"]["hynix"] is not None
+    assert state["prices"]["long"] is not None
+    assert state["prices"]["inverse"] is not None
+    assert state["macd"]["macd"] is not None
+    assert state["macd"]["signal"] is not None
+    assert state["macd"]["hist"] is not None
+    assert state["display_direction"] in (DIR_UP, DIR_DOWN, DIR_HOLD)
+    assert r.get("macd")
+
+
+def test_up_buys_long_down_buys_inverse_duplicate_zero():
+    broker = FakeBroker()
+    state = om.default_state()
+    quotes = {
+        "long": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+        "inverse": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+    }
+    r_up = om.switch_to_direction(
+        broker, DIR_UP, mode="mock", budget=2_000_000, quotes=quotes,
+        signal_id="SIG-UP-A", state=state,
+    )
+    assert r_up["success"]
+    assert LONG_SYMBOL in broker.positions
+    buys_up = [b for b in broker.buys if b[0] == LONG_SYMBOL]
+    assert len(buys_up) == 1
+
+    r_dup = om.switch_to_direction(
+        broker, DIR_UP, mode="mock", budget=2_000_000, quotes=quotes,
+        signal_id="SIG-UP-A", state=state,
+    )
+    assert r_dup.get("duplicate")
+    assert len([b for b in broker.buys if b[0] == LONG_SYMBOL]) == 1
+
+    broker2 = FakeBroker()
+    state2 = om.default_state()
+    r_dn = om.switch_to_direction(
+        broker2, DIR_DOWN, mode="mock", budget=2_000_000, quotes=quotes,
+        signal_id="SIG-DN-A", state=state2,
+    )
+    assert r_dn["success"]
+    assert INVERSE_SYMBOL in broker2.positions
+    assert len([b for b in broker2.buys if b[0] == INVERSE_SYMBOL]) == 1
 
 
 def test_order_data_invalid_does_not_flip_macd():

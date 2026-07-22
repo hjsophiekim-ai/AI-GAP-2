@@ -53,9 +53,31 @@ def is_stopped() -> bool:
 
 
 def stop_auto_trade() -> None:
+    """Stop kill-switch for proposal auto-trade AND Enhanced live orders.
+
+    Critical: UI "자동매매 정지" must set the same ``auto_trade_on=False`` that
+    Enhanced order enablement and MACD mutual-exclusion read via
+    ``hynix_switch_state.load_state()`` / ``set_control``. Writing only
+    ``hynix_auto_trade_stopped.flag`` left Enhanced ON and caused MACD Start
+    false positives (LEGACY_STRATEGY_ACTIVE).
+    """
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     _STOP_FLAG_PATH.write_text(kst_now().isoformat(), encoding="utf-8")
     logger.warning("[HYNIX_AUTO] 자동매매 정지 요청됨")
+    try:
+        # Same write path as Enhanced checkbox OFF:
+        # set_control → save_state_atomic → hynix_auto_state_{mode}.json
+        # + hynix_strategy_profile_common.json under STATE_DIR (AI_GAP_DATA_DIR).
+        from app.services.hynix_switch_engine import set_control
+
+        set_control(auto_trade_on=False)
+        logger.warning(
+            "[HYNIX_AUTO] Enhanced auto_trade_on=False via set_control "
+            "(path=%s)",
+            _STATE_DIR / "hynix_auto_state_*.json",
+        )
+    except Exception as exc:
+        logger.error("[HYNIX_AUTO] Failed to set Enhanced auto_trade_on=False: %s", exc)
 
 
 def resume_auto_trade() -> None:

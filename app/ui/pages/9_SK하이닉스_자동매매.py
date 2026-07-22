@@ -192,6 +192,8 @@ with c1:
     gen_clicked = st.button("제안 생성 (PAPER 계좌 기준)", type="primary", use_container_width=True)
 with c2:
     if st.button("자동매매 정지", use_container_width=True):
+        # Writes hynix_auto_trade_stopped.flag AND set_control(auto_trade_on=False)
+        # so MACD Start immediately sees Enhanced OFF via load_state().
         stop_auto_trade()
         st.rerun()
 with c3:
@@ -732,6 +734,13 @@ with sc3:
                 st.error("blocking_reason: " + ", ".join(real_gate_status["blocking_reasons"]))
 
 if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.get("mode"):
+    # Bidirectional mutex: block Enhanced enable while MACD strategy is ON.
+    if auto_on and not switch_state.get("auto_trade_on"):
+        from app.trading.macd_hynix_order_manager import is_macd_strategy_on
+        if is_macd_strategy_on():
+            st.error("MACD 하이닉스 자동매매가 ON 상태입니다. MACD를 중지한 뒤 Enhanced를 시작하세요.")
+            auto_on = False
+            st.session_state["hynix_switch_auto_on"] = False
     switch_state = set_control(auto_trade_on=auto_on, mode=switch_mode)
 
 # ── 신규진입 시간창(요구사항 2026-07-21 — 09:15~09:30 블랙아웃 폐지) — 모드와

@@ -151,6 +151,7 @@ def default_state() -> dict[str, Any]:
             "hist_deltas": [],
             "reason": None,
         },
+        "quote_errors": [],
         "pipeline": {stage: {"ok": None, "at": None, "message": ""} for stage in PIPELINE_STAGES},
         "order_block_reason": None,
         "next_action": "대기",
@@ -165,8 +166,17 @@ def default_state() -> dict[str, Any]:
             "order_requested_at": None,
             "broker_executed_at": None,
         },
+        # Clear status split — worker alive ≠ strategy running
+        "scheduler_alive": False,
+        "strategy_enabled": False,
+        "market_data_active": False,
+        "signal_calculation_active": False,
+        "order_execution_enabled": False,
+        "primary_block_reason": None,
+        "legacy_truth_debug": {},
         "force_liquidate_pending": False,
         "force_liquidate_done_date": None,
+        "session_date": None,
         "real_confirm_ok": False,
         "masked_account": "",
         "continuation_reentry_enabled": CONTINUATION_REENTRY_ENABLED,
@@ -255,47 +265,225 @@ def set_pipeline_stage(state: dict[str, Any], stage: str, ok: bool, message: str
 
 
 def write_mutex(*, macd_on: bool, mode: str, reason: str = "") -> None:
+    """Write mutual-exclusion record. enabled=False clears ownership (file may remain)."""
     ensure_paths()
     payload = {
+        "owner": "MACD" if macd_on else "NONE",
+        "enabled": bool(macd_on),
+        # Backward-compatible alias for older readers
         "macd_auto_trade_on": bool(macd_on),
         "mode": mode,
         "updated_at": datetime.now().isoformat(),
+        "git_sha": _git_sha(),
         "reason": reason,
-        "note": (
-            "Old Enhanced UI cannot yet read this file without a one-line patch. "
-            "MACD module already blocks start when old auto_trade_on is true."
-        ),
     }
     MUTEX_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def clear_mutex(*, mode: str = "mock", reason: str = "cleared") -> None:
+    """Release MACD ownership. Do not treat a leftover file as 'MACD ON'."""
+    write_mutex(macd_on=False, mode=mode, reason=reason)
+
+
+def read_mutex() -> dict[str, Any]:
+    ensure_paths()
+    if not MUTEX_PATH.exists():
+        return {"owner": "NONE", "enabled": False, "macd_auto_trade_on": False}
+    try:
+        data = json.loads(MUTEX_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"owner": "NONE", "enabled": False, "macd_auto_trade_on": False}
+        enabled = bool(data.get("enabled", data.get("macd_auto_trade_on", False)))
+        return {
+            "owner": str(data.get("owner") or ("MACD" if enabled else "NONE")),
+            "enabled": enabled,
+            "macd_auto_trade_on": enabled,
+            "mode": data.get("mode"),
+            "updated_at": data.get("updated_at"),
+            "git_sha": data.get("git_sha"),
+            "reason": data.get("reason"),
+        }
+    except Exception:
+        return {"owner": "NONE", "enabled": False, "macd_auto_trade_on": False}
+
+
+def is_macd_strategy_on() -> bool:
+    """True only when MACD strategy is actually enabled (state or live mutex)."""
+    try:
+        state = load_state()
+        if bool(state.get("auto_trade_on")):
+            return True
+    except Exception:
+        pass
+    mutex = read_mutex()
+    return bool(mutex.get("enabled"))
+
+
+def _file_mtime_iso(path: Path) -> Optional[str]:
+    try:
+        if path.exists():
+            return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    except Exception:
+        pass
+    return None
+
+
+def legacy_auto_trade_truth(*, force_disk: bool = True) -> dict[str, Any]:
+    """Single source of truth for Enhanced auto_trade_on (orders actually enabled).
+
+    Enhanced UI saves via ``hynix_switch_engine.set_control`` →
+    ``hynix_switch_state.save_state_atomic`` which writes:
+      - ``STATE_DIR/hynix_auto_state_{mode}.json`` (mode-specific full state)
+      - ``STATE_DIR/hynix_strategy_profile_common.json`` (shared keys overlay)
+
+    Enhanced runtime / UI reads via ``hynix_switch_state.load_state()`` which:
+      1. loads ``hynix_auto_state_{active_mode}.json``
+      2. overlays common profile keys (including auto_trade_on)
+
+    MACD MUST use that same helper — never OR-scan arbitrary state files
+    (stale mode file with True while common/effective is False caused
+    LEGACY_STRATEGY_ACTIVE false positives).
+
+    Debug dump includes absolute paths, mtimes, AI_GAP_DATA_DIR, and values.
+    """
+    import os
+
+    from app.utils.data_paths import DATA_ROOT, DATA_ROOT_ENV_VAR
+    from app.services import hynix_switch_state as hss
+
+    # force_disk: load_state always reads from disk (no in-process cache today).
+    _ = force_disk
+    mode = hss.get_active_mode()
+    mode_path = (STATE_DIR / f"hynix_auto_state_{mode}.json").resolve()
+    common_path = (STATE_DIR / "hynix_strategy_profile_common.json").resolve()
+    active_mode_path = (STATE_DIR / "hynix_auto_state_active_mode.json").resolve()
+
+    state = hss.load_state(mode=mode)
+    auto_on = bool(state.get("auto_trade_on"))
+
+    mode_raw_on = None
+    common_raw_on = None
+    try:
+        if mode_path.exists():
+            raw = json.loads(mode_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and "auto_trade_on" in raw:
+                mode_raw_on = bool(raw.get("auto_trade_on"))
+    except Exception:
+        pass
+    try:
+        if common_path.exists():
+            raw = json.loads(common_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and "auto_trade_on" in raw:
+                common_raw_on = bool(raw.get("auto_trade_on"))
+    except Exception:
+        pass
+
+    dump = {
+        "auto_trade_on": auto_on,
+        "active_mode": mode,
+        "truth_helper": "app.services.hynix_switch_state.load_state",
+        "enhanced_save_path": str(mode_path),
+        "enhanced_save_mtime": _file_mtime_iso(mode_path),
+        "enhanced_common_path": str(common_path),
+        "enhanced_common_mtime": _file_mtime_iso(common_path),
+        "active_mode_pointer_path": str(active_mode_path),
+        "mode_file_auto_trade_on": mode_raw_on,
+        "common_file_auto_trade_on": common_raw_on,
+        "macd_read_helper": "app.trading.macd_hynix_order_manager.legacy_auto_trade_truth",
+        "macd_state_path": str(STATE_PATH.resolve()),
+        "macd_mutex_path": str(MUTEX_PATH.resolve()),
+        "STATE_DIR": str(STATE_DIR.resolve()),
+        "DATA_ROOT": str(DATA_ROOT.resolve()),
+        "AI_GAP_DATA_DIR": os.environ.get(DATA_ROOT_ENV_VAR),
+        "AI_GAP_DATA_DIR_env_var": DATA_ROOT_ENV_VAR,
+        "read_at": datetime.now().isoformat(),
+    }
+    debug_path = STATE_DIR / "macd_legacy_truth_debug.json"
+    try:
+        ensure_paths()
+        debug_path.write_text(json.dumps(dump, ensure_ascii=False, indent=2), encoding="utf-8")
+        dump["debug_dump_path"] = str(debug_path.resolve())
+    except Exception as exc:
+        dump["debug_dump_error"] = str(exc)
+    return dump
+
+
 def read_old_auto_trade_on() -> tuple[bool, str]:
-    """Read-only peek at Enhanced auto_trade_on for mutual exclusion (no writes)."""
-    candidates = [
-        STATE_DIR / "hynix_strategy_profile_common.json",
-        STATE_DIR / "hynix_auto_state_mock.json",
-        STATE_DIR / "hynix_auto_state_real.json",
-    ]
-    for path in candidates:
-        try:
-            if not path.exists():
-                continue
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and bool(data.get("auto_trade_on")):
-                return True, str(path.name)
-        except Exception:
-            continue
+    """Read Enhanced auto_trade_on via the same load_state() Enhanced uses."""
+    dump = legacy_auto_trade_truth(force_disk=True)
+    if dump.get("auto_trade_on"):
+        return True, str(dump.get("enhanced_save_path") or "hynix_switch_state.load_state")
     return False, ""
 
 
 def can_start_macd(mode: str = "mock") -> tuple[bool, str]:
-    old_on, src = read_old_auto_trade_on()
-    if old_on:
-        return False, f"기존 하이닉스 자동매매가 ON 상태입니다 ({src}). 중지 후 시작하세요."
+    """Return (ok, reason). reason uses stable codes for UI primary_block_reason.
+
+    Force-reads Enhanced truth from disk via ``legacy_auto_trade_truth`` /
+    ``hynix_switch_state.load_state`` — never treats mutex file existence as
+    legacy ON.
+    """
+    dump = legacy_auto_trade_truth(force_disk=True)
+    if dump.get("auto_trade_on"):
+        # Only block when Enhanced *actually* auto_trade_on=True after disk read.
+        return False, (
+            f"LEGACY_STRATEGY_ACTIVE: Enhanced auto_trade_on=True "
+            f"(truth={dump.get('truth_helper')}, path={dump.get('enhanced_save_path')})"
+        )
+    # Legacy OFF: allow start. Clear stale MACD mutex only when MACD state is also off
+    # (do not treat leftover mutex file as legacy ON; do not wipe an active MACD run).
     state = load_state()
+    if not state.get("auto_trade_on"):
+        mutex = read_mutex()
+        if mutex.get("enabled"):
+            try:
+                clear_mutex(mode=mode, reason="stale_mutex_macd_off_legacy_off")
+            except Exception:
+                pass
     if state.get("force_liquidate_pending"):
-        return False, "15:00 강제청산 진행 중입니다."
+        return False, "FORCE_LIQUIDATE_PENDING: 15:00 강제청산 진행 중"
     return True, ""
+
+
+def refresh_runtime_status(state: dict[str, Any], *, worker_alive: Optional[bool] = None) -> dict[str, Any]:
+    """Derive clear status split fields onto state (in-place)."""
+    prices = state.get("prices") or {}
+    macd = state.get("macd") or {}
+
+    def _num(v: Any) -> bool:
+        try:
+            return v is not None and float(v) == float(v)  # not NaN
+        except Exception:
+            return False
+
+    strategy_on = bool(state.get("auto_trade_on"))
+    alive = bool(worker_alive) if worker_alive is not None else bool(
+        (state.get("worker") or {}).get("alive") or state.get("scheduler_alive")
+    )
+    market_ok = all(_num(prices.get(k)) for k in ("hynix", "long", "inverse"))
+    signal_ok = all(_num(macd.get(k)) for k in ("macd", "signal", "hist"))
+    order_ok = strategy_on and not state.get("stopped") and not state.get("order_block_reason")
+
+    primary = None
+    if not strategy_on:
+        primary = "STRATEGY_OFF"
+    elif state.get("force_liquidate_pending"):
+        primary = "FORCE_LIQUIDATE_PENDING"
+    elif state.get("order_block_reason"):
+        primary = str(state.get("order_block_reason"))
+    elif not market_ok:
+        errs = state.get("quote_errors") or []
+        primary = "QUOTE_ERROR" if errs else "MARKET_DATA_INACTIVE"
+    elif not signal_ok:
+        primary = str((macd.get("reason") if isinstance(macd, dict) else None) or "SIGNAL_INACTIVE")
+
+    state["scheduler_alive"] = alive
+    state["strategy_enabled"] = strategy_on
+    state["market_data_active"] = market_ok
+    state["signal_calculation_active"] = signal_ok
+    state["order_execution_enabled"] = order_ok and market_ok
+    state["primary_block_reason"] = primary
+    return state
 
 
 def get_ledger_path() -> Path:
