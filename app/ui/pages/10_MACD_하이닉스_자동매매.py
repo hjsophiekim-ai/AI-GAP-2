@@ -178,6 +178,33 @@ st.write(f"**다음 예상 행동**: {state.get('next_action') or '대기'}")
 if state.get("order_block_reason"):
     st.warning(f"주문 보류: {state.get('order_block_reason')}")
 
+# ── TP/SL / Continuation re-entry ─────────────────────────────────────────
+st.subheader("TP/SL · 연속재진입")
+ep = state.get("direction_episode") or {}
+re = state.get("reentry") or {}
+e1, e2, e3, e4 = st.columns(4)
+e1.metric("마지막 이벤트", state.get("last_event") or "-")
+e2.metric("에피소드 재진입 사용", "YES" if ep.get("continuation_reentry_used") else "NO")
+e3.metric("SL 잠금", "YES" if ep.get("sl_lock") else "NO")
+e4.metric(
+    "재진입 기능",
+    "ON" if state.get("continuation_reentry_enabled") else "OFF(기본)",
+)
+st.write(
+    f"episode=`{ep.get('id')}` · dir=`{ep.get('direction')}` · "
+    f"entry_kind=`{(pos.get('entry_kind') if pos else None) or '-'}` · "
+    f"tp_at=`{ep.get('tp_at')}` · last_exit=`{ep.get('last_exit_reason')}`"
+)
+st.write(
+    f"reentry_eligible=`{re.get('eligible')}` · block=`{re.get('block_reason')}` · "
+    f"bars_since_tp=`{re.get('bars_since_tp')}` · hist_contracted=`{re.get('hist_contracted')}` · "
+    f"hist_last3=`{re.get('hist_last3')}`"
+)
+st.caption(
+    "Exit: TP +3% / SL -1.5% (net vs ETF entry) · 15:00 강제청산 최우선 · "
+    "반대 MACD → OPPOSITE_SWITCH · CONTINUATION_REENTRY는 플래그 ON일 때만"
+)
+
 st.write(
     f"마지막 신호: `{state.get('last_signal_at')}` (`{state.get('last_signal_id')}`) · "
     f"마지막 주문: `{state.get('last_order_at')}`"
@@ -219,7 +246,8 @@ if rows:
         c for c in [
             "timestamp", "macd_signal", "action", "symbol", "executed_qty",
             "order_price", "executed_price", "order_id", "hold_seconds",
-            "gross_pnl", "cost", "net_pnl", "exit_reason", "mode", "git_sha",
+            "gross_pnl", "cost", "net_pnl", "exit_reason", "entry_kind",
+            "direction_episode_id", "signal_source", "mode", "git_sha",
             "success", "signal_id",
         ] if c in df.columns
     ]

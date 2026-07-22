@@ -15,15 +15,26 @@ import pandas as pd
 from app.logger import logger
 from app.trading import macd_hynix_order_manager as om
 from app.trading.macd_hynix_strategy import (
+    CONTINUATION_REENTRY_ENABLED,
     DIR_DOWN,
     DIR_HOLD,
     DIR_UP,
+    ENTRY_CONTINUATION,
+    ENTRY_INITIAL,
+    EXIT_OPPOSITE,
+    EXIT_SL,
+    EXIT_TP,
     INVERSE_SYMBOL,
     LONG_SYMBOL,
+    SIGNAL_SOURCE_CONTINUATION,
     SIGNAL_SYMBOL,
+    check_tp_sl,
+    evaluate_continuation_reentry,
     evaluate_macd_direction,
+    snapshot_tp_context,
     target_symbol_for_direction,
 )
+from app.trading.macd_hynix_order_manager import SIGNAL_SOURCE
 
 KST = ZoneInfo("Asia/Seoul")
 TICK_SECONDS = 5.0
@@ -202,6 +213,9 @@ def _next_action_label(state: dict[str, Any]) -> str:
     target = target_symbol_for_direction(direction)
     if state.get("order_block_reason"):
         return "주문 보류(ORDER_DATA_INVALID)"
+    reentry = state.get("reentry") or {}
+    if reentry.get("eligible") and not held:
+        return "연속재진입 대기"
     if direction == DIR_UP and held != LONG_SYMBOL:
         return "KODEX 매수"
     if direction == DIR_DOWN and held != INVERSE_SYMBOL:
@@ -209,6 +223,20 @@ def _next_action_label(state: dict[str, Any]) -> str:
     if held:
         return "기존 보유 유지"
     return "대기"
+
+
+def _held_etf_price(quotes: dict[str, Any], symbol: Optional[str]) -> Optional[float]:
+    if symbol == LONG_SYMBOL:
+        px = (quotes.get("long") or {}).get("price")
+    elif symbol == INVERSE_SYMBOL:
+        px = (quotes.get("inverse") or {}).get("price")
+    else:
+        return None
+    try:
+        val = float(px)
+        return val if val > 0 else None
+    except Exception:
+        return None
 
 
 def run_once(
@@ -223,6 +251,12 @@ def run_once(
     state = state if state is not None else om.load_state()
     mode = str(state.get("mode") or "mock")
     result: dict[str, Any] = {"ok": True, "now": now.isoformat(), "actions": []}
+    reentry_enabled = bool(
+        state.get("continuation_reentry_enabled")
+        if state.get("continuation_reentry_enabled") is not None
+        else CONTINUATION_REENTRY_ENABLED
+    )
+    state["continuation_reentry_enabled"] = reentry_enabled
 
     if not state.get("auto_trade_on") and not state.get("force_liquidate_pending"):
         result["skipped"] = "auto_trade_off"
@@ -248,7 +282,7 @@ def run_once(
     try:
         quotes = _refresh_quotes(broker, state)
 
-        # 15:00 force liquidate — highest priority
+        # 15:00 force liquidate — always highest priority
         if should_force_liquidate(now, state.get("force_liquidate_done_date")) or state.get("force_liquidate_pending"):
             state["force_liquidate_pending"] = True
             liq = om.force_liquidate_all(broker, mode=mode, quotes=quotes, state=state)
@@ -264,6 +298,33 @@ def run_once(
 
         if df_1m is None:
             df_1m = _load_minute_df(mode)
+
+        # TP/SL every tick while in position (before arming new switches)
+        pos = state.get("position") or {}
+        held_symbol = pos.get("symbol")
+        held_qty = int(pos.get("quantity") or 0)
+        entry_px = float(pos.get("avg_price") or 0)
+        if held_symbol and held_qty > 0 and entry_px > 0:
+            cur_px = _held_etf_price(quotes, held_symbol)
+            if cur_px is not None:
+                exit_hit = check_tp_sl(held_symbol, entry_px, cur_px, held_qty)
+                if exit_hit:
+                    tp_ctx = snapshot_tp_context(df_1m, now=now) if exit_hit == EXIT_TP else None
+                    exit_res = om.exit_position_full(
+                        broker,
+                        mode=mode,
+                        quotes=quotes,
+                        state=state,
+                        reason=exit_hit,
+                        signal_id=f"{exit_hit}:{pos.get('signal_id') or now.isoformat()}",
+                        tp_context=tp_ctx,
+                    )
+                    result["actions"].append({"exit": exit_res, "reason": exit_hit})
+                    state["next_action"] = _next_action_label(state)
+                    om.save_state(state)
+                    # After TP/SL, continue tick for re-entry eval / signals (no return)
+                    if not exit_res.get("success"):
+                        return result
 
         eval_res = evaluate_macd_direction(
             df_1m,
@@ -283,7 +344,36 @@ def run_once(
         }
         result["macd"] = eval_res
 
-        # Arm new signal (order on this or next tick after detection)
+        # After SL: if pattern breaks to HOLD, clear last_dir so a later first-turn
+        # can open a *new* episode (does not unlock CONTINUATION_REENTRY).
+        ep = state.get("direction_episode") or {}
+        if ep.get("sl_lock") and eval_res.get("display_direction") == DIR_HOLD:
+            if state.get("last_signal_direction") in (DIR_UP, DIR_DOWN):
+                state["last_signal_direction"] = DIR_HOLD
+
+        pos = state.get("position") or {}
+        flat = not pos.get("symbol") or int(pos.get("quantity") or 0) <= 0
+
+        # Continuation re-entry diagnostics (every tick when flat after TP)
+        cont = evaluate_continuation_reentry(
+            df_1m,
+            direction=str(ep.get("direction") or eval_res.get("display_direction") or ""),
+            episode=ep,
+            now=now,
+            enabled=reentry_enabled,
+        )
+        state["reentry"] = {
+            "eligible": bool(cont.get("eligible")),
+            "block_reason": cont.get("block_reason"),
+            "bars_since_tp": cont.get("bars_since_tp") or 0,
+            "hist_contracted": bool(cont.get("hist_contracted")),
+            "hist_last3": cont.get("hist_last3") or [],
+            "enabled": reentry_enabled,
+            "episode_reentry_used": bool(ep.get("continuation_reentry_used")),
+        }
+        result["reentry"] = state["reentry"]
+
+        # Arm new MACD first-turn signal (Strategy B unchanged)
         if eval_res.get("new_signal") and eval_res.get("signal_id"):
             sid = eval_res["signal_id"]
             processed = set(state.get("processed_signal_ids") or [])
@@ -291,6 +381,8 @@ def run_once(
                 state["pending_signal_id"] = sid
                 state["pending_signal_direction"] = eval_res["signal_direction"]
                 state["pending_signal_at"] = now.isoformat()
+                state["pending_entry_kind"] = ENTRY_INITIAL
+                state["pending_signal_source"] = SIGNAL_SOURCE
                 state["last_signal_at"] = now.isoformat()
                 state["last_signal_bar_ts"] = eval_res.get("bar_ts")
                 # Arm direction immediately so the same UP/DOWN streak cannot re-fire.
@@ -300,16 +392,39 @@ def run_once(
                 om.set_pipeline_stage(state, "Signal", True, sid)
                 result["actions"].append({"signal": sid, "direction": eval_res["signal_direction"]})
 
-        # Execute pending switch on this tick (signal→order on next 5s tick after detect;
-        # if pending was set earlier, execute now; if set this tick, leave for next tick)
+        # Arm continuation re-entry once (no new MACD color-flip required)
+        elif (
+            flat
+            and reentry_enabled
+            and cont.get("eligible")
+            and cont.get("signal_id")
+            and not state.get("pending_signal_id")
+        ):
+            sid = cont["signal_id"]
+            processed = set(state.get("processed_signal_ids") or [])
+            if sid not in processed:
+                state["pending_signal_id"] = sid
+                state["pending_signal_direction"] = ep.get("direction")
+                state["pending_signal_at"] = now.isoformat()
+                state["pending_entry_kind"] = ENTRY_CONTINUATION
+                state["pending_signal_source"] = SIGNAL_SOURCE_CONTINUATION
+                state.setdefault("worker", {})["signal_detected_at"] = now.isoformat()
+                om.set_pipeline_stage(state, "Signal", True, sid)
+                result["actions"].append({
+                    "continuation_reentry": sid,
+                    "direction": ep.get("direction"),
+                })
+
+        # Execute pending switch on this tick
         pending_id = state.get("pending_signal_id")
         pending_dir = state.get("pending_signal_direction")
         pending_at = state.get("pending_signal_at")
+        pending_kind = state.get("pending_entry_kind") or ENTRY_INITIAL
+        pending_src = state.get("pending_signal_source") or SIGNAL_SOURCE
         execute_now = False
         if pending_id and pending_dir:
             try:
                 detected = datetime.fromisoformat(str(pending_at)) if pending_at else None
-                # Execute only if signal was detected on a prior tick (or age >= ~half interval)
                 if detected is not None and (now - detected).total_seconds() >= (TICK_SECONDS * 0.5):
                     execute_now = True
                 elif detected is None:
@@ -322,6 +437,13 @@ def run_once(
                 state["order_block_reason"] = "NO_NEW_SWITCH_AFTER_14:55"
                 result["actions"].append({"blocked": "after_14:55"})
             else:
+                # Opposite MACD while holding → sell reason OPPOSITE_SWITCH
+                cur_pos = state.get("position") or {}
+                cur_held = cur_pos.get("symbol")
+                target = target_symbol_for_direction(pending_dir)
+                sell_reason = None
+                if cur_held and target and cur_held != target and pending_kind == ENTRY_INITIAL:
+                    sell_reason = EXIT_OPPOSITE
                 switch_res = om.switch_to_direction(
                     broker,
                     pending_dir,
@@ -330,15 +452,19 @@ def run_once(
                     quotes=quotes,
                     signal_id=pending_id,
                     state=state,
+                    entry_kind=pending_kind,
+                    signal_source=pending_src,
+                    sell_reason=sell_reason,
                 )
                 result["actions"].append({"switch": switch_res})
                 if switch_res.get("success") or switch_res.get("duplicate") or switch_res.get("skipped_same_direction"):
                     state["pending_signal_id"] = None
                     state["pending_signal_direction"] = None
+                    state["pending_entry_kind"] = None
+                    state["pending_signal_source"] = None
                     state["last_signal_direction"] = pending_dir
                     state["last_signal_id"] = pending_id
                 elif switch_res.get("order_data_invalid"):
-                    # Hold order; do NOT flip MACD display to HOLD
                     state["order_block_reason"] = switch_res.get("message")
 
         state["next_action"] = _next_action_label(state)

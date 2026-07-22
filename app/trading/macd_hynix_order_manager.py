@@ -17,10 +17,19 @@ from typing import Any, Optional
 from app.logger import logger
 from app.trading import exit_order_coordinator as order_coord
 from app.trading.macd_hynix_strategy import (
+    CONTINUATION_REENTRY_ENABLED,
+    ENTRY_CONTINUATION,
+    ENTRY_INITIAL,
+    EXIT_OPPOSITE,
+    EXIT_SESSION,
+    EXIT_SL,
+    EXIT_TP,
     INVERSE_SYMBOL,
     LONG_SYMBOL,
+    SIGNAL_SOURCE_CONTINUATION,
     SYMBOL_NAME,
     TRADE_SYMBOLS,
+    make_direction_episode_id,
     opposite_symbol,
     target_symbol_for_direction,
 )
@@ -47,7 +56,7 @@ LEDGER_COLUMNS = [
     "requested_qty", "executed_qty", "order_price", "executed_price", "order_id",
     "hold_seconds", "gross_pnl", "cost", "net_pnl", "exit_reason", "success",
     "position_confirmed", "signal_id", "idempotency_key", "pipeline_stage",
-    "git_sha", "message",
+    "git_sha", "message", "entry_kind", "direction_episode_id", "signal_source",
 ]
 
 PIPELINE_STAGES = [
@@ -91,6 +100,8 @@ def default_state() -> dict[str, Any]:
         "pending_signal_id": None,
         "pending_signal_direction": None,
         "pending_signal_at": None,
+        "pending_entry_kind": None,
+        "pending_signal_source": None,
         "order_requested_at": None,
         "broker_executed_at": None,
         "last_order_at": None,
@@ -100,7 +111,32 @@ def default_state() -> dict[str, Any]:
             "avg_price": 0.0,
             "entry_at": None,
             "signal_id": None,
+            "entry_kind": None,
+            "direction_episode_id": None,
         },
+        "direction_episode": {
+            "id": None,
+            "direction": None,
+            "started_at": None,
+            "initial_entry_used": False,
+            "continuation_reentry_used": False,
+            "sl_lock": False,
+            "tp_at": None,
+            "tp_bar_ts": None,
+            "tp_hist_max_abs": 0.0,
+            "tp_hynix_price": None,
+            "tp_pivot_price": None,
+            "last_exit_reason": None,
+        },
+        "reentry": {
+            "eligible": False,
+            "block_reason": None,
+            "bars_since_tp": 0,
+            "hist_contracted": False,
+            "hist_last3": [],
+            "enabled": CONTINUATION_REENTRY_ENABLED,
+        },
+        "last_event": None,
         "prices": {
             "hynix": None,
             "long": None,
@@ -133,6 +169,7 @@ def default_state() -> dict[str, Any]:
         "force_liquidate_done_date": None,
         "real_confirm_ok": False,
         "masked_account": "",
+        "continuation_reentry_enabled": CONTINUATION_REENTRY_ENABLED,
         "updated_at": None,
         "git_sha": _git_sha(),
     }
@@ -158,8 +195,26 @@ def load_state() -> dict[str, Any]:
                 base["pipeline"] = default_state()["pipeline"]
             if not isinstance(base.get("position"), dict):
                 base["position"] = default_state()["position"]
+            else:
+                merged_pos = default_state()["position"]
+                merged_pos.update(base["position"])
+                base["position"] = merged_pos
             if not isinstance(base.get("worker"), dict):
                 base["worker"] = default_state()["worker"]
+            if not isinstance(base.get("direction_episode"), dict):
+                base["direction_episode"] = default_state()["direction_episode"]
+            else:
+                merged_ep = default_state()["direction_episode"]
+                merged_ep.update(base["direction_episode"])
+                base["direction_episode"] = merged_ep
+            if not isinstance(base.get("reentry"), dict):
+                base["reentry"] = default_state()["reentry"]
+            else:
+                merged_re = default_state()["reentry"]
+                merged_re.update(base["reentry"])
+                base["reentry"] = merged_re
+            if "continuation_reentry_enabled" not in base:
+                base["continuation_reentry_enabled"] = CONTINUATION_REENTRY_ENABLED
             return base
         except Exception as exc:
             logger.error("[MACDHynix] state load failed: %s", exc)
@@ -451,6 +506,9 @@ def _record_fill(
     hold_seconds: float = 0.0,
     entry_price: Optional[float] = None,
     message: str = "",
+    entry_kind: str = "",
+    direction_episode_id: str = "",
+    signal_source: str = SIGNAL_SOURCE,
 ) -> str:
     """Record ledger only after broker confirmation when success=True."""
     cost_engine = TradeCostEngine()
@@ -509,6 +567,9 @@ def _record_fill(
         "pipeline_stage": pipeline_stage,
         "git_sha": _git_sha(),
         "message": message,
+        "entry_kind": entry_kind,
+        "direction_episode_id": direction_episode_id,
+        "signal_source": signal_source,
     })
 
 
@@ -524,6 +585,9 @@ def execute_sell_all(
     entry_price: Optional[float] = None,
     entry_at: Optional[str] = None,
     attempt: int = 1,
+    entry_kind: str = "",
+    direction_episode_id: str = "",
+    signal_source: str = SIGNAL_SOURCE,
 ) -> dict[str, Any]:
     if symbol not in TRADE_SYMBOLS:
         return {"success": False, "message": f"invalid trade symbol {symbol}"}
@@ -550,10 +614,10 @@ def execute_sell_all(
         account=account,
         symbol=symbol,
         side="SELL",
-        episode_id=signal_id,
+        episode_id=direction_episode_id or signal_id,
         exit_event_id=f"MACD_SELL:{symbol}:{signal_id}:{attempt}",
         target_qty=before,
-        source=SIGNAL_SOURCE,
+        source=signal_source or SIGNAL_SOURCE,
         reason=reason,
     ) as coordinated:
         if coordinated.blocked:
@@ -609,6 +673,9 @@ def execute_sell_all(
                 exit_reason=reason,
                 hold_seconds=hold_seconds,
                 entry_price=entry_price,
+                entry_kind=entry_kind,
+                direction_episode_id=direction_episode_id,
+                signal_source=signal_source,
             )
             return {
                 "success": True,
@@ -648,6 +715,9 @@ def execute_sell_all(
             "pipeline_stage": "Sell Requested",
             "git_sha": _git_sha(),
             "message": "sell accepted but qty not confirmed flat",
+            "entry_kind": entry_kind,
+            "direction_episode_id": direction_episode_id,
+            "signal_source": signal_source,
         })
         return {
             "success": False,
@@ -670,6 +740,9 @@ def execute_buy(
     macd_signal: str,
     reason: str,
     attempt: int = 1,
+    entry_kind: str = ENTRY_INITIAL,
+    direction_episode_id: str = "",
+    signal_source: str = SIGNAL_SOURCE,
 ) -> dict[str, Any]:
     if symbol not in TRADE_SYMBOLS:
         return {"success": False, "message": f"invalid trade symbol {symbol}"}
@@ -706,10 +779,10 @@ def execute_buy(
         account=account,
         symbol=symbol,
         side="BUY",
-        episode_id=signal_id,
+        episode_id=direction_episode_id or signal_id,
         exit_event_id=f"MACD_BUY:{symbol}:{signal_id}:{attempt}",
         target_qty=qty,
-        source=SIGNAL_SOURCE,
+        source=signal_source or SIGNAL_SOURCE,
         reason=reason,
     ) as coordinated:
         if coordinated.blocked:
@@ -756,6 +829,9 @@ def execute_buy(
                 idempotency_key=coordinated.idempotency_key,
                 pipeline_stage="Buy Executed",
                 exit_reason=reason,
+                entry_kind=entry_kind,
+                direction_episode_id=direction_episode_id,
+                signal_source=signal_source,
             )
             return {
                 "success": True,
@@ -791,6 +867,9 @@ def execute_buy(
             "pipeline_stage": "Buy Requested",
             "git_sha": _git_sha(),
             "message": "buy accepted but fill not confirmed",
+            "entry_kind": entry_kind,
+            "direction_episode_id": direction_episode_id,
+            "signal_source": signal_source,
         })
         return {
             "success": False,
@@ -799,6 +878,122 @@ def execute_buy(
             "idempotency_key": coordinated.idempotency_key,
             "order": od,
         }
+
+
+def start_direction_episode(state: dict[str, Any], direction: str, bar_ts: Optional[str] = None) -> dict[str, Any]:
+    """Begin a new direction_episode (resets re-entry rights)."""
+    ep_id = make_direction_episode_id(direction, bar_ts)
+    state["direction_episode"] = {
+        "id": ep_id,
+        "direction": direction,
+        "started_at": datetime.now().isoformat(),
+        "initial_entry_used": False,
+        "continuation_reentry_used": False,
+        "sl_lock": False,
+        "tp_at": None,
+        "tp_bar_ts": None,
+        "tp_hist_max_abs": 0.0,
+        "tp_hynix_price": None,
+        "tp_pivot_price": None,
+        "last_exit_reason": None,
+    }
+    return state["direction_episode"]
+
+
+def mark_episode_after_exit(
+    state: dict[str, Any],
+    reason: str,
+    *,
+    tp_context: Optional[dict[str, Any]] = None,
+) -> None:
+    """Update episode bookkeeping after a full exit (TP/SL/opposite/session)."""
+    ep = state.setdefault("direction_episode", default_state()["direction_episode"])
+    ep["last_exit_reason"] = reason
+    if reason == EXIT_TP:
+        ep["tp_at"] = datetime.now().isoformat()
+        ctx = tp_context or {}
+        ep["tp_bar_ts"] = ctx.get("tp_bar_ts") or ep.get("tp_bar_ts")
+        ep["tp_hist_max_abs"] = float(ctx.get("tp_hist_max_abs") or ep.get("tp_hist_max_abs") or 0.0)
+        ep["tp_hynix_price"] = ctx.get("tp_hynix_price")
+        direction = ep.get("direction")
+        if direction == "DOWN_BLUE":
+            ep["tp_pivot_price"] = ctx.get("tp_pivot_low") or ctx.get("tp_hynix_price")
+        else:
+            ep["tp_pivot_price"] = ctx.get("tp_pivot_high") or ctx.get("tp_hynix_price")
+    elif reason == EXIT_SL:
+        # Same episode: forbid continuation re-entry; do not unlock by time alone.
+        ep["sl_lock"] = True
+        ep["tp_at"] = None
+    elif reason in (EXIT_OPPOSITE, EXIT_SESSION, "15:00_FORCE_LIQUIDATE", "EOD_FLAT"):
+        # Opposite / session ends episode rights
+        state["direction_episode"] = default_state()["direction_episode"]
+        state["direction_episode"]["last_exit_reason"] = reason
+
+
+def exit_position_full(
+    broker,
+    *,
+    mode: str,
+    quotes: dict[str, Any],
+    state: dict[str, Any],
+    reason: str,
+    signal_id: Optional[str] = None,
+    tp_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Full flatten of current MACD position (TP/SL/session). No buy."""
+    with _ORDER_PROCESS_LOCK:
+        pos = state.get("position") or {}
+        symbol = pos.get("symbol")
+        if not symbol or int(pos.get("quantity") or 0) <= 0:
+            return {"success": True, "already_flat": True}
+        price_key = "long" if symbol == LONG_SYMBOL else "inverse"
+        price = float((quotes.get(price_key) or {}).get("price") or 0)
+        if price <= 0:
+            price = float(pos.get("avg_price") or 0)
+        if price <= 0:
+            return {"success": False, "message": "ORDER_DATA_INVALID: missing exit price", "order_data_invalid": True}
+
+        sid = signal_id or f"{reason}:{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        ep = state.get("direction_episode") or {}
+        set_pipeline_stage(state, "Sell Requested", True, reason)
+        sell_res = None
+        for attempt in range(1, MAX_ORDER_ATTEMPTS + 1):
+            sell_res = execute_sell_all(
+                broker,
+                symbol,
+                price,
+                mode=mode,
+                signal_id=sid,
+                macd_signal=str(ep.get("direction") or state.get("display_direction") or ""),
+                reason=reason,
+                entry_price=float(pos.get("avg_price") or 0) or None,
+                entry_at=pos.get("entry_at"),
+                attempt=attempt,
+                entry_kind=str(pos.get("entry_kind") or ""),
+                direction_episode_id=str(pos.get("direction_episode_id") or ep.get("id") or ""),
+                signal_source=SIGNAL_SOURCE,
+            )
+            if sell_res.get("success") and (sell_res.get("fill_confirmed") or sell_res.get("already_flat")):
+                break
+        if not sell_res or not sell_res.get("success"):
+            msg = (sell_res or {}).get("message") or "exit sell failed"
+            set_pipeline_stage(state, "Sell Executed", False, msg)
+            return {"success": False, "message": msg, "sell": sell_res}
+
+        set_pipeline_stage(state, "Sell Executed", True, reason)
+        state["position"] = {
+            "symbol": None,
+            "quantity": 0,
+            "avg_price": 0.0,
+            "entry_at": None,
+            "signal_id": None,
+            "entry_kind": None,
+            "direction_episode_id": None,
+        }
+        mark_episode_after_exit(state, reason, tp_context=tp_context)
+        state["last_event"] = reason
+        state["last_order_at"] = datetime.now().isoformat()
+        return {"success": True, "sell": sell_res, "reason": reason}
 
 
 def switch_to_direction(
@@ -810,6 +1005,9 @@ def switch_to_direction(
     quotes: dict[str, Any],
     signal_id: str,
     state: dict[str, Any],
+    entry_kind: str = ENTRY_INITIAL,
+    signal_source: str = SIGNAL_SOURCE,
+    sell_reason: Optional[str] = None,
 ) -> dict[str, Any]:
     """Full switch: sell opposite (if any) → confirm 0 → buy target. Never buy before sell confirm."""
     with _ORDER_PROCESS_LOCK:
@@ -844,16 +1042,33 @@ def switch_to_direction(
             state["processed_signal_ids"] = (processed + [signal_id])[-50:]
             return {"success": True, "message": "already holding target", "skipped_same_direction": True}
 
+        # Continuation re-entry: must be flat and same episode direction
+        if entry_kind == ENTRY_CONTINUATION:
+            ep = state.get("direction_episode") or {}
+            if ep.get("sl_lock"):
+                return {"success": False, "message": "SL_LOCK blocks continuation re-entry"}
+            if ep.get("continuation_reentry_used"):
+                return {"success": False, "message": "continuation re-entry already used"}
+            if int(live_other or 0) > 0 or int(live_target or 0) > 0:
+                return {"success": False, "message": "continuation requires flat book"}
+            if str(ep.get("direction") or "") != direction:
+                return {"success": False, "message": "continuation direction mismatch"}
+
         macd_signal = direction
         set_pipeline_stage(state, "Signal", True, signal_id)
         state["order_requested_at"] = datetime.now().isoformat()
         state.setdefault("worker", {})["order_requested_at"] = state["order_requested_at"]
 
+        ep = state.get("direction_episode") or {}
+        ep_id = str(ep.get("id") or "")
+        exit_reason = sell_reason or (
+            EXIT_OPPOSITE if (held_symbol and held_symbol != target) else f"SWITCH_TO_{direction}"
+        )
+
         # 1) Sell opposite / any non-target holdings first
         sell_symbols = []
         if live_other_sym and int(live_other or 0) > 0:
             sell_symbols.append(live_other_sym)
-        # Also flatten target if somehow both held (shouldn't) — sell other first only
         for sell_sym in sell_symbols:
             price_key = "long" if sell_sym == LONG_SYMBOL else "inverse"
             sell_price = float((quotes.get(price_key) or {}).get("price") or 0)
@@ -871,10 +1086,13 @@ def switch_to_direction(
                     mode=mode,
                     signal_id=signal_id,
                     macd_signal=macd_signal,
-                    reason=f"SWITCH_TO_{direction}",
+                    reason=exit_reason,
                     entry_price=float(pos.get("avg_price") or 0) or None,
                     entry_at=pos.get("entry_at"),
                     attempt=attempt,
+                    entry_kind=str(pos.get("entry_kind") or ""),
+                    direction_episode_id=str(pos.get("direction_episode_id") or ep_id),
+                    signal_source=signal_source,
                 )
                 if sell_res.get("success") and (sell_res.get("fill_confirmed") or sell_res.get("already_flat")):
                     break
@@ -883,12 +1101,13 @@ def switch_to_direction(
                 set_pipeline_stage(state, "Sell Executed", False, msg)
                 return {"success": False, "message": msg, "sell": sell_res}
             set_pipeline_stage(state, "Sell Executed", True, f"{sell_sym} flat")
-            # Hard gate: confirm 0 before buy
             confirm = confirm_quantity(broker, sell_sym)
             if not confirm.get("ok") or int(confirm.get("quantity") or 0) != 0:
                 msg = f"sell confirm failed; remaining={confirm.get('quantity')}"
                 set_pipeline_stage(state, "Sell Executed", False, msg)
                 return {"success": False, "message": msg, "sell": sell_res}
+            if exit_reason == EXIT_OPPOSITE:
+                mark_episode_after_exit(state, EXIT_OPPOSITE)
 
         state["position"] = {
             "symbol": None,
@@ -896,7 +1115,17 @@ def switch_to_direction(
             "avg_price": 0.0,
             "entry_at": None,
             "signal_id": None,
+            "entry_kind": None,
+            "direction_episode_id": None,
         }
+
+        # New episode on initial MACD first-turn (not continuation)
+        if entry_kind == ENTRY_INITIAL:
+            ep = start_direction_episode(state, direction, bar_ts=signal_id.split(":")[-1] if signal_id else None)
+            ep_id = str(ep.get("id") or "")
+        else:
+            ep = state.get("direction_episode") or {}
+            ep_id = str(ep.get("id") or "")
 
         # 2) Buy target
         price_key = "long" if target == LONG_SYMBOL else "inverse"
@@ -906,6 +1135,7 @@ def switch_to_direction(
             set_pipeline_stage(state, "Buy Requested", False, msg)
             return {"success": False, "message": msg, "order_data_invalid": True}
 
+        buy_reason = ENTRY_CONTINUATION if entry_kind == ENTRY_CONTINUATION else ENTRY_INITIAL
         set_pipeline_stage(state, "Buy Requested", True, target)
         buy_res = None
         for attempt in range(1, MAX_ORDER_ATTEMPTS + 1):
@@ -917,8 +1147,11 @@ def switch_to_direction(
                 mode=mode,
                 signal_id=signal_id,
                 macd_signal=macd_signal,
-                reason=f"ENTER_{direction}",
+                reason=buy_reason,
                 attempt=attempt,
+                entry_kind=entry_kind,
+                direction_episode_id=ep_id,
+                signal_source=signal_source,
             )
             if buy_res.get("success") and buy_res.get("fill_confirmed"):
                 break
@@ -941,9 +1174,18 @@ def switch_to_direction(
             "avg_price": float(buy_res.get("avg_price") or buy_price),
             "entry_at": now_iso,
             "signal_id": signal_id,
+            "entry_kind": entry_kind,
+            "direction_episode_id": ep_id,
         }
+        ep = state.setdefault("direction_episode", default_state()["direction_episode"])
+        if entry_kind == ENTRY_CONTINUATION:
+            ep["continuation_reentry_used"] = True
+            ep["tp_at"] = None  # consumed TP window
+        else:
+            ep["initial_entry_used"] = True
         state["broker_executed_at"] = now_iso
         state["last_order_at"] = now_iso
+        state["last_event"] = entry_kind
         state.setdefault("worker", {})["broker_executed_at"] = now_iso
         state["processed_signal_ids"] = (processed + [signal_id])[-50:]
         state["order_block_reason"] = None
@@ -953,6 +1195,7 @@ def switch_to_direction(
             "success": True,
             "buy": buy_res,
             "target": target,
+            "entry_kind": entry_kind,
             "message": "switch complete",
         }
 
@@ -963,7 +1206,7 @@ def force_liquidate_all(
     mode: str,
     quotes: dict[str, Any],
     state: dict[str, Any],
-    reason: str = "15:00_FORCE_LIQUIDATE",
+    reason: str = EXIT_SESSION,
 ) -> dict[str, Any]:
     """Priority flatten of both ETFs. Independent of MACD signal."""
     with _ORDER_PROCESS_LOCK:
@@ -985,6 +1228,7 @@ def force_liquidate_all(
                 # Still attempt with last known avg
                 price = float((state.get("position") or {}).get("avg_price") or 1)
             pos = state.get("position") or {}
+            ep = state.get("direction_episode") or {}
             res = execute_sell_all(
                 broker,
                 symbol,
@@ -995,6 +1239,9 @@ def force_liquidate_all(
                 reason=reason,
                 entry_price=float(pos.get("avg_price") or 0) or None,
                 entry_at=pos.get("entry_at"),
+                entry_kind=str(pos.get("entry_kind") or ""),
+                direction_episode_id=str(pos.get("direction_episode_id") or ep.get("id") or ""),
+                signal_source=SIGNAL_SOURCE,
             )
             results[symbol] = res
             if not res.get("success"):
@@ -1006,7 +1253,11 @@ def force_liquidate_all(
                 "avg_price": 0.0,
                 "entry_at": None,
                 "signal_id": None,
+                "entry_kind": None,
+                "direction_episode_id": None,
             }
+            mark_episode_after_exit(state, reason)
+            state["last_event"] = reason
             state["force_liquidate_pending"] = False
             state["force_liquidate_done_date"] = datetime.now().strftime("%Y-%m-%d")
             set_pipeline_stage(state, "Position Confirmed", True, reason)

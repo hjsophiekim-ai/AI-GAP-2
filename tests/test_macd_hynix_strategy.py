@@ -17,9 +17,21 @@ from app.trading.macd_hynix_strategy import (
     DIR_DOWN,
     DIR_HOLD,
     DIR_UP,
+    ENTRY_CONTINUATION,
+    ENTRY_INITIAL,
+    EXIT_OPPOSITE,
+    EXIT_SL,
+    EXIT_TP,
     INVERSE_SYMBOL,
     LONG_SYMBOL,
+    SIGNAL_SOURCE_CONTINUATION,
+    SL_NET_PCT,
+    TP_NET_PCT,
+    check_tp_sl,
+    evaluate_continuation_reentry,
     evaluate_macd_direction,
+    make_direction_episode_id,
+    net_pnl_pct_vs_entry,
     resample_completed_3m,
     target_symbol_for_direction,
 )
@@ -386,3 +398,212 @@ def test_buy_blocked_while_opposite_held():
     )
     assert res["success"] is False
     assert res.get("opposite_qty") == 5
+
+
+def test_tp_sl_thresholds_net_pnl():
+    # At flat price after costs, net % is slightly negative (fees) — not TP/SL
+    assert check_tp_sl(LONG_SYMBOL, 10000.0, 10000.0, 10) is None
+    # +3% gross still needs to clear costs; use larger move
+    assert check_tp_sl(LONG_SYMBOL, 10000.0, 10400.0, 10) == EXIT_TP
+    assert check_tp_sl(LONG_SYMBOL, 10000.0, 9800.0, 10) == EXIT_SL
+    pct_up = net_pnl_pct_vs_entry(LONG_SYMBOL, 10000.0, 10400.0, 10)
+    pct_dn = net_pnl_pct_vs_entry(LONG_SYMBOL, 10000.0, 9800.0, 10)
+    assert pct_up >= TP_NET_PCT
+    assert pct_dn <= SL_NET_PCT
+
+
+def test_exit_position_tp_records_reason():
+    broker = FakeBroker()
+    broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
+    state = om.default_state()
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "quantity": 5, "avg_price": 10000.0,
+        "entry_at": datetime.now().isoformat(), "signal_id": "SIG-1",
+        "entry_kind": ENTRY_INITIAL, "direction_episode_id": "EP:UP",
+    }
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP", "direction": DIR_UP, "initial_entry_used": True,
+    }
+    quotes = {
+        "long": {"price": 10400.0, "updated_at": datetime.now().isoformat()},
+        "inverse": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+    }
+    res = om.exit_position_full(
+        broker, mode="mock", quotes=quotes, state=state, reason=EXIT_TP,
+        tp_context={"tp_bar_ts": "2026-07-21T10:00:00", "tp_hist_max_abs": 1.5,
+                    "tp_hynix_price": 180000.0, "tp_pivot_high": 181000.0},
+    )
+    assert res["success"]
+    assert state["position"]["symbol"] is None
+    assert state["direction_episode"]["tp_at"]
+    assert state["direction_episode"]["last_exit_reason"] == EXIT_TP
+    rows = om.load_ledger()
+    assert any(r.get("exit_reason") == EXIT_TP for r in rows)
+
+
+def test_sl_lock_blocks_continuation_reentry():
+    episode = {
+        "id": "EP:UP",
+        "direction": DIR_UP,
+        "sl_lock": True,
+        "continuation_reentry_used": False,
+        "tp_at": datetime.now().isoformat(),
+        "tp_bar_ts": "2026-07-21T10:00:00",
+        "tp_hist_max_abs": 1.0,
+        "tp_pivot_price": 100.0,
+    }
+    cont = evaluate_continuation_reentry(
+        _bars_1m(120, trend="up"),
+        direction=DIR_UP,
+        episode=episode,
+        now=datetime(2026, 7, 21, 11, 0, 0),
+        enabled=True,
+    )
+    assert cont["eligible"] is False
+    assert cont["block_reason"] == "SL_LOCK"
+
+
+def test_continuation_gates_require_enabled_and_tp():
+    episode = {
+        "id": "EP:UP",
+        "direction": DIR_UP,
+        "sl_lock": False,
+        "continuation_reentry_used": False,
+        "tp_at": None,
+        "tp_bar_ts": None,
+        "tp_hist_max_abs": 1.0,
+    }
+    cont = evaluate_continuation_reentry(
+        _bars_1m(120, trend="up"),
+        direction=DIR_UP,
+        episode=episode,
+        now=datetime(2026, 7, 21, 11, 0, 0),
+        enabled=True,
+    )
+    assert cont["eligible"] is False
+    assert cont["block_reason"] == "NO_TP_YET"
+
+    cont2 = evaluate_continuation_reentry(
+        _bars_1m(120, trend="up"),
+        direction=DIR_UP,
+        episode={**episode, "tp_at": "x"},
+        now=datetime(2026, 7, 21, 11, 0, 0),
+        enabled=False,
+    )
+    assert cont2["block_reason"] == "REENTRY_DISABLED"
+
+
+def test_opposite_signal_resets_episode():
+    broker = FakeBroker()
+    broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
+    state = om.default_state()
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "quantity": 5, "avg_price": 10000.0,
+        "entry_at": datetime.now().isoformat(), "signal_id": "old",
+        "entry_kind": ENTRY_INITIAL, "direction_episode_id": "EP:UP:old",
+    }
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP:old", "direction": DIR_UP,
+        "initial_entry_used": True, "tp_at": "keep-me",
+    }
+    quotes = {
+        "long": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+        "inverse": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+    }
+    res = om.switch_to_direction(
+        broker, DIR_DOWN, mode="mock", budget=5_000_000, quotes=quotes,
+        signal_id="SIG-DOWN-1", state=state,
+        entry_kind=ENTRY_INITIAL, sell_reason=EXIT_OPPOSITE,
+    )
+    assert res["success"]
+    assert INVERSE_SYMBOL in broker.positions
+    # New episode after opposite switch
+    assert state["direction_episode"]["direction"] == DIR_DOWN
+    assert state["direction_episode"]["id"] != "EP:UP:old"
+    assert state["direction_episode"]["continuation_reentry_used"] is False
+    assert state["position"]["entry_kind"] == ENTRY_INITIAL
+
+
+def test_continuation_reentry_idempotent_signal_id():
+    broker = FakeBroker()
+    state = om.default_state()
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP:1", "direction": DIR_UP,
+        "tp_at": datetime.now().isoformat(),
+        "continuation_reentry_used": False, "sl_lock": False,
+    }
+    quotes = {
+        "long": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+        "inverse": {"price": 10000.0, "updated_at": datetime.now().isoformat()},
+    }
+    sid = "MACD_CONT:EP:UP:1:bar"
+    r1 = om.switch_to_direction(
+        broker, DIR_UP, mode="mock", budget=2_000_000, quotes=quotes,
+        signal_id=sid, state=state,
+        entry_kind=ENTRY_CONTINUATION,
+        signal_source=SIGNAL_SOURCE_CONTINUATION,
+    )
+    assert r1["success"]
+    assert state["direction_episode"]["continuation_reentry_used"] is True
+    # Flatten for second attempt
+    broker.sell(LONG_SYMBOL, "long", broker.positions[LONG_SYMBOL].quantity, 10000.0)
+    state["position"] = om.default_state()["position"]
+    r2 = om.switch_to_direction(
+        broker, DIR_UP, mode="mock", budget=2_000_000, quotes=quotes,
+        signal_id=sid, state=state,
+        entry_kind=ENTRY_CONTINUATION,
+        signal_source=SIGNAL_SOURCE_CONTINUATION,
+    )
+    assert r2.get("duplicate")
+
+
+def test_worker_tp_exit_then_no_immediate_rebuy(monkeypatch):
+    broker = FakeBroker()
+    broker.buy(LONG_SYMBOL, "long", 5, 10000.0)
+    broker.prices[LONG_SYMBOL] = 10400.0
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["position"] = {
+        "symbol": LONG_SYMBOL, "quantity": 5, "avg_price": 10000.0,
+        "entry_at": datetime.now().isoformat(), "signal_id": "SIG",
+        "entry_kind": ENTRY_INITIAL, "direction_episode_id": "EP:UP",
+    }
+    state["direction_episode"] = {
+        **om.default_state()["direction_episode"],
+        "id": "EP:UP", "direction": DIR_UP, "initial_entry_used": True,
+    }
+    state["continuation_reentry_enabled"] = False
+    df = _bars_1m(150, trend="up")
+    now = datetime(2026, 7, 21, 11, 0, 0)
+
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": False,
+        "signal_direction": None,
+        "macd": 1.0, "signal": 0.5, "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5], "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-21T10:57:00",
+        "bar_close_ts": "2026-07-21T11:00:00",
+        "reason": "UP_RED_PATTERN",
+        "signal_id": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        assert any(a.get("reason") == EXIT_TP for a in r["actions"] if "exit" in a or "reason" in a)
+        assert state["position"]["symbol"] is None
+        assert state["pending_signal_id"] is None  # no immediate rebuy (reentry disabled)
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_episode_id_helper():
+    eid = make_direction_episode_id(DIR_UP, "2026-07-21T10:00:00")
+    assert eid.startswith("EP:UP_RED:")
