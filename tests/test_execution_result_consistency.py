@@ -192,3 +192,166 @@ def test_enhanced_score_does_not_overwrite_live_direction_in_resolver():
     assert result["action"] == "HOLD"
     assert result["reason_code"] == "ETF_5S_10S_BOTH_OPPOSITE"
     assert result["structural_signal_label"] == "HOLD"
+
+
+def test_deferral_completed_snapshot_within_15s_has_required_fields():
+    """After MAIN_CYCLE_ENTRY_DEFERRED, Fast Worker snapshot within 15s is BUY or clear HOLD."""
+    from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL
+
+    now = datetime(2026, 7, 22, 10, 50, 0)
+    state = {
+        "last_decision": {"final_action": "HYNIX_BUY", "enhanced_score": 80.0, "inverse_pressure_score": 40.0},
+        "live_trade_direction": {"direction": "UP"},
+    }
+    engine._mark_fast_worker_deferral(state, now=now)
+    assert state.get("force_fast_worker_tick") is True
+
+    continuation_state = {
+        "last_result": {
+            "action": "ENTER",
+            "entry_path": "CONTINUATION",
+            "reason_code": "CONTINUATION_CANDIDATE",
+            "evidence_score": 70,
+            "structural_signal_label": "BUY",
+            "target_pct": 0.30,
+        },
+        "last_block_reason": "CHASE_BLOCK",
+        "order_sizing_audit": {
+            "position_cap": 1.0,
+            "target_ratio": 0.30,
+            "effective_target_pct": 0.30,
+            "calculated_quantity": 0,
+            "order_skip_reason": "CHASE_BLOCK",
+        },
+    }
+    engine._update_fast_worker_decision_snapshot(
+        state, now=now + timedelta(seconds=5), continuation_state=continuation_state,
+    )
+    snap = state["last_completed_decision_snapshot"]
+    age = engine._deferral_age_seconds(
+        {"deferred_at": now.isoformat()}, now + timedelta(seconds=5)
+    )
+    assert age is not None and age <= engine._FAST_WORKER_DEFERRAL_DEADLINE_SECONDS
+    for key in engine._FAST_WORKER_SNAPSHOT_REQUIRED_FIELDS:
+        assert key in snap, f"missing required field: {key}"
+    assert snap["final_action"]["value"] in ("BUY", "HOLD")
+    if snap["final_action"]["value"] == "HOLD":
+        assert snap["primary_block_reason"]["value"]
+    assert snap["resolved_direction"]["value"] == "UP"
+    assert snap["target_symbol"]["value"] == LONG_SYMBOL == "0193T0"
+    assert "coordinator_result" in snap and "broker_result" in snap
+    assert engine._fast_worker_snapshot_is_complete(snap)
+    assert "pending_fast_worker_deferral" not in state
+
+    # DOWN → 0197X0
+    state_down = {
+        "last_decision": {"final_action": "HYNIX_BUY", "enhanced_score": 20.0, "inverse_pressure_score": 80.0},
+        "live_trade_direction": {"direction": "DOWN"},
+    }
+    engine._update_fast_worker_decision_snapshot(
+        state_down,
+        now=now + timedelta(seconds=6),
+        continuation_state={
+            "last_result": {
+                "action": "HOLD",
+                "reason_code": "CONTINUATION_TOO_WEAK",
+                "structural_signal_label": "HOLD",
+                "target_pct": 0.0,
+            },
+            "last_block_reason": "CONTINUATION_TOO_WEAK",
+            "order_sizing_audit": {"position_cap": 1.0, "target_ratio": 0.0, "calculated_quantity": 0},
+        },
+    )
+    snap_down = state_down["last_completed_decision_snapshot"]
+    assert snap_down["resolved_direction"]["value"] == "DOWN"
+    assert snap_down["target_symbol"]["value"] == SHORT_SYMBOL == "0197X0"
+    # Enhanced HYNIX_BUY must not overwrite resolved direction wording.
+    assert snap_down["signal_summary"]["resolved_direction"] == "DOWN"
+    assert snap_down["signal_summary"]["enhanced_final_action_diagnostic"] == "HYNIX_BUY"
+    assert snap_down["final_action"]["value"] == "HOLD"
+
+
+def test_pending_over_15s_records_error_and_clears_indefinite_pending():
+    now = datetime(2026, 7, 22, 11, 0, 0)
+    state = {
+        "last_decision": {"final_action": "HYNIX_BUY", "enhanced_score": 70.0, "inverse_pressure_score": 40.0},
+        "live_trade_direction": {"direction": "UP"},
+        "pending_fast_worker_deferral": {
+            "reason_code": "FAST_WORKER_OWNS_ENTRY",
+            "deferred_at": (now - timedelta(seconds=20)).isoformat(),
+            "deadline_seconds": 15.0,
+        },
+        "last_fast_worker_decision_snapshot": {"cycle_status": "PENDING", "source": "MAIN_CYCLE_DEFERRED"},
+    }
+    age = engine._deferral_age_seconds(state["pending_fast_worker_deferral"], now)
+    assert age is not None and age > engine._FAST_WORKER_DEFERRAL_DEADLINE_SECONDS
+
+    engine._record_fast_worker_snapshot_error(
+        state,
+        now=now,
+        code="FAST_WORKER_SNAPSHOT_TIMEOUT",
+        detail="FAST_WORKER_SNAPSHOT_PENDING exceeded 15s",
+    )
+    engine._request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_TIMEOUT")
+    engine._clear_fast_worker_deferral(state)
+
+    assert state["last_fast_worker_snapshot_error"]["code"] == "FAST_WORKER_SNAPSHOT_TIMEOUT"
+    assert state.get("force_fast_worker_tick") is True
+    assert "pending_fast_worker_deferral" not in state  # zero indefinite pending
+
+
+def test_continuation_candidate_not_approved_without_order():
+    assert engine._sanitize_continuation_reason_code(
+        "CONTINUATION_ENTRY_APPROVED", order_requested=False, order_ok=False
+    ) == "CONTINUATION_CANDIDATE"
+    assert engine._sanitize_continuation_reason_code(
+        "CONTINUATION_ENTRY_APPROVED", order_requested=True, order_ok=False
+    ) == "CONTINUATION_ENTRY_APPROVED"
+    assert engine._promote_continuation_reason_for_order("CONTINUATION_CANDIDATE") == "CONTINUATION_ENTRY_APPROVED"
+    assert engine._sanitize_continuation_reason_code("WAIT_FOR_CONFIRMATION") == "CONFIRMATION_PENDING"
+
+    now = datetime(2026, 7, 22, 11, 5, 0)
+    state = {
+        "last_decision": {"enhanced_score": 75.0, "inverse_pressure_score": 40.0},
+        "live_trade_direction": {"direction": "UP"},
+    }
+    engine._update_fast_worker_decision_snapshot(
+        state,
+        now=now,
+        continuation_state={
+            "last_result": {
+                "action": "ENTER",
+                "entry_path": "CONTINUATION",
+                "reason_code": "CONTINUATION_ENTRY_APPROVED",  # stale/illegal pre-order label
+                "structural_signal_label": "BUY",
+                "target_pct": 0.30,
+            },
+            "last_block_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+            "order_sizing_audit": {
+                "position_cap": 1.0,
+                "target_ratio": 0.30,
+                "effective_target_pct": 0.30,
+                "calculated_quantity": 0,
+                "order_skip_reason": "FAST_WORKER_ENTRY_NOT_EXECUTED",
+            },
+        },
+    )
+    snap = state["last_completed_decision_snapshot"]
+    assert snap["continuation_reason"]["value"] == "CONTINUATION_CANDIDATE"
+    assert snap["final_action"]["value"] == "HOLD"
+    assert snap["primary_block_reason"]["value"]
+    # Zero “approved” with neither order nor block result
+    assert not (
+        snap["continuation_reason"]["value"] == "CONTINUATION_ENTRY_APPROVED"
+        and not snap["order_requested"]
+        and not snap["primary_block_reason"]["value"]
+    )
+
+
+def test_down_direction_maps_only_to_0197x0():
+    from app.trading.hynix_symbols import LONG_SYMBOL, SHORT_SYMBOL, symbol_for_live_direction
+
+    assert symbol_for_live_direction("DOWN") == SHORT_SYMBOL == "0197X0"
+    assert symbol_for_live_direction("UP") == LONG_SYMBOL == "0193T0"
+    # Enhanced HYNIX_BUY label must not flip DOWN mapping.
+    assert symbol_for_live_direction("DOWN") != LONG_SYMBOL

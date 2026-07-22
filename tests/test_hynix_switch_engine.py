@@ -1580,7 +1580,7 @@ def test_continuation_entry_after_missed_early_reversal_in_sustained_uptrend():
     )
 
     assert result["action"] == "ENTER"
-    assert result["reason_code"] == "CONTINUATION_ENTRY_APPROVED"
+    assert result["reason_code"] == "CONTINUATION_CANDIDATE"
     assert result["entry_path"] == "CONTINUATION"
     assert 0.20 <= result["target_pct"] <= 0.30
 
@@ -1692,7 +1692,7 @@ def test_range_weighted_entry_does_not_veto_single_5s_or_vwap_failure():
     )
 
     assert result["action"] == "ENTER"
-    assert result["reason_code"] == "CONTINUATION_ENTRY_APPROVED"
+    assert result["reason_code"] == "CONTINUATION_CANDIDATE"
 
 
 def test_range_weighted_entry_hard_blocks_both_entry_etf_5s_10s_opposite():
@@ -1762,7 +1762,7 @@ def test_range_weighted_fixed_a_continuation_buy_order_conditions():
 
     assert result["action"] == "ENTER"
     assert result["entry_path"] == "CONTINUATION"
-    assert result["reason_code"] == "CONTINUATION_ENTRY_APPROVED"
+    assert result["reason_code"] == "CONTINUATION_CANDIDATE"
     assert result["expected_net_edge_pct"] >= 0.15
 
 

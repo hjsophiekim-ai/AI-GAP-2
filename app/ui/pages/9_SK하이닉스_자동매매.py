@@ -992,7 +992,7 @@ if switch_state.get("mode") == "mock":
     )
     if _signal_summary:
         _ss1, _ss2, _ss3, _ss4 = st.columns(4)
-        _ss1.metric("Live Trade Direction", snapshot_field(_decision_snapshot, "live_trade_direction", "NONE"))
+        _ss1.metric("Live Trade Direction", snapshot_field(_decision_snapshot, "resolved_direction", snapshot_field(_decision_snapshot, "live_trade_direction", "NONE")))
         _ss2.metric("Actionable Signal", snapshot_field(_decision_snapshot, "actionable_signal", "HOLD"))
         _ss3.metric("Final Action", snapshot_field(_decision_snapshot, "final_action", "HOLD"))
         _ss4.metric("Block Reason", snapshot_field(_decision_snapshot, "primary_block_reason", _signal_summary.get("primary_block_reason") or _signal_summary.get("block_reason") or "없음"))
@@ -2014,7 +2014,15 @@ else:
             for r in _bt.get("reasons") or []:
                 st.markdown(f"- {r}")
 
-    st.subheader(f"개선된 최종점수: {_num(enh.get('enhanced_score')):.1f}/100 → 최종 판단: {decision.get('final_action', 'HOLD')}")
+    st.subheader(
+        f"개선된 최종점수: {_num(enh.get('enhanced_score')):.1f}/100 "
+        f"→ Enhanced 진단: {decision.get('final_action', 'HOLD')}"
+    )
+    st.caption(
+        "Enhanced `HYNIX_BUY`/`INVERSE_BUY`는 진단 전용입니다. "
+        "최종 실행 방향은 Live Trade Direction / resolved_direction "
+        "(UP→0193T0, DOWN→0197X0)을 따릅니다."
+    )
     with st.expander("판단 사유 Top5", expanded=True):
         for i, reason in enumerate(enh.get("reason_top5") or [], start=1):
             st.markdown(f"{i}. {reason}")

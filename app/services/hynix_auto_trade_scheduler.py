@@ -248,10 +248,16 @@ class HynixFastTrendWatcherThread(threading.Thread):
         super().__init__(daemon=True, name="HynixFastTrendWatcher")
         self.interval_seconds = interval_seconds
         self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
         self._last_full_tick_at: Optional[object] = None
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._wake_event.set()
+
+    def wake(self) -> None:
+        """Interrupt the sleep wait so the next Fast Worker tick runs immediately."""
+        self._wake_event.set()
 
     def run(self) -> None:
         logger.info("[HynixFastTrendWatcher] start (%.0fs interval, %.0fs when Early Detector LIVE)",
@@ -261,7 +267,13 @@ class HynixFastTrendWatcherThread(threading.Thread):
             next_interval = self._next_interval_seconds()
             with _status_lock:
                 _fast_status["next_run_at"] = (kst_now() + timedelta(seconds=next_interval)).isoformat()
-            self._stop_event.wait(next_interval)
+            # Wait for interval OR explicit wake OR stop.
+            self._wake_event.clear()
+            triggered = self._wake_event.wait(timeout=max(0.0, float(next_interval)))
+            if self._stop_event.is_set():
+                break
+            if triggered:
+                logger.info("[HynixFastTrendWatcher] woken early for deferred-entry completeness")
         logger.info("[HynixFastTrendWatcher] stopped")
 
     def _fast_cadence_active(self, state: dict) -> bool:
@@ -275,6 +287,9 @@ class HynixFastTrendWatcherThread(threading.Thread):
             state = load_state()
         except Exception:
             return self.interval_seconds
+        # Main cycle asked for an immediate Fast Worker tick (deferral / timeout).
+        if state.get("force_fast_worker_tick"):
+            return 0.0
         if self._fast_cadence_active(state):
             return EARLY_DETECTOR_FAST_INTERVAL_SECONDS
         return self.interval_seconds
@@ -386,6 +401,19 @@ def ensure_fast_trend_watcher_running(interval_seconds: float = FAST_WATCHER_INT
             _fast_instance = HynixFastTrendWatcherThread(interval_seconds=interval_seconds)
             _fast_instance.start()
         return _fast_instance
+
+
+def wake_fast_trend_watcher() -> bool:
+    """Wake the Fast Worker sleep wait so the next tick runs immediately.
+
+    Used when Main Cycle defers entry (`MAIN_CYCLE_ENTRY_DEFERRED`) or when
+    `FAST_WORKER_SNAPSHOT_PENDING` exceeds the 15s deadline.
+    """
+    with _fast_lock:
+        if _fast_instance is None or not _fast_instance.is_alive():
+            return False
+        _fast_instance.wake()
+        return True
 
 
 def ensure_auto_trade_background_threads(

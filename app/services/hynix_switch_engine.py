@@ -152,16 +152,21 @@ _EXECUTION_HARD_HOLD_REASONS = frozenset({
     "CHASE_BLOCK",
 })
 _FAST_WORKER_SNAPSHOT_REQUIRED_FIELDS = (
+    "resolved_direction",
     "final_action",
     "target_symbol",
-    "ratio",
+    "target_ratio",
     "qty",
+    "primary_block_reason",
     "block_reason",
     "order_requested",
     "coordinator_result",
     "broker_result",
 )
 _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS = 15.0
+_CONTINUATION_APPROVED_REASON = "CONTINUATION_ENTRY_APPROVED"
+_CONTINUATION_CANDIDATE_REASON = "CONTINUATION_CANDIDATE"
+_CONFIRMATION_PENDING_REASON = "CONFIRMATION_PENDING"
 
 
 def _set_live_entry_engine_state(state: dict, *, now: datetime, reason: str) -> None:
@@ -274,10 +279,36 @@ def _mark_fast_worker_deferral(state: dict, *, now: datetime) -> None:
         "deferred_at": now.isoformat(),
         "deadline_seconds": _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS,
     }
+    # Ask Fast Worker to run ASAP so a completed snapshot lands within 15s.
+    _request_fast_worker_wake(state, reason="MAIN_CYCLE_ENTRY_DEFERRED")
 
 
 def _clear_fast_worker_deferral(state: dict) -> None:
     state.pop("pending_fast_worker_deferral", None)
+
+
+def _request_fast_worker_wake(state: dict, *, reason: str) -> None:
+    """Flag + optional scheduler wake so main cycle never leaves deferral stranded."""
+    from app.utils.time_utils import kst_now as _kst_now
+
+    state["force_fast_worker_tick"] = True
+    state["fast_worker_wake_requested_at"] = _kst_now().isoformat()
+    state["fast_worker_wake_reason"] = reason
+
+
+def _record_fast_worker_snapshot_error(state: dict, *, now: datetime, code: str, detail: str) -> dict:
+    error = {
+        "code": code,
+        "detail": detail,
+        "recorded_at": now.isoformat(),
+        "pending": dict(state.get("pending_fast_worker_deferral") or {}),
+    }
+    errors = list(state.get("fast_worker_snapshot_errors") or [])
+    errors.append(error)
+    state["fast_worker_snapshot_errors"] = errors[-20:]
+    state["last_fast_worker_snapshot_error"] = error
+    logger.error("[HynixSwitchEngine] %s: %s", code, detail)
+    return error
 
 
 def _deferral_age_seconds(pending: Optional[dict], now: datetime) -> Optional[float]:
@@ -290,6 +321,28 @@ def _deferral_age_seconds(pending: Optional[dict], now: datetime) -> Optional[fl
         return max(0.0, (now - datetime.fromisoformat(str(raw))).total_seconds())
     except Exception:
         return None
+
+
+def _sanitize_continuation_reason_code(
+    reason: Optional[str],
+    *,
+    order_requested: bool = False,
+    order_ok: bool = False,
+) -> Optional[str]:
+    """Forbid CONTINUATION_ENTRY_APPROVED unless an order was/is being requested."""
+    code = _normalize_reason_code(reason)
+    if code == _CONTINUATION_APPROVED_REASON and not (order_requested or order_ok):
+        return _CONTINUATION_CANDIDATE_REASON
+    if code == "WAIT_FOR_CONFIRMATION":
+        return _CONFIRMATION_PENDING_REASON
+    return code
+
+
+def _promote_continuation_reason_for_order(reason: Optional[str]) -> str:
+    code = _normalize_reason_code(reason) or "WEIGHTED_ORDER_CONTROLLER"
+    if code == _CONTINUATION_CANDIDATE_REASON:
+        return _CONTINUATION_APPROVED_REASON
+    return code
 
 
 def _adaptive_position_cap_info(state: Optional[dict]) -> dict:
@@ -554,7 +607,7 @@ def evaluate_trend_continuation_entry(
     if score_gap < 10.0 or leader_score < 60.0:
         return {"action": "HOLD", "reason_code": "CONTINUATION_TOO_WEAK", "entry_path": "NONE", "score_gap": score_gap, "target_pct": 0.0}
     if score_gap < 20.0:
-        return {"action": "HOLD", "reason_code": "WAIT_FOR_CONFIRMATION", "entry_path": "NONE", "score_gap": score_gap, "target_pct": 0.0}
+        return {"action": "HOLD", "reason_code": _CONFIRMATION_PENDING_REASON, "entry_path": "NONE", "score_gap": score_gap, "target_pct": 0.0}
 
     if live_direction_held_seconds is None or float(live_direction_held_seconds) < 15.0:
         return {"action": "HOLD", "reason_code": "CONTINUATION_TOO_WEAK", "entry_path": "NONE", "score_gap": score_gap, "target_pct": 0.0}
@@ -581,7 +634,7 @@ def evaluate_trend_continuation_entry(
         low, high = 0.20, 0.30
     return {
         "action": "ENTER",
-        "reason_code": "CONTINUATION_ENTRY_APPROVED",
+        "reason_code": _CONTINUATION_CANDIDATE_REASON,
         "entry_path": "CONTINUATION",
         "score_gap": score_gap,
         "target_pct": _score_gap_dynamic_pct(
@@ -742,15 +795,15 @@ def evaluate_range_weighted_entry(
         action = "HOLD"
         low = high = 0.0
     elif evidence_score < thresholds["mid"]:
-        reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if confirm_matches >= 2 else "CONTINUATION_ENTRY_APPROVED")
+        reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if confirm_matches >= 2 else _CONTINUATION_CANDIDATE_REASON)
         action = "ENTER"
         low, high = 0.20, 0.30
     elif evidence_score < thresholds["strong"]:
-        reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if pullback_shape else "CONTINUATION_ENTRY_APPROVED")
+        reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if pullback_shape else _CONTINUATION_CANDIDATE_REASON)
         action = "ENTER"
         low, high = 0.30, 0.50
     else:
-        reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if pullback_shape else "CONTINUATION_ENTRY_APPROVED")
+        reason = "REVERSAL_ENTRY" if normalized_hint == "REVERSAL" else ("PULLBACK_ENTRY" if pullback_shape else _CONTINUATION_CANDIDATE_REASON)
         action = "ENTER"
         low, high = (0.50, 0.70) if net_edge >= 0.30 else (0.30, 0.50)
     if micro_chop_active and action == "ENTER":
@@ -1086,6 +1139,7 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     controller_enter = continuation_result.get("action") == "ENTER"
     order_ok = _switch_order_succeeded(last_switch) or _switch_order_succeeded((early_result or {}).get("switch"))
     structural_label = continuation_result.get("structural_signal_label") or continuation_state.get("structural_signal_label")
+    resolved_direction = _normalize_direction(live.get("direction")) or "NONE"
 
     block_candidates = [
         last_block,
@@ -1124,10 +1178,12 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         ((last_switch or {}).get("orders") or [])
         or (((early_result or {}).get("switch") or {}).get("orders") or [])
     )
+    # Single direction→symbol mapping (UP→0193T0, DOWN→0197X0). Enhanced HYNIX_BUY
+    # labels are diagnostic-only and must not redirect the execution symbol.
     target_symbol = (
         last_switch.get("requested_symbol")
         or (early_result or {}).get("requested_symbol")
-        or symbol_for_live_direction(live.get("direction"))
+        or symbol_for_live_direction(resolved_direction)
     )
     ratio = (
         sizing_audit.get("effective_target_pct")
@@ -1136,10 +1192,20 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     )
     if ratio is None:
         ratio = continuation_result.get("target_pct")
+    target_ratio = (
+        sizing_audit.get("target_ratio")
+        if sizing_audit.get("target_ratio") is not None
+        else ratio
+    )
     qty = sizing_audit.get("calculated_quantity")
     if qty is None:
         qty = last_switch.get("requested_qty")
     order_requested = bool(today_orders) or bool(last_switch.get("acted")) or bool(last_switch.get("orders"))
+    continuation_reason = _sanitize_continuation_reason_code(
+        continuation_result.get("reason_code"),
+        order_requested=order_requested,
+        order_ok=order_ok,
+    )
     coordinator_result = {
         "blocked_by_coordinator": bool(last_switch.get("blocked_by_coordinator")),
         "failure_code": last_switch.get("failure_code") or last_switch.get("order_skip_reason"),
@@ -1170,7 +1236,8 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "source": "FAST_WORKER",
         "raw_score_leader": _snapshot_field(_raw_score_leader(decision), snapshot_id, calculated_at, hynix_score=decision.get("enhanced_score"), inverse_score=decision.get("inverse_pressure_score"), label="raw component score"),
         "enhanced_score": _snapshot_field(decision.get("enhanced_score"), snapshot_id, calculated_at, inverse_score=decision.get("inverse_pressure_score"), label="final enhanced decision score"),
-        "live_trade_direction": _snapshot_field(live.get("direction") or "NONE", snapshot_id, calculated_at),
+        "live_trade_direction": _snapshot_field(resolved_direction, snapshot_id, calculated_at),
+        "resolved_direction": _snapshot_field(resolved_direction, snapshot_id, calculated_at),
         "actionable_signal": _snapshot_field(action, snapshot_id, calculated_at),
         "final_action": _snapshot_field(action, snapshot_id, calculated_at),
         "block_reason": _snapshot_field(block_reason, snapshot_id, calculated_at),
@@ -1182,7 +1249,7 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "structural_signal_label": _snapshot_field(display_structural, snapshot_id, calculated_at),
         "structure_confirmed": _snapshot_field(continuation_result.get("structure_confirmed"), snapshot_id, calculated_at),
         "strong_structure_confirmed": _snapshot_field(continuation_result.get("strong_structure_confirmed"), snapshot_id, calculated_at),
-        "continuation_reason": _snapshot_field(continuation_result.get("reason_code"), snapshot_id, calculated_at),
+        "continuation_reason": _snapshot_field(continuation_reason, snapshot_id, calculated_at),
         "score_gap": _snapshot_field(continuation_result.get("score_gap") or _score_gap_from_decision(decision), snapshot_id, calculated_at),
         "range_evidence_score": _snapshot_field(continuation_result.get("evidence_score"), snapshot_id, calculated_at),
         "live_direction_held_seconds": _snapshot_field(continuation_state.get("live_direction_held_seconds"), snapshot_id, calculated_at),
@@ -1194,7 +1261,7 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "gross_cost_ratio": _snapshot_field(continuation_result.get("gross_cost_ratio"), snapshot_id, calculated_at),
         "reward_risk": _snapshot_field(continuation_result.get("reward_risk"), snapshot_id, calculated_at),
         "position_cap": _snapshot_field(sizing_audit.get("position_cap"), snapshot_id, calculated_at),
-        "target_ratio": _snapshot_field(sizing_audit.get("target_ratio"), snapshot_id, calculated_at),
+        "target_ratio": _snapshot_field(target_ratio, snapshot_id, calculated_at),
         "target_symbol": _snapshot_field(target_symbol, snapshot_id, calculated_at),
         "ratio": _snapshot_field(ratio, snapshot_id, calculated_at),
         "qty": _snapshot_field(qty, snapshot_id, calculated_at),
@@ -1213,18 +1280,23 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
             "snapshot_id": snapshot_id,
             "calculated_at": calculated_at,
             "raw_score_leader": _raw_score_leader(decision),
-            "live_trade_direction": live.get("direction") or "NONE",
+            "live_trade_direction": resolved_direction,
+            "resolved_direction": resolved_direction,
             "actionable_signal": action,
             "final_action": action,
             "structural_signal_label": display_structural,
             "block_reason": block_reason,
             "primary_block_reason": primary_block_reason,
             "secondary_reasons": secondary_reasons,
+            "continuation_reason": continuation_reason,
             "target_symbol": target_symbol,
+            "target_ratio": target_ratio,
             "ratio": ratio,
             "qty": qty,
             "order_requested": order_requested,
             "conclusion": explanation,
+            # Enhanced HYNIX_BUY stays diagnostic-only — never overwrites execution direction.
+            "enhanced_final_action_diagnostic": decision.get("final_action"),
         },
         "pipeline_trace": {"snapshot_id": snapshot_id, "calculated_at": calculated_at, "early_decision": early_result or {}, "continuation": continuation_result},
         "orders_this_cycle": today_orders,
@@ -1232,6 +1304,7 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     state["last_fast_worker_decision_snapshot"] = snapshot
     state["last_completed_decision_snapshot"] = snapshot
     state["last_signal_summary"] = snapshot["signal_summary"]
+    state.pop("force_fast_worker_tick", None)
     _clear_fast_worker_deferral(state)
 
 
@@ -3110,14 +3183,72 @@ def update_hynix_auto_trade_loop(mode: Optional[str] = None, now: Optional[datet
     모두 같은 mode의 state를 동시에 load→수정→save할 수 있어(lost update 위험 — 실제로
     2026-07-10 부분손절 손익 1건이 이렇게 누락된 사고가 있었다), 이 함수 호출 전체를
     mode별 락(app.services.hynix_switch_state.with_state_lock)으로 직렬화한다.
+
+    After the locked cycle, if Main Cycle deferred entry to Fast Worker (or a
+    pending snapshot timed out), immediately wake/trigger the next Fast Worker
+    tick outside the state lock to avoid deadlock.
     """
     from app.services.hynix_switch_state import with_state_lock
 
+    now = now or kst_now()
     resolved_mode = mode
     if resolved_mode is None:
         resolved_mode = load_state(mode=None).get("mode", "mock")
     with with_state_lock(resolved_mode):
-        return _update_hynix_auto_trade_loop_locked(mode=mode, now=now)
+        result = _update_hynix_auto_trade_loop_locked(mode=mode, now=now)
+
+    wake = bool(
+        result.get("wake_fast_worker")
+        or (result.get("state") or {}).get("_wake_fast_worker_after_cycle")
+        or (result.get("state") or {}).get("force_fast_worker_tick")
+    )
+    immediate = bool(
+        ((result.get("state") or {}).get("last_fast_worker_snapshot_error") or {}).get("code")
+        in ("FAST_WORKER_SNAPSHOT_TIMEOUT", "FAST_WORKER_SNAPSHOT_STALE")
+        or (result.get("decision_snapshot") or {}).get("source") == "MAIN_CYCLE_DEFERRED"
+        and _snapshot_field_value(result.get("decision_snapshot"), "primary_block_reason")
+        in ("FAST_WORKER_SNAPSHOT_TIMEOUT", "FAST_WORKER_SNAPSHOT_STALE")
+    )
+    if wake:
+        try:
+            from app.services.hynix_auto_trade_scheduler import wake_fast_trend_watcher
+
+            wake_fast_trend_watcher()
+        except Exception as exc:
+            logger.debug("[HynixSwitchEngine] Fast Worker wake signal failed: %s", exc)
+        if immediate:
+            try:
+                # Overdue pending: trigger a Fast Worker tick now (lock already released).
+                fw_result = run_early_trend_fast_feed_tick(mode=resolved_mode, now=now)
+                result["fast_worker_wake_result"] = {
+                    "skipped": bool((fw_result or {}).get("skipped")),
+                    "reason": (fw_result or {}).get("reason"),
+                }
+                with with_state_lock(resolved_mode):
+                    state_after = load_state(mode=resolved_mode)
+                    state_after.pop("_wake_fast_worker_after_cycle", None)
+                    fw_snap = state_after.get("last_fast_worker_decision_snapshot")
+                    if _fast_worker_snapshot_is_complete(fw_snap):
+                        state_after["last_completed_decision_snapshot"] = fw_snap
+                        result["decision_snapshot"] = fw_snap
+                        result["state"] = state_after
+                    else:
+                        result["state"] = state_after
+                    save_state_atomic(state_after)
+            except Exception as exc:
+                logger.error("[HynixSwitchEngine] Fast Worker immediate tick after deferral failed: %s", exc)
+                result["fast_worker_wake_result"] = {"skipped": True, "reason": str(exc)}
+        else:
+            # Fresh deferral: wake the background Fast Worker; it must complete within 15s.
+            try:
+                with with_state_lock(resolved_mode):
+                    state_after = load_state(mode=resolved_mode)
+                    state_after.pop("_wake_fast_worker_after_cycle", None)
+                    save_state_atomic(state_after)
+                    result["state"] = state_after
+            except Exception:
+                pass
+    return result
 
 
 def compute_eod_regime_only(mode: Optional[str] = None, now: Optional[datetime] = None) -> dict:
@@ -4419,6 +4550,13 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                             final_action = action_for_live_direction(desired_live_direction) or (
                                 "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
                             )
+                            _order_reason = _promote_continuation_reason_for_order(
+                                continuation_eval.get("reason_code")
+                            )
+                            if _order_reason != continuation_eval.get("reason_code"):
+                                continuation_eval = {**continuation_eval, "reason_code": _order_reason}
+                                continuation_state["last_result"] = continuation_eval
+                                continuation_state["last_reason_code"] = _order_reason
                             _entry_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
                             _entry_audit["direction_episode_id"] = _episode_id_for_order
                             _entry_audit["episode_id"] = _episode_id_for_order
@@ -4426,7 +4564,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                             _entry_audit["position_cap"] = _sizing["position_cap"]
                             switch = run_switch_or_entry(
                                 state, broker, final_action, long_price, inverse_price, now=now,
-                                forced=True, reason=continuation_eval.get("reason_code") or "WEIGHTED_ORDER_CONTROLLER",
+                                forced=True, reason=_order_reason or "WEIGHTED_ORDER_CONTROLLER",
                                 position_manager=position_manager, target_position_pct=_sizing["effective_target_pct"],
                                 entry_type="WEIGHTED_RANGE_ENTRY",
                                 signal_source="WEIGHTED_ORDER_CONTROLLER",
@@ -5473,6 +5611,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
     state["last_signal_summary"] = trace["signal_summary"]
     pending_deferral = state.get("pending_fast_worker_deferral")
     fw_snap = state.get("last_fast_worker_decision_snapshot")
+    wake_fast_worker = False
     if pending_deferral and _fast_worker_snapshot_is_complete(fw_snap):
         # Fast Worker already produced the required completed snapshot within the window.
         age = _deferral_age_seconds(pending_deferral, now)
@@ -5480,9 +5619,21 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
             state["last_completed_decision_snapshot"] = fw_snap
             _clear_fast_worker_deferral(state)
         else:
+            # Stale completed snap after deadline — record error, clear pending.
+            _record_fast_worker_snapshot_error(
+                state,
+                now=now,
+                code="FAST_WORKER_SNAPSHOT_STALE",
+                detail=f"Completed snapshot arrived after {_FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:.0f}s deferral window",
+            )
             completed_decision_snapshot = {
                 **completed_decision_snapshot,
                 "source": "MAIN_CYCLE_DEFERRED",
+                "resolved_direction": _snapshot_field(
+                    _normalize_direction((state.get("live_trade_direction") or {}).get("direction")) or "NONE",
+                    completed_decision_snapshot["snapshot_id"],
+                    completed_decision_snapshot["calculated_at"],
+                ),
                 "block_reason": _snapshot_field(
                     "FAST_WORKER_SNAPSHOT_STALE",
                     completed_decision_snapshot["snapshot_id"],
@@ -5499,6 +5650,7 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                     completed_decision_snapshot["calculated_at"],
                 ),
                 "target_symbol": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
+                "target_ratio": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
                 "ratio": _snapshot_field(None, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
                 "qty": _snapshot_field(0, completed_decision_snapshot["snapshot_id"], completed_decision_snapshot["calculated_at"]),
                 "order_requested": False,
@@ -5506,23 +5658,44 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
                 "broker_result": {"status": "NOT_REQUESTED"},
             }
             state["last_completed_decision_snapshot"] = completed_decision_snapshot
+            _clear_fast_worker_deferral(state)
+            wake_fast_worker = True
+            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_STALE")
     elif pending_deferral:
         # No silent incomplete deferral — HOLD placeholder until Fast Worker completes.
         defer_reason = "FAST_WORKER_SNAPSHOT_PENDING"
         age = _deferral_age_seconds(pending_deferral, now)
-        if age is not None and age > _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:
-            defer_reason = "FAST_WORKER_SNAPSHOT_INCOMPLETE"
+        overdue = age is not None and age > _FAST_WORKER_DEFERRAL_DEADLINE_SECONDS
+        if overdue:
+            defer_reason = "FAST_WORKER_SNAPSHOT_TIMEOUT"
+            _record_fast_worker_snapshot_error(
+                state,
+                now=now,
+                code="FAST_WORKER_SNAPSHOT_TIMEOUT",
+                detail=(
+                    f"FAST_WORKER_SNAPSHOT_PENDING exceeded "
+                    f"{_FAST_WORKER_DEFERRAL_DEADLINE_SECONDS:.0f}s (age={age:.1f}s) — "
+                    "waking Fast Worker and clearing indefinite pending"
+                ),
+            )
+            wake_fast_worker = True
+            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_TIMEOUT")
         sid = completed_decision_snapshot["snapshot_id"]
         cat = completed_decision_snapshot["calculated_at"]
+        resolved_direction = _normalize_direction((state.get("live_trade_direction") or {}).get("direction")) or "NONE"
+        target_symbol = symbol_for_live_direction(resolved_direction)
         completed_decision_snapshot = {
             **completed_decision_snapshot,
             "source": "MAIN_CYCLE_DEFERRED",
+            "resolved_direction": _snapshot_field(resolved_direction, sid, cat),
+            "live_trade_direction": _snapshot_field(resolved_direction, sid, cat),
             "final_action": _snapshot_field("HOLD", sid, cat),
             "actionable_signal": _snapshot_field("HOLD", sid, cat),
             "block_reason": _snapshot_field(defer_reason, sid, cat),
             "primary_block_reason": _snapshot_field(defer_reason, sid, cat),
             "structural_signal_label": _snapshot_field("HOLD", sid, cat),
-            "target_symbol": _snapshot_field(None, sid, cat),
+            "target_symbol": _snapshot_field(target_symbol, sid, cat),
+            "target_ratio": _snapshot_field(None, sid, cat),
             "ratio": _snapshot_field(None, sid, cat),
             "qty": _snapshot_field(0, sid, cat),
             "order_requested": False,
@@ -5532,12 +5705,26 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         completed_decision_snapshot["signal_summary"] = {
             **(completed_decision_snapshot.get("signal_summary") or {}),
             "final_action": "HOLD",
+            "resolved_direction": resolved_direction,
+            "live_trade_direction": resolved_direction,
             "block_reason": defer_reason,
             "primary_block_reason": defer_reason,
+            "target_symbol": target_symbol,
+            # Enhanced HYNIX_BUY is diagnostic-only.
+            "enhanced_final_action_diagnostic": (decision or {}).get("final_action"),
         }
         state["last_completed_decision_snapshot"] = completed_decision_snapshot
+        if overdue:
+            # Forbid indefinite pending: clear after recording timeout error + wake request.
+            _clear_fast_worker_deferral(state)
+        elif not state.get("force_fast_worker_tick"):
+            # Still inside the 15s window — ensure Fast Worker is nudged.
+            wake_fast_worker = True
+            _request_fast_worker_wake(state, reason="FAST_WORKER_SNAPSHOT_PENDING")
     else:
         state["last_completed_decision_snapshot"] = completed_decision_snapshot
+    if wake_fast_worker or state.get("force_fast_worker_tick"):
+        state["_wake_fast_worker_after_cycle"] = True
     save_state_atomic(state)
 
     # ── 로그 기록 ────────────────────────────────────────────────────────────
@@ -5642,9 +5829,10 @@ def _update_hynix_auto_trade_loop_locked(mode: Optional[str] = None, now: Option
         "position_manager": position_manager.to_cache_dict() if position_manager is not None else None,
         "warnings": warnings + (enhanced_result.get("warnings") or []),
         "pipeline_trace": trace,
-        "decision_snapshot": completed_decision_snapshot,
+        "decision_snapshot": state.get("last_completed_decision_snapshot") or completed_decision_snapshot,
         # SHADOW MODE 전용 — 실제 주문에 영향 없음(비교/검증 목적).
         "cycle_ai_shadow_result": state.get("last_cycle_ai_result"),
+        "wake_fast_worker": bool(state.get("_wake_fast_worker_after_cycle") or state.get("force_fast_worker_tick")),
     }
 
 
