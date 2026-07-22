@@ -19,7 +19,13 @@ from typing import Optional
 from app.logger import logger
 from app.utils.time_utils import kst_now
 from app.utils.runtime_info import read_runtime_info
-from app.trading.hynix_symbols import SIGNAL_SYMBOL, LONG_SYMBOL as HYNIX_SYMBOL, SHORT_SYMBOL as INVERSE_SYMBOL
+from app.trading.hynix_symbols import (
+    SIGNAL_SYMBOL,
+    LONG_SYMBOL as HYNIX_SYMBOL,
+    SHORT_SYMBOL as INVERSE_SYMBOL,
+    action_for_live_direction,
+    symbol_for_live_direction,
+)
 from app.services.hynix_switch_state import load_state, save_state_atomic, set_active_mode, reset_mock_state
 from app.services.hynix_switch_logger import log_enhanced_prediction, log_trade
 from app.trading.hynix_switch_risk_gate import (
@@ -137,6 +143,86 @@ def _live_trade_direction_label(state: dict) -> str:
     if live.get("status") == "REVERSAL_CANDIDATE":
         return f"REVERSAL_CANDIDATE_{direction}"
     return direction
+
+
+
+def _adaptive_position_cap_info(state: Optional[dict]) -> dict:
+    """Adaptive Regime position-cap for new entries (DATA_INSUFFICIENT → 0%).
+
+    Existing policy: DATA_INSUFFICIENT has block_new_entries=True and
+    position_pct_multiplier=0.0 — no exploratory live entry is allowed until a
+    real regime confirms. Early-session safety stays fail-closed.
+    """
+    from app.trading.adaptive_market_regime import DATA_INSUFFICIENT, get_risk_profile
+
+    adaptive = (state or {}).get("adaptive_regime") or {}
+    regime = adaptive.get("confirmed_regime") or adaptive.get("regime") or DATA_INSUFFICIENT
+    profile = get_risk_profile(str(regime))
+    try:
+        multiplier = float(profile.get("position_pct_multiplier") if profile.get("position_pct_multiplier") is not None else 1.0)
+    except Exception:
+        multiplier = 1.0
+    block_new = bool(profile.get("block_new_entries")) or multiplier <= 0.0
+    return {
+        "regime": regime,
+        "position_cap": max(0.0, multiplier),
+        "block_new_entries": block_new,
+        "profile": profile,
+    }
+
+
+def _effective_target_pct_with_adaptive_cap(target_pct: Optional[float], state: Optional[dict]) -> dict:
+    """Apply Adaptive Regime cap to a Weighted Controller target ratio.
+
+    Returns audit fields: position_cap, target_ratio, effective_target_pct, skip_reason.
+    """
+    info = _adaptive_position_cap_info(state)
+    try:
+        raw = float(target_pct) if target_pct is not None else 0.0
+    except Exception:
+        raw = 0.0
+    if raw > 1.0:
+        raw = raw / 100.0
+    raw = max(0.0, min(1.0, raw))
+    effective = raw * float(info["position_cap"])
+    skip_reason = None
+    if info["block_new_entries"] or float(info["position_cap"]) <= 0.0:
+        effective = 0.0
+        skip_reason = "DATA_INSUFFICIENT_POSITION_CAP_ZERO"
+    elif effective <= 0.0:
+        skip_reason = "TARGET_PCT_ZERO"
+    return {
+        "position_cap": float(info["position_cap"]),
+        "target_ratio": raw,
+        "effective_target_pct": effective,
+        "order_skip_reason": skip_reason,
+        "regime": info["regime"],
+        "block_new_entries": info["block_new_entries"],
+    }
+
+
+def _orders_are_today(orders: Optional[list], *, today: Optional[str] = None) -> list:
+    """Keep only same-calendar-day order rows for UI/state display."""
+    day = today or kst_now().strftime("%Y%m%d")
+    kept: list = []
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        ts = str(order.get("timestamp") or "")
+        day_key = ts[:10].replace("-", "")
+        if not ts:
+            continue
+        if day_key == day:
+            kept.append(order)
+    return kept
+
+
+def _switch_order_succeeded(switch_result: Optional[dict]) -> bool:
+    return bool(
+        switch_result
+        and switch_result.get("acted")
+        and any(bool(o.get("success")) for o in (switch_result.get("orders") or []) if isinstance(o, dict))
+    )
 
 
 def _is_hynix_live_uptrend_block(final_action: str, reason: str, state: dict) -> bool:
@@ -785,7 +871,7 @@ def _build_completed_decision_snapshot(
         "decision": {**(decision or {})},
         "signal_summary": {**signal_summary, "snapshot_id": snapshot_id, "calculated_at": calculated_at},
         "pipeline_trace": {**(trace or {}), "snapshot_id": snapshot_id, "calculated_at": calculated_at},
-        "orders_this_cycle": list(orders_this_cycle or []),
+        "orders_this_cycle": _orders_are_today(list(orders_this_cycle or []), today=now.strftime("%Y%m%d")),
         "new_entry_allowed": bool(new_entry_allowed_now),
     }
     return snapshot
@@ -797,14 +883,51 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
     snapshot_id = _decision_snapshot_id(now)
     continuation_result = continuation_state.get("last_result") or {}
     live = state.get("live_trade_direction") or {}
-    action = "BUY" if continuation_result.get("action") == "ENTER" else "HOLD"
-    block_reason = None if action == "BUY" else continuation_result.get("reason_code")
     early_reason = (early_result or {}).get("reason_code") or (early_result or {}).get("reason")
-    primary_block_reason = block_reason or (None if action == "BUY" else early_reason)
+    last_block = continuation_state.get("last_block_reason")
+    last_switch = continuation_state.get("last_switch") or (early_result or {}).get("switch") or {}
+    sizing_audit = continuation_state.get("order_sizing_audit") or {}
+    order_skip = (
+        sizing_audit.get("order_skip_reason")
+        or last_switch.get("failure_code")
+        or last_switch.get("order_skip_reason")
+        or last_block
+    )
+    controller_enter = continuation_result.get("action") == "ENTER"
+    order_ok = _switch_order_succeeded(last_switch) or _switch_order_succeeded((early_result or {}).get("switch"))
+    # Never display BUY + empty block when Adaptive cap / sizing / Fast Worker
+    # gates prevented an actual order. Cap=0 → explicit HOLD.
+    if order_ok:
+        action = "BUY"
+        block_reason = None
+        primary_block_reason = None
+    elif order_skip == "DATA_INSUFFICIENT_POSITION_CAP_ZERO" or (
+        controller_enter and float(sizing_audit.get("position_cap") or 1.0) <= 0.0
+    ):
+        action = "HOLD"
+        block_reason = "DATA_INSUFFICIENT_POSITION_CAP_ZERO"
+        primary_block_reason = "DATA_INSUFFICIENT_POSITION_CAP_ZERO"
+    elif controller_enter and order_skip:
+        action = "HOLD"
+        block_reason = str(order_skip)
+        primary_block_reason = str(order_skip)
+    elif controller_enter and not order_ok:
+        # ENTER approved but Fast Worker did not complete the broker path — no silent BUY.
+        action = "HOLD"
+        block_reason = str(last_block or early_reason or "FAST_WORKER_ENTRY_NOT_EXECUTED")
+        primary_block_reason = block_reason
+    else:
+        action = "HOLD"
+        block_reason = continuation_result.get("reason_code")
+        primary_block_reason = block_reason or early_reason
     secondary_reasons = [
-        reason for reason in (early_reason, continuation_result.get("reason_code"))
+        reason for reason in (early_reason, continuation_result.get("reason_code"), last_block, sizing_audit.get("order_skip_reason"))
         if reason and reason != primary_block_reason
     ]
+    today_orders = _orders_are_today(
+        ((last_switch or {}).get("orders") or [])
+        or (((early_result or {}).get("switch") or {}).get("orders") or [])
+    )
     snapshot = {
         "snapshot_id": snapshot_id,
         "calculated_at": calculated_at,
@@ -834,12 +957,16 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
         "expected_net_edge_pct": _snapshot_field(continuation_result.get("expected_net_edge_pct"), snapshot_id, calculated_at),
         "gross_cost_ratio": _snapshot_field(continuation_result.get("gross_cost_ratio"), snapshot_id, calculated_at),
         "reward_risk": _snapshot_field(continuation_result.get("reward_risk"), snapshot_id, calculated_at),
+        "position_cap": _snapshot_field(sizing_audit.get("position_cap"), snapshot_id, calculated_at),
+        "target_ratio": _snapshot_field(sizing_audit.get("target_ratio"), snapshot_id, calculated_at),
+        "calculated_quantity": _snapshot_field(sizing_audit.get("calculated_quantity"), snapshot_id, calculated_at),
+        "order_skip_reason": _snapshot_field(sizing_audit.get("order_skip_reason") or order_skip, snapshot_id, calculated_at),
         "signal_detected_at": continuation_state.get("first_detected_at"),
         "snapshot_calculated_at": calculated_at,
-        "order_requested_at": ((continuation_state.get("last_switch") or {}).get("orders") or [{}])[0].get("timestamp") if (continuation_state.get("last_switch") or {}).get("orders") else None,
+        "order_requested_at": ((last_switch or {}).get("orders") or [{}])[0].get("timestamp") if (last_switch or {}).get("orders") else None,
         "explanation": (
             f"{continuation_result.get('structural_signal_label') or 'TREND_CONTINUATION_ENTRY'} 승인"
-            if action == "BUY" else f"Continuation 차단: {block_reason}"
+            if action == "BUY" else f"Continuation 차단: {primary_block_reason or block_reason}"
         ),
         "enhanced_result": dict(state.get("last_enhanced_result") or {}),
         "decision": dict(decision),
@@ -856,11 +983,11 @@ def _update_fast_worker_decision_snapshot(state: dict, *, now: datetime, continu
             "secondary_reasons": secondary_reasons,
             "conclusion": (
                 f"{continuation_result.get('structural_signal_label') or 'TREND_CONTINUATION_ENTRY'} 승인"
-                if action == "BUY" else f"Continuation 차단: {block_reason}"
+                if action == "BUY" else f"Continuation 차단: {primary_block_reason or block_reason}"
             ),
         },
         "pipeline_trace": {"snapshot_id": snapshot_id, "calculated_at": calculated_at, "early_decision": early_result or {}, "continuation": continuation_result},
-        "orders_this_cycle": ((continuation_state.get("last_switch") or {}).get("orders") or []),
+        "orders_this_cycle": today_orders,
     }
     state["last_completed_decision_snapshot"] = snapshot
     state["last_signal_summary"] = snapshot["signal_summary"]
@@ -1032,17 +1159,28 @@ def detect_opposite_episode_transition(
     confirm_dirs: dict,
     existing_structure_broken: bool,
     new_etf_vwap_reclaim: bool,
+    new_etf_vwap_break: bool = False,
+    new_swing_breakout: bool = False,
 ) -> bool:
-    """opposite episode 전환: swing 구조 이탈 또는 반대 ETF VWAP 재돌파 + 5/10 정렬(5초 단독 불가)."""
+    """opposite episode 전환은 아래 OR 중 하나만 충족하면 된다.
+
+    1) swing structure breakout / structure broken against existing direction
+       (existing structure break OR new-direction swing breakout; 5/10 불필요)
+    2) 반대 ETF VWAP reclaim/break + ETF 5/10초 방향 확인 (5초 단독 불가)
+    """
     if not existing_direction:
         return True
     if existing_direction == new_direction:
         return False
     if not live_direction_matches:
         return False
-    if confirm_dirs.get(5) != new_direction or confirm_dirs.get(10) != new_direction:
-        return False
-    return bool(existing_structure_broken or new_etf_vwap_reclaim)
+    if existing_structure_broken or new_swing_breakout:
+        return True
+    dirs_5_10_aligned = (
+        confirm_dirs.get(5) == new_direction and confirm_dirs.get(10) == new_direction
+    )
+    vwap_ok = bool(new_etf_vwap_reclaim or new_etf_vwap_break)
+    return bool(vwap_ok and dirs_5_10_aligned)
 
 
 def range_episode_allows_entry(
@@ -1053,19 +1191,33 @@ def range_episode_allows_entry(
     vwap_reclaim: bool,
     direction_changed: bool,
 ) -> tuple[bool, str | None]:
-    """동일 episode 내 과매매 방지 — REVERSAL probe 1회, PROBE_FAILED는 REVERSAL만 차단."""
+    """동일 episode 내 과매매 방지 — REVERSAL probe 1회, PROBE_FAILED는 동일 REVERSAL만 차단."""
     if direction_changed:
         return True, None
 
     structural_unlock = swing_breakout or vwap_reclaim
-    if continuation_state.get("episode_status") == "PROBE_FAILED" and entry_path == "REVERSAL":
+    normalized_path = (entry_path or "").upper() or None
+    probe_failed = continuation_state.get("episode_status") == "PROBE_FAILED"
+    # PROBE_FAILED locks repeating the same REVERSAL only; CONTINUATION needs new structure.
+    if probe_failed and normalized_path == "REVERSAL":
         return False, "PROBE_FAILED_REVERSAL_BLOCKED"
-    if entry_path == "REVERSAL" and continuation_state.get("reversal_probe_done"):
+    if probe_failed and normalized_path != "REVERSAL" and not structural_unlock:
+        return False, "AWAITING_STRUCTURAL_REENTRY"
+    if normalized_path == "REVERSAL" and continuation_state.get("reversal_probe_done"):
         return False, "REVERSAL_PROBE_ONCE_PER_EPISODE"
     if continuation_state.get("awaiting_structural_reentry") and not structural_unlock:
         return False, "AWAITING_STRUCTURAL_REENTRY"
     if continuation_state.get("entry_done"):
+        # New structure after PROBE_FAILED must not keep CONTINUATION locked by entry_done.
+        if probe_failed and normalized_path != "REVERSAL" and structural_unlock:
+            continuation_state["entry_done"] = False
+            continuation_state["awaiting_structural_reentry"] = False
+            continuation_state["last_block_reason"] = None
+            return True, None
         return False, "ENTRY_DONE_FOR_EPISODE"
+    if probe_failed and normalized_path != "REVERSAL" and structural_unlock:
+        continuation_state["awaiting_structural_reentry"] = False
+        continuation_state["last_block_reason"] = None
     return True, None
 
 
@@ -3802,7 +3954,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 elif _episode_confirm.get("indicator_direction") in ("UP", "DOWN"):
                     # enhanced 차단 시 episode 지표 방향을 참고(주문은 A만)
                     desired_live_direction = _episode_confirm["indicator_direction"]
-            desired_symbol = HYNIX_SYMBOL if desired_live_direction == "UP" else (INVERSE_SYMBOL if desired_live_direction == "DOWN" else None)
+            desired_symbol = symbol_for_live_direction(desired_live_direction)
             current_etf_price = long_price if desired_symbol == HYNIX_SYMBOL else (inverse_price if desired_symbol == INVERSE_SYMBOL else None)
             from app.trading.etf_entry_confirmation import resolve_window_directions, trade_aligned_window_directions
 
@@ -3861,12 +4013,16 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 try:
                     from app.trading.etf_entry_confirmation import is_swing_structure_broken_against
 
-                    _existing_symbol = HYNIX_SYMBOL if _existing_episode_direction == "UP" else INVERSE_SYMBOL
+                    _existing_symbol = symbol_for_live_direction(_existing_episode_direction) or HYNIX_SYMBOL
                     _existing_df = _load_etf_own_minute_cache(_existing_symbol)
                     _existing_price = long_price if _existing_symbol == HYNIX_SYMBOL else inverse_price
                     if _existing_df is not None and _existing_price:
+                        # Inverse is held long for market DOWN — use trade-aligned UP.
+                        _structure_dir = (
+                            "UP" if _existing_symbol == INVERSE_SYMBOL else _existing_episode_direction
+                        )
                         _existing_structure_broken = is_swing_structure_broken_against(
-                            _existing_df, float(_existing_price), _existing_episode_direction,
+                            _existing_df, float(_existing_price), _structure_dir,
                         )
                 except Exception:
                     _existing_structure_broken = False
@@ -3877,6 +4033,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 confirm_dirs=confirm_dirs,
                 existing_structure_broken=_existing_structure_broken,
                 new_etf_vwap_reclaim=_vwap_reclaim,
+                new_swing_breakout=bool(confirm_swing_breakout),
             )
             _direction_episode_changed = False
             if continuation_state.get("direction") != desired_live_direction and (
@@ -3981,30 +4138,55 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 _ep_confirm = etd_state.get("macd_williams_episode") or {}
                 _held_sec = (state.get("live_trade_direction") or {}).get("direction_held_seconds")
                 _timing_ok, _timing_reason = entry_timing_ok(_held_sec)
-                if daily_loss_limit_reached_from_pct(_daily_ret, _range_cfg):
-                    continuation_state["last_block_reason"] = "DAILY_LOSS_LIMIT"
+                _sizing = _effective_target_pct_with_adaptive_cap(continuation_eval.get("target_pct"), state)
+                try:
+                    _calc_qty = int(
+                        (_sizing["effective_target_pct"] * float(broker.get_buyable_cash() or 0.0))
+                        // float(current_etf_price)
+                    ) if current_etf_price else 0
+                except Exception:
+                    _calc_qty = 0
+                _sizing["calculated_quantity"] = max(0, int(_calc_qty or 0))
+                continuation_state["order_sizing_audit"] = _sizing
+
+                def _mark_fast_entry_block(code: str) -> None:
+                    nonlocal early_result
+                    continuation_state["last_block_reason"] = code
+                    early_result = {
+                        "skipped": True,
+                        "reason": code,
+                        "reason_code": code,
+                        "continuation": continuation_eval,
+                        "order_sizing_audit": _sizing,
+                        "order_permission": "BLOCKED",
+                    }
+
+                if _sizing.get("order_skip_reason") == "DATA_INSUFFICIENT_POSITION_CAP_ZERO":
+                    # DATA_INSUFFICIENT policy: no exploratory live entry (cap=0).
+                    _mark_fast_entry_block("DATA_INSUFFICIENT_POSITION_CAP_ZERO")
+                elif daily_loss_limit_reached_from_pct(_daily_ret, _range_cfg):
+                    _mark_fast_entry_block("DAILY_LOSS_LIMIT")
                 elif chase_hard_block(moved_pct):
-                    continuation_state["last_block_reason"] = "CHASE_BLOCK"
+                    _mark_fast_entry_block("CHASE_BLOCK")
                 elif not _timing_ok:
-                    continuation_state["last_block_reason"] = _timing_reason
+                    _mark_fast_entry_block(_timing_reason or "ENTRY_TIMING_BLOCK")
                 elif episode_gate_blocks_entry(_gate_mode, _ep_confirm):
-                    continuation_state["last_block_reason"] = "MACD_WILLIAMS_EPISODE_NOT_CONFIRMED"
                     continuation_state["episode_gate_mode"] = _gate_mode
+                    _mark_fast_entry_block("MACD_WILLIAMS_EPISODE_NOT_CONFIRMED")
                 else:
                     held_symbol = (state.get("position") or {}).get("symbol")
                     _entry_path_for_key = continuation_eval.get("entry_path") or "CONTINUATION"
                     _episode_id_for_order = continuation_state.get("direction_episode_id") or f"{desired_live_direction}:{continuation_state.get('first_detected_at')}"
                     order_key = f"{_episode_id_for_order}:ENTRY"
                     _opposite_switch = bool(held_symbol and held_symbol != desired_symbol)
+                    # Preserve whatever opposite-episode confirmation the surrounding
+                    # Fast Worker tick already computed (_opposite_episode_confirmed).
                     _opposite_switch_allowed = (
                         live_trade.get("direction") == desired_live_direction
-                        and confirm_dirs.get(5) == desired_live_direction
-                        and confirm_dirs.get(10) == desired_live_direction
-                        and bool(confirm_swing_breakout)
                         and _opposite_episode_confirmed
                     )
                     if _opposite_switch and not _opposite_switch_allowed:
-                        continuation_state["last_block_reason"] = "OPPOSITE_EPISODE_NOT_CONFIRMED"
+                        _mark_fast_entry_block("OPPOSITE_EPISODE_NOT_CONFIRMED")
                     else:
                         _allows_entry, _entry_block = range_episode_allows_entry(
                             continuation_state,
@@ -4014,22 +4196,34 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                             direction_changed=_direction_episode_changed,
                         )
                         if not _allows_entry:
-                            continuation_state["last_block_reason"] = _entry_block
-                        elif held_symbol != desired_symbol and not continuation_state.get("entry_done") and continuation_state.get("last_order_key") != order_key:
-                            final_action = "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                            _mark_fast_entry_block(_entry_block or "RANGE_EPISODE_ENTRY_BLOCKED")
+                        elif held_symbol == desired_symbol or continuation_state.get("entry_done") or continuation_state.get("last_order_key") == order_key:
+                            _mark_fast_entry_block(
+                                "TARGET_ALREADY_FILLED" if held_symbol == desired_symbol else "FAST_WORKER_ENTRY_ALREADY_ATTEMPTED"
+                            )
+                        else:
+                            final_action = action_for_live_direction(desired_live_direction) or (
+                                "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                            )
                             _entry_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
                             _entry_audit["direction_episode_id"] = _episode_id_for_order
                             _entry_audit["episode_id"] = _episode_id_for_order
+                            _entry_audit["target_position_pct"] = _sizing["effective_target_pct"]
+                            _entry_audit["position_cap"] = _sizing["position_cap"]
                             switch = run_switch_or_entry(
                                 state, broker, final_action, long_price, inverse_price, now=now,
                                 forced=True, reason=continuation_eval.get("reason_code") or "WEIGHTED_ORDER_CONTROLLER",
-                                position_manager=position_manager, target_position_pct=continuation_eval["target_pct"],
+                                position_manager=position_manager, target_position_pct=_sizing["effective_target_pct"],
                                 entry_type="WEIGHTED_RANGE_ENTRY",
                                 signal_source="WEIGHTED_ORDER_CONTROLLER",
                                 fusion_metadata=_entry_audit,
                             )
                             continuation_state["last_order_key"] = order_key
                             continuation_state["last_switch"] = switch
+                            _sizing["calculated_quantity"] = int(switch.get("requested_qty") or _sizing.get("calculated_quantity") or 0)
+                            if switch.get("failure_code") or switch.get("order_skip_reason"):
+                                _sizing["order_skip_reason"] = switch.get("failure_code") or switch.get("order_skip_reason")
+                            continuation_state["order_sizing_audit"] = _sizing
                             if _fast_order_succeeded(switch):
                                 continuation_state["entry_done"] = True
                                 continuation_state["entry_path"] = continuation_eval.get("entry_path")
@@ -4048,7 +4242,34 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                                     "entry_path": continuation_eval.get("entry_path"),
                                     "switch": switch,
                                     "continuation": continuation_eval,
+                                    "order_sizing_audit": _sizing,
                                 }
+                            else:
+                                _fail = (
+                                    switch.get("failure_code")
+                                    or switch.get("order_skip_reason")
+                                    or switch.get("message")
+                                    or "FAST_WORKER_ORDER_NOT_SENT"
+                                )
+                                continuation_state["last_block_reason"] = str(_fail)
+                                early_result = {
+                                    "skipped": True,
+                                    "reason": str(_fail),
+                                    "reason_code": str(_fail),
+                                    "switch": switch,
+                                    "continuation": continuation_eval,
+                                    "order_sizing_audit": _sizing,
+                                    "order_permission": "BLOCKED",
+                                }
+            elif continuation_eval.get("action") == "ENTER" and not desired_symbol:
+                continuation_state["last_block_reason"] = "NO_LIVE_DIRECTION_SYMBOL"
+                early_result = {
+                    "skipped": True,
+                    "reason": "NO_LIVE_DIRECTION_SYMBOL",
+                    "reason_code": "NO_LIVE_DIRECTION_SYMBOL",
+                    "continuation": continuation_eval,
+                    "order_permission": "BLOCKED",
+                }
             _held_for_scale = (state.get("position") or {}).get("symbol")
             if (
                 desired_symbol
@@ -4076,7 +4297,7 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                     )
                     _scale_key = f"{_episode_id_for_scale}:SCALE_IN"
                     if _scale_target > 0 and continuation_state.get("last_order_key") != _scale_key:
-                        final_action = "HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY"
+                        final_action = action_for_live_direction(desired_live_direction) or ("HYNIX_BUY" if desired_live_direction == "UP" else "INVERSE_BUY")
                         _scale_audit = _weighted_entry_fusion_metadata(state, continuation_eval)
                         _scale_audit["direction_episode_id"] = _episode_id_for_scale
                         _scale_audit["episode_id"] = _episode_id_for_scale

@@ -1764,12 +1764,59 @@ def run_switch_or_entry(
             "stage": "entry", "failure_code": "ETF_DATA_INSUFFICIENT", "requested_symbol": desired_symbol,
         }
 
+    # Adaptive Regime cap (DATA_INSUFFICIENT → 0%): never bump to 1 share when
+    # the effective target is zero. Record position_cap / target / qty / skip reason.
+    effective_target = target_position_pct
+    position_cap = None
+    order_skip_reason = None
+    try:
+        from app.trading.adaptive_market_regime import get_risk_profile
+
+        _adaptive = state.get("adaptive_regime") or {}
+        _regime = _adaptive.get("confirmed_regime") or _adaptive.get("regime")
+        if _regime:
+            _profile = get_risk_profile(str(_regime))
+            position_cap = float(_profile.get("position_pct_multiplier") if _profile.get("position_pct_multiplier") is not None else 1.0)
+            if bool(_profile.get("block_new_entries")) or position_cap <= 0.0:
+                effective_target = 0.0
+                order_skip_reason = "DATA_INSUFFICIENT_POSITION_CAP_ZERO"
+            elif target_position_pct is not None:
+                _raw = float(target_position_pct)
+                if _raw > 1.0:
+                    _raw = _raw / 100.0
+                effective_target = max(0.0, min(1.0, _raw)) * position_cap
+    except Exception as exc:
+        logger.debug("[SwitchPositionManager] adaptive cap apply skipped: %s", exc)
+
     sized_cash, full_cash = _sizing_cash_amount(
-        broker, forced, target_position_pct=target_position_pct,
+        broker, forced, target_position_pct=effective_target,
         symbol=desired_symbol, current_price=current_price, state=state,
     )
+    calculated_qty = int(sized_cash // current_price) if current_price else 0
+    if order_skip_reason == "DATA_INSUFFICIENT_POSITION_CAP_ZERO" or (
+        position_cap is not None and float(position_cap) <= 0.0
+    ):
+        return {
+            "acted": False, "orders": orders,
+            "message": "adaptive regime position cap is 0 — new entry blocked",
+            "stage": "entry",
+            "failure_code": "DATA_INSUFFICIENT_POSITION_CAP_ZERO",
+            "order_skip_reason": "DATA_INSUFFICIENT_POSITION_CAP_ZERO",
+            "requested_symbol": desired_symbol,
+            "requested_qty": 0,
+            "sized_cash": sized_cash,
+            "buyable_cash": full_cash,
+            "position_cap": position_cap,
+            "target_ratio": target_position_pct,
+            "calculated_quantity": 0,
+        }
     buy_reason = f"new entry/switch buy ({reason})"
-    if int(sized_cash // current_price) < 1 and full_cash >= current_price:
+    # Allow the historical 1-share bump unless Adaptive cap explicitly zeroed sizing.
+    _allow_min_share_bump = order_skip_reason != "DATA_INSUFFICIENT_POSITION_CAP_ZERO" and (
+        effective_target is None or float(effective_target or 0.0) > 0.0
+        or target_position_pct is None
+    )
+    if calculated_qty < 1 and full_cash >= current_price and _allow_min_share_bump:
         cash_amount = current_price  # sized amount rounds to <1 share but buyable cash covers 1 - guarantee at least 1 share
         buy_reason += " [sized amount insufficient for 1 share - bumped to minimum 1 share]"
     else:
@@ -1827,6 +1874,10 @@ def run_switch_or_entry(
         "order_price": buy_result.get("order_price"), "sized_cash": buy_result.get("sized_cash"),
         "buyable_cash": full_cash, "failure_code": buy_result.get("failure_code"),
         "broker_error": buy_result.get("broker_error"),
+        "position_cap": position_cap,
+        "target_ratio": target_position_pct,
+        "calculated_quantity": buy_result.get("requested_qty") if buy_result.get("requested_qty") is not None else calculated_qty,
+        "order_skip_reason": buy_result.get("failure_code") or order_skip_reason,
     }
 
 

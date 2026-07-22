@@ -1475,6 +1475,13 @@ if switch_run_clicked:
 # 고정되어 이후 백그라운드 스레드가 갱신한 최신 결과가 화면에 반영되지 않는다.
 cycle_result = _manual_cycle_result
 if not cycle_result and _decision_snapshot:
+    _snap_orders = list(_decision_snapshot.get("orders_this_cycle") or [])
+    _today_day = kst_now().strftime("%Y%m%d")
+    _snap_orders = [
+        o for o in _snap_orders
+        if isinstance(o, dict)
+        and str(o.get("timestamp") or "")[:10].replace("-", "") == _today_day
+    ]
     cycle_result = {
         "skipped": False, "computed_at": _decision_snapshot.get("calculated_at"),
         "mode": switch_state.get("mode"), "new_entry_allowed": _decision_snapshot.get("new_entry_allowed", is_new_entry_allowed(kst_now())),
@@ -1484,7 +1491,7 @@ if not cycle_result and _decision_snapshot:
         "inverse_current_price": switch_state.get("last_inverse_price"),
         "enhanced_result": _decision_snapshot.get("enhanced_result") or {},
         "decision": _decision_snapshot.get("decision") or {},
-        "orders_this_cycle": _decision_snapshot.get("orders_this_cycle") or [],
+        "orders_this_cycle": _snap_orders,
         "state": switch_state,
         "position_manager": {"position": switch_state.get("position"), "position_conflict": switch_state.get("position_conflict")},
         "pipeline_trace": _decision_snapshot.get("pipeline_trace") or {},
@@ -2271,7 +2278,15 @@ else:
 
     if cycle_result.get("orders_this_cycle"):
         st.markdown("**이번 사이클 거래 사유**")
+        _today_day = kst_now().strftime("%Y%m%d")
         for order in cycle_result["orders_this_cycle"]:
+            # Never show non-today / unconfirmed fills as "체결확정".
+            _ts = str(order.get("timestamp") or "")
+            _day_key = _ts[:10].replace("-", "")
+            if not _ts or _day_key != _today_day:
+                continue
+            _exec_qty = int(order.get("executed_qty") or 0)
+            _broker_ok = bool(order.get("success")) and _exec_qty > 0
             # 요구사항1 — KIS 응답의 rt_cd/msg_cd/msg1과 주문번호를 그대로 노출해
             # "Order Sent=YES인데 Broker Executed=NO" 같은 상황의 원인을 화면에서 바로
             # 진단할 수 있게 한다.
@@ -2280,9 +2295,13 @@ else:
             )
             _order_id_part = f" · 주문번호 {order.get('order_id')}" if order.get("order_id") else ""
             _diag_part = f" ({_kis_diag})" if _kis_diag else ""
+            if _broker_ok:
+                _fill_label = f"체결확정 {_exec_qty}주"
+            else:
+                _fill_label = f"미확정(요청 {order.get('quantity')}주, executed_qty={_exec_qty})"
             st.markdown(
-                f"- [{order.get('action')}] {order.get('symbol')} 요청 {order.get('quantity')}주 "
-                f"(체결확정 {order.get('executed_qty', 0)}주) @ {order.get('price')} — {order.get('reason')}"
+                f"- [{order.get('action')}] {order.get('symbol')} {_fill_label}"
+                f" @ {order.get('price')} — {order.get('reason')}"
                 f"{_order_id_part}{_diag_part}"
             )
 
