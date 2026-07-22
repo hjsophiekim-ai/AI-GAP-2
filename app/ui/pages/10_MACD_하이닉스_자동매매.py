@@ -139,6 +139,42 @@ st.caption(
     "mutex 파일 존재만으로는 차단하지 않습니다."
 )
 
+# ── Daily trading summary ─────────────────────────────────────────────────
+st.subheader("오늘 거래 요약")
+_budget_for_pnl = float(state.get("budget") or budget or 10_000_000)
+_daily = summarize_daily_trading(budget=_budget_for_pnl)
+_today_label = kst_now().strftime("%Y-%m-%d")
+if _daily.get("has_data"):
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("오늘 총 거래 건수", f"{_daily.get('round_trip_count', 0):,}건")
+    p2.metric("수수료", f"{_daily.get('total_cost', 0):,.0f}원")
+    p3.metric("손실", f"{_daily.get('loss_amount', 0):,.0f}원")
+    p4.metric("수익", f"{_daily.get('profit_amount', 0):,.0f}원")
+    _net = float(_daily.get("net_pnl") or 0)
+    p5.metric(
+        "수익률",
+        f"{_daily.get('return_pct', 0):.4f}%",
+        delta=f"순손익 {_net:+,.0f}원",
+    )
+    st.caption(
+        f"KST 거래일 `{_today_label}` · 원장 `{_daily.get('ledger_path')}` · "
+        f"완료 왕복거래(매도 체결) {_daily.get('round_trip_count', 0)}건 · "
+        f"체결 {_daily.get('operating_fill_count', 0)}건 "
+        f"(매수 {_daily.get('buy_fill_count', 0)} / 매도 {_daily.get('sell_fill_count', 0)}) · "
+        f"수익률 = 순손익 / 투자예산({int(_budget_for_pnl):,}원) × 100"
+    )
+else:
+    z1, z2, z3, z4, z5 = st.columns(5)
+    z1.metric("오늘 총 거래 건수", "0건")
+    z2.metric("수수료", "0원")
+    z3.metric("손실", "0원")
+    z4.metric("수익", "0원")
+    z5.metric("수익률", "0.0000%")
+    st.caption(
+        f"KST 거래일 `{_today_label}` · 데이터 없음 — 원장 `{_daily.get('ledger_path')}` · "
+        f"수익률 기준 = 투자예산({int(_budget_for_pnl):,}원, state.budget)"
+    )
+
 # Clear status split — worker alive ≠ strategy running
 st.subheader("상태 분리")
 s1, s2, s3, s4, s5, s6 = st.columns(6)
