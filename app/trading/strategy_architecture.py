@@ -32,6 +32,8 @@ ENTRY_TIMING_MAX_HELD_SECONDS = 15.0
 
 # 추격 차단 임계 (ETF 이동 %)
 CHASE_HARD_BLOCK_PCT = 0.6
+# Freshness guard only — discard stale chase signal_price; NOT a chase % threshold.
+CHASE_SIGNAL_MAX_AGE_SECONDS = 120.0
 
 STATE_PROMOTION_PATH = (
     Path(__file__).resolve().parent.parent.parent
@@ -114,3 +116,76 @@ def chase_hard_block(moved_pct: Optional[float]) -> bool:
     if moved_pct is None:
         return False
     return float(moved_pct) >= CHASE_HARD_BLOCK_PCT
+
+
+def chase_signal_age_seconds(first_detected_at: Optional[str], now) -> Optional[float]:
+    """Age of the current direction_episode chase signal in seconds."""
+    if not first_detected_at or now is None:
+        return None
+    try:
+        from datetime import datetime
+
+        detected = datetime.fromisoformat(str(first_detected_at))
+        return max(0.0, (now - detected).total_seconds())
+    except Exception:
+        return None
+
+
+def signal_price_outside_today_range(
+    signal_price: Optional[float],
+    df_1min,
+    *,
+    now=None,
+) -> bool:
+    """True when signal_price is inconsistent with today's ETF bar range."""
+    if signal_price is None or df_1min is None:
+        return False
+    try:
+        import pandas as pd
+
+        work = df_1min
+        if work is None or getattr(work, "empty", True):
+            return False
+        if "datetime" in work.columns and now is not None:
+            day = now.strftime("%Y-%m-%d")
+            dts = pd.to_datetime(work["datetime"], errors="coerce")
+            work = work.loc[dts.dt.strftime("%Y-%m-%d") == day]
+            if work.empty:
+                return False
+        today_high = float(work["high"].max())
+        today_low = float(work["low"].min())
+        px = float(signal_price)
+        # Outside [low, high] → yesterday or wrong-symbol residue.
+        return px > today_high or px < today_low
+    except Exception:
+        return False
+
+
+def should_discard_stale_chase_signal(
+    *,
+    first_detected_at: Optional[str],
+    signal_price: Optional[float],
+    now,
+    df_1min=None,
+    max_age_seconds: float = CHASE_SIGNAL_MAX_AGE_SECONDS,
+) -> tuple[bool, str]:
+    """Freshness guard for chase: age>120s or price outside today's ETF range.
+
+    Does not change chase % thresholds — only decides whether to discard and
+    re-init the episode signal_price.
+    """
+    age = chase_signal_age_seconds(first_detected_at, now)
+    if age is not None and age > float(max_age_seconds):
+        return True, "SIGNAL_AGE_GT_120S"
+    if first_detected_at and now is not None:
+        try:
+            from datetime import datetime
+
+            detected = datetime.fromisoformat(str(first_detected_at))
+            if detected.strftime("%Y%m%d") != now.strftime("%Y%m%d"):
+                return True, "SIGNAL_FROM_PRIOR_DAY"
+        except Exception:
+            pass
+    if signal_price_outside_today_range(signal_price, df_1min, now=now):
+        return True, "SIGNAL_PRICE_OUT_OF_TODAY_RANGE"
+    return False, ""

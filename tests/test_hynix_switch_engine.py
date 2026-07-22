@@ -2000,6 +2000,17 @@ def test_range_weighted_missing_edge_is_data_insufficient_not_low_net_edge():
 
 def test_early_fast_feed_no_early_signal_runs_continuation_order_path(tmp_path, monkeypatch):
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(
+        engine,
+        "read_runtime_info",
+        lambda: {
+            "git_sha": "deadbeef",
+            "origin_main_sha": "deadbeef",
+            "render_sha": "deadbeef",
+            "sha_all_match": True,
+            "orders_enabled_by_deployment": True,
+        },
+    )
 
     import app.data_sources.auto_market_collector as auto_collector_module
     import app.data_sources.hynix_long_collector as long_collector_module
@@ -2069,6 +2080,17 @@ def test_early_fast_feed_no_early_signal_runs_continuation_order_path(tmp_path, 
 
 def test_fast_feed_price_action_reversal_factors_feed_existing_candidate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(
+        engine,
+        "read_runtime_info",
+        lambda: {
+            "git_sha": "deadbeef",
+            "origin_main_sha": "deadbeef",
+            "render_sha": "deadbeef",
+            "sha_all_match": True,
+            "orders_enabled_by_deployment": True,
+        },
+    )
 
     import app.data_sources.auto_market_collector as auto_collector_module
     import app.data_sources.hynix_long_collector as long_collector_module

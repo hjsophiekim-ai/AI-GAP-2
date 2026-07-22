@@ -970,8 +970,19 @@ if switch_state.get("mode") == "mock":
     _signal_summary = (_decision_snapshot or {}).get("signal_summary") or {}
     _snap_fields = completed_snapshot_decision_fields(_decision_snapshot)
     if _signal_summary.get("conclusion"):
-        if _snap_fields.get("primary_block_reason") == "NEW_ENTRY_TIME_CLOSED" or _signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
+        _live_time_closed = (
+            _snap_fields.get("primary_block_reason") == "NEW_ENTRY_TIME_CLOSED"
+            and not is_new_entry_allowed(kst_now())
+        )
+        if _live_time_closed:
             st.error(_signal_summary["conclusion"])
+        elif "14:50" in str(_signal_summary.get("conclusion") or "") and is_new_entry_allowed(kst_now()):
+            # Stale snapshot time-gate — do not surface as a live 14:50 block.
+            st.info(
+                f"원점수는 {_snap_fields.get('resolved_direction') or _signal_summary.get('raw_score_leader') or '-'} "
+                f"우세이나 실행 가능한 신규진입 신호 없음 → HOLD"
+                + (f" ({_snap_fields.get('primary_block_reason')})" if _snap_fields.get("primary_block_reason") else "")
+            )
         else:
             st.info(_signal_summary["conclusion"])
     if _live_enhanced is not None and _live_inverse is not None:
@@ -1832,8 +1843,17 @@ else:
         or {}
     )
     if _trace_signal_summary.get("conclusion"):
-        if _pipeline_fields.get("primary_block_reason") == "NEW_ENTRY_TIME_CLOSED" or _trace_signal_summary.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
+        _live_time_closed = (
+            _pipeline_fields.get("primary_block_reason") == "NEW_ENTRY_TIME_CLOSED"
+            and not is_new_entry_allowed(kst_now())
+        )
+        if _live_time_closed:
             st.error(_trace_signal_summary["conclusion"])
+        elif "14:50" in str(_trace_signal_summary.get("conclusion") or "") and is_new_entry_allowed(kst_now()):
+            st.info(
+                f"실행 가능한 신규진입 신호 없음 → HOLD"
+                + (f" ({_pipeline_fields.get('primary_block_reason')})" if _pipeline_fields.get("primary_block_reason") else "")
+            )
         else:
             st.info(_trace_signal_summary["conclusion"])
 

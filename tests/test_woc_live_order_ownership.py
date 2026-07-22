@@ -98,6 +98,14 @@ def _patch_woc_gates(monkeypatch, *, enter: bool = True, chase: bool = False):
         "order_skip_reason": None,
     })
     monkeypatch.setattr(engine, "_load_etf_own_minute_cache", lambda symbol: None)
+    _runtime = {
+        "git_sha": "deadbeef",
+        "origin_main_sha": "deadbeef",
+        "render_sha": "deadbeef",
+        "sha_all_match": True,
+        "orders_enabled_by_deployment": True,
+    }
+    monkeypatch.setattr(engine, "read_runtime_info", lambda: _runtime)
 
     import app.trading.strategy_architecture as sa
     monkeypatch.setattr(sa, "chase_hard_block", lambda moved: bool(chase))

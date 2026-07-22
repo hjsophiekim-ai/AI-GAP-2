@@ -91,6 +91,24 @@ def completed_snapshot_decision_fields(snapshot: dict) -> dict:
     blocking_reason = pipeline.get("blocking_reason")
     if blocking_reason is None and snap.get("source") == "FAST_WORKER" and not entry_approved:
         blocking_reason = primary
+
+    # Asia/Seoul live time gate only — never reuse a stale snapshot's
+    # NEW_ENTRY_TIME_CLOSED for display/decision while the window is open.
+    try:
+        from app.trading.hynix_switch_risk_gate import is_new_entry_allowed
+        from app.utils.time_utils import kst_now
+
+        if primary == "NEW_ENTRY_TIME_CLOSED" and is_new_entry_allowed(kst_now()):
+            primary = None
+            if blocking_reason == "NEW_ENTRY_TIME_CLOSED":
+                blocking_reason = None
+            if entry_approved_reason == "NEW_ENTRY_TIME_CLOSED":
+                entry_approved_reason = None
+            if signal.get("block_reason") == "NEW_ENTRY_TIME_CLOSED":
+                signal = {**signal, "block_reason": None, "primary_block_reason": None}
+    except Exception:
+        pass
+
     return {
         "cycle_id": snap.get("cycle_id") or pipeline.get("cycle_id") or signal.get("cycle_id"),
         "snapshot_id": snap.get("snapshot_id"),

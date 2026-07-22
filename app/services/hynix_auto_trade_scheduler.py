@@ -290,13 +290,18 @@ class HynixFastTrendWatcherThread(threading.Thread):
         logger.info("[HynixFastTrendWatcher] start (%.0fs interval, %.0fs when Early Detector LIVE)",
                     self.interval_seconds, EARLY_DETECTOR_FAST_INTERVAL_SECONDS)
         while not self._stop_event.is_set():
+            started_at = kst_now()
             self._run_if_enabled()
             next_interval = self._next_interval_seconds()
+            # Compensate for work time so mean tick interval stays near target
+            # (sleeping a full 5s AFTER a 2s tick produced ~7s averages).
+            elapsed = max(0.0, (kst_now() - started_at).total_seconds())
+            wait = max(0.0, float(next_interval) - elapsed)
             with _status_lock:
-                _fast_status["next_run_at"] = (kst_now() + timedelta(seconds=next_interval)).isoformat()
-            # Wait for interval OR explicit wake OR stop.
+                _fast_status["next_run_at"] = (kst_now() + timedelta(seconds=wait)).isoformat()
+            # Wait for remaining interval OR explicit wake OR stop.
             self._wake_event.clear()
-            triggered = self._wake_event.wait(timeout=max(0.0, float(next_interval)))
+            triggered = self._wake_event.wait(timeout=wait)
             if self._stop_event.is_set():
                 break
             if triggered:
@@ -342,16 +347,18 @@ class HynixFastTrendWatcherThread(threading.Thread):
             _write_heartbeat_file()
             return
 
-        # 요구사항(2026-07-20 최종) — Early Detector가 LIVE인 동안에는 이 워처가
-        # 5초마다 깨어나지만, calculate_enhanced_hynix_prediction_score() 등
-        # 무거운 전체 재계산은 여전히 최소 FAST_WATCHER_INTERVAL_SECONDS(30초)
-        # 간격으로만 수행한다 — KIS 분봉/계좌 API 호출량을 그대로 유지하기 위함.
-        # 그 사이 5초 틱은 가벼운 현재가 2건 조회로 실시간 기울기만 갱신한다.
+        # 요구사항(2026-07-20 최종) — auto_trade_on이면 5초 틱이 LIVE 신규진입을
+        # 소유한다. 무거운 30초 full tick(calculate_enhanced…)이 5초 슬롯을 훔치면
+        # 평균 간격이 7초+로 불어나므로, cadence 활성 중에는 항상 fast_feed만
+        # 돌리고 full diagnostics는 cadence가 꺼져 있을 때만(또는 강제) 수행한다.
+        # Main 3분 사이클이 last_decision / primary_trend를 이미 갱신한다.
         fast_cadence_active = self._fast_cadence_active(state)
         due_for_full_tick = (
             not fast_cadence_active
-            or self._last_full_tick_at is None
-            or (now - self._last_full_tick_at).total_seconds() >= FAST_WATCHER_INTERVAL_SECONDS
+            and (
+                self._last_full_tick_at is None
+                or (now - self._last_full_tick_at).total_seconds() >= FAST_WATCHER_INTERVAL_SECONDS
+            )
         )
 
         started_at = now

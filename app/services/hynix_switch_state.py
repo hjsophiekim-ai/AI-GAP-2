@@ -414,6 +414,16 @@ def _clear_intraday_decision_state(state: dict) -> None:
     state["position_sync_block_new_orders"] = False
 
 
+def _clear_episode_chase_state(state: dict) -> None:
+    """Reset direction episode / chase / probe fields (trading-day rollover)."""
+    state["trend_continuation_entry"] = None
+    state["early_trend_detector"] = None
+    state["live_trade_direction"] = None
+    state["macd_williams_episode_gate_mode"] = None
+    state["last_completed_decision_snapshot"] = None
+    state["last_pipeline_trace"] = None
+
+
 def _sanitize_intraday_state_dates(state: dict, today: str) -> None:
     """Drop stale day-scoped caches even when the top-level state date is current.
 
@@ -445,6 +455,11 @@ def _sanitize_intraday_state_dates(state: dict, today: str) -> None:
     if stale:
         logger.warning("[HynixSwitchState] stale intraday Enhanced cache detected; clearing day-scoped fields")
         _clear_intraday_decision_state(state)
+
+    # Episode/chase/signal fields are reset on trading-day change in load_state
+    # (date != today). Do not re-clear them here based on nested timestamps —
+    # Fast Worker tests and replay ticks may pass a simulated `now` whose date
+    # differs from wall-clock KST while still writing valid in-session state.
 
 
 def _clear_stale_position_sync_critical_alert(state: dict) -> None:
@@ -554,6 +569,9 @@ def load_state(mode: Optional[str] = None) -> dict:
             state["fast_trend_watcher"] = None
             state["trend_switch_unconfirmed_order"] = None
             state["pending_manual_stop_loss_alert"] = None
+            # Trading-day change: reset episode / chase / probe continuation so
+            # yesterday's signal_price (e.g. 14,475) cannot drive today's CHASE.
+            _clear_episode_chase_state(state)
             _clear_flat_position_diagnostics(state)
             if mode == "mock":
                 state["cash"] = state.get("mock_budget_krw", _DEFAULT_MOCK_BUDGET_KRW)

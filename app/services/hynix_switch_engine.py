@@ -1171,8 +1171,20 @@ def _build_signal_summary(
     continuation_result = (state.get("trend_continuation_entry") or {}).get("last_result") or {}
     structural_label = continuation_result.get("structural_signal_label")
     block_reason = None
-    if not new_entry_allowed_now:
+    # Time judgments use Asia/Seoul `now` only — never treat SHA / other blocks
+    # as NEW_ENTRY_TIME_CLOSED, and never reuse a stale snapshot clock.
+    time_gate_open = is_new_entry_allowed(now)
+    window_rule = str((new_entry_window or {}).get("rule") or "")
+    sha_blocked = "DEPLOYMENT_SHA" in window_rule
+    if not time_gate_open:
         block_reason = "NEW_ENTRY_TIME_CLOSED"
+    elif sha_blocked or (
+        not new_entry_allowed_now and "DEPLOYMENT_SHA" in window_rule
+    ):
+        block_reason = "DEPLOYMENT_SHA_MISMATCH"
+    elif not new_entry_allowed_now:
+        # Non-time deployment/ops blocks must not display as 14:50 gate.
+        block_reason = "NEW_ENTRY_BLOCKED"
     elif trace.get("entry_approved") is False:
         block_reason = _trace_block_reason(trace, decision_action, entry_reason, state)
     hard = _first_hard_hold_reason(
@@ -1207,8 +1219,10 @@ def _build_signal_summary(
     else:
         live_label = _live_trade_direction_label(state)
 
-    if not new_entry_allowed_now:
+    if not time_gate_open:
         conclusion = "14:50 이후 신호와 무관하게 신규진입 금지 → HOLD"
+    elif block_reason == "DEPLOYMENT_SHA_MISMATCH":
+        conclusion = window_rule or "DEPLOYMENT_SHA_MISMATCH — 신규진입 차단"
     elif block_reason == "LIVE_HYNIX_UPTREND" and raw_leader == "INVERSE":
         conclusion = "원점수는 INVERSE 우세이나 하이닉스 단기상승 확인으로 인버스 진입 차단 → HOLD"
     elif actionable_signal == "HOLD" or final_action == "HOLD":
@@ -1233,7 +1247,7 @@ def _build_signal_summary(
         "block_reason": block_reason,
         "primary_block_reason": primary_block or block_reason,
         "entry_approved_reason": entry_reason,
-        "new_entry_allowed": bool(new_entry_allowed_now),
+        "new_entry_allowed": bool(time_gate_open and new_entry_allowed_now),
         "new_entry_rule": (new_entry_window or {}).get("rule"),
         "conclusion": conclusion,
     }
@@ -1436,6 +1450,15 @@ def _woc_live_entry_inputs_from_state(
         now=now,
         swing_breakout=bool(confirm_swing_breakout),
         vwap_reclaim=_vwap_reclaim,
+    )
+
+    # Freshness guard: discard stale/yesterday signal_price before chase %.
+    refresh_stale_chase_signal_state(
+        continuation_state,
+        now=now,
+        direction=desired_live_direction,
+        current_etf_price=current_etf_price,
+        desired_symbol=desired_symbol,
     )
 
     moved_pct = None
@@ -2371,6 +2394,64 @@ def reset_range_episode_probe_state(
         "entry_path": None,
         "last_block_reason": None,
     })
+
+
+def refresh_stale_chase_signal_state(
+    continuation_state: dict,
+    *,
+    now: datetime,
+    direction: str,
+    current_etf_price: float | None,
+    desired_symbol: str | None = None,
+    df_1min=None,
+) -> dict:
+    """Discard stale chase signal and re-init with current price (freshness only).
+
+    Uses today's direction_episode + current trading day. If signal_age>120s or
+    signal_price is outside today's ETF range, reset episode signal fields so
+    CHASE is not computed against yesterday's residue (e.g. 14,475 on 0197X0).
+    """
+    from app.trading.strategy_architecture import should_discard_stale_chase_signal
+
+    if df_1min is None and desired_symbol:
+        try:
+            df_1min = _load_etf_own_minute_cache(desired_symbol)
+        except Exception:
+            df_1min = None
+    discard, reason = should_discard_stale_chase_signal(
+        first_detected_at=continuation_state.get("first_detected_at"),
+        signal_price=continuation_state.get("reference_price"),
+        now=now,
+        df_1min=df_1min,
+    )
+    result = {"refreshed": False, "reason": None}
+    if not discard:
+        # Still ensure episode exists for current direction with a signal price.
+        if continuation_state.get("reference_price") is None and current_etf_price is not None:
+            continuation_state["reference_price"] = current_etf_price
+            if not continuation_state.get("first_detected_at"):
+                continuation_state["first_detected_at"] = now.isoformat()
+            if not continuation_state.get("direction_episode_id"):
+                continuation_state["direction_episode_id"] = f"{direction}:{now.isoformat()}"
+            if not continuation_state.get("direction"):
+                continuation_state["direction"] = direction
+            result = {"refreshed": True, "reason": "SIGNAL_PRICE_INITIALIZED"}
+        return result
+
+    episode_id = f"{direction}:{now.isoformat()}"
+    reset_range_episode_probe_state(
+        continuation_state,
+        now=now,
+        direction=direction,
+        episode_id=episode_id,
+        reference_price=current_etf_price,
+    )
+    continuation_state["chase_signal_refresh_reason"] = reason
+    continuation_state["moved_pct_since_signal"] = None
+    continuation_state["chase_diagnostics"] = None
+    continuation_state["last_block_reason"] = None
+    result = {"refreshed": True, "reason": reason}
+    return result
 
 
 def _structural_event_after_probe_exit(continuation_state: dict, event_at_key: str) -> bool:
@@ -4621,6 +4702,26 @@ def _run_early_trend_detector_tick(
                 "direction": direction, "first_detected_at": now.isoformat(), "reference_price": current_etf_price,
                 "change_point_detected_at": now.isoformat(), "direction_confirmed_at": now.isoformat(),
             }
+        else:
+            # Freshness guard (120s / prior-day / out-of-range price): discard stale
+            # signal_price before CHASE calc — does not change chase % threshold.
+            from app.trading.strategy_architecture import should_discard_stale_chase_signal
+
+            _discard, _discard_reason = should_discard_stale_chase_signal(
+                first_detected_at=candidate.get("first_detected_at"),
+                signal_price=candidate.get("reference_price"),
+                now=now,
+                df_1min=_etf_df,
+            )
+            if _discard:
+                candidate = {
+                    "direction": direction,
+                    "first_detected_at": now.isoformat(),
+                    "reference_price": current_etf_price,
+                    "change_point_detected_at": now.isoformat(),
+                    "direction_confirmed_at": now.isoformat(),
+                    "chase_signal_refresh_reason": _discard_reason,
+                }
         try:
             _candidate_detected_at = datetime.fromisoformat(candidate["first_detected_at"])
         except Exception:
@@ -5202,6 +5303,38 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 save_state_atomic(state)
                 return {"skipped": True, "reason": "new entry window closed", "live_slopes": etd_state["live_slopes"]}
 
+        # SHA Match gate — block new entries until Local/Origin/Render agree
+        # (same gate as main cycle; exits still run elsewhere).
+        _runtime_info = read_runtime_info() or {}
+        if not _runtime_info.get("orders_enabled_by_deployment", True):
+            _sha_reason = (
+                f"DEPLOYMENT_SHA_MISMATCH(local={_runtime_info.get('git_sha')}, "
+                f"origin={_runtime_info.get('origin_main_sha')}, render={_runtime_info.get('render_sha')})"
+            )
+            etd_state["last_block_reason"] = _sha_reason
+            state["early_trend_detector"] = etd_state
+            continuation_state = dict(state.get("trend_continuation_entry") or {})
+            continuation_state["last_block_reason"] = "DEPLOYMENT_SHA_MISMATCH"
+            state["trend_continuation_entry"] = continuation_state
+            _update_fast_worker_decision_snapshot(
+                state,
+                now=now,
+                continuation_state=continuation_state,
+                early_result={
+                    "skipped": True,
+                    "reason": _sha_reason,
+                    "reason_code": "DEPLOYMENT_SHA_MISMATCH",
+                    "primary_block_reason": "DEPLOYMENT_SHA_MISMATCH",
+                },
+            )
+            save_state_atomic(state)
+            return {
+                "skipped": True,
+                "reason": _sha_reason,
+                "reason_code": "DEPLOYMENT_SHA_MISMATCH",
+                "live_slopes": etd_state["live_slopes"],
+            }
+
         if not _EARLY_ORDER_LOCK.acquire(blocking=False):
             etd_state["last_block_reason"] = "DUPLICATE_ORDER_LOCK: Early order worker already running"
             state["early_trend_detector"] = etd_state
@@ -5225,11 +5358,22 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 etd.default_latency_trace(worker_name="EARLY_FAST_WORKER"), "account_query_started_at", now
             )
             state["early_trend_detector"] = etd_state
-            position_manager.sync()
+            # Throttle account sync — avoid duplicate KIS calls every 5s tick.
+            # Fresh sync is forced immediately before any live order below.
+            _sync_needed = True
+            _last_sync_ok = state.get("position_sync_last_ok_at")
+            if _last_sync_ok:
+                try:
+                    _sync_age = (now - datetime.fromisoformat(str(_last_sync_ok))).total_seconds()
+                    _sync_needed = _sync_age > 15.0
+                except Exception:
+                    _sync_needed = True
+            if _sync_needed:
+                position_manager.sync()
+                apply_position_manager_to_state(state, position_manager)
             etd_state = dict(state.get("early_trend_detector") or etd_state)
             etd_state["latency"] = etd.mark_latency(etd_state.get("latency"), "account_query_completed_at", kst_now())
             state["early_trend_detector"] = etd_state
-            apply_position_manager_to_state(state, position_manager)
 
             def _fast_order_succeeded(switch_result: dict) -> bool:
                 return bool(
@@ -5370,6 +5514,14 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                 now=now,
                 swing_breakout=bool(confirm_swing_breakout),
                 vwap_reclaim=_vwap_reclaim,
+            )
+            # Freshness guard: discard stale/yesterday signal_price before chase %.
+            refresh_stale_chase_signal_state(
+                continuation_state,
+                now=now,
+                direction=desired_live_direction,
+                current_etf_price=current_etf_price,
+                desired_symbol=desired_symbol,
             )
             moved_pct = None
             try:
@@ -5549,6 +5701,9 @@ def run_early_trend_fast_feed_tick(mode: Optional[str] = None, now: Optional[dat
                             _entry_audit["target_position_pct"] = _sizing["effective_target_pct"]
                             _entry_audit["position_cap"] = _sizing["position_cap"]
                             _entry_audit["entry_owner"] = WOC_ENTRY_OWNER
+                            # Force fresh broker sync immediately before live order.
+                            position_manager.sync(force=True)
+                            apply_position_manager_to_state(state, position_manager)
                             switch = run_switch_or_entry(
                                 state, broker, final_action, long_price, inverse_price, now=now,
                                 forced=True, reason=_order_reason or "WEIGHTED_ORDER_CONTROLLER",
