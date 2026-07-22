@@ -355,6 +355,57 @@ def test_mock_real_state_fields_separated(tmp_path, monkeypatch):
     assert again["real_confirm_ok"] is True
 
 
+def test_real_run_once_passes_configured_confirm_text(monkeypatch, tmp_path):
+    """REAL worker must pass cfg.real_confirm_text() into KisRealBroker gate 4."""
+    from app.config import get_config
+    from app.services import hynix_switch_state as hss
+
+    monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "MUTEX_PATH", tmp_path / "macd_hynix_mutex.json")
+    monkeypatch.setattr(om, "STATE_PATH", tmp_path / "macd_hynix_state.json")
+    (tmp_path / "hynix_auto_state_active_mode.json").write_text(
+        json.dumps({"mode": "real"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_auto_state_real.json").write_text(
+        json.dumps({"auto_trade_on": False, "mode": "real"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": False}), encoding="utf-8"
+    )
+
+    broker = FakeBroker()
+    captured: dict = {}
+
+    def _capture(mode, *, real_confirm_text="", real_ready=False):
+        captured["mode"] = mode
+        captured["real_confirm_text"] = real_confirm_text
+        captured["real_ready"] = real_ready
+        return broker
+
+    monkeypatch.setattr(om, "create_macd_broker", _capture)
+    monkeypatch.setattr(worker, "_load_minute_df", lambda *a, **k: _bars_1m(150, trend="up"))
+    monkeypatch.setattr(worker, "in_trading_session", lambda *a, **k: False)
+
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "real"
+    state["real_confirm_ok"] = True
+    state["order_block_reason"] = "stale_should_clear"
+    om.save_state(state)
+
+    now = datetime(2026, 7, 23, 8, 20, 0)
+    worker.run_once(now=now, state=state)
+
+    expected = str(get_config().real_confirm_text() or "")
+    assert captured.get("mode") == "real"
+    assert captured.get("real_ready") is True
+    assert captured.get("real_confirm_text") == expected
+    assert state.get("order_block_reason") is None
+    assert state.get("primary_block_reason") == "MARKET_CLOSED"
+    assert state.get("order_execution_enabled") is False
+
+
 def test_ledger_success_only_after_confirm():
     broker = FakeBroker()
     quotes_price = 10000.0
