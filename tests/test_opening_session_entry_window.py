@@ -109,7 +109,7 @@ def test_liquidation_and_tp_sl_are_not_gated_by_new_entry_window(tmp_path, monke
 
     monkeypatch.setattr(
         enhanced_score_module, "calculate_enhanced_hynix_prediction_score",
-        lambda mode=None: {
+        lambda mode=None, **_kwargs: {
             "base_prediction_score": 50.0, "existing_micron_score": 50.0, "hynix_technical_score": 50.0,
             "intraday_momentum_score": 50.0, "inverse_pressure_score": 50.0, "enhanced_score": 50.0,
             "reason_top5": [], "data_valid": {"base_prediction": True, "existing_micron": True, "hynix_technical": True, "intraday_momentum": True},
@@ -205,7 +205,7 @@ def test_fast_watcher_runs_during_0900_1450_window(tmp_path, monkeypatch):
     monkeypatch.setattr(state_module, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(
         enhanced_score_module, "calculate_enhanced_hynix_prediction_score",
-        lambda mode=None: {
+        lambda mode=None, **_kwargs: {
             "hynix_current_price": 100_000, "inverse_current_price": 5_000,
             "hynix_prev_close": 99_000, "market_data": {"hynix_minute": {"df_1min": None}},
         },

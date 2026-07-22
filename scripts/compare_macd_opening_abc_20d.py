@@ -412,7 +412,12 @@ def replay_day(
                 if display in (DIR_UP, DIR_DOWN) and opening_probe_b_confirms(ev, display):
                     direction = display
         elif strategy == "IMMEDIATE_50_THEN_CONFIRM":
-            if ev.get("new_signal") and not (close_ts.hour == 9 and close_ts.minute == 3):
+            skip_903 = (
+                partial_await_confirm
+                and close_ts.hour == 9
+                and close_ts.minute == 3
+            )
+            if ev.get("new_signal") and not skip_903:
                 direction = ev["signal_direction"]
         elif strategy == "NEW_TURN_ONLY":
             if ev.get("new_signal"):
@@ -546,8 +551,34 @@ def summarize(all_trades: list[Trade], day_stats: list[DayStats]) -> dict[str, A
 
 
 def evaluate_adoption(a: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
+    probe_attempts = int(c.get("open_probe_attempts") or 0)
+    if probe_attempts <= 0:
+        return {
+            "gates": {
+                "sufficient_probe_sample": {
+                    "pass": False,
+                    "detail": (
+                        f"open_probe_attempts={probe_attempts}; "
+                        "cannot judge opening-probe merit"
+                    ),
+                },
+            },
+            "all_pass": False,
+            "verdict": "INSUFFICIENT_SAMPLE",
+            "live_flag_recommendation": False,
+            "status": "PENDING_RETEST",
+            "parity_ok": (
+                a.get("round_trips") == c.get("round_trips")
+                and float(a.get("net") or 0) == float(c.get("net") or 0)
+            ),
+        }
+
     mdd_delta = float(c.get("mdd") or 0) - float(a.get("mdd") or 0)
     gates = {
+        "sufficient_probe_sample": {
+            "pass": True,
+            "detail": f"open_probe_attempts={probe_attempts}",
+        },
         "net_c_gt_a": {
             "pass": float(c["net"]) > float(a["net"]),
             "detail": f"C net {c['net']} > A net {a['net']}",
@@ -567,6 +598,7 @@ def evaluate_adoption(a: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
         "all_pass": all_pass,
         "verdict": "ADOPT" if all_pass else "DO_NOT_ADOPT",
         "live_flag_recommendation": all_pass,
+        "status": "EVALUATED",
     }
 
 
@@ -587,7 +619,7 @@ def render_md(report: dict[str, Any]) -> str:
         "|---------|-----|----|------|-----|-------------------|---------------|-----------------|-------------|",
         f"| A NEW_TURN | {a['net']:,.0f} | {a['pf']} | {a['mdd']} | {a['wr']} | {a.get('avg_first_entry_sec_after_900')} | — | — | {a.get('first_30m_pnl')} |",
         f"| B 09:03 BAR | {b['net']:,.0f} | {b['pf']} | {b['mdd']} | {b['wr']} | {b.get('avg_first_entry_sec_after_900')} | — | — | {b.get('first_30m_pnl')} |",
-        f"| C IMMEDIATE+CONFIRM | {c['net']:,.0f} | {c['pf']} | {c['mdd']} | {c['wr']} | {c.get('avg_first_entry_sec_after_900')} | {c.get('open_0900_success_rate_pct')}% | {c.get('unconfirmed_exit_pnl')} | {c.get('first_30m_pnl')} |",
+        f"| C IMMEDIATE+CONFIRM | {c['net']:,.0f} | {c['pf']} | {c['mdd']} | {c['wr']} | {c.get('avg_first_entry_sec_after_900')} | {c.get('open_0900_success_rate_pct')} | {c.get('unconfirmed_exit_pnl')} | {c.get('first_30m_pnl')} |",
         "",
         "## Adoption gates (C vs A)",
         "",
