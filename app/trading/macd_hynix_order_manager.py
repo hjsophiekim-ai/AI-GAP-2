@@ -215,6 +215,13 @@ def default_state() -> dict[str, Any]:
         "order_execution_enabled": False,
         "primary_block_reason": None,
         "legacy_truth_debug": {},
+        "last_macd_bars_ok": False,
+        "last_flag": None,
+        "last_new_signal": False,
+        "last_signal_eval": {},
+        "last_order_attempt_at": None,
+        "last_order_error": None,
+        "worker_code_sha": None,
         "force_liquidate_pending": False,
         "force_liquidate_done_date": None,
         "session_date": None,
@@ -650,7 +657,12 @@ def refresh_runtime_status(state: dict[str, Any], *, worker_alive: Optional[bool
     alive = bool(worker_alive) if worker_alive is not None else bool(
         (state.get("worker") or {}).get("alive") or state.get("scheduler_alive")
     )
-    market_ok = all(_num(prices.get(k)) for k in ("hynix", "long", "inverse"))
+    # Signal path needs hynix; orders need at least one ETF. Inverse-only blip must not
+    # freeze the whole morning when long (+ hynix) quotes are healthy.
+    hynix_ok = _num(prices.get("hynix"))
+    long_ok = _num(prices.get("long"))
+    inv_ok = _num(prices.get("inverse"))
+    market_ok = bool(hynix_ok and (long_ok or inv_ok))
     signal_ok = all(_num(macd.get(k)) for k in ("macd", "signal", "hist"))
     order_ok = strategy_on and not state.get("stopped") and not state.get("order_block_reason")
 
@@ -798,10 +810,24 @@ def confirm_quantity(
     return {"ok": False, "quantity": None, "avg_price": None, "error": last_error}
 
 
-def validate_etf_quotes(quotes: dict[str, Any]) -> tuple[bool, str]:
-    """Safety checks on ETF quotes. Does NOT flip MACD direction — only blocks orders."""
+def validate_etf_quotes(
+    quotes: dict[str, Any],
+    *,
+    required_symbols: Optional[list[str]] = None,
+) -> tuple[bool, str]:
+    """Safety checks on ETF quotes. Does NOT flip MACD direction — only blocks orders.
+
+    When ``required_symbols`` is set, only those ETF slots are checked so a transient
+    inverse quote failure cannot block a long-only BUY (and vice versa).
+    """
     now = datetime.now()
-    for key, symbol in (("long", LONG_SYMBOL), ("inverse", INVERSE_SYMBOL)):
+    want = set(required_symbols or [LONG_SYMBOL, INVERSE_SYMBOL])
+    slots = []
+    if LONG_SYMBOL in want:
+        slots.append(("long", LONG_SYMBOL))
+    if INVERSE_SYMBOL in want:
+        slots.append(("inverse", INVERSE_SYMBOL))
+    for key, symbol in slots:
         q = quotes.get(key) or {}
         price = q.get("price")
         try:
@@ -824,12 +850,15 @@ def validate_etf_quotes(quotes: dict[str, Any]) -> tuple[bool, str]:
                     return False, f"ORDER_DATA_INVALID: {symbol} bad bid/ask"
             except Exception:
                 return False, f"ORDER_DATA_INVALID: {symbol} bid/ask parse"
-    # Both ETFs abnormal same-direction spike
+    # Both ETFs abnormal same-direction spike (only when both quotes present)
     try:
-        long_chg = float((quotes.get("long") or {}).get("change_pct") or 0)
-        inv_chg = float((quotes.get("inverse") or {}).get("change_pct") or 0)
-        if abs(long_chg) >= 3.0 and abs(inv_chg) >= 3.0 and (long_chg * inv_chg) > 0:
-            return False, "ORDER_DATA_INVALID: both ETFs abnormal same-direction move"
+        long_q = quotes.get("long") or {}
+        inv_q = quotes.get("inverse") or {}
+        if long_q.get("price") and inv_q.get("price"):
+            long_chg = float(long_q.get("change_pct") or 0)
+            inv_chg = float(inv_q.get("change_pct") or 0)
+            if abs(long_chg) >= 3.0 and abs(inv_chg) >= 3.0 and (long_chg * inv_chg) > 0:
+                return False, "ORDER_DATA_INVALID: both ETFs abnormal same-direction move"
     except Exception:
         pass
     return True, ""
@@ -1480,9 +1509,24 @@ def switch_to_direction(
         if not target:
             return {"success": False, "message": "unknown direction"}
 
-        ok_q, q_reason = validate_etf_quotes(quotes)
+        # Peek holdings first so we only require quotes for symbols we will trade.
+        live_target = get_held_quantity(broker, target)
+        live_other_sym = opposite_symbol(target)
+        live_other = get_held_quantity(broker, live_other_sym) if live_other_sym else 0
+        if live_target is None or (live_other_sym and live_other is None):
+            return {"success": False, "message": "ORDER_DATA_INVALID: holdings query failed"}
+
+        need_syms = [target]
+        if live_other_sym and int(live_other or 0) > 0:
+            need_syms.append(live_other_sym)
+        held0 = (state.get("position") or {}).get("symbol")
+        if held0 and held0 != target and held0 not in need_syms:
+            need_syms.append(held0)
+
+        ok_q, q_reason = validate_etf_quotes(quotes, required_symbols=need_syms)
         if not ok_q:
             state["order_block_reason"] = q_reason
+            state["last_order_error"] = q_reason
             set_pipeline_stage(state, "Sell Requested", False, q_reason)
             return {"success": False, "message": q_reason, "order_data_invalid": True}
 
@@ -1498,13 +1542,6 @@ def switch_to_direction(
             and not allow_same_direction_add
         ):
             return {"success": True, "message": "same direction — no add", "skipped_same_direction": True}
-
-        # Re-check live holdings
-        live_target = get_held_quantity(broker, target)
-        live_other_sym = opposite_symbol(target)
-        live_other = get_held_quantity(broker, live_other_sym) if live_other_sym else 0
-        if live_target is None or (live_other_sym and live_other is None):
-            return {"success": False, "message": "ORDER_DATA_INVALID: holdings query failed"}
 
         if (
             int(live_target or 0) > 0
@@ -1530,6 +1567,8 @@ def switch_to_direction(
         macd_signal = direction
         set_pipeline_stage(state, "Signal", True, signal_id)
         stamp_order_latency(state, "order_requested_at", overwrite=True)
+        state["last_order_attempt_at"] = datetime.now().isoformat()
+        state["last_order_error"] = None
 
         ep = state.get("direction_episode") or {}
         ep_id = str(ep.get("id") or "")

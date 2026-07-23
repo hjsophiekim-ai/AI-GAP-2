@@ -315,26 +315,29 @@ def evaluate_macd_direction(
     new_signal = False
     signal_direction = None
     reason = "HOLD"
+    # Live order arming: when the signed pattern is UP/DOWN and direction_state is
+    # not already that side, arm INITIAL even if onset already fired on an earlier
+    # bar (warm-up / missed tick). Otherwise UI shows RED/BLUE with new_signal=False
+    # forever and flat books never buy. Onset is preserved only for reason labels.
+    # Replay collectors still use signed_hist_two_turn_onset separately.
     if pattern == DIR_UP:
         reason = "UP_RED_PATTERN"
         if (
-            onset == DIR_UP
-            and signed_hist_two_turn_new_signal(onset, last_dir)
+            signed_hist_two_turn_new_signal(pattern, last_dir)
             and bar_ts_iso != str(last_signal_bar_ts or "")
         ):
             new_signal = True
             signal_direction = DIR_UP
-            reason = "UP_RED_FIRST_TURN"
+            reason = "UP_RED_FIRST_TURN" if onset == DIR_UP else "UP_RED_PATTERN_ENTRY"
     elif pattern == DIR_DOWN:
         reason = "DOWN_BLUE_PATTERN"
         if (
-            onset == DIR_DOWN
-            and signed_hist_two_turn_new_signal(onset, last_dir)
+            signed_hist_two_turn_new_signal(pattern, last_dir)
             and bar_ts_iso != str(last_signal_bar_ts or "")
         ):
             new_signal = True
             signal_direction = DIR_DOWN
-            reason = "DOWN_BLUE_FIRST_TURN"
+            reason = "DOWN_BLUE_FIRST_TURN" if onset == DIR_DOWN else "DOWN_BLUE_PATTERN_ENTRY"
     else:
         reason = "HOLD_NO_PATTERN"
 
@@ -366,6 +369,7 @@ def evaluate_macd_direction(
         "bar_close_ts": bar_close_ts.isoformat(),
         "reason": reason,
         "signal_id": signal_id,
+        "onset": onset,
     }
 
 

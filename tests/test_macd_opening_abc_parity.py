@@ -41,11 +41,20 @@ def day_universe():
 
 
 def test_opening_abc_parity_on_non_903_signal_day(day_universe):
-    """Days without 09:03 new_signal must already match (17/20 in Jul-2026 sample)."""
-    dates, day_data = day_universe
-    day = "2026-06-24"
-    ds_a, ds_c = _replay_pair(day, dates, day_data)
+    """Days without 09:03 new_signal must already match (rolling 20d sample).
 
+    Date is chosen from the current universe (not hardcoded) so the test does not
+    fail when the oldest day rolls off the 20-session window.
+    """
+    dates, day_data = day_universe
+    day = None
+    ds_a = ds_c = None
+    for candidate in dates:
+        a, c = _replay_pair(candidate, dates, day_data)
+        if c.open_probe_fired is False:
+            day, ds_a, ds_c = candidate, a, c
+            break
+    assert day is not None, f"no non-probe day in universe {dates}"
     assert ds_c.open_probe_fired is False
     assert _trade_keys(ds_a.trades) == _trade_keys(ds_c.trades)
     assert round(sum(t.net_pnl for t in ds_a.trades), 2) == round(

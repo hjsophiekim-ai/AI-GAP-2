@@ -44,6 +44,7 @@ from app.trading.macd_hynix_strategy import (
     in_open_probe_window,
     open_probe_window_expired,
     opening_probe_b_confirms,
+    opposite_symbol,
     resample_completed_3m,
     tail_prior_day_1m,
     target_symbol_for_direction,
@@ -259,15 +260,20 @@ def _fetch_kis_minute_1m(mode: str, count: int, today: str) -> tuple[pd.DataFram
         else:
             candles = client.get_minute_candles(SIGNAL_SYMBOL, period_min=1, count=count) or []
             for c in candles:
-                hhmmss = str(c.get("time") or "")
+                hhmmss = str(c.get("time") or "").strip().replace(":", "")
                 if len(hhmmss) < 6:
                     continue
-                raw_date = str(c.get("date") or "").strip()
-                if len(raw_date) == 8 and raw_date.isdigit():
-                    day = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                hhmmss = hhmmss[:6]
+                raw_date = str(c.get("date") or "").strip().replace("-", "")
+                if len(raw_date) >= 8 and raw_date[:8].isdigit():
+                    ymd = raw_date[:8]
                 else:
-                    day = today
-                ts = datetime.strptime(f"{day}{hhmmss[:6]}", "%Y%m%d%H%M%S")
+                    # ``today`` may be ISO (YYYY-MM-DD); strip to YYYYMMDD for strptime.
+                    ymd = str(today).replace("-", "")[:8]
+                try:
+                    ts = datetime.strptime(f"{ymd}{hhmmss}", "%Y%m%d%H%M%S")
+                except ValueError:
+                    continue
                 rows.append({
                     "datetime": ts,
                     "open": float(c.get("open") or 0),
@@ -438,8 +444,58 @@ def _record_hynix_sample(state: dict[str, Any], now: datetime, price: Optional[f
     op["price_samples_5s"] = samples[-12:]
 
 
+def _quote_cache_path(symbol: str) -> Optional[Path]:
+    from pathlib import Path as _P
+
+    root = _P(__file__).resolve().parents[2] / "data" / "cache"
+    mapping = {
+        SIGNAL_SYMBOL: root / "hynix_current.json",
+        LONG_SYMBOL: root / "hynix_long_current.json",
+        INVERSE_SYMBOL: root / "hynix_inverse_current.json",
+    }
+    return mapping.get(symbol)
+
+
+def _quote_from_local_cache(symbol: str, *, max_age_sec: float = 600.0) -> Optional[dict[str, Any]]:
+    """Fallback ETF/hynix quote from data/cache/*.json when KIS inquire-price fails."""
+    path = _quote_cache_path(symbol)
+    if path is None or not path.exists():
+        return None
+    try:
+        import json as _json
+
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+        price = float(raw.get("current_price") or raw.get("price") or 0)
+        if price <= 0:
+            return None
+        cached_at = str(raw.get("cached_at") or "")
+        if cached_at:
+            try:
+                age = (datetime.now() - datetime.fromisoformat(cached_at)).total_seconds()
+                if age > max_age_sec:
+                    return None
+            except Exception:
+                pass
+        return {
+            "price": price,
+            "change_pct": raw.get("change_rate") or raw.get("change_pct"),
+            "bid": None,
+            "ask": None,
+            "updated_at": cached_at or datetime.now().isoformat(),
+            "ok": True,
+            "api_function": f"local_cache:{path.name}",
+            "symbol": symbol,
+            "response_code": None,
+            "error_message": None,
+            "retry_count": 0,
+            "from_cache": True,
+        }
+    except Exception:
+        return None
+
+
 def _quote_from_broker(broker, symbol: str, *, retries: int = 2) -> dict[str, Any]:
-    """Fetch one symbol quote; on failure return concrete error fields (never silent None-only)."""
+    """Fetch one symbol quote; on failure try local cache, else concrete error fields."""
     price = None
     change_pct = None
     bid = None
@@ -501,6 +557,11 @@ def _quote_from_broker(broker, symbol: str, *, retries: int = 2) -> dict[str, An
             time.sleep(0.15)
 
     ok = price is not None and price > 0
+    if not ok:
+        cached = _quote_from_local_cache(symbol)
+        if cached:
+            return cached
+
     result = {
         "price": price if ok else None,
         "change_pct": change_pct,
@@ -540,13 +601,14 @@ def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
                 "slot": key,
             })
     state["quote_errors"] = errors
-    if errors:
-        # Surface concrete quote failure — do not leave silent Nones only.
+    # Only hard-block when hynix OR both ETFs are missing — a single ETF blip must not
+    # freeze the morning (orders validate the symbols they actually need).
+    critical = (not hynix.get("ok")) or (not long_q.get("ok") and not inv_q.get("ok"))
+    if critical and errors:
         state["order_block_reason"] = (
-            state.get("order_block_reason")
-            or f"QUOTE_ERROR: {errors[0].get('symbol')} via {errors[0].get('api_function')}: "
-               f"{errors[0].get('error_message')} (code={errors[0].get('response_code')}, "
-               f"retries={errors[0].get('retry_count')})"
+            f"QUOTE_ERROR: {errors[0].get('symbol')} via {errors[0].get('api_function')}: "
+            f"{errors[0].get('error_message')} (code={errors[0].get('response_code')}, "
+            f"retries={errors[0].get('retry_count')})"
         )
     elif str(state.get("order_block_reason") or "").startswith("QUOTE_ERROR:"):
         state["order_block_reason"] = None
@@ -696,6 +758,22 @@ def run_once(
                     "reason": warm.get("reason") or reason,
                 })
         result["macd"] = eval_res
+        # Per-tick visibility: prove 3m bars + flags are computed every cycle
+        state["last_macd_bars_ok"] = bool(eval_res.get("ok"))
+        state["last_flag"] = eval_res.get("display_direction") or DIR_HOLD
+        state["last_new_signal"] = bool(eval_res.get("new_signal"))
+        state["last_signal_eval"] = {
+            "bar_ts": eval_res.get("bar_ts"),
+            "bar_close_ts": eval_res.get("bar_close_ts"),
+            "hist_last3": eval_res.get("hist_last3") or [],
+            "hist_deltas": eval_res.get("hist_deltas") or [],
+            "flag": eval_res.get("display_direction"),
+            "new_signal": bool(eval_res.get("new_signal")),
+            "signal_id": eval_res.get("signal_id"),
+            "reason": eval_res.get("reason"),
+            "at": now.isoformat(),
+        }
+        state["worker_code_sha"] = om._git_sha()
         om.refresh_runtime_status(state, worker_alive=True)
 
         # Opening-probe path still refreshes pre-09:00 when probe enabled
@@ -987,7 +1065,8 @@ def run_once(
                     "direction": ep.get("direction"),
                 })
 
-        # Execute pending switch on this tick
+        # Execute pending switch ASAP on the arming tick (no age gate).
+        # Pending is idempotent via processed_signal_ids; delaying only caused missed buys.
         pending_id = state.get("pending_signal_id")
         pending_dir = state.get("pending_signal_direction")
         pending_at = state.get("pending_signal_at")
@@ -995,16 +1074,7 @@ def run_once(
         pending_src = state.get("pending_signal_source") or SIGNAL_SOURCE
         pending_frac = float(state.get("pending_budget_fraction") or 1.0)
         pending_scale = bool(state.get("pending_open_scale"))
-        execute_now = False
-        if pending_id and pending_dir:
-            try:
-                detected = datetime.fromisoformat(str(pending_at)) if pending_at else None
-                if detected is not None and (now - detected).total_seconds() >= (TICK_SECONDS * 0.5):
-                    execute_now = True
-                elif detected is None:
-                    execute_now = True
-            except Exception:
-                execute_now = True
+        execute_now = bool(pending_id and pending_dir)
 
         if execute_now and pending_id and pending_dir:
             if not allow_new_switch(now):
@@ -1043,6 +1113,11 @@ def run_once(
                         budget_fraction=pending_frac,
                     )
                 result["actions"].append({"switch": switch_res})
+                state["last_order_attempt_at"] = now.isoformat()
+                if not switch_res.get("success") and not switch_res.get("duplicate") and not switch_res.get("skipped_same_direction"):
+                    state["last_order_error"] = str(switch_res.get("message") or "switch_failed")
+                else:
+                    state["last_order_error"] = None
                 if switch_res.get("success") or switch_res.get("duplicate") or switch_res.get("skipped_same_direction"):
                     if pending_kind == ENTRY_OPEN_IMMEDIATE:
                         op["immediate_fired_today"] = True
@@ -1151,9 +1226,16 @@ def _worker_loop() -> None:
     logger.info("[MACDHynix] worker stopped")
 
 
-def ensure_worker_running() -> dict[str, Any]:
+def ensure_worker_running(*, force_restart: bool = False) -> dict[str, Any]:
+    """Start daemon worker; when ``force_restart`` kill old thread so new bytecode loads."""
     global _worker_thread
-    if _worker_thread and _worker_thread.is_alive():
+    if force_restart:
+        stop_worker()
+        if _worker_thread and _worker_thread.is_alive():
+            _worker_thread.join(timeout=3.0)
+        _worker_thread = None
+        _stop_event.clear()
+    elif _worker_thread and _worker_thread.is_alive():
         return get_worker_status()
     _stop_event.clear()
     _worker_thread = threading.Thread(target=_worker_loop, name="macd-hynix-worker", daemon=True)
@@ -1164,6 +1246,52 @@ def ensure_worker_running() -> dict[str, Any]:
 def stop_worker() -> None:
     _stop_event.set()
     _wake_event.set()
+
+
+def repair_phantom_initial_entry(state: dict[str, Any], broker) -> dict[str, Any]:
+    """Clear phantom INITIAL_ENTRY lock when broker+local are flat (test/pollution / failed fill).
+
+    Keeps real same-dir episode lock after a genuine exit. Only unlocks when last_event
+    claims INITIAL_ENTRY but neither broker nor local book holds the target ETF.
+    """
+    out = {"repaired": False}
+    pos = state.get("position") or {}
+    local_qty = int(pos.get("quantity") or 0)
+    if local_qty > 0 and pos.get("symbol"):
+        return out
+    if str(state.get("last_event") or "") != "INITIAL_ENTRY":
+        return out
+    sid = state.get("last_signal_id")
+    direction = state.get("last_signal_direction")
+    target = target_symbol_for_direction(direction)
+    if not target or not sid:
+        return out
+    live = om.get_held_quantity(broker, target)
+    if live is None:
+        return out
+    if int(live) > 0:
+        return out
+    other = opposite_symbol(target)
+    other_qty = om.get_held_quantity(broker, other) if other else 0
+    if other and other_qty is not None and int(other_qty) > 0:
+        return out
+
+    processed = [x for x in (state.get("processed_signal_ids") or []) if x != sid]
+    state["processed_signal_ids"] = processed
+    state["last_signal_direction"] = None
+    state["last_signal_bar_ts"] = None
+    state["last_signal_id"] = None
+    state["last_event"] = None
+    state["direction_episode"] = om.default_state()["direction_episode"]
+    state["pipeline"] = om.default_state()["pipeline"]
+    state["position"] = om.default_state()["position"]
+    out.update({"repaired": True, "cleared_signal_id": sid, "cleared_direction": direction})
+    logger.warning(
+        "[MACDHynix] repaired phantom INITIAL_ENTRY lock sid=%s dir=%s (broker flat)",
+        sid,
+        direction,
+    )
+    return out
 
 
 def start_auto_trade(
@@ -1187,6 +1315,9 @@ def start_auto_trade(
         om.save_state(state)
         return {"ok": False, "message": reason, "primary_block_reason": reason}
 
+    # Kill old daemon thread so Start always loads current worker/strategy bytecode.
+    ensure_worker_running(force_restart=True)
+
     state = om.load_state()
     today = _now_kst().strftime("%Y-%m-%d")
     # Must rollover BEFORE first run_once. Setting session_date alone used to skip the
@@ -1204,18 +1335,35 @@ def start_auto_trade(
     state["masked_account"] = masked_account
     state["primary_block_reason"] = None
     state["order_block_reason"] = None
+    state["last_order_error"] = None
+    state["worker_code_sha"] = om._git_sha()
     state["legacy_truth_debug"] = om.legacy_auto_trade_truth(force_disk=True)
     om.write_mutex(macd_on=True, mode=mode, reason="macd_started")
     om.refresh_runtime_status(state, worker_alive=True)
     om.save_state(state)
-    ensure_worker_running()
+
     # First tick immediately after start: fetch quotes + compute MACD (do not wait 5s).
     try:
-        run_once(state=state)
+        # Build broker early so phantom repair can see live holdings.
+        real_ready = bool(state.get("real_confirm_ok"))
+        confirm_text = ""
+        if mode == "real" and real_ready:
+            from app.config import get_config
+
+            confirm_text = str(get_config().real_confirm_text() or "")
+        broker = om.create_macd_broker(
+            mode,
+            real_confirm_text=confirm_text,
+            real_ready=real_ready,
+        )
+        repair_phantom_initial_entry(state, broker)
+        om.save_state(state)
+        run_once(broker=broker, state=state)
     except Exception as exc:
         logger.warning("[MACDHynix] immediate first tick failed: %s", exc)
         state = om.load_state()
         state["order_block_reason"] = state.get("order_block_reason") or f"first_tick_error: {exc}"
+        state["last_order_error"] = str(exc)
         om.refresh_runtime_status(state, worker_alive=True)
         om.save_state(state)
     _wake_event.set()
@@ -1232,6 +1380,7 @@ def stop_auto_trade(reason: str = "user_stop") -> dict[str, Any]:
     om.clear_mutex(mode=str(state.get("mode") or "mock"), reason=reason)
     om.refresh_runtime_status(state, worker_alive=True)
     om.save_state(state)
+    stop_worker()
     return {"ok": True, "state": state}
 
 

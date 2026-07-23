@@ -247,6 +247,17 @@ st.write(f"**다음 예상 행동**: {state.get('next_action') or '대기'}")
 if state.get("order_block_reason"):
     st.warning(f"주문 보류: {state.get('order_block_reason')}")
 
+_diag = state.get("last_signal_eval") or {}
+st.caption(
+    f"tick_diag · bars_ok=`{state.get('last_macd_bars_ok')}` · "
+    f"flag=`{state.get('last_flag')}` · new_signal=`{state.get('last_new_signal')}` · "
+    f"bar=`{_diag.get('bar_ts')}` close=`{_diag.get('bar_close_ts')}` · "
+    f"hist3=`{_diag.get('hist_last3')}` · "
+    f"order_attempt=`{state.get('last_order_attempt_at')}` · "
+    f"order_err=`{state.get('last_order_error')}` · "
+    f"worker_code_sha=`{state.get('worker_code_sha') or state.get('git_sha')}`"
+)
+
 # ── Opening probe ─────────────────────────────────────────────────────────
 st.subheader("Opening probe (09:00 immediate)")
 op = state.get("opening_probe") or {}

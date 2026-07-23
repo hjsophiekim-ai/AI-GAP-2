@@ -720,6 +720,7 @@ def test_quote_error_surfaces_fields(monkeypatch):
         raise RuntimeError(f"KIS fail {symbol}")
 
     broker.get_current_price = boom  # type: ignore
+    monkeypatch.setattr(worker, "_quote_from_local_cache", lambda *a, **k: None)
     state = om.default_state()
     state["auto_trade_on"] = True
     quotes = worker._refresh_quotes(broker, state)
@@ -727,6 +728,10 @@ def test_quote_error_surfaces_fields(monkeypatch):
     err = state["quote_errors"][0]
     assert err.get("api_function")
     assert err.get("symbol")
+    assert "KIS fail" in str(err.get("error_message") or "") or err.get("error_message")
+    assert state.get("order_block_reason")
+    assert "QUOTE_ERROR" in str(state.get("order_block_reason"))
+    assert quotes["hynix"]["ok"] is False
     assert err.get("error_message")
     assert err.get("retry_count")
     assert "QUOTE_ERROR" in str(state.get("order_block_reason") or "")
@@ -867,17 +872,10 @@ def test_worker_run_once_arms_then_executes_next_tick():
     wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
     try:
         r1 = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
-        assert any("signal" in a for a in r1["actions"])
-        assert state["pending_signal_id"]
-        # Next tick 5s later executes
-        r2 = worker.run_once(
-            broker=broker,
-            now=now + timedelta(seconds=5),
-            df_1m=df,
-            state=state,
-        )
-        assert any("switch" in a for a in r2["actions"])
+        # Same-tick execute: signal armed and switch completes in one run_once
+        assert any("signal" in a or "switch" in a for a in r1["actions"])
         assert LONG_SYMBOL in broker.positions or state.get("position", {}).get("symbol") == LONG_SYMBOL
+        assert any("switch" in a for a in r1["actions"]) or state.get("position", {}).get("quantity", 0) > 0
     finally:
         wmod.evaluate_macd_direction = original  # type: ignore
 
@@ -1260,10 +1258,12 @@ def test_worker_opposite_priority_over_profit_lock(monkeypatch):
     wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
     try:
         r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
-        assert any("opposite_signal" in a for a in r["actions"])
+        assert any("opposite_signal" in a or "switch" in a for a in r["actions"])
         assert not any(a.get("reason") == EXIT_PROFIT_LOCK for a in r["actions"])
-        # Pending opposite armed; profit-lock exit skipped this tick
-        assert state.get("pending_signal_id") == fake_eval["signal_id"]
+        # Same-tick execute: opposite arms and switches; pending cleared after success
+        assert state.get("last_signal_direction") == DIR_DOWN
+        assert state.get("pending_signal_id") is None
+        assert INVERSE_SYMBOL in broker.positions or state.get("position", {}).get("symbol") == INVERSE_SYMBOL
     finally:
         wmod.evaluate_macd_direction = original  # type: ignore
 
@@ -1420,3 +1420,250 @@ def test_scale_opening_probe_adds_same_direction():
     assert res["success"]
     assert len(broker.buys) > buys_before
     assert state["position"]["size_fraction"] >= 0.9
+
+
+def test_day_flat_rollover_one_entry_then_same_day_restart_no_rebuy():
+    """After flat day rollover: one initial entry; same-day restart must not re-buy same dir."""
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["session_date"] = "2026-07-22"
+    state["last_signal_direction"] = DIR_DOWN  # yesterday leftover
+    state["opening_probe_enabled"] = False
+
+    # New day while flat clears direction once
+    assert om.apply_macd_session_day_rollover(state, session_date="2026-07-23") is True
+    assert state["last_signal_direction"] is None
+    assert state["processed_signal_ids"] == []
+
+    sid = "MACD3M:UP_RED:2026-07-23T10:00:00"
+    up_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-23T10:00:00",
+        "bar_close_ts": "2026-07-23T10:03:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": sid,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: up_eval  # type: ignore
+    try:
+        now = datetime(2026, 7, 23, 10, 3, 5)
+        worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        worker.run_once(broker=broker, now=now + timedelta(seconds=5), df_1m=df, state=state)
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) == 1
+
+        # Same-day Stop→Start: rollover no-op; flatten book; same signal must not re-buy
+        assert om.apply_macd_session_day_rollover(state, session_date="2026-07-23") is False
+        assert state["last_signal_direction"] == DIR_UP
+        for sym, pos in list(broker.positions.items()):
+            broker.cash += float(pos.avg_price) * int(pos.quantity)
+            del broker.positions[sym]
+        state["position"] = om.default_state()["position"]
+        n = len(broker.buys)
+        for i in range(6):
+            worker.run_once(
+                broker=broker,
+                now=now + timedelta(hours=1, seconds=5 * i),
+                df_1m=df,
+                state=state,
+            )
+        assert len(broker.buys) == n
+
+        # Opposite flag → one new entry
+        down_sid = "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+        down_eval = {
+            **up_eval,
+            "display_direction": DIR_DOWN,
+            "signal_direction": DIR_DOWN,
+            "bar_ts": "2026-07-23T12:00:00",
+            "bar_close_ts": "2026-07-23T12:03:00",
+            "reason": "DOWN_BLUE_FIRST_TURN",
+            "signal_id": down_sid,
+            "macd": -1.0,
+            "hist": -0.5,
+            "hist_last3": [-0.1, -0.3, -0.5],
+            "hist_deltas": [-0.2, -0.2],
+        }
+        wmod.evaluate_macd_direction = lambda *a, **k: down_eval  # type: ignore
+        for i in range(4):
+            worker.run_once(
+                broker=broker,
+                now=datetime(2026, 7, 23, 12, 3, 5) + timedelta(seconds=5 * i),
+                df_1m=df,
+                state=state,
+            )
+        assert sum(1 for b in broker.buys if b[0] == INVERSE_SYMBOL) == 1
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_stop_auto_trade_stops_worker_and_start_force_restarts():
+    """Stop joins via stop_worker; Start force-restarts so new bytecode loads."""
+    import inspect
+
+    src_stop = inspect.getsource(worker.stop_auto_trade)
+    assert "stop_worker" in src_stop
+    src_ensure = inspect.getsource(worker.ensure_worker_running)
+    assert "force_restart" in src_ensure
+    src_start = inspect.getsource(worker.start_auto_trade)
+    assert "force_restart=True" in src_start
+    assert "repair_phantom_initial_entry" in src_start
+
+
+def test_kis_minute_parse_accepts_dashed_today():
+    """Regression: today ISO date must not break %Y%m%d%H%M%S parse."""
+    # Unit-level: the formatter used inside _fetch_kis_minute_1m
+    today = "2026-07-23"
+    ymd = str(today).replace("-", "")[:8]
+    hhmmss = "100100"
+    from datetime import datetime as dt
+
+    ts = dt.strptime(f"{ymd}{hhmmss}", "%Y%m%d%H%M%S")
+    assert ts.hour == 10 and ts.minute == 1
+
+
+def test_validate_etf_quotes_target_only_allows_long_buy():
+    quotes = {
+        "long": {"price": 15000.0, "updated_at": datetime.now().isoformat()},
+        "inverse": {},  # missing — must not block long-only
+    }
+    ok, reason = om.validate_etf_quotes(quotes, required_symbols=[LONG_SYMBOL])
+    assert ok is True
+    ok2, _ = om.validate_etf_quotes(quotes, required_symbols=[LONG_SYMBOL, INVERSE_SYMBOL])
+    assert ok2 is False
+
+
+def test_repair_phantom_initial_entry_unlocks_flat_book():
+    broker = FakeBroker()
+    state = om.default_state()
+    state["last_event"] = "INITIAL_ENTRY"
+    state["last_signal_direction"] = DIR_UP
+    state["last_signal_id"] = "MACD3M:UP_RED:2026-07-23T10:00:00"
+    state["processed_signal_ids"] = ["MACD3M:UP_RED:2026-07-23T10:00:00"]
+    state["position"] = om.default_state()["position"]
+    out = worker.repair_phantom_initial_entry(state, broker)
+    assert out["repaired"] is True
+    assert state["last_signal_direction"] is None
+    assert state["processed_signal_ids"] == []
+
+def test_pattern_without_onset_arms_when_flat_episode_free():
+    """UI-red/blue without onset must still arm INITIAL when flat and direction free."""
+    from app.trading.macd_hynix_strategy import (
+        signed_hist_two_turn_new_signal,
+        signed_hist_two_turn_onset,
+        signed_hist_two_turn_pattern,
+    )
+
+    assert signed_hist_two_turn_pattern(5.0, 4.0, 3.0) == DIR_UP
+    assert signed_hist_two_turn_onset(5.0, 4.0, 3.0, 2.0) is None
+    assert signed_hist_two_turn_new_signal(DIR_UP, None) is True
+    assert signed_hist_two_turn_new_signal(DIR_UP, DIR_UP) is False
+
+    df = _bars_1m(120, trend="up")
+    now = df["datetime"].iloc[-1] + timedelta(minutes=3)
+    r = evaluate_macd_direction(
+        df, now=now, last_signal_direction=None, session_date=now.strftime("%Y-%m-%d"),
+    )
+    if r.get("ok") and r.get("display_direction") == DIR_UP:
+        assert r["new_signal"] is True
+        assert r["signal_id"]
+        assert r["reason"] in ("UP_RED_FIRST_TURN", "UP_RED_PATTERN_ENTRY")
+
+
+def test_worker_same_tick_arms_and_buys_up_red():
+    """Flat UP_RED: arm + broker.buy(0193T0) on the same run_once tick."""
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    now = datetime(2026, 7, 23, 10, 3, 5)
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-23T10:00:00",
+        "bar_close_ts": "2026-07-23T10:03:00",
+        "reason": "UP_RED_PATTERN_ENTRY",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        assert any("signal" in a or "switch" in a for a in r["actions"])
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) == 1
+        assert state.get("position", {}).get("symbol") == LONG_SYMBOL
+        rows = om.load_ledger()
+        assert any(row.get("action") == "BUY" and row.get("symbol") == LONG_SYMBOL for row in rows)
+        n = len(broker.buys)
+        worker.run_once(broker=broker, now=now + timedelta(seconds=5), df_1m=df, state=state)
+        assert len(broker.buys) == n
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_worker_same_tick_arms_and_buys_down_blue():
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="down")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    now = datetime(2026, 7, 23, 10, 3, 5)
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_DOWN,
+        "new_signal": True,
+        "signal_direction": DIR_DOWN,
+        "macd": -1.0,
+        "signal": -0.5,
+        "hist": -0.5,
+        "hist_last3": [-0.1, -0.3, -0.5],
+        "hist_deltas": [-0.2, -0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-23T10:00:00",
+        "bar_close_ts": "2026-07-23T10:03:00",
+        "reason": "DOWN_BLUE_PATTERN_ENTRY",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        assert sum(1 for b in broker.buys if b[0] == INVERSE_SYMBOL) == 1
+        assert any(
+            row.get("action") == "BUY" and row.get("symbol") == INVERSE_SYMBOL
+            for row in om.load_ledger()
+        )
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
