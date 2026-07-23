@@ -1,0 +1,6 @@
+READY_FOR_MOCK only after Render ≥5 min live observation OR documented blocker + same-path 7/23 E2E trace. Submit all 12 final report items.
+
+Delete/replace old tangled worker/parallel_quote/reload paths rather than stacking more conditions.
+
+If a prior agent left half-done files, finish as this clean architecture.
+</user_query>

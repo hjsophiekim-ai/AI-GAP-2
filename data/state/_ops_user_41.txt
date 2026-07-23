@@ -1,0 +1,24 @@
+<timestamp>Thursday, Jul 23, 2026, 1:09 PM (UTC+9)</timestamp>
+<user_query>
+Repo: `C:\Users\FURSYS\Desktop\AI-GAP 2`
+
+User confirms: treat the **작전 명령** (the full “MACD 자동매매 모듈을 더 이상 증상별로 패치하지 마라… refactor: rebuild isolated MACD trading pipeline end to end” message) as the **FINAL authoritative spec**. Clean up the program accordingly.
+
+Proceed to completion under that spec only:
+
+1. Finish audit A–G report first (in artifacts + final response)
+2. Rebuild into exactly 4 components: MarketDataService, MacdSignalEngine, MacdOrderExecutor, ReadOnly UI
+3. Single runtime store `data/state/macd_hynix_runtime.json`
+4. Remove tangled paths: module reload code-swap, nested ThreadPool quote, multi-file duplicate ON/OFF/signal state, UI-owned worker lifecycle
+5. Keep strategy rules (signed B, -1.5% SL, Profit Lock +1.5%/0.8pp, no +3% TP, opposite switch, 15:00 flatten, continuation OFF, MOCK no REAL gates)
+6. Full pytest 100% + same-path E2E Jul21–23
+7. **Commit/push ONLY after all criteria pass** with message:
+```
+refactor: rebuild isolated MACD trading pipeline end to end
+```
+8. READY_FOR_MOCK only if verification gates pass
+
+If mid-work half-done patches conflict with this clean architecture, delete/replace them — do not stack.
+
+Deliver the 12-item final report from the ops command.
+</user_query>

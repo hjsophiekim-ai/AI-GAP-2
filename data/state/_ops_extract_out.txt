@@ -1,0 +1,13 @@
+﻿len 3834
+idx -1
+python : Traceback (most recent call last):
+위치 C:\Users\FURSYS\AppData\Local\Temp\ps-script-3656be4f-9bfc-48a0-8d02-cf50208cafb2.ps1:87 문자:1
++ python -c "
++ ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "<string>", line 15, in <module>
+    print(t[max(0,idx):idx+2000][:2000] if idx>=0 else 'none')
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'cp949' codec can't encode character '\u2013' in position 474: illegal multibyte sequence

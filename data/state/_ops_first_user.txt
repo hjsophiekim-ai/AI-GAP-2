@@ -1,0 +1,63 @@
+<timestamp>Thursday, Jul 23, 2026, 12:54 PM (UTC+9)</timestamp>
+<user_query>
+Repo: `C:\Users\FURSYS\Desktop\AI-GAP 2`
+
+**FINAL structural normalize** of MACD module data → signal → order. Do **NOT** add conditions or change MACD formula / exit thresholds.
+
+Exact commit message:
+```
+fix: rebuild MACD data and order pipeline for reliable live execution
+```
+
+## Live Render evidence to fix
+- quote_status=FAILED; 000660/0193T0 get_current_price 2s Timeout; 0197X0 QUOTE_PHASE_CAP skipped
+- bootstrap only today 59×1m; warmup_ready=NO; 3m=20/100
+- MACD numbers shown but bars_ok=False, flag=HOLD, signal_id=None
+- Worker mean 8.99s p95 14.30s
+- worker error=`cannot schedule new futures after interpreter shutdown`
+- 0 orders / 0 latency samples
+
+## BEFORE coding — report these four (in final report too):
+A. Actual traceback/cause of get_current_price timeout
+B. Exact API paging condition that fails prior-day bootstrap
+C. Code locations reusing shutdown executor after interpreter shutdown
+D. Actual 7/23 signed-B signal computation results
+
+Read end-to-end first:
+- macd_hynix_strategy.py, worker.py, order_manager.py
+- UI page 10
+- KIS mock broker current price / minute chart
+- executor/watchdog/state
+
+## Implement all 1–12 from user (summary):
+
+1. **Worker lifecycle**: No module-level ThreadPoolExecutor reuse; never submit to shutdown executor; stop joins thread+executor; start creates new Worker+executor; exactly 1 active Worker; block start if old thread not dead; Streamlit rerun must not kill/duplicate. UI: worker_instance_id, worker_started_at, worker_thread_count, executor_alive, worker_code_sha, last_exception traceback.
+
+2. **Decouple quotes from 5s worker**: Separate QuoteCache updater (1 thread). Worker reads cache; age≤10s allows orders; on fail use last good by age. If KIS not thread-safe → single I/O queue serializing all KIS; worker never blocks on live HTTP.
+
+3. **Diagnose real timeout** with full audit (URL kind, token, HTTP, rt_cd, exception repr/traceback, elapsed). Measure sane timeout — don’t blindly 2s hide causes.
+
+4. **bootstrap_history() once on Start**, independent of current-price. ≥300×1m + ≥100 completed 3m including prior day. Page backward on 30/60 returns; dedupe; sort; fail if only today expands. Log request_no, requested_to, received_count, oldest/newest.
+
+5. **One MACD state**: warmup_ready=NO → show NOT_READY, no trading MACD numbers as ready, signal_calculation_active=NO. Only when YES: completed_signal_snapshot shared by UI+Worker.
+
+6. **signed-B once per new completed 3m**: calculate → persist signal_id (trading_date+completed_bar_at+direction) → same cycle order intent → queue. States DETECTED→…→LEDGER_RECORDED. No pending timer / session_state as order gate.
+
+7. **Order rules** (existing): UP_RED sell SOL→buy KODEX; DOWN_BLUE sell KODEX→buy SOL; flat direct buy; no dup signal_id; MOCK no REAL gates.
+
+8. **Latency goals**: signal→order_intent ≤1s; intent→KIS request start ≤4s. Don’t overclaim fill within 5s. Stamp all stages.
+
+9. **Daily signal ledger** separate from execution; show “신호 계산 불가” not “신호 없음” when not ready.
+
+10. **Day rollover** clear prior FORCE_LIQUIDATE from today’s runtime UI; keep permanent ledger.
+
+11. **Same-path test** with 7/23 saved bars; real bootstrap→signal→Worker→OM; fake KIS mock only. Output all UP/DOWN times, chart vs signed-B note, targets, latencies, expected Net PnL.
+
+12. **Regression tests** as listed + full pytest/compileall.
+
+Then push and try Render ≥10 min observation report (prices/age, bootstrap, warmup, flag/signal_id, thread counts, tick stats, quote success, mock E2E, SHAs).
+
+**READY_FOR_MOCK only if all criteria pass.** Else NOT_READY with failing items.
+
+Prefer minimal structural surgery that achieves reliability over rewrite-for-its-own-sake — but do rebuild pipeline as required.
+</user_query>

@@ -1,0 +1,54 @@
+<timestamp>Thursday, Jul 23, 2026, 1:09 PM (UTC+9)</timestamp>
+<user_query>
+Repo: `C:\Users\FURSYS\Desktop\AI-GAP 2`
+
+**STOP symptom patches.** Keep MACD strategy rules (signed B, TP/SL/Profit Lock, no continuation) but **audit end-to-end then rebuild** the MACD ops path into ONE architecture.
+
+**Do NOT commit/push until ALL criteria pass.** Order: cause report → structural fix → full verification → then commit/push.
+
+Exact final commit message:
+```
+refactor: rebuild isolated MACD trading pipeline end to end
+```
+
+## Replace prior partial rebuild with this authoritative spec
+
+### 1. Full code audit FIRST — report A–G before/with the fix
+Read all MACD files + KIS brokers + OrderCoordinator + state/mutex/ledger + ThreadPool/watchdog/reload.
+
+Report:
+A. KIS current-price timeout call flow + cause
+B. Why prior-day warm-up failed
+C. Whether UI and Worker compute different signals
+D. Where shutdown executors are reused
+E. Stage timings making Worker >5s
+F. All early-returns that blocked orders when flags existed
+G. Each state file role + duplication/conflicts
+
+### 2. Only 4 runtime components
+1) MarketDataService
+2) MacdSignalEngine
+3) MacdOrderExecutor
+4) ReadOnly UI
+
+UI must NOT create/kill/reload Worker or compute signals — only read one persistent snapshot + write start/stop commands. Streamlit rerun must not own Worker lifecycle.
+
+Prefer independent MACD Worker process on Render; else process-global singleton supervisor with exactly: Worker×1, Quote updater×1, zero executor reuse errors, zero duplicate threads.
+
+**Remove module-reload code-swap.** SHA change → new process / new Worker object only.
+
+### 3. Single store: `data/state/macd_hynix_runtime.json`
+Required fields as user listed. Mutex only for MACD vs Enhanced ownership. Atomic write + file lock. Stop duplicating ON/OFF/signal/pipeline across many files (migrate/consolidate).
+
+### 4–10. Implement MarketData bootstrap, KIS quote service, single signed-B function + completed_signal_snapshot, one-way state machine DETECTED→…→LEDGER_RECORDED, order/exit rules as specified, 5s monotonic worker (light work only), UI modes STOPPED/BOOTSTRAPPING/READY/RUNNING/DATA_ERROR/SIGNAL_ERROR/ORDER_BLOCKED/WORKER_STALLED, etc. — follow user's sections 4–10 exactly.
+
+### 11. Same-path E2E Jul21–23 bars through real bootstrap→SignalEngine→Worker→OrderExecutor; broker=fake mock only. Parity with A–F signed B. Plus optional KIS mock smoke diagnostic mode.
+
+### 12. All regression tests + **full pytest 100% pass** — do not dismiss unrelated failures.
+
+### 13. READY_FOR_MOCK only after Render ≥5 min live observation OR documented blocker + same-path 7/23 E2E trace. Submit all 12 final report items.
+
+Delete/replace old tangled worker/parallel_quote/reload paths rather than stacking more conditions.
+
+If a prior agent left half-done files, finish as this clean architecture.
+</user_query>
