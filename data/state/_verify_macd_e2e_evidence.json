@@ -1,29 +1,3324 @@
 {
-  "verdict": "READY_FOR_MOCK",
-  "sha": "abf36c3",
-  "proof": {
-    "at": "2026-07-23T10:03:05",
-    "flag": "DOWN_BLUE",
-    "new_signal": false,
-    "pattern_reason": "DOWN_BLUE_PATTERN",
-    "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
-    "flat": true,
-    "would_arm": true,
-    "arm_blocked_reason": null,
-    "pending_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
-    "pending_dir": "DOWN_BLUE",
-    "execute_attempted": true,
-    "broker_called": true,
-    "broker_result": {
-      "success": true,
-      "duplicate": null,
-      "skipped_same_direction": null,
-      "message": "switch complete",
-      "target": "0197X0",
-      "entry_kind": "INITIAL_ENTRY"
+  "sha": "587e18d855b597603698c8c7d640032e22b8dff8",
+  "sha_short": "587e18d",
+  "origin_main": "abf36c32e1a676c88745d0c44c8272c99f8f109b",
+  "checklist": {
+    "1_force_restart_old_thread_gone": true,
+    "1_force_restart_new_alive": true,
+    "1_worker_code_sha_current": true,
+    "2_down_same_tick": true,
+    "2_down_0197X0": true,
+    "2_down_order_requested": true,
+    "2_down_accepted": true,
+    "2_down_executed": true,
+    "2_down_position_confirmed": true,
+    "2_down_ledger": true,
+    "2_down_no_extra_buys": true,
+    "3_up_same_tick": true,
+    "3_up_0193T0": true,
+    "3_up_order_requested": true,
+    "3_up_accepted": true,
+    "3_up_executed": true,
+    "3_up_position_confirmed": true,
+    "3_up_ledger": true,
+    "3_up_no_extra_buys": true,
+    "4_dup_flag_held": true,
+    "4_dup_restart_no_rebuy": true,
+    "4_dup_holding_no_initial": true,
+    "4_dup_signal_id_once": true,
+    "5_opp_down_to_up": true,
+    "5_opp_up_to_down": true,
+    "6_ui_fields": true
+  },
+  "exit_rules": {
+    "15:00": "FORCE_LIQUIDATE highest priority",
+    "opposite_MACD": "OPPOSITE_SWITCH sell then buy",
+    "SL": "SL_EXIT at −1.5% net",
+    "profit_lock": "activate ≥+1.5% net, giveback ≥0.8pp → PROFIT_LOCK",
+    "fixed_tp": "none (no +3% TP in live worker)",
+    "same_dir_reentry": "blocked after episode used (unless continuation flag ON)"
+  },
+  "force_restart": {
+    "ok": true,
+    "live_state_sha_before": "abf36c3",
+    "render": "NOT_CHECKABLE_NO_RENDER_MCP",
+    "old_thread_ident": 12560,
+    "old_thread_alive_before": true,
+    "new_thread_ident": 40024,
+    "new_thread_alive": true,
+    "status": {
+      "thread_ident": 40024,
+      "thread_alive": true,
+      "alive": false
     },
-    "worker_code_sha": "abf36c3",
-    "module_digest": "fa70807cb176",
-    "stale_worker": false
-  }
+    "old_thread_gone": true,
+    "worker_code_sha_after": "587e18d",
+    "git_sha_fn": "587e18d",
+    "sha_matches_head": true,
+    "old_sha_94e1835_replaced": true,
+    "worker_stopped_after_proof": true
+  },
+  "episodes": {
+    "DOWN_BLUE": {
+      "tmp": "C:\\Users\\FURSYS\\AppData\\Local\\Temp\\macd_e2e_6e7qw978",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+      "direction": "DOWN_BLUE",
+      "target_symbol": "0197X0",
+      "signal_type": "INITIAL",
+      "pipeline_checks": {
+        "has_armed_at": true,
+        "has_order_requested_at": true,
+        "has_kis_accepted_at": true,
+        "has_broker_executed_at": true,
+        "has_position_confirmed_at": true,
+        "target_symbol": true,
+        "qty_gt_0": true,
+        "broker_buy_once": true,
+        "ledger_buy": true,
+        "signal_id_processed": true,
+        "same_tick_fill": true
+      },
+      "extra_buys_while_flag_held": 0,
+      "latency": {
+        "armed_at": "2026-07-23T10:03:05",
+        "signal_type": "INITIAL",
+        "current_flag": "DOWN_BLUE",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+        "order_requested_at": "2026-07-23T10:35:43.647011",
+        "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+        "broker_executed_at": "2026-07-23T10:35:43.647291",
+        "position_confirmed_at": "2026-07-23T10:35:43.647291",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "completed_3m_bar_at": "2026-07-23T10:03:00",
+          "signal_detected_at": "2026-07-23T10:03:05",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "segments_sec": {}
+        }
+      },
+      "position": {
+        "symbol": "0197X0",
+        "quantity": 500,
+        "avg_price": 10000.0,
+        "entry_at": "2026-07-23T10:35:43.647291",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+        "entry_kind": "INITIAL_ENTRY",
+        "direction_episode_id": "EP:DOWN_BLUE:00",
+        "size_fraction": 1.0,
+        "opening_probe": false
+      },
+      "ledger_rows": [
+        {
+          "trade_id": "8624f63dc16b4ae2",
+          "timestamp": "2026-07-23T10:35:43.775767",
+          "mode": "mock",
+          "macd_signal": "DOWN_BLUE",
+          "action": "BUY",
+          "symbol": "0197X0",
+          "requested_qty": "500",
+          "executed_qty": "500",
+          "order_price": "10000.0",
+          "executed_price": "10000.0",
+          "order_id": "B1",
+          "hold_seconds": "0.0",
+          "gross_pnl": "0.0",
+          "cost": "750.0",
+          "net_pnl": "-750.0",
+          "exit_reason": "INITIAL_ENTRY",
+          "success": "True",
+          "position_confirmed": "True",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "idempotency_key": "mock:50123456:0197X0:BUY:EP_DOWN_BLUE_00:MACD_BUY_0197X0_MACD3M_DOWN_BLUE_2026-07-23T10_00_00_1:500",
+          "pipeline_stage": "Buy Executed",
+          "git_sha": "587e18d",
+          "message": "",
+          "entry_kind": "INITIAL_ENTRY",
+          "direction_episode_id": "EP:DOWN_BLUE:00",
+          "signal_source": "MACD_HIST_3M_B",
+          "peak_net_return": "",
+          "current_net_return": "",
+          "giveback_pct": "",
+          "profit_lock_active": "",
+          "completed_3m_bar_at": "2026-07-23T10:03:00",
+          "signal_detected_at": "2026-07-23T10:03:05",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "lat_bar_to_signal_s": "5.0",
+          "lat_signal_to_request_s": "1958.647",
+          "lat_request_to_kis_s": "0.0",
+          "lat_kis_to_fill_s": "0.0",
+          "lat_signal_to_fill_s": "1958.647"
+        }
+      ],
+      "broker_buys": [
+        [
+          "0197X0",
+          500,
+          10000.0
+        ]
+      ],
+      "broker_sells": [],
+      "first_tick_actions": [
+        {
+          "signal": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "direction": "DOWN_BLUE"
+        },
+        {
+          "switch": {
+            "success": true,
+            "buy": {
+              "success": true,
+              "bought_quantity": 500,
+              "after_quantity": 500,
+              "avg_price": 10000.0,
+              "fill_confirmed": true,
+              "idempotency_key": "mock:50123456:0197X0:BUY:EP_DOWN_BLUE_00:MACD_BUY_0197X0_MACD3M_DOWN_BLUE_2026-07-23T10_00_00_1:500",
+              "order": {
+                "success": true,
+                "mode": "mock",
+                "account_type": "mock",
+                "symbol": "0197X0",
+                "name": "SOL SK하이닉스선물단일종목인버스2X",
+                "side": "buy",
+                "quantity": 500,
+                "price": 10000.0,
+                "order_type": "market",
+                "order_id": "B1",
+                "message": "ok",
+                "timestamp": "2026-07-23 10:35:43",
+                "http_status": 0,
+                "error_type": "",
+                "excluded_reason": "",
+                "rt_cd": "",
+                "msg_cd": "",
+                "msg1": ""
+              },
+              "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+              "broker_executed_at": "2026-07-23T10:35:43.647291",
+              "position_confirmed_at": "2026-07-23T10:35:43.647291"
+            },
+            "target": "0197X0",
+            "entry_kind": "INITIAL_ENTRY",
+            "message": "switch complete",
+            "order_latency": {
+              "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+              "completed_3m_bar_at": "2026-07-23T10:03:00",
+              "signal_detected_at": "2026-07-23T10:03:05",
+              "order_requested_at": "2026-07-23T10:35:43.647011",
+              "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+              "broker_executed_at": "2026-07-23T10:35:43.647291",
+              "position_confirmed_at": "2026-07-23T10:35:43.647291",
+              "segments_sec": {
+                "bar_complete_to_signal_detect": 5.0,
+                "signal_detect_to_order_request": 1958.647,
+                "order_request_to_kis_accept": 0.0,
+                "kis_accept_to_fill_confirm": 0.0,
+                "signal_detect_to_final_fill": 1958.647
+              },
+              "finalized_at": "2026-07-23T10:35:43.942831"
+            }
+          }
+        }
+      ],
+      "log_ticks": [
+        {
+          "label": "DOWN_BLUE_INITIAL_same_tick",
+          "now": "2026-07-23T10:03:05",
+          "actions": [
+            {
+              "signal": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+              "direction": "DOWN_BLUE"
+            },
+            {
+              "switch": {
+                "success": true,
+                "buy": {
+                  "success": true,
+                  "bought_quantity": 500,
+                  "after_quantity": 500,
+                  "avg_price": 10000.0,
+                  "fill_confirmed": true,
+                  "idempotency_key": "mock:50123456:0197X0:BUY:EP_DOWN_BLUE_00:MACD_BUY_0197X0_MACD3M_DOWN_BLUE_2026-07-23T10_00_00_1:500",
+                  "order": {
+                    "success": true,
+                    "mode": "mock",
+                    "account_type": "mock",
+                    "symbol": "0197X0",
+                    "name": "SOL SK하이닉스선물단일종목인버스2X",
+                    "side": "buy",
+                    "quantity": 500,
+                    "price": 10000.0,
+                    "order_type": "market",
+                    "order_id": "B1",
+                    "message": "ok",
+                    "timestamp": "2026-07-23 10:35:43",
+                    "http_status": 0,
+                    "error_type": "",
+                    "excluded_reason": "",
+                    "rt_cd": "",
+                    "msg_cd": "",
+                    "msg1": ""
+                  },
+                  "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+                  "broker_executed_at": "2026-07-23T10:35:43.647291",
+                  "position_confirmed_at": "2026-07-23T10:35:43.647291"
+                },
+                "target": "0197X0",
+                "entry_kind": "INITIAL_ENTRY",
+                "message": "switch complete",
+                "order_latency": {
+                  "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+                  "completed_3m_bar_at": "2026-07-23T10:03:00",
+                  "signal_detected_at": "2026-07-23T10:03:05",
+                  "order_requested_at": "2026-07-23T10:35:43.647011",
+                  "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+                  "broker_executed_at": "2026-07-23T10:35:43.647291",
+                  "position_confirmed_at": "2026-07-23T10:35:43.647291",
+                  "segments_sec": {
+                    "bar_complete_to_signal_detect": 5.0,
+                    "signal_detect_to_order_request": 1958.647,
+                    "order_request_to_kis_accept": 0.0,
+                    "kis_accept_to_fill_confirm": 0.0,
+                    "signal_detect_to_final_fill": 1958.647
+                  },
+                  "finalized_at": "2026-07-23T10:35:43.942831"
+                }
+              }
+            }
+          ],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": null,
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_1",
+          "now": "2026-07-23T10:03:10",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_2",
+          "now": "2026-07-23T10:03:15",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_3",
+          "now": "2026-07-23T10:03:20",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_4",
+          "now": "2026-07-23T10:03:25",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_5",
+          "now": "2026-07-23T10:03:30",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_6",
+          "now": "2026-07-23T10:03:35",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_7",
+          "now": "2026-07-23T10:03:40",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "DOWN_BLUE_held_tick_8",
+          "now": "2026-07-23T10:03:45",
+          "actions": [],
+          "armed_at": "2026-07-23T10:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "DOWN_BLUE",
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "order_requested_at": "2026-07-23T10:35:43.647011",
+          "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+          "broker_executed_at": "2026-07-23T10:35:43.647291",
+          "position_confirmed_at": "2026-07-23T10:35:43.647291",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "completed_3m_bar_at": "2026-07-23T10:03:00",
+            "signal_detected_at": "2026-07-23T10:03:05",
+            "order_requested_at": "2026-07-23T10:35:43.647011",
+            "kis_order_accepted_at": "2026-07-23T10:35:43.647226",
+            "broker_executed_at": "2026-07-23T10:35:43.647291",
+            "position_confirmed_at": "2026-07-23T10:35:43.647291",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "DOWN_BLUE",
+          "processed_signal_ids": [
+            "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          ],
+          "position": {
+            "symbol": "0197X0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0197X0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0197X0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "0197X0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:43+0900",
+              "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        }
+      ]
+    },
+    "UP_RED": {
+      "tmp": "C:\\Users\\FURSYS\\AppData\\Local\\Temp\\macd_e2e_1kf_q7oh",
+      "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+      "direction": "UP_RED",
+      "target_symbol": "0193T0",
+      "signal_type": "INITIAL",
+      "pipeline_checks": {
+        "has_armed_at": true,
+        "has_order_requested_at": true,
+        "has_kis_accepted_at": true,
+        "has_broker_executed_at": true,
+        "has_position_confirmed_at": true,
+        "target_symbol": true,
+        "qty_gt_0": true,
+        "broker_buy_once": true,
+        "ledger_buy": true,
+        "signal_id_processed": true,
+        "same_tick_fill": true
+      },
+      "extra_buys_while_flag_held": 0,
+      "latency": {
+        "armed_at": "2026-07-23T11:03:05",
+        "signal_type": "INITIAL",
+        "current_flag": "UP_RED",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+        "order_requested_at": "2026-07-23T10:35:49.680935",
+        "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+        "broker_executed_at": "2026-07-23T10:35:49.681155",
+        "position_confirmed_at": "2026-07-23T10:35:49.681155",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "completed_3m_bar_at": "2026-07-23T11:03:00",
+          "signal_detected_at": "2026-07-23T11:03:05",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "segments_sec": {}
+        }
+      },
+      "position": {
+        "symbol": "0193T0",
+        "quantity": 500,
+        "avg_price": 10000.0,
+        "entry_at": "2026-07-23T10:35:49.681155",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+        "entry_kind": "INITIAL_ENTRY",
+        "direction_episode_id": "EP:UP_RED:00",
+        "size_fraction": 1.0,
+        "opening_probe": false
+      },
+      "ledger_rows": [
+        {
+          "trade_id": "0612122ef44f4b5c",
+          "timestamp": "2026-07-23T10:35:49.681237",
+          "mode": "mock",
+          "macd_signal": "UP_RED",
+          "action": "BUY",
+          "symbol": "0193T0",
+          "requested_qty": "500",
+          "executed_qty": "500",
+          "order_price": "10000.0",
+          "executed_price": "10000.0",
+          "order_id": "B1",
+          "hold_seconds": "0.0",
+          "gross_pnl": "0.0",
+          "cost": "750.0",
+          "net_pnl": "-750.0",
+          "exit_reason": "INITIAL_ENTRY",
+          "success": "True",
+          "position_confirmed": "True",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "idempotency_key": "mock:50123456:0193T0:BUY:EP_UP_RED_00:MACD_BUY_0193T0_MACD3M_UP_RED_2026-07-23T11_00_00_1:500",
+          "pipeline_stage": "Buy Executed",
+          "git_sha": "587e18d",
+          "message": "",
+          "entry_kind": "INITIAL_ENTRY",
+          "direction_episode_id": "EP:UP_RED:00",
+          "signal_source": "MACD_HIST_3M_B",
+          "peak_net_return": "",
+          "current_net_return": "",
+          "giveback_pct": "",
+          "profit_lock_active": "",
+          "completed_3m_bar_at": "2026-07-23T11:03:00",
+          "signal_detected_at": "2026-07-23T11:03:05",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "lat_bar_to_signal_s": "5.0",
+          "lat_signal_to_request_s": "-1635.319",
+          "lat_request_to_kis_s": "0.0",
+          "lat_kis_to_fill_s": "0.0",
+          "lat_signal_to_fill_s": "-1635.319"
+        }
+      ],
+      "broker_buys": [
+        [
+          "0193T0",
+          500,
+          10000.0
+        ]
+      ],
+      "broker_sells": [],
+      "first_tick_actions": [
+        {
+          "signal": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "direction": "UP_RED"
+        },
+        {
+          "switch": {
+            "success": true,
+            "buy": {
+              "success": true,
+              "bought_quantity": 500,
+              "after_quantity": 500,
+              "avg_price": 10000.0,
+              "fill_confirmed": true,
+              "idempotency_key": "mock:50123456:0193T0:BUY:EP_UP_RED_00:MACD_BUY_0193T0_MACD3M_UP_RED_2026-07-23T11_00_00_1:500",
+              "order": {
+                "success": true,
+                "mode": "mock",
+                "account_type": "mock",
+                "symbol": "0193T0",
+                "name": "KODEX SK하이닉스단일종목레버리지",
+                "side": "buy",
+                "quantity": 500,
+                "price": 10000.0,
+                "order_type": "market",
+                "order_id": "B1",
+                "message": "ok",
+                "timestamp": "2026-07-23 10:35:49",
+                "http_status": 0,
+                "error_type": "",
+                "excluded_reason": "",
+                "rt_cd": "",
+                "msg_cd": "",
+                "msg1": ""
+              },
+              "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+              "broker_executed_at": "2026-07-23T10:35:49.681155",
+              "position_confirmed_at": "2026-07-23T10:35:49.681155"
+            },
+            "target": "0193T0",
+            "entry_kind": "INITIAL_ENTRY",
+            "message": "switch complete",
+            "order_latency": {
+              "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+              "completed_3m_bar_at": "2026-07-23T11:03:00",
+              "signal_detected_at": "2026-07-23T11:03:05",
+              "order_requested_at": "2026-07-23T10:35:49.680935",
+              "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+              "broker_executed_at": "2026-07-23T10:35:49.681155",
+              "position_confirmed_at": "2026-07-23T10:35:49.681155",
+              "segments_sec": {
+                "bar_complete_to_signal_detect": 5.0,
+                "signal_detect_to_order_request": -1635.319,
+                "order_request_to_kis_accept": 0.0,
+                "kis_accept_to_fill_confirm": 0.0,
+                "signal_detect_to_final_fill": -1635.319
+              },
+              "finalized_at": "2026-07-23T10:35:49.882867"
+            }
+          }
+        }
+      ],
+      "log_ticks": [
+        {
+          "label": "UP_RED_INITIAL_same_tick",
+          "now": "2026-07-23T11:03:05",
+          "actions": [
+            {
+              "signal": "MACD3M:UP_RED:2026-07-23T11:00:00",
+              "direction": "UP_RED"
+            },
+            {
+              "switch": {
+                "success": true,
+                "buy": {
+                  "success": true,
+                  "bought_quantity": 500,
+                  "after_quantity": 500,
+                  "avg_price": 10000.0,
+                  "fill_confirmed": true,
+                  "idempotency_key": "mock:50123456:0193T0:BUY:EP_UP_RED_00:MACD_BUY_0193T0_MACD3M_UP_RED_2026-07-23T11_00_00_1:500",
+                  "order": {
+                    "success": true,
+                    "mode": "mock",
+                    "account_type": "mock",
+                    "symbol": "0193T0",
+                    "name": "KODEX SK하이닉스단일종목레버리지",
+                    "side": "buy",
+                    "quantity": 500,
+                    "price": 10000.0,
+                    "order_type": "market",
+                    "order_id": "B1",
+                    "message": "ok",
+                    "timestamp": "2026-07-23 10:35:49",
+                    "http_status": 0,
+                    "error_type": "",
+                    "excluded_reason": "",
+                    "rt_cd": "",
+                    "msg_cd": "",
+                    "msg1": ""
+                  },
+                  "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+                  "broker_executed_at": "2026-07-23T10:35:49.681155",
+                  "position_confirmed_at": "2026-07-23T10:35:49.681155"
+                },
+                "target": "0193T0",
+                "entry_kind": "INITIAL_ENTRY",
+                "message": "switch complete",
+                "order_latency": {
+                  "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+                  "completed_3m_bar_at": "2026-07-23T11:03:00",
+                  "signal_detected_at": "2026-07-23T11:03:05",
+                  "order_requested_at": "2026-07-23T10:35:49.680935",
+                  "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+                  "broker_executed_at": "2026-07-23T10:35:49.681155",
+                  "position_confirmed_at": "2026-07-23T10:35:49.681155",
+                  "segments_sec": {
+                    "bar_complete_to_signal_detect": 5.0,
+                    "signal_detect_to_order_request": -1635.319,
+                    "order_request_to_kis_accept": 0.0,
+                    "kis_accept_to_fill_confirm": 0.0,
+                    "signal_detect_to_final_fill": -1635.319
+                  },
+                  "finalized_at": "2026-07-23T10:35:49.882867"
+                }
+              }
+            }
+          ],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": null,
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_1",
+          "now": "2026-07-23T11:03:10",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_2",
+          "now": "2026-07-23T11:03:15",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_3",
+          "now": "2026-07-23T11:03:20",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_4",
+          "now": "2026-07-23T11:03:25",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_5",
+          "now": "2026-07-23T11:03:30",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_6",
+          "now": "2026-07-23T11:03:35",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_7",
+          "now": "2026-07-23T11:03:40",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        },
+        {
+          "label": "UP_RED_held_tick_8",
+          "now": "2026-07-23T11:03:45",
+          "actions": [],
+          "armed_at": "2026-07-23T11:03:05",
+          "signal_type": "INITIAL",
+          "current_flag": "UP_RED",
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "order_requested_at": "2026-07-23T10:35:49.680935",
+          "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+          "broker_executed_at": "2026-07-23T10:35:49.681155",
+          "position_confirmed_at": "2026-07-23T10:35:49.681155",
+          "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+          "order_latency": {
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "completed_3m_bar_at": "2026-07-23T11:03:00",
+            "signal_detected_at": "2026-07-23T11:03:05",
+            "order_requested_at": "2026-07-23T10:35:49.680935",
+            "kis_order_accepted_at": "2026-07-23T10:35:49.681104",
+            "broker_executed_at": "2026-07-23T10:35:49.681155",
+            "position_confirmed_at": "2026-07-23T10:35:49.681155",
+            "segments_sec": {}
+          },
+          "pending_signal_id": null,
+          "last_signal_direction": "UP_RED",
+          "processed_signal_ids": [
+            "MACD3M:UP_RED:2026-07-23T11:00:00"
+          ],
+          "position": {
+            "symbol": "0193T0",
+            "quantity": 500,
+            "avg_price": 10000.0,
+            "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "entry_kind": "INITIAL_ENTRY"
+          },
+          "broker_buys": [
+            [
+              "0193T0",
+              500,
+              10000.0
+            ]
+          ],
+          "broker_sells": [],
+          "broker_positions": {
+            "0193T0": {
+              "qty": 500,
+              "avg": 10000.0
+            }
+          },
+          "pipeline": {
+            "Signal": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            },
+            "Sell Requested": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Sell Executed": {
+              "ok": null,
+              "at": null,
+              "message": ""
+            },
+            "Buy Requested": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Buy Executed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "0193T0"
+            },
+            "Position Confirmed": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "qty=500"
+            },
+            "Ledger Recorded": {
+              "ok": true,
+              "at": "2026-07-23T10:35:49+0900",
+              "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+            }
+          },
+          "worker_code_sha": "587e18d"
+        }
+      ]
+    }
+  },
+  "down_blue_log_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_e2e_down_blue_log.json",
+  "up_red_log_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_e2e_up_red_log.json",
+  "duplicate_proofs": {
+    "flag_held_many_ticks_zero_extra": {
+      "ok": true,
+      "buys": 1
+    },
+    "restart_alone_no_same_dir_rebuy": {
+      "ok": true,
+      "buys": 0,
+      "last_signal_direction": "UP_RED",
+      "processed": [
+        "MACD3M:UP_RED:2026-07-23T10:00:00"
+      ]
+    },
+    "holding_target_no_initial": {
+      "ok": true,
+      "buys": 1,
+      "initial_actions": 0,
+      "position": "0193T0"
+    },
+    "same_signal_id_once": {
+      "ok": true,
+      "processed_signal_ids": [
+        "MACD3M:UP_RED:2026-07-23T10:00:00"
+      ]
+    },
+    "all_ok": true
+  },
+  "opposite_switch": {
+    "checks_down_to_up": {
+      "sold_0197X0": true,
+      "flat_then_long": true,
+      "bought_0193T0": true,
+      "no_0197X0_left": true
+    },
+    "checks_up_to_down": {
+      "sold_0193T0": true,
+      "bought_0197X0": true,
+      "holding_inverse": true,
+      "no_0193T0_left": true
+    },
+    "ok": true,
+    "log_ticks": [
+      {
+        "label": "A_DOWN_entry",
+        "now": "2026-07-23T10:03:05",
+        "actions": [
+          {
+            "signal": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+            "direction": "DOWN_BLUE"
+          },
+          {
+            "switch": {
+              "success": true,
+              "buy": {
+                "success": true,
+                "bought_quantity": 500,
+                "after_quantity": 500,
+                "avg_price": 10000.0,
+                "fill_confirmed": true,
+                "idempotency_key": "mock:50123456:0197X0:BUY:EP_DOWN_BLUE_00:MACD_BUY_0197X0_MACD3M_DOWN_BLUE_2026-07-23T10_00_00_1:500",
+                "order": {
+                  "success": true,
+                  "mode": "mock",
+                  "account_type": "mock",
+                  "symbol": "0197X0",
+                  "name": "SOL SK하이닉스선물단일종목인버스2X",
+                  "side": "buy",
+                  "quantity": 500,
+                  "price": 10000.0,
+                  "order_type": "market",
+                  "order_id": "B1",
+                  "message": "ok",
+                  "timestamp": "2026-07-23 10:36:16",
+                  "http_status": 0,
+                  "error_type": "",
+                  "excluded_reason": "",
+                  "rt_cd": "",
+                  "msg_cd": "",
+                  "msg1": ""
+                },
+                "kis_order_accepted_at": "2026-07-23T10:36:16.482509",
+                "broker_executed_at": "2026-07-23T10:36:16.482559",
+                "position_confirmed_at": "2026-07-23T10:36:16.482559"
+              },
+              "target": "0197X0",
+              "entry_kind": "INITIAL_ENTRY",
+              "message": "switch complete",
+              "order_latency": {
+                "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+                "completed_3m_bar_at": "2026-07-23T10:03:00",
+                "signal_detected_at": "2026-07-23T10:03:05",
+                "order_requested_at": "2026-07-23T10:36:16.482302",
+                "kis_order_accepted_at": "2026-07-23T10:36:16.482509",
+                "broker_executed_at": "2026-07-23T10:36:16.482559",
+                "position_confirmed_at": "2026-07-23T10:36:16.482559",
+                "segments_sec": {
+                  "bar_complete_to_signal_detect": 5.0,
+                  "signal_detect_to_order_request": 1991.482,
+                  "order_request_to_kis_accept": 0.0,
+                  "kis_accept_to_fill_confirm": 0.0,
+                  "signal_detect_to_final_fill": 1991.483
+                },
+                "finalized_at": "2026-07-23T10:36:16.684128"
+              }
+            }
+          }
+        ],
+        "armed_at": "2026-07-23T10:03:05",
+        "signal_type": "INITIAL",
+        "current_flag": "DOWN_BLUE",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+        "order_requested_at": "2026-07-23T10:36:16.482302",
+        "kis_order_accepted_at": "2026-07-23T10:36:16.482509",
+        "broker_executed_at": "2026-07-23T10:36:16.482559",
+        "position_confirmed_at": "2026-07-23T10:36:16.482559",
+        "duplicate_block_reason": null,
+        "order_latency": {
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "completed_3m_bar_at": "2026-07-23T10:03:00",
+          "signal_detected_at": "2026-07-23T10:03:05",
+          "order_requested_at": "2026-07-23T10:36:16.482302",
+          "kis_order_accepted_at": "2026-07-23T10:36:16.482509",
+          "broker_executed_at": "2026-07-23T10:36:16.482559",
+          "position_confirmed_at": "2026-07-23T10:36:16.482559",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "DOWN_BLUE",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+        ],
+        "position": {
+          "symbol": "0197X0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [],
+        "broker_positions": {
+          "0197X0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:16+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          },
+          "Sell Requested": {
+            "ok": null,
+            "at": null,
+            "message": ""
+          },
+          "Sell Executed": {
+            "ok": null,
+            "at": null,
+            "message": ""
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:16+0900",
+            "message": "0197X0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:16+0900",
+            "message": "0197X0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:16+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:16+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "B_UP_switch_tick_0",
+        "now": "2026-07-23T11:03:05",
+        "actions": [
+          {
+            "opposite_signal": "MACD3M:UP_RED:2026-07-23T11:00:00",
+            "direction": "UP_RED"
+          },
+          {
+            "switch": {
+              "success": true,
+              "buy": {
+                "success": true,
+                "bought_quantity": 500,
+                "after_quantity": 500,
+                "avg_price": 10000.0,
+                "fill_confirmed": true,
+                "idempotency_key": "mock:50123456:0193T0:BUY:EP_UP_RED_00:MACD_BUY_0193T0_MACD3M_UP_RED_2026-07-23T11_00_00_1:500",
+                "order": {
+                  "success": true,
+                  "mode": "mock",
+                  "account_type": "mock",
+                  "symbol": "0193T0",
+                  "name": "KODEX SK하이닉스단일종목레버리지",
+                  "side": "buy",
+                  "quantity": 500,
+                  "price": 10000.0,
+                  "order_type": "market",
+                  "order_id": "B2",
+                  "message": "ok",
+                  "timestamp": "2026-07-23 10:36:17",
+                  "http_status": 0,
+                  "error_type": "",
+                  "excluded_reason": "",
+                  "rt_cd": "",
+                  "msg_cd": "",
+                  "msg1": ""
+                },
+                "kis_order_accepted_at": "2026-07-23T10:36:17.916065",
+                "broker_executed_at": "2026-07-23T10:36:17.916102",
+                "position_confirmed_at": "2026-07-23T10:36:17.916102"
+              },
+              "target": "0193T0",
+              "entry_kind": "INITIAL_ENTRY",
+              "message": "switch complete",
+              "order_latency": {
+                "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+                "completed_3m_bar_at": "2026-07-23T11:03:00",
+                "signal_detected_at": "2026-07-23T11:03:05",
+                "order_requested_at": "2026-07-23T10:36:17.366023",
+                "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+                "broker_executed_at": "2026-07-23T10:36:17.916102",
+                "position_confirmed_at": "2026-07-23T10:36:17.916102",
+                "segments_sec": {
+                  "bar_complete_to_signal_detect": 5.0,
+                  "signal_detect_to_order_request": -1607.634,
+                  "order_request_to_kis_accept": 0.0,
+                  "kis_accept_to_fill_confirm": 0.55,
+                  "signal_detect_to_final_fill": -1607.084
+                },
+                "finalized_at": "2026-07-23T10:36:18.118411"
+              }
+            }
+          }
+        ],
+        "armed_at": "2026-07-23T11:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "UP_RED",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+        "order_requested_at": "2026-07-23T10:36:17.366023",
+        "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+        "broker_executed_at": "2026-07-23T10:36:17.916102",
+        "position_confirmed_at": "2026-07-23T10:36:17.916102",
+        "duplicate_block_reason": null,
+        "order_latency": {
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "completed_3m_bar_at": "2026-07-23T11:03:00",
+          "signal_detected_at": "2026-07-23T11:03:05",
+          "order_requested_at": "2026-07-23T10:36:17.366023",
+          "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+          "broker_executed_at": "2026-07-23T10:36:17.916102",
+          "position_confirmed_at": "2026-07-23T10:36:17.916102",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "UP_RED",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00"
+        ],
+        "position": {
+          "symbol": "0193T0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0193T0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0193T0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "0193T0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "B_UP_switch_tick_1",
+        "now": "2026-07-23T11:03:10",
+        "actions": [],
+        "armed_at": "2026-07-23T11:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "UP_RED",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+        "order_requested_at": "2026-07-23T10:36:17.366023",
+        "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+        "broker_executed_at": "2026-07-23T10:36:17.916102",
+        "position_confirmed_at": "2026-07-23T10:36:17.916102",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "completed_3m_bar_at": "2026-07-23T11:03:00",
+          "signal_detected_at": "2026-07-23T11:03:05",
+          "order_requested_at": "2026-07-23T10:36:17.366023",
+          "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+          "broker_executed_at": "2026-07-23T10:36:17.916102",
+          "position_confirmed_at": "2026-07-23T10:36:17.916102",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "UP_RED",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00"
+        ],
+        "position": {
+          "symbol": "0193T0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0193T0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0193T0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "0193T0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "B_UP_switch_tick_2",
+        "now": "2026-07-23T11:03:15",
+        "actions": [],
+        "armed_at": "2026-07-23T11:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "UP_RED",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+        "order_requested_at": "2026-07-23T10:36:17.366023",
+        "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+        "broker_executed_at": "2026-07-23T10:36:17.916102",
+        "position_confirmed_at": "2026-07-23T10:36:17.916102",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "completed_3m_bar_at": "2026-07-23T11:03:00",
+          "signal_detected_at": "2026-07-23T11:03:05",
+          "order_requested_at": "2026-07-23T10:36:17.366023",
+          "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+          "broker_executed_at": "2026-07-23T10:36:17.916102",
+          "position_confirmed_at": "2026-07-23T10:36:17.916102",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "UP_RED",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00"
+        ],
+        "position": {
+          "symbol": "0193T0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0193T0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0193T0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "0193T0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "B_UP_switch_tick_3",
+        "now": "2026-07-23T11:03:20",
+        "actions": [],
+        "armed_at": "2026-07-23T11:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "UP_RED",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+        "order_requested_at": "2026-07-23T10:36:17.366023",
+        "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+        "broker_executed_at": "2026-07-23T10:36:17.916102",
+        "position_confirmed_at": "2026-07-23T10:36:17.916102",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "completed_3m_bar_at": "2026-07-23T11:03:00",
+          "signal_detected_at": "2026-07-23T11:03:05",
+          "order_requested_at": "2026-07-23T10:36:17.366023",
+          "kis_order_accepted_at": "2026-07-23T10:36:17.366142",
+          "broker_executed_at": "2026-07-23T10:36:17.916102",
+          "position_confirmed_at": "2026-07-23T10:36:17.916102",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "UP_RED",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00"
+        ],
+        "position": {
+          "symbol": "0193T0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0193T0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0197X0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:17+0900",
+            "message": "0193T0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "0193T0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:18+0900",
+            "message": "MACD3M:UP_RED:2026-07-23T11:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "C_DOWN_switch_tick_0",
+        "now": "2026-07-23T12:03:05",
+        "actions": [
+          {
+            "opposite_signal": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+            "direction": "DOWN_BLUE"
+          },
+          {
+            "switch": {
+              "success": true,
+              "buy": {
+                "success": true,
+                "bought_quantity": 500,
+                "after_quantity": 500,
+                "avg_price": 10000.0,
+                "fill_confirmed": true,
+                "idempotency_key": "mock:50123456:0197X0:BUY:EP_DOWN_BLUE_00:MACD_BUY_0197X0_MACD3M_DOWN_BLUE_2026-07-23T12_00_00_1:500",
+                "order": {
+                  "success": true,
+                  "mode": "mock",
+                  "account_type": "mock",
+                  "symbol": "0197X0",
+                  "name": "SOL SK하이닉스선물단일종목인버스2X",
+                  "side": "buy",
+                  "quantity": 500,
+                  "price": 10000.0,
+                  "order_type": "market",
+                  "order_id": "B3",
+                  "message": "ok",
+                  "timestamp": "2026-07-23 10:36:20",
+                  "http_status": 0,
+                  "error_type": "",
+                  "excluded_reason": "",
+                  "rt_cd": "",
+                  "msg_cd": "",
+                  "msg1": ""
+                },
+                "kis_order_accepted_at": "2026-07-23T10:36:20.890299",
+                "broker_executed_at": "2026-07-23T10:36:20.890325",
+                "position_confirmed_at": "2026-07-23T10:36:20.890325"
+              },
+              "target": "0197X0",
+              "entry_kind": "INITIAL_ENTRY",
+              "message": "switch complete",
+              "order_latency": {
+                "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+                "completed_3m_bar_at": "2026-07-23T12:03:00",
+                "signal_detected_at": "2026-07-23T12:03:05",
+                "order_requested_at": "2026-07-23T10:36:20.374813",
+                "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+                "broker_executed_at": "2026-07-23T10:36:20.890325",
+                "position_confirmed_at": "2026-07-23T10:36:20.890325",
+                "segments_sec": {
+                  "bar_complete_to_signal_detect": 5.0,
+                  "signal_detect_to_order_request": -5204.625,
+                  "order_request_to_kis_accept": 0.0,
+                  "kis_accept_to_fill_confirm": 0.515,
+                  "signal_detect_to_final_fill": -5204.11
+                },
+                "finalized_at": "2026-07-23T10:36:21.089721"
+              }
+            }
+          }
+        ],
+        "armed_at": "2026-07-23T12:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "DOWN_BLUE",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+        "order_requested_at": "2026-07-23T10:36:20.374813",
+        "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+        "broker_executed_at": "2026-07-23T10:36:20.890325",
+        "position_confirmed_at": "2026-07-23T10:36:20.890325",
+        "duplicate_block_reason": null,
+        "order_latency": {
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "completed_3m_bar_at": "2026-07-23T12:03:00",
+          "signal_detected_at": "2026-07-23T12:03:05",
+          "order_requested_at": "2026-07-23T10:36:20.374813",
+          "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+          "broker_executed_at": "2026-07-23T10:36:20.890325",
+          "position_confirmed_at": "2026-07-23T10:36:20.890325",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "DOWN_BLUE",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+        ],
+        "position": {
+          "symbol": "0197X0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ],
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0197X0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0197X0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "0197X0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "C_DOWN_switch_tick_1",
+        "now": "2026-07-23T12:03:10",
+        "actions": [],
+        "armed_at": "2026-07-23T12:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "DOWN_BLUE",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+        "order_requested_at": "2026-07-23T10:36:20.374813",
+        "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+        "broker_executed_at": "2026-07-23T10:36:20.890325",
+        "position_confirmed_at": "2026-07-23T10:36:20.890325",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "completed_3m_bar_at": "2026-07-23T12:03:00",
+          "signal_detected_at": "2026-07-23T12:03:05",
+          "order_requested_at": "2026-07-23T10:36:20.374813",
+          "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+          "broker_executed_at": "2026-07-23T10:36:20.890325",
+          "position_confirmed_at": "2026-07-23T10:36:20.890325",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "DOWN_BLUE",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+        ],
+        "position": {
+          "symbol": "0197X0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ],
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0197X0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0197X0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "0197X0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "C_DOWN_switch_tick_2",
+        "now": "2026-07-23T12:03:15",
+        "actions": [],
+        "armed_at": "2026-07-23T12:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "DOWN_BLUE",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+        "order_requested_at": "2026-07-23T10:36:20.374813",
+        "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+        "broker_executed_at": "2026-07-23T10:36:20.890325",
+        "position_confirmed_at": "2026-07-23T10:36:20.890325",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "completed_3m_bar_at": "2026-07-23T12:03:00",
+          "signal_detected_at": "2026-07-23T12:03:05",
+          "order_requested_at": "2026-07-23T10:36:20.374813",
+          "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+          "broker_executed_at": "2026-07-23T10:36:20.890325",
+          "position_confirmed_at": "2026-07-23T10:36:20.890325",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "DOWN_BLUE",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+        ],
+        "position": {
+          "symbol": "0197X0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ],
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0197X0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0197X0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "0197X0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      },
+      {
+        "label": "C_DOWN_switch_tick_3",
+        "now": "2026-07-23T12:03:20",
+        "actions": [],
+        "armed_at": "2026-07-23T12:03:05",
+        "signal_type": "REVERSAL",
+        "current_flag": "DOWN_BLUE",
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+        "order_requested_at": "2026-07-23T10:36:20.374813",
+        "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+        "broker_executed_at": "2026-07-23T10:36:20.890325",
+        "position_confirmed_at": "2026-07-23T10:36:20.890325",
+        "duplicate_block_reason": "ALREADY_HOLDING_TARGET_NO_INITIAL",
+        "order_latency": {
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "completed_3m_bar_at": "2026-07-23T12:03:00",
+          "signal_detected_at": "2026-07-23T12:03:05",
+          "order_requested_at": "2026-07-23T10:36:20.374813",
+          "kis_order_accepted_at": "2026-07-23T10:36:20.374918",
+          "broker_executed_at": "2026-07-23T10:36:20.890325",
+          "position_confirmed_at": "2026-07-23T10:36:20.890325",
+          "segments_sec": {}
+        },
+        "pending_signal_id": null,
+        "last_signal_direction": "DOWN_BLUE",
+        "processed_signal_ids": [
+          "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+          "MACD3M:UP_RED:2026-07-23T11:00:00",
+          "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+        ],
+        "position": {
+          "symbol": "0197X0",
+          "quantity": 500,
+          "avg_price": 10000.0,
+          "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+          "entry_kind": "INITIAL_ENTRY"
+        },
+        "broker_buys": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ],
+          [
+            "0197X0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_sells": [
+          [
+            "0197X0",
+            500,
+            10000.0
+          ],
+          [
+            "0193T0",
+            500,
+            10000.0
+          ]
+        ],
+        "broker_positions": {
+          "0197X0": {
+            "qty": 500,
+            "avg": 10000.0
+          }
+        },
+        "pipeline": {
+          "Signal": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          },
+          "Sell Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0"
+          },
+          "Sell Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0193T0 flat"
+          },
+          "Buy Requested": {
+            "ok": true,
+            "at": "2026-07-23T10:36:20+0900",
+            "message": "0197X0"
+          },
+          "Buy Executed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "0197X0"
+          },
+          "Position Confirmed": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "qty=500"
+          },
+          "Ledger Recorded": {
+            "ok": true,
+            "at": "2026-07-23T10:36:21+0900",
+            "message": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+          }
+        },
+        "worker_code_sha": "587e18d"
+      }
+    ],
+    "final_position": {
+      "symbol": "0197X0",
+      "quantity": 500,
+      "avg_price": 10000.0,
+      "entry_at": "2026-07-23T10:36:16.482559",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+      "entry_kind": "INITIAL_ENTRY",
+      "direction_episode_id": "EP:DOWN_BLUE:00",
+      "size_fraction": 1.0,
+      "opening_probe": false
+    },
+    "broker_buys": [
+      [
+        "0197X0",
+        500,
+        10000.0
+      ],
+      [
+        "0193T0",
+        500,
+        10000.0
+      ],
+      [
+        "0197X0",
+        500,
+        10000.0
+      ]
+    ],
+    "broker_sells": [
+      [
+        "0197X0",
+        500,
+        10000.0
+      ],
+      [
+        "0193T0",
+        500,
+        10000.0
+      ]
+    ]
+  },
+  "ui_fields": {
+    "ok": true,
+    "fields": {
+      "current_flag": true,
+      "signal_type": true,
+      "signal_id": true,
+      "armed_at": true,
+      "order_requested_at": true,
+      "broker_executed_at": true,
+      "position_confirmed_at": true,
+      "duplicate_block_reason": true
+    }
+  },
+  "verdict": "READY_FOR_MOCK"
 }

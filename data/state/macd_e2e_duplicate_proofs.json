@@ -1,0 +1,27 @@
+{
+  "flag_held_many_ticks_zero_extra": {
+    "ok": true,
+    "buys": 1
+  },
+  "restart_alone_no_same_dir_rebuy": {
+    "ok": true,
+    "buys": 0,
+    "last_signal_direction": "UP_RED",
+    "processed": [
+      "MACD3M:UP_RED:2026-07-23T10:00:00"
+    ]
+  },
+  "holding_target_no_initial": {
+    "ok": true,
+    "buys": 1,
+    "initial_actions": 0,
+    "position": "0193T0"
+  },
+  "same_signal_id_once": {
+    "ok": true,
+    "processed_signal_ids": [
+      "MACD3M:UP_RED:2026-07-23T10:00:00"
+    ]
+  },
+  "all_ok": true
+}
