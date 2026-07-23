@@ -1457,6 +1457,45 @@ def run_once(
             state["decision_trace"] = trace
             result["decision_trace"] = trace
 
+        # Today's flag summary: unique onsets (signal_id / bar_ts+flag), not every 5s hold tick.
+        if flag_now in (DIR_UP, DIR_DOWN):
+            br = trace.get("broker_result") if isinstance(trace.get("broker_result"), dict) else {}
+            ordered = bool(br.get("success")) and not br.get("duplicate") and not br.get("skipped_same_direction")
+            # Treat successful same-direction skip as "ordered" for this signal (already in position).
+            if br.get("skipped_same_direction"):
+                ordered = True
+            order_id = None
+            if ordered:
+                buy = br.get("buy") if isinstance(br.get("buy"), dict) else {}
+                order_id = buy.get("order_id") or br.get("order_id")
+            sid = (
+                eval_res.get("signal_id")
+                or pending_id
+                or state.get("last_signal_id")
+            )
+            new_occ = bool(eval_res.get("new_signal"))
+            for act in result.get("actions") or []:
+                if not isinstance(act, dict):
+                    continue
+                if act.get("signal") or act.get("opposite_signal") or act.get("continuation_reentry"):
+                    new_occ = True
+                    sid = act.get("signal") or act.get("opposite_signal") or act.get("continuation_reentry") or sid
+                    if act.get("direction") in (DIR_UP, DIR_DOWN):
+                        flag_now = act["direction"]
+                    break
+            block_reason = None if ordered else om.resolve_macd_flag_block_reason(state, trace)
+            om.record_macd_flag_event(
+                state,
+                ts=now.isoformat(),
+                flag=flag_now,
+                signal_id=sid,
+                bar_ts=str(eval_res.get("bar_ts") or "") or None,
+                new_occurrence=new_occ,
+                ordered=ordered,
+                block_reason=block_reason,
+                order_id=order_id,
+            )
+
         state["next_action"] = _next_action_label(state)
         om.refresh_runtime_status(state, worker_alive=True)
         om.save_state(state)

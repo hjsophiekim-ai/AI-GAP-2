@@ -18,6 +18,8 @@ from app.logger import logger
 from app.trading import exit_order_coordinator as order_coord
 from app.trading.macd_hynix_strategy import (
     CONTINUATION_REENTRY_ENABLED,
+    DIR_DOWN,
+    DIR_UP,
     ENTRY_CONTINUATION,
     ENTRY_INITIAL,
     ENTRY_OPEN_IMMEDIATE,
@@ -218,6 +220,8 @@ def default_state() -> dict[str, Any]:
         "last_macd_bars_ok": False,
         "last_flag": None,
         "current_flag": None,
+        # Unique UP_RED/DOWN_BLUE onsets today (not every 5s held tick).
+        "flag_events_today": [],
         "signal_type": None,  # INITIAL | REVERSAL
         "armed_at": None,
         "duplicate_block_reason": None,
@@ -1826,6 +1830,162 @@ def flatten_opening_probe_unconfirmed(
     return res
 
 
+FLAG_EVENT_MAX = 200
+
+
+def flag_occurrence_key(
+    flag: str,
+    *,
+    signal_id: Optional[str] = None,
+    bar_ts: Optional[str] = None,
+) -> Optional[str]:
+    """Stable unique key for one flag occurrence (signal_id preferred, else bar_ts+flag)."""
+    sid = str(signal_id or "").strip()
+    if sid:
+        return sid
+    bts = str(bar_ts or "").strip()
+    fl = str(flag or "").strip()
+    if bts and fl:
+        return f"{bts}|{fl}"
+    return None
+
+
+def resolve_macd_flag_block_reason(
+    state: dict[str, Any],
+    decision_trace: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """Best-effort reason a flag did not produce an order."""
+    trace = decision_trace if isinstance(decision_trace, dict) else (state.get("decision_trace") or {})
+    for candidate in (
+        trace.get("arm_blocked_reason"),
+        state.get("duplicate_block_reason"),
+        state.get("primary_block_reason"),
+        state.get("order_block_reason"),
+        state.get("last_order_error"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    if state.get("stale_worker"):
+        return "STALE_WORKER"
+    return None
+
+
+def record_macd_flag_event(
+    state: dict[str, Any],
+    *,
+    ts: str,
+    flag: str,
+    signal_id: Optional[str] = None,
+    bar_ts: Optional[str] = None,
+    new_occurrence: bool = False,
+    ordered: bool = False,
+    block_reason: Optional[str] = None,
+    order_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Persist one unique UP_RED/DOWN_BLUE flag occurrence for today's UI summary.
+
+    Dedupes by ``signal_id`` (preferred) or ``bar_ts|flag``. Held 5s ticks with the
+    same key do not inflate the count; they may only refresh block/order fields.
+    """
+    fl = str(flag or "").strip()
+    if fl not in (DIR_UP, DIR_DOWN):
+        return None
+    key = flag_occurrence_key(fl, signal_id=signal_id, bar_ts=bar_ts)
+    if not key:
+        return None
+
+    events = state.setdefault("flag_events_today", [])
+    if not isinstance(events, list):
+        events = []
+        state["flag_events_today"] = events
+
+    existing: Optional[dict[str, Any]] = None
+    sid = str(signal_id or "").strip() or None
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("occurrence_key") == key:
+            existing = ev
+            break
+        if sid and ev.get("signal_id") == sid:
+            existing = ev
+            break
+
+    if existing is None:
+        if not new_occurrence:
+            # Held tick / late order update: refresh latest same-flag unordered row.
+            if ordered or block_reason:
+                for ev in reversed(events):
+                    if not isinstance(ev, dict) or ev.get("flag") != fl:
+                        continue
+                    if ordered:
+                        ev["ordered"] = True
+                        ev["block_reason"] = None
+                        if order_id:
+                            ev["order_id"] = str(order_id)
+                        if sid and not ev.get("signal_id"):
+                            ev["signal_id"] = sid
+                        return ev
+                    if not ev.get("ordered"):
+                        ev["block_reason"] = str(block_reason)
+                        return ev
+            return None
+        ev = {
+            "ts": str(ts),
+            "flag": fl,
+            "signal_id": sid,
+            "bar_ts": str(bar_ts) if bar_ts else None,
+            "occurrence_key": key,
+            "ordered": bool(ordered),
+            "block_reason": None if ordered else (str(block_reason) if block_reason else None),
+            "order_id": str(order_id) if order_id else None,
+        }
+        events.append(ev)
+        if len(events) > FLAG_EVENT_MAX:
+            del events[0 : len(events) - FLAG_EVENT_MAX]
+        return ev
+
+    existing["occurrence_key"] = key
+    if sid and not existing.get("signal_id"):
+        existing["signal_id"] = sid
+    if bar_ts and not existing.get("bar_ts"):
+        existing["bar_ts"] = str(bar_ts)
+    if ordered:
+        existing["ordered"] = True
+        existing["block_reason"] = None
+        if order_id:
+            existing["order_id"] = str(order_id)
+    elif block_reason and not existing.get("ordered"):
+        existing["block_reason"] = str(block_reason)
+    return existing
+
+
+def summarize_macd_flag_events(state: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """UI helper: today's red/blue flag counts + unordered (missed) events."""
+    events = [
+        e for e in list((state or {}).get("flag_events_today") or [])
+        if isinstance(e, dict) and e.get("flag") in (DIR_UP, DIR_DOWN)
+    ]
+    missed = [
+        {
+            "ts": e.get("ts"),
+            "flag": e.get("flag"),
+            "signal_id": e.get("signal_id"),
+            "block_reason": e.get("block_reason") or "UNKNOWN",
+        }
+        for e in events
+        if not e.get("ordered")
+    ]
+    return {
+        "red_count": sum(1 for e in events if e.get("flag") == DIR_UP),
+        "blue_count": sum(1 for e in events if e.get("flag") == DIR_DOWN),
+        "event_count": len(events),
+        "missed_order_events": missed,
+        "events": events,
+    }
+
+
 def reset_opening_probe_daily(state: dict[str, Any], *, session_date: str) -> None:
     """Clear per-day opening probe flags (retain enabled flag)."""
     op = default_state()["opening_probe"]
@@ -1838,8 +1998,8 @@ def apply_macd_session_day_rollover(state: dict[str, Any], *, session_date: str)
     """KST calendar-day rollover: clear prior-day runtime UI + flat direction_state.
 
     Clears: last_event, pipeline stages, signal/order/position timestamps,
-    position-confirmed display, in-flight latency, pending order arming, and
-    opening-probe daily flags.
+    position-confirmed display, in-flight latency, pending order arming,
+    opening-probe daily flags, and ``flag_events_today``.
 
     When flat (normal after 15:00 liquidate): also clears ``last_signal_direction``
     so today's first valid signed-B onset after 09:00 can enter. Warm-up bars
@@ -1864,6 +2024,7 @@ def apply_macd_session_day_rollover(state: dict[str, Any], *, session_date: str)
     state["order_latency"] = {}
     state["order_latency_last"] = None
     state["order_block_reason"] = None
+    state["flag_events_today"] = []
     state["pending_signal_id"] = None
     state["pending_signal_direction"] = None
     state["pending_signal_at"] = None

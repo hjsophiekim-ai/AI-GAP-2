@@ -186,6 +186,33 @@ else:
         f"수익률 기준 = 투자예산({int(_budget_for_pnl):,}원, state.budget)"
     )
 
+# ── Today's flag & trade summary ──────────────────────────────────────────
+st.subheader("오늘 신호·미주문 요약")
+_flag_sum = om.summarize_macd_flag_events(state)
+_trade_n = int(_daily.get("round_trip_count") or 0)
+fg1, fg2, fg3 = st.columns(3)
+fg1.metric("오늘 빨간불", f"{_flag_sum.get('red_count', 0)}회")
+fg2.metric("오늘 파란불", f"{_flag_sum.get('blue_count', 0)}회")
+fg3.metric("오늘 거래", f"{_trade_n}건")
+st.caption(
+    "빨간불/파란불 = 당일 고유 신호 onset(signal_id 또는 bar_ts+flag) · "
+    "보유 중 5초 틱은 카운트하지 않음 · "
+    f"거래 = 원장 완료 왕복(매도 체결) `{_trade_n}`건"
+)
+_missed = _flag_sum.get("missed_order_events") or []
+if _missed:
+    st.markdown("**미주문 사유**")
+    for _m in _missed:
+        _fl = _m.get("flag")
+        _label = "빨간불(UP_RED)" if _fl == DIR_UP else ("파란불(DOWN_BLUE)" if _fl == DIR_DOWN else str(_fl))
+        _ts = _m.get("ts") or "-"
+        _reason = _m.get("block_reason") or "UNKNOWN"
+        _sid = _m.get("signal_id") or ""
+        _sid_bit = f" · `{_sid}`" if _sid else ""
+        st.write(f"- `{_ts}` · {_label}{_sid_bit} · 사유 `{_reason}`")
+else:
+    st.caption("미주문 신호 없음 (모든 당일 신호에 주문이 체결되었거나 신호 없음)")
+
 # Clear status split — worker alive ≠ strategy running
 st.subheader("상태 분리")
 s1, s2, s3, s4, s5, s6 = st.columns(6)
