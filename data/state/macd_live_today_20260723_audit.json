@@ -1,0 +1,1579 @@
+{
+  "generated_at": "2026-07-23T11:03:30.627064+09:00",
+  "as_of": "2026-07-23T11:03:30.048145",
+  "session_date": "2026-07-23",
+  "window": {
+    "start": "2026-07-23T09:00:00",
+    "end": "2026-07-23T11:03:30.048145"
+  },
+  "verdict": "NO_TRADES",
+  "run_class": "RUN_PARTIAL",
+  "ingest": {
+    "000660": {
+      "symbol": "000660",
+      "sources": [
+        {
+          "name": "kis_live_000660_1m.csv",
+          "rows_today_cut": 122,
+          "range": {
+            "first": "2026-07-23T09:00:00",
+            "last": "2026-07-23T11:01:00"
+          },
+          "primary": true
+        },
+        {
+          "name": "hynix_minute_1m.csv",
+          "rows_today_cut": 30,
+          "range": {
+            "first": "2026-07-23T09:34:00",
+            "last": "2026-07-23T10:03:00"
+          }
+        },
+        {
+          "name": "replay_20260723_hynix_1m.csv",
+          "rows_today_cut": 124,
+          "range": {
+            "first": "2026-07-23T09:00:00",
+            "last": "2026-07-23T11:03:00"
+          },
+          "note": "fallback only; ETF levels may diverge from live"
+        },
+        {
+          "name": "naver_multi_1m/000660_1m.csv",
+          "rows_prior": 348,
+          "range_prior": {
+            "first": "2026-07-22T09:00:00",
+            "last": "2026-07-22T14:47:00"
+          }
+        }
+      ],
+      "today_1m_count": 122,
+      "today_range": {
+        "first": "2026-07-23T09:00:00",
+        "last": "2026-07-23T11:01:00"
+      },
+      "prior_tail_1m_count": 300,
+      "merged_1m_count": 422,
+      "merged_range": {
+        "first": "2026-07-22T09:48:00",
+        "last": "2026-07-23T11:01:00"
+      },
+      "latest_close": 1875000.0,
+      "latest_ts": "2026-07-23T11:01:00",
+      "today_df_rows": 122
+    },
+    "0193T0": {
+      "symbol": "0193T0",
+      "sources": [
+        {
+          "name": "kis_live_0193T0_1m.csv",
+          "rows_today_cut": 122,
+          "range": {
+            "first": "2026-07-23T09:00:00",
+            "last": "2026-07-23T11:01:00"
+          },
+          "primary": true
+        },
+        {
+          "name": "hynix_long_minute_1m.csv",
+          "rows_today_cut": 0,
+          "range": null
+        },
+        {
+          "name": "replay_20260723_long_1m.csv",
+          "rows_today_cut": 124,
+          "range": {
+            "first": "2026-07-23T09:00:00",
+            "last": "2026-07-23T11:03:00"
+          },
+          "note": "fallback only; ETF levels may diverge from live"
+        },
+        {
+          "name": "naver_multi_1m/0193T0_1m.csv",
+          "rows_prior": 345,
+          "range_prior": {
+            "first": "2026-07-22T09:02:00",
+            "last": "2026-07-22T14:47:00"
+          }
+        }
+      ],
+      "today_1m_count": 122,
+      "today_range": {
+        "first": "2026-07-23T09:00:00",
+        "last": "2026-07-23T11:01:00"
+      },
+      "prior_tail_1m_count": 0,
+      "merged_1m_count": 122,
+      "merged_range": {
+        "first": "2026-07-23T09:00:00",
+        "last": "2026-07-23T11:01:00"
+      },
+      "latest_close": 14875.0,
+      "latest_ts": "2026-07-23T11:01:00",
+      "today_df_rows": 122
+    },
+    "0197X0": {
+      "symbol": "0197X0",
+      "sources": [
+        {
+          "name": "kis_live_0197X0_1m.csv",
+          "rows_today_cut": 122,
+          "range": {
+            "first": "2026-07-23T09:00:00",
+            "last": "2026-07-23T11:01:00"
+          },
+          "primary": true
+        },
+        {
+          "name": "hynix_inverse_minute_1m.csv",
+          "rows_today_cut": 0,
+          "range": null
+        },
+        {
+          "name": "replay_20260723_inverse_1m.csv",
+          "rows_today_cut": 124,
+          "range": {
+            "first": "2026-07-23T09:00:00",
+            "last": "2026-07-23T11:03:00"
+          },
+          "note": "fallback only; ETF levels may diverge from live"
+        },
+        {
+          "name": "naver_multi_1m/0197X0_1m.csv",
+          "rows_prior": 345,
+          "range_prior": {
+            "first": "2026-07-22T09:02:00",
+            "last": "2026-07-22T14:47:00"
+          }
+        }
+      ],
+      "today_1m_count": 122,
+      "today_range": {
+        "first": "2026-07-23T09:00:00",
+        "last": "2026-07-23T11:01:00"
+      },
+      "prior_tail_1m_count": 0,
+      "merged_1m_count": 122,
+      "merged_range": {
+        "first": "2026-07-23T09:00:00",
+        "last": "2026-07-23T11:01:00"
+      },
+      "latest_close": 10825.0,
+      "latest_ts": "2026-07-23T11:01:00",
+      "today_df_rows": 122
+    }
+  },
+  "reconstructed_flags": {
+    "ok": true,
+    "completed_3m_today": 41,
+    "completed_3m_total_incl_warmup": 141,
+    "first_today_3m": "2026-07-23T09:00:00",
+    "last_today_3m": "2026-07-23T11:00:00",
+    "onset_flags_today": [
+      {
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "flag": "UP_RED",
+        "kind": "ONSET",
+        "hist_last3": [
+          -1460.345725,
+          2928.736204,
+          5306.6288
+        ],
+        "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00"
+      },
+      {
+        "bar_ts": "2026-07-23T10:24:00",
+        "bar_close_ts": "2026-07-23T10:27:00",
+        "flag": "DOWN_BLUE",
+        "kind": "ONSET",
+        "hist_last3": [
+          1188.424681,
+          -267.123223,
+          -1350.797818
+        ],
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:24:00"
+      }
+    ],
+    "live_arm_signals": [
+      {
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "flag": "UP_RED",
+        "new_signal": true,
+        "reason": "UP_RED_FIRST_TURN",
+        "hist_last3": [
+          -1460.345725,
+          2928.736204,
+          5306.6288
+        ],
+        "hist_deltas": [
+          4389.081929,
+          2377.892596
+        ],
+        "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
+        "completed_3m_count": 102,
+        "kind": "LIVE_ARM"
+      },
+      {
+        "bar_ts": "2026-07-23T10:24:00",
+        "bar_close_ts": "2026-07-23T10:27:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": true,
+        "reason": "DOWN_BLUE_FIRST_TURN",
+        "hist_last3": [
+          1188.424681,
+          -267.123223,
+          -1350.797818
+        ],
+        "hist_deltas": [
+          -1455.547904,
+          -1083.674595
+        ],
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:24:00",
+        "completed_3m_count": 129,
+        "kind": "LIVE_ARM"
+      }
+    ],
+    "pattern_bars": [
+      {
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "flag": "UP_RED",
+        "new_signal": true,
+        "reason": "UP_RED_FIRST_TURN",
+        "hist_last3": [
+          -1460.345725,
+          2928.736204,
+          5306.6288
+        ],
+        "hist_deltas": [
+          4389.081929,
+          2377.892596
+        ],
+        "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
+        "completed_3m_count": 102
+      },
+      {
+        "bar_ts": "2026-07-23T09:06:00",
+        "bar_close_ts": "2026-07-23T09:09:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          2928.736204,
+          5306.6288,
+          6287.198946
+        ],
+        "hist_deltas": [
+          2377.892596,
+          980.570146
+        ],
+        "signal_id": null,
+        "completed_3m_count": 103
+      },
+      {
+        "bar_ts": "2026-07-23T09:09:00",
+        "bar_close_ts": "2026-07-23T09:12:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          5306.6288,
+          6287.198946,
+          7219.668839
+        ],
+        "hist_deltas": [
+          980.570146,
+          932.469893
+        ],
+        "signal_id": null,
+        "completed_3m_count": 104
+      },
+      {
+        "bar_ts": "2026-07-23T09:12:00",
+        "bar_close_ts": "2026-07-23T09:15:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          6287.198946,
+          7219.668839,
+          8567.195037
+        ],
+        "hist_deltas": [
+          932.469893,
+          1347.526198
+        ],
+        "signal_id": null,
+        "completed_3m_count": 105
+      },
+      {
+        "bar_ts": "2026-07-23T09:15:00",
+        "bar_close_ts": "2026-07-23T09:18:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          7219.668839,
+          8567.195037,
+          8999.804281
+        ],
+        "hist_deltas": [
+          1347.526198,
+          432.609244
+        ],
+        "signal_id": null,
+        "completed_3m_count": 106
+      },
+      {
+        "bar_ts": "2026-07-23T09:57:00",
+        "bar_close_ts": "2026-07-23T10:00:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          887.388629,
+          1132.581598,
+          1655.867749
+        ],
+        "hist_deltas": [
+          245.192969,
+          523.286152
+        ],
+        "signal_id": null,
+        "completed_3m_count": 120
+      },
+      {
+        "bar_ts": "2026-07-23T10:00:00",
+        "bar_close_ts": "2026-07-23T10:03:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          1132.581598,
+          1655.867749,
+          1939.345755
+        ],
+        "hist_deltas": [
+          523.286152,
+          283.478006
+        ],
+        "signal_id": null,
+        "completed_3m_count": 121
+      },
+      {
+        "bar_ts": "2026-07-23T10:03:00",
+        "bar_close_ts": "2026-07-23T10:06:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          1655.867749,
+          1939.345755,
+          2308.506769
+        ],
+        "hist_deltas": [
+          283.478006,
+          369.161014
+        ],
+        "signal_id": null,
+        "completed_3m_count": 122
+      },
+      {
+        "bar_ts": "2026-07-23T10:06:00",
+        "bar_close_ts": "2026-07-23T10:09:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          1939.345755,
+          2308.506769,
+          2483.396825
+        ],
+        "hist_deltas": [
+          369.161014,
+          174.890056
+        ],
+        "signal_id": null,
+        "completed_3m_count": 123
+      },
+      {
+        "bar_ts": "2026-07-23T10:09:00",
+        "bar_close_ts": "2026-07-23T10:12:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          2308.506769,
+          2483.396825,
+          2649.328747
+        ],
+        "hist_deltas": [
+          174.890056,
+          165.931922
+        ],
+        "signal_id": null,
+        "completed_3m_count": 124
+      },
+      {
+        "bar_ts": "2026-07-23T10:12:00",
+        "bar_close_ts": "2026-07-23T10:15:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          2483.396825,
+          2649.328747,
+          3082.088589
+        ],
+        "hist_deltas": [
+          165.931922,
+          432.759842
+        ],
+        "signal_id": null,
+        "completed_3m_count": 125
+      },
+      {
+        "bar_ts": "2026-07-23T10:24:00",
+        "bar_close_ts": "2026-07-23T10:27:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": true,
+        "reason": "DOWN_BLUE_FIRST_TURN",
+        "hist_last3": [
+          1188.424681,
+          -267.123223,
+          -1350.797818
+        ],
+        "hist_deltas": [
+          -1455.547904,
+          -1083.674595
+        ],
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:24:00",
+        "completed_3m_count": 129
+      },
+      {
+        "bar_ts": "2026-07-23T10:27:00",
+        "bar_close_ts": "2026-07-23T10:30:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -267.123223,
+          -1350.797818,
+          -2205.320337
+        ],
+        "hist_deltas": [
+          -1083.674595,
+          -854.522518
+        ],
+        "signal_id": null,
+        "completed_3m_count": 130
+      },
+      {
+        "bar_ts": "2026-07-23T10:30:00",
+        "bar_close_ts": "2026-07-23T10:33:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -1350.797818,
+          -2205.320337,
+          -3121.663574
+        ],
+        "hist_deltas": [
+          -854.522518,
+          -916.343238
+        ],
+        "signal_id": null,
+        "completed_3m_count": 131
+      },
+      {
+        "bar_ts": "2026-07-23T10:33:00",
+        "bar_close_ts": "2026-07-23T10:36:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -2205.320337,
+          -3121.663574,
+          -3255.791747
+        ],
+        "hist_deltas": [
+          -916.343238,
+          -134.128172
+        ],
+        "signal_id": null,
+        "completed_3m_count": 132
+      },
+      {
+        "bar_ts": "2026-07-23T10:42:00",
+        "bar_close_ts": "2026-07-23T10:45:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -3076.643832,
+          -3341.696111,
+          -3863.653584
+        ],
+        "hist_deltas": [
+          -265.052278,
+          -521.957474
+        ],
+        "signal_id": null,
+        "completed_3m_count": 135
+      },
+      {
+        "bar_ts": "2026-07-23T10:45:00",
+        "bar_close_ts": "2026-07-23T10:48:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -3341.696111,
+          -3863.653584,
+          -4319.013345
+        ],
+        "hist_deltas": [
+          -521.957474,
+          -455.35976
+        ],
+        "signal_id": null,
+        "completed_3m_count": 136
+      },
+      {
+        "bar_ts": "2026-07-23T10:48:00",
+        "bar_close_ts": "2026-07-23T10:51:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -3863.653584,
+          -4319.013345,
+          -4443.645677
+        ],
+        "hist_deltas": [
+          -455.35976,
+          -124.632332
+        ],
+        "signal_id": null,
+        "completed_3m_count": 137
+      },
+      {
+        "bar_ts": "2026-07-23T10:57:00",
+        "bar_close_ts": "2026-07-23T11:00:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -4152.870073,
+          -4245.679167,
+          -4883.458071
+        ],
+        "hist_deltas": [
+          -92.809094,
+          -637.778903
+        ],
+        "signal_id": null,
+        "completed_3m_count": 140
+      }
+    ],
+    "timeline": [
+      {
+        "bar_ts": "2026-07-23T09:00:00",
+        "bar_close_ts": "2026-07-23T09:03:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          -1451.361105,
+          -1460.345725,
+          2928.736204
+        ],
+        "hist_deltas": [
+          -8.98462,
+          4389.081929
+        ],
+        "signal_id": null,
+        "completed_3m_count": 101
+      },
+      {
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "flag": "UP_RED",
+        "new_signal": true,
+        "reason": "UP_RED_FIRST_TURN",
+        "hist_last3": [
+          -1460.345725,
+          2928.736204,
+          5306.6288
+        ],
+        "hist_deltas": [
+          4389.081929,
+          2377.892596
+        ],
+        "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
+        "completed_3m_count": 102
+      },
+      {
+        "bar_ts": "2026-07-23T09:06:00",
+        "bar_close_ts": "2026-07-23T09:09:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          2928.736204,
+          5306.6288,
+          6287.198946
+        ],
+        "hist_deltas": [
+          2377.892596,
+          980.570146
+        ],
+        "signal_id": null,
+        "completed_3m_count": 103
+      },
+      {
+        "bar_ts": "2026-07-23T09:09:00",
+        "bar_close_ts": "2026-07-23T09:12:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          5306.6288,
+          6287.198946,
+          7219.668839
+        ],
+        "hist_deltas": [
+          980.570146,
+          932.469893
+        ],
+        "signal_id": null,
+        "completed_3m_count": 104
+      },
+      {
+        "bar_ts": "2026-07-23T09:12:00",
+        "bar_close_ts": "2026-07-23T09:15:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          6287.198946,
+          7219.668839,
+          8567.195037
+        ],
+        "hist_deltas": [
+          932.469893,
+          1347.526198
+        ],
+        "signal_id": null,
+        "completed_3m_count": 105
+      },
+      {
+        "bar_ts": "2026-07-23T09:15:00",
+        "bar_close_ts": "2026-07-23T09:18:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          7219.668839,
+          8567.195037,
+          8999.804281
+        ],
+        "hist_deltas": [
+          1347.526198,
+          432.609244
+        ],
+        "signal_id": null,
+        "completed_3m_count": 106
+      },
+      {
+        "bar_ts": "2026-07-23T09:18:00",
+        "bar_close_ts": "2026-07-23T09:21:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          8567.195037,
+          8999.804281,
+          8688.13551
+        ],
+        "hist_deltas": [
+          432.609244,
+          -311.668771
+        ],
+        "signal_id": null,
+        "completed_3m_count": 107
+      },
+      {
+        "bar_ts": "2026-07-23T09:21:00",
+        "bar_close_ts": "2026-07-23T09:24:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          8999.804281,
+          8688.13551,
+          7332.144897
+        ],
+        "hist_deltas": [
+          -311.668771,
+          -1355.990613
+        ],
+        "signal_id": null,
+        "completed_3m_count": 108
+      },
+      {
+        "bar_ts": "2026-07-23T09:24:00",
+        "bar_close_ts": "2026-07-23T09:27:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          8688.13551,
+          7332.144897,
+          6397.048034
+        ],
+        "hist_deltas": [
+          -1355.990613,
+          -935.096863
+        ],
+        "signal_id": null,
+        "completed_3m_count": 109
+      },
+      {
+        "bar_ts": "2026-07-23T09:27:00",
+        "bar_close_ts": "2026-07-23T09:30:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          7332.144897,
+          6397.048034,
+          5122.021737
+        ],
+        "hist_deltas": [
+          -935.096863,
+          -1275.026297
+        ],
+        "signal_id": null,
+        "completed_3m_count": 110
+      },
+      {
+        "bar_ts": "2026-07-23T09:30:00",
+        "bar_close_ts": "2026-07-23T09:33:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          6397.048034,
+          5122.021737,
+          3689.099119
+        ],
+        "hist_deltas": [
+          -1275.026297,
+          -1432.922618
+        ],
+        "signal_id": null,
+        "completed_3m_count": 111
+      },
+      {
+        "bar_ts": "2026-07-23T09:33:00",
+        "bar_close_ts": "2026-07-23T09:36:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          5122.021737,
+          3689.099119,
+          2798.277088
+        ],
+        "hist_deltas": [
+          -1432.922618,
+          -890.822031
+        ],
+        "signal_id": null,
+        "completed_3m_count": 112
+      },
+      {
+        "bar_ts": "2026-07-23T09:36:00",
+        "bar_close_ts": "2026-07-23T09:39:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          3689.099119,
+          2798.277088,
+          2032.283071
+        ],
+        "hist_deltas": [
+          -890.822031,
+          -765.994017
+        ],
+        "signal_id": null,
+        "completed_3m_count": 113
+      },
+      {
+        "bar_ts": "2026-07-23T09:39:00",
+        "bar_close_ts": "2026-07-23T09:42:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          2798.277088,
+          2032.283071,
+          1443.869186
+        ],
+        "hist_deltas": [
+          -765.994017,
+          -588.413885
+        ],
+        "signal_id": null,
+        "completed_3m_count": 114
+      },
+      {
+        "bar_ts": "2026-07-23T09:42:00",
+        "bar_close_ts": "2026-07-23T09:45:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          2032.283071,
+          1443.869186,
+          1058.131511
+        ],
+        "hist_deltas": [
+          -588.413885,
+          -385.737676
+        ],
+        "signal_id": null,
+        "completed_3m_count": 115
+      },
+      {
+        "bar_ts": "2026-07-23T09:45:00",
+        "bar_close_ts": "2026-07-23T09:48:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          1443.869186,
+          1058.131511,
+          1327.777977
+        ],
+        "hist_deltas": [
+          -385.737676,
+          269.646467
+        ],
+        "signal_id": null,
+        "completed_3m_count": 116
+      },
+      {
+        "bar_ts": "2026-07-23T09:48:00",
+        "bar_close_ts": "2026-07-23T09:51:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          1058.131511,
+          1327.777977,
+          1161.41531
+        ],
+        "hist_deltas": [
+          269.646467,
+          -166.362668
+        ],
+        "signal_id": null,
+        "completed_3m_count": 117
+      },
+      {
+        "bar_ts": "2026-07-23T09:51:00",
+        "bar_close_ts": "2026-07-23T09:54:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          1327.777977,
+          1161.41531,
+          887.388629
+        ],
+        "hist_deltas": [
+          -166.362668,
+          -274.026681
+        ],
+        "signal_id": null,
+        "completed_3m_count": 118
+      },
+      {
+        "bar_ts": "2026-07-23T09:54:00",
+        "bar_close_ts": "2026-07-23T09:57:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          1161.41531,
+          887.388629,
+          1132.581598
+        ],
+        "hist_deltas": [
+          -274.026681,
+          245.192969
+        ],
+        "signal_id": null,
+        "completed_3m_count": 119
+      },
+      {
+        "bar_ts": "2026-07-23T09:57:00",
+        "bar_close_ts": "2026-07-23T10:00:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          887.388629,
+          1132.581598,
+          1655.867749
+        ],
+        "hist_deltas": [
+          245.192969,
+          523.286152
+        ],
+        "signal_id": null,
+        "completed_3m_count": 120
+      },
+      {
+        "bar_ts": "2026-07-23T10:00:00",
+        "bar_close_ts": "2026-07-23T10:03:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          1132.581598,
+          1655.867749,
+          1939.345755
+        ],
+        "hist_deltas": [
+          523.286152,
+          283.478006
+        ],
+        "signal_id": null,
+        "completed_3m_count": 121
+      },
+      {
+        "bar_ts": "2026-07-23T10:03:00",
+        "bar_close_ts": "2026-07-23T10:06:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          1655.867749,
+          1939.345755,
+          2308.506769
+        ],
+        "hist_deltas": [
+          283.478006,
+          369.161014
+        ],
+        "signal_id": null,
+        "completed_3m_count": 122
+      },
+      {
+        "bar_ts": "2026-07-23T10:06:00",
+        "bar_close_ts": "2026-07-23T10:09:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          1939.345755,
+          2308.506769,
+          2483.396825
+        ],
+        "hist_deltas": [
+          369.161014,
+          174.890056
+        ],
+        "signal_id": null,
+        "completed_3m_count": 123
+      },
+      {
+        "bar_ts": "2026-07-23T10:09:00",
+        "bar_close_ts": "2026-07-23T10:12:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          2308.506769,
+          2483.396825,
+          2649.328747
+        ],
+        "hist_deltas": [
+          174.890056,
+          165.931922
+        ],
+        "signal_id": null,
+        "completed_3m_count": 124
+      },
+      {
+        "bar_ts": "2026-07-23T10:12:00",
+        "bar_close_ts": "2026-07-23T10:15:00",
+        "flag": "UP_RED",
+        "new_signal": false,
+        "reason": "UP_RED_PATTERN",
+        "hist_last3": [
+          2483.396825,
+          2649.328747,
+          3082.088589
+        ],
+        "hist_deltas": [
+          165.931922,
+          432.759842
+        ],
+        "signal_id": null,
+        "completed_3m_count": 125
+      },
+      {
+        "bar_ts": "2026-07-23T10:15:00",
+        "bar_close_ts": "2026-07-23T10:18:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          2649.328747,
+          3082.088589,
+          2503.662364
+        ],
+        "hist_deltas": [
+          432.759842,
+          -578.426225
+        ],
+        "signal_id": null,
+        "completed_3m_count": 126
+      },
+      {
+        "bar_ts": "2026-07-23T10:18:00",
+        "bar_close_ts": "2026-07-23T10:21:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          3082.088589,
+          2503.662364,
+          1188.424681
+        ],
+        "hist_deltas": [
+          -578.426225,
+          -1315.237684
+        ],
+        "signal_id": null,
+        "completed_3m_count": 127
+      },
+      {
+        "bar_ts": "2026-07-23T10:21:00",
+        "bar_close_ts": "2026-07-23T10:24:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          2503.662364,
+          1188.424681,
+          -267.123223
+        ],
+        "hist_deltas": [
+          -1315.237684,
+          -1455.547904
+        ],
+        "signal_id": null,
+        "completed_3m_count": 128
+      },
+      {
+        "bar_ts": "2026-07-23T10:24:00",
+        "bar_close_ts": "2026-07-23T10:27:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": true,
+        "reason": "DOWN_BLUE_FIRST_TURN",
+        "hist_last3": [
+          1188.424681,
+          -267.123223,
+          -1350.797818
+        ],
+        "hist_deltas": [
+          -1455.547904,
+          -1083.674595
+        ],
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:24:00",
+        "completed_3m_count": 129
+      },
+      {
+        "bar_ts": "2026-07-23T10:27:00",
+        "bar_close_ts": "2026-07-23T10:30:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -267.123223,
+          -1350.797818,
+          -2205.320337
+        ],
+        "hist_deltas": [
+          -1083.674595,
+          -854.522518
+        ],
+        "signal_id": null,
+        "completed_3m_count": 130
+      },
+      {
+        "bar_ts": "2026-07-23T10:30:00",
+        "bar_close_ts": "2026-07-23T10:33:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -1350.797818,
+          -2205.320337,
+          -3121.663574
+        ],
+        "hist_deltas": [
+          -854.522518,
+          -916.343238
+        ],
+        "signal_id": null,
+        "completed_3m_count": 131
+      },
+      {
+        "bar_ts": "2026-07-23T10:33:00",
+        "bar_close_ts": "2026-07-23T10:36:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -2205.320337,
+          -3121.663574,
+          -3255.791747
+        ],
+        "hist_deltas": [
+          -916.343238,
+          -134.128172
+        ],
+        "signal_id": null,
+        "completed_3m_count": 132
+      },
+      {
+        "bar_ts": "2026-07-23T10:36:00",
+        "bar_close_ts": "2026-07-23T10:39:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          -3121.663574,
+          -3255.791747,
+          -3076.643832
+        ],
+        "hist_deltas": [
+          -134.128172,
+          179.147914
+        ],
+        "signal_id": null,
+        "completed_3m_count": 133
+      },
+      {
+        "bar_ts": "2026-07-23T10:39:00",
+        "bar_close_ts": "2026-07-23T10:42:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          -3255.791747,
+          -3076.643832,
+          -3341.696111
+        ],
+        "hist_deltas": [
+          179.147914,
+          -265.052278
+        ],
+        "signal_id": null,
+        "completed_3m_count": 134
+      },
+      {
+        "bar_ts": "2026-07-23T10:42:00",
+        "bar_close_ts": "2026-07-23T10:45:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -3076.643832,
+          -3341.696111,
+          -3863.653584
+        ],
+        "hist_deltas": [
+          -265.052278,
+          -521.957474
+        ],
+        "signal_id": null,
+        "completed_3m_count": 135
+      },
+      {
+        "bar_ts": "2026-07-23T10:45:00",
+        "bar_close_ts": "2026-07-23T10:48:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -3341.696111,
+          -3863.653584,
+          -4319.013345
+        ],
+        "hist_deltas": [
+          -521.957474,
+          -455.35976
+        ],
+        "signal_id": null,
+        "completed_3m_count": 136
+      },
+      {
+        "bar_ts": "2026-07-23T10:48:00",
+        "bar_close_ts": "2026-07-23T10:51:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -3863.653584,
+          -4319.013345,
+          -4443.645677
+        ],
+        "hist_deltas": [
+          -455.35976,
+          -124.632332
+        ],
+        "signal_id": null,
+        "completed_3m_count": 137
+      },
+      {
+        "bar_ts": "2026-07-23T10:51:00",
+        "bar_close_ts": "2026-07-23T10:54:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          -4319.013345,
+          -4443.645677,
+          -4152.870073
+        ],
+        "hist_deltas": [
+          -124.632332,
+          290.775604
+        ],
+        "signal_id": null,
+        "completed_3m_count": 138
+      },
+      {
+        "bar_ts": "2026-07-23T10:54:00",
+        "bar_close_ts": "2026-07-23T10:57:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          -4443.645677,
+          -4152.870073,
+          -4245.679167
+        ],
+        "hist_deltas": [
+          290.775604,
+          -92.809094
+        ],
+        "signal_id": null,
+        "completed_3m_count": 139
+      },
+      {
+        "bar_ts": "2026-07-23T10:57:00",
+        "bar_close_ts": "2026-07-23T11:00:00",
+        "flag": "DOWN_BLUE",
+        "new_signal": false,
+        "reason": "DOWN_BLUE_PATTERN",
+        "hist_last3": [
+          -4152.870073,
+          -4245.679167,
+          -4883.458071
+        ],
+        "hist_deltas": [
+          -92.809094,
+          -637.778903
+        ],
+        "signal_id": null,
+        "completed_3m_count": 140
+      },
+      {
+        "bar_ts": "2026-07-23T11:00:00",
+        "bar_close_ts": "2026-07-23T11:03:00",
+        "flag": "HOLD",
+        "new_signal": false,
+        "reason": "HOLD_NO_PATTERN",
+        "hist_last3": [
+          -4245.679167,
+          -4883.458071,
+          -4797.167058
+        ],
+        "hist_deltas": [
+          -637.778903,
+          86.291012
+        ],
+        "signal_id": null,
+        "completed_3m_count": 141
+      }
+    ],
+    "warmup_hist_last3": [
+      -4245.679167,
+      -4883.458071,
+      -4797.167058
+    ]
+  },
+  "worker_truncated_view": {
+    "ok": true,
+    "note": "State live diag received only ~30 1m bars (10:03–10:32); morning 09:00–10:02 missing → EMA/hist ≠ full-day truth",
+    "trunc_1m_count": 30,
+    "trunc_range": {
+      "first": "2026-07-23T10:03:00",
+      "last": "2026-07-23T10:32:00"
+    },
+    "hist_last3_at_1032": [
+      7512.167177,
+      5894.586843,
+      4402.404676
+    ],
+    "state_hist_last3_reference": [
+      7513.802402,
+      5896.100968,
+      4403.806667
+    ],
+    "hist_match_state_approx": true,
+    "eval_at_1030": {
+      "flag": "HOLD",
+      "reason": "HOLD_NO_PATTERN",
+      "hist_last3": [
+        7512.167177,
+        5894.586843,
+        4402.404676
+      ],
+      "new_signal": false
+    },
+    "live_arm_signals_under_truncation": [
+      {
+        "bar_ts": "2026-07-23T10:06:00",
+        "bar_close_ts": "2026-07-23T10:09:00",
+        "flag": "UP_RED",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:06:00",
+        "hist_last3": [
+          -1460.345725,
+          3886.001161,
+          7290.158154
+        ],
+        "reason": "UP_RED_FIRST_TURN"
+      }
+    ]
+  },
+  "program": {
+    "verdict": "NO_TRADES",
+    "trading_verdict": "NO_TRADES",
+    "run_health": {
+      "mode": "mock",
+      "auto_trade_on": true,
+      "session_date": "2026-07-23",
+      "scheduler_alive": true,
+      "worker_alive": false,
+      "stale_worker": false,
+      "stale_worker_reason": null,
+      "last_tick_at": "2026-07-23T10:32:37.471490",
+      "tick_age_sec": 1852.6,
+      "avg_interval": 9.963,
+      "warmup_ready": true,
+      "warmup_reason": "WARMUP_READY",
+      "completed_3m_bar_at": "2026-07-23T10:03:00",
+      "last_signal_at": "2026-07-23T10:03:05",
+      "last_flag": "HOLD",
+      "current_flag": "HOLD",
+      "armed_at": "2026-07-23T10:03:05",
+      "order_block_reason": null,
+      "primary_block_reason": null,
+      "pipeline_all_null": true,
+      "flag_events_today_present": false,
+      "decision_trace_present": false,
+      "position_flat": true,
+      "prices": {
+        "hynix": 1901000.0,
+        "long": 15355.0,
+        "inverse": 10475.0,
+        "updated_at": "2026-07-23T10:32:40.697305"
+      },
+      "updated_at": "2026-07-23T10:33:51.279186",
+      "git_sha": "abf36c3",
+      "mutex": {
+        "owner": "NONE",
+        "enabled": false,
+        "macd_auto_trade_on": false,
+        "mode": "mock",
+        "updated_at": "2026-07-23T10:32:40.626418",
+        "git_sha": "abf36c3",
+        "reason": "test"
+      }
+    },
+    "why_zero_real_trades": [
+      "macd_hynix_state.mode=mock (not real)",
+      "real_confirm_ok=false",
+      "mutex.enabled=false reason=test",
+      "mutex.macd_auto_trade_on=false",
+      "legacy_auto_trade_truth auto_trade_on=false",
+      "real broker gate: broker create failed: 실전투자 확인 문구가 틀립니다. 'I_UNDERSTAND_REAL_TRADING_RISK'를 정확히 입력하세요.",
+      "worker.alive=false last_tick_at=2026-07-23T10:32:37.471490 age_sec=1852.6"
+    ],
+    "executed_trade_count_real": 0,
+    "executed_trade_count_ledger_all_modes": 5,
+    "executed_trade_count_mock_stub": 5,
+    "fills": [
+      {
+        "timestamp": "2026-07-23T09:32:00.178014",
+        "mode": "mock",
+        "symbol": "0193T0",
+        "side": "BUY",
+        "price": 10000.0,
+        "qty": 500,
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+        "exit_reason": "INITIAL_ENTRY",
+        "cost": 750.0,
+        "net_pnl": -750.0,
+        "success": true,
+        "classification": "MOCK_E2E_STUB"
+      },
+      {
+        "timestamp": "2026-07-23T09:32:38.668820",
+        "mode": "mock",
+        "symbol": "0193T0",
+        "side": "BUY",
+        "price": 10000.0,
+        "qty": 500,
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+        "exit_reason": "INITIAL_ENTRY",
+        "cost": 750.0,
+        "net_pnl": -750.0,
+        "success": true,
+        "classification": "MOCK_E2E_STUB"
+      },
+      {
+        "timestamp": "2026-07-23T09:33:43.481902",
+        "mode": "mock",
+        "symbol": "0193T0",
+        "side": "BUY",
+        "price": 10000.0,
+        "qty": 500,
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+        "exit_reason": "INITIAL_ENTRY",
+        "cost": 750.0,
+        "net_pnl": -750.0,
+        "success": true,
+        "classification": "MOCK_E2E_STUB"
+      },
+      {
+        "timestamp": "2026-07-23T09:33:44.176772",
+        "mode": "mock",
+        "symbol": "0193T0",
+        "side": "SELL",
+        "price": 10000.0,
+        "qty": 500,
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T11:00:00",
+        "exit_reason": "OPPOSITE_SWITCH",
+        "cost": 4500.0,
+        "net_pnl": -4500.0,
+        "success": true,
+        "classification": "MOCK_E2E_STUB"
+      },
+      {
+        "timestamp": "2026-07-23T09:33:44.645722",
+        "mode": "mock",
+        "symbol": "0197X0",
+        "side": "BUY",
+        "price": 10000.0,
+        "qty": 500,
+        "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T11:00:00",
+        "exit_reason": "INITIAL_ENTRY",
+        "cost": 750.0,
+        "net_pnl": -750.0,
+        "success": true,
+        "classification": "MOCK_E2E_STUB"
+      }
+    ],
+    "state_latency_anomaly": {
+      "note": "order timestamps ~09:49 precede signal_detected_at 10:03 — leftover mock/e2e clock skew",
+      "order_latency_last": {
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+        "completed_3m_bar_at": "2026-07-23T10:03:00",
+        "signal_detected_at": "2026-07-23T10:03:05",
+        "order_requested_at": "2026-07-23T09:49:21.741289",
+        "kis_order_accepted_at": "2026-07-23T09:49:21.741457",
+        "broker_executed_at": "2026-07-23T09:49:21.741506",
+        "position_confirmed_at": "2026-07-23T09:49:21.741506",
+        "segments_sec": {
+          "bar_complete_to_signal_detect": 5.0,
+          "signal_detect_to_order_request": -823.259,
+          "order_request_to_kis_accept": 0.0,
+          "kis_accept_to_fill_confirm": 0.0,
+          "signal_detect_to_final_fill": -823.258
+        },
+        "finalized_at": "2026-07-23T09:49:21.849906"
+      }
+    },
+    "run_class": "RUN_PARTIAL"
+  },
+  "counterfactual": {
+    "label": "COUNTERFACTUAL — not executed",
+    "budget": 1000000.0,
+    "fill_model": "next_1m_open after bar_close; TradeCostEngine round-trip",
+    "closed_round_trips": [
+      {
+        "entry_at": "2026-07-23T09:06:00",
+        "exit_at": "2026-07-23T10:27:00",
+        "symbol": "0193T0",
+        "side_path": "BUY→SELL",
+        "direction": "UP_RED",
+        "qty": 64,
+        "entry_price": 15490.0,
+        "exit_price": 15540.0,
+        "gross_pnl": 3200.0,
+        "cost": 496.47,
+        "net_pnl": 2703.53,
+        "return_pct": 0.2727,
+        "exit_reason": "OPPOSITE_SWITCH",
+        "entry_signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
+        "exit_signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:24:00",
+        "open": false
+      }
+    ],
+    "open_position_mtm": {
+      "entry_at": "2026-07-23T10:27:00",
+      "mark_at": "2026-07-23T11:03:30.048145",
+      "symbol": "0197X0",
+      "side_path": "BUY→MTM",
+      "direction": "DOWN_BLUE",
+      "qty": 96,
+      "entry_price": 10310.0,
+      "mark_price": 10825.0,
+      "gross_pnl": 49440.0,
+      "cost": 507.24,
+      "net_pnl": 48932.76,
+      "return_pct": 4.9439,
+      "exit_reason": "MARK_TO_MARKET",
+      "entry_signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:24:00",
+      "open": true
+    },
+    "summary": {
+      "closed_count": 1,
+      "closed_net_pnl": 2703.53,
+      "open_net_pnl_mtm": 48932.76,
+      "total_net_pnl_incl_open": 51636.29,
+      "total_return_pct_vs_budget": 5.1636
+    }
+  },
+  "notes": [
+    "flag_events_today / decision_trace absent from macd_hynix_state.json",
+    "ledger rows today are mock E2E stubs (price=10000) — not market fills",
+    "counterfactual section is labeled and must not be treated as realized PnL",
+    "Primary 1m feed: paginated KIS live (kis_live_*_1m.csv); replay used only as gap fill",
+    "replay_*_20260723 ETF prices diverge from live quotes — not used when KIS present"
+  ]
+}

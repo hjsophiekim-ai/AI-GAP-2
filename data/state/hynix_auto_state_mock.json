@@ -1,5 +1,5 @@
 {
-  "date": "20260720",
+  "date": "20260723",
   "mode": "mock",
   "position": {
     "symbol": null,
@@ -40,12 +40,12 @@
   "residual_position_error": false,
   "position_conflict": false,
   "critical_alert": null,
-  "auto_trade_on": true,
-  "active_strategy_enabled": false,
-  "adaptive_fusion_enabled": false,
+  "auto_trade_on": false,
+  "active_strategy_enabled": true,
+  "adaptive_fusion_enabled": true,
   "big_trend_holding_enabled": true,
-  "early_trend_detector_enabled": false,
-  "early_trend_detector_live": false,
+  "early_trend_detector_enabled": true,
+  "early_trend_detector_live": true,
   "weight_auto_apply_enabled": false,
   "daily_report_generated_date": "20260715",
   "stopped": false,
@@ -58,7 +58,7 @@
   "last_action": null,
   "last_order_id": null,
   "stop_loss_mode": "AUTO",
-  "last_stop_loss_signature": "0197X0:202607151040",
+  "last_stop_loss_signature": null,
   "pending_manual_stop_loss_alert": null,
   "adaptive_regime_enabled": true,
   "adaptive_regime_mode": "LIVE",
@@ -619,5 +619,11 @@
   "last_long_price": 14335.0,
   "pending_entry": null,
   "buyable_cash_diagnostic": null,
-  "daily_loss_block_override": true
+  "daily_loss_block_override": true,
+  "trend_continuation_entry": null,
+  "early_trend_detector": null,
+  "live_trade_direction": null,
+  "macd_williams_episode_gate_mode": null,
+  "last_completed_decision_snapshot": null,
+  "stop_loss_snapshot": null
 }

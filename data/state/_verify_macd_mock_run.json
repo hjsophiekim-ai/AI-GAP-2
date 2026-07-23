@@ -1,0 +1,378 @@
+{
+  "start_at": "2026-07-23T08:15:23.450637+09:00",
+  "start_result_ok": true,
+  "start_message": null,
+  "snapshots": [
+    {
+      "i": 0,
+      "at": "2026-07-23T08:15:38.628228+09:00",
+      "last_tick_at": "2026-07-23T08:15:27.125975",
+      "alive": true,
+      "intervals": [],
+      "avg": null,
+      "prices": {
+        "hynix": 1830000.0,
+        "long": 14180.0,
+        "inverse": 11350.0,
+        "updated_at": "2026-07-23T08:15:32.713520"
+      },
+      "macd": {
+        "macd": null,
+        "signal": null,
+        "hist": null,
+        "reason": "WARMUP_LT_26"
+      },
+      "display_direction": "HOLD",
+      "strategy_enabled": true,
+      "market_data_active": true,
+      "signal_calculation_active": false,
+      "order_execution_enabled": true,
+      "primary_block_reason": "WARMUP_LT_26",
+      "order_block_reason": null,
+      "next_action": "대기",
+      "pipeline_signal": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      }
+    },
+    {
+      "i": 1,
+      "at": "2026-07-23T08:15:44.221196+09:00",
+      "last_tick_at": "2026-07-23T08:15:34.945086",
+      "alive": true,
+      "intervals": [
+        8.102
+      ],
+      "avg": 8.102,
+      "prices": {
+        "hynix": 1830000.0,
+        "long": 14180.0,
+        "inverse": 11350.0,
+        "updated_at": "2026-07-23T08:15:37.169558"
+      },
+      "macd": {
+        "macd": null,
+        "signal": null,
+        "hist": null,
+        "reason": "WARMUP_LT_26"
+      },
+      "display_direction": "HOLD",
+      "strategy_enabled": true,
+      "market_data_active": true,
+      "signal_calculation_active": false,
+      "order_execution_enabled": true,
+      "primary_block_reason": "WARMUP_LT_26",
+      "order_block_reason": null,
+      "next_action": "대기",
+      "pipeline_signal": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      }
+    },
+    {
+      "i": 2,
+      "at": "2026-07-23T08:15:49.750662+09:00",
+      "last_tick_at": "2026-07-23T08:15:45.285535",
+      "alive": true,
+      "intervals": [
+        8.102,
+        4.741,
+        5.559
+      ],
+      "avg": 6.134,
+      "prices": {
+        "hynix": 1830000.0,
+        "long": 14180.0,
+        "inverse": 11350.0,
+        "updated_at": "2026-07-23T08:15:47.504268"
+      },
+      "macd": {
+        "macd": null,
+        "signal": null,
+        "hist": null,
+        "reason": "WARMUP_LT_26"
+      },
+      "display_direction": "HOLD",
+      "strategy_enabled": true,
+      "market_data_active": true,
+      "signal_calculation_active": false,
+      "order_execution_enabled": true,
+      "primary_block_reason": "WARMUP_LT_26",
+      "order_block_reason": null,
+      "next_action": "대기",
+      "pipeline_signal": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      }
+    },
+    {
+      "i": 3,
+      "at": "2026-07-23T08:15:56.213713+09:00",
+      "last_tick_at": "2026-07-23T08:15:50.710095",
+      "alive": true,
+      "intervals": [
+        8.102,
+        4.741,
+        5.559,
+        4.483
+      ],
+      "avg": 5.721,
+      "prices": {
+        "hynix": 1830000.0,
+        "long": 14180.0,
+        "inverse": 11350.0,
+        "updated_at": "2026-07-23T08:15:52.935765"
+      },
+      "macd": {
+        "macd": null,
+        "signal": null,
+        "hist": null,
+        "reason": "WARMUP_LT_26"
+      },
+      "display_direction": "HOLD",
+      "strategy_enabled": true,
+      "market_data_active": true,
+      "signal_calculation_active": false,
+      "order_execution_enabled": true,
+      "primary_block_reason": "WARMUP_LT_26",
+      "order_block_reason": null,
+      "next_action": "대기",
+      "pipeline_signal": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      }
+    },
+    {
+      "i": 4,
+      "at": "2026-07-23T08:16:01.563756+09:00",
+      "last_tick_at": "2026-07-23T08:15:55.238158",
+      "alive": true,
+      "intervals": [
+        8.102,
+        4.741,
+        5.559,
+        4.483,
+        5.418
+      ],
+      "avg": 5.661,
+      "prices": {
+        "hynix": 1830000.0,
+        "long": 14180.0,
+        "inverse": 11350.0,
+        "updated_at": "2026-07-23T08:15:57.456576"
+      },
+      "macd": {
+        "macd": null,
+        "signal": null,
+        "hist": null,
+        "reason": "WARMUP_LT_26"
+      },
+      "display_direction": "HOLD",
+      "strategy_enabled": true,
+      "market_data_active": true,
+      "signal_calculation_active": false,
+      "order_execution_enabled": true,
+      "primary_block_reason": "WARMUP_LT_26",
+      "order_block_reason": null,
+      "next_action": "대기",
+      "pipeline_signal": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      }
+    }
+  ],
+  "final": {
+    "auto_trade_on": true,
+    "mode": "mock",
+    "budget": 10000000.0,
+    "stopped": false,
+    "stopped_reason": null,
+    "display_direction": "HOLD",
+    "last_signal_direction": null,
+    "last_signal_bar_ts": null,
+    "last_signal_id": null,
+    "last_signal_at": null,
+    "pending_signal_id": null,
+    "pending_signal_direction": null,
+    "pending_signal_at": null,
+    "pending_entry_kind": null,
+    "pending_signal_source": null,
+    "order_requested_at": null,
+    "broker_executed_at": null,
+    "last_order_at": null,
+    "position": {
+      "symbol": null,
+      "quantity": 0,
+      "avg_price": 0.0,
+      "entry_at": null,
+      "signal_id": null,
+      "entry_kind": null,
+      "direction_episode_id": null,
+      "size_fraction": 1.0,
+      "opening_probe": false
+    },
+    "direction_episode": {
+      "id": null,
+      "direction": null,
+      "started_at": null,
+      "initial_entry_used": false,
+      "continuation_reentry_used": false,
+      "sl_lock": false,
+      "tp_at": null,
+      "tp_bar_ts": null,
+      "tp_hist_max_abs": 0.0,
+      "tp_hynix_price": null,
+      "tp_pivot_price": null,
+      "last_exit_reason": null
+    },
+    "reentry": {
+      "eligible": false,
+      "block_reason": null,
+      "bars_since_tp": 0,
+      "hist_contracted": false,
+      "hist_last3": [],
+      "enabled": false
+    },
+    "profit_lock": {
+      "peak_net_return": 0.0,
+      "current_net_return": 0.0,
+      "giveback_pct": 0.0,
+      "profit_lock_active": false
+    },
+    "last_event": null,
+    "prices": {
+      "hynix": 1830000.0,
+      "long": 14180.0,
+      "inverse": 11350.0,
+      "updated_at": "2026-07-23T08:15:57.456576"
+    },
+    "macd": {
+      "macd": null,
+      "signal": null,
+      "hist": null,
+      "hist_last3": [],
+      "hist_deltas": [],
+      "reason": "WARMUP_LT_26",
+      "bar_ts": null
+    },
+    "quote_errors": [],
+    "pipeline": {
+      "Signal": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      },
+      "Sell Requested": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      },
+      "Sell Executed": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      },
+      "Buy Requested": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      },
+      "Buy Executed": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      },
+      "Position Confirmed": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      },
+      "Ledger Recorded": {
+        "ok": null,
+        "at": null,
+        "message": ""
+      }
+    },
+    "order_block_reason": null,
+    "next_action": "대기",
+    "processed_signal_ids": [],
+    "worker": {
+      "alive": true,
+      "last_tick_at": "2026-07-23T08:15:55.238158",
+      "tick_intervals": [
+        8.102,
+        4.741,
+        5.559,
+        4.483,
+        5.418
+      ],
+      "avg_interval": 5.661,
+      "p95_interval": 8.102,
+      "signal_detected_at": null,
+      "order_requested_at": null,
+      "broker_executed_at": null
+    },
+    "scheduler_alive": true,
+    "strategy_enabled": true,
+    "market_data_active": true,
+    "signal_calculation_active": false,
+    "order_execution_enabled": true,
+    "primary_block_reason": "WARMUP_LT_26",
+    "legacy_truth_debug": {
+      "auto_trade_on": false,
+      "active_mode": "real",
+      "truth_helper": "app.services.hynix_switch_state.load_state",
+      "enhanced_save_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\hynix_auto_state_real.json",
+      "enhanced_save_mtime": "2026-07-23T08:15:21.266387",
+      "enhanced_common_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\hynix_strategy_profile_common.json",
+      "enhanced_common_mtime": "2026-07-23T08:15:21.159082",
+      "active_mode_pointer_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\hynix_auto_state_active_mode.json",
+      "mode_file_auto_trade_on": false,
+      "common_file_auto_trade_on": false,
+      "macd_read_helper": "app.trading.macd_hynix_order_manager.legacy_auto_trade_truth",
+      "macd_state_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_hynix_state.json",
+      "macd_mutex_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_hynix_mutex.json",
+      "STATE_DIR": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state",
+      "DATA_ROOT": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data",
+      "AI_GAP_DATA_DIR": null,
+      "AI_GAP_DATA_DIR_env_var": "AI_GAP_DATA_DIR",
+      "read_at": "2026-07-23T08:15:25.624347",
+      "debug_dump_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_legacy_truth_debug.json"
+    },
+    "force_liquidate_pending": false,
+    "force_liquidate_done_date": null,
+    "session_date": "2026-07-23",
+    "real_confirm_ok": false,
+    "masked_account": "",
+    "continuation_reentry_enabled": false,
+    "opening_probe_enabled": false,
+    "opening_probe": {
+      "warmup_ready": false,
+      "warmup_reason": null,
+      "warmup_hist_last2": [],
+      "warmup_hist_deltas": [],
+      "day_open_price": null,
+      "window_active": false,
+      "window_abandoned": false,
+      "immediate_fired_today": false,
+      "immediate_direction": null,
+      "immediate_signal_id": null,
+      "immediate_at": null,
+      "awaiting_09_03_confirm": false,
+      "scaled_to_full": false,
+      "unconfirmed_exit_at": null,
+      "last_eval_at": null,
+      "last_eval_reason": null,
+      "last_eval_signal": null,
+      "price_samples_5s": [],
+      "confirm_checked": false
+    },
+    "updated_at": "2026-07-23T08:15:58.643379",
+    "git_sha": "8e16545"
+  }
+}

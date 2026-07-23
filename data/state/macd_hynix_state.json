@@ -1,7 +1,7 @@
 {
-  "auto_trade_on": false,
+  "auto_trade_on": true,
   "mode": "mock",
-  "budget": 10000000,
+  "budget": 1000000.0,
   "stopped": false,
   "stopped_reason": null,
   "display_direction": "HOLD",
@@ -15,7 +15,13 @@
   "pending_entry_kind": null,
   "pending_signal_source": null,
   "order_requested_at": null,
+  "kis_order_accepted_at": null,
   "broker_executed_at": null,
+  "position_confirmed_at": null,
+  "completed_3m_bar_at": null,
+  "order_latency": {},
+  "order_latency_last": null,
+  "order_latency_history": [],
   "last_order_at": null,
   "position": {
     "symbol": null,
@@ -44,28 +50,82 @@
   },
   "reentry": {
     "eligible": false,
-    "block_reason": null,
+    "block_reason": "REENTRY_DISABLED",
     "bars_since_tp": 0,
     "hist_contracted": false,
     "hist_last3": [],
-    "enabled": false
+    "enabled": false,
+    "episode_reentry_used": false
+  },
+  "profit_lock": {
+    "peak_net_return": 0.0,
+    "current_net_return": 0.0,
+    "giveback_pct": 0.0,
+    "profit_lock_active": false
   },
   "last_event": null,
   "prices": {
     "hynix": null,
-    "long": null,
+    "long": 15295.0,
     "inverse": null,
-    "updated_at": null
+    "updated_at": "2026-07-23T12:43:20.950866"
   },
   "macd": {
-    "macd": null,
-    "signal": null,
-    "hist": null,
-    "hist_last3": [],
-    "hist_deltas": [],
-    "reason": null
+    "macd": -2422.45652,
+    "signal": -2749.654988,
+    "hist": 327.198468,
+    "hist_last3": [
+      -878.454381,
+      -77.223953,
+      327.198468
+    ],
+    "hist_deltas": [
+      801.230428,
+      404.422421
+    ],
+    "reason": "HOLD_NO_PATTERN",
+    "bar_ts": "2026-07-23T12:39:00"
   },
-  "quote_errors": [],
+  "quote_errors": [
+    {
+      "api_function": "KisMockBroker.get_current_price",
+      "symbol": "000660",
+      "response_code": null,
+      "error_message": "non-positive price=0.0",
+      "retry_count": 2,
+      "slot": "hynix",
+      "exception_class": null,
+      "exception_repr": null,
+      "traceback": null,
+      "http_status": null,
+      "rt_cd": null,
+      "msg_cd": null,
+      "msg1": null,
+      "elapsed_sec": 2.608,
+      "timed_out": null,
+      "thread_name": "macd-hynix-worker",
+      "thread_id": 16672
+    },
+    {
+      "api_function": "KisMockBroker.get_current_price",
+      "symbol": "0197X0",
+      "response_code": null,
+      "error_message": "TIMEOUT:quote:0197X0:repr=TimeoutError():limit=0.4s",
+      "retry_count": 1,
+      "slot": "inverse",
+      "exception_class": "TimeoutError",
+      "exception_repr": "TIMEOUT:quote:0197X0:repr=TimeoutError():limit=0.4s",
+      "traceback": null,
+      "http_status": null,
+      "rt_cd": null,
+      "msg_cd": null,
+      "msg1": null,
+      "elapsed_sec": 0.446,
+      "timed_out": true,
+      "thread_name": "macd-hynix-worker",
+      "thread_id": 16672
+    }
+  ],
   "pipeline": {
     "Signal": {
       "ok": null,
@@ -103,37 +163,92 @@
       "message": ""
     }
   },
-  "order_block_reason": null,
-  "next_action": "대기",
+  "order_block_reason": "QUOTE_ERROR: 000660 via KisMockBroker.get_current_price: non-positive price=0.0 (code=None, retries=2, class=None)",
+  "next_action": "주문 보류(ORDER_DATA_INVALID)",
   "processed_signal_ids": [],
   "worker": {
     "alive": true,
-    "last_tick_at": "2026-07-23T07:56:16.079648",
-    "tick_intervals": [
-      5.013,
-      4.981,
-      5.008,
-      4.992,
-      5.003,
-      5.003,
-      5.0,
-      5.003,
-      4.998,
-      4.997
-    ],
-    "avg_interval": 4.999,
-    "p95_interval": 5.009,
+    "last_tick_at": "2026-07-23T12:44:09.018719",
+    "tick_n": 3,
+    "tick_seq": 3,
+    "tick_intervals": [],
+    "intervals_buf_len": 0,
+    "intervals_buf_cap": 40,
+    "avg_interval": null,
+    "p95_interval": null,
+    "main_cycle_3m_wait_count": 0,
+    "completed_3m_bar_at": null,
     "signal_detected_at": null,
     "order_requested_at": null,
-    "broker_executed_at": null
+    "kis_order_accepted_at": null,
+    "broker_executed_at": null,
+    "position_confirmed_at": null,
+    "stalled": false,
+    "stall_reason": null,
+    "last_error": "[WinError 5] 액세스가 거부되었습니다: 'C:\\\\Users\\\\FURSYS\\\\Desktop\\\\AI-GAP 2\\\\data\\\\state\\\\macd_hynix_state.tmp' -> 'C:\\\\Users\\\\FURSYS\\\\Desktop\\\\AI-GAP 2\\\\data\\\\state\\\\macd_hynix_state.json'",
+    "run_once_source_hash": "4c3c3e49f124"
   },
   "scheduler_alive": true,
-  "strategy_enabled": false,
+  "strategy_enabled": true,
   "market_data_active": false,
-  "signal_calculation_active": false,
+  "signal_calculation_active": true,
   "order_execution_enabled": false,
-  "primary_block_reason": "STRATEGY_OFF",
-  "legacy_truth_debug": {},
+  "bootstrap_status": "OK",
+  "quote_status": "FAILED",
+  "macd_status": "OK",
+  "order_status": "BLOCKED",
+  "quote_source": "SEQUENTIAL",
+  "primary_block_reason": "QUOTE_ERROR: 000660 via KisMockBroker.get_current_price: non-positive price=0.0 (code=None, retries=2, class=None)",
+  "legacy_truth_debug": {
+    "auto_trade_on": false,
+    "active_mode": "mock",
+    "truth_helper": "app.services.hynix_switch_state.load_state",
+    "enhanced_save_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\hynix_auto_state_mock.json",
+    "enhanced_save_mtime": "2026-07-23T08:22:16.465992",
+    "enhanced_common_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\hynix_strategy_profile_common.json",
+    "enhanced_common_mtime": "2026-07-23T08:19:44.717456",
+    "active_mode_pointer_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\hynix_auto_state_active_mode.json",
+    "mode_file_auto_trade_on": false,
+    "common_file_auto_trade_on": false,
+    "macd_read_helper": "app.trading.macd_hynix_order_manager.legacy_auto_trade_truth",
+    "macd_state_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_hynix_state.json",
+    "macd_mutex_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_hynix_mutex.json",
+    "STATE_DIR": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state",
+    "DATA_ROOT": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data",
+    "AI_GAP_DATA_DIR": null,
+    "AI_GAP_DATA_DIR_env_var": "AI_GAP_DATA_DIR",
+    "read_at": "2026-07-23T12:43:09.539763",
+    "debug_dump_path": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\state\\macd_legacy_truth_debug.json"
+  },
+  "last_macd_bars_ok": true,
+  "last_flag": "HOLD",
+  "current_flag": "HOLD",
+  "flag_events_today": [],
+  "signal_type": null,
+  "armed_at": null,
+  "duplicate_block_reason": null,
+  "last_new_signal": false,
+  "last_signal_eval": {
+    "bar_ts": "2026-07-23T12:39:00",
+    "bar_close_ts": "2026-07-23T12:42:00",
+    "hist_last3": [
+      -878.454381,
+      -77.223953,
+      327.198468
+    ],
+    "hist_deltas": [
+      801.230428,
+      404.422421
+    ],
+    "flag": "HOLD",
+    "new_signal": false,
+    "signal_id": null,
+    "reason": "HOLD_NO_PATTERN",
+    "at": "2026-07-23T12:43:16.943236"
+  },
+  "last_order_attempt_at": null,
+  "last_order_error": null,
+  "worker_code_sha": "563d79c",
   "force_liquidate_pending": false,
   "force_liquidate_done_date": null,
   "session_date": "2026-07-23",
@@ -142,10 +257,16 @@
   "continuation_reentry_enabled": false,
   "opening_probe_enabled": false,
   "opening_probe": {
-    "warmup_ready": false,
-    "warmup_reason": null,
-    "warmup_hist_last2": [],
-    "warmup_hist_deltas": [],
+    "warmup_ready": true,
+    "warmup_reason": "WARMUP_READY",
+    "warmup_hist_last2": [
+      -1451.361105,
+      -1460.345725
+    ],
+    "warmup_hist_deltas": [
+      412.889175,
+      -8.98462
+    ],
     "day_open_price": null,
     "window_active": false,
     "window_abandoned": false,
@@ -160,8 +281,259 @@
     "last_eval_reason": null,
     "last_eval_signal": null,
     "price_samples_5s": [],
-    "confirm_checked": false
+    "confirm_checked": false,
+    "warmup_hist_last3": [
+      -1864.25028,
+      -1451.361105,
+      -1460.345725
+    ]
   },
-  "updated_at": "2026-07-23T07:56:16.081283",
-  "git_sha": "e41fc53"
+  "updated_at": "2026-07-23T12:44:10.655897",
+  "git_sha": "563d79c",
+  "bootstrap": {
+    "ok": true,
+    "status": "OK",
+    "started_at": "2026-07-23T12:43:10.235872",
+    "session_date": "2026-07-23",
+    "kis_requests": 1,
+    "received_1m_bars": 360,
+    "completed_3m_count": 121,
+    "reason": null,
+    "elapsed_sec": 2.657,
+    "time_range": {
+      "first": "2026-07-22T09:18:00",
+      "last": "2026-07-23T10:03:00"
+    },
+    "finished_at": "2026-07-23T12:43:12.893134",
+    "prior": {
+      "api_name": "local_prior_1m",
+      "sources_tried": [
+        "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\naver_multi_1m\\000660_1m.csv",
+        "replay_20260722_hynix_1m.csv"
+      ],
+      "prior_days_scanned": [
+        "2026-07-22",
+        "2026-07-21",
+        "2026-07-20",
+        "2026-07-17",
+        "2026-07-16",
+        "2026-07-15",
+        "2026-07-14",
+        "2026-07-13"
+      ],
+      "received_1m_bars": 330,
+      "time_range": {
+        "first": "2026-07-22T09:18:00",
+        "last": "2026-07-22T14:47:00"
+      },
+      "failure_reason": null
+    },
+    "live": {
+      "api_name": "inquire-time-itemchartprice",
+      "kis_requests": 1,
+      "received_1m_bars": 30,
+      "failure_reason": null,
+      "cache_fallback": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\hynix_minute_1m.csv"
+    }
+  },
+  "tick_phases": {
+    "quotes_sec": 4.006,
+    "history_sec": 0.092,
+    "macd_eval_sec": 0.01,
+    "total_sec": 4.235
+  },
+  "opening_warmup_macd": {
+    "ok": true,
+    "macd": -20108.474485,
+    "signal": -18648.12876,
+    "hist": -1460.345725,
+    "hist_last2": [
+      -1451.361105,
+      -1460.345725
+    ],
+    "hist_last3": [
+      -1864.25028,
+      -1451.361105,
+      -1460.345725
+    ],
+    "hist_deltas": [
+      412.889175,
+      -8.98462
+    ],
+    "completed_3m_count": 100,
+    "completed_1m_count": 300,
+    "reason": "WARMUP_READY",
+    "diagnostics": {
+      "prior": {
+        "api_name": "local_prior_1m",
+        "sources_tried": [
+          "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\naver_multi_1m\\000660_1m.csv",
+          "replay_20260722_hynix_1m.csv"
+        ],
+        "prior_days_scanned": [
+          "2026-07-22",
+          "2026-07-21",
+          "2026-07-20",
+          "2026-07-17",
+          "2026-07-16",
+          "2026-07-15",
+          "2026-07-14",
+          "2026-07-13"
+        ],
+        "received_1m_bars": 330,
+        "time_range": {
+          "first": "2026-07-22T09:18:00",
+          "last": "2026-07-22T14:47:00"
+        },
+        "failure_reason": null
+      },
+      "live": {
+        "api_name": "inquire-time-itemchartprice",
+        "pages": [
+          {
+            "api_name": "inquire-time-itemchartprice",
+            "requested_1m_bars": 30,
+            "received_1m_bars": 0,
+            "hour1": "",
+            "time_range": {
+              "first": null,
+              "last": null
+            },
+            "failure_reason": null,
+            "page": 1
+          }
+        ],
+        "kis_requests": 1,
+        "received_1m_bars": 30,
+        "failure_reason": null,
+        "cache_fallback": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\hynix_minute_1m.csv"
+      },
+      "kis_requests": 1,
+      "received_1m_bars": 300,
+      "completed_3m_count": 100,
+      "time_range": {
+        "first": "2026-07-22T09:18:00",
+        "last": "2026-07-23T12:43:00"
+      },
+      "failure_reason": null,
+      "live_incremental": {
+        "api_name": "inquire-time-itemchartprice",
+        "requested_1m_bars": 30,
+        "received_1m_bars": 30,
+        "hour1": "",
+        "time_range": {
+          "first": "2026-07-23T12:14:00",
+          "last": "2026-07-23T12:43:00"
+        },
+        "failure_reason": null
+      },
+      "from_cache": true,
+      "incremental": true,
+      "bootstrap_ok": true,
+      "requested_1m_bars": 300,
+      "completed_1m_count": 300,
+      "last_bar_time": "2026-07-23T12:43:00",
+      "requested_3m_bars": 100,
+      "first_3m_bar_ts": "2026-07-22T09:48:00",
+      "last_3m_bar_ts": "2026-07-22T14:45:00",
+      "last_1m_bar_ts": "2026-07-22T14:47:00",
+      "resample_boundary": "3min floor; bar included when open+3m <= now"
+    }
+  },
+  "macd_warmup_diagnostics": {
+    "prior": {
+      "api_name": "local_prior_1m",
+      "sources_tried": [
+        "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\naver_multi_1m\\000660_1m.csv",
+        "replay_20260722_hynix_1m.csv"
+      ],
+      "prior_days_scanned": [
+        "2026-07-22",
+        "2026-07-21",
+        "2026-07-20",
+        "2026-07-17",
+        "2026-07-16",
+        "2026-07-15",
+        "2026-07-14",
+        "2026-07-13"
+      ],
+      "received_1m_bars": 330,
+      "time_range": {
+        "first": "2026-07-22T09:18:00",
+        "last": "2026-07-22T14:47:00"
+      },
+      "failure_reason": null
+    },
+    "live": {
+      "api_name": "inquire-time-itemchartprice",
+      "pages": [
+        {
+          "api_name": "inquire-time-itemchartprice",
+          "requested_1m_bars": 30,
+          "received_1m_bars": 0,
+          "hour1": "",
+          "time_range": {
+            "first": null,
+            "last": null
+          },
+          "failure_reason": null,
+          "page": 1
+        }
+      ],
+      "kis_requests": 1,
+      "received_1m_bars": 30,
+      "failure_reason": null,
+      "cache_fallback": "C:\\Users\\FURSYS\\Desktop\\AI-GAP 2\\data\\cache\\hynix_minute_1m.csv"
+    },
+    "kis_requests": 1,
+    "received_1m_bars": 300,
+    "completed_3m_count": 100,
+    "time_range": {
+      "first": "2026-07-22T09:18:00",
+      "last": "2026-07-23T12:43:00"
+    },
+    "failure_reason": null,
+    "live_incremental": {
+      "api_name": "inquire-time-itemchartprice",
+      "requested_1m_bars": 30,
+      "received_1m_bars": 30,
+      "hour1": "",
+      "time_range": {
+        "first": "2026-07-23T12:14:00",
+        "last": "2026-07-23T12:43:00"
+      },
+      "failure_reason": null
+    },
+    "from_cache": true,
+    "incremental": true,
+    "bootstrap_ok": true,
+    "requested_1m_bars": 300,
+    "completed_1m_count": 300,
+    "last_bar_time": "2026-07-23T12:43:00",
+    "requested_3m_bars": 100,
+    "first_3m_bar_ts": "2026-07-22T09:48:00",
+    "last_3m_bar_ts": "2026-07-22T14:45:00",
+    "last_1m_bar_ts": "2026-07-22T14:47:00",
+    "resample_boundary": "3min floor; bar included when open+3m <= now"
+  },
+  "completed_signal": {
+    "flag": "HOLD",
+    "signal_id": null,
+    "bar_ts": "2026-07-23T12:39:00",
+    "completed_bar_at": "2026-07-23T12:42:00",
+    "new_signal": false,
+    "reason": "HOLD_NO_PATTERN",
+    "hist_last3": [
+      -878.454381,
+      -77.223953,
+      327.198468
+    ],
+    "at": "2026-07-23T12:43:16.943236",
+    "worker_code_sha": "563d79c",
+    "run_once_source_hash": "4c3c3e49f124"
+  },
+  "module_digest": "85cae2b14a1b",
+  "stale_worker": false,
+  "stale_worker_reason": null,
+  "primary_error": "[WinError 5] 액세스가 거부되었습니다: 'C:\\\\Users\\\\FURSYS\\\\Desktop\\\\AI-GAP 2\\\\data\\\\state\\\\macd_hynix_state.tmp' -> 'C:\\\\Users\\\\FURSYS\\\\Desktop\\\\AI-GAP 2\\\\data\\\\state\\\\macd_hynix_state.json'"
 }

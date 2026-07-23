@@ -1,0 +1,9 @@
+{
+  "owner": "NONE",
+  "enabled": false,
+  "macd_auto_trade_on": false,
+  "mode": "mock",
+  "updated_at": "2026-07-23T12:43:20.981515",
+  "git_sha": "563d79c",
+  "reason": "test"
+}
