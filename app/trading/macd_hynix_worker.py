@@ -9,6 +9,7 @@ import hashlib
 import importlib
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
@@ -226,22 +227,39 @@ def reload_macd_trading_stack(*, reason: str = "manual") -> dict[str, Any]:
     return {"ok": True, "reason": reason, **ident}
 
 
+def _format_call_error(exc: BaseException, *, label: str, timed_out: bool = False) -> str:
+    """Never collapse empty str(e) — TimeoutError() has empty str."""
+    kind = "TIMEOUT" if timed_out or isinstance(exc, concurrent.futures.TimeoutError) else type(exc).__name__
+    return f"{kind}:{label}:repr={exc!r}"
+
+
 def _call_with_timeout(
     fn: Callable[[], _T],
     *,
     timeout_sec: float = KIS_CALL_TIMEOUT_SEC,
     label: str = "kis_call",
 ) -> tuple[Optional[_T], Optional[str]]:
-    """Run ``fn`` in the shared pool; on timeout/error return (None, reason)."""
+    """Run ``fn`` in the shared pool; on timeout/error return (None, reason).
+
+    If already on a ``macd-kis`` worker thread, call ``fn`` directly — nested
+    submit into the same pool deadlocks when bootstrap + parallel quotes fill
+    ``max_workers``.
+    """
+    if threading.current_thread().name.startswith("macd-kis"):
+        try:
+            return fn(), None
+        except Exception as exc:
+            logger.warning("[MACDHynix] %s failed (inline): %r", label, exc)
+            return None, _format_call_error(exc, label=label)
     try:
         fut = _kis_executor.submit(fn)
         return fut.result(timeout=timeout_sec), None
-    except concurrent.futures.TimeoutError:
-        logger.warning("[MACDHynix] %s timed out after %.1fs — skip", label, timeout_sec)
-        return None, f"TIMEOUT_{timeout_sec:.0f}s:{label}"
+    except concurrent.futures.TimeoutError as exc:
+        logger.warning("[MACDHynix] %s timed out after %.1fs — skip (%r)", label, timeout_sec, exc)
+        return None, _format_call_error(exc, label=label, timed_out=True) + f":limit={timeout_sec:.1f}s"
     except Exception as exc:
-        logger.warning("[MACDHynix] %s failed: %s", label, exc)
-        return None, f"{label}:{exc}"
+        logger.warning("[MACDHynix] %s failed: %r", label, exc)
+        return None, _format_call_error(exc, label=label)
 
 
 def _parse_tick_at(raw: Any) -> Optional[datetime]:
@@ -657,10 +675,23 @@ _HISTORY_CACHE: dict[str, Any] = {
     "diag": {},
 }
 _history_lock = threading.Lock()
-HOT_QUOTE_TIMEOUT_SEC = 3.0
+# Per-symbol quote budget (sequential path). Keep phase total ≤ QUOTE_PHASE_CAP_SEC.
+HOT_QUOTE_TIMEOUT_SEC = 2.0
+QUOTE_PHASE_CAP_SEC = 4.0
+# retries=2 → one attempt + one immediate retry (do not wait 10s for all symbols).
+QUOTE_ATTEMPTS = 2
+# requests.Session + token refresh are NOT thread-safe → parallel quotes OFF by default.
+ENABLE_PARALLEL_QUOTES = False
 HOT_MINUTE_TIMEOUT_SEC = 4.0
+HISTORY_PHASE_CAP_SEC = 1.0
+MACD_PHASE_CAP_SEC = 0.1
 KIS_PAGE_SIZE = 30
 KIS_MAX_PAGES = 12  # ≤360 bars if each page is full
+_QUOTE_SLOTS: tuple[tuple[str, str], ...] = (
+    ("hynix", SIGNAL_SYMBOL),
+    ("long", LONG_SYMBOL),
+    ("inverse", INVERSE_SYMBOL),
+)
 
 
 def _candles_to_df(candles: list, today: str) -> pd.DataFrame:
@@ -1143,97 +1174,220 @@ def _quote_from_local_cache(symbol: str, *, max_age_sec: float = 600.0) -> Optio
         return None
 
 
-def _quote_from_broker(
-    broker, symbol: str, *, retries: int = 1, timeout_sec: float = HOT_QUOTE_TIMEOUT_SEC
-) -> dict[str, Any]:
-    """Fetch one symbol quote; on failure try local cache, else concrete error fields.
+def _audit_exception(exc: BaseException, *, timed_out: bool = False, elapsed_sec: float = 0.0) -> dict[str, Any]:
+    """Full failure audit — never hide empty str(exception)."""
+    return {
+        "exception_class": type(exc).__name__,
+        "exception_repr": repr(exc),
+        "exception_str": str(exc),
+        "traceback": traceback.format_exc(),
+        "thread_name": threading.current_thread().name,
+        "thread_id": threading.get_ident(),
+        "timed_out": bool(timed_out or isinstance(exc, (concurrent.futures.TimeoutError, TimeoutError))),
+        "elapsed_sec": round(float(elapsed_sec), 3),
+        "http_status": getattr(exc, "http_status", None) or getattr(exc, "status_code", None),
+        "rt_cd": getattr(exc, "rt_cd", None),
+        "msg_cd": getattr(exc, "msg_cd", None),
+        "msg1": getattr(exc, "msg1", None),
+    }
 
-    Each broker/KIS call is bounded by ``timeout_sec`` so a hung socket
-    cannot block the 5s worker loop indefinitely.
+
+def _failed_quote(
+    symbol: str,
+    *,
+    api_function: str,
+    error_message: str,
+    response_code: Optional[str] = None,
+    retry_count: int = 0,
+    audit: Optional[dict[str, Any]] = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    # ETF codes like 0193T0 / 0197X0 must remain strings (never int-coerced).
+    sym = str(symbol)
+    msg = error_message or (audit or {}).get("exception_repr") or "quote unavailable"
+    out: dict[str, Any] = {
+        "ok": False,
+        "price": None,
+        "change_pct": None,
+        "bid": None,
+        "ask": None,
+        "updated_at": datetime.now().isoformat(),
+        "api_function": api_function,
+        "symbol": sym,
+        "response_code": response_code,
+        "error_message": msg,
+        "retry_count": int(retry_count or 0),
+        "source": extra.get("source") or api_function,
+        "stale_age_sec": None,
+        "rt_cd": (audit or {}).get("rt_cd") or response_code,
+    }
+    if audit:
+        out["audit"] = audit
+        out.setdefault("http_status", audit.get("http_status"))
+        out.setdefault("msg_cd", audit.get("msg_cd"))
+        out.setdefault("msg1", audit.get("msg1"))
+        out.setdefault("timed_out", audit.get("timed_out"))
+        out.setdefault("thread_name", audit.get("thread_name"))
+        out.setdefault("thread_id", audit.get("thread_id"))
+        out.setdefault("exception_class", audit.get("exception_class"))
+        out.setdefault("exception_repr", audit.get("exception_repr"))
+        out.setdefault("traceback", audit.get("traceback"))
+        out.setdefault("elapsed_sec", audit.get("elapsed_sec"))
+    out.update(extra)
+    return out
+
+
+def validate_quote_payload(
+    quote: Optional[dict[str, Any]],
+    *,
+    max_stale_sec: float = 30.0,
+) -> tuple[bool, str]:
+    """Unified quote validation: price>0, timestamp, stale age, rt_cd, source."""
+    if not quote:
+        return False, "QUOTE_BAD:missing"
+    sym = quote.get("symbol")
+    if sym is not None and not isinstance(sym, str):
+        return False, f"QUOTE_BAD:symbol_not_str:{type(sym).__name__}"
+    try:
+        px = float(quote.get("price") or 0)
+    except Exception:
+        return False, "QUOTE_BAD:price_parse"
+    if px <= 0:
+        return False, f"QUOTE_BAD:non_positive_price={px}"
+    updated = quote.get("updated_at") or quote.get("quote_timestamp")
+    stale_age: Optional[float] = None
+    if updated:
+        try:
+            stale_age = (datetime.now() - datetime.fromisoformat(str(updated))).total_seconds()
+            quote["stale_age_sec"] = round(stale_age, 3)
+            if stale_age > max_stale_sec:
+                return False, f"QUOTE_BAD:stale:{stale_age:.1f}s"
+        except Exception:
+            pass
+    rt = quote.get("rt_cd") or quote.get("response_code")
+    if rt not in (None, "", "0", 0, "00"):
+        # Non-success KIS codes block; missing rt_cd is allowed for broker scalar prices.
+        try:
+            if str(rt) not in ("0", "00") and float(rt) != 0:
+                return False, f"QUOTE_BAD:rt_cd={rt}"
+        except Exception:
+            if str(rt) not in ("0", "00"):
+                return False, f"QUOTE_BAD:rt_cd={rt}"
+    if not (quote.get("source") or quote.get("api_function") or quote.get("quote_source")):
+        return False, "QUOTE_BAD:missing_source"
+    if quote.get("ok") is False:
+        return False, f"QUOTE_BAD:{quote.get('error_message') or 'ok=false'}"
+    return True, "OK"
+
+
+def _parse_price_payload(raw: Any) -> tuple[Optional[float], Optional[float], Any, Any, Optional[str], Optional[str], dict[str, Any]]:
+    """Return price, change_pct, bid, ask, response_code, msg, kis_meta."""
+    meta: dict[str, Any] = {
+        "http_status": None,
+        "rt_cd": None,
+        "msg_cd": None,
+        "msg1": None,
+    }
+    if isinstance(raw, dict):
+        meta["http_status"] = raw.get("http_status") or raw.get("status_code")
+        meta["rt_cd"] = raw.get("rt_cd")
+        meta["msg_cd"] = raw.get("msg_cd")
+        meta["msg1"] = raw.get("msg1")
+        code = raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code")
+        response_code = str(code) if code not in (None, "") else None
+        price = float(raw.get("current_price") or raw.get("price") or 0)
+        change_pct = raw.get("change_rate") if raw.get("change_rate") is not None else raw.get("change_pct")
+        bid = raw.get("bid") or raw.get("bid_price")
+        ask = raw.get("ask") or raw.get("ask_price")
+        msg = raw.get("error") or raw.get("message") or raw.get("msg1")
+        return price, change_pct, bid, ask, response_code, str(msg) if msg else None, meta
+    if raw is not None:
+        return float(raw), None, None, None, None, None, meta
+    return None, None, None, None, None, None, meta
+
+
+def _quote_from_broker(
+    broker,
+    symbol: str,
+    *,
+    retries: int = QUOTE_ATTEMPTS,
+    timeout_sec: float = HOT_QUOTE_TIMEOUT_SEC,
+) -> dict[str, Any]:
+    """Fetch one symbol quote via proven single-quote path (bounded timeout + 1 retry).
+
+    Symbol is always kept as ``str`` (0193T0 / 0197X0 must not become ints).
     """
+    symbol = str(symbol)
     price = None
     change_pct = None
     bid = None
     ask = None
     last_error: Optional[str] = None
+    last_audit: Optional[dict[str, Any]] = None
     api_fn = "broker.get_current_price"
     response_code: Optional[str] = None
+    kis_meta: dict[str, Any] = {}
     attempts = 0
+    call_t0 = time.monotonic()
 
     for attempt in range(1, max(1, retries) + 1):
         attempts = attempt
-        if hasattr(broker, "get_current_price"):
+        # One API surface per attempt — never chain broker then kis (2×timeout).
+        use_kis = (not hasattr(broker, "get_current_price")) and hasattr(broker, "kis")
+        if hasattr(broker, "get_current_price") and not use_kis:
             api_fn = f"{type(broker).__name__}.get_current_price"
 
-            def _pull_broker():
-                return broker.get_current_price(symbol)
+            def _pull(_sym=symbol):
+                return broker.get_current_price(_sym)
 
-            raw, to_err = _call_with_timeout(
-                _pull_broker,
-                timeout_sec=timeout_sec,
-                label=f"quote:{symbol}",
-            )
-            if to_err:
-                last_error = to_err
-                price = None
-            else:
-                try:
-                    if isinstance(raw, dict):
-                        response_code = str(
-                            raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
-                        ) or None
-                        price = float(raw.get("current_price") or raw.get("price") or 0)
-                        change_pct = raw.get("change_pct")
-                        bid = raw.get("bid") or raw.get("bid_price")
-                        ask = raw.get("ask") or raw.get("ask_price")
-                        if raw.get("error") or raw.get("message"):
-                            last_error = str(raw.get("error") or raw.get("message"))
-                    elif raw is not None:
-                        price = float(raw)
-                    if price is not None and price > 0:
-                        break
-                    if price is not None and price <= 0:
-                        last_error = f"non-positive price={price}"
-                        price = None
-                except Exception as exc:
-                    last_error = str(exc)
-                    price = None
-
-        if (price is None or price <= 0) and hasattr(broker, "kis"):
+            label = f"quote:{symbol}"
+        elif hasattr(broker, "kis"):
             api_fn = "broker.kis.get_current_price"
 
-            def _pull_kis():
-                return broker.kis.get_current_price(symbol)
+            def _pull(_sym=symbol):
+                return broker.kis.get_current_price(_sym)
 
-            raw, to_err = _call_with_timeout(
-                _pull_kis,
-                timeout_sec=timeout_sec,
-                label=f"kis_quote:{symbol}",
-            )
-            if to_err:
-                last_error = to_err
-                price = None
-            else:
-                try:
-                    if isinstance(raw, dict):
-                        response_code = str(
-                            raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
-                        ) or None
-                        price = float(raw.get("current_price") or raw.get("price") or 0)
-                        change_pct = raw.get("change_rate") or raw.get("change_pct")
-                        if raw.get("msg1") or raw.get("message"):
-                            last_error = str(raw.get("msg1") or raw.get("message"))
-                    if price is not None and price > 0:
-                        break
-                    if price is not None and price <= 0:
-                        last_error = f"non-positive price={price}"
-                        price = None
-                except Exception as exc:
-                    last_error = str(exc)
+            label = f"kis_quote:{symbol}"
+        else:
+            last_error = "no get_current_price on broker"
+            break
+
+        raw, to_err = _call_with_timeout(_pull, timeout_sec=timeout_sec, label=label)
+        if to_err:
+            last_error = to_err
+            last_audit = {
+                "exception_class": "TimeoutError" if "TIMEOUT" in to_err else "CallError",
+                "exception_repr": to_err,
+                "exception_str": to_err,
+                "traceback": None,
+                "thread_name": threading.current_thread().name,
+                "thread_id": threading.get_ident(),
+                "timed_out": "TIMEOUT" in to_err,
+                "elapsed_sec": round(time.monotonic() - call_t0, 3),
+                "http_status": None,
+                "rt_cd": None,
+                "msg_cd": None,
+                "msg1": None,
+                "api_function": api_fn,
+            }
+            price = None
+        else:
+            try:
+                price, change_pct, bid, ask, response_code, msg, kis_meta = _parse_price_payload(raw)
+                if msg:
+                    last_error = msg
+                if price is not None and price > 0:
+                    break
+                if price is not None and price <= 0:
+                    last_error = f"non-positive price={price}"
                     price = None
+            except Exception as exc:
+                last_audit = _audit_exception(exc, elapsed_sec=time.monotonic() - call_t0)
+                last_error = last_audit["exception_repr"]
+                price = None
 
         # Timeouts will not clear by retrying immediately — fall through to cache.
-        if last_error and str(last_error).startswith("TIMEOUT_"):
+        if last_error and str(last_error).startswith("TIMEOUT"):
             break
         if attempt < retries:
             time.sleep(0.05)
@@ -1242,6 +1396,8 @@ def _quote_from_broker(
     if not ok:
         cached = _quote_from_local_cache(symbol)
         if cached:
+            cached["symbol"] = str(symbol)
+            cached["source"] = cached.get("api_function")
             return cached
 
     result = {
@@ -1250,50 +1406,50 @@ def _quote_from_broker(
         "bid": bid,
         "ask": ask,
         "updated_at": datetime.now().isoformat(),
+        "quote_timestamp": datetime.now().isoformat(),
         "ok": ok,
         "api_function": api_fn,
-        "symbol": symbol,
+        "symbol": str(symbol),
         "response_code": response_code,
+        "rt_cd": kis_meta.get("rt_cd") or response_code,
+        "msg_cd": kis_meta.get("msg_cd"),
+        "msg1": kis_meta.get("msg1"),
+        "http_status": kis_meta.get("http_status"),
         "error_message": None if ok else (last_error or "quote unavailable"),
         "retry_count": attempts,
+        "source": api_fn,
+        "elapsed_sec": round(time.monotonic() - call_t0, 3),
+        "thread_name": threading.current_thread().name,
+        "thread_id": threading.get_ident(),
     }
+    if not ok and last_audit:
+        result["audit"] = last_audit
+        result["exception_class"] = last_audit.get("exception_class")
+        result["exception_repr"] = last_audit.get("exception_repr")
+        result["traceback"] = last_audit.get("traceback")
+        result["timed_out"] = last_audit.get("timed_out")
+    if ok:
+        valid, reason = validate_quote_payload(result)
+        if not valid:
+            result["ok"] = False
+            result["error_message"] = reason
     return result
 
 
-def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
-    """Fetch 3 quotes in parallel with short timeouts (keep tick ≤5s)."""
-    phase_t0 = time.monotonic()
-    futs = {
-        "hynix": _kis_executor.submit(
-            lambda: _quote_from_broker(
-                broker, SIGNAL_SYMBOL, retries=1, timeout_sec=HOT_QUOTE_TIMEOUT_SEC
-            )
-        ),
-        "long": _kis_executor.submit(
-            lambda: _quote_from_broker(
-                broker, LONG_SYMBOL, retries=1, timeout_sec=HOT_QUOTE_TIMEOUT_SEC
-            )
-        ),
-        "inverse": _kis_executor.submit(
-            lambda: _quote_from_broker(
-                broker, INVERSE_SYMBOL, retries=1, timeout_sec=HOT_QUOTE_TIMEOUT_SEC
-            )
-        ),
-    }
-    quotes: dict[str, Any] = {}
-    for key, fut in futs.items():
-        try:
-            quotes[key] = fut.result(timeout=HOT_QUOTE_TIMEOUT_SEC + 0.5)
-        except Exception as exc:
-            quotes[key] = {
-                "ok": False,
-                "price": None,
-                "symbol": {"hynix": SIGNAL_SYMBOL, "long": LONG_SYMBOL, "inverse": INVERSE_SYMBOL}[key],
-                "api_function": "parallel_quote",
-                "error_message": str(exc),
-                "retry_count": 0,
-                "response_code": None,
-            }
+def _quotes_critical_failure(quotes: dict[str, Any]) -> bool:
+    hynix = quotes.get("hynix") or {}
+    long_q = quotes.get("long") or {}
+    inv_q = quotes.get("inverse") or {}
+    return (not hynix.get("ok")) or (not long_q.get("ok") and not inv_q.get("ok"))
+
+
+def _apply_quote_state(
+    state: dict[str, Any],
+    quotes: dict[str, Any],
+    *,
+    quote_source: str,
+    phase_t0: float,
+) -> None:
     hynix, long_q, inv_q = quotes["hynix"], quotes["long"], quotes["inverse"]
     state["prices"] = {
         "hynix": hynix.get("price"),
@@ -1301,6 +1457,7 @@ def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
         "inverse": inv_q.get("price"),
         "updated_at": datetime.now().isoformat(),
     }
+    state["quote_source"] = quote_source
     errors = []
     for key, q in quotes.items():
         if not q.get("ok"):
@@ -1311,19 +1468,168 @@ def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
                 "error_message": q.get("error_message"),
                 "retry_count": q.get("retry_count"),
                 "slot": key,
+                "exception_class": q.get("exception_class"),
+                "exception_repr": q.get("exception_repr"),
+                "traceback": q.get("traceback"),
+                "http_status": q.get("http_status"),
+                "rt_cd": q.get("rt_cd"),
+                "msg_cd": q.get("msg_cd"),
+                "msg1": q.get("msg1"),
+                "elapsed_sec": q.get("elapsed_sec"),
+                "timed_out": q.get("timed_out"),
+                "thread_name": q.get("thread_name"),
+                "thread_id": q.get("thread_id"),
             })
     state["quote_errors"] = errors
     phases = state.setdefault("tick_phases", {})
     phases["quotes_sec"] = round(time.monotonic() - phase_t0, 3)
-    critical = (not hynix.get("ok")) or (not long_q.get("ok") and not inv_q.get("ok"))
-    if critical and errors:
+    any_fail = any(not (quotes.get(k) or {}).get("ok") for k, _ in _QUOTE_SLOTS)
+    if any_fail and errors:
+        # Any final symbol failure → keep orders blocked.
         state["order_block_reason"] = (
             f"QUOTE_ERROR: {errors[0].get('symbol')} via {errors[0].get('api_function')}: "
             f"{errors[0].get('error_message')} (code={errors[0].get('response_code')}, "
-            f"retries={errors[0].get('retry_count')})"
+            f"retries={errors[0].get('retry_count')}, class={errors[0].get('exception_class')})"
         )
+        state["quote_status"] = "FAILED"
     elif str(state.get("order_block_reason") or "").startswith("QUOTE_ERROR:"):
         state["order_block_reason"] = None
+        state["quote_status"] = "OK"
+    else:
+        state["quote_status"] = "OK" if not errors else "PARTIAL"
+
+
+def _refresh_quotes_sequential(
+    broker,
+    state: dict[str, Any],
+    *,
+    source_label: str = "SEQUENTIAL",
+    phase_deadline: Optional[float] = None,
+) -> dict[str, Any]:
+    """Stable default: 000660 → 0193T0 → 0197X0 via single-quote function."""
+    phase_t0 = time.monotonic()
+    deadline = phase_deadline if phase_deadline is not None else (phase_t0 + QUOTE_PHASE_CAP_SEC)
+    quotes: dict[str, Any] = {}
+    for key, sym in _QUOTE_SLOTS:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.05:
+            quotes[key] = _failed_quote(
+                sym,
+                api_function="sequential_quote",
+                error_message=f"QUOTE_PHASE_CAP:{QUOTE_PHASE_CAP_SEC}s",
+                audit={
+                    "exception_class": "QuotePhaseCap",
+                    "exception_repr": f"QuotePhaseCap({QUOTE_PHASE_CAP_SEC})",
+                    "exception_str": "phase cap",
+                    "traceback": None,
+                    "thread_name": threading.current_thread().name,
+                    "thread_id": threading.get_ident(),
+                    "timed_out": True,
+                    "elapsed_sec": round(time.monotonic() - phase_t0, 3),
+                    "http_status": None,
+                    "rt_cd": None,
+                    "msg_cd": None,
+                    "msg1": None,
+                },
+                source=source_label,
+                quote_source=source_label,
+            )
+            continue
+        per_timeout = min(HOT_QUOTE_TIMEOUT_SEC, max(0.2, remaining))
+        q = _quote_from_broker(
+            broker, str(sym), retries=QUOTE_ATTEMPTS, timeout_sec=per_timeout
+        )
+        q["symbol"] = str(sym)
+        q["quote_source"] = source_label
+        q["source"] = q.get("source") or q.get("api_function") or source_label
+        ok, reason = validate_quote_payload(q)
+        if not ok:
+            q["ok"] = False
+            q["error_message"] = q.get("error_message") or reason
+        quotes[key] = q
+    _apply_quote_state(state, quotes, quote_source=source_label, phase_t0=phase_t0)
+    return quotes
+
+
+def _refresh_quotes_parallel(broker, state: dict[str, Any]) -> dict[str, Any]:
+    """Optional parallel path — only safe with independent sessions + token lock.
+
+    Default is OFF: shared ``requests.Session`` / token refresh are not thread-safe,
+    and nested ``_call_with_timeout`` into the same pool deadlocks with bootstrap.
+    """
+    phase_t0 = time.monotonic()
+    slot_map = dict(_QUOTE_SLOTS)
+    futs = {
+        key: _kis_executor.submit(
+            lambda s=sym: _quote_from_broker(
+                broker, str(s), retries=QUOTE_ATTEMPTS, timeout_sec=HOT_QUOTE_TIMEOUT_SEC
+            )
+        )
+        for key, sym in _QUOTE_SLOTS
+    }
+    quotes: dict[str, Any] = {}
+    # Bound total wait — never 3× sequential outer timeouts (was ~10.5s).
+    remaining_budget = QUOTE_PHASE_CAP_SEC
+    for key, fut in futs.items():
+        wait = max(0.05, min(HOT_QUOTE_TIMEOUT_SEC + 0.25, remaining_budget))
+        wait_t0 = time.monotonic()
+        try:
+            quotes[key] = fut.result(timeout=wait)
+            quotes[key]["quote_source"] = "PARALLEL"
+            quotes[key]["symbol"] = str(slot_map[key])
+        except Exception as exc:
+            timed_out = isinstance(exc, (concurrent.futures.TimeoutError, TimeoutError))
+            audit = _audit_exception(
+                exc, timed_out=timed_out, elapsed_sec=time.monotonic() - wait_t0
+            )
+            audit["api_function"] = "parallel_quote"
+            quotes[key] = _failed_quote(
+                slot_map[key],
+                api_function="parallel_quote",
+                error_message=audit["exception_repr"],
+                audit=audit,
+                source="PARALLEL",
+                quote_source="PARALLEL",
+            )
+        remaining_budget -= time.monotonic() - wait_t0
+    _apply_quote_state(state, quotes, quote_source="PARALLEL", phase_t0=phase_t0)
+    return quotes
+
+
+def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
+    """Fetch 000660 / 0193T0 / 0197X0. Default sequential; parallel only if enabled.
+
+    On parallel/primary critical failure → same-tick sequential fallback.
+    """
+    phase_t0 = time.monotonic()
+    deadline = phase_t0 + QUOTE_PHASE_CAP_SEC
+    prefer_parallel = bool(state.get("prefer_parallel_quotes") or ENABLE_PARALLEL_QUOTES)
+
+    if prefer_parallel:
+        quotes = _refresh_quotes_parallel(broker, state)
+        if _quotes_critical_failure(quotes) or state.get("quote_errors"):
+            # Same-tick sequential fallback (proven single-quote path).
+            quotes = _refresh_quotes_sequential(
+                broker,
+                state,
+                source_label="SEQUENTIAL_FALLBACK",
+                phase_deadline=deadline,
+            )
+    else:
+        quotes = _refresh_quotes_sequential(
+            broker, state, source_label="SEQUENTIAL", phase_deadline=deadline
+        )
+        if _quotes_critical_failure(quotes) and (time.monotonic() < deadline - 0.2):
+            quotes = _refresh_quotes_sequential(
+                broker,
+                state,
+                source_label="SEQUENTIAL_FALLBACK",
+                phase_deadline=deadline,
+            )
+
+    # Guarantee phase timer reflects wall time even after fallback.
+    phases = state.setdefault("tick_phases", {})
+    phases["quotes_sec"] = round(time.monotonic() - phase_t0, 3)
     return quotes
 
 
@@ -1433,10 +1739,12 @@ def run_once(
     try:
         tick_t0 = time.monotonic()
         state["tick_phases"] = {}
+        prev_macd = dict(state.get("macd") or {})
         quotes = _refresh_quotes(broker, state)
 
         # Always compute MACD/direction for UI display (even outside session).
         # Orders remain gated by session / allow_new_switch below.
+        # Quote blips must NOT clear a good MACD cache — only block orders.
         session_date = now.strftime("%Y-%m-%d")
         load_diag: dict[str, Any] = {}
         hist_t0 = time.monotonic()
@@ -1444,18 +1752,27 @@ def run_once(
             # Hot path: cache + one incremental page (bootstrap is off-path on Start).
             df_1m, load_diag = load_macd_minute_history(mode, count=30, now=now)
         state["tick_phases"]["history_sec"] = round(time.monotonic() - hist_t0, 3)
+        if state["tick_phases"]["history_sec"] > HISTORY_PHASE_CAP_SEC:
+            logger.warning(
+                "[MACDHynix] history phase slow %.3fs > %.1fs",
+                state["tick_phases"]["history_sec"],
+                HISTORY_PHASE_CAP_SEC,
+            )
         warm = _ensure_macd_warmup(state, df_1m, now, load_diag=load_diag)
         boot = state.get("bootstrap") or {}
+        state["bootstrap_status"] = boot.get("status")
         warmup_ready = bool((state.get("opening_probe") or {}).get("warmup_ready") or boot.get("ok"))
         boot_status = str(boot.get("status") or "")
-        # Gate only when Start-bootstrap is in-flight or failed short — not on unit tests
-        # that inject df_1m without a bootstrap record.
+        # Bootstrap status is independent of quote_status. Gate orders on bootstrap
+        # only while Start-bootstrap is in-flight/failed — never leave RUNNING due
+        # to quote failures (quotes set quote_status / QUOTE_ERROR separately).
         if boot_status == "RUNNING" or (
             boot_status in ("FAILED", "SHORT") and not warmup_ready
         ):
-            state["order_block_reason"] = state.get("order_block_reason") or (
-                f"WARMUP_BOOTSTRAP:{boot.get('reason') or warm.get('reason') or boot_status}"
-            )
+            if not str(state.get("order_block_reason") or "").startswith("QUOTE_ERROR:"):
+                state["order_block_reason"] = state.get("order_block_reason") or (
+                    f"WARMUP_BOOTSTRAP:{boot.get('reason') or warm.get('reason') or boot_status}"
+                )
         elif str(state.get("order_block_reason") or "").startswith("WARMUP_BOOTSTRAP:") and warmup_ready:
             state["order_block_reason"] = None
 
@@ -1478,6 +1795,12 @@ def run_once(
             "reason": eval_res.get("reason"),
             "bar_ts": eval_res.get("bar_ts"),
         }
+        # Preserve prior MACD numbers across a quote-only blip.
+        if state.get("quote_errors") and state["macd"].get("macd") is None and prev_macd.get("macd") is not None:
+            for k in ("macd", "signal", "hist", "hist_last3", "hist_deltas"):
+                if prev_macd.get(k) is not None:
+                    state["macd"][k] = prev_macd.get(k)
+            state["macd"]["reason"] = state["macd"].get("reason") or prev_macd.get("reason") or "QUOTE_BLIP_MACD_CACHE"
         # If evaluate still warm-up-starved, surface rich diagnostics (not bare WARMUP_LT_26).
         if not eval_res.get("ok"):
             diag = state.get("macd_warmup_diagnostics") or load_diag or {}

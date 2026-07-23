@@ -241,6 +241,12 @@ s3.metric("market_data_active", "YES" if state.get("market_data_active") else "N
 s4.metric("signal_calculation_active", "YES" if state.get("signal_calculation_active") else "NO")
 s5.metric("order_execution_enabled", "YES" if state.get("order_execution_enabled") else "NO")
 s6.metric("primary_block_reason", str(state.get("primary_block_reason") or "-")[:40])
+_st2 = st.columns(5)
+_st2[0].metric("bootstrap_status", str(state.get("bootstrap_status") or (state.get("bootstrap") or {}).get("status") or "-"))
+_st2[1].metric("quote_status", str(state.get("quote_status") or "-"))
+_st2[2].metric("macd_status", str(state.get("macd_status") or "-")[:24])
+_st2[3].metric("order_status", str(state.get("order_status") or "-"))
+_st2[4].metric("quote_source", str(state.get("quote_source") or "-")[:20])
 if state.get("auto_trade_on"):
     st.caption("전략 실행 중 (strategy_enabled=YES). Worker alive만으로는 자동매매 실행으로 표시하지 않습니다.")
 else:

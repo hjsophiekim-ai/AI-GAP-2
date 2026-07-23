@@ -223,6 +223,11 @@ def default_state() -> dict[str, Any]:
         "market_data_active": False,
         "signal_calculation_active": False,
         "order_execution_enabled": False,
+        "bootstrap_status": None,
+        "quote_status": None,
+        "macd_status": None,
+        "order_status": None,
+        "quote_source": None,
         "primary_block_reason": None,
         "legacy_truth_debug": {},
         "last_macd_bars_ok": False,
@@ -695,11 +700,28 @@ def refresh_runtime_status(state: dict[str, Any], *, worker_alive: Optional[bool
     elif not signal_ok:
         primary = str((macd.get("reason") if isinstance(macd, dict) else None) or "SIGNAL_INACTIVE")
 
+    boot = state.get("bootstrap") or {}
+    boot_status = str(boot.get("status") or state.get("bootstrap_status") or "")
+    quote_status = str(state.get("quote_status") or ("OK" if market_ok else "FAILED"))
+    if state.get("quote_errors") and not market_ok:
+        quote_status = "FAILED"
+    elif state.get("quote_errors") and market_ok:
+        quote_status = "PARTIAL"
+    macd_status = "OK" if signal_ok else str(
+        (macd.get("reason") if isinstance(macd, dict) else None) or "SIGNAL_INACTIVE"
+    )
+    order_enabled = bool(order_ok and market_ok)
+    order_status = "ENABLED" if order_enabled else "BLOCKED"
+
     state["scheduler_alive"] = alive
     state["strategy_enabled"] = strategy_on
     state["market_data_active"] = market_ok
     state["signal_calculation_active"] = signal_ok
-    state["order_execution_enabled"] = order_ok and market_ok
+    state["order_execution_enabled"] = order_enabled
+    state["bootstrap_status"] = boot_status or None
+    state["quote_status"] = quote_status
+    state["macd_status"] = macd_status
+    state["order_status"] = order_status
     state["primary_block_reason"] = primary
     return state
 

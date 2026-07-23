@@ -173,8 +173,11 @@ class KISClient:
         self.base_url = BASE_URL_MOCK if mode == "mock" else BASE_URL_REAL
         self._token: str = ""
         self._token_expires_at: datetime = datetime.min
+        # requests.Session is NOT thread-safe — callers must not share one session
+        # across concurrent quote threads without per-thread sessions.
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json; charset=utf-8"})
+        self._token_lock = threading.Lock()
 
     # ── 레이트리밋 적용 HTTP 요청(EGW00201 대응) ────────────────────────────
     def _get(self, url: str, **kwargs):
@@ -327,90 +330,95 @@ class KISClient:
         액세스 토큰 발급/갱신.
         1) 메모리 캐시 (5분 버퍼) → 2) 파일 캐시 → 3) tokenP API 호출.
         비-200 또는 access_token 누락 시 KISTokenError(속성 포함) 발생.
+
+        Token refresh is serialized via ``_token_lock`` so parallel callers
+        (if any) cannot race invalidate/re-issue.
         """
         now = datetime.now()
-        # 1. 메모리 캐시
+        # Fast path without lock when memory token is still fresh.
         if self._token and now < self._token_expires_at - timedelta(minutes=5):
             return self._token
-        # 2. 파일 캐시
-        if self._load_token_cache():
-            return self._token
-        # 3. API 호출
-        url = f"{self.base_url}/oauth2/tokenP"
-        body = {
-            "grant_type": "client_credentials",
-            "appkey": self._app_key,
-            "appsecret": self._app_secret,
-        }
-        try:
-            resp = self._post(url, json=body, timeout=(3, 10))
-            http_status = resp.status_code
-
-            # raise_for_status() 전에 KIS 응답 body 파싱 (403/500 원인 확인용)
+        with self._token_lock:
+            now = datetime.now()
+            if self._token and now < self._token_expires_at - timedelta(minutes=5):
+                return self._token
+            if self._load_token_cache():
+                return self._token
+            url = f"{self.base_url}/oauth2/tokenP"
+            body = {
+                "grant_type": "client_credentials",
+                "appkey": self._app_key,
+                "appsecret": self._app_secret,
+            }
             try:
-                resp_data = resp.json()
-            except Exception:
-                resp_data = {}
-            rt_cd = resp_data.get("rt_cd", "")
-            msg_cd = resp_data.get("msg_cd", "")
-            msg1 = resp_data.get("msg1", resp_data.get("error_description", ""))
+                resp = self._post(url, json=body, timeout=(3, 10))
+                http_status = resp.status_code
 
-            if http_status == 403:
-                if self._load_token_cache():
-                    logger.warning(
-                        f"[KIS-{self.mode.upper()}] tokenP 403; using valid file token cache"
+                # raise_for_status() 전에 KIS 응답 body 파싱 (403/500 원인 확인용)
+                try:
+                    resp_data = resp.json()
+                except Exception:
+                    resp_data = {}
+                rt_cd = resp_data.get("rt_cd", "")
+                msg_cd = resp_data.get("msg_cd", "")
+                msg1 = resp_data.get("msg1", resp_data.get("error_description", ""))
+
+                if http_status == 403:
+                    if self._load_token_cache():
+                        logger.warning(
+                            f"[KIS-{self.mode.upper()}] tokenP 403; using valid file token cache"
+                        )
+                        return self._token
+                    key_exists = bool(self._app_key and self._app_secret)
+                    cache_exists = self._token_cache_path().exists()
+                    raise KISTokenError(
+                        f"[KIS-{self.mode.upper()}] tokenP 403 오류 | "
+                        f"mode={self.mode} base_url={self.base_url} "
+                        f"key_exists={key_exists} cache_exists={cache_exists} | "
+                        f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}",
+                        http_status=403,
+                        rt_cd=rt_cd,
+                        msg_cd=msg_cd,
+                        msg1=msg1,
+                        base_url_used=self.base_url,
                     )
-                    return self._token
-                key_exists = bool(self._app_key and self._app_secret)
-                cache_exists = self._token_cache_path().exists()
-                raise KISTokenError(
-                    f"[KIS-{self.mode.upper()}] tokenP 403 오류 | "
-                    f"mode={self.mode} base_url={self.base_url} "
-                    f"key_exists={key_exists} cache_exists={cache_exists} | "
-                    f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}",
-                    http_status=403,
-                    rt_cd=rt_cd,
-                    msg_cd=msg_cd,
-                    msg1=msg1,
-                    base_url_used=self.base_url,
-                )
-            if not resp.ok:
-                raise KISTokenError(
-                    f"[KIS-{self.mode.upper()}] tokenP HTTP {http_status} 오류 | "
-                    f"base_url={self.base_url} | "
-                    f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}",
-                    http_status=http_status,
-                    rt_cd=rt_cd,
-                    msg_cd=msg_cd,
-                    msg1=msg1,
-                    base_url_used=self.base_url,
-                )
+                if not resp.ok:
+                    raise KISTokenError(
+                        f"[KIS-{self.mode.upper()}] tokenP HTTP {http_status} 오류 | "
+                        f"base_url={self.base_url} | "
+                        f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}",
+                        http_status=http_status,
+                        rt_cd=rt_cd,
+                        msg_cd=msg_cd,
+                        msg1=msg1,
+                        base_url_used=self.base_url,
+                    )
 
-            token = resp_data.get("access_token", "")
-            if not token:
-                raise KISTokenError(
-                    f"[KIS-{self.mode.upper()}] tokenP 200이나 access_token 없음 | "
-                    f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}",
-                    http_status=http_status,
-                    rt_cd=rt_cd,
-                    msg_cd=msg_cd,
-                    msg1=msg1,
-                    base_url_used=self.base_url,
-                )
+                token = resp_data.get("access_token", "")
+                if not token:
+                    raise KISTokenError(
+                        f"[KIS-{self.mode.upper()}] tokenP 200이나 access_token 없음 | "
+                        f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}",
+                        http_status=http_status,
+                        rt_cd=rt_cd,
+                        msg_cd=msg_cd,
+                        msg1=msg1,
+                        base_url_used=self.base_url,
+                    )
 
-            self._token = token
-            expires_in = int(resp_data.get("expires_in", 86400))
-            self._token_expires_at = now + timedelta(seconds=expires_in)
-            self._save_token_cache()
-            logger.info(
-                f"[KIS-{self.mode.upper()}] 토큰 발급 완료 (만료: {self._token_expires_at:%H:%M:%S})"
-            )
-            return self._token
-        except KISTokenError:
-            raise
-        except Exception as e:
-            logger.error(f"[KIS-{self.mode.upper()}] 토큰 발급 실패: {e}")
-            raise
+                self._token = token
+                expires_in = int(resp_data.get("expires_in", 86400))
+                self._token_expires_at = now + timedelta(seconds=expires_in)
+                self._save_token_cache()
+                logger.info(
+                    f"[KIS-{self.mode.upper()}] 토큰 발급 완료 (만료: {self._token_expires_at:%H:%M:%S})"
+                )
+                return self._token
+            except KISTokenError:
+                raise
+            except Exception as e:
+                logger.error(f"[KIS-{self.mode.upper()}] 토큰 발급 실패: {e}")
+                raise
 
     def ensure_token(self) -> str:
         """get_access_token() 인터페이스 호환 alias — diagnose/test 스크립트용."""
@@ -450,14 +458,15 @@ class KISClient:
         )
 
     def _invalidate_token(self) -> None:
-        self._token = ""
-        self._token_expires_at = datetime.min
-        try:
-            path = self._token_cache_path()
-            if path.exists():
-                path.unlink()
-        except Exception as e:
-            logger.debug(f"[KIS-{self.mode.upper()}] 토큰 캐시 파일 삭제 실패(무해): {e}")
+        with self._token_lock:
+            self._token = ""
+            self._token_expires_at = datetime.min
+            try:
+                path = self._token_cache_path()
+                if path.exists():
+                    path.unlink()
+            except Exception as e:
+                logger.debug(f"[KIS-{self.mode.upper()}] 토큰 캐시 파일 삭제 실패(무해): {e}")
 
     def _request_with_token_retry(self, method: str, url: str, tr_id: str, **kwargs):
         """공통 GET/POST 요청 + 서버측 토큰 만료 감지 시 재발급 후 1회 재시도."""
@@ -498,17 +507,49 @@ class KISClient:
     # ── 현재가 조회 ────────────────────────────────────────────────────────
 
     def get_current_price(self, symbol: str) -> dict | None:
-        """국내주식 현재가 조회. 실패 시 None 반환."""
+        """국내주식 현재가 조회. 실패 시 None 반환.
+
+        ``symbol`` must remain a string (ETF codes like 0193T0 / 0197X0).
+        Short HTTP timeout so worker quote phase stays ≤4s.
+        """
+        symbol = str(symbol)
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
         headers = self._auth_headers(TR_CURRENT_PRICE)
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
-            resp.raise_for_status()
-            d = resp.json().get("output", {})
+            resp = self._get(url, headers=headers, params=params, timeout=(1.5, 2.0))
+            http_status = resp.status_code
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+            rt_cd = body.get("rt_cd", "")
+            msg_cd = body.get("msg_cd", "")
+            msg1 = body.get("msg1", "")
+            if not resp.ok:
+                logger.warning(
+                    f"[KIS] 현재가 HTTP {http_status} {symbol}: "
+                    f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}"
+                )
+                return {
+                    "current_price": 0,
+                    "rt_cd": rt_cd,
+                    "msg_cd": msg_cd,
+                    "msg1": msg1,
+                    "http_status": http_status,
+                    "error": msg1 or f"HTTP {http_status}",
+                }
+            d = body.get("output", {}) or {}
             if not d:
-                logger.warning(f"[KIS] 현재가 응답 없음: {symbol}")
-                return None
+                logger.warning(f"[KIS] 현재가 응답 없음: {symbol} rt_cd={rt_cd!r}")
+                return {
+                    "current_price": 0,
+                    "rt_cd": rt_cd,
+                    "msg_cd": msg_cd,
+                    "msg1": msg1 or "empty output",
+                    "http_status": http_status,
+                    "error": msg1 or "empty output",
+                }
             return {
                 "current_price": float(d.get("stck_prpr", 0)),
                 "open": float(d.get("stck_oprc", 0)),
@@ -521,9 +562,13 @@ class KISClient:
                 # 종목명(한글) — inquire-price 응답에 포함되어 별도 API 호출 없이
                 # 종목코드 검증(현재가+종목명 일치 확인)에 사용할 수 있다.
                 "name": d.get("hts_kor_isnm", ""),
+                "rt_cd": rt_cd or "0",
+                "msg_cd": msg_cd,
+                "msg1": msg1,
+                "http_status": http_status,
             }
         except Exception as e:
-            logger.warning(f"[KIS] 현재가 조회 실패 {symbol}: {e}")
+            logger.warning(f"[KIS] 현재가 조회 실패 {symbol}: {e!r}")
             return None
 
     # ── 잔고 조회 ──────────────────────────────────────────────────────────

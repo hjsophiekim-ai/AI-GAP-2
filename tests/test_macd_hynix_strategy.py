@@ -2303,3 +2303,207 @@ def test_tick_seq_not_capped_by_interval_buffer_logic():
         intervals = intervals[-worker.INTERVAL_HISTORY_MAX :]
     assert tick_seq == 80
     assert len(intervals) == worker.INTERVAL_HISTORY_MAX
+
+
+def test_parallel_exception_uses_sequential_fallback(monkeypatch):
+    """Parallel client exception → same-tick SEQUENTIAL_FALLBACK succeeds."""
+    broker = FakeBroker()
+    state = om.default_state()
+    state["prefer_parallel_quotes"] = True
+    monkeypatch.setattr(worker, "_quote_from_local_cache", lambda *a, **k: None)
+
+    def _boom_parallel(broker_, state_):
+        phase_t0 = __import__("time").monotonic()
+        bad = {}
+        for key, sym in worker._QUOTE_SLOTS:
+            bad[key] = worker._failed_quote(
+                sym,
+                api_function="parallel_quote",
+                error_message="TimeoutError()",
+                audit={
+                    "exception_class": "TimeoutError",
+                    "exception_repr": "TimeoutError()",
+                    "exception_str": "",
+                    "traceback": "traceback...",
+                    "thread_name": "macd-kis-0",
+                    "thread_id": 1,
+                    "timed_out": True,
+                    "elapsed_sec": 3.5,
+                    "http_status": None,
+                    "rt_cd": None,
+                    "msg_cd": None,
+                    "msg1": None,
+                },
+                source="PARALLEL",
+            )
+        worker._apply_quote_state(state_, bad, quote_source="PARALLEL", phase_t0=phase_t0)
+        return bad
+
+    monkeypatch.setattr(worker, "_refresh_quotes_parallel", _boom_parallel)
+    quotes = worker._refresh_quotes(broker, state)
+    assert state.get("quote_source") == "SEQUENTIAL_FALLBACK"
+    assert quotes["hynix"]["ok"] and quotes["long"]["ok"] and quotes["inverse"]["ok"]
+    assert isinstance(quotes["long"]["symbol"], str) and quotes["long"]["symbol"] == LONG_SYMBOL
+    assert isinstance(quotes["inverse"]["symbol"], str) and quotes["inverse"]["symbol"] == INVERSE_SYMBOL
+    assert state.get("quote_status") == "OK"
+    assert not str(state.get("order_block_reason") or "").startswith("QUOTE_ERROR:")
+    om.refresh_runtime_status(state, worker_alive=True)
+    assert state.get("market_data_active") is True
+    assert state.get("order_execution_enabled") is False  # auto_trade_off in default
+    state["auto_trade_on"] = True
+    om.refresh_runtime_status(state, worker_alive=True)
+    assert state.get("order_execution_enabled") is True
+
+
+def test_sequential_quotes_all_three_symbols_ok():
+    broker = FakeBroker()
+    state = om.default_state()
+    quotes = worker._refresh_quotes(broker, state)
+    assert state.get("quote_source") in ("SEQUENTIAL", "SEQUENTIAL_FALLBACK")
+    for key, sym in (("hynix", "000660"), ("long", LONG_SYMBOL), ("inverse", INVERSE_SYMBOL)):
+        assert quotes[key]["ok"] is True
+        assert quotes[key]["price"] > 0
+        assert quotes[key]["symbol"] == sym
+        assert isinstance(quotes[key]["symbol"], str)
+    assert (state.get("tick_phases") or {}).get("quotes_sec", 99) <= worker.QUOTE_PHASE_CAP_SEC + 0.5
+
+
+def test_any_symbol_quote_fail_blocks_orders(monkeypatch):
+    broker = FakeBroker()
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    monkeypatch.setattr(worker, "_quote_from_local_cache", lambda *a, **k: None)
+
+    def boom(symbol):
+        if symbol == INVERSE_SYMBOL:
+            raise RuntimeError("KIS fail inverse")
+        return broker.prices.get(symbol)
+
+    broker.get_current_price = boom  # type: ignore
+    quotes = worker._refresh_quotes(broker, state)
+    assert quotes["inverse"]["ok"] is False
+    assert "QUOTE_ERROR" in str(state.get("order_block_reason") or "")
+    assert state.get("quote_status") == "FAILED"
+    err = state["quote_errors"][0]
+    assert err.get("exception_repr") or err.get("error_message")
+    om.refresh_runtime_status(state, worker_alive=True)
+    assert state.get("order_execution_enabled") is False
+
+
+def test_quote_fail_blocks_then_recover_allows_signal_order(monkeypatch):
+    """quote fail → 0 orders; quote recover → next valid UP_RED orders 0193T0."""
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 2_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    state["bootstrap"] = {"ok": True, "status": "OK"}
+    state["opening_probe"] = {"warmup_ready": True}
+    monkeypatch.setattr(worker, "in_trading_session", lambda *a, **k: True)
+    monkeypatch.setattr(worker, "allow_new_switch", lambda *a, **k: True)
+    monkeypatch.setattr(worker, "_quote_from_local_cache", lambda *a, **k: None)
+
+    fail = {"on": True}
+
+    def flaky(symbol):
+        if fail["on"]:
+            raise RuntimeError(f"KIS down {symbol}")
+        return broker.prices.get(symbol)
+
+    broker.get_current_price = flaky  # type: ignore
+    sid = "MACD3M:UP_RED:2026-07-23T09:03:00"
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 100,
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": sid,
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        worker.run_once(
+            broker=broker, now=datetime(2026, 7, 23, 9, 6, 5), df_1m=df, state=state
+        )
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) == 0
+        block = str(state.get("order_block_reason") or state.get("primary_block_reason") or "")
+        assert "QUOTE_ERROR" in block or "ORDER_DATA_INVALID" in block or state.get("quote_status") == "FAILED"
+        assert state.get("order_execution_enabled") is False or not state.get("market_data_active")
+
+        fail["on"] = False
+        state["pending_signal_id"] = None
+        state["pending_signal_direction"] = None
+        state["last_signal_id"] = None
+        fake_eval["signal_id"] = "MACD3M:UP_RED:2026-07-23T09:06:00"
+        fake_eval["bar_ts"] = "2026-07-23T09:06:00"
+        fake_eval["bar_close_ts"] = "2026-07-23T09:09:00"
+        worker.run_once(
+            broker=broker, now=datetime(2026, 7, 23, 9, 9, 5), df_1m=df, state=state
+        )
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) >= 1
+        assert state.get("quote_source") in ("SEQUENTIAL", "SEQUENTIAL_FALLBACK")
+        assert state.get("market_data_active") is True
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_mock_up_red_orders_long_down_blue_orders_inverse():
+    broker = FakeBroker()
+    state = om.default_state()
+    quotes = {
+        "long": {"price": 10000.0, "updated_at": datetime.now().isoformat(), "ok": True},
+        "inverse": {"price": 10000.0, "updated_at": datetime.now().isoformat(), "ok": True},
+    }
+    r_up = om.switch_to_direction(
+        broker, DIR_UP, mode="mock", budget=2_000_000, quotes=quotes,
+        signal_id="SIG-UP-QUOTE", state=state,
+    )
+    assert r_up["success"]
+    assert LONG_SYMBOL in broker.positions
+    r_dn = om.switch_to_direction(
+        broker, DIR_DOWN, mode="mock", budget=2_000_000, quotes=quotes,
+        signal_id="SIG-DN-QUOTE", state=state,
+    )
+    assert r_dn["success"]
+    assert INVERSE_SYMBOL in broker.positions
+    assert LONG_SYMBOL not in broker.positions
+
+
+def test_quote_audit_never_empty_on_timeout(monkeypatch):
+    broker = FakeBroker()
+    state = om.default_state()
+    state["prefer_parallel_quotes"] = True
+    monkeypatch.setattr(worker, "_quote_from_local_cache", lambda *a, **k: None)
+
+    class _Hang:
+        def result(self, timeout=None):
+            raise TimeoutError()
+
+    monkeypatch.setattr(
+        worker,
+        "_kis_executor",
+        type("E", (), {"submit": staticmethod(lambda fn: _Hang())})(),
+    )
+    # Force parallel path only (no fallback) to inspect audit fields
+    quotes = worker._refresh_quotes_parallel(broker, state)
+    for q in quotes.values():
+        assert q["ok"] is False
+        assert q.get("exception_repr")
+        assert q.get("error_message")  # must not be empty string alone
+        assert q["error_message"] != "" or q.get("exception_repr") == "TimeoutError()"
+        assert q.get("timed_out") is True
+        assert q.get("api_function") == "parallel_quote"
