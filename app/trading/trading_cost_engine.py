@@ -64,6 +64,12 @@ class TradeCostEngine:
             return self._cfg["etf_buy_fee_rate"] if etf else self._cfg["domestic_buy_fee_rate"]
         return self._cfg["etf_sell_fee_rate"] if etf else self._cfg["domestic_sell_fee_rate"]
 
+    def fee_rate(self, symbol: str, side: str) -> float:
+        """Public accessor for the configured fee rate (config.yaml trading_cost) —
+        e.g. for order-sizing code that needs the real fee rate without duplicating
+        the ETF/domestic branching here."""
+        return self._fee_rate(symbol, side)
+
     def _tax_rate(self, symbol: str, side: str) -> float:
         if side != "SELL":
             return 0.0  # 거래세는 매도 시에만 부과된다.

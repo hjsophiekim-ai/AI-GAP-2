@@ -581,7 +581,7 @@ def run_duplicate_proofs() -> dict[str, Any]:
 
 
 def check_ui_fields() -> dict[str, Any]:
-    ui = (ROOT / "app" / "ui" / "pages" / "10_MACD_하이닉스_자동매매.py").read_text(encoding="utf-8")
+    ui = (ROOT / "app" / "ui" / "pages_disabled" / "10_MACD_하이닉스_자동매매.py").read_text(encoding="utf-8")
     required = [
         "current_flag",
         "signal_type",

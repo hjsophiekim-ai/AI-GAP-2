@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
+from app.trading import strategy_ownership
 from app.trading.macd2 import config, service as service_module, state_store
 from app.trading.macd2.models import RuntimeStatus
 from tests.macd2.fake_broker import FakeBroker
@@ -101,7 +102,7 @@ def test_start_blocks_when_macd_v1_active(monkeypatch, tmp_path):
 
     v1_path = tmp_path / "macd_hynix_runtime.json"
     v1_path.write_text(json.dumps({"auto_trade_on": True}), encoding="utf-8")
-    monkeypatch.setattr(service_module, "V1_RUNTIME_PATH", v1_path)
+    monkeypatch.setattr(strategy_ownership, "V1_RUNTIME_PATH", v1_path)
     _patch_ok_construction(monkeypatch)
 
     svc = service_module.Macd2Service()

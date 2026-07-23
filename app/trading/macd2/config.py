@@ -21,11 +21,13 @@ TRADE_SYMBOLS = (LONG_SYMBOL, INVERSE_SYMBOL)
 # ── Budget (UI-overridable; this is only the default) ──────────────────────
 DEFAULT_BUDGET = 10_000_000.0
 
-# Order-sizing safety margin (docs §9: "수수료·호가 변동을 고려한 안전 여유").
-# docs/MACD2_LOGIC.md §21 explicitly leaves the exact ratio as an open,
-# pending-confirmation item — this value is a conservative placeholder, not a
-# confirmed requirement. Flag for review before any real-money use.
-ORDER_SAFETY_MARGIN_PCT = 0.5
+# Order-sizing safety margin (docs §9: "수수료·호가 변동을 고려한 안전 여유") is no
+# longer a fixed placeholder ratio here — docs/MACD2_LOGIC.md §21 flagged the old
+# ORDER_SAFETY_MARGIN_PCT=0.5 constant as an unconfirmed placeholder. It is now
+# computed per-order from real inputs (buy fee rate from config.yaml
+# trading_cost + KRX tick size for the order price) by
+# order_executor.compute_order_safety_margin_pct(); see that function's
+# docstring and docs/MACD2_LOGIC.md §9/§21 for the rationale.
 
 # ── MACD (strategy-fixed) ───────────────────────────────────────────────────
 EMA_FAST = 12

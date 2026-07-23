@@ -146,6 +146,16 @@ def test_ui_trade_history_table_uses_execution_ledger_not_legacy_csv():
     assert 'pd.read_csv(_today_trade_log_path)' not in source
 
 
+def test_ui_enhanced_start_gate_also_blocks_on_macd2_active():
+    """Enhanced's start gate already blocked on MACD v1 (is_macd_strategy_on);
+    it must also block on MACD2 being really active (strategy_ownership),
+    otherwise Enhanced and MACD2 could both hold order authority at once
+    (소스 패턴 검증 — same style as the MACD v1 check above it)."""
+    source = _UI_PAGE_PATH.read_text(encoding="utf-8")
+    assert "from app.trading.strategy_ownership import macd2_active" in source
+    assert "macd2_active()[0]" in source
+
+
 def test_micron_fallback_used_when_1min_3min_missing(tmp_path, monkeypatch):
     """1분/3분봉 데이터가 없어도 None을 그대로 노출하지 않고 fallback 점수/상태를 표시한다."""
     import app.models.hynix_micron_realtime_score as mscore

@@ -666,6 +666,16 @@ def can_start_macd(mode: str = "mock") -> tuple[bool, str]:
             f"LEGACY_STRATEGY_ACTIVE: Enhanced auto_trade_on=True "
             f"(truth={dump.get('truth_helper')}, path={dump.get('enhanced_save_path')})"
         )
+
+    # MACD2 is a separate, independently-startable engine (app.trading.macd2.*)
+    # that can also place real orders — block if it is really running (real
+    # auto_trade_on + fresh heartbeat, not just a leftover flag/file).
+    from app.trading.strategy_ownership import macd2_active
+
+    m2_active, m2_reason = macd2_active()
+    if m2_active:
+        return False, f"{m2_reason}: MACD2가 실행 중입니다. MACD2를 먼저 중지한 뒤 MACD를 시작하세요."
+
     # Legacy OFF: allow start. Clear stale MACD mutex only when MACD state is also off
     # (do not treat leftover mutex file as legacy ON; do not wipe an active MACD run).
     state = load_state()

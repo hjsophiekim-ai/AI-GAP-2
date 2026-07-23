@@ -641,6 +641,44 @@ def test_mutex_blocks_when_old_auto_on(tmp_path, monkeypatch):
     assert "LEGACY_STRATEGY_ACTIVE" in msg
 
 
+def test_can_start_macd_blocks_when_macd2_active(tmp_path, monkeypatch):
+    """MACD2 is a separate engine that can also place real orders — MACD v1
+    must refuse to start while it's really running (docs: 상호배타)."""
+    from app.services import hynix_switch_state as hss
+
+    monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(om, "STATE_DIR", tmp_path)
+    (tmp_path / "hynix_auto_state_active_mode.json").write_text(
+        json.dumps({"mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_auto_state_mock.json").write_text(
+        json.dumps({"auto_trade_on": False, "mode": "mock"}), encoding="utf-8"
+    )
+    (tmp_path / "hynix_strategy_profile_common.json").write_text(
+        json.dumps({"auto_trade_on": False}), encoding="utf-8"
+    )
+
+    from app.trading import strategy_ownership as so
+
+    macd2_path = tmp_path / "macd2_runtime.json"
+    monkeypatch.setattr(so, "MACD2_RUNTIME_PATH", macd2_path)
+    macd2_path.write_text(json.dumps({
+        "auto_trade_on": True, "updated_at": datetime.now().isoformat(),
+    }), encoding="utf-8")
+
+    ok, msg = om.can_start_macd("mock")
+    assert ok is False
+    assert "MACD2" in msg
+
+    # A stale MACD2 flag (crashed process, old updated_at) must not block forever.
+    stale = datetime.now() - timedelta(seconds=so.MACD2_HEARTBEAT_STALE_SEC + 1)
+    macd2_path.write_text(json.dumps({
+        "auto_trade_on": True, "updated_at": stale.isoformat(),
+    }), encoding="utf-8")
+    ok2, msg2 = om.can_start_macd("mock")
+    assert ok2 is True, msg2
+
+
 def test_enhanced_stop_then_macd_start_sees_off(tmp_path, monkeypatch):
     """Stop path (set_control False) must make MACD Start succeed immediately."""
     from app.services import hynix_switch_state as hss

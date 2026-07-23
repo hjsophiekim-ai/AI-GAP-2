@@ -1,8 +1,12 @@
 """Unit tests for app.trading.macd2.order_executor — FakeBroker only, no real network."""
 from __future__ import annotations
 
-from app.trading.macd2 import ledger, order_executor
+import pytest
+
+from app.trading.macd2 import config, ledger, order_executor
 from app.trading.macd2.models import Direction, PositionSnapshot, SignalState
+from app.trading.trading_cost_engine import TradeCostEngine
+from app.utils.stock_utils import get_tick_size
 from tests.macd2.fake_broker import FakeBroker
 
 
@@ -20,6 +24,45 @@ def test_compute_order_quantity_applies_safety_margin():
 def test_compute_order_quantity_blocks_below_one_share():
     qty = order_executor.compute_order_quantity(available_cash=50, budget=10_000, price=100)
     assert qty == 0
+
+
+# ── Real fee/tick-size safety margin (docs §9/§21 — replaces the old fixed
+# placeholder ratio) ─────────────────────────────────────────────────────────
+
+def test_safety_margin_equals_real_fee_rate_plus_one_tick():
+    price = 15_000.0
+    margin = order_executor.compute_order_safety_margin_pct(price, config.LONG_SYMBOL)
+    expected_fee_pct = TradeCostEngine().fee_rate(config.LONG_SYMBOL, "BUY") * 100.0
+    expected_tick_pct = get_tick_size(price) / price * 100.0
+    assert margin == pytest.approx(expected_fee_pct + expected_tick_pct)
+
+
+def test_safety_margin_zero_price_returns_zero():
+    assert order_executor.compute_order_safety_margin_pct(0.0, config.LONG_SYMBOL) == 0.0
+
+
+def test_compute_order_quantity_uses_real_margin_by_default():
+    price = 15_000.0
+    expected_margin = order_executor.compute_order_safety_margin_pct(price, config.LONG_SYMBOL)
+    qty = order_executor.compute_order_quantity(
+        available_cash=10_000_000, budget=10_000_000, price=price, symbol=config.LONG_SYMBOL,
+    )
+    usable = 10_000_000 * (1 - expected_margin / 100.0)
+    assert qty == int(usable // price)
+
+
+@pytest.mark.parametrize("price", [1_500, 4_000, 15_000, 45_000, 150_000, 450_000, 900_000])
+@pytest.mark.parametrize("available_cash", [1_000, 50_000, 1_000_000, 10_000_000, 10_000_000_000])
+@pytest.mark.parametrize("budget", [1_000, 50_000, 1_000_000, 10_000_000])
+def test_order_never_exceeds_budget_or_cash_across_tick_bands(price, available_cash, budget):
+    """예산 초과 주문 0건: every KRX tick band x cash/budget combination must
+    size an order whose notional never exceeds min(cash, budget)."""
+    qty = order_executor.compute_order_quantity(
+        available_cash=available_cash, budget=budget, price=price, symbol=config.LONG_SYMBOL,
+    )
+    notional = qty * price
+    usable_cap = min(available_cash, budget)
+    assert notional <= usable_cap
 
 
 def test_flat_entry_up_red_buys_long_symbol():

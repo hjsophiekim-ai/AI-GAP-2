@@ -768,8 +768,13 @@ if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.g
     # Bidirectional mutex: block Enhanced enable while MACD strategy is ON.
     if auto_on and not switch_state.get("auto_trade_on"):
         from app.trading.macd_hynix_order_manager import is_macd_strategy_on
+        from app.trading.strategy_ownership import macd2_active
         if is_macd_strategy_on():
             st.error("MACD 하이닉스 자동매매가 ON 상태입니다. MACD를 중지한 뒤 Enhanced를 시작하세요.")
+            auto_on = False
+            st.session_state["hynix_switch_auto_on"] = False
+        elif macd2_active()[0]:
+            st.error("MACD2 자동매매가 실행 중입니다. MACD2를 먼저 중지한 뒤 Enhanced를 시작하세요.")
             auto_on = False
             st.session_state["hynix_switch_auto_on"] = False
     _ctrl_before = bool(switch_state.get("auto_trade_on"))

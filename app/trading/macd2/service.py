@@ -6,56 +6,34 @@ never started before bootstrap succeeds, and order authority
 (``auto_trade_on``) is never opened before the quote cache has been
 initialized (docs §14).
 
-Mutual exclusion with Enhanced / MACD v1 (docs §15) is a READ-ONLY check of
-their real ``auto_trade_on`` state — Enhanced's own state module is generic
-infrastructure (not MACD v1) and is read directly; MACD v1's runtime file is
-read as plain JSON (never via importing MACD v1 production code, and never
-written by MACD2). See docs §15 / the final report for the known one-way
-limitation this implies (v1/Enhanced cannot see MACD2's status back).
+Mutual exclusion with Enhanced / MACD v1 (docs §15) is delegated to
+``app.trading.strategy_ownership`` — a shared, read-only adapter that checks
+each system's real ``auto_trade_on`` state AND a freshness check on that
+system's own heartbeat/tick timestamp (a crashed process with a stuck flag
+is not treated as active). MACD v1's runtime file is read as plain JSON by
+that adapter (never via importing MACD v1 production code, and never written
+by MACD2). Enhanced and MACD v1 now also check MACD2 back through the same
+adapter — closing the one-way limitation an earlier version of this module
+had (see docs §15 / the final report).
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any, Optional
 
+from app.trading import strategy_ownership
 from app.trading.macd2 import config, state_store
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import RuntimeStatus
 from app.trading.macd2.worker import Macd2Worker
-from app.utils.data_paths import STATE_DIR
 
 KST = config.KST
 
-# Read-only reference to MACD v1's runtime file — MACD2 never writes here.
-V1_RUNTIME_PATH = STATE_DIR / "macd_hynix_runtime.json"
-
 
 def other_strategy_active() -> tuple[bool, str]:
-    """docs §15: block MACD2 start if Enhanced or MACD v1 is really active.
-
-    Never a mutex-file-existence check — reads each system's actual
-    ``auto_trade_on`` truth. If a check itself fails (module/file missing),
-    that system is treated as not-blocking rather than failing MACD2 open.
-    """
-    try:
-        from app.services import hynix_switch_state as enhanced_state
-
-        if bool(enhanced_state.load_state().get("auto_trade_on")):
-            return True, "ENHANCED_ACTIVE"
-    except Exception:
-        pass
-
-    try:
-        if V1_RUNTIME_PATH.exists():
-            raw = json.loads(V1_RUNTIME_PATH.read_text(encoding="utf-8"))
-            if bool(raw.get("auto_trade_on")):
-                return True, "MACD_V1_ACTIVE"
-    except Exception:
-        pass
-
-    return False, ""
+    """docs §15: block MACD2 start if Enhanced or MACD v1 is really active."""
+    return strategy_ownership.other_owner_active(strategy_ownership.MACD2)
 
 
 class Macd2Service:

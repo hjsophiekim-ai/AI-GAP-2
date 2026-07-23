@@ -21,6 +21,7 @@ from app.trading.macd2 import config, ledger
 from app.trading.macd2.broker_adapter import BrokerOrderResult
 from app.trading.macd2.models import Direction, PositionSnapshot, SignalState
 from app.trading.trading_cost_engine import TradeCostEngine
+from app.utils.stock_utils import get_tick_size
 
 KST = config.KST
 
@@ -56,17 +57,47 @@ def target_symbol_for_direction(direction: Direction) -> Optional[str]:
     return None
 
 
+def compute_order_safety_margin_pct(price: float, symbol: str) -> float:
+    """docs §9/§21: real fee + tick-size (호가단위) safety margin, as a percent
+    of price — replaces the old fixed placeholder ratio.
+
+    Two components, both already-real inputs used elsewhere in this codebase
+    (nothing new invented here):
+      - buy fee rate for this symbol from config.yaml trading_cost (via
+        TradeCostEngine, the same engine used for net-PnL/ledger recording).
+      - one KRX tick (app.utils.stock_utils.get_tick_size) expressed as a
+        percent of price, covering the case where the ask ticks up by one
+        increment between the quote used to size the order and the market
+        order actually filling.
+    """
+    if price <= 0:
+        return 0.0
+    fee_rate_pct = TradeCostEngine().fee_rate(symbol, "BUY") * 100.0
+    tick_pct = get_tick_size(price) / price * 100.0
+    return fee_rate_pct + tick_pct
+
+
 def compute_order_quantity(
     available_cash: float,
     budget: float,
     price: float,
     *,
-    safety_margin_pct: float = config.ORDER_SAFETY_MARGIN_PCT,
+    symbol: str = config.LONG_SYMBOL,
+    safety_margin_pct: Optional[float] = None,
 ) -> int:
-    """docs §9: min(budget, orderable cash), with a fee/price-move safety margin."""
+    """docs §9: min(budget, orderable cash), with a fee/price-move safety margin.
+
+    ``safety_margin_pct`` defaults to the real fee+tick calculation
+    (:func:`compute_order_safety_margin_pct`) — pass an explicit value only to
+    override it (e.g. in tests exercising the sizing formula itself).
+    """
     if price <= 0:
         return 0
-    usable = min(float(available_cash), float(budget)) * (1 - safety_margin_pct / 100.0)
+    margin_pct = (
+        safety_margin_pct if safety_margin_pct is not None
+        else compute_order_safety_margin_pct(price, symbol)
+    )
+    usable = min(float(available_cash), float(budget)) * (1 - margin_pct / 100.0)
     return max(int(usable // price), 0)
 
 
@@ -190,7 +221,7 @@ def execute_signal(
         return outcome
 
     cash = broker.get_orderable_cash(target_symbol)
-    qty = compute_order_quantity(cash, budget, price)
+    qty = compute_order_quantity(cash, budget, price, symbol=target_symbol)
     outcome.quantity = qty
     if qty < 1:
         outcome.final_state = SignalState.BLOCKED
