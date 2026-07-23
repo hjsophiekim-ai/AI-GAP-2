@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+import traceback
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -510,15 +511,18 @@ class KISClient:
         """국내주식 현재가 조회. 실패 시 None 반환.
 
         ``symbol`` must remain a string (ETF codes like 0193T0 / 0197X0).
-        Short HTTP timeout so worker quote phase stays ≤4s.
+        HTTP timeout is (connect=3s, read=8s) — do not use a 2s read that
+        hides real latency behind futures.TimeoutError before the socket fails.
         """
         symbol = str(symbol)
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
         headers = self._auth_headers(TR_CURRENT_PRICE)
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+        t0 = time.monotonic()
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(1.5, 2.0))
+            resp = self._get(url, headers=headers, params=params, timeout=(3.0, 8.0))
             http_status = resp.status_code
+            elapsed = round(time.monotonic() - t0, 3)
             try:
                 body = resp.json()
             except Exception:
@@ -529,7 +533,7 @@ class KISClient:
             if not resp.ok:
                 logger.warning(
                     f"[KIS] 현재가 HTTP {http_status} {symbol}: "
-                    f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}"
+                    f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r} elapsed={elapsed}s"
                 )
                 return {
                     "current_price": 0,
@@ -537,17 +541,23 @@ class KISClient:
                     "msg_cd": msg_cd,
                     "msg1": msg1,
                     "http_status": http_status,
+                    "elapsed_sec": elapsed,
+                    "url_kind": "inquire-price",
                     "error": msg1 or f"HTTP {http_status}",
                 }
             d = body.get("output", {}) or {}
             if not d:
-                logger.warning(f"[KIS] 현재가 응답 없음: {symbol} rt_cd={rt_cd!r}")
+                logger.warning(
+                    f"[KIS] 현재가 응답 없음: {symbol} rt_cd={rt_cd!r} elapsed={elapsed}s"
+                )
                 return {
                     "current_price": 0,
                     "rt_cd": rt_cd,
                     "msg_cd": msg_cd,
                     "msg1": msg1 or "empty output",
                     "http_status": http_status,
+                    "elapsed_sec": elapsed,
+                    "url_kind": "inquire-price",
                     "error": msg1 or "empty output",
                 }
             return {
@@ -566,10 +576,28 @@ class KISClient:
                 "msg_cd": msg_cd,
                 "msg1": msg1,
                 "http_status": http_status,
+                "elapsed_sec": elapsed,
+                "url_kind": "inquire-price",
             }
         except Exception as e:
-            logger.warning(f"[KIS] 현재가 조회 실패 {symbol}: {e!r}")
-            return None
+            elapsed = round(time.monotonic() - t0, 3)
+            tb = traceback.format_exc()
+            logger.warning(
+                f"[KIS] 현재가 조회 실패 {symbol}: {e!r} elapsed={elapsed}s\n{tb}"
+            )
+            return {
+                "current_price": 0,
+                "rt_cd": None,
+                "msg_cd": None,
+                "msg1": str(e) or repr(e),
+                "http_status": None,
+                "elapsed_sec": elapsed,
+                "url_kind": "inquire-price",
+                "error": repr(e),
+                "exception_class": type(e).__name__,
+                "exception_repr": repr(e),
+                "traceback": tb,
+            }
 
     # ── 잔고 조회 ──────────────────────────────────────────────────────────
 

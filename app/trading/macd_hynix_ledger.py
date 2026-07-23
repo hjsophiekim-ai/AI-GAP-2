@@ -27,10 +27,13 @@ LATENCY_TS_KEYS: tuple[str, ...] = (
 )
 
 # Pass gates (only evaluated when real signal samples exist).
+# Hard requirement: signal→order_requested ≤5s (same-tick preferred; target 0–1s).
 GATE_SIGNAL_TO_REQUEST_MEDIAN = 5.0
-GATE_SIGNAL_TO_REQUEST_P95 = 7.0
-GATE_SIGNAL_TO_KIS_MEDIAN = 8.0
-GATE_SIGNAL_TO_KIS_P95 = 12.0
+GATE_SIGNAL_TO_REQUEST_P95 = 5.0
+GATE_SIGNAL_TO_KIS_MEDIAN = 5.0  # same-tick path: detect→request≈0 + request→KIS
+GATE_SIGNAL_TO_KIS_P95 = 6.0
+GATE_REQUEST_TO_KIS_MEDIAN = 4.0
+GATE_REQUEST_TO_KIS_P95 = 4.5
 GATE_TICK_MEAN = 5.5
 GATE_TICK_P95 = 7.0
 OVER_THRESHOLD_SEC = 10.0

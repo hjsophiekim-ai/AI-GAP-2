@@ -47,10 +47,13 @@ from app.utils.data_paths import LOGS_DIR, STATE_DIR
 
 STRATEGY_NAME = "MACD_HYNIX_3M"
 SIGNAL_SOURCE = "MACD_HIST_3M_B"
-STATE_PATH = STATE_DIR / "macd_hynix_state.json"
+# Single runtime store (dual-path: runtime.json is canonical; legacy state.json kept in sync).
+STATE_PATH = STATE_DIR / "macd_hynix_runtime.json"
+LEGACY_STATE_PATH = STATE_DIR / "macd_hynix_state.json"
 MUTEX_PATH = STATE_DIR / "macd_hynix_mutex.json"
 LEDGER_PATH = LOGS_DIR / "macd_hynix_execution_ledger.csv"
-STATE_LOCK_PATH = STATE_DIR / "macd_hynix_state.lock"
+SIGNAL_LEDGER_PATH = LOGS_DIR / "macd_hynix_signal_ledger.csv"
+STATE_LOCK_PATH = STATE_DIR / "macd_hynix_runtime.lock"
 
 _FILE_LOCK = threading.RLock()
 _ORDER_PROCESS_LOCK = threading.RLock()  # process-wide MACD order lock
@@ -58,7 +61,7 @@ _ORDER_PROCESS_LOCK = threading.RLock()  # process-wide MACD order lock
 MAX_ORDER_ATTEMPTS = 3
 CONFIRM_ATTEMPTS = 5
 CONFIRM_DELAY_SEC = 1.0
-QUOTE_STALE_SEC = 30.0
+QUOTE_STALE_SEC = 10.0
 
 LEDGER_COLUMNS = [
     "trade_id", "timestamp", "mode", "macd_signal", "action", "symbol",
@@ -281,15 +284,38 @@ def ensure_paths() -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _write_state_unlocked(state: dict[str, Any]) -> None:
+    ensure_paths()
+    state = dict(state)
+    state["updated_at"] = datetime.now().isoformat()
+    state["git_sha"] = _git_sha()
+    # Keep snapshot aliases in sync
+    if state.get("completed_signal_snapshot") is not None:
+        state["completed_signal"] = state.get("completed_signal_snapshot")
+    tmp = STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(STATE_PATH)
+    # Dual-write legacy path for tools still pointing at macd_hynix_state.json
+    try:
+        legacy_tmp = LEGACY_STATE_PATH.with_suffix(".tmp")
+        legacy_tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        legacy_tmp.replace(LEGACY_STATE_PATH)
+    except Exception:
+        pass
+
+
 def load_state() -> dict[str, Any]:
     ensure_paths()
     with _FILE_LOCK:
-        if not STATE_PATH.exists():
+        path = STATE_PATH
+        if not path.exists() and LEGACY_STATE_PATH.exists():
+            path = LEGACY_STATE_PATH
+        if not path.exists():
             state = default_state()
             _write_state_unlocked(state)
             return state
         try:
-            raw = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
             base = default_state()
             base.update(raw if isinstance(raw, dict) else {})
             if not isinstance(base.get("pipeline"), dict):
@@ -338,20 +364,12 @@ def load_state() -> dict[str, Any]:
                 merged_op = default_state()["opening_probe"]
                 merged_op.update(base["opening_probe"])
                 base["opening_probe"] = merged_op
+            if base.get("completed_signal") and not base.get("completed_signal_snapshot"):
+                base["completed_signal_snapshot"] = base.get("completed_signal")
             return base
         except Exception as exc:
             logger.error("[MACDHynix] state load failed: %s", exc)
             return default_state()
-
-
-def _write_state_unlocked(state: dict[str, Any]) -> None:
-    ensure_paths()
-    state = dict(state)
-    state["updated_at"] = datetime.now().isoformat()
-    state["git_sha"] = _git_sha()
-    tmp = STATE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(STATE_PATH)
 
 
 def save_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -684,7 +702,17 @@ def refresh_runtime_status(state: dict[str, Any], *, worker_alive: Optional[bool
     long_ok = _num(prices.get("long"))
     inv_ok = _num(prices.get("inverse"))
     market_ok = bool(hynix_ok and (long_ok or inv_ok))
-    signal_ok = all(_num(macd.get(k)) for k in ("macd", "signal", "hist"))
+    warmup_ready = bool(
+        (state.get("opening_probe") or {}).get("warmup_ready")
+        or (state.get("bootstrap") or {}).get("ok")
+    )
+    cs = state.get("completed_signal") or {}
+    if str(state.get("macd_status") or "") == "NOT_READY" or str(cs.get("flag") or "") == "NOT_READY":
+        signal_ok = False
+    elif not warmup_ready:
+        signal_ok = False
+    else:
+        signal_ok = all(_num(macd.get(k)) for k in ("macd", "signal", "hist"))
     order_ok = strategy_on and not state.get("stopped") and not state.get("order_block_reason")
 
     primary = None
@@ -697,6 +725,8 @@ def refresh_runtime_status(state: dict[str, Any], *, worker_alive: Optional[bool
     elif not market_ok:
         errs = state.get("quote_errors") or []
         primary = "QUOTE_ERROR" if errs else "MARKET_DATA_INACTIVE"
+    elif not warmup_ready:
+        primary = "NOT_READY"
     elif not signal_ok:
         primary = str((macd.get("reason") if isinstance(macd, dict) else None) or "SIGNAL_INACTIVE")
 
@@ -707,16 +737,19 @@ def refresh_runtime_status(state: dict[str, Any], *, worker_alive: Optional[bool
         quote_status = "FAILED"
     elif state.get("quote_errors") and market_ok:
         quote_status = "PARTIAL"
-    macd_status = "OK" if signal_ok else str(
-        (macd.get("reason") if isinstance(macd, dict) else None) or "SIGNAL_INACTIVE"
-    )
-    order_enabled = bool(order_ok and market_ok)
+    if not warmup_ready:
+        macd_status = "NOT_READY"
+    else:
+        macd_status = "OK" if signal_ok else str(
+            (macd.get("reason") if isinstance(macd, dict) else None) or "SIGNAL_INACTIVE"
+        )
+    order_enabled = bool(order_ok and market_ok and warmup_ready)
     order_status = "ENABLED" if order_enabled else "BLOCKED"
 
     state["scheduler_alive"] = alive
     state["strategy_enabled"] = strategy_on
     state["market_data_active"] = market_ok
-    state["signal_calculation_active"] = signal_ok
+    state["signal_calculation_active"] = bool(signal_ok and warmup_ready)
     state["order_execution_enabled"] = order_enabled
     state["bootstrap_status"] = boot_status or None
     state["quote_status"] = quote_status
@@ -756,6 +789,37 @@ def load_ledger(limit: int = 200) -> list[dict[str, Any]]:
         return rows[-limit:]
     except Exception as exc:
         logger.error("[MACDHynix] ledger load failed: %s", exc)
+        return []
+
+
+SIGNAL_LEDGER_COLUMNS = [
+    "timestamp", "trading_date", "flag", "signal_id", "completed_bar_at",
+    "bar_ts", "hist_last3", "reason", "ordered", "block_reason", "lifecycle",
+]
+
+
+def append_signal_ledger(row: dict[str, Any]) -> None:
+    """Daily signal ledger — separate from execution ledger."""
+    ensure_paths()
+    is_new = not SIGNAL_LEDGER_PATH.exists()
+    with _FILE_LOCK:
+        with SIGNAL_LEDGER_PATH.open("a", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=SIGNAL_LEDGER_COLUMNS, extrasaction="ignore")
+            if is_new:
+                writer.writeheader()
+            writer.writerow({k: row.get(k, "") for k in SIGNAL_LEDGER_COLUMNS})
+
+
+def load_signal_ledger(limit: int = 200) -> list[dict[str, Any]]:
+    ensure_paths()
+    if not SIGNAL_LEDGER_PATH.exists():
+        return []
+    try:
+        with SIGNAL_LEDGER_PATH.open("r", encoding="utf-8-sig", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        return rows[-limit:]
+    except Exception as exc:
+        logger.error("[MACDHynix] signal ledger load failed: %s", exc)
         return []
 
 
@@ -1984,6 +2048,23 @@ def record_macd_flag_event(
         events.append(ev)
         if len(events) > FLAG_EVENT_MAX:
             del events[0 : len(events) - FLAG_EVENT_MAX]
+        try:
+            trading_date = str(state.get("session_date") or "")[:10]
+            append_signal_ledger({
+                "timestamp": str(ts),
+                "trading_date": trading_date,
+                "flag": fl,
+                "signal_id": sid or "",
+                "completed_bar_at": str(bar_ts or ""),
+                "bar_ts": str(bar_ts or ""),
+                "hist_last3": "",
+                "reason": "NEW_OCCURRENCE",
+                "ordered": bool(ordered),
+                "block_reason": ev.get("block_reason") or "",
+                "lifecycle": "DETECTED",
+            })
+        except Exception as exc:
+            logger.warning("[MACDHynix] signal ledger append failed: %s", exc)
         return ev
 
     existing["occurrence_key"] = key
