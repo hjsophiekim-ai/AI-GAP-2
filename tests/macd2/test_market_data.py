@@ -151,6 +151,59 @@ def test_quote_updater_lifecycle():
     assert svc.quote_updater_alive() is False
 
 
+def test_history_updater_lifecycle():
+    calls = {"n": 0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        calls["n"] += 1
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch)
+    assert svc.history_updater_alive() is False
+
+    svc.start_history_updater(interval_sec=0.05)
+    try:
+        assert svc.history_updater_alive() is True
+        time.sleep(0.2)
+        assert calls["n"] >= 2  # ticked more than once, all from the updater thread
+    finally:
+        svc.stop_history_updater(join_timeout=2.0)
+
+    assert svc.history_updater_alive() is False
+
+
+def test_default_kis_client_created_once_and_reused(monkeypatch):
+    """docs: KIS client는 서비스 시작 시 1개 생성·재사용 — the real (non-fake)
+    fetchers must call create_kis_client() at most once per service
+    instance, regardless of how many bootstrap/incremental/quote calls
+    happen afterward."""
+    created = []
+
+    class _FakeKisClient:
+        def get_minute_candles(self, symbol, period_min, count, hour1):
+            return []
+
+        def get_current_price(self, symbol):
+            return {"current_price": 100.0}
+
+    def fake_create_kis_client(mode):
+        created.append(mode)
+        return _FakeKisClient()
+
+    import app.trading.kis_client as kis_client_module
+
+    monkeypatch.setattr(kis_client_module, "create_kis_client", fake_create_kis_client)
+
+    svc = MarketDataService(mode="mock")  # no fetch_minute_candles/fetch_quote injected -> uses the real defaults
+    svc.bootstrap(now=datetime(2026, 1, 6, 9, 30, tzinfo=KST))
+    svc.merge_incremental_1m()
+    svc.refresh_quotes()
+    svc.refresh_quotes()
+
+    assert len(created) == 1  # exactly one client created for this service instance, reused every call
+
+
 def test_candles_to_df_skips_malformed_rows():
     candles = [
         {"date": "20260106", "time": "090000", "open": 1, "high": 1, "low": 1, "close": 100.0, "volume": 1},

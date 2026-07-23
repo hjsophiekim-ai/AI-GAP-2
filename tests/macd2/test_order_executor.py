@@ -193,6 +193,65 @@ def test_reconcile_failure_blocks_before_buy(monkeypatch):
     assert broker.get_position("0193T0") is None
 
 
+def test_buy_accepted_but_unfilled_never_recorded_as_executed():
+    """주문 접수 성공 != 체결 성공: broker.buy_market() returns success=True but
+    the account never actually shows the position (order accepted, 0 filled)."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 0  # accepted, but reconciles to 0 filled
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-unfilled",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+    assert outcome.final_state == SignalState.FAILED
+    assert outcome.block_reason == order_executor.FAIL_BUY_NOT_CONFIRMED
+    assert broker.get_position("0193T0") is None
+    assert ledger.load_execution_ledger() == []  # never recorded as a confirmed leg
+
+
+def test_buy_partial_fill_records_real_filled_qty_not_requested():
+    """부분체결: broker fills fewer shares than requested — the recorded qty
+    and resulting state must reflect the REAL fill, not the request."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 3  # cap the actual fill below whatever qty is requested
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-partial",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+    assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.quantity == 3
+    assert broker.get_position("0193T0").quantity == 3
+
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert int(rows[0]["executed_qty"]) == 3
+    assert int(rows[0]["requested_qty"]) > 3
+
+
+def test_switch_sell_succeeds_buy_fails_outcome_carries_flat_sell_state():
+    """docs: 스위칭 부분실패 — SELL clears to 0 but the follow-up BUY then
+    fails outright. The outcome must expose enough for the caller
+    (worker._apply_switch_outcome) to know the account is really flat."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0, "0197X0": 10_000.0})
+    broker.buy_market("0197X0", 20, "seed")
+    broker.fail_next_buy = True
+    position = PositionSnapshot(symbol="0197X0", quantity=20, avg_price=10_000.0)
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-switch-fail",
+        quotes={"0193T0": 15_000.0, "0197X0": 10_000.0}, position=position, budget=10_000_000.0,
+    )
+    assert outcome.final_state == SignalState.FAILED
+    assert outcome.block_reason == order_executor.FAIL_BUY
+    assert outcome.sell_result is not None and outcome.sell_result.success is True
+    assert outcome.sell_qty_after == 0
+    assert broker.get_position("0197X0") is None
+    assert broker.get_position("0193T0") is None
+
+
 def test_execute_exit_records_stop_loss_and_no_buy():
     broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 14_000.0})
     broker.set_quote("0193T0", 15_000.0)

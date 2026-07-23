@@ -23,6 +23,10 @@ class FakeBroker:
         self.orders: list[BrokerOrderResult] = []
         self.fail_next_buy = False
         self.fail_next_sell = False
+        # Partial/zero-fill simulation: caps the NEXT buy's actual fill below
+        # the requested qty (docs: 부분체결 / BUY 후 보유 0). None means "fill
+        # the full requested qty" (the default, existing behavior).
+        self.next_buy_fill_qty: Optional[int] = None
 
     def set_quote(self, symbol: str, price: float) -> None:
         self._quotes[symbol] = price
@@ -57,19 +61,22 @@ class FakeBroker:
             )
             self.orders.append(result)
             return result
-        self._cash -= price * qty
-        existing = self._positions.get(symbol)
-        if existing:
-            total_qty = existing.quantity + qty
-            new_avg = (existing.avg_price * existing.quantity + price * qty) / total_qty
-            self._positions[symbol] = Position(
-                symbol=symbol, name=symbol, quantity=total_qty, avg_price=new_avg, current_price=price,
-            )
-        else:
-            self._positions[symbol] = Position(
-                symbol=symbol, name=symbol, quantity=qty, avg_price=price, current_price=price,
-            )
-        result = BrokerOrderResult(True, self._next_order_id(), symbol, "BUY", qty, qty, price, "OK")
+        fill_qty = qty if self.next_buy_fill_qty is None else max(0, min(qty, self.next_buy_fill_qty))
+        self.next_buy_fill_qty = None
+        self._cash -= price * fill_qty
+        if fill_qty > 0:
+            existing = self._positions.get(symbol)
+            if existing:
+                total_qty = existing.quantity + fill_qty
+                new_avg = (existing.avg_price * existing.quantity + price * fill_qty) / total_qty
+                self._positions[symbol] = Position(
+                    symbol=symbol, name=symbol, quantity=total_qty, avg_price=new_avg, current_price=price,
+                )
+            else:
+                self._positions[symbol] = Position(
+                    symbol=symbol, name=symbol, quantity=fill_qty, avg_price=price, current_price=price,
+                )
+        result = BrokerOrderResult(True, self._next_order_id(), symbol, "BUY", qty, fill_qty, price, "OK")
         self.orders.append(result)
         return result
 

@@ -33,6 +33,7 @@ BLOCK_NOT_TRADABLE_DIRECTION = "NOT_A_TRADABLE_DIRECTION"
 FAIL_SELL = "SELL_FAILED"
 FAIL_SELL_NOT_CONFIRMED = "SELL_NOT_CONFIRMED_QTY_NONZERO"
 FAIL_BUY = "BUY_FAILED"
+FAIL_BUY_NOT_CONFIRMED = "BUY_NOT_CONFIRMED_QTY_ZERO"
 
 
 @dataclass
@@ -46,6 +47,7 @@ class ExecutionOutcome:
     buy_result: Optional[BrokerOrderResult] = None
     sell_qty_after: Optional[int] = None
     quantity: int = 0
+    filled_avg_price: Optional[float] = None
     timestamps: dict[str, str] = field(default_factory=dict)
 
 
@@ -109,7 +111,16 @@ def _record_leg(
     *, broker_mode: str, signal_id: str, symbol: str, side: str, qty: int,
     price: float, position_before: int, position_after: int, exit_reason: str,
     order_result: BrokerOrderResult, entry_price: float, confirmed_at: str,
+    requested_qty: Optional[int] = None,
 ) -> None:
+    """``qty`` is the REAL (reconciled) quantity that changed hands — used for
+    fee/PnL math and the ledger's own ``executed_qty`` column (never the
+    order response's own ``executed_qty``, which the broker layer cannot
+    distinguish from a requested-and-accepted qty on a partial fill).
+    ``requested_qty`` (defaults to ``qty`` — true for every SELL/exit leg,
+    which already reconciles to the exact held quantity) records the
+    originally-requested BUY size separately so a partial fill stays visible
+    in the ledger."""
     cost_engine = TradeCostEngine()
     if side == "SELL":
         cost = cost_engine.compute_net_pnl(
@@ -123,7 +134,8 @@ def _record_leg(
     ledger.append_execution({
         "order_id": order_result.order_id, "signal_id": signal_id, "timestamp": confirmed_at,
         "mode": broker_mode, "symbol": symbol, "side": side,
-        "requested_qty": qty, "executed_qty": order_result.executed_qty,
+        "requested_qty": requested_qty if requested_qty is not None else qty,
+        "executed_qty": qty,
         "requested_price": price, "executed_price": price,
         "position_before": position_before, "position_after": position_after,
         "gross_pnl": gross_pnl, "fee": fee, "slippage": slippage, "net_pnl": net_pnl,
@@ -140,6 +152,24 @@ def _reconcile_to_zero(broker, symbol: str, *, retries: int, delay_sec: float) -
         if attempt < retries - 1:
             time.sleep(delay_sec)
     return qty_after
+
+
+def _reconcile_buy_fill(broker, symbol: str, *, retries: int, delay_sec: float) -> tuple[int, float]:
+    """Real (qty, avg_price) actually held for ``symbol`` after a BUY order
+    reported ``success=True`` — never trust order acceptance as fill success
+    (docs: 주문 접수 성공 != 체결 성공). Re-queried fresh from the broker on
+    every attempt (no cache), so a partial fill naturally reports a quantity
+    below what was requested. Still 0 after all retries means the order was
+    accepted but nothing actually landed in the account.
+    """
+    for attempt in range(max(1, retries)):
+        pos = broker.get_position(symbol)
+        qty = int(pos.quantity) if pos else 0
+        if qty > 0:
+            return qty, float(pos.avg_price)
+        if attempt < retries - 1:
+            time.sleep(delay_sec)
+    return 0, 0.0
 
 
 def execute_signal(
@@ -221,15 +251,15 @@ def execute_signal(
         return outcome
 
     cash = broker.get_orderable_cash(target_symbol)
-    qty = compute_order_quantity(cash, budget, price, symbol=target_symbol)
-    outcome.quantity = qty
-    if qty < 1:
+    requested_qty = compute_order_quantity(cash, budget, price, symbol=target_symbol)
+    outcome.quantity = requested_qty
+    if requested_qty < 1:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_INSUFFICIENT_QTY
         return outcome
 
     timestamps["buy_requested_at"] = _now_iso()
-    buy_result = broker.buy_market(target_symbol, qty, f"{signal_id}:BUY:{target_symbol}")
+    buy_result = broker.buy_market(target_symbol, requested_qty, f"{signal_id}:BUY:{target_symbol}")
     outcome.buy_result = buy_result
     if not buy_result.success:
         outcome.final_state = SignalState.FAILED
@@ -237,11 +267,27 @@ def execute_signal(
         return outcome
     timestamps["buy_confirmed_at"] = _now_iso()
 
+    # Order acceptance is never treated as fill success (docs) — re-query the
+    # real holding before recording anything. A partial fill reports a real
+    # qty below requested_qty; nothing actually landed reports 0.
+    filled_qty, filled_avg_price = _reconcile_buy_fill(
+        broker, target_symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec,
+    )
+    timestamps["buy_reconciled_at"] = _now_iso()
+    if filled_qty <= 0:
+        outcome.final_state = SignalState.FAILED
+        outcome.block_reason = FAIL_BUY_NOT_CONFIRMED
+        return outcome
+
+    outcome.quantity = filled_qty
+    outcome.filled_avg_price = filled_avg_price
     _record_leg(
         broker_mode=broker.mode, signal_id=signal_id, symbol=target_symbol, side="BUY",
-        qty=qty, price=buy_result.executed_price or price, position_before=0, position_after=qty,
-        exit_reason="", order_result=buy_result, entry_price=buy_result.executed_price or price,
-        confirmed_at=timestamps["buy_confirmed_at"],
+        qty=filled_qty, price=filled_avg_price or buy_result.executed_price or price,
+        position_before=0, position_after=filled_qty,
+        exit_reason="", order_result=buy_result,
+        entry_price=filled_avg_price or buy_result.executed_price or price,
+        confirmed_at=timestamps["buy_confirmed_at"], requested_qty=requested_qty,
     )
     outcome.final_state = SignalState.EXECUTED
     return outcome

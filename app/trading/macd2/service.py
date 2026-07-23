@@ -110,6 +110,7 @@ class Macd2Service:
         state_store.save_state(state)
 
         self._market_data.start_quote_updater(interval_sec=1.0)
+        self._market_data.start_history_updater(interval_sec=config.WORKER_INTERVAL_SEC)
         self._worker = Macd2Worker(
             broker=self._broker, market_data=self._market_data,
             get_state=state_store.load_state, save_state=state_store.save_state,
@@ -122,6 +123,7 @@ class Macd2Service:
             self._worker.stop(join_timeout=5.0)
         if self._market_data is not None:
             self._market_data.stop_quote_updater(join_timeout=2.0)
+            self._market_data.stop_history_updater(join_timeout=2.0)
 
         state = state_store.load_state()
         state.auto_trade_on = False
@@ -148,6 +150,7 @@ class Macd2Service:
         return {
             "worker_alive": bool(self._worker and self._worker.is_alive()),
             "quote_updater_alive": bool(self._market_data and self._market_data.quote_updater_alive()),
+            "history_updater_alive": bool(self._market_data and self._market_data.history_updater_alive()),
             **stats,
         }
 

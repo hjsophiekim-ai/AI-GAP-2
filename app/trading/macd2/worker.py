@@ -2,10 +2,22 @@
 
 ``run_once()`` is one tick, fully testable without a background thread.
 ``start()``/``stop()`` wrap it in exactly one daemon thread. Never calls KIS
-directly — reads MarketDataService's cached history/quotes only (docs §8).
+directly, and never triggers MarketDataService's own incremental merge
+either — MarketDataService's own history-updater/quote-updater background
+threads refresh those caches; this module only reads them via
+``get_history_df()``/``get_quote()`` (docs §8/§11).
 Never renders UI, never re-walks full history, never reloads modules, never
 uses a pending-signal timer or a signal queue, never runs more than one
 Worker thread, never reuses a stopped thread object.
+
+Every tick also reconciles the real account position against
+``state.position`` (one ``broker.get_positions()`` call) before evaluating
+any signal — a mismatch blocks every order this tick (entry/switch/exit)
+until it clears (docs: 실제 계좌와 state는 항상 reconcile). A new trading
+date resets only the session-scoped runtime fields (last_signal_direction,
+last_evaluated_bar_ts, today's Profit Lock/processed_signal_ids) — the
+permanent signal ledger (ledger.append_signal, dedup by signal_id) is never
+cleared.
 
 Priority order for a held position, per docs §10 (this is docs' own stated
 order, not a re-derivation of MACD v1's runtime behavior — docs is the sole
@@ -32,6 +44,8 @@ from app.trading.macd2.signal_engine import calculate_macd, evaluate_signed_b, m
 from app.trading.trading_cost_engine import TradeCostEngine
 
 KST = config.KST
+
+POSITION_MISMATCH = "POSITION_MISMATCH"
 
 
 @dataclass
@@ -70,6 +84,47 @@ def _fresh_quote_prices(market_data: MarketDataService, symbols: tuple[str, ...]
     return prices
 
 
+def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
+    """New trading date -> reset only session-scoped runtime fields (docs:
+    거래일 변경 초기화). The permanent signal ledger (ledger.append_signal's
+    CSV, deduped by signal_id) is untouched here — ``processed_signal_ids``
+    is only the in-state, same-day dedup list, safe to clear on rollover."""
+    today_str = now.strftime("%Y%m%d")
+    if state.session_date is None:
+        # First tick ever for this state (e.g. brand-new RuntimeState) — there
+        # is nothing to roll over yet, so just record today without wiping
+        # fields a caller may have already set for the current session.
+        state.session_date = today_str
+        return
+    if state.session_date == today_str:
+        return
+    state.session_date = today_str
+    state.last_signal_direction = None
+    state.last_evaluated_bar_ts = None
+    state.processed_signal_ids = []
+    state.peak_net_return = 0.0
+    state.profit_lock_active = False
+
+
+def _position_mismatch_reason(broker, state: RuntimeState) -> Optional[str]:
+    """Real account holdings (one ``broker.get_positions()`` call) vs
+    ``state.position`` — returns ``POSITION_MISMATCH`` on any disagreement
+    (including a failed account query, which fails closed) so the caller can
+    block every order this tick until it clears."""
+    try:
+        real_positions = {p.symbol: int(p.quantity) for p in broker.get_positions() if p.quantity}
+    except Exception:
+        return POSITION_MISMATCH
+    expected_symbol = state.position.symbol if state.position and state.position.quantity > 0 else None
+    expected_qty = int(state.position.quantity) if expected_symbol else 0
+    for symbol in config.TRADE_SYMBOLS:
+        want = expected_qty if symbol == expected_symbol else 0
+        have = real_positions.get(symbol, 0)
+        if want != have:
+            return POSITION_MISMATCH
+    return None
+
+
 def run_once(
     *,
     broker,
@@ -85,11 +140,20 @@ def run_once(
         result.skipped = "auto_trade_off"
         return result
 
+    _apply_day_rollover(state, now)
+
+    mismatch = _position_mismatch_reason(broker, state)
+    if mismatch:
+        state.order_block_reason = mismatch
+        result.skipped = mismatch
+        return result
+
     quotes = _fresh_quote_prices(market_data, (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL))
 
-    # Worker triggers the incremental merge but never calls KIS itself — the
-    # actual network I/O is fully encapsulated inside MarketDataService (docs §8).
-    df_1m = market_data.merge_incremental_1m(now=now)
+    # Worker never calls KIS itself and never triggers the incremental merge —
+    # MarketDataService's own history-updater thread refreshes this cache in
+    # the background (docs §8/§11); this only reads the cached snapshot.
+    df_1m = market_data.get_history_df()
     bars_3m = resample_completed_3m(df_1m, now=now)
     macd_snap = calculate_macd(bars_3m)
     if macd_snap is None:
@@ -102,8 +166,10 @@ def run_once(
     bar_ts_str = macd_snap.bar_dt.isoformat()
     is_new_bar = bar_ts_str != state.last_evaluated_bar_ts
 
+    before_open = now.time() < config.SESSION_OPEN
     entry_cutoff_passed = now.time() >= config.NEW_ENTRY_CUTOFF
     force_liquidate_time = now.time() >= config.FORCE_LIQUIDATE_AT
+    entry_window_open = (not before_open) and (not entry_cutoff_passed)
 
     pos = state.position
 
@@ -146,7 +212,7 @@ def run_once(
             # opposite-signal branch does not switch this tick.
             profit_lock_should_exit = exits.exit_reason == config.EXIT_PROFIT_LOCK
 
-        if is_new_bar and not entry_cutoff_passed:
+        if is_new_bar and entry_window_open:
             pattern = evaluate_signed_b(macd_snap, state.last_signal_direction)
             if pattern != Direction.HOLD:
                 target = order_executor.target_symbol_for_direction(pattern)
@@ -179,7 +245,7 @@ def run_once(
         return result
 
     # ── Flat: new-entry evaluation ──────────────────────────────────────
-    if is_new_bar and not entry_cutoff_passed:
+    if is_new_bar and entry_window_open:
         pattern = evaluate_signed_b(macd_snap, state.last_signal_direction)
         if pattern != Direction.HOLD:
             signal_id = make_signal_id(trading_date, macd_snap.bar_dt.strftime("%H%M%S"), pattern)
@@ -208,17 +274,32 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
 
 
 def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> None:
+    """Retry policy (docs §2): every signal_id is single-shot regardless of
+    outcome — success, failure, or block — so it is never automatically
+    retried; a later, genuinely new signal_id (a different bar) is still
+    free to fire. A switch whose SELL leg cleared to 0 but whose BUY leg then
+    failed/was blocked leaves the account really flat, so state.position must
+    reflect that immediately rather than keep pointing at the already-sold
+    symbol (docs: 스위칭 부분실패 상태 처리) — this also prevents a duplicate
+    SELL next tick, since the held-position branch will no longer see a
+    stale position for that symbol.
+    """
     if outcome.final_state == SignalState.EXECUTED:
         state.position = PositionSnapshot(
             symbol=outcome.target_symbol, quantity=outcome.quantity,
-            avg_price=(outcome.buy_result.executed_price if outcome.buy_result else 0.0),
+            avg_price=(outcome.filled_avg_price or (outcome.buy_result.executed_price if outcome.buy_result else 0.0)),
             entry_at=datetime.now(KST),
         )
         state.last_signal_direction = pattern
         state.last_signal_bar_ts = outcome.timestamps.get("evaluated_at")
-        state.processed_signal_ids = list(state.processed_signal_ids) + [outcome.signal_id]
         state.peak_net_return = 0.0
         state.profit_lock_active = False
+    elif outcome.sell_result is not None and outcome.sell_result.success and outcome.sell_qty_after == 0:
+        state.position = None
+        state.peak_net_return = 0.0
+        state.profit_lock_active = False
+    if outcome.signal_id and outcome.signal_id not in state.processed_signal_ids:
+        state.processed_signal_ids = list(state.processed_signal_ids) + [outcome.signal_id]
     state.order_block_reason = outcome.block_reason
 
 

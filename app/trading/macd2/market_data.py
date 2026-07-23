@@ -2,9 +2,15 @@
 
 Owns bootstrap (prior-day + today 1m history for the signal symbol),
 incremental 1m merge, and a 3-symbol quote cache with staleness tracking.
-worker.py never calls KIS directly (docs §8/§11/§13) — it only reads this
-service's cached snapshots. A single I/O lock serializes all KIS calls (the
-underlying KISClient is not documented thread-safe).
+worker.py never calls KIS directly and never triggers the incremental merge
+either (docs §8/§11/§13) — it only reads this service's cached snapshots via
+get_history_df()/get_quote(). start_history_updater()/start_quote_updater()
+are the only two background threads that actually call KIS, each on its own
+centralized interval (never per-Worker-tick), so quote polling never
+compounds toward a rate limit. A single I/O lock serializes all KIS calls
+(the underlying KISClient is not documented thread-safe), and exactly one
+KISClient instance is created lazily (_get_kis_client()) and reused for the
+lifetime of this service instance — never re-created per call.
 
 Reuses app.trading.kis_client.create_kis_client / KISClient.get_minute_candles
 / get_current_price directly — generic, non-MACD-v1 KIS wrappers per the
@@ -73,35 +79,6 @@ def _candles_to_df(candles: list[dict]) -> pd.DataFrame:
     )
 
 
-def _default_fetch_minute_candles(mode: str, symbol: str, count: int, hour1: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Real KIS call — the one and only network entry point for minute bars."""
-    from app.trading.kis_client import create_kis_client
-
-    client = create_kis_client(mode if mode in ("mock", "real") else "mock")
-    if client is None:
-        return _empty_1m_frame(), {"error": "kis_client_none"}
-    try:
-        candles = client.get_minute_candles(symbol, period_min=1, count=count, hour1=hour1) or []
-    except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
-        return _empty_1m_frame(), {"error": repr(exc)}
-    df = _candles_to_df(candles)
-    return df, {"received_count": int(len(df))}
-
-
-def _default_fetch_quote(mode: str, symbol: str) -> tuple[Optional[float], Optional[str]]:
-    """Real KIS call — the one and only network entry point for a live quote."""
-    from app.trading.kis_client import create_kis_client
-
-    client = create_kis_client(mode if mode in ("mock", "real") else "mock")
-    if client is None:
-        return None, "kis_client_none"
-    try:
-        result = client.get_current_price(symbol)
-        return (float(result["current_price"]) if result else None), None
-    except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
-        return None, repr(exc)
-
-
 @dataclass(frozen=True)
 class BootstrapResult:
     ok: bool
@@ -124,8 +101,10 @@ class MarketDataService:
         fetch_quote: Optional[QuoteFetcher] = None,
     ) -> None:
         self.mode = mode
-        self._fetch_minute_candles = fetch_minute_candles or _default_fetch_minute_candles
-        self._fetch_quote = fetch_quote or _default_fetch_quote
+        self._kis_client: Any = None
+        self._kis_client_lock = threading.RLock()
+        self._fetch_minute_candles = fetch_minute_candles or self._default_fetch_minute_candles
+        self._fetch_quote = fetch_quote or self._default_fetch_quote
         self._io_lock = threading.RLock()  # single KIS I/O lock — no nested pools, no concurrent KIS calls
         self._history_lock = threading.RLock()
         self._quote_lock = threading.RLock()
@@ -133,6 +112,45 @@ class MarketDataService:
         self._quotes: dict[str, QuoteSnapshot] = {}
         self._quote_updater_thread: Optional[threading.Thread] = None
         self._quote_updater_stop = threading.Event()
+        self._history_updater_thread: Optional[threading.Thread] = None
+        self._history_updater_stop = threading.Event()
+
+    def _get_kis_client(self) -> Any:
+        """Exactly one KIS client per service instance (docs: created once at
+        service start, reused — never re-created per tick/request). Created
+        lazily on the first real network call and cached for every
+        subsequent bootstrap/incremental/quote call this instance makes."""
+        with self._kis_client_lock:
+            if self._kis_client is None:
+                from app.trading.kis_client import create_kis_client
+
+                self._kis_client = create_kis_client(self.mode if self.mode in ("mock", "real") else "mock")
+            return self._kis_client
+
+    def _default_fetch_minute_candles(self, mode: str, symbol: str, count: int, hour1: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """Real KIS call — the one and only network entry point for minute bars."""
+        del mode  # self.mode already selected the shared client via _get_kis_client()
+        client = self._get_kis_client()
+        if client is None:
+            return _empty_1m_frame(), {"error": "kis_client_none"}
+        try:
+            candles = client.get_minute_candles(symbol, period_min=1, count=count, hour1=hour1) or []
+        except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
+            return _empty_1m_frame(), {"error": repr(exc)}
+        df = _candles_to_df(candles)
+        return df, {"received_count": int(len(df))}
+
+    def _default_fetch_quote(self, mode: str, symbol: str) -> tuple[Optional[float], Optional[str]]:
+        """Real KIS call — the one and only network entry point for a live quote."""
+        del mode
+        client = self._get_kis_client()
+        if client is None:
+            return None, "kis_client_none"
+        try:
+            result = client.get_current_price(symbol)
+            return (float(result["current_price"]) if result else None), None
+        except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
+            return None, repr(exc)
 
     # ── history (bootstrap + incremental) ──────────────────────────────
 
@@ -294,3 +312,34 @@ class MarketDataService:
 
     def quote_updater_alive(self) -> bool:
         return bool(self._quote_updater_thread and self._quote_updater_thread.is_alive())
+
+    # ── history updater (background 1m refresh; Worker only reads the cache) ──
+
+    def start_history_updater(self, interval_sec: float = config.WORKER_INTERVAL_SEC) -> None:
+        """Background thread that periodically calls merge_incremental_1m() —
+        the only place that happens now that worker.py no longer triggers it
+        itself (docs: Worker tick에서 KIS network 호출 제거)."""
+        if self._history_updater_thread is not None and self._history_updater_thread.is_alive():
+            return
+        self._history_updater_stop.clear()
+
+        def _loop() -> None:
+            while not self._history_updater_stop.is_set():
+                try:
+                    self.merge_incremental_1m()
+                except Exception:
+                    pass
+                self._history_updater_stop.wait(interval_sec)
+
+        self._history_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-history-updater")
+        self._history_updater_thread.start()
+
+    def stop_history_updater(self, join_timeout: float = 2.0) -> None:
+        self._history_updater_stop.set()
+        thread = self._history_updater_thread
+        if thread is not None:
+            thread.join(timeout=join_timeout)
+        self._history_updater_thread = None
+
+    def history_updater_alive(self) -> bool:
+        return bool(self._history_updater_thread and self._history_updater_thread.is_alive())

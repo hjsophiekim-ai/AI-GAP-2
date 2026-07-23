@@ -67,6 +67,15 @@ class _FakeMarketDataServiceOK:
     def quote_updater_alive(self):
         return self._quote_updater_alive
 
+    def start_history_updater(self, interval_sec=5.0):
+        self._history_updater_alive = True
+
+    def stop_history_updater(self, join_timeout=2.0):
+        self._history_updater_alive = False
+
+    def history_updater_alive(self):
+        return getattr(self, "_history_updater_alive", False)
+
 
 class _FakeMarketDataServiceBootstrapFails(_FakeMarketDataServiceOK):
     def bootstrap(self, now=None):

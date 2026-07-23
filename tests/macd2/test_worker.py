@@ -190,6 +190,124 @@ def _svc_with_quote(df_1m, bootstrap_now, quote_prices):
     return svc
 
 
+def test_entry_blocked_before_0900_open(ready_market_data):
+    svc, now0 = ready_market_data
+    state = _fresh_state()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    early_now = now0.replace(hour=8, minute=59)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=early_now)
+    assert state.position is None
+    assert not any(a.startswith("ENTRY:") for a in result.actions)
+    assert broker.orders == []
+
+
+def test_switch_sell_success_buy_failure_leaves_state_flat():
+    """docs: 스위칭 부분실패 — SELL clears to 0, BUY then fails; state.position
+    must become None immediately (never keep pointing at the already-sold
+    symbol), and no duplicate SELL fires on a later tick."""
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0, config.WATCH_SYMBOL: 100.0}
+    svc = _bootstrapped_sine_service(quote_prices)
+    svc.refresh_quotes()
+
+    state, broker, entry_result, entry_now = _find_first_entry_tick(svc, _SESSION_START_NOW)
+    assert entry_result is not None
+    assert state.position is not None
+    held_symbol = state.position.symbol
+
+    broker.fail_next_buy = True
+    switch_now = None
+    for step in range(1, 60):
+        candidate = entry_now + timedelta(minutes=3 * step)
+        result = run_once(broker=broker, market_data=svc, state=state, now=candidate)
+        if any(a.startswith("OPPOSITE_SIGNAL:") for a in result.actions):
+            switch_now = candidate
+            break
+
+    assert switch_now is not None, "synthetic session never produced a reversal to exercise"
+    assert state.position is None  # flat, not stuck pointing at the sold symbol
+    assert broker.get_position(held_symbol) is None
+
+    orders_before = len(broker.orders)
+    run_once(broker=broker, market_data=svc, state=state, now=switch_now)  # same bar, re-ticked
+    assert len(broker.orders) == orders_before  # no duplicate SELL
+
+
+def test_position_mismatch_blocks_all_orders(ready_market_data):
+    svc, now0 = ready_market_data
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=15_000.0)
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    # Broker's real account disagrees with state.position (state thinks 10 held, broker has 0).
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert result.skipped == worker.POSITION_MISMATCH
+    assert state.order_block_reason == worker.POSITION_MISMATCH
+    assert broker.orders == []
+    assert state.position is not None  # untouched — mismatch blocks orders, does not silently "fix" state
+
+
+def test_day_rollover_resets_session_fields_but_allows_same_direction_signal():
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    df_1m = _1m_frame(prior_day, _sine_1m_closes(300))
+    svc = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m, {}))
+    svc.bootstrap(now=prior_day + timedelta(minutes=300, seconds=5))
+
+    state = _fresh_state()
+    state.session_date = "20260105"
+    state.last_signal_direction = Direction.UP_RED
+    state.last_evaluated_bar_ts = "stale-bar-ts-from-yesterday"
+    state.processed_signal_ids = ["20260105_090300_UP_RED"]
+    state.peak_net_return = 3.3
+    state.profit_lock_active = True
+    broker = FakeBroker(cash=10_000_000.0)
+
+    worker._apply_day_rollover(state, prior_day + timedelta(days=1))
+
+    assert state.session_date == (prior_day + timedelta(days=1)).strftime("%Y%m%d")
+    assert state.last_signal_direction is None
+    assert state.last_evaluated_bar_ts is None
+    assert state.processed_signal_ids == []
+    assert state.peak_net_return == 0.0
+    assert state.profit_lock_active is False
+
+    # The permanent signal ledger is untouched by rollover (a separate CSV,
+    # never cleared) — only the in-state runtime dedup list is reset.
+    ledger.append_signal({
+        "trading_date": "20260105", "completed_bar_at": "090300", "signal_id": "20260105_090300_UP_RED",
+        "signal_type": "INITIAL", "direction": "UP_RED", "macd": 1.0, "signal": 0.5,
+        "hist_last3": "[]", "detected_at": "2026-01-05T09:03:00+09:00",
+        "order_requested_at": "", "order_result": "EXECUTED", "block_reason": "",
+    })
+    assert len(ledger.load_signal_ledger()) == 1  # still there after rollover
+
+
+def test_worker_tick_never_calls_market_data_network_fetchers():
+    """docs: Worker tick에서 KIS network 호출 제거 — run_once() must read the
+    already-cached history via get_history_df() only, never trigger a new
+    fetch_minute_candles call itself (that is now the history-updater
+    thread's job)."""
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    fetch_calls = {"n": 0}
+
+    def counting_fetch(mode, symbol, count, hour1):
+        fetch_calls["n"] += 1
+        return _1m_frame(prior_day, _sine_1m_closes(300)), {}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=counting_fetch)
+    svc.bootstrap(now=prior_day + timedelta(minutes=300, seconds=5))
+    calls_after_bootstrap = fetch_calls["n"]
+    assert calls_after_bootstrap >= 1
+
+    state = _fresh_state()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    for step in range(10):
+        run_once(broker=broker, market_data=svc, state=state, now=prior_day + timedelta(minutes=300 + step, seconds=5))
+
+    assert fetch_calls["n"] == calls_after_bootstrap  # zero additional network fetches from ticking
+
+
 def test_stop_loss_exits_full_position():
     prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
     df_1m = _1m_frame(prior_day, _sine_1m_closes(300))

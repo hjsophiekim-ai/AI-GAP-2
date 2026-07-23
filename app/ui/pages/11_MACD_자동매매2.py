@@ -71,7 +71,17 @@ with c3:
         masked = None
     st.metric("계좌", masked or "(미설정)")
 with c4:
-    st.metric("주문 가능", "YES" if state.auto_trade_on else "NO")
+    # auto_trade_on is a persisted flag and can survive a Streamlit process
+    # restart with no Worker actually re-started in this process — never show
+    # order-ready from the flag alone (docs: Worker 부재+auto_trade_on=True는
+    # STALLED로 표시).
+    _worker_alive = bool(service.supervisor_status().get("worker_alive"))
+    if state.auto_trade_on and _worker_alive:
+        st.metric("주문 가능", "YES")
+    elif state.auto_trade_on:
+        st.metric("주문 가능", "STALLED")
+    else:
+        st.metric("주문 가능", "NO")
 
 real_kwargs = {}
 if mode == "real":
