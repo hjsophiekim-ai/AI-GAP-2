@@ -51,6 +51,9 @@ st.caption(
 cfg = get_config()
 state = om.load_state()
 wstatus = worker.ensure_worker_running()
+# Re-read after ensure — stall recover may have rewritten worker heartbeat fields.
+state = om.load_state()
+_stall = worker.detect_worker_stall(state=state, status=wstatus)
 
 if state.get("stale_worker") or wstatus.get("stale_worker"):
     st.error(
@@ -62,6 +65,22 @@ if state.get("stale_worker") or wstatus.get("stale_worker"):
     )
 elif state.get("primary_block_reason") == "STALE_WORKER":
     st.error("STALE_WORKER — 워커가 구버전 바이트코드를 감지해 재시작을 요청했습니다. Stop→Start.")
+elif (
+    wstatus.get("recovered_stall")
+    or state.get("primary_block_reason") == "WORKER_STALLED"
+    or (state.get("worker") or {}).get("stalled")
+    or _stall.get("stalled")
+):
+    st.error(
+        f"WORKER_STALLED — 5초 틱이 멈췄습니다 "
+        f"(reason=`{_stall.get('stall_reason') or (state.get('worker') or {}).get('stall_reason') or wstatus.get('stall_reason')}` · "
+        f"age=`{_stall.get('tick_age_sec')}`s). "
+        f"워커를 자동 재시작했습니다. 계속되면 Stop→Start."
+    )
+    # Clear sticky banner once ticks are fresh again.
+    if not _stall.get("stalled") and state.get("primary_block_reason") == "WORKER_STALLED":
+        state["primary_block_reason"] = None
+        om.save_state(state)
 
 # ── Controls ──────────────────────────────────────────────────────────────
 st.subheader("계좌 / 제어")
@@ -227,9 +246,26 @@ if state.get("auto_trade_on"):
 else:
     st.caption("전략 OFF — Worker가 살아 있어도 자동매매 실행 중이 아닙니다.")
 
+# Bootstrap warm-up diagnostics (off hot-path)
+_boot = state.get("bootstrap") or {}
+_op = state.get("opening_probe") or {}
+st.subheader("Bootstrap / Warm-up")
+b1, b2, b3, b4, b5 = st.columns(5)
+b1.metric("bootstrap", str(_boot.get("status") or "-"))
+b2.metric("warmup_ready", "YES" if _op.get("warmup_ready") or _boot.get("ok") else "NO")
+b3.metric("1m bars", str(_boot.get("received_1m_bars") or (_boot.get("live") or {}).get("received_1m_bars") or "-"))
+b4.metric("3m count", str(_boot.get("completed_3m_count") or "-"))
+b5.metric("elapsed_s", str(_boot.get("elapsed_sec") or "-"))
+st.caption(
+    f"kis_requests=`{_boot.get('kis_requests')}` · reason=`{_boot.get('reason')}` · "
+    f"range=`{(_boot.get('time_range') or {})}` · "
+    f"tick_phases=`{state.get('tick_phases')}`"
+)
+
 # ── Diagnostics ───────────────────────────────────────────────────────────
 st.subheader("현재 진단")
-light = state.get("display_direction") or DIR_HOLD
+_cs = state.get("completed_signal") or {}
+light = _cs.get("flag") or state.get("display_direction") or DIR_HOLD
 if light == DIR_UP:
     light_label = "🔴 빨간불 (UP_RED)"
 elif light == DIR_DOWN:
@@ -375,11 +411,21 @@ st.write(
 _ol = state.get("order_latency") or {}
 st.subheader("신호·주문 라이프사이클")
 sf1, sf2, sf3, sf4 = st.columns(4)
-sf1.metric("current_flag", str(state.get("current_flag") or state.get("display_direction") or "-"))
+sf1.metric("current_flag", str((_cs.get("flag") if _cs else None) or state.get("current_flag") or state.get("display_direction") or "-"))
 sf2.metric("signal_type", str(state.get("signal_type") or "-"))
-sf3.metric("signal_id", str(state.get("signal_id") or state.get("last_signal_id") or state.get("pending_signal_id") or "-")[:36])
+sf3.metric(
+    "signal_id",
+    str(
+        (_cs.get("signal_id") if _cs else None)
+        or state.get("signal_id")
+        or state.get("last_signal_id")
+        or state.get("pending_signal_id")
+        or "-"
+    )[:36],
+)
 sf4.metric("duplicate_block", str(state.get("duplicate_block_reason") or "-")[:36])
 st.write(
+    f"completed_bar_at=`{(_cs.get('completed_bar_at') if _cs else None) or state.get('completed_3m_bar_at')}` · "
     f"armed_at=`{state.get('armed_at') or state.get('pending_signal_at')}` · "
     f"order_requested_at=`{state.get('order_requested_at') or _ol.get('order_requested_at')}` · "
     f"broker_executed_at=`{state.get('broker_executed_at') or _ol.get('broker_executed_at')}` · "
@@ -398,13 +444,32 @@ if _dt:
     )
 
 ww = state.get("worker") or {}
+_tick_seq = (
+    ww.get("tick_seq")
+    if ww.get("tick_seq") is not None
+    else (ww.get("tick_n") if ww.get("tick_n") is not None else wstatus.get("tick_seq") or wstatus.get("tick_n"))
+)
+_buf_len = ww.get("intervals_buf_len")
+if _buf_len is None:
+    _buf_len = len(ww.get("tick_intervals") or wstatus.get("tick_intervals") or [])
 st.write(
     f"Worker alive=`{ww.get('alive') or wstatus.get('alive')}` · "
+    f"**tick_seq=`{_tick_seq}`** (monotonic, never capped) · "
+    f"intervals_buf=`{_buf_len}`/{ww.get('intervals_buf_cap') or wstatus.get('intervals_buf_cap') or 40} "
+    f"(cadence window only — NOT tick count) · "
     f"last_tick=`{ww.get('last_tick_at') or wstatus.get('last_tick_at')}` · "
-    f"intervals={ww.get('tick_intervals') or wstatus.get('tick_intervals')} · "
+    f"age=`{wstatus.get('tick_age_sec') if wstatus.get('tick_age_sec') is not None else _stall.get('tick_age_sec')}`s · "
+    f"watchdog=`{wstatus.get('watchdog_alive')}` · "
+    f"sha=`{state.get('worker_code_sha') or wstatus.get('worker_code_sha')}` · "
+    f"run_once_hash=`{ww.get('run_once_source_hash') or wstatus.get('run_once_source_hash')}` · "
     f"avg={ww.get('avg_interval') or wstatus.get('avg_interval')} · "
     f"p95={ww.get('p95_interval') or wstatus.get('p95_interval')}"
 )
+if ww.get("last_error") or wstatus.get("primary_error") or wstatus.get("last_error"):
+    st.caption(
+        f"worker last_error=`{ww.get('last_error') or wstatus.get('last_error')}` · "
+        f"primary_error=`{state.get('primary_error') or wstatus.get('primary_error')}`"
+    )
 st.write(
     f"signal_detected_at=`{ww.get('signal_detected_at') or _ol.get('signal_detected_at')}` · "
     f"order_requested_at=`{ww.get('order_requested_at') or state.get('order_requested_at') or _ol.get('order_requested_at')}` · "

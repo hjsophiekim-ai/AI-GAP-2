@@ -4,13 +4,14 @@ Does not call Enhanced / WOC / Early / Active / Fusion / Regime / Prediction.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import importlib
 import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -56,6 +57,12 @@ from app.trading.macd_hynix_order_manager import SIGNAL_SOURCE
 
 KST = ZoneInfo("Asia/Seoul")
 TICK_SECONDS = 5.0
+# Stall if no heartbeat for this long while strategy is on (2–3 missed 5s ticks).
+TICK_STALL_SEC = 15.0
+# Bound KIS I/O so a hung quote/minute call cannot freeze the 5s loop forever.
+KIS_CALL_TIMEOUT_SEC = 8.0
+# Cadence diagnostics only — NEVER use this length as tick count (UI looked "frozen" at 40).
+INTERVAL_HISTORY_MAX = 40
 SESSION_START = (9, 0)
 NO_NEW_SWITCH_AFTER = (14, 55)
 FORCE_LIQUIDATE_AT = (15, 0)
@@ -63,7 +70,10 @@ FORCE_LIQUIDATE_AT = (15, 0)
 WARMUP_LOOKBACK_DAYS = 8
 KIS_MINUTE_API = "inquire-time-itemchartprice"
 
+_T = TypeVar("_T")
+
 _worker_thread: Optional[threading.Thread] = None
+_watchdog_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 _wake_event = threading.Event()
 _status_lock = threading.Lock()
@@ -71,19 +81,54 @@ _status: dict[str, Any] = {
     "alive": False,
     "last_tick_at": None,
     "tick_intervals": [],
+    "tick_n": 0,
+    "tick_seq": 0,
     "started_at": None,
     "last_error": None,
+    "primary_error": None,
     "main_cycle_3m_wait_count": 0,
     "thread_ident": None,
     "force_restarted_at": None,
     "modules_reloaded_at": None,
     "stale_worker": False,
+    "stalled": False,
+    "stall_reason": None,
+    "stall_recovered_at": None,
+    "run_once_source_hash": None,
 }
 _tick_counter = 0
 _LOADED_MODULE_DIGEST = ""
 _LOADED_GIT_SHA = ""
+_RUN_ONCE_SRC_HASH = ""
 _STALE_CHECK_EVERY_N_TICKS = 6  # ~30s at 5s ticks
 _ZOMBIE_PENDING_SEC = 45.0
+_WATCHDOG_INTERVAL_SEC = 5.0
+_recover_lock = threading.Lock()
+_last_stall_recover_mono = 0.0
+# Shared pool for bounded KIS calls (workers stay small; avoid per-tick thread storms).
+_kis_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="macd-kis"
+)
+
+
+def _run_once_source_hash() -> str:
+    """Hash of run_once source — proves which tick body is loaded (cached)."""
+    global _RUN_ONCE_SRC_HASH
+    if _RUN_ONCE_SRC_HASH:
+        return _RUN_ONCE_SRC_HASH
+    try:
+        import inspect
+
+        src = inspect.getsource(run_once)
+        _RUN_ONCE_SRC_HASH = hashlib.sha1(src.encode("utf-8")).hexdigest()[:12]
+        return _RUN_ONCE_SRC_HASH
+    except Exception:
+        return ""
+
+
+def _invalidate_run_once_hash() -> None:
+    global _RUN_ONCE_SRC_HASH
+    _RUN_ONCE_SRC_HASH = ""
 
 
 def _file_digest(path: Path) -> str:
@@ -108,8 +153,11 @@ def _capture_loaded_identity() -> dict[str, str]:
     """Record identity of bytecode currently loaded in this process."""
     global _LOADED_MODULE_DIGEST, _LOADED_GIT_SHA
     _LOADED_MODULE_DIGEST = _stack_module_digest()
-    _LOADED_GIT_SHA = om._git_sha() or ""
+    # Cache once — never spawn git on every 5s tick (empty string must not re-trigger).
+    sha = om._git_sha() or "unknown"
+    _LOADED_GIT_SHA = sha
     return {"module_digest": _LOADED_MODULE_DIGEST, "git_sha": _LOADED_GIT_SHA}
+
 
 
 def worker_identity() -> dict[str, Any]:
@@ -142,12 +190,17 @@ def reload_macd_trading_stack(*, reason: str = "manual") -> dict[str, Any]:
 
     ``force_restart`` alone is NOT enough after ``git pull``: the daemon keeps the
     already-imported bytecode. Start / stale-gate must call this.
+
+    Never ``join`` the current thread (stale detection inside the worker used to
+    deadlock on self-join for the join timeout window).
     """
     global _worker_thread
     stop_worker()
-    if _worker_thread and _worker_thread.is_alive():
+    cur = threading.current_thread()
+    if _worker_thread and _worker_thread.is_alive() and _worker_thread is not cur:
         _worker_thread.join(timeout=3.0)
-    _worker_thread = None
+    if _worker_thread is not cur:
+        _worker_thread = None
     _stop_event.clear()
 
     import app.trading.macd_hynix_order_manager as om_mod
@@ -158,10 +211,12 @@ def reload_macd_trading_stack(*, reason: str = "manual") -> dict[str, Any]:
     importlib.reload(om_mod)
     reloaded = importlib.reload(worker_mod)
     ident = reloaded._capture_loaded_identity()
+    reloaded._invalidate_run_once_hash()
     with reloaded._status_lock:
         reloaded._status["modules_reloaded_at"] = datetime.now().isoformat()
         reloaded._status["stale_worker"] = False
         reloaded._status["reload_reason"] = reason
+        reloaded._status["run_once_source_hash"] = reloaded._run_once_source_hash()
     logger.warning(
         "[MACDHynix] trading stack reloaded reason=%s digest=%s git=%s",
         reason,
@@ -169,6 +224,234 @@ def reload_macd_trading_stack(*, reason: str = "manual") -> dict[str, Any]:
         ident.get("git_sha"),
     )
     return {"ok": True, "reason": reason, **ident}
+
+
+def _call_with_timeout(
+    fn: Callable[[], _T],
+    *,
+    timeout_sec: float = KIS_CALL_TIMEOUT_SEC,
+    label: str = "kis_call",
+) -> tuple[Optional[_T], Optional[str]]:
+    """Run ``fn`` in the shared pool; on timeout/error return (None, reason)."""
+    try:
+        fut = _kis_executor.submit(fn)
+        return fut.result(timeout=timeout_sec), None
+    except concurrent.futures.TimeoutError:
+        logger.warning("[MACDHynix] %s timed out after %.1fs — skip", label, timeout_sec)
+        return None, f"TIMEOUT_{timeout_sec:.0f}s:{label}"
+    except Exception as exc:
+        logger.warning("[MACDHynix] %s failed: %s", label, exc)
+        return None, f"{label}:{exc}"
+
+
+def _parse_tick_at(raw: Any) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw))
+    except Exception:
+        return None
+
+
+def tick_age_sec(last_tick_at: Any = None) -> Optional[float]:
+    """Seconds since last heartbeat (in-memory status preferred)."""
+    if last_tick_at is None:
+        with _status_lock:
+            last_tick_at = _status.get("last_tick_at")
+    ts = _parse_tick_at(last_tick_at)
+    if ts is None:
+        return None
+    return max(0.0, (datetime.now() - ts).total_seconds())
+
+
+def detect_worker_stall(
+    *,
+    state: Optional[dict[str, Any]] = None,
+    status: Optional[dict[str, Any]] = None,
+    stall_sec: float = TICK_STALL_SEC,
+) -> dict[str, Any]:
+    """Return stall diagnostics. Stalled when strategy is on and ticks are dead/frozen."""
+    st = state if state is not None else om.load_state()
+    wst = status if status is not None else get_worker_status()
+    strategy_on = bool(
+        st.get("strategy_enabled")
+        or st.get("auto_trade_on")
+        or st.get("force_liquidate_pending")
+    )
+    thread_alive = bool(wst.get("thread_alive"))
+    last_tick = wst.get("last_tick_at") or (st.get("worker") or {}).get("last_tick_at")
+    age = tick_age_sec(last_tick)
+    reason: Optional[str] = None
+    stalled = False
+    if strategy_on:
+        if not thread_alive:
+            stalled = True
+            reason = "WORKER_THREAD_DEAD"
+        elif age is None:
+            # Strategy on but never heartbeated after start — treat as stall after grace.
+            started = _parse_tick_at(wst.get("started_at") or (st.get("worker") or {}).get("started_at"))
+            if started is not None and (datetime.now() - started).total_seconds() > stall_sec:
+                stalled = True
+                reason = "WORKER_NO_HEARTBEAT"
+        elif age > stall_sec:
+            stalled = True
+            reason = "WORKER_TICK_STALE"
+    return {
+        "stalled": stalled,
+        "stall_reason": reason,
+        "strategy_on": strategy_on,
+        "thread_alive": thread_alive,
+        "last_tick_at": last_tick,
+        "tick_age_sec": round(age, 3) if age is not None else None,
+        "stall_sec": stall_sec,
+        "tick_n": wst.get("tick_n") if wst.get("tick_n") is not None else (st.get("worker") or {}).get("tick_n"),
+    }
+
+
+def _persist_heartbeat(
+    *,
+    tick_n: int,
+    intervals: Optional[list[float]] = None,
+    error: Optional[str] = None,
+    partial: bool = False,
+) -> str:
+    """Always refresh last_tick_at (even on partial/failed ticks). Returns ISO timestamp.
+
+    ``tick_n`` / ``tick_seq`` are monotonic counters — never capped.
+    ``tick_intervals`` is a rolling cadence window of size INTERVAL_HISTORY_MAX only.
+    """
+    now_iso = datetime.now().isoformat()
+    src_hash = _run_once_source_hash()
+    with _status_lock:
+        _status["alive"] = True
+        _status["last_tick_at"] = now_iso
+        _status["tick_n"] = int(tick_n)
+        _status["tick_seq"] = int(tick_n)
+        _status["stalled"] = False
+        _status["stall_reason"] = None
+        _status["run_once_source_hash"] = src_hash
+        if error is not None:
+            _status["last_error"] = error
+            _status["primary_error"] = error
+        iv = list(intervals if intervals is not None else (_status.get("tick_intervals") or []))
+    try:
+        state = om.load_state()
+        w = state.setdefault("worker", {})
+        w["alive"] = True
+        w["last_tick_at"] = now_iso
+        w["tick_n"] = int(tick_n)
+        w["tick_seq"] = int(tick_n)
+        w["tick_intervals"] = [round(x, 3) for x in iv[-INTERVAL_HISTORY_MAX:]]
+        w["intervals_buf_len"] = len(w["tick_intervals"])
+        w["intervals_buf_cap"] = INTERVAL_HISTORY_MAX
+        w["avg_interval"] = _avg(iv[-20:])
+        w["p95_interval"] = _p95(iv[-20:])
+        w["main_cycle_3m_wait_count"] = 0
+        w["run_once_source_hash"] = src_hash
+        if error is not None:
+            w["last_error"] = error
+            state["primary_error"] = error
+        if partial and error:
+            if not state.get("primary_block_reason"):
+                state["primary_block_reason"] = "TICK_PARTIAL_ERROR"
+        elif state.get("primary_block_reason") in ("WORKER_STALLED", "TICK_PARTIAL_ERROR"):
+            state["primary_block_reason"] = None
+        state["worker_code_sha"] = _LOADED_GIT_SHA or "unknown"
+        state["module_digest"] = _LOADED_MODULE_DIGEST
+        om.save_state(state)
+    except Exception as exc:
+        logger.warning("[MACDHynix] heartbeat persist failed: %s", exc)
+    return now_iso
+
+
+def recover_stalled_worker(*, reason: str = "stall_watchdog") -> dict[str, Any]:
+    """Reload modules + force-restart worker thread after a detected stall."""
+    global _last_stall_recover_mono
+    with _recover_lock:
+        now_m = time.monotonic()
+        # Cooldown so UI refresh + watchdog don't thrash restarts.
+        if now_m - _last_stall_recover_mono < 8.0:
+            return {"ok": False, "skipped": "recover_cooldown", "reason": reason}
+        _last_stall_recover_mono = now_m
+
+    logger.error("[MACDHynix] WORKER_STALLED recover reason=%s — reload+restart", reason)
+    try:
+        st = om.load_state()
+        st["primary_block_reason"] = "WORKER_STALLED"
+        w = st.setdefault("worker", {})
+        w["stalled"] = True
+        w["stall_reason"] = reason
+        om.save_state(st)
+    except Exception:
+        pass
+
+    # Prefer out-of-band reload when called from the worker thread itself.
+    cur = threading.current_thread()
+    if _worker_thread is cur:
+        def _deferred() -> None:
+            time.sleep(0.15)
+            try:
+                reload_macd_trading_stack(reason=reason)
+                import app.trading.macd_hynix_worker as wmod
+
+                wmod._start_worker_thread_only()
+                wmod._ensure_watchdog_running()
+                with wmod._status_lock:
+                    wmod._status["stall_recovered_at"] = datetime.now().isoformat()
+                    wmod._status["stalled"] = False
+            except Exception:
+                logger.exception("[MACDHynix] deferred stall recover failed")
+
+        threading.Thread(target=_deferred, name="macd-stall-recover", daemon=True).start()
+        return {"ok": True, "deferred": True, "reason": reason}
+
+    reload_macd_trading_stack(reason=reason)
+    import app.trading.macd_hynix_worker as wmod
+
+    status = wmod._start_worker_thread_only()
+    wmod._ensure_watchdog_running()
+    with wmod._status_lock:
+        wmod._status["stall_recovered_at"] = datetime.now().isoformat()
+        wmod._status["stalled"] = False
+        wmod._status["stall_reason"] = None
+    try:
+        st = om.load_state()
+        st["primary_block_reason"] = None
+        w = st.setdefault("worker", {})
+        w["stalled"] = False
+        w["stall_reason"] = None
+        w["stall_recovered_at"] = datetime.now().isoformat()
+        om.save_state(st)
+    except Exception:
+        pass
+    return {"ok": True, "deferred": False, "reason": reason, "status": status}
+
+
+def _watchdog_loop() -> None:
+    logger.info("[MACDHynix] stall watchdog started (every %.1fs, stall>%.1fs)", _WATCHDOG_INTERVAL_SEC, TICK_STALL_SEC)
+    while not _stop_event.is_set():
+        if _stop_event.wait(timeout=_WATCHDOG_INTERVAL_SEC):
+            break
+        try:
+            info = detect_worker_stall()
+            if info.get("stalled"):
+                with _status_lock:
+                    _status["stalled"] = True
+                    _status["stall_reason"] = info.get("stall_reason")
+                recover_stalled_worker(reason=str(info.get("stall_reason") or "WORKER_STALLED"))
+        except Exception:
+            logger.exception("[MACDHynix] watchdog iteration failed")
+    logger.info("[MACDHynix] stall watchdog stopped")
+
+
+def _ensure_watchdog_running() -> None:
+    global _watchdog_thread
+    if _watchdog_thread and _watchdog_thread.is_alive():
+        return
+    _watchdog_thread = threading.Thread(
+        target=_watchdog_loop, name="macd-hynix-watchdog", daemon=True
+    )
+    _watchdog_thread.start()
 
 
 # Capture identity at first import (updated again after reload).
@@ -222,18 +505,30 @@ def get_worker_status() -> dict[str, Any]:
     with _status_lock:
         intervals = list(_status.get("tick_intervals") or [])
         tid = int(_worker_thread.ident) if _worker_thread and _worker_thread.ident else None
-        ident = worker_identity()
-        return {
-            **dict(_status),
-            "tick_intervals": intervals[-40:],
-            "avg_interval": _avg(intervals[-20:]),
-            "p95_interval": _p95(intervals[-20:]),
-            "main_cycle_3m_wait_count": int(_status.get("main_cycle_3m_wait_count") or 0),
-            "thread_alive": bool(_worker_thread and _worker_thread.is_alive()),
-            "thread_ident": tid,
-            "thread_name": _worker_thread.name if _worker_thread else None,
-            **ident,
-        }
+        snap = dict(_status)
+        last_tick = snap.get("last_tick_at")
+    ident = worker_identity()
+    age = tick_age_sec(last_tick)
+    tick_n = int(snap.get("tick_n") or 0)
+    return {
+        **snap,
+        "tick_intervals": intervals[-INTERVAL_HISTORY_MAX:],
+        "intervals_buf_len": len(intervals[-INTERVAL_HISTORY_MAX:]),
+        "intervals_buf_cap": INTERVAL_HISTORY_MAX,
+        "avg_interval": _avg(intervals[-20:]),
+        "p95_interval": _p95(intervals[-20:]),
+        "main_cycle_3m_wait_count": int(snap.get("main_cycle_3m_wait_count") or 0),
+        "tick_n": tick_n,
+        "tick_seq": int(snap.get("tick_seq") or tick_n),
+        "thread_alive": bool(_worker_thread and _worker_thread.is_alive()),
+        "thread_ident": tid,
+        "thread_name": _worker_thread.name if _worker_thread else None,
+        "watchdog_alive": bool(_watchdog_thread and _watchdog_thread.is_alive()),
+        "tick_age_sec": round(age, 3) if age is not None else None,
+        "run_once_source_hash": snap.get("run_once_source_hash") or _run_once_source_hash(),
+        "worker_code_sha": _LOADED_GIT_SHA or "unknown",
+        **ident,
+    }
 
 
 def _load_minute_df(mode: str, count: int = 120) -> pd.DataFrame:
@@ -352,109 +647,237 @@ def _load_prior_history_1m(now: datetime) -> tuple[pd.DataFrame, dict[str, Any]]
     }
 
 
-def _fetch_kis_minute_1m(mode: str, count: int, today: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Live KIS 1m bars for 000660 (today session). Uses stck_bsop_date when present."""
+# In-memory day history — bootstrap once, incremental merge on ticks (never re-fetch 300 bars).
+_HISTORY_CACHE: dict[str, Any] = {
+    "session_date": None,
+    "df_1m": None,
+    "bootstrap_ok": False,
+    "bootstrap_at": None,
+    "bootstrap_elapsed_sec": None,
+    "diag": {},
+}
+_history_lock = threading.Lock()
+HOT_QUOTE_TIMEOUT_SEC = 3.0
+HOT_MINUTE_TIMEOUT_SEC = 4.0
+KIS_PAGE_SIZE = 30
+KIS_MAX_PAGES = 12  # ≤360 bars if each page is full
+
+
+def _candles_to_df(candles: list, today: str) -> pd.DataFrame:
     rows: list[dict] = []
-    err: Optional[str] = None
+    for c in candles or []:
+        hhmmss = str(c.get("time") or "").strip().replace(":", "")
+        if len(hhmmss) < 6:
+            continue
+        hhmmss = hhmmss[:6]
+        raw_date = str(c.get("date") or "").strip().replace("-", "")
+        if len(raw_date) >= 8 and raw_date[:8].isdigit():
+            ymd = raw_date[:8]
+        else:
+            ymd = str(today).replace("-", "")[:8]
+        try:
+            ts = datetime.strptime(f"{ymd}{hhmmss}", "%Y%m%d%H%M%S")
+        except ValueError:
+            continue
+        rows.append({
+            "datetime": ts,
+            "open": float(c.get("open") or 0),
+            "high": float(c.get("high") or 0),
+            "low": float(c.get("low") or 0),
+            "close": float(c.get("close") or 0),
+            "volume": int(c.get("volume") or 0),
+        })
+    if not rows:
+        return pd.DataFrame()
+    return (
+        pd.DataFrame(rows)
+        .drop_duplicates("datetime")
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+
+
+def _fetch_kis_minute_1m(
+    mode: str,
+    count: int,
+    today: str,
+    *,
+    hour1: str = "",
+    timeout_sec: float = KIS_CALL_TIMEOUT_SEC,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """One KIS 1m page for 000660 (≈30 bars). Optional ``hour1`` for pagination."""
+    rows_err: Optional[str] = None
     requested = int(count)
     try:
         from app.trading.kis_client import create_kis_client
 
         client = create_kis_client(mode if mode in ("mock", "real") else "mock")
         if client is None:
-            err = "kis_client_none"
+            rows_err = "kis_client_none"
+            candles: list = []
         else:
-            candles = client.get_minute_candles(SIGNAL_SYMBOL, period_min=1, count=count) or []
-            for c in candles:
-                hhmmss = str(c.get("time") or "").strip().replace(":", "")
-                if len(hhmmss) < 6:
-                    continue
-                hhmmss = hhmmss[:6]
-                raw_date = str(c.get("date") or "").strip().replace("-", "")
-                if len(raw_date) >= 8 and raw_date[:8].isdigit():
-                    ymd = raw_date[:8]
-                else:
-                    # ``today`` may be ISO (YYYY-MM-DD); strip to YYYYMMDD for strptime.
-                    ymd = str(today).replace("-", "")[:8]
-                try:
-                    ts = datetime.strptime(f"{ymd}{hhmmss}", "%Y%m%d%H%M%S")
-                except ValueError:
-                    continue
-                rows.append({
-                    "datetime": ts,
-                    "open": float(c.get("open") or 0),
-                    "high": float(c.get("high") or 0),
-                    "low": float(c.get("low") or 0),
-                    "close": float(c.get("close") or 0),
-                    "volume": int(c.get("volume") or 0),
-                })
+            def _pull():
+                return client.get_minute_candles(
+                    SIGNAL_SYMBOL, period_min=1, count=count, hour1=hour1
+                ) or []
+
+            candles, to_err = _call_with_timeout(
+                _pull, timeout_sec=timeout_sec, label=f"get_minute_candles:{hour1 or 'latest'}"
+            )
+            if to_err:
+                rows_err = to_err
+                candles = []
     except Exception as exc:
-        err = str(exc)
+        rows_err = str(exc)
+        candles = []
         logger.warning("[MACDHynix] minute fetch failed: %s", exc)
 
-    df = pd.DataFrame()
-    if rows:
-        df = (
-            pd.DataFrame(rows)
-            .drop_duplicates("datetime")
-            .sort_values("datetime")
-            .reset_index(drop=True)
-        )
+    df = _candles_to_df(candles or [], today)
     t0 = pd.Timestamp(df["datetime"].iloc[0]).isoformat() if len(df) else None
     t1 = pd.Timestamp(df["datetime"].iloc[-1]).isoformat() if len(df) else None
     return df, {
         "api_name": KIS_MINUTE_API,
         "requested_1m_bars": requested,
         "received_1m_bars": int(len(df)),
+        "hour1": hour1 or "",
         "time_range": {"first": t0, "last": t1},
-        "failure_reason": err,
+        "failure_reason": rows_err,
     }
 
 
-def load_macd_minute_history(
+def _fetch_kis_minute_paged(
     mode: str,
+    today: str,
     *,
-    count: int = 120,
-    now: Optional[datetime] = None,
+    target_bars: int = 120,
+    timeout_sec: float = HOT_MINUTE_TIMEOUT_SEC,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Prior-day warm-up 1m + live/today 1m merged for MACD EMA / signals.
+    """Page KIS minute API backwards until ``target_bars`` or max pages."""
+    pages: list[pd.DataFrame] = []
+    page_diags: list[dict] = []
+    hour1 = ""
+    for page_i in range(KIS_MAX_PAGES):
+        part, diag = _fetch_kis_minute_1m(
+            mode, KIS_PAGE_SIZE, today, hour1=hour1, timeout_sec=timeout_sec
+        )
+        diag = {**diag, "page": page_i + 1}
+        page_diags.append(diag)
+        if part.empty:
+            break
+        pages.append(part)
+        merged = (
+            pd.concat(pages, ignore_index=True)
+            .drop_duplicates("datetime")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+        )
+        if len(merged) >= target_bars:
+            pages = [merged]
+            break
+        # Oldest bar time → next page cursor
+        oldest = pd.Timestamp(part["datetime"].iloc[0])
+        next_h = oldest.strftime("%H%M%S")
+        if next_h == hour1:
+            break
+        hour1 = next_h
+        # Brief pause to respect KIS rate limits during bootstrap only
+        time.sleep(0.05)
+    if not pages:
+        return pd.DataFrame(), {
+            "api_name": KIS_MINUTE_API,
+            "pages": page_diags,
+            "kis_requests": len(page_diags),
+            "received_1m_bars": 0,
+            "failure_reason": page_diags[-1].get("failure_reason") if page_diags else "NO_PAGES",
+        }
+    df = (
+        pd.concat(pages, ignore_index=True)
+        .drop_duplicates("datetime")
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+    t0 = pd.Timestamp(df["datetime"].iloc[0]).isoformat() if len(df) else None
+    t1 = pd.Timestamp(df["datetime"].iloc[-1]).isoformat() if len(df) else None
+    return df, {
+        "api_name": KIS_MINUTE_API,
+        "pages": page_diags,
+        "kis_requests": len(page_diags),
+        "requested_1m_bars": target_bars,
+        "received_1m_bars": int(len(df)),
+        "time_range": {"first": t0, "last": t1},
+        "failure_reason": None,
+    }
 
-    Always preloads prior trading-day history first so open does not wait for
-    ~78 minutes of same-day bars (WARMUP_LT_26).
+
+def bootstrap_macd_history(
+    mode: str = "mock",
+    *,
+    now: Optional[datetime] = None,
+    state: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """OFF hot-path warm-up: prior-day ≥300×1m + paged today KIS → ≥100 completed 3m.
+
+    Stores result in ``_HISTORY_CACHE`` and state.bootstrap. Orders stay blocked
+    until ``bootstrap_ok`` / warmup_ready.
     """
     now = now or _now_kst()
     today = now.strftime("%Y-%m-%d")
-    prior_df, prior_diag = _load_prior_history_1m(now)
-    live_df, live_diag = _fetch_kis_minute_1m(mode, count, today)
+    t0 = time.monotonic()
+    state = state if state is not None else om.load_state()
+    boot = state.setdefault("bootstrap", {})
+    boot.update({
+        "status": "RUNNING",
+        "started_at": datetime.now().isoformat(),
+        "session_date": today,
+        "kis_requests": 0,
+        "received_1m_bars": 0,
+        "completed_3m_count": 0,
+        "ok": False,
+        "reason": None,
+    })
+    om.save_state(state)
 
-    # Cache fallback when KIS empty (typical pre-open)
-    cache_diag: dict[str, Any] = {"used": False}
+    prior_df, prior_diag = _load_prior_history_1m(now)
+    # Prefer local prior; page KIS for today (and fill if prior short).
+    live_df, live_diag = _fetch_kis_minute_paged(
+        mode, today, target_bars=max(120, WARMUP_1M_BARS // 2), timeout_sec=HOT_MINUTE_TIMEOUT_SEC
+    )
     if live_df.empty:
         from app.utils.data_paths import CACHE_DIR
 
         cache = CACHE_DIR / "hynix_minute_1m.csv"
         if cache.exists():
-            cached = _read_1m_csv(cache)
-            if not cached.empty:
-                live_df = cached
-                cache_diag = {
-                    "used": True,
-                    "path": str(cache),
-                    "received_1m_bars": int(len(cached)),
-                }
+            live_df = _read_1m_csv(cache)
+            live_diag = {
+                **live_diag,
+                "cache_fallback": str(cache),
+                "received_1m_bars": int(len(live_df)),
+            }
 
     frames = [f for f in (prior_df, live_df) if f is not None and not f.empty]
     if not frames:
-        diag = {
-            "api_name": KIS_MINUTE_API,
+        elapsed = round(time.monotonic() - t0, 3)
+        boot.update({
+            "status": "FAILED",
+            "ok": False,
+            "reason": "NO_1M_BARS",
+            "elapsed_sec": elapsed,
             "prior": prior_diag,
             "live": live_diag,
-            "cache": cache_diag,
-            "received_1m_bars": 0,
-            "completed_3m_count": 0,
-            "failure_reason": "NO_1M_BARS",
-        }
-        return pd.DataFrame(), diag
+            "finished_at": datetime.now().isoformat(),
+        })
+        with _history_lock:
+            _HISTORY_CACHE.update({
+                "session_date": today,
+                "df_1m": pd.DataFrame(),
+                "bootstrap_ok": False,
+                "bootstrap_at": datetime.now().isoformat(),
+                "bootstrap_elapsed_sec": elapsed,
+                "diag": {"prior": prior_diag, "live": live_diag},
+            })
+        state["bootstrap"] = boot
+        om.save_state(state)
+        return boot
 
     df = (
         pd.concat(frames, ignore_index=True)
@@ -462,25 +885,145 @@ def load_macd_minute_history(
         .sort_values("datetime")
         .reset_index(drop=True)
     )
+    # Keep a generous window but not unbounded
+    if len(df) > WARMUP_1M_BARS + 120:
+        df = df.tail(WARMUP_1M_BARS + 120).reset_index(drop=True)
     bars3 = resample_completed_3m(df, now=now)
+    elapsed = round(time.monotonic() - t0, 3)
+    ok = len(bars3) >= WARMUP_3M_BARS
+    reason = None if ok else (
+        f"WARMUP_LT_{WARMUP_3M_BARS}" if len(bars3) >= 3 else "DATA_INSUFFICIENT"
+    )
+    t_first = pd.Timestamp(df["datetime"].iloc[0]).isoformat() if len(df) else None
+    t_last = pd.Timestamp(df["datetime"].iloc[-1]).isoformat() if len(df) else None
+    diag = {
+        "prior": prior_diag,
+        "live": live_diag,
+        "kis_requests": int((live_diag or {}).get("kis_requests") or 0),
+        "received_1m_bars": int(len(df)),
+        "completed_3m_count": int(len(bars3)),
+        "time_range": {"first": t_first, "last": t_last},
+        "failure_reason": reason,
+    }
+    with _history_lock:
+        _HISTORY_CACHE.update({
+            "session_date": today,
+            "df_1m": df.copy(),
+            "bootstrap_ok": ok,
+            "bootstrap_at": datetime.now().isoformat(),
+            "bootstrap_elapsed_sec": elapsed,
+            "diag": diag,
+        })
+
+    boot.update({
+        "status": "OK" if ok else "SHORT",
+        "ok": ok,
+        "reason": reason,
+        "elapsed_sec": elapsed,
+        "kis_requests": diag["kis_requests"],
+        "received_1m_bars": diag["received_1m_bars"],
+        "completed_3m_count": diag["completed_3m_count"],
+        "time_range": diag["time_range"],
+        "finished_at": datetime.now().isoformat(),
+        "prior": prior_diag,
+        "live": {k: v for k, v in (live_diag or {}).items() if k != "pages"},
+    })
+    state["bootstrap"] = boot
+    # Seed warm-up display immediately
+    _ensure_macd_warmup(state, df, now, load_diag=diag)
+    if ok:
+        state["primary_block_reason"] = None
+        if str(state.get("order_block_reason") or "").startswith("WARMUP"):
+            state["order_block_reason"] = None
+    else:
+        state["order_block_reason"] = f"WARMUP_BOOTSTRAP:{reason}"
+    om.refresh_runtime_status(state, worker_alive=True)
+    om.save_state(state)
+    logger.warning(
+        "[MACDHynix] bootstrap done ok=%s 1m=%s 3m=%s kis_req=%s elapsed=%.2fs reason=%s",
+        ok, len(df), len(bars3), diag["kis_requests"], elapsed, reason,
+    )
+    return boot
+
+
+def load_macd_minute_history(
+    mode: str,
+    *,
+    count: int = 30,
+    now: Optional[datetime] = None,
+    force_bootstrap: bool = False,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Hot-path history: use day cache + one incremental KIS page (not full 300 re-fetch)."""
+    now = now or _now_kst()
+    today = now.strftime("%Y-%m-%d")
+
+    with _history_lock:
+        cached_df = _HISTORY_CACHE.get("df_1m")
+        cached_day = _HISTORY_CACHE.get("session_date")
+        boot_ok = bool(_HISTORY_CACHE.get("bootstrap_ok"))
+        cached_diag = dict(_HISTORY_CACHE.get("diag") or {})
+
+    if force_bootstrap or cached_df is None or cached_day != today or (
+        isinstance(cached_df, pd.DataFrame) and cached_df.empty
+    ):
+        boot = bootstrap_macd_history(mode, now=now)
+        with _history_lock:
+            cached_df = _HISTORY_CACHE.get("df_1m")
+            cached_diag = dict(_HISTORY_CACHE.get("diag") or {})
+            boot_ok = bool(_HISTORY_CACHE.get("bootstrap_ok"))
+        if cached_df is None or (isinstance(cached_df, pd.DataFrame) and cached_df.empty):
+            return pd.DataFrame(), {
+                **cached_diag,
+                "bootstrap": boot,
+                "failure_reason": boot.get("reason") or "NO_1M_BARS",
+            }
+        return cached_df.copy(), {
+            **cached_diag,
+            "bootstrap_ok": boot_ok,
+            "from_cache": False,
+            "incremental": False,
+        }
+
+    # Incremental: one latest page only (fast path for 5s ticks)
+    live_df, live_diag = _fetch_kis_minute_1m(
+        mode, min(count, KIS_PAGE_SIZE), today, timeout_sec=HOT_MINUTE_TIMEOUT_SEC
+    )
+    base = cached_df if isinstance(cached_df, pd.DataFrame) else pd.DataFrame()
+    if live_df is not None and not live_df.empty:
+        df = (
+            pd.concat([base, live_df], ignore_index=True)
+            .drop_duplicates("datetime")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+        )
+        if len(df) > WARMUP_1M_BARS + 120:
+            df = df.tail(WARMUP_1M_BARS + 120).reset_index(drop=True)
+        with _history_lock:
+            _HISTORY_CACHE["df_1m"] = df.copy()
+    else:
+        df = base.copy() if isinstance(base, pd.DataFrame) else pd.DataFrame()
+
+    bars3 = resample_completed_3m(df, now=now) if not df.empty else pd.DataFrame()
     t0 = pd.Timestamp(df["datetime"].iloc[0]).isoformat() if len(df) else None
     t1 = pd.Timestamp(df["datetime"].iloc[-1]).isoformat() if len(df) else None
     diag = {
-        "api_name": KIS_MINUTE_API,
-        "prior": prior_diag,
-        "live": live_diag,
-        "cache": cache_diag,
+        **cached_diag,
+        "live_incremental": live_diag,
+        "from_cache": True,
+        "incremental": True,
+        "bootstrap_ok": boot_ok,
         "requested_1m_bars": WARMUP_1M_BARS,
         "received_1m_bars": int(len(df)),
         "completed_1m_count": int(len(df)),
         "completed_3m_count": int(len(bars3)),
         "time_range": {"first": t0, "last": t1},
         "last_bar_time": t1,
-        "resample_boundary": "3min floor; bar included when open+3m <= now",
         "failure_reason": None if len(bars3) >= WARMUP_3M_BARS else (
             f"WARMUP_LT_{WARMUP_3M_BARS}" if len(bars3) >= 3 else "DATA_INSUFFICIENT"
         ),
     }
+    with _history_lock:
+        _HISTORY_CACHE["diag"] = diag
     return df, diag
 
 
@@ -600,8 +1143,14 @@ def _quote_from_local_cache(symbol: str, *, max_age_sec: float = 600.0) -> Optio
         return None
 
 
-def _quote_from_broker(broker, symbol: str, *, retries: int = 2) -> dict[str, Any]:
-    """Fetch one symbol quote; on failure try local cache, else concrete error fields."""
+def _quote_from_broker(
+    broker, symbol: str, *, retries: int = 1, timeout_sec: float = HOT_QUOTE_TIMEOUT_SEC
+) -> dict[str, Any]:
+    """Fetch one symbol quote; on failure try local cache, else concrete error fields.
+
+    Each broker/KIS call is bounded by ``timeout_sec`` so a hung socket
+    cannot block the 5s worker loop indefinitely.
+    """
     price = None
     change_pct = None
     bid = None
@@ -613,54 +1162,81 @@ def _quote_from_broker(broker, symbol: str, *, retries: int = 2) -> dict[str, An
 
     for attempt in range(1, max(1, retries) + 1):
         attempts = attempt
-        try:
-            if hasattr(broker, "get_current_price"):
-                api_fn = f"{type(broker).__name__}.get_current_price"
-                raw = broker.get_current_price(symbol)
-                if isinstance(raw, dict):
-                    response_code = str(
-                        raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
-                    ) or None
-                    price = float(raw.get("current_price") or raw.get("price") or 0)
-                    change_pct = raw.get("change_pct")
-                    bid = raw.get("bid") or raw.get("bid_price")
-                    ask = raw.get("ask") or raw.get("ask_price")
-                    if raw.get("error") or raw.get("message"):
-                        last_error = str(raw.get("error") or raw.get("message"))
-                elif raw is not None:
-                    price = float(raw)
-            if price is not None and price > 0:
-                break
-            if price is not None and price <= 0:
-                last_error = f"non-positive price={price}"
+        if hasattr(broker, "get_current_price"):
+            api_fn = f"{type(broker).__name__}.get_current_price"
+
+            def _pull_broker():
+                return broker.get_current_price(symbol)
+
+            raw, to_err = _call_with_timeout(
+                _pull_broker,
+                timeout_sec=timeout_sec,
+                label=f"quote:{symbol}",
+            )
+            if to_err:
+                last_error = to_err
                 price = None
-        except Exception as exc:
-            last_error = str(exc)
-            price = None
+            else:
+                try:
+                    if isinstance(raw, dict):
+                        response_code = str(
+                            raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
+                        ) or None
+                        price = float(raw.get("current_price") or raw.get("price") or 0)
+                        change_pct = raw.get("change_pct")
+                        bid = raw.get("bid") or raw.get("bid_price")
+                        ask = raw.get("ask") or raw.get("ask_price")
+                        if raw.get("error") or raw.get("message"):
+                            last_error = str(raw.get("error") or raw.get("message"))
+                    elif raw is not None:
+                        price = float(raw)
+                    if price is not None and price > 0:
+                        break
+                    if price is not None and price <= 0:
+                        last_error = f"non-positive price={price}"
+                        price = None
+                except Exception as exc:
+                    last_error = str(exc)
+                    price = None
 
         if (price is None or price <= 0) and hasattr(broker, "kis"):
-            try:
-                api_fn = "broker.kis.get_current_price"
-                raw = broker.kis.get_current_price(symbol)
-                if isinstance(raw, dict):
-                    response_code = str(
-                        raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
-                    ) or None
-                    price = float(raw.get("current_price") or raw.get("price") or 0)
-                    change_pct = raw.get("change_rate") or raw.get("change_pct")
-                    if raw.get("msg1") or raw.get("message"):
-                        last_error = str(raw.get("msg1") or raw.get("message"))
-                if price is not None and price > 0:
-                    break
-                if price is not None and price <= 0:
-                    last_error = f"non-positive price={price}"
-                    price = None
-            except Exception as exc:
-                last_error = str(exc)
-                price = None
+            api_fn = "broker.kis.get_current_price"
 
+            def _pull_kis():
+                return broker.kis.get_current_price(symbol)
+
+            raw, to_err = _call_with_timeout(
+                _pull_kis,
+                timeout_sec=timeout_sec,
+                label=f"kis_quote:{symbol}",
+            )
+            if to_err:
+                last_error = to_err
+                price = None
+            else:
+                try:
+                    if isinstance(raw, dict):
+                        response_code = str(
+                            raw.get("rt_cd") or raw.get("msg_cd") or raw.get("code") or ""
+                        ) or None
+                        price = float(raw.get("current_price") or raw.get("price") or 0)
+                        change_pct = raw.get("change_rate") or raw.get("change_pct")
+                        if raw.get("msg1") or raw.get("message"):
+                            last_error = str(raw.get("msg1") or raw.get("message"))
+                    if price is not None and price > 0:
+                        break
+                    if price is not None and price <= 0:
+                        last_error = f"non-positive price={price}"
+                        price = None
+                except Exception as exc:
+                    last_error = str(exc)
+                    price = None
+
+        # Timeouts will not clear by retrying immediately — fall through to cache.
+        if last_error and str(last_error).startswith("TIMEOUT_"):
+            break
         if attempt < retries:
-            time.sleep(0.15)
+            time.sleep(0.05)
 
     ok = price is not None and price > 0
     if not ok:
@@ -685,10 +1261,40 @@ def _quote_from_broker(broker, symbol: str, *, retries: int = 2) -> dict[str, An
 
 
 def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
-    hynix = _quote_from_broker(broker, SIGNAL_SYMBOL)
-    long_q = _quote_from_broker(broker, LONG_SYMBOL)
-    inv_q = _quote_from_broker(broker, INVERSE_SYMBOL)
-    quotes = {"hynix": hynix, "long": long_q, "inverse": inv_q}
+    """Fetch 3 quotes in parallel with short timeouts (keep tick ≤5s)."""
+    phase_t0 = time.monotonic()
+    futs = {
+        "hynix": _kis_executor.submit(
+            lambda: _quote_from_broker(
+                broker, SIGNAL_SYMBOL, retries=1, timeout_sec=HOT_QUOTE_TIMEOUT_SEC
+            )
+        ),
+        "long": _kis_executor.submit(
+            lambda: _quote_from_broker(
+                broker, LONG_SYMBOL, retries=1, timeout_sec=HOT_QUOTE_TIMEOUT_SEC
+            )
+        ),
+        "inverse": _kis_executor.submit(
+            lambda: _quote_from_broker(
+                broker, INVERSE_SYMBOL, retries=1, timeout_sec=HOT_QUOTE_TIMEOUT_SEC
+            )
+        ),
+    }
+    quotes: dict[str, Any] = {}
+    for key, fut in futs.items():
+        try:
+            quotes[key] = fut.result(timeout=HOT_QUOTE_TIMEOUT_SEC + 0.5)
+        except Exception as exc:
+            quotes[key] = {
+                "ok": False,
+                "price": None,
+                "symbol": {"hynix": SIGNAL_SYMBOL, "long": LONG_SYMBOL, "inverse": INVERSE_SYMBOL}[key],
+                "api_function": "parallel_quote",
+                "error_message": str(exc),
+                "retry_count": 0,
+                "response_code": None,
+            }
+    hynix, long_q, inv_q = quotes["hynix"], quotes["long"], quotes["inverse"]
     state["prices"] = {
         "hynix": hynix.get("price"),
         "long": long_q.get("price"),
@@ -707,8 +1313,8 @@ def _refresh_quotes(broker, state: dict[str, Any]) -> dict[str, Any]:
                 "slot": key,
             })
     state["quote_errors"] = errors
-    # Only hard-block when hynix OR both ETFs are missing — a single ETF blip must not
-    # freeze the morning (orders validate the symbols they actually need).
+    phases = state.setdefault("tick_phases", {})
+    phases["quotes_sec"] = round(time.monotonic() - phase_t0, 3)
     critical = (not hynix.get("ok")) or (not long_q.get("ok") and not inv_q.get("ok"))
     if critical and errors:
         state["order_block_reason"] = (
@@ -795,19 +1401,23 @@ def run_once(
     own_broker = False
     if broker is None:
         try:
-            # UI stores real_confirm_ok after phrase match; worker must pass the
-            # configured confirm text into KisRealBroker gate 4 (empty string fails).
-            real_ready = bool(state.get("real_confirm_ok"))
-            confirm_text = ""
-            if mode == "real" and real_ready:
-                from app.config import get_config
+            # MOCK: never touch REAL confirm / safety gates.
+            if mode == "mock":
+                broker = om.create_macd_broker("mock")
+            else:
+                # UI stores real_confirm_ok after phrase match; worker must pass the
+                # configured confirm text into KisRealBroker gate 4 (empty string fails).
+                real_ready = bool(state.get("real_confirm_ok"))
+                confirm_text = ""
+                if real_ready:
+                    from app.config import get_config
 
-                confirm_text = str(get_config().real_confirm_text() or "")
-            broker = om.create_macd_broker(
-                mode,
-                real_confirm_text=confirm_text,
-                real_ready=real_ready,
-            )
+                    confirm_text = str(get_config().real_confirm_text() or "")
+                broker = om.create_macd_broker(
+                    mode,
+                    real_confirm_text=confirm_text,
+                    real_ready=real_ready,
+                )
             own_broker = True
             # Clear stale gate errors from a prior failed create / session.
             if state.get("order_block_reason"):
@@ -821,15 +1431,35 @@ def run_once(
             return result
 
     try:
+        tick_t0 = time.monotonic()
+        state["tick_phases"] = {}
         quotes = _refresh_quotes(broker, state)
 
         # Always compute MACD/direction for UI display (even outside session).
         # Orders remain gated by session / allow_new_switch below.
         session_date = now.strftime("%Y-%m-%d")
         load_diag: dict[str, Any] = {}
+        hist_t0 = time.monotonic()
         if df_1m is None:
-            df_1m, load_diag = load_macd_minute_history(mode, count=120, now=now)
+            # Hot path: cache + one incremental page (bootstrap is off-path on Start).
+            df_1m, load_diag = load_macd_minute_history(mode, count=30, now=now)
+        state["tick_phases"]["history_sec"] = round(time.monotonic() - hist_t0, 3)
         warm = _ensure_macd_warmup(state, df_1m, now, load_diag=load_diag)
+        boot = state.get("bootstrap") or {}
+        warmup_ready = bool((state.get("opening_probe") or {}).get("warmup_ready") or boot.get("ok"))
+        boot_status = str(boot.get("status") or "")
+        # Gate only when Start-bootstrap is in-flight or failed short — not on unit tests
+        # that inject df_1m without a bootstrap record.
+        if boot_status == "RUNNING" or (
+            boot_status in ("FAILED", "SHORT") and not warmup_ready
+        ):
+            state["order_block_reason"] = state.get("order_block_reason") or (
+                f"WARMUP_BOOTSTRAP:{boot.get('reason') or warm.get('reason') or boot_status}"
+            )
+        elif str(state.get("order_block_reason") or "").startswith("WARMUP_BOOTSTRAP:") and warmup_ready:
+            state["order_block_reason"] = None
+
+        eval_t0 = time.monotonic()
         eval_res = evaluate_macd_direction(
             df_1m,
             now=now,
@@ -837,6 +1467,7 @@ def run_once(
             last_signal_bar_ts=state.get("last_signal_bar_ts"),
             session_date=session_date,
         )
+        state["tick_phases"]["macd_eval_sec"] = round(time.monotonic() - eval_t0, 3)
         state["display_direction"] = eval_res.get("display_direction") or DIR_HOLD
         state["macd"] = {
             "macd": eval_res.get("macd"),
@@ -881,7 +1512,20 @@ def run_once(
             "reason": eval_res.get("reason"),
             "at": now.isoformat(),
         }
-        state["worker_code_sha"] = om._git_sha()
+        # Single completed_signal snapshot — UI must read only this (not recompute).
+        state["completed_signal"] = {
+            "flag": flag_now,
+            "signal_id": eval_res.get("signal_id") or state.get("pending_signal_id") or state.get("last_signal_id"),
+            "bar_ts": eval_res.get("bar_ts"),
+            "completed_bar_at": eval_res.get("bar_close_ts"),
+            "new_signal": bool(eval_res.get("new_signal")),
+            "reason": eval_res.get("reason"),
+            "hist_last3": eval_res.get("hist_last3") or [],
+            "at": now.isoformat(),
+            "worker_code_sha": _LOADED_GIT_SHA or "unknown",
+            "run_once_source_hash": _run_once_source_hash(),
+        }
+        state["worker_code_sha"] = _LOADED_GIT_SHA or "unknown"
         state["git_sha"] = state["worker_code_sha"]
         state["module_digest"] = _LOADED_MODULE_DIGEST
         ident = worker_identity()
@@ -1334,8 +1978,12 @@ def run_once(
             "new_signal": bool(eval_res.get("new_signal")),
             "pattern_reason": eval_res.get("reason"),
             "signal_id": eval_res.get("signal_id") or pending_id,
+            "completed_bar_at": eval_res.get("bar_close_ts"),
+            "bar_ts": eval_res.get("bar_ts"),
             "flat": flat_now,
-            "would_arm": bool(execute_now or eval_res.get("new_signal")),
+            "would_arm": bool(execute_now or eval_res.get("new_signal") or (
+                flat_now and flag_now in (DIR_UP, DIR_DOWN)
+            )),
             "arm_blocked_reason": state.get("duplicate_block_reason")
             or state.get("order_block_reason")
             or state.get("primary_block_reason"),
@@ -1344,10 +1992,22 @@ def run_once(
             "execute_attempted": False,
             "broker_called": False,
             "broker_result": None,
+            "pipeline_stages": {},
+            "mode": mode,
+            "real_gate_checked": False,  # mock must stay False
             "worker_code_sha": state.get("worker_code_sha"),
             "module_digest": state.get("module_digest"),
+            "run_once_source_hash": _run_once_source_hash(),
             "stale_worker": state.get("stale_worker"),
+            "tick_seq": (state.get("worker") or {}).get("tick_seq")
+            or (state.get("worker") or {}).get("tick_n"),
         }
+        if mode == "mock":
+            trace["real_gate_checked"] = False
+        else:
+            trace["real_gate_checked"] = True
+            trace["real_confirm_ok"] = bool(state.get("real_confirm_ok"))
+
 
         if execute_now and pending_id and pending_dir:
             trace["execute_attempted"] = True
@@ -1438,7 +2098,17 @@ def run_once(
                         state["last_signal_id"] = pending_id
                 elif switch_res.get("order_data_invalid"):
                     state["order_block_reason"] = switch_res.get("message")
-
+                # Same-tick pipeline snapshot keyed by signal_id
+                trace["pipeline_stages"] = {
+                    "signal_id": pending_id,
+                    "signal": True,
+                    "arm": True,
+                    "switch_to_direction": bool(trace.get("broker_called")),
+                    "order_success": bool(switch_res.get("success")),
+                    "position_symbol": (state.get("position") or {}).get("symbol"),
+                    "position_qty": (state.get("position") or {}).get("quantity"),
+                    "kis_message": (switch_res.get("message") if isinstance(switch_res, dict) else None),
+                }
         if flag_now in (DIR_UP, DIR_DOWN) or trace.get("execute_attempted") or trace.get("broker_called"):
             if (
                 flat_now
@@ -1497,6 +2167,16 @@ def run_once(
             )
 
         state["next_action"] = _next_action_label(state)
+        try:
+            total = round(time.monotonic() - tick_t0, 3)
+            phases = state.setdefault("tick_phases", {})
+            phases["total_sec"] = total
+            if total > TICK_SECONDS:
+                logger.warning(
+                    "[MACDHynix] slow tick total=%.3fs phases=%s", total, phases
+                )
+        except Exception:
+            pass
         om.refresh_runtime_status(state, worker_alive=True)
         om.save_state(state)
         return result
@@ -1507,20 +2187,37 @@ def run_once(
 
 def _worker_loop() -> None:
     logger.info("[MACDHynix] worker started (fixed %ss schedule)", TICK_SECONDS)
+    global _tick_counter
+    # Seed monotonic counter from disk so UI never appears to "reset" or cap at 40.
+    try:
+        prev_n = int((om.load_state().get("worker") or {}).get("tick_n") or 0)
+        if prev_n > _tick_counter:
+            _tick_counter = prev_n
+    except Exception:
+        pass
     with _status_lock:
         _status["alive"] = True
         _status["started_at"] = datetime.now().isoformat()
         _status["last_error"] = None
+        _status["primary_error"] = None
         _status["stale_worker"] = False
+        _status["stalled"] = False
+        _status["stall_reason"] = None
+        _status["run_once_source_hash"] = _run_once_source_hash()
+        _status["tick_n"] = _tick_counter
+        _status["tick_seq"] = _tick_counter
 
     # Align to wall-clock 5s grid
     next_tick = time.monotonic()
     last_mono = None
-    global _tick_counter
+    exit_reason: Optional[str] = None
     while not _stop_event.is_set():
         now_mono = time.monotonic()
         if now_mono < next_tick:
-            _wake_event.wait(timeout=min(0.2, next_tick - now_mono))
+            remaining = next_tick - now_mono
+            # Negative timeout == infinite wait in threading.Event — never pass <0.
+            if remaining > 0:
+                _wake_event.wait(timeout=min(0.2, remaining))
             _wake_event.clear()
             continue
 
@@ -1530,17 +2227,34 @@ def _worker_loop() -> None:
             with _status_lock:
                 intervals = list(_status.get("tick_intervals") or [])
                 intervals.append(interval)
-                _status["tick_intervals"] = intervals[-40:]
+                # Display/cadence buffer only — must NOT stop the loop at 40.
+                _status["tick_intervals"] = intervals[-INTERVAL_HISTORY_MAX:]
         last_mono = tick_started
         _tick_counter += 1
+        tick_n = _tick_counter
+        tick_error: Optional[str] = None
+
+        # Heartbeat FIRST — never leave alive=True with a frozen last_tick_at.
+        try:
+            with _status_lock:
+                intervals_snap = list(_status.get("tick_intervals") or [])
+            _persist_heartbeat(tick_n=tick_n, intervals=intervals_snap)
+        except Exception as hb_exc:
+            logger.warning("[MACDHynix] early heartbeat failed: %s", hb_exc)
+            with _status_lock:
+                _status["alive"] = True
+                _status["last_tick_at"] = datetime.now().isoformat()
+                _status["tick_n"] = tick_n
+                _status["tick_seq"] = tick_n
 
         try:
-            if _tick_counter == 1 or (_tick_counter % _STALE_CHECK_EVERY_N_TICKS) == 0:
+            if tick_n == 1 or (tick_n % _STALE_CHECK_EVERY_N_TICKS) == 0:
                 ident = worker_identity()
                 if ident.get("stale_worker"):
                     logger.error(
-                        "[MACDHynix] STALE_WORKER detected (%s) — reloading stack",
+                        "[MACDHynix] STALE_WORKER detected (%s) at tick_seq=%s — exit for reload",
                         ident.get("stale_reason"),
+                        tick_n,
                     )
                     try:
                         st = om.load_state()
@@ -1550,15 +2264,18 @@ def _worker_loop() -> None:
                         om.save_state(st)
                     except Exception:
                         pass
-                    reload_macd_trading_stack(reason=str(ident.get("stale_reason") or "stale_tick"))
-                    # This loop body is old bytecode after reload — exit; Start/ensure respawns.
+                    exit_reason = str(ident.get("stale_reason") or "stale_tick")
+                    # Do NOT reload/join from inside this thread — deferred recover does.
                     break
 
             state = om.load_state()
             state.setdefault("worker", {})
             state["worker"]["alive"] = True
             state["worker"]["last_tick_at"] = datetime.now().isoformat()
-            state["worker_code_sha"] = _LOADED_GIT_SHA or om._git_sha()
+            state["worker"]["tick_n"] = tick_n
+            state["worker"]["tick_seq"] = tick_n
+            state["worker"]["intervals_buf_cap"] = INTERVAL_HISTORY_MAX
+            state["worker_code_sha"] = _LOADED_GIT_SHA or "unknown"
             state["module_digest"] = _LOADED_MODULE_DIGEST
             state["stale_worker"] = False
             today = _now_kst().strftime("%Y-%m-%d")
@@ -1566,24 +2283,60 @@ def _worker_loop() -> None:
                 if state.get("session_date") and not state.get("auto_trade_on"):
                     om.clear_mutex(mode=str(state.get("mode") or "mock"), reason="day_change")
                 om.apply_macd_session_day_rollover(state, session_date=today)
+                with _history_lock:
+                    _HISTORY_CACHE["session_date"] = None
+                    _HISTORY_CACHE["df_1m"] = None
+                    _HISTORY_CACHE["bootstrap_ok"] = False
             with _status_lock:
                 intervals = list(_status.get("tick_intervals") or [])
-                state["worker"]["tick_intervals"] = [round(x, 3) for x in intervals[-40:]]
+                state["worker"]["tick_intervals"] = [
+                    round(x, 3) for x in intervals[-INTERVAL_HISTORY_MAX:]
+                ]
+                state["worker"]["intervals_buf_len"] = len(state["worker"]["tick_intervals"])
                 state["worker"]["avg_interval"] = _avg(intervals[-20:])
                 state["worker"]["p95_interval"] = _p95(intervals[-20:])
                 state["worker"]["main_cycle_3m_wait_count"] = 0
+                state["worker"]["run_once_source_hash"] = _status.get("run_once_source_hash") or _run_once_source_hash()
                 _status["alive"] = True
                 _status["last_tick_at"] = state["worker"]["last_tick_at"]
+                _status["tick_n"] = tick_n
+                _status["tick_seq"] = tick_n
                 _status["main_cycle_3m_wait_count"] = 0
+            # quotes → MACD/flag → decision_trace → arm/execute (inside run_once)
             if state.get("auto_trade_on") or state.get("force_liquidate_pending"):
                 run_once(state=state)
             else:
                 om.refresh_runtime_status(state, worker_alive=True)
                 om.save_state(state)
+            if tick_n % 12 == 0:
+                logger.info(
+                    "[MACDHynix] tick_seq=%s alive intervals_buf=%s/%s",
+                    tick_n,
+                    len(intervals[-INTERVAL_HISTORY_MAX:]),
+                    INTERVAL_HISTORY_MAX,
+                )
         except Exception as exc:
-            logger.exception("[MACDHynix] tick error: %s", exc)
-            with _status_lock:
-                _status["last_error"] = str(exc)
+            tick_error = str(exc)
+            logger.exception(
+                "[MACDHynix] tick error tick_seq=%s: %s", tick_n, exc
+            )
+            try:
+                with _status_lock:
+                    intervals_snap = list(_status.get("tick_intervals") or [])
+                    _status["primary_error"] = tick_error
+                _persist_heartbeat(
+                    tick_n=tick_n,
+                    intervals=intervals_snap,
+                    error=tick_error,
+                    partial=True,
+                )
+            except Exception:
+                with _status_lock:
+                    _status["last_error"] = tick_error
+                    _status["primary_error"] = tick_error
+                    _status["last_tick_at"] = datetime.now().isoformat()
+                    _status["tick_n"] = tick_n
+                    _status["tick_seq"] = tick_n
 
         next_tick += TICK_SECONDS
         behind = time.monotonic() - next_tick
@@ -1591,23 +2344,36 @@ def _worker_loop() -> None:
             skipped = int(behind // TICK_SECONDS)
             next_tick += skipped * TICK_SECONDS
 
+    intentional_stop = _stop_event.is_set() and exit_reason is None
     with _status_lock:
         _status["alive"] = False
-    try:
-        state = om.load_state()
-        state.setdefault("worker", {})["alive"] = False
-        om.save_state(state)
-    except Exception:
-        pass
-    # If we exited due to stale reload, spawn the reloaded loop.
-    try:
-        import app.trading.macd_hynix_worker as wmod
 
-        if not (wmod._worker_thread and wmod._worker_thread.is_alive()):
-            wmod._start_worker_thread_only()
-    except Exception:
-        pass
-    logger.info("[MACDHynix] worker stopped")
+    if intentional_stop:
+        try:
+            state = om.load_state()
+            state.setdefault("worker", {})["alive"] = False
+            om.save_state(state)
+        except Exception:
+            pass
+    elif exit_reason:
+        # Stale bytecode: deferred reload+restart (never self-join).
+        recover_stalled_worker(reason=exit_reason)
+    else:
+        # Unexpected exit while strategy may still be on — try respawn.
+        try:
+            st = om.load_state()
+            if st.get("auto_trade_on") or st.get("strategy_enabled") or st.get("force_liquidate_pending"):
+                recover_stalled_worker(reason="WORKER_LOOP_EXIT")
+            else:
+                st.setdefault("worker", {})["alive"] = False
+                om.save_state(st)
+        except Exception:
+            pass
+    logger.info(
+        "[MACDHynix] worker stopped reason=%s last_tick_seq=%s",
+        exit_reason or ("stop" if intentional_stop else "exit"),
+        _tick_counter,
+    )
 
 
 def ensure_worker_running(*, force_restart: bool = False) -> dict[str, Any]:
@@ -1616,28 +2382,52 @@ def ensure_worker_running(*, force_restart: bool = False) -> dict[str, Any]:
     Modules are importlib-reloaded when disk/git identity diverges from what this
     process loaded (git pull without process restart). Thread kill alone is not
     enough to pick up new bytecode.
+
+    Also detects stalled ticks (no heartbeat > TICK_STALL_SEC while strategy on)
+    and auto-recovers with WORKER_STALLED reload+restart.
     """
     global _worker_thread
+    _ensure_watchdog_running()
     ident = worker_identity()
     stale = bool(ident.get("stale_worker"))
+
+    if not force_restart and not stale:
+        stall = detect_worker_stall()
+        if stall.get("stalled"):
+            recover_stalled_worker(reason=str(stall.get("stall_reason") or "WORKER_STALLED"))
+            import app.trading.macd_hynix_worker as wmod
+
+            status = wmod.get_worker_status()
+            status["recovered_stall"] = True
+            status["stall_info"] = stall
+            return status
+
     if force_restart or stale:
         if stale or force_restart:
-            # Always join old thread on Start / stale.
+            # Always join old thread on Start / stale (never join self).
             stop_worker()
-            if _worker_thread and _worker_thread.is_alive():
+            cur = threading.current_thread()
+            if _worker_thread and _worker_thread.is_alive() and _worker_thread is not cur:
                 _worker_thread.join(timeout=3.0)
-            _worker_thread = None
+            if _worker_thread is not cur:
+                _worker_thread = None
             _stop_event.clear()
         if stale:
             reload_macd_trading_stack(reason=str(ident.get("stale_reason") or "stale"))
             import app.trading.macd_hynix_worker as wmod
 
-            return wmod._start_worker_thread_only()
+            status = wmod._start_worker_thread_only()
+            wmod._ensure_watchdog_running()
+            return status
         # force_restart with matching digest: new thread, same loaded modules.
-        return _start_worker_thread_only()
+        status = _start_worker_thread_only()
+        _ensure_watchdog_running()
+        return status
     if _worker_thread and _worker_thread.is_alive():
         return get_worker_status()
-    return _start_worker_thread_only()
+    status = _start_worker_thread_only()
+    _ensure_watchdog_running()
+    return status
 
 
 def _start_worker_thread_only() -> dict[str, Any]:
@@ -1651,6 +2441,8 @@ def _start_worker_thread_only() -> dict[str, Any]:
         _status["thread_ident"] = int(_worker_thread.ident) if _worker_thread.ident else None
         _status["force_restarted_at"] = datetime.now().isoformat()
         _status["stale_worker"] = False
+        _status["stalled"] = False
+    _ensure_watchdog_running()
     return get_worker_status()
 
 
@@ -1762,20 +2554,42 @@ def start_auto_trade(
     om_live.refresh_runtime_status(state, worker_alive=True)
     om_live.save_state(state)
 
+    # Bootstrap warm-up OFF the 5s hot path (prior+paged KIS → ≥100×3m).
+    try:
+        boot = w_live.bootstrap_macd_history(mode, now=w_live._now_kst(), state=state)
+        state = om_live.load_state()
+        logger.warning(
+            "[MACDHynix] start bootstrap ok=%s 1m=%s 3m=%s elapsed=%s",
+            boot.get("ok"),
+            boot.get("received_1m_bars"),
+            boot.get("completed_3m_count"),
+            boot.get("elapsed_sec"),
+        )
+    except Exception as exc:
+        logger.exception("[MACDHynix] bootstrap failed: %s", exc)
+        state = om_live.load_state()
+        state.setdefault("bootstrap", {})["status"] = "FAILED"
+        state["bootstrap"]["reason"] = str(exc)
+        state["order_block_reason"] = f"WARMUP_BOOTSTRAP:{exc}"
+        om_live.save_state(state)
+
     # First tick immediately after start: fetch quotes + compute MACD (do not wait 5s).
     try:
         # Build broker early so phantom repair can see live holdings.
-        real_ready = bool(state.get("real_confirm_ok"))
-        confirm_text = ""
-        if mode == "real" and real_ready:
-            from app.config import get_config
+        if mode == "mock":
+            broker = om_live.create_macd_broker("mock")
+        else:
+            real_ready = bool(state.get("real_confirm_ok"))
+            confirm_text = ""
+            if real_ready:
+                from app.config import get_config
 
-            confirm_text = str(get_config().real_confirm_text() or "")
-        broker = om_live.create_macd_broker(
-            mode,
-            real_confirm_text=confirm_text,
-            real_ready=real_ready,
-        )
+                confirm_text = str(get_config().real_confirm_text() or "")
+            broker = om_live.create_macd_broker(
+                mode,
+                real_confirm_text=confirm_text,
+                real_ready=real_ready,
+            )
         w_live.repair_phantom_initial_entry(state, broker)
         om_live.save_state(state)
         w_live.run_once(broker=broker, state=state)

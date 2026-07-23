@@ -980,8 +980,19 @@ class KISClient:
 
     # ── 분봉 조회 ──────────────────────────────────────────────────────────
 
-    def get_minute_candles(self, symbol: str, period_min: int = 1, count: int = 60) -> list[dict]:
-        """국내주식 분봉 조회. 최신 순으로 count개 반환. 실패 시 [] 반환."""
+    def get_minute_candles(
+        self,
+        symbol: str,
+        period_min: int = 1,
+        count: int = 60,
+        *,
+        hour1: str = "",
+    ) -> list[dict]:
+        """국내주식 분봉 조회. 최신 순으로 count개 반환. 실패 시 [] 반환.
+
+        ``hour1`` (HHMMSS): KIS pagination cursor — empty = latest page;
+        set to oldest time from prior page to walk backwards.
+        """
         tr_id = "FHKST03010200"
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
         headers = self._auth_headers(tr_id)
@@ -989,7 +1000,7 @@ class KISClient:
             "FID_ETC_CLS_CODE": "",
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": symbol,
-            "FID_INPUT_HOUR_1": "",
+            "FID_INPUT_HOUR_1": str(hour1 or ""),
             "FID_PW_DATA_INCU_YN": "N",
         }
         try:

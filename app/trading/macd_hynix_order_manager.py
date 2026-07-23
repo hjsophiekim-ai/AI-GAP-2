@@ -197,7 +197,11 @@ def default_state() -> dict[str, Any]:
         "worker": {
             "alive": False,
             "last_tick_at": None,
+            "tick_n": 0,
+            "tick_seq": 0,
             "tick_intervals": [],
+            "intervals_buf_len": 0,
+            "intervals_buf_cap": 40,
             "avg_interval": None,
             "p95_interval": None,
             # MACD module is 5s-worker only — never defers to Enhanced 3m main cycle.
@@ -208,6 +212,10 @@ def default_state() -> dict[str, Any]:
             "kis_order_accepted_at": None,
             "broker_executed_at": None,
             "position_confirmed_at": None,
+            "stalled": False,
+            "stall_reason": None,
+            "last_error": None,
+            "run_once_source_hash": None,
         },
         # Clear status split — worker alive ≠ strategy running
         "scheduler_alive": False,
@@ -873,18 +881,28 @@ def validate_etf_quotes(
 
 
 def create_macd_broker(mode: str, *, real_confirm_text: str = "", real_ready: bool = False):
+    """Create broker for MACD worker.
+
+    MOCK never consults REAL confirm phrase / real safety gates — only mock account.
+    REAL still requires confirm_text + real_ready.
+    """
     from app.trading.broker_factory import create_broker
 
-    mode = "real" if mode == "real" else "mock"
-    if mode == "real":
-        return create_broker(
-            mode="real",
-            confirm_text=real_confirm_text,
-            runtime_real_mode=bool(real_ready),
-            runtime_enable_real_buy=bool(real_ready),
-            runtime_enable_real_sell=bool(real_ready),
+    mode = "real" if str(mode).lower() == "real" else "mock"
+    if mode == "mock":
+        # Explicitly ignore any real_confirm_* kwargs leaked from UI/state.
+        return create_broker(mode="mock")
+    if not real_ready:
+        raise RuntimeError(
+            "REAL mode requires real_confirm_ok / real_ready — refusing broker create"
         )
-    return create_broker(mode="mock")
+    return create_broker(
+        mode="real",
+        confirm_text=real_confirm_text,
+        runtime_real_mode=True,
+        runtime_enable_real_buy=True,
+        runtime_enable_real_sell=True,
+    )
 
 
 def _order_to_dict(order: Any) -> dict:
@@ -2032,6 +2050,12 @@ def apply_macd_session_day_rollover(state: dict[str, Any], *, session_date: str)
     state["pending_signal_source"] = None
     state["pending_budget_fraction"] = None
     state["pending_open_scale"] = None
+    state["armed_at"] = None
+    state["decision_trace"] = None
+    state["completed_signal"] = None
+    state["duplicate_block_reason"] = None
+    state["last_order_error"] = None
+    state["primary_error"] = None
     for k in (
         "order_requested_at",
         "kis_order_accepted_at",
@@ -2070,6 +2094,10 @@ def apply_macd_session_day_rollover(state: dict[str, Any], *, session_date: str)
         state["force_liquidate_done_date"] = None
         state["force_liquidate_pending"] = False
         state["processed_signal_ids"] = []
+        state["display_direction"] = "HOLD"
+        state["last_flag"] = None
+        state["current_flag"] = None
+        state["signal_type"] = None
 
     state["session_date"] = session_date
     return True

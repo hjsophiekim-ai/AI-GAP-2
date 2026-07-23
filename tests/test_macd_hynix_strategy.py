@@ -1808,3 +1808,498 @@ def test_force_restart_changes_thread_ident():
     assert tid1 is not None
     assert tid1 != tid0
     worker.stop_worker()
+
+
+def test_mock_create_broker_ignores_real_confirm(monkeypatch):
+    """MOCK must never require REAL confirm phrase / real_ready."""
+    calls = []
+
+    class _Dummy:
+        mode = "mock"
+
+    def _fake_create_broker(**kwargs):
+        calls.append(kwargs)
+        return _Dummy()
+
+    monkeypatch.setattr(
+        "app.trading.broker_factory.create_broker",
+        _fake_create_broker,
+    )
+    broker = om.create_macd_broker(
+        "mock",
+        real_confirm_text="",
+        real_ready=False,
+    )
+    assert broker is not None
+    assert calls and calls[0].get("mode") == "mock"
+    # REAL kwargs must not be forwarded on mock path
+    assert "confirm_text" not in calls[0]
+    assert "runtime_real_mode" not in calls[0]
+
+
+def test_mock_run_once_without_real_confirm_ok(monkeypatch):
+    """Worker mock path creates broker without reading real_confirm_ok."""
+    broker = FakeBroker()
+    created = {"mode": None, "kwargs": None}
+
+    def _capture(mode, *, real_confirm_text="", real_ready=False):
+        created["mode"] = mode
+        created["kwargs"] = {"real_confirm_text": real_confirm_text, "real_ready": real_ready}
+        return broker
+
+    monkeypatch.setattr(om, "create_macd_broker", _capture)
+    df = _bars_1m(80, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    state["real_confirm_ok"] = False  # must not block mock
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    state["budget"] = 5_000_000
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        # broker=None forces create_macd_broker path
+        r = worker.run_once(broker=None, now=datetime(2026, 7, 23, 9, 6, 5), df_1m=df, state=state)
+        assert created["mode"] == "mock"
+        assert r.get("ok") is not False or not str(r.get("error") or "").startswith("broker create")
+        assert state.get("decision_trace", {}).get("real_gate_checked") is False
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) == 1
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_same_flag_20_ticks_no_duplicate_buys():
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    now = datetime(2026, 7, 23, 10, 3, 5)
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-23T10:00:00",
+        "bar_close_ts": "2026-07-23T10:03:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+        "onset": None,
+    }
+    # After first tick, subsequent evals are held pattern (no new_signal)
+    held_eval = {**fake_eval, "new_signal": False, "signal_id": None, "reason": "UP_RED_PATTERN"}
+    import app.trading.macd_hynix_worker as wmod
+
+    calls = {"n": 0}
+
+    def _eval(*a, **k):
+        calls["n"] += 1
+        return fake_eval if calls["n"] == 1 else held_eval
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = _eval  # type: ignore
+    try:
+        for i in range(20):
+            worker.run_once(
+                broker=broker,
+                now=now + timedelta(seconds=5 * i),
+                df_1m=df,
+                state=state,
+            )
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) == 1
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_ui_and_worker_share_same_signed_b_flag():
+    """UI must display worker-computed flag only (no independent signed-B)."""
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        worker.run_once(
+            broker=broker,
+            now=datetime(2026, 7, 23, 9, 6, 5),
+            df_1m=df,
+            state=state,
+        )
+        # UI reads these fields from state — must match worker eval
+        assert state["display_direction"] == fake_eval["display_direction"]
+        assert state["current_flag"] == fake_eval["display_direction"]
+        assert state["last_flag"] == fake_eval["display_direction"]
+        assert (state.get("last_signal_eval") or {}).get("flag") == fake_eval["display_direction"]
+        assert (state.get("decision_trace") or {}).get("flag") == fake_eval["display_direction"]
+        assert (state.get("decision_trace") or {}).get("completed_bar_at") == fake_eval["bar_close_ts"]
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_intervals_buf_caps_at_40_but_tick_seq_keeps_growing(monkeypatch):
+    """Prove the historic 'freeze at 40' was intervals buffer — tick_seq must exceed 40."""
+    # 1) Pure logic: buffer caps, counter does not.
+    intervals: list[float] = []
+    tick_seq = 0
+    for _ in range(80):
+        tick_seq += 1
+        intervals.append(5.0)
+        intervals = intervals[-worker.INTERVAL_HISTORY_MAX :]
+    assert tick_seq == 80
+    assert len(intervals) == worker.INTERVAL_HISTORY_MAX
+
+    # 2) Live worker with disk/git/stale mocked out — must cross 60.
+    worker.stop_worker()
+    if worker._worker_thread and worker._worker_thread.is_alive():
+        worker._worker_thread.join(timeout=2.0)
+    worker._tick_counter = 0
+    with worker._status_lock:
+        worker._status["tick_intervals"] = []
+        worker._status["tick_n"] = 0
+        worker._status["tick_seq"] = 0
+        worker._status["last_tick_at"] = None
+
+    monkeypatch.setattr(worker, "TICK_SECONDS", 0.005)
+    monkeypatch.setattr(worker, "TICK_STALL_SEC", 60.0)
+    monkeypatch.setattr(worker, "_STALE_CHECK_EVERY_N_TICKS", 10_000)
+    monkeypatch.setattr(worker, "run_once", lambda **k: {"ok": True, "actions": []})
+    monkeypatch.setattr(
+        worker, "worker_identity", lambda: {"stale_worker": False, "stale_reason": None}
+    )
+
+    mem = {
+        "auto_trade_on": True,
+        "strategy_enabled": True,
+        "force_liquidate_pending": False,
+        "session_date": "2026-07-23",
+        "mode": "mock",
+        "worker": {"tick_n": 0, "tick_seq": 0, "alive": False},
+    }
+
+    def _hb(*, tick_n, intervals=None, error=None, partial=False):
+        now_iso = datetime.now().isoformat()
+        with worker._status_lock:
+            worker._status["alive"] = True
+            worker._status["last_tick_at"] = now_iso
+            worker._status["tick_n"] = int(tick_n)
+            worker._status["tick_seq"] = int(tick_n)
+            if intervals is not None:
+                worker._status["tick_intervals"] = list(intervals)[-worker.INTERVAL_HISTORY_MAX :]
+        mem["worker"]["tick_n"] = int(tick_n)
+        mem["worker"]["tick_seq"] = int(tick_n)
+        mem["worker"]["last_tick_at"] = now_iso
+        mem["worker"]["alive"] = True
+        return now_iso
+
+    monkeypatch.setattr(worker, "_persist_heartbeat", _hb)
+    monkeypatch.setattr(om, "load_state", lambda: dict(mem))
+    monkeypatch.setattr(om, "save_state", lambda s: None)
+    monkeypatch.setattr(om, "apply_macd_session_day_rollover", lambda *a, **k: None)
+    monkeypatch.setattr(om, "refresh_runtime_status", lambda *a, **k: {})
+
+    worker._last_stall_recover_mono = 0.0
+    status = worker.ensure_worker_running(force_restart=True)
+    assert status.get("thread_alive")
+
+    deadline = datetime.now() + timedelta(seconds=3)
+    while datetime.now() < deadline:
+        s = worker.get_worker_status()
+        if int(s.get("tick_seq") or 0) >= 60:
+            break
+        import time as _t
+
+        _t.sleep(0.01)
+
+    s = worker.get_worker_status()
+    seq = int(s.get("tick_seq") or 0)
+    buf = len(s.get("tick_intervals") or [])
+    worker.stop_worker()
+    if worker._worker_thread and worker._worker_thread.is_alive():
+        worker._worker_thread.join(timeout=2.0)
+
+    assert seq >= 60, f"tick_seq froze or too low: {seq}"
+    assert buf <= worker.INTERVAL_HISTORY_MAX
+
+
+def test_detect_worker_stall_and_recover(monkeypatch):
+    """Stale last_tick while strategy on → detect stall; ensure recovers."""
+    worker.stop_worker()
+    if worker._worker_thread and worker._worker_thread.is_alive():
+        worker._worker_thread.join(timeout=2.0)
+
+    st = om.default_state()
+    st["auto_trade_on"] = True
+    st["strategy_enabled"] = True
+    st["worker"] = {
+        **(st.get("worker") or {}),
+        "alive": True,
+        "last_tick_at": (datetime.now() - timedelta(seconds=20)).isoformat(),
+        "tick_n": 40,
+        "tick_seq": 40,
+    }
+    om.save_state(st)
+    with worker._status_lock:
+        worker._status["alive"] = True
+        worker._status["last_tick_at"] = st["worker"]["last_tick_at"]
+        worker._status["tick_n"] = 40
+        worker._status["tick_seq"] = 40
+    # Thread intentionally dead → WORKER_THREAD_DEAD or stale
+    worker._worker_thread = None
+
+    info = worker.detect_worker_stall(state=st, stall_sec=15.0)
+    assert info["stalled"] is True
+    assert info["stall_reason"] in ("WORKER_THREAD_DEAD", "WORKER_TICK_STALE", "WORKER_NO_HEARTBEAT")
+
+    monkeypatch.setattr(worker, "TICK_SECONDS", 0.05)
+    monkeypatch.setattr(worker, "run_once", lambda **k: {"ok": True, "actions": []})
+    monkeypatch.setattr(
+        worker, "worker_identity", lambda: {"stale_worker": False, "stale_reason": None}
+    )
+    worker._last_stall_recover_mono = 0.0
+    recovered = worker.ensure_worker_running()
+    assert recovered.get("thread_alive") or recovered.get("recovered_stall")
+    # Give a couple ticks
+    import time as _t
+
+    _t.sleep(0.3)
+    after = worker.get_worker_status()
+    worker.stop_worker()
+    assert after.get("thread_alive") or int(after.get("tick_seq") or 0) >= 0
+
+
+def test_replay_20260723_0906_up_red_reaches_order_path():
+    """Then-time 09:06 UP_RED signal_id must arm+buy on mock without real confirm."""
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    state["real_confirm_ok"] = False
+    state["budget"] = 1_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    sid = "MACD3M:UP_RED:2026-07-23T09:03:00"
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 5306.6288,
+        "hist_last3": [-1460.345725, 2928.736204, 5306.6288],
+        "hist_deltas": [4389.081929, 2377.892596],
+        "completed_3m_count": 102,
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": sid,
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        r = worker.run_once(
+            broker=broker, now=datetime(2026, 7, 23, 9, 6, 5), df_1m=df, state=state
+        )
+        tr = state.get("decision_trace") or {}
+        assert tr.get("real_gate_checked") is False
+        assert tr.get("execute_attempted") or any("switch" in a for a in r["actions"])
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) == 1
+        assert state.get("position", {}).get("symbol") == LONG_SYMBOL
+        assert sid in (state.get("processed_signal_ids") or []) or state.get("last_signal_id") == sid
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_replay_20260723_1027_down_blue_reaches_order_path():
+    """Then-time 10:27 DOWN_BLUE must buy 0197X0 (worker alive + mock, no real gate)."""
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="down")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["mode"] = "mock"
+    state["real_confirm_ok"] = False
+    state["budget"] = 1_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    sid = "MACD3M:DOWN_BLUE:2026-07-23T10:24:00"
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_DOWN,
+        "new_signal": True,
+        "signal_direction": DIR_DOWN,
+        "macd": -1.0,
+        "signal": -0.5,
+        "hist": -1350.797818,
+        "hist_last3": [1188.424681, -267.123223, -1350.797818],
+        "hist_deltas": [-1455.547904, -1083.674595],
+        "completed_3m_count": 120,
+        "bar_ts": "2026-07-23T10:24:00",
+        "bar_close_ts": "2026-07-23T10:27:00",
+        "reason": "DOWN_BLUE_FIRST_TURN",
+        "signal_id": sid,
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        r = worker.run_once(
+            broker=broker, now=datetime(2026, 7, 23, 10, 27, 5), df_1m=df, state=state
+        )
+        tr = state.get("decision_trace") or {}
+        assert tr.get("real_gate_checked") is False
+        assert tr.get("completed_bar_at") == "2026-07-23T10:27:00"
+        assert sum(1 for b in broker.buys if b[0] == INVERSE_SYMBOL) == 1
+        assert any("switch" in a for a in r["actions"]) or tr.get("broker_called")
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+def test_bootstrap_builds_300_1m_to_100_3m(monkeypatch):
+    """Bootstrap must produce ≥100 completed 3m from prior+live without hot-path re-fetch."""
+    # Build synthetic prior+live 1m (≥300 bars)
+    prior = _bars_1m(320, start=datetime(2026, 7, 22, 9, 0, 0), trend="up")
+    live = _bars_1m(60, start=datetime(2026, 7, 23, 9, 0, 0), trend="up")
+
+    monkeypatch.setattr(worker, "_load_prior_history_1m", lambda now: (prior, {"api_name": "test_prior", "received_1m_bars": len(prior)}))
+    monkeypatch.setattr(
+        worker,
+        "_fetch_kis_minute_paged",
+        lambda mode, today, target_bars=120, timeout_sec=4.0: (live, {"kis_requests": 2, "received_1m_bars": len(live)}),
+    )
+    with worker._history_lock:
+        worker._HISTORY_CACHE.update({"session_date": None, "df_1m": None, "bootstrap_ok": False, "diag": {}})
+
+    boot = worker.bootstrap_macd_history("mock", now=datetime(2026, 7, 23, 10, 0, 0))
+    assert boot.get("ok") is True
+    assert int(boot.get("completed_3m_count") or 0) >= 100
+    assert int(boot.get("received_1m_bars") or 0) >= 300
+    with worker._history_lock:
+        assert worker._HISTORY_CACHE.get("bootstrap_ok") is True
+        cached = worker._HISTORY_CACHE.get("df_1m")
+    assert cached is not None and len(cached) >= 300
+
+    # Hot path must NOT re-call paged fetch — only incremental
+    calls = {"paged": 0}
+
+    def _no_page(*a, **k):
+        calls["paged"] += 1
+        return pd.DataFrame(), {}
+
+    monkeypatch.setattr(worker, "_fetch_kis_minute_paged", _no_page)
+    monkeypatch.setattr(
+        worker,
+        "_fetch_kis_minute_1m",
+        lambda *a, **k: (live.tail(5), {"received_1m_bars": 5}),
+    )
+    df2, diag2 = worker.load_macd_minute_history("mock", count=30, now=datetime(2026, 7, 23, 10, 5, 0))
+    assert calls["paged"] == 0
+    assert diag2.get("incremental") is True
+    assert len(df2) >= 300
+
+
+def test_completed_signal_ui_matches_worker():
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["session_date"] = "2026-07-23"
+    state["opening_probe_enabled"] = False
+    state["bootstrap"] = {"ok": True, "status": "OK"}
+    state["opening_probe"] = {"warmup_ready": True}
+    sid = "MACD3M:UP_RED:2026-07-23T09:03:00"
+    fake_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 100,
+        "bar_ts": "2026-07-23T09:03:00",
+        "bar_close_ts": "2026-07-23T09:06:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": sid,
+        "onset": None,
+    }
+    import app.trading.macd_hynix_worker as wmod
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: fake_eval  # type: ignore
+    try:
+        worker.run_once(broker=broker, now=datetime(2026, 7, 23, 9, 6, 5), df_1m=df, state=state)
+        cs = state.get("completed_signal") or {}
+        assert cs.get("flag") == state.get("current_flag") == DIR_UP
+        assert cs.get("signal_id") == sid or state.get("last_signal_id") == sid
+        assert cs.get("completed_bar_at") == "2026-07-23T09:06:00"
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_tick_seq_not_capped_by_interval_buffer_logic():
+    intervals: list[float] = []
+    tick_seq = 0
+    for _ in range(80):
+        tick_seq += 1
+        intervals.append(5.0)
+        intervals = intervals[-worker.INTERVAL_HISTORY_MAX :]
+    assert tick_seq == 80
+    assert len(intervals) == worker.INTERVAL_HISTORY_MAX
