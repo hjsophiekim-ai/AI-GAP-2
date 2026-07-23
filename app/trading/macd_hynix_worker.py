@@ -33,6 +33,9 @@ from app.trading.macd_hynix_strategy import (
     SIGNAL_SOURCE_CONTINUATION,
     SIGNAL_SOURCE_OPEN_IMMEDIATE,
     SIGNAL_SYMBOL,
+    WARMUP_1M_BARS,
+    WARMUP_3M_BARS,
+    compute_warmup_macd,
     evaluate_continuation_reentry,
     evaluate_macd_direction,
     evaluate_opening_probe,
@@ -41,7 +44,7 @@ from app.trading.macd_hynix_strategy import (
     in_open_probe_window,
     open_probe_window_expired,
     opening_probe_b_confirms,
-    compute_warmup_macd,
+    resample_completed_3m,
     tail_prior_day_1m,
     target_symbol_for_direction,
 )
@@ -52,6 +55,9 @@ TICK_SECONDS = 5.0
 SESSION_START = (9, 0)
 NO_NEW_SWITCH_AFTER = (14, 55)
 FORCE_LIQUIDATE_AT = (15, 0)
+# Prior trading days to scan for warm-up 1m caches (weekends skipped).
+WARMUP_LOOKBACK_DAYS = 8
+KIS_MINUTE_API = "inquire-time-itemchartprice"
 
 _worker_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
@@ -125,66 +131,36 @@ def get_worker_status() -> dict[str, Any]:
 
 def _load_minute_df(mode: str, count: int = 120) -> pd.DataFrame:
     """Fetch 000660 1m bars via KIS; fall back to local cache CSV."""
-    rows: list[dict] = []
+    df, _diag = load_macd_minute_history(mode, count=count, now=_now_kst())
+    return df
+
+
+def _weekday_prior_dates(today: datetime, n: int = WARMUP_LOOKBACK_DAYS) -> list[str]:
+    """Recent Mon–Fri calendar dates strictly before ``today`` (KST naive)."""
+    out: list[str] = []
+    d = today.date() if hasattr(today, "date") else today
+    from datetime import date as date_cls
+
+    if not isinstance(d, date_cls):
+        d = pd.Timestamp(today).date()
+    cur = d
+    while len(out) < n:
+        cur = cur - timedelta(days=1)
+        if cur.weekday() < 5:
+            out.append(cur.strftime("%Y-%m-%d"))
+    return out
+
+
+def _read_1m_csv(path) -> pd.DataFrame:
     try:
-        from app.trading.kis_client import create_kis_client
-
-        client = create_kis_client(mode if mode in ("mock", "real") else "mock")
-        if client is not None:
-            candles = client.get_minute_candles(SIGNAL_SYMBOL, period_min=1, count=count) or []
-            today = _now_kst().strftime("%Y-%m-%d")
-            for c in candles:
-                hhmmss = str(c.get("time") or "")
-                if len(hhmmss) < 6:
-                    continue
-                ts = datetime.strptime(f"{today}{hhmmss[:6]}", "%Y%m%d%H%M%S")
-                rows.append({
-                    "datetime": ts,
-                    "open": float(c.get("open") or 0),
-                    "high": float(c.get("high") or 0),
-                    "low": float(c.get("low") or 0),
-                    "close": float(c.get("close") or 0),
-                    "volume": int(c.get("volume") or 0),
-                })
+        df = pd.read_csv(path)
+        if "datetime" not in df.columns:
+            return pd.DataFrame()
+        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+        return df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
     except Exception as exc:
-        logger.warning("[MACDHynix] minute fetch failed: %s", exc)
-
-    df = pd.DataFrame()
-    if rows:
-        df = pd.DataFrame(rows).drop_duplicates("datetime").sort_values("datetime")
-        df = df.reset_index(drop=True)
-
-    # Cache fallback (read-only) when KIS returned nothing (typical pre-open).
-    if df.empty:
-        from app.utils.data_paths import CACHE_DIR
-
-        cache = CACHE_DIR / "hynix_minute_1m.csv"
-        if cache.exists():
-            try:
-                cached = pd.read_csv(cache)
-                if "datetime" in cached.columns:
-                    cached["datetime"] = pd.to_datetime(cached["datetime"], errors="coerce")
-                    df = (
-                        cached.dropna(subset=["datetime"])
-                        .sort_values("datetime")
-                        .reset_index(drop=True)
-                    )
-            except Exception as exc:
-                logger.warning("[MACDHynix] cache read failed: %s", exc)
-
-    # Pre-open / thin feed: merge prior-session 1m so UI MACD can leave WARMUP_LT_26.
-    # Need >26 completed 3m bars ≈ >80 1m bars.
-    if len(df) < 90:
-        prior_day = _prior_session_date(_now_kst())
-        prior = _load_prior_day_minute_df(mode, prior_day)
-        if prior is not None and len(prior) > 0:
-            df = (
-                pd.concat([prior, df], ignore_index=True)
-                .drop_duplicates("datetime")
-                .sort_values("datetime")
-                .reset_index(drop=True)
-            )
-    return df if df is not None else pd.DataFrame()
+        logger.warning("[MACDHynix] 1m csv read failed %s: %s", path, exc)
+        return pd.DataFrame()
 
 
 def _load_prior_day_minute_df(mode: str, day: str) -> pd.DataFrame:
@@ -194,34 +170,263 @@ def _load_prior_day_minute_df(mode: str, day: str) -> pd.DataFrame:
     tag = day.replace("-", "")
     path = CACHE_DIR / f"replay_{tag}_hynix_1m.csv"
     if path.exists():
-        try:
-            df = pd.read_csv(path)
-            if "datetime" in df.columns:
-                df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
-                return df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
-        except Exception as exc:
-            logger.warning("[MACDHynix] prior-day cache read failed: %s", exc)
+        return _read_1m_csv(path)
     return pd.DataFrame()
 
 
+def _load_prior_history_1m(now: datetime) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Load prior trading-day 1m bars until ≥ WARMUP_1M_BARS (or best effort).
+
+    Sources (in order per day): replay_YYYYMMDD_hynix_1m.csv, then naver multi 1m.
+    """
+    from app.utils.data_paths import CACHE_DIR
+
+    sources_tried: list[str] = []
+    frames: list[pd.DataFrame] = []
+    days = _weekday_prior_dates(now, WARMUP_LOOKBACK_DAYS)
+    naver_path = CACHE_DIR / "naver_multi_1m" / "000660_1m.csv"
+    naver_df = _read_1m_csv(naver_path) if naver_path.exists() else pd.DataFrame()
+    if not naver_df.empty:
+        sources_tried.append(str(naver_path))
+
+    for day in days:
+        day_frames: list[pd.DataFrame] = []
+        replay = _load_prior_day_minute_df("mock", day)
+        if not replay.empty:
+            day_frames.append(replay)
+            sources_tried.append(f"replay_{day.replace('-', '')}_hynix_1m.csv")
+        if not naver_df.empty:
+            mask = naver_df["datetime"].dt.strftime("%Y-%m-%d") == day
+            part = naver_df.loc[mask]
+            if not part.empty:
+                day_frames.append(part)
+        if day_frames:
+            frames.extend(day_frames)
+        merged_so_far = (
+            pd.concat(frames, ignore_index=True).drop_duplicates("datetime")
+            if frames else pd.DataFrame()
+        )
+        if len(merged_so_far) >= WARMUP_1M_BARS:
+            break
+
+    if not frames:
+        # Last-resort: entire naver multi file (may span many days)
+        if not naver_df.empty:
+            frames.append(naver_df.tail(WARMUP_1M_BARS + 50))
+
+    if not frames:
+        return pd.DataFrame(), {
+            "api_name": "local_prior_1m",
+            "sources_tried": sources_tried,
+            "prior_days_scanned": days,
+            "received_1m_bars": 0,
+            "time_range": None,
+            "failure_reason": "NO_PRIOR_1M_CACHE",
+        }
+
+    df = (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates("datetime")
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+    # Prefer most recent warm-up window
+    if len(df) > WARMUP_1M_BARS + 30:
+        df = df.tail(WARMUP_1M_BARS + 30).reset_index(drop=True)
+    t0 = pd.Timestamp(df["datetime"].iloc[0]).isoformat() if len(df) else None
+    t1 = pd.Timestamp(df["datetime"].iloc[-1]).isoformat() if len(df) else None
+    return df, {
+        "api_name": "local_prior_1m",
+        "sources_tried": list(dict.fromkeys(sources_tried)),
+        "prior_days_scanned": days,
+        "received_1m_bars": int(len(df)),
+        "time_range": {"first": t0, "last": t1},
+        "failure_reason": None if len(df) >= WARMUP_1M_BARS else "PRIOR_1M_SHORT",
+    }
+
+
+def _fetch_kis_minute_1m(mode: str, count: int, today: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Live KIS 1m bars for 000660 (today session). Uses stck_bsop_date when present."""
+    rows: list[dict] = []
+    err: Optional[str] = None
+    requested = int(count)
+    try:
+        from app.trading.kis_client import create_kis_client
+
+        client = create_kis_client(mode if mode in ("mock", "real") else "mock")
+        if client is None:
+            err = "kis_client_none"
+        else:
+            candles = client.get_minute_candles(SIGNAL_SYMBOL, period_min=1, count=count) or []
+            for c in candles:
+                hhmmss = str(c.get("time") or "")
+                if len(hhmmss) < 6:
+                    continue
+                raw_date = str(c.get("date") or "").strip()
+                if len(raw_date) == 8 and raw_date.isdigit():
+                    day = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                else:
+                    day = today
+                ts = datetime.strptime(f"{day}{hhmmss[:6]}", "%Y%m%d%H%M%S")
+                rows.append({
+                    "datetime": ts,
+                    "open": float(c.get("open") or 0),
+                    "high": float(c.get("high") or 0),
+                    "low": float(c.get("low") or 0),
+                    "close": float(c.get("close") or 0),
+                    "volume": int(c.get("volume") or 0),
+                })
+    except Exception as exc:
+        err = str(exc)
+        logger.warning("[MACDHynix] minute fetch failed: %s", exc)
+
+    df = pd.DataFrame()
+    if rows:
+        df = (
+            pd.DataFrame(rows)
+            .drop_duplicates("datetime")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+        )
+    t0 = pd.Timestamp(df["datetime"].iloc[0]).isoformat() if len(df) else None
+    t1 = pd.Timestamp(df["datetime"].iloc[-1]).isoformat() if len(df) else None
+    return df, {
+        "api_name": KIS_MINUTE_API,
+        "requested_1m_bars": requested,
+        "received_1m_bars": int(len(df)),
+        "time_range": {"first": t0, "last": t1},
+        "failure_reason": err,
+    }
+
+
+def load_macd_minute_history(
+    mode: str,
+    *,
+    count: int = 120,
+    now: Optional[datetime] = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Prior-day warm-up 1m + live/today 1m merged for MACD EMA / signals.
+
+    Always preloads prior trading-day history first so open does not wait for
+    ~78 minutes of same-day bars (WARMUP_LT_26).
+    """
+    now = now or _now_kst()
+    today = now.strftime("%Y-%m-%d")
+    prior_df, prior_diag = _load_prior_history_1m(now)
+    live_df, live_diag = _fetch_kis_minute_1m(mode, count, today)
+
+    # Cache fallback when KIS empty (typical pre-open)
+    cache_diag: dict[str, Any] = {"used": False}
+    if live_df.empty:
+        from app.utils.data_paths import CACHE_DIR
+
+        cache = CACHE_DIR / "hynix_minute_1m.csv"
+        if cache.exists():
+            cached = _read_1m_csv(cache)
+            if not cached.empty:
+                live_df = cached
+                cache_diag = {
+                    "used": True,
+                    "path": str(cache),
+                    "received_1m_bars": int(len(cached)),
+                }
+
+    frames = [f for f in (prior_df, live_df) if f is not None and not f.empty]
+    if not frames:
+        diag = {
+            "api_name": KIS_MINUTE_API,
+            "prior": prior_diag,
+            "live": live_diag,
+            "cache": cache_diag,
+            "received_1m_bars": 0,
+            "completed_3m_count": 0,
+            "failure_reason": "NO_1M_BARS",
+        }
+        return pd.DataFrame(), diag
+
+    df = (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates("datetime")
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+    bars3 = resample_completed_3m(df, now=now)
+    t0 = pd.Timestamp(df["datetime"].iloc[0]).isoformat() if len(df) else None
+    t1 = pd.Timestamp(df["datetime"].iloc[-1]).isoformat() if len(df) else None
+    diag = {
+        "api_name": KIS_MINUTE_API,
+        "prior": prior_diag,
+        "live": live_diag,
+        "cache": cache_diag,
+        "requested_1m_bars": WARMUP_1M_BARS,
+        "received_1m_bars": int(len(df)),
+        "completed_1m_count": int(len(df)),
+        "completed_3m_count": int(len(bars3)),
+        "time_range": {"first": t0, "last": t1},
+        "last_bar_time": t1,
+        "resample_boundary": "3min floor; bar included when open+3m <= now",
+        "failure_reason": None if len(bars3) >= WARMUP_3M_BARS else (
+            f"WARMUP_LT_{WARMUP_3M_BARS}" if len(bars3) >= 3 else "DATA_INSUFFICIENT"
+        ),
+    }
+    return df, diag
+
+
 def _prior_session_date(today: datetime) -> str:
-    return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    days = _weekday_prior_dates(today, 1)
+    return days[0] if days else (today - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-def _refresh_opening_warmup(state: dict[str, Any], df_1m: pd.DataFrame, now: datetime, mode: str) -> None:
-    """Pre-09:00 warm-up MACD from prior day (≥100 completed 3m bars)."""
+def _ensure_macd_warmup(
+    state: dict[str, Any],
+    df_1m: pd.DataFrame,
+    now: datetime,
+    *,
+    load_diag: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Always-on warm-up (independent of OPENING_PROBE_ENABLED).
+
+    Sets opening_probe.warmup_ready when ≥100 completed 3m bars are available
+    from prior+live history — never waits for same-day intraday accumulation.
+    """
     op = state.setdefault("opening_probe", {})
-    if op.get("warmup_ready"):
-        return
+    # Prefer pure prior-day tail for probe hist snapshot; fall back to full df.
     prior_day = _prior_session_date(now)
-    prev_df = _load_prior_day_minute_df(mode, prior_day)
-    warmup_1m = tail_prior_day_1m(prev_df)
-    warm = compute_warmup_macd(warmup_1m, now=None)
+    prev_df = _load_prior_day_minute_df("mock", prior_day)
+    warmup_1m = tail_prior_day_1m(prev_df) if not prev_df.empty else pd.DataFrame()
+    if warmup_1m.empty and df_1m is not None and not df_1m.empty:
+        # Use all non-today bars from the merged feed as warm-up seed
+        today = now.strftime("%Y-%m-%d")
+        mask = pd.to_datetime(df_1m["datetime"]).dt.strftime("%Y-%m-%d") < today
+        warmup_1m = df_1m.loc[mask].tail(WARMUP_1M_BARS).reset_index(drop=True)
+        if warmup_1m.empty:
+            warmup_1m = df_1m.tail(WARMUP_1M_BARS).reset_index(drop=True)
+
+    warm = compute_warmup_macd(warmup_1m, now=None, diagnostics=load_diag or {})
+    # If dedicated prior warm-up short but merged feed already has ≥100 3m, mark ready.
+    if not warm.get("ok") and df_1m is not None and not df_1m.empty:
+        merged_bars = resample_completed_3m(df_1m, now=now)
+        if len(merged_bars) >= WARMUP_3M_BARS:
+            warm = compute_warmup_macd(
+                df_1m.tail(max(WARMUP_1M_BARS, len(df_1m))).reset_index(drop=True),
+                now=now,
+                diagnostics=load_diag or {},
+            )
+
     op["warmup_ready"] = bool(warm.get("ok"))
     op["warmup_reason"] = warm.get("reason")
     op["warmup_hist_last2"] = warm.get("hist_last2") or []
     op["warmup_hist_deltas"] = warm.get("hist_deltas") or []
+    if warm.get("hist_last3"):
+        op["warmup_hist_last3"] = warm.get("hist_last3")
     state["opening_warmup_macd"] = warm
+    state["macd_warmup_diagnostics"] = warm.get("diagnostics") or load_diag or {}
+    return warm
+
+
+def _refresh_opening_warmup(state: dict[str, Any], df_1m: pd.DataFrame, now: datetime, mode: str) -> None:
+    """Compat wrapper for opening-probe path — delegates to always-on warm-up."""
+    _ensure_macd_warmup(state, df_1m, now)
 
 
 def _record_hynix_sample(state: dict[str, Any], now: datetime, price: Optional[float]) -> None:
@@ -452,13 +657,17 @@ def run_once(
 
         # Always compute MACD/direction for UI display (even outside session).
         # Orders remain gated by session / allow_new_switch below.
+        session_date = now.strftime("%Y-%m-%d")
+        load_diag: dict[str, Any] = {}
         if df_1m is None:
-            df_1m = _load_minute_df(mode)
+            df_1m, load_diag = load_macd_minute_history(mode, count=120, now=now)
+        warm = _ensure_macd_warmup(state, df_1m, now, load_diag=load_diag)
         eval_res = evaluate_macd_direction(
             df_1m,
             now=now,
             last_signal_direction=state.get("last_signal_direction"),
             last_signal_bar_ts=state.get("last_signal_bar_ts"),
+            session_date=session_date,
         )
         state["display_direction"] = eval_res.get("display_direction") or DIR_HOLD
         state["macd"] = {
@@ -470,10 +679,26 @@ def run_once(
             "reason": eval_res.get("reason"),
             "bar_ts": eval_res.get("bar_ts"),
         }
+        # If evaluate still warm-up-starved, surface rich diagnostics (not bare WARMUP_LT_26).
+        if not eval_res.get("ok"):
+            diag = state.get("macd_warmup_diagnostics") or load_diag or {}
+            reason = eval_res.get("reason") or "SIGNAL_INACTIVE"
+            state["macd"]["reason"] = reason
+            state["macd"]["diagnostics"] = diag
+            if warm.get("ok") and warm.get("macd") is not None:
+                # Warm-up MACD numbers available for UI even if last bar gated oddly.
+                state["macd"].update({
+                    "macd": warm.get("macd"),
+                    "signal": warm.get("signal"),
+                    "hist": warm.get("hist"),
+                    "hist_last3": warm.get("hist_last3") or [],
+                    "hist_deltas": warm.get("hist_deltas") or [],
+                    "reason": warm.get("reason") or reason,
+                })
         result["macd"] = eval_res
         om.refresh_runtime_status(state, worker_alive=True)
 
-        # Pre-open warm-up (prior-day MACD) — ready by 08:59; no direction reuse
+        # Opening-probe path still refreshes pre-09:00 when probe enabled
         if probe_enabled and now.hour < 9:
             _refresh_opening_warmup(state, df_1m, now, mode)
 
@@ -531,7 +756,10 @@ def run_once(
             if new_target and new_target != held_symbol:
                 sid = eval_res["signal_id"]
                 processed = set(state.get("processed_signal_ids") or [])
-                if sid not in processed:
+                # Do NOT re-stamp pending_signal_at when already armed — that prevented
+                # next-tick execution (age never reached 0.5*TICK) so blue/red flags
+                # showed in UI with no ETF order.
+                if sid not in processed and sid != state.get("pending_signal_id"):
                     state["pending_signal_id"] = sid
                     state["pending_signal_direction"] = new_dir
                     state["pending_signal_at"] = now.isoformat()
@@ -553,6 +781,9 @@ def run_once(
                     if op.get("awaiting_09_03_confirm"):
                         op["awaiting_09_03_confirm"] = False
                         op["confirm_checked"] = True
+                elif sid == state.get("pending_signal_id"):
+                    # Already armed — keep pending age so execute_now can fire this tick.
+                    opposite_pending = True
 
         # SL / profit-lock every tick while in position (skip when opposite armed this tick)
         # Priority after 15:00 + opposite: SL then PROFIT_LOCK (no fixed +3% TP)
@@ -875,15 +1106,13 @@ def _worker_loop() -> None:
             state["worker"]["alive"] = True
             state["worker"]["last_tick_at"] = datetime.now().isoformat()
             today = _now_kst().strftime("%Y-%m-%d")
-            if state.get("session_date") and state.get("session_date") != today:
+            if state.get("session_date") != today:
                 # Day change: clear mutex ownership if strategy is off
-                if not state.get("auto_trade_on"):
+                if state.get("session_date") and not state.get("auto_trade_on"):
                     om.clear_mutex(mode=str(state.get("mode") or "mock"), reason="day_change")
-                om.reset_opening_probe_daily(state, session_date=today)
-                state["last_signal_direction"] = None
-                state["last_signal_bar_ts"] = None
-            elif not state.get("session_date"):
-                state["session_date"] = today
+                # Reset direction_state so first signed-B onset after 09:00 can enter
+                # (start_auto_trade must use the same helper — do not set session_date alone).
+                om.apply_macd_session_day_rollover(state, session_date=today)
             with _status_lock:
                 intervals = list(_status.get("tick_intervals") or [])
                 state["worker"]["tick_intervals"] = [round(x, 3) for x in intervals[-40:]]
@@ -959,6 +1188,13 @@ def start_auto_trade(
         return {"ok": False, "message": reason, "primary_block_reason": reason}
 
     state = om.load_state()
+    today = _now_kst().strftime("%Y-%m-%d")
+    # Must rollover BEFORE first run_once. Setting session_date alone used to skip the
+    # worker day-change path and leave overnight last_signal_direction=UP/DOWN, so a
+    # morning signed-B onset never armed despite UI showing RED/BLUE.
+    om.apply_macd_session_day_rollover(state, session_date=today)
+    if not state.get("session_date"):
+        state["session_date"] = today
     state["auto_trade_on"] = True
     state["mode"] = mode
     state["budget"] = float(budget)
@@ -966,7 +1202,6 @@ def start_auto_trade(
     state["stopped_reason"] = None
     state["real_confirm_ok"] = bool(real_confirm_ok) if mode == "real" else False
     state["masked_account"] = masked_account
-    state["session_date"] = _now_kst().strftime("%Y-%m-%d")
     state["primary_block_reason"] = None
     state["order_block_reason"] = None
     state["legacy_truth_debug"] = om.legacy_auto_trade_truth(force_disk=True)

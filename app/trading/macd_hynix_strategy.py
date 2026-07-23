@@ -233,17 +233,41 @@ def collect_signed_hist_two_turn_signals(
     return events
 
 
+def is_today_regular_session_bar(bar_ts: Any, session_date: Optional[str]) -> bool:
+    """True when a completed 3m bar belongs to today's KRX regular session.
+
+    Used so prior-day warm-up bars can feed EMA/MACD display but never arm
+    ``new_signal`` as if they were today's entries.
+    """
+    if not session_date:
+        return True
+    try:
+        ts = pd.Timestamp(bar_ts)
+    except Exception:
+        return False
+    if ts.strftime("%Y-%m-%d") != str(session_date):
+        return False
+    hm = (int(ts.hour), int(ts.minute))
+    # 3m bar open times: 09:00 .. 15:27 (bar completes by 15:30).
+    return hm >= (9, 0) and hm <= (15, 27)
+
+
 def evaluate_macd_direction(
     df_1m: Optional[pd.DataFrame],
     *,
     now: Optional[datetime] = None,
     last_signal_direction: Optional[str] = None,
     last_signal_bar_ts: Optional[str] = None,
+    session_date: Optional[str] = None,
 ) -> dict[str, Any]:
     """Evaluate Strategy B on completed 3m MACD histogram of 000660.
 
     Signed same-sign two-turn + onset (old prev_ok) + persistent direction_state.
     Warm-up: bar index must be >= MACD_SIGNAL_MIN_INDEX (old `i < 26` skip).
+
+    Prior-day bars may be included for EMA warm-up / display. When
+    ``session_date`` is set, ``new_signal`` only arms on today's regular-session
+    completed bars (warm-up hist is never treated as today's entry signal).
     """
     empty = {
         "ok": False,
@@ -313,6 +337,15 @@ def evaluate_macd_direction(
             reason = "DOWN_BLUE_FIRST_TURN"
     else:
         reason = "HOLD_NO_PATTERN"
+
+    # Warm-up / prior-day completed bars: keep MACD display, never arm entry.
+    if new_signal and not is_today_regular_session_bar(bar_ts, session_date):
+        new_signal = False
+        signal_direction = None
+        if pattern == DIR_UP:
+            reason = "UP_RED_PATTERN"
+        elif pattern == DIR_DOWN:
+            reason = "DOWN_BLUE_PATTERN"
 
     signal_id = None
     if new_signal and signal_direction:
@@ -765,6 +798,7 @@ def compute_warmup_macd(
     df_warmup_1m: Optional[pd.DataFrame],
     *,
     now: Optional[datetime] = None,
+    diagnostics: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """MACD/Signal/Histogram from prior-day warm-up only (ready before 09:00).
 
@@ -777,41 +811,69 @@ def compute_warmup_macd(
         "signal": None,
         "hist": None,
         "hist_last2": [],
+        "hist_last3": [],
         "hist_deltas": [],
         "completed_3m_count": 0,
+        "completed_1m_count": 0,
         "reason": "DATA_INSUFFICIENT",
+        "diagnostics": diagnostics or {},
     }
+    n1 = int(len(df_warmup_1m)) if df_warmup_1m is not None and not getattr(df_warmup_1m, "empty", True) else 0
+    empty["completed_1m_count"] = n1
     end = now
     if end is None and df_warmup_1m is not None and not df_warmup_1m.empty:
         end = pd.Timestamp(df_warmup_1m["datetime"].iloc[-1]).to_pydatetime() + timedelta(minutes=1)
     bars = resample_completed_3m(df_warmup_1m, now=end)
-    if len(bars) < WARMUP_3M_BARS:
-        return {
-            **empty,
-            "completed_3m_count": int(len(bars)),
-            "reason": (
-                f"WARMUP_LT_{WARMUP_3M_BARS}"
-                if len(bars) >= 3
-                else "DATA_INSUFFICIENT"
-            ),
-        }
+    n3 = int(len(bars))
+    first_bar = pd.Timestamp(bars["datetime"].iloc[0]).isoformat() if n3 else None
+    last_bar = pd.Timestamp(bars["datetime"].iloc[-1]).isoformat() if n3 else None
+    diag = {
+        **(diagnostics or {}),
+        "requested_3m_bars": WARMUP_3M_BARS,
+        "requested_1m_bars": WARMUP_1M_BARS,
+        "received_1m_bars": n1,
+        "completed_1m_count": n1,
+        "completed_3m_count": n3,
+        "first_3m_bar_ts": first_bar,
+        "last_3m_bar_ts": last_bar,
+        "last_1m_bar_ts": (
+            pd.Timestamp(df_warmup_1m["datetime"].iloc[-1]).isoformat()
+            if n1 > 0 else None
+        ),
+        "resample_boundary": "3min floor; bar included when open+3m <= now",
+    }
+    if n3 < WARMUP_3M_BARS:
+        reason = f"WARMUP_LT_{WARMUP_3M_BARS}" if n3 >= 3 else "DATA_INSUFFICIENT"
+        diag["failure_reason"] = reason
+        return {**empty, "completed_3m_count": n3, "reason": reason, "diagnostics": diag}
     closes = pd.to_numeric(bars["close"], errors="coerce").dropna()
     comps = macd_components(closes)
     hist = comps.get("hist")
     if hist is None or len(hist) < 2:
-        return {**empty, "completed_3m_count": int(len(bars)), "reason": "MACD_INSUFFICIENT"}
+        diag["failure_reason"] = "MACD_INSUFFICIENT"
+        return {
+            **empty,
+            "completed_3m_count": n3,
+            "reason": "MACD_INSUFFICIENT",
+            "diagnostics": diag,
+        }
     h1, h2 = float(hist.iloc[-1]), float(hist.iloc[-2])
+    h3 = float(hist.iloc[-3]) if len(hist) >= 3 else h2
     d1 = h1 - h2
     d0 = float(hist.iloc[-2]) - float(hist.iloc[-3]) if len(hist) >= 3 else d1
+    diag["failure_reason"] = None
     return {
         "ok": True,
         "macd": round(float(comps["macd"].iloc[-1]), 6),
         "signal": round(float(comps["signal"].iloc[-1]), 6),
         "hist": round(h1, 6),
         "hist_last2": [round(h2, 6), round(h1, 6)],
+        "hist_last3": [round(h3, 6), round(h2, 6), round(h1, 6)],
         "hist_deltas": [round(d0, 6), round(d1, 6)],
-        "completed_3m_count": int(len(bars)),
+        "completed_3m_count": n3,
+        "completed_1m_count": n1,
         "reason": "WARMUP_READY",
+        "diagnostics": diag,
     }
 
 

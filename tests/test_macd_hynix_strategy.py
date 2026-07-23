@@ -264,6 +264,160 @@ def test_onset_suppresses_warmup_carry():
     # Newly UP: prev bar not signed-UP (flat/zero delta on prior window)
     assert signed_hist_two_turn_onset(3.0, 2.0, 1.0, 1.5) == DIR_UP
 
+
+def test_prior_day_warmup_yields_macd_at_open_without_same_day_bars():
+    """Right after open: prior-day warm-up yields MACD numbers (no 26 same-day wait)."""
+    from app.trading.macd_hynix_strategy import WARMUP_3M_BARS, resample_completed_3m
+
+    prior = pd.read_csv(Path("data/cache/replay_20260722_hynix_1m.csv"))
+    prior["datetime"] = pd.to_datetime(prior["datetime"])
+    # Simulate 09:00 open with only prior-day history (0 same-day 1m bars)
+    now = datetime(2026, 7, 23, 9, 0, 5)
+    bars = resample_completed_3m(prior, now=now)
+    assert len(bars) >= WARMUP_3M_BARS, f"need ≥{WARMUP_3M_BARS} 3m from prior day, got {len(bars)}"
+    r = evaluate_macd_direction(prior, now=now, session_date="2026-07-23")
+    assert r["ok"] is True
+    assert r["macd"] is not None and r["signal"] is not None and r["hist"] is not None
+    assert len(r["hist_last3"]) == 3
+    # Must not wait for same-day bars
+    assert r["reason"] != "WARMUP_LT_26"
+
+
+def test_warmup_bars_do_not_arm_todays_new_signal():
+    """Prior-day / warm-up completed bars never count as today's new_signal."""
+    prior = pd.read_csv(Path("data/cache/replay_20260722_hynix_1m.csv"))
+    prior["datetime"] = pd.to_datetime(prior["datetime"])
+    now = datetime(2026, 7, 23, 9, 0, 5)
+    r = evaluate_macd_direction(
+        prior,
+        now=now,
+        last_signal_direction=None,
+        session_date="2026-07-23",
+    )
+    assert r["ok"] is True
+    # Last bar is Jul22 — display may be UP/DOWN/HOLD but must not arm entry
+    assert r["new_signal"] is False
+    assert r["signal_id"] is None
+
+
+def test_session_day_rollover_clears_runtime_and_direction_when_flat():
+    """New KST day clears yesterday pipeline/events + direction_state when flat."""
+    state = om.default_state()
+    state["session_date"] = "2026-07-22"
+    state["last_event"] = "15:00_FORCE_LIQUIDATE"
+    state["last_signal_direction"] = DIR_UP
+    state["last_signal_bar_ts"] = "2026-07-22T14:00:00"
+    state["direction_episode"]["last_exit_reason"] = "15:00_FORCE_LIQUIDATE"
+    om.set_pipeline_stage(state, "Signal", True, "yesterday")
+    state["order_latency"] = {"signal_id": "old"}
+    state["position_confirmed_at"] = "2026-07-22T10:00:00"
+    assert om.apply_macd_session_day_rollover(state, session_date="2026-07-23") is True
+    assert state["session_date"] == "2026-07-23"
+    assert state["last_event"] is None
+    assert state["pipeline"]["Signal"]["ok"] is None
+    assert state["order_latency"] == {}
+    assert state["position_confirmed_at"] is None
+    assert state["direction_episode"]["last_exit_reason"] is None
+    # Flat day start: clear direction so first signed onset after 09:00 can enter
+    assert state["last_signal_direction"] is None
+    assert state["last_signal_bar_ts"] is None
+    assert om.apply_macd_session_day_rollover(state, session_date="2026-07-23") is False
+
+
+def test_session_day_rollover_keeps_held_position_local_state():
+    state = om.default_state()
+    state["session_date"] = "2026-07-22"
+    state["last_event"] = "BUY"
+    state["last_signal_direction"] = DIR_UP
+    state["position"] = {
+        **om.default_state()["position"],
+        "symbol": LONG_SYMBOL,
+        "quantity": 10,
+        "avg_price": 10000.0,
+    }
+    assert om.apply_macd_session_day_rollover(state, session_date="2026-07-23") is True
+    assert state["position"]["symbol"] == LONG_SYMBOL
+    assert int(state["position"]["quantity"]) == 10
+    assert state["last_event"] is None
+    # Still holding → keep direction_state (do not unlock mid-position overnight carry)
+    assert state["last_signal_direction"] == DIR_UP
+
+
+def test_worker_up_down_symbols_once_no_duplicate():
+    """Valid UP → 0193T0 once; DOWN → 0197X0 once; no duplicate same signal_id."""
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="up")
+    state = om.default_state()
+    state["auto_trade_on"] = True
+    state["budget"] = 5_000_000
+    state["session_date"] = "2026-07-23"
+    now = datetime(2026, 7, 23, 10, 3, 5)
+
+    up_eval = {
+        "ok": True,
+        "display_direction": DIR_UP,
+        "new_signal": True,
+        "signal_direction": DIR_UP,
+        "macd": 1.0,
+        "signal": 0.5,
+        "hist": 0.5,
+        "hist_last3": [0.1, 0.3, 0.5],
+        "hist_deltas": [0.2, 0.2],
+        "completed_3m_count": 40,
+        "bar_ts": "2026-07-23T10:00:00",
+        "bar_close_ts": "2026-07-23T10:03:00",
+        "reason": "UP_RED_FIRST_TURN",
+        "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+    }
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    wmod.evaluate_macd_direction = lambda *a, **k: up_eval  # type: ignore
+    try:
+        worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        worker.run_once(broker=broker, now=now + timedelta(seconds=5), df_1m=df, state=state)
+        assert sum(1 for b in broker.buys if b[0] == LONG_SYMBOL) == 1
+        # Duplicate same signal must not re-buy
+        n_buys = len(broker.buys)
+        worker.run_once(broker=broker, now=now + timedelta(seconds=10), df_1m=df, state=state)
+        worker.run_once(broker=broker, now=now + timedelta(seconds=15), df_1m=df, state=state)
+        assert len(broker.buys) == n_buys
+
+        down_eval = {
+            **up_eval,
+            "display_direction": DIR_DOWN,
+            "signal_direction": DIR_DOWN,
+            "bar_ts": "2026-07-23T11:00:00",
+            "bar_close_ts": "2026-07-23T11:03:00",
+            "reason": "DOWN_BLUE_FIRST_TURN",
+            "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T11:00:00",
+        }
+        wmod.evaluate_macd_direction = lambda *a, **k: down_eval  # type: ignore
+        worker.run_once(broker=broker, now=now + timedelta(hours=1), df_1m=df, state=state)
+        worker.run_once(
+            broker=broker,
+            now=now + timedelta(hours=1, seconds=5),
+            df_1m=df,
+            state=state,
+        )
+        assert sum(1 for b in broker.buys if b[0] == INVERSE_SYMBOL) == 1
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def test_ensure_warmup_sets_ready_from_prior_history(monkeypatch):
+    """Worker warm-up path marks warmup_ready without same-day accumulation."""
+    prior = pd.read_csv(Path("data/cache/replay_20260722_hynix_1m.csv"))
+    prior["datetime"] = pd.to_datetime(prior["datetime"])
+    state = om.default_state()
+    now = datetime(2026, 7, 23, 9, 0, 5)
+    monkeypatch.setattr(worker, "_load_prior_day_minute_df", lambda mode, day: prior)
+    warm = worker._ensure_macd_warmup(state, prior, now, load_diag={"api_name": "test"})
+    assert warm.get("ok") is True
+    assert state["opening_probe"]["warmup_ready"] is True
+    assert state["opening_probe"]["warmup_reason"] == "WARMUP_READY"
+
+
 def test_sell_before_buy_on_switch():
     broker = FakeBroker()
     # Hold inverse first

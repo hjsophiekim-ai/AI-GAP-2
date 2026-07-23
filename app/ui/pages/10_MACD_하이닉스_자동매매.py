@@ -263,6 +263,19 @@ st.write(
     f"last_eval=`{op.get('last_eval_signal')}`/`{op.get('last_eval_reason')}` · "
     f"scaled=`{op.get('scaled_to_full')}` · unconf_exit=`{op.get('unconfirmed_exit_at')}`"
 )
+_wdiag = state.get("macd_warmup_diagnostics") or (state.get("macd") or {}).get("diagnostics") or {}
+if _wdiag:
+    st.caption(
+        "Warm-up diagnostics (KST) · "
+        f"api=`{_wdiag.get('api_name')}` · "
+        f"1m={_wdiag.get('received_1m_bars') or _wdiag.get('completed_1m_count')}/"
+        f"{_wdiag.get('requested_1m_bars')} · "
+        f"3m={_wdiag.get('completed_3m_count')}/{_wdiag.get('requested_3m_bars')} · "
+        f"range=`{(_wdiag.get('time_range') or {}).get('first')}`→"
+        f"`{(_wdiag.get('time_range') or {}).get('last') or _wdiag.get('last_bar_time')}` · "
+        f"fail=`{_wdiag.get('failure_reason')}` · "
+        f"boundary=`{_wdiag.get('resample_boundary')}`"
+    )
 st.caption(
     "09:00:05–09:00:15 immediate 50% (warm-up MACD + price/slope) · "
     "09:03 first 3m bar confirm → scale 100% or flatten · "

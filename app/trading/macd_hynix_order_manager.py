@@ -341,10 +341,13 @@ def update_state(**kwargs) -> dict[str, Any]:
 
 
 def set_pipeline_stage(state: dict[str, Any], stage: str, ok: bool, message: str = "") -> None:
+    from zoneinfo import ZoneInfo
+
+    kst = ZoneInfo("Asia/Seoul")
     pipe = state.setdefault("pipeline", {})
     pipe[stage] = {
         "ok": bool(ok),
-        "at": datetime.now().isoformat(),
+        "at": datetime.now(kst).strftime("%Y-%m-%dT%H:%M:%S%z"),
         "message": str(message or ""),
     }
 
@@ -1786,6 +1789,86 @@ def reset_opening_probe_daily(state: dict[str, Any], *, session_date: str) -> No
     op["day_open_price"] = state.get("opening_probe", {}).get("day_open_price")
     state["opening_probe"] = op
     state["session_date"] = session_date
+
+
+def apply_macd_session_day_rollover(state: dict[str, Any], *, session_date: str) -> bool:
+    """KST calendar-day rollover: clear prior-day runtime UI + flat direction_state.
+
+    Clears: last_event, pipeline stages, signal/order/position timestamps,
+    position-confirmed display, in-flight latency, pending order arming, and
+    opening-probe daily flags.
+
+    When flat (normal after 15:00 liquidate): also clears ``last_signal_direction``
+    so today's first valid signed-B onset after 09:00 can enter. Warm-up bars
+    still cannot arm (``session_date`` gate on evaluate). Does **not** delete
+    broker holdings or permanent ledger rows. When still holding overnight,
+    keeps direction_state and local position tracking.
+
+    Returns True when a day change was applied.
+    """
+    prev = state.get("session_date")
+    if prev == session_date:
+        return False
+
+    pos = state.get("position") or {}
+    held = bool(pos.get("symbol") and int(pos.get("quantity") or 0) > 0)
+
+    reset_opening_probe_daily(state, session_date=session_date)
+
+    # Runtime / UI clear (always)
+    state["last_event"] = None
+    state["pipeline"] = default_state()["pipeline"]
+    state["order_latency"] = {}
+    state["order_latency_last"] = None
+    state["order_block_reason"] = None
+    state["pending_signal_id"] = None
+    state["pending_signal_direction"] = None
+    state["pending_signal_at"] = None
+    state["pending_entry_kind"] = None
+    state["pending_signal_source"] = None
+    state["pending_budget_fraction"] = None
+    state["pending_open_scale"] = None
+    for k in (
+        "order_requested_at",
+        "kis_order_accepted_at",
+        "broker_executed_at",
+        "position_confirmed_at",
+        "completed_3m_bar_at",
+        "signal_detected_at",
+        "last_signal_at",
+        "last_order_at",
+    ):
+        state[k] = None
+    w = state.setdefault("worker", {})
+    for k in (
+        "completed_3m_bar_at",
+        "signal_detected_at",
+        "order_requested_at",
+        "kis_order_accepted_at",
+        "broker_executed_at",
+        "position_confirmed_at",
+    ):
+        w[k] = None
+
+    if not held:
+        # Flat overnight (normal after 15:00 force liquidate): clear local position
+        # display + episode exit banner so UI does not show yesterday's event.
+        # Also clear direction_state so today's first valid signed-B onset can enter
+        # (warm-up bars still cannot arm via session_date gate on evaluate).
+        state["position"] = default_state()["position"]
+        state["direction_episode"] = default_state()["direction_episode"]
+        state["direction_episode"]["last_exit_reason"] = None
+        state["last_signal_direction"] = None
+        state["last_signal_bar_ts"] = None
+        state["last_signal_id"] = None
+        state["profit_lock"] = default_state()["profit_lock"]
+        state["reentry"] = default_state()["reentry"]
+        state["force_liquidate_done_date"] = None
+        state["force_liquidate_pending"] = False
+        state["processed_signal_ids"] = []
+
+    state["session_date"] = session_date
+    return True
 
 
 def force_liquidate_all(

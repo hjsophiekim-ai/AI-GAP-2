@@ -1002,6 +1002,7 @@ class KISClient:
                 if close <= 0:
                     continue
                 result.append({
+                    "date": str(row.get("stck_bsop_date") or ""),
                     "time": row.get("stck_cntg_hour", ""),
                     "open": float(row.get("stck_oprc", 0) or 0),
                     "high": float(row.get("stck_hgpr", 0) or 0),
