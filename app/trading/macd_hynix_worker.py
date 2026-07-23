@@ -4,9 +4,12 @@ Does not call Enhanced / WOC / Early / Active / Fusion / Regime / Prediction.
 """
 from __future__ import annotations
 
+import hashlib
+import importlib
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -71,7 +74,105 @@ _status: dict[str, Any] = {
     "started_at": None,
     "last_error": None,
     "main_cycle_3m_wait_count": 0,
+    "thread_ident": None,
+    "force_restarted_at": None,
+    "modules_reloaded_at": None,
+    "stale_worker": False,
 }
+_tick_counter = 0
+_LOADED_MODULE_DIGEST = ""
+_LOADED_GIT_SHA = ""
+_STALE_CHECK_EVERY_N_TICKS = 6  # ~30s at 5s ticks
+_ZOMBIE_PENDING_SEC = 45.0
+
+
+def _file_digest(path: Path) -> str:
+    try:
+        return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
+def _stack_module_digest() -> str:
+    """Digest of strategy+order_manager+worker source on disk (identity of tradable code)."""
+    base = Path(__file__).resolve().parent
+    parts = [
+        _file_digest(base / "macd_hynix_strategy.py"),
+        _file_digest(base / "macd_hynix_order_manager.py"),
+        _file_digest(base / "macd_hynix_worker.py"),
+    ]
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def _capture_loaded_identity() -> dict[str, str]:
+    """Record identity of bytecode currently loaded in this process."""
+    global _LOADED_MODULE_DIGEST, _LOADED_GIT_SHA
+    _LOADED_MODULE_DIGEST = _stack_module_digest()
+    _LOADED_GIT_SHA = om._git_sha() or ""
+    return {"module_digest": _LOADED_MODULE_DIGEST, "git_sha": _LOADED_GIT_SHA}
+
+
+def worker_identity() -> dict[str, Any]:
+    disk = _stack_module_digest()
+    git = om._git_sha() or ""
+    stale = bool(
+        (_LOADED_MODULE_DIGEST and disk and disk != _LOADED_MODULE_DIGEST)
+        or (_LOADED_GIT_SHA and git and git != _LOADED_GIT_SHA)
+    )
+    return {
+        "loaded_module_digest": _LOADED_MODULE_DIGEST,
+        "disk_module_digest": disk,
+        "loaded_git_sha": _LOADED_GIT_SHA,
+        "disk_git_sha": git,
+        "stale_worker": stale,
+        "stale_reason": (
+            "DISK_NEWER_THAN_LOADED_MODULE"
+            if (_LOADED_MODULE_DIGEST and disk and disk != _LOADED_MODULE_DIGEST)
+            else (
+                "GIT_SHA_MOVED_SINCE_IMPORT"
+                if (_LOADED_GIT_SHA and git and git != _LOADED_GIT_SHA)
+                else None
+            )
+        ),
+    }
+
+
+def reload_macd_trading_stack(*, reason: str = "manual") -> dict[str, Any]:
+    """Stop worker thread, reload strategy/om/worker from disk, recapture identity.
+
+    ``force_restart`` alone is NOT enough after ``git pull``: the daemon keeps the
+    already-imported bytecode. Start / stale-gate must call this.
+    """
+    global _worker_thread
+    stop_worker()
+    if _worker_thread and _worker_thread.is_alive():
+        _worker_thread.join(timeout=3.0)
+    _worker_thread = None
+    _stop_event.clear()
+
+    import app.trading.macd_hynix_order_manager as om_mod
+    import app.trading.macd_hynix_strategy as strat_mod
+    import app.trading.macd_hynix_worker as worker_mod
+
+    importlib.reload(strat_mod)
+    importlib.reload(om_mod)
+    reloaded = importlib.reload(worker_mod)
+    ident = reloaded._capture_loaded_identity()
+    with reloaded._status_lock:
+        reloaded._status["modules_reloaded_at"] = datetime.now().isoformat()
+        reloaded._status["stale_worker"] = False
+        reloaded._status["reload_reason"] = reason
+    logger.warning(
+        "[MACDHynix] trading stack reloaded reason=%s digest=%s git=%s",
+        reason,
+        ident.get("module_digest"),
+        ident.get("git_sha"),
+    )
+    return {"ok": True, "reason": reason, **ident}
+
+
+# Capture identity at first import (updated again after reload).
+_capture_loaded_identity()
 
 
 def _now_kst() -> datetime:
@@ -120,6 +221,8 @@ def _avg(values: list[float]) -> Optional[float]:
 def get_worker_status() -> dict[str, Any]:
     with _status_lock:
         intervals = list(_status.get("tick_intervals") or [])
+        tid = int(_worker_thread.ident) if _worker_thread and _worker_thread.ident else None
+        ident = worker_identity()
         return {
             **dict(_status),
             "tick_intervals": intervals[-40:],
@@ -127,6 +230,9 @@ def get_worker_status() -> dict[str, Any]:
             "p95_interval": _p95(intervals[-20:]),
             "main_cycle_3m_wait_count": int(_status.get("main_cycle_3m_wait_count") or 0),
             "thread_alive": bool(_worker_thread and _worker_thread.is_alive()),
+            "thread_ident": tid,
+            "thread_name": _worker_thread.name if _worker_thread else None,
+            **ident,
         }
 
 
@@ -760,21 +866,68 @@ def run_once(
         result["macd"] = eval_res
         # Per-tick visibility: prove 3m bars + flags are computed every cycle
         state["last_macd_bars_ok"] = bool(eval_res.get("ok"))
-        state["last_flag"] = eval_res.get("display_direction") or DIR_HOLD
+        flag_now = eval_res.get("display_direction") or DIR_HOLD
+        state["last_flag"] = flag_now
+        state["current_flag"] = flag_now
         state["last_new_signal"] = bool(eval_res.get("new_signal"))
         state["last_signal_eval"] = {
             "bar_ts": eval_res.get("bar_ts"),
             "bar_close_ts": eval_res.get("bar_close_ts"),
             "hist_last3": eval_res.get("hist_last3") or [],
             "hist_deltas": eval_res.get("hist_deltas") or [],
-            "flag": eval_res.get("display_direction"),
+            "flag": flag_now,
             "new_signal": bool(eval_res.get("new_signal")),
             "signal_id": eval_res.get("signal_id"),
             "reason": eval_res.get("reason"),
             "at": now.isoformat(),
         }
         state["worker_code_sha"] = om._git_sha()
+        state["git_sha"] = state["worker_code_sha"]
+        state["module_digest"] = _LOADED_MODULE_DIGEST
+        ident = worker_identity()
+        state["stale_worker"] = bool(ident.get("stale_worker"))
+        state["stale_worker_reason"] = ident.get("stale_reason")
+        # Keep UI aliases in sync (armed_at survives pending clear after fill).
+        if state.get("pending_signal_at") and not state.get("armed_at"):
+            state["armed_at"] = state.get("pending_signal_at")
         om.refresh_runtime_status(state, worker_alive=True)
+
+        # Clear half-written / zombie pending that blocks arms incorrectly.
+        if state.get("pending_signal_id") and not state.get("pending_signal_direction"):
+            logger.warning(
+                "[MACDHynix] clearing orphan pending_id without direction: %s",
+                state.get("pending_signal_id"),
+            )
+            state["pending_signal_id"] = None
+            state["pending_signal_at"] = None
+            state["pending_entry_kind"] = None
+        if state.get("pending_signal_at") and not state.get("pending_signal_id"):
+            state["pending_signal_at"] = None
+        if state.get("pending_signal_id") and state.get("pending_signal_at"):
+            try:
+                pend_age = (
+                    now - datetime.fromisoformat(str(state["pending_signal_at"]))
+                ).total_seconds()
+            except Exception:
+                pend_age = 9999.0
+            if pend_age > _ZOMBIE_PENDING_SEC:
+                logger.warning(
+                    "[MACDHynix] clearing zombie pending age=%.1fs sid=%s",
+                    pend_age,
+                    state.get("pending_signal_id"),
+                )
+                state["decision_trace"] = {
+                    **(state.get("decision_trace") or {}),
+                    "cleared_zombie_pending": state.get("pending_signal_id"),
+                    "zombie_age_sec": pend_age,
+                }
+                state["pending_signal_id"] = None
+                state["pending_signal_direction"] = None
+                state["pending_signal_at"] = None
+                state["pending_entry_kind"] = None
+                state["pending_signal_source"] = None
+                state["pending_budget_fraction"] = None
+                state["pending_open_scale"] = None
 
         # Opening-probe path still refreshes pre-09:00 when probe enabled
         if probe_enabled and now.hour < 9:
@@ -841,6 +994,9 @@ def run_once(
                     state["pending_signal_id"] = sid
                     state["pending_signal_direction"] = new_dir
                     state["pending_signal_at"] = now.isoformat()
+                    state["armed_at"] = now.isoformat()
+                    state["signal_type"] = "REVERSAL"
+                    state["duplicate_block_reason"] = None
                     state["pending_entry_kind"] = ENTRY_INITIAL
                     state["pending_signal_source"] = SIGNAL_SOURCE
                     state["last_signal_at"] = now.isoformat()
@@ -862,6 +1018,8 @@ def run_once(
                 elif sid == state.get("pending_signal_id"):
                     # Already armed — keep pending age so execute_now can fire this tick.
                     opposite_pending = True
+                elif sid in processed:
+                    state["duplicate_block_reason"] = f"DUPLICATE_SIGNAL_ID:{sid}"
 
         # SL / profit-lock every tick while in position (skip when opposite armed this tick)
         # Priority after 15:00 + opposite: SL then PROFIT_LOCK (no fixed +3% TP)
@@ -898,9 +1056,8 @@ def run_once(
                     state["next_action"] = _next_action_label(state)
                     om.refresh_runtime_status(state, worker_alive=True)
                     om.save_state(state)
-                    # After SL / profit-lock, continue tick for signals (no return)
-                    if not exit_res.get("success"):
-                        return result
+                    # SL / profit-lock: end tick — never INITIAL-rebuy same bar.
+                    return result
 
         # Keep last_signal_direction after SL/profit-lock/flat — same-dir re-entry forbidden;
         # a new episode arms only on opposite confirmed B signal.
@@ -1009,8 +1166,12 @@ def run_once(
                 flat = not pos.get("symbol") or int(pos.get("quantity") or 0) <= 0
 
         # Arm new MACD first-turn signal (Strategy B unchanged)
+        # INITIAL only when flat — already holding target must not re-arm INITIAL.
+        pos = state.get("position") or {}
+        flat = not pos.get("symbol") or int(pos.get("quantity") or 0) <= 0
         if (
-            eval_res.get("new_signal")
+            flat
+            and eval_res.get("new_signal")
             and eval_res.get("signal_id")
             and not opposite_pending
             and not (probe_enabled and op.get("awaiting_09_03_confirm") and not op.get("confirm_checked"))
@@ -1021,6 +1182,9 @@ def run_once(
                 state["pending_signal_id"] = sid
                 state["pending_signal_direction"] = eval_res["signal_direction"]
                 state["pending_signal_at"] = now.isoformat()
+                state["armed_at"] = now.isoformat()
+                state["signal_type"] = "INITIAL"
+                state["duplicate_block_reason"] = None
                 state["pending_entry_kind"] = ENTRY_INITIAL
                 state["pending_signal_source"] = SIGNAL_SOURCE
                 state["last_signal_at"] = now.isoformat()
@@ -1036,6 +1200,91 @@ def run_once(
                 )
                 om.set_pipeline_stage(state, "Signal", True, sid)
                 result["actions"].append({"signal": sid, "direction": eval_res["signal_direction"]})
+            elif sid in processed:
+                state["duplicate_block_reason"] = f"DUPLICATE_SIGNAL_ID:{sid}"
+        elif (
+            not flat
+            and eval_res.get("new_signal")
+            and eval_res.get("signal_id")
+            and not opposite_pending
+        ):
+            # Same-dir flag while holding target — do not INITIAL
+            tgt = target_symbol_for_direction(eval_res.get("signal_direction"))
+            if tgt and tgt == (pos.get("symbol")):
+                state["duplicate_block_reason"] = "ALREADY_HOLDING_TARGET_NO_INITIAL"
+
+        # HARD GUARANTEE: flat + visible UP_RED/DOWN_BLUE + orders enabled → arm+buy
+        # same tick unless holding target / signal_id processed / same-dir episode used.
+        flag_pattern = flag_now if flag_now in (DIR_UP, DIR_DOWN) else None
+        orders_on = bool(state.get("order_execution_enabled", True)) and not state.get("order_block_reason")
+        if (
+            flat
+            and flag_pattern
+            and orders_on
+            and in_trading_session(now)
+            and allow_new_switch(now)
+            and not opposite_pending
+            and not state.get("pending_signal_id")
+            and not (probe_enabled and op.get("awaiting_09_03_confirm") and not op.get("confirm_checked"))
+        ):
+            target = target_symbol_for_direction(flag_pattern)
+            processed = set(state.get("processed_signal_ids") or [])
+            bar_ts = eval_res.get("bar_ts") or now.replace(second=0, microsecond=0).isoformat()
+            force_sid = eval_res.get("signal_id") or f"MACD3M:{flag_pattern}:{bar_ts}"
+            ep_now = state.get("direction_episode") or {}
+            # Same-dir episode already used (entry, SL, or profit-lock exit) — no rebuy.
+            same_dir_used = (
+                state.get("last_signal_direction") == flag_pattern
+                or (
+                    ep_now.get("direction") == flag_pattern
+                    and (
+                        bool(ep_now.get("initial_entry_used"))
+                        or bool(ep_now.get("sl_lock"))
+                        or bool(ep_now.get("last_exit_reason"))
+                        or bool(ep_now.get("continuation_reentry_used"))
+                    )
+                )
+            )
+            if force_sid in processed:
+                state["duplicate_block_reason"] = f"DUPLICATE_SIGNAL_ID:{force_sid}"
+            elif same_dir_used:
+                state["duplicate_block_reason"] = state.get("duplicate_block_reason") or (
+                    f"SAME_DIR_EPISODE_USED:{flag_pattern}"
+                )
+                # Ensure direction lock survives exits that never stamped last_signal_direction.
+                if not state.get("last_signal_direction"):
+                    state["last_signal_direction"] = flag_pattern
+            elif target:
+                state["pending_signal_id"] = force_sid
+                state["pending_signal_direction"] = flag_pattern
+                state["pending_signal_at"] = now.isoformat()
+                state["armed_at"] = now.isoformat()
+                state["signal_type"] = "INITIAL"
+                state["duplicate_block_reason"] = None
+                state["pending_entry_kind"] = ENTRY_INITIAL
+                state["pending_signal_source"] = SIGNAL_SOURCE
+                state["last_signal_at"] = now.isoformat()
+                state["last_signal_bar_ts"] = bar_ts
+                state["last_signal_direction"] = flag_pattern
+                state["last_signal_id"] = force_sid
+                if not eval_res.get("new_signal"):
+                    result["actions"].append({
+                        "force_arm": force_sid,
+                        "direction": flag_pattern,
+                        "reason": "FLAT_FLAG_MUST_ORDER",
+                    })
+                om.begin_order_latency(
+                    state,
+                    signal_id=force_sid,
+                    completed_3m_bar_at=eval_res.get("bar_close_ts"),
+                    signal_detected_at=now.isoformat(),
+                )
+                om.set_pipeline_stage(state, "Signal", True, force_sid)
+                if not any(
+                    isinstance(a, dict) and a.get("signal") == force_sid
+                    for a in result["actions"]
+                ):
+                    result["actions"].append({"signal": force_sid, "direction": flag_pattern})
 
         # Arm continuation re-entry once (no new MACD color-flip required)
         elif (
@@ -1075,10 +1324,36 @@ def run_once(
         pending_frac = float(state.get("pending_budget_fraction") or 1.0)
         pending_scale = bool(state.get("pending_open_scale"))
         execute_now = bool(pending_id and pending_dir)
+        orders_on = bool(state.get("order_execution_enabled", True)) and not state.get("order_block_reason")
+
+        pos_now = state.get("position") or {}
+        flat_now = not pos_now.get("symbol") or int(pos_now.get("quantity") or 0) <= 0
+        trace: dict[str, Any] = {
+            "at": now.isoformat(),
+            "flag": flag_now,
+            "new_signal": bool(eval_res.get("new_signal")),
+            "pattern_reason": eval_res.get("reason"),
+            "signal_id": eval_res.get("signal_id") or pending_id,
+            "flat": flat_now,
+            "would_arm": bool(execute_now or eval_res.get("new_signal")),
+            "arm_blocked_reason": state.get("duplicate_block_reason")
+            or state.get("order_block_reason")
+            or state.get("primary_block_reason"),
+            "pending_id": pending_id,
+            "pending_dir": pending_dir,
+            "execute_attempted": False,
+            "broker_called": False,
+            "broker_result": None,
+            "worker_code_sha": state.get("worker_code_sha"),
+            "module_digest": state.get("module_digest"),
+            "stale_worker": state.get("stale_worker"),
+        }
 
         if execute_now and pending_id and pending_dir:
+            trace["execute_attempted"] = True
             if not allow_new_switch(now):
                 state["order_block_reason"] = "NO_NEW_SWITCH_AFTER_14:55"
+                trace["arm_blocked_reason"] = "NO_NEW_SWITCH_AFTER_14:55"
                 result["actions"].append({"blocked": "after_14:55"})
             else:
                 # Opposite MACD while holding → sell reason OPPOSITE_SWITCH
@@ -1088,32 +1363,56 @@ def run_once(
                 sell_reason = None
                 if cur_held and target and cur_held != target and pending_kind in (ENTRY_INITIAL, ENTRY_OPEN_IMMEDIATE):
                     sell_reason = EXIT_OPPOSITE
-                if pending_scale and pending_kind == ENTRY_OPEN_SCALE:
-                    switch_res = om.scale_opening_probe(
-                        broker,
-                        pending_dir,
-                        mode=mode,
-                        budget=float(state.get("budget") or 10_000_000),
-                        quotes=quotes,
-                        signal_id=pending_id,
-                        state=state,
-                    )
-                else:
-                    switch_res = om.switch_to_direction(
-                        broker,
-                        pending_dir,
-                        mode=mode,
-                        budget=float(state.get("budget") or 10_000_000),
-                        quotes=quotes,
-                        signal_id=pending_id,
-                        state=state,
-                        entry_kind=pending_kind,
-                        signal_source=pending_src,
-                        sell_reason=sell_reason,
-                        budget_fraction=pending_frac,
-                    )
+                try:
+                    if pending_scale and pending_kind == ENTRY_OPEN_SCALE:
+                        switch_res = om.scale_opening_probe(
+                            broker,
+                            pending_dir,
+                            mode=mode,
+                            budget=float(state.get("budget") or 10_000_000),
+                            quotes=quotes,
+                            signal_id=pending_id,
+                            state=state,
+                        )
+                    else:
+                        switch_res = om.switch_to_direction(
+                            broker,
+                            pending_dir,
+                            mode=mode,
+                            budget=float(state.get("budget") or 10_000_000),
+                            quotes=quotes,
+                            signal_id=pending_id,
+                            state=state,
+                            entry_kind=pending_kind,
+                            signal_source=pending_src,
+                            sell_reason=sell_reason,
+                            budget_fraction=pending_frac,
+                        )
+                    trace["broker_called"] = True
+                    trace["broker_result"] = {
+                        "success": switch_res.get("success"),
+                        "duplicate": switch_res.get("duplicate"),
+                        "skipped_same_direction": switch_res.get("skipped_same_direction"),
+                        "message": switch_res.get("message"),
+                        "target": switch_res.get("target") or target,
+                        "entry_kind": switch_res.get("entry_kind") or pending_kind,
+                    }
+                except Exception as exc:
+                    logger.exception("[MACDHynix] switch_to_direction raised: %s", exc)
+                    switch_res = {"success": False, "message": f"switch_exception: {exc}"}
+                    trace["broker_called"] = True
+                    trace["broker_result"] = {"success": False, "message": str(exc)}
+                    state["last_order_error"] = str(exc)
                 result["actions"].append({"switch": switch_res})
                 state["last_order_attempt_at"] = now.isoformat()
+                if switch_res.get("duplicate"):
+                    state["duplicate_block_reason"] = f"DUPLICATE_SIGNAL_ID:{pending_id}"
+                elif switch_res.get("skipped_same_direction"):
+                    state["duplicate_block_reason"] = str(
+                        switch_res.get("message") or "ALREADY_HOLDING_TARGET"
+                    )
+                elif switch_res.get("success"):
+                    state["duplicate_block_reason"] = None
                 if not switch_res.get("success") and not switch_res.get("duplicate") and not switch_res.get("skipped_same_direction"):
                     state["last_order_error"] = str(switch_res.get("message") or "switch_failed")
                 else:
@@ -1140,6 +1439,24 @@ def run_once(
                 elif switch_res.get("order_data_invalid"):
                     state["order_block_reason"] = switch_res.get("message")
 
+        if flag_now in (DIR_UP, DIR_DOWN) or trace.get("execute_attempted") or trace.get("broker_called"):
+            if (
+                flat_now
+                and flag_now in (DIR_UP, DIR_DOWN)
+                and not trace.get("broker_called")
+                and not trace.get("arm_blocked_reason")
+            ):
+                if state.get("last_signal_direction") == flag_now:
+                    trace["arm_blocked_reason"] = f"SAME_DIR_EPISODE_USED:{flag_now}"
+                elif not orders_on:
+                    trace["arm_blocked_reason"] = "ORDER_EXECUTION_DISABLED"
+                elif not allow_new_switch(now):
+                    trace["arm_blocked_reason"] = "NO_NEW_SWITCH_AFTER_14:55"
+                else:
+                    trace["arm_blocked_reason"] = "NO_EXECUTE_UNEXPECTED"
+            state["decision_trace"] = trace
+            result["decision_trace"] = trace
+
         state["next_action"] = _next_action_label(state)
         om.refresh_runtime_status(state, worker_alive=True)
         om.save_state(state)
@@ -1155,10 +1472,12 @@ def _worker_loop() -> None:
         _status["alive"] = True
         _status["started_at"] = datetime.now().isoformat()
         _status["last_error"] = None
+        _status["stale_worker"] = False
 
     # Align to wall-clock 5s grid
     next_tick = time.monotonic()
     last_mono = None
+    global _tick_counter
     while not _stop_event.is_set():
         now_mono = time.monotonic()
         if now_mono < next_tick:
@@ -1174,26 +1493,45 @@ def _worker_loop() -> None:
                 intervals.append(interval)
                 _status["tick_intervals"] = intervals[-40:]
         last_mono = tick_started
+        _tick_counter += 1
 
         try:
+            if _tick_counter == 1 or (_tick_counter % _STALE_CHECK_EVERY_N_TICKS) == 0:
+                ident = worker_identity()
+                if ident.get("stale_worker"):
+                    logger.error(
+                        "[MACDHynix] STALE_WORKER detected (%s) — reloading stack",
+                        ident.get("stale_reason"),
+                    )
+                    try:
+                        st = om.load_state()
+                        st["stale_worker"] = True
+                        st["stale_worker_reason"] = ident.get("stale_reason")
+                        st["primary_block_reason"] = "STALE_WORKER"
+                        om.save_state(st)
+                    except Exception:
+                        pass
+                    reload_macd_trading_stack(reason=str(ident.get("stale_reason") or "stale_tick"))
+                    # This loop body is old bytecode after reload — exit; Start/ensure respawns.
+                    break
+
             state = om.load_state()
             state.setdefault("worker", {})
             state["worker"]["alive"] = True
             state["worker"]["last_tick_at"] = datetime.now().isoformat()
+            state["worker_code_sha"] = _LOADED_GIT_SHA or om._git_sha()
+            state["module_digest"] = _LOADED_MODULE_DIGEST
+            state["stale_worker"] = False
             today = _now_kst().strftime("%Y-%m-%d")
             if state.get("session_date") != today:
-                # Day change: clear mutex ownership if strategy is off
                 if state.get("session_date") and not state.get("auto_trade_on"):
                     om.clear_mutex(mode=str(state.get("mode") or "mock"), reason="day_change")
-                # Reset direction_state so first signed-B onset after 09:00 can enter
-                # (start_auto_trade must use the same helper — do not set session_date alone).
                 om.apply_macd_session_day_rollover(state, session_date=today)
             with _status_lock:
                 intervals = list(_status.get("tick_intervals") or [])
                 state["worker"]["tick_intervals"] = [round(x, 3) for x in intervals[-40:]]
                 state["worker"]["avg_interval"] = _avg(intervals[-20:])
                 state["worker"]["p95_interval"] = _p95(intervals[-20:])
-                # Confirm: MACD uses fixed 5s worker only — never waits on 3m main cycle.
                 state["worker"]["main_cycle_3m_wait_count"] = 0
                 _status["alive"] = True
                 _status["last_tick_at"] = state["worker"]["last_tick_at"]
@@ -1208,7 +1546,6 @@ def _worker_loop() -> None:
             with _status_lock:
                 _status["last_error"] = str(exc)
 
-        # Fixed schedule: advance by 5s slots (catch up at most one skipped slot)
         next_tick += TICK_SECONDS
         behind = time.monotonic() - next_tick
         if behind > TICK_SECONDS:
@@ -1223,23 +1560,58 @@ def _worker_loop() -> None:
         om.save_state(state)
     except Exception:
         pass
+    # If we exited due to stale reload, spawn the reloaded loop.
+    try:
+        import app.trading.macd_hynix_worker as wmod
+
+        if not (wmod._worker_thread and wmod._worker_thread.is_alive()):
+            wmod._start_worker_thread_only()
+    except Exception:
+        pass
     logger.info("[MACDHynix] worker stopped")
 
 
 def ensure_worker_running(*, force_restart: bool = False) -> dict[str, Any]:
-    """Start daemon worker; when ``force_restart`` kill old thread so new bytecode loads."""
+    """Start daemon worker; force_restart always kills the old thread.
+
+    Modules are importlib-reloaded when disk/git identity diverges from what this
+    process loaded (git pull without process restart). Thread kill alone is not
+    enough to pick up new bytecode.
+    """
     global _worker_thread
-    if force_restart:
-        stop_worker()
-        if _worker_thread and _worker_thread.is_alive():
-            _worker_thread.join(timeout=3.0)
-        _worker_thread = None
-        _stop_event.clear()
-    elif _worker_thread and _worker_thread.is_alive():
+    ident = worker_identity()
+    stale = bool(ident.get("stale_worker"))
+    if force_restart or stale:
+        if stale or force_restart:
+            # Always join old thread on Start / stale.
+            stop_worker()
+            if _worker_thread and _worker_thread.is_alive():
+                _worker_thread.join(timeout=3.0)
+            _worker_thread = None
+            _stop_event.clear()
+        if stale:
+            reload_macd_trading_stack(reason=str(ident.get("stale_reason") or "stale"))
+            import app.trading.macd_hynix_worker as wmod
+
+            return wmod._start_worker_thread_only()
+        # force_restart with matching digest: new thread, same loaded modules.
+        return _start_worker_thread_only()
+    if _worker_thread and _worker_thread.is_alive():
+        return get_worker_status()
+    return _start_worker_thread_only()
+
+
+def _start_worker_thread_only() -> dict[str, Any]:
+    global _worker_thread
+    if _worker_thread and _worker_thread.is_alive():
         return get_worker_status()
     _stop_event.clear()
     _worker_thread = threading.Thread(target=_worker_loop, name="macd-hynix-worker", daemon=True)
     _worker_thread.start()
+    with _status_lock:
+        _status["thread_ident"] = int(_worker_thread.ident) if _worker_thread.ident else None
+        _status["force_restarted_at"] = datetime.now().isoformat()
+        _status["stale_worker"] = False
     return get_worker_status()
 
 
@@ -1315,15 +1687,20 @@ def start_auto_trade(
         om.save_state(state)
         return {"ok": False, "message": reason, "primary_block_reason": reason}
 
-    # Kill old daemon thread so Start always loads current worker/strategy bytecode.
-    ensure_worker_running(force_restart=True)
+    # Kill old daemon + ALWAYS reload trading modules from disk on Start.
+    # Thread restart alone cannot pick up git pulls into an already-imported process.
+    reload_macd_trading_stack(reason="start_auto_trade")
+    import app.trading.macd_hynix_order_manager as om_live
+    import app.trading.macd_hynix_worker as w_live
 
-    state = om.load_state()
-    today = _now_kst().strftime("%Y-%m-%d")
+    w_live._start_worker_thread_only()
+
+    state = om_live.load_state()
+    today = w_live._now_kst().strftime("%Y-%m-%d")
     # Must rollover BEFORE first run_once. Setting session_date alone used to skip the
     # worker day-change path and leave overnight last_signal_direction=UP/DOWN, so a
     # morning signed-B onset never armed despite UI showing RED/BLUE.
-    om.apply_macd_session_day_rollover(state, session_date=today)
+    om_live.apply_macd_session_day_rollover(state, session_date=today)
     if not state.get("session_date"):
         state["session_date"] = today
     state["auto_trade_on"] = True
@@ -1336,11 +1713,15 @@ def start_auto_trade(
     state["primary_block_reason"] = None
     state["order_block_reason"] = None
     state["last_order_error"] = None
-    state["worker_code_sha"] = om._git_sha()
-    state["legacy_truth_debug"] = om.legacy_auto_trade_truth(force_disk=True)
-    om.write_mutex(macd_on=True, mode=mode, reason="macd_started")
-    om.refresh_runtime_status(state, worker_alive=True)
-    om.save_state(state)
+    state["stale_worker"] = False
+    state["stale_worker_reason"] = None
+    state["worker_code_sha"] = om_live._git_sha()
+    state["git_sha"] = state["worker_code_sha"]
+    state["module_digest"] = getattr(w_live, "_LOADED_MODULE_DIGEST", None)
+    state["legacy_truth_debug"] = om_live.legacy_auto_trade_truth(force_disk=True)
+    om_live.write_mutex(macd_on=True, mode=mode, reason="macd_started")
+    om_live.refresh_runtime_status(state, worker_alive=True)
+    om_live.save_state(state)
 
     # First tick immediately after start: fetch quotes + compute MACD (do not wait 5s).
     try:
@@ -1351,26 +1732,27 @@ def start_auto_trade(
             from app.config import get_config
 
             confirm_text = str(get_config().real_confirm_text() or "")
-        broker = om.create_macd_broker(
+        broker = om_live.create_macd_broker(
             mode,
             real_confirm_text=confirm_text,
             real_ready=real_ready,
         )
-        repair_phantom_initial_entry(state, broker)
-        om.save_state(state)
-        run_once(broker=broker, state=state)
+        w_live.repair_phantom_initial_entry(state, broker)
+        om_live.save_state(state)
+        w_live.run_once(broker=broker, state=state)
     except Exception as exc:
         logger.warning("[MACDHynix] immediate first tick failed: %s", exc)
-        state = om.load_state()
+        state = om_live.load_state()
         state["order_block_reason"] = state.get("order_block_reason") or f"first_tick_error: {exc}"
         state["last_order_error"] = str(exc)
-        om.refresh_runtime_status(state, worker_alive=True)
-        om.save_state(state)
-    _wake_event.set()
-    return {"ok": True, "state": om.load_state()}
+        om_live.refresh_runtime_status(state, worker_alive=True)
+        om_live.save_state(state)
+    w_live._wake_event.set()
+    return {"ok": True, "state": om_live.load_state()}
 
 
 def stop_auto_trade(reason: str = "user_stop") -> dict[str, Any]:
+    global _worker_thread
     state = om.load_state()
     state["auto_trade_on"] = False
     state["stopped"] = True
@@ -1378,9 +1760,13 @@ def stop_auto_trade(reason: str = "user_stop") -> dict[str, Any]:
     state["pending_signal_id"] = None
     state["pending_signal_direction"] = None
     om.clear_mutex(mode=str(state.get("mode") or "mock"), reason=reason)
-    om.refresh_runtime_status(state, worker_alive=True)
+    om.refresh_runtime_status(state, worker_alive=False)
     om.save_state(state)
     stop_worker()
+    if _worker_thread and _worker_thread.is_alive():
+        _worker_thread.join(timeout=3.0)
+    if _worker_thread and not _worker_thread.is_alive():
+        _worker_thread = None
     return {"ok": True, "state": state}
 
 

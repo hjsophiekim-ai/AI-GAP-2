@@ -52,6 +52,17 @@ cfg = get_config()
 state = om.load_state()
 wstatus = worker.ensure_worker_running()
 
+if state.get("stale_worker") or wstatus.get("stale_worker"):
+    st.error(
+        f"STALE_WORKER — 실행 중 코드가 디스크/git과 불일치합니다. "
+        f"reason=`{state.get('stale_worker_reason') or wstatus.get('stale_reason')}` · "
+        f"loaded_git=`{wstatus.get('loaded_git_sha') or state.get('worker_code_sha')}` · "
+        f"disk_git=`{wstatus.get('disk_git_sha')}` · "
+        f"Stop→Start 하세요 (Start가 모듈을 disk에서 reload합니다)."
+    )
+elif state.get("primary_block_reason") == "STALE_WORKER":
+    st.error("STALE_WORKER — 워커가 구버전 바이트코드를 감지해 재시작을 요청했습니다. Stop→Start.")
+
 # ── Controls ──────────────────────────────────────────────────────────────
 st.subheader("계좌 / 제어")
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1])
@@ -250,12 +261,13 @@ if state.get("order_block_reason"):
 _diag = state.get("last_signal_eval") or {}
 st.caption(
     f"tick_diag · bars_ok=`{state.get('last_macd_bars_ok')}` · "
-    f"flag=`{state.get('last_flag')}` · new_signal=`{state.get('last_new_signal')}` · "
+    f"flag=`{state.get('last_flag') or state.get('current_flag')}` · new_signal=`{state.get('last_new_signal')}` · "
     f"bar=`{_diag.get('bar_ts')}` close=`{_diag.get('bar_close_ts')}` · "
     f"hist3=`{_diag.get('hist_last3')}` · "
     f"order_attempt=`{state.get('last_order_attempt_at')}` · "
     f"order_err=`{state.get('last_order_error')}` · "
-    f"worker_code_sha=`{state.get('worker_code_sha') or state.get('git_sha')}`"
+    f"worker_code_sha=`{state.get('worker_code_sha') or state.get('git_sha')}` · "
+    f"thread_ident=`{wstatus.get('thread_ident')}`"
 )
 
 # ── Opening probe ─────────────────────────────────────────────────────────
@@ -332,6 +344,32 @@ st.write(
     f"마지막 주문: `{state.get('last_order_at')}`"
 )
 
+# Signal / order lifecycle (mock integration visibility)
+_ol = state.get("order_latency") or {}
+st.subheader("신호·주문 라이프사이클")
+sf1, sf2, sf3, sf4 = st.columns(4)
+sf1.metric("current_flag", str(state.get("current_flag") or state.get("display_direction") or "-"))
+sf2.metric("signal_type", str(state.get("signal_type") or "-"))
+sf3.metric("signal_id", str(state.get("signal_id") or state.get("last_signal_id") or state.get("pending_signal_id") or "-")[:36])
+sf4.metric("duplicate_block", str(state.get("duplicate_block_reason") or "-")[:36])
+st.write(
+    f"armed_at=`{state.get('armed_at') or state.get('pending_signal_at')}` · "
+    f"order_requested_at=`{state.get('order_requested_at') or _ol.get('order_requested_at')}` · "
+    f"broker_executed_at=`{state.get('broker_executed_at') or _ol.get('broker_executed_at')}` · "
+    f"position_confirmed_at=`{state.get('position_confirmed_at') or _ol.get('position_confirmed_at')}` · "
+    f"duplicate_block_reason=`{state.get('duplicate_block_reason')}`"
+)
+_dt = state.get("decision_trace") or {}
+if _dt:
+    st.caption(
+        "decision_trace · "
+        f"flag=`{_dt.get('flag')}` new_signal=`{_dt.get('new_signal')}` flat=`{_dt.get('flat')}` · "
+        f"would_arm=`{_dt.get('would_arm')}` blocked=`{_dt.get('arm_blocked_reason')}` · "
+        f"execute=`{_dt.get('execute_attempted')}` broker_called=`{_dt.get('broker_called')}` · "
+        f"result=`{(_dt.get('broker_result') or {}).get('message') or (_dt.get('broker_result') or {}).get('success')}` · "
+        f"sha=`{_dt.get('worker_code_sha')}` digest=`{_dt.get('module_digest')}`"
+    )
+
 ww = state.get("worker") or {}
 st.write(
     f"Worker alive=`{ww.get('alive') or wstatus.get('alive')}` · "
@@ -341,11 +379,11 @@ st.write(
     f"p95={ww.get('p95_interval') or wstatus.get('p95_interval')}"
 )
 st.write(
-    f"signal_detected_at=`{ww.get('signal_detected_at')}` · "
-    f"order_requested_at=`{ww.get('order_requested_at') or state.get('order_requested_at')}` · "
-    f"kis_order_accepted_at=`{ww.get('kis_order_accepted_at') or state.get('kis_order_accepted_at')}` · "
-    f"broker_executed_at=`{ww.get('broker_executed_at') or state.get('broker_executed_at')}` · "
-    f"position_confirmed_at=`{ww.get('position_confirmed_at') or state.get('position_confirmed_at')}`"
+    f"signal_detected_at=`{ww.get('signal_detected_at') or _ol.get('signal_detected_at')}` · "
+    f"order_requested_at=`{ww.get('order_requested_at') or state.get('order_requested_at') or _ol.get('order_requested_at')}` · "
+    f"kis_order_accepted_at=`{ww.get('kis_order_accepted_at') or state.get('kis_order_accepted_at') or _ol.get('kis_order_accepted_at')}` · "
+    f"broker_executed_at=`{ww.get('broker_executed_at') or state.get('broker_executed_at') or _ol.get('broker_executed_at')}` · "
+    f"position_confirmed_at=`{ww.get('position_confirmed_at') or state.get('position_confirmed_at') or _ol.get('position_confirmed_at')}`"
 )
 
 # ── Order latency instrumentation ─────────────────────────────────────────

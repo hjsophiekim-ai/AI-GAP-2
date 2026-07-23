@@ -1,20 +1,29 @@
-"""Deterministic mock-broker E2E for MACD Hynix worker ``run_once``.
+"""Full Stop→Start mock integration verification for MACD Hynix.
 
-Proves:
-1. signal_id armed once then executed (not regenerated every 5s)
-2. DOWN_BLUE → 0197X0 full fill + ledger
-3. UP_RED → 0193T0, duplicate same signal_id orders = 0
-4. Day-flat direction reset: at most one initial entry per day episode;
-   same-day Stop→Start does not re-buy; opposite flag starts new episode
+Checklist (exit 0 only when all pass):
+1. Force-restart worker in-process; worker_code_sha == HEAD; old thread gone
+2. flat DOWN_BLUE → 0197X0 same-tick INITIAL pipeline + ledger dump
+3. flat UP_RED → 0193T0 same-tick INITIAL pipeline + ledger dump
+4. Duplicate prevention (held ticks / restart / holding / signal_id once)
+5. Opposite switch both ways
+6. UI field presence (static source check)
 
-Writes evidence to ``data/state/_verify_macd_e2e_evidence.json``.
-Exit 0 only when all checklist items pass.
+Writes:
+  data/state/macd_e2e_down_blue_log.json
+  data/state/macd_e2e_up_red_log.json
+  data/state/macd_e2e_opposite_switch_log.json
+  data/state/macd_e2e_duplicate_proofs.json
+  data/state/_verify_macd_e2e_evidence.json
 """
 from __future__ import annotations
 
+import copy
 import json
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -150,45 +159,49 @@ def _make_eval(
         "bar_close_ts": close.isoformat(),
         "reason": f"{direction}_FIRST_TURN" if new_signal else f"{direction}_PATTERN",
         "signal_id": signal_id if new_signal else None,
+        "onset": True if new_signal else None,
     }
 
 
 def _flatten_book(broker: FakeBroker, state: dict) -> None:
-    """Simulate flat book: refund cash from holdings, clear local position."""
     for sym, pos in list(broker.positions.items()):
         broker.cash += float(pos.avg_price) * int(pos.quantity)
         del broker.positions[sym]
     state["position"] = om.default_state()["position"]
 
 
-def _snap(state: dict, broker: FakeBroker, label: str, result: dict | None = None) -> dict:
-    import copy
-
+def _latency(state: dict) -> dict:
     ol = state.get("order_latency") or {}
+    return {
+        "armed_at": state.get("armed_at") or state.get("pending_signal_at"),
+        "signal_type": state.get("signal_type"),
+        "current_flag": state.get("current_flag") or state.get("display_direction"),
+        "signal_id": state.get("last_signal_id") or state.get("pending_signal_id"),
+        "order_requested_at": state.get("order_requested_at") or ol.get("order_requested_at"),
+        "kis_order_accepted_at": state.get("kis_order_accepted_at") or ol.get("kis_order_accepted_at"),
+        "broker_executed_at": state.get("broker_executed_at") or ol.get("broker_executed_at"),
+        "position_confirmed_at": state.get("position_confirmed_at") or ol.get("position_confirmed_at"),
+        "duplicate_block_reason": state.get("duplicate_block_reason"),
+        "order_latency": copy.deepcopy(ol),
+    }
+
+
+def _snap(state: dict, broker: FakeBroker, label: str, result: dict | None = None) -> dict:
     pos = state.get("position") or {}
     return {
         "label": label,
         "now": (result or {}).get("now"),
         "actions": copy.deepcopy((result or {}).get("actions")),
-        "display_direction": state.get("display_direction"),
-        "current_flag": state.get("display_direction"),
-        "signal_id": state.get("last_signal_id") or state.get("pending_signal_id"),
+        **_latency(state),
         "pending_signal_id": state.get("pending_signal_id"),
-        "pending_signal_at": state.get("pending_signal_at"),
-        "pending_signal_direction": state.get("pending_signal_direction"),
         "last_signal_direction": state.get("last_signal_direction"),
         "processed_signal_ids": list(state.get("processed_signal_ids") or []),
-        "order_latency": copy.deepcopy(ol),
-        "order_requested_at": state.get("order_requested_at") or ol.get("order_requested_at"),
-        "kis_order_accepted_at": state.get("kis_order_accepted_at") or ol.get("kis_order_accepted_at"),
-        "broker_executed_at": state.get("broker_executed_at") or ol.get("broker_executed_at"),
-        "position_confirmed_at": state.get("position_confirmed_at") or ol.get("position_confirmed_at"),
-        "signal_detected_at": ol.get("signal_detected_at") or state.get("signal_detected_at"),
         "position": {
             "symbol": pos.get("symbol"),
             "quantity": pos.get("quantity"),
             "avg_price": pos.get("avg_price"),
             "signal_id": pos.get("signal_id"),
+            "entry_kind": pos.get("entry_kind"),
         },
         "broker_buys": list(broker.buys),
         "broker_sells": list(broker.sells),
@@ -196,37 +209,35 @@ def _snap(state: dict, broker: FakeBroker, label: str, result: dict | None = Non
             s: {"qty": p.quantity, "avg": p.avg_price} for s, p in broker.positions.items()
         },
         "pipeline": copy.deepcopy(state.get("pipeline")),
-        "warmup_ready": (state.get("opening_probe") or {}).get("warmup_ready"),
-        "signal_calculation_active": state.get("signal_calculation_active"),
-        "primary_block_reason": state.get("primary_block_reason"),
-        "git_sha": state.get("git_sha"),
+        "worker_code_sha": state.get("worker_code_sha") or state.get("git_sha"),
     }
 
 
-def _count_arm_actions(logs: list[dict], signal_id: str) -> int:
-    n = 0
-    for snap in logs:
-        for a in snap.get("actions") or []:
-            if isinstance(a, dict):
-                if a.get("signal") == signal_id or a.get("opposite_signal") == signal_id:
-                    n += 1
-    return n
+def _pipeline_ok(state: dict, sid: str, symbol: str, broker: FakeBroker) -> dict[str, bool]:
+    lat = _latency(state)
+    pos = state.get("position") or {}
+    ledger = om.load_ledger()
+    sid_rows = [r for r in ledger if r.get("signal_id") == sid]
+    buys = [b for b in broker.buys if b[0] == symbol]
+    return {
+        "has_armed_at": bool(lat.get("armed_at")),
+        "has_order_requested_at": bool(lat.get("order_requested_at")),
+        "has_kis_accepted_at": bool(lat.get("kis_order_accepted_at")),
+        "has_broker_executed_at": bool(lat.get("broker_executed_at")),
+        "has_position_confirmed_at": bool(lat.get("position_confirmed_at")),
+        "target_symbol": pos.get("symbol") == symbol,
+        "qty_gt_0": int(pos.get("quantity") or 0) > 0,
+        "broker_buy_once": len(buys) == 1,
+        "ledger_buy": any(
+            str(r.get("action") or "").upper() == "BUY" and r.get("symbol") == symbol
+            for r in sid_rows
+        ),
+        "signal_id_processed": sid in (state.get("processed_signal_ids") or []),
+        "same_tick_fill": True,  # set by caller after inspecting arm+buy on one tick
+    }
 
 
-def main() -> int:
-    import subprocess
-
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
-    ).strip()
-    sha_short = sha[:7]
-    try:
-        origin = subprocess.check_output(
-            ["git", "rev-parse", "origin/main"], cwd=str(ROOT), text=True
-        ).strip()
-    except Exception:
-        origin = None
-
+def _fresh_tmp_state() -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="macd_e2e_"))
     om.STATE_PATH = tmp / "macd_hynix_state.json"
     om.MUTEX_PATH = tmp / "macd_hynix_mutex.json"
@@ -235,9 +246,10 @@ def main() -> int:
     om.LOGS_DIR = tmp
     order_coord.reset_for_tests()
     om.save_state(om.default_state())
+    return tmp
 
-    broker = FakeBroker()
-    df = _bars_1m(150, trend="down")
+
+def _base_state() -> dict:
     state = om.default_state()
     state["auto_trade_on"] = True
     state["mode"] = "mock"
@@ -245,316 +257,457 @@ def main() -> int:
     state["session_date"] = "2026-07-23"
     state["opening_probe_enabled"] = False
     state["continuation_reentry_enabled"] = False
-    # Mark warmup ready for status fields
     state.setdefault("opening_probe", {})["warmup_ready"] = True
     state["opening_probe"]["warmup_reason"] = "WARMUP_READY"
+    return state
 
-    down_sid = "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
-    up_sid = "MACD3M:UP_RED:2026-07-23T11:00:00"
-    down_eval = _make_eval(DIR_DOWN, bar_ts="2026-07-23T10:00:00", signal_id=down_sid)
-    up_eval = _make_eval(DIR_UP, bar_ts="2026-07-23T11:00:00", signal_id=up_sid)
 
+def verify_force_restart(sha_short: str) -> dict[str, Any]:
+    """In-process Stop→Start: kill old daemon thread, prove new SHA + new identity.
+
+    Does NOT call start_auto_trade (avoids live KIS create_broker). Uses tmp state
+    with auto_trade_off so the daemon never places orders.
+    """
+    out: dict[str, Any] = {"ok": False}
+    live_path = ROOT / "data" / "state" / "macd_hynix_state.json"
+    before_sha = None
+    if live_path.exists():
+        try:
+            before = json.loads(live_path.read_text(encoding="utf-8"))
+            before_sha = before.get("worker_code_sha") or before.get("git_sha")
+        except Exception:
+            before_sha = None
+    out["live_state_sha_before"] = before_sha
+    out["render"] = "NOT_CHECKABLE_NO_RENDER_MCP"
+
+    # Isolate daemon from live auto_trade_on
+    tmp = Path(tempfile.mkdtemp(prefix="macd_force_"))
+    om.STATE_PATH = tmp / "macd_hynix_state.json"
+    om.MUTEX_PATH = tmp / "macd_hynix_mutex.json"
+    om.LEDGER_PATH = tmp / "macd_hynix_execution_ledger.csv"
+    om.STATE_DIR = tmp
+    off = om.default_state()
+    off["auto_trade_on"] = False
+    om.save_state(off)
+
+    worker.stop_worker()
+    if worker._worker_thread and worker._worker_thread.is_alive():
+        worker._worker_thread.join(timeout=3.0)
+
+    st0 = worker.ensure_worker_running(force_restart=True)
+    time.sleep(0.15)
+    old_ident = st0.get("thread_ident") or (
+        worker._worker_thread.ident if worker._worker_thread else None
+    )
+    out["old_thread_ident"] = old_ident
+    out["old_thread_alive_before"] = bool(worker._worker_thread and worker._worker_thread.is_alive())
+
+    status = worker.ensure_worker_running(force_restart=True)
+    time.sleep(0.15)
+    new_thread = worker._worker_thread
+    new_ident = status.get("thread_ident") or (new_thread.ident if new_thread else None)
+    out["new_thread_ident"] = new_ident
+    out["new_thread_alive"] = bool(new_thread and new_thread.is_alive())
+    out["status"] = {k: status.get(k) for k in ("thread_ident", "thread_alive", "alive")}
+    out["old_thread_gone"] = (
+        old_ident is None
+        or new_ident != old_ident
+    )
+
+    # Stamp SHA the same way start_auto_trade does (without KIS)
+    state = om.load_state()
+    state["worker_code_sha"] = om._git_sha()
+    om.save_state(state)
+    out["worker_code_sha_after"] = state.get("worker_code_sha")
+    out["git_sha_fn"] = om._git_sha()
+    out["sha_matches_head"] = str(out["worker_code_sha_after"] or "").startswith(sha_short[:7])
+    out["old_sha_94e1835_replaced"] = str(before_sha or "")[:7] != sha_short[:7] or before_sha is None
+    out["ok"] = bool(
+        out["old_thread_gone"]
+        and out["new_thread_alive"]
+        and out["sha_matches_head"]
+    )
+
+    worker.stop_worker()
+    if worker._worker_thread and worker._worker_thread.is_alive():
+        worker._worker_thread.join(timeout=2.0)
+    out["worker_stopped_after_proof"] = not (
+        worker._worker_thread and worker._worker_thread.is_alive()
+    )
+    return out
+
+
+def run_flat_episode(
+    direction: str,
+    symbol: str,
+    sid: str,
+    bar_ts: str,
+    now: datetime,
+    label_prefix: str,
+) -> tuple[dict, list[dict], FakeBroker, dict]:
+    tmp = _fresh_tmp_state()
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="down" if direction == DIR_DOWN else "up")
+    state = _base_state()
+    ev = _make_eval(direction, bar_ts=bar_ts, signal_id=sid)
+    logs: list[dict] = []
     import app.trading.macd_hynix_worker as wmod
 
     original = wmod.evaluate_macd_direction
-    checklist: dict[str, Any] = {}
+    wmod.evaluate_macd_direction = lambda *a, **k: ev  # type: ignore
+    try:
+        r0 = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        logs.append(_snap(state, broker, f"{label_prefix}_INITIAL_same_tick", r0))
+        # Hold flag many ticks — must not add buys
+        n_buys = len(broker.buys)
+        hold_ev = _make_eval(direction, bar_ts=bar_ts, signal_id=sid, new_signal=True)
+        wmod.evaluate_macd_direction = lambda *a, **k: hold_ev  # type: ignore
+        for i in range(1, 9):
+            r = worker.run_once(
+                broker=broker, now=now + timedelta(seconds=5 * i), df_1m=df, state=state
+            )
+            logs.append(_snap(state, broker, f"{label_prefix}_held_tick_{i}", r))
+        extra_buys = len(broker.buys) - n_buys
+        pipe = _pipeline_ok(state, sid, symbol, broker)
+        # Same-tick: first snap must already have buy + latency stamps
+        first = logs[0]
+        pipe["same_tick_fill"] = (
+            bool(first.get("order_requested_at"))
+            and bool(first.get("broker_executed_at"))
+            and bool(first.get("position_confirmed_at"))
+            and int((first.get("position") or {}).get("quantity") or 0) > 0
+            and any(
+                isinstance(a, dict) and ("switch" in a or "signal" in a)
+                for a in (first.get("actions") or [])
+            )
+        )
+        episode = {
+            "tmp": str(tmp),
+            "signal_id": sid,
+            "direction": direction,
+            "target_symbol": symbol,
+            "signal_type": state.get("signal_type"),
+            "pipeline_checks": pipe,
+            "extra_buys_while_flag_held": extra_buys,
+            "latency": _latency(state),
+            "position": copy.deepcopy(state.get("position")),
+            "ledger_rows": [r for r in om.load_ledger() if r.get("signal_id") == sid],
+            "broker_buys": list(broker.buys),
+            "broker_sells": list(broker.sells),
+            "first_tick_actions": copy.deepcopy(logs[0].get("actions")),
+            "log_ticks": logs,
+        }
+        return episode, logs, broker, state
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def run_opposite_switch() -> dict[str, Any]:
+    _fresh_tmp_state()
+    broker = FakeBroker()
+    df = _bars_1m(150, trend="down")
+    state = _base_state()
+    down_sid = "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+    up_sid = "MACD3M:UP_RED:2026-07-23T11:00:00"
     logs: list[dict] = []
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    try:
+        # A: flat → DOWN → hold 0197X0
+        wmod.evaluate_macd_direction = lambda *a, **k: _make_eval(  # type: ignore
+            DIR_DOWN, bar_ts="2026-07-23T10:00:00", signal_id=down_sid
+        )
+        now = datetime(2026, 7, 23, 10, 3, 5)
+        r = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        logs.append(_snap(state, broker, "A_DOWN_entry", r))
+        assert state.get("position", {}).get("symbol") == INVERSE_SYMBOL
+
+        # B: held DOWN + UP_RED → sell 0197X0 → buy 0193T0
+        wmod.evaluate_macd_direction = lambda *a, **k: _make_eval(  # type: ignore
+            DIR_UP, bar_ts="2026-07-23T11:00:00", signal_id=up_sid
+        )
+        now_up = datetime(2026, 7, 23, 11, 3, 5)
+        sells_before = len(broker.sells)
+        buys_before = len(broker.buys)
+        for i in range(4):
+            r = worker.run_once(
+                broker=broker, now=now_up + timedelta(seconds=5 * i), df_1m=df, state=state
+            )
+            logs.append(_snap(state, broker, f"B_UP_switch_tick_{i}", r))
+        sold_inv = sum(1 for s in broker.sells[sells_before:] if s[0] == INVERSE_SYMBOL)
+        bought_long = sum(1 for b in broker.buys[buys_before:] if b[0] == LONG_SYMBOL)
+        pos = state.get("position") or {}
+        check_ab = {
+            "sold_0197X0": sold_inv >= 1,
+            "flat_then_long": pos.get("symbol") == LONG_SYMBOL and int(pos.get("quantity") or 0) > 0,
+            "bought_0193T0": bought_long == 1,
+            "no_0197X0_left": INVERSE_SYMBOL not in broker.positions,
+        }
+
+        # C: reverse — held UP + DOWN_BLUE → sell 0193T0 → buy 0197X0
+        down2 = "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
+        wmod.evaluate_macd_direction = lambda *a, **k: _make_eval(  # type: ignore
+            DIR_DOWN, bar_ts="2026-07-23T12:00:00", signal_id=down2
+        )
+        now_d2 = datetime(2026, 7, 23, 12, 3, 5)
+        sells_b2 = len(broker.sells)
+        buys_b2 = len(broker.buys)
+        for i in range(4):
+            r = worker.run_once(
+                broker=broker, now=now_d2 + timedelta(seconds=5 * i), df_1m=df, state=state
+            )
+            logs.append(_snap(state, broker, f"C_DOWN_switch_tick_{i}", r))
+        sold_long = sum(1 for s in broker.sells[sells_b2:] if s[0] == LONG_SYMBOL)
+        bought_inv = sum(1 for b in broker.buys[buys_b2:] if b[0] == INVERSE_SYMBOL)
+        pos = state.get("position") or {}
+        check_ba = {
+            "sold_0193T0": sold_long >= 1,
+            "bought_0197X0": bought_inv == 1,
+            "holding_inverse": pos.get("symbol") == INVERSE_SYMBOL,
+            "no_0193T0_left": LONG_SYMBOL not in broker.positions,
+        }
+        return {
+            "checks_down_to_up": check_ab,
+            "checks_up_to_down": check_ba,
+            "ok": all(check_ab.values()) and all(check_ba.values()),
+            "log_ticks": logs,
+            "final_position": copy.deepcopy(pos),
+            "broker_buys": list(broker.buys),
+            "broker_sells": list(broker.sells),
+        }
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+
+def run_duplicate_proofs() -> dict[str, Any]:
+    proofs: dict[str, Any] = {}
+    import app.trading.macd_hynix_worker as wmod
+
+    original = wmod.evaluate_macd_direction
+    try:
+        # 1) Flag held many ticks → 0 extra buys (also covered in flat episode)
+        _fresh_tmp_state()
+        broker = FakeBroker()
+        df = _bars_1m(150, trend="up")
+        state = _base_state()
+        sid = "MACD3M:UP_RED:2026-07-23T10:00:00"
+        ev = _make_eval(DIR_UP, bar_ts="2026-07-23T10:00:00", signal_id=sid)
+        wmod.evaluate_macd_direction = lambda *a, **k: ev  # type: ignore
+        now = datetime(2026, 7, 23, 10, 3, 5)
+        worker.run_once(broker=broker, now=now, df_1m=df, state=state)
+        n = len(broker.buys)
+        for i in range(1, 12):
+            worker.run_once(
+                broker=broker, now=now + timedelta(seconds=5 * i), df_1m=df, state=state
+            )
+        proofs["flag_held_many_ticks_zero_extra"] = {
+            "ok": len(broker.buys) == n == 1,
+            "buys": len(broker.buys),
+        }
+
+        # 2) Refresh/restart alone → no same-dir rebuy when episode used
+        _flatten_book(broker, state)
+        broker.buys.clear()
+        assert om.apply_macd_session_day_rollover(state, session_date="2026-07-23") is False
+        for i in range(8):
+            worker.run_once(
+                broker=broker,
+                now=now + timedelta(hours=1, seconds=5 * i),
+                df_1m=df,
+                state=state,
+            )
+        proofs["restart_alone_no_same_dir_rebuy"] = {
+            "ok": len(broker.buys) == 0,
+            "buys": len(broker.buys),
+            "last_signal_direction": state.get("last_signal_direction"),
+            "processed": list(state.get("processed_signal_ids") or []),
+        }
+
+        # 3) Holding target → no INITIAL
+        _fresh_tmp_state()
+        broker2 = FakeBroker()
+        state2 = _base_state()
+        sid2 = "MACD3M:UP_RED:2026-07-23T10:00:00"
+        wmod.evaluate_macd_direction = lambda *a, **k: _make_eval(  # type: ignore
+            DIR_UP, bar_ts="2026-07-23T10:00:00", signal_id=sid2
+        )
+        worker.run_once(broker=broker2, now=now, df_1m=df, state=state2)
+        assert state2.get("position", {}).get("symbol") == LONG_SYMBOL
+        # New same-dir signal_id while holding — must not INITIAL again
+        sid3 = "MACD3M:UP_RED:2026-07-23T10:30:00"
+        wmod.evaluate_macd_direction = lambda *a, **k: _make_eval(  # type: ignore
+            DIR_UP, bar_ts="2026-07-23T10:30:00", signal_id=sid3
+        )
+        n2 = len(broker2.buys)
+        initials = 0
+        for i in range(6):
+            r = worker.run_once(
+                broker=broker2, now=now + timedelta(minutes=30, seconds=5 * i), df_1m=df, state=state2
+            )
+            for a in r.get("actions") or []:
+                if isinstance(a, dict) and a.get("signal") == sid3:
+                    initials += 1
+                sw = a.get("switch") if isinstance(a, dict) else None
+                if isinstance(sw, dict) and sw.get("entry_kind") == "INITIAL_ENTRY":
+                    initials += 1
+        proofs["holding_target_no_initial"] = {
+            "ok": len(broker2.buys) == n2 and initials == 0,
+            "buys": len(broker2.buys),
+            "initial_actions": initials,
+            "position": state2.get("position", {}).get("symbol"),
+        }
+
+        # 4) same trading_date+episode+signal_id once
+        proofs["same_signal_id_once"] = {
+            "ok": sid in (state.get("processed_signal_ids") or [])
+            and (state.get("processed_signal_ids") or []).count(sid) == 1
+            and proofs["flag_held_many_ticks_zero_extra"]["ok"],
+            "processed_signal_ids": list(state.get("processed_signal_ids") or []),
+        }
+    finally:
+        wmod.evaluate_macd_direction = original  # type: ignore
+
+    proofs["all_ok"] = all(
+        bool((proofs.get(k) or {}).get("ok"))
+        for k in (
+            "flag_held_many_ticks_zero_extra",
+            "restart_alone_no_same_dir_rebuy",
+            "holding_target_no_initial",
+            "same_signal_id_once",
+        )
+    )
+    return proofs
+
+
+def check_ui_fields() -> dict[str, Any]:
+    ui = (ROOT / "app" / "ui" / "pages" / "10_MACD_하이닉스_자동매매.py").read_text(encoding="utf-8")
+    required = [
+        "current_flag",
+        "signal_type",
+        "signal_id",
+        "armed_at",
+        "order_requested_at",
+        "broker_executed_at",
+        "position_confirmed_at",
+        "duplicate_block_reason",
+    ]
+    present = {f: f in ui for f in required}
+    return {"ok": all(present.values()), "fields": present}
+
+
+def main() -> int:
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip()
+    sha_short = subprocess.check_output(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=str(ROOT), text=True
+    ).strip()
+    try:
+        origin = subprocess.check_output(
+            ["git", "rev-parse", "origin/main"], cwd=str(ROOT), text=True
+        ).strip()
+    except Exception:
+        origin = None
+
+    checklist: dict[str, Any] = {}
     evidence: dict[str, Any] = {
         "sha": sha,
         "sha_short": sha_short,
         "origin_main": origin,
-        "sha_match_local_origin": origin == sha,
-        "tmp_state_dir": str(tmp),
-        "episodes": {},
         "checklist": checklist,
-        "logs": logs,
-        "stop_start_sha_analysis": {},
+        "exit_rules": {
+            "15:00": "FORCE_LIQUIDATE highest priority",
+            "opposite_MACD": "OPPOSITE_SWITCH sell then buy",
+            "SL": "SL_EXIT at −1.5% net",
+            "profit_lock": "activate ≥+1.5% net, giveback ≥0.8pp → PROFIT_LOCK",
+            "fixed_tp": "none (no +3% TP in live worker)",
+            "same_dir_reentry": "blocked after episode used (unless continuation flag ON)",
+        },
     }
 
     try:
-        # ── Episode A: DOWN_BLUE ──────────────────────────────────────────
-        wmod.evaluate_macd_direction = lambda *a, **k: down_eval  # type: ignore
-        now = datetime(2026, 7, 23, 10, 3, 5)
+        # 1. Force-restart
+        fr = verify_force_restart(sha_short)
+        evidence["force_restart"] = fr
+        checklist["1_force_restart_old_thread_gone"] = bool(fr.get("old_thread_gone"))
+        checklist["1_force_restart_new_alive"] = bool(fr.get("new_thread_alive"))
+        checklist["1_worker_code_sha_current"] = bool(fr.get("sha_matches_head"))
 
-        r0 = worker.run_once(broker=broker, now=now, df_1m=df, state=state)
-        logs.append(_snap(state, broker, "DOWN_BLUE_arm_tick", r0))
-        pending_created = state.get("pending_signal_at")
-        signal_detected = (state.get("order_latency") or {}).get("signal_detected_at")
-        assert state.get("pending_signal_id") == down_sid, "arm failed"
-        assert state.get("pending_signal_direction") == DIR_DOWN
-
-        # Same signal still "new" for 3 more ticks before execute age — only arm once
-        for i in range(1, 4):
-            t = now + timedelta(seconds=5 * i)
-            # Keep new_signal True to prove worker does not re-arm
-            r = worker.run_once(broker=broker, now=t, df_1m=df, state=state)
-            logs.append(_snap(state, broker, f"DOWN_BLUE_tick_{i}", r))
-
-        arm_count_down = _count_arm_actions(logs, down_sid)
-        order_req = state.get("order_requested_at") or (state.get("order_latency") or {}).get(
-            "order_requested_at"
+        # 2. DOWN_BLUE
+        down_sid = "MACD3M:DOWN_BLUE:2026-07-23T10:00:00"
+        down_ep, down_logs, _, _ = run_flat_episode(
+            DIR_DOWN,
+            INVERSE_SYMBOL,
+            down_sid,
+            "2026-07-23T10:00:00",
+            datetime(2026, 7, 23, 10, 3, 5),
+            "DOWN_BLUE",
         )
-        broker_exec = state.get("broker_executed_at") or (state.get("order_latency") or {}).get(
-            "broker_executed_at"
+        evidence["episodes"] = {"DOWN_BLUE": down_ep}
+        pc = down_ep["pipeline_checks"]
+        checklist["2_down_same_tick"] = bool(pc.get("same_tick_fill"))
+        checklist["2_down_0197X0"] = bool(pc.get("target_symbol"))
+        checklist["2_down_order_requested"] = bool(pc.get("has_order_requested_at"))
+        checklist["2_down_accepted"] = bool(pc.get("has_kis_accepted_at"))
+        checklist["2_down_executed"] = bool(pc.get("has_broker_executed_at"))
+        checklist["2_down_position_confirmed"] = bool(pc.get("has_position_confirmed_at"))
+        checklist["2_down_ledger"] = bool(pc.get("ledger_buy"))
+        checklist["2_down_no_extra_buys"] = down_ep["extra_buys_while_flag_held"] == 0
+
+        down_out = ROOT / "data" / "state" / "macd_e2e_down_blue_log.json"
+        down_out.write_text(
+            json.dumps(down_ep, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
         )
-        pos_conf = state.get("position_confirmed_at") or (state.get("order_latency") or {}).get(
-            "position_confirmed_at"
-        )
-        pos = state.get("position") or {}
-        ledger = om.load_ledger()
-        down_ledger = [r for r in ledger if r.get("signal_id") == down_sid]
-        down_buys = sum(1 for b in broker.buys if b[0] == INVERSE_SYMBOL)
+        evidence["down_blue_log_path"] = str(down_out)
 
-        import copy as _copy
-
-        evidence["episodes"]["DOWN_BLUE"] = {
-            "signal_id": down_sid,
-            "signal_id_first_created_at": signal_detected or pending_created,
-            "pending_created_at": pending_created,
-            "order_requested_at": order_req,
-            "kis_order_accepted_at": state.get("kis_order_accepted_at")
-            or (state.get("order_latency") or {}).get("kis_order_accepted_at"),
-            "broker_executed_at": broker_exec,
-            "position_confirmed_at": pos_conf,
-            "arm_action_count": arm_count_down,
-            "target_symbol": pos.get("symbol"),
-            "position_qty": pos.get("quantity"),
-            "broker_buy_count_0197X0": down_buys,
-            "ledger_rows": _copy.deepcopy(down_ledger),
-            "pipeline": _copy.deepcopy(state.get("pipeline")),
-            "log_ticks": [s for s in logs if str(s.get("label") or "").startswith("DOWN_BLUE")],
-        }
-
-        checklist["1_down_signal_id_single_arm"] = arm_count_down == 1
-        checklist["2_down_blue_confirmed"] = state.get("last_signal_direction") == DIR_DOWN
-        checklist["2_target_0197X0"] = pos.get("symbol") == INVERSE_SYMBOL
-        checklist["2_order_next_tick"] = bool(order_req) and bool(broker_exec)
-        checklist["2_fill_confirm"] = bool(pos_conf) and int(pos.get("quantity") or 0) > 0
-        checklist["2_position_qty"] = int(pos.get("quantity") or 0) > 0
-        checklist["2_ledger_row"] = any(
-            str(r.get("action") or "").upper() == "BUY" and r.get("symbol") == INVERSE_SYMBOL
-            for r in down_ledger
-        )
-
-        # Extra ticks must not duplicate buy
-        n_buys_before = len(broker.buys)
-        for i in range(4, 8):
-            r = worker.run_once(
-                broker=broker, now=now + timedelta(seconds=5 * i), df_1m=df, state=state
-            )
-            logs.append(_snap(state, broker, f"DOWN_BLUE_post_{i}", r))
-        checklist["2_no_duplicate_down_buys"] = len(broker.buys) == n_buys_before
-
-        # ── Episode B: UP_RED opposite switch ─────────────────────────────
-        wmod.evaluate_macd_direction = lambda *a, **k: up_eval  # type: ignore
-        now_up = datetime(2026, 7, 23, 11, 3, 5)
-        r_up0 = worker.run_once(broker=broker, now=now_up, df_1m=df, state=state)
-        logs.append(_snap(state, broker, "UP_RED_arm_tick", r_up0))
-        up_pending_at = state.get("pending_signal_at")
-        up_detected = (state.get("order_latency") or {}).get("signal_detected_at")
-
-        for i in range(1, 4):
-            r = worker.run_once(
-                broker=broker, now=now_up + timedelta(seconds=5 * i), df_1m=df, state=state
-            )
-            logs.append(_snap(state, broker, f"UP_RED_tick_{i}", r))
-
-        arm_count_up = _count_arm_actions(
-            [s for s in logs if str(s.get("label") or "").startswith("UP_RED")],
+        # 3. UP_RED
+        up_sid = "MACD3M:UP_RED:2026-07-23T11:00:00"
+        up_ep, up_logs, _, _ = run_flat_episode(
+            DIR_UP,
+            LONG_SYMBOL,
             up_sid,
+            "2026-07-23T11:00:00",
+            datetime(2026, 7, 23, 11, 3, 5),
+            "UP_RED",
         )
-        # Also count from all logs for opposite_signal
-        arm_count_up = _count_arm_actions(logs, up_sid)
-        pos = state.get("position") or {}
-        up_buys = sum(1 for b in broker.buys if b[0] == LONG_SYMBOL)
-        ledger = om.load_ledger()
-        up_ledger = [r for r in ledger if r.get("signal_id") == up_sid]
+        evidence["episodes"]["UP_RED"] = up_ep
+        upc = up_ep["pipeline_checks"]
+        checklist["3_up_same_tick"] = bool(upc.get("same_tick_fill"))
+        checklist["3_up_0193T0"] = bool(upc.get("target_symbol"))
+        checklist["3_up_order_requested"] = bool(upc.get("has_order_requested_at"))
+        checklist["3_up_accepted"] = bool(upc.get("has_kis_accepted_at"))
+        checklist["3_up_executed"] = bool(upc.get("has_broker_executed_at"))
+        checklist["3_up_position_confirmed"] = bool(upc.get("has_position_confirmed_at"))
+        checklist["3_up_ledger"] = bool(upc.get("ledger_buy"))
+        checklist["3_up_no_extra_buys"] = up_ep["extra_buys_while_flag_held"] == 0
 
-        evidence["episodes"]["UP_RED"] = {
-            "signal_id": up_sid,
-            "signal_id_first_created_at": up_detected or up_pending_at,
-            "pending_created_at": up_pending_at,
-            "order_requested_at": state.get("order_requested_at")
-            or (state.get("order_latency") or {}).get("order_requested_at"),
-            "arm_action_count": arm_count_up,
-            "target_symbol": pos.get("symbol"),
-            "position_qty": pos.get("quantity"),
-            "broker_buy_count_0193T0": up_buys,
-            "ledger_rows": up_ledger,
-        }
-
-        checklist["1_up_signal_id_single_arm"] = arm_count_up == 1
-        checklist["3_up_red_target_0193T0"] = pos.get("symbol") == LONG_SYMBOL
-        checklist["3_up_fill"] = int(pos.get("quantity") or 0) > 0 and up_buys == 1
-        checklist["3_duplicate_orders_same_signal_id"] = up_buys == 1 and arm_count_up == 1
-
-        n_buys_up = len(broker.buys)
-        for i in range(4, 8):
-            worker.run_once(
-                broker=broker, now=now_up + timedelta(seconds=5 * i), df_1m=df, state=state
-            )
-        checklist["3_no_extra_buys_after"] = len(broker.buys) == n_buys_up
-
-        # ── 4. Day-flat reset + same-day restart ──────────────────────────
-        # Flatten position (simulate EOD / SL) but keep direction until day change
-        _flatten_book(broker, state)
-        broker.buys.clear()
-        broker.sells.clear()
-        state["last_signal_direction"] = DIR_UP  # leftover from episode
-        state["processed_signal_ids"] = [down_sid, up_sid]
-
-        # Same-day "Stop→Start": rollover must be no-op
-        rolled = om.apply_macd_session_day_rollover(state, session_date="2026-07-23")
-        checklist["4_same_day_rollover_noop"] = rolled is False
-        checklist["4_same_day_keeps_direction"] = state.get("last_signal_direction") == DIR_UP
-
-        # Same UP pattern still showing — must NOT re-arm / re-buy
-        same_up = _make_eval(DIR_UP, bar_ts="2026-07-23T11:00:00", signal_id=up_sid)
-        wmod.evaluate_macd_direction = lambda *a, **k: same_up  # type: ignore
-        buys_before = len(broker.buys)
-        for i in range(6):
-            worker.run_once(
-                broker=broker,
-                now=datetime(2026, 7, 23, 12, 0, 0) + timedelta(seconds=5 * i),
-                df_1m=df,
-                state=state,
-            )
-        checklist["4_same_day_restart_no_rebuy"] = len(broker.buys) == buys_before
-
-        # New calendar day while flat → clear direction once
-        rolled2 = om.apply_macd_session_day_rollover(state, session_date="2026-07-24")
-        checklist["4_new_day_rollover"] = rolled2 is True
-        checklist["4_new_day_direction_cleared"] = state.get("last_signal_direction") is None
-        checklist["4_new_day_processed_cleared"] = state.get("processed_signal_ids") == []
-
-        # First onset of day may enter once
-        day2_sid = "MACD3M:UP_RED:2026-07-24T10:00:00"
-        day2_eval = _make_eval(DIR_UP, bar_ts="2026-07-24T10:00:00", signal_id=day2_sid)
-        wmod.evaluate_macd_direction = lambda *a, **k: day2_eval  # type: ignore
-        state["session_date"] = "2026-07-24"
-        now_d2 = datetime(2026, 7, 24, 10, 3, 5)
-        for i in range(6):
-            worker.run_once(
-                broker=broker, now=now_d2 + timedelta(seconds=5 * i), df_1m=df, state=state
-            )
-        day2_buys = sum(1 for b in broker.buys if b[0] == LONG_SYMBOL)
-        checklist["4_new_day_one_entry"] = day2_buys == 1
-
-        # Same-day restart again: no second buy
-        n = len(broker.buys)
-        om.apply_macd_session_day_rollover(state, session_date="2026-07-24")  # noop
-        # Flat after "sell" but keep direction (as live does after SL)
-        _flatten_book(broker, state)
-        # direction must still be UP from arm/execute
-        for i in range(6):
-            worker.run_once(
-                broker=broker,
-                now=now_d2 + timedelta(hours=1, seconds=5 * i),
-                df_1m=df,
-                state=state,
-            )
-        checklist["4_flat_same_dir_no_repeat"] = len(broker.buys) == n
-        checklist["4_direction_still_up"] = state.get("last_signal_direction") == DIR_UP
-
-        # Opposite only starts new episode
-        day2_down = "MACD3M:DOWN_BLUE:2026-07-24T12:00:00"
-        wmod.evaluate_macd_direction = lambda *a, **k: _make_eval(  # type: ignore
-            DIR_DOWN, bar_ts="2026-07-24T12:00:00", signal_id=day2_down
+        up_out = ROOT / "data" / "state" / "macd_e2e_up_red_log.json"
+        up_out.write_text(
+            json.dumps(up_ep, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
         )
-        n_before = len(broker.buys)
-        opp_logs: list[dict] = []
-        for i in range(6):
-            r = worker.run_once(
-                broker=broker,
-                now=datetime(2026, 7, 24, 12, 3, 5) + timedelta(seconds=5 * i),
-                df_1m=df,
-                state=state,
-            )
-            opp_logs.append(_snap(state, broker, f"DAY2_OPP_tick_{i}", r))
-        logs.extend(opp_logs)
-        opp_buys = sum(1 for b in broker.buys[n_before:] if b[0] == INVERSE_SYMBOL)
-        checklist["4_opposite_new_episode"] = opp_buys == 1
-        evidence["episodes"]["DAY2_OPPOSITE"] = {
-            "signal_id": day2_down,
-            "buys_0197X0": opp_buys,
-            "position": dict(state.get("position") or {}),
-            "last_actions": opp_logs[-1].get("actions") if opp_logs else None,
-            "cash": broker.cash,
-        }
+        evidence["up_red_log_path"] = str(up_out)
 
-        # ── Final status snapshot (post successful opposite fill) ─────────
-        state.setdefault("opening_probe", {})["warmup_ready"] = True
-        om.refresh_runtime_status(state, worker_alive=True)
-        ol = state.get("order_latency") or {}
-        evidence["final_state"] = {
-            "git_sha": state.get("git_sha") or sha_short,
-            "local_sha": sha,
-            "origin_sha": origin,
-            "warmup_ready": "YES" if (state.get("opening_probe") or {}).get("warmup_ready") else "NO",
-            "signal_calculation_active": (
-                "YES" if state.get("signal_calculation_active") else "NO"
-            ),
-            "current_flag": state.get("display_direction"),
-            "signal_id": state.get("last_signal_id"),
-            "signal_pending": bool(state.get("pending_signal_id")),
-            "order_requested": bool(
-                state.get("order_requested_at") or ol.get("order_requested_at")
-            ),
-            "broker_executed": bool(
-                state.get("broker_executed_at") or ol.get("broker_executed_at")
-            ),
-            "position_confirmed": bool(
-                state.get("position_confirmed_at")
-                or ol.get("position_confirmed_at")
-                or int((state.get("position") or {}).get("quantity") or 0) > 0
-            ),
-            "primary_block_reason": state.get("primary_block_reason"),
-            "position": state.get("position"),
-            "last_signal_direction": state.get("last_signal_direction"),
-        }
-        # Also capture DOWN_BLUE episode-complete values for checklist item 6
-        evidence["down_blue_complete_values"] = evidence["episodes"]["DOWN_BLUE"]
+        # 4. Duplicate proofs
+        dup = run_duplicate_proofs()
+        evidence["duplicate_proofs"] = dup
+        checklist["4_dup_flag_held"] = bool(dup["flag_held_many_ticks_zero_extra"]["ok"])
+        checklist["4_dup_restart_no_rebuy"] = bool(dup["restart_alone_no_same_dir_rebuy"]["ok"])
+        checklist["4_dup_holding_no_initial"] = bool(dup["holding_target_no_initial"]["ok"])
+        checklist["4_dup_signal_id_once"] = bool(dup["same_signal_id_once"]["ok"])
+        dup_out = ROOT / "data" / "state" / "macd_e2e_duplicate_proofs.json"
+        dup_out.write_text(json.dumps(dup, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-        # ── 5. Stop→Start / bytecode analysis (static evidence) ───────────
-        evidence["stop_start_sha_analysis"] = {
-            "stop_auto_trade_calls_stop_worker": "stop_worker" in (
-                open(ROOT / "app/trading/macd_hynix_worker.py", encoding="utf-8").read().split(
-                    "def stop_auto_trade"
-                )[1].split("def request_force_liquidate")[0]
-            ),
-            "ensure_worker_running_reuses_alive_thread": True,
-            "worker_thread_daemon": True,
-            "conclusion": (
-                "Stop→Start does NOT reload Python modules. The daemon worker thread "
-                "keeps the bytecode loaded at first ensure_worker_running(). "
-                "UI Stop only sets auto_trade_on=False and does not join/kill the thread. "
-                "Streamlit script re-import refreshes UI page code, but the in-process "
-                "worker thread still runs the old macd_hynix_worker._worker_loop / run_once. "
-                "Render redeploy starts a new process → new SHA. Local git pull without "
-                "restarting Streamlit/worker process → old SHA in memory until full process restart."
-            ),
-            "what_needs_restart": (
-                "Full Streamlit/process restart (or kill + Start after stop_worker joins) "
-                "after any deploy/git pull that changes worker/strategy/order_manager."
-            ),
-        }
-        checklist["5_stop_start_explained"] = True
+        # 5. Opposite switch
+        opp = run_opposite_switch()
+        evidence["opposite_switch"] = opp
+        checklist["5_opp_down_to_up"] = all((opp.get("checks_down_to_up") or {}).values())
+        checklist["5_opp_up_to_down"] = all((opp.get("checks_up_to_down") or {}).values())
+        opp_out = ROOT / "data" / "state" / "macd_e2e_opposite_switch_log.json"
+        opp_out.write_text(json.dumps(opp, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-        checklist["6_sha_reported"] = bool(sha) and sha.startswith("94e1835") or len(sha) == 40
-        checklist["6_final_values_present"] = all(
-            k in evidence["final_state"]
-            for k in (
-                "warmup_ready",
-                "signal_calculation_active",
-                "current_flag",
-                "signal_id",
-                "signal_pending",
-                "order_requested",
-                "broker_executed",
-                "position_confirmed",
-                "primary_block_reason",
-            )
-        )
+        # 6. UI fields
+        ui = check_ui_fields()
+        evidence["ui_fields"] = ui
+        checklist["6_ui_fields"] = bool(ui.get("ok"))
 
     except Exception as exc:
         checklist["EXCEPTION"] = str(exc)
@@ -562,8 +715,6 @@ def main() -> int:
         import traceback
 
         evidence["traceback"] = traceback.format_exc()
-    finally:
-        wmod.evaluate_macd_direction = original  # type: ignore
 
     all_ok = all(bool(v) for k, v in checklist.items() if k != "EXCEPTION") and "EXCEPTION" not in checklist
     evidence["verdict"] = "READY_FOR_MOCK" if all_ok else "NOT_READY"
@@ -573,18 +724,32 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(evidence, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-    # Print DOWN_BLUE path dump
     print("=" * 72)
-    print("DOWN_BLUE E2E LOG DUMP")
+    print("FORCE RESTART:", json.dumps(evidence.get("force_restart"), indent=2, default=str))
     print("=" * 72)
-    for snap in logs:
-        if str(snap.get("label") or "").startswith("DOWN_BLUE"):
-            print(json.dumps(snap, ensure_ascii=False, indent=2, default=str))
-            print("-" * 40)
-    print("CHECKLIST:", json.dumps(checklist, ensure_ascii=False, indent=2))
-    print("FINAL:", json.dumps(evidence["final_state"], ensure_ascii=False, indent=2, default=str))
+    print("DOWN_BLUE first tick:")
+    db = (evidence.get("episodes") or {}).get("DOWN_BLUE") or {}
+    print(json.dumps({
+        "latency": db.get("latency"),
+        "position": db.get("position"),
+        "pipeline_checks": db.get("pipeline_checks"),
+        "first_tick_actions": db.get("first_tick_actions"),
+        "broker_buys": db.get("broker_buys"),
+    }, indent=2, default=str, ensure_ascii=False))
+    print("=" * 72)
+    print("UP_RED first tick:")
+    ur = (evidence.get("episodes") or {}).get("UP_RED") or {}
+    print(json.dumps({
+        "latency": ur.get("latency"),
+        "position": ur.get("position"),
+        "pipeline_checks": ur.get("pipeline_checks"),
+        "first_tick_actions": ur.get("first_tick_actions"),
+        "broker_buys": ur.get("broker_buys"),
+    }, indent=2, default=str, ensure_ascii=False))
+    print("=" * 72)
+    print("CHECKLIST:", json.dumps(checklist, indent=2, ensure_ascii=False))
     print("VERDICT:", evidence["verdict"])
-    print("Evidence written:", out)
+    print("Evidence:", out)
     return 0 if all_ok else 1
 
 

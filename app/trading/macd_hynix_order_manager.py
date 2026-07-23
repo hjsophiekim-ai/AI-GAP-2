@@ -217,6 +217,10 @@ def default_state() -> dict[str, Any]:
         "legacy_truth_debug": {},
         "last_macd_bars_ok": False,
         "last_flag": None,
+        "current_flag": None,
+        "signal_type": None,  # INITIAL | REVERSAL
+        "armed_at": None,
+        "duplicate_block_reason": None,
         "last_new_signal": False,
         "last_signal_eval": {},
         "last_order_attempt_at": None,

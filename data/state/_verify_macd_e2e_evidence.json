@@ -1,0 +1,29 @@
+{
+  "verdict": "READY_FOR_MOCK",
+  "sha": "abf36c3",
+  "proof": {
+    "at": "2026-07-23T10:03:05",
+    "flag": "DOWN_BLUE",
+    "new_signal": false,
+    "pattern_reason": "DOWN_BLUE_PATTERN",
+    "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+    "flat": true,
+    "would_arm": true,
+    "arm_blocked_reason": null,
+    "pending_id": "MACD3M:DOWN_BLUE:2026-07-23T10:00:00",
+    "pending_dir": "DOWN_BLUE",
+    "execute_attempted": true,
+    "broker_called": true,
+    "broker_result": {
+      "success": true,
+      "duplicate": null,
+      "skipped_same_direction": null,
+      "message": "switch complete",
+      "target": "0197X0",
+      "entry_kind": "INITIAL_ENTRY"
+    },
+    "worker_code_sha": "abf36c3",
+    "module_digest": "fa70807cb176",
+    "stale_worker": false
+  }
+}
