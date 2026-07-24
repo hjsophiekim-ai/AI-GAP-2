@@ -71,3 +71,26 @@ def test_start_stop_buttons_render():
     labels = [b.label for b in at.button]
     assert "자동매매 시작" in labels
     assert "자동매매 중지" in labels
+    assert "Bootstrap 재시도" in labels
+
+
+def test_operational_diagnostics_panel_renders_before_start():
+    """Worker/quote/bootstrap heartbeat diagnostics (docs §21 2026-07-24 UI
+    addition) must render even with no Worker ever started — worker_status
+    must read STOPPED (auto_trade_on is False), never crash on missing
+    worker_stats fields."""
+    at = _fresh_app()
+    at.run()
+    assert not at.exception
+    assert any("운영 진단" in h.value for h in at.subheader)
+    metric_labels = [m.label for m in at.metric]
+    for expected in (
+        "worker_status", "quote_updater_status", "active_worker_count",
+        "worker_instance_id", "worker_started_at", "worker_code_sha", "tick_seq_total",
+        "recent_tick_sample_count", "last_tick_at", "last_tick_age_sec", "next_tick_at",
+        "bootstrap_last_attempt_at", "bootstrap_retry_count", "received_1m_bars",
+        "completed_3m_bars", "warmup_ready",
+    ):
+        assert expected in metric_labels, f"missing diagnostic metric: {expected}"
+    worker_status_metric = next(m for m in at.metric if m.label == "worker_status")
+    assert worker_status_metric.value == "STOPPED"

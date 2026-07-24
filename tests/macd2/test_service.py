@@ -76,11 +76,30 @@ class _FakeMarketDataServiceOK:
     def history_updater_alive(self):
         return getattr(self, "_history_updater_alive", False)
 
+    def get_last_bootstrap_diag(self):
+        return {}
+
 
 class _FakeMarketDataServiceBootstrapFails(_FakeMarketDataServiceOK):
     def bootstrap(self, now=None):
         from app.trading.macd2.market_data import BootstrapResult
         return BootstrapResult(False, "TODAY_ONLY_NO_PRIOR_DAY", 300, 0, 300, 100, 0.01)
+
+
+class _FakeMarketDataServiceBootstrapFailsThenSucceeds(_FakeMarketDataServiceOK):
+    """First bootstrap() call fails; every call after that succeeds — for
+    exercising Macd2Service.retry_bootstrap() without a new thread/instance."""
+
+    def __init__(self, mode="mock"):
+        super().__init__(mode)
+        self._bootstrap_calls = 0
+
+    def bootstrap(self, now=None):
+        from app.trading.macd2.market_data import BootstrapResult
+        self._bootstrap_calls += 1
+        if self._bootstrap_calls == 1:
+            return BootstrapResult(False, "TODAY_ONLY_NO_PRIOR_DAY", 300, 0, 300, 100, 0.01)
+        return BootstrapResult(True, None, 300, 300, 0, 100, 0.01)
 
 
 def _patch_ok_construction(monkeypatch, market_data_cls=_FakeMarketDataServiceOK):
@@ -156,6 +175,58 @@ def test_start_bootstrap_failure_never_starts_worker(monkeypatch):
     assert state.ui_mode == RuntimeStatus.DATA_ERROR
     assert state.auto_trade_on is False
     assert svc.supervisor_status()["worker_alive"] is False
+
+
+def test_start_bootstrap_failure_keeps_quote_updater_running(monkeypatch):
+    """docs §21 (2026-07-24 bootstrap fix): quote lifecycle is independent of
+    bootstrap — live prices must keep updating even when history bootstrap
+    fails, so the UI is never blind just because warmup/orders are blocked."""
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction(monkeypatch, market_data_cls=_FakeMarketDataServiceBootstrapFails)
+
+    svc = service_module.Macd2Service()
+    res = svc.start(mode="mock")
+
+    assert res["ok"] is False
+    assert svc.supervisor_status()["quote_updater_alive"] is True
+    assert svc.supervisor_status()["worker_alive"] is False
+
+
+def test_retry_bootstrap_starts_worker_after_initial_failure(monkeypatch):
+    """docs §21: manual bootstrap retry (재시도 버튼) reuses the existing
+    broker/MarketDataService — no new thread, no new instance — and starts
+    the Worker once a later attempt succeeds."""
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction(monkeypatch, market_data_cls=_FakeMarketDataServiceBootstrapFailsThenSucceeds)
+
+    svc = service_module.Macd2Service()
+    try:
+        first = svc.start(mode="mock")
+        assert first["ok"] is False
+        assert svc.supervisor_status()["worker_alive"] is False
+        market_data_before_retry = svc._market_data
+
+        retry = svc.retry_bootstrap()
+        assert retry["ok"] is True
+        assert svc._market_data is market_data_before_retry  # same instance, no new thread/service
+        assert svc.supervisor_status()["worker_alive"] is True
+
+        state = state_store.load_state()
+        assert state.ui_mode == RuntimeStatus.RUNNING
+        assert state.auto_trade_on is True
+        assert state.warmup_ready is True
+
+        # Retrying again while already running is a safe no-op.
+        again = svc.retry_bootstrap()
+        assert again == {"ok": True, "message": "ALREADY_RUNNING"}
+    finally:
+        svc.stop()
+
+
+def test_retry_bootstrap_before_start_is_rejected():
+    svc = service_module.Macd2Service()
+    res = svc.retry_bootstrap()
+    assert res == {"ok": False, "message": "NOT_STARTED"}
 
 
 def test_start_twice_does_not_spawn_second_worker(monkeypatch):

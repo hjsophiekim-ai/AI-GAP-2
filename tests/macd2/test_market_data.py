@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from app.trading.macd2 import config
-from app.trading.macd2.market_data import MarketDataService, _candles_to_df
+from app.trading.macd2 import config, market_data as market_data_module
+from app.trading.macd2.market_data import MarketDataService, _candles_to_df, _load_prior_day_1m_cache
 
 KST = config.KST
 
@@ -71,8 +71,13 @@ def test_merge_incremental_does_not_refetch_full_history():
     call_counts = []
     prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
     today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
-    # Bootstrap page (large `count`) already includes prior-day bars, so bootstrap
-    # stops after exactly one page fetch and never touches the "incremental" branch.
+    # The live (large-count) fetch always returns the same combined frame
+    # regardless of the hour1 cursor (this fake does not model a real KIS
+    # cursor) — bootstrap's own no-growth check needs a second identical page
+    # to detect that and stop, so exactly 2 large-page calls are expected,
+    # never re-growing into a 3rd. The important behavior under test is the
+    # one after bootstrap: merge_incremental_1m() must request a SMALL page
+    # (count=10), never the large history page again.
     bootstrap_frame = pd.concat([_fake_bars_df(prior_day, 200), _fake_bars_df(today, 150)], ignore_index=True)
     incremental_frame = _fake_bars_df(today + timedelta(minutes=150), 3)
 
@@ -84,7 +89,7 @@ def test_merge_incremental_does_not_refetch_full_history():
     svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch)
     svc.bootstrap(now=today + timedelta(minutes=150, seconds=5))
     before = svc.get_history_df()
-    assert len(call_counts) == 1  # bootstrap needed exactly one page (prior day already included)
+    assert call_counts == [120, 120]  # 1 real page + 1 to detect no further growth, then stop
 
     merged = svc.merge_incremental_1m(now=today + timedelta(minutes=153, seconds=5))
 
@@ -202,6 +207,89 @@ def test_default_kis_client_created_once_and_reused(monkeypatch):
     svc.refresh_quotes()
 
     assert len(created) == 1  # exactly one client created for this service instance, reused every call
+
+
+def test_prior_day_cache_loads_most_recent_prior_trading_date(tmp_path, monkeypatch):
+    """docs §21 (2026-07-24 bootstrap fix): KIS's live minute-candle endpoint
+    has no date parameter and only ever returns TODAY — prior-day bars must
+    come from this local cache instead, explicitly scoped to the most recent
+    prior trading date found in the file (never today's own rows)."""
+    monkeypatch.setattr(market_data_module, "CACHE_DIR", tmp_path)
+    cache_dir = tmp_path / "naver_multi_1m"
+    cache_dir.mkdir()
+    rows = []
+    for day, n in (("2026-01-05", 380), ("2026-01-06", 200)):  # two distinct prior dates
+        for i in range(n):
+            rows.append(f"{day} {9 + i // 60:02d}:{i % 60:02d}:00,100,100,100,100,10")
+    (cache_dir / "000660_1m.csv").write_text(
+        "datetime,open,high,low,close,volume\n" + "\n".join(rows) + "\n", encoding="utf-8",
+    )
+
+    df, diag = _load_prior_day_1m_cache("000660", today_ymd="20260107")
+
+    assert diag["error"] is None
+    assert diag["prior_trading_date"] == "20260106"  # the LATEST prior date, not the oldest
+    assert len(df) == 200
+    assert diag["received_count"] == 200
+    assert list(df.columns) == ["datetime", "open", "high", "low", "close", "volume"]
+    assert df["datetime"].iloc[0].tzinfo is not None  # tz-aware KST, matching the rest of macd2
+
+
+def test_prior_day_cache_missing_file_reports_error_not_exception(tmp_path, monkeypatch):
+    monkeypatch.setattr(market_data_module, "CACHE_DIR", tmp_path)
+    df, diag = _load_prior_day_1m_cache("000660", today_ymd="20260107")
+    assert df.empty
+    assert diag["error"] == "NO_PRIOR_DAY_CACHE"
+
+
+def test_bootstrap_uses_prior_day_cache_when_kis_only_has_today(tmp_path, monkeypatch):
+    """The exact reported failure mode: KIS genuinely only returns today's
+    bars (or none, pre-market) — bootstrap must still succeed using the
+    prior-day cache, instead of reporting TODAY_ONLY_NO_PRIOR_DAY/NO_1M_BARS."""
+    monkeypatch.setattr(market_data_module, "CACHE_DIR", tmp_path)
+    cache_dir = tmp_path / "naver_multi_1m"
+    cache_dir.mkdir()
+    rows = [f"2026-01-05 {9 + i // 60:02d}:{i % 60:02d}:00,100,100,100,100,10" for i in range(380)]
+    (cache_dir / "000660_1m.csv").write_text(
+        "datetime,open,high,low,close,volume\n" + "\n".join(rows) + "\n", encoding="utf-8",
+    )
+
+    def fake_fetch_no_today_data(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch_no_today_data)
+    result = svc.bootstrap(now=datetime(2026, 1, 6, 8, 59, tzinfo=KST))  # pre-market, no today bars yet
+
+    assert result.ok is True
+    assert result.reason is None
+    assert result.prior_day_1m_bars == 380
+    assert result.today_1m_bars == 0
+    diag = svc.get_last_bootstrap_diag()
+    assert diag["requested_trading_date"] == "20260106"
+    assert diag["prior_day_cache"]["prior_trading_date"] == "20260105"
+
+
+def test_bootstrap_kis_page_no_growth_stops_without_infinite_loop():
+    """docs §21: KIS's today-only endpoint repeating the same page forever
+    (identical hour1 cursor never surfacing new data) must not loop forever
+    or beyond a bounded number of requests."""
+    call_count = {"n": 0}
+    same_page = _fake_bars_df(datetime(2026, 1, 6, 9, 0, tzinfo=KST), 5)
+
+    def fake_fetch_repeating(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        call_count["n"] += 1
+        return same_page.copy(), {}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch_repeating)
+    result = svc.bootstrap(now=datetime(2026, 1, 6, 9, 10, tzinfo=KST))
+
+    assert call_count["n"] <= market_data_module.KIS_MAX_PAGES
+    assert call_count["n"] == 2  # 1st page + 1 to detect no growth, then stop
+    assert result.today_1m_bars == 5
+    diag = svc.get_last_bootstrap_diag()
+    assert diag["kis_pages"][-1]["stop_reason"] == "PAGE_NO_GROWTH"
 
 
 def test_candles_to_df_skips_malformed_rows():

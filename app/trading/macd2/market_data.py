@@ -32,6 +32,7 @@ import pandas as pd
 from app.trading.macd2 import config
 from app.trading.macd2.models import QuoteSnapshot
 from app.trading.macd2.signal_engine import resample_completed_3m
+from app.utils.data_paths import CACHE_DIR
 
 KST = config.KST
 
@@ -48,6 +49,52 @@ KIS_MAX_PAGES = 6
 
 def _empty_1m_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=list(_1M_COLUMNS))
+
+
+def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """The prior trading day's 1m bars for ``watch_symbol``, from a local
+    historical cache (``data/cache/naver_multi_1m/{symbol}_1m.csv``) — plain,
+    generic market-data for this symbol (not MACD-v1 production code; MACD
+    v1's own app.trading.macd_pipeline.market_data reads the same file, but
+    this function is an independent, MACD2-only implementation, never an
+    import from that module — docs §8/§21 2026-07-24 bootstrap fix).
+
+    KIS's live inquire-time-itemchartprice endpoint (docs: kis_client.py's
+    get_minute_candles) has no date parameter and only ever returns TODAY's
+    bars regardless of the hour1 pagination cursor — it can never supply a
+    prior calendar day, which is why bootstrap() no longer tries to page
+    backwards into KIS for one.
+    """
+    path = CACHE_DIR / "naver_multi_1m" / f"{watch_symbol}_1m.csv"
+    if not path.exists():
+        return _empty_1m_frame(), {"path": str(path), "error": "NO_PRIOR_DAY_CACHE", "received_count": 0}
+    try:
+        raw = pd.read_csv(path)
+    except Exception as exc:
+        return _empty_1m_frame(), {"path": str(path), "error": repr(exc), "received_count": 0}
+    if "datetime" not in raw.columns:
+        return _empty_1m_frame(), {"path": str(path), "error": "MALFORMED_CACHE_NO_DATETIME_COLUMN", "received_count": 0}
+
+    raw["datetime"] = pd.to_datetime(raw["datetime"], errors="coerce")
+    raw = raw.dropna(subset=["datetime"])
+    prior_only = raw[raw["datetime"].dt.strftime("%Y%m%d") < today_ymd]
+    if prior_only.empty:
+        return _empty_1m_frame(), {"path": str(path), "error": "CACHE_HAS_NO_PRIOR_DAY_ROWS", "received_count": 0}
+
+    prior_trading_date = sorted(prior_only["datetime"].dt.strftime("%Y%m%d").unique())[-1]
+    day_df = prior_only[prior_only["datetime"].dt.strftime("%Y%m%d") == prior_trading_date]
+    day_df = day_df.sort_values("datetime").reset_index(drop=True)
+    day_df["datetime"] = day_df["datetime"].dt.tz_localize(KST)
+    day_df = day_df[list(_1M_COLUMNS)]
+
+    return day_df, {
+        "path": str(path),
+        "prior_trading_date": prior_trading_date,
+        "received_count": int(len(day_df)),
+        "oldest": day_df["datetime"].iloc[0].isoformat(),
+        "newest": day_df["datetime"].iloc[-1].isoformat(),
+        "error": None,
+    }
 
 
 def _candles_to_df(candles: list[dict]) -> pd.DataFrame:
@@ -114,6 +161,13 @@ class MarketDataService:
         self._quote_updater_stop = threading.Event()
         self._history_updater_thread: Optional[threading.Thread] = None
         self._history_updater_stop = threading.Event()
+        self._last_bootstrap_diag: dict[str, Any] = {}
+
+    def get_last_bootstrap_diag(self) -> dict[str, Any]:
+        """Per-request diagnostics from the most recent bootstrap() call —
+        prior-day cache load result + every KIS page (date/hour1/count/
+        oldest/newest/error). Empty dict before bootstrap() has ever run."""
+        return dict(self._last_bootstrap_diag)
 
     def _get_kis_client(self) -> Any:
         """Exactly one KIS client per service instance (docs: created once at
@@ -155,52 +209,87 @@ class MarketDataService:
     # ── history (bootstrap + incremental) ──────────────────────────────
 
     def bootstrap(self, now: Optional[datetime] = None) -> BootstrapResult:
-        """Once on Start: page backwards until >=300 1m bars including prior day,
-        and >=100 completed 3m bars. TODAY_ONLY data is never reported as ok=True
-        (docs §4/§8).
+        """Once on Start: prior-day 1m bars from the local historical cache
+        (see ``_load_prior_day_1m_cache`` — KIS's inquire-time-itemchartprice
+        endpoint has no date parameter and only ever returns TODAY's bars, no
+        matter what ``hour1`` cursor is sent) + today's 1m bars paged live
+        from KIS, merged into >=300 1m bars including prior day and >=100
+        completed 3m bars. TODAY_ONLY data is never reported as ok=True
+        (docs §4/§8). Every KIS page request and the prior-day cache load are
+        recorded in ``get_last_bootstrap_diag()``.
         """
         now = now or datetime.now(KST)
         t0 = datetime.now(KST)
+        today_ymd = now.strftime("%Y%m%d")
+
+        prior_df, prior_diag = _load_prior_day_1m_cache(config.WATCH_SYMBOL, today_ymd)
+        page_diags: list[dict[str, Any]] = []
+
         pages: list[pd.DataFrame] = []
         hour1 = ""
         prev_count = 0
-        for _ in range(KIS_MAX_PAGES):
+        for page_i in range(KIS_MAX_PAGES):
             with self._io_lock:
                 part, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, KIS_PAGE_SIZE, hour1)
+            page_diags.append({
+                "request_no": page_i + 1,
+                "requested_date": today_ymd,
+                "requested_hour1": hour1 or "LATEST",
+                "received_count": int(len(part)),
+                "oldest": part["datetime"].iloc[0].isoformat() if not part.empty else None,
+                "newest": part["datetime"].iloc[-1].isoformat() if not part.empty else None,
+                "error": _diag.get("error"),
+            })
             if part.empty:
                 break
             pages.append(part)
-            merged = (
+            merged_today = (
                 pd.concat(pages, ignore_index=True)
                 .drop_duplicates(subset=["datetime"], keep="last")
                 .sort_values("datetime")
                 .reset_index(drop=True)
             )
-            if len(merged) <= prev_count:
+            if len(merged_today) <= prev_count:
+                page_diags[-1]["stop_reason"] = "PAGE_NO_GROWTH"
                 break  # cursor stopped making progress
-            prev_count = len(merged)
-            today_ymd = now.strftime("%Y%m%d")
-            has_prior = bool((merged["datetime"].dt.strftime("%Y%m%d") != today_ymd).any())
-            if len(merged) >= config.WARMUP_1M_BARS_MIN and has_prior:
-                break
-            oldest = merged["datetime"].iloc[0]
-            hour1 = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+            prev_count = len(merged_today)
+            oldest = merged_today["datetime"].iloc[0]
+            next_hour1 = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+            if next_hour1 == hour1:
+                page_diags[-1]["stop_reason"] = "CURSOR_NOT_MOVING"
+                break  # never repeat an identical request (today-only data would loop forever)
+            hour1 = next_hour1
 
-        df = (
+        today_df = (
             pd.concat(pages, ignore_index=True)
             .drop_duplicates(subset=["datetime"], keep="last")
             .sort_values("datetime")
             .reset_index(drop=True)
             if pages else _empty_1m_frame()
         )
+        _non_empty = [frame for frame in (prior_df, today_df) if not frame.empty]
+        df = (
+            pd.concat(_non_empty, ignore_index=True)
+            .drop_duplicates(subset=["datetime"], keep="last")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+            if _non_empty else _empty_1m_frame()
+        )
         elapsed = (datetime.now(KST) - t0).total_seconds()
+
+        self._last_bootstrap_diag = {
+            "requested_trading_date": today_ymd,
+            "prior_day_cache": prior_diag,
+            "kis_pages": page_diags,
+            "merged_oldest": df["datetime"].iloc[0].isoformat() if not df.empty else None,
+            "merged_newest": df["datetime"].iloc[-1].isoformat() if not df.empty else None,
+        }
 
         if df.empty:
             with self._history_lock:
                 self._df_1m = df
             return BootstrapResult(False, "NO_1M_BARS", 0, 0, 0, 0, round(elapsed, 3))
 
-        today_ymd = now.strftime("%Y%m%d")
         dates = df["datetime"].dt.strftime("%Y%m%d")
         prior_n = int((dates != today_ymd).sum())
         today_n = int((dates == today_ymd).sum())

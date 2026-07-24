@@ -33,8 +33,9 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from app.trading.macd2 import config, ledger, order_executor, risk_exit
@@ -340,6 +341,8 @@ class Macd2Worker:
         self._last_tick_at: Optional[datetime] = None
         self._last_exception: Optional[str] = None
         self._lock = threading.RLock()
+        self._instance_id = uuid.uuid4().hex[:12]
+        self._started_at: Optional[datetime] = None
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -350,11 +353,20 @@ class Macd2Worker:
             mean = sum(intervals) / len(intervals) if intervals else None
             p95 = sorted(intervals)[int(len(intervals) * 0.95) - 1] if intervals else None
             age = (datetime.now(KST) - self._last_tick_at).total_seconds() if self._last_tick_at else None
+            next_tick_at = (
+                (self._last_tick_at + timedelta(seconds=self._tick_interval_sec)).isoformat()
+                if self._last_tick_at else None
+            )
             return {
                 "tick_n": self._tick_n, "mean_interval_sec": mean, "p95_interval_sec": p95,
                 "max_interval_sec": max(intervals) if intervals else None,
                 "last_tick_age_sec": age, "last_exception": self._last_exception,
                 "stalled": bool(age is not None and age > config.WORKER_STALL_AGE_SEC),
+                "instance_id": self._instance_id,
+                "started_at": self._started_at.isoformat() if self._started_at else None,
+                "last_tick_at": self._last_tick_at.isoformat() if self._last_tick_at else None,
+                "next_tick_at": next_tick_at,
+                "recent_tick_sample_count": len(self._tick_intervals),
             }
 
     def _run_loop(self) -> None:
@@ -381,6 +393,7 @@ class Macd2Worker:
         if self.is_alive():
             return  # never spawn a second Worker thread
         self._stop_event.clear()
+        self._started_at = datetime.now(KST)
         self._thread = threading.Thread(target=self._run_loop, name="macd2-worker", daemon=True)
         self._thread.start()
 

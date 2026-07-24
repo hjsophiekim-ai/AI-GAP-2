@@ -1,10 +1,14 @@
 """MACD2 lifecycle service — single entry point (docs §14).
 
 start()/stop()/get_snapshot()/supervisor_status() own the full lifecycle:
-bootstrap -> quote-cache-ready -> Worker start, in that order. The Worker is
-never started before bootstrap succeeds, and order authority
-(``auto_trade_on``) is never opened before the quote cache has been
-initialized (docs §14).
+quote-cache-ready -> bootstrap -> Worker start, in that order. The quote
+updater is started before bootstrap runs and kept running even if bootstrap
+fails (docs §21 2026-07-24 bootstrap fix: 현재가 조회와 bootstrap 생명주기
+분리) — a data-collection failure blocks signal/order evaluation only, never
+live price display. The Worker is never started before bootstrap succeeds,
+and order authority (``auto_trade_on``) is never opened before that (docs
+§14). ``retry_bootstrap()`` lets the UI retry bootstrap without spawning a
+new thread or reconstructing the broker/market-data service.
 
 Mutual exclusion with Enhanced / MACD v1 (docs §15) is delegated to
 ``app.trading.strategy_ownership`` — a shared, read-only adapter that checks
@@ -43,6 +47,9 @@ class Macd2Service:
         self._market_data: Optional[MarketDataService] = None
         self._broker = None
         self._worker: Optional[Macd2Worker] = None
+        self._bootstrap_attempts: int = 0
+        self._last_bootstrap_at: Optional[str] = None
+        self._last_bootstrap_result: Optional[dict[str, Any]] = None
 
     def start(
         self,
@@ -80,7 +87,38 @@ class Macd2Service:
             return {"ok": False, "message": str(exc)}
 
         self._market_data = MarketDataService(mode=mode)
-        boot = self._market_data.bootstrap(now=datetime.now(KST))
+        self._bootstrap_attempts = 0
+        self._last_bootstrap_at = None
+        self._last_bootstrap_result = None
+
+        # Quote lifecycle is independent of bootstrap (docs §21): get an
+        # initial read and start the background updater regardless of
+        # whether history bootstrap succeeds below, so live prices are never
+        # blocked by a data-collection failure.
+        try:
+            self._market_data.refresh_quotes()
+        except Exception:
+            pass  # per-symbol errors surface via get_quote()/QuoteSnapshot.error
+        self._market_data.start_quote_updater(interval_sec=1.0)
+
+        return self._attempt_bootstrap()
+
+    def retry_bootstrap(self) -> dict[str, Any]:
+        """Manual bootstrap retry (docs §21: 재시도 버튼) — reuses the
+        existing broker/MarketDataService/quote updater; never spawns a new
+        thread. No-op if the Worker is already running."""
+        if self._market_data is None or self._broker is None:
+            return {"ok": False, "message": "NOT_STARTED"}
+        if self._worker is not None and self._worker.is_alive():
+            return {"ok": True, "message": "ALREADY_RUNNING"}
+        return self._attempt_bootstrap()
+
+    def _attempt_bootstrap(self) -> dict[str, Any]:
+        self._bootstrap_attempts += 1
+        now = datetime.now(KST)
+        self._last_bootstrap_at = now.isoformat()
+        boot = self._market_data.bootstrap(now=now)
+        self._last_bootstrap_result = dict(boot.__dict__)
 
         state = state_store.load_state()
         state.warmup_ready = boot.ok
@@ -88,15 +126,8 @@ class Macd2Service:
             state.ui_mode = RuntimeStatus.DATA_ERROR
             state.order_block_reason = f"WARMUP_BOOTSTRAP:{boot.reason}"
             state_store.save_state(state)
+            # Worker/order loop never starts — quote updater keeps running.
             return {"ok": False, "message": boot.reason, "bootstrap": boot.__dict__}
-
-        try:
-            self._market_data.refresh_quotes()
-        except Exception as exc:
-            state.ui_mode = RuntimeStatus.DATA_ERROR
-            state.order_block_reason = f"QUOTE_CACHE_INIT_FAILED:{exc}"
-            state_store.save_state(state)
-            return {"ok": False, "message": "QUOTE_CACHE_INIT_FAILED"}
 
         state.ui_mode = RuntimeStatus.READY
         state_store.save_state(state)
@@ -109,7 +140,6 @@ class Macd2Service:
         state.ui_mode = RuntimeStatus.RUNNING
         state_store.save_state(state)
 
-        self._market_data.start_quote_updater(interval_sec=1.0)
         self._market_data.start_history_updater(interval_sec=config.WORKER_INTERVAL_SEC)
         self._worker = Macd2Worker(
             broker=self._broker, market_data=self._market_data,
@@ -143,14 +173,22 @@ class Macd2Service:
             "state": state,
             "worker": self._worker.tick_stats() if self._worker is not None else None,
             "quotes": quotes,
+            "bootstrap_diag": self._market_data.get_last_bootstrap_diag() if self._market_data is not None else {},
+            "bootstrap_attempts": self._bootstrap_attempts,
+            "bootstrap_last_attempt_at": self._last_bootstrap_at,
+            "bootstrap_last_result": self._last_bootstrap_result,
         }
 
     def supervisor_status(self) -> dict[str, Any]:
         stats = self._worker.tick_stats() if self._worker is not None else {}
+        worker_alive = bool(self._worker and self._worker.is_alive())
         return {
-            "worker_alive": bool(self._worker and self._worker.is_alive()),
+            "worker_alive": worker_alive,
+            "active_worker_count": 1 if worker_alive else 0,
             "quote_updater_alive": bool(self._market_data and self._market_data.quote_updater_alive()),
             "history_updater_alive": bool(self._market_data and self._market_data.history_updater_alive()),
+            "bootstrap_attempts": self._bootstrap_attempts,
+            "bootstrap_last_attempt_at": self._last_bootstrap_at,
             **stats,
         }
 

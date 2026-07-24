@@ -11,7 +11,7 @@ import socket
 
 import pytest
 
-from app.trading.macd2 import ledger, service, state_store
+from app.trading.macd2 import ledger, market_data, service, state_store
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +30,10 @@ def _isolate_macd2_state(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger, "LOGS_DIR_PATH", tmp_path)
     monkeypatch.setattr(ledger, "SIGNAL_LEDGER_PATH", tmp_path / "macd2_signal_ledger.csv")
     monkeypatch.setattr(ledger, "EXECUTION_LEDGER_PATH", tmp_path / "macd2_execution_ledger.csv")
+    # bootstrap()'s prior-day cache loader (docs §21 2026-07-24 fix) reads
+    # CACHE_DIR/naver_multi_1m/{symbol}_1m.csv directly — must never resolve
+    # to the real data/cache/ tree in a test.
+    monkeypatch.setattr(market_data, "CACHE_DIR", tmp_path / "cache")
     yield
 
 
