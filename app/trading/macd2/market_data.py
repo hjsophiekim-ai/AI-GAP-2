@@ -40,11 +40,35 @@ _1M_COLUMNS = ("datetime", "open", "high", "low", "close", "volume")
 
 # fetch_minute_candles(mode, symbol, count, hour1) -> (DataFrame[_1M_COLUMNS], diag)
 MinuteCandleFetcher = Callable[[str, str, int, str], "tuple[pd.DataFrame, dict[str, Any]]"]
+# fetch_minute_candles_for_date(mode, symbol, date_ymd, count, hour1) -> (DataFrame[_1M_COLUMNS], diag)
+MinuteCandleForDateFetcher = Callable[[str, str, str, int, str], "tuple[pd.DataFrame, dict[str, Any]]"]
 # fetch_quote(mode, symbol) -> (price_or_None, error_or_None)
 QuoteFetcher = Callable[[str, str], "tuple[Optional[float], Optional[str]]"]
 
 KIS_PAGE_SIZE = 120
 KIS_MAX_PAGES = 6
+
+# Bounds how far back _load_prior_trading_day() searches for the most recent
+# actual trading day (docs §21 2026-07-24 warm-up fix: 주말·공휴일이면 과거
+# 날짜를 순차 탐색 — bounded so consecutive holidays can never loop forever).
+MAX_TRADING_DATE_LOOKBACK_DAYS = 10
+
+
+def _prior_weekday_candidates(today_ymd: str, max_candidates: int) -> list[str]:
+    """Calendar dates before ``today_ymd``, most-recent first, skipping
+    Sat/Sun — a cheap first filter only. Actual holiday detection still
+    relies on the KIS API returning empty for that date (the caller moves on
+    to the next candidate); this list is just a bounded search space."""
+    today = datetime.strptime(today_ymd, "%Y%m%d").date()
+    out: list[str] = []
+    d = today
+    guard = 0
+    while len(out) < max_candidates and guard < max_candidates * 3:
+        d = d - timedelta(days=1)
+        guard += 1
+        if d.weekday() < 5:
+            out.append(d.strftime("%Y%m%d"))
+    return out
 
 
 def _empty_1m_frame() -> pd.DataFrame:
@@ -52,18 +76,17 @@ def _empty_1m_frame() -> pd.DataFrame:
 
 
 def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """The prior trading day's 1m bars for ``watch_symbol``, from a local
-    historical cache (``data/cache/naver_multi_1m/{symbol}_1m.csv``) — plain,
-    generic market-data for this symbol (not MACD-v1 production code; MACD
-    v1's own app.trading.macd_pipeline.market_data reads the same file, but
-    this function is an independent, MACD2-only implementation, never an
-    import from that module — docs §8/§21 2026-07-24 bootstrap fix).
-
-    KIS's live inquire-time-itemchartprice endpoint (docs: kis_client.py's
-    get_minute_candles) has no date parameter and only ever returns TODAY's
-    bars regardless of the hour1 pagination cursor — it can never supply a
-    prior calendar day, which is why bootstrap() no longer tries to page
-    backwards into KIS for one.
+    """Fallback B (docs §21 2026-07-24 warm-up fix): the prior trading day's
+    1m bars for ``watch_symbol`` from a local historical cache
+    (``data/cache/naver_multi_1m/{symbol}_1m.csv``) — plain, generic
+    market-data for this symbol (not MACD-v1 production code; MACD v1's own
+    app.trading.macd_pipeline.market_data reads the same file, but this
+    function is an independent, MACD2-only implementation, never an import
+    from that module). Only consulted when fallback A (KIS's official
+    주식일별분봉조회, ``_fetch_trading_day_candles``) fails to find any prior
+    trading day at all — this cache is a fallback, never a requirement: a
+    machine that has never run MACD2/collected this cache before must still
+    be able to warm up purely from fallback A.
     """
     path = CACHE_DIR / "naver_multi_1m" / f"{watch_symbol}_1m.csv"
     if not path.exists():
@@ -145,12 +168,16 @@ class MarketDataService:
         mode: str = "mock",
         *,
         fetch_minute_candles: Optional[MinuteCandleFetcher] = None,
+        fetch_minute_candles_for_date: Optional[MinuteCandleForDateFetcher] = None,
         fetch_quote: Optional[QuoteFetcher] = None,
     ) -> None:
         self.mode = mode
         self._kis_client: Any = None
         self._kis_client_lock = threading.RLock()
         self._fetch_minute_candles = fetch_minute_candles or self._default_fetch_minute_candles
+        self._fetch_minute_candles_for_date = (
+            fetch_minute_candles_for_date or self._default_fetch_minute_candles_for_date
+        )
         self._fetch_quote = fetch_quote or self._default_fetch_quote
         self._io_lock = threading.RLock()  # single KIS I/O lock — no nested pools, no concurrent KIS calls
         self._history_lock = threading.RLock()
@@ -194,6 +221,22 @@ class MarketDataService:
         df = _candles_to_df(candles)
         return df, {"received_count": int(len(df))}
 
+    def _default_fetch_minute_candles_for_date(
+        self, mode: str, symbol: str, date_ymd: str, count: int, hour1: str,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """Real KIS call — 주식일별분봉조회 (fallback A), the only network
+        entry point that can return a SPECIFIC calendar date's minute bars."""
+        del mode
+        try:
+            client = self._get_kis_client()
+            if client is None:
+                return _empty_1m_frame(), {"error": "kis_client_none"}
+            candles = client.get_minute_candles_for_date(symbol, date_ymd, period_min=1, count=count, hour1=hour1) or []
+        except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
+            return _empty_1m_frame(), {"error": repr(exc)}
+        df = _candles_to_df(candles)
+        return df, {"received_count": int(len(df))}
+
     def _default_fetch_quote(self, mode: str, symbol: str) -> tuple[Optional[float], Optional[str]]:
         """Real KIS call — the one and only network entry point for a live quote."""
         del mode
@@ -208,21 +251,113 @@ class MarketDataService:
 
     # ── history (bootstrap + incremental) ──────────────────────────────
 
+    def _fetch_trading_day_candles(self, date_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """One full page-backwards walk of KIS's 주식일별분봉조회 for a SINGLE
+        specific calendar date — same no-growth/cursor-stuck bounded loop as
+        the live today-only walk, just against the date-scoped endpoint."""
+        pages: list[pd.DataFrame] = []
+        page_diags: list[dict[str, Any]] = []
+        hour1 = ""
+        prev_count = 0
+        for page_i in range(KIS_MAX_PAGES):
+            with self._io_lock:
+                part, _diag = self._fetch_minute_candles_for_date(
+                    self.mode, config.WATCH_SYMBOL, date_ymd, KIS_PAGE_SIZE, hour1,
+                )
+            page_diags.append({
+                "request_no": page_i + 1, "requested_date": date_ymd,
+                "requested_hour1": hour1 or "LATEST", "received_count": int(len(part)),
+                "oldest": part["datetime"].iloc[0].isoformat() if not part.empty else None,
+                "newest": part["datetime"].iloc[-1].isoformat() if not part.empty else None,
+                "error": _diag.get("error"),
+            })
+            if part.empty:
+                break
+            pages.append(part)
+            merged = (
+                pd.concat(pages, ignore_index=True)
+                .drop_duplicates(subset=["datetime"], keep="last")
+                .sort_values("datetime")
+                .reset_index(drop=True)
+            )
+            if len(merged) <= prev_count:
+                page_diags[-1]["stop_reason"] = "PAGE_NO_GROWTH"
+                break
+            prev_count = len(merged)
+            oldest = merged["datetime"].iloc[0]
+            next_hour1 = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+            if next_hour1 == hour1:
+                page_diags[-1]["stop_reason"] = "CURSOR_NOT_MOVING"
+                break
+            hour1 = next_hour1
+
+        df = (
+            pd.concat(pages, ignore_index=True)
+            .drop_duplicates(subset=["datetime"], keep="last")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+            if pages else _empty_1m_frame()
+        )
+        return df, {"date": date_ymd, "pages": page_diags, "received_count": int(len(df))}
+
+    def _load_prior_trading_day(self, today_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """Fallback chain (docs §21 2026-07-24 warm-up fix) — never requires
+        a previous MACD2 run or a pre-existing local cache:
+
+          A. KIS 주식일별분봉조회 (``_fetch_trading_day_candles``) for each
+             candidate weekday before today, most recent first, stopping at
+             the first date with any data (a real trading day — a weekday
+             holiday simply returns empty and the search moves on). Bounded
+             by MAX_TRADING_DATE_LOOKBACK_DAYS so consecutive holidays can
+             never loop forever.
+          B. The local persistent cache (``_load_prior_day_1m_cache``) —
+             only consulted if every candidate in A came back empty.
+          C. Neither succeeded — caller reports TODAY_ONLY_WARMING_UP, not a
+             hard error; today's own bars keep accumulating regardless.
+        """
+        candidates = _prior_weekday_candidates(today_ymd, MAX_TRADING_DATE_LOOKBACK_DAYS)
+        attempts: list[dict[str, Any]] = []
+        for date_ymd in candidates:
+            df, diag = self._fetch_trading_day_candles(date_ymd)
+            attempts.append(diag)
+            if not df.empty:
+                return df, {
+                    "source": "KIS_DAILY_MINUTE_CHART", "selected_date": date_ymd,
+                    "candidates_tried": len(attempts), "attempts": attempts,
+                    "received_count": int(len(df)),
+                    "oldest": df["datetime"].iloc[0].isoformat(), "newest": df["datetime"].iloc[-1].isoformat(),
+                }
+
+        cache_df, cache_diag = _load_prior_day_1m_cache(config.WATCH_SYMBOL, today_ymd)
+        if not cache_df.empty:
+            return cache_df, {
+                "source": "PERSISTENT_CACHE", "candidates_tried": len(attempts),
+                "attempts": attempts, "cache": cache_diag, "received_count": int(len(cache_df)),
+            }
+
+        return _empty_1m_frame(), {
+            "source": "NONE", "candidates_tried": len(attempts), "attempts": attempts,
+            "cache": cache_diag, "received_count": 0,
+        }
+
     def bootstrap(self, now: Optional[datetime] = None) -> BootstrapResult:
-        """Once on Start: prior-day 1m bars from the local historical cache
-        (see ``_load_prior_day_1m_cache`` — KIS's inquire-time-itemchartprice
-        endpoint has no date parameter and only ever returns TODAY's bars, no
-        matter what ``hour1`` cursor is sent) + today's 1m bars paged live
-        from KIS, merged into >=300 1m bars including prior day and >=100
-        completed 3m bars. TODAY_ONLY data is never reported as ok=True
-        (docs §4/§8). Every KIS page request and the prior-day cache load are
-        recorded in ``get_last_bootstrap_diag()``.
+        """Once on Start: the most recent actual trading day's 1m bars (see
+        ``_load_prior_trading_day`` — KIS's official 주식일별분봉조회 first,
+        local cache only as a fallback, docs §21) + today's 1m bars paged
+        live from KIS (inquire-time-itemchartprice has no date parameter and
+        only ever returns TODAY, no matter what ``hour1`` cursor is sent),
+        merged into >=300 1m bars including prior day and >=100 completed
+        3m bars. A prior day that could not be found at all (fallback A and B
+        both empty) is reported as TODAY_ONLY_WARMING_UP, not a hard error —
+        neither a previous MACD2 run nor a pre-existing cache is ever
+        required for bootstrap to succeed. Every request is recorded in
+        ``get_last_bootstrap_diag()``.
         """
         now = now or datetime.now(KST)
         t0 = datetime.now(KST)
         today_ymd = now.strftime("%Y%m%d")
 
-        prior_df, prior_diag = _load_prior_day_1m_cache(config.WATCH_SYMBOL, today_ymd)
+        prior_df, prior_diag = self._load_prior_trading_day(today_ymd)
         page_diags: list[dict[str, Any]] = []
 
         pages: list[pd.DataFrame] = []
@@ -279,7 +414,7 @@ class MarketDataService:
 
         self._last_bootstrap_diag = {
             "requested_trading_date": today_ymd,
-            "prior_day_cache": prior_diag,
+            "prior_trading_day": prior_diag,
             "kis_pages": page_diags,
             "merged_oldest": df["datetime"].iloc[0].isoformat() if not df.empty else None,
             "merged_newest": df["datetime"].iloc[-1].isoformat() if not df.empty else None,
@@ -300,8 +435,13 @@ class MarketDataService:
             self._df_1m = df
 
         if prior_n <= 0:
+            # Fallback A (KIS official date-scoped API) and fallback B
+            # (persistent cache) both came back empty — not a hard error,
+            # today's own bars keep accumulating and a later retry (or the
+            # next scheduled bootstrap) may well succeed once more of today
+            # has elapsed (docs §21: never require a prior run/cache).
             return BootstrapResult(
-                False, "TODAY_ONLY_NO_PRIOR_DAY", int(len(df)), prior_n, today_n,
+                False, "TODAY_ONLY_WARMING_UP", int(len(df)), prior_n, today_n,
                 completed_3m_count, round(elapsed, 3),
             )
         if len(df) < config.WARMUP_1M_BARS_MIN:

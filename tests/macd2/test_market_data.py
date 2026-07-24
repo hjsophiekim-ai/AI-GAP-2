@@ -8,7 +8,12 @@ import pandas as pd
 import pytest
 
 from app.trading.macd2 import config, market_data as market_data_module
-from app.trading.macd2.market_data import MarketDataService, _candles_to_df, _load_prior_day_1m_cache
+from app.trading.macd2.market_data import (
+    MarketDataService,
+    _candles_to_df,
+    _load_prior_day_1m_cache,
+    _prior_weekday_candidates,
+)
 
 KST = config.KST
 
@@ -52,7 +57,7 @@ def test_bootstrap_fails_today_only_even_with_enough_bars():
     result = svc.bootstrap(now=today + timedelta(minutes=320, seconds=5))
 
     assert result.ok is False
-    assert result.reason == "TODAY_ONLY_NO_PRIOR_DAY"
+    assert result.reason == "TODAY_ONLY_WARMING_UP"
 
 
 def test_bootstrap_fails_on_no_data():
@@ -242,10 +247,12 @@ def test_prior_day_cache_missing_file_reports_error_not_exception(tmp_path, monk
     assert diag["error"] == "NO_PRIOR_DAY_CACHE"
 
 
-def test_bootstrap_uses_prior_day_cache_when_kis_only_has_today(tmp_path, monkeypatch):
-    """The exact reported failure mode: KIS genuinely only returns today's
-    bars (or none, pre-market) — bootstrap must still succeed using the
-    prior-day cache, instead of reporting TODAY_ONLY_NO_PRIOR_DAY/NO_1M_BARS."""
+def test_bootstrap_falls_back_to_cache_when_kis_date_api_has_nothing(tmp_path, monkeypatch):
+    """Fallback chain C-path (docs §21): fallback A (KIS 주식일별분봉조회)
+    finds nothing for any candidate date (no fetch_minute_candles_for_date
+    injected here — the autouse real-KIS-client block makes every fallback-A
+    attempt fail), fallback B (persistent cache) has data -> bootstrap must
+    still succeed using the cache, never requiring fallback A to work."""
     monkeypatch.setattr(market_data_module, "CACHE_DIR", tmp_path)
     cache_dir = tmp_path / "naver_multi_1m"
     cache_dir.mkdir()
@@ -267,7 +274,8 @@ def test_bootstrap_uses_prior_day_cache_when_kis_only_has_today(tmp_path, monkey
     assert result.today_1m_bars == 0
     diag = svc.get_last_bootstrap_diag()
     assert diag["requested_trading_date"] == "20260106"
-    assert diag["prior_day_cache"]["prior_trading_date"] == "20260105"
+    assert diag["prior_trading_day"]["source"] == "PERSISTENT_CACHE"
+    assert diag["prior_trading_day"]["cache"]["prior_trading_date"] == "20260105"
 
 
 def test_bootstrap_kis_page_no_growth_stops_without_infinite_loop():
@@ -290,6 +298,151 @@ def test_bootstrap_kis_page_no_growth_stops_without_infinite_loop():
     assert result.today_1m_bars == 5
     diag = svc.get_last_bootstrap_diag()
     assert diag["kis_pages"][-1]["stop_reason"] == "PAGE_NO_GROWTH"
+
+
+# ── Fallback A: KIS 주식일별분봉조회 (explicit trading-day search) ──────────
+
+def test_prior_weekday_candidates_monday_finds_friday_first():
+    """월요일에는 토/일을 건너뛰고 금요일이 첫 번째 후보여야 한다."""
+    monday = "20260112"  # a real Monday
+    candidates = _prior_weekday_candidates(monday, max_candidates=5)
+    assert candidates[0] == "20260109"  # the preceding Friday
+    assert "20260111" not in candidates  # Sunday
+    assert "20260110" not in candidates  # Saturday
+
+
+def test_prior_weekday_candidates_bounded_length():
+    candidates = _prior_weekday_candidates("20260112", max_candidates=3)
+    assert len(candidates) == 3
+
+
+def test_bootstrap_holiday_then_next_day_finds_most_recent_real_trading_day():
+    """공휴일 다음 날: 첫 후보(전날, 공휴일)는 빈 응답, 다음 후보(그 전
+    거래일)에서 데이터를 찾아 그 날짜를 실제 전일 거래일로 선택해야 한다."""
+    today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)  # Tuesday
+    holiday_ymd = "20260105"  # Monday — the first candidate, a holiday (empty)
+    real_trading_ymd = "20260102"  # the preceding Friday — has real data
+
+    def fake_fetch_for_date(mode, symbol, date_ymd, count, hour1):
+        del mode, symbol, count, hour1
+        if date_ymd == real_trading_ymd:
+            day = datetime.strptime(date_ymd, "%Y%m%d").replace(tzinfo=KST)
+            return _fake_bars_df(day, 380), {}
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {}
+
+    def fake_fetch_today_empty(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {}
+
+    svc = MarketDataService(
+        mode="mock", fetch_minute_candles=fake_fetch_today_empty,
+        fetch_minute_candles_for_date=fake_fetch_for_date,
+    )
+    result = svc.bootstrap(now=today)
+
+    assert result.ok is True
+    assert result.prior_day_1m_bars == 380
+    diag = svc.get_last_bootstrap_diag()
+    assert diag["prior_trading_day"]["source"] == "KIS_DAILY_MINUTE_CHART"
+    assert diag["prior_trading_day"]["selected_date"] == real_trading_ymd
+    assert diag["prior_trading_day"]["candidates_tried"] == 2  # holiday date, then the real one
+
+
+def test_bootstrap_warms_up_from_kis_date_api_alone_no_cache_needed(tmp_path, monkeypatch):
+    """docs §21: a machine that has never run MACD2 before (no local cache
+    at all) must still warm up successfully purely from fallback A."""
+    monkeypatch.setattr(market_data_module, "CACHE_DIR", tmp_path)  # empty — no cache exists
+    today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
+    prior_day_ymd = "20260105"
+
+    def fake_fetch_for_date(mode, symbol, date_ymd, count, hour1):
+        del mode, symbol, count, hour1
+        assert date_ymd == prior_day_ymd  # first weekday candidate, found immediately
+        day = datetime.strptime(date_ymd, "%Y%m%d").replace(tzinfo=KST)
+        return _fake_bars_df(day, 380), {}
+
+    def fake_fetch_today(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {}
+
+    svc = MarketDataService(
+        mode="mock", fetch_minute_candles=fake_fetch_today,
+        fetch_minute_candles_for_date=fake_fetch_for_date,
+    )
+    result = svc.bootstrap(now=today)
+
+    assert result.ok is True
+    assert result.reason is None
+    assert result.prior_day_1m_bars == 380
+    diag = svc.get_last_bootstrap_diag()
+    assert diag["prior_trading_day"]["source"] == "KIS_DAILY_MINUTE_CHART"
+    assert diag["prior_trading_day"]["candidates_tried"] == 1  # succeeded on the very first candidate
+
+
+def test_bootstrap_kis_date_api_fails_falls_back_to_cache(tmp_path, monkeypatch):
+    """Fallback A explicitly fails/errors for every candidate date -> fallback
+    B (persistent cache) must still deliver a successful warm-up."""
+    monkeypatch.setattr(market_data_module, "CACHE_DIR", tmp_path)
+    cache_dir = tmp_path / "naver_multi_1m"
+    cache_dir.mkdir()
+    rows = [f"2026-01-05 {9 + i // 60:02d}:{i % 60:02d}:00,100,100,100,100,10" for i in range(380)]
+    (cache_dir / "000660_1m.csv").write_text(
+        "datetime,open,high,low,close,volume\n" + "\n".join(rows) + "\n", encoding="utf-8",
+    )
+
+    def fake_fetch_for_date_always_fails(mode, symbol, date_ymd, count, hour1):
+        del mode, symbol, date_ymd, count, hour1
+        raise ConnectionError("KIS API unreachable")
+
+    def fake_fetch_today(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {}
+
+    def _safe_fetch_for_date(mode, symbol, date_ymd, count, hour1):
+        try:
+            return fake_fetch_for_date_always_fails(mode, symbol, date_ymd, count, hour1)
+        except ConnectionError as exc:
+            return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {"error": repr(exc)}
+
+    svc = MarketDataService(
+        mode="mock", fetch_minute_candles=fake_fetch_today,
+        fetch_minute_candles_for_date=_safe_fetch_for_date,
+    )
+    result = svc.bootstrap(now=datetime(2026, 1, 6, 8, 59, tzinfo=KST))
+
+    assert result.ok is True
+    assert result.prior_day_1m_bars == 380
+    diag = svc.get_last_bootstrap_diag()
+    assert diag["prior_trading_day"]["source"] == "PERSISTENT_CACHE"
+    assert diag["prior_trading_day"]["candidates_tried"] == market_data_module.MAX_TRADING_DATE_LOOKBACK_DAYS
+
+
+def test_bootstrap_all_sources_fail_reports_today_only_warming_up(tmp_path, monkeypatch):
+    """Fallback A empty for every candidate AND fallback B (cache) empty ->
+    TODAY_ONLY_WARMING_UP (not a hard error), search still bounded."""
+    monkeypatch.setattr(market_data_module, "CACHE_DIR", tmp_path)  # no cache file at all
+    attempts = {"n": 0}
+
+    def fake_fetch_for_date_empty(mode, symbol, date_ymd, count, hour1):
+        del mode, symbol, date_ymd, count, hour1
+        attempts["n"] += 1
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]), {}
+
+    def fake_fetch_today(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return _fake_bars_df(datetime(2026, 1, 6, 9, 0, tzinfo=KST), 5), {}
+
+    svc = MarketDataService(
+        mode="mock", fetch_minute_candles=fake_fetch_today,
+        fetch_minute_candles_for_date=fake_fetch_for_date_empty,
+    )
+    result = svc.bootstrap(now=datetime(2026, 1, 6, 9, 10, tzinfo=KST))
+
+    assert result.ok is False
+    assert result.reason == "TODAY_ONLY_WARMING_UP"
+    assert attempts["n"] == market_data_module.MAX_TRADING_DATE_LOOKBACK_DAYS  # bounded — no infinite loop
+    diag = svc.get_last_bootstrap_diag()
+    assert diag["prior_trading_day"]["source"] == "NONE"
 
 
 def test_candles_to_df_skips_malformed_rows():

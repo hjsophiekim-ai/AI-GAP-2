@@ -83,7 +83,7 @@ class _FakeMarketDataServiceOK:
 class _FakeMarketDataServiceBootstrapFails(_FakeMarketDataServiceOK):
     def bootstrap(self, now=None):
         from app.trading.macd2.market_data import BootstrapResult
-        return BootstrapResult(False, "TODAY_ONLY_NO_PRIOR_DAY", 300, 0, 300, 100, 0.01)
+        return BootstrapResult(False, "TODAY_ONLY_WARMING_UP", 300, 0, 300, 100, 0.01)
 
 
 class _FakeMarketDataServiceBootstrapFailsThenSucceeds(_FakeMarketDataServiceOK):
@@ -98,7 +98,7 @@ class _FakeMarketDataServiceBootstrapFailsThenSucceeds(_FakeMarketDataServiceOK)
         from app.trading.macd2.market_data import BootstrapResult
         self._bootstrap_calls += 1
         if self._bootstrap_calls == 1:
-            return BootstrapResult(False, "TODAY_ONLY_NO_PRIOR_DAY", 300, 0, 300, 100, 0.01)
+            return BootstrapResult(False, "TODAY_ONLY_WARMING_UP", 300, 0, 300, 100, 0.01)
         return BootstrapResult(True, None, 300, 300, 0, 100, 0.01)
 
 
@@ -170,7 +170,7 @@ def test_start_bootstrap_failure_never_starts_worker(monkeypatch):
     res = svc.start(mode="mock")
 
     assert res["ok"] is False
-    assert "TODAY_ONLY_NO_PRIOR_DAY" in res["message"]
+    assert "TODAY_ONLY_WARMING_UP" in res["message"]
     state = state_store.load_state()
     assert state.ui_mode == RuntimeStatus.DATA_ERROR
     assert state.auto_trade_on is False

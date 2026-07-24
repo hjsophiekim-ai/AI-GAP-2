@@ -94,6 +94,11 @@ def main() -> int:
         report["prior_day_1m_bars"] = boot.prior_day_1m_bars
         report["today_1m_bars"] = boot.today_1m_bars
         report["completed_3m_count"] = boot.completed_3m_count
+        diag = mds.get_last_bootstrap_diag()
+        prior_diag = diag.get("prior_trading_day") or {}
+        report["prior_trading_day_source"] = prior_diag.get("source")
+        report["selected_prior_trading_date"] = prior_diag.get("selected_date")
+        report["prior_trading_day_candidates_tried"] = prior_diag.get("candidates_tried")
 
     warmup_ready = False
     macd_snap = None

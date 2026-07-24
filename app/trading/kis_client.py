@@ -1099,6 +1099,60 @@ class KISClient:
             logger.warning(f"[KIS] 분봉 조회 실패 {symbol}: {e}")
             return []
 
+    def get_minute_candles_for_date(
+        self,
+        symbol: str,
+        date: str,
+        period_min: int = 1,
+        count: int = 60,
+        *,
+        hour1: str = "",
+    ) -> list[dict]:
+        """국내주식 주식일별분봉조회 — 특정 거래일(``date``, YYYYMMDD)의 분봉을
+        명시적으로 조회한다. ``get_minute_candles()``(inquire-time-itemchartprice)
+        와 달리 이 API(inquire-time-dailychartprice)는 FID_INPUT_DATE_1으로
+        조회 대상 날짜를 지정할 수 있어, ``date``가 오늘이 아니어도(전일/이전
+        거래일) 그 날짜의 실제 체결 분봉을 반환한다 — get_minute_candles()는
+        날짜 파라미터가 없어 항상 당일 데이터만 반환하는 것과 대비된다.
+
+        최신 순으로 최대 ``count``개 반환. ``hour1`` (HHMMSS): 페이징 커서
+        (비우면 해당 날짜의 마지막 시각부터). 실패 시 [] 반환.
+        """
+        tr_id = "FHKST03010230"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+        headers = self._auth_headers(tr_id)
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": symbol,
+            "FID_INPUT_DATE_1": str(date),
+            "FID_INPUT_HOUR_1": str(hour1 or ""),
+            "FID_PW_DATA_INCU_YN": "N",
+            "FID_FAKE_TICK_INCU_YN": "N",
+        }
+        try:
+            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
+            resp.raise_for_status()
+            data = resp.json()
+            output = data.get("output2", [])
+            result = []
+            for row in output[:count]:
+                close = float(row.get("stck_prpr", 0) or 0)
+                if close <= 0:
+                    continue
+                result.append({
+                    "date": str(row.get("stck_bsop_date") or date),
+                    "time": row.get("stck_cntg_hour", ""),
+                    "open": float(row.get("stck_oprc", 0) or 0),
+                    "high": float(row.get("stck_hgpr", 0) or 0),
+                    "low": float(row.get("stck_lwpr", 0) or 0),
+                    "close": close,
+                    "volume": int(row.get("cntg_vol", 0) or 0),
+                })
+            return result
+        except Exception as e:
+            logger.warning(f"[KIS] 거래일 지정 분봉 조회 실패 {symbol} date={date}: {e}")
+            return []
+
     # ── 외국인/기관 매매동향 조회 ──────────────────────────────────────────
 
     def get_investor_trend(self, symbol: str) -> list[dict]:

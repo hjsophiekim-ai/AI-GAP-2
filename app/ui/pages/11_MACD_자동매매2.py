@@ -73,7 +73,7 @@ def _bootstrap_status(state, bootstrap_last_result: dict | None) -> str:
     if state.warmup_ready:
         return "OK"
     reason = str((bootstrap_last_result or {}).get("reason") or state.order_block_reason or "")
-    if "NO_1M_BARS" in reason or "TODAY_ONLY_NO_PRIOR_DAY" in reason:
+    if "NO_1M_BARS" in reason or "TODAY_ONLY_WARMING_UP" in reason:
         now_t = datetime.now(macd2_config.KST).time()
         if now_t < macd2_config.SESSION_OPEN:
             return "PREMARKET_WAIT"
