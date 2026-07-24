@@ -218,6 +218,15 @@ class RuntimeState:
     primary_relation: Optional[str] = None
     latest_primary_flag: Optional[Direction] = None
     latest_primary_signal_id: Optional[str] = None
+    provisional_bar_start: Optional[str] = None
+    provisional_bar_end: Optional[str] = None
+    provisional_macd: Optional[float] = None
+    provisional_signal: Optional[float] = None
+    provisional_diff: Optional[float] = None
+    provisional_flag: Optional[Direction] = None
+    provisional_signal_id: Optional[str] = None
+    provisional_detected_at: Optional[str] = None
+    provisional_order_requested_at: Optional[str] = None
     signed_b_shadow_direction: Optional[Direction] = None
     signed_b_shadow_hist_last3: tuple[float, float, float] = field(default_factory=tuple)
     updated_at: Optional[str] = None

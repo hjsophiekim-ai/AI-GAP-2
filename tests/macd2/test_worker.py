@@ -10,7 +10,7 @@ import pytest
 
 from app.trading.macd2 import config, ledger, state_store, worker
 from app.trading.macd2.market_data import MarketDataService
-from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState
+from app.trading.macd2.models import Direction, PositionSnapshot, QuoteSnapshot, RuntimeState
 from app.trading.macd2.worker import Macd2Worker, run_once
 from tests.macd2.fake_broker import FakeBroker
 
@@ -27,6 +27,22 @@ def _1m_frame(start: datetime, closes: list[float]) -> pd.DataFrame:
         {"datetime": start + timedelta(minutes=i), "open": c, "high": c + 0.1, "low": c - 0.1, "close": c, "volume": 10}
         for i, c in enumerate(closes)
     ]
+    return pd.DataFrame(rows)
+
+
+def _1m_from_3m_closes(start: datetime, closes: list[float]) -> pd.DataFrame:
+    rows = []
+    for i, close in enumerate(closes):
+        bar_start = start + timedelta(minutes=3 * i)
+        for j in range(3):
+            rows.append({
+                "datetime": bar_start + timedelta(minutes=j),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 10,
+            })
     return pd.DataFrame(rows)
 
 
@@ -137,7 +153,7 @@ def test_flat_entry_buys_correct_symbol_and_updates_state():
     assert state.position.quantity > 0
     assert state.last_signal_direction in (Direction.UP_RED, Direction.DOWN_BLUE)
     assert len(state.processed_signal_ids) == 1
-    assert ledger.load_signal_ledger()[0]["signal_type"] == "INITIAL"
+    assert ledger.load_signal_ledger()[0]["signal_type"] in {"INITIAL", "INITIAL_PROVISIONAL"}
     assert ledger.load_execution_ledger()[0]["side"] == "BUY"
 
 
@@ -168,6 +184,121 @@ def test_duplicate_signal_id_is_never_reexecuted_across_many_ticks():
     assert len(broker.orders) == orders_after_first  # zero additional orders
 
 
+def test_provisional_up_crossover_buys_long_once():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start)
+    svc = _provisional_service(df_1m, watch_price=140.0)
+    now = _forming_now(start)
+    state = _fresh_state()
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == ["ENTRY:UP_RED"]
+    assert state.position is not None
+    assert state.position.symbol == config.LONG_SYMBOL
+    assert broker.orders[0].symbol == config.LONG_SYMBOL
+    assert broker.orders[0].side == "BUY"
+    assert state.provisional_signal_id == "20260724_140000_UP_RED_PROVISIONAL"
+    assert result.signal_dispatch_trace["order_executor_called"] is True
+    assert result.order_requested_at
+
+
+def test_provisional_down_crossover_buys_inverse_once():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start)
+    svc = _provisional_service(df_1m, watch_price=60.0)
+    now = _forming_now(start)
+    state = _fresh_state()
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert state.position is not None
+    assert state.position.symbol == config.INVERSE_SYMBOL
+    assert broker.orders[0].symbol == config.INVERSE_SYMBOL
+    assert broker.orders[0].side == "BUY"
+    assert state.provisional_signal_id == "20260724_140000_DOWN_BLUE_PROVISIONAL"
+    assert result.signal_dispatch_trace["order_executor_called"] is True
+
+
+def test_provisional_same_forming_bar_twenty_ticks_orders_once():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start)
+    svc = _provisional_service(df_1m, watch_price=140.0)
+    now = _forming_now(start)
+    state = _fresh_state()
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    run_once(broker=broker, market_data=svc, state=state, now=now)
+    orders_after_first = len(broker.orders)
+    for _ in range(20):
+        run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert len(broker.orders) == orders_after_first
+    assert state.processed_signal_ids.count("20260724_140000_UP_RED_PROVISIONAL") == 1
+
+
+def test_provisional_same_bar_allows_one_direction_switch_but_no_repeat():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start)
+    svc = _provisional_service(df_1m, watch_price=140.0)
+    now = _forming_now(start)
+    state = _fresh_state()
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    run_once(broker=broker, market_data=svc, state=state, now=now)
+    svc._quotes[config.WATCH_SYMBOL] = QuoteSnapshot(
+        config.WATCH_SYMBOL, 60.0, datetime.now(KST), 0.0, "test", None,
+    )
+    result_down = run_once(broker=broker, market_data=svc, state=state, now=now)
+    svc._quotes[config.WATCH_SYMBOL] = QuoteSnapshot(
+        config.WATCH_SYMBOL, 140.0, datetime.now(KST), 0.0, "test", None,
+    )
+    run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result_down.actions == ["OPPOSITE_SIGNAL:DOWN_BLUE"]
+    assert [(o.side, o.symbol) for o in broker.orders] == [
+        ("BUY", config.LONG_SYMBOL),
+        ("SELL", config.LONG_SYMBOL),
+        ("BUY", config.INVERSE_SYMBOL),
+    ]
+
+
+def test_provisional_stale_target_quote_blocks_order():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start)
+    svc = _provisional_service(df_1m, watch_price=140.0)
+    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(
+        config.LONG_SYMBOL, 15_000.0, datetime.now(KST) - timedelta(seconds=27), 27.0, "test", None,
+    )
+    state = _fresh_state()
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=_forming_now(start))
+
+    assert broker.orders == []
+    assert state.pending_signal is not None
+    assert state.pending_signal["signal_id"] == "20260724_140000_UP_RED_PROVISIONAL"
+    assert result.skipped == worker.QUOTE_STALE
+
+
 def test_entry_cutoff_blocks_new_entry_after_1455(ready_market_data):
     svc, now0 = ready_market_data
     state = _fresh_state()
@@ -190,6 +321,22 @@ def _svc_with_quote(df_1m, bootstrap_now, quote_prices):
     svc.bootstrap(now=bootstrap_now)
     svc.refresh_quotes()
     return svc
+
+
+def _flat_completed_history(start: datetime, bars: int = 100) -> pd.DataFrame:
+    return _1m_from_3m_closes(start, [100.0] * bars)
+
+
+def _provisional_service(df_1m: pd.DataFrame, watch_price: float = 140.0) -> MarketDataService:
+    return _svc_with_quote(
+        df_1m,
+        df_1m["datetime"].iloc[-1] + timedelta(minutes=1),
+        {config.WATCH_SYMBOL: watch_price, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+
+def _forming_now(start: datetime, bars: int = 100, seconds: int = 5) -> datetime:
+    return start + timedelta(minutes=3 * bars, seconds=seconds)
 
 
 def test_entry_blocked_before_0900_open(ready_market_data):

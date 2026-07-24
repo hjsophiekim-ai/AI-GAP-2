@@ -44,8 +44,10 @@ from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    calculate_provisional_macd,
     evaluate_macd_crossover,
     is_tradeable_completed_bar,
+    make_provisional_signal_id,
     make_signal_id,
     resample_completed_3m,
     signed_b_condition,
@@ -324,6 +326,26 @@ def _pending_direction_still_active(pending_dir: Optional[Direction], macd_snap)
     return False
 
 
+def _quote_valid_for_provisional(market_data: MarketDataService, symbol: str) -> bool:
+    snap = market_data.get_quote(symbol)
+    return bool(
+        snap is not None
+        and not snap.error
+        and snap.price > 0
+        and (snap.age_sec is None or snap.age_sec <= config.QUOTE_MAX_AGE_SEC)
+    )
+
+
+def _update_provisional_state(state: RuntimeState, macd_snap, pattern: Direction, signal_id: Optional[str]) -> None:
+    state.provisional_bar_start = macd_snap.bar_dt.astimezone(KST).isoformat()
+    state.provisional_bar_end = (macd_snap.bar_dt + timedelta(minutes=3)).astimezone(KST).isoformat()
+    state.provisional_macd = macd_snap.macd
+    state.provisional_signal = macd_snap.signal
+    state.provisional_diff = macd_snap.current_diff
+    state.provisional_flag = pattern if pattern != Direction.HOLD else None
+    state.provisional_signal_id = signal_id
+
+
 def _pending_primary_signal(
     bars_3m,
     *,
@@ -352,7 +374,8 @@ def _expire_pending_if_needed(state: RuntimeState, macd_snap, now: datetime) -> 
         return False
     pending_dir = Direction(pending.get("direction")) if pending.get("direction") in {d.value for d in Direction} else None
     age = _pending_age_sec(pending, now)
-    if not _pending_direction_still_active(pending_dir, macd_snap) or (age is not None and age > config.PENDING_SIGNAL_RETRY_SEC):
+    inactive = macd_snap is not None and not _pending_direction_still_active(pending_dir, macd_snap)
+    if inactive or (age is not None and age > config.PENDING_SIGNAL_RETRY_SEC):
         pending["status"] = SignalState.EXPIRED.value
         state.pending_signal = None
         return True
@@ -491,6 +514,42 @@ def _execute_or_wait(
     return outcome
 
 
+def _dispatch_provisional_signal(
+    *,
+    broker,
+    market_data: MarketDataService,
+    state: RuntimeState,
+    now: datetime,
+    macd_snap,
+    direction: Direction,
+    signal_type: str,
+    position: Optional[PositionSnapshot],
+    result: TickResult,
+):
+    signal_id = make_provisional_signal_id(macd_snap.bar_dt, direction)
+    _update_provisional_state(state, macd_snap, direction, signal_id)
+    if signal_id in state.processed_signal_ids:
+        state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
+        return None
+    if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
+        return None
+
+    state.current_episode_direction = direction
+    signal_detected_at = datetime.now(KST)
+    state.provisional_detected_at = signal_detected_at.isoformat()
+    result.signal_detected_at = signal_detected_at.isoformat()
+    outcome = _execute_or_wait(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
+    )
+    _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome)
+    if outcome is not None:
+        state.provisional_order_requested_at = (
+            outcome.timestamps.get("buy_requested_at") or outcome.timestamps.get("sell_requested_at") or ""
+        )
+    return outcome
+
+
 def run_once(
     *,
     broker,
@@ -552,6 +611,24 @@ def run_once(
     state.primary_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
     state.signed_b_shadow_direction = signed_b_condition(macd_snap)
     state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
+    provisional_snap = None
+    provisional_condition = Direction.HOLD
+    watch_quote_ready = _quote_valid_for_provisional(market_data, config.WATCH_SYMBOL)
+    watch_price = quotes.get(config.WATCH_SYMBOL)
+    if watch_quote_ready and watch_price is not None:
+        provisional_snap = calculate_provisional_macd(
+            bars_3m, df_1m, now=now, current_price=watch_price,
+        )
+    if provisional_snap is not None:
+        provisional_condition = evaluate_macd_crossover(provisional_snap, None)
+        provisional_signal_id = (
+            make_provisional_signal_id(provisional_snap.bar_dt, provisional_condition)
+            if provisional_condition != Direction.HOLD else None
+        )
+        _update_provisional_state(state, provisional_snap, provisional_condition, provisional_signal_id)
+    else:
+        state.provisional_flag = None
+        state.provisional_signal_id = None
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
     is_new_bar = bar_ts_str != state.last_evaluated_bar_ts
@@ -566,7 +643,10 @@ def run_once(
         evaluate_macd_crossover(macd_snap, state.last_detected_direction)
         if tradeable_bar and entry_window_open else Direction.HOLD
     )
-    _expire_pending_if_needed(state, macd_snap, now)
+    pending_retry_snap = provisional_snap if (
+        state.pending_signal and str(state.pending_signal.get("signal_id") or "").endswith("_PROVISIONAL")
+    ) else macd_snap
+    _expire_pending_if_needed(state, pending_retry_snap, now)
     result.timing["signal_evaluation"] = time.monotonic() - t0
 
     pos = state.position
@@ -612,9 +692,10 @@ def run_once(
 
         if state.pending_signal and not state.pending_signal.get("order_requested"):
             pending_dir = Direction(state.pending_signal["direction"])
-            if _pending_direction_still_active(pending_dir, macd_snap):
+            active_snap = provisional_snap if str(state.pending_signal.get("signal_id") or "").endswith("_PROVISIONAL") else macd_snap
+            if active_snap is not None and _pending_direction_still_active(pending_dir, active_snap):
                 outcome = _execute_or_wait(
-                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=active_snap,
                     direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
                     signal_type=str(state.pending_signal.get("signal_type") or "REVERSAL"), position=pos, result=result,
                 )
@@ -622,6 +703,18 @@ def run_once(
                     _apply_switch_outcome(state, outcome, pending_dir)
                     result.actions.append(f"OPPOSITE_SIGNAL:{pending_dir.value}")
                     state.last_evaluated_bar_ts = bar_ts_str
+                    return result
+
+        if entry_window_open and provisional_snap is not None and provisional_condition != Direction.HOLD:
+            target = order_executor.target_symbol_for_direction(provisional_condition)
+            if target != pos.symbol:
+                outcome = _dispatch_provisional_signal(
+                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=provisional_snap,
+                    direction=provisional_condition, signal_type="REVERSAL_PROVISIONAL", position=pos, result=result,
+                )
+                if outcome is not None:
+                    _apply_switch_outcome(state, outcome, provisional_condition)
+                    result.actions.append(f"OPPOSITE_SIGNAL:{provisional_condition.value}")
                     return result
 
         if is_new_bar and entry_window_open and tradeable_bar:
@@ -675,9 +768,10 @@ def run_once(
     # ── Flat: new-entry evaluation ──────────────────────────────────────
     if state.pending_signal and not state.pending_signal.get("order_requested"):
         pending_dir = Direction(state.pending_signal["direction"])
-        if _pending_direction_still_active(pending_dir, macd_snap):
+        active_snap = provisional_snap if str(state.pending_signal.get("signal_id") or "").endswith("_PROVISIONAL") else macd_snap
+        if active_snap is not None and _pending_direction_still_active(pending_dir, active_snap):
             outcome = _execute_or_wait(
-                broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                broker=broker, market_data=market_data, state=state, now=now, macd_snap=active_snap,
                 direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
                 signal_type=str(state.pending_signal.get("signal_type") or "INITIAL"), position=None, result=result,
             )
@@ -686,6 +780,16 @@ def run_once(
                 result.actions.append(f"ENTRY:{pending_dir.value}")
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
+
+    if entry_window_open and provisional_snap is not None and provisional_condition != Direction.HOLD:
+        outcome = _dispatch_provisional_signal(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=provisional_snap,
+            direction=provisional_condition, signal_type="INITIAL_PROVISIONAL", position=None, result=result,
+        )
+        if outcome is not None:
+            _apply_switch_outcome(state, outcome, provisional_condition)
+            result.actions.append(f"ENTRY:{provisional_condition.value}")
+            return result
 
     if is_new_bar and entry_window_open and tradeable_bar:
         pattern, signal_snap, detected = _pending_primary_signal(

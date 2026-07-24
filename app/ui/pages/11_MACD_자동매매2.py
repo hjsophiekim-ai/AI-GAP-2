@@ -227,6 +227,19 @@ try:
         f"primary signal_id=`{state.latest_primary_signal_id or '-'}`"
     )
 
+    st.markdown("**Provisional forming-bar crossover**")
+    pr1, pr2, pr3, pr4 = st.columns(4)
+    pr1.metric("MACD", f"{state.provisional_macd:.6f}" if state.provisional_macd is not None else "-")
+    pr2.metric("Signal", f"{state.provisional_signal:.6f}" if state.provisional_signal is not None else "-")
+    pr3.metric("diff", f"{state.provisional_diff:.6f}" if state.provisional_diff is not None else "-")
+    pr4.metric("flag", state.provisional_flag.value if state.provisional_flag else "-")
+    st.caption(
+        f"forming=`{state.provisional_bar_start or '-'}` -> `{state.provisional_bar_end or '-'}` 쨌 "
+        f"signal_id=`{state.provisional_signal_id or '-'}` 쨌 "
+        f"detected_at=`{state.provisional_detected_at or '-'}` 쨌 "
+        f"order_requested_at=`{state.provisional_order_requested_at or '-'}`"
+    )
+
     st.markdown("**Signed-B shadow**")
     st.caption(
         f"hist_last3=`{state.signed_b_shadow_hist_last3 or '-'}` · "

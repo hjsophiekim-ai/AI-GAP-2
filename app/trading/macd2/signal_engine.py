@@ -120,6 +120,87 @@ def calculate_macd(three_minute_bars: Optional[pd.DataFrame]) -> Optional[MacdSn
     )
 
 
+def _floor_3m(dt: datetime) -> datetime:
+    return dt.replace(minute=dt.minute - (dt.minute % 3), second=0, microsecond=0)
+
+
+def calculate_provisional_macd(
+    completed_three_minute_bars: Optional[pd.DataFrame],
+    one_minute_bars: Optional[pd.DataFrame],
+    *,
+    now: datetime,
+    current_price: float,
+) -> Optional[MacdSnapshot]:
+    """Completed 3m bars plus the currently forming 3m bar.
+
+    The forming bar keeps the cached 1m OHLC already available to the Worker,
+    but its close/high/low are refreshed with the latest 000660 quote. This
+    uses the same MACD calculation as confirmed bars; only the last row is
+    provisional.
+    """
+    _require_tz_aware_scalar(now, "calculate_provisional_macd(now=...)")
+    if current_price <= 0:
+        return None
+    if completed_three_minute_bars is None or completed_three_minute_bars.empty:
+        return None
+
+    forming_start = _floor_3m(now.astimezone(config.KST))
+    if forming_start.date() != now.astimezone(config.KST).date():
+        return None
+    if forming_start.time() < config.SESSION_OPEN:
+        return None
+
+    completed = completed_three_minute_bars.copy().sort_values("datetime")
+    completed["datetime"] = pd.to_datetime(completed["datetime"], errors="coerce")
+    completed = completed.dropna(subset=["datetime"])
+    completed = completed[completed["datetime"] < forming_start]
+    if completed.empty:
+        return None
+
+    prev_close = float(pd.to_numeric(completed["close"], errors="coerce").dropna().iloc[-1])
+    open_price = prev_close
+    high_price = max(prev_close, float(current_price))
+    low_price = min(prev_close, float(current_price))
+    volume = 0.0
+
+    if one_minute_bars is not None and not one_minute_bars.empty and "datetime" in one_minute_bars.columns:
+        one_min = one_minute_bars.copy()
+        one_min["datetime"] = pd.to_datetime(one_min["datetime"], errors="coerce")
+        if one_min["datetime"].dt.tz is None:
+            raise ValueError(
+                "calculate_provisional_macd: one_minute_bars['datetime'] must be timezone-aware KST"
+            )
+        one_min = one_min.dropna(subset=["datetime"]).sort_values("datetime")
+        forming_rows = one_min[(one_min["datetime"] >= forming_start) & (one_min["datetime"] <= now)]
+        if not forming_rows.empty:
+            open_price = float(pd.to_numeric(forming_rows["open"], errors="coerce").dropna().iloc[0])
+            highs = (
+                pd.to_numeric(forming_rows["high"], errors="coerce").dropna()
+                if "high" in forming_rows.columns else pd.Series(dtype=float)
+            )
+            lows = (
+                pd.to_numeric(forming_rows["low"], errors="coerce").dropna()
+                if "low" in forming_rows.columns else pd.Series(dtype=float)
+            )
+            vols = (
+                pd.to_numeric(forming_rows["volume"], errors="coerce").dropna()
+                if "volume" in forming_rows.columns else pd.Series(dtype=float)
+            )
+            high_price = max(float(highs.max()) if not highs.empty else open_price, float(current_price))
+            low_price = min(float(lows.min()) if not lows.empty else open_price, float(current_price))
+            volume = float(vols.sum()) if not vols.empty else 0.0
+
+    forming = pd.DataFrame([{
+        "datetime": forming_start,
+        "open": open_price,
+        "high": high_price,
+        "low": low_price,
+        "close": float(current_price),
+        "volume": volume,
+    }])
+    return calculate_macd(pd.concat([completed, forming], ignore_index=True))
+
+
 def evaluate_signed_b(
     macd_snapshot: MacdSnapshot,
     previous_direction: Optional[Direction],
@@ -192,3 +273,9 @@ def make_signal_id(completed_bar_dt: datetime, direction: Direction) -> str:
     _require_tz_aware_scalar(completed_bar_dt, "make_signal_id(completed_bar_dt=...)")
     bar_kst = completed_bar_dt.astimezone(config.KST)
     return f"{bar_kst:%Y%m%d}_{bar_kst:%H%M%S}_{direction.value}"
+
+
+def make_provisional_signal_id(forming_bar_dt: datetime, direction: Direction) -> str:
+    _require_tz_aware_scalar(forming_bar_dt, "make_provisional_signal_id(forming_bar_dt=...)")
+    bar_kst = forming_bar_dt.astimezone(config.KST)
+    return f"{bar_kst:%Y%m%d}_{bar_kst:%H%M%S}_{direction.value}_PROVISIONAL"

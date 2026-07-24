@@ -103,6 +103,15 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "primary_relation": state.primary_relation,
         "latest_primary_flag": state.latest_primary_flag.value if state.latest_primary_flag else None,
         "latest_primary_signal_id": state.latest_primary_signal_id,
+        "provisional_bar_start": state.provisional_bar_start,
+        "provisional_bar_end": state.provisional_bar_end,
+        "provisional_macd": state.provisional_macd,
+        "provisional_signal": state.provisional_signal,
+        "provisional_diff": state.provisional_diff,
+        "provisional_flag": state.provisional_flag.value if state.provisional_flag else None,
+        "provisional_signal_id": state.provisional_signal_id,
+        "provisional_detected_at": state.provisional_detected_at,
+        "provisional_order_requested_at": state.provisional_order_requested_at,
         "signed_b_shadow_direction": (
             state.signed_b_shadow_direction.value if state.signed_b_shadow_direction else None
         ),
@@ -126,6 +135,8 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     episode_dir = Direction(episode_raw) if episode_raw in _DIRECTION_VALUES else None
     latest_primary_raw = raw.get("latest_primary_flag")
     latest_primary_flag = Direction(latest_primary_raw) if latest_primary_raw in _DIRECTION_VALUES else None
+    provisional_raw = raw.get("provisional_flag")
+    provisional_flag = Direction(provisional_raw) if provisional_raw in _DIRECTION_VALUES else None
     signed_b_raw = raw.get("signed_b_shadow_direction")
     signed_b_shadow = Direction(signed_b_raw) if signed_b_raw in _DIRECTION_VALUES else None
     return RuntimeState(
@@ -164,6 +175,15 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         primary_relation=raw.get("primary_relation"),
         latest_primary_flag=latest_primary_flag,
         latest_primary_signal_id=raw.get("latest_primary_signal_id"),
+        provisional_bar_start=raw.get("provisional_bar_start"),
+        provisional_bar_end=raw.get("provisional_bar_end"),
+        provisional_macd=raw.get("provisional_macd"),
+        provisional_signal=raw.get("provisional_signal"),
+        provisional_diff=raw.get("provisional_diff"),
+        provisional_flag=provisional_flag,
+        provisional_signal_id=raw.get("provisional_signal_id"),
+        provisional_detected_at=raw.get("provisional_detected_at"),
+        provisional_order_requested_at=raw.get("provisional_order_requested_at"),
         signed_b_shadow_direction=signed_b_shadow,
         signed_b_shadow_hist_last3=tuple(raw.get("signed_b_shadow_hist_last3") or ()),
         updated_at=raw.get("updated_at"),
