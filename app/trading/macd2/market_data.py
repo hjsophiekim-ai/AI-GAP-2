@@ -190,6 +190,39 @@ class MarketDataService:
         self._history_updater_stop = threading.Event()
         self._last_bootstrap_diag: dict[str, Any] = {}
 
+    def quote_statuses(
+        self,
+        symbols: tuple[str, ...] = (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL),
+    ) -> dict[str, str]:
+        statuses: dict[str, str] = {}
+        for symbol in symbols:
+            snap = self.get_quote(symbol)
+            if snap is None:
+                statuses[symbol] = "MISSING"
+            elif snap.error or snap.price <= 0:
+                statuses[symbol] = "ERROR"
+            elif snap.age_sec is not None and snap.age_sec > config.QUOTE_MAX_AGE_SEC:
+                statuses[symbol] = "STALE"
+            else:
+                statuses[symbol] = "VALID"
+        return statuses
+
+    def quote_status(
+        self,
+        symbols: tuple[str, ...] = (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL),
+    ) -> str:
+        if not self.quote_updater_alive():
+            return "DEAD"
+        statuses = self.quote_statuses(symbols)
+        vals = set(statuses.values())
+        if vals == {"VALID"}:
+            return "READY"
+        if "ERROR" in vals or "MISSING" in vals:
+            return "PARTIAL_ERROR"
+        if "STALE" in vals:
+            return "PARTIAL_STALE"
+        return "PARTIAL_ERROR"
+
     def get_last_bootstrap_diag(self) -> dict[str, Any]:
         """Per-request diagnostics from the most recent bootstrap() call —
         prior-day cache load result + every KIS page (date/hour1/count/
@@ -488,15 +521,30 @@ class MarketDataService:
         self,
         symbols: tuple[str, ...] = (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL),
     ) -> dict[str, QuoteSnapshot]:
-        now = datetime.now(KST)
         updated: dict[str, QuoteSnapshot] = {}
         for symbol in symbols:
             with self._io_lock:
                 price, error = self._fetch_quote(self.mode, symbol)
-            updated[symbol] = QuoteSnapshot(
-                symbol=symbol, price=float(price) if price is not None else 0.0,
-                fetched_at=now, age_sec=0.0, source="kis", error=error,
-            )
+            success = error is None and price is not None and float(price) > 0
+            fetched_at = datetime.now(KST)
+            if success:
+                updated[symbol] = QuoteSnapshot(
+                    symbol=symbol, price=float(price), fetched_at=fetched_at, age_sec=0.0, source="kis", error=None,
+                )
+                continue
+            with self._quote_lock:
+                previous = self._quotes.get(symbol)
+            if previous is not None and previous.price > 0:
+                updated[symbol] = QuoteSnapshot(
+                    symbol=symbol, price=previous.price, fetched_at=previous.fetched_at,
+                    age_sec=(fetched_at - previous.fetched_at).total_seconds(), source=previous.source,
+                    error=error or "QUOTE_FETCH_FAILED",
+                )
+            else:
+                updated[symbol] = QuoteSnapshot(
+                    symbol=symbol, price=0.0, fetched_at=fetched_at, age_sec=0.0, source="kis",
+                    error=error or "QUOTE_FETCH_FAILED",
+                )
         with self._quote_lock:
             self._quotes.update(updated)
         return updated

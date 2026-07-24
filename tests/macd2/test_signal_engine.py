@@ -11,6 +11,7 @@ from app.trading.macd2.models import Direction, MacdSnapshot
 from app.trading.macd2.signal_engine import (
     calculate_macd,
     evaluate_signed_b,
+    is_tradeable_completed_bar,
     make_signal_id,
     resample_completed_3m,
 )
@@ -163,10 +164,18 @@ def test_calculate_macd_matches_pandas_ewm_adjust_false():
 
 
 def test_make_signal_id_format():
-    assert make_signal_id("20260723", "102700", Direction.DOWN_BLUE) == "20260723_102700_DOWN_BLUE"
+    bar_dt = datetime(2026, 7, 23, 10, 27, tzinfo=KST)
+    assert make_signal_id(bar_dt, Direction.DOWN_BLUE) == "20260723_102700_DOWN_BLUE"
 
 
-@pytest.mark.parametrize("trading_date,bar_at", [("2026-07-23", "102700"), ("20260723", "10:27:00")])
-def test_make_signal_id_rejects_malformed_input(trading_date, bar_at):
+def test_make_signal_id_rejects_naive_bar_time():
     with pytest.raises(ValueError):
-        make_signal_id(trading_date, bar_at, Direction.UP_RED)
+        make_signal_id(datetime(2026, 7, 23, 10, 27), Direction.UP_RED)
+
+
+def test_tradeable_completed_bar_requires_same_day_and_after_open():
+    now = datetime(2026, 7, 24, 9, 6, tzinfo=KST)
+    assert is_tradeable_completed_bar(datetime(2026, 7, 24, 9, 0, tzinfo=KST), now)
+    assert not is_tradeable_completed_bar(datetime(2026, 7, 23, 15, 27, tzinfo=KST), now)
+    assert not is_tradeable_completed_bar(datetime(2026, 7, 24, 8, 57, tzinfo=KST), now)
+    assert not is_tradeable_completed_bar(datetime(2026, 7, 24, 9, 3, tzinfo=KST), datetime(2026, 7, 24, 9, 5, tzinfo=KST))

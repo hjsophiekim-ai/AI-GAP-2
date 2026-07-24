@@ -65,6 +65,8 @@ WORKER_STALL_AGE_SEC = 15.0
 
 # ── Market data validity (strategy-fixed) ──────────────────────────────────
 QUOTE_MAX_AGE_SEC = 10.0
+PENDING_SIGNAL_RETRY_SEC = 30.0
+FLAT_POSITION_RECONCILE_INTERVAL_SEC = 30.0
 
 # ── Feature flags (strategy-fixed per docs; not user-configurable) ────────
 CONTINUATION_REENTRY_ENABLED = False

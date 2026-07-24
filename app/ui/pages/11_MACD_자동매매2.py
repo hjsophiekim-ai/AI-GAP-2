@@ -65,7 +65,9 @@ def _quote_status(quotes: dict) -> str:
     for symbol in (macd2_config.WATCH_SYMBOL, macd2_config.LONG_SYMBOL, macd2_config.INVERSE_SYMBOL):
         snap = quotes.get(symbol)
         if snap is None or snap.error or not snap.price:
-            return "ERROR"
+            return "PARTIAL_ERROR"
+        if snap.age_sec is not None and snap.age_sec > macd2_config.QUOTE_MAX_AGE_SEC:
+            return "PARTIAL_STALE"
     return "READY"
 
 
@@ -178,7 +180,7 @@ quotes = snapshot["quotes"] or {}
 try:
     st.subheader("상태")
     bootstrap_last_result = snapshot.get("bootstrap_last_result")
-    quote_status = _quote_status(quotes)
+    quote_status = snapshot.get("quote_status") or _quote_status(quotes)
     bootstrap_status = _bootstrap_status(state, bootstrap_last_result)
     macd_status = "READY" if state.warmup_ready else "NOT_READY"
     order_status = "BLOCKED" if state.order_block_reason or not state.auto_trade_on else "READY"

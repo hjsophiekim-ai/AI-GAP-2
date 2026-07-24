@@ -169,10 +169,20 @@ class Macd2Service:
         if self._market_data is not None:
             for symbol in (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL):
                 quotes[symbol] = self._market_data.get_quote(symbol)
+        quote_statuses = (
+            self._market_data.quote_statuses()
+            if self._market_data is not None and hasattr(self._market_data, "quote_statuses") else {}
+        )
+        quote_status = (
+            self._market_data.quote_status()
+            if self._market_data is not None and hasattr(self._market_data, "quote_status") else "DEAD"
+        )
         return {
             "state": state,
             "worker": self._worker.tick_stats() if self._worker is not None else None,
             "quotes": quotes,
+            "quote_statuses": quote_statuses,
+            "quote_status": quote_status,
             "bootstrap_diag": self._market_data.get_last_bootstrap_diag() if self._market_data is not None else {},
             "bootstrap_attempts": self._bootstrap_attempts,
             "bootstrap_last_attempt_at": self._last_bootstrap_at,

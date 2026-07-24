@@ -34,6 +34,9 @@ class SignalState(str, Enum):
     POSITION_CONFIRMED = "POSITION_CONFIRMED"
     LEDGER_RECORDED = "LEDGER_RECORDED"
     BLOCKED = "BLOCKED"
+    WAITING = "WAITING"
+    ORDER_REQUESTED = "ORDER_REQUESTED"
+    EXPIRED = "EXPIRED"
     FAILED = "FAILED"
 
 
@@ -187,11 +190,17 @@ class RuntimeState:
     session_date: Optional[str] = None
     warmup_ready: bool = False
     last_signal_direction: Optional[Direction] = None
+    last_detected_direction: Optional[Direction] = None
+    last_executed_direction: Optional[Direction] = None
+    current_episode_direction: Optional[Direction] = None
     last_signal_bar_ts: Optional[str] = None
     last_evaluated_bar_ts: Optional[str] = None
     processed_signal_ids: list[str] = field(default_factory=list)
+    pending_signal: Optional[dict[str, Any]] = None
     position: Optional[PositionSnapshot] = None
     peak_net_return: float = 0.0
     profit_lock_active: bool = False
     order_block_reason: Optional[str] = None
+    position_reconcile_diag: dict[str, Any] = field(default_factory=dict)
+    last_position_reconcile_at: Optional[str] = None
     updated_at: Optional[str] = None

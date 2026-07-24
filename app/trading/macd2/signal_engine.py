@@ -140,10 +140,25 @@ def evaluate_signed_b(
     return pattern
 
 
-def make_signal_id(trading_date: str, completed_bar_at: str, direction: Direction) -> str:
-    """docs §6: ``trading_date_completedBarAt_direction`` (e.g. 20260723_102700_DOWN_BLUE)."""
-    if len(trading_date) != 8 or not trading_date.isdigit():
-        raise ValueError(f"make_signal_id: trading_date must be YYYYMMDD, got {trading_date!r}")
-    if len(completed_bar_at) != 6 or not completed_bar_at.isdigit():
-        raise ValueError(f"make_signal_id: completed_bar_at must be HHMMSS, got {completed_bar_at!r}")
-    return f"{trading_date}_{completed_bar_at}_{direction.value}"
+def signed_b_condition(macd_snapshot: MacdSnapshot) -> Direction:
+    """Raw signed-B condition for the latest bar, without onset suppression."""
+    return evaluate_signed_b(macd_snapshot, None)
+
+
+def is_tradeable_completed_bar(bar_dt: datetime, now_kst: datetime) -> bool:
+    _require_tz_aware_scalar(bar_dt, "is_tradeable_completed_bar(bar_dt=...)")
+    _require_tz_aware_scalar(now_kst, "is_tradeable_completed_bar(now_kst=...)")
+    bar_kst = bar_dt.astimezone(config.KST)
+    now_kst = now_kst.astimezone(config.KST)
+    if bar_kst.date() != now_kst.date():
+        return False
+    if bar_kst.time() < config.SESSION_OPEN:
+        return False
+    return bar_kst + timedelta(minutes=3) <= now_kst.replace(second=0, microsecond=0)
+
+
+def make_signal_id(completed_bar_dt: datetime, direction: Direction) -> str:
+    """Signal id is derived only from the completed bar's own KST date/time."""
+    _require_tz_aware_scalar(completed_bar_dt, "make_signal_id(completed_bar_dt=...)")
+    bar_kst = completed_bar_dt.astimezone(config.KST)
+    return f"{bar_kst:%Y%m%d}_{bar_kst:%H%M%S}_{direction.value}"

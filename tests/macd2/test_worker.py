@@ -102,6 +102,7 @@ def _find_first_entry_tick(svc, now0, budget=10_000_000.0, *, steps=80):
     """
     state = _fresh_state(budget=budget)
     broker = FakeBroker(cash=budget, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    svc.refresh_quotes()
     for step in range(steps):
         now = now0 + timedelta(minutes=3 * step)
         result = run_once(broker=broker, market_data=svc, state=state, now=now)
@@ -111,6 +112,7 @@ def _find_first_entry_tick(svc, now0, budget=10_000_000.0, *, steps=80):
 
 
 def _bootstrapped_sine_service(quote_prices):
+    quote_prices = {config.WATCH_SYMBOL: 100.0, **quote_prices}
     closes = _sine_1m_closes(300)
     df_1m = _1m_frame(_PRIOR_DAY, closes)
     svc = MarketDataService(
@@ -242,10 +244,10 @@ def test_position_mismatch_blocks_all_orders(ready_market_data):
 
     result = run_once(broker=broker, market_data=svc, state=state, now=now0)
 
-    assert result.skipped == worker.POSITION_MISMATCH
-    assert state.order_block_reason == worker.POSITION_MISMATCH
+    assert result.skipped == worker.RECOVERED_TO_FLAT
+    assert state.order_block_reason == worker.RECOVERED_TO_FLAT
     assert broker.orders == []
-    assert state.position is not None  # untouched — mismatch blocks orders, does not silently "fix" state
+    assert state.position is None
 
 
 def test_day_rollover_resets_session_fields_but_allows_same_direction_signal():

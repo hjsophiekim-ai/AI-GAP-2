@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -71,13 +72,25 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_signal_direction": (
             state.last_signal_direction.value if state.last_signal_direction else None
         ),
+        "last_detected_direction": (
+            state.last_detected_direction.value if state.last_detected_direction else None
+        ),
+        "last_executed_direction": (
+            state.last_executed_direction.value if state.last_executed_direction else None
+        ),
+        "current_episode_direction": (
+            state.current_episode_direction.value if state.current_episode_direction else None
+        ),
         "last_signal_bar_ts": state.last_signal_bar_ts,
         "last_evaluated_bar_ts": state.last_evaluated_bar_ts,
         "processed_signal_ids": list(state.processed_signal_ids),
+        "pending_signal": dict(state.pending_signal) if state.pending_signal else None,
         "position": _position_to_dict(state.position),
         "peak_net_return": float(state.peak_net_return),
         "profit_lock_active": bool(state.profit_lock_active),
         "order_block_reason": state.order_block_reason,
+        "position_reconcile_diag": dict(state.position_reconcile_diag or {}),
+        "last_position_reconcile_at": state.last_position_reconcile_at,
         "updated_at": state.updated_at,
     }
 
@@ -89,6 +102,12 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     ui_mode = RuntimeStatus(ui_mode_raw) if ui_mode_raw in _UI_MODE_VALUES else base.ui_mode
     last_dir_raw = raw.get("last_signal_direction")
     last_dir = Direction(last_dir_raw) if last_dir_raw in _DIRECTION_VALUES else None
+    detected_raw = raw.get("last_detected_direction")
+    detected_dir = Direction(detected_raw) if detected_raw in _DIRECTION_VALUES else None
+    executed_raw = raw.get("last_executed_direction")
+    executed_dir = Direction(executed_raw) if executed_raw in _DIRECTION_VALUES else None
+    episode_raw = raw.get("current_episode_direction")
+    episode_dir = Direction(episode_raw) if episode_raw in _DIRECTION_VALUES else None
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         ui_mode=ui_mode,
@@ -100,13 +119,19 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         session_date=raw.get("session_date"),
         warmup_ready=bool(raw.get("warmup_ready", False)),
         last_signal_direction=last_dir,
+        last_detected_direction=detected_dir,
+        last_executed_direction=executed_dir,
+        current_episode_direction=episode_dir,
         last_signal_bar_ts=raw.get("last_signal_bar_ts"),
         last_evaluated_bar_ts=raw.get("last_evaluated_bar_ts"),
         processed_signal_ids=list(raw.get("processed_signal_ids") or []),
+        pending_signal=raw.get("pending_signal") if isinstance(raw.get("pending_signal"), dict) else None,
         position=_position_from_dict(raw.get("position")),
         peak_net_return=float(raw.get("peak_net_return", 0.0)),
         profit_lock_active=bool(raw.get("profit_lock_active", False)),
         order_block_reason=raw.get("order_block_reason"),
+        position_reconcile_diag=raw.get("position_reconcile_diag") if isinstance(raw.get("position_reconcile_diag"), dict) else {},
+        last_position_reconcile_at=raw.get("last_position_reconcile_at"),
         updated_at=raw.get("updated_at"),
     )
 
@@ -136,7 +161,7 @@ def save_state(state: RuntimeState) -> RuntimeState:
         ensure_paths()
         state.updated_at = datetime.now(config.KST).isoformat()
         payload = serialize(state)
-        tmp = STATE_PATH.with_suffix(STATE_PATH.suffix + f".tmp.{os.getpid()}")
+        tmp = STATE_PATH.with_suffix(STATE_PATH.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex}")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, STATE_PATH)
         return state

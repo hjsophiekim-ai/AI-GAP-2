@@ -248,7 +248,7 @@ def run_replay(
                 continue
 
             trading_date = macd_snap.bar_dt.strftime("%Y%m%d")
-            signal_id = make_signal_id(trading_date, macd_snap.bar_dt.strftime("%H%M%S"), pattern)
+            signal_id = make_signal_id(macd_snap.bar_dt, pattern)
             next_open = float(df_1m["open"].iloc[i + 1]) if i + 1 < len(df_1m) else float(df_1m["close"].iloc[i])
             broker.set_fill_price(target, next_open)
             if position is not None:
