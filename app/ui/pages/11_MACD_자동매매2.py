@@ -213,12 +213,12 @@ try:
         p1.metric("보유 종목", "flat")
     p2.metric("Profit Lock", "ON" if state.profit_lock_active else "OFF", delta=f"peak {state.peak_net_return:.2f}%")
 
-    st.markdown("**Primary MACD crossover**")
+    st.markdown("**Primary forming-bar MACD crossover**")
     pc1, pc2, pc3, pc4 = st.columns(4)
-    pc1.metric("MACD", snapshot.get("primary_macd", "-"))
-    pc2.metric("Signal", snapshot.get("primary_signal", "-"))
-    prev_diff = state.primary_previous_diff
-    curr_diff = state.primary_current_diff
+    pc1.metric("MACD", f"{state.provisional_macd:.6f}" if state.provisional_macd is not None else "-")
+    pc2.metric("Signal", f"{state.provisional_signal:.6f}" if state.provisional_signal is not None else "-")
+    prev_diff = state.primary_current_diff
+    curr_diff = state.provisional_diff
     pc3.metric("previous diff", f"{prev_diff:.6f}" if prev_diff is not None else "-")
     pc4.metric("current diff", f"{curr_diff:.6f}" if curr_diff is not None else "-")
     st.caption(

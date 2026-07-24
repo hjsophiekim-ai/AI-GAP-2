@@ -8,6 +8,7 @@ same functions — no duplicate implementations.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -17,6 +18,19 @@ from app.trading.macd2 import config
 from app.trading.macd2.models import Direction, MacdSnapshot
 
 _THREE_MIN_COLUMNS = ("datetime", "open", "high", "low", "close", "volume")
+
+
+@dataclass(frozen=True)
+class PrimaryCrossoverResult:
+    """Common Primary MACD2 decision for Worker/UI/replay/tests.
+
+    ``snapshot`` is the completed-bars-plus-forming-bar MACD state. Only
+    ``direction`` values other than HOLD have order authority.
+    """
+
+    snapshot: Optional[MacdSnapshot]
+    direction: Direction
+    signal_id: Optional[str]
 
 
 def _empty_3m_frame() -> pd.DataFrame:
@@ -236,7 +250,7 @@ def evaluate_macd_crossover(
     macd_snapshot: MacdSnapshot,
     previous_direction: Optional[Direction],
 ) -> Direction:
-    """Primary MACD2 order signal: completed-bar MACD/Signal crossover onset."""
+    """Primary MACD2 crossover onset from previous diff to current diff."""
     previous_diff = macd_snapshot.previous_diff
     current_diff = macd_snapshot.current_diff
     if previous_diff is None:
@@ -254,6 +268,33 @@ def evaluate_macd_crossover(
     if previous_direction == pattern:
         return Direction.HOLD
     return pattern
+
+
+def evaluate_primary_forming_crossover(
+    completed_three_minute_bars: Optional[pd.DataFrame],
+    one_minute_bars: Optional[pd.DataFrame],
+    *,
+    now: datetime,
+    current_price: float,
+    previous_direction: Optional[Direction] = None,
+) -> PrimaryCrossoverResult:
+    """Primary order signal: previous completed 3m bar + current forming 3m bar.
+
+    This is the single production/replay/UI-facing decision function for
+    MACD2 Primary flags. Confirmed completed-bar crossovers and signed-B remain
+    diagnostics only.
+    """
+    snap = calculate_provisional_macd(
+        completed_three_minute_bars,
+        one_minute_bars,
+        now=now,
+        current_price=current_price,
+    )
+    if snap is None:
+        return PrimaryCrossoverResult(None, Direction.HOLD, None)
+    direction = evaluate_macd_crossover(snap, previous_direction)
+    signal_id = make_provisional_signal_id(snap.bar_dt, direction) if direction != Direction.HOLD else None
+    return PrimaryCrossoverResult(snap, direction, signal_id)
 
 
 def is_tradeable_completed_bar(bar_dt: datetime, now_kst: datetime) -> bool:

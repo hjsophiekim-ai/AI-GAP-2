@@ -44,11 +44,8 @@ from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import (
     calculate_macd,
-    calculate_provisional_macd,
-    evaluate_macd_crossover,
-    is_tradeable_completed_bar,
+    evaluate_primary_forming_crossover,
     make_provisional_signal_id,
-    make_signal_id,
     resample_completed_3m,
     signed_b_condition,
 )
@@ -388,28 +385,9 @@ def _update_provisional_state(state: RuntimeState, macd_snap, pattern: Direction
     state.provisional_diff = macd_snap.current_diff
     state.provisional_flag = pattern if pattern != Direction.HOLD else None
     state.provisional_signal_id = signal_id
-
-
-def _pending_primary_signal(
-    bars_3m,
-    *,
-    last_evaluated_bar_ts: Optional[str],
-    last_detected_direction: Optional[Direction],
-    now: datetime,
-) -> tuple[Direction, Optional[Any], Optional[Direction]]:
-    detected = last_detected_direction
-    for i in range(config.EMA_SLOW, len(bars_3m) + 1):
-        snap = calculate_macd(bars_3m.iloc[:i])
-        if snap is None:
-            continue
-        if last_evaluated_bar_ts and snap.bar_dt.isoformat() <= last_evaluated_bar_ts:
-            continue
-        if not is_tradeable_completed_bar(snap.bar_dt, now):
-            continue
-        pattern = evaluate_macd_crossover(snap, detected)
-        if pattern != Direction.HOLD:
-            return pattern, snap, pattern
-    return Direction.HOLD, None, detected
+    if pattern != Direction.HOLD:
+        state.latest_primary_flag = pattern
+        state.latest_primary_signal_id = signal_id
 
 
 def _expire_pending_if_needed(state: RuntimeState, macd_snap, now: datetime) -> bool:
@@ -606,6 +584,7 @@ def _dispatch_provisional_signal(
         return None
 
     state.current_episode_direction = direction
+    state.last_detected_direction = direction
     signal_detected_at = datetime.now(KST)
     state.provisional_detected_at = signal_detected_at.isoformat()
     result.signal_detected_at = signal_detected_at.isoformat()
@@ -637,6 +616,7 @@ def _record_provisional_blocked_signal(
     if signal_id in state.processed_signal_ids:
         return
     state.current_episode_direction = direction
+    state.last_detected_direction = direction
     state.order_block_reason = reason
     signal_detected_at = datetime.now(KST)
     state.provisional_detected_at = signal_detected_at.isoformat()
@@ -728,33 +708,26 @@ def run_once(
     watch_quote_ready = _quote_valid_for_provisional(market_data, config.WATCH_SYMBOL)
     watch_price = quotes.get(config.WATCH_SYMBOL)
     if watch_quote_ready and watch_price is not None:
-        provisional_snap = calculate_provisional_macd(
+        primary_result = evaluate_primary_forming_crossover(
             bars_3m, df_1m, now=now, current_price=watch_price,
+            previous_direction=state.last_detected_direction,
         )
+        provisional_snap = primary_result.snapshot
+        provisional_condition = primary_result.direction
     if provisional_snap is not None:
-        provisional_condition = evaluate_macd_crossover(provisional_snap, None)
-        provisional_signal_id = (
-            make_provisional_signal_id(provisional_snap.bar_dt, provisional_condition)
-            if provisional_condition != Direction.HOLD else None
-        )
+        provisional_signal_id = primary_result.signal_id
         _update_provisional_state(state, provisional_snap, provisional_condition, provisional_signal_id)
     else:
         state.provisional_flag = None
         state.provisional_signal_id = None
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
-    is_new_bar = bar_ts_str != state.last_evaluated_bar_ts
-    tradeable_bar = is_tradeable_completed_bar(macd_snap.bar_dt, now)
 
     before_open = now.time() < config.SESSION_OPEN
     entry_cutoff_passed = now.time() >= config.NEW_ENTRY_CUTOFF
     force_liquidate_time = now.time() >= config.FORCE_LIQUIDATE_AT
     entry_window_open = (not before_open) and (not entry_cutoff_passed)
     t0 = time.monotonic()
-    current_condition = (
-        evaluate_macd_crossover(macd_snap, state.last_detected_direction)
-        if tradeable_bar and entry_window_open else Direction.HOLD
-    )
     pending_retry_snap = provisional_snap if (
         state.pending_signal and str(state.pending_signal.get("signal_id") or "").endswith("_PROVISIONAL")
     ) else macd_snap
@@ -836,46 +809,6 @@ def run_once(
                     result=result,
                 )
 
-        if is_new_bar and entry_window_open and tradeable_bar:
-            pattern, signal_snap, detected = _pending_primary_signal(
-                bars_3m,
-                last_evaluated_bar_ts=state.last_evaluated_bar_ts,
-                last_detected_direction=state.last_detected_direction,
-                now=now,
-            )
-            if pattern == Direction.HOLD and signal_snap is None and current_condition != Direction.HOLD:
-                pattern = current_condition
-                signal_snap = macd_snap
-                detected = pattern
-            if detected is not None:
-                state.last_detected_direction = detected
-            if pattern != Direction.HOLD:
-                state.current_episode_direction = pattern
-                state.latest_primary_flag = pattern
-                macd_signal_snap = signal_snap or macd_snap
-                target = order_executor.target_symbol_for_direction(pattern)
-                if target != pos.symbol:
-                    signal_id = make_signal_id(macd_signal_snap.bar_dt, pattern)
-                    provisional_signal_id = make_provisional_signal_id(macd_signal_snap.bar_dt, pattern)
-                    if provisional_signal_id in state.processed_signal_ids:
-                        state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
-                        return result
-                    state.latest_primary_signal_id = signal_id
-                    signal_detected_at = datetime.now(KST)
-                    result.signal_detected_at = signal_detected_at.isoformat()
-                    outcome = _execute_or_wait(
-                        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_signal_snap,
-                        direction=pattern, signal_id=signal_id, signal_type="REVERSAL", position=pos, result=result,
-                    )
-                    _record_signal_ledger(state, macd_signal_snap, pattern, "REVERSAL", signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
-                    if outcome is not None:
-                        _apply_switch_outcome(state, outcome, pattern)
-                        result.actions.append(f"OPPOSITE_SIGNAL:{pattern.value}")
-                        state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
-                        return result
-                    state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
-                    return result
-
         if profit_lock_should_exit:
             outcome = order_executor.execute_exit(
                 broker=broker, symbol=pos.symbol, quantity=pos.quantity,
@@ -912,42 +845,6 @@ def run_once(
         if outcome is not None:
             _apply_switch_outcome(state, outcome, provisional_condition)
             result.actions.append(f"ENTRY:{provisional_condition.value}")
-            return result
-
-    if is_new_bar and entry_window_open and tradeable_bar:
-        pattern, signal_snap, detected = _pending_primary_signal(
-            bars_3m,
-            last_evaluated_bar_ts=state.last_evaluated_bar_ts,
-            last_detected_direction=state.last_detected_direction,
-            now=now,
-        )
-        if pattern == Direction.HOLD and signal_snap is None and current_condition != Direction.HOLD:
-            pattern = current_condition
-            signal_snap = macd_snap
-            detected = pattern
-        if detected is not None:
-            state.last_detected_direction = detected
-        if pattern != Direction.HOLD:
-            state.current_episode_direction = pattern
-            state.latest_primary_flag = pattern
-            macd_signal_snap = signal_snap or macd_snap
-            signal_id = make_signal_id(macd_signal_snap.bar_dt, pattern)
-            provisional_signal_id = make_provisional_signal_id(macd_signal_snap.bar_dt, pattern)
-            if provisional_signal_id in state.processed_signal_ids:
-                state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
-                return result
-            state.latest_primary_signal_id = signal_id
-            signal_detected_at = datetime.now(KST)
-            result.signal_detected_at = signal_detected_at.isoformat()
-            outcome = _execute_or_wait(
-                broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_signal_snap,
-                direction=pattern, signal_id=signal_id, signal_type="INITIAL", position=None, result=result,
-            )
-            _record_signal_ledger(state, macd_signal_snap, pattern, "INITIAL", signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
-            if outcome is not None:
-                _apply_switch_outcome(state, outcome, pattern)
-                result.actions.append(f"ENTRY:{pattern.value}")
-            state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
             return result
 
     state.last_evaluated_bar_ts = bar_ts_str

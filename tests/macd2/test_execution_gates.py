@@ -12,6 +12,8 @@ from app.trading.macd2.signal_engine import (
     calculate_macd,
     evaluate_macd_crossover,
     make_signal_id,
+    make_provisional_signal_id,
+    PrimaryCrossoverResult,
     resample_completed_3m,
     signed_b_condition,
 )
@@ -90,6 +92,20 @@ def _assert_latest_primary(df_1m: pd.DataFrame, now: datetime, direction: Direct
 
 def _patch_snap(monkeypatch, snap: MacdSnapshot):
     monkeypatch.setattr(worker, "calculate_macd", lambda _bars: snap)
+    def fake_primary(*args, **kwargs):
+        now = kwargs.get("now")
+        previous_direction = kwargs.get("previous_direction")
+        if now is not None:
+            if snap.bar_dt.date() != now.date() or now < snap.bar_dt + timedelta(minutes=3):
+                return PrimaryCrossoverResult(snap, Direction.HOLD, None)
+        direction = evaluate_macd_crossover(snap, previous_direction)
+        signal_id = make_provisional_signal_id(snap.bar_dt, direction) if direction != Direction.HOLD else None
+        return PrimaryCrossoverResult(snap, direction, signal_id)
+    monkeypatch.setattr(
+        worker,
+        "evaluate_primary_forming_crossover",
+        fake_primary,
+    )
 
 
 def test_prior_day_last_up_red_with_no_today_bar_orders_zero(monkeypatch):
@@ -271,27 +287,36 @@ def test_executor_none_is_recorded_as_signal_not_dispatched(monkeypatch):
 
 def test_production_path_up_crossover_buys_long_once():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [120.0])
-    now = start + timedelta(minutes=3 * 36)
-    _assert_latest_primary(df_1m, now, Direction.UP_RED)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 100)
+    now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _state()
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
 
-    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+    result = worker.run_once(
+        broker=broker,
+        market_data=_history_svc(df_1m, prices={config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0}),
+        state=state,
+        now=now,
+    )
 
     assert result.actions == ["ENTRY:UP_RED"]
     assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
+    assert state.latest_primary_signal_id == "20260724_140000_UP_RED_PROVISIONAL"
 
 
 def test_production_path_down_crossover_buys_inverse_once():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [80.0])
-    now = start + timedelta(minutes=3 * 36)
-    _assert_latest_primary(df_1m, now, Direction.DOWN_BLUE)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 100)
+    now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _state()
     broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
 
-    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+    result = worker.run_once(
+        broker=broker,
+        market_data=_history_svc(df_1m, prices={config.WATCH_SYMBOL: 60.0, config.INVERSE_SYMBOL: 10_000.0}),
+        state=state,
+        now=now,
+    )
 
     assert result.actions == ["ENTRY:DOWN_BLUE"]
     assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
@@ -299,6 +324,7 @@ def test_production_path_down_crossover_buys_inverse_once():
     assert result.signal_dispatch_trace["position_reconcile_result"] == worker.MATCH_FLAT
     assert result.signal_dispatch_trace["quote_status"] == "READY"
     assert result.signal_dispatch_trace["target_quote_valid"] is True
+    assert state.latest_primary_signal_id == "20260724_140000_DOWN_BLUE_PROVISIONAL"
 
 
 def test_production_path_catches_intermediate_down_crossover_when_cache_jumps_ahead():
@@ -320,25 +346,29 @@ def test_production_path_catches_intermediate_down_crossover_when_cache_jumps_ah
 
     result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
 
-    assert result.actions == ["ENTRY:DOWN_BLUE"]
-    assert state.latest_primary_signal_id == "20260724_125700_DOWN_BLUE"
-    assert state.last_evaluated_bar_ts == datetime(2026, 7, 24, 12, 57, tzinfo=KST).isoformat()
-    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
+    assert result.actions == []
+    assert state.latest_primary_signal_id is None
+    assert broker.orders == []
 
 
 def test_production_path_treats_post_baseline_1300_bar_as_new_signal():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 80 + [80.0])
-    now = start + timedelta(minutes=3 * 81)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 81)
+    now = start + timedelta(minutes=3 * 81, seconds=5)
     state = _state()
     state.last_evaluated_bar_ts = datetime(2026, 7, 24, 12, 57, tzinfo=KST).isoformat()
     state.session_baseline_bar_ts = state.last_evaluated_bar_ts
     broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
 
-    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+    result = worker.run_once(
+        broker=broker,
+        market_data=_history_svc(df_1m, prices={config.WATCH_SYMBOL: 60.0, config.INVERSE_SYMBOL: 10_000.0}),
+        state=state,
+        now=now,
+    )
 
     assert result.actions == ["ENTRY:DOWN_BLUE"]
-    assert state.latest_primary_signal_id == "20260724_130000_DOWN_BLUE"
+    assert state.latest_primary_signal_id == "20260724_130300_DOWN_BLUE_PROVISIONAL"
     assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
 
 
@@ -365,10 +395,10 @@ def test_production_path_signed_b_only_without_crossover_orders_zero():
 
 def test_production_path_same_crossover_bar_twenty_ticks_orders_once():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [120.0])
-    now = start + timedelta(minutes=3 * 36)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 100)
+    now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _state()
-    svc = _history_svc(df_1m)
+    svc = _history_svc(df_1m, prices={config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0})
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
 
     worker.run_once(broker=broker, market_data=svc, state=state, now=now)
@@ -380,17 +410,25 @@ def test_production_path_same_crossover_bar_twenty_ticks_orders_once():
 
 def test_production_path_up_then_down_sells_to_zero_then_buys_inverse():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    up_df = _1m_from_3m_closes(start, [100.0] * 35 + [120.0])
-    down_df = _1m_from_3m_closes(start, [100.0] * 36 + [80.0])
-    up_now = start + timedelta(minutes=3 * 36)
-    down_now = start + timedelta(minutes=3 * 37)
-    _assert_latest_primary(up_df, up_now, Direction.UP_RED)
-    _assert_latest_primary(down_df, down_now, Direction.DOWN_BLUE)
+    up_df = _1m_from_3m_closes(start, [100.0] * 100)
+    down_df = _1m_from_3m_closes(start, [100.0] * 100 + [140.0])
+    up_now = start + timedelta(minutes=3 * 100, seconds=5)
+    down_now = start + timedelta(minutes=3 * 101, seconds=5)
     state = _state()
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
 
-    worker.run_once(broker=broker, market_data=_history_svc(up_df), state=state, now=up_now)
-    result = worker.run_once(broker=broker, market_data=_history_svc(down_df), state=state, now=down_now)
+    worker.run_once(
+        broker=broker,
+        market_data=_history_svc(up_df, prices={config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0}),
+        state=state,
+        now=up_now,
+    )
+    result = worker.run_once(
+        broker=broker,
+        market_data=_history_svc(down_df, prices={config.WATCH_SYMBOL: 60.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}),
+        state=state,
+        now=down_now,
+    )
 
     assert result.actions == ["OPPOSITE_SIGNAL:DOWN_BLUE"]
     assert [(o.side, o.symbol) for o in broker.orders] == [
@@ -425,7 +463,7 @@ def test_target_quote_stale_waiting_and_no_order(monkeypatch):
     )
 
     assert result.skipped == worker.QUOTE_STALE
-    assert state.pending_signal["signal_id"] == "20260724_090000_UP_RED"
+    assert state.pending_signal["signal_id"] == "20260724_090000_UP_RED_PROVISIONAL"
     assert ledger.load_execution_ledger() == []
 
 
@@ -461,7 +499,7 @@ def test_quote_recovers_within_10_seconds_orders_original_signal_id(monkeypatch)
 
     assert len([o for o in broker.orders if o.side == "BUY"]) == 1
     assert broker.orders[0].symbol == config.LONG_SYMBOL
-    assert state.processed_signal_ids == ["20260724_090000_UP_RED"]
+    assert state.processed_signal_ids == ["20260724_090000_UP_RED_PROVISIONAL"]
     assert result.actions == ["ENTRY:UP_RED"]
 
 

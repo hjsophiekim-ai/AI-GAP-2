@@ -10,6 +10,7 @@ from app.trading.macd2 import config
 from app.trading.macd2.models import Direction, MacdSnapshot
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    evaluate_primary_forming_crossover,
     evaluate_macd_crossover,
     evaluate_signed_b,
     is_tradeable_completed_bar,
@@ -154,6 +155,48 @@ def test_evaluate_macd_crossover(previous_diff, current_diff, previous_direction
         current_diff=current_diff,
     )
     assert evaluate_macd_crossover(snap, previous_direction) == expected
+
+
+def test_evaluate_primary_forming_crossover_uses_current_quote_for_up_signal():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    completed = pd.DataFrame([
+        {"datetime": start + timedelta(minutes=3 * i), "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1}
+        for i in range(100)
+    ])
+    one_min = _minute_bars(start, [100.0] * 300)
+    now = start + timedelta(minutes=300, seconds=5)
+
+    result = evaluate_primary_forming_crossover(
+        completed,
+        one_min,
+        now=now,
+        current_price=140.0,
+    )
+
+    assert result.snapshot is not None
+    assert result.snapshot.bar_dt == start + timedelta(minutes=300)
+    assert result.direction == Direction.UP_RED
+    assert result.signal_id == "20260724_140000_UP_RED_PROVISIONAL"
+
+
+def test_evaluate_primary_forming_crossover_suppresses_same_direction_repeat():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    completed = pd.DataFrame([
+        {"datetime": start + timedelta(minutes=3 * i), "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1}
+        for i in range(100)
+    ])
+    one_min = _minute_bars(start, [100.0] * 300)
+
+    result = evaluate_primary_forming_crossover(
+        completed,
+        one_min,
+        now=start + timedelta(minutes=300, seconds=5),
+        current_price=140.0,
+        previous_direction=Direction.UP_RED,
+    )
+
+    assert result.direction == Direction.HOLD
+    assert result.signal_id is None
 
 
 def test_calculate_macd_none_when_insufficient_bars():
