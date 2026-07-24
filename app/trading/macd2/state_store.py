@@ -91,6 +91,22 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "order_block_reason": state.order_block_reason,
         "position_reconcile_diag": dict(state.position_reconcile_diag or {}),
         "last_position_reconcile_at": state.last_position_reconcile_at,
+        "strategy_name": state.strategy_name,
+        "strategy_version": state.strategy_version,
+        "signal_rule": state.signal_rule,
+        "session_started_at": state.session_started_at,
+        "session_baseline_bar_ts": state.session_baseline_bar_ts,
+        "baseline_relation": state.baseline_relation,
+        "worker_instance_id": state.worker_instance_id,
+        "primary_previous_diff": state.primary_previous_diff,
+        "primary_current_diff": state.primary_current_diff,
+        "primary_relation": state.primary_relation,
+        "latest_primary_flag": state.latest_primary_flag.value if state.latest_primary_flag else None,
+        "latest_primary_signal_id": state.latest_primary_signal_id,
+        "signed_b_shadow_direction": (
+            state.signed_b_shadow_direction.value if state.signed_b_shadow_direction else None
+        ),
+        "signed_b_shadow_hist_last3": list(state.signed_b_shadow_hist_last3 or ()),
         "updated_at": state.updated_at,
     }
 
@@ -108,6 +124,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     executed_dir = Direction(executed_raw) if executed_raw in _DIRECTION_VALUES else None
     episode_raw = raw.get("current_episode_direction")
     episode_dir = Direction(episode_raw) if episode_raw in _DIRECTION_VALUES else None
+    latest_primary_raw = raw.get("latest_primary_flag")
+    latest_primary_flag = Direction(latest_primary_raw) if latest_primary_raw in _DIRECTION_VALUES else None
+    signed_b_raw = raw.get("signed_b_shadow_direction")
+    signed_b_shadow = Direction(signed_b_raw) if signed_b_raw in _DIRECTION_VALUES else None
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         ui_mode=ui_mode,
@@ -132,6 +152,20 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         order_block_reason=raw.get("order_block_reason"),
         position_reconcile_diag=raw.get("position_reconcile_diag") if isinstance(raw.get("position_reconcile_diag"), dict) else {},
         last_position_reconcile_at=raw.get("last_position_reconcile_at"),
+        strategy_name=str(raw.get("strategy_name") or config.STRATEGY_NAME),
+        strategy_version=str(raw.get("strategy_version") or ""),
+        signal_rule=str(raw.get("signal_rule") or ""),
+        session_started_at=raw.get("session_started_at"),
+        session_baseline_bar_ts=raw.get("session_baseline_bar_ts"),
+        baseline_relation=raw.get("baseline_relation"),
+        worker_instance_id=raw.get("worker_instance_id"),
+        primary_previous_diff=raw.get("primary_previous_diff"),
+        primary_current_diff=raw.get("primary_current_diff"),
+        primary_relation=raw.get("primary_relation"),
+        latest_primary_flag=latest_primary_flag,
+        latest_primary_signal_id=raw.get("latest_primary_signal_id"),
+        signed_b_shadow_direction=signed_b_shadow,
+        signed_b_shadow_hist_last3=tuple(raw.get("signed_b_shadow_hist_last3") or ()),
         updated_at=raw.get("updated_at"),
     )
 

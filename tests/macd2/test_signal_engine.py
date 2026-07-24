@@ -10,6 +10,7 @@ from app.trading.macd2 import config
 from app.trading.macd2.models import Direction, MacdSnapshot
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    evaluate_macd_crossover,
     evaluate_signed_b,
     is_tradeable_completed_bar,
     make_signal_id,
@@ -125,6 +126,34 @@ def _macd_snapshot(hist_last3: tuple[float, float, float]) -> MacdSnapshot:
 def test_evaluate_signed_b(hist_last3, previous_direction, expected):
     snap = _macd_snapshot(hist_last3)
     assert evaluate_signed_b(snap, previous_direction) == expected
+
+
+@pytest.mark.parametrize(
+    "previous_diff,current_diff,previous_direction,expected",
+    [
+        (-0.1, 0.2, None, Direction.UP_RED),
+        (0.0, 0.2, None, Direction.UP_RED),
+        (0.1, -0.2, None, Direction.DOWN_BLUE),
+        (0.0, -0.2, None, Direction.DOWN_BLUE),
+        (0.1, 0.2, None, Direction.HOLD),
+        (-0.2, -0.1, None, Direction.HOLD),
+        (-0.1, 0.2, Direction.UP_RED, Direction.HOLD),
+        (0.1, -0.2, Direction.DOWN_BLUE, Direction.HOLD),
+        (-0.1, 0.2, Direction.DOWN_BLUE, Direction.UP_RED),
+    ],
+)
+def test_evaluate_macd_crossover(previous_diff, current_diff, previous_direction, expected):
+    snap = MacdSnapshot(
+        bar_dt=datetime(2026, 7, 24, 9, 3, tzinfo=KST),
+        macd=current_diff,
+        signal=0.0,
+        hist=current_diff,
+        hist_last3=(0.0, previous_diff, current_diff),
+        completed_3m_count=30,
+        previous_diff=previous_diff,
+        current_diff=current_diff,
+    )
+    assert evaluate_macd_crossover(snap, previous_direction) == expected
 
 
 def test_calculate_macd_none_when_insufficient_bars():

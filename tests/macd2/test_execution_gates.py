@@ -22,9 +22,17 @@ def _state():
 
 def _snap(bar_dt: datetime, direction: Direction = Direction.UP_RED) -> MacdSnapshot:
     hist = (1.0, 2.0, 3.0) if direction == Direction.UP_RED else (-1.0, -2.0, -3.0)
+    previous_diff = -1.0 if direction == Direction.UP_RED else 1.0
+    current_diff = 1.0 if direction == Direction.UP_RED else -1.0
     if direction == Direction.HOLD:
         hist = (1.0, 2.0, 1.5)
-    return MacdSnapshot(bar_dt=bar_dt, macd=0.0, signal=0.0, hist=hist[-1], hist_last3=hist, completed_3m_count=100)
+        previous_diff = 1.0
+        current_diff = 1.5
+    return MacdSnapshot(
+        bar_dt=bar_dt, macd=current_diff, signal=0.0, hist=hist[-1], hist_last3=hist,
+        completed_3m_count=100, previous_diff=previous_diff, current_diff=current_diff,
+        relation="ABOVE" if current_diff > 0 else "BELOW",
+    )
 
 
 def _svc(prices=None):
@@ -129,6 +137,27 @@ def test_up_down_up_counts_three_onsets(monkeypatch):
     assert [r["direction"] for r in ledger.load_signal_ledger()] == ["UP_RED", "DOWN_BLUE", "UP_RED"]
 
 
+def test_crossover_opposite_signal_sells_then_buys(monkeypatch):
+    state = _state()
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    first_bar = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(first_bar, Direction.UP_RED))
+    worker.run_once(broker=broker, market_data=svc, state=state, now=first_bar + timedelta(minutes=3))
+
+    second_bar = datetime(2026, 7, 24, 9, 3, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(second_bar, Direction.DOWN_BLUE))
+    worker.run_once(broker=broker, market_data=svc, state=state, now=second_bar + timedelta(minutes=3))
+
+    assert [(o.side, o.symbol) for o in broker.orders] == [
+        ("BUY", config.LONG_SYMBOL),
+        ("SELL", config.LONG_SYMBOL),
+        ("BUY", config.INVERSE_SYMBOL),
+    ]
+    assert broker.get_position(config.LONG_SYMBOL) is None
+    assert broker.get_position(config.INVERSE_SYMBOL).quantity > 0
+
+
 def test_quote_age_27_seconds_is_stale_not_ready():
     svc = _svc()
     old = datetime.now(KST) - timedelta(seconds=27)
@@ -156,6 +185,23 @@ def test_target_quote_stale_waiting_and_no_order(monkeypatch):
     assert ledger.load_execution_ledger() == []
 
 
+def test_signed_b_shadow_without_crossover_does_not_order(monkeypatch):
+    state = _state()
+    bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    snap = MacdSnapshot(
+        bar_dt=bar_dt, macd=2.0, signal=0.0, hist=3.0, hist_last3=(1.0, 2.0, 3.0),
+        completed_3m_count=100, previous_diff=1.0, current_diff=2.0, relation="ABOVE",
+    )
+    _patch_snap(monkeypatch, snap)
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+
+    worker.run_once(broker=broker, market_data=_svc(), state=state, now=bar_dt + timedelta(minutes=3))
+
+    assert state.signed_b_shadow_direction == Direction.UP_RED
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
+
+
 def test_quote_recovers_within_10_seconds_orders_original_signal_id(monkeypatch):
     state = _state()
     svc = _svc()
@@ -173,6 +219,40 @@ def test_quote_recovers_within_10_seconds_orders_original_signal_id(monkeypatch)
     assert broker.orders[0].symbol == config.LONG_SYMBOL
     assert state.processed_signal_ids == ["20260724_090000_UP_RED"]
     assert result.actions == ["ENTRY:UP_RED"]
+
+
+def test_worker_start_baseline_blocks_past_crossover(monkeypatch):
+    state = _state()
+    svc = _svc()
+    baseline_bar = datetime(2026, 7, 24, 10, 51, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(baseline_bar, Direction.UP_RED))
+
+    worker.initialize_strategy_session(
+        state, svc, now=datetime(2026, 7, 24, 10, 53, tzinfo=KST), worker_instance_id="worker-test",
+    )
+    result = worker.run_once(
+        broker=FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0}),
+        market_data=svc, state=state, now=datetime(2026, 7, 24, 10, 53, 5, tzinfo=KST),
+    )
+
+    assert result.actions == []
+    assert ledger.load_signal_ledger() == []
+
+
+def test_worker_after_start_new_crossover_orders_once(monkeypatch):
+    state = _state()
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+    baseline_bar = datetime(2026, 7, 24, 10, 51, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(baseline_bar, Direction.HOLD))
+    worker.initialize_strategy_session(state, svc, now=datetime(2026, 7, 24, 10, 53, tzinfo=KST))
+
+    new_bar = datetime(2026, 7, 24, 10, 54, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(new_bar, Direction.UP_RED))
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=new_bar + timedelta(minutes=3))
+
+    assert result.actions == ["ENTRY:UP_RED"]
+    assert len([o for o in broker.orders if o.side == "BUY"]) == 1
 
 
 def test_runtime_flat_and_broker_flat_is_match_flat():

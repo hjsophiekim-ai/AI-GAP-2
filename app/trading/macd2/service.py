@@ -30,7 +30,8 @@ from app.trading.macd2 import config, state_store
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import RuntimeStatus
-from app.trading.macd2.worker import Macd2Worker
+from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
+from app.trading.macd2.worker import Macd2Worker, initialize_strategy_session
 
 KST = config.KST
 
@@ -136,15 +137,17 @@ class Macd2Service:
         # starts — the thread's own first tick calls load_state()/save_state()
         # concurrently, and starting it first would race a stale READY state
         # back over this one.
-        state.auto_trade_on = True
-        state.ui_mode = RuntimeStatus.RUNNING
-        state_store.save_state(state)
-
         self._market_data.start_history_updater(interval_sec=config.WORKER_INTERVAL_SEC)
         self._worker = Macd2Worker(
             broker=self._broker, market_data=self._market_data,
             get_state=state_store.load_state, save_state=state_store.save_state,
         )
+        state = initialize_strategy_session(
+            state, self._market_data, now=datetime.now(KST), worker_instance_id=self._worker.instance_id,
+        )
+        state.auto_trade_on = True
+        state.ui_mode = RuntimeStatus.RUNNING
+        state_store.save_state(state)
         self._worker.start()
         return {"ok": True, "bootstrap": boot.__dict__}
 
@@ -177,12 +180,24 @@ class Macd2Service:
             self._market_data.quote_status()
             if self._market_data is not None and hasattr(self._market_data, "quote_status") else "DEAD"
         )
+        primary_macd = None
+        primary_signal = None
+        if self._market_data is not None:
+            try:
+                snap = calculate_macd(resample_completed_3m(self._market_data.get_history_df(), now=datetime.now(KST)))
+                if snap is not None:
+                    primary_macd = snap.macd
+                    primary_signal = snap.signal
+            except Exception:
+                pass
         return {
             "state": state,
             "worker": self._worker.tick_stats() if self._worker is not None else None,
             "quotes": quotes,
             "quote_statuses": quote_statuses,
             "quote_status": quote_status,
+            "primary_macd": primary_macd,
+            "primary_signal": primary_signal,
             "bootstrap_diag": self._market_data.get_last_bootstrap_diag() if self._market_data is not None else {},
             "bootstrap_attempts": self._bootstrap_attempts,
             "bootstrap_last_attempt_at": self._last_bootstrap_at,

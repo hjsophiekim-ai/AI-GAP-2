@@ -101,6 +101,9 @@ class MacdSnapshot:
     hist: float
     hist_last3: tuple[float, float, float]
     completed_3m_count: int
+    previous_diff: Optional[float] = None
+    current_diff: Optional[float] = None
+    relation: str = "EQUAL"
 
     def __post_init__(self) -> None:
         _require_tz_aware(self.bar_dt, "MacdSnapshot.bar_dt")
@@ -203,4 +206,18 @@ class RuntimeState:
     order_block_reason: Optional[str] = None
     position_reconcile_diag: dict[str, Any] = field(default_factory=dict)
     last_position_reconcile_at: Optional[str] = None
+    strategy_name: str = "MACD2"
+    strategy_version: str = ""
+    signal_rule: str = ""
+    session_started_at: Optional[str] = None
+    session_baseline_bar_ts: Optional[str] = None
+    baseline_relation: Optional[str] = None
+    worker_instance_id: Optional[str] = None
+    primary_previous_diff: Optional[float] = None
+    primary_current_diff: Optional[float] = None
+    primary_relation: Optional[str] = None
+    latest_primary_flag: Optional[Direction] = None
+    latest_primary_signal_id: Optional[str] = None
+    signed_b_shadow_direction: Optional[Direction] = None
+    signed_b_shadow_hist_last3: tuple[float, float, float] = field(default_factory=tuple)
     updated_at: Optional[str] = None

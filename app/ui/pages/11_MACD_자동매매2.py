@@ -213,7 +213,26 @@ try:
         p1.metric("보유 종목", "flat")
     p2.metric("Profit Lock", "ON" if state.profit_lock_active else "OFF", delta=f"peak {state.peak_net_return:.2f}%")
 
-    st.caption(f"최신 signal_id: `{(state.processed_signal_ids or ['-'])[-1]}` · last_signal_direction: `{state.last_signal_direction.value if state.last_signal_direction else '-'}`")
+    st.markdown("**Primary MACD crossover**")
+    pc1, pc2, pc3, pc4 = st.columns(4)
+    pc1.metric("MACD", snapshot.get("primary_macd", "-"))
+    pc2.metric("Signal", snapshot.get("primary_signal", "-"))
+    prev_diff = state.primary_previous_diff
+    curr_diff = state.primary_current_diff
+    pc3.metric("previous diff", f"{prev_diff:.6f}" if prev_diff is not None else "-")
+    pc4.metric("current diff", f"{curr_diff:.6f}" if curr_diff is not None else "-")
+    st.caption(
+        f"relation=`{state.primary_relation or '-'}` · latest primary flag="
+        f"`{state.latest_primary_flag.value if state.latest_primary_flag else '-'}` · "
+        f"primary signal_id=`{state.latest_primary_signal_id or '-'}`"
+    )
+
+    st.markdown("**Signed-B shadow**")
+    st.caption(
+        f"hist_last3=`{state.signed_b_shadow_hist_last3 or '-'}` · "
+        f"signed-B=`{state.signed_b_shadow_direction.value if state.signed_b_shadow_direction else '-'}` · "
+        "order_authority=`NONE`"
+    )
 except Exception as exc:
     st.error(f"상태 패널 오류 — 나머지 화면은 계속 표시됩니다 (`{exc}`)")
 
@@ -302,8 +321,17 @@ except Exception as exc:
 st.subheader("오늘 신호·거래 통계")
 try:
     trading_date = (state.session_date or pd.Timestamp.now().strftime("%Y%m%d"))
-    sig_summary = ledger.summarize_signals(trading_date)
-    trade_summary = ledger.summarize_daily_trading(trading_date, budget=state.budget)
+    sig_summary = ledger.summarize_signals(
+        trading_date,
+        strategy_version=state.strategy_version,
+        signal_rule=state.signal_rule,
+        session_started_at=state.session_started_at,
+    )
+    trade_summary = ledger.summarize_daily_trading(
+        trading_date,
+        budget=state.budget,
+        signal_ids=set(sig_summary.get("current_signal_ids") or []),
+    )
 
     g1, g2, g3 = st.columns(3)
     g1.metric("오늘 빨간 플래그", f"{sig_summary['red_count']}회")
@@ -312,6 +340,10 @@ try:
 
     for u in sig_summary.get("unexecuted_signals") or []:
         st.write(f"- `{u.get('signal_id')}` · {u.get('direction')} · 사유 `{u.get('reason')}`")
+    excluded = sig_summary.get("excluded_signals") or []
+    if excluded:
+        with st.expander(f"과거/제외 신호 ({len(excluded)}건)"):
+            st.dataframe(pd.DataFrame(excluded), use_container_width=True, height=260)
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Gross", f"{trade_summary['gross_pnl']:,.0f}원")

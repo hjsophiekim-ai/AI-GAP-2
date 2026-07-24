@@ -26,7 +26,7 @@ _SESSION_START_NOW = _PRIOR_DAY + timedelta(minutes=3 * (config.SIGNAL_MIN_BAR_I
 
 
 def _sine_1m_closes(n_minutes: int, amplitude: float = 20.0) -> list[float]:
-    period = n_minutes
+    period = max(n_minutes // 2, 1)
     return [round(100.0 + amplitude * math.sin(2 * math.pi * i / period), 4) for i in range(n_minutes)]
 
 

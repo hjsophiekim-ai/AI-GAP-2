@@ -26,7 +26,16 @@ from app.trading.macd2 import config  # noqa: E402
 from app.trading.macd2.broker_adapter import create_macd2_broker  # noqa: E402
 from app.trading.macd2.ledger import EXECUTION_LEDGER_PATH, SIGNAL_LEDGER_PATH  # noqa: E402
 from app.trading.macd2.market_data import MarketDataService  # noqa: E402
-from app.trading.macd2.signal_engine import calculate_macd, evaluate_signed_b, resample_completed_3m  # noqa: E402
+from app.trading.macd2.models import Direction  # noqa: E402
+from app.trading.macd2.signal_engine import (  # noqa: E402
+    calculate_macd,
+    evaluate_macd_crossover,
+    evaluate_signed_b,
+    is_tradeable_completed_bar,
+    make_signal_id,
+    resample_completed_3m,
+    signed_b_condition,
+)
 
 KST = config.KST
 SYMBOLS = (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL)
@@ -114,7 +123,48 @@ def main() -> int:
         macd_snap = calculate_macd(bars_3m)
         warmup_ready = macd_snap is not None
         if macd_snap is not None:
-            signed_b = evaluate_signed_b(macd_snap, None)
+            signed_b = signed_b_condition(macd_snap)
+        timeline = []
+        last_primary = None
+        last_shadow = None
+        for i in range(config.EMA_SLOW, len(bars_3m) + 1):
+            snap_i = calculate_macd(bars_3m.iloc[:i])
+            if snap_i is None:
+                continue
+            primary = evaluate_macd_crossover(snap_i, last_primary)
+            shadow = evaluate_signed_b(snap_i, last_shadow)
+            eligible = is_tradeable_completed_bar(snap_i.bar_dt, datetime.now(KST))
+            sid = make_signal_id(snap_i.bar_dt, primary) if primary != Direction.HOLD and eligible else ""
+            timeline.append({
+                "completed_bar_at": snap_i.bar_dt.isoformat(),
+                "macd": snap_i.macd,
+                "signal": snap_i.signal,
+                "previous_diff": snap_i.previous_diff,
+                "current_diff": snap_i.current_diff,
+                "crossover_flag": primary.value,
+                "signed_b_shadow_flag": shadow.value,
+                "order_eligibility": bool(primary != Direction.HOLD and eligible),
+                "signal_id": sid,
+                "order_result": "",
+                "block_reason": "",
+            })
+            if primary != Direction.HOLD:
+                last_primary = primary
+            if shadow != Direction.HOLD:
+                last_shadow = shadow
+        today = datetime.now(KST).date()
+        today_timeline = [
+            row for row in timeline
+            if datetime.fromisoformat(row["completed_bar_at"]).date() == today
+        ]
+        report["primary_crossover_timeline_today"] = [
+            row for row in today_timeline if row["crossover_flag"] != Direction.HOLD.value
+        ]
+        report["signed_b_shadow_timeline_today"] = [
+            row for row in today_timeline if row["signed_b_shadow_flag"] != Direction.HOLD.value
+        ]
+        report["primary_crossover_count_today"] = len(report["primary_crossover_timeline_today"])
+        report["signed_b_shadow_count_today"] = len(report["signed_b_shadow_timeline_today"])
 
     report["warmup_ready"] = warmup_ready
     if macd_snap is not None:

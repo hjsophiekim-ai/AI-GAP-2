@@ -20,6 +20,8 @@ SIGNAL_LEDGER_COLUMNS = [
     "trading_date", "completed_bar_at", "signal_id", "signal_type", "direction",
     "macd", "signal", "hist_last3", "detected_at", "order_requested_at",
     "order_result", "block_reason",
+    "strategy_name", "strategy_version", "signal_rule", "worker_code_sha",
+    "worker_instance_id", "session_started_at",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [
@@ -43,12 +45,32 @@ def ensure_paths() -> None:
 
 def _append_row(path: Path, columns: list[str], row: dict[str, Any]) -> None:
     ensure_paths()
+    if path.exists() and path.stat().st_size > 0:
+        _ensure_columns(path, columns)
     is_new = not path.exists() or path.stat().st_size == 0
     with open(path, "a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=columns)
         if is_new:
             writer.writeheader()
         writer.writerow({col: row.get(col, "") for col in columns})
+
+
+def _ensure_columns(path: Path, columns: list[str]) -> None:
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        old_columns = list(reader.fieldnames or [])
+        if all(col in old_columns for col in columns):
+            return
+        rows = list(reader)
+    merged_columns = list(old_columns)
+    for col in columns:
+        if col not in merged_columns:
+            merged_columns.append(col)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=merged_columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({col: row.get(col, "") for col in merged_columns})
 
 
 def _load_rows(path: Path, limit: int = 10_000) -> list[dict[str, Any]]:
@@ -113,12 +135,57 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
-def summarize_signals(trading_date: str) -> dict[str, Any]:
+def _current_strategy_rows(
+    rows: list[dict[str, Any]],
+    *,
+    strategy_version: Optional[str] = None,
+    signal_rule: Optional[str] = None,
+    session_started_at: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    current: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for row in rows:
+        keep = True
+        reason = ""
+        if strategy_version and row.get("strategy_version") != strategy_version:
+            keep, reason = False, "OLD_STRATEGY"
+        if keep and signal_rule and row.get("signal_rule") != signal_rule:
+            keep, reason = False, "LEGACY_INVALID"
+        if keep and session_started_at:
+            completed_at = str(row.get("completed_bar_at") or "")
+            if len(completed_at) == 6:
+                session_hms = session_started_at[11:19].replace(":", "")
+                if completed_at < session_hms:
+                    keep, reason = False, "PRE_SESSION_SIGNAL"
+        if keep:
+            current.append(row)
+        else:
+            copy = dict(row)
+            copy["excluded_reason"] = reason
+            excluded.append(copy)
+    return current, excluded
+
+
+def summarize_signals(
+    trading_date: str,
+    *,
+    strategy_version: Optional[str] = None,
+    signal_rule: Optional[str] = None,
+    session_started_at: Optional[str] = None,
+) -> dict[str, Any]:
     """docs §16 stats: today's UP_RED/DOWN_BLUE counts + unexecuted signals+reason.
 
     Never raises on an empty/missing ledger.
     """
-    rows = [r for r in load_signal_ledger() if r.get("trading_date") == trading_date]
+    all_rows = [r for r in load_signal_ledger() if r.get("trading_date") == trading_date]
+    rows, excluded = _current_strategy_rows(
+        all_rows, strategy_version=strategy_version, signal_rule=signal_rule,
+        session_started_at=session_started_at,
+    )
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        unique.setdefault(str(row.get("signal_id") or ""), row)
+    rows = [row for sid, row in unique.items() if sid]
     red_count = sum(1 for r in rows if r.get("direction") == "UP_RED")
     blue_count = sum(1 for r in rows if r.get("direction") == "DOWN_BLUE")
     unexecuted = [
@@ -132,16 +199,26 @@ def summarize_signals(trading_date: str) -> dict[str, Any]:
         "blue_count": blue_count,
         "signal_count": len(rows),
         "unexecuted_signals": unexecuted,
+        "excluded_signals": excluded,
+        "latest_signal_id": rows[-1].get("signal_id") if rows else None,
+        "current_signal_ids": [r.get("signal_id") for r in rows if r.get("signal_id")],
     }
 
 
-def summarize_daily_trading(trading_date: str, budget: float = config.DEFAULT_BUDGET) -> dict[str, Any]:
+def summarize_daily_trading(
+    trading_date: str,
+    budget: float = config.DEFAULT_BUDGET,
+    *,
+    signal_ids: Optional[set[str]] = None,
+) -> dict[str, Any]:
     """docs §16/§17 stats: buys/sells, completed round trips, gross/cost/net,
     return%, win rate, profit factor, max drawdown. Never raises on an empty
     or missing execution ledger — an empty ledger produces a well-formed
     zeroed result (UI must keep rendering).
     """
     rows = [r for r in load_execution_ledger() if str(r.get("timestamp") or "").startswith(trading_date)]
+    if signal_ids is not None:
+        rows = [r for r in rows if str(r.get("signal_id") or "") in signal_ids]
     budget_f = float(budget or config.DEFAULT_BUDGET)
 
     empty: dict[str, Any] = {

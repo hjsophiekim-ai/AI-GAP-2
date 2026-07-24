@@ -34,6 +34,7 @@ import threading
 import time
 import traceback
 import uuid
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -44,6 +45,7 @@ from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState, 
 from app.trading.macd2.signal_engine import (
     calculate_macd,
     evaluate_signed_b,
+    evaluate_macd_crossover,
     is_tradeable_completed_bar,
     make_signal_id,
     resample_completed_3m,
@@ -65,6 +67,15 @@ TEMPORARY_BLOCK_REASONS = {
     order_executor.BLOCK_ORDER_DATA_INVALID,
     POSITION_DATA_ERROR,
 }
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL, text=True, timeout=3,
+        ).strip()
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -128,6 +139,53 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.pending_signal = None
     state.peak_net_return = 0.0
     state.profit_lock_active = False
+
+
+def _relation_from_diff(diff: Optional[float]) -> str:
+    if diff is None:
+        return "EQUAL"
+    if diff > 0:
+        return "ABOVE"
+    if diff < 0:
+        return "BELOW"
+    return "EQUAL"
+
+
+def initialize_strategy_session(
+    state: RuntimeState,
+    market_data: MarketDataService,
+    *,
+    now: Optional[datetime] = None,
+    worker_instance_id: Optional[str] = None,
+) -> RuntimeState:
+    now = now or datetime.now(KST)
+    state.strategy_name = config.STRATEGY_NAME
+    state.strategy_version = config.STRATEGY_VERSION
+    state.signal_rule = config.SIGNAL_RULE
+    state.session_started_at = now.isoformat()
+    state.worker_instance_id = worker_instance_id
+    state.pending_signal = None
+    state.last_detected_direction = None
+    state.last_executed_direction = None
+    state.current_episode_direction = None
+    state.processed_signal_ids = []
+
+    df_1m = market_data.get_history_df()
+    macd_snap = calculate_macd(resample_completed_3m(df_1m, now=now))
+    if macd_snap is not None:
+        state.session_baseline_bar_ts = macd_snap.bar_dt.isoformat()
+        state.last_evaluated_bar_ts = macd_snap.bar_dt.isoformat()
+        state.baseline_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
+        state.primary_previous_diff = macd_snap.previous_diff
+        state.primary_current_diff = macd_snap.current_diff
+        state.primary_relation = state.baseline_relation
+        state.signed_b_shadow_direction = signed_b_condition(macd_snap)
+        state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
+    else:
+        state.session_baseline_bar_ts = None
+        state.last_evaluated_bar_ts = None
+        state.baseline_relation = None
+    return state
 
 
 def _normalize_broker_positions(raw_positions) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
@@ -257,13 +315,21 @@ def _pending_age_sec(pending: dict[str, Any], now: datetime) -> Optional[float]:
         return None
 
 
-def _expire_pending_if_needed(state: RuntimeState, current_condition: Direction, now: datetime) -> bool:
+def _pending_direction_still_active(pending_dir: Optional[Direction], macd_snap) -> bool:
+    if pending_dir == Direction.UP_RED:
+        return (macd_snap.current_diff if macd_snap.current_diff is not None else macd_snap.macd - macd_snap.signal) > 0
+    if pending_dir == Direction.DOWN_BLUE:
+        return (macd_snap.current_diff if macd_snap.current_diff is not None else macd_snap.macd - macd_snap.signal) < 0
+    return False
+
+
+def _expire_pending_if_needed(state: RuntimeState, macd_snap, now: datetime) -> bool:
     pending = state.pending_signal
     if not pending:
         return False
     pending_dir = Direction(pending.get("direction")) if pending.get("direction") in {d.value for d in Direction} else None
     age = _pending_age_sec(pending, now)
-    if current_condition != pending_dir or (age is not None and age > config.PENDING_SIGNAL_RETRY_SEC):
+    if not _pending_direction_still_active(pending_dir, macd_snap) or (age is not None and age > config.PENDING_SIGNAL_RETRY_SEC):
         pending["status"] = SignalState.EXPIRED.value
         state.pending_signal = None
         return True
@@ -391,6 +457,13 @@ def run_once(
         return result
 
     _apply_day_rollover(state, now)
+    if state.strategy_version != config.STRATEGY_VERSION or state.signal_rule != config.SIGNAL_RULE:
+        state.strategy_name = config.STRATEGY_NAME
+        state.strategy_version = config.STRATEGY_VERSION
+        state.signal_rule = config.SIGNAL_RULE
+        state.pending_signal = None
+        state.last_detected_direction = None
+        state.last_evaluated_bar_ts = None
 
     t0 = time.monotonic()
     reconcile = reconcile_position_state(broker, state, now)
@@ -421,6 +494,11 @@ def run_once(
         result.timing["total"] = time.monotonic() - tick_started
         return result
     state.warmup_ready = True
+    state.primary_previous_diff = macd_snap.previous_diff
+    state.primary_current_diff = macd_snap.current_diff
+    state.primary_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
+    state.signed_b_shadow_direction = signed_b_condition(macd_snap)
+    state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
     is_new_bar = bar_ts_str != state.last_evaluated_bar_ts
@@ -431,8 +509,8 @@ def run_once(
     force_liquidate_time = now.time() >= config.FORCE_LIQUIDATE_AT
     entry_window_open = (not before_open) and (not entry_cutoff_passed)
     t0 = time.monotonic()
-    current_condition = signed_b_condition(macd_snap) if tradeable_bar and entry_window_open else Direction.HOLD
-    _expire_pending_if_needed(state, current_condition, now)
+    current_condition = evaluate_macd_crossover(macd_snap, None) if tradeable_bar and entry_window_open else Direction.HOLD
+    _expire_pending_if_needed(state, macd_snap, now)
     result.timing["signal_evaluation"] = time.monotonic() - t0
 
     pos = state.position
@@ -478,7 +556,7 @@ def run_once(
 
         if state.pending_signal and not state.pending_signal.get("order_requested"):
             pending_dir = Direction(state.pending_signal["direction"])
-            if current_condition == pending_dir:
+            if _pending_direction_still_active(pending_dir, macd_snap):
                 outcome = _execute_or_wait(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
@@ -491,20 +569,22 @@ def run_once(
                     return result
 
         if is_new_bar and entry_window_open and tradeable_bar:
-            pattern = evaluate_signed_b(macd_snap, state.last_detected_direction)
+            pattern = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
             if pattern != Direction.HOLD:
                 state.last_detected_direction = pattern
                 state.current_episode_direction = pattern
+                state.latest_primary_flag = pattern
                 target = order_executor.target_symbol_for_direction(pattern)
                 if target != pos.symbol:
                     signal_id = make_signal_id(macd_snap.bar_dt, pattern)
+                    state.latest_primary_signal_id = signal_id
                     signal_detected_at = datetime.now(KST)
                     result.signal_detected_at = signal_detected_at.isoformat()
                     outcome = _execute_or_wait(
                         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                         direction=pattern, signal_id=signal_id, signal_type="REVERSAL", position=pos, result=result,
                     )
-                    _record_signal_ledger(macd_snap, pattern, "REVERSAL", signal_id, signal_detected_at, outcome)
+                    _record_signal_ledger(state, macd_snap, pattern, "REVERSAL", signal_id, signal_detected_at, outcome)
                     if outcome is not None:
                         _apply_switch_outcome(state, outcome, pattern)
                         result.actions.append(f"OPPOSITE_SIGNAL:{pattern.value}")
@@ -526,7 +606,7 @@ def run_once(
     # ── Flat: new-entry evaluation ──────────────────────────────────────
     if state.pending_signal and not state.pending_signal.get("order_requested"):
         pending_dir = Direction(state.pending_signal["direction"])
-        if current_condition == pending_dir:
+        if _pending_direction_still_active(pending_dir, macd_snap):
             outcome = _execute_or_wait(
                 broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                 direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
@@ -539,18 +619,20 @@ def run_once(
                 return result
 
     if is_new_bar and entry_window_open and tradeable_bar:
-        pattern = evaluate_signed_b(macd_snap, state.last_detected_direction)
+        pattern = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
         if pattern != Direction.HOLD:
             state.last_detected_direction = pattern
             state.current_episode_direction = pattern
+            state.latest_primary_flag = pattern
             signal_id = make_signal_id(macd_snap.bar_dt, pattern)
+            state.latest_primary_signal_id = signal_id
             signal_detected_at = datetime.now(KST)
             result.signal_detected_at = signal_detected_at.isoformat()
             outcome = _execute_or_wait(
                 broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                 direction=pattern, signal_id=signal_id, signal_type="INITIAL", position=None, result=result,
             )
-            _record_signal_ledger(macd_snap, pattern, "INITIAL", signal_id, signal_detected_at, outcome)
+            _record_signal_ledger(state, macd_snap, pattern, "INITIAL", signal_id, signal_detected_at, outcome)
             if outcome is not None:
                 _apply_switch_outcome(state, outcome, pattern)
                 result.actions.append(f"ENTRY:{pattern.value}")
@@ -598,7 +680,7 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
     state.order_block_reason = outcome.block_reason
 
 
-def _record_signal_ledger(macd_snap, direction, signal_type, signal_id, detected_at, outcome) -> None:
+def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, detected_at, outcome) -> None:
     order_result = outcome.final_state.value if outcome is not None else SignalState.WAITING.value
     trading_date = macd_snap.bar_dt.astimezone(KST).strftime("%Y%m%d")
     ledger.append_signal({
@@ -617,6 +699,12 @@ def _record_signal_ledger(macd_snap, direction, signal_type, signal_id, detected
         ),
         "order_result": order_result,
         "block_reason": outcome.block_reason or "" if outcome is not None else "WAITING",
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": config.SIGNAL_RULE,
+        "worker_code_sha": _git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
     })
 
 
@@ -645,6 +733,10 @@ class Macd2Worker:
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
+
+    @property
+    def instance_id(self) -> str:
+        return self._instance_id
 
     def tick_stats(self) -> dict[str, Any]:
         with self._lock:
@@ -676,6 +768,7 @@ class Macd2Worker:
             try:
                 t_stage = time.monotonic()
                 state = self._get_state()
+                state.worker_instance_id = self._instance_id
                 stage_timing["state_load"] = time.monotonic() - t_stage
                 tick_result = run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
                 stage_timing.update(tick_result.timing)

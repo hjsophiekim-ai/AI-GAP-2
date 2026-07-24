@@ -103,6 +103,9 @@ def calculate_macd(three_minute_bars: Optional[pd.DataFrame]) -> Optional[MacdSn
         return None
 
     h0, h1, h2 = float(hist.iloc[-1]), float(hist.iloc[-2]), float(hist.iloc[-3])
+    previous_diff = round(float(hist.iloc[-2]), 6)
+    current_diff = round(float(hist.iloc[-1]), 6)
+    relation = "ABOVE" if current_diff > 0 else ("BELOW" if current_diff < 0 else "EQUAL")
     bar_dt = pd.Timestamp(three_minute_bars["datetime"].iloc[-1]).to_pydatetime()
     return MacdSnapshot(
         bar_dt=bar_dt,
@@ -111,6 +114,9 @@ def calculate_macd(three_minute_bars: Optional[pd.DataFrame]) -> Optional[MacdSn
         hist=round(h0, 6),
         hist_last3=(round(h2, 6), round(h1, 6), round(h0, 6)),
         completed_3m_count=int(len(three_minute_bars)),
+        previous_diff=previous_diff,
+        current_diff=current_diff,
+        relation=relation,
     )
 
 
@@ -143,6 +149,30 @@ def evaluate_signed_b(
 def signed_b_condition(macd_snapshot: MacdSnapshot) -> Direction:
     """Raw signed-B condition for the latest bar, without onset suppression."""
     return evaluate_signed_b(macd_snapshot, None)
+
+
+def evaluate_macd_crossover(
+    macd_snapshot: MacdSnapshot,
+    previous_direction: Optional[Direction],
+) -> Direction:
+    """Primary MACD2 order signal: completed-bar MACD/Signal crossover onset."""
+    previous_diff = macd_snapshot.previous_diff
+    current_diff = macd_snapshot.current_diff
+    if previous_diff is None:
+        previous_diff = macd_snapshot.hist_last3[-2]
+    if current_diff is None:
+        current_diff = macd_snapshot.macd - macd_snapshot.signal
+
+    if previous_diff <= 0 and current_diff > 0:
+        pattern = Direction.UP_RED
+    elif previous_diff >= 0 and current_diff < 0:
+        pattern = Direction.DOWN_BLUE
+    else:
+        return Direction.HOLD
+
+    if previous_direction == pattern:
+        return Direction.HOLD
+    return pattern
 
 
 def is_tradeable_completed_bar(bar_dt: datetime, now_kst: datetime) -> bool:

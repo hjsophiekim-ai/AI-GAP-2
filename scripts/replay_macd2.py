@@ -40,7 +40,7 @@ from app.trading.macd2 import config, ledger, order_executor, risk_exit  # noqa:
 from app.trading.macd2.broker_adapter import BrokerOrderResult  # noqa: E402
 from app.trading.macd2.models import Direction, PositionSnapshot  # noqa: E402
 from app.trading.macd2.signal_engine import (  # noqa: E402
-    calculate_macd, evaluate_signed_b, make_signal_id, resample_completed_3m,
+    calculate_macd, evaluate_macd_crossover, signed_b_condition, make_signal_id, resample_completed_3m,
 )
 from app.trading.trading_cost_engine import TradeCostEngine  # noqa: E402
 
@@ -237,8 +237,16 @@ def run_replay(
                         position = None
                         peak_net_return, profit_lock_active = 0.0, False
 
-            pattern = evaluate_signed_b(macd_snap, last_direction)
-            signal_timeline.append({"bar": bar_key, "pattern": pattern.value, "hist_last3": macd_snap.hist_last3})
+            pattern = evaluate_macd_crossover(macd_snap, last_direction)
+            shadow = signed_b_condition(macd_snap)
+            signal_timeline.append({
+                "bar": bar_key,
+                "pattern": pattern.value,
+                "previous_diff": macd_snap.previous_diff,
+                "current_diff": macd_snap.current_diff,
+                "signed_b_shadow": shadow.value,
+                "hist_last3": macd_snap.hist_last3,
+            })
             if pattern == Direction.HOLD:
                 continue
 

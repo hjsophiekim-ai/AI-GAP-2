@@ -21,6 +21,11 @@ TRADE_SYMBOLS = (LONG_SYMBOL, INVERSE_SYMBOL)
 # ── Budget (UI-overridable; this is only the default) ──────────────────────
 DEFAULT_BUDGET = 10_000_000.0
 
+STRATEGY_NAME = "MACD2"
+STRATEGY_VERSION = "20260724_MACD_CROSSOVER_V1"
+SIGNAL_RULE = "MACD_CROSSOVER"
+LEGACY_SIGNAL_RULE = "SIGNED_B_LEGACY"
+
 # Order-sizing safety margin (docs §9: "수수료·호가 변동을 고려한 안전 여유") is no
 # longer a fixed placeholder ratio here — docs/MACD2_LOGIC.md §21 flagged the old
 # ORDER_SAFETY_MARGIN_PCT=0.5 constant as an unconfirmed placeholder. It is now

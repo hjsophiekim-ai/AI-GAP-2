@@ -16,6 +16,17 @@ def _signal_row(signal_id: str, direction: str = "UP_RED", order_result: str = "
     }
 
 
+def _current_signal_row(signal_id: str, direction: str = "UP_RED"):
+    row = _signal_row(signal_id, direction=direction)
+    row.update({
+        "strategy_name": "MACD2",
+        "strategy_version": "20260724_MACD_CROSSOVER_V1",
+        "signal_rule": "MACD_CROSSOVER",
+        "session_started_at": "2026-01-06T09:00:00+09:00",
+    })
+    return row
+
+
 def _execution_row(order_id: str, side: str = "BUY", net_pnl: float = 0.0, gross_pnl: float = 0.0, fee: float = 0.0):
     return {
         "order_id": order_id, "signal_id": "sid-1", "timestamp": "20260106T090305",
@@ -73,6 +84,40 @@ def test_summarize_signals_counts_and_unexecuted():
     assert len(summary["unexecuted_signals"]) == 2
     reasons = {u["signal_id"]: u["reason"] for u in summary["unexecuted_signals"]}
     assert reasons["sid-2"] == "QUOTE_STALE"
+
+
+def test_summarize_signals_filters_old_strategy_rows():
+    for i in range(7):
+        row = _signal_row(f"old-{i}", order_result="BLOCKED", block_reason="ORDER_DATA_INVALID")
+        row.update({"strategy_version": "OLD", "signal_rule": "SIGNED_B_LEGACY"})
+        ledger.append_signal(row)
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version="20260724_MACD_CROSSOVER_V1",
+        signal_rule="MACD_CROSSOVER",
+        session_started_at="2026-01-06T09:00:00+09:00",
+    )
+    assert summary["red_count"] == 0
+    assert summary["blue_count"] == 0
+    assert summary["signal_count"] == 0
+    assert len(summary["excluded_signals"]) == 7
+
+
+def test_summarize_signals_counts_current_strategy_only_and_latest():
+    ledger.append_signal(_signal_row("old", direction="UP_RED"))
+    ledger.append_signal(_current_signal_row("cur-red", direction="UP_RED"))
+    ledger.append_signal(_current_signal_row("cur-blue", direction="DOWN_BLUE"))
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version="20260724_MACD_CROSSOVER_V1",
+        signal_rule="MACD_CROSSOVER",
+        session_started_at="2026-01-06T09:00:00+09:00",
+    )
+    assert summary["red_count"] == 1
+    assert summary["blue_count"] == 1
+    assert summary["latest_signal_id"] == "cur-blue"
 
 
 def test_summarize_daily_trading_empty_ledger_does_not_raise():
