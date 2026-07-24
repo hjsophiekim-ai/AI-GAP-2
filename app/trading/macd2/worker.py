@@ -324,6 +324,28 @@ def _pending_direction_still_active(pending_dir: Optional[Direction], macd_snap)
     return False
 
 
+def _pending_primary_signal(
+    bars_3m,
+    *,
+    last_evaluated_bar_ts: Optional[str],
+    last_detected_direction: Optional[Direction],
+    now: datetime,
+) -> tuple[Direction, Optional[Any], Optional[Direction]]:
+    detected = last_detected_direction
+    for i in range(config.EMA_SLOW, len(bars_3m) + 1):
+        snap = calculate_macd(bars_3m.iloc[:i])
+        if snap is None:
+            continue
+        if last_evaluated_bar_ts and snap.bar_dt.isoformat() <= last_evaluated_bar_ts:
+            continue
+        if not is_tradeable_completed_bar(snap.bar_dt, now):
+            continue
+        pattern = evaluate_macd_crossover(snap, detected)
+        if pattern != Direction.HOLD:
+            return pattern, snap, pattern
+    return Direction.HOLD, None, detected
+
+
 def _expire_pending_if_needed(state: RuntimeState, macd_snap, now: datetime) -> bool:
     pending = state.pending_signal
     if not pending:
@@ -540,7 +562,10 @@ def run_once(
     force_liquidate_time = now.time() >= config.FORCE_LIQUIDATE_AT
     entry_window_open = (not before_open) and (not entry_cutoff_passed)
     t0 = time.monotonic()
-    current_condition = evaluate_macd_crossover(macd_snap, None) if tradeable_bar and entry_window_open else Direction.HOLD
+    current_condition = (
+        evaluate_macd_crossover(macd_snap, state.last_detected_direction)
+        if tradeable_bar and entry_window_open else Direction.HOLD
+    )
     _expire_pending_if_needed(state, macd_snap, now)
     result.timing["signal_evaluation"] = time.monotonic() - t0
 
@@ -600,27 +625,40 @@ def run_once(
                     return result
 
         if is_new_bar and entry_window_open and tradeable_bar:
-            pattern = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
+            pattern, signal_snap, detected = _pending_primary_signal(
+                bars_3m,
+                last_evaluated_bar_ts=state.last_evaluated_bar_ts,
+                last_detected_direction=state.last_detected_direction,
+                now=now,
+            )
+            if pattern == Direction.HOLD and signal_snap is None and current_condition != Direction.HOLD:
+                pattern = current_condition
+                signal_snap = macd_snap
+                detected = pattern
+            if detected is not None:
+                state.last_detected_direction = detected
             if pattern != Direction.HOLD:
-                state.last_detected_direction = pattern
                 state.current_episode_direction = pattern
                 state.latest_primary_flag = pattern
+                macd_signal_snap = signal_snap or macd_snap
                 target = order_executor.target_symbol_for_direction(pattern)
                 if target != pos.symbol:
-                    signal_id = make_signal_id(macd_snap.bar_dt, pattern)
+                    signal_id = make_signal_id(macd_signal_snap.bar_dt, pattern)
                     state.latest_primary_signal_id = signal_id
                     signal_detected_at = datetime.now(KST)
                     result.signal_detected_at = signal_detected_at.isoformat()
                     outcome = _execute_or_wait(
-                        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_signal_snap,
                         direction=pattern, signal_id=signal_id, signal_type="REVERSAL", position=pos, result=result,
                     )
-                    _record_signal_ledger(state, macd_snap, pattern, "REVERSAL", signal_id, signal_detected_at, outcome)
+                    _record_signal_ledger(state, macd_signal_snap, pattern, "REVERSAL", signal_id, signal_detected_at, outcome)
                     if outcome is not None:
                         _apply_switch_outcome(state, outcome, pattern)
                         result.actions.append(f"OPPOSITE_SIGNAL:{pattern.value}")
-                        state.last_evaluated_bar_ts = bar_ts_str
+                        state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
                         return result
+                    state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
+                    return result
 
         if profit_lock_should_exit:
             outcome = order_executor.execute_exit(
@@ -650,23 +688,36 @@ def run_once(
                 return result
 
     if is_new_bar and entry_window_open and tradeable_bar:
-        pattern = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
+        pattern, signal_snap, detected = _pending_primary_signal(
+            bars_3m,
+            last_evaluated_bar_ts=state.last_evaluated_bar_ts,
+            last_detected_direction=state.last_detected_direction,
+            now=now,
+        )
+        if pattern == Direction.HOLD and signal_snap is None and current_condition != Direction.HOLD:
+            pattern = current_condition
+            signal_snap = macd_snap
+            detected = pattern
+        if detected is not None:
+            state.last_detected_direction = detected
         if pattern != Direction.HOLD:
-            state.last_detected_direction = pattern
             state.current_episode_direction = pattern
             state.latest_primary_flag = pattern
-            signal_id = make_signal_id(macd_snap.bar_dt, pattern)
+            macd_signal_snap = signal_snap or macd_snap
+            signal_id = make_signal_id(macd_signal_snap.bar_dt, pattern)
             state.latest_primary_signal_id = signal_id
             signal_detected_at = datetime.now(KST)
             result.signal_detected_at = signal_detected_at.isoformat()
             outcome = _execute_or_wait(
-                broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_signal_snap,
                 direction=pattern, signal_id=signal_id, signal_type="INITIAL", position=None, result=result,
             )
-            _record_signal_ledger(state, macd_snap, pattern, "INITIAL", signal_id, signal_detected_at, outcome)
+            _record_signal_ledger(state, macd_signal_snap, pattern, "INITIAL", signal_id, signal_detected_at, outcome)
             if outcome is not None:
                 _apply_switch_outcome(state, outcome, pattern)
                 result.actions.append(f"ENTRY:{pattern.value}")
+            state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
+            return result
 
     state.last_evaluated_bar_ts = bar_ts_str
     return result

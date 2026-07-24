@@ -301,6 +301,31 @@ def test_production_path_down_crossover_buys_inverse_once():
     assert result.signal_dispatch_trace["target_quote_valid"] is True
 
 
+def test_production_path_catches_intermediate_down_crossover_when_cache_jumps_ahead():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    # Index 79 is 12:57. Later 13:00/13:03 bars are already in cache, so the
+    # latest bar is no longer the crossover bar.
+    df_1m = _1m_from_3m_closes(start, [100.0] * 79 + [80.0, 70.0, 60.0])
+    now = start + timedelta(minutes=3 * 82)
+    crossover_snap = calculate_macd(resample_completed_3m(df_1m.iloc[: 80 * 3], now=start + timedelta(minutes=3 * 80)))
+    latest_snap = calculate_macd(resample_completed_3m(df_1m, now=now))
+    assert crossover_snap is not None
+    assert latest_snap is not None
+    assert crossover_snap.bar_dt == datetime(2026, 7, 24, 12, 57, tzinfo=KST)
+    assert evaluate_macd_crossover(crossover_snap, None) == Direction.DOWN_BLUE
+    assert evaluate_macd_crossover(latest_snap, None) == Direction.HOLD
+    state = _state()
+    state.last_evaluated_bar_ts = datetime(2026, 7, 24, 12, 54, tzinfo=KST).isoformat()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
+
+    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert state.latest_primary_signal_id == "20260724_125700_DOWN_BLUE"
+    assert state.last_evaluated_bar_ts == datetime(2026, 7, 24, 12, 57, tzinfo=KST).isoformat()
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
+
+
 def test_production_path_signed_b_only_without_crossover_orders_zero():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [110.0, 120.0, 130.0])
@@ -310,6 +335,10 @@ def test_production_path_signed_b_only_without_crossover_orders_zero():
     assert signed_b_condition(snap) == Direction.UP_RED
     assert evaluate_macd_crossover(snap, None) == Direction.HOLD
     state = _state()
+    state.strategy_version = config.STRATEGY_VERSION
+    state.signal_rule = config.SIGNAL_RULE
+    state.last_evaluated_bar_ts = snap.bar_dt.isoformat()
+    state.last_detected_direction = Direction.UP_RED
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
 
     result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)

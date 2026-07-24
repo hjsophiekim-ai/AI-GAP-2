@@ -300,6 +300,23 @@ def test_bootstrap_kis_page_no_growth_stops_without_infinite_loop():
     assert diag["kis_pages"][-1]["stop_reason"] == "PAGE_NO_GROWTH"
 
 
+def test_bootstrap_rejects_late_starting_today_history_after_open():
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    late_today = datetime(2026, 1, 6, 11, 39, tzinfo=KST)
+    combined = pd.concat([_fake_bars_df(prior_day, 381), _fake_bars_df(late_today, 90)], ignore_index=True)
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return combined.copy(), {}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch)
+    result = svc.bootstrap(now=datetime(2026, 1, 6, 13, 9, tzinfo=KST))
+
+    assert result.ok is False
+    assert result.reason == "TODAY_1M_START_AFTER_OPEN:11:39:00"
+    assert result.today_1m_bars == 90
+
+
 # ── Fallback A: KIS 주식일별분봉조회 (explicit trading-day search) ──────────
 
 def test_prior_weekday_candidates_monday_finds_friday_first():

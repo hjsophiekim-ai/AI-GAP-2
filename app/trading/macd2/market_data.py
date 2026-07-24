@@ -467,6 +467,14 @@ class MarketDataService:
         with self._history_lock:
             self._df_1m = df
 
+        if today_n > 0 and now.time() > config.SESSION_OPEN:
+            today_start = df[dates == today_ymd]["datetime"].iloc[0].astimezone(KST)
+            if today_start.time() > config.SESSION_OPEN:
+                return BootstrapResult(
+                    False, f"TODAY_1M_START_AFTER_OPEN:{today_start.strftime('%H:%M:%S')}",
+                    int(len(df)), prior_n, today_n, completed_3m_count, round(elapsed, 3),
+                )
+
         if prior_n <= 0:
             # Fallback A (KIS official date-scoped API) and fallback B
             # (persistent cache) both came back empty — not a hard error,
