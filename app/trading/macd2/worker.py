@@ -39,12 +39,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+import pandas as pd
+
 from app.trading.macd2 import config, ledger, order_executor, risk_exit
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import (
     calculate_macd,
     evaluate_primary_forming_crossover,
+    forming_bar_window,
     make_provisional_signal_id,
     resample_completed_3m,
     signed_b_condition,
@@ -390,6 +393,43 @@ def _update_provisional_state(state: RuntimeState, macd_snap, pattern: Direction
         state.latest_primary_signal_id = signal_id
 
 
+def _last_1m_diag(df_1m) -> tuple[Optional[str], Optional[float]]:
+    if df_1m is None or getattr(df_1m, "empty", True) or "datetime" not in df_1m.columns or "close" not in df_1m.columns:
+        return None, None
+    work = df_1m.copy()
+    work["datetime"] = pd.to_datetime(work["datetime"], errors="coerce")
+    closes = pd.to_numeric(work["close"], errors="coerce")
+    work = work.loc[work["datetime"].notna() & closes.notna()].copy()
+    if work.empty:
+        return None, None
+    row = work.sort_values("datetime").iloc[-1]
+    return pd.Timestamp(row["datetime"]).to_pydatetime().isoformat(), float(row["close"])
+
+
+def _update_forming_input_diag(
+    state: RuntimeState,
+    *,
+    now: datetime,
+    df_1m,
+    watch_price: Optional[float],
+    market_data: MarketDataService,
+) -> None:
+    forming_start, forming_end = forming_bar_window(now)
+    last_1m_at, last_1m_close = _last_1m_diag(df_1m)
+    state.provisional_bar_start = forming_start.isoformat()
+    state.provisional_bar_end = forming_end.isoformat()
+    state.provisional_evaluated_at = datetime.now(KST).isoformat()
+    state.provisional_input_now = now.astimezone(KST).isoformat()
+    state.provisional_quote_price = watch_price
+    state.provisional_last_1m_at = last_1m_at
+    state.provisional_last_1m_close = last_1m_close
+    diag = market_data.quote_normalization_diag() if hasattr(market_data, "quote_normalization_diag") else {}
+    note = str(diag.get("reason") or "")
+    if diag:
+        note = note or "NO_SCALE_CHANGE"
+    state.provisional_price_scale_note = note
+
+
 def _expire_pending_if_needed(state: RuntimeState, macd_snap, now: datetime) -> bool:
     pending = state.pending_signal
     if not pending:
@@ -707,6 +747,9 @@ def run_once(
     provisional_condition = Direction.HOLD
     watch_quote_ready = _quote_valid_for_provisional(market_data, config.WATCH_SYMBOL)
     watch_price = quotes.get(config.WATCH_SYMBOL)
+    _update_forming_input_diag(
+        state, now=now, df_1m=df_1m, watch_price=watch_price, market_data=market_data,
+    )
     if watch_quote_ready and watch_price is not None:
         primary_result = evaluate_primary_forming_crossover(
             bars_3m, df_1m, now=now, current_price=watch_price,
@@ -718,6 +761,9 @@ def run_once(
         provisional_signal_id = primary_result.signal_id
         _update_provisional_state(state, provisional_snap, provisional_condition, provisional_signal_id)
     else:
+        state.provisional_macd = None
+        state.provisional_signal = None
+        state.provisional_diff = None
         state.provisional_flag = None
         state.provisional_signal_id = None
 

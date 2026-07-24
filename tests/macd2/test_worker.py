@@ -207,6 +207,51 @@ def test_provisional_up_crossover_buys_long_once():
     assert result.order_requested_at
 
 
+def test_provisional_forming_window_at_1447_uses_current_bar():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start, bars=115)
+    svc = _provisional_service(df_1m, watch_price=140.0)
+    now = datetime(2026, 7, 24, 14, 47, 0, tzinfo=KST)
+    state = _fresh_state()
+    state.provisional_bar_start = "2026-07-24T14:15:00+09:00"
+    state.provisional_bar_end = "2026-07-24T14:18:00+09:00"
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert state.provisional_bar_start == "2026-07-24T14:45:00+09:00"
+    assert state.provisional_bar_end == "2026-07-24T14:48:00+09:00"
+    assert state.provisional_input_now == "2026-07-24T14:47:00+09:00"
+    assert state.provisional_last_1m_at == "2026-07-24T14:44:00+09:00"
+    assert state.provisional_last_1m_close == 100.0
+
+
+def test_provisional_recomputes_same_forming_bar_from_latest_quote_every_tick():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start)
+    svc = _provisional_service(df_1m, watch_price=130.0)
+    now = _forming_now(start)
+    state = _fresh_state()
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    run_once(broker=broker, market_data=svc, state=state, now=now)
+    first_diff = state.provisional_diff
+    svc._quotes[config.WATCH_SYMBOL] = QuoteSnapshot(
+        config.WATCH_SYMBOL, 160.0, datetime.now(KST), 0.0, "test", None,
+    )
+    run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))
+
+    assert state.provisional_bar_start == "2026-07-24T14:00:00+09:00"
+    assert state.provisional_quote_price == 160.0
+    assert state.provisional_diff != first_diff
+
+
 def test_provisional_down_crossover_buys_inverse_once():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)

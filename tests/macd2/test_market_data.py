@@ -120,6 +120,26 @@ def test_refresh_quotes_populates_all_three_symbols_with_age():
         assert snap.error is None
 
 
+def test_watch_quote_is_normalized_to_latest_1m_close_scale():
+    start = datetime(2026, 7, 24, 14, 30, tzinfo=KST)
+    history = pd.DataFrame([
+        {"datetime": start, "open": 178800.0, "high": 178800.0, "low": 178800.0, "close": 178800.0, "volume": 1}
+    ])
+    svc = MarketDataService(
+        mode="mock",
+        fetch_minute_candles=lambda *a: (history, {}),
+        fetch_quote=lambda mode, symbol: (1_788_000.0 if symbol == config.WATCH_SYMBOL else 10_000.0, None),
+    )
+    svc.bootstrap(now=start + timedelta(minutes=1))
+
+    svc.refresh_quotes(symbols=(config.WATCH_SYMBOL,))
+    snap = svc.get_quote(config.WATCH_SYMBOL)
+
+    assert snap is not None
+    assert snap.price == 178800.0
+    assert svc.quote_normalization_diag()["reason"] == "QUOTE_10X_HISTORY_CLOSE"
+
+
 def test_get_quote_reports_error_without_raising():
     def fake_quote(mode, symbol):
         del mode, symbol

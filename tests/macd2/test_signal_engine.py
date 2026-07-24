@@ -13,6 +13,7 @@ from app.trading.macd2.signal_engine import (
     evaluate_primary_forming_crossover,
     evaluate_macd_crossover,
     evaluate_signed_b,
+    forming_bar_window,
     is_tradeable_completed_bar,
     make_signal_id,
     resample_completed_3m,
@@ -90,6 +91,15 @@ def test_resample_completed_3m_dedupes_keeping_latest_value():
     out = resample_completed_3m(pd.DataFrame(rows), now=now)
     assert len(out) == 1
     assert out.iloc[0]["close"] == 105.0
+
+
+def test_forming_bar_window_uses_current_kst_3m_floor():
+    now = datetime(2026, 7, 24, 14, 47, 12, tzinfo=KST)
+
+    start, end = forming_bar_window(now)
+
+    assert start == datetime(2026, 7, 24, 14, 45, tzinfo=KST)
+    assert end == datetime(2026, 7, 24, 14, 48, tzinfo=KST)
 
 
 def _macd_snapshot(hist_last3: tuple[float, float, float]) -> MacdSnapshot:

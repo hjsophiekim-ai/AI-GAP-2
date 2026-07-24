@@ -189,6 +189,7 @@ class MarketDataService:
         self._history_updater_thread: Optional[threading.Thread] = None
         self._history_updater_stop = threading.Event()
         self._last_bootstrap_diag: dict[str, Any] = {}
+        self._quote_normalization_diag: dict[str, Any] = {}
 
     def quote_statuses(
         self,
@@ -228,6 +229,45 @@ class MarketDataService:
         prior-day cache load result + every KIS page (date/hour1/count/
         oldest/newest/error). Empty dict before bootstrap() has ever run."""
         return dict(self._last_bootstrap_diag)
+
+    def quote_normalization_diag(self) -> dict[str, Any]:
+        return dict(self._quote_normalization_diag)
+
+    def _latest_history_close(self) -> tuple[Optional[datetime], Optional[float]]:
+        with self._history_lock:
+            df = self._df_1m.copy()
+        if df.empty or "datetime" not in df.columns or "close" not in df.columns:
+            return None, None
+        closes = pd.to_numeric(df["close"], errors="coerce")
+        valid = df.loc[closes.notna()].copy()
+        if valid.empty:
+            return None, None
+        last = valid.sort_values("datetime").iloc[-1]
+        return pd.Timestamp(last["datetime"]).to_pydatetime(), float(last["close"])
+
+    def _normalize_quote_price(self, symbol: str, price: float) -> float:
+        if symbol != config.WATCH_SYMBOL or price <= 0:
+            return price
+        last_dt, last_close = self._latest_history_close()
+        diag = {
+            "symbol": symbol,
+            "raw_quote": float(price),
+            "last_1m_at": last_dt.isoformat() if last_dt else None,
+            "last_1m_close": last_close,
+            "scale_factor": 1.0,
+            "normalized_quote": float(price),
+            "reason": "",
+        }
+        if last_close and last_close > 0:
+            ratio = float(price) / float(last_close)
+            if 9.5 <= ratio <= 10.5:
+                price = float(price) / 10.0
+                diag.update({"scale_factor": 0.1, "normalized_quote": price, "reason": "QUOTE_10X_HISTORY_CLOSE"})
+            elif 0.095 <= ratio <= 0.105:
+                price = float(price) * 10.0
+                diag.update({"scale_factor": 10.0, "normalized_quote": price, "reason": "QUOTE_0_1X_HISTORY_CLOSE"})
+        self._quote_normalization_diag = diag
+        return price
 
     def _get_kis_client(self) -> Any:
         """Exactly one KIS client per service instance (docs: created once at
@@ -535,6 +575,7 @@ class MarketDataService:
             success = error is None and price is not None and float(price) > 0
             fetched_at = datetime.now(KST)
             if success:
+                price = self._normalize_quote_price(symbol, float(price))
                 updated[symbol] = QuoteSnapshot(
                     symbol=symbol, price=float(price), fetched_at=fetched_at, age_sec=0.0, source="kis", error=None,
                 )

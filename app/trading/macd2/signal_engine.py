@@ -138,6 +138,12 @@ def _floor_3m(dt: datetime) -> datetime:
     return dt.replace(minute=dt.minute - (dt.minute % 3), second=0, microsecond=0)
 
 
+def forming_bar_window(now: datetime) -> tuple[datetime, datetime]:
+    _require_tz_aware_scalar(now, "forming_bar_window(now=...)")
+    start = _floor_3m(now.astimezone(config.KST))
+    return start, start + timedelta(minutes=3)
+
+
 def calculate_provisional_macd(
     completed_three_minute_bars: Optional[pd.DataFrame],
     one_minute_bars: Optional[pd.DataFrame],
@@ -158,7 +164,7 @@ def calculate_provisional_macd(
     if completed_three_minute_bars is None or completed_three_minute_bars.empty:
         return None
 
-    forming_start = _floor_3m(now.astimezone(config.KST))
+    forming_start, _forming_end = forming_bar_window(now)
     if forming_start.date() != now.astimezone(config.KST).date():
         return None
     if forming_start.time() < config.SESSION_OPEN:

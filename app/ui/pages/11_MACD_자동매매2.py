@@ -222,9 +222,10 @@ try:
     pc3.metric("previous diff", f"{prev_diff:.6f}" if prev_diff is not None else "-")
     pc4.metric("current diff", f"{curr_diff:.6f}" if curr_diff is not None else "-")
     st.caption(
-        f"relation=`{state.primary_relation or '-'}` · latest primary flag="
-        f"`{state.latest_primary_flag.value if state.latest_primary_flag else '-'}` · "
-        f"primary signal_id=`{state.latest_primary_signal_id or '-'}`"
+        f"current forming flag=`{state.provisional_flag.value if state.provisional_flag else '-'}` · "
+        f"current signal_id=`{state.provisional_signal_id or '-'}` · "
+        f"last primary onset=`{state.latest_primary_flag.value if state.latest_primary_flag else '-'}`/"
+        f"`{state.latest_primary_signal_id or '-'}`"
     )
 
     st.markdown("**Provisional forming-bar crossover**")
@@ -234,10 +235,15 @@ try:
     pr3.metric("diff", f"{state.provisional_diff:.6f}" if state.provisional_diff is not None else "-")
     pr4.metric("flag", state.provisional_flag.value if state.provisional_flag else "-")
     st.caption(
-        f"forming=`{state.provisional_bar_start or '-'}` -> `{state.provisional_bar_end or '-'}` 쨌 "
-        f"signal_id=`{state.provisional_signal_id or '-'}` 쨌 "
-        f"detected_at=`{state.provisional_detected_at or '-'}` 쨌 "
-        f"order_requested_at=`{state.provisional_order_requested_at or '-'}`"
+        f"forming=`{state.provisional_bar_start or '-'}` -> `{state.provisional_bar_end or '-'}` · "
+        f"signal_id=`{state.provisional_signal_id or '-'}` · "
+        f"detected_at=`{state.provisional_detected_at or '-'}` · "
+        f"order_requested_at=`{state.provisional_order_requested_at or '-'}` · "
+        f"input_now=`{getattr(state, 'provisional_input_now', None) or '-'}` · "
+        f"quote=`{getattr(state, 'provisional_quote_price', None) or '-'}` · "
+        f"last_1m=`{getattr(state, 'provisional_last_1m_at', None) or '-'}`/"
+        f"`{getattr(state, 'provisional_last_1m_close', None) or '-'}` · "
+        f"scale=`{getattr(state, 'provisional_price_scale_note', None) or '-'}`"
     )
 
     st.markdown("**Signed-B shadow**")

@@ -225,6 +225,12 @@ class RuntimeState:
     provisional_diff: Optional[float] = None
     provisional_flag: Optional[Direction] = None
     provisional_signal_id: Optional[str] = None
+    provisional_evaluated_at: Optional[str] = None
+    provisional_input_now: Optional[str] = None
+    provisional_quote_price: Optional[float] = None
+    provisional_last_1m_at: Optional[str] = None
+    provisional_last_1m_close: Optional[float] = None
+    provisional_price_scale_note: Optional[str] = None
     provisional_detected_at: Optional[str] = None
     provisional_order_requested_at: Optional[str] = None
     provisional_ordered_bar_ts: Optional[str] = None
