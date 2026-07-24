@@ -8,7 +8,13 @@ import pytest
 from app.trading.macd2 import config, ledger, worker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, MacdSnapshot, PositionSnapshot, QuoteSnapshot
-from app.trading.macd2.signal_engine import make_signal_id
+from app.trading.macd2.signal_engine import (
+    calculate_macd,
+    evaluate_macd_crossover,
+    make_signal_id,
+    resample_completed_3m,
+    signed_b_condition,
+)
 from tests.macd2.fake_broker import FakeBroker
 
 KST = config.KST
@@ -44,6 +50,42 @@ def _svc(prices=None):
     )
     svc.refresh_quotes()
     return svc
+
+
+def _1m_from_3m_closes(start: datetime, closes: list[float]) -> pd.DataFrame:
+    rows = []
+    for i, close in enumerate(closes):
+        bar_start = start + timedelta(minutes=3 * i)
+        for j in range(3):
+            rows.append({
+                "datetime": bar_start + timedelta(minutes=j),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 10,
+            })
+    return pd.DataFrame(rows)
+
+
+def _history_svc(df_1m: pd.DataFrame, prices=None) -> MarketDataService:
+    prices = prices or {config.WATCH_SYMBOL: 100.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    empty = pd.DataFrame({"datetime": [], "open": [], "high": [], "low": [], "close": [], "volume": []})
+    svc = MarketDataService(
+        mode="mock",
+        fetch_minute_candles=lambda *a: (df_1m, {}),
+        fetch_minute_candles_for_date=lambda *a: (empty, {}),
+        fetch_quote=lambda mode, symbol: (prices.get(symbol), None),
+    )
+    svc.bootstrap(now=df_1m["datetime"].iloc[-1] + timedelta(minutes=1))
+    svc.refresh_quotes()
+    return svc
+
+
+def _assert_latest_primary(df_1m: pd.DataFrame, now: datetime, direction: Direction) -> None:
+    snap = calculate_macd(resample_completed_3m(df_1m, now=now))
+    assert snap is not None
+    assert evaluate_macd_crossover(snap, None) == direction
 
 
 def _patch_snap(monkeypatch, snap: MacdSnapshot):
@@ -225,6 +267,94 @@ def test_executor_none_is_recorded_as_signal_not_dispatched(monkeypatch):
     assert result.signal_dispatch_trace["order_executor_called"] is True
     assert result.signal_dispatch_trace["final_block_reason"] == worker.SIGNAL_NOT_DISPATCHED
     assert ledger.load_signal_ledger()[0]["block_reason"] == worker.SIGNAL_NOT_DISPATCHED
+
+
+def test_production_path_up_crossover_buys_long_once():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [120.0])
+    now = start + timedelta(minutes=3 * 36)
+    _assert_latest_primary(df_1m, now, Direction.UP_RED)
+    state = _state()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+
+    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+
+    assert result.actions == ["ENTRY:UP_RED"]
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
+
+
+def test_production_path_down_crossover_buys_inverse_once():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [80.0])
+    now = start + timedelta(minutes=3 * 36)
+    _assert_latest_primary(df_1m, now, Direction.DOWN_BLUE)
+    state = _state()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
+
+    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
+    assert result.signal_dispatch_trace["order_executor_called"] is True
+    assert result.signal_dispatch_trace["position_reconcile_result"] == worker.MATCH_FLAT
+    assert result.signal_dispatch_trace["quote_status"] == "READY"
+    assert result.signal_dispatch_trace["target_quote_valid"] is True
+
+
+def test_production_path_signed_b_only_without_crossover_orders_zero():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [110.0, 120.0, 130.0])
+    now = start + timedelta(minutes=3 * 38)
+    snap = calculate_macd(resample_completed_3m(df_1m, now=now))
+    assert snap is not None
+    assert signed_b_condition(snap) == Direction.UP_RED
+    assert evaluate_macd_crossover(snap, None) == Direction.HOLD
+    state = _state()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+
+    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+
+    assert result.actions == []
+    assert broker.orders == []
+
+
+def test_production_path_same_crossover_bar_twenty_ticks_orders_once():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [120.0])
+    now = start + timedelta(minutes=3 * 36)
+    state = _state()
+    svc = _history_svc(df_1m)
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+
+    worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+    for _ in range(20):
+        worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
+
+
+def test_production_path_up_then_down_sells_to_zero_then_buys_inverse():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    up_df = _1m_from_3m_closes(start, [100.0] * 35 + [120.0])
+    down_df = _1m_from_3m_closes(start, [100.0] * 36 + [80.0])
+    up_now = start + timedelta(minutes=3 * 36)
+    down_now = start + timedelta(minutes=3 * 37)
+    _assert_latest_primary(up_df, up_now, Direction.UP_RED)
+    _assert_latest_primary(down_df, down_now, Direction.DOWN_BLUE)
+    state = _state()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    worker.run_once(broker=broker, market_data=_history_svc(up_df), state=state, now=up_now)
+    result = worker.run_once(broker=broker, market_data=_history_svc(down_df), state=state, now=down_now)
+
+    assert result.actions == ["OPPOSITE_SIGNAL:DOWN_BLUE"]
+    assert [(o.side, o.symbol) for o in broker.orders] == [
+        ("BUY", config.LONG_SYMBOL),
+        ("SELL", config.LONG_SYMBOL),
+        ("BUY", config.INVERSE_SYMBOL),
+    ]
+    assert broker.get_position(config.LONG_SYMBOL) is None
+    assert broker.get_position(config.INVERSE_SYMBOL).quantity > 0
 
 
 def test_quote_age_27_seconds_is_stale_not_ready():

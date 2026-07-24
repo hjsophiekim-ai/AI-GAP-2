@@ -44,7 +44,6 @@ from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import (
     calculate_macd,
-    evaluate_signed_b,
     evaluate_macd_crossover,
     is_tradeable_completed_bar,
     make_signal_id,
