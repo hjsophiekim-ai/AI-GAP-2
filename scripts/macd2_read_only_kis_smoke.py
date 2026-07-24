@@ -112,13 +112,12 @@ def main() -> int:
     warmup_ready = False
     macd_snap = None
     signed_b = None
-    if boot is not None and boot.ok:
-        df_1m = mds.get_history_df()
-        if not df_1m.empty:
-            report["data_range"] = {
-                "from": df_1m["datetime"].iloc[0].isoformat(),
-                "to": df_1m["datetime"].iloc[-1].isoformat(),
-            }
+    df_1m = mds.get_history_df()
+    if not df_1m.empty:
+        report["data_range"] = {
+            "from": df_1m["datetime"].iloc[0].isoformat(),
+            "to": df_1m["datetime"].iloc[-1].isoformat(),
+        }
         bars_3m = resample_completed_3m(df_1m, now=datetime.now(KST))
         macd_snap = calculate_macd(bars_3m)
         warmup_ready = macd_snap is not None
@@ -127,26 +126,39 @@ def main() -> int:
         timeline = []
         last_primary = None
         last_shadow = None
+        quote_status_by_symbol = mds.quote_statuses()
+        position_reconcile_result = "READ_ONLY_NOT_RECONCILED"
         for i in range(config.EMA_SLOW, len(bars_3m) + 1):
             snap_i = calculate_macd(bars_3m.iloc[:i])
             if snap_i is None:
                 continue
+            prev_snap = calculate_macd(bars_3m.iloc[:i - 1]) if i > config.EMA_SLOW else None
             primary = evaluate_macd_crossover(snap_i, last_primary)
             shadow = evaluate_signed_b(snap_i, last_shadow)
             eligible = is_tradeable_completed_bar(snap_i.bar_dt, datetime.now(KST))
             sid = make_signal_id(snap_i.bar_dt, primary) if primary != Direction.HOLD and eligible else ""
+            target_symbol = ""
+            if primary == Direction.UP_RED:
+                target_symbol = config.LONG_SYMBOL
+            elif primary == Direction.DOWN_BLUE:
+                target_symbol = config.INVERSE_SYMBOL
+            target_quote_status = quote_status_by_symbol.get(target_symbol, "") if target_symbol else ""
             timeline.append({
                 "completed_bar_at": snap_i.bar_dt.isoformat(),
-                "macd": snap_i.macd,
-                "signal": snap_i.signal,
+                "previous_macd": prev_snap.macd if prev_snap is not None else None,
+                "previous_signal": prev_snap.signal if prev_snap is not None else None,
                 "previous_diff": snap_i.previous_diff,
+                "current_macd": snap_i.macd,
+                "current_signal": snap_i.signal,
                 "current_diff": snap_i.current_diff,
                 "crossover_flag": primary.value,
                 "signed_b_shadow_flag": shadow.value,
                 "order_eligibility": bool(primary != Direction.HOLD and eligible),
                 "signal_id": sid,
-                "order_result": "",
-                "block_reason": "",
+                "quote_validity": target_quote_status,
+                "position_reconcile_result": position_reconcile_result,
+                "order_executor_called": "NO",
+                "final_block_reason": "READ_ONLY_NO_ORDER" if primary != Direction.HOLD and eligible else "",
             })
             if primary != Direction.HOLD:
                 last_primary = primary

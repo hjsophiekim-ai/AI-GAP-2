@@ -62,6 +62,7 @@ MATCH_FLAT = "MATCH_FLAT"
 MATCH_POSITION = "MATCH_POSITION"
 RECOVERED_FROM_BROKER = "RECOVERED_FROM_BROKER"
 RECOVERED_TO_FLAT = "RECOVERED_TO_FLAT"
+SIGNAL_NOT_DISPATCHED = "SIGNAL_NOT_DISPATCHED"
 TEMPORARY_BLOCK_REASONS = {
     QUOTE_STALE,
     order_executor.BLOCK_ORDER_DATA_INVALID,
@@ -86,6 +87,7 @@ class TickResult:
     skipped: Optional[str] = None
     signal_detected_at: Optional[str] = None
     order_requested_at: Optional[str] = None
+    signal_dispatch_trace: dict[str, Any] = field(default_factory=dict)
     timing: dict[str, float] = field(default_factory=dict)
 
 
@@ -382,9 +384,22 @@ def _execute_or_wait(
     result: TickResult,
 ):
     order_started = time.monotonic()
+    result.signal_dispatch_trace = {
+        "signal_id": signal_id,
+        "direction": direction.value,
+        "signal_type": signal_type,
+        "completed_bar_at": macd_snap.bar_dt.isoformat(),
+        "position_reconcile_result": None,
+        "quote_status": None,
+        "target_quote_valid": False,
+        "order_executor_called": False,
+        "final_block_reason": None,
+    }
     reconcile = reconcile_position_state(broker, state, now, force=True)
+    result.signal_dispatch_trace["position_reconcile_result"] = reconcile
     if reconcile == RECOVERED_FROM_BROKER:
         state.order_block_reason = RECOVERED_FROM_BROKER
+        result.signal_dispatch_trace["final_block_reason"] = RECOVERED_FROM_BROKER
         _set_pending_signal(
             state, signal_id=signal_id, direction=direction, signal_type=signal_type,
             macd_snap=macd_snap, detected_at=now, reason=RECOVERED_FROM_BROKER,
@@ -394,6 +409,7 @@ def _execute_or_wait(
         return None
     if reconcile in (POSITION_DATA_ERROR, POSITION_MISMATCH):
         state.order_block_reason = reconcile
+        result.signal_dispatch_trace["final_block_reason"] = reconcile
         _set_pending_signal(
             state, signal_id=signal_id, direction=direction, signal_type=signal_type,
             macd_snap=macd_snap, detected_at=now, reason=reconcile,
@@ -405,8 +421,12 @@ def _execute_or_wait(
     quote_status, quotes = _quote_status_for_order(
         market_data, (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL)
     )
+    target = order_executor.target_symbol_for_direction(direction)
+    result.signal_dispatch_trace["quote_status"] = quote_status
+    result.signal_dispatch_trace["target_quote_valid"] = bool(target and target in quotes and quotes[target] > 0)
     if quote_status != "READY":
         state.order_block_reason = quote_status
+        result.signal_dispatch_trace["final_block_reason"] = quote_status
         _set_pending_signal(
             state, signal_id=signal_id, direction=direction, signal_type=signal_type,
             macd_snap=macd_snap, detected_at=now, reason=quote_status,
@@ -415,11 +435,22 @@ def _execute_or_wait(
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
 
+    result.signal_dispatch_trace["order_executor_called"] = True
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=signal_id, quotes=quotes,
         position=position, budget=state.budget,
         processed_signal_ids=frozenset(state.processed_signal_ids),
     )
+    if outcome is None:
+        state.order_block_reason = SIGNAL_NOT_DISPATCHED
+        result.skipped = SIGNAL_NOT_DISPATCHED
+        result.signal_dispatch_trace["final_block_reason"] = SIGNAL_NOT_DISPATCHED
+        _set_pending_signal(
+            state, signal_id=signal_id, direction=direction, signal_type=signal_type,
+            macd_snap=macd_snap, detected_at=now, reason=SIGNAL_NOT_DISPATCHED,
+        )
+        result.timing["order_execution"] = time.monotonic() - order_started
+        return None
     result.order_requested_at = outcome.timestamps.get("sell_requested_at") or outcome.timestamps.get("buy_requested_at")
     if _has_order_request(outcome):
         if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
@@ -434,6 +465,7 @@ def _execute_or_wait(
         )
     else:
         state.pending_signal = None
+    result.signal_dispatch_trace["final_block_reason"] = outcome.block_reason or ""
     result.timing["order_execution"] = time.monotonic() - order_started
     return outcome
 
@@ -682,6 +714,7 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
 
 def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, detected_at, outcome) -> None:
     order_result = outcome.final_state.value if outcome is not None else SignalState.WAITING.value
+    block_reason = outcome.block_reason or "" if outcome is not None else (state.order_block_reason or "WAITING")
     trading_date = macd_snap.bar_dt.astimezone(KST).strftime("%Y%m%d")
     ledger.append_signal({
         "trading_date": trading_date,
@@ -698,7 +731,7 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
             if outcome is not None else ""
         ),
         "order_result": order_result,
-        "block_reason": outcome.block_reason or "" if outcome is not None else "WAITING",
+        "block_reason": block_reason,
         "strategy_name": config.STRATEGY_NAME,
         "strategy_version": config.STRATEGY_VERSION,
         "signal_rule": config.SIGNAL_RULE,

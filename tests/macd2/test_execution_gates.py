@@ -158,6 +158,75 @@ def test_crossover_opposite_signal_sells_then_buys(monkeypatch):
     assert broker.get_position(config.INVERSE_SYMBOL).quantity > 0
 
 
+def test_down_blue_crossover_flat_buys_inverse_once(monkeypatch):
+    state = _state()
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
+    bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(bar_dt, Direction.DOWN_BLUE))
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=bar_dt + timedelta(minutes=3))
+
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert broker.orders[0].side == "BUY"
+    assert broker.orders[0].symbol == config.INVERSE_SYMBOL
+    assert result.signal_dispatch_trace["order_executor_called"] is True
+    assert result.signal_dispatch_trace["position_reconcile_result"] == worker.MATCH_FLAT
+    assert result.signal_dispatch_trace["quote_status"] == "READY"
+    assert result.signal_dispatch_trace["target_quote_valid"] is True
+
+
+def test_ten_same_direction_crossover_bars_create_one_flag_and_one_order(monkeypatch):
+    state = _state()
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+    for i in range(10):
+        bar_dt = datetime(2026, 7, 24, 9, 3 * i, tzinfo=KST)
+        _patch_snap(monkeypatch, _snap(bar_dt, Direction.UP_RED))
+        worker.run_once(broker=broker, market_data=svc, state=state, now=bar_dt + timedelta(minutes=3))
+
+    assert [r["direction"] for r in ledger.load_signal_ledger()] == ["UP_RED"]
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
+
+
+def test_down_blue_ready_dispatches_executor_once(monkeypatch):
+    state = _state()
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
+    bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(bar_dt, Direction.DOWN_BLUE))
+    calls = {"n": 0}
+    original = worker.order_executor.execute_signal
+
+    def wrapped_execute_signal(**kwargs):
+        calls["n"] += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(worker.order_executor, "execute_signal", wrapped_execute_signal)
+
+    worker.run_once(broker=broker, market_data=svc, state=state, now=bar_dt + timedelta(minutes=3))
+
+    assert calls["n"] == 1
+    assert broker.orders[0].symbol == config.INVERSE_SYMBOL
+
+
+def test_executor_none_is_recorded_as_signal_not_dispatched(monkeypatch):
+    state = _state()
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
+    bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    _patch_snap(monkeypatch, _snap(bar_dt, Direction.DOWN_BLUE))
+    monkeypatch.setattr(worker.order_executor, "execute_signal", lambda **kwargs: None)
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=bar_dt + timedelta(minutes=3))
+
+    assert result.skipped == worker.SIGNAL_NOT_DISPATCHED
+    assert state.order_block_reason == worker.SIGNAL_NOT_DISPATCHED
+    assert result.signal_dispatch_trace["order_executor_called"] is True
+    assert result.signal_dispatch_trace["final_block_reason"] == worker.SIGNAL_NOT_DISPATCHED
+    assert ledger.load_signal_ledger()[0]["block_reason"] == worker.SIGNAL_NOT_DISPATCHED
+
+
 def test_quote_age_27_seconds_is_stale_not_ready():
     svc = _svc()
     old = datetime.now(KST) - timedelta(seconds=27)
