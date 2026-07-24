@@ -316,6 +316,31 @@ def test_provisional_unrelated_etf_stale_does_not_block_order():
     assert result.signal_dispatch_trace["required_quote_symbols"] == [config.WATCH_SYMBOL, config.LONG_SYMBOL]
 
 
+def test_provisional_same_target_holding_records_flag_and_block_reason():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _flat_completed_history(start)
+    svc = _provisional_service(df_1m, watch_price=140.0)
+    state = _fresh_state()
+    broker = FakeBroker(
+        cash=10_000_000.0,
+        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+    broker.buy_market(config.LONG_SYMBOL, 10, "seed")
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=15_000.0)
+    orders_before = len(broker.orders)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=_forming_now(start))
+
+    rows = ledger.load_signal_ledger()
+    assert len(broker.orders) == orders_before
+    assert result.actions == []
+    assert state.provisional_signal_id == "20260724_140000_UP_RED_PROVISIONAL"
+    assert rows[-1]["signal_id"] == "20260724_140000_UP_RED_PROVISIONAL"
+    assert rows[-1]["direction"] == Direction.UP_RED.value
+    assert rows[-1]["block_reason"] == worker.order_executor.BLOCK_ALREADY_HOLDING
+    assert rows[-1]["executor_called"] == "False"
+
+
 def test_provisional_quote_recovers_orders_same_signal_id_once():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)

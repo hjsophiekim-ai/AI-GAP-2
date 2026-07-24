@@ -623,6 +623,45 @@ def _dispatch_provisional_signal(
     return outcome
 
 
+def _record_provisional_blocked_signal(
+    *,
+    state: RuntimeState,
+    macd_snap,
+    direction: Direction,
+    signal_type: str,
+    reason: str,
+    result: TickResult,
+) -> None:
+    signal_id = make_provisional_signal_id(macd_snap.bar_dt, direction)
+    _update_provisional_state(state, macd_snap, direction, signal_id)
+    if signal_id in state.processed_signal_ids:
+        return
+    state.current_episode_direction = direction
+    state.order_block_reason = reason
+    signal_detected_at = datetime.now(KST)
+    state.provisional_detected_at = signal_detected_at.isoformat()
+    result.signal_detected_at = signal_detected_at.isoformat()
+    result.signal_dispatch_trace = {
+        "signal_id": signal_id,
+        "direction": direction.value,
+        "signal_type": signal_type,
+        "completed_bar_at": macd_snap.bar_dt.isoformat(),
+        "forming_bar_start": macd_snap.bar_dt.isoformat(),
+        "forming_bar_end": (macd_snap.bar_dt + timedelta(minutes=3)).isoformat(),
+        "order_executor_called": False,
+        "broker_called": False,
+        "final_block_reason": reason,
+    }
+    outcome = order_executor.ExecutionOutcome(
+        signal_id=signal_id,
+        direction=direction,
+        target_symbol=order_executor.target_symbol_for_direction(direction),
+        final_state=SignalState.BLOCKED,
+        block_reason=reason,
+    )
+    _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
+
+
 def run_once(
     *,
     broker,
@@ -789,6 +828,13 @@ def run_once(
                     _apply_switch_outcome(state, outcome, provisional_condition)
                     result.actions.append(f"OPPOSITE_SIGNAL:{provisional_condition.value}")
                     return result
+            else:
+                _record_provisional_blocked_signal(
+                    state=state, macd_snap=provisional_snap, direction=provisional_condition,
+                    signal_type="HELD_SAME_PROVISIONAL",
+                    reason=order_executor.BLOCK_ALREADY_HOLDING,
+                    result=result,
+                )
 
         if is_new_bar and entry_window_open and tradeable_bar:
             pattern, signal_snap, detected = _pending_primary_signal(
