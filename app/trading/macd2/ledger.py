@@ -20,6 +20,7 @@ SIGNAL_LEDGER_COLUMNS = [
     "trading_date", "completed_bar_at", "signal_id", "signal_type", "direction",
     "macd", "signal", "hist_last3", "detected_at", "order_requested_at",
     "order_result", "block_reason",
+    "signal_bar_at", "signal_confirmed_at", "baseline_completed_bar_at",
     "strategy_name", "strategy_version", "signal_rule", "worker_code_sha",
     "worker_instance_id", "session_started_at",
 ]
@@ -141,6 +142,7 @@ def _current_strategy_rows(
     strategy_version: Optional[str] = None,
     signal_rule: Optional[str] = None,
     session_started_at: Optional[str] = None,
+    session_baseline_bar_ts: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     current: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -151,11 +153,11 @@ def _current_strategy_rows(
             keep, reason = False, "OLD_STRATEGY"
         if keep and signal_rule and row.get("signal_rule") != signal_rule:
             keep, reason = False, "LEGACY_INVALID"
-        if keep and session_started_at:
+        if keep and session_baseline_bar_ts:
             completed_at = str(row.get("completed_bar_at") or "")
-            if len(completed_at) == 6:
-                session_hms = session_started_at[11:19].replace(":", "")
-                if completed_at < session_hms:
+            baseline_hms = session_baseline_bar_ts[11:19].replace(":", "")
+            if len(completed_at) == 6 and len(baseline_hms) == 6:
+                if completed_at <= baseline_hms:
                     keep, reason = False, "PRE_SESSION_SIGNAL"
         if keep:
             current.append(row)
@@ -172,6 +174,7 @@ def summarize_signals(
     strategy_version: Optional[str] = None,
     signal_rule: Optional[str] = None,
     session_started_at: Optional[str] = None,
+    session_baseline_bar_ts: Optional[str] = None,
 ) -> dict[str, Any]:
     """docs §16 stats: today's UP_RED/DOWN_BLUE counts + unexecuted signals+reason.
 
@@ -180,14 +183,21 @@ def summarize_signals(
     all_rows = [r for r in load_signal_ledger() if r.get("trading_date") == trading_date]
     rows, excluded = _current_strategy_rows(
         all_rows, strategy_version=strategy_version, signal_rule=signal_rule,
-        session_started_at=session_started_at,
+        session_started_at=session_started_at, session_baseline_bar_ts=session_baseline_bar_ts,
     )
     unique: dict[str, dict[str, Any]] = {}
     for row in rows:
         unique.setdefault(str(row.get("signal_id") or ""), row)
-    rows = [row for sid, row in unique.items() if sid]
-    red_count = sum(1 for r in rows if r.get("direction") == "UP_RED")
-    blue_count = sum(1 for r in rows if r.get("direction") == "DOWN_BLUE")
+    rows = sorted([row for sid, row in unique.items() if sid], key=lambda r: str(r.get("completed_bar_at") or ""))
+    onset_rows: list[dict[str, Any]] = []
+    last_direction = ""
+    for row in rows:
+        direction = str(row.get("direction") or "")
+        if direction and direction != last_direction:
+            onset_rows.append(row)
+            last_direction = direction
+    red_count = sum(1 for r in onset_rows if r.get("direction") == "UP_RED")
+    blue_count = sum(1 for r in onset_rows if r.get("direction") == "DOWN_BLUE")
     unexecuted = [
         {"signal_id": r.get("signal_id"), "direction": r.get("direction"), "reason": r.get("block_reason")}
         for r in rows
@@ -197,11 +207,12 @@ def summarize_signals(
         "trading_date": trading_date,
         "red_count": red_count,
         "blue_count": blue_count,
-        "signal_count": len(rows),
+        "signal_count": len(onset_rows),
         "unexecuted_signals": unexecuted,
         "excluded_signals": excluded,
-        "latest_signal_id": rows[-1].get("signal_id") if rows else None,
-        "current_signal_ids": [r.get("signal_id") for r in rows if r.get("signal_id")],
+        "latest_signal_id": onset_rows[-1].get("signal_id") if onset_rows else None,
+        "current_signal_ids": [r.get("signal_id") for r in onset_rows if r.get("signal_id")],
+        "onset_signals": onset_rows,
     }
 
 

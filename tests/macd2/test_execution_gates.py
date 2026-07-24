@@ -326,6 +326,22 @@ def test_production_path_catches_intermediate_down_crossover_when_cache_jumps_ah
     assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
 
 
+def test_production_path_treats_post_baseline_1300_bar_as_new_signal():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 80 + [80.0])
+    now = start + timedelta(minutes=3 * 81)
+    state = _state()
+    state.last_evaluated_bar_ts = datetime(2026, 7, 24, 12, 57, tzinfo=KST).isoformat()
+    state.session_baseline_bar_ts = state.last_evaluated_bar_ts
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
+
+    result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
+
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert state.latest_primary_signal_id == "20260724_130000_DOWN_BLUE"
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
+
+
 def test_production_path_signed_b_only_without_crossover_orders_zero():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _1m_from_3m_closes(start, [100.0] * 35 + [110.0, 120.0, 130.0])

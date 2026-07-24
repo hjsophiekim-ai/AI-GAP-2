@@ -27,6 +27,19 @@ def _current_signal_row(signal_id: str, direction: str = "UP_RED"):
     return row
 
 
+def _current_signal_at(signal_id: str, completed_hms: str, direction: str, *, session_start: str, baseline: str):
+    row = _current_signal_row(signal_id, direction=direction)
+    row.update({
+        "completed_bar_at": completed_hms,
+        "signal_bar_at": f"2026-01-06T{completed_hms[0:2]}:{completed_hms[2:4]}:{completed_hms[4:6]}+09:00",
+        "signal_confirmed_at": "",
+        "detected_at": session_start,
+        "session_started_at": session_start,
+        "baseline_completed_bar_at": baseline,
+    })
+    return row
+
+
 def _execution_row(order_id: str, side: str = "BUY", net_pnl: float = 0.0, gross_pnl: float = 0.0, fee: float = 0.0):
     return {
         "order_id": order_id, "signal_id": "sid-1", "timestamp": "20260106T090305",
@@ -118,6 +131,77 @@ def test_summarize_signals_counts_current_strategy_only_and_latest():
     assert summary["red_count"] == 1
     assert summary["blue_count"] == 1
     assert summary["latest_signal_id"] == "cur-blue"
+
+
+def test_summarize_signals_uses_baseline_not_session_start_for_pre_session():
+    ledger.append_signal(_current_signal_at(
+        "20260106_125700_DOWN_BLUE", "125700", "DOWN_BLUE",
+        session_start="2026-01-06T12:59:21+09:00",
+        baseline="2026-01-06T12:54:00+09:00",
+    ))
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version="20260724_MACD_CROSSOVER_V1",
+        signal_rule="MACD_CROSSOVER",
+        session_started_at="2026-01-06T12:59:21+09:00",
+        session_baseline_bar_ts="2026-01-06T12:54:00+09:00",
+    )
+
+    assert summary["blue_count"] == 1
+    assert summary["excluded_signals"] == []
+
+
+def test_summarize_signals_excludes_baseline_completed_bar_only():
+    ledger.append_signal(_current_signal_at(
+        "baseline", "125700", "DOWN_BLUE",
+        session_start="2026-01-06T13:00:31+09:00",
+        baseline="2026-01-06T12:57:00+09:00",
+    ))
+    ledger.append_signal(_current_signal_at(
+        "new", "130000", "DOWN_BLUE",
+        session_start="2026-01-06T13:00:31+09:00",
+        baseline="2026-01-06T12:57:00+09:00",
+    ))
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version="20260724_MACD_CROSSOVER_V1",
+        signal_rule="MACD_CROSSOVER",
+        session_baseline_bar_ts="2026-01-06T12:57:00+09:00",
+    )
+
+    assert summary["blue_count"] == 1
+    assert summary["current_signal_ids"] == ["new"]
+    assert summary["excluded_signals"][0]["excluded_reason"] == "PRE_SESSION_SIGNAL"
+
+
+def test_summarize_signals_counts_consecutive_same_direction_as_one_onset_and_excludes_old_strategy():
+    for i in range(8):
+        row = _signal_row(f"old-{i}", direction="UP_RED")
+        row.update({"strategy_version": "OLD", "signal_rule": "SIGNED_B_LEGACY"})
+        ledger.append_signal(row)
+    ledger.append_signal(_current_signal_at(
+        "down-1257", "125700", "DOWN_BLUE",
+        session_start="2026-01-06T12:59:21+09:00",
+        baseline="2026-01-06T12:54:00+09:00",
+    ))
+    ledger.append_signal(_current_signal_at(
+        "down-1300", "130000", "DOWN_BLUE",
+        session_start="2026-01-06T13:00:31+09:00",
+        baseline="2026-01-06T12:57:00+09:00",
+    ))
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version="20260724_MACD_CROSSOVER_V1",
+        signal_rule="MACD_CROSSOVER",
+    )
+
+    assert summary["red_count"] == 0
+    assert summary["blue_count"] == 1
+    assert summary["signal_count"] == 1
+    assert len([r for r in summary["excluded_signals"] if r["excluded_reason"] == "OLD_STRATEGY"]) == 8
 
 
 def test_summarize_daily_trading_empty_ledger_does_not_raise():
