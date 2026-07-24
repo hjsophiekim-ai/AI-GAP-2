@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from app.trading.macd2 import ledger
+from app.trading.macd2 import config, ledger
 
 _APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
 
@@ -62,6 +62,58 @@ def test_page_renders_with_populated_ledger():
     assert not at.exception
     metric_values = " ".join(str(m.value) for m in at.metric)
     assert metric_values  # at least some metrics rendered
+
+
+def test_daily_stats_show_flag_times_and_order_status():
+    trading_date = "20260724"
+    for row in (
+        {
+            "trading_date": trading_date,
+            "completed_bar_at": "092400",
+            "forming_bar_start": "2026-07-24T09:24:00+09:00",
+            "signal_id": "20260724_092400_UP_RED_PROVISIONAL",
+            "signal_type": "INITIAL",
+            "direction": "UP_RED",
+            "detected_at": "2026-07-24T09:24:02+09:00",
+            "order_requested_at": "2026-07-24T09:24:03+09:00",
+            "order_result": "EXECUTED",
+            "block_reason": "",
+            "strategy_name": "MACD2",
+            "strategy_version": config.STRATEGY_VERSION,
+            "signal_rule": config.SIGNAL_RULE,
+        },
+        {
+            "trading_date": trading_date,
+            "completed_bar_at": "143300",
+            "forming_bar_start": "2026-07-24T14:33:00+09:00",
+            "signal_id": "20260724_143300_DOWN_BLUE_PROVISIONAL",
+            "signal_type": "INITIAL",
+            "direction": "DOWN_BLUE",
+            "detected_at": "2026-07-24T14:33:04+09:00",
+            "order_requested_at": "",
+            "order_result": "BLOCKED",
+            "block_reason": "QUOTE_STALE",
+            "strategy_name": "MACD2",
+            "strategy_version": config.STRATEGY_VERSION,
+            "signal_rule": config.SIGNAL_RULE,
+        },
+    ):
+        ledger.append_signal(row)
+
+    at = _fresh_app()
+    at.run()
+    assert not at.exception
+    metric_labels = [m.label for m in at.metric]
+    assert "오늘 빨간 플래그" in metric_labels
+    assert "오늘 파란 플래그" in metric_labels
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "빨간 플래그 1건: 09:24:00" in captions
+    assert "파란 플래그 1건: 14:33:00" in captions
+    frames = [df.value for df in at.dataframe if getattr(df, "value", None) is not None]
+    flag_frame = next(frame for frame in frames if "not_ordered_reason" in frame.columns)
+    assert "order_requested" in flag_frame.columns
+    assert "not_ordered_reason" in flag_frame.columns
+    assert "QUOTE_STALE" in set(flag_frame["not_ordered_reason"])
 
 
 def test_start_stop_buttons_render():

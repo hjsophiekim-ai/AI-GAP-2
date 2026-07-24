@@ -83,6 +83,47 @@ def _bootstrap_status(state, bootstrap_last_result: dict | None) -> str:
             return "MARKET_CLOSED_WAIT"
     return "FAILED" if bootstrap_last_result is not None or state.order_block_reason else "PENDING"
 
+
+def _format_signal_time(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    try:
+        parsed = pd.Timestamp(text)
+        if not pd.isna(parsed):
+            return parsed.strftime("%H:%M:%S")
+    except Exception:
+        pass
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 14:
+        return f"{digits[8:10]}:{digits[10:12]}:{digits[12:14]}"
+    if len(digits) >= 6:
+        return f"{digits[-6:-4]}:{digits[-4:-2]}:{digits[-2:]}"
+    return text
+
+
+def _signal_display_time(row: dict) -> str:
+    return _format_signal_time(
+        row.get("forming_bar_start")
+        or row.get("signal_bar_at")
+        or row.get("completed_bar_at")
+    )
+
+
+def _order_requested_at(row: dict) -> str:
+    return _format_signal_time(row.get("order_requested_at") or row.get("order_requested_at_trace"))
+
+
+def _not_ordered_reason(row: dict, requested_at: str) -> str:
+    if requested_at != "-":
+        return "-"
+    for key in ("block_reason", "final_result", "order_result"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return "NO_ORDER_REQUEST"
+
+
 try:
     from streamlit_autorefresh import st_autorefresh
 
@@ -359,9 +400,9 @@ try:
     )
 
     g1, g2, g3 = st.columns(3)
-    g1.metric("오늘 빨간 플래그", f"{sig_summary['red_count']}회")
-    g2.metric("오늘 파란 플래그", f"{sig_summary['blue_count']}회")
-    g3.metric("완료 왕복", f"{trade_summary['round_trip_count']}건")
+    g1.metric("오늘 빨간 플래그", f"{sig_summary['red_count']}건")
+    g2.metric("오늘 파란 플래그", f"{sig_summary['blue_count']}건")
+    g3.metric("완료 거래", f"{trade_summary['round_trip_count']}건")
 
     st.caption(
         "KIS manual arrows today total=5 · "
@@ -372,18 +413,21 @@ try:
     if onset_rows:
         flag_rows = []
         for row in onset_rows:
-            requested_at = str(row.get("order_requested_at") or row.get("order_requested_at_trace") or "")
-            order_result = str(row.get("order_result") or "")
-            block_reason = str(row.get("block_reason") or "")
+            requested_at = _order_requested_at(row)
             flag_rows.append({
-                "bar_time": row.get("completed_bar_at") or "-",
+                "flag_time": _signal_display_time(row),
                 "direction": row.get("direction") or "-",
                 "signal_id": row.get("signal_id") or "-",
-                "ordered": "YES" if requested_at else "NO",
-                "order_result": order_result or "-",
-                "reason": block_reason or "-",
+                "order_requested": "YES" if requested_at != "-" else "NO",
+                "order_requested_at": requested_at,
+                "order_result": str(row.get("order_result") or "-"),
+                "not_ordered_reason": _not_ordered_reason(row, requested_at),
             })
-        st.dataframe(pd.DataFrame(flag_rows), use_container_width=True, height=220)
+        red_times = [r["flag_time"] for r in flag_rows if r["direction"] == "UP_RED"]
+        blue_times = [r["flag_time"] for r in flag_rows if r["direction"] == "DOWN_BLUE"]
+        st.caption(f"빨간 플래그 {len(red_times)}건: {', '.join(red_times) if red_times else '-'}")
+        st.caption(f"파란 플래그 {len(blue_times)}건: {', '.join(blue_times) if blue_times else '-'}")
+        st.dataframe(pd.DataFrame(flag_rows), use_container_width=True, height=260)
     else:
         st.caption("No current-version provisional flags today.")
 
