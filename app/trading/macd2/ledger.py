@@ -23,6 +23,14 @@ SIGNAL_LEDGER_COLUMNS = [
     "signal_bar_at", "signal_confirmed_at", "baseline_completed_bar_at",
     "strategy_name", "strategy_version", "signal_rule", "worker_code_sha",
     "worker_instance_id", "session_started_at",
+    "forming_bar_start", "forming_bar_end",
+    "previous_macd", "previous_signal", "previous_diff",
+    "provisional_macd", "provisional_signal", "provisional_diff",
+    "confirmed_macd", "confirmed_signal", "confirmed_diff",
+    "provisional_direction", "confirmed_direction",
+    "quote_ages", "position_reconcile", "executor_called", "order_requested_at_trace",
+    "broker_called", "broker_order_id", "broker_rt_cd", "broker_msg_cd", "broker_msg1",
+    "final_result",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

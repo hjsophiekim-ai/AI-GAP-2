@@ -227,6 +227,7 @@ class RuntimeState:
     provisional_signal_id: Optional[str] = None
     provisional_detected_at: Optional[str] = None
     provisional_order_requested_at: Optional[str] = None
+    provisional_ordered_bar_ts: Optional[str] = None
     signed_b_shadow_direction: Optional[Direction] = None
     signed_b_shadow_hist_last3: tuple[float, float, float] = field(default_factory=tuple)
     updated_at: Optional[str] = None

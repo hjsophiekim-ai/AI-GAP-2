@@ -112,6 +112,7 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "provisional_signal_id": state.provisional_signal_id,
         "provisional_detected_at": state.provisional_detected_at,
         "provisional_order_requested_at": state.provisional_order_requested_at,
+        "provisional_ordered_bar_ts": state.provisional_ordered_bar_ts,
         "signed_b_shadow_direction": (
             state.signed_b_shadow_direction.value if state.signed_b_shadow_direction else None
         ),
@@ -184,6 +185,7 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         provisional_signal_id=raw.get("provisional_signal_id"),
         provisional_detected_at=raw.get("provisional_detected_at"),
         provisional_order_requested_at=raw.get("provisional_order_requested_at"),
+        provisional_ordered_bar_ts=raw.get("provisional_ordered_bar_ts"),
         signed_b_shadow_direction=signed_b_shadow,
         signed_b_shadow_hist_last3=tuple(raw.get("signed_b_shadow_hist_last3") or ()),
         updated_at=raw.get("updated_at"),

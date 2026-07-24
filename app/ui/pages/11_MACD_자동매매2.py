@@ -340,6 +340,12 @@ try:
         signal_rule=state.signal_rule,
         session_started_at=state.session_started_at,
     )
+    confirmed_summary = ledger.summarize_signals(
+        trading_date,
+        strategy_version=state.strategy_version,
+        signal_rule=getattr(macd2_config, "CONFIRMED_SIGNAL_RULE", "MACD_CROSSOVER_CONFIRMED"),
+        session_started_at=state.session_started_at,
+    )
     trade_summary = ledger.summarize_daily_trading(
         trading_date,
         budget=state.budget,
@@ -350,6 +356,30 @@ try:
     g1.metric("오늘 빨간 플래그", f"{sig_summary['red_count']}회")
     g2.metric("오늘 파란 플래그", f"{sig_summary['blue_count']}회")
     g3.metric("완료 왕복", f"{trade_summary['round_trip_count']}건")
+
+    st.caption(
+        "KIS manual arrows today total=5 · "
+        f"system provisional red/blue={sig_summary['red_count']}/{sig_summary['blue_count']} · "
+        f"system confirmed red/blue={confirmed_summary['red_count']}/{confirmed_summary['blue_count']}"
+    )
+    onset_rows = sig_summary.get("onset_signals") or []
+    if onset_rows:
+        flag_rows = []
+        for row in onset_rows:
+            requested_at = str(row.get("order_requested_at") or row.get("order_requested_at_trace") or "")
+            order_result = str(row.get("order_result") or "")
+            block_reason = str(row.get("block_reason") or "")
+            flag_rows.append({
+                "bar_time": row.get("completed_bar_at") or "-",
+                "direction": row.get("direction") or "-",
+                "signal_id": row.get("signal_id") or "-",
+                "ordered": "YES" if requested_at else "NO",
+                "order_result": order_result or "-",
+                "reason": block_reason or "-",
+            })
+        st.dataframe(pd.DataFrame(flag_rows), use_container_width=True, height=220)
+    else:
+        st.caption("No current-version provisional flags today.")
 
     for u in sig_summary.get("unexecuted_signals") or []:
         st.write(f"- `{u.get('signal_id')}` · {u.get('direction')} · 사유 `{u.get('reason')}`")

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.trading.macd2 import ledger
+from app.trading.macd2 import config, ledger
 
 
 def _signal_row(signal_id: str, direction: str = "UP_RED", order_result: str = "EXECUTED", block_reason: str = ""):
@@ -20,8 +20,8 @@ def _current_signal_row(signal_id: str, direction: str = "UP_RED"):
     row = _signal_row(signal_id, direction=direction)
     row.update({
         "strategy_name": "MACD2",
-        "strategy_version": "20260724_MACD_CROSSOVER_V1",
-        "signal_rule": "MACD_CROSSOVER",
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": config.SIGNAL_RULE,
         "session_started_at": "2026-01-06T09:00:00+09:00",
     })
     return row
@@ -107,8 +107,8 @@ def test_summarize_signals_filters_old_strategy_rows():
 
     summary = ledger.summarize_signals(
         "20260106",
-        strategy_version="20260724_MACD_CROSSOVER_V1",
-        signal_rule="MACD_CROSSOVER",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
         session_started_at="2026-01-06T09:00:00+09:00",
     )
     assert summary["red_count"] == 0
@@ -124,8 +124,8 @@ def test_summarize_signals_counts_current_strategy_only_and_latest():
 
     summary = ledger.summarize_signals(
         "20260106",
-        strategy_version="20260724_MACD_CROSSOVER_V1",
-        signal_rule="MACD_CROSSOVER",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
         session_started_at="2026-01-06T09:00:00+09:00",
     )
     assert summary["red_count"] == 1
@@ -142,8 +142,8 @@ def test_summarize_signals_uses_baseline_not_session_start_for_pre_session():
 
     summary = ledger.summarize_signals(
         "20260106",
-        strategy_version="20260724_MACD_CROSSOVER_V1",
-        signal_rule="MACD_CROSSOVER",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
         session_started_at="2026-01-06T12:59:21+09:00",
         session_baseline_bar_ts="2026-01-06T12:54:00+09:00",
     )
@@ -166,8 +166,8 @@ def test_summarize_signals_excludes_baseline_completed_bar_only():
 
     summary = ledger.summarize_signals(
         "20260106",
-        strategy_version="20260724_MACD_CROSSOVER_V1",
-        signal_rule="MACD_CROSSOVER",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
         session_baseline_bar_ts="2026-01-06T12:57:00+09:00",
     )
 
@@ -194,8 +194,8 @@ def test_summarize_signals_counts_consecutive_same_direction_as_one_onset_and_ex
 
     summary = ledger.summarize_signals(
         "20260106",
-        strategy_version="20260724_MACD_CROSSOVER_V1",
-        signal_rule="MACD_CROSSOVER",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
     )
 
     assert summary["red_count"] == 0

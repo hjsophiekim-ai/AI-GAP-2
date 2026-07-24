@@ -308,6 +308,24 @@ def _quote_status_for_order(market_data: MarketDataService, symbols: tuple[str, 
     return order_executor.BLOCK_ORDER_DATA_INVALID, valid_prices
 
 
+def _required_quote_symbols(direction: Direction, position: Optional[PositionSnapshot]) -> tuple[str, ...]:
+    symbols = [config.WATCH_SYMBOL]
+    if position is not None and position.quantity > 0 and position.symbol:
+        symbols.append(position.symbol)
+    target = order_executor.target_symbol_for_direction(direction)
+    if target:
+        symbols.append(target)
+    return tuple(dict.fromkeys(symbols))
+
+
+def _quote_ages(market_data: MarketDataService, symbols: tuple[str, ...]) -> dict[str, Optional[float]]:
+    ages: dict[str, Optional[float]] = {}
+    for symbol in symbols:
+        snap = market_data.get_quote(symbol)
+        ages[symbol] = snap.age_sec if snap is not None else None
+    return ages
+
+
 def _pending_age_sec(pending: dict[str, Any], now: datetime) -> Optional[float]:
     raw = pending.get("detected_at")
     if not raw:
@@ -334,6 +352,32 @@ def _quote_valid_for_provisional(market_data: MarketDataService, symbol: str) ->
         and snap.price > 0
         and (snap.age_sec is None or snap.age_sec <= config.QUOTE_MAX_AGE_SEC)
     )
+
+
+def _provisional_bar_key_from_id(signal_id: str) -> Optional[str]:
+    parts = str(signal_id or "").split("_")
+    if len(parts) >= 5 and parts[-1] == "PROVISIONAL":
+        return f"{parts[0]}_{parts[1]}"
+    return None
+
+
+def _provisional_bar_key(bar_dt: datetime) -> str:
+    bar_kst = bar_dt.astimezone(KST)
+    return f"{bar_kst:%Y%m%d}_{bar_kst:%H%M%S}"
+
+
+def _provisional_bar_locked(state: RuntimeState, bar_dt: datetime, signal_id: str) -> bool:
+    bar_key = _provisional_bar_key(bar_dt)
+    if state.provisional_ordered_bar_ts == bar_dt.astimezone(KST).isoformat():
+        return True
+    for processed in state.processed_signal_ids:
+        if _provisional_bar_key_from_id(processed) == bar_key:
+            return True
+    pending = state.pending_signal or {}
+    pending_id = str(pending.get("signal_id") or "")
+    if pending_id and pending_id != signal_id and _provisional_bar_key_from_id(pending_id) == bar_key:
+        return True
+    return False
 
 
 def _update_provisional_state(state: RuntimeState, macd_snap, pattern: Direction, signal_id: Optional[str]) -> None:
@@ -433,10 +477,18 @@ def _execute_or_wait(
         "direction": direction.value,
         "signal_type": signal_type,
         "completed_bar_at": macd_snap.bar_dt.isoformat(),
+        "forming_bar_start": macd_snap.bar_dt.isoformat() if str(signal_id).endswith("_PROVISIONAL") else "",
+        "forming_bar_end": (macd_snap.bar_dt + timedelta(minutes=3)).isoformat() if str(signal_id).endswith("_PROVISIONAL") else "",
         "position_reconcile_result": None,
         "quote_status": None,
+        "required_quote_symbols": [],
+        "quote_ages": {},
         "target_quote_valid": False,
         "order_executor_called": False,
+        "executor_called_at": None,
+        "broker_called": False,
+        "broker_order_id": "",
+        "broker_raw": {},
         "final_block_reason": None,
     }
     reconcile = reconcile_position_state(broker, state, now, force=True)
@@ -462,10 +514,11 @@ def _execute_or_wait(
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
 
-    quote_status, quotes = _quote_status_for_order(
-        market_data, (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL)
-    )
+    required_symbols = _required_quote_symbols(direction, position)
+    quote_status, quotes = _quote_status_for_order(market_data, required_symbols)
     target = order_executor.target_symbol_for_direction(direction)
+    result.signal_dispatch_trace["required_quote_symbols"] = list(required_symbols)
+    result.signal_dispatch_trace["quote_ages"] = _quote_ages(market_data, required_symbols)
     result.signal_dispatch_trace["quote_status"] = quote_status
     result.signal_dispatch_trace["target_quote_valid"] = bool(target and target in quotes and quotes[target] > 0)
     if quote_status != "READY":
@@ -480,6 +533,7 @@ def _execute_or_wait(
         return None
 
     result.signal_dispatch_trace["order_executor_called"] = True
+    result.signal_dispatch_trace["executor_called_at"] = datetime.now(KST).isoformat()
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=signal_id, quotes=quotes,
         position=position, budget=state.budget,
@@ -496,6 +550,12 @@ def _execute_or_wait(
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
     result.order_requested_at = outcome.timestamps.get("sell_requested_at") or outcome.timestamps.get("buy_requested_at")
+    result.signal_dispatch_trace["order_requested_at"] = result.order_requested_at or ""
+    broker_result = outcome.buy_result or outcome.sell_result
+    if broker_result is not None:
+        result.signal_dispatch_trace["broker_called"] = True
+        result.signal_dispatch_trace["broker_order_id"] = broker_result.order_id
+        result.signal_dispatch_trace["broker_raw"] = dict(broker_result.raw or {})
     if _has_order_request(outcome):
         if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
             state.pending_signal["status"] = SignalState.ORDER_REQUESTED.value
@@ -531,6 +591,17 @@ def _dispatch_provisional_signal(
     if signal_id in state.processed_signal_ids:
         state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
         return None
+    if _provisional_bar_locked(state, macd_snap.bar_dt, signal_id):
+        state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
+        result.signal_dispatch_trace = {
+            "signal_id": signal_id,
+            "direction": direction.value,
+            "signal_type": signal_type,
+            "completed_bar_at": macd_snap.bar_dt.isoformat(),
+            "order_executor_called": False,
+            "final_block_reason": order_executor.BLOCK_DUPLICATE_SIGNAL,
+        }
+        return None
     if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
         return None
 
@@ -542,11 +613,13 @@ def _dispatch_provisional_signal(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
     )
-    _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome)
+    _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
     if outcome is not None:
         state.provisional_order_requested_at = (
             outcome.timestamps.get("buy_requested_at") or outcome.timestamps.get("sell_requested_at") or ""
         )
+        if _has_order_request(outcome):
+            state.provisional_ordered_bar_ts = macd_snap.bar_dt.astimezone(KST).isoformat()
     return outcome
 
 
@@ -737,6 +810,10 @@ def run_once(
                 target = order_executor.target_symbol_for_direction(pattern)
                 if target != pos.symbol:
                     signal_id = make_signal_id(macd_signal_snap.bar_dt, pattern)
+                    provisional_signal_id = make_provisional_signal_id(macd_signal_snap.bar_dt, pattern)
+                    if provisional_signal_id in state.processed_signal_ids:
+                        state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
+                        return result
                     state.latest_primary_signal_id = signal_id
                     signal_detected_at = datetime.now(KST)
                     result.signal_detected_at = signal_detected_at.isoformat()
@@ -744,7 +821,7 @@ def run_once(
                         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_signal_snap,
                         direction=pattern, signal_id=signal_id, signal_type="REVERSAL", position=pos, result=result,
                     )
-                    _record_signal_ledger(state, macd_signal_snap, pattern, "REVERSAL", signal_id, signal_detected_at, outcome)
+                    _record_signal_ledger(state, macd_signal_snap, pattern, "REVERSAL", signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
                     if outcome is not None:
                         _apply_switch_outcome(state, outcome, pattern)
                         result.actions.append(f"OPPOSITE_SIGNAL:{pattern.value}")
@@ -809,6 +886,10 @@ def run_once(
             state.latest_primary_flag = pattern
             macd_signal_snap = signal_snap or macd_snap
             signal_id = make_signal_id(macd_signal_snap.bar_dt, pattern)
+            provisional_signal_id = make_provisional_signal_id(macd_signal_snap.bar_dt, pattern)
+            if provisional_signal_id in state.processed_signal_ids:
+                state.last_evaluated_bar_ts = macd_signal_snap.bar_dt.isoformat()
+                return result
             state.latest_primary_signal_id = signal_id
             signal_detected_at = datetime.now(KST)
             result.signal_detected_at = signal_detected_at.isoformat()
@@ -816,7 +897,7 @@ def run_once(
                 broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_signal_snap,
                 direction=pattern, signal_id=signal_id, signal_type="INITIAL", position=None, result=result,
             )
-            _record_signal_ledger(state, macd_signal_snap, pattern, "INITIAL", signal_id, signal_detected_at, outcome)
+            _record_signal_ledger(state, macd_signal_snap, pattern, "INITIAL", signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
             if outcome is not None:
                 _apply_switch_outcome(state, outcome, pattern)
                 result.actions.append(f"ENTRY:{pattern.value}")
@@ -866,10 +947,13 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
     state.order_block_reason = outcome.block_reason
 
 
-def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, detected_at, outcome) -> None:
+def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, detected_at, outcome, dispatch_trace=None) -> None:
     order_result = outcome.final_state.value if outcome is not None else SignalState.WAITING.value
     block_reason = outcome.block_reason or "" if outcome is not None else (state.order_block_reason or "WAITING")
     trading_date = macd_snap.bar_dt.astimezone(KST).strftime("%Y%m%d")
+    trace = dict(dispatch_trace or {})
+    raw = dict(trace.get("broker_raw") or {})
+    is_provisional = str(signal_id).endswith("_PROVISIONAL")
     ledger.append_signal({
         "trading_date": trading_date,
         "completed_bar_at": macd_snap.bar_dt.astimezone(KST).strftime("%H%M%S"),
@@ -891,10 +975,33 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "baseline_completed_bar_at": state.session_baseline_bar_ts or "",
         "strategy_name": config.STRATEGY_NAME,
         "strategy_version": config.STRATEGY_VERSION,
-        "signal_rule": config.SIGNAL_RULE,
+        "signal_rule": config.SIGNAL_RULE if is_provisional else config.CONFIRMED_SIGNAL_RULE,
         "worker_code_sha": _git_sha(),
         "worker_instance_id": state.worker_instance_id or "",
         "session_started_at": state.session_started_at or "",
+        "forming_bar_start": trace.get("forming_bar_start") or (macd_snap.bar_dt.astimezone(KST).isoformat() if is_provisional else ""),
+        "forming_bar_end": trace.get("forming_bar_end") or ((macd_snap.bar_dt + timedelta(minutes=3)).astimezone(KST).isoformat() if is_provisional else ""),
+        "previous_macd": "",
+        "previous_signal": "",
+        "previous_diff": macd_snap.previous_diff if macd_snap.previous_diff is not None else "",
+        "provisional_macd": macd_snap.macd if is_provisional else "",
+        "provisional_signal": macd_snap.signal if is_provisional else "",
+        "provisional_diff": macd_snap.current_diff if is_provisional else "",
+        "confirmed_macd": "" if is_provisional else macd_snap.macd,
+        "confirmed_signal": "" if is_provisional else macd_snap.signal,
+        "confirmed_diff": "" if is_provisional else macd_snap.current_diff,
+        "provisional_direction": direction.value if is_provisional else "",
+        "confirmed_direction": "" if is_provisional else direction.value,
+        "quote_ages": str(trace.get("quote_ages") or {}),
+        "position_reconcile": trace.get("position_reconcile_result") or "",
+        "executor_called": trace.get("order_executor_called"),
+        "order_requested_at_trace": trace.get("order_requested_at") or "",
+        "broker_called": trace.get("broker_called"),
+        "broker_order_id": trace.get("broker_order_id") or "",
+        "broker_rt_cd": raw.get("rt_cd") or "",
+        "broker_msg_cd": raw.get("msg_cd") or "",
+        "broker_msg1": raw.get("msg1") or "",
+        "final_result": order_result if not block_reason else f"{order_result}:{block_reason}",
     })
 
 
