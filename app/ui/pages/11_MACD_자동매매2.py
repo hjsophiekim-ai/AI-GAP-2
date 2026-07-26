@@ -188,7 +188,7 @@ if mode == "real":
 else:
     st.info("MOCK 모드 (기본값) — KIS 모의투자 계좌")
 
-b1, b2, b3 = st.columns(3)
+b1, b2, b3, b4 = st.columns(4)
 with b1:
     if st.button("자동매매 시작", type="primary", use_container_width=True):
         res = service.start(mode=mode, budget=float(budget), real_kwargs=real_kwargs if mode == "real" else None)
@@ -203,6 +203,20 @@ with b2:
         st.warning("중지됨")
         st.rerun()
 with b3:
+    if st.button("자동매매 중지 및 일괄매도", use_container_width=True):
+        res = service.stop_and_liquidate_all("user_stop_liquidate_all")
+        sold = [r for r in res.get("results", []) if r.get("symbol")]
+        if res.get("ok"):
+            if sold:
+                detail = ", ".join(f"{r['symbol']} {r['quantity']}주" for r in sold)
+                st.warning(f"자동매매 중지 + 일괄매도 완료: {detail}")
+            else:
+                st.warning("자동매매 중지됨 (보유 포지션 없음)")
+        else:
+            failed = ", ".join(f"{r.get('symbol') or '?'}:{r.get('block_reason')}" for r in sold if not r.get("ok"))
+            st.error(f"일괄매도 일부/전체 실패 — {failed or res.get('message')}")
+        st.rerun()
+with b4:
     if st.button("Bootstrap 재시도", use_container_width=True):
         res = service.retry_bootstrap()
         if res.get("ok"):

@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from app.trading import strategy_ownership
-from app.trading.macd2 import config, state_store
+from app.trading.macd2 import config, order_executor, state_store
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import RuntimeStatus
@@ -165,6 +165,63 @@ class Macd2Service:
         state.ui_mode = RuntimeStatus.STOPPED
         state_store.save_state(state)
         return {"ok": True}
+
+    def stop_and_liquidate_all(self, reason: str = "user_stop_liquidate_all") -> dict[str, Any]:
+        """UI "자동매매 중지 및 일괄매도" 버튼 — Worker를 먼저 멈춰 더 이상 새
+        신호로 매매하지 않도록 한 뒤, 그 시점에 실제로 보유 중인 모든
+        TRADE_SYMBOLS 포지션을 order_executor.execute_exit로 시장가 매도한다
+        (worker.py의 FORCED_LIQUIDATION과 동일한, 이미 검증된 매도 경로 재사용
+        — 별도 매도 로직 재구현 없음). 브로커 조회 실패/미시작 상태에서도
+        안전하게 실패를 보고한다."""
+        if self._worker is not None:
+            self._worker.stop(join_timeout=5.0)
+
+        if self._broker is None:
+            return {"ok": False, "message": "NOT_STARTED", "results": []}
+
+        state = state_store.load_state()
+        results: list[dict[str, Any]] = []
+        try:
+            raw_positions = list(self._broker.get_positions())
+        except Exception as exc:
+            raw_positions = []
+            results.append({"symbol": None, "quantity": 0, "ok": False, "final_state": "FAILED", "block_reason": f"POSITIONS_FETCH_FAILED:{exc!r}"})
+
+        for pos in raw_positions:
+            symbol = str(getattr(pos, "symbol", "") or "")
+            qty = int(getattr(pos, "quantity", 0) or 0)
+            if symbol not in config.TRADE_SYMBOLS or qty <= 0:
+                continue
+            entry_price = float(getattr(pos, "avg_price", 0.0) or 0.0)
+            if state.position is not None and state.position.symbol == symbol and state.position.avg_price:
+                entry_price = float(state.position.avg_price)
+            outcome = order_executor.execute_exit(
+                broker=self._broker, symbol=symbol, quantity=qty,
+                exit_reason=config.EXIT_USER_LIQUIDATION, entry_price=entry_price,
+            )
+            results.append({
+                "symbol": symbol, "quantity": qty,
+                "ok": outcome.final_state.value == "EXECUTED",
+                "final_state": outcome.final_state.value,
+                "block_reason": outcome.block_reason,
+            })
+
+        if self._market_data is not None:
+            self._market_data.stop_quote_updater(join_timeout=2.0)
+            self._market_data.stop_history_updater(join_timeout=2.0)
+
+        all_ok = all(r.get("ok") for r in results) if results else True
+        state = state_store.load_state()
+        state.auto_trade_on = False
+        state.stopped = True
+        state.stopped_reason = reason
+        state.ui_mode = RuntimeStatus.STOPPED
+        if all_ok:
+            state.position = None
+            state.peak_net_return = 0.0
+            state.profit_lock_active = False
+        state_store.save_state(state)
+        return {"ok": all_ok, "results": results}
 
     def get_snapshot(self) -> dict[str, Any]:
         state = state_store.load_state()

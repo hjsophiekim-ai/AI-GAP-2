@@ -14,7 +14,7 @@ import pytest
 
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, service as service_module, state_store
-from app.trading.macd2.models import RuntimeStatus
+from app.trading.macd2.models import PositionSnapshot, RuntimeStatus
 from tests.macd2.fake_broker import FakeBroker
 
 KST = config.KST
@@ -262,6 +262,67 @@ def test_stop_sets_stopped_state_and_kills_worker(monkeypatch):
     assert state.stopped is True
     assert state.stopped_reason == "test_stop"
     assert state.ui_mode == RuntimeStatus.STOPPED
+
+
+def test_stop_and_liquidate_all_sells_held_position(monkeypatch):
+    """UI "자동매매 중지 및 일괄매도" 버튼: Worker를 멈추고, 그 시점에 실제
+    브로커가 들고 있는 TRADE_SYMBOLS 포지션을 order_executor.execute_exit로
+    시장가 매도한 뒤 auto_trade_on/position을 모두 정리한다."""
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction(monkeypatch)
+
+    svc = service_module.Macd2Service()
+    try:
+        svc.start(mode="mock")
+        assert svc.supervisor_status()["worker_alive"] is True
+
+        broker = svc._broker
+        broker.set_quote(config.LONG_SYMBOL, 15000.0)
+        broker.buy_market(config.LONG_SYMBOL, 100, "test:BUY")
+        state = state_store.load_state()
+        state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=100, avg_price=15000.0)
+        state_store.save_state(state)
+
+        res = svc.stop_and_liquidate_all("test_liquidate")
+
+        assert res["ok"] is True
+        assert res["results"] == [
+            {"symbol": config.LONG_SYMBOL, "quantity": 100, "ok": True, "final_state": "EXECUTED", "block_reason": config.EXIT_USER_LIQUIDATION},
+        ]
+        assert broker.get_position(config.LONG_SYMBOL) is None
+        assert svc.supervisor_status()["worker_alive"] is False
+
+        state = state_store.load_state()
+        assert state.auto_trade_on is False
+        assert state.stopped is True
+        assert state.stopped_reason == "test_liquidate"
+        assert state.ui_mode == RuntimeStatus.STOPPED
+        assert state.position is None
+    finally:
+        svc.stop()
+
+
+def test_stop_and_liquidate_all_noop_when_flat(monkeypatch):
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction(monkeypatch)
+
+    svc = service_module.Macd2Service()
+    try:
+        svc.start(mode="mock")
+        res = svc.stop_and_liquidate_all("test_liquidate_flat")
+
+        assert res == {"ok": True, "results": []}
+        state = state_store.load_state()
+        assert state.auto_trade_on is False
+        assert state.stopped is True
+    finally:
+        svc.stop()
+
+
+def test_stop_and_liquidate_all_before_start_is_rejected():
+    svc = service_module.Macd2Service()
+    res = svc.stop_and_liquidate_all()
+    assert res == {"ok": False, "message": "NOT_STARTED", "results": []}
 
 
 def test_get_snapshot_shape(monkeypatch):

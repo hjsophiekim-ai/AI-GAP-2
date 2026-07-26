@@ -55,6 +55,7 @@ EXIT_STOP_LOSS = "STOP_LOSS"
 EXIT_PROFIT_LOCK = "PROFIT_LOCK"
 EXIT_OPPOSITE_SIGNAL = "OPPOSITE_SIGNAL"
 EXIT_FORCED_LIQUIDATION = "FORCED_LIQUIDATION"
+EXIT_USER_LIQUIDATION = "USER_LIQUIDATION"  # UI "자동매매 중지 및 일괄매도" 버튼
 
 # ── Session timing (strategy-fixed, KST) ───────────────────────────────────
 SESSION_OPEN = time(9, 0)
