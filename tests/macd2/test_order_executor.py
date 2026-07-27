@@ -113,6 +113,53 @@ def test_orderable_cash_smaller_than_budget_shrinks_requested_qty():
     assert outcome.quantity * price < budget  # sized off cash, not the larger budget
 
 
+def test_ui_budget_9200000_uses_kis_nrcvb_buy_qty_cap():
+    price = 15_000.0
+    broker = FakeBroker(cash=9_254_852.0, quotes={"0193T0": price})
+    broker.next_nrcvb_buy_qty = 100
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-kis-qty-cap",
+        quotes={"0193T0": price}, position=None, budget=9_200_000.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.budget_qty == int(9_200_000.0 // price)
+    assert outcome.nrcvb_buy_qty == 100
+    assert outcome.final_qty <= 100
+    assert outcome.buy_result.requested_qty == outcome.final_qty
+    assert broker.orders[-1].requested_qty <= 100
+
+
+def test_market_buyable_query_matches_market_order_type():
+    broker = FakeBroker(cash=9_254_852.0, quotes={"0193T0": 15_000.0})
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-market-ord-dvsn",
+        quotes={"0193T0": 15_000.0}, position=None, budget=9_200_000.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert broker.buy_sizing_quotes[-1].order_type == "market"
+    assert broker.buy_sizing_quotes[-1].ord_dvsn == "01"
+    assert broker.orders[-1].raw.get("ORD_DVSN", "01") == "01"
+
+
+def test_final_qty_zero_blocks_before_broker_order():
+    broker = FakeBroker(cash=9_254_852.0, quotes={"0193T0": 15_000.0})
+    broker.next_nrcvb_buy_qty = 0
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-zero-nrcvb",
+        quotes={"0193T0": 15_000.0}, position=None, budget=9_200_000.0,
+    )
+
+    assert outcome.final_state == SignalState.BLOCKED
+    assert outcome.block_reason == order_executor.BLOCK_NRCVB_BUY_QTY_ZERO
+    assert outcome.broker_called is False
+    assert broker.orders == []
+
+
 def test_flat_entry_down_blue_buys_inverse_symbol():
     broker = FakeBroker(cash=10_000_000.0, quotes={"0197X0": 10_000.0})
     outcome = order_executor.execute_signal(
@@ -187,7 +234,8 @@ def test_insufficient_cash_blocks_qty_lt_1():
         quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
     )
     assert outcome.final_state == SignalState.BLOCKED
-    assert outcome.block_reason == order_executor.BLOCK_INSUFFICIENT_QTY
+    assert outcome.block_reason == order_executor.BLOCK_NRCVB_BUY_QTY_ZERO
+    assert outcome.broker_called is False
 
 
 def test_sell_failure_blocks_before_any_buy_attempt():
@@ -237,8 +285,48 @@ def test_buy_accepted_but_unfilled_never_recorded_as_executed():
     )
     assert outcome.final_state == SignalState.FAILED
     assert outcome.block_reason == order_executor.FAIL_BUY_NOT_CONFIRMED
+    assert outcome.order_failure_stage == order_executor.FILL_TIMEOUT
+    assert outcome.filled_qty == 0
+    assert outcome.fill_poll_result == "TIMEOUT"
+    assert outcome.balance_qty == 0
     assert broker.get_position("0193T0") is None
     assert ledger.load_execution_ledger() == []  # never recorded as a confirmed leg
+
+
+def test_buy_rejected_is_classified_order_rejected_with_kis_fields():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.fail_next_buy = True
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-rejected",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+    )
+
+    assert outcome.final_state == SignalState.FAILED
+    assert outcome.block_reason == order_executor.FAIL_BUY
+    assert outcome.order_failure_stage == order_executor.ORDER_REJECTED
+    assert outcome.buy_result.raw["rt_cd"] == "1"
+    assert outcome.buy_result.raw["msg_cd"] == "FAKE_REJECT"
+    assert outcome.buy_result.raw["msg1"] == "fake rejected"
+    assert outcome.fill_poll_result == "NOT_POLLED_ORDER_REJECTED"
+
+
+def test_buy_success_without_order_id_is_classified_no_order_id():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_order_id = ""
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-no-order-id",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+    )
+
+    assert outcome.final_state == SignalState.FAILED
+    assert outcome.block_reason == order_executor.FAIL_BUY
+    assert outcome.order_failure_stage == order_executor.NO_ORDER_ID
+    assert outcome.buy_result.success is True
+    assert outcome.buy_result.order_id == ""
+    assert outcome.fill_poll_result == "NOT_POLLED_NO_ORDER_ID"
+    assert ledger.load_execution_ledger() == []
 
 
 def test_buy_partial_fill_records_real_filled_qty_not_requested():
@@ -253,6 +341,9 @@ def test_buy_partial_fill_records_real_filled_qty_not_requested():
         reconcile_retries=2, reconcile_delay_sec=0.0,
     )
     assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.order_failure_stage == order_executor.BALANCE_MISMATCH
+    assert outcome.fill_poll_result == "FILLED"
+    assert outcome.balance_qty == 3
     assert outcome.quantity == 3
     assert broker.get_position("0193T0").quantity == 3
 

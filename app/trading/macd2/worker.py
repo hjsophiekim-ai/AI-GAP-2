@@ -724,17 +724,43 @@ def _execute_or_wait(
     result.signal_dispatch_trace["order_requested_at"] = result.order_requested_at or ""
     if outcome.orderable_cash_at_sizing is not None:
         state.last_order_orderable_cash = outcome.orderable_cash_at_sizing
+        state.last_order_nrcvb_buy_amt = outcome.nrcvb_buy_amt
+        state.last_order_nrcvb_buy_qty = outcome.nrcvb_buy_qty
+        state.last_order_psbl_qty_calc_unpr = outcome.psbl_qty_calc_unpr
+        state.last_order_budget_qty = outcome.budget_qty
+        state.last_order_final_qty = outcome.final_qty
+        state.last_order_sizing_rt_cd = outcome.sizing_rt_cd
+        state.last_order_sizing_msg_cd = outcome.sizing_msg_cd
+        state.last_order_sizing_msg1 = outcome.sizing_msg1
         state.last_order_sizing_price = outcome.sizing_price
-        state.last_order_requested_qty = outcome.quantity
-        state.last_order_expected_amount = (
-            round(outcome.sizing_price * outcome.quantity, 2) if outcome.sizing_price else None
-        )
+        state.last_order_requested_qty = outcome.buy_result.requested_qty if outcome.buy_result else outcome.quantity
+        state.last_order_expected_amount = outcome.expected_amount
+    state.last_order_failure_stage = outcome.order_failure_stage
+    state.last_order_filled_qty = outcome.filled_qty
+    state.last_order_fill_poll_result = outcome.fill_poll_result
+    state.last_order_balance_qty = outcome.balance_qty
     _record_broker_order_result(state, outcome)
     broker_result = outcome.buy_result or outcome.sell_result
     if broker_result is not None:
         result.signal_dispatch_trace["broker_called"] = True
         result.signal_dispatch_trace["broker_order_id"] = broker_result.order_id
         result.signal_dispatch_trace["broker_raw"] = dict(broker_result.raw or {})
+    result.signal_dispatch_trace["orderable_cash"] = outcome.orderable_cash_at_sizing
+    result.signal_dispatch_trace["nrcvb_buy_amt"] = outcome.nrcvb_buy_amt
+    result.signal_dispatch_trace["nrcvb_buy_qty"] = outcome.nrcvb_buy_qty
+    result.signal_dispatch_trace["psbl_qty_calc_unpr"] = outcome.psbl_qty_calc_unpr
+    result.signal_dispatch_trace["budget_qty"] = outcome.budget_qty
+    result.signal_dispatch_trace["final_qty"] = outcome.final_qty
+    result.signal_dispatch_trace["sizing_price"] = outcome.sizing_price
+    result.signal_dispatch_trace["requested_qty"] = outcome.buy_result.requested_qty if outcome.buy_result else outcome.quantity
+    result.signal_dispatch_trace["expected_amount"] = outcome.expected_amount
+    result.signal_dispatch_trace["sizing_rt_cd"] = outcome.sizing_rt_cd
+    result.signal_dispatch_trace["sizing_msg_cd"] = outcome.sizing_msg_cd
+    result.signal_dispatch_trace["sizing_msg1"] = outcome.sizing_msg1
+    result.signal_dispatch_trace["filled_qty"] = outcome.filled_qty
+    result.signal_dispatch_trace["fill_poll_result"] = outcome.fill_poll_result
+    result.signal_dispatch_trace["balance_qty"] = outcome.balance_qty
+    result.signal_dispatch_trace["failure_stage"] = outcome.order_failure_stage or ""
     if _has_order_request(outcome):
         if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
             state.pending_signal["status"] = SignalState.ORDER_REQUESTED.value
@@ -1209,6 +1235,22 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "broker_rt_cd": raw.get("rt_cd") or "",
         "broker_msg_cd": raw.get("msg_cd") or "",
         "broker_msg1": raw.get("msg1") or "",
+        "orderable_cash": trace.get("orderable_cash") if trace.get("orderable_cash") is not None else "",
+        "nrcvb_buy_amt": trace.get("nrcvb_buy_amt") if trace.get("nrcvb_buy_amt") is not None else "",
+        "nrcvb_buy_qty": trace.get("nrcvb_buy_qty") if trace.get("nrcvb_buy_qty") is not None else "",
+        "psbl_qty_calc_unpr": trace.get("psbl_qty_calc_unpr") if trace.get("psbl_qty_calc_unpr") is not None else "",
+        "budget_qty": trace.get("budget_qty") if trace.get("budget_qty") is not None else "",
+        "final_qty": trace.get("final_qty") if trace.get("final_qty") is not None else "",
+        "sizing_price": trace.get("sizing_price") if trace.get("sizing_price") is not None else "",
+        "requested_qty": trace.get("requested_qty") if trace.get("requested_qty") is not None else "",
+        "expected_amount": trace.get("expected_amount") if trace.get("expected_amount") is not None else "",
+        "sizing_rt_cd": trace.get("sizing_rt_cd") or "",
+        "sizing_msg_cd": trace.get("sizing_msg_cd") or "",
+        "sizing_msg1": trace.get("sizing_msg1") or "",
+        "filled_qty": trace.get("filled_qty") if trace.get("filled_qty") is not None else "",
+        "fill_poll_result": trace.get("fill_poll_result") or "",
+        "balance_qty": trace.get("balance_qty") if trace.get("balance_qty") is not None else "",
+        "failure_stage": trace.get("failure_stage") or "",
         "final_result": order_result if not block_reason else f"{order_result}:{block_reason}",
     })
     state.last_duplicate_signal_id = None if written else signal_id

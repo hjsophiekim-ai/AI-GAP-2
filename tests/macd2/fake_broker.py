@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from app.models import Position
-from app.trading.macd2.broker_adapter import BrokerOrderResult
+from app.trading.macd2.broker_adapter import BrokerOrderResult, BuySizingQuote
 
 
 class FakeBroker:
@@ -23,6 +23,9 @@ class FakeBroker:
         self.orders: list[BrokerOrderResult] = []
         self.fail_next_buy = False
         self.fail_next_sell = False
+        self.next_buy_order_id: Optional[str] = None
+        self.next_nrcvb_buy_qty: Optional[int] = None
+        self.buy_sizing_quotes: list[BuySizingQuote] = []
         # Partial/zero-fill simulation: caps the NEXT buy's actual fill below
         # the requested qty (docs: 부분체결 / BUY 후 보유 0). None means "fill
         # the full requested qty" (the default, existing behavior).
@@ -37,6 +40,28 @@ class FakeBroker:
     def get_orderable_cash(self, symbol: str) -> float:
         del symbol
         return self._cash
+
+    def get_buy_sizing_quote(self, symbol: str, *, price: float, order_type: str = "market") -> BuySizingQuote:
+        ord_dvsn = "01" if order_type == "market" else "00"
+        qty = int(self._cash // price) if price > 0 else 0
+        if self.next_nrcvb_buy_qty is not None:
+            qty = self.next_nrcvb_buy_qty
+        quote = BuySizingQuote(
+            symbol=symbol,
+            order_type=order_type,
+            ord_dvsn=ord_dvsn,
+            orderable_cash=self._cash,
+            nrcvb_buy_amt=self._cash,
+            nrcvb_buy_qty=qty,
+            psbl_qty_calc_unpr=price,
+            psbl_qty=qty,
+            rt_cd="0",
+            msg_cd="FAKE_OK",
+            msg1="fake buyable ok",
+            raw={"rt_cd": "0", "msg_cd": "FAKE_OK", "msg1": "fake buyable ok", "ORD_DVSN": ord_dvsn},
+        )
+        self.buy_sizing_quotes.append(quote)
+        return quote
 
     def get_quote(self, symbol: str) -> Optional[float]:
         return self._quotes.get(symbol)
@@ -56,8 +81,11 @@ class FakeBroker:
         price = self._quotes.get(symbol)
         if self.fail_next_buy or price is None or qty < 1:
             self.fail_next_buy = False
+            order_id = self.next_buy_order_id if self.next_buy_order_id is not None else self._next_order_id()
+            self.next_buy_order_id = None
             result = BrokerOrderResult(
-                False, self._next_order_id(), symbol, "BUY", qty, 0, 0.0, "FAKE_BUY_FAILED",
+                False, order_id, symbol, "BUY", qty, 0, 0.0, "FAKE_BUY_FAILED",
+                raw={"rt_cd": "1", "msg_cd": "FAKE_REJECT", "msg1": "fake rejected"},
             )
             self.orders.append(result)
             return result
@@ -76,7 +104,9 @@ class FakeBroker:
                 self._positions[symbol] = Position(
                     symbol=symbol, name=symbol, quantity=fill_qty, avg_price=price, current_price=price,
                 )
-        result = BrokerOrderResult(True, self._next_order_id(), symbol, "BUY", qty, fill_qty, price, "OK")
+        order_id = self.next_buy_order_id if self.next_buy_order_id is not None else self._next_order_id()
+        self.next_buy_order_id = None
+        result = BrokerOrderResult(True, order_id, symbol, "BUY", qty, fill_qty, price, "OK", raw={"ORD_DVSN": "01"})
         self.orders.append(result)
         return result
 

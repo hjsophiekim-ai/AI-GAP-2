@@ -296,17 +296,32 @@ try:
         f"symbol=`{state.last_broker_order_symbol or '-'}` · side=`{state.last_broker_order_side or '-'}` · "
         f"at=`{state.last_broker_order_at or '-'}`"
     )
+    st.caption(
+        f"order failure detail: stage=`{state.last_order_failure_stage or '-'}` · "
+        f"filled_qty=`{state.last_order_filled_qty if state.last_order_filled_qty is not None else '-'}` · "
+        f"fill_poll_result=`{state.last_order_fill_poll_result or '-'}` · "
+        f"balance_qty=`{state.last_order_balance_qty if state.last_order_balance_qty is not None else '-'}`"
+    )
     if state.last_duplicate_signal_id:
         st.warning(f"signal ledger 중복 기록 거부됨 — signal_id=`{state.last_duplicate_signal_id}` (이미 기록된 signal_id)")
     st.markdown("**주문 sizing (직전 진입/스위치 시도)**")
     if state.last_order_orderable_cash is not None:
         oc1, oc2, oc3, oc4 = st.columns(4)
         oc1.metric("orderable_cash", f"{state.last_order_orderable_cash:,.0f}")
-        oc2.metric("sizing_price", f"{state.last_order_sizing_price:,.2f}" if state.last_order_sizing_price is not None else "-")
-        oc3.metric("requested_qty", state.last_order_requested_qty if state.last_order_requested_qty is not None else "-")
-        oc4.metric("expected_amount", f"{state.last_order_expected_amount:,.0f}" if state.last_order_expected_amount is not None else "-")
+        oc2.metric("nrcvb_buy_amt", f"{state.last_order_nrcvb_buy_amt:,.0f}" if state.last_order_nrcvb_buy_amt is not None else "-")
+        oc3.metric("nrcvb_buy_qty", state.last_order_nrcvb_buy_qty if state.last_order_nrcvb_buy_qty is not None else "-")
+        oc4.metric("final_qty", state.last_order_final_qty if state.last_order_final_qty is not None else "-")
+        oc5, oc6, oc7, oc8 = st.columns(4)
+        oc5.metric("budget_qty", state.last_order_budget_qty if state.last_order_budget_qty is not None else "-")
+        oc6.metric("psbl_qty_calc_unpr", f"{state.last_order_psbl_qty_calc_unpr:,.0f}" if state.last_order_psbl_qty_calc_unpr is not None else "-")
+        oc7.metric("sizing_price", f"{state.last_order_sizing_price:,.2f}" if state.last_order_sizing_price is not None else "-")
+        oc8.metric("expected_amount", f"{state.last_order_expected_amount:,.0f}" if state.last_order_expected_amount is not None else "-")
+        st.caption(
+            f"KIS sizing response: rt_cd=`{state.last_order_sizing_rt_cd or '-'}` · "
+            f"msg_cd=`{state.last_order_sizing_msg_cd or '-'}` · msg1=`{state.last_order_sizing_msg1 or '-'}`"
+        )
     else:
-        st.caption("orderable_cash=`-` · sizing_price=`-` · requested_qty=`-` · expected_amount=`-`")
+        st.caption("orderable_cash=`-` · nrcvb_buy_qty=`-` · budget_qty=`-` · final_qty=`-` · expected_amount=`-`")
 
     st.markdown("**QUOTE_STALE 재조회 진단 (2026-07-27)**")
     st.caption(
@@ -483,6 +498,27 @@ try:
                 "order_requested_at": requested_at,
                 "order_result": str(row.get("order_result") or "-"),
                 "not_ordered_reason": _not_ordered_reason(row, requested_at),
+                "failure_stage": row.get("failure_stage") or "-",
+                "orderable_cash": row.get("orderable_cash") or "-",
+                "nrcvb_buy_amt": row.get("nrcvb_buy_amt") or "-",
+                "nrcvb_buy_qty": row.get("nrcvb_buy_qty") or "-",
+                "psbl_qty_calc_unpr": row.get("psbl_qty_calc_unpr") or "-",
+                "budget_qty": row.get("budget_qty") or "-",
+                "final_qty": row.get("final_qty") or "-",
+                "sizing_price": row.get("sizing_price") or "-",
+                "requested_qty": row.get("requested_qty") or "-",
+                "expected_amount": row.get("expected_amount") or "-",
+                "sizing_rt_cd": row.get("sizing_rt_cd") or "-",
+                "sizing_msg_cd": row.get("sizing_msg_cd") or "-",
+                "sizing_msg1": row.get("sizing_msg1") or "-",
+                "broker_called": row.get("broker_called") or "-",
+                "rt_cd": row.get("broker_rt_cd") or "-",
+                "msg_cd": row.get("broker_msg_cd") or "-",
+                "msg1": row.get("broker_msg1") or "-",
+                "order_id": row.get("broker_order_id") or "-",
+                "filled_qty": row.get("filled_qty") or "-",
+                "fill_poll_result": row.get("fill_poll_result") or "-",
+                "balance_qty": row.get("balance_qty") or "-",
             })
         red_times = [r["flag_time"] for r in flag_rows if r["direction"] == "UP_RED"]
         blue_times = [r["flag_time"] for r in flag_rows if r["direction"] == "DOWN_BLUE"]

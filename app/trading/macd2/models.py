@@ -260,9 +260,21 @@ class RuntimeState:
 
     # ── Order sizing diagnostics (most recent entry/switch attempt) ────────
     last_order_orderable_cash: Optional[float] = None
+    last_order_nrcvb_buy_amt: Optional[float] = None
+    last_order_nrcvb_buy_qty: Optional[int] = None
+    last_order_psbl_qty_calc_unpr: Optional[float] = None
+    last_order_budget_qty: Optional[int] = None
+    last_order_final_qty: Optional[int] = None
+    last_order_sizing_rt_cd: Optional[str] = None
+    last_order_sizing_msg_cd: Optional[str] = None
+    last_order_sizing_msg1: Optional[str] = None
     last_order_sizing_price: Optional[float] = None
     last_order_requested_qty: Optional[int] = None
     last_order_expected_amount: Optional[float] = None
+    last_order_failure_stage: Optional[str] = None
+    last_order_filled_qty: Optional[int] = None
+    last_order_fill_poll_result: Optional[str] = None
+    last_order_balance_qty: Optional[int] = None
 
     # ── Confirmed (completed-bar) Primary crossover — order authority
     # (2026-07-27 KIS-parity fix: moved off the forming/provisional bar) ────

@@ -868,7 +868,9 @@ class KISClient:
             "output": dict,          # API 응답 output 전체
             "ord_psbl_cash": float,  # 주문가능현금 (현금성)
             "nrcvb_buy_amt": float,  # 재매수가능금액 (D+2 매도대금 포함 — 앱 주문가능금액)
+            "nrcvb_buy_qty": int,    # 미수 없는 재매수가능수량
             "psbl_qty": int,         # 주문가능수량
+            "psbl_qty_calc_unpr": float,  # 가능수량 산정 단가
             "rt_cd": str,
             "msg_cd": str,
             "msg1": str,
@@ -911,7 +913,9 @@ class KISClient:
                     "output": {},
                     "ord_psbl_cash": 0.0,
                     "nrcvb_buy_amt": 0.0,
+                    "nrcvb_buy_qty": 0,
                     "psbl_qty": 0,
+                    "psbl_qty_calc_unpr": 0.0,
                     "rt_cd": rt_cd,
                     "msg_cd": msg_cd,
                     "msg1": msg1,
@@ -923,7 +927,9 @@ class KISClient:
                 "output": output,
                 "ord_psbl_cash": float(output.get("ord_psbl_cash", 0) or 0),
                 "nrcvb_buy_amt": float(output.get("nrcvb_buy_amt", 0) or 0),
+                "nrcvb_buy_qty": _to_int(_first_present(output, "nrcvb_buy_qty", "nrcvb_buy_qnty"), 0),
                 "psbl_qty": int(output.get("psbl_qty", 0) or 0),
+                "psbl_qty_calc_unpr": _to_float(output.get("psbl_qty_calc_unpr"), 0.0) or 0.0,
                 "rt_cd": data.get("rt_cd", ""),
                 "msg_cd": data.get("msg_cd", ""),
                 "msg1": data.get("msg1", ""),
@@ -935,7 +941,9 @@ class KISClient:
                 "output": {},
                 "ord_psbl_cash": 0.0,
                 "nrcvb_buy_amt": 0.0,
+                "nrcvb_buy_qty": 0,
                 "psbl_qty": 0,
+                "psbl_qty_calc_unpr": 0.0,
                 "rt_cd": "",
                 "msg_cd": "",
                 "msg1": "",

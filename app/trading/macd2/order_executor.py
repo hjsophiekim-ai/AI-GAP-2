@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Optional
 
 from app.trading.macd2 import config, ledger
-from app.trading.macd2.broker_adapter import BrokerOrderResult
+from app.trading.macd2.broker_adapter import BrokerOrderResult, BuySizingQuote
 from app.trading.macd2.models import Direction, PositionSnapshot, SignalState
 from app.trading.trading_cost_engine import TradeCostEngine
 from app.utils.stock_utils import get_tick_size
@@ -29,11 +29,17 @@ BLOCK_DUPLICATE_SIGNAL = "DUPLICATE_SIGNAL_BLOCKED"
 BLOCK_ALREADY_HOLDING = "ALREADY_HOLDING_SAME_DIRECTION"
 BLOCK_ORDER_DATA_INVALID = "ORDER_DATA_INVALID"
 BLOCK_INSUFFICIENT_QTY = "INSUFFICIENT_QTY"
+BLOCK_KIS_BUYABLE_QUERY_FAILED = "KIS_BUYABLE_QUERY_FAILED"
+BLOCK_NRCVB_BUY_QTY_ZERO = "NRCVB_BUY_QTY_ZERO"
 BLOCK_NOT_TRADABLE_DIRECTION = "NOT_A_TRADABLE_DIRECTION"
 FAIL_SELL = "SELL_FAILED"
 FAIL_SELL_NOT_CONFIRMED = "SELL_NOT_CONFIRMED_QTY_NONZERO"
 FAIL_BUY = "BUY_FAILED"
 FAIL_BUY_NOT_CONFIRMED = "BUY_NOT_CONFIRMED_QTY_ZERO"
+ORDER_REJECTED = "ORDER_REJECTED"
+NO_ORDER_ID = "NO_ORDER_ID"
+FILL_TIMEOUT = "FILL_TIMEOUT"
+BALANCE_MISMATCH = "BALANCE_MISMATCH"
 
 
 @dataclass
@@ -54,7 +60,21 @@ class ExecutionOutcome:
     # so the caller can display/verify requested_qty * sizing_price never
     # exceeds orderable_cash_at_sizing.
     orderable_cash_at_sizing: Optional[float] = None
+    nrcvb_buy_amt: Optional[float] = None
+    nrcvb_buy_qty: Optional[int] = None
+    psbl_qty_calc_unpr: Optional[float] = None
+    budget_qty: Optional[int] = None
+    final_qty: Optional[int] = None
+    sizing_rt_cd: Optional[str] = None
+    sizing_msg_cd: Optional[str] = None
+    sizing_msg1: Optional[str] = None
     sizing_price: Optional[float] = None
+    expected_amount: Optional[float] = None
+    broker_called: bool = False
+    order_failure_stage: Optional[str] = None
+    filled_qty: Optional[int] = None
+    fill_poll_result: Optional[str] = None
+    balance_qty: Optional[int] = None
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -109,6 +129,32 @@ def compute_order_quantity(
     return max(int(usable // price), 0)
 
 
+def compute_final_order_quantity(
+    *,
+    budget: float,
+    price: float,
+    nrcvb_buy_qty: int,
+    symbol: str = config.LONG_SYMBOL,
+    safety_margin_pct: Optional[float] = None,
+) -> tuple[int, int]:
+    """Final BUY qty for live KIS: min(UI budget qty, KIS no-margin buyable qty),
+    then subtract the same fee/tick safety margin from that quantity.
+
+    KIS ``nrcvb_buy_qty`` is already the account/symbol/order-type answer from
+    inquire-psbl-order, so we never recompute the final order only from cash.
+    """
+    if price <= 0:
+        return 0, 0
+    budget_qty = max(int(float(budget) // float(price)), 0)
+    base_qty = min(budget_qty, max(int(nrcvb_buy_qty or 0), 0))
+    margin_pct = (
+        safety_margin_pct if safety_margin_pct is not None
+        else compute_order_safety_margin_pct(price, symbol)
+    )
+    final_qty = max(int(base_qty * (1 - margin_pct / 100.0)), 0)
+    return budget_qty, final_qty
+
+
 def _now_iso() -> str:
     return datetime.now(KST).isoformat()
 
@@ -160,7 +206,7 @@ def _reconcile_to_zero(broker, symbol: str, *, retries: int, delay_sec: float) -
     return qty_after
 
 
-def _reconcile_buy_fill(broker, symbol: str, *, retries: int, delay_sec: float) -> tuple[int, float]:
+def _reconcile_buy_fill(broker, symbol: str, *, retries: int, delay_sec: float) -> tuple[int, float, str, int]:
     """Real (qty, avg_price) actually held for ``symbol`` after a BUY order
     reported ``success=True`` — never trust order acceptance as fill success
     (docs: 주문 접수 성공 != 체결 성공). Re-queried fresh from the broker on
@@ -168,14 +214,19 @@ def _reconcile_buy_fill(broker, symbol: str, *, retries: int, delay_sec: float) 
     below what was requested. Still 0 after all retries means the order was
     accepted but nothing actually landed in the account.
     """
+    last_qty = 0
     for attempt in range(max(1, retries)):
-        pos = broker.get_position(symbol)
+        try:
+            pos = broker.get_position(symbol)
+        except Exception as exc:
+            return 0, 0.0, f"ERROR:{exc}", last_qty
         qty = int(pos.quantity) if pos else 0
+        last_qty = qty
         if qty > 0:
-            return qty, float(pos.avg_price)
+            return qty, float(pos.avg_price), "FILLED", qty
         if attempt < retries - 1:
             time.sleep(delay_sec)
-    return 0, 0.0
+    return 0, 0.0, "TIMEOUT", last_qty
 
 
 def execute_signal(
@@ -256,36 +307,88 @@ def execute_signal(
         outcome.block_reason = BLOCK_ORDER_DATA_INVALID
         return outcome
 
-    cash = broker.get_orderable_cash(target_symbol)
-    requested_qty = compute_order_quantity(cash, budget, price, symbol=target_symbol)
+    sizing_getter = getattr(broker, "get_buy_sizing_quote", None)
+    if sizing_getter is not None:
+        sizing_quote = sizing_getter(target_symbol, price=price, order_type="market")
+    else:
+        cash = broker.get_orderable_cash(target_symbol)
+        fallback_qty = int(cash // price) if price > 0 else 0
+        sizing_quote = BuySizingQuote(
+            symbol=target_symbol, order_type="market", ord_dvsn="01",
+            orderable_cash=cash, nrcvb_buy_amt=cash, nrcvb_buy_qty=fallback_qty,
+            psbl_qty_calc_unpr=price, psbl_qty=fallback_qty,
+            rt_cd="", msg_cd="", msg1="", raw={},
+        )
+    budget_qty, requested_qty = compute_final_order_quantity(
+        budget=budget, price=price, nrcvb_buy_qty=sizing_quote.nrcvb_buy_qty, symbol=target_symbol,
+    )
     outcome.quantity = requested_qty
-    outcome.orderable_cash_at_sizing = cash
+    outcome.orderable_cash_at_sizing = sizing_quote.orderable_cash
+    outcome.nrcvb_buy_amt = sizing_quote.nrcvb_buy_amt
+    outcome.nrcvb_buy_qty = sizing_quote.nrcvb_buy_qty
+    outcome.psbl_qty_calc_unpr = sizing_quote.psbl_qty_calc_unpr
+    outcome.budget_qty = budget_qty
+    outcome.final_qty = requested_qty
+    outcome.sizing_rt_cd = sizing_quote.rt_cd
+    outcome.sizing_msg_cd = sizing_quote.msg_cd
+    outcome.sizing_msg1 = sizing_quote.msg1
     outcome.sizing_price = price
+    outcome.expected_amount = round(price * requested_qty, 2)
+    if sizing_quote.rt_cd not in ("", "0", None):
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_KIS_BUYABLE_QUERY_FAILED
+        outcome.order_failure_stage = BLOCK_KIS_BUYABLE_QUERY_FAILED
+        return outcome
+    if sizing_quote.nrcvb_buy_qty < 1:
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_NRCVB_BUY_QTY_ZERO
+        outcome.order_failure_stage = BLOCK_NRCVB_BUY_QTY_ZERO
+        return outcome
     if requested_qty < 1:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_INSUFFICIENT_QTY
+        outcome.order_failure_stage = BLOCK_INSUFFICIENT_QTY
         return outcome
 
     timestamps["buy_requested_at"] = _now_iso()
     buy_result = broker.buy_market(target_symbol, requested_qty, f"{signal_id}:BUY:{target_symbol}")
+    outcome.broker_called = True
     outcome.buy_result = buy_result
     if not buy_result.success:
         outcome.final_state = SignalState.FAILED
         outcome.block_reason = FAIL_BUY
+        outcome.order_failure_stage = ORDER_REJECTED
+        outcome.filled_qty = 0
+        outcome.fill_poll_result = "NOT_POLLED_ORDER_REJECTED"
+        outcome.balance_qty = None
+        return outcome
+    if not buy_result.order_id:
+        outcome.final_state = SignalState.FAILED
+        outcome.block_reason = FAIL_BUY
+        outcome.order_failure_stage = NO_ORDER_ID
+        outcome.filled_qty = 0
+        outcome.fill_poll_result = "NOT_POLLED_NO_ORDER_ID"
+        outcome.balance_qty = None
         return outcome
     timestamps["buy_confirmed_at"] = _now_iso()
 
     # Order acceptance is never treated as fill success (docs) — re-query the
     # real holding before recording anything. A partial fill reports a real
     # qty below requested_qty; nothing actually landed reports 0.
-    filled_qty, filled_avg_price = _reconcile_buy_fill(
+    filled_qty, filled_avg_price, fill_poll_result, balance_qty = _reconcile_buy_fill(
         broker, target_symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec,
     )
+    outcome.filled_qty = filled_qty
+    outcome.fill_poll_result = fill_poll_result
+    outcome.balance_qty = balance_qty
     timestamps["buy_reconciled_at"] = _now_iso()
     if filled_qty <= 0:
         outcome.final_state = SignalState.FAILED
         outcome.block_reason = FAIL_BUY_NOT_CONFIRMED
+        outcome.order_failure_stage = FILL_TIMEOUT
         return outcome
+    if filled_qty != requested_qty:
+        outcome.order_failure_stage = BALANCE_MISMATCH
 
     outcome.quantity = filled_qty
     outcome.filled_avg_price = filled_avg_price

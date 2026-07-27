@@ -66,6 +66,31 @@ class _StubBrokerWithStockBuyable(_StubBroker):
         return {"0193T0": 6_000_000.0, "0197X0": 4_000_000.0}.get(symbol, 0.0)
 
 
+class _StubKis:
+    def __init__(self):
+        self.calls = []
+
+    def get_buyable_cash_raw(self, symbol="005930", price=0, ord_dvsn=None):
+        self.calls.append((symbol, price, ord_dvsn))
+        return {
+            "output": {"nrcvb_buy_qty": "123", "psbl_qty_calc_unpr": "15000"},
+            "ord_psbl_cash": 9_208_577.0,
+            "nrcvb_buy_amt": 9_253_492.0,
+            "nrcvb_buy_qty": 123,
+            "psbl_qty": 123,
+            "psbl_qty_calc_unpr": 15_000.0,
+            "rt_cd": "0",
+            "msg_cd": "20310000",
+            "msg1": "OK",
+        }
+
+
+class _StubBrokerWithKis(_StubBroker):
+    def __init__(self):
+        super().__init__()
+        self.kis = _StubKis()
+
+
 def test_get_orderable_cash_uses_symbol_scoped_lookup_when_available():
     """2026-07-27 fix: get_orderable_cash("005930")-style account-level calls
     silently query an unrelated placeholder symbol under the hood — the
@@ -76,6 +101,23 @@ def test_get_orderable_cash_uses_symbol_scoped_lookup_when_available():
     assert adapter.get_orderable_cash("0193T0") == 6_000_000.0
     assert adapter.get_orderable_cash("0197X0") == 4_000_000.0
     assert stub.stock_buyable_calls == [("0193T0", 0), ("0197X0", 0)]
+
+
+def test_get_buy_sizing_quote_uses_same_symbol_and_market_ord_dvsn():
+    stub = _StubBrokerWithKis()
+    adapter = MockBrokerAdapter(broker=stub)
+
+    quote = adapter.get_buy_sizing_quote("0193T0", price=15_000.0, order_type="market")
+
+    assert stub.kis.calls == [("0193T0", 0, "01")]
+    assert quote.order_type == "market"
+    assert quote.ord_dvsn == "01"
+    assert quote.nrcvb_buy_amt == 9_253_492.0
+    assert quote.nrcvb_buy_qty == 123
+    assert quote.psbl_qty_calc_unpr == 15_000.0
+    assert quote.rt_cd == "0"
+    assert quote.msg_cd == "20310000"
+    assert quote.msg1 == "OK"
 
 
 def test_get_orderable_cash_falls_back_without_stock_buyable_amount():
