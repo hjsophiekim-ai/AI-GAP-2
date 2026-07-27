@@ -106,6 +106,22 @@ QUOTE_HISTORY_PRICE_RATIO_MAX = 2.0
 # 않는 상태) 시각 불일치로 간주한다.
 HISTORY_STALE_MAX_SEC = 180.0
 
+# 전일 warm-up 조회(주식일별분봉조회) 중 KIS 서버 일시 오류(500 등)를 "해당
+# 날짜에 데이터 없음(휴장일)"으로 오인해 더 이전 날짜로 잘못 넘어가면 EMA
+# seed가 실제 KIS 차트와 달라진다 (2026-07-27 3플래그 재현 검증에서 발견 —
+# 정상 거래일 20260724 조회가 500으로 실패해 20260723으로 잘못 대체됨). 응답이
+# 명시적 오류를 동반한 빈 결과일 때만 재시도하고, 오류 없는 빈 결과(진짜 휴장일)
+# 는 즉시 다음 날짜로 넘어간다.
+PRIOR_DAY_FETCH_RETRIES = 5
+PRIOR_DAY_FETCH_RETRY_DELAY_SEC = 2.0
+
+# 백워드 페이징(주식일별분봉조회/inquire-time-itemchartprice)에서 연속 요청을
+# 텀 없이 쏘면 KIS 초당 거래건수 제한에 걸려 일부 페이지가 오류 없이 조용히
+# 빈 결과로 돌아온다 (2026-07-27 발견 — page당 실수신 30건인데 지연 없이
+# 여러 페이지를 연속 요청하면 중간 페이지가 누락됨). 페이지 사이에 짧은
+# 페이싱을 둔다.
+KIS_PAGE_FETCH_PACING_SEC = 0.4
+
 # ── Feature flags (strategy-fixed per docs; not user-configurable) ────────
 CONTINUATION_REENTRY_ENABLED = False
 OPENING_PROBE_ENABLED = False

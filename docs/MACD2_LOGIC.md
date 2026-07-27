@@ -22,6 +22,7 @@ MACD2는 SK하이닉스(`000660`) KIS 3분봉 MACD(12,26,9) 차트에 빨간색�
 - `000660` 1분봉은 KIS 당일 1분봉 API(`MarketDataService.merge_incremental_1m`)로 주기적으로(history-updater 스레드, Worker tick과 같은 주기) 갱신하며, 기존 warm-up 이력에 **append → datetime 기준 dedup(keep last) → sort**한 뒤 저장한다. Worker 자신은 KIS를 직접 호출하지 않고 이 캐시만 읽는다.
 - 완성 3분봉은 09:00 기준 3분 경계로 이 누적 1분봉 이력에서 리샘플한다: 09:00~09:02, 09:03~09:05, ...
 - 전일 데이터는 EMA warm-up에만 사용한다.
+- **2026-07-27 조회 신뢰성 수정**: `주식일별분봉조회`/`inquire-time-itemchartprice`는 실제로 요청 1회당 약 30건만 반환한다(`count` 파라미터와 무관). 페이지 예산(`KIS_MAX_PAGES`)을 06→20으로 늘려 하루 세션(09:00~15:30, 390분)을 모두 커버하도록 했다(이전에는 장 시작 후 3시간이 지나면 당일 데이터 앞부분이 누락됐다). 또한 연속 페이지 요청 사이에 짧은 페이싱(`KIS_PAGE_FETCH_PACING_SEC`)을 두어 KIS 초당 거래건수 제한으로 중간 페이지가 조용히 빈 결과로 오는 문제를 줄였다. 전일 warm-up 날짜 조회가 KIS 서버 오류(500 등)로 실패하면 이를 "해당 날짜 데이터 없음(휴장일)"로 오인해 더 이전 날짜로 잘못 대체하던 버그도 수정했다(`PRIOR_DAY_FETCH_RETRIES`/`PRIOR_DAY_FETCH_RETRY_DELAY_SEC` — 명시적 오류를 동반한 빈 응답만 재시도, 오류 없는 진짜 휴장일은 즉시 다음 날짜로 진행). 전일 warm-up 조회(`_fetch_minute_candles_for_date`)는 MOCK 환경의 이 엔드포인트가 유독 불안정해 읽기 전용 REAL 계좌 client로 수행한다(`000660`은 신호 입력 전용, 직접 매매 대상이 아니므로 REAL/MOCK 시세 데이터가 동일함을 실측 검증했다 — 매매·잔고·주문 경로는 여전히 MOCK만 사용). 당일 라이브 페이징은 REAL 전환 시 오히려 REAL 계좌 rate limit에 더 취약해져 MOCK 그대로 유지한다.
 - 당일 추가된 1분봉 수(`today_1m_bar_count`), 1분봉 이력의 최신 시각(`history_newest_at`), 마지막으로 완성된 3분봉 시각(`last_completed_3m_bar_at`)을 매 tick runtime/UI에 표시한다.
 - `000660` quote와 최근 1분봉 close가 10배/0.1배 스케일 차이를 보이면 MarketData 계층에서 quote를 1회 정상화한다(신호 계산부의 임의 보정은 금지). 이 보정 이후에도 quote와 1분봉 history의 가격 비율이 정상 범위(`QUOTE_HISTORY_PRICE_RATIO_MIN`~`MAX`)를 벗어나거나, 정규장 중인데 1분봉 history의 최신 시각이 `HISTORY_STALE_MAX_SEC` 이상 갱신되지 않으면 **단위·시각 불일치**로 보고 신규 진입을 차단하며 `state.quote_history_mismatch_reason`에 원인을 남긴다.
 - 주문에 필요한 quote는 `price > 0`이고 `age_sec <= 10`이어야 한다.
@@ -132,7 +133,7 @@ Signal ledger는 `csv.DictWriter`에 컬럼명 기반 dict만 전달한다(위�
 - `signal_rule` (완성봉 crossover 규칙, 현재: `MACD_CROSSOVER_CONFIRMED` — `config.SIGNAL_RULE`과 `config.CONFIRMED_SIGNAL_RULE`은 이제 같은 값이다)
 - `worker_code_sha`
 - `session_started_at`
-- `previous_diff`
+- `previous_macd` / `previous_signal` / `previous_diff` (2026-07-27 수정: `previous_macd`/`previous_signal`이 항상 빈 값으로 기록되던 버그를 고쳤다 — `MacdSnapshot`에 `previous_macd`/`previous_signal` 필드를 추가하고 `calculate_macd()`가 직전 완성봉의 MACD선/Signal선 값을 채운다)
 - `confirmed_macd` / `confirmed_signal` / `confirmed_diff` / `confirmed_direction`
 - `quote_ages`
 - `position_reconcile`

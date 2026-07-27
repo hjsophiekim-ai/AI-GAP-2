@@ -131,6 +131,8 @@ def calculate_macd(three_minute_bars: Optional[pd.DataFrame]) -> Optional[MacdSn
         previous_diff=previous_diff,
         current_diff=current_diff,
         relation=relation,
+        previous_macd=round(float(macd.iloc[-2]), 6) if len(macd) >= 2 else None,
+        previous_signal=round(float(signal.iloc[-2]), 6) if len(signal) >= 2 else None,
     )
 
 

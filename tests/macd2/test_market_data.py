@@ -205,13 +205,24 @@ def test_history_updater_lifecycle():
 
 def test_default_kis_client_created_once_and_reused(monkeypatch):
     """docs: KIS client는 서비스 시작 시 1개 생성·재사용 — the real (non-fake)
-    fetchers must call create_kis_client() at most once per service
-    instance, regardless of how many bootstrap/incremental/quote calls
-    happen afterward."""
+    fetchers must call create_kis_client() at most once per (mode, purpose)
+    per service instance, regardless of how many bootstrap/incremental/quote
+    calls happen afterward.
+
+    2026-07-27 fix: WATCH_SYMBOL(000660) prior-day warm-up now reads via a
+    SEPARATE, dedicated read-only REAL client
+    (``_get_watch_symbol_history_client``, MOCK's date-scoped warm-up
+    endpoint proved unreliable) — so a "mock"-mode service now legitimately
+    creates at most 2 clients total (one "mock" for orders/quotes/today's
+    live paging, one "real" for prior-day warm-up), each created exactly
+    once and reused, never re-created per call."""
     created = []
 
     class _FakeKisClient:
         def get_minute_candles(self, symbol, period_min, count, hour1):
+            return []
+
+        def get_minute_candles_for_date(self, symbol, date, period_min, count, hour1):
             return []
 
         def get_current_price(self, symbol):
@@ -231,7 +242,8 @@ def test_default_kis_client_created_once_and_reused(monkeypatch):
     svc.refresh_quotes()
     svc.refresh_quotes()
 
-    assert len(created) == 1  # exactly one client created for this service instance, reused every call
+    assert created.count("mock") == 1  # exactly one mock client, reused every call
+    assert created.count("real") <= 1  # at most one dedicated read-only warm-up client, reused
 
 
 def test_prior_day_cache_loads_most_recent_prior_trading_date(tmp_path, monkeypatch):

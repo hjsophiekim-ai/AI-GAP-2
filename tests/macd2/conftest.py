@@ -11,7 +11,16 @@ import socket
 
 import pytest
 
-from app.trading.macd2 import ledger, market_data, service, state_store
+from app.trading.macd2 import config, ledger, market_data, service, state_store
+
+
+@pytest.fixture(autouse=True)
+def _fast_prior_day_fetch_retries(monkeypatch):
+    """_fetch_trading_day_candles' transient-error retry (2026-07-27 warm-up
+    fix) real-sleeps between attempts in production — tests that simulate an
+    always-failing fetch must not pay that wall-clock cost."""
+    monkeypatch.setattr(config, "PRIOR_DAY_FETCH_RETRY_DELAY_SEC", 0.0)
+    monkeypatch.setattr(config, "KIS_PAGE_FETCH_PACING_SEC", 0.0)
 
 
 @pytest.fixture(autouse=True)

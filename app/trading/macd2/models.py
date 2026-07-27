@@ -104,6 +104,8 @@ class MacdSnapshot:
     previous_diff: Optional[float] = None
     current_diff: Optional[float] = None
     relation: str = "EQUAL"
+    previous_macd: Optional[float] = None
+    previous_signal: Optional[float] = None
 
     def __post_init__(self) -> None:
         _require_tz_aware(self.bar_dt, "MacdSnapshot.bar_dt")

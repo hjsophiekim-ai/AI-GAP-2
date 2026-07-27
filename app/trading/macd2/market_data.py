@@ -23,6 +23,7 @@ see tests/macd2/test_market_data.py. Never call the real KIS fetchers there.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
@@ -46,7 +47,12 @@ MinuteCandleForDateFetcher = Callable[[str, str, str, int, str], "tuple[pd.DataF
 QuoteFetcher = Callable[[str, str], "tuple[Optional[float], Optional[str]]"]
 
 KIS_PAGE_SIZE = 120
-KIS_MAX_PAGES = 6
+# inquire-time-itemchartprice / 주식일별분봉조회 both actually return ~30 rows
+# per call regardless of the requested count (KIS 서버측 고정 page size —
+# 2026-07-27 발견: 장 시작 후 3시간(6 pages * 30 rows = 180분)이 지나면 이후
+# paging walk가 오늘 데이터의 앞부분을 빠뜨렸다). A full KRX session is 09:00
+# ~15:30 = 390 minutes -> needs >=13 pages at 30 rows/page; sized with margin.
+KIS_MAX_PAGES = 20
 
 # Bounds how far back _load_prior_trading_day() searches for the most recent
 # actual trading day (docs §21 2026-07-24 warm-up fix: 주말·공휴일이면 과거
@@ -174,6 +180,8 @@ class MarketDataService:
         self.mode = mode
         self._kis_client: Any = None
         self._kis_client_lock = threading.RLock()
+        self._watch_history_client: Any = None
+        self._watch_history_client_lock = threading.RLock()
         self._fetch_minute_candles = fetch_minute_candles or self._default_fetch_minute_candles
         self._fetch_minute_candles_for_date = (
             fetch_minute_candles_for_date or self._default_fetch_minute_candles_for_date
@@ -281,8 +289,46 @@ class MarketDataService:
                 self._kis_client = create_kis_client(self.mode if self.mode in ("mock", "real") else "mock")
             return self._kis_client
 
+    def _get_watch_symbol_history_client(self) -> Any:
+        """WATCH_SYMBOL (000660) prior-day warm-up (주식일별분봉조회) read-only
+        client — never used for orders or the traded ETF symbols.
+
+        000660 is signal-input-only, never traded directly, so its candle
+        DATA is identical whether read via the REAL or MOCK KIS endpoint (KIS
+        모의투자 mirrors real market data). Verified empirically 2026-07-27:
+        MOCK vs REAL 000660 1m OHLC matched exactly (0.000% diff) at every bar
+        checked around today's 3 flag times. But the MOCK/virtual server's
+        date-scoped historical-minute-chart endpoint intermittently 500s in
+        ways the REAL endpoint for the SAME public data does not — silently
+        corrupting prior-day warm-up (wrong seed day). This ONE-SHOT
+        per-bootstrap fetch is the only thing routed through REAL; today's
+        repeated live-paging walk stays on the MOCK endpoint (routing that
+        one through REAL instead hit REAL-account rate limits and made it
+        LESS reliable, not more). All order/balance/quote calls for the
+        traded ETFs still go through ``_get_kis_client()`` unchanged."""
+        if self.mode == "real":
+            return self._get_kis_client()
+        with self._watch_history_client_lock:
+            if self._watch_history_client is None:
+                from app.trading.kis_client import create_kis_client
+
+                self._watch_history_client = create_kis_client("real")
+            if self._watch_history_client is not None:
+                return self._watch_history_client
+        # no REAL credentials configured in this deployment — fall back to
+        # the mode-selected (mock) client rather than fetching nothing.
+        return self._get_kis_client()
+
     def _default_fetch_minute_candles(self, mode: str, symbol: str, count: int, hour1: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-        """Real KIS call — the one and only network entry point for minute bars."""
+        """Real KIS call — the one and only network entry point for minute bars.
+
+        Today's live paging walk fires several rapid successive requests
+        (backward cursor), which hit REAL-account rate limits harder than the
+        MOCK endpoint (verified 2026-07-27: switching this path to REAL
+        caused it to intermittently miss the early session instead). Only
+        the ONE-SHOT prior-day warm-up fetch
+        (_default_fetch_minute_candles_for_date) uses the REAL client — this
+        path stays on self.mode's regular client, unchanged."""
         del mode  # self.mode already selected the shared client via _get_kis_client()
         client = self._get_kis_client()
         if client is None:
@@ -301,7 +347,7 @@ class MarketDataService:
         entry point that can return a SPECIFIC calendar date's minute bars."""
         del mode
         try:
-            client = self._get_kis_client()
+            client = self._get_watch_symbol_history_client()
             if client is None:
                 return _empty_1m_frame(), {"error": "kis_client_none"}
             candles = client.get_minute_candles_for_date(symbol, date_ymd, period_min=1, count=count, hour1=hour1) or []
@@ -327,16 +373,32 @@ class MarketDataService:
     def _fetch_trading_day_candles(self, date_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
         """One full page-backwards walk of KIS's 주식일별분봉조회 for a SINGLE
         specific calendar date — same no-growth/cursor-stuck bounded loop as
-        the live today-only walk, just against the date-scoped endpoint."""
+        the live today-only walk, just against the date-scoped endpoint.
+
+        A transient fetch error (e.g. KIS 500 / rate limit) is retried up to
+        ``PRIOR_DAY_FETCH_RETRIES`` times before this date is treated as
+        empty — otherwise a one-off server hiccup on the true prior trading
+        day gets silently mistaken for "no data / holiday" and the caller
+        falls back to an earlier, wrong date, seeding EMA warm-up off a
+        different day than KIS's own chart uses (2026-07-27 fix)."""
         pages: list[pd.DataFrame] = []
         page_diags: list[dict[str, Any]] = []
         hour1 = ""
         prev_count = 0
         for page_i in range(KIS_MAX_PAGES):
-            with self._io_lock:
-                part, _diag = self._fetch_minute_candles_for_date(
-                    self.mode, config.WATCH_SYMBOL, date_ymd, KIS_PAGE_SIZE, hour1,
-                )
+            if page_i > 0:
+                time.sleep(config.KIS_PAGE_FETCH_PACING_SEC)
+            part = _empty_1m_frame()
+            _diag: dict[str, Any] = {}
+            for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
+                with self._io_lock:
+                    part, _diag = self._fetch_minute_candles_for_date(
+                        self.mode, config.WATCH_SYMBOL, date_ymd, KIS_PAGE_SIZE, hour1,
+                    )
+                if not part.empty or not _diag.get("error"):
+                    break
+                if retry_i < config.PRIOR_DAY_FETCH_RETRIES - 1:
+                    time.sleep(config.PRIOR_DAY_FETCH_RETRY_DELAY_SEC)
             page_diags.append({
                 "request_no": page_i + 1, "requested_date": date_ymd,
                 "requested_hour1": hour1 or "LATEST", "received_count": int(len(part)),
@@ -437,8 +499,17 @@ class MarketDataService:
         hour1 = ""
         prev_count = 0
         for page_i in range(KIS_MAX_PAGES):
-            with self._io_lock:
-                part, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, KIS_PAGE_SIZE, hour1)
+            if page_i > 0:
+                time.sleep(config.KIS_PAGE_FETCH_PACING_SEC)
+            part = _empty_1m_frame()
+            _diag: dict[str, Any] = {}
+            for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
+                with self._io_lock:
+                    part, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, KIS_PAGE_SIZE, hour1)
+                if not part.empty or not _diag.get("error"):
+                    break
+                if retry_i < config.PRIOR_DAY_FETCH_RETRIES - 1:
+                    time.sleep(config.PRIOR_DAY_FETCH_RETRY_DELAY_SEC)
             page_diags.append({
                 "request_no": page_i + 1,
                 "requested_date": today_ymd,
