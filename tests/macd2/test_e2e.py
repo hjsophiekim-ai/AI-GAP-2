@@ -57,11 +57,20 @@ def e2e_session():
 
 
 def _run_until(svc, broker, state, predicate, *, max_steps=90, step_minutes=3, start=_SESSION_START_NOW):
+    """Each step ticks twice (docs 2026-07-27 momentary-crossing fix — a
+    provisional crossing needs a second fresh tick >= PROVISIONAL_CONFIRM_MIN_GAP_SEC
+    later, still within the same forming bar, before it counts as confirmed):
+    first at ``now`` (arms the candidate, if any), then at ``now + 5s``
+    (confirms it, mirroring the real ~5s worker cadence)."""
     for step in range(max_steps):
         now = start + timedelta(minutes=step_minutes * step)
         result = run_once(broker=broker, market_data=svc, state=state, now=now)
         if predicate(result):
             return result, now
+        now2 = now + timedelta(seconds=5)
+        result2 = run_once(broker=broker, market_data=svc, state=state, now=now2)
+        if predicate(result2):
+            return result2, now2
     return None, None
 
 

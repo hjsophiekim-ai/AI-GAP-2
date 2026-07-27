@@ -237,3 +237,27 @@ class RuntimeState:
     signed_b_shadow_direction: Optional[Direction] = None
     signed_b_shadow_hist_last3: tuple[float, float, float] = field(default_factory=tuple)
     updated_at: Optional[str] = None
+
+    # ── Provisional two-tick candidate gate (2026-07-27 momentary-crossing fix) ──
+    candidate_flag: Optional[Direction] = None  # CANDIDATE_UP_RED/CANDIDATE_DOWN_BLUE display only — no order authority
+    candidate_bar_ts: Optional[str] = None
+    candidate_first_seen_at: Optional[str] = None
+    candidate_first_diff: Optional[float] = None
+    candidate_confirmed_at: Optional[str] = None
+    candidate_confirmed_diff: Optional[float] = None
+
+    # ── Broker order result (most recent, any leg) ─────────────────────────
+    last_broker_order_id: Optional[str] = None
+    last_broker_order_result: Optional[str] = None
+    last_broker_order_symbol: Optional[str] = None
+    last_broker_order_side: Optional[str] = None
+    last_broker_order_at: Optional[str] = None
+
+    # ── Signal-ledger duplicate-write visibility ───────────────────────────
+    last_duplicate_signal_id: Optional[str] = None
+
+    # ── Order sizing diagnostics (most recent entry/switch attempt) ────────
+    last_order_orderable_cash: Optional[float] = None
+    last_order_sizing_price: Optional[float] = None
+    last_order_requested_qty: Optional[int] = None
+    last_order_expected_amount: Optional[float] = None

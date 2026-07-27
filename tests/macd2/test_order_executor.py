@@ -82,6 +82,37 @@ def test_flat_entry_up_red_buys_long_symbol():
     assert rows[0]["signal_id"] == "sig-1"
 
 
+def test_execute_signal_records_sizing_diagnostics():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-sizing",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+    )
+    assert outcome.orderable_cash_at_sizing == 10_000_000.0
+    assert outcome.sizing_price == 15_000.0
+    assert outcome.quantity * outcome.sizing_price <= outcome.orderable_cash_at_sizing
+
+
+def test_orderable_cash_smaller_than_budget_shrinks_requested_qty():
+    """2026-07-27 fix: budget 9.2M but the REAL (symbol-scoped) orderable
+    cash is smaller — the order must size off the smaller real figure, never
+    the UI budget, and the resulting notional must never exceed it."""
+    price = 15_000.0
+    real_orderable_cash = 4_000_000.0
+    budget = 9_200_000.0
+    broker = FakeBroker(cash=real_orderable_cash, quotes={"0193T0": price})
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-shrink",
+        quotes={"0193T0": price}, position=None, budget=budget,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.orderable_cash_at_sizing == real_orderable_cash
+    assert outcome.quantity * price <= real_orderable_cash
+    assert outcome.quantity * price < budget  # sized off cash, not the larger budget
+
+
 def test_flat_entry_down_blue_buys_inverse_symbol():
     broker = FakeBroker(cash=10_000_000.0, quotes={"0197X0": 10_000.0})
     outcome = order_executor.execute_signal(

@@ -52,6 +52,39 @@ def test_mock_adapter_wraps_cash_and_quote():
     assert adapter.get_quote("9999999") is None
 
 
+class _StubBrokerWithStockBuyable(_StubBroker):
+    """Mirrors KisMockBroker/KisRealBroker's real, symbol-scoped lookup —
+    deliberately returns a DIFFERENT value than the account-level
+    get_orderable_cash() to prove the adapter prefers the symbol-scoped one."""
+
+    def __init__(self):
+        super().__init__()
+        self.stock_buyable_calls = []
+
+    def get_stock_buyable_amount(self, symbol: str = "005930", price: int = 0) -> float:
+        self.stock_buyable_calls.append((symbol, price))
+        return {"0193T0": 6_000_000.0, "0197X0": 4_000_000.0}.get(symbol, 0.0)
+
+
+def test_get_orderable_cash_uses_symbol_scoped_lookup_when_available():
+    """2026-07-27 fix: get_orderable_cash("005930")-style account-level calls
+    silently query an unrelated placeholder symbol under the hood — the
+    adapter must prefer the real per-symbol KIS lookup instead."""
+    stub = _StubBrokerWithStockBuyable()
+    adapter = MockBrokerAdapter(broker=stub)
+
+    assert adapter.get_orderable_cash("0193T0") == 6_000_000.0
+    assert adapter.get_orderable_cash("0197X0") == 4_000_000.0
+    assert stub.stock_buyable_calls == [("0193T0", 0), ("0197X0", 0)]
+
+
+def test_get_orderable_cash_falls_back_without_stock_buyable_amount():
+    """A broker double lacking get_stock_buyable_amount (e.g. older test
+    stubs) must keep working exactly as before."""
+    adapter = MockBrokerAdapter(broker=_StubBroker())
+    assert adapter.get_orderable_cash("0193T0") == 8_500_000.0
+
+
 def test_mock_adapter_get_position_lookup_and_reconcile():
     adapter = MockBrokerAdapter(broker=_StubBroker())
     pos = adapter.get_position("0193T0")

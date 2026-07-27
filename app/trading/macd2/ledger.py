@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import csv
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from app.trading.macd2 import config
+from app.trading.macd2.models import Direction
 from app.utils.data_paths import LOGS_DIR
+
+_VALID_DIRECTION_VALUES = {d.value for d in Direction}
 
 SIGNAL_LEDGER_COLUMNS = [
     "trading_date", "completed_bar_at", "signal_id", "signal_type", "direction",
@@ -52,16 +56,40 @@ def ensure_paths() -> None:
     LOGS_DIR_PATH.mkdir(parents=True, exist_ok=True)
 
 
+def _read_header(path: Path) -> Optional[list[str]]:
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    with open(path, newline="", encoding="utf-8") as fh:
+        try:
+            return next(csv.reader(fh))
+        except StopIteration:
+            return None
+
+
 def _append_row(path: Path, columns: list[str], row: dict[str, Any]) -> None:
+    """Append one row, keyed strictly by column NAME — never by position.
+
+    ``columns`` is the current code's canonical column list, but its ORDER
+    can change across versions (a field inserted in the middle, not only
+    appended at the end). A file already on disk keeps whatever order it was
+    first written with; if this function blindly wrote new rows using
+    ``columns``' (possibly different) order, every value would land one or
+    more columns off from the on-disk header — the exact 2026-07-27 incident
+    where a forming_bar_start value ended up in the strategy_name column.
+    Reading back the REAL on-disk header (after _ensure_columns has merged
+    in any genuinely missing columns) and using THAT as fieldnames guarantees
+    new rows always align with whatever is actually on disk.
+    """
     ensure_paths()
-    if path.exists() and path.stat().st_size > 0:
-        _ensure_columns(path, columns)
     is_new = not path.exists() or path.stat().st_size == 0
+    if not is_new:
+        _ensure_columns(path, columns)
+    fieldnames = columns if is_new else (_read_header(path) or columns)
     with open(path, "a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=columns)
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
         if is_new:
             writer.writeheader()
-        writer.writerow({col: row.get(col, "") for col in columns})
+        writer.writerow({col: row.get(col, "") for col in fieldnames})
 
 
 def _ensure_columns(path: Path, columns: list[str]) -> None:
@@ -144,6 +172,37 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _row_schema_ok(row: dict[str, Any]) -> bool:
+    """Sanity-check a small set of fields whose VALUES are known to be one of
+    a fixed set — a column-order mismatch between an old on-disk header and
+    the current code (2026-07-27 incident: forming_bar_start landing in the
+    strategy_name column) reliably produces an out-of-domain value here, even
+    though the row's OTHER fields (strategy_version, signal_rule, ...) may
+    look superficially plausible. Empty/missing values are never flagged —
+    only a genuinely wrong, non-empty value counts as malformed, so legacy
+    rows predating a given column are still handled by OLD_STRATEGY/
+    LEGACY_INVALID instead."""
+    strategy_name = str(row.get("strategy_name") or "")
+    if strategy_name and strategy_name != config.STRATEGY_NAME:
+        return False
+    direction = str(row.get("direction") or "")
+    if direction and direction not in _VALID_DIRECTION_VALUES:
+        return False
+    return True
+
+
+def _is_pre_session_row(row: dict[str, Any], session_started_at: Optional[str]) -> bool:
+    if not session_started_at:
+        return False
+    detected_at = str(row.get("detected_at") or "")
+    if not detected_at:
+        return False
+    try:
+        return datetime.fromisoformat(detected_at) < datetime.fromisoformat(str(session_started_at))
+    except ValueError:
+        return False
+
+
 def _current_strategy_rows(
     rows: list[dict[str, Any]],
     *,
@@ -157,10 +216,14 @@ def _current_strategy_rows(
     for row in rows:
         keep = True
         reason = ""
-        if strategy_version and row.get("strategy_version") != strategy_version:
+        if not _row_schema_ok(row):
+            keep, reason = False, "MALFORMED_SCHEMA"
+        if keep and strategy_version and row.get("strategy_version") != strategy_version:
             keep, reason = False, "OLD_STRATEGY"
         if keep and signal_rule and row.get("signal_rule") != signal_rule:
             keep, reason = False, "LEGACY_INVALID"
+        if keep and _is_pre_session_row(row, session_started_at):
+            keep, reason = False, "PRE_SESSION_ROW"
         if keep and session_baseline_bar_ts:
             completed_at = str(row.get("completed_bar_at") or "")
             baseline_hms = session_baseline_bar_ts[11:19].replace(":", "")

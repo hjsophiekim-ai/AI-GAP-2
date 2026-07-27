@@ -49,6 +49,12 @@ class ExecutionOutcome:
     quantity: int = 0
     filled_avg_price: Optional[float] = None
     timestamps: dict[str, str] = field(default_factory=dict)
+    # Sizing diagnostics (docs 2026-07-27 주문가능금액 fix) — the actual
+    # per-symbol orderable cash and quote price used to compute ``quantity``,
+    # so the caller can display/verify requested_qty * sizing_price never
+    # exceeds orderable_cash_at_sizing.
+    orderable_cash_at_sizing: Optional[float] = None
+    sizing_price: Optional[float] = None
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -253,6 +259,8 @@ def execute_signal(
     cash = broker.get_orderable_cash(target_symbol)
     requested_qty = compute_order_quantity(cash, budget, price, symbol=target_symbol)
     outcome.quantity = requested_qty
+    outcome.orderable_cash_at_sizing = cash
+    outcome.sizing_price = price
     if requested_qty < 1:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_INSUFFICIENT_QTY

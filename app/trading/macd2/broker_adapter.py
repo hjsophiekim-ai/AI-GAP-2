@@ -55,9 +55,18 @@ class _BrokerAdapterBase:
         return float(self._broker.get_balance())
 
     def get_orderable_cash(self, symbol: str) -> float:
-        # The shared broker layer exposes account-level orderable cash; MACD2's
-        # budget-vs-cash comparison (docs §9) only needs the account total.
-        del symbol
+        # Query KIS's per-symbol 매수가능금액 (inquire-psbl-order) for THIS
+        # target symbol/market-order — never the account-level
+        # get_orderable_cash()/get_buyable_cash() convenience methods, which
+        # silently query a hardcoded placeholder symbol ("005930") unrelated
+        # to what MACD2 is actually about to trade. That mismatch let the
+        # sizing figure diverge from what KIS actually accepts for the real
+        # target ETN, producing a "주문가능금액 부족" rejection even though
+        # compute_order_quantity's own min(cash, budget) math was correct
+        # given the wrong cash figure it was fed (2026-07-27 incident).
+        stock_getter = getattr(self._broker, "get_stock_buyable_amount", None)
+        if stock_getter is not None:
+            return float(stock_getter(symbol=symbol, price=0))
         getter = getattr(self._broker, "get_orderable_cash", None) or self._broker.get_buyable_cash
         return float(getter())
 

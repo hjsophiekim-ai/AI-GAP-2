@@ -276,12 +276,36 @@ try:
     curr_diff = state.provisional_diff
     pc3.metric("previous diff", f"{prev_diff:.6f}" if prev_diff is not None else "-")
     pc4.metric("current diff", f"{curr_diff:.6f}" if curr_diff is not None else "-")
-    st.caption(
-        f"current forming flag=`{state.provisional_flag.value if state.provisional_flag else '-'}` · "
-        f"current signal_id=`{state.provisional_signal_id or '-'}` · "
-        f"last primary onset=`{state.latest_primary_flag.value if state.latest_primary_flag else '-'}`/"
-        f"`{state.latest_primary_signal_id or '-'}`"
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    fc1.metric("confirmed flag (this tick)", state.provisional_flag.value if state.provisional_flag else "-")
+    fc2.metric(
+        "candidate flag (unconfirmed)",
+        f"CANDIDATE_{state.candidate_flag.value}" if state.candidate_flag else "-",
     )
+    fc3.metric("last confirmed onset", state.latest_primary_flag.value if state.latest_primary_flag else "-")
+    fc4.metric("broker order result", state.last_broker_order_result or "-")
+    st.caption(
+        f"current signal_id=`{state.provisional_signal_id or '-'}` · "
+        f"last primary onset signal_id=`{state.latest_primary_signal_id or '-'}` · "
+        f"candidate since=`{state.candidate_first_seen_at or '-'}` (first diff `{state.candidate_first_diff if state.candidate_first_diff is not None else '-'}`) · "
+        f"last confirmed at=`{state.candidate_confirmed_at or '-'}` (confirmed diff `{state.candidate_confirmed_diff if state.candidate_confirmed_diff is not None else '-'}`)"
+    )
+    st.caption(
+        f"broker order: id=`{state.last_broker_order_id or '-'}` · "
+        f"symbol=`{state.last_broker_order_symbol or '-'}` · side=`{state.last_broker_order_side or '-'}` · "
+        f"at=`{state.last_broker_order_at or '-'}`"
+    )
+    if state.last_duplicate_signal_id:
+        st.warning(f"signal ledger 중복 기록 거부됨 — signal_id=`{state.last_duplicate_signal_id}` (이미 기록된 signal_id)")
+    st.markdown("**주문 sizing (직전 진입/스위치 시도)**")
+    if state.last_order_orderable_cash is not None:
+        oc1, oc2, oc3, oc4 = st.columns(4)
+        oc1.metric("orderable_cash", f"{state.last_order_orderable_cash:,.0f}")
+        oc2.metric("sizing_price", f"{state.last_order_sizing_price:,.2f}" if state.last_order_sizing_price is not None else "-")
+        oc3.metric("requested_qty", state.last_order_requested_qty if state.last_order_requested_qty is not None else "-")
+        oc4.metric("expected_amount", f"{state.last_order_expected_amount:,.0f}" if state.last_order_expected_amount is not None else "-")
+    else:
+        st.caption("orderable_cash=`-` · sizing_price=`-` · requested_qty=`-` · expected_amount=`-`")
 
     st.markdown("**Provisional forming-bar crossover**")
     pr1, pr2, pr3, pr4 = st.columns(4)
@@ -419,7 +443,7 @@ try:
     g3.metric("완료 거래", f"{trade_summary['round_trip_count']}건")
 
     st.caption(
-        "KIS manual arrows today total=5 · "
+        "KIS manual arrows today=- · "
         f"system provisional red/blue={sig_summary['red_count']}/{sig_summary['blue_count']} · "
         f"system confirmed red/blue={confirmed_summary['red_count']}/{confirmed_summary['blue_count']}"
     )

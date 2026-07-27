@@ -124,6 +124,22 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         ),
         "signed_b_shadow_hist_last3": list(state.signed_b_shadow_hist_last3 or ()),
         "updated_at": state.updated_at,
+        "candidate_flag": state.candidate_flag.value if state.candidate_flag else None,
+        "candidate_bar_ts": state.candidate_bar_ts,
+        "candidate_first_seen_at": state.candidate_first_seen_at,
+        "candidate_first_diff": state.candidate_first_diff,
+        "candidate_confirmed_at": state.candidate_confirmed_at,
+        "candidate_confirmed_diff": state.candidate_confirmed_diff,
+        "last_broker_order_id": state.last_broker_order_id,
+        "last_broker_order_result": state.last_broker_order_result,
+        "last_broker_order_symbol": state.last_broker_order_symbol,
+        "last_broker_order_side": state.last_broker_order_side,
+        "last_broker_order_at": state.last_broker_order_at,
+        "last_duplicate_signal_id": state.last_duplicate_signal_id,
+        "last_order_orderable_cash": state.last_order_orderable_cash,
+        "last_order_sizing_price": state.last_order_sizing_price,
+        "last_order_requested_qty": state.last_order_requested_qty,
+        "last_order_expected_amount": state.last_order_expected_amount,
     }
 
 
@@ -146,6 +162,8 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     provisional_flag = Direction(provisional_raw) if provisional_raw in _DIRECTION_VALUES else None
     signed_b_raw = raw.get("signed_b_shadow_direction")
     signed_b_shadow = Direction(signed_b_raw) if signed_b_raw in _DIRECTION_VALUES else None
+    candidate_raw = raw.get("candidate_flag")
+    candidate_flag = Direction(candidate_raw) if candidate_raw in _DIRECTION_VALUES else None
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         ui_mode=ui_mode,
@@ -201,6 +219,22 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         signed_b_shadow_direction=signed_b_shadow,
         signed_b_shadow_hist_last3=tuple(raw.get("signed_b_shadow_hist_last3") or ()),
         updated_at=raw.get("updated_at"),
+        candidate_flag=candidate_flag,
+        candidate_bar_ts=raw.get("candidate_bar_ts"),
+        candidate_first_seen_at=raw.get("candidate_first_seen_at"),
+        candidate_first_diff=raw.get("candidate_first_diff"),
+        candidate_confirmed_at=raw.get("candidate_confirmed_at"),
+        candidate_confirmed_diff=raw.get("candidate_confirmed_diff"),
+        last_broker_order_id=raw.get("last_broker_order_id"),
+        last_broker_order_result=raw.get("last_broker_order_result"),
+        last_broker_order_symbol=raw.get("last_broker_order_symbol"),
+        last_broker_order_side=raw.get("last_broker_order_side"),
+        last_broker_order_at=raw.get("last_broker_order_at"),
+        last_duplicate_signal_id=raw.get("last_duplicate_signal_id"),
+        last_order_orderable_cash=raw.get("last_order_orderable_cash"),
+        last_order_sizing_price=raw.get("last_order_sizing_price"),
+        last_order_requested_qty=raw.get("last_order_requested_qty"),
+        last_order_expected_amount=raw.get("last_order_expected_amount"),
     )
 
 

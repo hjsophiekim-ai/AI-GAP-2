@@ -75,6 +75,12 @@ QUOTE_MAX_AGE_SEC = 10.0
 PENDING_SIGNAL_RETRY_SEC = 30.0
 FLAT_POSITION_RECONCILE_INTERVAL_SEC = 30.0
 
+# 2026-07-27 momentary-crossing fix: a single-tick provisional forming-bar
+# crossover is only a CANDIDATE, never an order — it is confirmed as a
+# Primary onset only once the SAME direction is still present on a LATER
+# fresh quote tick at least this many seconds after the first sighting.
+PROVISIONAL_CONFIRM_MIN_GAP_SEC = 3.0
+
 # ── Feature flags (strategy-fixed per docs; not user-configurable) ────────
 CONTINUATION_REENTRY_ENABLED = False
 OPENING_PROBE_ENABLED = False

@@ -1,6 +1,8 @@
 """Unit tests for app.trading.macd2.ledger — isolated to tmp_path via conftest.py."""
 from __future__ import annotations
 
+import csv
+
 import pytest
 
 from app.trading.macd2 import config, ledger
@@ -77,6 +79,49 @@ def test_append_signal_requires_signal_id():
     row["signal_id"] = ""
     with pytest.raises(ValueError):
         ledger.append_signal(row)
+
+
+def test_append_signal_aligns_new_row_to_reordered_on_disk_header():
+    """2026-07-27 incident: a file already on disk with a header order that
+    differs from the current code's canonical SIGNAL_LEDGER_COLUMNS list
+    (e.g. from an earlier code version) must never cause a NEW row's values
+    to land in the wrong columns. Simulate this by writing a header with
+    ``strategy_name`` and ``forming_bar_start`` swapped relative to the
+    canonical order, plus one legacy row in that same swapped order, then
+    append a new row through the real API and verify both rows still read
+    back correctly BY NAME.
+    """
+    swapped_columns = list(ledger.SIGNAL_LEDGER_COLUMNS)
+    i, j = swapped_columns.index("strategy_name"), swapped_columns.index("forming_bar_start")
+    swapped_columns[i], swapped_columns[j] = swapped_columns[j], swapped_columns[i]
+
+    legacy_row = _current_signal_row("legacy-1")
+    legacy_row["forming_bar_start"] = "2026-01-06T09:03:00+09:00"
+    ledger.SIGNAL_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger.SIGNAL_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=swapped_columns)
+        writer.writeheader()
+        writer.writerow({col: legacy_row.get(col, "") for col in swapped_columns})
+
+    new_row = _current_signal_row("new-1")
+    new_row["forming_bar_start"] = "2026-01-06T09:06:00+09:00"
+    assert ledger.append_signal(new_row) is True
+
+    rows = ledger.load_signal_ledger()
+    assert len(rows) == 2
+    by_id = {r["signal_id"]: r for r in rows}
+    assert by_id["legacy-1"]["strategy_name"] == "MACD2"
+    assert by_id["legacy-1"]["forming_bar_start"] == "2026-01-06T09:03:00+09:00"
+    assert by_id["new-1"]["strategy_name"] == "MACD2"
+    assert by_id["new-1"]["forming_bar_start"] == "2026-01-06T09:06:00+09:00"
+
+    # The on-disk header itself is untouched (no rewrite needed — nothing was
+    # actually missing, only reordered) so the swapped order is still there;
+    # confirming this is what makes the naive "write with canonical order"
+    # bug possible if _append_row didn't read it back.
+    with open(ledger.SIGNAL_LEDGER_PATH, newline="", encoding="utf-8") as fh:
+        on_disk_header = next(csv.reader(fh))
+    assert on_disk_header == swapped_columns
 
 
 def test_append_execution_dedupes_by_order_id():
@@ -202,6 +247,60 @@ def test_summarize_signals_counts_consecutive_same_direction_as_one_onset_and_ex
     assert summary["blue_count"] == 1
     assert summary["signal_count"] == 1
     assert len([r for r in summary["excluded_signals"] if r["excluded_reason"] == "OLD_STRATEGY"]) == 8
+
+
+def test_summarize_signals_excludes_malformed_schema_rows():
+    """2026-07-27 incident: a row whose strategy_name column holds something
+    other than "MACD2" (e.g. a forming_bar_start value that landed there via
+    a column-order mismatch) must be excluded as MALFORMED_SCHEMA — never
+    silently counted toward today's red/blue stats."""
+    good = _current_signal_row("good-1", direction="UP_RED")
+    ledger.append_signal(good)
+    corrupted = _current_signal_row("corrupted-1", direction="DOWN_BLUE")
+    corrupted["strategy_name"] = "2026-07-27T09:06:00+09:00"  # shifted value, not "MACD2"
+    ledger.append_signal(corrupted)
+    corrupted_direction = _current_signal_row("corrupted-2", direction="2026-07-27T09:07:00+09:00")
+    ledger.append_signal(corrupted_direction)
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
+        session_started_at="2026-01-06T09:00:00+09:00",
+    )
+
+    assert summary["red_count"] == 1
+    assert summary["blue_count"] == 0
+    assert summary["current_signal_ids"] == ["good-1"]
+    malformed = [r for r in summary["excluded_signals"] if r["excluded_reason"] == "MALFORMED_SCHEMA"]
+    assert {r["signal_id"] for r in malformed} == {"corrupted-1", "corrupted-2"}
+
+
+def test_summarize_signals_excludes_pre_session_rows_by_detected_at():
+    """summarize_signals' session_started_at argument must actually filter —
+    a row detected BEFORE the current Worker session started (leftover from a
+    previous run/test on the same trading date) is excluded as
+    PRE_SESSION_ROW, while a row detected after session start on the SAME
+    date is still counted normally (not misclassified as OLD_STRATEGY)."""
+    previous_session_row = _current_signal_row("prev-session-1", direction="UP_RED")
+    previous_session_row["detected_at"] = "2026-01-06T08:00:00+09:00"
+    ledger.append_signal(previous_session_row)
+    current_session_row = _current_signal_row("cur-session-1", direction="DOWN_BLUE")
+    current_session_row["detected_at"] = "2026-01-06T09:05:00+09:00"
+    ledger.append_signal(current_session_row)
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
+        session_started_at="2026-01-06T09:00:00+09:00",
+    )
+
+    assert summary["red_count"] == 0
+    assert summary["blue_count"] == 1
+    assert summary["current_signal_ids"] == ["cur-session-1"]
+    excluded_reasons = {r["signal_id"]: r["excluded_reason"] for r in summary["excluded_signals"]}
+    assert excluded_reasons["prev-session-1"] == "PRE_SESSION_ROW"
 
 
 def test_summarize_daily_trading_empty_ledger_does_not_raise():
