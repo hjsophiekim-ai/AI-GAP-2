@@ -451,6 +451,10 @@ def _advance_provisional_candidate(
         state.candidate_bar_ts = bar_key
         state.candidate_first_seen_at = now.isoformat()
         state.candidate_first_diff = provisional_snap.current_diff
+        if config.PROVISIONAL_CONFIRM_MIN_GAP_SEC <= 0:
+            state.candidate_confirmed_at = now.isoformat()
+            state.candidate_confirmed_diff = provisional_snap.current_diff
+            return provisional_snap, provisional_condition
         return None, Direction.HOLD
 
     gap_sec = None
@@ -829,8 +833,9 @@ def _dispatch_confirmed_signal(
     signal_type: str,
     position: Optional[PositionSnapshot],
     result: TickResult,
+    signal_id_override: Optional[str] = None,
 ):
-    signal_id = make_signal_id(macd_snap.bar_dt, direction)
+    signal_id = signal_id_override or make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
         state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
         return None
@@ -847,6 +852,26 @@ def _dispatch_confirmed_signal(
     )
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
     return outcome
+
+
+def _dispatch_candidate_signal(
+    *,
+    broker,
+    market_data: MarketDataService,
+    state: RuntimeState,
+    now: datetime,
+    candidate_snap,
+    direction: Direction,
+    signal_type: str,
+    position: Optional[PositionSnapshot],
+    result: TickResult,
+):
+    signal_id = make_signal_id(candidate_snap.bar_dt, direction)
+    return _dispatch_confirmed_signal(
+        broker=broker, market_data=market_data, state=state, now=now,
+        macd_snap=candidate_snap, direction=direction, signal_type=signal_type,
+        position=position, result=result, signal_id_override=signal_id,
+    )
 
 
 def _record_confirmed_blocked_signal(
@@ -975,9 +1000,10 @@ def run_once(
     today_has_completed_bar = bool(
         not bars_3m.empty and (bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str).any()
     )
+    provisional_ready = today_has_completed_bar and bool(state.last_confirmed_bar_ts)
     candidate_snap, candidate_condition = _advance_provisional_candidate(
         state, raw_provisional_snap, raw_provisional_condition, now,
-        today_has_completed_bar=today_has_completed_bar,
+        today_has_completed_bar=provisional_ready,
     )
     if candidate_snap is not None:
         candidate_signal_id = make_provisional_signal_id(candidate_snap.bar_dt, candidate_condition)
@@ -1064,6 +1090,27 @@ def run_once(
                     state.last_evaluated_bar_ts = bar_ts_str
                     return result
 
+        candidate_switch_direction = candidate_condition if candidate_snap is not None else Direction.HOLD
+        if entry_window_open and candidate_switch_direction != Direction.HOLD:
+            target = order_executor.target_symbol_for_direction(candidate_switch_direction)
+            if target != pos.symbol:
+                outcome = _dispatch_candidate_signal(
+                    broker=broker, market_data=market_data, state=state, now=now,
+                    candidate_snap=candidate_snap, direction=candidate_switch_direction,
+                    signal_type="REVERSAL_PROVISIONAL", position=pos, result=result,
+                )
+                if outcome is not None:
+                    _apply_switch_outcome(state, outcome, candidate_switch_direction)
+                    result.actions.append(f"OPPOSITE_SIGNAL:{candidate_switch_direction.value}")
+                    return result
+            else:
+                _record_confirmed_blocked_signal(
+                    state=state, macd_snap=candidate_snap, direction=candidate_switch_direction,
+                    signal_type="HELD_SAME_PROVISIONAL",
+                    reason=order_executor.BLOCK_ALREADY_HOLDING,
+                    result=result,
+                )
+
         if entry_window_open and confirmed_direction != Direction.HOLD:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
@@ -1112,6 +1159,18 @@ def run_once(
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
 
+    candidate_entry_direction = candidate_condition if candidate_snap is not None else Direction.HOLD
+    if entry_window_open and candidate_entry_direction != Direction.HOLD:
+        outcome = _dispatch_candidate_signal(
+            broker=broker, market_data=market_data, state=state, now=now,
+            candidate_snap=candidate_snap, direction=candidate_entry_direction,
+            signal_type="INITIAL_PROVISIONAL", position=None, result=result,
+        )
+        if outcome is not None:
+            _apply_switch_outcome(state, outcome, candidate_entry_direction)
+            result.actions.append(f"ENTRY:{candidate_entry_direction.value}")
+            return result
+
     if entry_window_open and confirmed_direction != Direction.HOLD:
         outcome = _dispatch_confirmed_signal(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
@@ -1133,7 +1192,10 @@ def _record_broker_order_result(state: RuntimeState, outcome) -> None:
     if result is None:
         return
     state.last_broker_order_id = result.order_id
-    state.last_broker_order_result = "OK" if result.success else (result.message or "FAILED")
+    if result.success:
+        state.last_broker_order_result = "OK"
+    else:
+        state.last_broker_order_result = outcome.order_failure_stage or outcome.block_reason or "ORDER_FAILED"
     state.last_broker_order_symbol = result.symbol
     state.last_broker_order_side = result.side
     state.last_broker_order_at = datetime.now(KST).isoformat()

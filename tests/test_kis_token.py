@@ -425,15 +425,19 @@ class TestTokenExpiredMidSessionAutoRetry:
         assert result["ord_psbl_cash"] == 5_000_000.0
         assert result.get("error") is None
 
-    def test_non_token_error_does_not_trigger_retry(self, tmp_path, monkeypatch):
-        """다른 오류(예: 레이트리밋 EGW00201)는 토큰 재발급 대상이 아니므로 재시도하지 않는다."""
+    def test_rate_limit_error_retries_without_token_refresh(self, tmp_path, monkeypatch):
+        """레이트리밋 EGW00201은 재시도하되 토큰 재발급 대상은 아니다."""
         client = self._client_with_valid_looking_cached_token(tmp_path, monkeypatch)
+        import app.trading.kis_client as kis_client_module
+        monkeypatch.setitem(kis_client_module._RATE_LIMIT_RETRY_DELAY_SECONDS, "mock", 0.01)
+        monkeypatch.setattr(kis_client_module.time, "sleep", lambda _seconds: None)
+
         rate_limit_body = {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}
         with patch.object(client._session, "get", return_value=_mock_resp(500, rate_limit_body)) as mock_get, \
                 patch.object(client._session, "post") as mock_post:
             result = client.get_balance()
 
-        assert mock_get.call_count == 1  # 토큰 문제가 아니므로 재시도 없음
+        assert mock_get.call_count == kis_client_module._RATE_LIMIT_RETRY_MAX_ATTEMPTS
         mock_post.assert_not_called()
         assert client._token == "stale-but-locally-valid-token"  # 토큰 무효화되지 않음
         assert result["error"] is not None

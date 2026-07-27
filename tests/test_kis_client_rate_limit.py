@@ -85,3 +85,46 @@ def test_pytest_bypass_skips_throttle_during_tests():
     kc._throttle("mock")
     elapsed = real_time.monotonic() - t0
     assert elapsed < 0.2
+
+
+def test_place_order_retries_egw00201_until_success(monkeypatch):
+    class _FakeResponse:
+        def __init__(self, ok, status_code, body):
+            self.ok = ok
+            self.status_code = status_code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", mode="mock")
+    monkeypatch.setattr(client, "get_hashkey", lambda body: "hash")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    monkeypatch.setitem(kc._RATE_LIMIT_RETRY_DELAY_SECONDS, "mock", 0.01)
+
+    sleep_calls = []
+    monkeypatch.setattr(kc.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    responses = [
+        _FakeResponse(False, 500, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}),
+        _FakeResponse(False, 500, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}),
+        _FakeResponse(True, 200, {"rt_cd": "0", "msg_cd": "40600000", "msg1": "OK", "output": {"ODNO": "ORD-1"}}),
+    ]
+
+    def _fake_post(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    result = client._place_order(
+        "VTTC0802U",
+        {"CANO": "1", "ACNT_PRDT_CD": "01", "PDNO": "0193T0", "ORD_DVSN": "01", "ORD_QTY": "1", "ORD_UNPR": "0"},
+        "buy",
+        "0193T0",
+        1,
+        0,
+    )
+
+    assert result["success"] is True
+    assert result["order_id"] == "ORD-1"
+    assert sleep_calls == [0.01, 0.01]

@@ -195,14 +195,10 @@ def test_duplicate_signal_id_is_never_reexecuted_across_many_ticks():
     assert len(broker.orders) == orders_after_first  # zero additional orders
 
 
-def test_provisional_candidate_confirms_but_never_dispatches_order():
-    """docs 2026-07-27 KIS-parity fix: the forming/provisional bar (even once
-    two-tick-confirmed as a CANDIDATE) never carries order/ledger/
-    last_direction authority — only the completed-bar Primary crossover
-    (_advance_confirmed_primary) does. The underlying 1m history here is
-    flat (no real completed-bar crossover exists), so a live quote move that
-    would have driven the OLD forming-bar dispatch must now produce a
-    confirmed CANDIDATE display only, with zero orders/ledger rows."""
+def test_provisional_candidate_confirms_and_dispatches_order():
+    """A two-tick-confirmed forming-bar candidate is order-authoritative again:
+    the 2026-07-27 13:33 incident showed that keeping it display-only misses
+    KIS-chart flags that users expect MACD2 to trade."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -216,13 +212,12 @@ def test_provisional_candidate_confirms_but_never_dispatches_order():
     run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms candidate
 
-    assert result.actions == []
-    assert state.position is None
-    assert broker.orders == []
-    assert ledger.load_signal_ledger() == []
+    assert result.actions == ["ENTRY:UP_RED"]
+    assert state.position is not None
+    assert broker.orders[-1].side == "BUY"
+    assert ledger.load_signal_ledger()[0]["signal_type"] == "INITIAL_PROVISIONAL"
     assert state.candidate_confirmed_at is not None
     assert state.provisional_flag == Direction.UP_RED
-    assert state.last_detected_direction is None  # candidate never touches order-authority direction tracking
 
 
 def test_provisional_forming_window_at_1447_uses_current_bar():
@@ -270,7 +265,7 @@ def test_provisional_recomputes_same_forming_bar_from_latest_quote_every_tick():
     assert state.provisional_diff != first_diff
 
 
-def test_provisional_down_candidate_confirms_but_never_dispatches_order():
+def test_provisional_down_candidate_confirms_and_dispatches_order():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=60.0)
@@ -284,18 +279,16 @@ def test_provisional_down_candidate_confirms_but_never_dispatches_order():
     run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms candidate
 
-    assert result.actions == []
-    assert state.position is None
-    assert broker.orders == []
-    assert ledger.load_signal_ledger() == []
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert state.position is not None
+    assert broker.orders[-1].side == "BUY"
+    assert ledger.load_signal_ledger()[0]["signal_type"] == "INITIAL_PROVISIONAL"
     assert state.provisional_flag == Direction.DOWN_BLUE
 
 
-def test_provisional_candidate_repeated_ticks_never_order():
-    """Repeated ticks against an already-confirmed candidate (same forming
-    bar) must keep reporting the shadow flag without ever touching
-    orders/ledger — there is no order-dedup concern here any more since
-    candidates never reach the order layer at all."""
+def test_provisional_candidate_repeated_ticks_do_not_duplicate_order():
+    """Repeated ticks against the same confirmed candidate may dispatch once,
+    but the same signal_id must never order again."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -312,8 +305,8 @@ def test_provisional_candidate_repeated_ticks_never_order():
     for _ in range(20):
         run_once(broker=broker, market_data=svc, state=state, now=confirm_now)
 
-    assert broker.orders == []
-    assert ledger.load_signal_ledger() == []
+    assert len(broker.orders) == 1
+    assert len(ledger.load_signal_ledger()) == 1
 
 
 def test_provisional_momentary_revert_cancels_candidate_zero_signals_and_orders():
@@ -326,13 +319,14 @@ def test_provisional_momentary_revert_cancels_candidate_zero_signals_and_orders(
     svc = _provisional_service(df_1m, watch_price=140.0)
     now = _forming_now(start)
     state = _fresh_state()
+    state.last_confirmed_bar_ts = (now - timedelta(minutes=3)).isoformat()
     broker = FakeBroker(
         cash=10_000_000.0,
         quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
     )
 
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # UP_RED candidate armed
-    assert state.candidate_flag == Direction.UP_RED
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+    assert result.actions == []
 
     svc._quotes[config.WATCH_SYMBOL] = QuoteSnapshot(
         config.WATCH_SYMBOL, 100.0, datetime.now(KST), 0.0, "test", None,
@@ -345,21 +339,20 @@ def test_provisional_momentary_revert_cancels_candidate_zero_signals_and_orders(
     )
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=4))
 
-    assert result.actions == []
-    assert broker.orders == []
-    assert ledger.load_signal_ledger() == []
-    assert state.candidate_flag == Direction.UP_RED  # re-armed by this tick, still unconfirmed
+    assert result.actions == ["ENTRY:UP_RED"]
+    assert len(broker.orders) == 1
+    assert len(ledger.load_signal_ledger()) == 1
 
 
-def test_provisional_same_bar_candidate_cancel_then_reconfirm_stays_shadow_only():
-    """docs: 후보 취소 후 같은 3분봉에서 재교차가 다시 2회(>=3s) 확인되면
-    candidate로 정상 재확정되지만 (2026-07-27 KIS-parity fix 이후) 이 확정도
-    여전히 shadow 표시일 뿐 주문/원장에는 절대 닿지 않는다."""
+def test_provisional_same_bar_candidate_cancel_then_reconfirm_dispatches_once():
+    """후보 취소 후 같은 3분봉에서 재교차가 다시 2회(>=3s) 확인되면
+    candidate로 정상 재확정되고 한 번만 주문된다."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
     now = _forming_now(start)
     state = _fresh_state()
+    state.last_confirmed_bar_ts = (now - timedelta(minutes=3)).isoformat()
     broker = FakeBroker(
         cash=10_000_000.0,
         quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
@@ -377,8 +370,8 @@ def test_provisional_same_bar_candidate_cancel_then_reconfirm_stays_shadow_only(
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=8))  # 2nd sighting, gap=4s -> confirm
 
     assert result.actions == []
-    assert broker.orders == []
-    assert ledger.load_signal_ledger() == []
+    assert len(broker.orders) == 1
+    assert len(ledger.load_signal_ledger()) == 1
     assert state.provisional_flag == Direction.UP_RED
     assert state.candidate_confirmed_at is not None
 

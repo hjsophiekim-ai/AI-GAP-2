@@ -317,6 +317,16 @@ class KisRealBroker(BrokerBase):
         logger.info("REAL get_positions: %d 종목", len(positions))
         return positions
 
+    def _record_direct_execution_if_needed(self, order_result: OrderResult) -> None:
+        if getattr(self, "_suppress_direct_execution_ledger", False):
+            return
+        try:
+            from app.trading.macd2 import ledger as macd2_ledger
+
+            macd2_ledger.append_broker_direct_execution(order_result)
+        except Exception as e:
+            logger.warning("REAL direct execution ledger append failed %s: %s", order_result.order_id, e)
+
     def buy(
         self,
         symbol: str,
@@ -402,7 +412,7 @@ class KisRealBroker(BrokerBase):
                 result = self.kis.buy(symbol, quantity, int(price), order_type)
             if result["success"]:
                 self._daily_ordered_amount += quantity * price
-            return OrderResult(
+            order_result = OrderResult(
                 success=result["success"],
                 mode=self.mode,
                 account_type="real",
@@ -416,7 +426,10 @@ class KisRealBroker(BrokerBase):
                 message=result.get("message", ""),
                 raw=result.get("raw", {}),
                 http_status=result.get("http_status", 0),
+                rt_cd=result.get("rt_cd", ""), msg_cd=result.get("msg_cd", ""), msg1=result.get("msg1", ""),
             )
+            self._record_direct_execution_if_needed(order_result)
+            return order_result
         except KISTokenError:
             raise
         except Exception as e:
@@ -468,7 +481,7 @@ class KisRealBroker(BrokerBase):
         try:
             with real_order_lock("sell"):
                 result = self.kis.sell(symbol, quantity, int(price), order_type)
-            return OrderResult(
+            order_result = OrderResult(
                 success=result["success"],
                 mode=self.mode,
                 account_type="real",
@@ -481,7 +494,11 @@ class KisRealBroker(BrokerBase):
                 order_id=result.get("order_id", ""),
                 message=result.get("message", ""),
                 raw=result.get("raw", {}),
+                http_status=result.get("http_status", 0),
+                rt_cd=result.get("rt_cd", ""), msg_cd=result.get("msg_cd", ""), msg1=result.get("msg1", ""),
             )
+            self._record_direct_execution_if_needed(order_result)
+            return order_result
         except Exception as e:
             logger.error("REAL sell 예외 %s: %s", symbol, e)
             return OrderResult(

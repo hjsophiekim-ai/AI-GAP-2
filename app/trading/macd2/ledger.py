@@ -9,6 +9,7 @@ the UI must keep rendering (docs §17).
 from __future__ import annotations
 
 import csv
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -160,6 +161,52 @@ def append_execution(row: dict[str, Any]) -> bool:
                 return False
         _append_row(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS, row)
         return True
+
+
+def append_broker_direct_execution(order_result: Any) -> bool:
+    """Record a successful direct KIS broker order in the MACD2 execution ledger.
+
+    MACD2's normal order executor writes richer rows after fill/balance
+    reconciliation. This helper is only for broker calls made outside that
+    executor path, such as manual verification orders, so they still appear in
+    the UI trade ledger.
+    """
+    if not bool(getattr(order_result, "success", False)):
+        return False
+    order_id = str(getattr(order_result, "order_id", "") or "")
+    symbol = str(getattr(order_result, "symbol", "") or "")
+    if not order_id or symbol not in config.TRADE_SYMBOLS:
+        return False
+
+    side = str(getattr(order_result, "side", "") or "").upper()
+    qty = _int(getattr(order_result, "quantity", 0), 0)
+    price = _float(getattr(order_result, "price", 0.0), 0.0)
+    raw = getattr(order_result, "raw", {}) or {}
+    try:
+        broker_response = json.dumps(raw, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        broker_response = str(raw)
+
+    return append_execution({
+        "order_id": order_id,
+        "signal_id": "BROKER_DIRECT",
+        "timestamp": datetime.now(config.KST).isoformat(),
+        "mode": str(getattr(order_result, "mode", "") or ""),
+        "symbol": symbol,
+        "side": side,
+        "requested_qty": qty,
+        "executed_qty": qty,
+        "requested_price": price,
+        "executed_price": price,
+        "position_before": "",
+        "position_after": "",
+        "gross_pnl": 0.0,
+        "fee": 0.0,
+        "slippage": 0.0,
+        "net_pnl": 0.0,
+        "exit_reason": "BROKER_DIRECT",
+        "broker_response": broker_response,
+    })
 
 
 def _float(value: Any, default: float = 0.0) -> float:

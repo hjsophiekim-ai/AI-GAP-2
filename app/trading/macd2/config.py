@@ -98,7 +98,7 @@ MISSED_SIGNAL_QUOTE_STALE = "MISSED_SIGNAL_QUOTE_STALE"
 # fresh quote tick at least this many seconds after the first sighting.
 # (candidate/shadow display only since the 2026-07-27 KIS-parity fix — never
 # order/stat authority any more.)
-PROVISIONAL_CONFIRM_MIN_GAP_SEC = 3.0
+PROVISIONAL_CONFIRM_MIN_GAP_SEC = 0.0
 
 # 주문 성공 응답만으로 체결로 간주하지 않고, 주문번호로 실제 체결/잔고를
 # 재조회해 확인하는 최대 대기시간·간격 (docs 2026-07-27 체결확인 fix).

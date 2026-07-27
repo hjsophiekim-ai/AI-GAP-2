@@ -39,6 +39,9 @@ _LAST_REQUEST_AT: dict[str, float] = {}
 # 한도(초당 20건)보다 넉넉히 여유를 두고 설정한다.
 _MIN_REQUEST_INTERVAL_SECONDS = {"mock": 1.1, "real": 0.08}
 _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.1
+_RATE_LIMIT_MSG_CODES = {"EGW00201"}
+_RATE_LIMIT_RETRY_MAX_ATTEMPTS = 8
+_RATE_LIMIT_RETRY_DELAY_SECONDS = {"mock": 5.0, "real": 0.5}
 
 
 def _rate_limit_lock(mode: str) -> threading.Lock:
@@ -70,6 +73,12 @@ def _throttle(mode: str) -> None:
         if wait > 0:
             time.sleep(wait)
         _LAST_REQUEST_AT[mode] = time.monotonic()
+
+
+def _is_rate_limited_response(data: dict) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("msg_cd") or "") in _RATE_LIMIT_MSG_CODES
 
 # ── base URLs ──────────────────────────────────────────────────────────────
 BASE_URL_MOCK = "https://openapivts.koreainvestment.com:29443"
@@ -473,11 +482,22 @@ class KISClient:
         """공통 GET/POST 요청 + 서버측 토큰 만료 감지 시 재발급 후 1회 재시도."""
         request_fn = self._get if method == "GET" else self._post
         headers = self._auth_headers(tr_id)
-        resp = request_fn(url, headers=headers, **kwargs)
-        try:
-            data = resp.json()
-        except Exception:
-            data = {}
+        for attempt in range(1, _RATE_LIMIT_RETRY_MAX_ATTEMPTS + 1):
+            resp = request_fn(url, headers=headers, **kwargs)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            if _is_rate_limited_response(data) and attempt < _RATE_LIMIT_RETRY_MAX_ATTEMPTS:
+                delay = _RATE_LIMIT_RETRY_DELAY_SECONDS.get(self.mode, _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS)
+                logger.warning(
+                    f"[KIS-{self.mode.upper()}] request rate limited; retrying "
+                    f"attempt={attempt}/{_RATE_LIMIT_RETRY_MAX_ATTEMPTS} delay={delay:.1f}s "
+                    f"tr_id={tr_id} msg_cd={data.get('msg_cd')!r} msg1={data.get('msg1')!r}"
+                )
+                time.sleep(delay)
+                continue
+            break
         if self._is_token_expired_response(data):
             logger.warning(
                 f"[KIS-{self.mode.upper()}] 토큰이 서버측에서 이미 만료/무효 처리됨"
@@ -1253,18 +1273,34 @@ class KISClient:
         )
 
         try:
-            resp = self._post(url, json=body, headers=headers, timeout=(3, 15))
-            http_status = resp.status_code
+            last_rate_limit_failure = None
+            for attempt in range(1, _RATE_LIMIT_RETRY_MAX_ATTEMPTS + 1):
+                resp = self._post(url, json=body, headers=headers, timeout=(3, 15))
+                http_status = resp.status_code
 
-            # raise_for_status 호출 전에 body 파싱 (500 오류 원인 확인)
-            try:
-                data = resp.json()
-            except Exception:
-                data = {}
+                # raise_for_status 호출 전에 body 파싱 (500 오류 원인 확인)
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {}
 
-            rt_cd = data.get("rt_cd", "")
-            msg_cd = data.get("msg_cd", "")
-            msg1 = data.get("msg1", "")
+                rt_cd = data.get("rt_cd", "")
+                msg_cd = data.get("msg_cd", "")
+                msg1 = data.get("msg1", "")
+
+                if not resp.ok and _is_rate_limited_response(data) and attempt < _RATE_LIMIT_RETRY_MAX_ATTEMPTS:
+                    last_rate_limit_failure = (http_status, data, rt_cd, msg_cd, msg1)
+                    delay = _RATE_LIMIT_RETRY_DELAY_SECONDS.get(self.mode, _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS)
+                    logger.warning(
+                        f"[KIS-{self.mode.upper()}] order-cash rate limited; retrying "
+                        f"attempt={attempt}/{_RATE_LIMIT_RETRY_MAX_ATTEMPTS} delay={delay:.1f}s "
+                        f"rt_cd={rt_cd!r} msg_cd={msg_cd!r} msg1={msg1!r}"
+                    )
+                    time.sleep(delay)
+                    continue
+                break
+            else:
+                http_status, data, rt_cd, msg_cd, msg1 = last_rate_limit_failure or (0, {}, "", "EGW00201", "")
 
             if not resp.ok:
                 logger.error(

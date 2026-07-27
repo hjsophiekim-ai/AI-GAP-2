@@ -71,6 +71,16 @@ def _quote_status(quotes: dict) -> str:
     return "READY"
 
 
+def _broker_order_result_display(state) -> str:
+    result = str(state.last_broker_order_result or "").strip()
+    if not result:
+        return "-"
+    legacy_cash_reject = "주문가능금액" in result and state.last_order_nrcvb_buy_qty is None and state.last_order_final_qty is None
+    if legacy_cash_reject:
+        return "LEGACY_ORDER_REJECTED_PRE_FIX"
+    return result
+
+
 def _bootstrap_status(state, bootstrap_last_result: dict | None) -> str:
     if state.warmup_ready:
         return "OK"
@@ -284,7 +294,7 @@ try:
     )
     fc2.metric("candidate confirmed (여전히 shadow)", state.provisional_flag.value if state.provisional_flag else "-")
     fc3.metric("last confirmed onset (완성봉, 주문권한)", state.latest_primary_flag.value if state.latest_primary_flag else "-")
-    fc4.metric("broker order result", state.last_broker_order_result or "-")
+    fc4.metric("broker order result", _broker_order_result_display(state))
     st.caption(
         f"current signal_id=`{state.provisional_signal_id or '-'}` · "
         f"last primary onset signal_id=`{state.latest_primary_signal_id or '-'}` · "
@@ -296,6 +306,11 @@ try:
         f"symbol=`{state.last_broker_order_symbol or '-'}` · side=`{state.last_broker_order_side or '-'}` · "
         f"at=`{state.last_broker_order_at or '-'}`"
     )
+    if _broker_order_result_display(state) == "LEGACY_ORDER_REJECTED_PRE_FIX":
+        st.caption(
+            "legacy broker message from a pre-fix order is hidden from the current status; "
+            "new attempts use KIS nrcvb_buy_qty/final_qty diagnostics below."
+        )
     st.caption(
         f"order failure detail: stage=`{state.last_order_failure_stage or '-'}` · "
         f"filled_qty=`{state.last_order_filled_qty if state.last_order_filled_qty is not None else '-'}` · "

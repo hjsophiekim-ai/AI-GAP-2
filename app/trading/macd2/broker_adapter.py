@@ -142,14 +142,26 @@ class _BrokerAdapterBase:
                 return pos
         return None
 
+    def _call_broker_without_direct_ledger(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
+        old_value = getattr(self._broker, "_suppress_direct_execution_ledger", False)
+        setattr(self._broker, "_suppress_direct_execution_ledger", True)
+        try:
+            return getattr(self._broker, method_name)(*args, **kwargs)
+        finally:
+            setattr(self._broker, "_suppress_direct_execution_ledger", old_value)
+
     def buy_market(self, symbol: str, qty: int, client_order_id: str) -> BrokerOrderResult:
         del client_order_id  # not accepted by the underlying broker layer; kept for interface parity
-        result = self._broker.buy(symbol, symbol, int(qty), 0, order_type="market")
+        result = self._call_broker_without_direct_ledger(
+            "buy", symbol, symbol, int(qty), 0, order_type="market",
+        )
         return _to_order_result(result, symbol, "BUY", int(qty))
 
     def sell_market(self, symbol: str, qty: int, client_order_id: str) -> BrokerOrderResult:
         del client_order_id
-        result = self._broker.sell(symbol, symbol, int(qty), 0, order_type="market")
+        result = self._call_broker_without_direct_ledger(
+            "sell", symbol, symbol, int(qty), 0, order_type="market",
+        )
         return _to_order_result(result, symbol, "SELL", int(qty))
 
     def wait_for_execution(self, order_id: str, timeout: float = 10.0) -> BrokerOrderResult:
