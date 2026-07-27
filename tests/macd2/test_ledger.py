@@ -349,3 +349,32 @@ def test_summarize_daily_trading_computes_pnl_and_stats():
     assert summary["win_rate_pct"] == 50.0
     assert summary["profit_factor"] == pytest.approx(2.5)
     assert summary["max_drawdown"] == 2000.0  # peak 5000 -> trough 3000
+
+
+def test_backfill_broker_direct_fills_inserts_and_updates_by_order_id():
+    fill = {
+        "order_id": "direct-1",
+        "symbol": "0193T0",
+        "side": "BUY",
+        "quantity": 1,
+        "price": 15000,
+        "timestamp": "20260727132133",
+    }
+
+    assert ledger.backfill_broker_direct_fills([fill], mode="mock") == {
+        "scanned": 1,
+        "written": 1,
+        "skipped": 0,
+    }
+    rows = ledger.load_execution_ledger()
+    assert rows[0]["timestamp"] == "2026-07-27T13:21:33+09:00"
+    assert rows[0]["executed_price"] == "15000.0"
+    assert rows[0]["exit_reason"] == "BROKER_DIRECT_FILL_BACKFILL"
+
+    fill["price"] = 15100
+    fill["timestamp"] = "20260727132200"
+    assert ledger.backfill_broker_direct_fills([fill], mode="mock")["written"] == 1
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["timestamp"] == "2026-07-27T13:22:00+09:00"
+    assert rows[0]["executed_price"] == "15100.0"

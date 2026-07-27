@@ -163,6 +163,30 @@ def append_execution(row: dict[str, Any]) -> bool:
         return True
 
 
+def _upsert_broker_direct_execution(row: dict[str, Any]) -> str:
+    order_id = str(row.get("order_id") or "")
+    if not order_id:
+        raise ValueError("_upsert_broker_direct_execution: row is missing order_id")
+    with _EXECUTION_LOCK:
+        rows = _load_rows(EXECUTION_LEDGER_PATH, limit=0)
+        for existing in rows:
+            if existing.get("order_id") != order_id:
+                continue
+            if str(existing.get("signal_id") or "") != "BROKER_DIRECT":
+                return "skipped"
+            existing.update({col: row.get(col, "") for col in EXECUTION_LEDGER_COLUMNS})
+            _ensure_columns(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS)
+            fieldnames = _read_header(EXECUTION_LEDGER_PATH) or EXECUTION_LEDGER_COLUMNS
+            with open(EXECUTION_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames)
+                writer.writeheader()
+                for item in rows:
+                    writer.writerow({col: item.get(col, "") for col in fieldnames})
+            return "updated"
+        _append_row(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS, row)
+        return "inserted"
+
+
 def append_broker_direct_execution(order_result: Any) -> bool:
     """Record a successful direct KIS broker order in the MACD2 execution ledger.
 
@@ -187,10 +211,12 @@ def append_broker_direct_execution(order_result: Any) -> bool:
     except TypeError:
         broker_response = str(raw)
 
-    return append_execution({
+    timestamp = _normalize_execution_timestamp(getattr(order_result, "timestamp", "") or "")
+
+    status = _upsert_broker_direct_execution({
         "order_id": order_id,
         "signal_id": "BROKER_DIRECT",
-        "timestamp": datetime.now(config.KST).isoformat(),
+        "timestamp": timestamp,
         "mode": str(getattr(order_result, "mode", "") or ""),
         "symbol": symbol,
         "side": side,
@@ -207,6 +233,81 @@ def append_broker_direct_execution(order_result: Any) -> bool:
         "exit_reason": "BROKER_DIRECT",
         "broker_response": broker_response,
     })
+    return status in ("inserted", "updated")
+
+
+def _normalize_execution_timestamp(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return datetime.now(config.KST).isoformat()
+    if len(text) == 14 and text.isdigit():
+        return datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=config.KST).isoformat()
+    if len(text) == 8 and text.isdigit():
+        return datetime.strptime(text, "%Y%m%d").replace(tzinfo=config.KST).isoformat()
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return datetime.now(config.KST).isoformat()
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        parsed = parsed.replace(tzinfo=config.KST)
+    return parsed.astimezone(config.KST).isoformat()
+
+
+def append_broker_direct_fill(fill: dict[str, Any], *, mode: str) -> bool:
+    order_id = str(fill.get("order_id") or fill.get("odno") or "")
+    symbol = str(fill.get("symbol") or fill.get("pdno") or "")
+    if not order_id or symbol not in config.TRADE_SYMBOLS:
+        return False
+    side = str(fill.get("side") or "").upper()
+    qty = _int(fill.get("quantity") or fill.get("qty") or fill.get("tot_ccld_qty"), 0)
+    price = _float(fill.get("price") or fill.get("avg_price") or fill.get("avg_prvs"), 0.0)
+    try:
+        broker_response = json.dumps(fill, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        broker_response = str(fill)
+    status = _upsert_broker_direct_execution({
+        "order_id": order_id,
+        "signal_id": "BROKER_DIRECT",
+        "timestamp": _normalize_execution_timestamp(fill.get("timestamp") or fill.get("ordered_at") or ""),
+        "mode": mode,
+        "symbol": symbol,
+        "side": side,
+        "requested_qty": qty,
+        "executed_qty": qty,
+        "requested_price": price,
+        "executed_price": price,
+        "position_before": "",
+        "position_after": "",
+        "gross_pnl": 0.0,
+        "fee": 0.0,
+        "slippage": 0.0,
+        "net_pnl": 0.0,
+        "exit_reason": "BROKER_DIRECT_FILL_BACKFILL",
+        "broker_response": broker_response,
+    })
+    return status in ("inserted", "updated")
+
+
+def backfill_broker_direct_fills(fills: list[dict[str, Any]], *, mode: str) -> dict[str, int]:
+    scanned = 0
+    written = 0
+    skipped = 0
+    for fill in fills:
+        if not isinstance(fill, dict):
+            skipped += 1
+            continue
+        scanned += 1
+        try:
+            if append_broker_direct_fill(fill, mode=mode):
+                written += 1
+            else:
+                skipped += 1
+        except Exception:
+            skipped += 1
+    return {"scanned": scanned, "written": written, "skipped": skipped}
 
 
 def _float(value: Any, default: float = 0.0) -> float:

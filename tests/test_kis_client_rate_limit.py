@@ -128,3 +128,46 @@ def test_place_order_retries_egw00201_until_success(monkeypatch):
     assert result["success"] is True
     assert result["order_id"] == "ORD-1"
     assert sleep_calls == [0.01, 0.01]
+
+
+def test_get_today_fills_retries_egw00201_until_success(monkeypatch):
+    class _FakeResponse:
+        def __init__(self, ok, status_code, body):
+            self.ok = ok
+            self.status_code = status_code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", product_code="01", mode="mock")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    monkeypatch.setitem(kc._RATE_LIMIT_RETRY_DELAY_SECONDS, "mock", 0.01)
+
+    sleep_calls = []
+    monkeypatch.setattr(kc.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    responses = [
+        _FakeResponse(False, 500, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}),
+        _FakeResponse(True, 200, {
+            "rt_cd": "0",
+            "msg_cd": "00000000",
+            "msg1": "OK",
+            "output1": [{
+                "pdno": "0193T0",
+                "sll_buy_dvsn_cd": "02",
+                "odno": "ORD-FILL-1",
+                "tot_ccld_qty": "1",
+                "avg_prvs": "15000",
+                "ord_tmd": "132133",
+            }],
+        }),
+    ]
+
+    monkeypatch.setattr(client, "_get", lambda *args, **kwargs: responses.pop(0))
+
+    result = client.get_today_fills(symbol="0193T0")
+
+    assert result["ok"] is True
+    assert result["fills"][0]["order_id"] == "ORD-FILL-1"
+    assert sleep_calls == [0.01]

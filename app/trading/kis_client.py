@@ -763,7 +763,6 @@ class KISClient:
         """
         tr_id = TR_ORDER_HISTORY_MOCK if self.mode == "mock" else TR_ORDER_HISTORY_REAL
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
-        headers = self._auth_headers(tr_id)
         today = kst_now().strftime("%Y%m%d")
         params = {
             "CANO": self.account_no,
@@ -782,7 +781,7 @@ class KISClient:
             "CTX_AREA_NK100": "",
         }
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(3, 15))
+            resp = self._request_with_token_retry("GET", url, tr_id, params=params, timeout=(3, 15))
             try:
                 data = resp.json()
             except Exception:

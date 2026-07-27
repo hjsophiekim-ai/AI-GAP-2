@@ -487,7 +487,6 @@ try:
     trade_summary = ledger.summarize_daily_trading(
         trading_date,
         budget=state.budget,
-        signal_ids=set(sig_summary.get("current_signal_ids") or []),
     )
 
     g1, g2, g3 = st.columns(3)
@@ -563,6 +562,11 @@ except Exception as exc:
 st.subheader("거래 원장")
 try:
     rows = ledger.load_execution_ledger(limit=300)
+    today_rows = [r for r in rows if str(r.get("timestamp") or "").startswith(trading_date)]
+    st.caption(
+        f"execution ledger path=`{ledger.EXECUTION_LEDGER_PATH}` · "
+        f"loaded_rows={len(rows)} · today_rows={len(today_rows)}"
+    )
     if rows:
         df = pd.DataFrame(rows)
         st.dataframe(df.iloc[::-1], use_container_width=True, height=360)
