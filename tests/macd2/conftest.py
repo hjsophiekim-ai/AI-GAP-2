@@ -21,6 +21,7 @@ def _fast_prior_day_fetch_retries(monkeypatch):
     always-failing fetch must not pay that wall-clock cost."""
     monkeypatch.setattr(config, "PRIOR_DAY_FETCH_RETRY_DELAY_SEC", 0.0)
     monkeypatch.setattr(config, "KIS_PAGE_FETCH_PACING_SEC", 0.0)
+    monkeypatch.setattr(config, "QUOTE_STALE_RETRY_INTERVAL_SEC", 0.0)
 
 
 @pytest.fixture(autouse=True)

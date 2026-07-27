@@ -272,7 +272,8 @@ def summarize_signals(
     unexecuted = [
         {"signal_id": r.get("signal_id"), "direction": r.get("direction"), "reason": r.get("block_reason")}
         for r in rows
-        if not str(r.get("order_result") or "").strip() or str(r.get("order_result")).upper() in ("BLOCKED", "FAILED")
+        if not str(r.get("order_result") or "").strip()
+        or str(r.get("order_result")).upper() in ("BLOCKED", "FAILED", "WAITING")
     ]
     return {
         "trading_date": trading_date,

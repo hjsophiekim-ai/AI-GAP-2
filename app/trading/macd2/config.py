@@ -83,6 +83,15 @@ QUOTE_MAX_AGE_SEC = 10.0
 PENDING_SIGNAL_RETRY_SEC = 30.0
 FLAT_POSITION_RECONCILE_INTERVAL_SEC = 30.0
 
+# 2026-07-27 QUOTE_STALE 처리 수정: confirmed 신호가 quote stale로 막히면
+# 그 자리에서(같은 tick 안에서) 강제 재조회 후 최대 이 횟수만큼, 이 간격으로
+# 재검증한다. 신호 확정(detected_at) 후 이 시간을 넘기면 더 이상 뒤늦게
+# 주문하지 않고 MISSED_SIGNAL_QUOTE_STALE로 종료·기록한다.
+QUOTE_STALE_RETRY_MAX_ATTEMPTS = 3
+QUOTE_STALE_RETRY_INTERVAL_SEC = 1.0
+QUOTE_STALE_MAX_WAIT_SEC = 15.0
+MISSED_SIGNAL_QUOTE_STALE = "MISSED_SIGNAL_QUOTE_STALE"
+
 # 2026-07-27 momentary-crossing fix: a single-tick provisional forming-bar
 # crossover is only a CANDIDATE, never an order — it is confirmed as a
 # Primary onset only once the SAME direction is still present on a LATER

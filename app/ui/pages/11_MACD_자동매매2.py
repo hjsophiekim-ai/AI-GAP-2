@@ -308,6 +308,19 @@ try:
     else:
         st.caption("orderable_cash=`-` · sizing_price=`-` · requested_qty=`-` · expected_amount=`-`")
 
+    st.markdown("**QUOTE_STALE 재조회 진단 (2026-07-27)**")
+    st.caption(
+        f"signal_id=`{state.last_quote_stale_signal_id or '-'}` · "
+        f"quote_ages(감지 시점)=`{state.last_quote_stale_quote_ages or '-'}` · "
+        f"재조회 횟수=`{state.last_quote_stale_retry_count if state.last_quote_stale_retry_count is not None else '-'}` · "
+        f"결과=`{state.last_quote_stale_result or '-'}`"
+    )
+    if state.last_quote_stale_result == macd2_config.MISSED_SIGNAL_QUOTE_STALE:
+        st.warning(
+            f"signal_id=`{state.last_quote_stale_signal_id}`은 15초 내 fresh quote를 확보하지 못해 "
+            f"주문하지 않고 `{macd2_config.MISSED_SIGNAL_QUOTE_STALE}`로 종료되었습니다."
+        )
+
     st.markdown("**1분봉 history 진단 (KIS 당일 1분봉 = 단일 원본)**")
     h1, h2, h3, h4 = st.columns(4)
     h1.metric("당일 1분봉 수", state.today_1m_bar_count if state.today_1m_bar_count is not None else "-")

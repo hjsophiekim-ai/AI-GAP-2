@@ -272,4 +272,12 @@ class RuntimeState:
     today_1m_bar_count: Optional[int] = None
     history_newest_at: Optional[str] = None
     last_completed_3m_bar_at: Optional[str] = None
+
+    # ── QUOTE_STALE recovery diagnostics (2026-07-27 fix) — most recent
+    # confirmed-signal quote-stale retry attempt, kept for the UI, separate
+    # from any restored/historical onset. ──────────────────────────────────
+    last_quote_stale_signal_id: Optional[str] = None
+    last_quote_stale_quote_ages: Optional[str] = None  # str(dict) — symbol -> age_sec at signal detection
+    last_quote_stale_retry_count: Optional[int] = None
+    last_quote_stale_result: Optional[str] = None  # "RECOVERED" / "MISSED_SIGNAL_QUOTE_STALE"
     quote_history_mismatch_reason: Optional[str] = None  # None when consistent

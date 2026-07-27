@@ -145,6 +145,10 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "history_newest_at": state.history_newest_at,
         "last_completed_3m_bar_at": state.last_completed_3m_bar_at,
         "quote_history_mismatch_reason": state.quote_history_mismatch_reason,
+        "last_quote_stale_signal_id": state.last_quote_stale_signal_id,
+        "last_quote_stale_quote_ages": state.last_quote_stale_quote_ages,
+        "last_quote_stale_retry_count": state.last_quote_stale_retry_count,
+        "last_quote_stale_result": state.last_quote_stale_result,
     }
 
 
@@ -245,6 +249,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         history_newest_at=raw.get("history_newest_at"),
         last_completed_3m_bar_at=raw.get("last_completed_3m_bar_at"),
         quote_history_mismatch_reason=raw.get("quote_history_mismatch_reason"),
+        last_quote_stale_signal_id=raw.get("last_quote_stale_signal_id"),
+        last_quote_stale_quote_ages=raw.get("last_quote_stale_quote_ages"),
+        last_quote_stale_retry_count=raw.get("last_quote_stale_retry_count"),
+        last_quote_stale_result=raw.get("last_quote_stale_result"),
     )
 
 

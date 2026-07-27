@@ -61,6 +61,37 @@ def _snap(bar_dt: datetime, direction: Direction = Direction.UP_RED) -> MacdSnap
     )
 
 
+def _svc_with_stale_symbol(stale_symbol: str, *, recovers_after: "int | None" = None, prices=None):
+    """A MarketDataService whose fetch_quote errors for ``stale_symbol`` — for
+    ``recovers_after`` forced-refresh calls, then returns a fresh price
+    forever after (``None`` = never recovers). Other symbols are always
+    fresh from construction. Used to exercise the 2026-07-27 QUOTE_STALE
+    synchronous-retry fix without relying on wall-clock staleness."""
+    prices = prices or {config.WATCH_SYMBOL: 100.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    call_count = {"n": 0}
+
+    def fetch_quote(mode, symbol):
+        if symbol == stale_symbol:
+            call_count["n"] += 1
+            if recovers_after is None or call_count["n"] <= recovers_after:
+                return None, "STALE_TEST"
+        return prices.get(symbol), None
+
+    svc = MarketDataService(
+        mode="mock",
+        fetch_minute_candles=lambda *a: (pd.DataFrame({"datetime": []}), {}),
+        fetch_quote=fetch_quote,
+    )
+    fresh_at = datetime.now(KST)
+    for symbol, price in prices.items():
+        if symbol == stale_symbol:
+            continue
+        svc._quotes[symbol] = QuoteSnapshot(symbol, price, fresh_at, 0.0, "test")
+    old = fresh_at - timedelta(seconds=999)
+    svc._quotes[stale_symbol] = QuoteSnapshot(stale_symbol, prices.get(stale_symbol, 0.0), old, 999.0, "test")
+    return svc
+
+
 def _svc(prices=None):
     prices = prices or {config.WATCH_SYMBOL: 100.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
     svc = MarketDataService(
@@ -221,16 +252,18 @@ def test_five_continuous_up_red_condition_bars_create_one_red_flag(monkeypatch):
 
 
 def test_blocked_order_same_direction_next_bar_adds_no_flag(monkeypatch):
+    """Target quote never recovers within the 3-attempt/15s synchronous
+    QUOTE_STALE window (2026-07-27 fix) -> first bar's signal finalizes as
+    MISSED_SIGNAL_QUOTE_STALE (one ledger row), never placing an order; the
+    second (same-direction) bar is suppressed by the repeat-direction gate
+    before it ever reaches the quote check, so no second row/order either."""
     state = _primed_state()
-    svc = _svc()
-    old = datetime(2026, 7, 24, 8, 59, 30, tzinfo=KST)
-    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 15_000.0, old, 999.0, "test")
+    svc = _svc_with_stale_symbol(config.LONG_SYMBOL)
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
     for minute in (0, 3):
         bar_dt = datetime(2026, 7, 24, 9, minute, tzinfo=KST)
         now = bar_dt + timedelta(minutes=3)
         _patch_snap(monkeypatch, _snap(bar_dt, Direction.UP_RED), svc, now)
-        svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 15_000.0, old, 999.0, "test")
         worker.run_once(broker=broker, market_data=svc, state=state, now=now)
 
     assert len(ledger.load_signal_ledger()) == 1
@@ -498,22 +531,29 @@ def test_quote_age_27_seconds_is_stale_not_ready():
 
 
 def test_target_quote_stale_waiting_and_no_order(monkeypatch):
+    """2026-07-27 fix: QUOTE_STALE is resolved synchronously within this one
+    call (force-refresh + retry up to 3x/15s) — if the target quote never
+    recovers, the signal finalizes as MISSED_SIGNAL_QUOTE_STALE with no
+    lingering pending_signal (nothing left for a later tick to dispatch
+    late) and no order/execution row."""
     state = _primed_state()
-    svc = _svc()
+    svc = _svc_with_stale_symbol(config.LONG_SYMBOL)
     bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     now = bar_dt + timedelta(minutes=3)
     _patch_snap(monkeypatch, _snap(bar_dt, Direction.UP_RED), svc, now)
-    old = datetime(2026, 7, 24, 8, 59, 30, tzinfo=KST)
-    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 15_000.0, old, 999.0, "test")
 
     result = worker.run_once(
         broker=FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0}),
         market_data=svc, state=state, now=now,
     )
 
-    assert result.skipped == worker.QUOTE_STALE
-    assert state.pending_signal["signal_id"] == "20260724_090000_UP_RED"
+    assert result.skipped == config.MISSED_SIGNAL_QUOTE_STALE
+    assert state.pending_signal is None
     assert ledger.load_execution_ledger() == []
+    rows = ledger.load_signal_ledger()
+    assert len(rows) == 1
+    assert rows[0]["signal_id"] == "20260724_090000_UP_RED"
+    assert rows[0]["block_reason"] == config.MISSED_SIGNAL_QUOTE_STALE
 
 
 def test_signed_b_shadow_without_crossover_does_not_order(monkeypatch):
@@ -535,25 +575,50 @@ def test_signed_b_shadow_without_crossover_does_not_order(monkeypatch):
     assert ledger.load_signal_ledger() == []
 
 
-def test_quote_recovers_within_10_seconds_orders_original_signal_id(monkeypatch):
+def test_quote_recovers_within_retries_orders_original_signal_id(monkeypatch):
+    """2026-07-27 fix: QUOTE_STALE recovery is synchronous within the SAME
+    run_once() call/tick — a target quote that is stale on the first forced
+    refresh but fresh by the second still orders exactly once, in one call,
+    using the original signal_id."""
     state = _primed_state()
-    svc = _svc()
+    svc = _svc_with_stale_symbol(config.LONG_SYMBOL, recovers_after=1)
     bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    first_now = bar_dt + timedelta(minutes=3)
-    _patch_snap(monkeypatch, _snap(bar_dt, Direction.UP_RED), svc, first_now)
-    old = datetime(2026, 7, 24, 8, 59, 30, tzinfo=KST)
-    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 15_000.0, old, 999.0, "test")
+    now = bar_dt + timedelta(minutes=3)
+    _patch_snap(monkeypatch, _snap(bar_dt, Direction.UP_RED), svc, now)
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
-    worker.run_once(broker=broker, market_data=svc, state=state, now=first_now)  # blocked, pending
-    svc.refresh_quotes()
 
-    second_now = bar_dt + timedelta(seconds=10, minutes=3)
-    result = worker.run_once(broker=broker, market_data=svc, state=state, now=second_now)
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
 
     assert len([o for o in broker.orders if o.side == "BUY"]) == 1
     assert broker.orders[0].symbol == config.LONG_SYMBOL
     assert state.processed_signal_ids == ["20260724_090000_UP_RED"]
     assert result.actions == ["ENTRY:UP_RED"]
+    assert state.last_quote_stale_result == "RECOVERED"
+
+
+def test_opposite_signal_after_missed_quote_stale_processes_normally(monkeypatch):
+    """A signal that finalized as MISSED_SIGNAL_QUOTE_STALE leaves nothing
+    pending (2026-07-27 fix) — a genuinely NEW opposite confirmed signal on a
+    later bar must dispatch normally, not be blocked by leftover state."""
+    state = _primed_state()
+    svc = _svc_with_stale_symbol(config.LONG_SYMBOL)
+    bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    now = bar_dt + timedelta(minutes=3)
+    _patch_snap(monkeypatch, _snap(bar_dt, Direction.UP_RED), svc, now)
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+    assert state.pending_signal is None
+    assert broker.orders == []
+
+    svc._quotes[config.INVERSE_SYMBOL] = QuoteSnapshot(config.INVERSE_SYMBOL, 10_000.0, datetime.now(KST), 0.0, "test")
+    next_bar = datetime(2026, 7, 24, 9, 3, tzinfo=KST)
+    next_now = next_bar + timedelta(minutes=3)
+    _patch_snap(monkeypatch, _snap(next_bar, Direction.DOWN_BLUE), svc, next_now)
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=next_now)
+
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert broker.orders[-1].side == "BUY"
+    assert broker.orders[-1].symbol == config.INVERSE_SYMBOL
 
 
 def test_worker_start_baseline_blocks_past_crossover(monkeypatch):

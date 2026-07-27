@@ -344,6 +344,19 @@ def _quote_ages(market_data: MarketDataService, symbols: tuple[str, ...]) -> dic
     return ages
 
 
+def _pending_detected_at(pending: dict[str, Any], now: datetime) -> datetime:
+    """The ORIGINAL detection time of a retried pending signal — the
+    QUOTE_STALE 15s window (config.QUOTE_STALE_MAX_WAIT_SEC) is anchored to
+    when the signal was first confirmed, not to this retry tick's ``now``."""
+    raw = pending.get("detected_at")
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw))
+        except ValueError:
+            pass
+    return now
+
+
 def _pending_age_sec(pending: dict[str, Any], now: datetime) -> Optional[float]:
     raw = pending.get("detected_at")
     if not raw:
@@ -603,6 +616,7 @@ def _execute_or_wait(
     signal_type: str,
     position: Optional[PositionSnapshot],
     result: TickResult,
+    signal_detected_at: Optional[datetime] = None,
 ):
     order_started = time.monotonic()
     result.signal_dispatch_trace = {
@@ -650,20 +664,43 @@ def _execute_or_wait(
     required_symbols = _required_quote_symbols(direction, position)
     quote_status, quotes = _quote_status_for_order(market_data, required_symbols)
     target = order_executor.target_symbol_for_direction(direction)
+    detected_at = signal_detected_at or now
+    quote_ages_at_detection = _quote_ages(market_data, required_symbols)
     result.signal_dispatch_trace["required_quote_symbols"] = list(required_symbols)
-    result.signal_dispatch_trace["quote_ages"] = _quote_ages(market_data, required_symbols)
+    result.signal_dispatch_trace["quote_ages"] = quote_ages_at_detection
     result.signal_dispatch_trace["quote_status"] = quote_status
     result.signal_dispatch_trace["target_quote_valid"] = bool(target and target in quotes and quotes[target] > 0)
+    state.last_quote_stale_signal_id = signal_id
+    state.last_quote_stale_quote_ages = str(quote_ages_at_detection)
+
+    retry_count = 0
+    while quote_status != "READY":
+        elapsed = (datetime.now(KST) - detected_at).total_seconds()
+        if elapsed >= config.QUOTE_STALE_MAX_WAIT_SEC or retry_count >= config.QUOTE_STALE_RETRY_MAX_ATTEMPTS:
+            break
+        market_data.refresh_quotes(symbols=required_symbols)
+        time.sleep(config.QUOTE_STALE_RETRY_INTERVAL_SEC)
+        retry_count += 1
+        quote_status, quotes = _quote_status_for_order(market_data, required_symbols)
+
+    result.signal_dispatch_trace["quote_stale_retry_count"] = retry_count
+    state.last_quote_stale_retry_count = retry_count
+
     if quote_status != "READY":
-        state.order_block_reason = quote_status
-        result.signal_dispatch_trace["final_block_reason"] = quote_status
-        _set_pending_signal(
-            state, signal_id=signal_id, direction=direction, signal_type=signal_type,
-            macd_snap=macd_snap, detected_at=now, reason=quote_status,
-        )
-        result.skipped = quote_status
+        state.order_block_reason = config.MISSED_SIGNAL_QUOTE_STALE
+        state.last_quote_stale_result = config.MISSED_SIGNAL_QUOTE_STALE
+        result.signal_dispatch_trace["final_block_reason"] = config.MISSED_SIGNAL_QUOTE_STALE
+        result.signal_dispatch_trace["quote_ages"] = _quote_ages(market_data, required_symbols)
+        # Resolved synchronously within this one call/tick — never left as a
+        # cross-tick pending retry (docs 2026-07-27 QUOTE_STALE fix), so no
+        # later tick can mistakenly dispatch this signal_id late.
+        state.pending_signal = None
+        result.skipped = config.MISSED_SIGNAL_QUOTE_STALE
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
+
+    state.last_quote_stale_result = "RECOVERED" if retry_count > 0 else None
+    result.signal_dispatch_trace["quote_ages"] = _quote_ages(market_data, required_symbols)
 
     result.signal_dispatch_trace["order_executor_called"] = True
     result.signal_dispatch_trace["executor_called_at"] = datetime.now(KST).isoformat()
@@ -780,6 +817,7 @@ def _dispatch_confirmed_signal(
     outcome = _execute_or_wait(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
+        signal_detected_at=signal_detected_at,
     )
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
     return outcome
@@ -992,6 +1030,7 @@ def run_once(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
                     signal_type=str(state.pending_signal.get("signal_type") or "REVERSAL"), position=pos, result=result,
+                    signal_detected_at=_pending_detected_at(state.pending_signal, now),
                 )
                 if outcome is not None:
                     _apply_switch_outcome(state, outcome, pending_dir)
@@ -1039,6 +1078,7 @@ def run_once(
                 broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                 direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
                 signal_type=str(state.pending_signal.get("signal_type") or "INITIAL"), position=None, result=result,
+                signal_detected_at=_pending_detected_at(state.pending_signal, now),
             )
             if outcome is not None:
                 _apply_switch_outcome(state, outcome, pending_dir)

@@ -112,6 +112,7 @@ Worker는 5초 tick으로 동작한다.
 - 체결은 주문 성공 응답만으로 확정하지 않고, 주문번호 기준 실제 체결/잔고 재조회로 확인한다(최대 60초 폴링, 부분체결 반영).
 - MOCK/REAL 게이트는 broker adapter와 기존 service 경로를 따른다. REAL 주문, 신용, 미수는 사용하지 않는다.
 - 실제 KIS 주문은 명시된 운영 모드에서만 허용한다. 테스트는 fake broker만 사용한다.
+- **QUOTE_STALE 처리 (2026-07-27 수정)**: confirmed 신호가 000660/주문 대상 ETF quote stale로 막히면, 여러 tick에 걸쳐 대기하지 않고 **같은 tick 안에서 동기적으로** 해당 종목 quote를 강제 재조회(`market_data.refresh_quotes`)해 최대 `QUOTE_STALE_RETRY_MAX_ATTEMPTS`(3)회, `QUOTE_STALE_RETRY_INTERVAL_SEC`(1초) 간격으로 재검증한다. 신호 확정(`detected_at`) 후 `QUOTE_STALE_MAX_WAIT_SEC`(15초)를 넘기면 더 이상 뒤늦게 주문하지 않고 `MISSED_SIGNAL_QUOTE_STALE`로 신호 원장에 종료·기록하며 `pending_signal`을 남기지 않는다(이후 어떤 tick도 이 signal_id를 뒤늦게 주문하지 않는다). 재시도 도중 fresh quote가 확보되면 그 자리에서 실제 MOCK 주문가능금액 재조회 → 안전수량 계산 → 주문 순서를 그대로 진행한다. 신호 발생 사실(방향)은 주문 성공 여부와 무관하게 오늘 red/blue 통계에 정확히 집계된다.
 
 ## 원장
 
