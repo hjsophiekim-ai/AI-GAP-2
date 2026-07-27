@@ -22,9 +22,17 @@ TRADE_SYMBOLS = (LONG_SYMBOL, INVERSE_SYMBOL)
 DEFAULT_BUDGET = 10_000_000.0
 
 STRATEGY_NAME = "MACD2"
-STRATEGY_VERSION = "20260724_MACD_FORMING_CROSSOVER_V1"
-SIGNAL_RULE = "MACD_FORMING_CROSSOVER"
-CONFIRMED_SIGNAL_RULE = "MACD_CROSSOVER_CONFIRMED"
+# 2026-07-27 KIS-parity fix: order authority moved OFF the forming/provisional
+# bar and onto the confirmed, completed-3m-bar MACD(12,26,9) crossover — the
+# same thing KIS itself charts a flag on. SIGNAL_RULE is now that confirmed
+# rule; CONFIRMED_SIGNAL_RULE is kept as an alias (same value) since it is
+# still referenced by the UI/tests under its original name. The forming bar
+# and Signed-B remain shadow/candidate-only display (PROVISIONAL_SHADOW_RULE),
+# never written to the signal ledger and never given order/stat authority.
+STRATEGY_VERSION = "20260727_MACD_CONFIRMED_CROSSOVER_V1"
+SIGNAL_RULE = "MACD_CROSSOVER_CONFIRMED"
+CONFIRMED_SIGNAL_RULE = SIGNAL_RULE
+PROVISIONAL_SHADOW_RULE = "MACD_FORMING_CANDIDATE_SHADOW"
 LEGACY_SIGNAL_RULE = "SIGNED_B_LEGACY"
 
 # Order-sizing safety margin (docs §9: "수수료·호가 변동을 고려한 안전 여유") is no
@@ -79,7 +87,24 @@ FLAT_POSITION_RECONCILE_INTERVAL_SEC = 30.0
 # crossover is only a CANDIDATE, never an order — it is confirmed as a
 # Primary onset only once the SAME direction is still present on a LATER
 # fresh quote tick at least this many seconds after the first sighting.
+# (candidate/shadow display only since the 2026-07-27 KIS-parity fix — never
+# order/stat authority any more.)
 PROVISIONAL_CONFIRM_MIN_GAP_SEC = 3.0
+
+# 주문 성공 응답만으로 체결로 간주하지 않고, 주문번호로 실제 체결/잔고를
+# 재조회해 확인하는 최대 대기시간·간격 (docs 2026-07-27 체결확인 fix).
+ORDER_FILL_POLL_MAX_SEC = 60.0
+ORDER_FILL_POLL_INTERVAL_SEC = 1.0
+
+# KIS 1분봉(history)과 실시간 quote의 단위·시각 불일치 감지 허용범위 (docs
+# 2026-07-27 fix) — 정상 범위를 벗어나면 주문을 차단한다. 10배/0.1배 스케일
+# 오차는 market_data._normalize_quote_price()가 이미 보정하므로, 여기서는
+# 그 보정 이후에도 설명되지 않는 큰 괴리만 잡아낸다.
+QUOTE_HISTORY_PRICE_RATIO_MIN = 0.5
+QUOTE_HISTORY_PRICE_RATIO_MAX = 2.0
+# 정규장 중 1분봉 history의 최신 시각이 이보다 오래되면(당일 데이터가 갱신되지
+# 않는 상태) 시각 불일치로 간주한다.
+HISTORY_STALE_MAX_SEC = 180.0
 
 # ── Feature flags (strategy-fixed per docs; not user-configurable) ────────
 CONTINUATION_REENTRY_ENABLED = False

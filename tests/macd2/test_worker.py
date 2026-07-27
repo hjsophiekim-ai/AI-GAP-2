@@ -114,14 +114,11 @@ def _find_first_entry_tick(svc, now0, budget=10_000_000.0, *, steps=80):
     """Advance in 3-minute steps (mirroring completed-3m-bar cadence) until a
     flat-entry signal actually fires. Relies on resample_completed_3m's own
     now-based completion cutoff to reveal progressively more of the already-
-    loaded synthetic session — no incremental re-fetch simulation needed.
-
-    Each step ticks twice (docs 2026-07-27 momentary-crossing fix — a
-    provisional crossing needs a second fresh tick >= PROVISIONAL_CONFIRM_MIN_GAP_SEC
-    later, still within the same forming bar, before it counts as a
-    confirmed Primary onset): first at ``now`` (arms the candidate, if any),
-    then at ``now + 5s`` (confirms it, mirroring the real ~5s worker cadence).
-    """
+    loaded synthetic sine-wave session — no incremental re-fetch simulation
+    needed. The Primary crossover is confirmed-completed-bar-only (docs
+    2026-07-27 KIS-parity fix) and dispatches immediately on a single tick —
+    no arm/confirm gap needed here (that only applies to the shadow/candidate
+    forming-bar display, not order authority)."""
     state = _fresh_state(budget=budget)
     broker = FakeBroker(cash=budget, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
     svc.refresh_quotes()
@@ -130,10 +127,6 @@ def _find_first_entry_tick(svc, now0, budget=10_000_000.0, *, steps=80):
         result = run_once(broker=broker, market_data=svc, state=state, now=now)
         if result.actions and result.actions[0].startswith("ENTRY:"):
             return state, broker, result, now
-        now2 = now + timedelta(seconds=5)
-        result2 = run_once(broker=broker, market_data=svc, state=state, now=now2)
-        if result2.actions and result2.actions[0].startswith("ENTRY:"):
-            return state, broker, result2, now2
     return state, broker, None, None
 
 
@@ -166,6 +159,14 @@ def test_flat_entry_buys_correct_symbol_and_updates_state():
     assert ledger.load_signal_ledger()[0]["signal_type"] in {"INITIAL", "INITIAL_PROVISIONAL"}
     assert ledger.load_execution_ledger()[0]["side"] == "BUY"
 
+    # 주문 후 실제 잔고와 state 일치 (docs §5): the broker's own real position
+    # must exactly match what state.position claims — never trust the order
+    # response alone, always reconcile against the actual account.
+    broker_position = broker.get_position(state.position.symbol)
+    assert broker_position is not None
+    assert broker_position.quantity == state.position.quantity
+    assert broker_position.avg_price == state.position.avg_price
+
 
 def test_same_bar_is_not_evaluated_twice(ready_market_data):
     svc, now0 = ready_market_data
@@ -194,7 +195,14 @@ def test_duplicate_signal_id_is_never_reexecuted_across_many_ticks():
     assert len(broker.orders) == orders_after_first  # zero additional orders
 
 
-def test_provisional_up_crossover_buys_long_once():
+def test_provisional_candidate_confirms_but_never_dispatches_order():
+    """docs 2026-07-27 KIS-parity fix: the forming/provisional bar (even once
+    two-tick-confirmed as a CANDIDATE) never carries order/ledger/
+    last_direction authority — only the completed-bar Primary crossover
+    (_advance_confirmed_primary) does. The underlying 1m history here is
+    flat (no real completed-bar crossover exists), so a live quote move that
+    would have driven the OLD forming-bar dispatch must now produce a
+    confirmed CANDIDATE display only, with zero orders/ledger rows."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -205,17 +213,16 @@ def test_provisional_up_crossover_buys_long_once():
         quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
     )
 
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms
+    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
+    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms candidate
 
-    assert result.actions == ["ENTRY:UP_RED"]
-    assert state.position is not None
-    assert state.position.symbol == config.LONG_SYMBOL
-    assert broker.orders[0].symbol == config.LONG_SYMBOL
-    assert broker.orders[0].side == "BUY"
-    assert state.provisional_signal_id == "20260724_140000_UP_RED_PROVISIONAL"
-    assert result.signal_dispatch_trace["order_executor_called"] is True
-    assert result.order_requested_at
+    assert result.actions == []
+    assert state.position is None
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
+    assert state.candidate_confirmed_at is not None
+    assert state.provisional_flag == Direction.UP_RED
+    assert state.last_detected_direction is None  # candidate never touches order-authority direction tracking
 
 
 def test_provisional_forming_window_at_1447_uses_current_bar():
@@ -263,7 +270,7 @@ def test_provisional_recomputes_same_forming_bar_from_latest_quote_every_tick():
     assert state.provisional_diff != first_diff
 
 
-def test_provisional_down_crossover_buys_inverse_once():
+def test_provisional_down_candidate_confirms_but_never_dispatches_order():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=60.0)
@@ -274,19 +281,21 @@ def test_provisional_down_crossover_buys_inverse_once():
         quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
     )
 
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms
+    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
+    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms candidate
 
-    assert result.actions == ["ENTRY:DOWN_BLUE"]
-    assert state.position is not None
-    assert state.position.symbol == config.INVERSE_SYMBOL
-    assert broker.orders[0].symbol == config.INVERSE_SYMBOL
-    assert broker.orders[0].side == "BUY"
-    assert state.provisional_signal_id == "20260724_140000_DOWN_BLUE_PROVISIONAL"
-    assert result.signal_dispatch_trace["order_executor_called"] is True
+    assert result.actions == []
+    assert state.position is None
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
+    assert state.provisional_flag == Direction.DOWN_BLUE
 
 
-def test_provisional_same_forming_bar_twenty_ticks_orders_once():
+def test_provisional_candidate_repeated_ticks_never_order():
+    """Repeated ticks against an already-confirmed candidate (same forming
+    bar) must keep reporting the shadow flag without ever touching
+    orders/ledger — there is no order-dedup concern here any more since
+    candidates never reach the order layer at all."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -297,15 +306,14 @@ def test_provisional_same_forming_bar_twenty_ticks_orders_once():
         quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
     )
 
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
+    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
     confirm_now = now + timedelta(seconds=5)
-    run_once(broker=broker, market_data=svc, state=state, now=confirm_now)  # confirms -> 1 order
-    orders_after_first = len(broker.orders)
+    run_once(broker=broker, market_data=svc, state=state, now=confirm_now)  # confirms candidate
     for _ in range(20):
         run_once(broker=broker, market_data=svc, state=state, now=confirm_now)
 
-    assert len(broker.orders) == orders_after_first
-    assert state.processed_signal_ids.count("20260724_140000_UP_RED_PROVISIONAL") == 1
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
 
 
 def test_provisional_momentary_revert_cancels_candidate_zero_signals_and_orders():
@@ -343,9 +351,10 @@ def test_provisional_momentary_revert_cancels_candidate_zero_signals_and_orders(
     assert state.candidate_flag == Direction.UP_RED  # re-armed by this tick, still unconfirmed
 
 
-def test_provisional_same_bar_candidate_cancel_then_reconfirm_orders_once():
+def test_provisional_same_bar_candidate_cancel_then_reconfirm_stays_shadow_only():
     """docs: 후보 취소 후 같은 3분봉에서 재교차가 다시 2회(>=3s) 확인되면
-    새 candidate로 정상 확정되어 주문 1건이 나가야 한다."""
+    candidate로 정상 재확정되지만 (2026-07-27 KIS-parity fix 이후) 이 확정도
+    여전히 shadow 표시일 뿐 주문/원장에는 절대 닿지 않는다."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -367,9 +376,11 @@ def test_provisional_same_bar_candidate_cancel_then_reconfirm_orders_once():
     run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=4))  # re-crossed: fresh 1st sighting
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=8))  # 2nd sighting, gap=4s -> confirm
 
-    assert result.actions == ["ENTRY:UP_RED"]
-    assert len(broker.orders) == 1
-    assert len(ledger.load_signal_ledger()) == 1
+    assert result.actions == []
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
+    assert state.provisional_flag == Direction.UP_RED
+    assert state.candidate_confirmed_at is not None
 
 
 def test_baseline_only_first_forming_bar_of_day_produces_no_signal_or_order():
@@ -406,174 +417,60 @@ def test_baseline_only_first_forming_bar_of_day_produces_no_signal_or_order():
     assert state.primary_previous_diff is not None and state.primary_previous_diff < 0
 
 
-def test_provisional_same_bar_blocks_opposite_switch():
+def test_provisional_candidate_opposite_direction_never_triggers_switch():
+    """A held position (opened via the real confirmed-bar Primary crossover)
+    must never be switched/sold by a forming-bar CANDIDATE, no matter how
+    strongly the live quote suggests the opposite direction — only another
+    confirmed completed-bar crossover has that authority (docs 2026-07-27
+    KIS-parity fix)."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _flat_completed_history(start)
-    svc = _provisional_service(df_1m, watch_price=140.0)
-    now = _forming_now(start)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])  # real UP_RED crossover at 13:57
+    confirmed_now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state()
-    broker = FakeBroker(
-        cash=10_000_000.0,
-        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    state.strategy_name = config.STRATEGY_NAME
+    state.strategy_version = config.STRATEGY_VERSION
+    state.signal_rule = config.SIGNAL_RULE
+    state.last_confirmed_bar_ts = (start + timedelta(minutes=3 * 98)).isoformat()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    svc = _svc_with_quote(
+        df_1m, confirmed_now,
+        {config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
     )
 
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms UP_RED candidate
-    run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms -> BUY LONG
+    entry_result = run_once(broker=broker, market_data=svc, state=state, now=confirmed_now)
+    assert entry_result.actions == ["ENTRY:UP_RED"]
+    assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
+
     svc._quotes[config.WATCH_SYMBOL] = QuoteSnapshot(
         config.WATCH_SYMBOL, 60.0, datetime.now(KST), 0.0, "test", None,
     )
-    result_down = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=10))
-    svc._quotes[config.WATCH_SYMBOL] = QuoteSnapshot(
-        config.WATCH_SYMBOL, 140.0, datetime.now(KST), 0.0, "test", None,
-    )
-    run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=15))
+    result = run_once(broker=broker, market_data=svc, state=state, now=confirmed_now + timedelta(seconds=5))
 
-    assert result_down.actions == []
-    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
-    assert state.order_block_reason == worker.order_executor.BLOCK_DUPLICATE_SIGNAL
-
-
-def test_provisional_stale_target_quote_blocks_order():
-    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _flat_completed_history(start)
-    svc = _provisional_service(df_1m, watch_price=140.0)
-    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(
-        config.LONG_SYMBOL, 15_000.0, datetime.now(KST) - timedelta(seconds=27), 27.0, "test", None,
-    )
-    state = _fresh_state()
-    broker = FakeBroker(
-        cash=10_000_000.0,
-        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
-    )
-
-    now = _forming_now(start)
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms
-
-    assert broker.orders == []
-    assert state.pending_signal is not None
-    assert state.pending_signal["signal_id"] == "20260724_140000_UP_RED_PROVISIONAL"
-    assert result.skipped == worker.QUOTE_STALE
-
-
-def test_provisional_unrelated_etf_stale_does_not_block_order():
-    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _flat_completed_history(start)
-    svc = _provisional_service(df_1m, watch_price=140.0)
-    svc._quotes[config.INVERSE_SYMBOL] = QuoteSnapshot(
-        config.INVERSE_SYMBOL, 10_000.0, datetime.now(KST) - timedelta(seconds=27), 27.0, "test", None,
-    )
-    state = _fresh_state()
-    broker = FakeBroker(
-        cash=10_000_000.0,
-        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
-    )
-
-    now = _forming_now(start)
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms
-
-    assert result.actions == ["ENTRY:UP_RED"]
-    assert broker.orders[0].symbol == config.LONG_SYMBOL
-    assert result.signal_dispatch_trace["required_quote_symbols"] == [config.WATCH_SYMBOL, config.LONG_SYMBOL]
-
-
-def test_provisional_same_target_holding_records_flag_and_block_reason():
-    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _flat_completed_history(start)
-    svc = _provisional_service(df_1m, watch_price=140.0)
-    state = _fresh_state()
-    broker = FakeBroker(
-        cash=10_000_000.0,
-        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
-    )
-    broker.buy_market(config.LONG_SYMBOL, 10, "seed")
-    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=15_000.0)
-    orders_before = len(broker.orders)
-
-    now = _forming_now(start)
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms
-
-    rows = ledger.load_signal_ledger()
-    assert len(broker.orders) == orders_before
     assert result.actions == []
-    assert state.provisional_signal_id == "20260724_140000_UP_RED_PROVISIONAL"
-    assert rows[-1]["signal_id"] == "20260724_140000_UP_RED_PROVISIONAL"
-    assert rows[-1]["direction"] == Direction.UP_RED.value
-    assert rows[-1]["block_reason"] == worker.order_executor.BLOCK_ALREADY_HOLDING
-    assert rows[-1]["executor_called"] == "False"
+    assert state.position.symbol == config.LONG_SYMBOL  # untouched by the candidate
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
 
 
-def test_provisional_quote_recovers_orders_same_signal_id_once():
+def test_confirmed_dispatch_within_5_seconds_of_detection():
+    """docs §6 5초 재현 검증: a genuine completed-bar crossover reaches the
+    order executor within SIGNAL_TO_ORDER_REQUEST_MAX_SEC (5s) of detection."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _flat_completed_history(start)
-    svc = _provisional_service(df_1m, watch_price=140.0)
-    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(
-        config.LONG_SYMBOL, 15_000.0, datetime.now(KST) - timedelta(seconds=27), 27.0, "test", None,
-    )
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state()
-    broker = FakeBroker(
-        cash=10_000_000.0,
-        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
-    )
-    now = _forming_now(start)
+    state.strategy_name = config.STRATEGY_NAME
+    state.strategy_version = config.STRATEGY_VERSION
+    state.signal_rule = config.SIGNAL_RULE
+    state.last_confirmed_bar_ts = (start + timedelta(minutes=3 * 98)).isoformat()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    svc = _svc_with_quote(df_1m, now, {config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
 
-    run_once(broker=broker, market_data=svc, state=state, now=now)
-    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(
-        config.LONG_SYMBOL, 15_000.0, datetime.now(KST), 0.0, "test", None,
-    )
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
 
     assert result.actions == ["ENTRY:UP_RED"]
-    assert len([o for o in broker.orders if o.side == "BUY"]) == 1
-    assert state.processed_signal_ids == ["20260724_140000_UP_RED_PROVISIONAL"]
-
-
-def test_provisional_executor_called_within_5_seconds_of_detection():
-    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _flat_completed_history(start)
-    svc = _provisional_service(df_1m, watch_price=140.0)
-    state = _fresh_state()
-    broker = FakeBroker(
-        cash=10_000_000.0,
-        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
-    )
-
-    now = _forming_now(start)
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms
-
     detected = datetime.fromisoformat(result.signal_detected_at)
     executor_called = datetime.fromisoformat(result.signal_dispatch_trace["executor_called_at"])
     assert (executor_called - detected).total_seconds() <= config.SIGNAL_TO_ORDER_REQUEST_MAX_SEC
-
-
-def test_confirmed_after_provisional_same_bar_does_not_reorder(monkeypatch):
-    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _flat_completed_history(start)
-    svc = _provisional_service(df_1m, watch_price=140.0)
-    now = _forming_now(start)
-    state = _fresh_state()
-    broker = FakeBroker(
-        cash=10_000_000.0,
-        quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
-    )
-    run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate only
-    run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms
-    state.position = None
-    broker._positions.clear()
-    orders_after_provisional = len(broker.orders)
-
-    confirmed_bar = start + timedelta(minutes=300)
-    monkeypatch.setattr(worker, "calculate_macd", lambda _bars: MacdSnapshot(
-        bar_dt=confirmed_bar, macd=1.0, signal=0.0, hist=1.0,
-        hist_last3=(0.0, -1.0, 1.0), completed_3m_count=101,
-        previous_diff=-1.0, current_diff=1.0, relation="ABOVE",
-    ))
-    run_once(broker=broker, market_data=svc, state=state, now=confirmed_bar + timedelta(minutes=3))
-
-    assert len(broker.orders) == orders_after_provisional
 
 
 def test_entry_cutoff_blocks_new_entry_after_1455(ready_market_data):
@@ -645,10 +542,9 @@ def test_switch_sell_success_buy_failure_leaves_state_flat():
     switch_now = None
     for step in range(1, 60):
         candidate = entry_now + timedelta(minutes=3 * step)
-        run_once(broker=broker, market_data=svc, state=state, now=candidate)
-        result = run_once(broker=broker, market_data=svc, state=state, now=candidate + timedelta(seconds=5))
+        result = run_once(broker=broker, market_data=svc, state=state, now=candidate)
         if any(a.startswith("OPPOSITE_SIGNAL:") for a in result.actions):
-            switch_now = candidate + timedelta(seconds=5)
+            switch_now = candidate
             break
 
     assert switch_now is not None, "synthetic session never produced a reversal to exercise"

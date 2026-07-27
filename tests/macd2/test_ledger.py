@@ -276,6 +276,30 @@ def test_summarize_signals_excludes_malformed_schema_rows():
     assert {r["signal_id"] for r in malformed} == {"corrupted-1", "corrupted-2"}
 
 
+def test_summarize_signals_excludes_six_previous_malformed_rows_from_today_stats():
+    """6건의 이전 malformed 행(실제 사고 재현 규모)이 오늘 통계에서 모두
+    제외되고, 정상 오늘 신호만 카운트된다."""
+    for i in range(6):
+        corrupted = _current_signal_row(f"malformed-{i}", direction="UP_RED" if i % 2 == 0 else "DOWN_BLUE")
+        corrupted["strategy_name"] = f"2026-07-2{i}T09:0{i}:00+09:00"  # shifted column value
+        ledger.append_signal(corrupted)
+    ledger.append_signal(_current_signal_row("today-good", direction="UP_RED"))
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
+        session_started_at="2026-01-06T09:00:00+09:00",
+    )
+
+    assert summary["current_signal_ids"] == ["today-good"]
+    assert summary["red_count"] == 1
+    assert summary["blue_count"] == 0
+    malformed = [r for r in summary["excluded_signals"] if r["excluded_reason"] == "MALFORMED_SCHEMA"]
+    assert len(malformed) == 6
+    assert {r["signal_id"] for r in malformed} == {f"malformed-{i}" for i in range(6)}
+
+
 def test_summarize_signals_excludes_pre_session_rows_by_detected_at():
     """summarize_signals' session_started_at argument must actually filter —
     a row detected BEFORE the current Worker session started (leftover from a

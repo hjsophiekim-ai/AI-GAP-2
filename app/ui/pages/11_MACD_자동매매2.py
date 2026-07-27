@@ -268,21 +268,22 @@ try:
         p1.metric("보유 종목", "flat")
     p2.metric("Profit Lock", "ON" if state.profit_lock_active else "OFF", delta=f"peak {state.peak_net_return:.2f}%")
 
-    st.markdown("**Primary forming-bar MACD crossover**")
+    st.markdown("**Primary (완성봉 MACD crossover — 유일한 주문권한)**")
+    st.caption("아래 diff/MACD는 진행 중(미완성) 3분봉의 shadow 진단값이며 주문에 사용되지 않는다. 실제 주문권한은 latest_primary_flag(완성봉)에만 있다.")
     pc1, pc2, pc3, pc4 = st.columns(4)
-    pc1.metric("MACD", f"{state.provisional_macd:.6f}" if state.provisional_macd is not None else "-")
-    pc2.metric("Signal", f"{state.provisional_signal:.6f}" if state.provisional_signal is not None else "-")
+    pc1.metric("MACD (진행봉 shadow)", f"{state.provisional_macd:.6f}" if state.provisional_macd is not None else "-")
+    pc2.metric("Signal (진행봉 shadow)", f"{state.provisional_signal:.6f}" if state.provisional_signal is not None else "-")
     prev_diff = state.primary_current_diff
     curr_diff = state.provisional_diff
-    pc3.metric("previous diff", f"{prev_diff:.6f}" if prev_diff is not None else "-")
-    pc4.metric("current diff", f"{curr_diff:.6f}" if curr_diff is not None else "-")
+    pc3.metric("previous diff (완성봉)", f"{prev_diff:.6f}" if prev_diff is not None else "-")
+    pc4.metric("current diff (진행봉 shadow)", f"{curr_diff:.6f}" if curr_diff is not None else "-")
     fc1, fc2, fc3, fc4 = st.columns(4)
-    fc1.metric("confirmed flag (this tick)", state.provisional_flag.value if state.provisional_flag else "-")
-    fc2.metric(
-        "candidate flag (unconfirmed)",
+    fc1.metric(
+        "candidate flag (진행봉, 주문권한 없음)",
         f"CANDIDATE_{state.candidate_flag.value}" if state.candidate_flag else "-",
     )
-    fc3.metric("last confirmed onset", state.latest_primary_flag.value if state.latest_primary_flag else "-")
+    fc2.metric("candidate confirmed (여전히 shadow)", state.provisional_flag.value if state.provisional_flag else "-")
+    fc3.metric("last confirmed onset (완성봉, 주문권한)", state.latest_primary_flag.value if state.latest_primary_flag else "-")
     fc4.metric("broker order result", state.last_broker_order_result or "-")
     st.caption(
         f"current signal_id=`{state.provisional_signal_id or '-'}` · "
@@ -306,6 +307,15 @@ try:
         oc4.metric("expected_amount", f"{state.last_order_expected_amount:,.0f}" if state.last_order_expected_amount is not None else "-")
     else:
         st.caption("orderable_cash=`-` · sizing_price=`-` · requested_qty=`-` · expected_amount=`-`")
+
+    st.markdown("**1분봉 history 진단 (KIS 당일 1분봉 = 단일 원본)**")
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric("당일 1분봉 수", state.today_1m_bar_count if state.today_1m_bar_count is not None else "-")
+    h2.metric("history 최신시각", _format_signal_time(state.history_newest_at) if state.history_newest_at else "-")
+    h3.metric("마지막 완성 3분봉", _format_signal_time(state.last_completed_3m_bar_at) if state.last_completed_3m_bar_at else "-")
+    h4.metric("quote-history 불일치", state.quote_history_mismatch_reason or "OK")
+    if state.quote_history_mismatch_reason:
+        st.error(f"quote/1분봉 history 단위·시각 불일치로 신규 진입이 차단됩니다 — 원인: `{state.quote_history_mismatch_reason}`")
 
     st.markdown("**Provisional forming-bar crossover**")
     pr1, pr2, pr3, pr4 = st.columns(4)

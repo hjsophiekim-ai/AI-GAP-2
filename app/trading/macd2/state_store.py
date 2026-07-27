@@ -140,6 +140,11 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_order_sizing_price": state.last_order_sizing_price,
         "last_order_requested_qty": state.last_order_requested_qty,
         "last_order_expected_amount": state.last_order_expected_amount,
+        "last_confirmed_bar_ts": state.last_confirmed_bar_ts,
+        "today_1m_bar_count": state.today_1m_bar_count,
+        "history_newest_at": state.history_newest_at,
+        "last_completed_3m_bar_at": state.last_completed_3m_bar_at,
+        "quote_history_mismatch_reason": state.quote_history_mismatch_reason,
     }
 
 
@@ -235,6 +240,11 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         last_order_sizing_price=raw.get("last_order_sizing_price"),
         last_order_requested_qty=raw.get("last_order_requested_qty"),
         last_order_expected_amount=raw.get("last_order_expected_amount"),
+        last_confirmed_bar_ts=raw.get("last_confirmed_bar_ts"),
+        today_1m_bar_count=raw.get("today_1m_bar_count"),
+        history_newest_at=raw.get("history_newest_at"),
+        last_completed_3m_bar_at=raw.get("last_completed_3m_bar_at"),
+        quote_history_mismatch_reason=raw.get("quote_history_mismatch_reason"),
     )
 
 

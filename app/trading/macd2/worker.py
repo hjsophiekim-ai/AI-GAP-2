@@ -46,15 +46,23 @@ from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    evaluate_macd_crossover,
     evaluate_primary_forming_crossover,
     forming_bar_window,
     make_provisional_signal_id,
+    make_signal_id,
     resample_completed_3m,
     signed_b_condition,
 )
 from app.trading.trading_cost_engine import TradeCostEngine
 
 KST = config.KST
+
+# 주문 성공 응답만으로 체결로 간주하지 않고 실제 체결/잔고 재조회로 확인하는
+# 최대 대기시간(docs 2026-07-27 체결확인 fix) — order_executor의 reconcile
+# 재시도 파라미터로 Worker의 모든 프로덕션 호출에 적용된다.
+ORDER_FILL_RECONCILE_RETRIES = max(1, int(config.ORDER_FILL_POLL_MAX_SEC / config.ORDER_FILL_POLL_INTERVAL_SEC))
+ORDER_FILL_RECONCILE_DELAY_SEC = config.ORDER_FILL_POLL_INTERVAL_SEC
 
 POSITION_MISMATCH = "POSITION_MISMATCH"
 POSITION_DATA_ERROR = "POSITION_DATA_ERROR"
@@ -138,6 +146,7 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.last_evaluated_bar_ts = None
+    state.last_confirmed_bar_ts = None
     state.processed_signal_ids = []
     state.pending_signal = None
     state.peak_net_return = 0.0
@@ -178,6 +187,15 @@ def initialize_strategy_session(
     if macd_snap is not None:
         state.session_baseline_bar_ts = macd_snap.bar_dt.isoformat()
         state.last_evaluated_bar_ts = macd_snap.bar_dt.isoformat()
+        # Marks THIS bar as already baseline'd so run_once's Primary gate
+        # (_advance_confirmed_primary) treats the next NEW completed bar as a
+        # genuine same-day continuation (mid-session Worker (re)start with
+        # plenty of already-completed today bars) rather than mistakenly
+        # re-treating it as "the very first bar ever evaluated" — while a
+        # real overnight gap (this baseline bar dated yesterday, the next one
+        # dated today) is still correctly caught by that gate's own date
+        # comparison.
+        state.last_confirmed_bar_ts = macd_snap.bar_dt.isoformat()
         state.baseline_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
         state.primary_previous_diff = macd_snap.previous_diff
         state.primary_current_diff = macd_snap.current_diff
@@ -354,32 +372,6 @@ def _quote_valid_for_provisional(market_data: MarketDataService, symbol: str) ->
     )
 
 
-def _provisional_bar_key_from_id(signal_id: str) -> Optional[str]:
-    parts = str(signal_id or "").split("_")
-    if len(parts) >= 5 and parts[-1] == "PROVISIONAL":
-        return f"{parts[0]}_{parts[1]}"
-    return None
-
-
-def _provisional_bar_key(bar_dt: datetime) -> str:
-    bar_kst = bar_dt.astimezone(KST)
-    return f"{bar_kst:%Y%m%d}_{bar_kst:%H%M%S}"
-
-
-def _provisional_bar_locked(state: RuntimeState, bar_dt: datetime, signal_id: str) -> bool:
-    bar_key = _provisional_bar_key(bar_dt)
-    if state.provisional_ordered_bar_ts == bar_dt.astimezone(KST).isoformat():
-        return True
-    for processed in state.processed_signal_ids:
-        if _provisional_bar_key_from_id(processed) == bar_key:
-            return True
-    pending = state.pending_signal or {}
-    pending_id = str(pending.get("signal_id") or "")
-    if pending_id and pending_id != signal_id and _provisional_bar_key_from_id(pending_id) == bar_key:
-        return True
-    return False
-
-
 def _update_provisional_diagnostics(state: RuntimeState, macd_snap) -> None:
     """Raw, unconfirmed live diff/MACD/signal display — updated every tick
     regardless of candidate/confirmation status (diagnostic only, never order
@@ -391,15 +383,14 @@ def _update_provisional_diagnostics(state: RuntimeState, macd_snap) -> None:
     state.provisional_diff = macd_snap.current_diff
 
 
-def _update_provisional_state(state: RuntimeState, macd_snap, pattern: Direction, signal_id: Optional[str]) -> None:
-    """Only ever called with a CONFIRMED (post two-tick-gate) snap/pattern —
-    sets the flag/signal_id fields that carry order authority."""
+def _update_provisional_shadow_flag(state: RuntimeState, macd_snap, pattern: Direction, signal_id: Optional[str]) -> None:
+    """Shadow/candidate display only (2026-07-27 KIS-parity fix) — the
+    forming/provisional bar never carries order, stats, or last_direction
+    authority any more. See _advance_confirmed_primary() for the actual
+    order-authoritative Primary flag (completed 3m bars only)."""
     _update_provisional_diagnostics(state, macd_snap)
     state.provisional_flag = pattern if pattern != Direction.HOLD else None
     state.provisional_signal_id = signal_id
-    if pattern != Direction.HOLD:
-        state.latest_primary_flag = pattern
-        state.latest_primary_signal_id = signal_id
 
 
 def _reset_candidate(state: RuntimeState) -> None:
@@ -417,55 +408,32 @@ def _advance_provisional_candidate(
     *,
     today_has_completed_bar: bool,
 ) -> tuple[Optional[Any], Direction]:
-    """Two-tick confirmation gate (2026-07-27 momentary-crossing fix).
+    """Two-tick shadow/candidate gate (2026-07-27 momentary-crossing fix,
+    demoted to display-only by the 2026-07-27 KIS-parity fix — this NEVER
+    drives orders/stats/last_direction any more; see
+    _advance_confirmed_primary() for that).
 
     A single-tick provisional forming-bar crossing from
-    evaluate_primary_forming_crossover() is never itself an order signal —
-    it only becomes a confirmed Primary onset once the SAME direction is
-    still present on a LATER, fresh quote tick at least
-    config.PROVISIONAL_CONFIRM_MIN_GAP_SEC apart (both ticks are already
-    quote-age-gated <= QUOTE_MAX_AGE_SEC by the caller only invoking this
-    when watch_quote_ready was true). Any other outcome this tick — HOLD,
-    the opposite direction, or the forming bar rolling over — cancels the
-    candidate immediately; a fresh candidate may start right after (docs:
-    후보 취소 후 재교차 시 새로 2회 확인).
+    evaluate_primary_forming_crossover() only becomes a "confirmed candidate"
+    (for UI display) once the SAME direction is still present on a LATER,
+    fresh quote tick at least config.PROVISIONAL_CONFIRM_MIN_GAP_SEC apart.
+    Any other outcome this tick — HOLD, the opposite direction, or the
+    forming bar rolling over — cancels the candidate immediately; a fresh
+    candidate may start right after.
 
-    ``today_has_completed_bar`` gates the very first forming bar of a new
-    trading day: before today's own first 3m bar completes, previous_diff
-    still refers to yesterday's last completed bar, so any zero-crossing
-    here is an overnight-gap artifact, not an intraday reversal — never a
-    candidate/signal in that window (direction baseline only).
+    ``today_has_completed_bar`` suppresses the very first forming bar of a
+    new trading day the same way _advance_confirmed_primary() suppresses the
+    first completed bar — previous_diff there still refers to yesterday.
     """
-    if provisional_snap is None or provisional_condition == Direction.HOLD:
-        _reset_candidate(state)
-        return None, Direction.HOLD
-    if not today_has_completed_bar:
+    if provisional_snap is None or provisional_condition == Direction.HOLD or not today_has_completed_bar:
         _reset_candidate(state)
         return None, Direction.HOLD
 
     bar_key = provisional_snap.bar_dt.isoformat()
-    signal_id = make_provisional_signal_id(provisional_snap.bar_dt, provisional_condition)
-    pending = state.pending_signal or {}
-
-    if signal_id in state.processed_signal_ids or _provisional_bar_locked(state, provisional_snap.bar_dt, signal_id):
-        # Already ordered (or bar-locked) for this direction/bar — nothing
-        # left to candidate/confirm.
-        state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
-        _reset_candidate(state)
-        return None, Direction.HOLD
-    if pending.get("signal_id") == signal_id:
-        # Already confirmed earlier this bar and currently pending/blocked on
-        # execution (e.g. QUOTE_STALE) — keep reporting the confirmed
-        # snapshot every tick so the existing pending-signal retry path keeps
-        # seeing a fresh active_snap; never re-arm the candidate gate for a
-        # direction that is already confirmed.
-        _reset_candidate(state)
-        return provisional_snap, provisional_condition
-
     same_candidate = state.candidate_flag == provisional_condition and state.candidate_bar_ts == bar_key
     if not same_candidate:
         # First sighting of this direction on this forming bar — arm the
-        # candidate, never dispatch an order from it.
+        # candidate only, never a dispatch signal.
         state.candidate_flag = provisional_condition
         state.candidate_bar_ts = bar_key
         state.candidate_first_seen_at = now.isoformat()
@@ -483,7 +451,6 @@ def _advance_provisional_candidate(
 
     state.candidate_confirmed_at = now.isoformat()
     state.candidate_confirmed_diff = provisional_snap.current_diff
-    _reset_candidate(state)
     return provisional_snap, provisional_condition
 
 
@@ -522,6 +489,60 @@ def _update_forming_input_diag(
     if diag:
         note = note or "NO_SCALE_CHANGE"
     state.provisional_price_scale_note = note
+
+
+def _update_history_freshness_diag(
+    state: RuntimeState, *, df_1m, macd_snap, watch_price: Optional[float], now: datetime,
+) -> None:
+    """docs 2026-07-27 §1: 당일 추가 1분봉 수/history newest/마지막 완성 3분봉
+    시각을 runtime/UI에 표시하고, KIS 1분봉(history)과 실시간 quote의 단위·
+    시각이 설명되지 않게 어긋나면 주문을 차단한다 (quote_history_mismatch_reason).
+    market_data._normalize_quote_price()가 이미 10배/0.1배 스케일 오차는
+    보정하므로, 여기서는 그 보정 이후에도 남는 큰 괴리(단위 불일치)와 1분봉
+    history 자체가 갱신되지 않는 시각 불일치만 잡아낸다.
+    """
+    today_str = now.astimezone(KST).strftime("%Y%m%d")
+    today_count = 0
+    newest_at: Optional[str] = None
+    newest_close: Optional[float] = None
+    newest_dt: Optional[datetime] = None
+    if df_1m is not None and not df_1m.empty and "datetime" in df_1m.columns:
+        dates = df_1m["datetime"].dt.strftime("%Y%m%d")
+        today_count = int((dates == today_str).sum())
+        last_row = df_1m.sort_values("datetime").iloc[-1]
+        newest_dt = pd.Timestamp(last_row["datetime"]).to_pydatetime()
+        newest_at = newest_dt.isoformat()
+        if "close" in df_1m.columns:
+            try:
+                newest_close = float(last_row["close"])
+            except (TypeError, ValueError):
+                newest_close = None
+    state.today_1m_bar_count = today_count
+    state.history_newest_at = newest_at
+    state.last_completed_3m_bar_at = macd_snap.bar_dt.isoformat() if macd_snap is not None else None
+
+    reason: Optional[str] = None
+    if now.time() >= config.SESSION_OPEN and not _within_open_grace_window(now):
+        if newest_dt is None:
+            reason = "HISTORY_EMPTY"
+        elif (now - newest_dt).total_seconds() > config.HISTORY_STALE_MAX_SEC:
+            reason = "HISTORY_STALE"
+    if reason is None and watch_price is not None and newest_close is not None and newest_close > 0:
+        ratio = float(watch_price) / float(newest_close)
+        if not (config.QUOTE_HISTORY_PRICE_RATIO_MIN <= ratio <= config.QUOTE_HISTORY_PRICE_RATIO_MAX):
+            reason = "QUOTE_HISTORY_PRICE_MISMATCH"
+    state.quote_history_mismatch_reason = reason
+
+
+def _within_open_grace_window(now: datetime, *, grace_sec: float = 60.0) -> bool:
+    """A brief grace window right at SESSION_OPEN — the history-updater
+    thread may not have pulled today's very first 1m bar yet even though the
+    session clock has already ticked over; avoid a false HISTORY_STALE/EMPTY
+    block in that narrow window."""
+    open_dt = now.astimezone(KST).replace(
+        hour=config.SESSION_OPEN.hour, minute=config.SESSION_OPEN.minute, second=0, microsecond=0,
+    )
+    return bool(now.astimezone(KST) < open_dt + timedelta(seconds=grace_sec))
 
 
 def _expire_pending_if_needed(state: RuntimeState, macd_snap, now: datetime) -> bool:
@@ -589,8 +610,8 @@ def _execute_or_wait(
         "direction": direction.value,
         "signal_type": signal_type,
         "completed_bar_at": macd_snap.bar_dt.isoformat(),
-        "forming_bar_start": macd_snap.bar_dt.isoformat() if str(signal_id).endswith("_PROVISIONAL") else "",
-        "forming_bar_end": (macd_snap.bar_dt + timedelta(minutes=3)).isoformat() if str(signal_id).endswith("_PROVISIONAL") else "",
+        "forming_bar_start": "",
+        "forming_bar_end": "",
         "position_reconcile_result": None,
         "quote_status": None,
         "required_quote_symbols": [],
@@ -650,6 +671,7 @@ def _execute_or_wait(
         broker=broker, direction=direction, signal_id=signal_id, quotes=quotes,
         position=position, budget=state.budget,
         processed_signal_ids=frozenset(state.processed_signal_ids),
+        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
     )
     if outcome is None:
         state.order_block_reason = SIGNAL_NOT_DISPATCHED
@@ -694,7 +716,46 @@ def _execute_or_wait(
     return outcome
 
 
-def _dispatch_provisional_signal(
+def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
+    """Primary (order-authoritative) crossover — completed 3m bars ONLY
+    (docs 2026-07-27 KIS-parity fix): previous_diff/current_diff come solely
+    from calculate_macd(bars_3m), the same confirmed MACD(12,26,9) KIS itself
+    charts a flag on for a completed bar. Evaluated exactly once per new
+    completed-bar timestamp — a repeat tick against the same bar_dt is
+    always HOLD here, regardless of direction.
+
+    The very first completed bar this state has ever evaluated (or the
+    first one on a NEW calendar date relative to the previously evaluated
+    bar) sets direction baseline only, never dispatches: previous_diff there
+    can span across a trading-day gap (yesterday's last bar vs. today's
+    first), so any zero-crossing is an overnight-gap artifact, not an
+    intraday reversal. It is also never counted toward the repeat-direction
+    suppression state, so a genuine later same-direction crossing still
+    fires normally.
+    """
+    bar_key = macd_snap.bar_dt.isoformat()
+    if state.last_confirmed_bar_ts == bar_key:
+        return Direction.HOLD
+    prior_bar_ts = state.last_confirmed_bar_ts
+    state.last_confirmed_bar_ts = bar_key
+    is_first_of_day = True
+    if prior_bar_ts:
+        try:
+            prior_date = datetime.fromisoformat(prior_bar_ts).astimezone(KST).date()
+            is_first_of_day = prior_date != macd_snap.bar_dt.astimezone(KST).date()
+        except ValueError:
+            is_first_of_day = True
+    if is_first_of_day:
+        return Direction.HOLD
+    direction = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
+    if direction != Direction.HOLD:
+        state.last_detected_direction = direction
+        state.latest_primary_flag = direction
+        state.latest_primary_signal_id = make_signal_id(macd_snap.bar_dt, direction)
+    return direction
+
+
+def _dispatch_confirmed_signal(
     *,
     broker,
     market_data: MarketDataService,
@@ -706,45 +767,25 @@ def _dispatch_provisional_signal(
     position: Optional[PositionSnapshot],
     result: TickResult,
 ):
-    signal_id = make_provisional_signal_id(macd_snap.bar_dt, direction)
-    _update_provisional_state(state, macd_snap, direction, signal_id)
+    signal_id = make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
         state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
-        return None
-    if _provisional_bar_locked(state, macd_snap.bar_dt, signal_id):
-        state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
-        result.signal_dispatch_trace = {
-            "signal_id": signal_id,
-            "direction": direction.value,
-            "signal_type": signal_type,
-            "completed_bar_at": macd_snap.bar_dt.isoformat(),
-            "order_executor_called": False,
-            "final_block_reason": order_executor.BLOCK_DUPLICATE_SIGNAL,
-        }
         return None
     if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
         return None
 
     state.current_episode_direction = direction
-    state.last_detected_direction = direction
     signal_detected_at = datetime.now(KST)
-    state.provisional_detected_at = signal_detected_at.isoformat()
     result.signal_detected_at = signal_detected_at.isoformat()
     outcome = _execute_or_wait(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
     )
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
-    if outcome is not None:
-        state.provisional_order_requested_at = (
-            outcome.timestamps.get("buy_requested_at") or outcome.timestamps.get("sell_requested_at") or ""
-        )
-        if _has_order_request(outcome):
-            state.provisional_ordered_bar_ts = macd_snap.bar_dt.astimezone(KST).isoformat()
     return outcome
 
 
-def _record_provisional_blocked_signal(
+def _record_confirmed_blocked_signal(
     *,
     state: RuntimeState,
     macd_snap,
@@ -753,23 +794,17 @@ def _record_provisional_blocked_signal(
     reason: str,
     result: TickResult,
 ) -> None:
-    signal_id = make_provisional_signal_id(macd_snap.bar_dt, direction)
-    _update_provisional_state(state, macd_snap, direction, signal_id)
+    signal_id = make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
         return
-    state.current_episode_direction = direction
-    state.last_detected_direction = direction
     state.order_block_reason = reason
     signal_detected_at = datetime.now(KST)
-    state.provisional_detected_at = signal_detected_at.isoformat()
     result.signal_detected_at = signal_detected_at.isoformat()
     result.signal_dispatch_trace = {
         "signal_id": signal_id,
         "direction": direction.value,
         "signal_type": signal_type,
         "completed_bar_at": macd_snap.bar_dt.isoformat(),
-        "forming_bar_start": macd_snap.bar_dt.isoformat(),
-        "forming_bar_end": (macd_snap.bar_dt + timedelta(minutes=3)).isoformat(),
         "order_executor_called": False,
         "broker_called": False,
         "final_block_reason": reason,
@@ -810,6 +845,7 @@ def run_once(
         state.pending_signal = None
         state.last_detected_direction = None
         state.last_evaluated_bar_ts = None
+        state.last_confirmed_bar_ts = None
 
     t0 = time.monotonic()
     reconcile = reconcile_position_state(broker, state, now)
@@ -845,6 +881,9 @@ def run_once(
     state.primary_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
     state.signed_b_shadow_direction = signed_b_condition(macd_snap)
     state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
+
+    # ── Shadow/candidate only: forming-bar provisional + Signed-B NEVER carry
+    # order/stat/last_direction authority (docs 2026-07-27 KIS-parity fix) ──
     raw_provisional_snap = None
     raw_provisional_condition = Direction.HOLD
     watch_quote_ready = _quote_valid_for_provisional(market_data, config.WATCH_SYMBOL)
@@ -852,6 +891,7 @@ def run_once(
     _update_forming_input_diag(
         state, now=now, df_1m=df_1m, watch_price=watch_price, market_data=market_data,
     )
+    _update_history_freshness_diag(state, df_1m=df_1m, macd_snap=macd_snap, watch_price=watch_price, now=now)
     if watch_quote_ready and watch_price is not None:
         primary_result = evaluate_primary_forming_crossover(
             bars_3m, df_1m, now=now, current_price=watch_price,
@@ -867,44 +907,39 @@ def run_once(
         state.provisional_signal = None
         state.provisional_diff = None
 
-    # 2026-07-27 fix: before today's own first 3m bar completes, previous_diff
-    # still refers to yesterday's last completed bar — any crossing here is
-    # an overnight-gap artifact, never an actionable candidate (docs: 첫 당일
-    # 진행봉은 baseline만 설정).
     today_str = now.astimezone(KST).strftime("%Y%m%d")
     today_has_completed_bar = bool(
         not bars_3m.empty and (bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str).any()
     )
-
-    provisional_snap, provisional_condition = _advance_provisional_candidate(
+    candidate_snap, candidate_condition = _advance_provisional_candidate(
         state, raw_provisional_snap, raw_provisional_condition, now,
         today_has_completed_bar=today_has_completed_bar,
     )
-    if provisional_snap is not None:
-        provisional_signal_id = make_provisional_signal_id(provisional_snap.bar_dt, provisional_condition)
-        _update_provisional_state(state, provisional_snap, provisional_condition, provisional_signal_id)
+    if candidate_snap is not None:
+        candidate_signal_id = make_provisional_signal_id(candidate_snap.bar_dt, candidate_condition)
+        _update_provisional_shadow_flag(state, candidate_snap, candidate_condition, candidate_signal_id)
     else:
         state.provisional_flag = None
         state.provisional_signal_id = None
+
+    # ── Primary (order-authoritative): completed 3m bars ONLY — same
+    # confirmed MACD(12,26,9) KIS itself charts a flag on (docs 2026-07-27
+    # KIS-parity fix). Evaluated exactly once per new completed-bar
+    # timestamp; the first completed bar this state has ever evaluated (or
+    # the first on a new calendar date) sets baseline only.
+    confirmed_direction = _advance_confirmed_primary(state, macd_snap)
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
 
     before_open = now.time() < config.SESSION_OPEN
     entry_cutoff_passed = now.time() >= config.NEW_ENTRY_CUTOFF
     force_liquidate_time = now.time() >= config.FORCE_LIQUIDATE_AT
-    entry_window_open = (not before_open) and (not entry_cutoff_passed)
+    entry_window_open = (not before_open) and (not entry_cutoff_passed) and not state.quote_history_mismatch_reason
     t0 = time.monotonic()
-    # NOTE: uses raw_provisional_snap (not the two-tick-gated provisional_snap)
-    # — a pending signal's own direction can legitimately still be "active"
-    # (positive/negative diff unchanged) even on a tick where
-    # evaluate_macd_crossover's own repeat-direction suppression makes the
-    # CONDITION read HOLD (previous_direction already equals this direction
-    # once dispatch/pending was first set) — that suppression must never make
-    # this retry/expiry check see a stale/None snapshot.
-    pending_retry_snap = raw_provisional_snap if (
-        state.pending_signal and str(state.pending_signal.get("signal_id") or "").endswith("_PROVISIONAL")
-    ) else macd_snap
-    _expire_pending_if_needed(state, pending_retry_snap, now)
+    # A pending (blocked-on-retry) signal is always confirmed-bar-sourced now
+    # — its own direction stays "active" as long as macd_snap (the completed
+    # bar) hasn't rolled over to a new one yet.
+    _expire_pending_if_needed(state, macd_snap, now)
     result.timing["signal_evaluation"] = time.monotonic() - t0
 
     pos = state.position
@@ -918,6 +953,7 @@ def run_once(
             outcome = order_executor.execute_exit(
                 broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                 exit_reason=config.EXIT_FORCED_LIQUIDATION, entry_price=pos.avg_price,
+                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
             )
             _apply_exit_outcome(state, outcome)
             result.actions.append(f"FORCED_LIQUIDATION:{pos.symbol}")
@@ -938,6 +974,7 @@ def run_once(
                 outcome = order_executor.execute_exit(
                     broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                     exit_reason=config.EXIT_STOP_LOSS, entry_price=pos.avg_price,
+                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
                 )
                 _apply_exit_outcome(state, outcome)
                 result.actions.append(f"STOP_LOSS:{pos.symbol}")
@@ -950,10 +987,9 @@ def run_once(
 
         if state.pending_signal and not state.pending_signal.get("order_requested"):
             pending_dir = Direction(state.pending_signal["direction"])
-            active_snap = raw_provisional_snap if str(state.pending_signal.get("signal_id") or "").endswith("_PROVISIONAL") else macd_snap
-            if active_snap is not None and _pending_direction_still_active(pending_dir, active_snap):
+            if _pending_direction_still_active(pending_dir, macd_snap):
                 outcome = _execute_or_wait(
-                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=active_snap,
+                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
                     signal_type=str(state.pending_signal.get("signal_type") or "REVERSAL"), position=pos, result=result,
                 )
@@ -963,21 +999,21 @@ def run_once(
                     state.last_evaluated_bar_ts = bar_ts_str
                     return result
 
-        if entry_window_open and provisional_snap is not None and provisional_condition != Direction.HOLD:
-            target = order_executor.target_symbol_for_direction(provisional_condition)
+        if entry_window_open and confirmed_direction != Direction.HOLD:
+            target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
-                outcome = _dispatch_provisional_signal(
-                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=provisional_snap,
-                    direction=provisional_condition, signal_type="REVERSAL_PROVISIONAL", position=pos, result=result,
+                outcome = _dispatch_confirmed_signal(
+                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                    direction=confirmed_direction, signal_type="REVERSAL", position=pos, result=result,
                 )
                 if outcome is not None:
-                    _apply_switch_outcome(state, outcome, provisional_condition)
-                    result.actions.append(f"OPPOSITE_SIGNAL:{provisional_condition.value}")
+                    _apply_switch_outcome(state, outcome, confirmed_direction)
+                    result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
                     return result
             else:
-                _record_provisional_blocked_signal(
-                    state=state, macd_snap=provisional_snap, direction=provisional_condition,
-                    signal_type="HELD_SAME_PROVISIONAL",
+                _record_confirmed_blocked_signal(
+                    state=state, macd_snap=macd_snap, direction=confirmed_direction,
+                    signal_type="HELD_SAME",
                     reason=order_executor.BLOCK_ALREADY_HOLDING,
                     result=result,
                 )
@@ -986,6 +1022,7 @@ def run_once(
             outcome = order_executor.execute_exit(
                 broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                 exit_reason=config.EXIT_PROFIT_LOCK, entry_price=pos.avg_price,
+                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
             )
             _apply_exit_outcome(state, outcome)
             result.actions.append(f"PROFIT_LOCK:{pos.symbol}")
@@ -997,10 +1034,9 @@ def run_once(
     # ── Flat: new-entry evaluation ──────────────────────────────────────
     if state.pending_signal and not state.pending_signal.get("order_requested"):
         pending_dir = Direction(state.pending_signal["direction"])
-        active_snap = raw_provisional_snap if str(state.pending_signal.get("signal_id") or "").endswith("_PROVISIONAL") else macd_snap
-        if active_snap is not None and _pending_direction_still_active(pending_dir, active_snap):
+        if _pending_direction_still_active(pending_dir, macd_snap):
             outcome = _execute_or_wait(
-                broker=broker, market_data=market_data, state=state, now=now, macd_snap=active_snap,
+                broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                 direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
                 signal_type=str(state.pending_signal.get("signal_type") or "INITIAL"), position=None, result=result,
             )
@@ -1010,14 +1046,14 @@ def run_once(
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
 
-    if entry_window_open and provisional_snap is not None and provisional_condition != Direction.HOLD:
-        outcome = _dispatch_provisional_signal(
-            broker=broker, market_data=market_data, state=state, now=now, macd_snap=provisional_snap,
-            direction=provisional_condition, signal_type="INITIAL_PROVISIONAL", position=None, result=result,
+    if entry_window_open and confirmed_direction != Direction.HOLD:
+        outcome = _dispatch_confirmed_signal(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+            direction=confirmed_direction, signal_type="INITIAL", position=None, result=result,
         )
         if outcome is not None:
-            _apply_switch_outcome(state, outcome, provisional_condition)
-            result.actions.append(f"ENTRY:{provisional_condition.value}")
+            _apply_switch_outcome(state, outcome, confirmed_direction)
+            result.actions.append(f"ENTRY:{confirmed_direction.value}")
             return result
 
     state.last_evaluated_bar_ts = bar_ts_str
@@ -1083,7 +1119,9 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
     trading_date = macd_snap.bar_dt.astimezone(KST).strftime("%Y%m%d")
     trace = dict(dispatch_trace or {})
     raw = dict(trace.get("broker_raw") or {})
-    is_provisional = str(signal_id).endswith("_PROVISIONAL")
+    # All ledger-recorded signals are confirmed (completed-bar) since the
+    # 2026-07-27 KIS-parity fix — the forming/provisional candidate never
+    # reaches this function any more (shadow display only).
     written = ledger.append_signal({
         "trading_date": trading_date,
         "completed_bar_at": macd_snap.bar_dt.astimezone(KST).strftime("%H%M%S"),
@@ -1105,23 +1143,23 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "baseline_completed_bar_at": state.session_baseline_bar_ts or "",
         "strategy_name": config.STRATEGY_NAME,
         "strategy_version": config.STRATEGY_VERSION,
-        "signal_rule": config.SIGNAL_RULE if is_provisional else config.CONFIRMED_SIGNAL_RULE,
+        "signal_rule": config.SIGNAL_RULE,
         "worker_code_sha": _git_sha(),
         "worker_instance_id": state.worker_instance_id or "",
         "session_started_at": state.session_started_at or "",
-        "forming_bar_start": trace.get("forming_bar_start") or (macd_snap.bar_dt.astimezone(KST).isoformat() if is_provisional else ""),
-        "forming_bar_end": trace.get("forming_bar_end") or ((macd_snap.bar_dt + timedelta(minutes=3)).astimezone(KST).isoformat() if is_provisional else ""),
+        "forming_bar_start": trace.get("forming_bar_start") or "",
+        "forming_bar_end": trace.get("forming_bar_end") or "",
         "previous_macd": "",
         "previous_signal": "",
         "previous_diff": macd_snap.previous_diff if macd_snap.previous_diff is not None else "",
-        "provisional_macd": macd_snap.macd if is_provisional else "",
-        "provisional_signal": macd_snap.signal if is_provisional else "",
-        "provisional_diff": macd_snap.current_diff if is_provisional else "",
-        "confirmed_macd": "" if is_provisional else macd_snap.macd,
-        "confirmed_signal": "" if is_provisional else macd_snap.signal,
-        "confirmed_diff": "" if is_provisional else macd_snap.current_diff,
-        "provisional_direction": direction.value if is_provisional else "",
-        "confirmed_direction": "" if is_provisional else direction.value,
+        "provisional_macd": "",
+        "provisional_signal": "",
+        "provisional_diff": "",
+        "confirmed_macd": macd_snap.macd,
+        "confirmed_signal": macd_snap.signal,
+        "confirmed_diff": macd_snap.current_diff,
+        "provisional_direction": "",
+        "confirmed_direction": direction.value,
         "quote_ages": str(trace.get("quote_ages") or {}),
         "position_reconcile": trace.get("position_reconcile_result") or "",
         "executor_called": trace.get("order_executor_called"),

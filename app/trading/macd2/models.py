@@ -261,3 +261,13 @@ class RuntimeState:
     last_order_sizing_price: Optional[float] = None
     last_order_requested_qty: Optional[int] = None
     last_order_expected_amount: Optional[float] = None
+
+    # ── Confirmed (completed-bar) Primary crossover — order authority
+    # (2026-07-27 KIS-parity fix: moved off the forming/provisional bar) ────
+    last_confirmed_bar_ts: Optional[str] = None  # completed 3m bar_dt last evaluated (exactly once each)
+
+    # ── 1m/3m history freshness display (docs 2026-07-27 §1) ───────────────
+    today_1m_bar_count: Optional[int] = None
+    history_newest_at: Optional[str] = None
+    last_completed_3m_bar_at: Optional[str] = None
+    quote_history_mismatch_reason: Optional[str] = None  # None when consistent
