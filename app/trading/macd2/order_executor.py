@@ -30,6 +30,8 @@ BLOCK_ALREADY_HOLDING = "ALREADY_HOLDING_SAME_DIRECTION"
 BLOCK_ORDER_DATA_INVALID = "ORDER_DATA_INVALID"
 BLOCK_INSUFFICIENT_QTY = "INSUFFICIENT_QTY"
 BLOCK_KIS_BUYABLE_QUERY_FAILED = "KIS_BUYABLE_QUERY_FAILED"
+BLOCK_ASK_QUOTE_FAILED = "ASK_QUOTE_FAILED"
+BLOCK_ASK_QUOTE_STALE = "ASK_QUOTE_STALE"
 BLOCK_NRCVB_BUY_QTY_ZERO = "NRCVB_BUY_QTY_ZERO"
 BLOCK_NOT_TRADABLE_DIRECTION = "NOT_A_TRADABLE_DIRECTION"
 FAIL_SELL = "SELL_FAILED"
@@ -63,6 +65,11 @@ class ExecutionOutcome:
     nrcvb_buy_amt: Optional[float] = None
     nrcvb_buy_qty: Optional[int] = None
     psbl_qty_calc_unpr: Optional[float] = None
+    ask1: Optional[float] = None
+    order_price: Optional[float] = None
+    order_type: Optional[str] = None
+    usable_cash: Optional[float] = None
+    limit_buyable_qty: Optional[int] = None
     budget_qty: Optional[int] = None
     final_qty: Optional[int] = None
     sizing_rt_cd: Optional[str] = None
@@ -153,6 +160,26 @@ def compute_final_order_quantity(
     )
     final_qty = max(int(base_qty * (1 - margin_pct / 100.0)), 0)
     return budget_qty, final_qty
+
+
+def compute_ioc_limit_buy_quantity(
+    *,
+    ui_budget: float,
+    orderable_cash: float,
+    order_price: float,
+    limit_buyable_qty: int,
+) -> tuple[float, int, int, float]:
+    if order_price <= 0:
+        return 0.0, 0, 0, 0.0
+    usable_cash = min(float(ui_budget or 0.0), float(orderable_cash or 0.0))
+    max_notional = usable_cash * 0.995
+    budget_qty = max(int(max_notional // float(order_price)), 0)
+    final_qty = min(budget_qty, max(int(limit_buyable_qty or 0), 0))
+    expected_amount = round(float(order_price) * final_qty, 2)
+    if final_qty > 0 and expected_amount > max_notional:
+        final_qty = max(final_qty - 1, 0)
+        expected_amount = round(float(order_price) * final_qty, 2)
+    return usable_cash, budget_qty, final_qty, expected_amount
 
 
 def _now_iso() -> str:
@@ -301,45 +328,80 @@ def execute_signal(
             confirmed_at=timestamps["sell_confirmed_at"],
         )
 
-    price = quotes.get(target_symbol)
-    if price is None or price <= 0:
+    quote_price = quotes.get(target_symbol)
+    if quote_price is None or quote_price <= 0:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_ORDER_DATA_INVALID
         return outcome
 
+    ask_getter = getattr(broker, "get_fresh_ask1", None)
+    if ask_getter is None:
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_ASK_QUOTE_FAILED
+        outcome.order_failure_stage = BLOCK_ASK_QUOTE_FAILED
+        return outcome
+    ask_quote = dict(ask_getter(target_symbol) or {})
+    ask1 = float(ask_quote.get("ask1") or 0.0)
+    outcome.ask1 = ask1 if ask1 > 0 else None
+    outcome.order_type = "ioc_limit"
+    if ask_quote.get("stale") or ask_quote.get("is_stale"):
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_ASK_QUOTE_STALE
+        outcome.order_failure_stage = BLOCK_ASK_QUOTE_STALE
+        outcome.sizing_rt_cd = str(ask_quote.get("rt_cd") or "")
+        outcome.sizing_msg_cd = str(ask_quote.get("msg_cd") or "")
+        outcome.sizing_msg1 = str(ask_quote.get("msg1") or "stale ask1")
+        return outcome
+    if not ask_quote.get("ok", False) or ask1 <= 0:
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_ASK_QUOTE_FAILED
+        outcome.order_failure_stage = BLOCK_ASK_QUOTE_FAILED
+        outcome.sizing_rt_cd = str(ask_quote.get("rt_cd") or "")
+        outcome.sizing_msg_cd = str(ask_quote.get("msg_cd") or "")
+        outcome.sizing_msg1 = str(ask_quote.get("msg1") or "ask1 unavailable")
+        return outcome
+    order_price = float(int(ask1 + get_tick_size(ask1)))
+    outcome.order_price = order_price
     sizing_getter = getattr(broker, "get_buy_sizing_quote", None)
     if sizing_getter is not None:
-        sizing_quote = sizing_getter(target_symbol, price=price, order_type="market")
+        sizing_quote = sizing_getter(target_symbol, price=order_price, order_type="ioc_limit")
     else:
         cash = broker.get_orderable_cash(target_symbol)
-        fallback_qty = int(cash // price) if price > 0 else 0
+        fallback_qty = int(cash // order_price) if order_price > 0 else 0
         sizing_quote = BuySizingQuote(
-            symbol=target_symbol, order_type="market", ord_dvsn="01",
+            symbol=target_symbol, order_type="ioc_limit", ord_dvsn="11",
             orderable_cash=cash, nrcvb_buy_amt=cash, nrcvb_buy_qty=fallback_qty,
-            psbl_qty_calc_unpr=price, psbl_qty=fallback_qty,
-            rt_cd="", msg_cd="", msg1="", raw={},
+            psbl_qty_calc_unpr=order_price, psbl_qty=fallback_qty,
+            rt_cd="", msg_cd="", msg1="", order_price=order_price,
+            limit_buyable_qty=fallback_qty, raw={},
         )
-    budget_qty, requested_qty = compute_final_order_quantity(
-        budget=budget, price=price, nrcvb_buy_qty=sizing_quote.nrcvb_buy_qty, symbol=target_symbol,
+    limit_buyable_qty = sizing_quote.limit_buyable_qty or sizing_quote.nrcvb_buy_qty
+    usable_cash, budget_qty, requested_qty, expected_amount = compute_ioc_limit_buy_quantity(
+        ui_budget=budget,
+        orderable_cash=sizing_quote.orderable_cash,
+        order_price=order_price,
+        limit_buyable_qty=limit_buyable_qty,
     )
     outcome.quantity = requested_qty
     outcome.orderable_cash_at_sizing = sizing_quote.orderable_cash
     outcome.nrcvb_buy_amt = sizing_quote.nrcvb_buy_amt
     outcome.nrcvb_buy_qty = sizing_quote.nrcvb_buy_qty
     outcome.psbl_qty_calc_unpr = sizing_quote.psbl_qty_calc_unpr
+    outcome.usable_cash = usable_cash
+    outcome.limit_buyable_qty = limit_buyable_qty
     outcome.budget_qty = budget_qty
     outcome.final_qty = requested_qty
     outcome.sizing_rt_cd = sizing_quote.rt_cd
     outcome.sizing_msg_cd = sizing_quote.msg_cd
     outcome.sizing_msg1 = sizing_quote.msg1
-    outcome.sizing_price = price
-    outcome.expected_amount = round(price * requested_qty, 2)
+    outcome.sizing_price = order_price
+    outcome.expected_amount = expected_amount
     if sizing_quote.rt_cd not in ("", "0", None):
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_KIS_BUYABLE_QUERY_FAILED
         outcome.order_failure_stage = BLOCK_KIS_BUYABLE_QUERY_FAILED
         return outcome
-    if sizing_quote.nrcvb_buy_qty < 1:
+    if limit_buyable_qty < 1:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_NRCVB_BUY_QTY_ZERO
         outcome.order_failure_stage = BLOCK_NRCVB_BUY_QTY_ZERO
@@ -351,7 +413,13 @@ def execute_signal(
         return outcome
 
     timestamps["buy_requested_at"] = _now_iso()
-    buy_result = broker.buy_market(target_symbol, requested_qty, f"{signal_id}:BUY:{target_symbol}")
+    buy_ioc_limit = getattr(broker, "buy_ioc_limit", None)
+    if buy_ioc_limit is None:
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_ORDER_DATA_INVALID
+        outcome.order_failure_stage = BLOCK_ORDER_DATA_INVALID
+        return outcome
+    buy_result = buy_ioc_limit(target_symbol, requested_qty, order_price, f"{signal_id}:BUY:{target_symbol}")
     outcome.broker_called = True
     outcome.buy_result = buy_result
     if not buy_result.success:
@@ -394,10 +462,10 @@ def execute_signal(
     outcome.filled_avg_price = filled_avg_price
     _record_leg(
         broker_mode=broker.mode, signal_id=signal_id, symbol=target_symbol, side="BUY",
-        qty=filled_qty, price=filled_avg_price or buy_result.executed_price or price,
+        qty=filled_qty, price=filled_avg_price or buy_result.executed_price or order_price,
         position_before=0, position_after=filled_qty,
         exit_reason="", order_result=buy_result,
-        entry_price=filled_avg_price or buy_result.executed_price or price,
+        entry_price=filled_avg_price or buy_result.executed_price or order_price,
         confirmed_at=timestamps["buy_confirmed_at"], requested_qty=requested_qty,
     )
     outcome.final_state = SignalState.EXECUTED

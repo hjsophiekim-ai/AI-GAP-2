@@ -104,9 +104,20 @@ TR_ORDER_HISTORY_MOCK = "VTTC8001R"
 
 TR_DAILY_PRICE = "FHKST01010400"
 TR_INVESTOR_TREND = "FHKST01010900"
+TR_ORDERBOOK = "FHKST01010200"
 
 ORD_DVSN_LIMIT = "00"
 ORD_DVSN_MARKET = "01"
+ORD_DVSN_IOC_LIMIT = "11"
+
+
+def _buy_ord_dvsn_for_order_type(order_type: str) -> str:
+    normalized = str(order_type or "limit").lower()
+    if normalized == "market":
+        return ORD_DVSN_MARKET
+    if normalized in {"ioc_limit", "limit_ioc", "ioc"}:
+        return ORD_DVSN_IOC_LIMIT
+    return ORD_DVSN_LIMIT
 
 
 def _first_present(mapping: dict, *keys, default=None):
@@ -1033,6 +1044,53 @@ class KISClient:
         value = max(raw.get("nrcvb_buy_amt", 0.0), raw.get("ord_psbl_cash", 0.0))
         return {"value": value, "ok": True, "status": "OK", "error": None, **base}
 
+    def get_orderbook_quote(self, symbol: str) -> dict:
+        """Fresh domestic stock orderbook quote for IOC-limit BUY sizing."""
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": symbol,
+        }
+        try:
+            resp = self._request_with_token_retry("GET", url, TR_ORDERBOOK, params=params, timeout=(3, 10))
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            output = data.get("output1") or data.get("output") or {}
+            if isinstance(output, list):
+                output = output[0] if output else {}
+            if not resp.ok:
+                return {
+                    "ok": False,
+                    "symbol": symbol,
+                    "ask1": 0.0,
+                    "bid1": 0.0,
+                    "rt_cd": data.get("rt_cd", ""),
+                    "msg_cd": data.get("msg_cd", ""),
+                    "msg1": data.get("msg1", data.get("error_description", "")),
+                    "raw": data,
+                }
+            ask1 = _to_float(_first_present(output, "askp1", "stck_askp1", "askp"), 0.0) or 0.0
+            bid1 = _to_float(_first_present(output, "bidp1", "stck_bidp1", "bidp"), 0.0) or 0.0
+            rt_cd = data.get("rt_cd", "")
+            return {
+                "ok": rt_cd in ("", "0", None) and ask1 > 0,
+                "symbol": symbol,
+                "ask1": ask1,
+                "bid1": bid1,
+                "rt_cd": rt_cd,
+                "msg_cd": data.get("msg_cd", ""),
+                "msg1": data.get("msg1", ""),
+                "raw": data,
+            }
+        except Exception as e:
+            logger.warning(f"[KIS-{self.mode.upper()}] orderbook quote failed {symbol}: {e}")
+            return {
+                "ok": False, "symbol": symbol, "ask1": 0.0, "bid1": 0.0,
+                "rt_cd": "", "msg_cd": "", "msg1": str(e), "raw": {},
+            }
+
     def get_token_status(self) -> dict:
         """토큰 상태 진단(비밀값 없음) — 토큰 문자열 자체는 절대 반환하지 않는다."""
         expires_at = self._token_expires_at
@@ -1217,7 +1275,7 @@ class KISClient:
         order_type: str = "limit",
     ) -> dict:
         tr_id = TR_BUY_MOCK if self.mode == "mock" else TR_BUY_REAL
-        ord_dvsn = ORD_DVSN_MARKET if order_type == "market" else ORD_DVSN_LIMIT
+        ord_dvsn = _buy_ord_dvsn_for_order_type(order_type)
         body = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.product_code,

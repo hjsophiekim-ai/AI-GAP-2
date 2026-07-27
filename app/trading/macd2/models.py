@@ -263,6 +263,11 @@ class RuntimeState:
     last_order_nrcvb_buy_amt: Optional[float] = None
     last_order_nrcvb_buy_qty: Optional[int] = None
     last_order_psbl_qty_calc_unpr: Optional[float] = None
+    last_order_ask1: Optional[float] = None
+    last_order_order_price: Optional[float] = None
+    last_order_order_type: Optional[str] = None
+    last_order_usable_cash: Optional[float] = None
+    last_order_limit_buyable_qty: Optional[int] = None
     last_order_budget_qty: Optional[int] = None
     last_order_final_qty: Optional[int] = None
     last_order_sizing_rt_cd: Optional[str] = None

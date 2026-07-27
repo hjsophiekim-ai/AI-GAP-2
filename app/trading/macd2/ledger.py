@@ -36,6 +36,7 @@ SIGNAL_LEDGER_COLUMNS = [
     "quote_ages", "position_reconcile", "executor_called", "order_requested_at_trace",
     "broker_called", "broker_order_id", "broker_rt_cd", "broker_msg_cd", "broker_msg1",
     "orderable_cash", "nrcvb_buy_amt", "nrcvb_buy_qty", "psbl_qty_calc_unpr",
+    "ask1", "order_price", "order_type", "usable_cash", "limit_buyable_qty",
     "budget_qty", "final_qty", "sizing_price", "requested_qty", "expected_amount",
     "sizing_rt_cd", "sizing_msg_cd", "sizing_msg1",
     "filled_qty", "fill_poll_result", "balance_qty", "failure_stage",

@@ -726,11 +726,20 @@ def _execute_or_wait(
         return None
     result.order_requested_at = outcome.timestamps.get("sell_requested_at") or outcome.timestamps.get("buy_requested_at")
     result.signal_dispatch_trace["order_requested_at"] = result.order_requested_at or ""
-    if outcome.orderable_cash_at_sizing is not None:
+    if (
+        outcome.orderable_cash_at_sizing is not None
+        or outcome.ask1 is not None
+        or outcome.order_type is not None
+    ):
         state.last_order_orderable_cash = outcome.orderable_cash_at_sizing
         state.last_order_nrcvb_buy_amt = outcome.nrcvb_buy_amt
         state.last_order_nrcvb_buy_qty = outcome.nrcvb_buy_qty
         state.last_order_psbl_qty_calc_unpr = outcome.psbl_qty_calc_unpr
+        state.last_order_ask1 = outcome.ask1
+        state.last_order_order_price = outcome.order_price
+        state.last_order_order_type = outcome.order_type
+        state.last_order_usable_cash = outcome.usable_cash
+        state.last_order_limit_buyable_qty = outcome.limit_buyable_qty
         state.last_order_budget_qty = outcome.budget_qty
         state.last_order_final_qty = outcome.final_qty
         state.last_order_sizing_rt_cd = outcome.sizing_rt_cd
@@ -753,6 +762,11 @@ def _execute_or_wait(
     result.signal_dispatch_trace["nrcvb_buy_amt"] = outcome.nrcvb_buy_amt
     result.signal_dispatch_trace["nrcvb_buy_qty"] = outcome.nrcvb_buy_qty
     result.signal_dispatch_trace["psbl_qty_calc_unpr"] = outcome.psbl_qty_calc_unpr
+    result.signal_dispatch_trace["ask1"] = outcome.ask1
+    result.signal_dispatch_trace["order_price"] = outcome.order_price
+    result.signal_dispatch_trace["order_type"] = outcome.order_type
+    result.signal_dispatch_trace["usable_cash"] = outcome.usable_cash
+    result.signal_dispatch_trace["limit_buyable_qty"] = outcome.limit_buyable_qty
     result.signal_dispatch_trace["budget_qty"] = outcome.budget_qty
     result.signal_dispatch_trace["final_qty"] = outcome.final_qty
     result.signal_dispatch_trace["sizing_price"] = outcome.sizing_price
@@ -1301,6 +1315,11 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "nrcvb_buy_amt": trace.get("nrcvb_buy_amt") if trace.get("nrcvb_buy_amt") is not None else "",
         "nrcvb_buy_qty": trace.get("nrcvb_buy_qty") if trace.get("nrcvb_buy_qty") is not None else "",
         "psbl_qty_calc_unpr": trace.get("psbl_qty_calc_unpr") if trace.get("psbl_qty_calc_unpr") is not None else "",
+        "ask1": trace.get("ask1") if trace.get("ask1") is not None else "",
+        "order_price": trace.get("order_price") if trace.get("order_price") is not None else "",
+        "order_type": trace.get("order_type") or "",
+        "usable_cash": trace.get("usable_cash") if trace.get("usable_cash") is not None else "",
+        "limit_buyable_qty": trace.get("limit_buyable_qty") if trace.get("limit_buyable_qty") is not None else "",
         "budget_qty": trace.get("budget_qty") if trace.get("budget_qty") is not None else "",
         "final_qty": trace.get("final_qty") if trace.get("final_qty") is not None else "",
         "sizing_price": trace.get("sizing_price") if trace.get("sizing_price") is not None else "",

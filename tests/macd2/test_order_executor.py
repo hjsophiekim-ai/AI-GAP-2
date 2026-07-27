@@ -89,8 +89,10 @@ def test_execute_signal_records_sizing_diagnostics():
         quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
     )
     assert outcome.orderable_cash_at_sizing == 10_000_000.0
-    assert outcome.sizing_price == 15_000.0
-    assert outcome.quantity * outcome.sizing_price <= outcome.orderable_cash_at_sizing
+    assert outcome.ask1 == 15_000.0
+    assert outcome.order_type == "ioc_limit"
+    assert outcome.order_price == 15_010.0
+    assert outcome.expected_amount <= outcome.usable_cash * 0.995
 
 
 def test_orderable_cash_smaller_than_budget_shrinks_requested_qty():
@@ -109,11 +111,11 @@ def test_orderable_cash_smaller_than_budget_shrinks_requested_qty():
 
     assert outcome.final_state == SignalState.EXECUTED
     assert outcome.orderable_cash_at_sizing == real_orderable_cash
-    assert outcome.quantity * price <= real_orderable_cash
+    assert outcome.expected_amount <= real_orderable_cash * 0.995
     assert outcome.quantity * price < budget  # sized off cash, not the larger budget
 
 
-def test_ui_budget_9200000_uses_kis_nrcvb_buy_qty_cap():
+def test_ui_budget_9200000_uses_ioc_limit_buyable_qty_cap():
     price = 15_000.0
     broker = FakeBroker(cash=9_254_852.0, quotes={"0193T0": price})
     broker.next_nrcvb_buy_qty = 100
@@ -124,25 +126,87 @@ def test_ui_budget_9200000_uses_kis_nrcvb_buy_qty_cap():
     )
 
     assert outcome.final_state == SignalState.EXECUTED
-    assert outcome.budget_qty == int(9_200_000.0 // price)
+    assert outcome.budget_qty == int((9_200_000.0 * 0.995) // outcome.order_price)
     assert outcome.nrcvb_buy_qty == 100
+    assert outcome.limit_buyable_qty == 100
     assert outcome.final_qty <= 100
     assert outcome.buy_result.requested_qty == outcome.final_qty
     assert broker.orders[-1].requested_qty <= 100
 
 
-def test_market_buyable_query_matches_market_order_type():
+def test_ioc_limit_buyable_query_matches_ioc_limit_order_type():
     broker = FakeBroker(cash=9_254_852.0, quotes={"0193T0": 15_000.0})
 
     outcome = order_executor.execute_signal(
-        broker=broker, direction=Direction.UP_RED, signal_id="sig-market-ord-dvsn",
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-ioc-ord-dvsn",
         quotes={"0193T0": 15_000.0}, position=None, budget=9_200_000.0,
     )
 
     assert outcome.final_state == SignalState.EXECUTED
-    assert broker.buy_sizing_quotes[-1].order_type == "market"
-    assert broker.buy_sizing_quotes[-1].ord_dvsn == "01"
-    assert broker.orders[-1].raw.get("ORD_DVSN", "01") == "01"
+    assert broker.buy_sizing_quotes[-1].order_type == "ioc_limit"
+    assert broker.buy_sizing_quotes[-1].ord_dvsn == "11"
+    assert broker.orders[-1].raw.get("ORD_DVSN") == "11"
+
+
+def test_budget_9200000_ask1_11410_sizes_near_800_not_market_cap_480():
+    broker = FakeBroker(cash=9_254_852.0, quotes={"0193T0": 11_410.0})
+    broker.next_nrcvb_buy_qty = 2_000
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-ask-11410",
+        quotes={"0193T0": 11_410.0}, position=None, budget=9_200_000.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.ask1 == 11_410.0
+    assert outcome.order_price == 11_420.0
+    assert outcome.final_qty == int((9_200_000.0 * 0.995) // 11_420.0)
+    assert outcome.final_qty > 780
+    assert outcome.final_qty != 480
+    assert outcome.expected_amount <= outcome.usable_cash * 0.995
+
+
+def test_ioc_partial_fill_reflects_only_filled_qty_in_position_and_ledger():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 7
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-ioc-partial",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=1, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.buy_result.requested_qty > 7
+    assert outcome.filled_qty == 7
+    assert outcome.quantity == 7
+    assert broker.get_position("0193T0").quantity == 7
+    rows = ledger.load_execution_ledger()
+    assert rows[-1]["requested_qty"] == str(outcome.buy_result.requested_qty)
+    assert rows[-1]["executed_qty"] == "7"
+
+
+def test_ioc_unfilled_keeps_position_zero_and_duplicate_signal_blocks_reorder():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 0
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-ioc-unfilled",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=1, reconcile_delay_sec=0.0,
+    )
+    order_count = len(broker.orders)
+    blocked = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-ioc-unfilled",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        processed_signal_ids=frozenset({"sig-ioc-unfilled"}),
+    )
+
+    assert outcome.final_state == SignalState.FAILED
+    assert outcome.filled_qty == 0
+    assert broker.get_position("0193T0") is None
+    assert blocked.block_reason == order_executor.BLOCK_DUPLICATE_SIGNAL
+    assert len(broker.orders) == order_count
 
 
 def test_final_qty_zero_blocks_before_broker_order():

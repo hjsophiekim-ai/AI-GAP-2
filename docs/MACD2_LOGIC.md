@@ -107,7 +107,7 @@ Worker는 5초 tick으로 동작한다.
 - 14:55 이후 신규 진입 금지
 - 15:00 이후 강제청산 우선
 - Stop Loss(-1.5%)와 Profit Lock(+1.5% 활성화, 0.8%p 반납 청산)은 기존 규칙을 유지한다.
-- 주문 수량은 `min(UI 예산, KIS 실제 주문가능금액)`을 기준으로, 수수료·1틱 안전여유를 뺀 뒤 정수로 계산한다(`order_executor.compute_order_quantity`). 실제 주문가능금액은 대상 종목(`0193T0`/`0197X0`) 기준으로 매 주문 직전 재조회한다(계좌 전체 기준 조회가 아님).
+- 신규 BUY 수량은 시장가가 아니라 fresh 매도 1호가 기반 IOC 지정가(`ORD_DVSN=11`)로 계산한다. 주문 직전 KIS 호가조회에서 `ask1`을 받고, 즉시체결에 유리한 유효 호가(`ask1` 또는 `ask1+1틱`, 현재 구현은 `ask1+1틱`)를 `order_price`로 정한다. 같은 계좌·종목·`ORD_DVSN=11`·`order_price`로 KIS 매수가능조회 후 `usable_cash = min(UI 예산, KIS 실제 주문가능금액)`, `budget_qty = floor((usable_cash * 0.995) / order_price)`, `final_qty = min(budget_qty, limit_buyable_qty)`를 사용한다. `expected_amount`는 항상 `usable_cash * 0.995` 이하로 재검증하며, 과도한 수량 차감은 하지 않고 필요 시 최대 1주만 줄인다. 호가조회 실패/stale 또는 `final_qty=0`이면 시장가로 자동 전환하지 않고 주문을 차단해 원장/UI에 `ask1`, `order_price`, `order_type`, `usable_cash`, `limit_buyable_qty`, `budget_qty`, `final_qty`, `expected_amount`, `filled_qty`를 기록한다.
 - 주문가능금액 부족 시 주문하지 않고 KIS의 실제 코드·메시지를 신호 원장에 그대로 기록한다. 같은 `signal_id`로 무한 재시도하지 않는다(signal_id 단발성 원칙).
 - 체결은 주문 성공 응답만으로 확정하지 않고, 주문번호 기준 실제 체결/잔고 재조회로 확인한다(최대 60초 폴링, 부분체결 반영).
 - MOCK/REAL 게이트는 broker adapter와 기존 service 경로를 따른다. REAL 주문, 신용, 미수는 사용하지 않는다.

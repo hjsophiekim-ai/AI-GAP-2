@@ -329,8 +329,13 @@ try:
         oc5, oc6, oc7, oc8 = st.columns(4)
         oc5.metric("budget_qty", state.last_order_budget_qty if state.last_order_budget_qty is not None else "-")
         oc6.metric("psbl_qty_calc_unpr", f"{state.last_order_psbl_qty_calc_unpr:,.0f}" if state.last_order_psbl_qty_calc_unpr is not None else "-")
-        oc7.metric("sizing_price", f"{state.last_order_sizing_price:,.2f}" if state.last_order_sizing_price is not None else "-")
+        oc7.metric("order_price", f"{state.last_order_order_price:,.2f}" if state.last_order_order_price is not None else "-")
         oc8.metric("expected_amount", f"{state.last_order_expected_amount:,.0f}" if state.last_order_expected_amount is not None else "-")
+        oc9, oc10, oc11, oc12 = st.columns(4)
+        oc9.metric("ask1", f"{state.last_order_ask1:,.2f}" if state.last_order_ask1 is not None else "-")
+        oc10.metric("order_type", state.last_order_order_type or "-")
+        oc11.metric("usable_cash", f"{state.last_order_usable_cash:,.0f}" if state.last_order_usable_cash is not None else "-")
+        oc12.metric("limit_buyable_qty", state.last_order_limit_buyable_qty if state.last_order_limit_buyable_qty is not None else "-")
         st.caption(
             f"KIS sizing response: rt_cd=`{state.last_order_sizing_rt_cd or '-'}` · "
             f"msg_cd=`{state.last_order_sizing_msg_cd or '-'}` · msg1=`{state.last_order_sizing_msg1 or '-'}`"
@@ -517,6 +522,11 @@ try:
                 "nrcvb_buy_amt": row.get("nrcvb_buy_amt") or "-",
                 "nrcvb_buy_qty": row.get("nrcvb_buy_qty") or "-",
                 "psbl_qty_calc_unpr": row.get("psbl_qty_calc_unpr") or "-",
+                "ask1": row.get("ask1") or "-",
+                "order_price": row.get("order_price") or "-",
+                "order_type": row.get("order_type") or "-",
+                "usable_cash": row.get("usable_cash") or "-",
+                "limit_buyable_qty": row.get("limit_buyable_qty") or "-",
                 "budget_qty": row.get("budget_qty") or "-",
                 "final_qty": row.get("final_qty") or "-",
                 "sizing_price": row.get("sizing_price") or "-",

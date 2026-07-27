@@ -84,6 +84,17 @@ class _StubKis:
             "msg1": "OK",
         }
 
+    def get_orderbook_quote(self, symbol):
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "ask1": 11_410.0,
+            "bid1": 11_400.0,
+            "rt_cd": "0",
+            "msg_cd": "OK",
+            "msg1": "OK",
+        }
+
 
 class _StubBrokerWithKis(_StubBroker):
     def __init__(self):
@@ -120,6 +131,28 @@ def test_get_buy_sizing_quote_uses_same_symbol_and_market_ord_dvsn():
     assert quote.msg1 == "OK"
 
 
+def test_get_buy_sizing_quote_uses_ioc_limit_price_and_ord_dvsn():
+    stub = _StubBrokerWithKis()
+    adapter = MockBrokerAdapter(broker=stub)
+
+    quote = adapter.get_buy_sizing_quote("0193T0", price=11_420.0, order_type="ioc_limit")
+
+    assert stub.kis.calls == [("0193T0", 11_420, "11")]
+    assert quote.order_type == "ioc_limit"
+    assert quote.ord_dvsn == "11"
+    assert quote.order_price == 11_420.0
+    assert quote.limit_buyable_qty == 123
+
+
+def test_adapter_get_fresh_ask1_uses_kis_orderbook_quote():
+    adapter = MockBrokerAdapter(broker=_StubBrokerWithKis())
+
+    ask = adapter.get_fresh_ask1("0193T0")
+
+    assert ask["ok"] is True
+    assert ask["ask1"] == 11_410.0
+
+
 def test_get_orderable_cash_falls_back_without_stock_buyable_amount():
     """A broker double lacking get_stock_buyable_amount (e.g. older test
     stubs) must keep working exactly as before."""
@@ -149,6 +182,17 @@ def test_mock_adapter_buy_sell_use_market_order_type():
     sell_result = adapter.sell_market("0193T0", 5, "cid-2")
     assert sell_result.success is True
     assert stub.sell_calls == [("0193T0", 5, "market")]
+
+
+def test_mock_adapter_buy_ioc_limit_uses_ioc_limit_order_type():
+    stub = _StubBroker()
+    adapter = MockBrokerAdapter(broker=stub)
+
+    buy_result = adapter.buy_ioc_limit("0193T0", 5, 11_420.0, "cid-3")
+
+    assert buy_result.success is True
+    assert buy_result.side == "BUY"
+    assert stub.buy_calls == [("0193T0", 5, "ioc_limit")]
 
 
 def test_wait_for_execution_documents_synchronous_confirmation():

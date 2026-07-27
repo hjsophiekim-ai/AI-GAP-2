@@ -43,6 +43,10 @@ class BuySizingQuote:
     rt_cd: str
     msg_cd: str
     msg1: str
+    ask1: float = 0.0
+    order_price: float = 0.0
+    usable_cash: float = 0.0
+    limit_buyable_qty: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -92,24 +96,27 @@ class _BrokerAdapterBase:
         return float(getter())
 
     def get_buy_sizing_quote(self, symbol: str, *, price: float, order_type: str = "market") -> BuySizingQuote:
-        ord_dvsn = "01" if order_type == "market" else "00"
+        ord_dvsn = "01" if order_type == "market" else ("11" if order_type == "ioc_limit" else "00")
         raw_getter = getattr(getattr(self._broker, "kis", None), "get_buyable_cash_raw", None)
         if raw_getter is not None:
             raw = dict(raw_getter(symbol=symbol, price=0 if order_type == "market" else int(price), ord_dvsn=ord_dvsn) or {})
             output = dict(raw.get("output") or {})
             orderable_cash = max(float(raw.get("nrcvb_buy_amt") or 0.0), float(raw.get("ord_psbl_cash") or 0.0))
+            nrcvb_buy_qty = int(raw.get("nrcvb_buy_qty") or output.get("nrcvb_buy_qty") or 0)
             return BuySizingQuote(
                 symbol=symbol,
                 order_type=order_type,
                 ord_dvsn=ord_dvsn,
                 orderable_cash=orderable_cash,
                 nrcvb_buy_amt=float(raw.get("nrcvb_buy_amt") or 0.0),
-                nrcvb_buy_qty=int(raw.get("nrcvb_buy_qty") or output.get("nrcvb_buy_qty") or 0),
+                nrcvb_buy_qty=nrcvb_buy_qty,
                 psbl_qty_calc_unpr=float(raw.get("psbl_qty_calc_unpr") or output.get("psbl_qty_calc_unpr") or 0.0),
                 psbl_qty=int(raw.get("psbl_qty") or 0),
                 rt_cd=str(raw.get("rt_cd") or ""),
                 msg_cd=str(raw.get("msg_cd") or ""),
                 msg1=str(raw.get("msg1") or raw.get("error") or ""),
+                order_price=float(price or 0.0),
+                limit_buyable_qty=nrcvb_buy_qty if order_type == "ioc_limit" else 0,
                 raw=raw,
             )
         cash = self.get_orderable_cash(symbol)
@@ -126,8 +133,25 @@ class _BrokerAdapterBase:
             rt_cd="",
             msg_cd="",
             msg1="",
+            order_price=float(price or 0.0),
+            limit_buyable_qty=qty if order_type == "ioc_limit" else 0,
             raw={},
         )
+
+    def get_fresh_ask1(self, symbol: str) -> dict[str, Any]:
+        getter = getattr(getattr(self._broker, "kis", None), "get_orderbook_quote", None)
+        if getter is not None:
+            return dict(getter(symbol) or {})
+        price = self.get_quote(symbol)
+        return {
+            "ok": bool(price and price > 0),
+            "symbol": symbol,
+            "ask1": float(price or 0.0),
+            "rt_cd": "",
+            "msg_cd": "",
+            "msg1": "" if price else "ask1 unavailable",
+            "raw": {},
+        }
 
     def get_quote(self, symbol: str) -> Optional[float]:
         price = self._broker.get_current_price(symbol)
@@ -154,6 +178,13 @@ class _BrokerAdapterBase:
         del client_order_id  # not accepted by the underlying broker layer; kept for interface parity
         result = self._call_broker_without_direct_ledger(
             "buy", symbol, symbol, int(qty), 0, order_type="market",
+        )
+        return _to_order_result(result, symbol, "BUY", int(qty))
+
+    def buy_ioc_limit(self, symbol: str, qty: int, price: float, client_order_id: str) -> BrokerOrderResult:
+        del client_order_id
+        result = self._call_broker_without_direct_ledger(
+            "buy", symbol, symbol, int(qty), int(price), order_type="ioc_limit",
         )
         return _to_order_result(result, symbol, "BUY", int(qty))
 
