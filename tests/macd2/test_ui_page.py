@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -65,17 +66,23 @@ def test_page_renders_with_populated_ledger():
 
 
 def test_daily_stats_show_flag_times_and_order_status():
-    trading_date = "20260724"
+    # The page defaults trading_date to pd.Timestamp.now().strftime("%Y%m%d")
+    # whenever state.session_date is unset (true here — no Worker ever
+    # started), so the injected rows must use that SAME "today", not a
+    # hardcoded past date, or summarize_signals() filters them all out as a
+    # different trading_date and the flag captions never render.
+    trading_date = pd.Timestamp.now().strftime("%Y%m%d")
+    date_prefix = f"{trading_date[0:4]}-{trading_date[4:6]}-{trading_date[6:8]}"
     for row in (
         {
             "trading_date": trading_date,
             "completed_bar_at": "092400",
-            "forming_bar_start": "2026-07-24T09:24:00+09:00",
-            "signal_id": "20260724_092400_UP_RED_PROVISIONAL",
+            "forming_bar_start": f"{date_prefix}T09:24:00+09:00",
+            "signal_id": f"{trading_date}_092400_UP_RED_PROVISIONAL",
             "signal_type": "INITIAL",
             "direction": "UP_RED",
-            "detected_at": "2026-07-24T09:24:02+09:00",
-            "order_requested_at": "2026-07-24T09:24:03+09:00",
+            "detected_at": f"{date_prefix}T09:24:02+09:00",
+            "order_requested_at": f"{date_prefix}T09:24:03+09:00",
             "order_result": "EXECUTED",
             "block_reason": "",
             "strategy_name": "MACD2",
@@ -85,11 +92,11 @@ def test_daily_stats_show_flag_times_and_order_status():
         {
             "trading_date": trading_date,
             "completed_bar_at": "143300",
-            "forming_bar_start": "2026-07-24T14:33:00+09:00",
-            "signal_id": "20260724_143300_DOWN_BLUE_PROVISIONAL",
+            "forming_bar_start": f"{date_prefix}T14:33:00+09:00",
+            "signal_id": f"{trading_date}_143300_DOWN_BLUE_PROVISIONAL",
             "signal_type": "INITIAL",
             "direction": "DOWN_BLUE",
-            "detected_at": "2026-07-24T14:33:04+09:00",
+            "detected_at": f"{date_prefix}T14:33:04+09:00",
             "order_requested_at": "",
             "order_result": "BLOCKED",
             "block_reason": "QUOTE_STALE",
