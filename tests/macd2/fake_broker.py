@@ -32,6 +32,8 @@ class FakeBroker:
         # the requested qty (docs: 부분체결 / BUY 후 보유 0). None means "fill
         # the full requested qty" (the default, existing behavior).
         self.next_buy_fill_qty: Optional[int] = None
+        self.cancel_calls: list[tuple[str, str]] = []
+        self.fail_next_cancel = False
 
     def set_quote(self, symbol: str, price: float) -> None:
         self._quotes[symbol] = price
@@ -63,7 +65,7 @@ class FakeBroker:
             ask1=float(self.next_ask1 or self._quotes.get(symbol) or 0.0),
             order_price=float(price),
             usable_cash=self._cash,
-            limit_buyable_qty=qty if order_type == "ioc_limit" else 0,
+            limit_buyable_qty=qty if order_type in ("ioc_limit", "limit") else 0,
             raw={"rt_cd": "0", "msg_cd": "FAKE_OK", "msg1": "fake buyable ok", "ORD_DVSN": ord_dvsn},
         )
         self.buy_sizing_quotes.append(quote)
@@ -162,6 +164,49 @@ class FakeBroker:
         result = BrokerOrderResult(True, order_id, symbol, "BUY", qty, fill_qty, float(price), "OK", raw={"ORD_DVSN": "11"})
         self.orders.append(result)
         return result
+
+    def buy_limit(self, symbol: str, qty: int, price: float, client_order_id: str) -> BrokerOrderResult:
+        del client_order_id
+        if self.fail_next_buy or price <= 0 or qty < 1:
+            self.fail_next_buy = False
+            order_id = self.next_buy_order_id if self.next_buy_order_id is not None else self._next_order_id()
+            self.next_buy_order_id = None
+            result = BrokerOrderResult(
+                False, order_id, symbol, "BUY", qty, 0, 0.0, "FAKE_BUY_FAILED",
+                raw={"rt_cd": "1", "msg_cd": "FAKE_REJECT", "msg1": "fake rejected", "ORD_DVSN": "00"},
+            )
+            self.orders.append(result)
+            return result
+        fill_qty = qty if self.next_buy_fill_qty is None else max(0, min(qty, self.next_buy_fill_qty))
+        self.next_buy_fill_qty = None
+        self._cash -= float(price) * fill_qty
+        if fill_qty > 0:
+            existing = self._positions.get(symbol)
+            if existing:
+                total_qty = existing.quantity + fill_qty
+                new_avg = (existing.avg_price * existing.quantity + float(price) * fill_qty) / total_qty
+                self._positions[symbol] = Position(
+                    symbol=symbol, name=symbol, quantity=total_qty, avg_price=new_avg, current_price=float(price),
+                )
+            else:
+                self._positions[symbol] = Position(
+                    symbol=symbol, name=symbol, quantity=fill_qty, avg_price=float(price), current_price=float(price),
+                )
+        order_id = self.next_buy_order_id if self.next_buy_order_id is not None else self._next_order_id()
+        self.next_buy_order_id = None
+        result = BrokerOrderResult(True, order_id, symbol, "BUY", qty, fill_qty, float(price), "OK", raw={"ORD_DVSN": "00"})
+        self.orders.append(result)
+        return result
+
+    def cancel_order(self, order_id: str, symbol: str = "") -> BrokerOrderResult:
+        self.cancel_calls.append((str(order_id), str(symbol)))
+        if self.fail_next_cancel:
+            self.fail_next_cancel = False
+            return BrokerOrderResult(
+                False, str(order_id), symbol, "CANCEL", 0, 0, 0.0, "FAKE_CANCEL_FAILED",
+                raw={"msg1": "fake cancel failed"},
+            )
+        return BrokerOrderResult(True, str(order_id), symbol, "CANCEL", 0, 0, 0.0, "OK", raw={})
 
     def sell_market(self, symbol: str, qty: int, client_order_id: str) -> BrokerOrderResult:
         del client_order_id

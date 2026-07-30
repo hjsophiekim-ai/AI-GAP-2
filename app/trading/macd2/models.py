@@ -181,6 +181,22 @@ class OrderResult:
     broker_response: Optional[dict[str, Any]] = None
 
 
+@dataclass(frozen=True)
+class MajorFlagDecision:
+    """Result of the optional Hybrid MAJOR_FLAG order gate (filter only)."""
+
+    approved: bool
+    score: float
+    required_score: float
+    decision: str
+    reasons: tuple[str, ...]
+    component_scores: dict[str, float]
+    metrics: dict[str, Any]
+    is_reversal: bool
+    fast_reversal: bool
+    block_reason: Optional[str] = None
+
+
 @dataclass
 class RuntimeState:
     """MACD2's own runtime snapshot — never shares fields/paths with MACD v1."""
@@ -298,3 +314,23 @@ class RuntimeState:
     last_quote_stale_retry_count: Optional[int] = None
     last_quote_stale_result: Optional[str] = None  # "RECOVERED" / "MISSED_SIGNAL_QUOTE_STALE"
     quote_history_mismatch_reason: Optional[str] = None  # None when consistent
+
+    # ── Optional Hybrid MAJOR_FLAG filter (order authority gate only) ──────
+    major_filter_enabled: bool = False
+    major_filter_enabled_at: Optional[str] = None
+    major_filter_enabled_by: Optional[str] = None
+    major_filter_version: str = ""
+    daily_major_entry_count: int = 0
+    last_major_entry_at: Optional[str] = None
+    last_major_exit_at: Optional[str] = None
+    last_major_exit_direction: Optional[Direction] = None
+    last_major_score: Optional[float] = None
+    last_major_required_score: Optional[float] = None
+    last_major_approved: Optional[bool] = None
+    last_major_decision: Optional[str] = None
+    last_major_block_reason: Optional[str] = None
+    last_major_is_reversal: Optional[bool] = None
+    last_major_fast_reversal: Optional[bool] = None
+    last_major_component_scores: Optional[dict[str, Any]] = None
+    last_major_metrics: Optional[dict[str, Any]] = None
+    last_major_signal_id: Optional[str] = None

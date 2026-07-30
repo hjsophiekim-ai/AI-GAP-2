@@ -29,10 +29,10 @@ BLOCK_DUPLICATE_SIGNAL = "DUPLICATE_SIGNAL_BLOCKED"
 BLOCK_ALREADY_HOLDING = "ALREADY_HOLDING_SAME_DIRECTION"
 BLOCK_ORDER_DATA_INVALID = "ORDER_DATA_INVALID"
 BLOCK_INSUFFICIENT_QTY = "INSUFFICIENT_QTY"
-BLOCK_KIS_BUYABLE_QUERY_FAILED = "KIS_BUYABLE_QUERY_FAILED"
+BLOCK_KIS_BUYABLE_QUERY_FAILED = "BUYABLE_QUERY_FAILED"
 BLOCK_ASK_QUOTE_FAILED = "ASK_QUOTE_FAILED"
 BLOCK_ASK_QUOTE_STALE = "ASK_QUOTE_STALE"
-BLOCK_NRCVB_BUY_QTY_ZERO = "NRCVB_BUY_QTY_ZERO"
+BLOCK_NRCVB_BUY_QTY_ZERO = "INSUFFICIENT_QTY"
 BLOCK_NOT_TRADABLE_DIRECTION = "NOT_A_TRADABLE_DIRECTION"
 FAIL_SELL = "SELL_FAILED"
 FAIL_SELL_NOT_CONFIRMED = "SELL_NOT_CONFIRMED_QTY_NONZERO"
@@ -40,8 +40,12 @@ FAIL_BUY = "BUY_FAILED"
 FAIL_BUY_NOT_CONFIRMED = "BUY_NOT_CONFIRMED_QTY_ZERO"
 ORDER_REJECTED = "ORDER_REJECTED"
 NO_ORDER_ID = "NO_ORDER_ID"
-FILL_TIMEOUT = "FILL_TIMEOUT"
+FILL_TIMEOUT = "FILL_TIMEOUT_CANCELLED"
+FILL_TIMEOUT_CANCELLED = FILL_TIMEOUT
+CANCEL_FAILED = "CANCEL_FAILED"
 BALANCE_MISMATCH = "BALANCE_MISMATCH"
+BUY_FILL_POLL_MAX_SEC = 10.0
+BUY_FILL_POLL_INTERVAL_SEC = 1.0
 
 
 @dataclass
@@ -82,6 +86,11 @@ class ExecutionOutcome:
     filled_qty: Optional[int] = None
     fill_poll_result: Optional[str] = None
     balance_qty: Optional[int] = None
+    ord_dvsn: Optional[str] = None
+    ask1_age: Optional[float] = None
+    cancel_called: bool = False
+    cancel_result: Optional[str] = None
+    unfilled_qty: Optional[int] = None
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -162,7 +171,7 @@ def compute_final_order_quantity(
     return budget_qty, final_qty
 
 
-def compute_ioc_limit_buy_quantity(
+def compute_limit_buy_quantity(
     *,
     ui_budget: float,
     orderable_cash: float,
@@ -180,6 +189,10 @@ def compute_ioc_limit_buy_quantity(
         final_qty = max(final_qty - 1, 0)
         expected_amount = round(float(order_price) * final_qty, 2)
     return usable_cash, budget_qty, final_qty, expected_amount
+
+
+# Backward-compatible alias (legacy name from IOC era).
+compute_ioc_limit_buy_quantity = compute_limit_buy_quantity
 
 
 def _now_iso() -> str:
@@ -233,6 +246,23 @@ def _reconcile_to_zero(broker, symbol: str, *, retries: int, delay_sec: float) -
     return qty_after
 
 
+def _cancel_unfilled(broker, outcome: ExecutionOutcome, order_id: str, symbol: str) -> None:
+    cancel_fn = getattr(broker, "cancel_order", None)
+    outcome.cancel_called = True
+    if cancel_fn is None:
+        outcome.cancel_result = CANCEL_FAILED
+        return
+    try:
+        cancel_res = cancel_fn(order_id, symbol)
+    except TypeError:
+        cancel_res = cancel_fn(order_id)
+    except Exception as exc:
+        outcome.cancel_result = f"{CANCEL_FAILED}:{exc}"
+        return
+    ok = bool(getattr(cancel_res, "success", False))
+    outcome.cancel_result = "OK" if ok else CANCEL_FAILED
+
+
 def _reconcile_buy_fill(broker, symbol: str, *, retries: int, delay_sec: float) -> tuple[int, float, str, int]:
     """Real (qty, avg_price) actually held for ``symbol`` after a BUY order
     reported ``success=True`` — never trust order acceptance as fill success
@@ -250,7 +280,7 @@ def _reconcile_buy_fill(broker, symbol: str, *, retries: int, delay_sec: float) 
         qty = int(pos.quantity) if pos else 0
         last_qty = qty
         if qty > 0:
-            return qty, float(pos.avg_price), "FILLED", qty
+            return qty, float(pos.avg_price), "FILLED" if attempt == 0 else f"FILLED_AFTER_{attempt + 1}", qty
         if attempt < retries - 1:
             time.sleep(delay_sec)
     return 0, 0.0, "TIMEOUT", last_qty
@@ -343,7 +373,9 @@ def execute_signal(
     ask_quote = dict(ask_getter(target_symbol) or {})
     ask1 = float(ask_quote.get("ask1") or 0.0)
     outcome.ask1 = ask1 if ask1 > 0 else None
-    outcome.order_type = "ioc_limit"
+    outcome.ask1_age = float(ask_quote["age_sec"]) if ask_quote.get("age_sec") is not None else None
+    outcome.order_type = "limit"
+    outcome.ord_dvsn = "00"
     if ask_quote.get("stale") or ask_quote.get("is_stale"):
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_ASK_QUOTE_STALE
@@ -364,19 +396,19 @@ def execute_signal(
     outcome.order_price = order_price
     sizing_getter = getattr(broker, "get_buy_sizing_quote", None)
     if sizing_getter is not None:
-        sizing_quote = sizing_getter(target_symbol, price=order_price, order_type="ioc_limit")
+        sizing_quote = sizing_getter(target_symbol, price=order_price, order_type="limit")
     else:
         cash = broker.get_orderable_cash(target_symbol)
         fallback_qty = int(cash // order_price) if order_price > 0 else 0
         sizing_quote = BuySizingQuote(
-            symbol=target_symbol, order_type="ioc_limit", ord_dvsn="11",
+            symbol=target_symbol, order_type="limit", ord_dvsn="00",
             orderable_cash=cash, nrcvb_buy_amt=cash, nrcvb_buy_qty=fallback_qty,
             psbl_qty_calc_unpr=order_price, psbl_qty=fallback_qty,
             rt_cd="", msg_cd="", msg1="", order_price=order_price,
             limit_buyable_qty=fallback_qty, raw={},
         )
     limit_buyable_qty = sizing_quote.limit_buyable_qty or sizing_quote.nrcvb_buy_qty
-    usable_cash, budget_qty, requested_qty, expected_amount = compute_ioc_limit_buy_quantity(
+    usable_cash, budget_qty, requested_qty, expected_amount = compute_limit_buy_quantity(
         ui_budget=budget,
         orderable_cash=sizing_quote.orderable_cash,
         order_price=order_price,
@@ -396,6 +428,7 @@ def execute_signal(
     outcome.sizing_msg1 = sizing_quote.msg1
     outcome.sizing_price = order_price
     outcome.expected_amount = expected_amount
+    outcome.ord_dvsn = str(sizing_quote.ord_dvsn or "00")
     if sizing_quote.rt_cd not in ("", "0", None):
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_KIS_BUYABLE_QUERY_FAILED
@@ -403,8 +436,8 @@ def execute_signal(
         return outcome
     if limit_buyable_qty < 1:
         outcome.final_state = SignalState.BLOCKED
-        outcome.block_reason = BLOCK_NRCVB_BUY_QTY_ZERO
-        outcome.order_failure_stage = BLOCK_NRCVB_BUY_QTY_ZERO
+        outcome.block_reason = BLOCK_INSUFFICIENT_QTY
+        outcome.order_failure_stage = BLOCK_INSUFFICIENT_QTY
         return outcome
     if requested_qty < 1:
         outcome.final_state = SignalState.BLOCKED
@@ -413,13 +446,13 @@ def execute_signal(
         return outcome
 
     timestamps["buy_requested_at"] = _now_iso()
-    buy_ioc_limit = getattr(broker, "buy_ioc_limit", None)
-    if buy_ioc_limit is None:
+    buy_limit = getattr(broker, "buy_limit", None)
+    if buy_limit is None:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_ORDER_DATA_INVALID
         outcome.order_failure_stage = BLOCK_ORDER_DATA_INVALID
         return outcome
-    buy_result = buy_ioc_limit(target_symbol, requested_qty, order_price, f"{signal_id}:BUY:{target_symbol}")
+    buy_result = buy_limit(target_symbol, requested_qty, order_price, f"{signal_id}:BUY:{target_symbol}")
     outcome.broker_called = True
     outcome.buy_result = buy_result
     if not buy_result.success:
@@ -427,6 +460,7 @@ def execute_signal(
         outcome.block_reason = FAIL_BUY
         outcome.order_failure_stage = ORDER_REJECTED
         outcome.filled_qty = 0
+        outcome.unfilled_qty = requested_qty
         outcome.fill_poll_result = "NOT_POLLED_ORDER_REJECTED"
         outcome.balance_qty = None
         return outcome
@@ -435,28 +469,40 @@ def execute_signal(
         outcome.block_reason = FAIL_BUY
         outcome.order_failure_stage = NO_ORDER_ID
         outcome.filled_qty = 0
+        outcome.unfilled_qty = requested_qty
         outcome.fill_poll_result = "NOT_POLLED_NO_ORDER_ID"
         outcome.balance_qty = None
         return outcome
     timestamps["buy_confirmed_at"] = _now_iso()
 
-    # Order acceptance is never treated as fill success (docs) — re-query the
-    # real holding before recording anything. A partial fill reports a real
-    # qty below requested_qty; nothing actually landed reports 0.
+    # Order acceptance != fill. Poll up to 10s @ 1s; tests may pass shorter reconcile_*.
+    fill_retries = max(1, int(BUY_FILL_POLL_MAX_SEC / BUY_FILL_POLL_INTERVAL_SEC))
+    fill_delay = BUY_FILL_POLL_INTERVAL_SEC
+    if reconcile_retries < fill_retries or reconcile_delay_sec < BUY_FILL_POLL_INTERVAL_SEC:
+        fill_retries = max(1, int(reconcile_retries))
+        fill_delay = float(reconcile_delay_sec)
     filled_qty, filled_avg_price, fill_poll_result, balance_qty = _reconcile_buy_fill(
-        broker, target_symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec,
+        broker, target_symbol, retries=fill_retries, delay_sec=fill_delay,
     )
     outcome.filled_qty = filled_qty
     outcome.fill_poll_result = fill_poll_result
     outcome.balance_qty = balance_qty
+    outcome.unfilled_qty = max(requested_qty - filled_qty, 0)
     timestamps["buy_reconciled_at"] = _now_iso()
     if filled_qty <= 0:
+        _cancel_unfilled(broker, outcome, buy_result.order_id, target_symbol)
         outcome.final_state = SignalState.FAILED
         outcome.block_reason = FAIL_BUY_NOT_CONFIRMED
-        outcome.order_failure_stage = FILL_TIMEOUT
+        outcome.order_failure_stage = (
+            CANCEL_FAILED if outcome.cancel_result == CANCEL_FAILED else FILL_TIMEOUT_CANCELLED
+        )
         return outcome
-    if filled_qty != requested_qty:
-        outcome.order_failure_stage = BALANCE_MISMATCH
+    if filled_qty < requested_qty:
+        _cancel_unfilled(broker, outcome, buy_result.order_id, target_symbol)
+        if outcome.cancel_result == CANCEL_FAILED:
+            outcome.order_failure_stage = CANCEL_FAILED
+        else:
+            outcome.order_failure_stage = BALANCE_MISMATCH
 
     outcome.quantity = filled_qty
     outcome.filled_avg_price = filled_avg_price

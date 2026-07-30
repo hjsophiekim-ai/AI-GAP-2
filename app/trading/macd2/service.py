@@ -223,6 +223,29 @@ class Macd2Service:
         state_store.save_state(state)
         return {"ok": all_ok, "results": results}
 
+    def set_major_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle optional MAJOR_FLAG order gate.
+
+        Only updates runtime state — never places orders or liquidates.
+        Takes effect from the next confirmed flag; open positions unchanged.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.major_filter_enabled)
+        state.major_filter_enabled = enabled_bool
+        state.major_filter_version = config.MAJOR_FILTER_VERSION
+        state.major_filter_enabled_at = datetime.now(KST).isoformat()
+        state.major_filter_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "major_filter_enabled": enabled_bool,
+            "previous": prev,
+            "major_filter_enabled_at": state.major_filter_enabled_at,
+            "major_filter_enabled_by": state.major_filter_enabled_by,
+            "major_filter_version": state.major_filter_version,
+        }
+
     def get_snapshot(self) -> dict[str, Any]:
         state = state_store.load_state()
         quotes: dict[str, Any] = {}

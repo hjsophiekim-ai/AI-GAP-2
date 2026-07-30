@@ -30,6 +30,7 @@ source of truth per the 2026-07-23 design decision):
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import traceback
@@ -41,9 +42,16 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from app.trading.macd2 import config, ledger, order_executor, risk_exit
+from app.trading.macd2 import config, ledger, major_flag_filter, order_executor, risk_exit
 from app.trading.macd2.market_data import MarketDataService
-from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState, RuntimeStatus, SignalState
+from app.trading.macd2.models import (
+    Direction,
+    MajorFlagDecision,
+    PositionSnapshot,
+    RuntimeState,
+    RuntimeStatus,
+    SignalState,
+)
 from app.trading.macd2.signal_engine import (
     calculate_macd,
     evaluate_macd_crossover,
@@ -72,6 +80,10 @@ MATCH_POSITION = "MATCH_POSITION"
 RECOVERED_FROM_BROKER = "RECOVERED_FROM_BROKER"
 RECOVERED_TO_FLAT = "RECOVERED_TO_FLAT"
 SIGNAL_NOT_DISPATCHED = "SIGNAL_NOT_DISPATCHED"
+# Marker key inside ExecutionOutcome.timestamps for a signal the optional
+# Hybrid MAJOR_FLAG gate rejected — no broker/order_executor call ever
+# happened, so run_once must not treat it as an entry/switch attempt.
+MAJOR_FILTERED_TS_KEY = "major_filtered_at"
 TEMPORARY_BLOCK_REASONS = {
     QUOTE_STALE,
     order_executor.BLOCK_ORDER_DATA_INVALID,
@@ -151,6 +163,10 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.pending_signal = None
     state.peak_net_return = 0.0
     state.profit_lock_active = False
+    # MAJOR_FLAG daily entry budget is session-scoped; the toggle itself
+    # (major_filter_enabled) is user state and survives the rollover.
+    state.daily_major_entry_count = 0
+    state.last_major_entry_at = None
 
 
 def _relation_from_diff(diff: Optional[float]) -> str:
@@ -836,6 +852,185 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
     return direction
 
 
+def _direction_for_symbol(symbol: Optional[str]) -> Optional[Direction]:
+    """UP_RED position == holding LONG_SYMBOL, DOWN_BLUE == INVERSE_SYMBOL."""
+    if not symbol:
+        return None
+    if symbol == config.LONG_SYMBOL:
+        return Direction.UP_RED
+    if symbol == config.INVERSE_SYMBOL:
+        return Direction.DOWN_BLUE
+    return None
+
+
+def _position_direction(position: Optional[PositionSnapshot]) -> Optional[Direction]:
+    if position is None or int(position.quantity or 0) <= 0:
+        return None
+    return _direction_for_symbol(position.symbol)
+
+
+def _parse_iso_dt(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+
+
+def _major_last_entry_at(state: RuntimeState, position: Optional[PositionSnapshot]) -> Optional[datetime]:
+    if position is not None and int(position.quantity or 0) > 0 and position.entry_at is not None:
+        return position.entry_at
+    return _parse_iso_dt(state.last_major_entry_at)
+
+
+def _major_same_direction_exit_at(state: RuntimeState, flag_direction: Direction) -> Optional[datetime]:
+    if state.last_major_exit_direction != flag_direction:
+        return None
+    return _parse_iso_dt(state.last_major_exit_at)
+
+
+def _persist_major_decision(state: RuntimeState, decision: MajorFlagDecision, signal_id: str) -> None:
+    state.major_filter_version = config.MAJOR_FILTER_VERSION
+    state.last_major_score = float(decision.score)
+    state.last_major_required_score = float(decision.required_score)
+    state.last_major_approved = bool(decision.approved)
+    state.last_major_decision = decision.decision
+    state.last_major_block_reason = decision.block_reason
+    state.last_major_is_reversal = bool(decision.is_reversal)
+    state.last_major_fast_reversal = bool(decision.fast_reversal)
+    state.last_major_component_scores = dict(decision.component_scores or {})
+    state.last_major_metrics = dict(decision.metrics or {})
+    state.last_major_signal_id = signal_id
+
+
+def _judge_major_flag(
+    *,
+    state: RuntimeState,
+    bars_3m,
+    direction: Direction,
+    position: Optional[PositionSnapshot],
+    now: datetime,
+    signal_id: str,
+) -> MajorFlagDecision:
+    """Score + gate an ALREADY-confirmed crossover (order authority only).
+
+    Never called when ``state.major_filter_enabled`` is False, never creates or
+    suppresses a confirmed flag itself (``_advance_confirmed_primary`` and the
+    latest_primary_* stats stay exactly as they were), and never touches
+    STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION.
+    """
+    position_direction = _position_direction(position)
+    last_entry_at = _major_last_entry_at(state, position)
+    daily_count = int(state.daily_major_entry_count or 0)
+    decision = major_flag_filter.evaluate_major_flag(
+        bars_3m, direction, position_direction, last_entry_at, daily_count, now,
+    )
+    decision = major_flag_filter.apply_major_trade_gates(
+        decision,
+        flag_direction=direction,
+        position_direction=position_direction,
+        last_entry_at=last_entry_at,
+        last_same_direction_exit_at=_major_same_direction_exit_at(state, direction),
+        daily_major_entry_count=daily_count,
+        now=now,
+    )
+    _persist_major_decision(state, decision, signal_id)
+    return decision
+
+
+_MAJOR_METRIC_LEDGER_KEYS = (
+    "hist_impulse_atr", "breakout", "price_impulse_atr", "body_atr", "volume_ratio",
+    "ema10_ok", "ema20_or_vwap_ok", "recent_range_ratio", "ema_spread_ratio",
+)
+
+
+def _major_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+    """major_* ledger columns: always the toggle/daily-budget context, plus the
+    per-signal decision detail whenever the filter actually judged this signal."""
+    row: dict[str, Any] = {
+        "major_filter_enabled": bool(state.major_filter_enabled),
+        "major_filter_version": state.major_filter_version or config.MAJOR_FILTER_VERSION,
+        "major_score": "",
+        "major_required_score": "",
+        "major_approved": "",
+        "major_decision": "",
+        "major_block_reason": "",
+        "major_is_reversal": "",
+        "major_fast_reversal": "",
+        "major_component_scores": "",
+        "daily_major_entry_count": int(state.daily_major_entry_count or 0),
+        "last_major_entry_at": state.last_major_entry_at or "",
+    }
+    for key in _MAJOR_METRIC_LEDGER_KEYS:
+        row[key] = ""
+    if decision is None:
+        return row
+    row.update({
+        "major_score": float(decision.score),
+        "major_required_score": float(decision.required_score),
+        "major_approved": bool(decision.approved),
+        "major_decision": decision.decision or "",
+        "major_block_reason": decision.block_reason or "",
+        "major_is_reversal": bool(decision.is_reversal),
+        "major_fast_reversal": bool(decision.fast_reversal),
+        "major_component_scores": json.dumps(dict(decision.component_scores or {}), sort_keys=True),
+    })
+    metrics = dict(decision.metrics or {})
+    for key in _MAJOR_METRIC_LEDGER_KEYS:
+        value = metrics.get(key)
+        row[key] = "" if value is None else value
+    return row
+
+
+def _record_major_filtered_signal(
+    *,
+    state: RuntimeState,
+    macd_snap,
+    direction: Direction,
+    signal_type: str,
+    signal_id: str,
+    decision: MajorFlagDecision,
+    detected_at: datetime,
+    result: TickResult,
+):
+    """MAJOR_FLAG rejection: ledger only (order_result=FILTERED_OUT), never an
+    order_executor/broker call. The signal_id is consumed so the same flag is
+    not re-judged/re-dispatched on a later tick."""
+    block_reason = decision.block_reason or decision.decision or config.FILTERED_OUT
+    state.order_block_reason = block_reason
+    if signal_id not in state.processed_signal_ids:
+        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+    result.signal_dispatch_trace = {
+        "signal_id": signal_id,
+        "direction": direction.value,
+        "signal_type": signal_type,
+        "completed_bar_at": macd_snap.bar_dt.isoformat(),
+        "order_executor_called": False,
+        "broker_called": False,
+        "final_block_reason": block_reason,
+        "order_result_override": config.FILTERED_OUT,
+        "major_fields": _major_ledger_fields(state, decision),
+    }
+    outcome = order_executor.ExecutionOutcome(
+        signal_id=signal_id,
+        direction=direction,
+        target_symbol=order_executor.target_symbol_for_direction(direction),
+        final_state=SignalState.BLOCKED,
+        block_reason=block_reason,
+        timestamps={MAJOR_FILTERED_TS_KEY: detected_at.isoformat()},
+    )
+    _record_signal_ledger(
+        state, macd_snap, direction, signal_type, signal_id, detected_at, outcome,
+        result.signal_dispatch_trace,
+    )
+    return outcome
+
+
+def _is_major_filtered(outcome) -> bool:
+    return bool(outcome is not None and (outcome.timestamps or {}).get(MAJOR_FILTERED_TS_KEY))
+
+
 def _dispatch_confirmed_signal(
     *,
     broker,
@@ -848,6 +1043,7 @@ def _dispatch_confirmed_signal(
     position: Optional[PositionSnapshot],
     result: TickResult,
     signal_id_override: Optional[str] = None,
+    bars_3m=None,
 ):
     signal_id = signal_id_override or make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
@@ -859,11 +1055,28 @@ def _dispatch_confirmed_signal(
     state.current_episode_direction = direction
     signal_detected_at = datetime.now(KST)
     result.signal_detected_at = signal_detected_at.isoformat()
+
+    # Optional Hybrid MAJOR_FLAG gate — the ONLY filter judgment point, and
+    # only for a brand-new confirmed signal (pending retries already cleared
+    # this gate when they were first approved).
+    decision: Optional[MajorFlagDecision] = None
+    if state.major_filter_enabled:
+        decision = _judge_major_flag(
+            state=state, bars_3m=bars_3m, direction=direction, position=position,
+            now=now, signal_id=signal_id,
+        )
+        if not decision.approved:
+            return _record_major_filtered_signal(
+                state=state, macd_snap=macd_snap, direction=direction, signal_type=signal_type,
+                signal_id=signal_id, decision=decision, detected_at=signal_detected_at, result=result,
+            )
+
     outcome = _execute_or_wait(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
         signal_detected_at=signal_detected_at,
     )
+    result.signal_dispatch_trace["major_fields"] = _major_ledger_fields(state, decision)
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
     return outcome
 
@@ -879,12 +1092,13 @@ def _dispatch_candidate_signal(
     signal_type: str,
     position: Optional[PositionSnapshot],
     result: TickResult,
+    bars_3m=None,
 ):
     signal_id = make_signal_id(candidate_snap.bar_dt, direction)
     return _dispatch_confirmed_signal(
         broker=broker, market_data=market_data, state=state, now=now,
         macd_snap=candidate_snap, direction=direction, signal_type=signal_type,
-        position=position, result=result, signal_id_override=signal_id,
+        position=position, result=result, signal_id_override=signal_id, bars_3m=bars_3m,
     )
 
 
@@ -1111,12 +1325,22 @@ def run_once(
                 outcome = _dispatch_candidate_signal(
                     broker=broker, market_data=market_data, state=state, now=now,
                     candidate_snap=candidate_snap, direction=candidate_switch_direction,
-                    signal_type="REVERSAL_PROVISIONAL", position=pos, result=result,
+                    signal_type="REVERSAL_PROVISIONAL", position=pos, result=result, bars_3m=bars_3m,
                 )
-                if outcome is not None:
+                if _is_major_filtered(outcome):
+                    result.actions.append(f"{config.FILTERED_OUT}:{candidate_switch_direction.value}")
+                elif outcome is not None:
                     _apply_switch_outcome(state, outcome, candidate_switch_direction)
                     result.actions.append(f"OPPOSITE_SIGNAL:{candidate_switch_direction.value}")
                     return result
+            elif state.major_filter_enabled:
+                # Filter ON: the same-direction hold is decided (and ledgered as
+                # SAME_DIRECTION_POSITION_HELD) by the MAJOR_FLAG gate itself.
+                _dispatch_candidate_signal(
+                    broker=broker, market_data=market_data, state=state, now=now,
+                    candidate_snap=candidate_snap, direction=candidate_switch_direction,
+                    signal_type="HELD_SAME_PROVISIONAL", position=pos, result=result, bars_3m=bars_3m,
+                )
             else:
                 _record_confirmed_blocked_signal(
                     state=state, macd_snap=candidate_snap, direction=candidate_switch_direction,
@@ -1131,11 +1355,20 @@ def run_once(
                 outcome = _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=confirmed_direction, signal_type="REVERSAL", position=pos, result=result,
+                    bars_3m=bars_3m,
                 )
-                if outcome is not None:
+                if _is_major_filtered(outcome):
+                    result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
+                elif outcome is not None:
                     _apply_switch_outcome(state, outcome, confirmed_direction)
                     result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
                     return result
+            elif state.major_filter_enabled:
+                _dispatch_confirmed_signal(
+                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                    direction=confirmed_direction, signal_type="HELD_SAME", position=pos, result=result,
+                    bars_3m=bars_3m,
+                )
             else:
                 _record_confirmed_blocked_signal(
                     state=state, macd_snap=macd_snap, direction=confirmed_direction,
@@ -1178,9 +1411,11 @@ def run_once(
         outcome = _dispatch_candidate_signal(
             broker=broker, market_data=market_data, state=state, now=now,
             candidate_snap=candidate_snap, direction=candidate_entry_direction,
-            signal_type="INITIAL_PROVISIONAL", position=None, result=result,
+            signal_type="INITIAL_PROVISIONAL", position=None, result=result, bars_3m=bars_3m,
         )
-        if outcome is not None:
+        if _is_major_filtered(outcome):
+            result.actions.append(f"{config.FILTERED_OUT}:{candidate_entry_direction.value}")
+        elif outcome is not None:
             _apply_switch_outcome(state, outcome, candidate_entry_direction)
             result.actions.append(f"ENTRY:{candidate_entry_direction.value}")
             return result
@@ -1189,8 +1424,11 @@ def run_once(
         outcome = _dispatch_confirmed_signal(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
             direction=confirmed_direction, signal_type="INITIAL", position=None, result=result,
+            bars_3m=bars_3m,
         )
-        if outcome is not None:
+        if _is_major_filtered(outcome):
+            result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
+        elif outcome is not None:
             _apply_switch_outcome(state, outcome, confirmed_direction)
             result.actions.append(f"ENTRY:{confirmed_direction.value}")
             return result
@@ -1215,12 +1453,23 @@ def _record_broker_order_result(state: RuntimeState, outcome) -> None:
     state.last_broker_order_at = datetime.now(KST).isoformat()
 
 
+def _record_major_exit(state: RuntimeState, symbol: Optional[str]) -> None:
+    """Exit bookkeeping for the MAJOR_FLAG same-direction reentry cooldown."""
+    direction = _direction_for_symbol(symbol)
+    if direction is None:
+        return
+    state.last_major_exit_at = datetime.now(KST).isoformat()
+    state.last_major_exit_direction = direction
+
+
 def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
     _record_broker_order_result(state, outcome)
     if outcome.final_state == SignalState.EXECUTED:
+        exited_symbol = outcome.target_symbol or (outcome.sell_result.symbol if outcome.sell_result else None)
         state.position = None
         state.peak_net_return = 0.0
         state.profit_lock_active = False
+        _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 
 
@@ -1246,10 +1495,20 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
         state.last_signal_bar_ts = outcome.timestamps.get("evaluated_at")
         state.peak_net_return = 0.0
         state.profit_lock_active = False
+        # MAJOR_FLAG daily budget counts only a really-filled BUY leg, never a
+        # mere filter approval or a rejected/unfilled order.
+        filled_qty = int(outcome.quantity or 0) or int(
+            (outcome.buy_result.executed_qty if outcome.buy_result else 0) or 0
+        )
+        if state.major_filter_enabled and filled_qty > 0:
+            state.daily_major_entry_count = int(state.daily_major_entry_count or 0) + 1
+            state.last_major_entry_at = datetime.now(KST).isoformat()
     elif outcome.sell_result is not None and outcome.sell_result.success and outcome.sell_qty_after == 0:
+        exited_symbol = outcome.sell_result.symbol
         state.position = None
         state.peak_net_return = 0.0
         state.profit_lock_active = False
+        _record_major_exit(state, exited_symbol)
     if _has_order_request(outcome) and outcome.signal_id and outcome.signal_id not in state.processed_signal_ids:
         state.processed_signal_ids = list(state.processed_signal_ids) + [outcome.signal_id]
     state.order_block_reason = outcome.block_reason
@@ -1261,10 +1520,14 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
     trading_date = macd_snap.bar_dt.astimezone(KST).strftime("%Y%m%d")
     trace = dict(dispatch_trace or {})
     raw = dict(trace.get("broker_raw") or {})
+    # MAJOR_FLAG-rejected signals never reach order_executor, so their
+    # order_result comes from the dispatch trace (FILTERED_OUT) instead.
+    order_result = str(trace.get("order_result_override") or order_result)
+    major_fields = dict(trace.get("major_fields") or {}) or _major_ledger_fields(state)
     # All ledger-recorded signals are confirmed (completed-bar) since the
     # 2026-07-27 KIS-parity fix — the forming/provisional candidate never
     # reaches this function any more (shadow display only).
-    written = ledger.append_signal({
+    row = {
         "trading_date": trading_date,
         "completed_bar_at": macd_snap.bar_dt.astimezone(KST).strftime("%H%M%S"),
         "signal_id": signal_id,
@@ -1333,7 +1596,9 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "balance_qty": trace.get("balance_qty") if trace.get("balance_qty") is not None else "",
         "failure_stage": trace.get("failure_stage") or "",
         "final_result": order_result if not block_reason else f"{order_result}:{block_reason}",
-    })
+    }
+    row.update(major_fields)
+    written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
 
 

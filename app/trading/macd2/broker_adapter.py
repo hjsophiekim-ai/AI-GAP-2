@@ -116,7 +116,7 @@ class _BrokerAdapterBase:
                 msg_cd=str(raw.get("msg_cd") or ""),
                 msg1=str(raw.get("msg1") or raw.get("error") or ""),
                 order_price=float(price or 0.0),
-                limit_buyable_qty=nrcvb_buy_qty if order_type == "ioc_limit" else 0,
+                limit_buyable_qty=nrcvb_buy_qty if order_type in ("ioc_limit", "limit") else 0,
                 raw=raw,
             )
         cash = self.get_orderable_cash(symbol)
@@ -134,7 +134,7 @@ class _BrokerAdapterBase:
             msg_cd="",
             msg1="",
             order_price=float(price or 0.0),
-            limit_buyable_qty=qty if order_type == "ioc_limit" else 0,
+            limit_buyable_qty=qty if order_type in ("ioc_limit", "limit") else 0,
             raw={},
         )
 
@@ -182,11 +182,56 @@ class _BrokerAdapterBase:
         return _to_order_result(result, symbol, "BUY", int(qty))
 
     def buy_ioc_limit(self, symbol: str, qty: int, price: float, client_order_id: str) -> BrokerOrderResult:
+        """Legacy IOC path — kept for adapter compatibility; MACD2 Worker BUY
+        must not call this (see buy_limit / order_executor.execute_signal)."""
         del client_order_id
         result = self._call_broker_without_direct_ledger(
             "buy", symbol, symbol, int(qty), int(price), order_type="ioc_limit",
         )
         return _to_order_result(result, symbol, "BUY", int(qty))
+
+    def buy_limit(self, symbol: str, qty: int, price: float, client_order_id: str) -> BrokerOrderResult:
+        """Regular limit BUY (ORD_DVSN=00). Preferred path for new MACD2 entries."""
+        del client_order_id
+        result = self._call_broker_without_direct_ledger(
+            "buy", symbol, symbol, int(qty), int(price), order_type="limit",
+        )
+        return _to_order_result(result, symbol, "BUY", int(qty))
+
+    def cancel_order(self, order_id: str, symbol: str = "") -> BrokerOrderResult:
+        """Best-effort cancel of unfilled remainder. Returns success=False if
+        underlying broker has no cancel API (still records the attempt)."""
+        cancel_fn = getattr(self._broker, "cancel_order", None) or getattr(
+            getattr(self._broker, "kis", None), "cancel_order", None
+        )
+        if cancel_fn is None:
+            return BrokerOrderResult(
+                False, str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+                "CANCEL_NOT_SUPPORTED", raw={"msg1": "cancel_order unavailable"},
+            )
+        try:
+            raw_result = cancel_fn(order_id) if cancel_fn.__code__.co_argcount <= 2 else cancel_fn(order_id, symbol)
+        except TypeError:
+            try:
+                raw_result = cancel_fn(order_id, symbol)
+            except Exception as exc:
+                return BrokerOrderResult(
+                    False, str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+                    f"CANCEL_ERROR:{exc}", raw={"msg1": str(exc)},
+                )
+        except Exception as exc:
+            return BrokerOrderResult(
+                False, str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+                f"CANCEL_ERROR:{exc}", raw={"msg1": str(exc)},
+            )
+        if isinstance(raw_result, BrokerOrderResult):
+            return raw_result
+        success = bool(getattr(raw_result, "success", raw_result is True))
+        return BrokerOrderResult(
+            success, str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+            "OK" if success else "CANCEL_FAILED",
+            raw=dict(getattr(raw_result, "raw", {}) or {}) if raw_result is not True else {},
+        )
 
     def sell_market(self, symbol: str, qty: int, client_order_id: str) -> BrokerOrderResult:
         del client_order_id

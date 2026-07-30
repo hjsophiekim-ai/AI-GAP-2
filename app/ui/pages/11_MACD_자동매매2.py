@@ -198,6 +198,30 @@ if mode == "real":
 else:
     st.info("MOCK 모드 (기본값) — KIS 모의투자 계좌")
 
+# Optional Hybrid MAJOR_FLAG filter toggle (command only — never places orders).
+_filter_cols = st.columns([1.4, 1.6])
+with _filter_cols[0]:
+    _major_on = st.checkbox(
+        "강한 플래그만 거래",
+        value=bool(getattr(state, "major_filter_enabled", False)),
+        key="macd2_major_filter_toggle",
+        help="OFF=기존 confirmed 신호 전부 / ON=MAJOR_FLAG 승인 신호만 주문권한",
+    )
+with _filter_cols[1]:
+    if bool(_major_on) != bool(getattr(state, "major_filter_enabled", False)):
+        res = service.set_major_filter_enabled(bool(_major_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(
+                f"Major filter → {'ON' if _major_on else 'OFF'} "
+                f"(다음 confirmed 플래그부터 · `{res.get('major_filter_enabled_at')}`)"
+            )
+            st.rerun()
+    else:
+        st.caption(
+            f"Major filter={'ON' if state.major_filter_enabled else 'OFF'} · "
+            f"version=`{getattr(state, 'major_filter_version', None) or macd2_config.MAJOR_FILTER_VERSION}`"
+        )
+
 b1, b2, b3, b4 = st.columns(4)
 with b1:
     if st.button("자동매매 시작", type="primary", use_container_width=True):
@@ -277,6 +301,44 @@ try:
     else:
         p1.metric("보유 종목", "flat")
     p2.metric("Profit Lock", "ON" if state.profit_lock_active else "OFF", delta=f"peak {state.peak_net_return:.2f}%")
+
+    st.markdown("**Major filter (강한 플래그)**")
+    mf1, mf2, mf3, mf4 = st.columns(4)
+    mf1.metric("Major filter", "ON" if getattr(state, "major_filter_enabled", False) else "OFF")
+    mf2.metric("filter version", getattr(state, "major_filter_version", None) or macd2_config.MAJOR_FILTER_VERSION)
+    mf3.metric(
+        "오늘 MAJOR 승인 진입",
+        f"{int(getattr(state, 'daily_major_entry_count', 0) or 0)} / {macd2_config.MAJOR_MAX_DAILY_ENTRIES}",
+    )
+    mf4.metric("마지막 MAJOR 승인 시각", _format_signal_time(getattr(state, "last_major_entry_at", None)) if getattr(state, "last_major_entry_at", None) else "-")
+    st.caption(
+        f"enabled_at=`{getattr(state, 'major_filter_enabled_at', None) or '-'}` · "
+        f"by=`{getattr(state, 'major_filter_enabled_by', None) or '-'}`"
+    )
+
+    st.markdown("**현재 confirmed 신호 / MAJOR 판정**")
+    ms1, ms2, ms3, ms4 = st.columns(4)
+    ms1.metric("원본 flag", state.latest_primary_flag.value if state.latest_primary_flag else "-")
+    _score = getattr(state, "last_major_score", None)
+    _req = getattr(state, "last_major_required_score", None)
+    ms2.metric(
+        "major score / required",
+        f"{_score:.0f} / {_req:.0f}" if _score is not None and _req is not None else "-",
+    )
+    _approved = getattr(state, "last_major_approved", None)
+    if _approved is True:
+        _maj_status = "APPROVED"
+    elif _approved is False:
+        _maj_status = "FILTERED_OUT"
+    else:
+        _maj_status = "-"
+    ms3.metric("MAJOR 결과", _maj_status)
+    ms4.metric("block reason", getattr(state, "last_major_block_reason", None) or "-")
+    st.caption(
+        f"decision=`{getattr(state, 'last_major_decision', None) or '-'}` · "
+        f"signal_id=`{getattr(state, 'last_major_signal_id', None) or state.latest_primary_signal_id or '-'}` · "
+        f"components=`{getattr(state, 'last_major_component_scores', None) or '-'}`"
+    )
 
     st.markdown("**Primary (완성봉 MACD crossover — 유일한 주문권한)**")
     st.caption("아래 diff/MACD는 진행 중(미완성) 3분봉의 shadow 진단값이며 주문에 사용되지 않는다. 실제 주문권한은 latest_primary_flag(완성봉)에만 있다.")
@@ -498,6 +560,44 @@ try:
     g1.metric("오늘 빨간 플래그", f"{sig_summary['red_count']}건")
     g2.metric("오늘 파란 플래그", f"{sig_summary['blue_count']}건")
     g3.metric("완료 거래", f"{trade_summary['round_trip_count']}건")
+
+    # MAJOR filter stats (원본 flag vs 승인 분리)
+    _all_today = [r for r in ledger.load_signal_ledger() if r.get("trading_date") == trading_date]
+    _onset = sig_summary.get("onset_signals") or []
+    _major_approved_rows = [
+        r for r in _onset
+        if str(r.get("major_approved") or "").lower() in {"true", "1", "yes"}
+        or str(r.get("major_decision") or "") == macd2_config.MAJOR_APPROVED
+    ]
+    _major_red = sum(1 for r in _major_approved_rows if r.get("direction") == "UP_RED")
+    _major_blue = sum(1 for r in _major_approved_rows if r.get("direction") == "DOWN_BLUE")
+    _filtered = [
+        r for r in _onset
+        if str(r.get("order_result") or "").upper() == macd2_config.FILTERED_OUT
+        or str(r.get("major_approved") or "").lower() in {"false", "0", "no"}
+    ]
+    _filled_entries = int(trade_summary.get("buy_count") or 0)
+    mg1, mg2, mg3, mg4, mg5, mg6 = st.columns(6)
+    mg1.metric("원본 빨간 플래그", sig_summary["red_count"])
+    mg2.metric("원본 파란 플래그", sig_summary["blue_count"])
+    mg3.metric("MAJOR 승인 빨강", _major_red)
+    mg4.metric("MAJOR 승인 파랑", _major_blue)
+    mg5.metric("필터 탈락", len(_filtered))
+    mg6.metric("실제 체결 진입", _filled_entries)
+
+    if _filtered:
+        st.markdown("**필터 탈락 신호**")
+        _filt_rows = []
+        for row in _filtered:
+            _filt_rows.append({
+                "시간": _signal_display_time(row),
+                "방향": row.get("direction") or "-",
+                "score": row.get("major_score") or "-",
+                "required": row.get("major_required_score") or "-",
+                "block reason": row.get("major_block_reason") or row.get("block_reason") or "-",
+                "components": row.get("major_component_scores") or "-",
+            })
+        st.dataframe(pd.DataFrame(_filt_rows), use_container_width=True, height=220)
 
     st.caption(
         "KIS manual arrows today=- · "

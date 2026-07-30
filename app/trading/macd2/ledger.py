@@ -41,6 +41,14 @@ SIGNAL_LEDGER_COLUMNS = [
     "sizing_rt_cd", "sizing_msg_cd", "sizing_msg1",
     "filled_qty", "fill_poll_result", "balance_qty", "failure_stage",
     "final_result",
+    # Optional Hybrid MAJOR_FLAG filter fields (appended; never rename/delete older cols)
+    "major_filter_enabled", "major_filter_version",
+    "major_score", "major_required_score", "major_approved", "major_decision",
+    "major_block_reason", "major_is_reversal", "major_fast_reversal",
+    "major_component_scores",
+    "hist_impulse_atr", "breakout", "price_impulse_atr", "body_atr", "volume_ratio",
+    "ema10_ok", "ema20_or_vwap_ok", "recent_range_ratio", "ema_spread_ratio",
+    "daily_major_entry_count", "last_major_entry_at",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

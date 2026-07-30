@@ -7,10 +7,38 @@ RuntimeState, not from here — this module only supplies their defaults.
 """
 from __future__ import annotations
 
+import os
 from datetime import time, timedelta, timezone
 
 # KST is a fixed UTC+9 offset with no DST — safe as a plain timezone constant.
 KST = timezone(timedelta(hours=9))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return float(str(raw).strip())
+    except ValueError:
+        return default
 
 # ── Symbols (strategy-fixed) ────────────────────────────────────────────────
 WATCH_SYMBOL = "000660"  # SK하이닉스 — signal source only, never traded directly
@@ -134,6 +162,60 @@ KIS_PAGE_FETCH_PACING_SEC = 0.4
 # ── Feature flags (strategy-fixed per docs; not user-configurable) ────────
 CONTINUATION_REENTRY_ENABLED = False
 OPENING_PROBE_ENABLED = False
+
+# ── Optional Hybrid MAJOR_FLAG filter (order gate only; confirmed flags unchanged) ──
+# UI toggle defaults OFF. Env MACD2_MAJOR_FILTER_DEFAULT may override the
+# cold-start default; runtime state / UI command still wins after start.
+MAJOR_FILTER_VERSION = "MAJOR_FILTER_HYBRID_V1"
+MAJOR_FILTER_DEFAULT = _env_bool("MACD2_MAJOR_FILTER_DEFAULT", False)
+
+MAJOR_ENTRY_SCORE_MIN = _env_float("MACD2_MAJOR_ENTRY_SCORE_MIN", 65.0)
+MAJOR_REVERSAL_SCORE_MIN = _env_float("MACD2_MAJOR_REVERSAL_SCORE_MIN", 75.0)
+MAJOR_FAST_REVERSAL_SCORE_MIN = _env_float("MACD2_MAJOR_FAST_REVERSAL_SCORE_MIN", 82.0)
+
+# Hybrid component tiers (Hybrid V1 — order gate only)
+MAJOR_HIST_IMPULSE_T1 = 0.10  # 10 pts
+MAJOR_HIST_IMPULSE_T2 = 0.15  # 18 pts
+MAJOR_HIST_IMPULSE_T3 = 0.22  # 25 pts
+MAJOR_PRICE_IMPULSE_T1 = 0.35  # 15 pts (also price-confirm floor)
+MAJOR_PRICE_IMPULSE_T2 = 0.55  # 25 pts
+MAJOR_BODY_ATR_T1 = 0.25  # 5 pts
+MAJOR_BODY_ATR_T2 = 0.40  # 10 pts
+MAJOR_VOLUME_RATIO_T1 = 1.00  # 5 pts
+MAJOR_VOLUME_RATIO_T2 = 1.10  # 10 pts
+MAJOR_VOLUME_RATIO_T3 = 1.20  # 15 pts
+# Legacy single-threshold aliases (tests / older docs may still reference)
+MAJOR_HIST_IMPULSE_ATR_MIN = MAJOR_HIST_IMPULSE_T3
+MAJOR_PRICE_IMPULSE_ATR_MIN = MAJOR_PRICE_IMPULSE_T1
+MAJOR_BODY_ATR_MIN = MAJOR_BODY_ATR_T2
+MAJOR_VOLUME_RATIO_MIN = MAJOR_VOLUME_RATIO_T3
+MAJOR_SIDEWAYS_EMA_SPREAD_MAX = 0.0007
+MAJOR_SIDEWAYS_RANGE_MAX = 0.006
+MAJOR_RANGE_BREAKOUT_LOOKBACK = 4
+MAJOR_RECENT_RANGE_LOOKBACK = 8
+MAJOR_VOLUME_LOOKBACK = 20
+MAJOR_ATR_PERIOD = 14
+MAJOR_EMA_FAST = 10
+MAJOR_EMA_SLOW = 20
+MAJOR_MIN_COMPLETED_BARS = 26
+
+MAJOR_MAX_DAILY_ENTRIES = _env_int("MACD2_MAJOR_MAX_DAILY_ENTRIES", 4)
+MAJOR_MIN_HOLD_MIN = _env_int("MACD2_MAJOR_MIN_HOLD_MIN", 9)
+MAJOR_FAST_REVERSAL_WINDOW_MIN = _env_int("MACD2_MAJOR_FAST_REVERSAL_WINDOW_MIN", 15)
+MAJOR_SAME_DIRECTION_REENTRY_MIN = _env_int("MACD2_MAJOR_SAME_DIRECTION_REENTRY_MIN", 18)
+
+# Ledger / UI decision labels (filter gate only — not strategy_version)
+MAJOR_APPROVED = "MAJOR_APPROVED"
+MAJOR_SCORE_BELOW_THRESHOLD = "MAJOR_SCORE_BELOW_THRESHOLD"
+MAJOR_PRICE_CONFIRMATION_FAILED = "MAJOR_PRICE_CONFIRMATION_FAILED"
+MAJOR_SIDEWAYS_BLOCK = "MAJOR_SIDEWAYS_BLOCK"
+FILTER_DATA_INSUFFICIENT = "FILTER_DATA_INSUFFICIENT"
+FILTER_INPUT_NOT_CROSSOVER = "FILTER_INPUT_NOT_CROSSOVER"
+SAME_DIRECTION_POSITION_HELD = "SAME_DIRECTION_POSITION_HELD"
+MAJOR_DAILY_ENTRY_LIMIT = "MAJOR_DAILY_ENTRY_LIMIT"
+MAJOR_SAME_DIRECTION_COOLDOWN = "MAJOR_SAME_DIRECTION_COOLDOWN"
+MAJOR_MIN_HOLD_BLOCK = "MAJOR_MIN_HOLD_BLOCK"
+FILTERED_OUT = "FILTERED_OUT"
 
 # ── Isolated MACD2 runtime/ledger paths (never shared with MACD v1) ───────
 # Resolved lazily via app.utils.data_paths inside state_store.py/ledger.py so

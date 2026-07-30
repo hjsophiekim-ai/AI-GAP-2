@@ -31,7 +31,10 @@ _DIRECTION_VALUES = {d.value for d in Direction}
 
 
 def default_state() -> RuntimeState:
-    return RuntimeState()
+    state = RuntimeState()
+    state.major_filter_enabled = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
+    state.major_filter_version = config.MAJOR_FILTER_VERSION
+    return state
 
 
 def _position_to_dict(pos: Optional[PositionSnapshot]) -> Optional[dict[str, Any]]:
@@ -166,6 +169,26 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_quote_stale_quote_ages": state.last_quote_stale_quote_ages,
         "last_quote_stale_retry_count": state.last_quote_stale_retry_count,
         "last_quote_stale_result": state.last_quote_stale_result,
+        "major_filter_enabled": bool(state.major_filter_enabled),
+        "major_filter_enabled_at": state.major_filter_enabled_at,
+        "major_filter_enabled_by": state.major_filter_enabled_by,
+        "major_filter_version": state.major_filter_version or config.MAJOR_FILTER_VERSION,
+        "daily_major_entry_count": int(state.daily_major_entry_count or 0),
+        "last_major_entry_at": state.last_major_entry_at,
+        "last_major_exit_at": state.last_major_exit_at,
+        "last_major_exit_direction": (
+            state.last_major_exit_direction.value if state.last_major_exit_direction else None
+        ),
+        "last_major_score": state.last_major_score,
+        "last_major_required_score": state.last_major_required_score,
+        "last_major_approved": state.last_major_approved,
+        "last_major_decision": state.last_major_decision,
+        "last_major_block_reason": state.last_major_block_reason,
+        "last_major_is_reversal": state.last_major_is_reversal,
+        "last_major_fast_reversal": state.last_major_fast_reversal,
+        "last_major_component_scores": dict(state.last_major_component_scores or {}) if state.last_major_component_scores else None,
+        "last_major_metrics": dict(state.last_major_metrics or {}) if state.last_major_metrics else None,
+        "last_major_signal_id": state.last_major_signal_id,
     }
 
 
@@ -190,6 +213,11 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     signed_b_shadow = Direction(signed_b_raw) if signed_b_raw in _DIRECTION_VALUES else None
     candidate_raw = raw.get("candidate_flag")
     candidate_flag = Direction(candidate_raw) if candidate_raw in _DIRECTION_VALUES else None
+    last_major_exit_raw = raw.get("last_major_exit_direction")
+    last_major_exit_direction = (
+        Direction(last_major_exit_raw) if last_major_exit_raw in _DIRECTION_VALUES else None
+    )
+    major_enabled_default = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         ui_mode=ui_mode,
@@ -287,6 +315,30 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         last_quote_stale_quote_ages=raw.get("last_quote_stale_quote_ages"),
         last_quote_stale_retry_count=raw.get("last_quote_stale_retry_count"),
         last_quote_stale_result=raw.get("last_quote_stale_result"),
+        major_filter_enabled=bool(raw.get("major_filter_enabled", major_enabled_default)),
+        major_filter_enabled_at=raw.get("major_filter_enabled_at"),
+        major_filter_enabled_by=raw.get("major_filter_enabled_by"),
+        major_filter_version=str(raw.get("major_filter_version") or config.MAJOR_FILTER_VERSION),
+        daily_major_entry_count=int(raw.get("daily_major_entry_count") or 0),
+        last_major_entry_at=raw.get("last_major_entry_at"),
+        last_major_exit_at=raw.get("last_major_exit_at"),
+        last_major_exit_direction=last_major_exit_direction,
+        last_major_score=raw.get("last_major_score"),
+        last_major_required_score=raw.get("last_major_required_score"),
+        last_major_approved=raw.get("last_major_approved"),
+        last_major_decision=raw.get("last_major_decision"),
+        last_major_block_reason=raw.get("last_major_block_reason"),
+        last_major_is_reversal=raw.get("last_major_is_reversal"),
+        last_major_fast_reversal=raw.get("last_major_fast_reversal"),
+        last_major_component_scores=(
+            dict(raw.get("last_major_component_scores"))
+            if isinstance(raw.get("last_major_component_scores"), dict) else None
+        ),
+        last_major_metrics=(
+            dict(raw.get("last_major_metrics"))
+            if isinstance(raw.get("last_major_metrics"), dict) else None
+        ),
+        last_major_signal_id=raw.get("last_major_signal_id"),
     )
 
 

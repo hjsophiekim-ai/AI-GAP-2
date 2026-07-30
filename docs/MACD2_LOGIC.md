@@ -1,6 +1,6 @@
 # MACD2 Logic
 
-본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
+본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
 
 ## 목적
 
@@ -41,6 +41,8 @@ MACD2는 SK하이닉스(`000660`) KIS 3분봉 MACD(12,26,9) 차트에 빨간색�
 ## Primary 신호 — 완성봉 MACD crossover만이 주문권한을 가진다
 
 실제 주문권한이 있는 Primary 신호는 **새로 완성된 3분봉의 MACD(12,26,9) crossover** 하나뿐이다(2026-07-27 KIS-parity 개정 — 진행봉/Signed-B는 아래 "Candidate/Shadow" 절 참조).
+
+선택형 **강한 플래그 필터(MAJOR_FLAG)** 가 OFF이면 이 confirmed crossover가 곧 주문권한이다. ON이면 confirmed crossover는 여전히 전부 생성·기록되지만, 주문권한은 Hybrid 점수 승인(`MAJOR_APPROVED`)된 신호에만 부여된다(아래 “Optional Hybrid MAJOR_FLAG filter” 절).
 
 직전 완성 3분봉의 diff와 새로 완성된 3분봉의 diff를 비교한다.
 
@@ -86,18 +88,20 @@ Worker는 5초 tick으로 동작한다.
 6. 당일 1분봉 수/history 최신시각/quote-history 단위·시각 불일치 진단 갱신
 7. 진행봉 provisional MACD/candidate 갱신 (shadow 표시 전용, 아래 8-9와 독립)
 8. `_advance_confirmed_primary()`로 새 완성봉 여부 판정 → Primary direction 산출 (봉당 정확히 1회)
-9. 신규 Primary 방향이면 즉시:
-   1. 주문 직전 KIS 실제 주문가능금액 재조회
-   2. `min(UI 예산, 실제 주문가능금액)`에서 수수료·1틱 안전여유를 뺀 안전 수량 계산
-   3. (반대신호인 경우) 기존 ETF SELL → 체결 확인 → 실제 잔고 0 확인
-   4. 신규/반대 ETF BUY 요청
-   5. 주문번호로 체결내역 조회 — 주문 접수 응답만으로 체결 확정하지 않는다. 최대 `ORDER_FILL_POLL_MAX_SEC`(60초) 동안 폴링하며 부분체결도 실제 체결수량 그대로 반영한다.
-   6. 체결 확인 후 실제 잔고를 다시 조회해 종목·수량·평균단가를 state에 반영
+9. 신규 Primary 방향이면:
+   1. 신호 원장에 confirmed 플래그 기록(필터 ON/OFF와 무관 — 원본 플래그 수·시각·방향은 유지)
+   2. **강한 플래그 필터가 ON이면** `evaluate_major_flag()` → 거래 게이트 적용 → 승인(`MAJOR_APPROVED`)일 때만 아래 주문 단계로 진행. 탈락이면 `FILTERED_OUT`으로 종료하고 broker 호출 0 (아래 “Optional Hybrid MAJOR_FLAG filter” 절)
+   3. 필터 OFF이거나 MAJOR 승인 시: 주문 직전 KIS 실제 주문가능금액 재조회
+   4. `min(UI 예산, 실제 주문가능금액)`에서 수수료·1틱 안전여유를 뺀 안전 수량 계산
+   5. (반대신호인 경우) 기존 ETF SELL → 체결 확인 → 실제 잔고 0 확인
+   6. 신규/반대 ETF BUY 요청
+   7. 주문번호로 체결내역 조회 — 주문 접수 응답만으로 체결 확정하지 않는다. 최대 `ORDER_FILL_POLL_MAX_SEC`(60초) 동안 폴링하며 부분체결도 실제 체결수량 그대로 반영한다.
+   8. 체결 확인 후 실제 잔고를 다시 조회해 종목·수량·평균단가를 state에 반영
 10. quote 또는 position 일시 오류면 같은 `signal_id`를 `pending_signal`로 유지하고 최대 30초 재시도
-11. 주문 요청이 실제 생성되면 `processed_signal_ids`에 등록
+11. 주문 요청이 실제 생성되면(또는 MAJOR 필터 탈락으로 소비되면) `processed_signal_ids`에 등록
 12. state 저장
 
-진행봉 crossover는 8-9의 Primary 판단에 전혀 관여하지 않는다 — 오직 완성봉만 주문을 만든다.
+진행봉 crossover는 8-9의 Primary 판단에 전혀 관여하지 않는다 — 오직 완성봉만 주문을 만든다. MAJOR 필터는 완성봉 confirmed 신호의 **주문권한 게이트**일 뿐, confirmed 플래그 생성 자체는 바꾸지 않는다.
 
 ## 주문 및 위험관리
 
@@ -107,7 +111,7 @@ Worker는 5초 tick으로 동작한다.
 - 14:55 이후 신규 진입 금지
 - 15:00 이후 강제청산 우선
 - Stop Loss(-1.5%)와 Profit Lock(+1.5% 활성화, 0.8%p 반납 청산)은 기존 규칙을 유지한다.
-- 신규 BUY 수량은 시장가가 아니라 fresh 매도 1호가 기반 IOC 지정가(`ORD_DVSN=11`)로 계산한다. 주문 직전 KIS 호가조회에서 `ask1`을 받고, 즉시체결에 유리한 유효 호가(`ask1` 또는 `ask1+1틱`, 현재 구현은 `ask1+1틱`)를 `order_price`로 정한다. 같은 계좌·종목·`ORD_DVSN=11`·`order_price`로 KIS 매수가능조회 후 `usable_cash = min(UI 예산, KIS 실제 주문가능금액)`, `budget_qty = floor((usable_cash * 0.995) / order_price)`, `final_qty = min(budget_qty, limit_buyable_qty)`를 사용한다. `expected_amount`는 항상 `usable_cash * 0.995` 이하로 재검증하며, 과도한 수량 차감은 하지 않고 필요 시 최대 1주만 줄인다. 호가조회 실패/stale 또는 `final_qty=0`이면 시장가로 자동 전환하지 않고 주문을 차단해 원장/UI에 `ask1`, `order_price`, `order_type`, `usable_cash`, `limit_buyable_qty`, `budget_qty`, `final_qty`, `expected_amount`, `filled_qty`를 기록한다.
+- 신규 BUY 수량은 시장가가 아니라 fresh 매도 1호가 기반 일반 지정가(`ORD_DVSN=00`, `order_type=limit`)로 계산한다. IOC(`ORD_DVSN=11`)는 신규 BUY 경로에서 사용하지 않는다. 주문 직전 KIS 호가조회에서 `ask1`을 받고 `order_price=ask1+1틱`(KRX 호가단위 정규화)으로 정한다. ask1이 0/stale/조회실패면 시장가 전환 없이 차단한다. 같은 계좌·종목·`ORD_DVSN=00`·`order_price`로 KIS 매수가능조회 후 `usable_cash = min(UI 예산, KIS 실제 주문가능금액)`, `budget_qty = floor((usable_cash * 0.995) / order_price)`, `final_qty = min(budget_qty, limit_buyable_qty)`를 사용한다. `expected_amount`는 항상 `usable_cash * 0.995` 이하로 재검증하며, 과도한 수량 차감은 하지 않고 필요 시 최대 1주만 줄인다. 호가조회 실패/stale 또는 `final_qty=0`이면 시장가로 자동 전환하지 않고 주문을 차단해 원장/UI에 `ask1`, `order_price`, `order_type`, `usable_cash`, `limit_buyable_qty`, `budget_qty`, `final_qty`, `expected_amount`, `filled_qty`를 기록한다.
 - 주문가능금액 부족 시 주문하지 않고 KIS의 실제 코드·메시지를 신호 원장에 그대로 기록한다. 같은 `signal_id`로 무한 재시도하지 않는다(signal_id 단발성 원칙).
 - 체결은 주문 성공 응답만으로 확정하지 않고, 주문번호 기준 실제 체결/잔고 재조회로 확인한다(최대 60초 폴링, 부분체결 반영).
 - MOCK/REAL 게이트는 broker adapter와 기존 service 경로를 따른다. REAL 주문, 신용, 미수는 사용하지 않는다.
@@ -142,14 +146,15 @@ Signal ledger는 `csv.DictWriter`에 컬럼명 기반 dict만 전달한다(위�
 - `broker_called`
 - `broker_rt_cd` / `broker_msg_cd` / `broker_msg1`
 - `final_result`
+- (뒤에 추가) MAJOR 필터 필드: `major_filter_enabled`, `major_filter_version`, `major_score`, `major_required_score`, `major_approved`, `major_decision`, `major_block_reason`, `major_is_reversal`, `major_fast_reversal`, `major_component_scores`, `hist_impulse_atr`, `breakout`, `price_impulse_atr`, `body_atr`, `volume_ratio`, `ema10_ok`, `ema20_or_vwap_ok`, `recent_range_ratio`, `ema_spread_ratio`, `daily_major_entry_count`, `last_major_entry_at` — **기존 컬럼은 삭제·이름변경하지 않고 뒤에만 추가**한다. 과거 행 파싱이 깨지지 않도록 기본값을 둔다.
 
-`strategy_name`/`direction` 값이 알려진 도메인을 벗어나면(예: 컬럼 밀림으로 다른 값이 들어온 경우) 그 행은 삭제·덮어쓰기하지 않고 `MALFORMED_SCHEMA`로 제외 목록에만 표시한다. 오늘 빨강/파랑 통계는 **현재 거래일 + 현재 Worker 세션(`session_started_at` 이후) + 현재 `strategy_version`/`signal_rule`**의 confirmed 신호만 집계한다. candidate(shadow), 취소된 후보, malformed 행, 이전 세션·구버전 행은 모두 별도 제외 사유(`OLD_STRATEGY`/`LEGACY_INVALID`/`PRE_SESSION_ROW`/`PRE_SESSION_SIGNAL`/`MALFORMED_SCHEMA`)로 표시하며 통계에 하드코딩된 값(예: 고정 건수)을 사용하지 않는다.
+`strategy_name`/`direction` 값이 알려진 도메인을 벗어나면(예: 컬럼 밀림으로 다른 값이 들어온 경우) 그 행은 삭제·덮어쓰기하지 않고 `MALFORMED_SCHEMA`로 제외 목록에만 표시한다. 오늘 빨강/파랑 통계는 **현재 거래일 + 현재 Worker 세션(`session_started_at` 이후) + 현재 `strategy_version`/`signal_rule`**의 confirmed 신호만 집계한다. candidate(shadow), 취소된 후보, malformed 행, 이전 세션·구버전 행은 모두 별도 제외 사유(`OLD_STRATEGY`/`LEGACY_INVALID`/`PRE_SESSION_ROW`/`PRE_SESSION_SIGNAL`/`MALFORMED_SCHEMA`)로 표시하며 통계에 하드코딩된 값(예: 고정 건수)을 사용하지 않는다. **원본 confirmed 플래그 수와 MAJOR 승인·필터 탈락 수는 분리 집계**한다(필터 ON이어도 원본 red/blue 통계는 사라지지 않는다).
 
 Execution ledger는 주문 요청과 체결 결과를 `order_id` 기준으로 dedup한다.
 
 ## UI
 
-UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판단을 하지 않는다.
+UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판단을 하지 않는다. 상태 변경은 service command만 기록한다(Streamlit이 Worker 상태를 직접 수정하거나 주문 함수를 호출하지 않는다).
 
 다음을 각각 분리 표시한다:
 
@@ -159,6 +164,11 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - **order result** (`state.last_broker_order_result` 등) — 가장 최근 브로커 응답. 과거 실패(BUY_FAILED 등)와 현재 `order_block_reason`은 서로 다른 필드로 분리해 혼동을 막는다.
 - **주문 sizing**: 실제 주문가능금액, sizing에 사용한 가격, `requested_qty`, 예상 주문금액
 - **1분봉 history 진단**: 당일 추가 1분봉 수, history 최신시각, 마지막 완성 3분봉 시각, quote-history 불일치 사유
+- **강한 플래그만 거래** 토글 (계좌/제어): OFF/ON. 기본 OFF. `service.set_major_filter_enabled()` command만 기록
+- **Major filter 상태**: ON/OFF, `filter_version`, 오늘 MAJOR 승인 진입 수 / 최대 4회, 마지막 MAJOR 승인 시각, `filter_enabled_at`·변경 주체
+- **현재 confirmed / MAJOR 판정**: 원본 flag, major score/required, APPROVED 또는 FILTERED_OUT, 핵심 통과·탈락 이유
+- **오늘 통계 분리**: 원본 빨간/파란 플래그 수, MAJOR 승인 빨강/파랑 수, 필터 탈락 수, 실제 체결 진입 수
+- **필터 탈락 신호 표**: 시간, 방향, score, required, block reason, component scores
 
 `"KIS manual arrows"`처럼 실제 데이터 없이 고정 건수를 표시하는 하드코딩은 금지한다 — 실제 값이 없으면 `-`로 표시한다.
 
@@ -184,6 +194,162 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - UI/Worker/리플레이가 같은 Primary 공통 계산 결과 사용
 - 본 문서와 `app/trading/macd2/config.py`의 `SIGNAL_RULE`/`STRATEGY_VERSION`이 항상 일치 (`tests/macd2/test_docs_consistency.py`)
 - `tests/macd2`와 `compileall` 통과
+- MAJOR 필터 OFF이면 기존 `_execute_or_wait` 주문 경로·테스트 결과 불변
+- MAJOR 필터 ON이면 승인 신호만 주문, 탈락 신호 broker 호출 0, 동일 `signal_id` 재심사·재주문 0
+- Stop Loss / Profit Lock / 강제청산은 필터와 무관하게 기존 규칙 유지
+- `tests/macd2/test_major_flag_filter.py` 통과
+- read-only 검증 스크립트 `scripts/macd2_validate_major_filter.py`는 운영 state/ledger/cache·broker를 변경하지 않는다
+
+## Optional Hybrid MAJOR_FLAG filter (강한 플래그만 거래)
+
+선택형 주문권한 게이트다. **전략 버전(`STRATEGY_VERSION`)을 바꾸지 않고** 별도 `major_filter_version = MAJOR_FILTER_HYBRID_V1`로 관리한다. 필터 ON/OFF가 과거 원장의 기존 confirmed 신호를 변경하지 않는다.
+
+### 목표와 불변 조건
+
+- 기존 confirmed MACD 플래그는 지금처럼 **전부 정확히 생성·기록**한다.
+- UI에서 강한 플래그 필터가 **OFF**이면 기존 주문 흐름을 **100% 유지**한다.
+- 필터가 **ON**이면 confirmed 플래그 중 강도가 높은 MAJOR_FLAG만 주문권한을 가진다.
+- `signal_engine`의 MACD 공식·플래그 시각, 주문·체결·손절 로직은 변경하지 않는다.
+- 특정 날짜·시각·방향을 코드에 하드코딩하지 않는다.
+- 짧은 왕복 교차를 줄이고 큰 흐름을 남기는 Hybrid 점수 필터를 사용한다.
+
+### UI 제어
+
+- 표시명: **강한 플래그만 거래**
+- OFF: 기존 confirmed 신호가 모두 주문권한 보유
+- ON: MAJOR_FLAG 승인 신호만 주문권한 보유
+- 기본값 OFF. 환경변수 `MACD2_MAJOR_FILTER_DEFAULT=false`
+- UI는 `Macd2Service.set_major_filter_enabled()` command만 기록한다. Streamlit이 Worker 상태를 직접 수정하거나 주문 함수를 호출하지 않는다.
+- 전략 실행 중 토글 변경: **다음 신규 confirmed 플래그부터** 적용. 이미 보유한 포지션의 Stop Loss·Profit Lock·강제청산에는 영향 없음. 토글 변경 시 기존 position을 즉시 청산하거나 신규 매수하지 않는다. `major_filter_enabled_at`과 변경 주체(`major_filter_enabled_by`)를 state에 기록한다.
+
+### 입력 데이터와 미래 데이터 금지
+
+필터는 confirmed 플래그가 발생한 **완성 3분봉까지의 데이터만** 사용한다.
+
+허용 입력:
+
+- 현재 플래그가 발생한 완성 3분봉과 그 이전 완성 3분봉
+- 현재 실제 position 상태, 당일 승인 진입 횟수, 마지막 실제 진입시각
+
+금지:
+
+- 플래그 이후 봉, 이후 고가·저가·수익률, ETF 미래 가격, 차트 사후 모양
+- 현재 진행봉, live quote를 과거 완성봉 지표에 삽입
+- 선택된 시각 하드코딩
+
+필요 최소 데이터: `open/high/low/close/volume`, 최소 26개 이상 완성 3분봉, ATR14, MACD/Signal/Histogram, EMA10, EMA20, 당일 정규장 VWAP(전일 거래량·가격 혼합 금지).
+
+데이터 부족 또는 NaN/ATR 0/volume median 0이면:
+
+- 기존 confirmed 플래그는 그대로 기록
+- MAJOR_FLAG는 거절 (`FILTER_DATA_INSUFFICIENT`)
+- 필터 OFF이면 기존 주문은 정상 진행
+
+지표 계산은 `app/trading/macd2/major_flag_filter.py` 안의 **순수 함수**로만 수행한다. `signal_engine.py`에 지표를 끼워 넣지 않는다. 입력 DataFrame을 수정하지 않으며, 동일 입력 → 동일 출력이다.
+
+### Hybrid 점수 (최대 100)
+
+`evaluate_major_flag(bars_3m, flag_direction, position_direction, last_entry_at, daily_major_entry_count, now) -> MajorFlagDecision`
+
+반환: `approved`, `score`, `required_score`, `decision`, `reasons`, `component_scores`, `metrics`, `is_reversal`, `fast_reversal`, `block_reason`.
+
+방향: `UP_RED` = +1, `DOWN_BLUE` = -1.
+
+기본 확인: 마지막 두 완성봉이 실제 confirmed crossover 조건을 만족하는지 검증. 불만족 시 `FILTER_INPUT_NOT_CROSSOVER`. 이 함수는 새 플래그를 생성하지 않고 기존 confirmed 신호만 평가한다.
+
+| 항목 | 배점 | 조건 |
+|------|------|------|
+| A. Histogram impulse | 25 | `hist_impulse_atr = direction × (curr_hist − prev_hist) / ATR14` — `≥0.10→10`, `≥0.15→18`, `≥0.22→25` |
+| B. 가격 강도 | 25 | 4봉 돌파이면 25. 아니면 impulse — `≥0.35 ATR→15`, `≥0.55 ATR→25` |
+| C. 캔들 몸통 | 10 | 방향 일치 캔들 — `body_atr ≥0.25→5`, `≥0.40→10` |
+| D. 거래량 | 15 | `volume_ratio` — `≥1.00→5`, `≥1.10→10`, `≥1.20→15` (현재 봉은 중앙값 제외) |
+| E. EMA10 추세 | 10 | UP: EMA10↑ & close>EMA10 / DOWN: EMA10↓ & close<EMA10 |
+| F. EMA20 또는 VWAP | 10 | UP: close>EMA20 또는 close>당일 VWAP / DOWN: close<EMA20 또는 close<당일 VWAP |
+| G. 변동성 | 5 | 최근 8봉 range/close ≥ `0.006` **또는** 현재 ATR14 ≥ 직전 20개 ATR14 중앙값 |
+
+설정 기본값(`config.py`, 하드코딩 금지 — 필터 함수는 config 사용):
+
+- `MAJOR_ENTRY_SCORE_MIN=65`, `MAJOR_REVERSAL_SCORE_MIN=75`, `MAJOR_FAST_REVERSAL_SCORE_MIN=82`
+- hist/price/body/volume 구간은 `MAJOR_*_T1/T2/T3` 상수
+- `MAJOR_SIDEWAYS_EMA_SPREAD_MAX=0.0007`, `MAJOR_SIDEWAYS_RANGE_MAX=0.006`
+- `MAJOR_RANGE_BREAKOUT_LOOKBACK=4`, `MAJOR_RECENT_RANGE_LOOKBACK=8`, `MAJOR_VOLUME_LOOKBACK=20`
+
+### 승인 기준
+
+- 신규 진입(flat): `required_score = 65`
+- 반대 포지션 전환: `required_score = 75`
+- 직전 실제 진입 후 15분 이내 반대 전환: `required_score = 82`, `fast_reversal=True`
+- 필수 가격조건(하나 이상): 4봉 돌파 **또는** price impulse ≥ 0.35 ATR **또는** EMA20 방향 일치 **또는** VWAP 방향 일치
+- 횡보 차단(동시 만족 시 거절): `ema_spread = |EMA10−EMA20|/close < 0.0007` **그리고** 최근 8봉 range/close < `0.006`
+
+결과 라벨:
+
+- 승인: `MAJOR_APPROVED`
+- 점수 미달: `MAJOR_SCORE_BELOW_THRESHOLD`
+- 필수 가격조건 미달: `MAJOR_PRICE_CONFIRMATION_FAILED`
+- 횡보: `MAJOR_SIDEWAYS_BLOCK`
+- 데이터 부족: `FILTER_DATA_INSUFFICIENT`
+- 입력 비교차: `FILTER_INPUT_NOT_CROSSOVER`
+
+### 거래 횟수와 추가매수 방지
+
+설정: `MAJOR_MAX_DAILY_ENTRIES=4`, `MAJOR_MIN_HOLD_MIN=9`, `MAJOR_FAST_REVERSAL_WINDOW_MIN=15`, `MAJOR_SAME_DIRECTION_REENTRY_MIN=18` (환경변수 `MACD2_MAJOR_*`로 기본값 덮어쓰기 가능).
+
+1. 같은 방향 포지션 보유 중 같은 방향 플래그: 추가매수 금지 → `SAME_DIRECTION_POSITION_HELD`
+2. 하루 승인 신규진입 4회 도달 후 신규 BUY 금지 → `MAJOR_DAILY_ENTRY_LIMIT` (Stop Loss·Profit Lock·강제청산은 계속 작동)
+3. 같은 방향 재진입: 마지막 같은 방향 청산 후 18분 이내 금지 → `MAJOR_SAME_DIRECTION_COOLDOWN`
+4. 최소 보유 9분: 작은 반대 confirmed로는 전환하지 않음. 반대 점수 ≥ 82이면 9분 이내에도 강한 반전 전환 허용. Stop Loss는 시간과 무관 즉시. Profit Lock·강제청산은 기존 규칙 우선
+5. `daily_major_entry_count`는 **실제 BUY 체결수량 > 0일 때만** 증가. 플래그 승인만·주문 거절·미체결로는 증가 금지
+
+점수 승인 후 거래 게이트는 `apply_major_trade_gates()`로 적용한다.
+
+### Worker 연결 위치
+
+필터 판단은 주문 전 **한 곳**에서만 수행한다(`_dispatch_confirmed_signal` 내부, `_execute_or_wait` 직전). 주문·체결 함수 내부에 필터를 넣지 않는다.
+
+```text
+confirmed crossover 생성
+→ 기존 signal ledger 기록(원본 플래그 유지)
+→ [필터 ON] evaluate_major_flag + trade gates → 원장/state 기록
+→ approved=True 일 때만 _execute_or_wait
+→ approved=False 이면 broker 호출 없이 FILTERED_OUT + processed_signal_ids 등록
+```
+
+필터 OFF:
+
+```text
+confirmed crossover 생성 → 기존과 동일하게 _execute_or_wait
+```
+
+반대신호:
+
+- 필터 OFF: 기존 반대신호 전환 유지
+- 필터 ON: 반대 confirmed도 major 승인 시에만 기존 SELL→잔고0→BUY. 탈락 반대신호는 포지션 유지. Stop Loss·Profit Lock 조건이 발생하면 필터와 무관하게 청산
+
+pending 재시도는 최초 승인(또는 필터 OFF) 당시 게이트를 이미 통과한 것으로 보고 재필터하지 않는다.
+
+### 모델·state
+
+`MajorFlagDecision` dataclass를 `models.py`에 둔다. runtime state에 최소 다음을 저장한다:
+
+`major_filter_enabled`, `major_filter_enabled_at`, `major_filter_enabled_by`, `major_filter_version`, `daily_major_entry_count`, `last_major_entry_at`, `last_major_exit_at`, `last_major_exit_direction`, 및 직전 판정 필드(`last_major_score` 등).
+
+거래일 롤오버 시 `daily_major_entry_count`는 0으로 리셋한다. 토글(`major_filter_enabled`)은 유지한다.
+
+### 검증 스크립트
+
+`scripts/macd2_validate_major_filter.py` — 지정 일자의 000660 1분봉에 대해 confirmed 신호에 필터를 적용하는 **read-only** 검증.
+
+- 입력 예: `data/validation/macd2_parity`
+- 출력: `data/validation/major_filter/all_flags_scored.csv`, `approved_flags.csv`, `summary.json`
+- 주문·broker 호출 금지, 운영 state·ledger·cache 변경 금지
+- 참고용 목표 거래 시각(라벨일 뿐 코드 정답 하드코딩 아님)과의 승인·탈락 차이를 숨기지 않고 보고한다. 파라미터를 반복 조정해 과최적화하지 않는다.
+
+### 수정 범위 / 금지
+
+허용(최소 수정): `major_flag_filter.py`(신규), `config.py`, `models.py`, `worker.py`, `state_store.py`, `ledger.py`, `service.py`, UI, 본 문서, `tests/macd2/test_major_flag_filter.py`, 검증 스크립트.
+
+수정 금지: `signal_engine.py`의 MACD·confirmed crossover, `market_data.py` 기존 수집·봉 생성, `broker_adapter.py`, `order_executor.py`, `kis_client.py` 주문 함수, BUY/SELL 수량 산식, 체결 polling·잔고 동기화, STOP_LOSS, PROFIT_LOCK, 강제청산, REAL gate, 다른 전략 모듈, 광범위 리팩토링.
 
 ## 금지 사항
 
@@ -195,3 +361,7 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - 실제 KIS 주문 테스트 금지
 - 새 프레임워크 도입 또는 대규모 리팩토링 금지
 - `main` 브랜치 푸시 금지. `main-MACD2`에만 커밋·푸시한다.
+- MAJOR 필터용 날짜·시각·방향 하드코딩 금지
+- 필터 ON이 confirmed 플래그 생성 수·시각·방향을 바꾸게 하는 변경 금지
+- 필터를 주문·체결 함수 내부에 넣는 변경 금지
+- Stop Loss / Profit Lock / 강제청산을 필터에 종속시키는 변경 금지

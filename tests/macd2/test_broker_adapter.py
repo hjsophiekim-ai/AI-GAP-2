@@ -131,15 +131,15 @@ def test_get_buy_sizing_quote_uses_same_symbol_and_market_ord_dvsn():
     assert quote.msg1 == "OK"
 
 
-def test_get_buy_sizing_quote_uses_ioc_limit_price_and_ord_dvsn():
+def test_get_buy_sizing_quote_uses_limit_price_and_ord_dvsn():
     stub = _StubBrokerWithKis()
     adapter = MockBrokerAdapter(broker=stub)
 
-    quote = adapter.get_buy_sizing_quote("0193T0", price=11_420.0, order_type="ioc_limit")
+    quote = adapter.get_buy_sizing_quote("0193T0", price=11_420.0, order_type="limit")
 
-    assert stub.kis.calls == [("0193T0", 11_420, "11")]
-    assert quote.order_type == "ioc_limit"
-    assert quote.ord_dvsn == "11"
+    assert stub.kis.calls == [("0193T0", 11_420, "00")]
+    assert quote.order_type == "limit"
+    assert quote.ord_dvsn == "00"
     assert quote.order_price == 11_420.0
     assert quote.limit_buyable_qty == 123
 
@@ -184,14 +184,24 @@ def test_mock_adapter_buy_sell_use_market_order_type():
     assert stub.sell_calls == [("0193T0", 5, "market")]
 
 
-def test_mock_adapter_buy_ioc_limit_uses_ioc_limit_order_type():
+def test_mock_adapter_buy_limit_uses_limit_order_type():
     stub = _StubBroker()
     adapter = MockBrokerAdapter(broker=stub)
 
-    buy_result = adapter.buy_ioc_limit("0193T0", 5, 11_420.0, "cid-3")
+    buy_result = adapter.buy_limit("0193T0", 5, 11_420.0, "cid-3")
 
     assert buy_result.success is True
     assert buy_result.side == "BUY"
+    assert stub.buy_calls == [("0193T0", 5, "limit")]
+
+
+def test_mock_adapter_buy_ioc_limit_legacy_still_callable():
+    stub = _StubBroker()
+    adapter = MockBrokerAdapter(broker=stub)
+
+    buy_result = adapter.buy_ioc_limit("0193T0", 5, 11_420.0, "cid-legacy")
+
+    assert buy_result.success is True
     assert stub.buy_calls == [("0193T0", 5, "ioc_limit")]
 
 
