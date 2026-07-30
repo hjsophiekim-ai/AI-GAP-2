@@ -739,3 +739,44 @@ class MarketDataService:
 
     def history_updater_alive(self) -> bool:
         return bool(self._history_updater_thread and self._history_updater_thread.is_alive())
+
+
+def filter_complete_3m_bars(
+    bars_3m: pd.DataFrame, one_minute_bars: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[Any]]:
+    """Drop any completed 3-minute bar whose 3 constituent 1-minute bars are
+    not ALL present with a valid close in ``one_minute_bars`` (docs §4: an
+    API error or a dropped/empty page must never silently masquerade as a
+    real, complete 3-minute bar — never fill or interpolate the gap). A bar
+    is only ever treated as "confirmed" when its own 3 one-minute bars are
+    all actually there; anything else is simply excluded from the returned
+    frame (never included with partial data), so the caller's MACD/EMA
+    series only ever runs over genuinely complete bars.
+
+    Returns ``(filtered_bars_3m, dropped_bar_starts)`` — the caller decides
+    how to surface a non-empty ``dropped_bar_starts`` (e.g. HISTORY_GAP).
+    """
+    if bars_3m is None or bars_3m.empty:
+        return bars_3m, []
+    if one_minute_bars is None or one_minute_bars.empty or "datetime" not in one_minute_bars.columns:
+        return bars_3m.iloc[0:0].reset_index(drop=True), list(bars_3m["datetime"])
+
+    work_1m = one_minute_bars.copy()
+    work_1m["datetime"] = pd.to_datetime(work_1m["datetime"], errors="coerce")
+    if "close" in work_1m.columns:
+        valid_closes = pd.to_numeric(work_1m["close"], errors="coerce")
+        work_1m = work_1m.loc[work_1m["datetime"].notna() & valid_closes.notna()]
+    else:
+        work_1m = work_1m.loc[work_1m["datetime"].notna()]
+    have = set(work_1m["datetime"])
+
+    keep_mask: list[bool] = []
+    dropped: list[Any] = []
+    for bar_start in bars_3m["datetime"]:
+        needed = [pd.Timestamp(bar_start) + timedelta(minutes=i) for i in range(3)]
+        complete = all(minute in have for minute in needed)
+        keep_mask.append(complete)
+        if not complete:
+            dropped.append(bar_start)
+    filtered = bars_3m.loc[keep_mask].reset_index(drop=True)
+    return filtered, dropped

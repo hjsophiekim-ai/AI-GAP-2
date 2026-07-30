@@ -13,7 +13,9 @@ from app.trading.macd2.market_data import (
     _candles_to_df,
     _load_prior_day_1m_cache,
     _prior_weekday_candidates,
+    filter_complete_3m_bars,
 )
+from app.trading.macd2.signal_engine import resample_completed_3m
 
 KST = config.KST
 
@@ -504,3 +506,51 @@ def test_candles_to_df_skips_malformed_rows():
     df = _candles_to_df(candles)
     assert len(df) == 1
     assert df.iloc[0]["close"] == 100.0
+
+
+def test_filter_complete_3m_bars_drops_bin_missing_a_1m_bar():
+    """docs §4: a 3-min bin only ever counts as confirmed when ALL 3 of its
+    constituent 1-minute bars are present — never a silent partial bar."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    rows = []
+    for i in range(30):
+        if i == 13:  # drop the middle minute of the 09:12-09:15 bin
+            continue
+        dt = start + timedelta(minutes=i)
+        rows.append({"datetime": dt, "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0, "volume": 10})
+    df_1m = pd.DataFrame(rows)
+    now = start + timedelta(minutes=30)
+
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    gapped_bar_start = start + timedelta(minutes=12)
+    assert (bars_3m["datetime"] == gapped_bar_start).any()  # present before filtering (partial agg)
+
+    filtered, dropped = filter_complete_3m_bars(bars_3m, df_1m)
+
+    assert dropped == [pd.Timestamp(gapped_bar_start)]
+    assert not (filtered["datetime"] == gapped_bar_start).any()
+    assert len(filtered) == len(bars_3m) - 1
+
+
+def test_filter_complete_3m_bars_keeps_all_bars_when_no_gap():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _fake_bars_df(start, 30)
+    now = start + timedelta(minutes=30)
+
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    filtered, dropped = filter_complete_3m_bars(bars_3m, df_1m)
+
+    assert dropped == []
+    assert len(filtered) == len(bars_3m)
+
+
+def test_filter_complete_3m_bars_empty_1m_history_drops_everything():
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _fake_bars_df(start, 30)
+    now = start + timedelta(minutes=30)
+    bars_3m = resample_completed_3m(df_1m, now=now)
+
+    filtered, dropped = filter_complete_3m_bars(bars_3m, pd.DataFrame(columns=["datetime", "close"]))
+
+    assert filtered.empty
+    assert len(dropped) == len(bars_3m)

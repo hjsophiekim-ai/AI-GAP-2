@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from app.trading.macd2 import config, ledger
+from app.trading.macd2 import config, ledger, worker
 
 _APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
 
@@ -73,6 +73,10 @@ def test_daily_stats_show_flag_times_and_order_status():
     # different trading_date and the flag captions never render.
     trading_date = pd.Timestamp.now().strftime("%Y%m%d")
     date_prefix = f"{trading_date[0:4]}-{trading_date[4:6]}-{trading_date[6:8]}"
+    # The page now filters "current" stats rows to THIS deployed worker_code_sha
+    # (docs §2) — injected rows must carry the same value the page itself will
+    # compute via service.get_snapshot()["worker_code_sha"] (worker.git_sha()).
+    current_sha = worker.git_sha()
     for row in (
         {
             "trading_date": trading_date,
@@ -88,6 +92,7 @@ def test_daily_stats_show_flag_times_and_order_status():
             "strategy_name": "MACD2",
             "strategy_version": config.STRATEGY_VERSION,
             "signal_rule": config.SIGNAL_RULE,
+            "worker_code_sha": current_sha,
         },
         {
             "trading_date": trading_date,
@@ -103,6 +108,7 @@ def test_daily_stats_show_flag_times_and_order_status():
             "strategy_name": "MACD2",
             "strategy_version": config.STRATEGY_VERSION,
             "signal_rule": config.SIGNAL_RULE,
+            "worker_code_sha": current_sha,
         },
     ):
         ledger.append_signal(row)

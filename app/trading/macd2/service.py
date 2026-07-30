@@ -31,7 +31,7 @@ from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import RuntimeStatus
 from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
-from app.trading.macd2.worker import Macd2Worker, initialize_strategy_session
+from app.trading.macd2.worker import Macd2Worker, compute_today_signal_overview, git_sha, initialize_strategy_session
 
 KST = config.KST
 
@@ -262,12 +262,21 @@ class Macd2Service:
         )
         primary_macd = None
         primary_signal = None
+        today_signal_overview: list[dict[str, Any]] = []
         if self._market_data is not None:
             try:
-                snap = calculate_macd(resample_completed_3m(self._market_data.get_history_df(), now=datetime.now(KST)))
+                df_1m = self._market_data.get_history_df()
+                now = datetime.now(KST)
+                snap = calculate_macd(resample_completed_3m(df_1m, now=now))
                 if snap is not None:
                     primary_macd = snap.macd
                     primary_signal = snap.signal
+                # docs §3: recomputed, read-only "오늘 전체 신호" overview
+                # (LIVE_CONFIRMED vs HISTORICAL_REPLAY_ONLY) — never touches
+                # order_executor/major_flag_filter/processed_signal_ids.
+                today_signal_overview = compute_today_signal_overview(
+                    df_1m, now=now, session_started_at=state.session_started_at,
+                )
             except Exception:
                 pass
         return {
@@ -278,6 +287,8 @@ class Macd2Service:
             "quote_status": quote_status,
             "primary_macd": primary_macd,
             "primary_signal": primary_signal,
+            "today_signal_overview": today_signal_overview,
+            "worker_code_sha": git_sha(),
             "bootstrap_diag": self._market_data.get_last_bootstrap_diag() if self._market_data is not None else {},
             "bootstrap_attempts": self._bootstrap_attempts,
             "bootstrap_last_attempt_at": self._last_bootstrap_at,

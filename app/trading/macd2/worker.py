@@ -43,7 +43,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from app.trading.macd2 import config, ledger, major_flag_filter, order_executor, risk_exit
-from app.trading.macd2.market_data import MarketDataService
+from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
 from app.trading.macd2.models import (
     Direction,
     MajorFlagDecision,
@@ -98,6 +98,14 @@ def _git_sha() -> str:
         ).strip()
     except Exception:
         return ""
+
+
+def git_sha() -> str:
+    """Public wrapper — the SAME short SHA written into every signal-ledger
+    row's ``worker_code_sha`` column, so callers (UI stats filtering) compare
+    against the identical value/format instead of a differently-formatted SHA
+    from another source (e.g. app.utils.runtime_info's full-length SHA)."""
+    return _git_sha()
 
 
 @dataclass
@@ -223,6 +231,74 @@ def initialize_strategy_session(
         state.last_evaluated_bar_ts = None
         state.baseline_relation = None
     return state
+
+
+ORIGIN_LIVE_CONFIRMED = "LIVE_CONFIRMED"
+ORIGIN_HISTORICAL_REPLAY_ONLY = "HISTORICAL_REPLAY_ONLY"
+
+
+def compute_today_signal_overview(
+    df_1m: pd.DataFrame, *, now: datetime, session_started_at: Optional[str],
+) -> list[dict[str, Any]]:
+    """Recompute every one of TODAY's confirmed (completed-3m-bar) crossovers
+    from raw 1-minute history, for the 신호 통계 panel ONLY — never called by
+    run_once, never touches order_executor/major_flag_filter/processed_signal_ids
+    (docs §3/§5). Uses the exact same pure functions as the live Worker
+    (resample_completed_3m / filter_complete_3m_bars / calculate_macd /
+    evaluate_macd_crossover) so a bar's classification here always agrees
+    with what run_once would have decided had it been running at that moment.
+
+    A bar whose window closed strictly before ``session_started_at`` (this
+    Worker session was never running yet) is classified
+    ``HISTORICAL_REPLAY_ONLY`` — display only, no order authority ever
+    existed for it. A bar closing at/after ``session_started_at`` is
+    ``LIVE_CONFIRMED`` — the same bar the live run_once() loop had a genuine
+    chance to evaluate and dispatch on. The very first bar of the day is
+    baseline-only (mirrors ``_advance_confirmed_primary``'s own
+    is-first-of-day gate) and never produces a signal.
+    """
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    bars_3m, _dropped = filter_complete_3m_bars(bars_3m, df_1m)
+    if bars_3m.empty:
+        return []
+
+    today_str = now.astimezone(KST).strftime("%Y%m%d")
+    today_mask = bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str
+    today_indices = list(bars_3m.index[today_mask])
+    if not today_indices:
+        return []
+
+    session_start_dt = _parse_iso_dt(session_started_at)
+    overview: list[dict[str, Any]] = []
+    last_direction: Optional[Direction] = None
+    for pos, idx in enumerate(today_indices):
+        window = bars_3m.iloc[: idx + 1]
+        snap = calculate_macd(window)
+        if snap is None:
+            continue
+        if pos == 0:
+            # First bar of today: baseline only, never a signal (mirrors
+            # _advance_confirmed_primary's is_first_of_day suppression).
+            last_direction = None
+            continue
+        direction = evaluate_macd_crossover(snap, last_direction)
+        if direction == Direction.HOLD:
+            continue
+        last_direction = direction
+        bar_end = snap.bar_dt + timedelta(minutes=3)
+        origin = (
+            ORIGIN_HISTORICAL_REPLAY_ONLY
+            if session_start_dt is not None and bar_end <= session_start_dt
+            else ORIGIN_LIVE_CONFIRMED
+        )
+        overview.append({
+            "signal_id": make_signal_id(snap.bar_dt, direction),
+            "bar_start_at": snap.bar_dt.isoformat(),
+            "bar_end_at": bar_end.isoformat(),
+            "direction": direction.value,
+            "origin": origin,
+        })
+    return overview
 
 
 def _normalize_broker_positions(raw_positions) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
@@ -1081,27 +1157,6 @@ def _dispatch_confirmed_signal(
     return outcome
 
 
-def _dispatch_candidate_signal(
-    *,
-    broker,
-    market_data: MarketDataService,
-    state: RuntimeState,
-    now: datetime,
-    candidate_snap,
-    direction: Direction,
-    signal_type: str,
-    position: Optional[PositionSnapshot],
-    result: TickResult,
-    bars_3m=None,
-):
-    signal_id = make_signal_id(candidate_snap.bar_dt, direction)
-    return _dispatch_confirmed_signal(
-        broker=broker, market_data=market_data, state=state, now=now,
-        macd_snap=candidate_snap, direction=direction, signal_type=signal_type,
-        position=position, result=result, signal_id_override=signal_id, bars_3m=bars_3m,
-    )
-
-
 def _record_confirmed_blocked_signal(
     *,
     state: RuntimeState,
@@ -1185,6 +1240,15 @@ def run_once(
     result.timing["history_cache_read"] = time.monotonic() - t0
     t0 = time.monotonic()
     bars_3m = resample_completed_3m(df_1m, now=now)
+    # docs §4: a completed 3m bar only ever counts as "confirmed" when its own
+    # 3 constituent 1-minute bars are ALL present — an API error/dropped page
+    # must never silently masquerade as a real bar. Any bin missing one or
+    # more of its minutes is dropped here (never filled/interpolated), which
+    # also blocks that specific bar's crossover/MAJOR-filter/order evaluation
+    # (HISTORY_GAP) until the gap is backfilled by a later incremental merge.
+    bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(bars_3m, df_1m)
+    if _history_gap_bar_starts:
+        state.order_block_reason = "HISTORY_GAP"
     macd_snap = calculate_macd(bars_3m)
     result.timing["macd_calculation"] = time.monotonic() - t0
     if macd_snap is None:
@@ -1318,37 +1382,11 @@ def run_once(
                     state.last_evaluated_bar_ts = bar_ts_str
                     return result
 
-        candidate_switch_direction = candidate_condition if candidate_snap is not None else Direction.HOLD
-        if entry_window_open and candidate_switch_direction != Direction.HOLD:
-            target = order_executor.target_symbol_for_direction(candidate_switch_direction)
-            if target != pos.symbol:
-                outcome = _dispatch_candidate_signal(
-                    broker=broker, market_data=market_data, state=state, now=now,
-                    candidate_snap=candidate_snap, direction=candidate_switch_direction,
-                    signal_type="REVERSAL_PROVISIONAL", position=pos, result=result, bars_3m=bars_3m,
-                )
-                if _is_major_filtered(outcome):
-                    result.actions.append(f"{config.FILTERED_OUT}:{candidate_switch_direction.value}")
-                elif outcome is not None:
-                    _apply_switch_outcome(state, outcome, candidate_switch_direction)
-                    result.actions.append(f"OPPOSITE_SIGNAL:{candidate_switch_direction.value}")
-                    return result
-            elif state.major_filter_enabled:
-                # Filter ON: the same-direction hold is decided (and ledgered as
-                # SAME_DIRECTION_POSITION_HELD) by the MAJOR_FLAG gate itself.
-                _dispatch_candidate_signal(
-                    broker=broker, market_data=market_data, state=state, now=now,
-                    candidate_snap=candidate_snap, direction=candidate_switch_direction,
-                    signal_type="HELD_SAME_PROVISIONAL", position=pos, result=result, bars_3m=bars_3m,
-                )
-            else:
-                _record_confirmed_blocked_signal(
-                    state=state, macd_snap=candidate_snap, direction=candidate_switch_direction,
-                    signal_type="HELD_SAME_PROVISIONAL",
-                    reason=order_executor.BLOCK_ALREADY_HOLDING,
-                    result=result,
-                )
-
+        # NOTE: the forming-bar candidate (candidate_snap/candidate_condition)
+        # is shadow/display data ONLY (docs §5 MACD single-path fix) — it must
+        # never call order_executor, the MAJOR_FLAG filter, or mutate
+        # confirmed state/processed_signal_ids/the signal ledger. Only the
+        # confirmed, completed-3m-bar crossover below has order authority.
         if entry_window_open and confirmed_direction != Direction.HOLD:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
@@ -1406,20 +1444,9 @@ def run_once(
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
 
-    candidate_entry_direction = candidate_condition if candidate_snap is not None else Direction.HOLD
-    if entry_window_open and candidate_entry_direction != Direction.HOLD:
-        outcome = _dispatch_candidate_signal(
-            broker=broker, market_data=market_data, state=state, now=now,
-            candidate_snap=candidate_snap, direction=candidate_entry_direction,
-            signal_type="INITIAL_PROVISIONAL", position=None, result=result, bars_3m=bars_3m,
-        )
-        if _is_major_filtered(outcome):
-            result.actions.append(f"{config.FILTERED_OUT}:{candidate_entry_direction.value}")
-        elif outcome is not None:
-            _apply_switch_outcome(state, outcome, candidate_entry_direction)
-            result.actions.append(f"ENTRY:{candidate_entry_direction.value}")
-            return result
-
+    # NOTE: see the held-position branch above — the forming-bar candidate
+    # never dispatches an entry order either; only the confirmed crossover
+    # below (order authority stays exclusively with the completed 3m bar).
     if entry_window_open and confirmed_direction != Direction.HOLD:
         outcome = _dispatch_confirmed_signal(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,

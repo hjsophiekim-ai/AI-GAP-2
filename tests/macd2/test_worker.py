@@ -195,10 +195,13 @@ def test_duplicate_signal_id_is_never_reexecuted_across_many_ticks():
     assert len(broker.orders) == orders_after_first  # zero additional orders
 
 
-def test_provisional_candidate_confirms_and_dispatches_order():
-    """A two-tick-confirmed forming-bar candidate is order-authoritative again:
-    the 2026-07-27 13:33 incident showed that keeping it display-only misses
-    KIS-chart flags that users expect MACD2 to trade."""
+def test_provisional_candidate_never_dispatches_order_shadow_only():
+    """docs §1/§5 MACD single-path fix: the forming-bar candidate must NEVER
+    place a real order, touch the signal ledger, or gain processed_signal_ids
+    authority — only the confirmed, completed-3m-bar crossover may (see
+    _advance_confirmed_primary/test_confirmed_dispatch_within_5_seconds_of_detection).
+    The candidate's own shadow/diagnostic fields (provisional_flag,
+    candidate_confirmed_at) still populate normally for UI display."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -210,12 +213,12 @@ def test_provisional_candidate_confirms_and_dispatches_order():
     )
 
     run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms candidate
+    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # candidate confirmed (shadow only)
 
-    assert result.actions == ["ENTRY:UP_RED"]
-    assert state.position is not None
-    assert broker.orders[-1].side == "BUY"
-    assert ledger.load_signal_ledger()[0]["signal_type"] == "INITIAL_PROVISIONAL"
+    assert result.actions == []
+    assert state.position is None
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
     assert state.candidate_confirmed_at is not None
     assert state.provisional_flag == Direction.UP_RED
 
@@ -265,7 +268,7 @@ def test_provisional_recomputes_same_forming_bar_from_latest_quote_every_tick():
     assert state.provisional_diff != first_diff
 
 
-def test_provisional_down_candidate_confirms_and_dispatches_order():
+def test_provisional_down_candidate_never_dispatches_order_shadow_only():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=60.0)
@@ -277,18 +280,19 @@ def test_provisional_down_candidate_confirms_and_dispatches_order():
     )
 
     run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
-    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # confirms candidate
+    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))  # candidate confirmed (shadow only)
 
-    assert result.actions == ["ENTRY:DOWN_BLUE"]
-    assert state.position is not None
-    assert broker.orders[-1].side == "BUY"
-    assert ledger.load_signal_ledger()[0]["signal_type"] == "INITIAL_PROVISIONAL"
+    assert result.actions == []
+    assert state.position is None
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
     assert state.provisional_flag == Direction.DOWN_BLUE
 
 
-def test_provisional_candidate_repeated_ticks_do_not_duplicate_order():
-    """Repeated ticks against the same confirmed candidate may dispatch once,
-    but the same signal_id must never order again."""
+def test_provisional_candidate_repeated_ticks_never_dispatch_order():
+    """Repeated ticks against a persistently-confirmed forming-bar candidate
+    must never place any order — order authority stays exclusively with the
+    confirmed completed-bar crossover (docs §1/§5)."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -301,19 +305,20 @@ def test_provisional_candidate_repeated_ticks_do_not_duplicate_order():
 
     run_once(broker=broker, market_data=svc, state=state, now=now)  # arms the candidate
     confirm_now = now + timedelta(seconds=5)
-    run_once(broker=broker, market_data=svc, state=state, now=confirm_now)  # confirms candidate
+    run_once(broker=broker, market_data=svc, state=state, now=confirm_now)  # candidate confirmed (shadow only)
     for _ in range(20):
         run_once(broker=broker, market_data=svc, state=state, now=confirm_now)
 
-    assert len(broker.orders) == 1
-    assert len(ledger.load_signal_ledger()) == 1
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
 
 
 def test_provisional_momentary_revert_cancels_candidate_zero_signals_and_orders():
-    """docs 2026-07-27 momentary-crossing fix: a single-tick crossing that
-    reverts before a second fresh confirming tick must never reach the
-    ledger/order layer — candidate armed, then reverted, then re-armed
-    (still unconfirmed) produces 0 signals and 0 orders."""
+    """docs 2026-07-27 momentary-crossing fix (shadow display only since docs
+    §1/§5): a single-tick crossing that reverts before a second fresh
+    confirming tick cancels the shadow candidate; and — regardless of
+    revert/re-confirm — the forming-bar candidate never reaches the
+    ledger/order layer at all, confirmed or not."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -339,14 +344,15 @@ def test_provisional_momentary_revert_cancels_candidate_zero_signals_and_orders(
     )
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=4))
 
-    assert result.actions == ["ENTRY:UP_RED"]
-    assert len(broker.orders) == 1
-    assert len(ledger.load_signal_ledger()) == 1
+    assert result.actions == []
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
+    assert state.provisional_flag == Direction.UP_RED  # shadow re-confirmed, no order authority
 
 
-def test_provisional_same_bar_candidate_cancel_then_reconfirm_dispatches_once():
-    """후보 취소 후 같은 3분봉에서 재교차가 다시 2회(>=3s) 확인되면
-    candidate로 정상 재확정되고 한 번만 주문된다."""
+def test_provisional_same_bar_candidate_cancel_then_reconfirm_never_dispatches():
+    """후보 취소 후 같은 3분봉에서 재교차가 다시 2회(>=3s) 확인되어 shadow
+    candidate가 재확정되더라도(docs §1/§5) 주문·원장 기록은 0건이어야 한다."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     df_1m = _flat_completed_history(start)
     svc = _provisional_service(df_1m, watch_price=140.0)
@@ -370,8 +376,8 @@ def test_provisional_same_bar_candidate_cancel_then_reconfirm_dispatches_once():
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=8))  # 2nd sighting, gap=4s -> confirm
 
     assert result.actions == []
-    assert len(broker.orders) == 1
-    assert len(ledger.load_signal_ledger()) == 1
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
     assert state.provisional_flag == Direction.UP_RED
     assert state.candidate_confirmed_at is not None
 
@@ -464,6 +470,104 @@ def test_confirmed_dispatch_within_5_seconds_of_detection():
     detected = datetime.fromisoformat(result.signal_detected_at)
     executor_called = datetime.fromisoformat(result.signal_dispatch_trace["executor_called_at"])
     assert (executor_called - detected).total_seconds() <= config.SIGNAL_TO_ORDER_REQUEST_MAX_SEC
+
+
+def test_confirmed_flag_time_and_signal_id_use_bar_start_not_bar_end():
+    """docs §1: 3m bars are 09:00-anchored, left-labeled — the 13:57-14:00 bar's
+    flag_time/signal_id must show 13:57 (bar_start), never 14:00 (bar_end).
+    Only evaluated_at (detected_at)/order_requested_at may fall at/after the
+    bar's own completion instant (14:00)."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    now = start + timedelta(minutes=3 * 100, seconds=5)  # 14:00:05
+    bar_start = start + timedelta(minutes=3 * 99)  # 13:57:00
+    bar_end = bar_start + timedelta(minutes=3)  # 14:00:00
+    state = _fresh_state()
+    state.strategy_name = config.STRATEGY_NAME
+    state.strategy_version = config.STRATEGY_VERSION
+    state.signal_rule = config.SIGNAL_RULE
+    state.last_confirmed_bar_ts = (start + timedelta(minutes=3 * 98)).isoformat()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    svc = _svc_with_quote(df_1m, now, {config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == ["ENTRY:UP_RED"]
+    row = ledger.load_signal_ledger()[0]
+    assert row["completed_bar_at"] == bar_start.strftime("%H%M%S") == "135700"
+    assert row["signal_id"] == f"{bar_start:%Y%m%d}_{bar_start:%H%M%S}_UP_RED"
+    assert "135700" in row["signal_id"]
+    detected_at = datetime.fromisoformat(row["detected_at"])
+    order_requested_at = datetime.fromisoformat(row["order_requested_at"])
+    assert detected_at >= bar_end
+    assert order_requested_at >= bar_end
+
+
+def test_history_gap_blocks_confirmed_signal_until_backfilled():
+    """docs §4: a completed 3m bar missing one of its 3 constituent 1-minute
+    bars must never be treated as confirmed — HISTORY_GAP blocks that bar's
+    crossover/MAJOR-filter/order evaluation (0 orders, 0 ledger rows) without
+    advancing last_confirmed_bar_ts, so the SAME bar dispatches normally once
+    the gap is backfilled by a later incremental merge."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    full_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    gap_minute = start + timedelta(minutes=3 * 99 + 1)  # middle minute of the new 13:57-14:00 bar
+    gapped_1m = full_1m[full_1m["datetime"] != gap_minute].reset_index(drop=True)
+    now = start + timedelta(minutes=3 * 100, seconds=5)  # 14:00:05
+    baseline_ts = (start + timedelta(minutes=3 * 98)).isoformat()
+    state = _fresh_state()
+    state.strategy_name = config.STRATEGY_NAME
+    state.strategy_version = config.STRATEGY_VERSION
+    state.signal_rule = config.SIGNAL_RULE
+    state.last_confirmed_bar_ts = baseline_ts
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    svc = _svc_with_quote(
+        gapped_1m, now, {config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0},
+    )
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == []
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
+    assert state.order_block_reason == "HISTORY_GAP"
+    assert state.last_confirmed_bar_ts == baseline_ts  # not advanced — same bar retried later
+
+    # Gap backfilled by a later incremental merge (e.g. market_data's own
+    # history-updater catching up) -> the SAME bar now dispatches normally.
+    svc._df_1m = full_1m
+    result2 = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))
+
+    assert result2.actions == ["ENTRY:UP_RED"]
+    assert len(ledger.load_signal_ledger()) == 1
+
+
+def test_compute_today_signal_overview_classifies_by_session_started_at():
+    """docs §3: the recomputed today-overview never touches order_executor/
+    major_flag_filter — it only classifies each bar as HISTORICAL_REPLAY_ONLY
+    (bar closed before this Worker session started) or LIVE_CONFIRMED (bar
+    closed at/after session start), purely for the stats panel."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    now = start + timedelta(minutes=3 * 100, seconds=5)  # 14:00:05
+    bar_start = start + timedelta(minutes=3 * 99)  # 13:57:00
+    bar_end = bar_start + timedelta(minutes=3)  # 14:00:00
+
+    overview_hist = worker.compute_today_signal_overview(
+        df_1m, now=now, session_started_at=(bar_end + timedelta(minutes=1)).isoformat(),
+    )
+    matching = [r for r in overview_hist if r["bar_start_at"] == bar_start.isoformat()]
+    assert len(matching) == 1
+    assert matching[0]["origin"] == "HISTORICAL_REPLAY_ONLY"
+    assert matching[0]["direction"] == "UP_RED"
+    assert "135700" in matching[0]["signal_id"]
+
+    overview_live = worker.compute_today_signal_overview(
+        df_1m, now=now, session_started_at=(bar_start - timedelta(minutes=1)).isoformat(),
+    )
+    matching_live = [r for r in overview_live if r["bar_start_at"] == bar_start.isoformat()]
+    assert len(matching_live) == 1
+    assert matching_live[0]["origin"] == "LIVE_CONFIRMED"
 
 
 def test_entry_cutoff_blocks_new_entry_after_1455(ready_market_data):

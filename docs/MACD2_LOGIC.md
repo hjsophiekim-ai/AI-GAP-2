@@ -1,6 +1,6 @@
 # MACD2 Logic
 
-본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
+본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가, 2026-07-31 플래그 정합성 수정 — 진행봉 candidate 주문권한 재제거·1분봉 완전성 게이트·Worker 세션/SHA 기준 통계 분리). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
 
 ## 목적
 
@@ -20,8 +20,9 @@ MACD2는 SK하이닉스(`000660`) KIS 3분봉 MACD(12,26,9) 차트에 빨간색�
 ## 데이터 — KIS 당일 1분봉이 단일 원본
 
 - `000660` 1분봉은 KIS 당일 1분봉 API(`MarketDataService.merge_incremental_1m`)로 주기적으로(history-updater 스레드, Worker tick과 같은 주기) 갱신하며, 기존 warm-up 이력에 **append → datetime 기준 dedup(keep last) → sort**한 뒤 저장한다. Worker 자신은 KIS를 직접 호출하지 않고 이 캐시만 읽는다.
-- 완성 3분봉은 09:00 기준 3분 경계로 이 누적 1분봉 이력에서 리샘플한다: 09:00~09:02, 09:03~09:05, ...
+- 완성 3분봉은 09:00 기준 3분 경계로 이 누적 1분봉 이력에서 리샘플한다: 09:00~09:02, 09:03~09:05, ... (`label="left", closed="left"` — 봉의 이름/`signal_id`는 항상 그 봉의 **시작시각**이다. 예: 13:42~13:44 봉은 `completed_bar_at`/`signal_id`에 `13:42:00`으로 기록되고, `detected_at`/`order_requested_at`만 그 봉이 실제로 마감된 13:45:00 이후에 찍힌다 — 봉 시작/종료/평가 시각을 서로 섞어 쓰지 않는다.)
 - 전일 데이터는 EMA warm-up에만 사용한다.
+- **2026-07-31 1분봉 완전성 게이트**: 리샘플된 3분봉은 그 3개 구성 1분봉이 **모두** `open/close` 유효값과 함께 존재할 때만 confirmed 취급한다(`market_data.filter_complete_3m_bars`). API 오류·중간 빈 페이지로 1분봉 한 개라도 비면 그 3분봉은 confirmed 목록에서 제외되며(임의 보정·보간 금지), `state.order_block_reason="HISTORY_GAP"`으로 그 시점의 신호 평가·MAJOR 필터·주문을 모두 차단한다. `last_confirmed_bar_ts`는 이때 전진하지 않으므로, 이후 incremental merge로 누락 1분봉이 채워지면 같은 봉이 정상적으로 재평가된다.
 - **2026-07-27 조회 신뢰성 수정**: `주식일별분봉조회`/`inquire-time-itemchartprice`는 실제로 요청 1회당 약 30건만 반환한다(`count` 파라미터와 무관). 페이지 예산(`KIS_MAX_PAGES`)을 06→20으로 늘려 하루 세션(09:00~15:30, 390분)을 모두 커버하도록 했다(이전에는 장 시작 후 3시간이 지나면 당일 데이터 앞부분이 누락됐다). 또한 연속 페이지 요청 사이에 짧은 페이싱(`KIS_PAGE_FETCH_PACING_SEC`)을 두어 KIS 초당 거래건수 제한으로 중간 페이지가 조용히 빈 결과로 오는 문제를 줄였다. 전일 warm-up 날짜 조회가 KIS 서버 오류(500 등)로 실패하면 이를 "해당 날짜 데이터 없음(휴장일)"로 오인해 더 이전 날짜로 잘못 대체하던 버그도 수정했다(`PRIOR_DAY_FETCH_RETRIES`/`PRIOR_DAY_FETCH_RETRY_DELAY_SEC` — 명시적 오류를 동반한 빈 응답만 재시도, 오류 없는 진짜 휴장일은 즉시 다음 날짜로 진행). 전일 warm-up 조회(`_fetch_minute_candles_for_date`)는 MOCK 환경의 이 엔드포인트가 유독 불안정해 읽기 전용 REAL 계좌 client로 수행한다(`000660`은 신호 입력 전용, 직접 매매 대상이 아니므로 REAL/MOCK 시세 데이터가 동일함을 실측 검증했다 — 매매·잔고·주문 경로는 여전히 MOCK만 사용). 당일 라이브 페이징은 REAL 전환 시 오히려 REAL 계좌 rate limit에 더 취약해져 MOCK 그대로 유지한다.
 - 당일 추가된 1분봉 수(`today_1m_bar_count`), 1분봉 이력의 최신 시각(`history_newest_at`), 마지막으로 완성된 3분봉 시각(`last_completed_3m_bar_at`)을 매 tick runtime/UI에 표시한다.
 - `000660` quote와 최근 1분봉 close가 10배/0.1배 스케일 차이를 보이면 MarketData 계층에서 quote를 1회 정상화한다(신호 계산부의 임의 보정은 금지). 이 보정 이후에도 quote와 1분봉 history의 가격 비율이 정상 범위(`QUOTE_HISTORY_PRICE_RATIO_MIN`~`MAX`)를 벗어나거나, 정규장 중인데 1분봉 history의 최신 시각이 `HISTORY_STALE_MAX_SEC` 이상 갱신되지 않으면 **단위·시각 불일치**로 보고 신규 진입을 차단하며 `state.quote_history_mismatch_reason`에 원인을 남긴다.
@@ -58,7 +59,8 @@ Primary 계산은 `app.trading.macd2.signal_engine.evaluate_macd_crossover()` + 
 
 ## Candidate/Shadow — 진행봉과 Signed-B는 주문권한이 없다
 
-- **진행 중(forming) 3분봉의 provisional MACD/diff**: 최신 유효 `000660` quote로 매 tick 갱신되는 진단값이다. `evaluate_primary_forming_crossover()`로 계산하되, 그 결과는 UI candidate 표시(`state.candidate_flag`, `state.provisional_flag`)에만 쓰인다. 같은 방향이 서로 다른 fresh quote tick에서 최소 `PROVISIONAL_CONFIRM_MIN_GAP_SEC`(3초) 이상 간격을 두고 2회 유지되면 "confirmed candidate"로 표시하지만, 이 확정도 여전히 shadow일 뿐 주문·원장·통계·`last_direction`에는 절대 반영하지 않는다.
+- **진행 중(forming) 3분봉의 provisional MACD/diff**: 최신 유효 `000660` quote로 매 tick 갱신되는 진단값이다. `evaluate_primary_forming_crossover()`로 계산하되, 그 결과는 UI candidate 표시(`state.candidate_flag`, `state.provisional_flag`)에만 쓰인다. 같은 방향이 서로 다른 fresh quote tick에서 `config.PROVISIONAL_CONFIRM_MIN_GAP_SEC` 이상 간격을 두고 2회 유지되면 "confirmed candidate"로 표시하지만, 이 확정도 여전히 shadow일 뿐이다.
+- **2026-07-31 재확인/수정**: 한때 이 candidate가 `_dispatch_confirmed_signal`을 직접 호출해(진행 중 3분봉·live quote 기반으로) 실제 BUY/스위칭 주문과 MAJOR_FLAG 채점까지 수행하던 회귀가 있었다(봉이 마감되기 전에 평가되어 `detected_at`이 봉 종료시각보다 앞서는 등 §플래그 시각 규칙을 위반). `run_once()`에서 candidate/provisional 경로의 주문 호출을 완전히 제거해, candidate가 broker/`order_executor`/MAJOR 필터/`processed_signal_ids`/signal ledger 중 어느 것도 절대 건드리지 못하도록 되돌렸다 — 오직 완성봉 Primary crossover(`_advance_confirmed_primary`)만 주문권한을 가진다.
 - **Signed-B**: `evaluate_signed_b`, histogram slope, signed-B 조건은 주문권한이 없다. UI에는 shadow 진단값으로만 표시한다(최근 histogram 3개, signed-B shadow direction, `order_authority=NONE`).
 - 진행봉 provisional 값과 Signed-B는 오늘 빨강/파랑 통계, Primary 플래그 수, `last_direction`, signal ledger 어디에도 절대 포함하지 않는다.
 
@@ -102,6 +104,20 @@ Worker는 5초 tick으로 동작한다.
 12. state 저장
 
 진행봉 crossover는 8-9의 Primary 판단에 전혀 관여하지 않는다 — 오직 완성봉만 주문을 만든다. MAJOR 필터는 완성봉 confirmed 신호의 **주문권한 게이트**일 뿐, confirmed 플래그 생성 자체는 바꾸지 않는다.
+
+## Worker 시작/재시작 — LIVE_CONFIRMED vs HISTORICAL_REPLAY_ONLY
+
+- `initialize_strategy_session()`(Worker `start()`마다 실행)은 그 시점의 마지막 완성봉을 `session_baseline_bar_ts`/`last_confirmed_bar_ts`로 기록한다. `_advance_confirmed_primary`는 이 baseline 봉 자체를 "이미 평가됨"으로 취급해 재주문하지 않고, baseline **이후에 새로 완성되는 봉만** 정상적으로 신호가 된다 — 즉 Worker가 내려가 있던 동안(또는 장 시작 전) 이미 완성된 과거 봉은 재시작 시 절대 뒤늦게 주문되지 않으며, 재시작 이후 첫 신규 교차는 정상적으로 포착된다.
+- **오늘 전체 신호 통계 재계산**: Worker가 실제로 살아있지 않았던 시간대(장 시작 전 포함)에 완성된 봉은 라이브 실행 중에는 신호 원장에 전혀 기록되지 않는다(위 baseline 스킵 때문). UI 통계 패널에는 이를 보완하기 위해 `worker.compute_today_signal_overview(df_1m, now=..., session_started_at=state.session_started_at)`가 오늘 하루 전체의 confirmed crossover를 **읽기 전용으로 재계산**해 보여준다 — `resample_completed_3m`/`filter_complete_3m_bars`/`calculate_macd`/`evaluate_macd_crossover`와 완전히 동일한 순수 함수만 재사용하며, `order_executor`/`major_flag_filter`/`processed_signal_ids`/signal ledger에는 어떤 영향도 주지 않는다(참고용 표시 전용).
+  - 봉 마감 시각(`bar_end`)이 `session_started_at`보다 **이전**이면 `HISTORICAL_REPLAY_ONLY`(주문권한 없었음, 표시 전용).
+  - 봉 마감 시각이 `session_started_at` **이상**이면 `LIVE_CONFIRMED`(실제 Worker가 주문 기회를 가졌던 봉과 동일).
+  - `HISTORICAL_REPLAY_ONLY`/`HISTORY_GAP`(위 1분봉 완전성 절 참조) 봉은 MAJOR 필터·주문 평가 대상이 될 수 없다 — 애초에 broker/필터 호출 경로 자체에 들어오지 않는다.
+
+## 원장 신호의 원산지(SHA) 격리
+
+- 신호 원장의 각 행은 그 신호가 기록된 시점의 배포 코드 SHA를 `worker_code_sha`에 남긴다(`worker.git_sha()` — `git rev-parse --short HEAD`).
+- "오늘 빨강/파랑 플래그" 통계·"현재 confirmed" 표는 **현재 실행 중인 코드의 SHA와 일치하는 행만** 집계한다(`ledger.summarize_signals(..., worker_code_sha=...)`). 배포 도중 SHA가 바뀌면 그 이전 SHA로 기록된 행은 자동으로 `OLD_WORKER_SHA` 사유로 "과거/제외 신호" 패널에만 표시되고, 기존 원장 행 자체는 삭제·수정하지 않는다(조회 필터만 변경).
+- 같은 (날짜, `completed_bar_at`, `direction`) 조합은 `signal_id`가 항상 동일하므로(SHA/버전을 포함하지 않음) 원장 저장 단계(`append_signal`의 `signal_id` dedup)에서 이미 최초 1건만 남는다 — 서로 다른 SHA가 같은 봉을 동시에 기록하는 중복 행은 애초에 생길 수 없다.
 
 ## 주문 및 위험관리
 
@@ -148,7 +164,7 @@ Signal ledger는 `csv.DictWriter`에 컬럼명 기반 dict만 전달한다(위�
 - `final_result`
 - (뒤에 추가) MAJOR 필터 필드: `major_filter_enabled`, `major_filter_version`, `major_score`, `major_required_score`, `major_approved`, `major_decision`, `major_block_reason`, `major_is_reversal`, `major_fast_reversal`, `major_component_scores`, `hist_impulse_atr`, `breakout`, `price_impulse_atr`, `body_atr`, `volume_ratio`, `ema10_ok`, `ema20_or_vwap_ok`, `recent_range_ratio`, `ema_spread_ratio`, `daily_major_entry_count`, `last_major_entry_at` — **기존 컬럼은 삭제·이름변경하지 않고 뒤에만 추가**한다. 과거 행 파싱이 깨지지 않도록 기본값을 둔다.
 
-`strategy_name`/`direction` 값이 알려진 도메인을 벗어나면(예: 컬럼 밀림으로 다른 값이 들어온 경우) 그 행은 삭제·덮어쓰기하지 않고 `MALFORMED_SCHEMA`로 제외 목록에만 표시한다. 오늘 빨강/파랑 통계는 **현재 거래일 + 현재 Worker 세션(`session_started_at` 이후) + 현재 `strategy_version`/`signal_rule`**의 confirmed 신호만 집계한다. candidate(shadow), 취소된 후보, malformed 행, 이전 세션·구버전 행은 모두 별도 제외 사유(`OLD_STRATEGY`/`LEGACY_INVALID`/`PRE_SESSION_ROW`/`PRE_SESSION_SIGNAL`/`MALFORMED_SCHEMA`)로 표시하며 통계에 하드코딩된 값(예: 고정 건수)을 사용하지 않는다. **원본 confirmed 플래그 수와 MAJOR 승인·필터 탈락 수는 분리 집계**한다(필터 ON이어도 원본 red/blue 통계는 사라지지 않는다).
+`strategy_name`/`direction` 값이 알려진 도메인을 벗어나면(예: 컬럼 밀림으로 다른 값이 들어온 경우) 그 행은 삭제·덮어쓰기하지 않고 `MALFORMED_SCHEMA`로 제외 목록에만 표시한다. 오늘 빨강/파랑 통계는 **현재 거래일 + 현재 Worker 세션(`session_started_at` 이후) + 현재 `strategy_version`/`signal_rule`/`worker_code_sha`**의 confirmed 신호만 집계한다. candidate(shadow), 취소된 후보, malformed 행, 이전 세션·구버전·이전 배포 SHA 행은 모두 별도 제외 사유(`OLD_STRATEGY`/`LEGACY_INVALID`/`PRE_SESSION_ROW`/`PRE_SESSION_SIGNAL`/`MALFORMED_SCHEMA`/`OLD_WORKER_SHA`)로 표시하며 통계에 하드코딩된 값(예: 고정 건수)을 사용하지 않는다. **원본 confirmed 플래그 수와 MAJOR 승인·필터 탈락 수는 분리 집계**한다(필터 ON이어도 원본 red/blue 통계는 사라지지 않는다).
 
 Execution ledger는 주문 요청과 체결 결과를 `order_id` 기준으로 dedup한다.
 
@@ -169,6 +185,7 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - **현재 confirmed / MAJOR 판정**: 원본 flag, major score/required, APPROVED 또는 FILTERED_OUT, 핵심 통과·탈락 이유
 - **오늘 통계 분리**: 원본 빨간/파란 플래그 수, MAJOR 승인 빨강/파랑 수, 필터 탈락 수, 실제 체결 진입 수
 - **필터 탈락 신호 표**: 시간, 방향, score, required, block reason, component scores
+- **오늘 전체 신호 개요 (재계산, 참고용)**: `LIVE_CONFIRMED`/`HISTORICAL_REPLAY_ONLY` 건수와 목록 — `service.get_snapshot()["today_signal_overview"]`(`worker.compute_today_signal_overview`)를 그대로 표시만 한다. 주문·필터 평가에는 절대 사용하지 않는다.
 
 `"KIS manual arrows"`처럼 실제 데이터 없이 고정 건수를 표시하는 하드코딩은 금지한다 — 실제 값이 없으면 `-`로 표시한다.
 
@@ -199,6 +216,12 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - Stop Loss / Profit Lock / 강제청산은 필터와 무관하게 기존 규칙 유지
 - `tests/macd2/test_major_flag_filter.py` 통과
 - read-only 검증 스크립트 `scripts/macd2_validate_major_filter.py`는 운영 state/ledger/cache·broker를 변경하지 않는다
+- 13:42~13:44 완성봉의 `completed_bar_at`/`signal_id`는 `13:42:00`/`134200`을 포함하고, `detected_at`/`order_requested_at`은 13:45 이후
+- 진행봉(forming) candidate는 몇 번을 재확인(shadow confirm)하든 broker/`order_executor`/MAJOR 필터/원장 호출 0건 — 오직 완성봉 Primary만 주문
+- 1분봉 3개 중 하나라도 빠진 3분봉은 confirmed 목록에서 제외되고(`HISTORY_GAP`) 그 봉에 대한 신호·MAJOR 평가·주문 0건이며, 이후 해당 1분봉이 채워지면 같은 봉이 정상 재평가됨
+- Worker 재시작 시 재시작 이전에 이미 완성된 봉은 재주문되지 않고, 재시작 이후 첫 신규 완성봉은 정상 신호가 됨
+- 오늘 전체 신호 재계산(`compute_today_signal_overview`)이 세션 시작 이전 봉을 `HISTORICAL_REPLAY_ONLY`, 이후 봉을 `LIVE_CONFIRMED`로 정확히 분리하며 order_executor/MAJOR 필터를 호출하지 않음
+- 다른 `worker_code_sha`로 기록된 신호는 오늘 current 통계에서 제외되고(`OLD_WORKER_SHA`) "과거/제외 신호" 패널에만 표시되며, 원장 원본 행은 변경되지 않음
 
 ## Optional Hybrid MAJOR_FLAG filter (강한 플래그만 거래)
 
@@ -327,6 +350,8 @@ confirmed crossover 생성 → 기존과 동일하게 _execute_or_wait
 - 필터 ON: 반대 confirmed도 major 승인 시에만 기존 SELL→잔고0→BUY. 탈락 반대신호는 포지션 유지. Stop Loss·Profit Lock 조건이 발생하면 필터와 무관하게 청산
 
 pending 재시도는 최초 승인(또는 필터 OFF) 당시 게이트를 이미 통과한 것으로 보고 재필터하지 않는다.
+
+`HISTORY_GAP`(1분봉 공백)으로 차단된 봉과 `HISTORICAL_REPLAY_ONLY`로 분류되는 Worker 세션 시작 이전 봉은 애초에 `_advance_confirmed_primary`/`_dispatch_confirmed_signal` 호출 경로에 들어오지 않으므로 MAJOR 필터 평가·주문 호출이 구조적으로 0건이다 — 별도의 필터 예외 처리가 필요 없다.
 
 ### 모델·state
 

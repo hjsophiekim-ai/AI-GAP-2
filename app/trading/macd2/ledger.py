@@ -371,6 +371,7 @@ def _current_strategy_rows(
     signal_rule: Optional[str] = None,
     session_started_at: Optional[str] = None,
     session_baseline_bar_ts: Optional[str] = None,
+    worker_code_sha: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     current: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -383,6 +384,12 @@ def _current_strategy_rows(
             keep, reason = False, "OLD_STRATEGY"
         if keep and signal_rule and row.get("signal_rule") != signal_rule:
             keep, reason = False, "LEGACY_INVALID"
+        # docs §2: a row written by a DIFFERENT deployed code SHA (a redeploy
+        # happened mid-session, or this is a leftover row from a prior day's
+        # code) never counts toward "current" stats — only the query filter
+        # changes here, the on-disk row itself is never touched/rewritten.
+        if keep and worker_code_sha and str(row.get("worker_code_sha") or "") != worker_code_sha:
+            keep, reason = False, "OLD_WORKER_SHA"
         if keep and _is_pre_session_row(row, session_started_at):
             keep, reason = False, "PRE_SESSION_ROW"
         if keep and session_baseline_bar_ts:
@@ -407,6 +414,7 @@ def summarize_signals(
     signal_rule: Optional[str] = None,
     session_started_at: Optional[str] = None,
     session_baseline_bar_ts: Optional[str] = None,
+    worker_code_sha: Optional[str] = None,
 ) -> dict[str, Any]:
     """docs §16 stats: today's UP_RED/DOWN_BLUE counts + unexecuted signals+reason.
 
@@ -416,6 +424,7 @@ def summarize_signals(
     rows, excluded = _current_strategy_rows(
         all_rows, strategy_version=strategy_version, signal_rule=signal_rule,
         session_started_at=session_started_at, session_baseline_bar_ts=session_baseline_bar_ts,
+        worker_code_sha=worker_code_sha,
     )
     unique: dict[str, dict[str, Any]] = {}
     for row in rows:

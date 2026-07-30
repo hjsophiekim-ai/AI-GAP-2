@@ -539,17 +539,23 @@ except Exception as exc:
 st.subheader("오늘 신호·거래 통계")
 try:
     trading_date = (state.session_date or pd.Timestamp.now().strftime("%Y%m%d"))
+    # docs §2: only THIS deployed code's SHA counts toward "current" stats —
+    # a row from a different (older) worker_code_sha is excluded here and
+    # only ever shown in the "과거/제외 신호" panel below.
+    _current_worker_sha = snapshot.get("worker_code_sha") or None
     sig_summary = ledger.summarize_signals(
         trading_date,
         strategy_version=state.strategy_version,
         signal_rule=state.signal_rule,
         session_started_at=state.session_started_at,
+        worker_code_sha=_current_worker_sha,
     )
     confirmed_summary = ledger.summarize_signals(
         trading_date,
         strategy_version=state.strategy_version,
         signal_rule=getattr(macd2_config, "CONFIRMED_SIGNAL_RULE", "MACD_CROSSOVER_CONFIRMED"),
         session_started_at=state.session_started_at,
+        worker_code_sha=_current_worker_sha,
     )
     trade_summary = ledger.summarize_daily_trading(
         trading_date,
@@ -658,6 +664,18 @@ try:
     if excluded:
         with st.expander(f"과거/제외 신호 ({len(excluded)}건)"):
             st.dataframe(pd.DataFrame(excluded), use_container_width=True, height=260)
+
+    # docs §3: recomputed today-overview, LIVE_CONFIRMED vs
+    # HISTORICAL_REPLAY_ONLY — display only, never an order/filter input.
+    _overview = snapshot.get("today_signal_overview") or []
+    _live = [r for r in _overview if r.get("origin") == "LIVE_CONFIRMED"]
+    _historical = [r for r in _overview if r.get("origin") == "HISTORICAL_REPLAY_ONLY"]
+    st.markdown("**오늘 전체 신호 개요 (재계산, 참고용 — 주문권한 없음)**")
+    ov1, ov2 = st.columns(2)
+    ov1.metric("LIVE_CONFIRMED (Worker 시작 이후)", f"{len(_live)}건")
+    ov2.metric("HISTORICAL_REPLAY_ONLY (Worker 시작 전)", f"{len(_historical)}건")
+    if _overview:
+        st.dataframe(pd.DataFrame(_overview), use_container_width=True, height=200)
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Gross", f"{trade_summary['gross_pnl']:,.0f}원")

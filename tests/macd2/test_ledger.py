@@ -162,6 +162,42 @@ def test_summarize_signals_filters_old_strategy_rows():
     assert len(summary["excluded_signals"]) == 7
 
 
+def test_summarize_signals_excludes_rows_from_a_different_worker_code_sha():
+    """docs §2: a signal recorded by a different deployed code SHA (a redeploy
+    happened mid-session, or a leftover row from an earlier day) never counts
+    toward "current" stats — it only ever moves into excluded_signals, the
+    on-disk row itself is never touched."""
+    old_sha_row = _current_signal_row("cur-red-old-sha", direction="UP_RED")
+    old_sha_row["worker_code_sha"] = "aaaaaaa"
+    ledger.append_signal(old_sha_row)
+    new_sha_row = _current_signal_row("cur-blue-new-sha", direction="DOWN_BLUE")
+    new_sha_row["worker_code_sha"] = "bbbbbbb"
+    ledger.append_signal(new_sha_row)
+
+    summary = ledger.summarize_signals(
+        "20260106",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
+        session_started_at="2026-01-06T09:00:00+09:00",
+        worker_code_sha="bbbbbbb",
+    )
+
+    assert summary["red_count"] == 0
+    assert summary["blue_count"] == 1
+    excluded_reasons = {r["signal_id"]: r["excluded_reason"] for r in summary["excluded_signals"]}
+    assert excluded_reasons["cur-red-old-sha"] == "OLD_WORKER_SHA"
+
+    # No filter passed -> backward-compatible, both rows counted (existing behavior unchanged).
+    summary_unfiltered = ledger.summarize_signals(
+        "20260106",
+        strategy_version=config.STRATEGY_VERSION,
+        signal_rule=config.SIGNAL_RULE,
+        session_started_at="2026-01-06T09:00:00+09:00",
+    )
+    assert summary_unfiltered["red_count"] == 1
+    assert summary_unfiltered["blue_count"] == 1
+
+
 def test_summarize_signals_counts_current_strategy_only_and_latest():
     ledger.append_signal(_signal_row("old", direction="UP_RED"))
     ledger.append_signal(_current_signal_row("cur-red", direction="UP_RED"))
