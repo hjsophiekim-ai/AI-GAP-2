@@ -79,10 +79,56 @@ class OverseasBuyableQuantity:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class OverseasOrderResult:
+    success: bool
+    order_id: str
+    symbol: str
+    side: str
+    requested_qty: int
+    executed_qty: int = 0
+    executed_price: float = 0.0
+    rt_cd: str = ""
+    msg_cd: str = ""
+    msg1: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class OverseasOrderRow:
+    order_id: str
+    symbol: str
+    side: str
+    order_qty: int
+    executed_qty: int
+    unfilled_qty: int
+    order_price: float
+    executed_price: float
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 TR_OVERSEAS_BALANCE_REAL = "TTTS3012R"
 TR_OVERSEAS_BALANCE_MOCK = "VTTS3012R"
 TR_OVERSEAS_BUYABLE_REAL = "TTTS3007R"
 TR_OVERSEAS_BUYABLE_MOCK = "VTTS3007R"
+TR_OVERSEAS_US_BUY_REAL = "TTTT1002U"
+TR_OVERSEAS_US_BUY_MOCK = "VTTT1002U"
+TR_OVERSEAS_US_SELL_REAL = "TTTT1006U"
+TR_OVERSEAS_US_SELL_MOCK = "VTTT1001U"
+TR_OVERSEAS_US_CANCEL_REAL = "TTTT1004U"
+TR_OVERSEAS_US_CANCEL_MOCK = "VTTT1004U"
+TR_OVERSEAS_OPEN_ORDERS_REAL = "TTTS3018R"
+TR_OVERSEAS_OPEN_ORDERS_MOCK = ""
+TR_OVERSEAS_FILLS_REAL = "TTTS3035R"
+TR_OVERSEAS_FILLS_MOCK = "VTTS3035R"
+TR_OVERSEAS_ASKING_PRICE = "HHDFS76200100"
+
+OVERSEAS_STOCK_ORDER_ENDPOINT = "/uapi/overseas-stock/v1/trading/order"
+OVERSEAS_STOCK_CANCEL_ENDPOINT = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
+OVERSEAS_STOCK_OPEN_ORDERS_ENDPOINT = "/uapi/overseas-stock/v1/trading/inquire-nccs"
+OVERSEAS_STOCK_FILLS_ENDPOINT = "/uapi/overseas-stock/v1/trading/inquire-ccnl"
+OVERSEAS_STOCK_ASKING_PRICE_ENDPOINT = "/uapi/overseas-price/v1/quotations/inquire-asking-price"
+US_ORDER_EXCHANGES = frozenset({"NASD", "NYSE", "AMEX"})
 
 
 def _empty_1m_frame() -> pd.DataFrame:
@@ -128,6 +174,93 @@ def _int(raw: Any, default: int = 0) -> int:
         return int(float(str(raw).replace(",", "").strip())) if raw not in (None, "") else default
     except (TypeError, ValueError):
         return default
+
+
+def _mode_to_env_dv(mode: str) -> str:
+    if mode == "real":
+        return "real"
+    if mode == "mock":
+        return "demo"
+    raise ValueError(f"unsupported KIS overseas mode: {mode!r}")
+
+
+def _mask_account(cano: str, product: str) -> str:
+    if not cano:
+        return ""
+    head = cano[:2]
+    tail = cano[-2:] if len(cano) >= 2 else ""
+    return f"{head}****{tail}-{product or '**'}"
+
+
+def masked_account(mode: str) -> str:
+    cano, product = _credentials_account(mode)
+    return _mask_account(cano, product)
+
+
+def _post_hashkey(mode: str, body: dict[str, Any]) -> str:
+    import requests
+
+    from app.data_sources.kis_overseas_minute import _load_credentials
+
+    creds = _load_credentials(mode)
+    resp = requests.post(f"{_get_base_url(mode)}/uapi/hashkey", headers={
+        "appkey": creds["app_key"],
+        "appsecret": creds["app_secret"],
+        "Content-Type": "application/json; charset=utf-8",
+    }, json=body, timeout=10)
+    resp.raise_for_status()
+    return str(resp.json().get("HASH") or resp.json().get("hash") or "")
+
+
+def _post_headers(mode: str, tr_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    from app.data_sources.kis_overseas_minute import _auth_headers
+
+    headers = _auth_headers(mode, tr_id)
+    hashkey = _post_hashkey(mode, body)
+    if hashkey:
+        headers["hashkey"] = hashkey
+    return headers
+
+
+def _extract_output(body: dict[str, Any]) -> dict[str, Any]:
+    output = body.get("output", {}) if isinstance(body, dict) else {}
+    if isinstance(output, list):
+        return dict(output[0] if output else {})
+    return dict(output or {})
+
+
+def _extract_order_id(output: dict[str, Any]) -> str:
+    for key in ("ODNO", "odno", "OVRS_ORD_NO", "ovrs_ord_no", "ORD_NO", "ord_no"):
+        value = str(output.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _side_from_row(row: dict[str, Any]) -> str:
+    raw = str(row.get("sll_buy_dvsn_cd") or row.get("sll_buy_dvsn") or row.get("sll_buy_dvsn_name") or "").strip()
+    if raw in {"01", "SELL", "매도"} or "매도" in raw:
+        return "SELL"
+    if raw in {"02", "BUY", "매수"} or "매수" in raw:
+        return "BUY"
+    return raw
+
+
+def _order_row(row: dict[str, Any]) -> OverseasOrderRow:
+    order_qty = _int(row.get("ft_ord_qty") or row.get("ord_qty") or row.get("qty"))
+    executed_qty = _int(row.get("ft_ccld_qty") or row.get("tot_ccld_qty") or row.get("ccld_qty"))
+    unfilled_qty = _int(row.get("nccs_qty"), max(order_qty - executed_qty, 0))
+    return OverseasOrderRow(
+        order_id=_extract_order_id(row),
+        symbol=str(row.get("pdno") or row.get("ovrs_pdno") or row.get("item_cd") or "").strip(),
+        side=_side_from_row(row),
+        order_qty=order_qty,
+        executed_qty=executed_qty,
+        unfilled_qty=unfilled_qty,
+        order_price=_num(row.get("ft_ord_unpr3") or row.get("ovrs_ord_unpr") or row.get("ord_unpr")),
+        executed_price=_num(row.get("ft_ccld_unpr3") or row.get("avg_prvs") or row.get("ccld_unpr")),
+        raw=dict(row),
+    )
 
 
 def fetch_overseas_current_price(
@@ -291,7 +424,11 @@ def fetch_overseas_buyable_quantity(
             return None, "empty_output"
         available_usd = _num(output.get("ord_psbl_frcr_amt") or output.get("frcr_ord_psbl_amt"))
         available_qty = _int(output.get("ord_psbl_qty") or output.get("max_ord_psbl_qty"))
-        return OverseasBuyableQuantity(symbol, exchange_code, float(price or 0.0), available_usd, available_qty, dict(output)), None
+        raw = dict(output)
+        raw["_rt_cd"] = str(body.get("rt_cd") or "")
+        raw["_msg_cd"] = str(body.get("msg_cd") or "")
+        raw["_msg1"] = str(body.get("msg1") or "")
+        return OverseasBuyableQuantity(symbol, exchange_code, float(price or 0.0), available_usd, available_qty, raw), None
     except Exception as exc:  # pragma: no cover - real network path
         return None, repr(exc)
 
@@ -329,10 +466,14 @@ def fetch_overseas_balance(
                     raw=dict(row),
                 ))
         cash_raw = output2[0] if isinstance(output2, list) and output2 else output2
+        cash_raw_dict = dict(cash_raw or {})
+        cash_raw_dict["_rt_cd"] = str(body.get("rt_cd") or "")
+        cash_raw_dict["_msg_cd"] = str(body.get("msg_cd") or "")
+        cash_raw_dict["_msg1"] = str(body.get("msg1") or "")
         cash = OverseasCashBalance(
             currency=currency,
             available_amount=_num((cash_raw or {}).get("frcr_pchs_amt1") or (cash_raw or {}).get("ord_psbl_frcr_amt")),
-            raw=dict(cash_raw or {}),
+            raw=cash_raw_dict,
         )
         return positions, cash, None
     except Exception as exc:  # pragma: no cover - real network path
@@ -360,6 +501,256 @@ def fetch_overseas_open_orders(mode: str, symbol: str = "") -> None:
 def fetch_overseas_fills(mode: str, symbol: str = "") -> None:
     """체결내역·부분체결·평균체결가 — TR_ID/엔드포인트 미확인."""
     raise KisOverseasApiConfirmationRequired("해외주식 체결내역 조회 (overseas fills)")
+
+
+def fetch_overseas_asking_price(
+    mode: str, symbol: str, *, exchange_code: str = "NAS",
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Read KIS overseas best bid/ask. Official TR: HHDFS76200100."""
+    if mode == "mock":
+        return None, "MOCK_ASKING_PRICE_UNSUPPORTED_BY_KIS"
+    try:
+        import requests
+
+        from app.data_sources.kis_overseas_minute import _auth_headers
+
+        resp = requests.get(
+            f"{_get_base_url(mode)}{OVERSEAS_STOCK_ASKING_PRICE_ENDPOINT}",
+            headers=_auth_headers(mode, TR_OVERSEAS_ASKING_PRICE),
+            params={"AUTH": "", "EXCD": exchange_code, "SYMB": symbol},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        merged: dict[str, Any] = {}
+        for key in ("output1", "output2", "output3"):
+            output = body.get(key, {}) if isinstance(body, dict) else {}
+            if isinstance(output, list):
+                for row in output:
+                    if isinstance(row, dict):
+                        merged.update(row)
+            elif isinstance(output, dict):
+                merged.update(output)
+        ask = _num(merged.get("paskp1") or merged.get("askp1") or merged.get("ovrs_askp1") or merged.get("ask1"))
+        bid = _num(merged.get("pbidp1") or merged.get("bidp1") or merged.get("ovrs_bidp1") or merged.get("bid1"))
+        if ask <= 0:
+            return None, "ask1_unavailable"
+        return {"ok": True, "symbol": symbol, "exchange_code": exchange_code, "ask1": ask, "bid1": bid, "raw": body}, None
+    except Exception as exc:  # pragma: no cover - real network path
+        return None, repr(exc)
+
+
+def place_overseas_limit_order(  # type: ignore[no-redef]
+    mode: str, symbol: str, side: str, qty: int, price: float, *, exchange_code: str = "NASD",
+) -> OverseasOrderResult:
+    """Place a regular-session US overseas stock limit order."""
+    if exchange_code not in US_ORDER_EXCHANGES:
+        raise KisOverseasApiConfirmationRequired(f"unconfirmed US order exchange code: {exchange_code}")
+    if qty <= 0 or price <= 0:
+        raise ValueError("qty and price must be positive for overseas limit order")
+    side = side.upper()
+    if side not in {"BUY", "SELL"}:
+        raise ValueError("side must be BUY or SELL")
+    import requests
+
+    cano, product = _credentials_account(mode)
+    body = {
+        "CANO": cano, "ACNT_PRDT_CD": product, "OVRS_EXCG_CD": exchange_code,
+        "PDNO": symbol, "ORD_QTY": str(int(qty)), "OVRS_ORD_UNPR": f"{float(price):.2f}",
+        "CTAC_TLNO": "", "MGCO_APTM_ODNO": "", "SLL_TYPE": "00" if side == "SELL" else "",
+        "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": "00",
+    }
+    tr = _tr_id(
+        mode,
+        TR_OVERSEAS_US_BUY_REAL if side == "BUY" else TR_OVERSEAS_US_SELL_REAL,
+        TR_OVERSEAS_US_BUY_MOCK if side == "BUY" else TR_OVERSEAS_US_SELL_MOCK,
+    )
+    resp = requests.post(
+        f"{_get_base_url(mode)}{OVERSEAS_STOCK_ORDER_ENDPOINT}",
+        headers=_post_headers(mode, tr, body),
+        json=body,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    output = _extract_output(data)
+    order_id = _extract_order_id(output)
+    rt_cd = str(data.get("rt_cd") or "")
+    return OverseasOrderResult(
+        success=rt_cd == "0" and bool(order_id),
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        requested_qty=int(qty),
+        rt_cd=rt_cd,
+        msg_cd=str(data.get("msg_cd") or ""),
+        msg1=str(data.get("msg1") or ""),
+        raw=data,
+    )
+
+
+def place_overseas_market_order(
+    mode: str, symbol: str, side: str, qty: int, *, exchange_code: str = "NASD",
+) -> OverseasOrderResult:
+    """Market BUY/SELL remains blocked unless an exact immediate-order code is confirmed."""
+    raise KisOverseasApiConfirmationRequired(f"US regular market {side.upper()} order code")
+
+
+def cancel_overseas_order(  # type: ignore[no-redef]
+    mode: str, order_id: str, symbol: str, *, exchange_code: str = "NASD", qty: int = 1,
+) -> OverseasOrderResult:
+    """Cancel an overseas stock order. Official TR: TTTT1004U/VTTT1004U."""
+    if exchange_code not in US_ORDER_EXCHANGES:
+        raise KisOverseasApiConfirmationRequired(f"unconfirmed US cancel exchange code: {exchange_code}")
+    if not order_id:
+        raise ValueError("order_id is required")
+    import requests
+
+    cano, product = _credentials_account(mode)
+    body = {
+        "CANO": cano, "ACNT_PRDT_CD": product, "OVRS_EXCG_CD": exchange_code,
+        "PDNO": symbol, "ORGN_ODNO": order_id, "RVSE_CNCL_DVSN_CD": "02",
+        "ORD_QTY": str(int(max(qty, 1))), "OVRS_ORD_UNPR": "0",
+        "MGCO_APTM_ODNO": "", "ORD_SVR_DVSN_CD": "0",
+    }
+    tr = _tr_id(mode, TR_OVERSEAS_US_CANCEL_REAL, TR_OVERSEAS_US_CANCEL_MOCK)
+    resp = requests.post(
+        f"{_get_base_url(mode)}{OVERSEAS_STOCK_CANCEL_ENDPOINT}",
+        headers=_post_headers(mode, tr, body),
+        json=body,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    output = _extract_output(data)
+    rt_cd = str(data.get("rt_cd") or "")
+    return OverseasOrderResult(
+        success=rt_cd == "0",
+        order_id=_extract_order_id(output) or order_id,
+        symbol=symbol,
+        side="CANCEL",
+        requested_qty=int(max(qty, 1)),
+        rt_cd=rt_cd,
+        msg_cd=str(data.get("msg_cd") or ""),
+        msg1=str(data.get("msg1") or ""),
+        raw=data,
+    )
+
+
+def amend_overseas_order(
+    mode: str, order_id: str, symbol: str, qty: int, price: float, *, exchange_code: str = "NASD",
+) -> OverseasOrderResult:
+    """Amend an overseas stock order. Official TR: TTTT1004U/VTTT1004U."""
+    if exchange_code not in US_ORDER_EXCHANGES:
+        raise KisOverseasApiConfirmationRequired(f"unconfirmed US amend exchange code: {exchange_code}")
+    if not order_id or qty <= 0 or price <= 0:
+        raise ValueError("order_id, qty and price are required")
+    import requests
+
+    cano, product = _credentials_account(mode)
+    body = {
+        "CANO": cano, "ACNT_PRDT_CD": product, "OVRS_EXCG_CD": exchange_code,
+        "PDNO": symbol, "ORGN_ODNO": order_id, "RVSE_CNCL_DVSN_CD": "01",
+        "ORD_QTY": str(int(qty)), "OVRS_ORD_UNPR": f"{float(price):.2f}",
+        "MGCO_APTM_ODNO": "", "ORD_SVR_DVSN_CD": "0",
+    }
+    tr = _tr_id(mode, TR_OVERSEAS_US_CANCEL_REAL, TR_OVERSEAS_US_CANCEL_MOCK)
+    resp = requests.post(
+        f"{_get_base_url(mode)}{OVERSEAS_STOCK_CANCEL_ENDPOINT}",
+        headers=_post_headers(mode, tr, body),
+        json=body,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    output = _extract_output(data)
+    rt_cd = str(data.get("rt_cd") or "")
+    return OverseasOrderResult(
+        success=rt_cd == "0",
+        order_id=_extract_order_id(output) or order_id,
+        symbol=symbol,
+        side="AMEND",
+        requested_qty=int(qty),
+        rt_cd=rt_cd,
+        msg_cd=str(data.get("msg_cd") or ""),
+        msg1=str(data.get("msg1") or ""),
+        raw=data,
+    )
+
+
+def fetch_overseas_open_orders(  # type: ignore[no-redef]
+    mode: str, symbol: str = "", *, exchange_code: str = "NASD",
+) -> tuple[list[OverseasOrderRow], Optional[str], dict[str, Any]]:
+    """Read overseas open orders. Official TR: TTTS3018R/VTTS3018R."""
+    if mode == "mock":
+        return [], "MOCK_OPEN_ORDERS_UNSUPPORTED_BY_KIS", {"rt_cd": "", "msg_cd": "", "msg1": "mock open orders unsupported"}
+    try:
+        import requests
+
+        from app.data_sources.kis_overseas_minute import _auth_headers
+
+        cano, product = _credentials_account(mode)
+        resp = requests.get(
+            f"{_get_base_url(mode)}{OVERSEAS_STOCK_OPEN_ORDERS_ENDPOINT}",
+            headers=_auth_headers(mode, _tr_id(mode, TR_OVERSEAS_OPEN_ORDERS_REAL, TR_OVERSEAS_OPEN_ORDERS_MOCK)),
+            params={
+                "CANO": cano, "ACNT_PRDT_CD": product, "OVRS_EXCG_CD": exchange_code,
+                "SORT_SQN": "DS", "CTX_AREA_FK200": "", "CTX_AREA_NK200": "",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        rows = body.get("output", []) if isinstance(body, dict) else []
+        parsed = [_order_row(dict(row)) for row in (rows or []) if isinstance(row, dict)]
+        if symbol:
+            parsed = [row for row in parsed if row.symbol == symbol or not row.symbol]
+        error = None if str(body.get("rt_cd") or "") in {"", "0"} else str(body.get("msg1") or body)
+        return parsed, error, body
+    except Exception as exc:  # pragma: no cover - real network path
+        return [], repr(exc), {}
+
+
+def fetch_overseas_fills(  # type: ignore[no-redef]
+    mode: str,
+    symbol: str = "",
+    *,
+    exchange_code: str = "%",
+    start_date: str = "",
+    end_date: str = "",
+) -> tuple[list[OverseasOrderRow], Optional[str], dict[str, Any]]:
+    """Read overseas order/fill history. Official TR: TTTS3035R/VTTS3035R."""
+    try:
+        import requests
+
+        from app.data_sources.kis_overseas_minute import _auth_headers
+
+        today = datetime.now(config.ET).strftime("%Y%m%d")
+        cano, product = _credentials_account(mode)
+        mock = mode == "mock"
+        resp = requests.get(
+            f"{_get_base_url(mode)}{OVERSEAS_STOCK_FILLS_ENDPOINT}",
+            headers=_auth_headers(mode, _tr_id(mode, TR_OVERSEAS_FILLS_REAL, TR_OVERSEAS_FILLS_MOCK)),
+            params={
+                "CANO": cano, "ACNT_PRDT_CD": product, "PDNO": "" if mock else (symbol or "%"),
+                "ORD_STRT_DT": start_date or today, "ORD_END_DT": end_date or today,
+                "SLL_BUY_DVSN": "00", "CCLD_NCCS_DVSN": "00",
+                "OVRS_EXCG_CD": "" if mock else exchange_code, "SORT_SQN": "DS",
+                "ORD_DT": "", "ORD_GNO_BRNO": "", "ODNO": "",
+                "CTX_AREA_NK200": "", "CTX_AREA_FK200": "",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        rows = body.get("output", []) if isinstance(body, dict) else []
+        parsed = [_order_row(dict(row)) for row in (rows or []) if isinstance(row, dict)]
+        if symbol:
+            parsed = [row for row in parsed if row.symbol == symbol or not row.symbol]
+        error = None if str(body.get("rt_cd") or "") in {"", "0"} else str(body.get("msg1") or body)
+        return parsed, error, body
+    except Exception as exc:  # pragma: no cover - real network path
+        return [], repr(exc), {}
 
 
 def fetch_overseas_market_calendar(mode: str) -> None:

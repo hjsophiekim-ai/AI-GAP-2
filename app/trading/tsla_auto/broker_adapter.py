@@ -1,20 +1,8 @@
-"""TSLA_AUTO broker adapter — thin wrapper over kis_overseas_adapter.py only.
+"""TSLA_AUTO KIS overseas broker adapter.
 
-Never imports app.trading.broker_factory / app.trading.broker_base / KisMockBroker
-/ KisRealBroker (domestic, docs/TSLA_AUTO_COPY_MAP.md — DO_NOT_COPY) and never
-imports app.trading.kis_client (domestic order/balance functions).
-
-**REAL and MOCK order/balance calls are both currently unimplemented** — the
-underlying KIS 해외주식 주문/잔고/주문가능금액·수량 TR_IDs were not confirmed
-against official docs in this session (docs §KIS 해외주식 API). Calling any
-order/balance method here raises
-``kis_overseas_adapter.KisOverseasApiConfirmationRequired`` — it never
-silently succeeds or returns a guessed value. Quote/minute-candle methods
-(handled by market_data.py, not this file) ARE implemented against confirmed
-TRs. Tests must use a FakeBroker test double (tests/tsla_auto/fake_broker.py)
-— never this class — to exercise order_executor/worker logic; a green test
-suite using FakeBroker is worker-logic validation only, never "실제 KIS MOCK
-검증 완료" (docs §17).
+This module is independent from domestic-stock broker code. MOCK routes to
+KIS overseas paper-trading endpoints; REAL is still gated by the existing
+TSLA_AUTO real-order safety flags.
 """
 from __future__ import annotations
 
@@ -29,7 +17,7 @@ class BrokerOrderResult:
     success: bool
     order_id: str
     symbol: str
-    side: str  # "BUY" / "SELL"
+    side: str
     requested_qty: int
     executed_qty: int
     executed_price: float
@@ -51,17 +39,16 @@ class BuySizingQuote:
 
 
 class _BrokerAdapterBase:
-    """Shared implementation for Mock/Real adapters (docs §14 주문 로직 interface)."""
-
-    mode: str  # "mock" | "real"
+    mode: str
 
     def get_positions(self) -> list[Any]:
-        from app.trading.tsla_auto.kis_overseas_adapter import fetch_overseas_balance
+        from app.trading.tsla_auto.kis_overseas_adapter import (
+            KisOverseasApiConfirmationRequired,
+            fetch_overseas_balance,
+        )
 
         positions, _cash, error = fetch_overseas_balance(self.mode)
         if error:
-            from app.trading.tsla_auto.kis_overseas_adapter import KisOverseasApiConfirmationRequired
-
             raise KisOverseasApiConfirmationRequired(f"overseas balance read failed: {error}")
         return list(positions)
 
@@ -72,68 +59,149 @@ class _BrokerAdapterBase:
         return None
 
     def get_orderable_usd(self, symbol: str, *, price: float = 0.0) -> float:
-        from app.trading.tsla_auto.kis_overseas_adapter import fetch_overseas_buyable_amount
+        from app.trading.tsla_auto.kis_overseas_adapter import (
+            KisOverseasApiConfirmationRequired,
+            fetch_overseas_buyable_amount,
+        )
 
         amount, error = fetch_overseas_buyable_amount(
-            self.mode, symbol, exchange_code=config.ORDER_EXCHANGE_BY_SYMBOL.get(symbol, "NASD"), price=price,
+            self.mode,
+            symbol,
+            exchange_code=config.ORDER_EXCHANGE_BY_SYMBOL.get(symbol, "NASD"),
+            price=price,
         )
         if error:
-            from app.trading.tsla_auto.kis_overseas_adapter import KisOverseasApiConfirmationRequired
-
             raise KisOverseasApiConfirmationRequired(f"overseas buyable amount read failed: {error}")
         return float(amount or 0.0)
 
     def get_buy_sizing_quote(self, symbol: str, *, price: float) -> BuySizingQuote:
-        from app.trading.tsla_auto.kis_overseas_adapter import fetch_overseas_buyable_quantity
+        from app.trading.tsla_auto.kis_overseas_adapter import (
+            KisOverseasApiConfirmationRequired,
+            fetch_overseas_buyable_quantity,
+        )
 
         exchange = config.ORDER_EXCHANGE_BY_SYMBOL.get(symbol, "NASD")
         if symbol == config.INVERSE_SYMBOL and not exchange:
-            from app.trading.tsla_auto.kis_overseas_adapter import KisOverseasApiConfirmationRequired
-
             raise KisOverseasApiConfirmationRequired(config.TSLZ_EXCHANGE_UNRESOLVED)
         quote, error = fetch_overseas_buyable_quantity(self.mode, symbol, exchange_code=exchange, price=price)
         if error or quote is None:
-            from app.trading.tsla_auto.kis_overseas_adapter import KisOverseasApiConfirmationRequired
-
             raise KisOverseasApiConfirmationRequired(f"overseas buyable quantity read failed: {error}")
+        raw = quote.raw or {}
         return BuySizingQuote(
-            symbol=symbol, order_type="limit", available_usd=quote.available_usd,
-            available_qty=quote.available_qty, order_price=quote.order_price,
-            rt_cd="0", msg_cd="", msg1="", raw=quote.raw,
+            symbol=symbol,
+            order_type="limit",
+            available_usd=quote.available_usd,
+            available_qty=quote.available_qty,
+            order_price=quote.order_price,
+            rt_cd=str(raw.get("_rt_cd") or raw.get("rt_cd") or "0"),
+            msg_cd=str(raw.get("_msg_cd") or raw.get("msg_cd") or ""),
+            msg1=str(raw.get("_msg1") or raw.get("msg1") or ""),
+            raw=raw,
         )
 
     def get_fresh_ask1(self, symbol: str) -> dict[str, Any]:
-        """MACD2와 달리, 해외주식 호가(bid1/ask1) 전용 TR도 이 세션에서
-        미확인이다 — 현재가상세(HHDFS00000300) 응답에 별도 매도호가 필드가
-        없다면 quote 가격을 임시 ask1 근사치로 쓰지 않고 명시적으로
-        실패시켜야 한다(임의 시장가 전환 금지 원칙과 동일하게, 임의 호가
-        근사도 금지)."""
-        from app.trading.tsla_auto.kis_overseas_adapter import KisOverseasApiConfirmationRequired
+        from app.trading.tsla_auto.kis_overseas_adapter import (
+            KisOverseasApiConfirmationRequired,
+            fetch_overseas_asking_price,
+        )
 
-        raise KisOverseasApiConfirmationRequired("TSLL/TSLZ 호가(매도1호가 ask1) 조회")
+        exchange = config.QUOTE_EXCHANGE_BY_SYMBOL.get(symbol, config.EXCHANGE_CODE)
+        if symbol == config.INVERSE_SYMBOL and not exchange:
+            raise KisOverseasApiConfirmationRequired(config.TSLZ_EXCHANGE_UNRESOLVED)
+        quote, error = fetch_overseas_asking_price(self.mode, symbol, exchange_code=exchange)
+        if self.mode == "mock" and error == "MOCK_ASKING_PRICE_UNSUPPORTED_BY_KIS":
+            from app.trading.tsla_auto.kis_overseas_adapter import fetch_overseas_current_price
+
+            last, last_error = fetch_overseas_current_price(self.mode, symbol, exchange_code=exchange)
+            if last is not None and last_error is None and last.price > 0:
+                return {
+                    "ok": True,
+                    "ask1": last.price,
+                    "bid1": last.price,
+                    "source": "mock_current_price_fallback",
+                    "msg1": error,
+                    "raw": last.raw,
+                }
+        if error or quote is None:
+            return {"ok": False, "ask1": 0.0, "bid1": 0.0, "msg1": error or "ask1 unavailable"}
+        return quote
 
     def buy_limit(self, symbol: str, qty: int, price: float, client_order_id: str) -> BrokerOrderResult:
         from app.trading.tsla_auto.kis_overseas_adapter import place_overseas_limit_order
 
         del client_order_id
-        place_overseas_limit_order(self.mode, symbol, "BUY", qty, price, exchange_code=config.EXCHANGE_CODE)
-        raise AssertionError("unreachable")
+        res = place_overseas_limit_order(
+            self.mode,
+            symbol,
+            "BUY",
+            qty,
+            price,
+            exchange_code=config.ORDER_EXCHANGE_BY_SYMBOL.get(symbol, "NASD"),
+        )
+        return BrokerOrderResult(
+            res.success,
+            res.order_id,
+            res.symbol,
+            res.side,
+            res.requested_qty,
+            res.executed_qty,
+            res.executed_price,
+            res.msg1 or res.msg_cd,
+            raw=res.raw,
+        )
 
     def sell_market(self, symbol: str, qty: int, client_order_id: str) -> BrokerOrderResult:
-        """docs §14 반대전환: 기존 ETF 전량 SELL. 실제 TR 미확인이므로
-        (§KIS_OVERSEAS_API_CONFIRMATION_REQUIRED) place_overseas_limit_order와
-        동일하게 차단한다 — SELL도 임의 구현하지 않는다."""
-        from app.trading.tsla_auto.kis_overseas_adapter import place_overseas_limit_order
+        from app.trading.tsla_auto.kis_overseas_adapter import (
+            KisOverseasApiConfirmationRequired,
+            place_overseas_limit_order,
+        )
 
         del client_order_id
-        place_overseas_limit_order(self.mode, symbol, "SELL", qty, 0.0, exchange_code=config.EXCHANGE_CODE)
-        raise AssertionError("unreachable")
+        quote = self.get_fresh_ask1(symbol)
+        bid1 = float(quote.get("bid1") or 0.0)
+        if bid1 <= 0:
+            raise KisOverseasApiConfirmationRequired("fresh bid1 required for sell limit")
+        price = round(max(bid1 - 0.01, 0.01), 2)
+        res = place_overseas_limit_order(
+            self.mode,
+            symbol,
+            "SELL",
+            qty,
+            price,
+            exchange_code=config.ORDER_EXCHANGE_BY_SYMBOL.get(symbol, "NASD"),
+        )
+        return BrokerOrderResult(
+            res.success,
+            res.order_id,
+            res.symbol,
+            res.side,
+            res.requested_qty,
+            res.executed_qty,
+            res.executed_price or price,
+            res.msg1 or res.msg_cd,
+            raw=res.raw,
+        )
 
     def cancel_order(self, order_id: str, symbol: str = "") -> BrokerOrderResult:
         from app.trading.tsla_auto.kis_overseas_adapter import cancel_overseas_order
 
-        cancel_overseas_order(self.mode, order_id, symbol)
-        raise AssertionError("unreachable")
+        res = cancel_overseas_order(
+            self.mode,
+            order_id,
+            symbol,
+            exchange_code=config.ORDER_EXCHANGE_BY_SYMBOL.get(symbol, "NASD"),
+        )
+        return BrokerOrderResult(
+            res.success,
+            res.order_id,
+            symbol,
+            "CANCEL",
+            res.requested_qty,
+            res.executed_qty,
+            res.executed_price,
+            res.msg1 or res.msg_cd,
+            raw=res.raw,
+        )
 
     def reconcile_position(self, symbol: str) -> int:
         pos = self.get_position(symbol)
@@ -146,36 +214,22 @@ class _BrokerAdapterBase:
 
 
 class MockBrokerAdapter(_BrokerAdapterBase):
-    """"MOCK" mode — intended to route to KIS's paper-trading (모의투자)
-    overseas endpoint, but that TR path is unconfirmed (docs §KIS 해외주식 API
-    "REAL·MOCK 지원 차이"). Order/balance methods raise
-    KisOverseasApiConfirmationRequired exactly like RealBrokerAdapter — this
-    is intentional, not a bug: MOCK here means "connect to KIS's mock
-    servers", not "an in-memory fake". Use FakeBroker for tests."""
-
     mode = "mock"
 
 
 class RealBrokerAdapter(_BrokerAdapterBase):
-    """REAL mode. Gated by config.ALLOW_REAL_ORDER (default False) at the
-    Service layer before this adapter is ever constructed for live use —
-    this adapter itself does not duplicate that gate, matching MACD2's own
-    docs §14 design (REAL safety gates live at construction time)."""
-
     mode = "real"
 
     def __init__(self, *, confirm_text: str = "", runtime_allow_real_order: bool = False) -> None:
         if not runtime_allow_real_order or not config.ALLOW_REAL_ORDER:
             raise PermissionError(
                 "TSLA_AUTO REAL order path is disabled by default "
-                "(TSLA_AUTO_ALLOW_REAL_ORDER=false) — this work item does not enable it."
+                "(TSLA_AUTO_ALLOW_REAL_ORDER=false)."
             )
         self._confirm_text = confirm_text
 
 
 def create_tsla_auto_broker(mode: str, **kwargs: Any) -> _BrokerAdapterBase:
-    """docs §14 factory: mode in {"mock", "real"}. "READ_ONLY" never
-    constructs a broker at all (service.py) — only market_data quotes."""
     if mode == "mock":
         return MockBrokerAdapter()
     if mode == "real":
