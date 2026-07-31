@@ -1,5 +1,16 @@
 # MACD2 Logic
 
+## 2026-07-31 MACD2 Primary Rule
+
+- `strategy_version`: `20260731_KIS_MACD_COLOR_FLAG_V1`
+- `signal_rule`: `KIS_MACD_COLOR_FLAG_CONFIRMED`
+- Primary order authority uses completed 3-minute bars only.
+- MACD uses EMA 12/26/9 with `adjust=False`.
+- A completed bar is `UP_RED` when MACD histogram values rise for two consecutive completed bars: `h0 > h1 > h2`.
+- A completed bar is `DOWN_BLUE` when MACD histogram values fall for two consecutive completed bars: `h0 < h1 < h2`.
+- Histogram sign is not part of the KIS color rule. A less-negative histogram can be `UP_RED`; a less-positive histogram can be `DOWN_BLUE`.
+- `flag_time` and `signal_id` use the completed bar's start timestamp (`bar_start_at`), while tradeable confirmation happens at `bar_start_at + 3 minutes`.
+
 본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가, 2026-07-31 플래그 정합성 수정 — 진행봉 candidate 주문권한 재제거·1분봉 완전성 게이트·Worker 세션/SHA 기준 통계 분리). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
 
 ## 목적

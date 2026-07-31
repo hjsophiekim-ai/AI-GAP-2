@@ -1,15 +1,17 @@
 """Tests for app.trading.strategy_ownership — the shared read-only adapter
-that Enhanced / MACD v1 / MACD2 each consult before opening order authority.
+that Enhanced / MACD2 each consult before opening order authority.
 
 Covers: per-engine flag+heartbeat semantics (fresh blocks, stale does not,
 missing-heartbeat fails safe), full bidirectional pairwise blocking across
-all three engines (docs requirement: exactly one may hold authority), and a
+both engines (docs requirement: exactly one may hold authority), and a
 concurrent-access race test against the shared JSON files.
 
+2026-07-31: the retired Hynix MACD engine has been removed from the active
+ownership gate; its tests are removed along with it.
+
 Global isolation: tests/conftest.py's autouse `_isolate_ai_gap_data_paths`
-already points ``strategy_ownership.V1_RUNTIME_PATH`` /
-``MACD2_RUNTIME_PATH`` at a per-test tmp_path, so no test here can ever touch
-the real data/state files.
+already points ``strategy_ownership.MACD2_RUNTIME_PATH`` at a per-test
+tmp_path, so no test here can ever touch the real data/state files.
 """
 from __future__ import annotations
 
@@ -78,53 +80,15 @@ def test_enhanced_active_fails_safe_when_heartbeat_missing(monkeypatch):
     assert reason == "ENHANCED_ACTIVE"
 
 
-# ── macd_v1_active() ─────────────────────────────────────────────────────────
-
-def test_macd_v1_active_when_flag_true_and_tick_fresh(tmp_path, monkeypatch):
-    monkeypatch.setattr(so, "V1_RUNTIME_PATH", tmp_path / "macd_hynix_runtime.json")
-    _write(so.V1_RUNTIME_PATH, {
-        "auto_trade_on": True,
-        "worker": {"last_tick_at": datetime.now().isoformat()},
-    })
-    active, reason = so.macd_v1_active()
-    assert active is True
-    assert reason == "MACD_V1_ACTIVE"
-
-
-def test_macd_v1_not_active_when_tick_stale(tmp_path, monkeypatch):
-    monkeypatch.setattr(so, "V1_RUNTIME_PATH", tmp_path / "macd_hynix_runtime.json")
-    stale = datetime.now() - timedelta(seconds=so.MACD_V1_HEARTBEAT_STALE_SEC + 1)
-    _write(so.V1_RUNTIME_PATH, {
-        "auto_trade_on": True,
-        "worker": {"last_tick_at": stale.isoformat()},
-    })
-    active, _ = so.macd_v1_active()
-    assert active is False
-
-
-def test_macd_v1_not_active_when_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(so, "V1_RUNTIME_PATH", tmp_path / "does_not_exist.json")
-    active, _ = so.macd_v1_active()
-    assert active is False
-
+# ── _read_json() plumbing ────────────────────────────────────────────────────
 
 def test_read_json_fails_closed_on_corrupt_existing_file(tmp_path):
     """A file that exists but never parses (real corruption, not just a
     torn read that would clear up on retry) must return the _READ_ERROR
     sentinel, not silently degrade to {} (which would read as 'not active')."""
-    bad_path = tmp_path / "macd_hynix_runtime.json"
+    bad_path = tmp_path / "some_engine_runtime.json"
     bad_path.write_text("{not valid json", encoding="utf-8")
     assert so._read_json(bad_path, attempts=2, backoff_sec=0.0) is so._READ_ERROR
-
-
-def test_macd_v1_fails_closed_when_read_uncertain(tmp_path, monkeypatch):
-    """This is a safety gate: an uncertain read of MACD v1's file must still
-    block MACD2, never silently fall through to 'not active'."""
-    monkeypatch.setattr(so, "V1_RUNTIME_PATH", tmp_path / "macd_hynix_runtime.json")
-    monkeypatch.setattr(so, "_read_json", lambda path, **k: so._READ_ERROR)
-    active, reason = so.macd_v1_active()
-    assert active is True
-    assert reason == "MACD_V1_READ_UNCERTAIN_FAILSAFE"
 
 
 # ── macd2_active() ───────────────────────────────────────────────────────────
@@ -163,10 +127,9 @@ def test_macd2_active_handles_tz_aware_updated_at(tmp_path, monkeypatch):
 
 # ── Bidirectional pairwise blocking (docs requirement: exactly one owner) ──
 
-def _patch_checks(monkeypatch, *, enhanced=(False, ""), macd_v1=(False, ""), macd2=(False, "")):
+def _patch_checks(monkeypatch, *, enhanced=(False, ""), macd2=(False, "")):
     monkeypatch.setattr(so, "_CHECKS", {
         so.ENHANCED: lambda: enhanced,
-        so.MACD_V1: lambda: macd_v1,
         so.MACD2: lambda: macd2,
     })
 
@@ -178,20 +141,6 @@ def test_macd2_blocked_by_enhanced_active(monkeypatch):
     assert reason == "ENHANCED_ACTIVE"
 
 
-def test_macd2_blocked_by_macd_v1_active(monkeypatch):
-    _patch_checks(monkeypatch, macd_v1=(True, "MACD_V1_ACTIVE"))
-    blocked, reason = so.other_owner_active(so.MACD2)
-    assert blocked is True
-    assert reason == "MACD_V1_ACTIVE"
-
-
-def test_macd_v1_blocked_by_macd2_active(monkeypatch):
-    _patch_checks(monkeypatch, macd2=(True, "MACD2_ACTIVE"))
-    blocked, reason = so.other_owner_active(so.MACD_V1)
-    assert blocked is True
-    assert reason == "MACD2_ACTIVE"
-
-
 def test_enhanced_blocked_by_macd2_active(monkeypatch):
     _patch_checks(monkeypatch, macd2=(True, "MACD2_ACTIVE"))
     blocked, reason = so.other_owner_active(so.ENHANCED)
@@ -201,7 +150,7 @@ def test_enhanced_blocked_by_macd2_active(monkeypatch):
 
 def test_nothing_active_allows_any_claimant_to_start(monkeypatch):
     _patch_checks(monkeypatch)
-    for claimant in (so.ENHANCED, so.MACD_V1, so.MACD2):
+    for claimant in (so.ENHANCED, so.MACD2):
         blocked, reason = so.other_owner_active(claimant)
         assert blocked is False
         assert reason == ""
@@ -215,13 +164,18 @@ def test_unknown_claimant_raises():
 # ── Concurrent-access race test ─────────────────────────────────────────────
 
 def test_concurrent_heartbeat_writes_reliably_block_other_engine(tmp_path, monkeypatch):
-    """While MACD v1's runtime file is being atomically rewritten every ~1ms
-    by a background thread (simulating its live 5s-tick worker, compressed in
-    time), MACD2's start-gate check must see it as active on every single
+    """While MACD2's runtime file is being atomically rewritten every ~1ms by
+    a background thread (simulating its live 5s-tick worker, compressed in
+    time), Enhanced's start-gate check must see it as active on every single
     read — no crash on a torn/concurrent read, no false 'clear to start'.
+
+    2026-07-31: this previously exercised MACD v1's runtime file (now
+    removed from the codebase); rewritten against MACD2's own file instead —
+    same concurrent atomic-write-vs-read race, just the other direction
+    (Enhanced checking MACD2).
     """
-    v1_path = tmp_path / "macd_hynix_runtime.json"
-    monkeypatch.setattr(so, "V1_RUNTIME_PATH", v1_path)
+    macd2_path = tmp_path / "macd2_runtime.json"
+    monkeypatch.setattr(so, "MACD2_RUNTIME_PATH", macd2_path)
     monkeypatch.setattr(
         "app.services.hynix_switch_state.load_state", lambda *a, **k: {"auto_trade_on": False}
     )
@@ -231,10 +185,10 @@ def test_concurrent_heartbeat_writes_reliably_block_other_engine(tmp_path, monke
     write_exhausted = []
 
     def _payload():
-        return {"auto_trade_on": True, "worker": {"last_tick_at": datetime.now().isoformat()}}
+        return {"auto_trade_on": True, "updated_at": datetime.now().isoformat()}
 
     def _replace_with_retry() -> bool:
-        tmp = v1_path.with_suffix(v1_path.suffix + f".tmp.{os.getpid()}")
+        tmp = macd2_path.with_suffix(macd2_path.suffix + f".tmp.{os.getpid()}")
         tmp.write_text(json.dumps(_payload()), encoding="utf-8")
         # os.replace() onto a path a concurrent reader has briefly opened can
         # raise PermissionError on Windows (no POSIX-style replace-while-open
@@ -242,7 +196,7 @@ def test_concurrent_heartbeat_writes_reliably_block_other_engine(tmp_path, monke
         # bug in the reader; retry with generous backoff.
         for _ in range(200):
             try:
-                os.replace(tmp, v1_path)
+                os.replace(tmp, macd2_path)
                 return True
             except PermissionError:
                 time.sleep(0.001)
@@ -253,7 +207,7 @@ def test_concurrent_heartbeat_writes_reliably_block_other_engine(tmp_path, monke
     # always exists with a real, fresh, active payload once contention begins
     # — a later replace that loses the race just leaves that still-valid
     # prior content in place (never "file missing").
-    v1_path.write_text(json.dumps(_payload()), encoding="utf-8")
+    macd2_path.write_text(json.dumps(_payload()), encoding="utf-8")
 
     def _writer_loop():
         while not stop.is_set():
@@ -273,7 +227,7 @@ def test_concurrent_heartbeat_writes_reliably_block_other_engine(tmp_path, monke
         read_errors = []
         for _ in range(200):
             try:
-                blocked, reason = so.other_owner_active(so.MACD2)
+                blocked, reason = so.other_owner_active(so.ENHANCED)
             except Exception as exc:  # pragma: no cover
                 read_errors.append(exc)
                 continue
@@ -287,11 +241,11 @@ def test_concurrent_heartbeat_writes_reliably_block_other_engine(tmp_path, monke
     assert not read_errors, f"concurrent reads raised: {read_errors}"
     assert len(read_results) == 200
     assert all(blocked for blocked, _ in read_results), (
-        "MACD2's start-gate must never see MACD v1 as inactive while it is actively ticking"
+        "Enhanced's start-gate must never see MACD2 as inactive while it is actively ticking"
     )
-    # Almost always a clean MACD_V1_ACTIVE read; a torn read mid-replace may
-    # occasionally fail closed as MACD_V1_READ_UNCERTAIN_FAILSAFE instead —
+    # Almost always a clean MACD2_ACTIVE read; a torn read mid-replace may
+    # occasionally fail closed as MACD2_READ_UNCERTAIN_FAILSAFE instead —
     # both keep `blocked` True, which is the actual safety property.
     assert all(
-        reason in ("MACD_V1_ACTIVE", "MACD_V1_READ_UNCERTAIN_FAILSAFE") for _, reason in read_results
+        reason in ("MACD2_ACTIVE", "MACD2_READ_UNCERTAIN_FAILSAFE") for _, reason in read_results
     )

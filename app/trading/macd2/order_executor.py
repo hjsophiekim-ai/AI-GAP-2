@@ -4,8 +4,7 @@ Combines budget/cash-based quantity sizing, the sell-then-confirm-then-
 reconcile-then-buy direction-switch sequence, and duplicate-order
 prevention. Reuses TradeCostEngine (generic shared trading infra, not
 MACD-v1 domain code — see the 2026-07-23 code-reuse audit) for fee/net-PnL
-calculation only. Never imports from app.trading.macd_hynix_* or
-app.trading.macd_pipeline.*.
+calculation only.
 
 Writes a confirmed leg to the execution ledger only after both KIS execution
 success AND position reconciliation succeed (docs §17) — never before.

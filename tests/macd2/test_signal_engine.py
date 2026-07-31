@@ -10,6 +10,7 @@ from app.trading.macd2 import config
 from app.trading.macd2.models import Direction, MacdSnapshot
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    evaluate_confirmed_macd_flag,
     evaluate_primary_forming_crossover,
     evaluate_macd_crossover,
     evaluate_signed_b,
@@ -165,6 +166,21 @@ def test_evaluate_macd_crossover(previous_diff, current_diff, previous_direction
         current_diff=current_diff,
     )
     assert evaluate_macd_crossover(snap, previous_direction) == expected
+
+
+@pytest.mark.parametrize(
+    "hist_last3,previous_direction,expected",
+    [
+        ((-3.0, -2.0, -1.0), None, Direction.UP_RED),
+        ((3.0, 2.0, 1.0), None, Direction.DOWN_BLUE),
+        ((1.0, 2.0, 3.0), Direction.UP_RED, Direction.HOLD),
+        ((3.0, 2.0, 1.0), Direction.DOWN_BLUE, Direction.HOLD),
+        ((1.0, 3.0, 2.0), None, Direction.HOLD),
+    ],
+)
+def test_evaluate_confirmed_macd_flag_matches_kis_histogram_color(hist_last3, previous_direction, expected):
+    snap = _macd_snapshot(hist_last3)
+    assert evaluate_confirmed_macd_flag(snap, previous_direction) == expected
 
 
 def test_evaluate_primary_forming_crossover_uses_current_quote_for_up_signal():

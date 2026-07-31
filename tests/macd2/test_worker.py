@@ -423,7 +423,7 @@ def test_provisional_candidate_opposite_direction_never_triggers_switch():
     confirmed completed-bar crossover has that authority (docs 2026-07-27
     KIS-parity fix)."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])  # real UP_RED crossover at 13:57
+    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])  # real UP_RED flag at 13:57
     confirmed_now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state()
     state.strategy_name = config.STRATEGY_NAME
@@ -454,7 +454,7 @@ def test_confirmed_dispatch_within_5_seconds_of_detection():
     """docs §6 5초 재현 검증: a genuine completed-bar crossover reaches the
     order executor within SIGNAL_TO_ORDER_REQUEST_MAX_SEC (5s) of detection."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
     now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state()
     state.strategy_name = config.STRATEGY_NAME
@@ -478,7 +478,7 @@ def test_confirmed_flag_time_and_signal_id_use_bar_start_not_bar_end():
     Only evaluated_at (detected_at)/order_requested_at may fall at/after the
     bar's own completion instant (14:00)."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
     now = start + timedelta(minutes=3 * 100, seconds=5)  # 14:00:05
     bar_start = start + timedelta(minutes=3 * 99)  # 13:57:00
     bar_end = bar_start + timedelta(minutes=3)  # 14:00:00
@@ -510,7 +510,7 @@ def test_history_gap_blocks_confirmed_signal_until_backfilled():
     advancing last_confirmed_bar_ts, so the SAME bar dispatches normally once
     the gap is backfilled by a later incremental merge."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    full_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    full_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
     gap_minute = start + timedelta(minutes=3 * 99 + 1)  # middle minute of the new 13:57-14:00 bar
     gapped_1m = full_1m[full_1m["datetime"] != gap_minute].reset_index(drop=True)
     now = start + timedelta(minutes=3 * 100, seconds=5)  # 14:00:05
@@ -548,7 +548,7 @@ def test_compute_today_signal_overview_classifies_by_session_started_at():
     (bar closed before this Worker session started) or LIVE_CONFIRMED (bar
     closed at/after session start), purely for the stats panel."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
     now = start + timedelta(minutes=3 * 100, seconds=5)  # 14:00:05
     bar_start = start + timedelta(minutes=3 * 99)  # 13:57:00
     bar_end = bar_start + timedelta(minutes=3)  # 14:00:00

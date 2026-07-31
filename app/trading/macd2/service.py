@@ -52,6 +52,14 @@ class Macd2Service:
         self._last_bootstrap_at: Optional[str] = None
         self._last_bootstrap_result: Optional[dict[str, Any]] = None
 
+    def _persist_worker_stall_if_needed(self, state):
+        worker_alive = bool(self._worker and self._worker.is_alive())
+        if state.auto_trade_on and not worker_alive:
+            state.ui_mode = RuntimeStatus.WORKER_STALLED
+            state.order_block_reason = "WORKER_THREAD_DEAD"
+            state_store.save_state(state)
+        return state
+
     def start(
         self,
         *,
@@ -248,6 +256,7 @@ class Macd2Service:
 
     def get_snapshot(self) -> dict[str, Any]:
         state = state_store.load_state()
+        state = self._persist_worker_stall_if_needed(state)
         quotes: dict[str, Any] = {}
         if self._market_data is not None:
             for symbol in (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL):
@@ -296,10 +305,13 @@ class Macd2Service:
         }
 
     def supervisor_status(self) -> dict[str, Any]:
+        state = self._persist_worker_stall_if_needed(state_store.load_state())
         stats = self._worker.tick_stats() if self._worker is not None else {}
         worker_alive = bool(self._worker and self._worker.is_alive())
         return {
             "worker_alive": worker_alive,
+            "runtime_ui_mode": state.ui_mode.value,
+            "order_block_reason": state.order_block_reason,
             "active_worker_count": 1 if worker_alive else 0,
             "quote_updater_alive": bool(self._market_data and self._market_data.quote_updater_alive()),
             "history_updater_alive": bool(self._market_data and self._market_data.history_updater_alive()),

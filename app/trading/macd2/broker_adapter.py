@@ -4,7 +4,6 @@ Reuses app.trading.broker_factory.create_broker / KisMockBroker /
 KisRealBroker / BrokerBase directly — these are generic trading
 infrastructure shared by Enhanced and MACD v1, not MACD-v1 domain code (see
 the 2026-07-23 code-reuse audit). This module does NOT import anything from
-app.trading.macd_hynix_* or app.trading.macd_pipeline.* (docs/MACD2_LOGIC.md
 §9/§14 — REAL confirm/gate lives entirely inside KisRealBroker.__init__;
 MockBrokerAdapter never touches it).
 """

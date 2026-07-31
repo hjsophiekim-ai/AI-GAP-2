@@ -54,6 +54,7 @@ from app.trading.macd2.models import (
 )
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    evaluate_confirmed_macd_flag,
     evaluate_macd_crossover,
     evaluate_primary_forming_crossover,
     forming_bar_window,
@@ -240,12 +241,12 @@ ORIGIN_HISTORICAL_REPLAY_ONLY = "HISTORICAL_REPLAY_ONLY"
 def compute_today_signal_overview(
     df_1m: pd.DataFrame, *, now: datetime, session_started_at: Optional[str],
 ) -> list[dict[str, Any]]:
-    """Recompute every one of TODAY's confirmed (completed-3m-bar) crossovers
+    """Recompute every one of TODAY's confirmed completed-3m-bar MACD flags
     from raw 1-minute history, for the 신호 통계 panel ONLY — never called by
     run_once, never touches order_executor/major_flag_filter/processed_signal_ids
     (docs §3/§5). Uses the exact same pure functions as the live Worker
     (resample_completed_3m / filter_complete_3m_bars / calculate_macd /
-    evaluate_macd_crossover) so a bar's classification here always agrees
+    evaluate_confirmed_macd_flag) so a bar's classification here always agrees
     with what run_once would have decided had it been running at that moment.
 
     A bar whose window closed strictly before ``session_started_at`` (this
@@ -276,12 +277,7 @@ def compute_today_signal_overview(
         snap = calculate_macd(window)
         if snap is None:
             continue
-        if pos == 0:
-            # First bar of today: baseline only, never a signal (mirrors
-            # _advance_confirmed_primary's is_first_of_day suppression).
-            last_direction = None
-            continue
-        direction = evaluate_macd_crossover(snap, last_direction)
+        direction = evaluate_confirmed_macd_flag(snap, last_direction)
         if direction == Direction.HOLD:
             continue
         last_direction = direction
@@ -911,16 +907,9 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
         return Direction.HOLD
     prior_bar_ts = state.last_confirmed_bar_ts
     state.last_confirmed_bar_ts = bar_key
-    is_first_of_day = True
-    if prior_bar_ts:
-        try:
-            prior_date = datetime.fromisoformat(prior_bar_ts).astimezone(KST).date()
-            is_first_of_day = prior_date != macd_snap.bar_dt.astimezone(KST).date()
-        except ValueError:
-            is_first_of_day = True
-    if is_first_of_day:
+    if not prior_bar_ts:
         return Direction.HOLD
-    direction = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
+    direction = evaluate_confirmed_macd_flag(macd_snap, state.last_detected_direction)
     if direction != Direction.HOLD:
         state.last_detected_direction = direction
         state.latest_primary_flag = direction

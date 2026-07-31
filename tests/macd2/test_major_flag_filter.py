@@ -69,32 +69,39 @@ def _flat_bars(
     return pd.DataFrame(rows)
 
 
-def _shape_last_bar(
+def _shape_last_two_bars(
     bars: pd.DataFrame,
     direction: Direction,
     *,
     jump: float = 100.0,
     volume_mult: float = 5.0,
 ) -> pd.DataFrame:
-    """Turn the last row into a strong ``direction`` flag bar (open == base
-    close, so the base's hist stays exactly 0.0 and the last bar is a real
-    confirmed MACD crossover)."""
+    """Turn the last two rows into a strong KIS color flag shape."""
     i = len(bars) - 1
-    base = float(bars["close"].iloc[i - 1])
+    mid_i = i - 1
+    base = float(bars["close"].iloc[mid_i - 1])
+    mid_jump = jump / 2.0
     if direction is Direction.UP_RED:
+        mid_close = base + mid_jump
         close = base + jump
-        high, low = close + _BASE_SPREAD, base - _BASE_SPREAD
+        mid_high, mid_low = mid_close + _BASE_SPREAD, base - _BASE_SPREAD
+        high, low = close + _BASE_SPREAD, mid_close - _BASE_SPREAD
     else:
+        mid_close = base - mid_jump
         close = base - jump
-        high, low = base + _BASE_SPREAD, close - _BASE_SPREAD
+        mid_high, mid_low = base + _BASE_SPREAD, mid_close - _BASE_SPREAD
+        high, low = mid_close + _BASE_SPREAD, close - _BASE_SPREAD
+    bars.loc[mid_i, ["open", "high", "low", "close", "volume"]] = [
+        base, mid_high, mid_low, mid_close, _BASE_VOLUME * volume_mult,
+    ]
     bars.loc[i, ["open", "high", "low", "close", "volume"]] = [
-        base, high, low, close, _BASE_VOLUME * volume_mult,
+        mid_close, high, low, close, _BASE_VOLUME * volume_mult,
     ]
     return bars
 
 
 def _crossover_bars(direction: Direction, *, n: int = _BASE_BARS, **kwargs) -> pd.DataFrame:
-    return _shape_last_bar(_flat_bars(n), direction, **kwargs)
+    return _shape_last_two_bars(_flat_bars(n), direction, **kwargs)
 
 
 def _decision_now(bars: pd.DataFrame) -> datetime:
@@ -338,7 +345,7 @@ def test_a_bar_after_the_flag_bar_shifts_the_current_bar_so_callers_must_slice()
     documented caller responsibility (the worker hands it bars_3m sliced at the
     confirmed bar), and this test pins the behavior."""
     bars = _crossover_bars(Direction.UP_RED)
-    future_close = float(bars["close"].iloc[-1]) + 50.0
+    future_close = float(bars["close"].iloc[-1]) - 50.0
     future = pd.DataFrame([{
         "datetime": pd.Timestamp(bars["datetime"].iloc[-1]).to_pydatetime() + timedelta(minutes=3),
         "open": future_close,
@@ -434,7 +441,7 @@ def test_vwap_never_mixes_the_previous_days_volume():
     expected_vwap = float((typical * day2["volume"]).sum() / day2["volume"].sum())
     assert decision.metrics["vwap"] == pytest.approx(expected_vwap)
     # Day 1's typical price (1100 with 100x the volume) would have dominated.
-    assert decision.metrics["vwap"] < 1010.0
+    assert decision.metrics["vwap"] < 1015.0
 
 
 def test_last_two_bars_that_are_not_a_crossover_are_rejected():
@@ -769,7 +776,7 @@ def _confirmed_up_scenario(*, filter_on: bool, quotes: dict = None):
     """A single-tick confirmed UP_RED completed-bar crossover (the same shape
     tests/macd2/test_worker.py uses), with the MAJOR_FLAG toggle configurable."""
     quote_prices = {**_WORKER_QUOTES, **(quotes or {})}
-    df_1m = _1m_from_3m_closes(_WORKER_START, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(_WORKER_START, [100.0] * 98 + [120.0, 140.0])
     now = _WORKER_START + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state(filter_on=filter_on)
     state.last_confirmed_bar_ts = (_WORKER_START + timedelta(minutes=3 * 98)).isoformat()
@@ -968,7 +975,7 @@ def test_stop_loss_is_not_gated_even_when_the_filter_rejects_everything(monkeypa
     monkeypatch.setattr(config, "MAJOR_ENTRY_SCORE_MIN", 200.0)
     monkeypatch.setattr(config, "MAJOR_REVERSAL_SCORE_MIN", 200.0)
     monkeypatch.setattr(config, "MAJOR_FAST_REVERSAL_SCORE_MIN", 200.0)
-    df_1m = _1m_from_3m_closes(_WORKER_START, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(_WORKER_START, [100.0] * 98 + [120.0, 140.0])
     now = _WORKER_START + timedelta(minutes=3 * 100, seconds=5)
     svc = _svc_with_quote(df_1m, now, {**_WORKER_QUOTES, config.INVERSE_SYMBOL: 9_000.0})
 

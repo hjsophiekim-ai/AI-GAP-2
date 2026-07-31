@@ -3,9 +3,7 @@
 No network, state file, UI, TradeCostEngine, or broker access — net-return
 percentages are computed elsewhere (order_executor.py, using the actual ETF
 entry price) and passed in here as plain floats. Independent from
-app.trading.macd_hynix_strategy per the 2026-07-23 design decision (docs/
-MACD2_LOGIC.md is the sole source of truth; v1 is reference-only, compared
-in tests/macd2/test_parity.py).
+docs/MACD2_LOGIC.md is the sole source of truth.
 
 Priority order (docs §10) is: 1) 15:00 forced liquidation, 2) stop loss,
 3) opposite signed-B signal, 4) profit lock, 5) hold. Only (2) and (4) are

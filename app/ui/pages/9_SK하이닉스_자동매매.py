@@ -765,15 +765,13 @@ with sc3:
                 st.error("blocking_reason: " + ", ".join(real_gate_status["blocking_reasons"]))
 
 if auto_on != switch_state.get("auto_trade_on") or switch_mode != switch_state.get("mode"):
-    # Bidirectional mutex: block Enhanced enable while MACD strategy is ON.
+    # Bidirectional mutex: block Enhanced enable while MACD2 is ON.
+    # (2026-07-31: legacy MACD v1 removed from the codebase — its own
+    # is_macd_strategy_on() check is gone along with it; MACD2 is the only
+    # remaining engine to check here.)
     if auto_on and not switch_state.get("auto_trade_on"):
-        from app.trading.macd_hynix_order_manager import is_macd_strategy_on
         from app.trading.strategy_ownership import macd2_active
-        if is_macd_strategy_on():
-            st.error("MACD 하이닉스 자동매매가 ON 상태입니다. MACD를 중지한 뒤 Enhanced를 시작하세요.")
-            auto_on = False
-            st.session_state["hynix_switch_auto_on"] = False
-        elif macd2_active()[0]:
+        if macd2_active()[0]:
             st.error("MACD2 자동매매가 실행 중입니다. MACD2를 먼저 중지한 뒤 Enhanced를 시작하세요.")
             auto_on = False
             st.session_state["hynix_switch_auto_on"] = False

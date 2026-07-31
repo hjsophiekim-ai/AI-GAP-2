@@ -83,6 +83,6 @@ def test_load_state_discards_unexpected_keys():
     assert "legacy_v1_only_field" not in serialized
 
 
-def test_does_not_reference_macd_v1_paths():
+def test_state_path_is_macd2_owned():
     assert "macd_hynix" not in str(state_store.STATE_PATH)
     assert state_store.STATE_PATH.name == "macd2_runtime.json"

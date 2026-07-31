@@ -1,10 +1,8 @@
 """MACD2 signal engine — pure functions only.
 
 No network, state file, UI, or broker access. Implements docs/MACD2_LOGIC.md
-§§4-6 exactly (independent from app.trading.macd_hynix_strategy — see
-docs/MACD2_LOGIC.md header and the 2026-07-23 design decision to keep MACD2
-fully separate from MACD v1). Live, replay, and test code must all call these
-same functions — no duplicate implementations.
+§§4-6 exactly. Live, replay, and test code must all call these same functions
+— no duplicate implementations.
 """
 from __future__ import annotations
 
@@ -276,6 +274,36 @@ def evaluate_macd_crossover(
     if previous_direction == pattern:
         return Direction.HOLD
     return pattern
+
+
+def evaluate_confirmed_macd_flag(
+    macd_snapshot: MacdSnapshot,
+    previous_direction: Optional[Direction],
+) -> Direction:
+    """KIS-style confirmed MACD color flag for the latest completed 3m bar.
+
+    KIS colors the completed MACD histogram red when the histogram is rising
+    for two consecutive completed bars, and blue when it is falling for two
+    consecutive completed bars. The sign of the histogram is not part of this
+    color rule, so a less-negative histogram can be UP_RED and a less-positive
+    histogram can be DOWN_BLUE.
+    """
+    h2, h1, h0 = macd_snapshot.hist_last3
+    if h0 > h1 and h1 > h2:
+        pattern = Direction.UP_RED
+    elif h0 < h1 and h1 < h2:
+        pattern = Direction.DOWN_BLUE
+    else:
+        return Direction.HOLD
+
+    if previous_direction == pattern:
+        return Direction.HOLD
+    return pattern
+
+
+def confirmed_macd_flag_condition(macd_snapshot: MacdSnapshot) -> Direction:
+    """Raw KIS-style confirmed color condition without onset suppression."""
+    return evaluate_confirmed_macd_flag(macd_snapshot, None)
 
 
 def evaluate_primary_forming_crossover(

@@ -1,11 +1,17 @@
-"""Regression: Enhanced OFF must persist for MACD handoff.
+"""Regression: Enhanced OFF must persist.
 
 Covers:
 - ON → load_state True
 - OFF (set_control / stop_auto_trade) → same mode+common files False
 - Still False after simulated background save / page-reload load_state
 - Background must not restore False→True
-- Enhanced OFF → MACD Start succeeds
+
+2026-07-31: this file previously also covered "Enhanced OFF → legacy MACD v1
+Start succeeds" (a cross-engine handoff test against
+app.trading.macd_hynix_order_manager/macd_hynix_worker). MACD v1 has been
+safely removed from the codebase per the legacy MACD-module cleanup, so that
+test and its imports are removed here too — the remaining tests are pure
+Enhanced-state regressions and are unaffected.
 """
 
 from __future__ import annotations
@@ -15,8 +21,6 @@ import time
 
 import app.services.hynix_auto_trade_service as hats
 import app.services.hynix_switch_state as hss
-import app.trading.macd_hynix_order_manager as om
-import app.trading.macd_hynix_worker as worker
 from app.services.hynix_switch_engine import set_control
 
 
@@ -24,9 +28,6 @@ def _seed_enhanced_on(tmp_path, monkeypatch):
     monkeypatch.setattr(hss, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(hats, "_STATE_DIR", tmp_path)
     monkeypatch.setattr(hats, "_STOP_FLAG_PATH", tmp_path / "hynix_auto_trade_stopped.flag")
-    monkeypatch.setattr(om, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(om, "MUTEX_PATH", tmp_path / "macd_hynix_mutex.json")
-    monkeypatch.setattr(om, "STATE_PATH", tmp_path / "macd_hynix_state.json")
     (tmp_path / "hynix_auto_state_active_mode.json").write_text(
         json.dumps({"mode": "mock"}), encoding="utf-8"
     )
@@ -110,21 +111,6 @@ def test_still_false_after_page_refresh_reload(tmp_path, monkeypatch):
     # Simulate Streamlit page refresh: brand-new load_state()
     assert hss.load_state()["auto_trade_on"] is False
     assert hss.load_state(mode="mock")["auto_trade_on"] is False
-
-
-def test_enhanced_off_macd_start_succeeds(tmp_path, monkeypatch):
-    _seed_enhanced_on(tmp_path, monkeypatch)
-    assert om.can_start_macd("mock")[0] is False
-
-    verify = hats.stop_auto_trade()
-    assert verify.get("after") is False
-    ok, msg = om.can_start_macd("mock")
-    assert ok is True, msg
-
-    res = worker.start_auto_trade(mode="mock", budget=1_000_000)
-    assert res["ok"] is True
-    assert om.read_mutex().get("enabled") is True
-    worker.stop_auto_trade("test")
 
 
 def test_only_explicit_start_may_enable(tmp_path, monkeypatch):

@@ -14,8 +14,7 @@ lifetime of this service instance — never re-created per call.
 
 Reuses app.trading.kis_client.create_kis_client / KISClient.get_minute_candles
 / get_current_price directly — generic, non-MACD-v1 KIS wrappers per the
-2026-07-23 code-reuse audit. Never imports from app.trading.macd_hynix_* or
-app.trading.macd_pipeline.*.
+2026-07-23 code-reuse audit.
 
 Tests must inject a fake ``fetch_minute_candles``/``fetch_quote`` callable —
 see tests/macd2/test_market_data.py. Never call the real KIS fetchers there.
@@ -86,7 +85,6 @@ def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.Data
     1m bars for ``watch_symbol`` from a local historical cache
     (``data/cache/naver_multi_1m/{symbol}_1m.csv``) — plain, generic
     market-data for this symbol (not MACD-v1 production code; MACD v1's own
-    app.trading.macd_pipeline.market_data reads the same file, but this
     function is an independent, MACD2-only implementation, never an import
     from that module). Only consulted when fallback A (KIS's official
     주식일별분봉조회, ``_fetch_trading_day_candles``) fails to find any prior
@@ -755,6 +753,13 @@ def filter_complete_3m_bars(
 
     Returns ``(filtered_bars_3m, dropped_bar_starts)`` — the caller decides
     how to surface a non-empty ``dropped_bar_starts`` (e.g. HISTORY_GAP).
+
+    2026-07-31: a volume>0 variant of this check was tried (treating a
+    zero-volume 1-minute bar as incomplete) to explain a 000660 opening-auction
+    data artifact, but it did not reproduce KIS's own observed 09:00 UP_RED /
+    09:15 DOWN_BLUE flags against real data — reverted, see the startup-gate
+    fix in service.py/worker.py for that day's actual root cause (Worker never
+    confirmed started, docs §startup-lifecycle).
     """
     if bars_3m is None or bars_3m.empty:
         return bars_3m, []

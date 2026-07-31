@@ -1,9 +1,8 @@
 """
 11_MACD_자동매매2.py — ReadOnly UI for MACD2 (독립 신규 모듈)
 
-MACD2는 app/trading/macd2/* 로 완전히 독립되어 있으며, 기존 MACD v1
-(app/trading/macd_hynix_*, app/trading/macd_pipeline/*)이나 Enhanced 코드를
-호출하지 않는다. UI는 command 기록(시작/중지)과 service.get_snapshot()
+MACD2는 app/trading/macd2/* 로 완전히 독립되어 있으며, 다른 자동매매
+엔진 코드를 호출하지 않는다. UI는 command 기록(시작/중지)과 service.get_snapshot()
 읽기만 수행한다 — MACD 계산·network 호출·Worker 생성/reload를 UI에서
 직접 하지 않는다(docs/MACD2_LOGIC.md §16).
 
@@ -340,7 +339,7 @@ try:
         f"components=`{getattr(state, 'last_major_component_scores', None) or '-'}`"
     )
 
-    st.markdown("**Primary (완성봉 MACD crossover — 유일한 주문권한)**")
+    st.markdown("**Primary (완성봉 MACD color flag — 유일한 주문권한)**")
     st.caption("아래 diff/MACD는 진행 중(미완성) 3분봉의 shadow 진단값이며 주문에 사용되지 않는다. 실제 주문권한은 latest_primary_flag(완성봉)에만 있다.")
     pc1, pc2, pc3, pc4 = st.columns(4)
     pc1.metric("MACD (진행봉 shadow)", f"{state.provisional_macd:.6f}" if state.provisional_macd is not None else "-")
@@ -553,7 +552,7 @@ try:
     confirmed_summary = ledger.summarize_signals(
         trading_date,
         strategy_version=state.strategy_version,
-        signal_rule=getattr(macd2_config, "CONFIRMED_SIGNAL_RULE", "MACD_CROSSOVER_CONFIRMED"),
+        signal_rule=getattr(macd2_config, "CONFIRMED_SIGNAL_RULE", "KIS_MACD_COLOR_FLAG_CONFIRMED"),
         session_started_at=state.session_started_at,
         worker_code_sha=_current_worker_sha,
     )

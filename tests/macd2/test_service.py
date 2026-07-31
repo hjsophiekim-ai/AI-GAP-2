@@ -4,7 +4,6 @@ real broker_factory/KIS client (conftest.py's network/KIS-client blocks would
 fail the test immediately if it ever did)."""
 from __future__ import annotations
 
-import json
 import math
 import time as time_module
 from datetime import datetime, timedelta
@@ -12,7 +11,6 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from app.trading import strategy_ownership
 from app.trading.macd2 import config, service as service_module, state_store
 from app.trading.macd2.models import PositionSnapshot, RuntimeStatus
 from tests.macd2.fake_broker import FakeBroker
@@ -119,27 +117,6 @@ def test_start_blocks_when_enhanced_active(monkeypatch):
     assert state_store.load_state().auto_trade_on is False
 
 
-def test_start_blocks_when_macd_v1_active(monkeypatch, tmp_path):
-    # Uses the real other_strategy_active() (not mocked), with Enhanced's own
-    # check pinned to False so this genuinely isolates the MACD v1 file-read
-    # branch (real-environment hynix_switch_state.load_state() defaults are
-    # not something this test should depend on).
-    import app.services.hynix_switch_state as enhanced_state
-
-    monkeypatch.setattr(enhanced_state, "load_state", lambda *a, **k: {"auto_trade_on": False})
-
-    v1_path = tmp_path / "macd_hynix_runtime.json"
-    v1_path.write_text(json.dumps({"auto_trade_on": True}), encoding="utf-8")
-    monkeypatch.setattr(strategy_ownership, "V1_RUNTIME_PATH", v1_path)
-    _patch_ok_construction(monkeypatch)
-
-    svc = service_module.Macd2Service()
-    res = svc.start(mode="mock")
-
-    assert res["ok"] is False
-    assert res["message"] == "MACD_V1_ACTIVE"
-
-
 def test_start_full_lifecycle_reaches_running(monkeypatch):
     monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
     _patch_ok_construction(monkeypatch)
@@ -158,6 +135,19 @@ def test_start_full_lifecycle_reaches_running(monkeypatch):
         status = svc.supervisor_status()
         assert status["worker_alive"] is True
         assert status["quote_updater_alive"] is True
+        deadline = time_module.time() + 2.0
+        while svc.supervisor_status()["tick_n"] < 1 and time_module.time() < deadline:
+            time_module.sleep(0.05)
+
+        status = svc.supervisor_status()
+        assert status["worker_alive"] is True
+        assert status["tick_n"] >= 1
+        assert status["started_at"]
+        assert status["last_tick_at"]
+        state = state_store.load_state()
+        assert state.worker_instance_id == status["instance_id"]
+        assert state.session_started_at
+        assert state.ui_mode == RuntimeStatus.RUNNING
     finally:
         svc.stop()
 

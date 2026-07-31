@@ -126,10 +126,10 @@ def _macd_lines(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
     return macd, signal, hist
 
 
-def _raw_crossover_direction(prev_hist: float, curr_hist: float) -> Optional[Direction]:
-    if prev_hist <= 0 and curr_hist > 0:
+def _raw_confirmed_color_direction(hist_2: float, hist_1: float, hist_0: float) -> Optional[Direction]:
+    if hist_0 > hist_1 and hist_1 > hist_2:
         return Direction.UP_RED
-    if prev_hist >= 0 and curr_hist < 0:
+    if hist_0 < hist_1 and hist_1 < hist_2:
         return Direction.DOWN_BLUE
     return None
 
@@ -390,11 +390,12 @@ def evaluate_major_flag(
             required_score=required_score,
         )
 
-    # Verify last two completed bars form a real confirmed crossover for flag_direction.
+    # Verify the latest completed bar is a real confirmed KIS color flag for flag_direction.
     _macd, _signal, hist = _macd_lines(work["close"].astype(float))
+    prev2_hist = float(hist.iloc[-3])
     prev_hist = float(hist.iloc[-2])
     curr_hist = float(hist.iloc[-1])
-    if not _finite(prev_hist) or not _finite(curr_hist):
+    if not _finite(prev2_hist) or not _finite(prev_hist) or not _finite(curr_hist):
         return _reject(
             decision=config.FILTER_DATA_INSUFFICIENT,
             block_reason=config.FILTER_DATA_INSUFFICIENT,
@@ -403,16 +404,16 @@ def evaluate_major_flag(
             fast_reversal=fast_reversal,
             required_score=required_score,
         )
-    raw = _raw_crossover_direction(prev_hist, curr_hist)
+    raw = _raw_confirmed_color_direction(prev2_hist, prev_hist, curr_hist)
     if raw != direction:
         return _reject(
             decision=config.FILTER_INPUT_NOT_CROSSOVER,
             block_reason=config.FILTER_INPUT_NOT_CROSSOVER,
-            reasons=[f"last two bars are not a confirmed {direction.value} crossover"],
+            reasons=[f"last three bars are not a confirmed {direction.value} color flag"],
             is_reversal=is_reversal,
             fast_reversal=fast_reversal,
             required_score=required_score,
-            metrics={"prev_hist": prev_hist, "hist": curr_hist},
+            metrics={"prev2_hist": prev2_hist, "prev_hist": prev_hist, "hist": curr_hist},
         )
 
     scores_t, metrics_t, err = compute_component_scores(work)
