@@ -54,7 +54,7 @@ from app.trading.macd2.models import (
 )
 from app.trading.macd2.signal_engine import (
     calculate_macd,
-    evaluate_confirmed_macd_flag,
+    evaluate_confirmed_macd_color_onset,
     evaluate_macd_crossover,
     evaluate_primary_forming_crossover,
     forming_bar_window,
@@ -164,6 +164,9 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.session_date = today_str
     state.last_signal_direction = None
     state.last_detected_direction = None
+    state.macd_color_pending_direction = None
+    state.macd_color_pending_count = 0
+    state.macd_color_last_regime = None
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.last_evaluated_bar_ts = None
@@ -203,6 +206,9 @@ def initialize_strategy_session(
     state.worker_instance_id = worker_instance_id
     state.pending_signal = None
     state.last_detected_direction = None
+    state.macd_color_pending_direction = None
+    state.macd_color_pending_count = 0
+    state.macd_color_last_regime = None
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.processed_signal_ids = []
@@ -246,7 +252,7 @@ def compute_today_signal_overview(
     run_once, never touches order_executor/major_flag_filter/processed_signal_ids
     (docs §3/§5). Uses the exact same pure functions as the live Worker
     (resample_completed_3m / filter_complete_3m_bars / calculate_macd /
-    evaluate_confirmed_macd_flag) so a bar's classification here always agrees
+    evaluate_confirmed_macd_color_onset) so a bar's classification here always agrees
     with what run_once would have decided had it been running at that moment.
 
     A bar whose window closed strictly before ``session_started_at`` (this
@@ -272,16 +278,30 @@ def compute_today_signal_overview(
     session_start_dt = _parse_iso_dt(session_started_at)
     overview: list[dict[str, Any]] = []
     last_direction: Optional[Direction] = None
+    pending_direction: Optional[Direction] = None
+    pending_count = 0
+    last_regime: Optional[str] = None
     for pos, idx in enumerate(today_indices):
         window = bars_3m.iloc[: idx + 1]
         snap = calculate_macd(window)
         if snap is None:
             continue
-        direction = evaluate_confirmed_macd_flag(snap, last_direction)
+        bar_end = snap.bar_dt + timedelta(minutes=3)
+        decision = evaluate_confirmed_macd_color_onset(
+            snap,
+            last_direction,
+            pending_direction,
+            pending_count,
+            previous_regime=last_regime,
+            publishable=bar_end.time() < config.NEW_ENTRY_CUTOFF,
+        )
+        pending_direction = decision.pending_direction
+        pending_count = decision.pending_count
+        direction = decision.direction
         if direction == Direction.HOLD:
             continue
         last_direction = direction
-        bar_end = snap.bar_dt + timedelta(minutes=3)
+        last_regime = decision.regime
         origin = (
             ORIGIN_HISTORICAL_REPLAY_ONLY
             if session_start_dt is not None and bar_end <= session_start_dt
@@ -909,9 +929,21 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
     state.last_confirmed_bar_ts = bar_key
     if not prior_bar_ts:
         return Direction.HOLD
-    direction = evaluate_confirmed_macd_flag(macd_snap, state.last_detected_direction)
+    bar_end = macd_snap.bar_dt.astimezone(KST) + timedelta(minutes=3)
+    decision = evaluate_confirmed_macd_color_onset(
+        macd_snap,
+        state.last_detected_direction,
+        state.macd_color_pending_direction,
+        state.macd_color_pending_count,
+        previous_regime=state.macd_color_last_regime,
+        publishable=bar_end.time() < config.NEW_ENTRY_CUTOFF,
+    )
+    state.macd_color_pending_direction = decision.pending_direction
+    state.macd_color_pending_count = decision.pending_count
+    direction = decision.direction
     if direction != Direction.HOLD:
         state.last_detected_direction = direction
+        state.macd_color_last_regime = decision.regime
         state.latest_primary_flag = direction
         state.latest_primary_signal_id = make_signal_id(macd_snap.bar_dt, direction)
     return direction
@@ -1205,6 +1237,9 @@ def run_once(
         state.signal_rule = config.SIGNAL_RULE
         state.pending_signal = None
         state.last_detected_direction = None
+        state.macd_color_pending_direction = None
+        state.macd_color_pending_count = 0
+        state.macd_color_last_regime = None
         state.last_evaluated_bar_ts = None
         state.last_confirmed_bar_ts = None
 

@@ -212,6 +212,9 @@ class RuntimeState:
     warmup_ready: bool = False
     last_signal_direction: Optional[Direction] = None
     last_detected_direction: Optional[Direction] = None
+    macd_color_pending_direction: Optional[Direction] = None
+    macd_color_pending_count: int = 0
+    macd_color_last_regime: Optional[str] = None
     last_executed_direction: Optional[Direction] = None
     current_episode_direction: Optional[Direction] = None
     last_signal_bar_ts: Optional[str] = None

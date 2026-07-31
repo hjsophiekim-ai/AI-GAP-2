@@ -78,6 +78,11 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_detected_direction": (
             state.last_detected_direction.value if state.last_detected_direction else None
         ),
+        "macd_color_pending_direction": (
+            state.macd_color_pending_direction.value if state.macd_color_pending_direction else None
+        ),
+        "macd_color_pending_count": int(state.macd_color_pending_count or 0),
+        "macd_color_last_regime": state.macd_color_last_regime,
         "last_executed_direction": (
             state.last_executed_direction.value if state.last_executed_direction else None
         ),
@@ -201,6 +206,8 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     last_dir = Direction(last_dir_raw) if last_dir_raw in _DIRECTION_VALUES else None
     detected_raw = raw.get("last_detected_direction")
     detected_dir = Direction(detected_raw) if detected_raw in _DIRECTION_VALUES else None
+    pending_color_raw = raw.get("macd_color_pending_direction")
+    pending_color_dir = Direction(pending_color_raw) if pending_color_raw in _DIRECTION_VALUES else None
     executed_raw = raw.get("last_executed_direction")
     executed_dir = Direction(executed_raw) if executed_raw in _DIRECTION_VALUES else None
     episode_raw = raw.get("current_episode_direction")
@@ -230,6 +237,9 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         warmup_ready=bool(raw.get("warmup_ready", False)),
         last_signal_direction=last_dir,
         last_detected_direction=detected_dir,
+        macd_color_pending_direction=pending_color_dir,
+        macd_color_pending_count=int(raw.get("macd_color_pending_count") or 0),
+        macd_color_last_regime=raw.get("macd_color_last_regime"),
         last_executed_direction=executed_dir,
         current_episode_direction=episode_dir,
         last_signal_bar_ts=raw.get("last_signal_bar_ts"),
