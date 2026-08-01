@@ -28,6 +28,14 @@ _VERIFIED_KIS_FLAGS_BY_DATE = {
         "141800": Direction.DOWN_BLUE,
         "150000": Direction.UP_RED,
     },
+    "20260731": {
+        "102700": Direction.DOWN_BLUE,
+        "114500": Direction.UP_RED,
+        "152400": Direction.DOWN_BLUE,
+        "160900": Direction.UP_RED,
+        "162700": Direction.DOWN_BLUE,
+        "165700": Direction.UP_RED,
+    },
 }
 
 

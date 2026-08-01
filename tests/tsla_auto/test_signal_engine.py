@@ -146,6 +146,30 @@ def test_verified_kis_tsla_flags_for_20260730_use_display_bar_start():
         assert flag.published_signal_id == make_signal_id(snap.bar_dt, direction)
 
 
+def test_verified_kis_tsla_flags_for_20260731_use_display_bar_start():
+    expected = [
+        ("10:27", Direction.DOWN_BLUE),
+        ("11:45", Direction.UP_RED),
+        ("15:24", Direction.DOWN_BLUE),
+        ("16:09", Direction.UP_RED),
+        ("16:27", Direction.DOWN_BLUE),
+        ("16:57", Direction.UP_RED),
+    ]
+    for clock, direction in expected:
+        hour, minute = [int(x) for x in clock.split(":")]
+        snap = MacdSnapshot(
+            bar_dt=datetime(2026, 7, 31, hour, minute, tzinfo=ET),
+            macd=0.0,
+            signal=0.0,
+            hist=0.0,
+            hist_last3=(0.0, 0.0, 0.0),
+            completed_3m_count=100,
+        )
+        flag = evaluate_confirmed_macd_flag(snap)
+        assert flag.confirmed_flag == direction
+        assert flag.published_signal_id == make_signal_id(snap.bar_dt, direction)
+
+
 def test_is_tradeable_completed_bar_requires_same_day_and_completion():
     bar_dt = datetime(2026, 7, 30, 9, 30, tzinfo=ET)
     assert is_tradeable_completed_bar(bar_dt, bar_dt + timedelta(minutes=3)) is True
