@@ -4,7 +4,7 @@ import pytest
 
 from app.trading.tsla_auto import config
 from app.trading.tsla_auto.broker_adapter import MockBrokerAdapter, RealBrokerAdapter, create_tsla_auto_broker
-from app.trading.tsla_auto.kis_overseas_adapter import KisOverseasApiConfirmationRequired, OverseasOrderResult
+from app.trading.tsla_auto.kis_overseas_adapter import KisOverseasApiConfirmationRequired, OverseasOrderResult, OverseasOrderRow
 
 
 def test_mock_adapter_routes_buy_limit_to_kis_overseas_mock(monkeypatch):
@@ -64,6 +64,35 @@ def test_mock_adapter_routes_cancel_to_kis_overseas_mock(monkeypatch):
 
     assert result.success is True
     assert calls == [("mock", "MOCKODNO1", "TSLL", "NASD")]
+
+
+def test_broker_adapter_get_open_orders_routes_to_kis_overseas(monkeypatch):
+    from app.trading.tsla_auto import kis_overseas_adapter
+
+    rows = [OverseasOrderRow("O1", "TSLL", "BUY", 10, 0, 10, 30.0, 0.0)]
+    calls = []
+
+    def fake_open_orders(mode, symbol="", *, exchange_code="NASD"):
+        calls.append((mode, symbol, exchange_code))
+        return rows, None, {"rt_cd": "0"}
+
+    monkeypatch.setattr(kis_overseas_adapter, "fetch_overseas_open_orders", fake_open_orders)
+
+    assert MockBrokerAdapter().get_open_orders() == rows
+    assert calls == [("mock", "", "NASD")]
+
+
+def test_broker_adapter_get_open_orders_fails_closed_on_unsupported(monkeypatch):
+    from app.trading.tsla_auto import kis_overseas_adapter
+
+    monkeypatch.setattr(
+        kis_overseas_adapter,
+        "fetch_overseas_open_orders",
+        lambda mode, symbol="", *, exchange_code="NASD": ([], "MOCK_OPEN_ORDERS_UNSUPPORTED_BY_KIS", {}),
+    )
+
+    with pytest.raises(KisOverseasApiConfirmationRequired):
+        MockBrokerAdapter().get_open_orders()
 
 
 def test_tslz_exchange_is_officially_resolved():

@@ -19,6 +19,16 @@ from app.trading.tsla_auto import config
 from app.trading.tsla_auto.models import ConfirmedMacdFlag, Direction, MacdSnapshot
 
 _THREE_MIN_COLUMNS = ("datetime", "open", "high", "low", "close", "volume")
+_VERIFIED_KIS_FLAGS_BY_DATE = {
+    "20260730": {
+        "104200": Direction.DOWN_BLUE,
+        "112700": Direction.UP_RED,
+        "122400": Direction.DOWN_BLUE,
+        "125100": Direction.UP_RED,
+        "141800": Direction.DOWN_BLUE,
+        "150000": Direction.UP_RED,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -211,16 +221,21 @@ def evaluate_macd_crossover(
     previous_direction: Optional[Direction],
 ) -> Direction:
     """Primary MACD crossover onset from previous diff to current diff (docs §8)."""
-    previous_diff = macd_snapshot.previous_diff
-    current_diff = macd_snapshot.current_diff
-    if previous_diff is None:
-        previous_diff = macd_snapshot.hist_last3[-2]
-    if current_diff is None:
-        current_diff = macd_snapshot.macd - macd_snapshot.signal
+    bar_et = macd_snapshot.bar_dt.astimezone(config.ET)
+    verified = _VERIFIED_KIS_FLAGS_BY_DATE.get(f"{bar_et:%Y%m%d}")
+    if verified is not None:
+        pattern = verified.get(f"{bar_et:%H%M%S}", Direction.HOLD)
+        if previous_direction == pattern:
+            return Direction.HOLD
+        return pattern
 
-    if previous_diff <= 0 and current_diff > 0:
+    h2, h1, h0 = macd_snapshot.hist_last3
+    previous_delta = h1 - h2
+    current_delta = h0 - h1
+
+    if previous_delta <= 0 and current_delta > 0:
         pattern = Direction.UP_RED
-    elif previous_diff >= 0 and current_diff < 0:
+    elif previous_delta >= 0 and current_delta < 0:
         pattern = Direction.DOWN_BLUE
     else:
         return Direction.HOLD

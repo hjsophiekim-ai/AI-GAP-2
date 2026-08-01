@@ -172,6 +172,8 @@ class RuntimeState:
     order_block_reason: Optional[str] = None
     position_reconcile_diag: dict[str, Any] = field(default_factory=dict)
     last_position_reconcile_at: Optional[str] = None
+    market_session_state: dict[str, Any] = field(default_factory=dict)
+    liquidation_status: dict[str, Any] = field(default_factory=dict)
 
     strategy_name: str = "TSLA_AUTO"
     strategy_version: str = ""

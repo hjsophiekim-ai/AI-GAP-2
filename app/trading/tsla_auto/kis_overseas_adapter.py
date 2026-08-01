@@ -346,12 +346,21 @@ def fetch_overseas_minute_candles(
 
         rows = []
         for item in output2:
-            date_str = str(item.get("kymd") or "")
-            time_str = str(item.get("khms") or "")
-            if not date_str or not time_str:
+            exchange_date_str = str(item.get("xymd") or "")
+            exchange_time_str = str(item.get("xhms") or "")
+            kst_date_str = str(item.get("kymd") or "")
+            kst_time_str = str(item.get("khms") or "")
+            if not ((exchange_date_str and exchange_time_str) or (kst_date_str and kst_time_str)):
                 continue
             try:
-                dt = datetime.strptime(date_str + time_str, "%Y%m%d%H%M%S").replace(tzinfo=config.ET)
+                if exchange_date_str and exchange_time_str:
+                    dt = datetime.strptime(exchange_date_str + exchange_time_str, "%Y%m%d%H%M%S").replace(tzinfo=config.ET)
+                else:
+                    dt = (
+                        datetime.strptime(kst_date_str + kst_time_str, "%Y%m%d%H%M%S")
+                        .replace(tzinfo=config.KST)
+                        .astimezone(config.ET)
+                    )
                 close_raw = item.get("last")
                 if close_raw in (None, "", "0"):
                     continue
@@ -373,7 +382,7 @@ def fetch_overseas_minute_candles(
             et = df["datetime"].dt.tz_convert(config.ET)
             minutes = et.dt.hour * 60 + et.dt.minute
             open_min = config.SESSION_OPEN.hour * 60 + config.SESSION_OPEN.minute
-            close_min = 16 * 60
+            close_min = config.REGULAR_CLOSE.hour * 60 + config.REGULAR_CLOSE.minute
             df = df[(minutes >= open_min) & (minutes < close_min)].reset_index(drop=True)
         return df, {"received_count": int(len(df))}
     except Exception as exc:  # pragma: no cover - real network path, not exercised in tests

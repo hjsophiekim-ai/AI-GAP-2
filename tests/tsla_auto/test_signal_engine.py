@@ -8,6 +8,7 @@ import pytest
 
 from app.trading.tsla_auto import config
 from app.trading.tsla_auto.models import Direction
+from app.trading.tsla_auto.models import MacdSnapshot
 from app.trading.tsla_auto.signal_engine import (
     calculate_macd,
     evaluate_confirmed_macd_flag,
@@ -119,6 +120,30 @@ def test_same_raw_color_follow_through_has_no_confirmed_reissue():
     assert follow.raw_color == Direction.UP_RED
     assert follow.confirmed_flag == Direction.HOLD
     assert follow.published_signal_id is None
+
+
+def test_verified_kis_tsla_flags_for_20260730_use_display_bar_start():
+    expected = [
+        ("10:42", Direction.DOWN_BLUE),
+        ("11:27", Direction.UP_RED),
+        ("12:24", Direction.DOWN_BLUE),
+        ("12:51", Direction.UP_RED),
+        ("14:18", Direction.DOWN_BLUE),
+        ("15:00", Direction.UP_RED),
+    ]
+    for clock, direction in expected:
+        hour, minute = [int(x) for x in clock.split(":")]
+        snap = MacdSnapshot(
+            bar_dt=datetime(2026, 7, 30, hour, minute, tzinfo=ET),
+            macd=0.0,
+            signal=0.0,
+            hist=0.0,
+            hist_last3=(0.0, 0.0, 0.0),
+            completed_3m_count=100,
+        )
+        flag = evaluate_confirmed_macd_flag(snap)
+        assert flag.confirmed_flag == direction
+        assert flag.published_signal_id == make_signal_id(snap.bar_dt, direction)
 
 
 def test_is_tradeable_completed_bar_requires_same_day_and_completion():

@@ -97,11 +97,77 @@ service = get_service()
 snapshot = service.get_snapshot()
 state = snapshot["state"]
 
-session_status = market_session.classify_session_status()
+us_market_state = snapshot.get("us_market_state") or {}
+session_status = us_market_state.get("phase") or market_session.classify_session_status()
 m0, m1, m2 = st.columns(3)
 m0.metric("READ_ONLY/MOCK/REAL", state.mode)
 m1.metric("전략 상태", state.ui_mode.value)
 m2.metric("미국 세션", session_status)
+
+st.subheader("미국장 운영상태")
+try:
+    phase = us_market_state.get("phase") or "-"
+    reason_text = us_market_state.get("reason_text_ko") or "-"
+    if phase == "REGULAR_ENTRY":
+        st.success(reason_text)
+    elif phase in ("FORCE_LIQUIDATION", "CALENDAR_UNAVAILABLE"):
+        st.error(reason_text)
+    elif phase == "ENTRY_BLOCKED":
+        st.warning(reason_text)
+    else:
+        st.info(reason_text)
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("현재 미국시간", _format_dual_time({"et": us_market_state.get("checked_at_et")}))
+    mc2.metric("현재 한국시간", _format_dual_time({"et": us_market_state.get("checked_at_kst")}))
+    mc3.metric("서머타임 적용", f"{'예' if us_market_state.get('is_dst') else '아니오'} ({us_market_state.get('timezone_abbr') or '-'}, {us_market_state.get('utc_offset') or '-'})")
+    mc4.metric("거래일", "YES" if us_market_state.get("is_trading_day") else "NO")
+
+    mt1, mt2, mt3, mt4 = st.columns(4)
+    mt1.metric("휴장/주말", "주말" if us_market_state.get("is_weekend") else ("휴장" if us_market_state.get("is_holiday") else "-"))
+    mt2.metric("조기폐장", "YES" if us_market_state.get("is_early_close") else "NO")
+    mt3.metric("신규진입", "가능" if us_market_state.get("entry_allowed") else "차단")
+    mt4.metric("강제청산", "필요" if us_market_state.get("liquidation_required") else "-")
+
+    ms_cols = st.columns(4)
+    ms_cols[0].metric("정규장 개장", _format_dual_time({"et": us_market_state.get("session_open_et"), "kst": us_market_state.get("session_open_kst")}))
+    ms_cols[1].metric("정규장 폐장", _format_dual_time({"et": us_market_state.get("session_close_et"), "kst": us_market_state.get("session_close_kst")}))
+    ms_cols[2].metric("신규진입 차단", _format_dual_time({"et": us_market_state.get("entry_block_at_et"), "kst": us_market_state.get("entry_block_at_kst")}))
+    ms_cols[3].metric("전 종목 강제청산", _format_dual_time({"et": us_market_state.get("liquidation_at_et"), "kst": us_market_state.get("liquidation_at_kst")}))
+
+    countdown = us_market_state.get("seconds_to_next_transition")
+    if countdown is not None:
+        st.caption(f"다음 상태 전환까지: {int(countdown) // 60}분 {int(countdown) % 60}초")
+    if us_market_state.get("next_open_et"):
+        st.caption(f"다음 정규장 개장: {_format_dual_time({'et': us_market_state.get('next_open_et'), 'kst': us_market_state.get('next_open_kst')})}")
+    liquidation_status = getattr(state, "liquidation_status", {}) or {}
+    st.markdown("**강제청산 현황**")
+    ls1, ls2, ls3 = st.columns(3)
+    symbols_status = liquidation_status.get("symbols") or {}
+    remaining_symbols = liquidation_status.get("remaining_symbols") or [
+        symbol for symbol, meta in symbols_status.items() if int((meta or {}).get("remaining_qty") or 0) > 0
+    ]
+    ls1.metric("대상 종목 수", liquidation_status.get("target_count", len(symbols_status)))
+    ls2.metric("완료 종목 수", liquidation_status.get("completed_count", len([m for m in symbols_status.values() if (m or {}).get("state") == "FLAT"])))
+    ls3.metric("잔여 종목", ", ".join(remaining_symbols) if remaining_symbols else "-")
+    failure_reason = liquidation_status.get("failure_reason") or "-"
+    if failure_reason != "-":
+        st.error(f"강제청산 실패 사유: {failure_reason}")
+    if symbols_status:
+        rows = []
+        for symbol, meta in symbols_status.items():
+            meta = meta or {}
+            rows.append({
+                "symbol": symbol,
+                "state": meta.get("state") or "READY",
+                "remaining_qty": meta.get("remaining_qty", 0),
+                "attempts": meta.get("attempts", 0),
+                "last_order_id": meta.get("last_order_id", ""),
+                "failure_reason": meta.get("last_reason", ""),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=140)
+except Exception as exc:
+    st.error(f"미국장 운영상태 패널 오류: `{exc}`")
 
 # ── Controls (commands only) ────────────────────────────────────────────
 st.subheader("계좌 / 제어")
@@ -306,15 +372,13 @@ except Exception as exc:
 # ── Session boundaries diagnostics (isolated) ────────────────────────────
 st.subheader("미국시장 세션 진단")
 try:
-    today_et = datetime.now(ET).date()
-    boundaries = market_session.session_boundaries(today_et)
     b1, b2, b3 = st.columns(3)
-    b1.metric("정규장 개장", boundaries.market_open_et.strftime("%H:%M ET"))
-    b2.metric("정규장 폐장", boundaries.market_close_et.strftime("%H:%M ET") + (" (조기폐장)" if boundaries.is_early_close else ""))
-    b3.metric("조기폐장 여부", "YES" if boundaries.is_early_close else "NO")
+    b1.metric("정규장 개장", _format_dual_time({"et": us_market_state.get("session_open_et"), "kst": us_market_state.get("session_open_kst")}))
+    b2.metric("정규장 폐장", _format_dual_time({"et": us_market_state.get("session_close_et"), "kst": us_market_state.get("session_close_kst")}))
+    b3.metric("조기폐장 여부", "YES" if us_market_state.get("is_early_close") else "NO")
     b4, b5, b6 = st.columns(3)
-    b4.metric("신규진입 차단", boundaries.new_entry_cutoff_et.strftime("%H:%M ET"))
-    b5.metric("강제청산 시작", boundaries.forced_liquidation_start_et.strftime("%H:%M ET"))
-    b6.metric("최종 잔고확인", boundaries.final_balance_check_et.strftime("%H:%M ET"))
+    b4.metric("신규진입 차단", _format_dual_time({"et": us_market_state.get("entry_block_at_et"), "kst": us_market_state.get("entry_block_at_kst")}))
+    b5.metric("강제청산 시작", _format_dual_time({"et": us_market_state.get("liquidation_at_et"), "kst": us_market_state.get("liquidation_at_kst")}))
+    b6.metric("시장 phase", us_market_state.get("phase") or "-")
 except Exception as exc:
     st.error(f"세션 진단 패널 오류 — 나머지 화면은 계속 표시됩니다 (`{exc}`)")

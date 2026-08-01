@@ -44,6 +44,12 @@ def _env_str(name: str, default: str) -> str:
     return str(raw).strip()
 
 
+def _env_csv(name: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    text = default if raw is None or str(raw).strip() == "" else str(raw)
+    return tuple(part.strip().upper() for part in text.split(",") if part.strip())
+
+
 # ── Identity (docs §2/§3 — unique identifiers, never reused from MACD2) ────
 STRATEGY_ID = "TSLA_AUTO"
 STRATEGY_NAME = "TSLA_AUTO"
@@ -59,6 +65,10 @@ SIGNAL_SYMBOL = _env_str("TSLA_AUTO_SIGNAL_SYMBOL", "TSLA")  # signal-only, neve
 LONG_SYMBOL = _env_str("TSLA_AUTO_LONG_SYMBOL", "TSLL")  # bought on UP_RED
 INVERSE_SYMBOL = _env_str("TSLA_AUTO_INVERSE_SYMBOL", "TSLZ")  # bought on DOWN_BLUE
 TRADE_SYMBOLS = (LONG_SYMBOL, INVERSE_SYMBOL)
+MANAGED_LIQUIDATION_SYMBOLS = tuple(dict.fromkeys((
+    *TRADE_SYMBOLS,
+    *_env_csv("TSLA_AUTO_MANAGED_US_SYMBOLS", "TSLQ,TSLY"),
+)))
 # Known-wrong legacy ticker guarded against everywhere an order symbol is
 # accepted (docs §3/§4 — "TSLT" must never be a valid order target).
 FORBIDDEN_SYMBOLS = frozenset({"TSLT"})
@@ -77,6 +87,8 @@ QUOTE_EXCHANGE_BY_SYMBOL = {
 ORDER_EXCHANGE_BY_SYMBOL = {
     LONG_SYMBOL: _env_str("TSLA_AUTO_TSLL_ORDER_EXCHANGE", "NASD"),
     INVERSE_SYMBOL: _env_str("TSLA_AUTO_TSLZ_ORDER_EXCHANGE", "AMEX"),
+    "TSLQ": _env_str("TSLA_AUTO_TSLQ_ORDER_EXCHANGE", "NASD"),
+    "TSLY": _env_str("TSLA_AUTO_TSLY_ORDER_EXCHANGE", "AMEX"),
 }
 TSLZ_EXCHANGE_UNRESOLVED = "TSLZ_EXCHANGE_UNRESOLVED"
 
@@ -124,9 +136,12 @@ STOP_LOSS_REENTRY_OVERRIDE_APPROVED = "STOP_LOSS_REENTRY_OVERRIDE_APPROVED"
 # per-day calendar-aware computation — these are only the default relative
 # offsets, docs §6) ──────────────────────────────────────────────────────────
 SESSION_OPEN = market_session.REGULAR_OPEN  # 09:30 ET
+REGULAR_CLOSE = market_session.REGULAR_CLOSE  # 16:00 ET
 NEW_ENTRY_CUTOFF_BEFORE_CLOSE_MIN = market_session.NEW_ENTRY_CUTOFF_BEFORE_CLOSE_MIN  # 15
 FORCE_LIQUIDATE_BEFORE_CLOSE_MIN = market_session.FORCED_LIQUIDATION_BEFORE_CLOSE_MIN  # 10
 FINAL_BALANCE_CHECK_BEFORE_CLOSE_MIN = market_session.FINAL_BALANCE_CHECK_BEFORE_CLOSE_MIN  # 2
+US_LIQUIDATION_MAX_RETRIES = int(_env_float("TSLA_AUTO_US_LIQUIDATION_MAX_RETRIES", 3) or 3)
+US_LIQUIDATION_RETRY_SECONDS = _env_float("TSLA_AUTO_US_LIQUIDATION_RETRY_SECONDS", 10.0) or 10.0
 # (신규) 반대매수 포함 "모든 신규 매수" 최종 컷오프 — 정상장 기준 15:45 ET
 # (= market_close - NEW_ENTRY_CUTOFF_BEFORE_CLOSE_MIN, 조기폐장일엔 자동 축소).
 # 이 상수는 계산된 값과 항상 일치해야 하며 절대 시각을 별도로 하드코딩하지 않는다.

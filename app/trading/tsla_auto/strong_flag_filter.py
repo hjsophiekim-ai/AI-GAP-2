@@ -113,8 +113,8 @@ def _session_vwap(work: pd.DataFrame) -> pd.Series:
     dt = work["datetime"]
     day = dt.dt.tz_convert(ET).dt.strftime("%Y%m%d")
     minutes = dt.dt.tz_convert(ET).dt.hour * 60 + dt.dt.tz_convert(ET).dt.minute
-    open_min = config.SESSION_OPEN.hour * 60 + config.SESSION_OPEN.minute  # 570 = 09:30
-    close_min = 16 * 60 + 30  # 16:30 — generous upper bound past the latest possible regular close
+    open_min = config.SESSION_OPEN.hour * 60 + config.SESSION_OPEN.minute
+    close_min = config.REGULAR_CLOSE.hour * 60 + config.REGULAR_CLOSE.minute + 30
     typical = (work["high"] + work["low"] + work["close"]) / 3.0
     session = (minutes >= open_min) & (minutes <= close_min)
     pv = typical * work["volume"].where(session, 0.0)
@@ -135,9 +135,9 @@ def _macd_lines(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
 
 
 def _raw_crossover_direction(prev_hist: float, curr_hist: float) -> Optional[Direction]:
-    if prev_hist <= 0 and curr_hist > 0:
+    if curr_hist > prev_hist:
         return Direction.UP_RED
-    if prev_hist >= 0 and curr_hist < 0:
+    if curr_hist < prev_hist:
         return Direction.DOWN_BLUE
     return None
 

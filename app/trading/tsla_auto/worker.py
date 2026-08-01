@@ -15,9 +15,9 @@ is no candidate-dispatch code path here at all.
 Priority order for a held position (docs §12 — TSLA_AUTO's own order, NOT
 identical to MACD2's):
   1) Forced liquidation (market-close relative cutoff)
-  2) Stop Loss
-  3) Profit Lock
-  4) Approved opposite (confirmed) flag switch
+  2) Approved opposite (confirmed) flag switch
+  3) Stop Loss
+  4) Profit Lock
   5) Hold
 """
 from __future__ import annotations
@@ -433,6 +433,7 @@ def _execute_or_wait(
     result.signal_dispatch_trace = {
         "signal_id": signal_id, "direction": direction.value, "signal_type": signal_type,
         "completed_bar_at": macd_snap.bar_dt.isoformat(), "order_executor_called": False, "broker_called": False,
+        "display_at": macd_snap.bar_dt.isoformat(), "order_due_at": (macd_snap.bar_dt + timedelta(minutes=3)).isoformat(),
         "final_block_reason": None,
     }
     reconcile = reconcile_position_state(broker, state, now, force=True)
@@ -484,6 +485,7 @@ def _execute_or_wait(
         budget_usd=state.budget_usd, processed_signal_ids=frozenset(state.processed_signal_ids),
         strategy_owned_qty=state.strategy_owned_qty if position is not None else None,
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        market_state=market_session.get_us_market_state(now),
     )
     if outcome is None:
         state.order_block_reason = SIGNAL_NOT_DISPATCHED
@@ -540,6 +542,11 @@ def _record_blocked_signal(*, state, macd_snap, direction, signal_type, reason, 
 def _dispatch_confirmed_signal(
     *, broker, market_data, state, now, macd_snap, direction, signal_type, position, result, bars_3m=None,
 ):
+    bar_end = macd_snap.bar_dt + timedelta(minutes=3)
+    if now.astimezone(ET) < bar_end.astimezone(ET):
+        state.order_block_reason = "WAITING_FOR_3M_CONFIRMATION"
+        return None
+
     signal_id = make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
         state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
@@ -664,6 +671,208 @@ def _record_broker_order_result(state: RuntimeState, outcome) -> None:
     state.last_broker_order_at = datetime.now(ET).isoformat()
 
 
+def _cancel_open_buy_orders_if_supported(broker, state: RuntimeState) -> None:
+    get_open_orders = getattr(broker, "get_open_orders", None)
+    cancel_order = getattr(broker, "cancel_order", None)
+    if get_open_orders is None or cancel_order is None:
+        return
+    for order in get_open_orders() or []:
+        side = str(getattr(order, "side", "") or getattr(order, "ord_dvsn", "") or "").upper()
+        symbol = str(getattr(order, "symbol", "") or "")
+        order_id = str(getattr(order, "order_id", "") or getattr(order, "odno", "") or "")
+        if side == "BUY" and symbol in config.TRADE_SYMBOLS and order_id:
+            cancel_order(order_id, symbol)
+            state.liquidation_status.setdefault("cancelled_buy_orders", []).append({"symbol": symbol, "order_id": order_id})
+
+
+def _force_liquidate_managed_positions(*, broker, state: RuntimeState, now: datetime, result: TickResult) -> TickResult:
+    session_key = now.astimezone(ET).strftime("%Y%m%d")
+    status = dict(state.liquidation_status or {})
+    if status.get("session_date") != session_key:
+        status = {"session_date": session_key, "symbols": {}, "complete": False}
+    state.liquidation_status = status
+    _cancel_open_buy_orders_if_supported(broker, state)
+    raw_positions = broker.get_positions() if hasattr(broker, "get_positions") else []
+    targets = []
+    for p in raw_positions or []:
+        symbol = str(getattr(p, "symbol", "") or "")
+        qty = int(float(getattr(p, "quantity", 0) or 0))
+        avg = float(getattr(p, "avg_price", 0.0) or 0.0)
+        if symbol in config.TRADE_SYMBOLS and qty > 0:
+            targets.append((symbol, qty, avg))
+    if not targets:
+        status["complete"] = True
+        status["message"] = "강제청산 완료 - 보유수량 0"
+        state.position = None
+        state.account_holding_qty = 0
+        state.strategy_owned_qty = 0
+        result.actions.append("FORCE_LIQUIDATION_COMPLETE:FLAT")
+        return result
+    for symbol, qty, avg in targets:
+        symbol_status = status.setdefault("symbols", {}).setdefault(symbol, {})
+        if symbol_status.get("state") == "FLAT":
+            continue
+        symbol_status["state"] = "SELL_SUBMITTED"
+        outcome = order_executor.execute_exit(
+            broker=broker, symbol=symbol, quantity=qty, exit_reason=config.EXIT_FORCED_LIQUIDATION,
+            entry_price=avg, strategy_owned_qty=qty,
+            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        )
+        _record_broker_order_result(state, outcome)
+        remaining = broker.reconcile_position(symbol) if hasattr(broker, "reconcile_position") else outcome.sell_qty_after
+        symbol_status["remaining_qty"] = int(remaining or 0)
+        symbol_status["state"] = "FLAT" if int(remaining or 0) == 0 else "FAILED"
+        symbol_status["last_reason"] = outcome.block_reason or outcome.final_state.value
+        result.actions.append(f"FORCED_LIQUIDATION:{symbol}")
+    if all((v or {}).get("state") == "FLAT" for v in status.get("symbols", {}).values()):
+        status["complete"] = True
+        status["message"] = "강제청산 완료 - 보유수량 0"
+        state.position = None
+        state.account_holding_qty = 0
+        state.strategy_owned_qty = 0
+        state.strategy_average_price = 0.0
+    return result
+
+
+def _managed_liquidation_symbols() -> set[str]:
+    return {str(s).upper() for s in getattr(config, "MANAGED_LIQUIDATION_SYMBOLS", config.TRADE_SYMBOLS)}
+
+
+def _cancel_open_buy_orders_if_supported(broker, state: RuntimeState, managed_symbols: set[str]) -> tuple[bool, str]:  # type: ignore[no-redef]
+    get_open_orders = getattr(broker, "get_open_orders", None)
+    cancel_order = getattr(broker, "cancel_order", None)
+    if get_open_orders is None or cancel_order is None:
+        return False, "OPEN_ORDER_CANCEL_UNSUPPORTED"
+    state.liquidation_status.setdefault("cancelled_buy_orders", [])
+    state.liquidation_status["cancel_state"] = "CANCELING_ORDERS"
+    try:
+        open_orders = get_open_orders() or []
+    except Exception as exc:
+        state.liquidation_status["cancel_state"] = "FAILED"
+        state.liquidation_status["failure_reason"] = f"OPEN_ORDER_QUERY_FAILED:{exc}"
+        return False, state.liquidation_status["failure_reason"]
+    for order in open_orders:
+        side = str(getattr(order, "side", "") or getattr(order, "ord_dvsn", "") or "").upper()
+        symbol = str(getattr(order, "symbol", "") or "").upper()
+        order_id = str(getattr(order, "order_id", "") or getattr(order, "odno", "") or "")
+        if side == "BUY" and symbol in managed_symbols and order_id:
+            try:
+                cancel_result = cancel_order(order_id, symbol)
+            except Exception as exc:
+                state.liquidation_status["cancel_state"] = "FAILED"
+                state.liquidation_status["failure_reason"] = f"OPEN_BUY_CANCEL_FAILED:{symbol}:{order_id}:{exc}"
+                return False, state.liquidation_status["failure_reason"]
+            if not getattr(cancel_result, "success", False):
+                state.liquidation_status["cancel_state"] = "FAILED"
+                state.liquidation_status["failure_reason"] = (
+                    f"OPEN_BUY_CANCEL_FAILED:{symbol}:{order_id}:{getattr(cancel_result, 'message', '')}"
+                )
+                return False, state.liquidation_status["failure_reason"]
+            state.liquidation_status["cancelled_buy_orders"].append({"symbol": symbol, "order_id": order_id})
+    state.liquidation_status["cancel_state"] = "DONE"
+    return True, ""
+
+
+def _force_liquidate_managed_positions(*, broker, state: RuntimeState, now: datetime, result: TickResult) -> TickResult:  # type: ignore[no-redef]
+    session_key = now.astimezone(ET).strftime("%Y%m%d")
+    status = dict(state.liquidation_status or {})
+    if status.get("session_date") != session_key:
+        status = {"session_date": session_key, "symbols": {}, "complete": False}
+    state.liquidation_status = status
+    managed_symbols = _managed_liquidation_symbols()
+    account_scope = str(getattr(broker, "account_id", "") or getattr(broker, "mode", "") or "unknown")
+    cancel_ok, cancel_reason = _cancel_open_buy_orders_if_supported(broker, state, managed_symbols)
+    if not cancel_ok:
+        status["complete"] = False
+        status["failure_reason"] = cancel_reason
+        result.actions.append(f"FORCE_LIQUIDATION_FAILED:{cancel_reason}")
+        return result
+
+    raw_positions = broker.get_positions() if hasattr(broker, "get_positions") else []
+    targets: list[tuple[str, int, float]] = []
+    for p in raw_positions or []:
+        symbol = str(getattr(p, "symbol", "") or "").upper()
+        qty = int(float(getattr(p, "quantity", 0) or 0))
+        avg = float(getattr(p, "avg_price", 0.0) or 0.0)
+        if symbol in managed_symbols and qty > 0:
+            targets.append((symbol, qty, avg))
+            status.setdefault("symbols", {}).setdefault(symbol, {}).setdefault("state", "READY")
+    status["target_count"] = len(targets)
+    if not targets:
+        status["complete"] = True
+        status["completed_count"] = len([v for v in status.get("symbols", {}).values() if (v or {}).get("state") == "FLAT"])
+        status["remaining_symbols"] = []
+        status["message"] = "강제청산 완료 - 보유수량 0"
+        state.position = None
+        state.account_holding_qty = 0
+        state.strategy_owned_qty = 0
+        result.actions.append("FORCE_LIQUIDATION_COMPLETE:FLAT")
+        return result
+
+    for symbol, qty, _avg in targets:
+        symbol_status = status.setdefault("symbols", {}).setdefault(symbol, {})
+        if symbol_status.get("state") == "FLAT":
+            continue
+        remaining = int((broker.reconcile_position(symbol) if hasattr(broker, "reconcile_position") else qty) or 0)
+        if remaining <= 0:
+            symbol_status["state"] = "FLAT"
+            symbol_status["remaining_qty"] = 0
+            continue
+        idempotency_key = f"{session_key}:{account_scope}:{symbol}:FORCE_LIQUIDATION"
+        symbol_status["idempotency_key"] = idempotency_key
+        attempts = int(symbol_status.get("attempts") or 0)
+        max_retries = int(config.US_LIQUIDATION_MAX_RETRIES)
+        while remaining > 0 and attempts < max_retries:
+            if symbol_status.get("state") == "SELL_SUBMITTED" and int(symbol_status.get("inflight_qty") or 0) == remaining:
+                symbol_status["remaining_qty"] = remaining
+                symbol_status["last_reason"] = "DUPLICATE_INFLIGHT_SKIPPED"
+                break
+            attempts += 1
+            symbol_status["attempts"] = attempts
+            symbol_status["state"] = "SELL_SUBMITTED"
+            symbol_status["inflight_qty"] = remaining
+            sell_result = broker.sell_market(symbol, remaining, f"{idempotency_key}:{remaining}:{attempts}")
+            state.last_broker_order_id = sell_result.order_id
+            state.last_broker_order_result = "OK" if sell_result.success else (sell_result.message or "SELL_FAILED")
+            state.last_broker_order_symbol = sell_result.symbol
+            state.last_broker_order_side = sell_result.side
+            state.last_broker_order_at = datetime.now(ET).isoformat()
+            result.actions.append(f"FORCED_LIQUIDATION:{symbol}")
+            if not sell_result.success:
+                symbol_status["last_reason"] = sell_result.message or "SELL_FAILED"
+                break
+            remaining = int((broker.reconcile_position(symbol) if hasattr(broker, "reconcile_position") else max(0, remaining - int(sell_result.executed_qty or 0))) or 0)
+            symbol_status["remaining_qty"] = remaining
+            symbol_status["last_executed_qty"] = int(sell_result.executed_qty or 0)
+            symbol_status["last_order_id"] = sell_result.order_id
+            if remaining <= 0:
+                symbol_status["state"] = "FLAT"
+                symbol_status["inflight_qty"] = 0
+                break
+            symbol_status["state"] = "PARTIAL"
+            symbol_status["last_reason"] = "PARTIAL_FILL"
+        if remaining > 0 and symbol_status.get("state") != "SELL_SUBMITTED":
+            symbol_status["state"] = "FAILED"
+            symbol_status["remaining_qty"] = remaining
+            symbol_status["last_reason"] = symbol_status.get("last_reason") or "MAX_RETRIES_EXCEEDED"
+
+    symbols_state = status.get("symbols", {})
+    completed = [sym for sym, meta in symbols_state.items() if (meta or {}).get("state") == "FLAT"]
+    remaining_symbols = [sym for sym, meta in symbols_state.items() if int((meta or {}).get("remaining_qty") or 0) > 0]
+    status["completed_count"] = len(completed)
+    status["remaining_symbols"] = remaining_symbols
+    if targets and len(completed) >= len(targets) and not remaining_symbols:
+        status["complete"] = True
+        status["message"] = "강제청산 완료 - 보유수량 0"
+        state.position = None
+        state.account_holding_qty = 0
+        state.strategy_owned_qty = 0
+        state.strategy_average_price = 0.0
+    else:
+        status["complete"] = False
+    return result
+
+
 def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, detected_at, outcome, dispatch_trace=None, *, strong_decision=None) -> None:
     order_result = outcome.final_state.value if outcome is not None else SignalState.WAITING.value
     block_reason = outcome.block_reason or "" if outcome is not None else (state.order_block_reason or "WAITING")
@@ -774,7 +983,8 @@ def compute_today_signal_overview(df_1m: pd.DataFrame, *, now: datetime, session
         )
         overview.append({
             "signal_id": make_signal_id(snap.bar_dt, direction), "bar_start_at": snap.bar_dt.isoformat(),
-            "bar_end_at": bar_end.isoformat(), "direction": direction.value, "origin": origin,
+            "bar_end_at": bar_end.isoformat(), "display_at": snap.bar_dt.isoformat(),
+            "order_due_at": bar_end.isoformat(), "direction": direction.value, "origin": origin,
         })
     return overview
 
@@ -817,9 +1027,11 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
     macd_snap = calculate_macd(bars_3m)
     if macd_snap is None:
         state.warmup_ready = False
+        state.ui_mode = RuntimeStatus.BOOTSTRAPPING
         result.skipped = "NOT_READY"
         return result
     state.warmup_ready = True
+    state.ui_mode = RuntimeStatus.RUNNING
     state.primary_previous_diff = macd_snap.previous_diff
     state.primary_current_diff = macd_snap.current_diff
 
@@ -843,30 +1055,43 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
     confirmed_direction = _advance_confirmed_primary(state, macd_snap)
     bar_ts_str = macd_snap.bar_dt.isoformat()
 
-    today_date = now.astimezone(ET).date()
-    boundaries = market_session.session_boundaries(today_date)
-    before_open = now < boundaries.market_open_et
-    entry_cutoff_passed = now >= boundaries.new_entry_cutoff_et  # 15:45 ET normally
-    force_liquidate_time = now >= boundaries.forced_liquidation_start_et
-    entry_window_open = (not before_open) and (not entry_cutoff_passed)
+    market_state = market_session.get_us_market_state(now)
+    state.market_session_state = market_state.to_dict()
+    force_liquidate_time = market_state.liquidation_required
+    entry_window_open = market_state.entry_allowed
+    if not gap_bar_starts:
+        state.order_block_reason = None if market_state.entry_allowed else market_state.reason_code
 
     pos = state.position
+
+    if force_liquidate_time:
+        return _force_liquidate_managed_positions(broker=broker, state=state, now=now, result=result)
+
+    if market_state.phase == market_session.USMarketPhase.AFTER_MARKET:
+        managed_symbols = _managed_liquidation_symbols()
+        raw_positions = broker.get_positions() if hasattr(broker, "get_positions") else []
+        remaining = [
+            {"symbol": str(getattr(p, "symbol", "") or "").upper(), "quantity": int(float(getattr(p, "quantity", 0) or 0))}
+            for p in (raw_positions or [])
+            if str(getattr(p, "symbol", "") or "").upper() in managed_symbols and int(float(getattr(p, "quantity", 0) or 0)) > 0
+        ]
+        if remaining:
+            state.liquidation_status = {
+                **dict(state.liquidation_status or {}),
+                "session_date": now.astimezone(ET).strftime("%Y%m%d"),
+                "complete": False,
+                "warning": "AFTER_MARKET_UNLIQUIDATED_POSITION",
+                "message": "폐장 후 미청산 잔고 발견",
+                "remaining_symbols": [row["symbol"] for row in remaining],
+                "remaining_positions": remaining,
+            }
+            result.skipped = "AFTER_MARKET_UNLIQUIDATED_POSITION"
+            return result
 
     if pos is not None and pos.quantity > 0:
         current_price = quotes.get(pos.symbol)
         profit_lock_should_exit = False
         stop_loss_should_exit = False
-
-        # Priority 1: forced liquidation
-        if force_liquidate_time:
-            outcome = order_executor.execute_exit(
-                broker=broker, symbol=pos.symbol, quantity=pos.quantity, exit_reason=config.EXIT_FORCED_LIQUIDATION,
-                entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
-                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-            )
-            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_FORCED_LIQUIDATION)
-            result.actions.append(f"FORCED_LIQUIDATION:{pos.symbol}")
-            return result
 
         if current_price is not None:
             net_return = _net_return_pct(pos.avg_price, current_price, pos.quantity)
@@ -878,7 +1103,13 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
             stop_loss_should_exit = exits.exit_reason == config.EXIT_STOP_LOSS
             profit_lock_should_exit = exits.exit_reason == config.EXIT_PROFIT_LOCK
 
-        # Priority 2: Stop Loss
+        if entry_window_open and confirmed_direction != Direction.HOLD and not gap_bar_starts:
+            target = order_executor.target_symbol_for_direction(confirmed_direction)
+            if target and target != pos.symbol:
+                stop_loss_should_exit = False
+                profit_lock_should_exit = False
+
+        # Priority 3: Stop Loss when no opposite confirmed flag is waiting
         if stop_loss_should_exit:
             outcome = order_executor.execute_exit(
                 broker=broker, symbol=pos.symbol, quantity=pos.quantity, exit_reason=config.EXIT_STOP_LOSS,
@@ -915,7 +1146,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
 
-        # Priority 4: approved opposite (confirmed) flag switch
+        # Priority 2: approved opposite (confirmed) flag switch
         if entry_window_open and confirmed_direction != Direction.HOLD and not gap_bar_starts:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:

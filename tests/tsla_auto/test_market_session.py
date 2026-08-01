@@ -1,7 +1,7 @@
 """Unit tests for app.trading.tsla_auto.market_session."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from app.trading.tsla_auto import market_session as ms
 
@@ -53,6 +53,77 @@ def test_classify_session_status_closed_on_weekend():
 def test_classify_session_status_regular_during_market_hours():
     now = datetime(2026, 7, 30, 12, 0, tzinfo=ms.ET)
     assert ms.classify_session_status(now) == "REGULAR"
+
+
+def test_market_state_summer_regular_day_kst_cutoffs():
+    state = ms.get_us_market_state(datetime(2026, 8, 3, 10, 0, tzinfo=ms.ET))
+    assert state.phase == ms.USMarketPhase.REGULAR_ENTRY
+    assert state.entry_allowed is True
+    assert state.is_dst is True
+    assert state.timezone_abbr == "EDT"
+    assert state.session_open_kst.strftime("%H:%M") == "22:30"
+    assert state.session_close_kst.strftime("%H:%M") == "05:00"
+    assert state.entry_block_at_kst.strftime("%H:%M") == "04:45"
+    assert state.liquidation_at_kst.strftime("%H:%M") == "04:50"
+
+
+def test_market_state_winter_regular_day_kst_cutoffs():
+    state = ms.get_us_market_state(datetime(2026, 12, 1, 10, 0, tzinfo=ms.ET))
+    assert state.phase == ms.USMarketPhase.REGULAR_ENTRY
+    assert state.entry_allowed is True
+    assert state.is_dst is False
+    assert state.timezone_abbr == "EST"
+    assert state.session_open_kst.strftime("%H:%M") == "23:30"
+    assert state.session_close_kst.strftime("%H:%M") == "06:00"
+    assert state.entry_block_at_kst.strftime("%H:%M") == "05:45"
+    assert state.liquidation_at_kst.strftime("%H:%M") == "05:50"
+
+
+def test_market_state_dst_transition_dates_keep_et_open_fixed():
+    cases = [
+        (date(2026, 3, 6), "EST", "23:30"),
+        (date(2026, 3, 9), "EDT", "22:30"),
+        (date(2026, 10, 30), "EDT", "22:30"),
+        (date(2026, 11, 2), "EST", "23:30"),
+    ]
+    for d, abbr, kst_open in cases:
+        state = ms.get_us_market_state(datetime.combine(d, ms.REGULAR_OPEN, tzinfo=ms.ET))
+        assert state.session_open_et.time().isoformat() == "09:30:00"
+        assert state.timezone_abbr == abbr
+        assert state.session_open_kst.strftime("%H:%M") == kst_open
+
+
+def test_market_state_phase_boundaries_are_half_open():
+    d = date(2026, 8, 3)
+    b = ms.session_boundaries(d)
+    assert ms.get_us_market_state(b.market_open_et - timedelta(seconds=1)).phase == ms.USMarketPhase.PRE_MARKET
+    assert ms.get_us_market_state(b.market_open_et).phase == ms.USMarketPhase.REGULAR_ENTRY
+    assert ms.get_us_market_state(b.new_entry_cutoff_et - timedelta(seconds=1)).entry_allowed is True
+    assert ms.get_us_market_state(b.new_entry_cutoff_et).phase == ms.USMarketPhase.ENTRY_BLOCKED
+    assert ms.get_us_market_state(b.forced_liquidation_start_et - timedelta(seconds=1)).phase == ms.USMarketPhase.ENTRY_BLOCKED
+    assert ms.get_us_market_state(b.forced_liquidation_start_et).phase == ms.USMarketPhase.FORCE_LIQUIDATION
+    assert ms.get_us_market_state(b.market_close_et).phase == ms.USMarketPhase.AFTER_MARKET
+
+
+def test_market_state_holiday_weekend_and_calendar_unavailable(monkeypatch):
+    holiday = ms.get_us_market_state(datetime(2026, 1, 1, 12, 0, tzinfo=ms.ET))
+    assert holiday.phase == ms.USMarketPhase.HOLIDAY
+    assert holiday.entry_allowed is False
+    weekend = ms.get_us_market_state(datetime(2026, 8, 1, 12, 0, tzinfo=ms.ET))
+    assert weekend.phase == ms.USMarketPhase.WEEKEND
+    assert weekend.entry_allowed is False
+    monkeypatch.setattr(ms, "_session_row", lambda d: (_ for _ in ()).throw(RuntimeError("calendar down")))
+    down = ms.get_us_market_state(datetime(2026, 8, 3, 12, 0, tzinfo=ms.ET))
+    assert down.phase == ms.USMarketPhase.CALENDAR_UNAVAILABLE
+    assert down.entry_allowed is False
+
+
+def test_market_state_early_close_uses_actual_close():
+    early = sorted(ms.us_early_close_dates(2026))[0]
+    b = ms.session_boundaries(early)
+    assert b.market_close_et.time().isoformat() == "13:00:00"
+    assert ms.get_us_market_state(b.new_entry_cutoff_et).phase == ms.USMarketPhase.ENTRY_BLOCKED
+    assert ms.get_us_market_state(b.forced_liquidation_start_et).phase == ms.USMarketPhase.FORCE_LIQUIDATION
 
 
 def test_classify_session_status_premarket_and_aftermarket():

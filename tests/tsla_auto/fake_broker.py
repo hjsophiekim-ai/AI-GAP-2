@@ -45,8 +45,10 @@ class FakeBroker:
         self.next_available_qty: Optional[int] = None
         self.buy_sizing_quotes: list[BuySizingQuote] = []
         self.next_buy_fill_qty: Optional[int] = None
+        self.sell_fill_plan: dict[str, list[int]] = {}
         self.cancel_calls: list[tuple[str, str]] = []
         self.fail_next_cancel = False
+        self.open_orders: list[object] = []
 
     def set_quote(self, symbol: str, price: float) -> None:
         self._quotes[symbol] = price
@@ -127,13 +129,21 @@ class FakeBroker:
             result = BrokerOrderResult(False, self._next_order_id(), symbol, "SELL", qty, 0, 0.0, "FAKE_SELL_FAILED")
             self.orders.append(result)
             return result
-        self._cash += price * qty
-        remaining = existing.quantity - qty
+        plan = self.sell_fill_plan.get(symbol) or []
+        fill_qty = qty
+        if plan:
+            fill_qty = max(0, min(qty, int(plan.pop(0))))
+            if plan:
+                self.sell_fill_plan[symbol] = plan
+            else:
+                self.sell_fill_plan.pop(symbol, None)
+        self._cash += price * fill_qty
+        remaining = existing.quantity - fill_qty
         if remaining <= 0:
             del self._positions[symbol]
         else:
             self._positions[symbol] = FakePosition(symbol, remaining, existing.avg_price)
-        result = BrokerOrderResult(True, self._next_order_id(), symbol, "SELL", qty, qty, price, "OK")
+        result = BrokerOrderResult(True, self._next_order_id(), symbol, "SELL", qty, fill_qty, price, "OK")
         self.orders.append(result)
         return result
 
@@ -142,7 +152,14 @@ class FakeBroker:
         if self.fail_next_cancel:
             self.fail_next_cancel = False
             return BrokerOrderResult(False, str(order_id), symbol, "CANCEL", 0, 0, 0.0, "FAKE_CANCEL_FAILED")
+        self.open_orders = [
+            order for order in self.open_orders
+            if str(getattr(order, "order_id", "") or getattr(order, "odno", "") or "") != str(order_id)
+        ]
         return BrokerOrderResult(True, str(order_id), symbol, "CANCEL", 0, 0, 0.0, "OK")
+
+    def get_open_orders(self) -> list[object]:
+        return list(self.open_orders)
 
     def reconcile_position(self, symbol: str) -> int:
         pos = self._positions.get(symbol)

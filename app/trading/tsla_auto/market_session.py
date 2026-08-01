@@ -12,12 +12,15 @@ functions should be backed by that call instead, keeping the same signatures.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
+from enum import Enum
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from dateutil.easter import easter
+import pandas as pd
+import pandas_market_calendars as mcal
 
 ET = ZoneInfo("America/New_York")
 KST = ZoneInfo("Asia/Seoul")
@@ -191,3 +194,301 @@ def previous_us_trading_day(d: date, *, max_lookback_days: int = 10) -> Optional
         if is_us_trading_day(cursor):
             return cursor
     return None
+
+
+class USMarketPhase(str, Enum):
+    HOLIDAY = "HOLIDAY"
+    WEEKEND = "WEEKEND"
+    PRE_MARKET = "PRE_MARKET"
+    REGULAR_ENTRY = "REGULAR_ENTRY"
+    ENTRY_BLOCKED = "ENTRY_BLOCKED"
+    FORCE_LIQUIDATION = "FORCE_LIQUIDATION"
+    AFTER_MARKET = "AFTER_MARKET"
+    CALENDAR_UNAVAILABLE = "CALENDAR_UNAVAILABLE"
+
+
+@dataclass(frozen=True)
+class USMarketSessionState:
+    checked_at_utc: datetime
+    checked_at_et: datetime
+    checked_at_kst: datetime
+    phase: USMarketPhase
+    is_trading_day: bool
+    is_holiday: bool
+    is_weekend: bool
+    is_early_close: bool
+    is_dst: bool
+    timezone_abbr: str
+    utc_offset: str
+    session_date_et: Optional[date]
+    session_open_et: Optional[datetime]
+    session_close_et: Optional[datetime]
+    session_open_kst: Optional[datetime]
+    session_close_kst: Optional[datetime]
+    entry_block_at_et: Optional[datetime]
+    entry_block_at_kst: Optional[datetime]
+    liquidation_at_et: Optional[datetime]
+    liquidation_at_kst: Optional[datetime]
+    next_open_et: Optional[datetime]
+    next_open_kst: Optional[datetime]
+    entry_allowed: bool
+    liquidation_required: bool
+    reason_code: str
+    reason_text_ko: str
+    holiday_name: Optional[str] = None
+    seconds_to_next_transition: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        out = asdict(self)
+        out["phase"] = self.phase.value
+        for key, value in list(out.items()):
+            if isinstance(value, (datetime, date)):
+                out[key] = value.isoformat()
+        return out
+
+
+MARKET_PREMARKET_BLOCK = "MARKET_PREMARKET_BLOCK"
+MARKET_AFTER_HOURS_BLOCK = "MARKET_AFTER_HOURS_BLOCK"
+MARKET_HOLIDAY_BLOCK = "MARKET_HOLIDAY_BLOCK"
+MARKET_WEEKEND_BLOCK = "MARKET_WEEKEND_BLOCK"
+MARKET_ENTRY_CUTOFF_BLOCK = "MARKET_ENTRY_CUTOFF_BLOCK"
+MARKET_LIQUIDATION_BLOCK = "MARKET_LIQUIDATION_BLOCK"
+MARKET_CALENDAR_UNAVAILABLE_BLOCK = "MARKET_CALENDAR_UNAVAILABLE_BLOCK"
+
+_NYSE = mcal.get_calendar("NYSE")
+
+
+def _require_aware(dt: datetime, label: str) -> datetime:
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        raise ValueError(f"{label}: naive datetime not allowed: {dt!r}")
+    return dt
+
+
+def _utc_offset_label(dt: datetime) -> str:
+    offset = dt.utcoffset()
+    if offset is None:
+        return "UTC?"
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    return f"UTC{sign}{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def _schedule(start: date, end: date) -> pd.DataFrame:
+    return _NYSE.schedule(start_date=start.isoformat(), end_date=end.isoformat())
+
+
+def _session_row(d: date) -> Optional[pd.Series]:
+    sched = _schedule(d, d)
+    if sched.empty:
+        return None
+    return sched.iloc[0]
+
+
+def _next_session_open(after: datetime, *, max_days: int = 14) -> Optional[datetime]:
+    after_et = _require_aware(after, "next_session_open(after)").astimezone(ET)
+    sched = _schedule(after_et.date(), after_et.date() + timedelta(days=max_days))
+    for _, row in sched.iterrows():
+        open_et = pd.Timestamp(row["market_open"]).to_pydatetime().astimezone(ET)
+        if open_et > after_et:
+            return open_et
+    return None
+
+
+def is_us_trading_day(d: date) -> bool:  # type: ignore[no-redef]
+    return _session_row(d) is not None
+
+
+def us_market_holidays(year: int) -> set[date]:  # type: ignore[no-redef]
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
+    trading = {pd.Timestamp(idx).date() for idx in _schedule(start, end).index}
+    weekdays = {start + timedelta(days=i) for i in range((end - start).days + 1) if (start + timedelta(days=i)).weekday() < 5}
+    return weekdays - trading
+
+
+def us_early_close_dates(year: int) -> set[date]:  # type: ignore[no-redef]
+    sched = _schedule(date(year, 1, 1), date(year, 12, 31))
+    out: set[date] = set()
+    for idx, row in sched.iterrows():
+        close_et = pd.Timestamp(row["market_close"]).to_pydatetime().astimezone(ET)
+        if close_et.time() < REGULAR_CLOSE:
+            out.add(pd.Timestamp(idx).date())
+    return out
+
+
+def _calendar_boundaries(d: date) -> Optional[SessionBoundaries]:
+    row = _session_row(d)
+    if row is None:
+        return None
+    open_et = pd.Timestamp(row["market_open"]).to_pydatetime().astimezone(ET)
+    close_et = pd.Timestamp(row["market_close"]).to_pydatetime().astimezone(ET)
+    return SessionBoundaries(
+        trading_day=d,
+        market_open_et=open_et,
+        market_close_et=close_et,
+        new_entry_cutoff_et=close_et - timedelta(minutes=NEW_ENTRY_CUTOFF_BEFORE_CLOSE_MIN),
+        forced_liquidation_start_et=close_et - timedelta(minutes=FORCED_LIQUIDATION_BEFORE_CLOSE_MIN),
+        final_balance_check_et=close_et - timedelta(minutes=FINAL_BALANCE_CHECK_BEFORE_CLOSE_MIN),
+        is_early_close=close_et.time() < REGULAR_CLOSE,
+    )
+
+
+def session_boundaries(d: date) -> SessionBoundaries:  # type: ignore[no-redef]
+    bounds = _calendar_boundaries(d)
+    if bounds is None:
+        raise ValueError(f"no NYSE/Nasdaq regular session for {d.isoformat()}")
+    return bounds
+
+
+def get_us_market_state(now: Optional[datetime] = None) -> USMarketSessionState:
+    """Single authoritative TSLA_AUTO US market status.
+
+    All callers must use this object rather than re-implementing time windows.
+    Calendar failures fail closed instead of allowing new entries.
+    """
+    now_utc = datetime.now(ZoneInfo("UTC")) if now is None else _require_aware(now, "get_us_market_state(now)").astimezone(ZoneInfo("UTC"))
+    now_et_ = now_utc.astimezone(ET)
+    now_kst = now_utc.astimezone(KST)
+    tz_abbr = now_et_.tzname() or "ET"
+    common = {
+        "checked_at_utc": now_utc,
+        "checked_at_et": now_et_,
+        "checked_at_kst": now_kst,
+        "is_dst": bool(now_et_.dst() and now_et_.dst().total_seconds() != 0),
+        "timezone_abbr": tz_abbr,
+        "utc_offset": _utc_offset_label(now_et_),
+    }
+    try:
+        row = _session_row(now_et_.date())
+        next_open = _next_session_open(now_et_)
+    except Exception as exc:
+        return USMarketSessionState(
+            **common,
+            phase=USMarketPhase.CALENDAR_UNAVAILABLE,
+            is_trading_day=False,
+            is_holiday=False,
+            is_weekend=False,
+            is_early_close=False,
+            session_date_et=None,
+            session_open_et=None,
+            session_close_et=None,
+            session_open_kst=None,
+            session_close_kst=None,
+            entry_block_at_et=None,
+            entry_block_at_kst=None,
+            liquidation_at_et=None,
+            liquidation_at_kst=None,
+            next_open_et=None,
+            next_open_kst=None,
+            entry_allowed=False,
+            liquidation_required=False,
+            reason_code=MARKET_CALENDAR_UNAVAILABLE_BLOCK,
+            reason_text_ko=f"미국 장 운영상태 확인 실패 - 안전상 신규진입 차단 ({exc})",
+            seconds_to_next_transition=None,
+        )
+
+    is_weekend = now_et_.weekday() >= 5
+    if row is None:
+        phase = USMarketPhase.WEEKEND if is_weekend else USMarketPhase.HOLIDAY
+        reason = MARKET_WEEKEND_BLOCK if is_weekend else MARKET_HOLIDAY_BLOCK
+        text = "미국 증시 주말 휴장 - 신규진입 차단" if is_weekend else "미국 증시 휴장일 - 신규진입 차단"
+        delta = int((next_open - now_et_).total_seconds()) if next_open else None
+        return USMarketSessionState(
+            **common,
+            phase=phase,
+            is_trading_day=False,
+            is_holiday=not is_weekend,
+            is_weekend=is_weekend,
+            is_early_close=False,
+            session_date_et=None,
+            session_open_et=None,
+            session_close_et=None,
+            session_open_kst=None,
+            session_close_kst=None,
+            entry_block_at_et=None,
+            entry_block_at_kst=None,
+            liquidation_at_et=None,
+            liquidation_at_kst=None,
+            next_open_et=next_open,
+            next_open_kst=next_open.astimezone(KST) if next_open else None,
+            entry_allowed=False,
+            liquidation_required=False,
+            reason_code=reason,
+            reason_text_ko=text,
+            seconds_to_next_transition=delta,
+        )
+
+    bounds = session_boundaries(now_et_.date())
+    entry_block = bounds.new_entry_cutoff_et
+    liquidation = bounds.forced_liquidation_start_et
+    if now_et_ < bounds.market_open_et:
+        phase = USMarketPhase.PRE_MARKET
+        allowed = False
+        liquidation_required = False
+        reason = MARKET_PREMARKET_BLOCK
+        text = "프리마켓 - 신규진입 차단"
+        next_transition = bounds.market_open_et
+    elif bounds.market_open_et <= now_et_ < entry_block:
+        phase = USMarketPhase.REGULAR_ENTRY
+        allowed = True
+        liquidation_required = False
+        reason = "MARKET_REGULAR_ENTRY"
+        text = "미국 정규장 - 신규진입 가능"
+        next_transition = entry_block
+    elif entry_block <= now_et_ < liquidation:
+        phase = USMarketPhase.ENTRY_BLOCKED
+        allowed = False
+        liquidation_required = False
+        reason = MARKET_ENTRY_CUTOFF_BLOCK
+        text = "정규장 종료 15분 전 - 신규진입 차단"
+        next_transition = liquidation
+    elif liquidation <= now_et_ < bounds.market_close_et:
+        phase = USMarketPhase.FORCE_LIQUIDATION
+        allowed = False
+        liquidation_required = True
+        reason = MARKET_LIQUIDATION_BLOCK
+        text = "정규장 종료 10분 전 - 전 종목 강제청산"
+        next_transition = bounds.market_close_et
+    else:
+        phase = USMarketPhase.AFTER_MARKET
+        allowed = False
+        liquidation_required = False
+        reason = MARKET_AFTER_HOURS_BLOCK
+        text = "애프터마켓 - 신규진입 차단"
+        next_transition = next_open
+    return USMarketSessionState(
+        **common,
+        phase=phase,
+        is_trading_day=True,
+        is_holiday=False,
+        is_weekend=False,
+        is_early_close=bounds.is_early_close,
+        session_date_et=bounds.trading_day,
+        session_open_et=bounds.market_open_et,
+        session_close_et=bounds.market_close_et,
+        session_open_kst=bounds.market_open_et.astimezone(KST),
+        session_close_kst=bounds.market_close_et.astimezone(KST),
+        entry_block_at_et=entry_block,
+        entry_block_at_kst=entry_block.astimezone(KST),
+        liquidation_at_et=liquidation,
+        liquidation_at_kst=liquidation.astimezone(KST),
+        next_open_et=next_open,
+        next_open_kst=next_open.astimezone(KST) if next_open else None,
+        entry_allowed=allowed,
+        liquidation_required=liquidation_required,
+        reason_code=reason,
+        reason_text_ko=text,
+        seconds_to_next_transition=int((next_transition - now_et_).total_seconds()) if next_transition else None,
+    )
+
+
+def classify_session_status(now: Optional[datetime] = None) -> str:  # type: ignore[no-redef]
+    state = get_us_market_state(now)
+    if state.phase == USMarketPhase.REGULAR_ENTRY:
+        return "REGULAR"
+    if state.phase == USMarketPhase.PRE_MARKET:
+        return "PREMARKET"
+    if state.phase == USMarketPhase.AFTER_MARKET:
+        return "AFTERMARKET"
+    return "CLOSED"

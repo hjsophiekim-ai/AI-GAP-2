@@ -423,3 +423,19 @@ pytest tests/test_budget_allocator.py -v
 - 주식 투자는 원금 손실의 위험이 있으며, 과거 수익률이 미래 수익률을 보장하지 않습니다.
 - 실전투자 전 반드시 모의투자(mock 모드)로 충분히 테스트하시기 바랍니다.
 - 자동매매 프로그램 사용 중에도 시장 상황을 직접 모니터링하는 것을 권장합니다.
+## TSLA_AUTO US Market Session Policy
+
+TSLA_AUTO uses `app.trading.tsla_auto.market_session.USMarketSessionState` as
+the single market-hours source for US stock automation. The market timezone is
+`America/New_York`, Korean UI display is `Asia/Seoul`, and DST is handled by
+Python `zoneinfo`. Trading days, holidays, and early closes come from
+`pandas_market_calendars` NYSE calendar.
+
+- New BUY/position-increasing orders are allowed only during `REGULAR_ENTRY`.
+- New entries are blocked from actual `session_close - 15 minutes`.
+- Forced liquidation starts at actual `session_close - 10 minutes`.
+- Early close days use the actual exchange close.
+- Premarket, aftermarket, weekend, holiday, and calendar-unavailable states
+  fail closed for new entries.
+
+See `docs/US_MARKET_SESSION_POLICY.md` for the full phase table.

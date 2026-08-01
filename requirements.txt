@@ -14,3 +14,4 @@ openpyxl
 sqlalchemy
 yfinance
 pandas_market_calendars
+tzdata

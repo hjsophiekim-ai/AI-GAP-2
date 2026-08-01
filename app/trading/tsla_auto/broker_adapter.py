@@ -58,6 +58,17 @@ class _BrokerAdapterBase:
                 return pos
         return None
 
+    def get_open_orders(self) -> list[Any]:
+        from app.trading.tsla_auto.kis_overseas_adapter import (
+            KisOverseasApiConfirmationRequired,
+            fetch_overseas_open_orders,
+        )
+
+        rows, error, _raw = fetch_overseas_open_orders(self.mode)
+        if error:
+            raise KisOverseasApiConfirmationRequired(f"overseas open orders read failed: {error}")
+        return list(rows)
+
     def get_orderable_usd(self, symbol: str, *, price: float = 0.0) -> float:
         from app.trading.tsla_auto.kis_overseas_adapter import (
             KisOverseasApiConfirmationRequired,

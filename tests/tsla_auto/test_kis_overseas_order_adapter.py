@@ -134,3 +134,97 @@ def test_mock_open_orders_reports_official_unsupported():
     assert rows == []
     assert error == "MOCK_OPEN_ORDERS_UNSUPPORTED_BY_KIS"
     assert raw["msg1"] == "mock open orders unsupported"
+
+
+def test_real_open_orders_uses_nccs_endpoint_and_parses_buy_rows(monkeypatch):
+    import requests
+
+    seen = {}
+
+    def fake_headers(mode, tr_id):
+        return {"tr_id": tr_id}
+
+    def fake_get(url, *, headers, params, timeout):
+        seen.update(url=url, headers=headers, params=params, timeout=timeout)
+        return _Resp({
+            "rt_cd": "0",
+            "output": [{
+                "ODNO": "O123",
+                "pdno": "TSLL",
+                "sll_buy_dvsn_cd": "02",
+                "ft_ord_qty": "10",
+                "ft_ccld_qty": "0",
+                "nccs_qty": "10",
+                "ft_ord_unpr3": "30.00",
+            }],
+        })
+
+    monkeypatch.setattr("app.data_sources.kis_overseas_minute._auth_headers", fake_headers)
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    rows, error, _raw = kis.fetch_overseas_open_orders("real", "TSLL", exchange_code="NASD")
+
+    assert error is None
+    assert seen["url"].endswith("/uapi/overseas-stock/v1/trading/inquire-nccs")
+    assert seen["headers"]["tr_id"] == kis.TR_OVERSEAS_OPEN_ORDERS_REAL
+    assert seen["params"]["OVRS_EXCG_CD"] == "NASD"
+    assert [(r.order_id, r.symbol, r.side, r.unfilled_qty) for r in rows] == [("O123", "TSLL", "BUY", 10)]
+
+
+def test_minute_candles_parse_kis_kst_timestamp_to_et_regular_session(monkeypatch):
+    import requests
+
+    def fake_headers(mode, tr_id):
+        return {"tr_id": tr_id}
+
+    def fake_creds(mode):
+        return {"app_key": "key", "app_secret": "secret", "base_url": "https://mock.example"}
+
+    def fake_get(url, *, headers, params, timeout):
+        assert params["SYMB"] == "TSLA"
+        return _Resp({
+            "output2": [
+                {"kymd": "20260731", "khms": "222900", "last": "300", "open": "300", "high": "301", "low": "299", "evol": "10"},
+                {"kymd": "20260731", "khms": "223000", "last": "301", "open": "300", "high": "302", "low": "300", "evol": "20"},
+            ]
+        })
+
+    monkeypatch.setattr("app.data_sources.kis_overseas_minute._auth_headers", fake_headers)
+    monkeypatch.setattr("app.data_sources.kis_overseas_minute._load_credentials", fake_creds)
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    df, diag = kis.fetch_overseas_minute_candles("mock", "TSLA", exchange_code="NAS", regular_only=True)
+
+    assert diag["received_count"] == 1
+    assert len(df) == 1
+    assert df["datetime"].iloc[0].isoformat() == "2026-07-31T09:30:00-04:00"
+
+
+def test_minute_candles_prefer_exchange_timestamp_when_present(monkeypatch):
+    import requests
+
+    def fake_headers(mode, tr_id):
+        return {"tr_id": tr_id}
+
+    def fake_creds(mode):
+        return {"app_key": "key", "app_secret": "secret", "base_url": "https://mock.example"}
+
+    def fake_get(url, *, headers, params, timeout):
+        return _Resp({
+            "output2": [
+                {
+                    "xymd": "20260731", "xhms": "093000",
+                    "kymd": "20260731", "khms": "223000",
+                    "last": "301", "open": "300", "high": "302", "low": "300", "evol": "20",
+                }
+            ]
+        })
+
+    monkeypatch.setattr("app.data_sources.kis_overseas_minute._auth_headers", fake_headers)
+    monkeypatch.setattr("app.data_sources.kis_overseas_minute._load_credentials", fake_creds)
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    df, diag = kis.fetch_overseas_minute_candles("mock", "TSLA", exchange_code="NAS", regular_only=True)
+
+    assert diag["received_count"] == 1
+    assert df["datetime"].iloc[0].isoformat() == "2026-07-31T09:30:00-04:00"

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from app.trading.tsla_auto import config, ledger
+from app.trading.tsla_auto import config, ledger, market_session
 from app.trading.tsla_auto.broker_adapter import BrokerOrderResult, BuySizingQuote
 from app.trading.tsla_auto.cost_engine import OverseasTradeCostEngine
 from app.trading.tsla_auto.models import Direction, PositionSnapshot, SignalState
@@ -41,6 +41,7 @@ FILL_TIMEOUT_CANCELLED = "FILL_TIMEOUT_CANCELLED"
 CANCEL_FAILED = "CANCEL_FAILED"
 BALANCE_MISMATCH = "BALANCE_MISMATCH"
 STRATEGY_OWNERSHIP_MISMATCH = "STRATEGY_OWNERSHIP_MISMATCH"
+ORDER_BLOCKED_BY_MARKET_PHASE = "ORDER_BLOCKED_BY_MARKET_PHASE"
 BUY_FILL_POLL_MAX_SEC = config.ORDER_FILL_POLL_MAX_SEC
 BUY_FILL_POLL_INTERVAL_SEC = config.ORDER_FILL_POLL_INTERVAL_SEC
 
@@ -188,6 +189,7 @@ def execute_signal(
     processed_signal_ids: frozenset[str] = frozenset(),
     strategy_owned_qty: Optional[int] = None,
     reconcile_retries: int = 5, reconcile_delay_sec: float = 0.5,
+    market_state: Optional[market_session.USMarketSessionState] = None,
 ) -> ExecutionOutcome:
     """Idempotent signal_id execution: entry (flat) or direction switch.
 
@@ -198,6 +200,7 @@ def execute_signal(
     """
     timestamps: dict[str, str] = {"evaluated_at": _now_iso()}
     target_symbol = target_symbol_for_direction(direction)
+    market_state = market_state or market_session.get_us_market_state(datetime.now(ET))
 
     if signal_id in processed_signal_ids:
         return ExecutionOutcome(
@@ -234,6 +237,13 @@ def execute_signal(
 
     outcome = ExecutionOutcome(signal_id, direction, target_symbol, SignalState.DETECTED, timestamps=timestamps)
 
+    if held_symbol is None and not market_state.entry_allowed:
+        return ExecutionOutcome(
+            signal_id, direction, target_symbol, SignalState.BLOCKED,
+            block_reason=market_state.reason_code, timestamps=timestamps,
+            order_failure_stage=ORDER_BLOCKED_BY_MARKET_PHASE,
+        )
+
     if held_symbol is not None:
         timestamps["sell_requested_at"] = _now_iso()
         sell_result = broker.sell_market(held_symbol, held_qty, f"{signal_id}:SELL:{held_symbol}")
@@ -259,6 +269,12 @@ def execute_signal(
             order_result=sell_result, entry_price=position.avg_price if position else 0.0,
             confirmed_at=timestamps["sell_confirmed_at"],
         )
+
+    if not market_state.entry_allowed:
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = market_state.reason_code
+        outcome.order_failure_stage = ORDER_BLOCKED_BY_MARKET_PHASE
+        return outcome
 
     quote_price = quotes.get(target_symbol)
     if quote_price is None or quote_price <= 0:

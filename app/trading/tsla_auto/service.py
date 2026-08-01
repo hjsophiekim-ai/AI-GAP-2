@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from app.trading.tsla_auto import config, order_executor, state_store
+from app.trading.tsla_auto import config, market_session, order_executor, state_store
 from app.trading.tsla_auto.broker_adapter import create_tsla_auto_broker
 from app.trading.tsla_auto.market_data import MarketDataService
 from app.trading.tsla_auto.models import RuntimeStatus
@@ -93,12 +93,12 @@ class TslaAutoService:
             self._last_bootstrap_at = now.isoformat()
             self._last_bootstrap_result = {"ok": boot.ok, "reason": boot.reason}
 
-            if not boot.ok or mode == "READ_ONLY":
+            if mode == "READ_ONLY":
                 state.auto_trade_on = False
-                state.ui_mode = RuntimeStatus.BOOTSTRAPPING if not boot.ok else RuntimeStatus.READY
+                state.ui_mode = RuntimeStatus.READY
                 state_store.save_state(state)
-                _write_command("start", mode=mode, ok=False, reason=boot.reason or "READ_ONLY_NO_TRADE")
-                return {"ok": mode == "READ_ONLY", "reason": boot.reason}
+                _write_command("start", mode=mode, ok=False, reason="READ_ONLY_NO_TRADE")
+                return {"ok": True, "reason": boot.reason}
 
             self._market_data.start_history_updater(interval_sec=config.WORKER_INTERVAL_SEC)
             worker_id = None
@@ -108,13 +108,13 @@ class TslaAutoService:
             )
             initialize_strategy_session(state, self._market_data, now=now, worker_instance_id=self._worker.instance_id)
             state.auto_trade_on = True
-            state.ui_mode = RuntimeStatus.RUNNING
+            state.ui_mode = RuntimeStatus.RUNNING if boot.ok else RuntimeStatus.BOOTSTRAPPING
             state.stopped = False
             state_store.save_state(state)
             self._acquire_lock()
             self._worker.start()
-            _write_command("start", mode=mode, ok=True)
-            return {"ok": True, "reason": None}
+            _write_command("start", mode=mode, ok=True, bootstrap_ok=boot.ok, reason=boot.reason)
+            return {"ok": True, "reason": boot.reason}
 
     def stop(self, *, liquidate: bool = False) -> dict[str, Any]:
         with self._lock:
@@ -185,6 +185,7 @@ class TslaAutoService:
             "state": state, "worker": self._worker.tick_stats() if self._worker is not None else None,
             "quotes": quotes, "quote_status": quote_status, "primary_macd": primary_macd, "primary_signal": primary_signal,
             "today_signal_overview": today_signal_overview, "worker_code_sha": git_sha(),
+            "us_market_state": market_session.get_us_market_state().to_dict(),
             "bootstrap_diag": self._market_data.get_last_bootstrap_diag() if self._market_data is not None else {},
             "bootstrap_attempts": self._bootstrap_attempts, "bootstrap_last_attempt_at": self._last_bootstrap_at,
             "bootstrap_last_result": self._last_bootstrap_result,

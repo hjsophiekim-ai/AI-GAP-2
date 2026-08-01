@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -167,6 +168,135 @@ def test_forced_liquidation_at_1550_overrides_everything():
     assert state.position is None
 
 
+def test_force_liquidation_sells_all_managed_us_symbols():
+    state = _fresh_state()
+    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0, "TSLQ": 40.0, "TSLY": 15.0})
+    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed-tsll")
+    broker.buy_limit("TSLQ", 7, 40.0, "seed-tslq")
+    broker.buy_limit("TSLY", 3, 15.0, "seed-tsly")
+    result = worker._force_liquidate_managed_positions(
+        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
+    )
+    sell_symbols = [o.symbol for o in broker.orders if o.side == "SELL"]
+    assert sell_symbols == [config.LONG_SYMBOL, "TSLQ", "TSLY"]
+    assert [(p.symbol, p.quantity) for p in broker.get_positions()] == []
+    assert state.liquidation_status["complete"] is True
+    assert state.liquidation_status["target_count"] == 3
+    assert result.actions == [f"FORCED_LIQUIDATION:{config.LONG_SYMBOL}", "FORCED_LIQUIDATION:TSLQ", "FORCED_LIQUIDATION:TSLY"]
+
+
+def test_force_liquidation_cancels_open_buys_before_selling():
+    state = _fresh_state()
+    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
+    broker.buy_limit(config.LONG_SYMBOL, 2, 30.0, "seed")
+    broker.open_orders = [SimpleNamespace(order_id="BUY-1", symbol=config.LONG_SYMBOL, side="BUY")]
+    worker._force_liquidate_managed_positions(
+        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
+    )
+    assert broker.cancel_calls == [("BUY-1", config.LONG_SYMBOL)]
+    assert state.liquidation_status["cancel_state"] == "DONE"
+    assert state.liquidation_status["complete"] is True
+
+
+def test_force_liquidation_fails_closed_when_open_buy_cancel_fails():
+    state = _fresh_state()
+    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
+    broker.buy_limit(config.LONG_SYMBOL, 2, 30.0, "seed")
+    broker.open_orders = [SimpleNamespace(order_id="BUY-1", symbol=config.LONG_SYMBOL, side="BUY")]
+    broker.fail_next_cancel = True
+    result = worker._force_liquidate_managed_positions(
+        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
+    )
+    assert state.liquidation_status["complete"] is False
+    assert state.liquidation_status["cancel_state"] == "FAILED"
+    assert state.liquidation_status["failure_reason"].startswith("OPEN_BUY_CANCEL_FAILED")
+    assert [o for o in broker.orders if o.side == "SELL"] == []
+    assert result.actions[0].startswith("FORCE_LIQUIDATION_FAILED:")
+
+
+def test_force_liquidation_retries_only_remaining_partial_qty():
+    state = _fresh_state()
+    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
+    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed")
+    broker.sell_fill_plan[config.LONG_SYMBOL] = [4, 6]
+    worker._force_liquidate_managed_positions(
+        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
+    )
+    sell_orders = [o for o in broker.orders if o.side == "SELL"]
+    assert [o.requested_qty for o in sell_orders] == [10, 6]
+    assert [o.executed_qty for o in sell_orders] == [4, 6]
+    assert broker.get_positions() == []
+    assert state.liquidation_status["symbols"][config.LONG_SYMBOL]["state"] == "FLAT"
+
+
+def test_force_liquidation_failed_after_max_retries_records_remaining(monkeypatch):
+    monkeypatch.setattr(config, "US_LIQUIDATION_MAX_RETRIES", 2)
+    state = _fresh_state()
+    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
+    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed")
+    broker.sell_fill_plan[config.LONG_SYMBOL] = [4, 0]
+    worker._force_liquidate_managed_positions(
+        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
+    )
+    meta = state.liquidation_status["symbols"][config.LONG_SYMBOL]
+    assert [o.requested_qty for o in broker.orders if o.side == "SELL"] == [10, 6]
+    assert meta["state"] == "FAILED"
+    assert meta["remaining_qty"] == 6
+    assert state.liquidation_status["complete"] is False
+
+
+def test_force_liquidation_idempotency_skips_duplicate_inflight_qty():
+    state = _fresh_state()
+    state.liquidation_status = {
+        "session_date": "20260724",
+        "symbols": {config.LONG_SYMBOL: {"state": "SELL_SUBMITTED", "inflight_qty": 10, "remaining_qty": 10}},
+        "complete": False,
+    }
+    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
+    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed")
+    worker._force_liquidate_managed_positions(
+        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
+    )
+    assert [o for o in broker.orders if o.side == "SELL"] == []
+    meta = state.liquidation_status["symbols"][config.LONG_SYMBOL]
+    assert meta["idempotency_key"] == f"20260724:mock:{config.LONG_SYMBOL}:FORCE_LIQUIDATION"
+    assert meta["last_reason"] == "DUPLICATE_INFLIGHT_SKIPPED"
+
+
+def test_force_liquidation_restart_recovers_and_sells_remaining_only():
+    first = _fresh_state()
+    first.liquidation_status = {
+        "session_date": "20260724",
+        "symbols": {config.LONG_SYMBOL: {"state": "SELL_SUBMITTED", "inflight_qty": 10, "remaining_qty": 10}},
+        "complete": False,
+    }
+    state_store.save_state(first)
+    restarted = state_store.load_state()
+    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
+    broker.buy_limit(config.LONG_SYMBOL, 6, 30.0, "remaining-after-partial")
+    worker._force_liquidate_managed_positions(
+        broker=broker, state=restarted, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
+    )
+    sell_orders = [o for o in broker.orders if o.side == "SELL"]
+    assert [o.requested_qty for o in sell_orders] == [6]
+    assert broker.get_positions() == []
+    assert restarted.liquidation_status["complete"] is True
+
+
+def test_after_market_start_warns_unliquidated_position_without_sell_loop():
+    svc, state, broker, _now = _confirmed_up_scenario()
+    broker.buy_limit(config.LONG_SYMBOL, 5, 30.0, "seed-after-market")
+    state.position = PositionSnapshot(config.LONG_SYMBOL, 5, 30.0)
+    state.account_holding_qty = 5
+    state.strategy_owned_qty = 5
+    after_close = _START.replace(hour=16, minute=0, second=0)
+    result = run_once(broker=broker, market_data=svc, state=state, now=after_close)
+    assert result.skipped == "AFTER_MARKET_UNLIQUIDATED_POSITION"
+    assert [o for o in broker.orders if o.side == "SELL"] == []
+    assert state.liquidation_status["warning"] == "AFTER_MARKET_UNLIQUIDATED_POSITION"
+    assert state.liquidation_status["remaining_symbols"] == [config.LONG_SYMBOL]
+
+
 def test_stop_loss_exits_full_position():
     svc, state, broker, now = _confirmed_up_scenario()
     run_once(broker=broker, market_data=svc, state=state, now=now)
@@ -194,7 +324,7 @@ def test_profit_lock_exits_on_giveback():
     assert state.position is None
 
 
-def test_profit_lock_takes_priority_over_opposite_signal_switch():
+def test_opposite_signal_switch_takes_priority_over_profit_lock():
     """docs §12 — TSLA_AUTO's OWN priority order (differs from MACD2): Profit
     Lock exits BEFORE an approved opposite-signal switch is even considered."""
     svc, state, broker, now = _confirmed_up_scenario()
@@ -206,14 +336,15 @@ def test_profit_lock_takes_priority_over_opposite_signal_switch():
 
     # Next completed bar produces a DOWN_BLUE crossover (opposite direction)
     # WHILE the held TSLL position is simultaneously in profit-lock-exit territory.
-    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0] + [90.0])
+    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0] + [60.0])
     svc._df_1m = df_1m2
     svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, entry_price * 1.015, datetime.now(ET), 0.0, "test", None)
     next_now = now + timedelta(minutes=3, seconds=5)
     result = run_once(broker=broker, market_data=svc, state=state, now=next_now)
 
-    assert result.actions == [f"PROFIT_LOCK:{config.LONG_SYMBOL}"]  # NOT "OPPOSITE_SIGNAL:..."
-    assert state.position is None
+    assert result.actions == ["OPPOSITE_SIGNAL:DOWN_BLUE"]
+    assert state.position is not None
+    assert state.position.symbol == config.INVERSE_SYMBOL
 
 
 def _strong_up_red_bars_3m(*, n: int = 60, jump: float = 100.0, volume_mult: float = 5.0) -> pd.DataFrame:
@@ -464,3 +595,5 @@ def test_compute_today_signal_overview_separates_live_and_historical():
     live_match = [r for r in live if r["bar_start_at"] == bar_start.isoformat()]
     assert hist_match[0]["origin"] == config.ORIGIN_HISTORICAL_REPLAY_ONLY
     assert live_match[0]["origin"] == config.ORIGIN_LIVE_CONFIRMED
+    assert live_match[0]["display_at"] == bar_start.isoformat()
+    assert live_match[0]["order_due_at"] == bar_end.isoformat()
