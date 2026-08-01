@@ -478,6 +478,7 @@ def _patch_total_score(
     ema20_or_vwap: float = 10.0,
     ema_spread_ratio: float = 0.01,
     recent_range_ratio: float = 0.02,
+    price_impulse_atr: float = 1.50,
 ) -> None:
     """Pin the scored total (and the two confirmation components) while the
     real crossover verification, sideways gate and threshold logic still run."""
@@ -493,7 +494,7 @@ def _patch_total_score(
         shaped["recent_range_ratio"] = recent_range_ratio
         # Drive the required price-confirmation gate via metrics (not score alone).
         shaped["breakout"] = price_strength >= 25.0
-        shaped["price_impulse_atr"] = 0.55 if price_strength >= 15.0 else 0.0
+        shaped["price_impulse_atr"] = price_impulse_atr if price_strength >= 15.0 else 0.0
         shaped["ema20_ok"] = ema20_or_vwap >= 10.0
         shaped["vwap_ok"] = False
         shaped["ema20_or_vwap_ok"] = ema20_or_vwap >= 10.0
@@ -502,8 +503,8 @@ def _patch_total_score(
     monkeypatch.setattr(major_flag_filter, "score_for_direction", fake_score_for_direction)
 
 
-@pytest.mark.parametrize(("total", "approved"), [(65.0, True), (64.0, False)])
-def test_flat_entry_threshold_is_65(monkeypatch, total, approved):
+@pytest.mark.parametrize(("total", "approved"), [(70.0, True), (65.0, False), (64.0, False)])
+def test_flat_entry_requires_strong_profile_score_70(monkeypatch, total, approved):
     _patch_total_score(monkeypatch, total)
     bars = _crossover_bars(Direction.UP_RED)
 
@@ -513,7 +514,10 @@ def test_flat_entry_threshold_is_65(monkeypatch, total, approved):
     assert decision.is_reversal is False
     assert decision.fast_reversal is False
     assert decision.approved is approved
-    assert decision.decision == (config.MAJOR_APPROVED if approved else config.MAJOR_SCORE_BELOW_THRESHOLD)
+    expected = config.MAJOR_APPROVED if approved else (
+        config.MAJOR_SCORE_BELOW_THRESHOLD if total < 65.0 else config.MAJOR_STRONG_PROFILE_FAILED
+    )
+    assert decision.decision == expected
 
 
 @pytest.mark.parametrize(("total", "approved"), [(75.0, True), (74.0, False)])
@@ -577,16 +581,16 @@ def test_price_confirmation_failure_blocks_even_a_high_score(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("price_strength", "ema20_or_vwap"),
-    [(25.0, 0.0), (0.0, 10.0)],
+    ("price_strength", "ema20_or_vwap", "expected"),
+    [(25.0, 0.0, config.MAJOR_APPROVED), (0.0, 10.0, config.MAJOR_STRONG_PROFILE_FAILED)],
 )
-def test_price_confirmation_passes_with_either_half(monkeypatch, price_strength, ema20_or_vwap):
+def test_price_confirmation_passes_with_either_half(monkeypatch, price_strength, ema20_or_vwap, expected):
     _patch_total_score(monkeypatch, 75.0, price_strength=price_strength, ema20_or_vwap=ema20_or_vwap)
     bars = _crossover_bars(Direction.UP_RED)
 
     decision = evaluate_major_flag(bars, Direction.UP_RED, None, None, 0, _decision_now(bars))
 
-    assert decision.decision == config.MAJOR_APPROVED
+    assert decision.decision == expected
 
 
 def test_sideways_block_requires_both_tight_ema_spread_and_tight_range(monkeypatch):

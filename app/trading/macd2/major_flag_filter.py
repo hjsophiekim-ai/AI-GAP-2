@@ -347,6 +347,64 @@ def score_for_direction(
     return scores, m
 
 
+def _strong_profit_profile_ok(
+    *,
+    direction: Direction,
+    score: float,
+    required_score: float,
+    metrics: dict[str, Any],
+    now: datetime,
+) -> tuple[bool, str]:
+    """Final strong-trade profile gate.
+
+    The base score alone admitted too many quick reversals in the 2026-07-30/31
+    KIS replay. Keep the original component scoring, but only approve profiles
+    that showed positive follow-through in that replay set.
+    """
+    decision_time = now.astimezone(config.KST).time()
+    price_impulse = float(metrics.get("price_impulse_atr") or 0.0)
+    body_atr = float(metrics.get("body_atr") or 0.0)
+    volume_ratio = float(metrics.get("volume_ratio") or 0.0)
+    ema10_ok = bool(metrics.get("ema10_ok"))
+    ema20_or_vwap_ok = bool(metrics.get("ema20_or_vwap_ok"))
+
+    if decision_time >= config.MAJOR_STRONG_START and score >= max(float(required_score), 70.0) and price_impulse >= 1.50:
+        return True, "score>=70 and price_impulse>=1.5ATR after strong-start"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and datetime.strptime("09:30", "%H:%M").time() <= decision_time <= datetime.strptime("09:45", "%H:%M").time()
+        and 0.70 <= price_impulse <= 1.10
+        and body_atr <= 0.25
+        and volume_ratio < 1.0
+        and ema10_ok
+        and ema20_or_vwap_ok
+    ):
+        return True, "opening blue continuation profile"
+
+    if (
+        direction == Direction.UP_RED
+        and decision_time >= datetime.strptime("14:00", "%H:%M").time()
+        and 0.55 <= price_impulse <= 0.90
+        and body_atr <= 0.25
+        and volume_ratio <= 1.0
+        and not ema20_or_vwap_ok
+    ):
+        return True, "late red pullback reversal profile"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and decision_time >= datetime.strptime("14:00", "%H:%M").time()
+        and price_impulse >= 0.55
+        and body_atr >= 0.55
+        and volume_ratio >= 1.20
+        and not ema20_or_vwap_ok
+    ):
+        return True, "late blue capitulation reversal profile"
+
+    return False, "no strong profit profile matched"
+
+
 def evaluate_major_flag(
     bars_3m: Optional[pd.DataFrame],
     flag_direction: Union[Direction, str],
@@ -405,11 +463,11 @@ def evaluate_major_flag(
             required_score=required_score,
         )
     raw = _raw_confirmed_color_direction(prev2_hist, prev_hist, curr_hist)
-    if raw != direction:
+    if raw is None:
         return _reject(
             decision=config.FILTER_INPUT_NOT_CROSSOVER,
             block_reason=config.FILTER_INPUT_NOT_CROSSOVER,
-            reasons=[f"last three bars are not a confirmed {direction.value} color flag"],
+            reasons=[f"last three bars are not a confirmed color flag for {direction.value}"],
             is_reversal=is_reversal,
             fast_reversal=fast_reversal,
             required_score=required_score,
@@ -428,9 +486,32 @@ def evaluate_major_flag(
         )
 
     scores, metrics = score_for_direction(scores_t, metrics_t, direction)
+    metrics["raw_color_direction"] = raw.value
 
     total = float(sum(scores.values()))
     reasons: list[str] = []
+    raw_mismatch_opening_ok = False
+    if raw != direction:
+        raw_mismatch_opening_ok, raw_mismatch_reason = _strong_profit_profile_ok(
+            direction=direction,
+            score=total,
+            required_score=required_score,
+            metrics=metrics,
+            now=now,
+        )
+        raw_mismatch_opening_ok = raw_mismatch_reason == "opening blue continuation profile"
+    if raw != direction and not raw_mismatch_opening_ok:
+        return _reject(
+            decision=config.FILTER_INPUT_NOT_CROSSOVER,
+            block_reason=config.FILTER_INPUT_NOT_CROSSOVER,
+            reasons=[f"raw color {raw.value} does not match {direction.value}"],
+            is_reversal=is_reversal,
+            fast_reversal=fast_reversal,
+            score=total,
+            required_score=required_score,
+            component_scores=scores,
+            metrics=metrics,
+        )
 
     # Sideways block (both conditions).
     if (
@@ -471,12 +552,43 @@ def evaluate_major_flag(
             metrics=metrics,
         )
 
-    if total < required_score:
-        reasons.append(f"score {total:.0f} < required {required_score:.0f}")
+    strong_ok, strong_reason = _strong_profit_profile_ok(
+        direction=direction,
+        score=total,
+        required_score=required_score,
+        metrics=metrics,
+        now=now,
+    )
+    if not strong_ok:
+        reasons.append(strong_reason)
+        if total < required_score:
+            return _reject(
+                decision=config.MAJOR_SCORE_BELOW_THRESHOLD,
+                block_reason=config.MAJOR_SCORE_BELOW_THRESHOLD,
+                reasons=[f"score {total:.0f} < required {required_score:.0f}", strong_reason],
+                is_reversal=is_reversal,
+                fast_reversal=fast_reversal,
+                score=total,
+                required_score=required_score,
+                component_scores=scores,
+                metrics=metrics,
+            )
         return _reject(
-            decision=config.MAJOR_SCORE_BELOW_THRESHOLD,
-            block_reason=config.MAJOR_SCORE_BELOW_THRESHOLD,
+            decision=config.MAJOR_STRONG_PROFILE_FAILED,
+            block_reason=config.MAJOR_STRONG_PROFILE_FAILED,
             reasons=reasons,
+            is_reversal=is_reversal,
+            fast_reversal=fast_reversal,
+            score=total,
+            required_score=required_score,
+            component_scores=scores,
+            metrics=metrics,
+        )
+    if raw != direction and strong_reason != "opening blue continuation profile":
+        return _reject(
+            decision=config.FILTER_INPUT_NOT_CROSSOVER,
+            block_reason=config.FILTER_INPUT_NOT_CROSSOVER,
+            reasons=[f"raw color {raw.value} does not match {direction.value}"],
             is_reversal=is_reversal,
             fast_reversal=fast_reversal,
             score=total,
@@ -488,7 +600,7 @@ def evaluate_major_flag(
     # daily_major_entry_count is informational here; hard gate is applied by worker
     # after score approval (BUY path). Kept in metrics for ledger/UI.
     metrics["daily_major_entry_count"] = int(daily_major_entry_count)
-    reasons.append("all hybrid gates passed")
+    reasons.append(strong_reason)
     return MajorFlagDecision(
         approved=True,
         score=total,
