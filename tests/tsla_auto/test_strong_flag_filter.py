@@ -173,9 +173,9 @@ def test_same_direction_position_held_blocks_add():
     assert gated.decision == config.SAME_DIRECTION_POSITION_HELD
 
 
-def test_input_not_crossover_rejected():
+def test_confirmed_signal_is_scored_without_rechecking_crossover():
     bars = _flat_bars(_BASE_BARS)  # no real crossover — flat hist stays ~0
     now = _decision_now(bars)
     decision = evaluate_strong_flag(bars, Direction.UP_RED, None, None, 0, now)
     assert decision.approved is False
-    assert decision.decision == config.FILTER_INPUT_NOT_CROSSOVER
+    assert decision.decision != config.FILTER_INPUT_NOT_CROSSOVER

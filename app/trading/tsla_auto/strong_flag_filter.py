@@ -134,14 +134,6 @@ def _macd_lines(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
     return macd, signal, hist
 
 
-def _raw_crossover_direction(prev_hist: float, curr_hist: float) -> Optional[Direction]:
-    if curr_hist > prev_hist:
-        return Direction.UP_RED
-    if curr_hist < prev_hist:
-        return Direction.DOWN_BLUE
-    return None
-
-
 def _reject(
     *, decision: str, block_reason: str, reasons: Sequence[str], is_reversal: bool = False,
     fast_reversal: bool = False, score: float = 0.0, required_score: float = 0.0,
@@ -412,22 +404,6 @@ def evaluate_strong_flag(
         return _reject(
             decision=config.FILTER_DATA_INSUFFICIENT, block_reason=config.FILTER_DATA_INSUFFICIENT,
             reasons=["insufficient or invalid completed 3m bars"], is_reversal=is_reversal, fast_reversal=fast_reversal,
-        )
-
-    _macd, _signal, hist = _macd_lines(work["close"].astype(float))
-    prev_hist = float(hist.iloc[-2])
-    curr_hist = float(hist.iloc[-1])
-    if not _finite(prev_hist) or not _finite(curr_hist):
-        return _reject(
-            decision=config.FILTER_DATA_INSUFFICIENT, block_reason=config.FILTER_DATA_INSUFFICIENT,
-            reasons=["MACD histogram NaN"], is_reversal=is_reversal, fast_reversal=fast_reversal,
-        )
-    raw = _raw_crossover_direction(prev_hist, curr_hist)
-    if raw != direction:
-        return _reject(
-            decision=config.FILTER_INPUT_NOT_CROSSOVER, block_reason=config.FILTER_INPUT_NOT_CROSSOVER,
-            reasons=[f"last two bars are not a confirmed {direction.value} crossover"],
-            is_reversal=is_reversal, fast_reversal=fast_reversal, metrics={"prev_hist": prev_hist, "hist": curr_hist},
         )
 
     scores_t, metrics_t, err = compute_component_scores(work)

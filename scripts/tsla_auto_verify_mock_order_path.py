@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """MOCK-only verification: TSLA_AUTO full signal->order->fill->balance path,
-strong-flag filter, NORMAL/CHOP daily caps, and 15:45 ET cutoff — FakeBroker
+strong-flag filter, NORMAL/CHOP daily caps, and 16:45 ET cutoff — FakeBroker
 + fake market-data fetchers only. Never constructs a REAL broker.
 
 IMPORTANT: this validates WORKER/ORDER_EXECUTOR LOGIC using a test double —
@@ -30,7 +30,7 @@ from app.trading.tsla_auto.worker import run_once
 from tests.tsla_auto.fake_broker import FakeBroker
 
 ET = config.ET
-_START = datetime(2026, 7, 24, 9, 30, tzinfo=ET)
+_START = datetime(2026, 7, 24, 10, 30, tzinfo=ET)
 _QUOTES = {config.SIGNAL_SYMBOL: 250.0, config.LONG_SYMBOL: 30.0, config.INVERSE_SYMBOL: 12.0}
 
 
@@ -169,7 +169,7 @@ def section_4_duplicate_signal_id_zero_reorder():
 
 
 def section_5_1545_cutoff_blocks_new_buy():
-    print("\n=== [5] 15:45 ET 이후 신규 BUY 0건 ===")
+    print("\n=== [5] 16:45 ET 이후 신규 BUY 0건 ===")
     with _isolated_paths():
         df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0])
         bar_end = _START + timedelta(minutes=3 * 100)
@@ -177,12 +177,12 @@ def section_5_1545_cutoff_blocks_new_buy():
         state.last_confirmed_bar_ts = (_START + timedelta(minutes=3 * 98)).isoformat()
         broker = FakeBroker(cash_usd=100_000.0, quotes={config.LONG_SYMBOL: 30.0, config.INVERSE_SYMBOL: 12.0})
         svc = _svc_with_quote(df_1m, bar_end, _QUOTES)
-        at_cutoff = _START.replace(hour=15, minute=45, second=0)
+        at_cutoff = _START.replace(hour=16, minute=45, second=0)
         result = run_once(broker=broker, market_data=svc, state=state, now=at_cutoff)
-        print(f"at 15:45:00 ET -> actions={result.actions} broker_calls={len(broker.orders)}")
-        _assert(result.actions == [], "15:45 cutoff must block new entries")
+        print(f"at 16:45:00 ET -> actions={result.actions} broker_calls={len(broker.orders)}")
+        _assert(result.actions == [], "16:45 cutoff must block new entries")
         _assert(broker.orders == [], "no broker call after cutoff")
-    print("PASS: 15:45 ET 컷오프 이후 신규 BUY 0건")
+    print("PASS: 16:45 ET 컷오프 이후 신규 BUY 0건")
 
 
 def section_6_real_broker_never_constructed():
@@ -206,7 +206,7 @@ def main() -> int:
     section_6_real_broker_never_constructed()
     print("\nREAL order calls: 0 (FakeBroker only, never a real broker/KIS client)")
     print("주의: 위 결과는 FakeBroker 기반 Worker/order_executor 로직 검증이며, ")
-    print("실제 KIS MOCK(모의투자) 해외 주문 TR 검증이 아니다 (docs §17 — 그 TR은 미확인).")
+    print("실제 KIS MOCK(모의투자) 해외 주문 TR 검증이 아니다 (docs §17 - 그 TR은 미확인).")
     print("ALL CHECKS PASSED")
     return 0
 

@@ -493,6 +493,25 @@ def test_strong_filter_on_rejected_never_calls_broker(monkeypatch):
     assert rows[0]["order_result"] == config.FILTERED_OUT
 
 
+def test_strong_filter_on_preserves_confirmed_raw_flag_identity():
+    svc_off, state_off, broker_off, now_off = _confirmed_up_scenario(strong_filter_on=False)
+    result_off = run_once(broker=broker_off, market_data=svc_off, state=state_off, now=now_off)
+    rows_off = ledger.load_signal_ledger()
+    assert result_off.actions == ["ENTRY:UP_RED"]
+    assert len(rows_off) == 1
+
+    ledger.SIGNAL_LEDGER_PATH.unlink()
+    svc_on, state_on, broker_on, now_on = _confirmed_up_scenario(strong_filter_on=True)
+    result_on = run_once(broker=broker_on, market_data=svc_on, state=state_on, now=now_on)
+    rows_on = ledger.load_signal_ledger()
+    assert result_on.actions
+    assert len(rows_on) == 1
+
+    assert [(r["signal_id"], r["direction"]) for r in rows_off] == [(r["signal_id"], r["direction"]) for r in rows_on]
+    assert rows_on[0]["block_reason"] != config.FILTER_INPUT_NOT_CROSSOVER
+    assert rows_on[0]["strong_decision"] != config.FILTER_INPUT_NOT_CROSSOVER
+
+
 def test_rejected_signal_never_re_judged_next_tick(monkeypatch):
     from app.trading.tsla_auto import strong_flag_filter
 

@@ -544,6 +544,16 @@ Execution ledger는 주문 요청과 체결 결과를 `order_id` 기준으로 de
 
 ## 비용·손익
 
+2026-08-01 구현 기준:
+
+- 매수 거래수수료: 체결금액의 0.25%
+- 매도 거래수수료: 체결금액의 0.25%
+- 환전우대: 95%로 계산한다. 기본 1.00% 환전 스프레드 중 우대 후 5%만 비용으로 반영하므로 실효 환전비용은 0.05%다.
+- 슬리피지: 요청가와 실제 체결가가 모두 있고 차이가 있으면 실제 차이를 비용으로 쓴다. 실제 차이를 산출할 수 없으면 편도 0.05%를 가정한다.
+- Worker와 replay는 모두 `app.trading.tsla_auto.cost_engine.OverseasTradeCostEngine`으로 Gross/비용/Net을 계산한다.
+- Execution ledger는 거래별 Gross PnL, 매수수수료, 매도수수료, 슬리피지, 환전비용, 총비용, Net PnL을 저장한다.
+- UI 당일 요약은 총 거래수수료, 총 슬리피지, 총 환전비용, 총비용, Gross PnL, Net PnL, Net Return을 표시한다.
+
 KIS 계좌에 실제 적용되는 미국주식 수수료율은 설정값(config.yaml 신규 섹션, 가칭
 `trading_cost.overseas_*`)으로 관리하며 확정되지 않은 수수료율은 코드에 고정하지 않는다
 (`app/trading/trading_cost_engine.py`가 이미 이 패턴을 국내 수수료에 대해 쓰고 있다 —

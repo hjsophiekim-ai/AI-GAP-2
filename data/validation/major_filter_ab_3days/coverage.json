@@ -1,0 +1,853 @@
+{
+  "items": [
+    {
+      "role": "session",
+      "symbol": "000660",
+      "date": "20260728",
+      "expected": 391,
+      "actual": 352,
+      "missing_count": 39,
+      "missing_timestamps": [
+        "10:14",
+        "10:15",
+        "10:16",
+        "10:17",
+        "10:18",
+        "10:19",
+        "10:20",
+        "10:21",
+        "10:22",
+        "10:23",
+        "10:24",
+        "10:25",
+        "10:26",
+        "10:27",
+        "10:28",
+        "10:29",
+        "10:30",
+        "10:31",
+        "10:32",
+        "10:33",
+        "10:34",
+        "10:35",
+        "10:36",
+        "10:37",
+        "10:38",
+        "10:39",
+        "10:40",
+        "10:41",
+        "10:42",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "10:14",
+          "end": "10:42",
+          "minutes": 29
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "10:14",
+          "end": "10:42",
+          "minutes": 29,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    },
+    {
+      "role": "session",
+      "symbol": "0193T0",
+      "date": "20260728",
+      "expected": 391,
+      "actual": 350,
+      "missing_count": 41,
+      "missing_timestamps": [
+        "09:00",
+        "09:01",
+        "10:14",
+        "10:15",
+        "10:16",
+        "10:17",
+        "10:18",
+        "10:19",
+        "10:20",
+        "10:21",
+        "10:22",
+        "10:23",
+        "10:24",
+        "10:25",
+        "10:26",
+        "10:27",
+        "10:28",
+        "10:29",
+        "10:30",
+        "10:31",
+        "10:32",
+        "10:33",
+        "10:34",
+        "10:35",
+        "10:36",
+        "10:37",
+        "10:38",
+        "10:39",
+        "10:40",
+        "10:41",
+        "10:42",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "09:00",
+          "end": "09:01",
+          "minutes": 2
+        },
+        {
+          "start": "10:14",
+          "end": "10:42",
+          "minutes": 29
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "09:00",
+          "end": "09:01",
+          "minutes": 2,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:14",
+          "end": "10:42",
+          "minutes": 29,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    },
+    {
+      "role": "session",
+      "symbol": "0197X0",
+      "date": "20260728",
+      "expected": 391,
+      "actual": 350,
+      "missing_count": 41,
+      "missing_timestamps": [
+        "09:00",
+        "09:01",
+        "10:14",
+        "10:15",
+        "10:16",
+        "10:17",
+        "10:18",
+        "10:19",
+        "10:20",
+        "10:21",
+        "10:22",
+        "10:23",
+        "10:24",
+        "10:25",
+        "10:26",
+        "10:27",
+        "10:28",
+        "10:29",
+        "10:30",
+        "10:31",
+        "10:32",
+        "10:33",
+        "10:34",
+        "10:35",
+        "10:36",
+        "10:37",
+        "10:38",
+        "10:39",
+        "10:40",
+        "10:41",
+        "10:42",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "09:00",
+          "end": "09:01",
+          "minutes": 2
+        },
+        {
+          "start": "10:14",
+          "end": "10:42",
+          "minutes": 29
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "09:00",
+          "end": "09:01",
+          "minutes": 2,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:14",
+          "end": "10:42",
+          "minutes": 29,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    },
+    {
+      "role": "session",
+      "symbol": "000660",
+      "date": "20260729",
+      "expected": 391,
+      "actual": 351,
+      "missing_count": 40,
+      "missing_timestamps": [
+        "10:58",
+        "12:33",
+        "12:34",
+        "12:35",
+        "12:36",
+        "12:37",
+        "12:38",
+        "12:39",
+        "12:40",
+        "12:41",
+        "12:42",
+        "12:43",
+        "12:44",
+        "12:45",
+        "12:46",
+        "12:47",
+        "12:48",
+        "12:49",
+        "12:50",
+        "12:51",
+        "12:52",
+        "12:53",
+        "12:54",
+        "12:55",
+        "12:56",
+        "12:57",
+        "12:58",
+        "12:59",
+        "13:00",
+        "13:01",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "10:58",
+          "end": "10:58",
+          "minutes": 1
+        },
+        {
+          "start": "12:33",
+          "end": "13:01",
+          "minutes": 29
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "10:58",
+          "end": "10:58",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "12:33",
+          "end": "13:01",
+          "minutes": 29,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    },
+    {
+      "role": "session",
+      "symbol": "0193T0",
+      "date": "20260729",
+      "expected": 391,
+      "actual": 347,
+      "missing_count": 44,
+      "missing_timestamps": [
+        "10:15",
+        "10:58",
+        "12:33",
+        "12:34",
+        "12:35",
+        "12:36",
+        "12:37",
+        "12:38",
+        "12:39",
+        "12:40",
+        "12:41",
+        "12:42",
+        "12:43",
+        "12:44",
+        "12:45",
+        "12:46",
+        "12:47",
+        "12:48",
+        "12:49",
+        "12:50",
+        "12:51",
+        "12:52",
+        "12:53",
+        "12:54",
+        "12:55",
+        "12:56",
+        "12:57",
+        "12:58",
+        "12:59",
+        "13:00",
+        "13:01",
+        "13:17",
+        "14:03",
+        "14:37",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "10:15",
+          "end": "10:15",
+          "minutes": 1
+        },
+        {
+          "start": "10:58",
+          "end": "10:58",
+          "minutes": 1
+        },
+        {
+          "start": "12:33",
+          "end": "13:01",
+          "minutes": 29
+        },
+        {
+          "start": "13:17",
+          "end": "13:17",
+          "minutes": 1
+        },
+        {
+          "start": "14:03",
+          "end": "14:03",
+          "minutes": 1
+        },
+        {
+          "start": "14:37",
+          "end": "14:37",
+          "minutes": 1
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "10:15",
+          "end": "10:15",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:58",
+          "end": "10:58",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "12:33",
+          "end": "13:01",
+          "minutes": 29,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "13:17",
+          "end": "13:17",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "14:03",
+          "end": "14:03",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "14:37",
+          "end": "14:37",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    },
+    {
+      "role": "session",
+      "symbol": "0197X0",
+      "date": "20260729",
+      "expected": 391,
+      "actual": 347,
+      "missing_count": 44,
+      "missing_timestamps": [
+        "10:13",
+        "10:58",
+        "12:33",
+        "12:34",
+        "12:35",
+        "12:36",
+        "12:37",
+        "12:38",
+        "12:39",
+        "12:40",
+        "12:41",
+        "12:42",
+        "12:43",
+        "12:44",
+        "12:45",
+        "12:46",
+        "12:47",
+        "12:48",
+        "12:49",
+        "12:50",
+        "12:51",
+        "12:52",
+        "12:53",
+        "12:54",
+        "12:55",
+        "12:56",
+        "12:57",
+        "12:58",
+        "12:59",
+        "13:00",
+        "13:01",
+        "13:33",
+        "13:34",
+        "14:11",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "10:13",
+          "end": "10:13",
+          "minutes": 1
+        },
+        {
+          "start": "10:58",
+          "end": "10:58",
+          "minutes": 1
+        },
+        {
+          "start": "12:33",
+          "end": "13:01",
+          "minutes": 29
+        },
+        {
+          "start": "13:33",
+          "end": "13:34",
+          "minutes": 2
+        },
+        {
+          "start": "14:11",
+          "end": "14:11",
+          "minutes": 1
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "10:13",
+          "end": "10:13",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:58",
+          "end": "10:58",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "12:33",
+          "end": "13:01",
+          "minutes": 29,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "13:33",
+          "end": "13:34",
+          "minutes": 2,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "14:11",
+          "end": "14:11",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    },
+    {
+      "role": "session",
+      "symbol": "000660",
+      "date": "20260730",
+      "expected": 391,
+      "actual": 381,
+      "missing_count": 10,
+      "missing_timestamps": [
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": true
+    },
+    {
+      "role": "session",
+      "symbol": "0193T0",
+      "date": "20260730",
+      "expected": 391,
+      "actual": 374,
+      "missing_count": 17,
+      "missing_timestamps": [
+        "09:22",
+        "10:05",
+        "10:06",
+        "10:41",
+        "10:42",
+        "11:18",
+        "12:17",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "09:22",
+          "end": "09:22",
+          "minutes": 1
+        },
+        {
+          "start": "10:05",
+          "end": "10:06",
+          "minutes": 2
+        },
+        {
+          "start": "10:41",
+          "end": "10:42",
+          "minutes": 2
+        },
+        {
+          "start": "11:18",
+          "end": "11:18",
+          "minutes": 1
+        },
+        {
+          "start": "12:17",
+          "end": "12:17",
+          "minutes": 1
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "09:22",
+          "end": "09:22",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:05",
+          "end": "10:06",
+          "minutes": 2,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:41",
+          "end": "10:42",
+          "minutes": 2,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "11:18",
+          "end": "11:18",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "12:17",
+          "end": "12:17",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    },
+    {
+      "role": "session",
+      "symbol": "0197X0",
+      "date": "20260730",
+      "expected": 391,
+      "actual": 375,
+      "missing_count": 16,
+      "missing_timestamps": [
+        "09:22",
+        "09:23",
+        "10:10",
+        "10:36",
+        "10:37",
+        "11:27",
+        "15:20",
+        "15:21",
+        "15:22",
+        "15:23",
+        "15:24",
+        "15:25",
+        "15:26",
+        "15:27",
+        "15:28",
+        "15:29"
+      ],
+      "gap_runs": [
+        {
+          "start": "09:22",
+          "end": "09:23",
+          "minutes": 2
+        },
+        {
+          "start": "10:10",
+          "end": "10:10",
+          "minutes": 1
+        },
+        {
+          "start": "10:36",
+          "end": "10:37",
+          "minutes": 2
+        },
+        {
+          "start": "11:27",
+          "end": "11:27",
+          "minutes": 1
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10
+        }
+      ],
+      "complete": false,
+      "has_gap_ge_1min": true,
+      "gap_diagnosis": [
+        {
+          "start": "09:22",
+          "end": "09:23",
+          "minutes": 2,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:10",
+          "end": "10:10",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "10:36",
+          "end": "10:37",
+          "minutes": 2,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "11:27",
+          "end": "11:27",
+          "minutes": 1,
+          "kind": "kis_source_hole_or_halt"
+        },
+        {
+          "start": "15:20",
+          "end": "15:29",
+          "minutes": 10,
+          "kind": "closing_auction_absent_in_kis"
+        }
+      ],
+      "complete_excluding_auction_1520_1529": false
+    }
+  ],
+  "all_complete": false,
+  "warmup_date": "20260727",
+  "source": "disk",
+  "kis_diagnosis": {
+    "auction_1520_1529": "KIS dailychartprice systematically omits 15:20-15:29; only 15:30 closing bar appears after 15:19.",
+    "fake_tick_y": "FID_FAKE_TICK_INCU_YN=Y does not fill midday or auction gaps (probed 000660 20260729).",
+    "backtest_policy": "Any missing minute (>=1 contiguous) fails the day; incomplete => no PnL."
+  }
+}

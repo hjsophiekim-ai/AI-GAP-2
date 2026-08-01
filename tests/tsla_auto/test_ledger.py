@@ -81,3 +81,31 @@ def test_summarize_daily_trading_empty_ledger_never_raises():
     summary = ledger.summarize_daily_trading("20260730", budget_usd=10_000.0)
     assert summary["has_data"] is False
     assert summary["net_pnl_usd"] == 0.0
+
+
+def test_summarize_daily_trading_cost_breakdown_from_closed_trades():
+    ledger.append_execution({
+        "order_id": "buy-1", "signal_id": "sid-1", "timestamp": "2026-07-30T10:00:00-04:00",
+        "mode": "mock", "symbol": config.LONG_SYMBOL, "side": "BUY", "requested_qty": 10, "executed_qty": 10,
+        "requested_price": 30.0, "executed_price": 30.0, "position_before": 0, "position_after": 10,
+        "gross_pnl_usd": 0.0, "buy_fee_usd": 0.75, "sell_fee_usd": 0.0, "slippage_usd": 0.15,
+        "fx_cost_usd": 0.15, "sec_fee_usd": 0.0, "finra_taf_usd": 0.0, "total_cost_usd": 1.05,
+        "fee_usd": 1.05, "net_pnl_usd": 0.0, "exit_reason": "", "broker_response": "{}",
+    })
+    ledger.append_execution({
+        "order_id": "sell-1", "signal_id": "sid-1", "timestamp": "2026-07-30T10:30:00-04:00",
+        "mode": "mock", "symbol": config.LONG_SYMBOL, "side": "SELL", "requested_qty": 10, "executed_qty": 10,
+        "requested_price": 32.0, "executed_price": 32.0, "position_before": 10, "position_after": 0,
+        "gross_pnl_usd": 20.0, "buy_fee_usd": 0.75, "sell_fee_usd": 0.8, "slippage_usd": 0.31,
+        "fx_cost_usd": 0.31, "sec_fee_usd": 0.0026, "finra_taf_usd": 0.0017, "total_cost_usd": 2.1743,
+        "fee_usd": 2.1743, "net_pnl_usd": 17.8257, "exit_reason": config.EXIT_PROFIT_LOCK,
+        "broker_response": "{}",
+    })
+
+    summary = ledger.summarize_daily_trading("20260730", budget_usd=1_000.0)
+    assert summary["gross_pnl_usd"] == 20.0
+    assert summary["total_commission_usd"] == 1.55
+    assert summary["total_slippage_usd"] == 0.31
+    assert summary["total_fx_cost_usd"] == 0.31
+    assert summary["total_cost_usd"] == 2.1743
+    assert summary["net_pnl_usd"] == 17.8257

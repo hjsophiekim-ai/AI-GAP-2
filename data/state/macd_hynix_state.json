@@ -1,122 +1,63 @@
 {
   "auto_trade_on": true,
   "mode": "mock",
-  "budget": 1000000,
+  "budget": 5000000,
   "stopped": false,
   "stopped_reason": null,
   "display_direction": "HOLD",
   "last_signal_direction": "DOWN_BLUE",
-  "last_signal_bar_ts": "2026-07-23T14:12:00",
-  "last_signal_id": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00",
+  "last_signal_bar_ts": "2026-07-23T12:00:00",
+  "last_signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
   "last_signal_at": null,
   "pending_signal_id": null,
   "pending_signal_direction": null,
   "pending_signal_at": null,
   "pending_entry_kind": null,
   "pending_signal_source": null,
-  "order_requested_at": "2026-07-23T14:15:01.735076",
-  "kis_order_accepted_at": "2026-07-23T14:15:24.871943",
-  "broker_executed_at": "2026-07-23T14:15:34.039938",
-  "position_confirmed_at": "2026-07-23T14:15:34.039938",
-  "completed_3m_bar_at": "2026-07-23T14:15:00",
-  "order_latency": {
-    "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00",
-    "completed_3m_bar_at": "2026-07-23T14:15:00",
-    "signal_detected_at": "2026-07-23T14:15:00.661239",
-    "order_requested_at": "2026-07-23T14:15:01.735076",
-    "kis_order_accepted_at": "2026-07-23T14:15:24.871943",
-    "broker_executed_at": "2026-07-23T14:15:34.039938",
-    "position_confirmed_at": "2026-07-23T14:15:34.039938",
-    "segments_sec": {}
-  },
-  "order_latency_last": {
-    "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00",
-    "completed_3m_bar_at": "2026-07-23T14:15:00",
-    "signal_detected_at": "2026-07-23T14:15:00.661239",
-    "order_requested_at": "2026-07-23T14:15:01.735076",
-    "kis_order_accepted_at": "2026-07-23T14:15:24.871943",
-    "broker_executed_at": "2026-07-23T14:15:34.039938",
-    "position_confirmed_at": "2026-07-23T14:15:34.039938",
-    "segments_sec": {
-      "bar_complete_to_signal_detect": 0.661,
-      "signal_detect_to_order_request": 1.074,
-      "order_request_to_kis_accept": 23.137,
-      "kis_accept_to_fill_confirm": 9.168,
-      "signal_detect_to_final_fill": 33.379
-    },
-    "finalized_at": "2026-07-23T14:15:34.164531"
-  },
+  "order_requested_at": null,
+  "kis_order_accepted_at": null,
+  "broker_executed_at": null,
+  "position_confirmed_at": null,
+  "completed_3m_bar_at": null,
+  "order_latency": {},
+  "order_latency_last": null,
   "order_latency_history": [
     {
-      "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
-      "completed_3m_bar_at": "2026-07-23T09:06:00",
-      "signal_detected_at": "2026-07-23T14:07:54.480976",
-      "order_requested_at": "2026-07-23T14:07:54.481359",
-      "kis_order_accepted_at": "2026-07-23T14:07:54.481601",
-      "broker_executed_at": "2026-07-23T14:07:54.481640",
-      "position_confirmed_at": "2026-07-23T14:07:54.481640",
+      "signal_id": "MACD3M:UP_RED:2026-07-23T10:00:00",
+      "completed_3m_bar_at": "2026-07-23T10:03:00",
+      "signal_detected_at": "2026-07-31T09:42:06.706088",
+      "order_requested_at": "2026-07-31T09:42:06.706229",
+      "kis_order_accepted_at": "2026-07-31T09:42:06.706356",
+      "broker_executed_at": "2026-07-31T09:42:06.706386",
+      "position_confirmed_at": "2026-07-31T09:42:06.706386",
       "segments_sec": {
-        "bar_complete_to_signal_detect": 18114.481,
+        "bar_complete_to_signal_detect": 689946.706,
         "signal_detect_to_order_request": 0.0,
         "order_request_to_kis_accept": 0.0,
         "kis_accept_to_fill_confirm": 0.0,
-        "signal_detect_to_final_fill": 0.001
+        "signal_detect_to_final_fill": 0.0
       },
-      "finalized_at": "2026-07-23T14:07:54.606606"
+      "finalized_at": "2026-07-31T09:42:06.782306"
     },
     {
-      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:36:00",
-      "completed_3m_bar_at": "2026-07-23T10:39:00",
-      "signal_detected_at": "2026-07-23T14:07:54.947926",
-      "order_requested_at": "2026-07-23T14:07:54.948102",
-      "kis_order_accepted_at": "2026-07-23T14:07:54.948317",
-      "broker_executed_at": "2026-07-23T14:07:55.357829",
-      "position_confirmed_at": "2026-07-23T14:07:55.357829",
+      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T12:00:00",
+      "completed_3m_bar_at": "2026-07-23T12:03:00",
+      "signal_detected_at": "2026-07-31T09:42:08.111051",
+      "order_requested_at": "2026-07-31T09:42:08.111173",
+      "kis_order_accepted_at": "2026-07-31T09:42:08.111296",
+      "broker_executed_at": "2026-07-31T09:42:08.111328",
+      "position_confirmed_at": "2026-07-31T09:42:08.111328",
       "segments_sec": {
-        "bar_complete_to_signal_detect": 12534.948,
+        "bar_complete_to_signal_detect": 682748.111,
         "signal_detect_to_order_request": 0.0,
         "order_request_to_kis_accept": 0.0,
-        "kis_accept_to_fill_confirm": 0.41,
-        "signal_detect_to_final_fill": 0.41
+        "kis_accept_to_fill_confirm": 0.0,
+        "signal_detect_to_final_fill": 0.0
       },
-      "finalized_at": "2026-07-23T14:07:55.496533"
-    },
-    {
-      "signal_id": "MACD3M:UP_RED:2026-07-23T13:39:00",
-      "completed_3m_bar_at": "2026-07-23T13:42:00",
-      "signal_detected_at": "2026-07-23T14:07:55.800445",
-      "order_requested_at": "2026-07-23T14:07:55.800568",
-      "kis_order_accepted_at": "2026-07-23T14:07:55.800711",
-      "broker_executed_at": "2026-07-23T14:07:56.197644",
-      "position_confirmed_at": "2026-07-23T14:07:56.197644",
-      "segments_sec": {
-        "bar_complete_to_signal_detect": 1555.8,
-        "signal_detect_to_order_request": 0.0,
-        "order_request_to_kis_accept": 0.0,
-        "kis_accept_to_fill_confirm": 0.397,
-        "signal_detect_to_final_fill": 0.397
-      },
-      "finalized_at": "2026-07-23T14:07:56.321948"
-    },
-    {
-      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00",
-      "completed_3m_bar_at": "2026-07-23T14:15:00",
-      "signal_detected_at": "2026-07-23T14:15:00.661239",
-      "order_requested_at": "2026-07-23T14:15:01.735076",
-      "kis_order_accepted_at": "2026-07-23T14:15:24.871943",
-      "broker_executed_at": "2026-07-23T14:15:34.039938",
-      "position_confirmed_at": "2026-07-23T14:15:34.039938",
-      "segments_sec": {
-        "bar_complete_to_signal_detect": 0.661,
-        "signal_detect_to_order_request": 1.074,
-        "order_request_to_kis_accept": 23.137,
-        "kis_accept_to_fill_confirm": 9.168,
-        "signal_detect_to_final_fill": 33.379
-      },
-      "finalized_at": "2026-07-23T14:15:34.164531"
+      "finalized_at": "2026-07-31T09:42:08.190902"
     }
   ],
-  "last_order_at": "2026-07-23T14:25:09.742675",
+  "last_order_at": "2026-07-31T09:43:01.830052",
   "position": {
     "symbol": null,
     "quantity": 0,
@@ -131,7 +72,7 @@
   "direction_episode": {
     "id": "EP:DOWN_BLUE:00",
     "direction": "DOWN_BLUE",
-    "started_at": "2026-07-23T14:15:01.735097",
+    "started_at": "2026-07-31T09:42:08.111197",
     "initial_entry_used": true,
     "continuation_reentry_used": false,
     "sl_lock": true,
@@ -158,79 +99,86 @@
   },
   "last_event": "SL_EXIT",
   "prices": {
-    "hynix": 1917000.0,
-    "long": 15525.0,
-    "inverse": 10305.0,
-    "updated_at": "2026-07-23T14:25:59.850575"
+    "hynix": 1691000.0,
+    "long": 10830.0,
+    "inverse": 8490.0,
+    "updated_at": "2026-07-31T09:59:49.187644"
   },
   "macd": {
-    "macd": -448.741551,
-    "signal": 1667.913416,
-    "hist": -2116.654967,
+    "macd": 81505.192064,
+    "signal": 64286.629173,
+    "hist": 17218.562892,
     "hist_last3": [
-      -3621.863547,
-      -2814.196936,
-      -2116.654967
+      23760.9588,
+      20703.345773,
+      17218.562892
     ],
     "hist_deltas": [
-      807.66661,
-      697.541969
+      -3057.613027,
+      -3484.782881
     ],
     "reason": "HOLD_NO_PATTERN",
-    "bar_ts": "2026-07-23T14:21:00"
+    "bar_ts": "2026-07-31T09:54:00"
   },
   "quote_errors": [],
   "pipeline": {
     "Signal": {
-      "ok": true,
-      "at": "2026-07-23T14:15:01+0900",
-      "message": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00"
+      "ok": null,
+      "at": null,
+      "message": ""
     },
     "Sell Requested": {
       "ok": true,
-      "at": "2026-07-23T14:24:59+0900",
+      "at": "2026-07-31T09:42:58+0900",
       "message": "SL_EXIT"
     },
     "Sell Executed": {
       "ok": true,
-      "at": "2026-07-23T14:25:09+0900",
+      "at": "2026-07-31T09:43:01+0900",
       "message": "SL_EXIT"
     },
     "Buy Requested": {
-      "ok": true,
-      "at": "2026-07-23T14:15:01+0900",
-      "message": "0197X0"
+      "ok": null,
+      "at": null,
+      "message": ""
     },
     "Buy Executed": {
-      "ok": true,
-      "at": "2026-07-23T14:15:34+0900",
-      "message": "0197X0"
+      "ok": null,
+      "at": null,
+      "message": ""
     },
     "Position Confirmed": {
-      "ok": true,
-      "at": "2026-07-23T14:15:34+0900",
-      "message": "qty=94"
+      "ok": null,
+      "at": null,
+      "message": ""
     },
     "Ledger Recorded": {
-      "ok": true,
-      "at": "2026-07-23T14:15:34+0900",
-      "message": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00"
+      "ok": null,
+      "at": null,
+      "message": ""
     }
   },
   "order_block_reason": null,
   "next_action": "대기",
   "processed_signal_ids": [
-    "MACD3M:UP_RED:2026-07-23T09:03:00",
-    "MACD3M:DOWN_BLUE:2026-07-23T10:36:00",
-    "MACD3M:UP_RED:2026-07-23T13:39:00",
-    "MACD3M:DOWN_BLUE:2026-07-23T14:12:00"
+    "MACD3M:UP_RED:2026-07-23T10:00:00",
+    "MACD3M:DOWN_BLUE:2026-07-23T12:00:00"
   ],
   "worker": {
     "alive": true,
-    "last_tick_at": "2026-07-23T14:25:57.407359",
-    "tick_n": 14,
-    "tick_seq": 14,
+    "last_tick_at": "2026-07-31T09:59:47.924150",
+    "tick_n": 16,
+    "tick_seq": 16,
     "tick_intervals": [
+      0.0,
+      0.015,
+      0.0,
+      0.015,
+      0.0,
+      0.015,
+      0.0,
+      0.015,
+      0.0,
       0.015,
       0.0,
       0.015,
@@ -239,17 +187,7 @@
       0.0,
       0.016,
       0.0,
-      0.015,
-      0.0,
-      0.015,
-      0.0,
-      0.015,
-      0.0,
-      0.015,
-      0.0,
-      0.015,
-      0.0,
-      0.015,
+      0.016,
       0.0,
       0.015,
       0.0,
@@ -257,47 +195,48 @@
       0.0,
       0.0,
       0.0,
-      0.0,
-      5.019,
-      9.188,
-      13.349,
-      3.158,
-      4.547,
-      4.76,
-      4.992,
-      5.002,
-      4.99,
+      6.835,
+      3.179,
+      5.001,
+      4.988,
       5.004,
-      4.996,
+      5.009,
+      4.993,
+      5.004,
       5.003,
-      5.01
+      4.997,
+      4.997,
+      4.998,
+      5.001,
+      5.001,
+      5.013
     ],
     "intervals_buf_len": 40,
     "intervals_buf_cap": 40,
-    "avg_interval": 3.753,
-    "p95_interval": 9.188,
+    "avg_interval": 3.752,
+    "p95_interval": 5.013,
     "main_cycle_3m_wait_count": 0,
-    "completed_3m_bar_at": "2026-07-23T14:15:00",
-    "signal_detected_at": "2026-07-23T14:15:00.661239",
-    "order_requested_at": "2026-07-23T14:15:01.735076",
-    "kis_order_accepted_at": "2026-07-23T14:15:24.871943",
-    "broker_executed_at": "2026-07-23T14:15:34.039938",
-    "position_confirmed_at": "2026-07-23T14:15:34.039938",
+    "completed_3m_bar_at": null,
+    "signal_detected_at": null,
+    "order_requested_at": null,
+    "kis_order_accepted_at": null,
+    "broker_executed_at": null,
+    "position_confirmed_at": null,
     "stalled": true,
-    "stall_reason": "WORKER_TICK_STALE",
+    "stall_reason": "WORKER_THREAD_DEAD",
     "last_error": null,
     "run_once_source_hash": "38e62f4eb8a4",
-    "instance_id": "b29fc9e0f256",
-    "started_at": "2026-07-23T14:24:42.368532",
+    "instance_id": "5d069445e519",
+    "started_at": "2026-07-31T09:58:32.897990",
     "thread_count": 3,
-    "code_sha": "0b0789f"
+    "code_sha": "5d428bf"
   },
   "scheduler_alive": true,
   "strategy_enabled": true,
   "market_data_active": true,
   "signal_calculation_active": true,
   "order_execution_enabled": true,
-  "bootstrap_status": "OK",
+  "bootstrap_status": "RUNNING",
   "quote_status": "OK",
   "macd_status": "OK",
   "order_status": "ENABLED",
@@ -307,60 +246,9 @@
   "last_macd_bars_ok": true,
   "last_flag": "HOLD",
   "current_flag": "HOLD",
-  "flag_events_today": [
-    {
-      "ts": "2026-07-23T09:06:05",
-      "flag": "UP_RED",
-      "signal_id": "MACD3M:UP_RED:2026-07-23T09:03:00",
-      "bar_ts": "2026-07-23T09:03:00",
-      "occurrence_key": "MACD3M:UP_RED:2026-07-23T09:03:00",
-      "ordered": false,
-      "block_reason": null,
-      "order_id": null
-    },
-    {
-      "ts": "2026-07-23T10:39:05",
-      "flag": "DOWN_BLUE",
-      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T10:36:00",
-      "bar_ts": "2026-07-23T10:36:00",
-      "occurrence_key": "MACD3M:DOWN_BLUE:2026-07-23T10:36:00",
-      "ordered": false,
-      "block_reason": null,
-      "order_id": null
-    },
-    {
-      "ts": "2026-07-23T13:42:05",
-      "flag": "UP_RED",
-      "signal_id": "MACD3M:UP_RED:2026-07-23T13:39:00",
-      "bar_ts": "2026-07-23T13:39:00",
-      "occurrence_key": "MACD3M:UP_RED:2026-07-23T13:39:00",
-      "ordered": false,
-      "block_reason": null,
-      "order_id": null
-    },
-    {
-      "ts": "2026-07-23T14:13:01.082497",
-      "flag": "DOWN_BLUE",
-      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T14:09:00",
-      "bar_ts": "2026-07-23T14:09:00",
-      "occurrence_key": "MACD3M:DOWN_BLUE:2026-07-23T14:09:00",
-      "ordered": false,
-      "block_reason": null,
-      "order_id": null
-    },
-    {
-      "ts": "2026-07-23T14:15:00.628471",
-      "flag": "DOWN_BLUE",
-      "signal_id": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00",
-      "bar_ts": "2026-07-23T14:12:00",
-      "occurrence_key": "MACD3M:DOWN_BLUE:2026-07-23T14:12:00",
-      "ordered": false,
-      "block_reason": null,
-      "order_id": null
-    }
-  ],
-  "signal_type": "REVERSAL",
-  "armed_at": "2026-07-23T09:06:05",
+  "flag_events_today": [],
+  "signal_type": "INITIAL",
+  "armed_at": null,
   "duplicate_block_reason": null,
   "last_new_signal": false,
   "last_signal_eval": {
@@ -369,17 +257,17 @@
     "new_signal": false,
     "signal_id": null,
     "reason": "HOLD_NO_PATTERN",
-    "bar_ts": "2026-07-23T14:21:00",
-    "bar_close_ts": "2026-07-23T14:24:00",
-    "completed_3m_count": 140,
-    "at": "2026-07-23T14:25:59.843816"
+    "bar_ts": "2026-07-31T09:54:00",
+    "bar_close_ts": "2026-07-31T09:57:00",
+    "completed_3m_count": 121,
+    "at": "2026-07-31T09:59:49.186739"
   },
-  "last_order_attempt_at": "2026-07-23T14:15:01.735084",
+  "last_order_attempt_at": "2026-07-31T09:42:08.111182",
   "last_order_error": null,
-  "worker_code_sha": "0b0789f",
+  "worker_code_sha": "5d428bf",
   "force_liquidate_pending": false,
   "force_liquidate_done_date": null,
-  "session_date": "2026-07-23",
+  "session_date": "2026-07-31",
   "real_confirm_ok": false,
   "masked_account": "",
   "continuation_reentry_enabled": false,
@@ -405,133 +293,135 @@
     "price_samples_5s": [],
     "confirm_checked": false
   },
-  "updated_at": "2026-07-23T14:25:59.911917",
-  "git_sha": "0b0789f",
-  "bootstrap": {
-    "ok": true,
-    "status": "OK",
-    "received_1m_bars": 729
+  "updated_at": "2026-07-31T09:59:49.200483",
+  "git_sha": "5d428bf",
+  "pending_budget_fraction": null,
+  "pending_open_scale": null,
+  "decision_trace": {
+    "real_gate_checked": false,
+    "mode": "mock",
+    "flag": "HOLD",
+    "completed_bar_at": "2026-07-31T09:57:00",
+    "signal_id": null,
+    "new_signal": false,
+    "broker_called": false,
+    "at": "2026-07-31T09:59:49.186739"
   },
-  "warmup_ready": true,
-  "quote_cache_age_sec": 5.676923200022429,
+  "completed_signal": {
+    "flag": "HOLD",
+    "signal_id": null,
+    "bar_ts": "2026-07-31T09:54:00",
+    "completed_bar_at": "2026-07-31T09:57:00",
+    "new_signal": false,
+    "reason": "HOLD_NO_PATTERN",
+    "hist_last3": [
+      23760.9588,
+      20703.345773,
+      17218.562892
+    ],
+    "macd": 81505.192064,
+    "signal": 64286.629173,
+    "hist": 17218.562892,
+    "at": "2026-07-31T09:59:49.186739",
+    "signal_calculation_active": true
+  },
+  "primary_error": null,
+  "signal_detected_at": null,
+  "quote_cache_age_sec": 0.6919663000007858,
   "quotes": {
     "hynix": {
       "ok": true,
-      "price": 1917000.0,
-      "change_pct": 4.75,
+      "price": 1691000.0,
+      "change_pct": 27.91,
       "symbol": "000660",
-      "updated_at": "2026-07-23T14:25:40.208437",
+      "updated_at": "2026-07-31T09:59:44.436328",
       "rt_cd": "0",
       "msg_cd": "MCA00000",
       "msg1": "정상처리 되었습니다.",
       "http_status": 200,
-      "elapsed_sec": 0.41,
+      "elapsed_sec": 0.082,
       "url_kind": "inquire-price",
       "error_message": null,
       "api_function": "broker.kis.get_current_price",
-      "quote_age_sec": 5.676925699983258,
+      "quote_age_sec": 0.6919679000002361,
       "from_cache": true,
       "cache_fresh": false,
       "last_good": true
     },
     "long": {
       "ok": true,
-      "price": 15525.0,
-      "change_pct": 9.49,
+      "price": 10830.0,
+      "change_pct": 54.82,
       "symbol": "0193T0",
-      "updated_at": "2026-07-23T14:25:44.090722",
+      "updated_at": "2026-07-31T09:59:42.475542",
       "rt_cd": "0",
       "msg_cd": "MCA00000",
       "msg1": "정상처리 되었습니다.",
       "http_status": 200,
-      "elapsed_sec": 0.203,
+      "elapsed_sec": 0.136,
       "url_kind": "inquire-price",
       "error_message": null,
       "api_function": "broker.kis.get_current_price",
-      "quote_age_sec": 5.676931800029706,
+      "quote_age_sec": 0.6919710000001942,
       "from_cache": true,
       "cache_fresh": false,
       "last_good": true
     },
     "inverse": {
       "ok": true,
-      "price": 10305.0,
-      "change_pct": -9.21,
+      "price": 8490.0,
+      "change_pct": -55.82,
       "symbol": "0197X0",
-      "updated_at": "2026-07-23T14:25:54.173600",
+      "updated_at": "2026-07-31T09:59:44.513542",
       "rt_cd": "0",
       "msg_cd": "MCA00000",
       "msg1": "정상처리 되었습니다.",
       "http_status": 200,
-      "elapsed_sec": 1.706,
+      "elapsed_sec": 0.067,
       "url_kind": "inquire-price",
       "error_message": null,
       "api_function": "broker.kis.get_current_price",
-      "quote_age_sec": 5.676923200022429,
+      "quote_age_sec": 0.6919730000008713,
       "from_cache": true,
-      "cache_fresh": true
+      "cache_fresh": false,
+      "last_good": true
     },
-    "updated_at": "2026-07-23T14:25:59.850585",
-    "age_sec": 5.676923200022429,
+    "updated_at": "2026-07-31T09:59:49.187650",
+    "age_sec": 0.6919663000007858,
     "status": "OK"
   },
   "tick_phases": {
     "quotes_sec": 0.0
   },
+  "warmup_ready": true,
   "macd_warmup_diagnostics": {
     "from": "_load_minute_df",
-    "completed_3m_count": 140,
+    "completed_3m_count": 121,
     "requested_3m_bars": 100,
-    "received_1m_bars": 420,
+    "received_1m_bars": 360,
     "requested_1m_bars": 300
   },
   "completed_signal_snapshot": {
     "flag": "HOLD",
     "signal_id": null,
-    "bar_ts": "2026-07-23T14:21:00",
-    "completed_bar_at": "2026-07-23T14:24:00",
+    "bar_ts": "2026-07-31T09:54:00",
+    "completed_bar_at": "2026-07-31T09:57:00",
     "new_signal": false,
     "reason": "HOLD_NO_PATTERN",
     "hist_last3": [
-      -3621.863547,
-      -2814.196936,
-      -2116.654967
+      23760.9588,
+      20703.345773,
+      17218.562892
     ],
-    "macd": -448.741551,
-    "signal": 1667.913416,
-    "hist": -2116.654967,
-    "at": "2026-07-23T14:25:59.843816",
+    "macd": 81505.192064,
+    "signal": 64286.629173,
+    "hist": 17218.562892,
+    "at": "2026-07-31T09:59:49.186739",
     "signal_calculation_active": true
-  },
-  "completed_signal": {
-    "flag": "HOLD",
-    "signal_id": null,
-    "bar_ts": "2026-07-23T14:21:00",
-    "completed_bar_at": "2026-07-23T14:24:00",
-    "new_signal": false,
-    "reason": "HOLD_NO_PATTERN",
-    "hist_last3": [
-      -3621.863547,
-      -2814.196936,
-      -2116.654967
-    ],
-    "macd": -448.741551,
-    "signal": 1667.913416,
-    "hist": -2116.654967,
-    "at": "2026-07-23T14:25:59.843816",
-    "signal_calculation_active": true
-  },
-  "decision_trace": {
-    "real_gate_checked": false,
-    "mode": "mock",
-    "flag": "HOLD",
-    "completed_bar_at": "2026-07-23T14:24:00",
-    "signal_id": null,
-    "new_signal": false,
-    "broker_called": false,
-    "at": "2026-07-23T14:25:59.843816"
   },
   "signal_lifecycle": "LEDGER_RECORDED",
-  "signal_detected_at": "2026-07-23T14:15:00.661239",
-  "ui_mode": "RUNNING"
+  "ui_mode": "RUNNING",
+  "bootstrap": {
+    "status": "RUNNING"
+  }
 }

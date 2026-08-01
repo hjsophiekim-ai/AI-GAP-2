@@ -1,0 +1,713 @@
+{
+  "sim_trading_date": "20260723",
+  "flag_events": [
+    {
+      "time": "10:22:00",
+      "direction": "DOWN_BLUE",
+      "actions_same_tick": [],
+      "watch_price": 1917000.0
+    },
+    {
+      "time": "13:43:00",
+      "direction": "DOWN_BLUE",
+      "actions_same_tick": [],
+      "watch_price": 1913000.0
+    },
+    {
+      "time": "13:50:00",
+      "direction": "DOWN_BLUE",
+      "actions_same_tick": [],
+      "watch_price": 1914000.0
+    },
+    {
+      "time": "14:28:00",
+      "direction": "UP_RED",
+      "actions_same_tick": [],
+      "watch_price": 1929000.0
+    },
+    {
+      "time": "14:43:00",
+      "direction": "DOWN_BLUE",
+      "actions_same_tick": [],
+      "watch_price": 1908000.0
+    },
+    {
+      "time": "15:19:00",
+      "direction": "UP_RED",
+      "actions_same_tick": [],
+      "watch_price": 1907000.0
+    }
+  ],
+  "tick_log": [
+    {
+      "time": "09:54:00",
+      "actions": [
+        "ENTRY:DOWN_BLUE"
+      ],
+      "provisional_flag": null,
+      "position_before": null,
+      "position_after": [
+        "0197X0",
+        973,
+        10265.13
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "09:57:00",
+      "actions": [
+        "OPPOSITE_SIGNAL:UP_RED"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0197X0",
+        973
+      ],
+      "position_after": [
+        "0193T0",
+        635,
+        15652.82
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "10:16:00",
+      "actions": [
+        "PROFIT_LOCK:0193T0"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0193T0",
+        635
+      ],
+      "position_after": null,
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": "PROFIT_LOCK"
+    },
+    {
+      "time": "10:24:00",
+      "actions": [
+        "ENTRY:DOWN_BLUE"
+      ],
+      "provisional_flag": null,
+      "position_before": null,
+      "position_after": [
+        "0197X0",
+        974,
+        10260.13
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "10:32:00",
+      "actions": [
+        "PROFIT_LOCK:0197X0"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0197X0",
+        974
+      ],
+      "position_after": null,
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": "PROFIT_LOCK"
+    },
+    {
+      "time": "11:45:00",
+      "actions": [
+        "ENTRY:UP_RED"
+      ],
+      "provisional_flag": null,
+      "position_before": null,
+      "position_after": [
+        "0193T0",
+        670,
+        14907.45
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "12:31:00",
+      "actions": [
+        "PROFIT_LOCK:0193T0"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0193T0",
+        670
+      ],
+      "position_after": null,
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": "PROFIT_LOCK"
+    },
+    {
+      "time": "13:06:00",
+      "actions": [
+        "ENTRY:DOWN_BLUE"
+      ],
+      "provisional_flag": null,
+      "position_before": null,
+      "position_after": [
+        "0197X0",
+        935,
+        10685.34
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "13:12:00",
+      "actions": [
+        "STOP_LOSS:0197X0"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0197X0",
+        935
+      ],
+      "position_after": null,
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": "STOP_LOSS"
+    },
+    {
+      "time": "13:21:00",
+      "actions": [
+        "ENTRY:UP_RED"
+      ],
+      "provisional_flag": null,
+      "position_before": null,
+      "position_after": [
+        "0193T0",
+        643,
+        15532.76
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "13:51:00",
+      "actions": [
+        "OPPOSITE_SIGNAL:DOWN_BLUE"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0193T0",
+        643
+      ],
+      "position_after": [
+        "0197X0",
+        963,
+        10375.18
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "14:19:00",
+      "actions": [
+        "PROFIT_LOCK:0197X0"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0197X0",
+        963
+      ],
+      "position_after": null,
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": "PROFIT_LOCK"
+    },
+    {
+      "time": "14:30:00",
+      "actions": [
+        "ENTRY:UP_RED"
+      ],
+      "provisional_flag": null,
+      "position_before": null,
+      "position_after": [
+        "0193T0",
+        633,
+        15782.89
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "14:35:00",
+      "actions": [
+        "STOP_LOSS:0193T0"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0193T0",
+        633
+      ],
+      "position_after": null,
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": "STOP_LOSS"
+    },
+    {
+      "time": "14:45:00",
+      "actions": [
+        "ENTRY:DOWN_BLUE"
+      ],
+      "provisional_flag": null,
+      "position_before": null,
+      "position_after": [
+        "0197X0",
+        951,
+        10500.25
+      ],
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": null
+    },
+    {
+      "time": "15:00:00",
+      "actions": [
+        "FORCED_LIQUIDATION:0197X0"
+      ],
+      "provisional_flag": null,
+      "position_before": [
+        "0197X0",
+        951
+      ],
+      "position_after": null,
+      "peak_net_return": 0.0,
+      "profit_lock_active": false,
+      "block_reason": "FORCED_LIQUIDATION"
+    }
+  ],
+  "execution_rows": [
+    {
+      "order_id": "SIM-000001",
+      "signal_id": "20260723_095100_DOWN_BLUE",
+      "timestamp": "2026-07-27T10:43:26.328750+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "BUY",
+      "requested_qty": "973",
+      "executed_qty": "973",
+      "requested_price": "10265.13",
+      "executed_price": "10265.13",
+      "position_before": "0",
+      "position_after": "973",
+      "gross_pnl": "0.0",
+      "fee": "1498.2",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000002",
+      "signal_id": "20260723_095400_UP_RED",
+      "timestamp": "2026-07-27T10:43:26.727267+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "SELL",
+      "requested_qty": "973",
+      "executed_qty": "973",
+      "requested_price": "10219.8875",
+      "executed_price": "10219.8875",
+      "position_before": "973",
+      "position_after": "0",
+      "gross_pnl": "-44020.95",
+      "fee": "1491.59",
+      "slippage": "5979.58",
+      "net_pnl": "-52990.32",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000003",
+      "signal_id": "20260723_095400_UP_RED",
+      "timestamp": "2026-07-27T10:43:26.751532+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "BUY",
+      "requested_qty": "635",
+      "executed_qty": "635",
+      "requested_price": "15652.822499999998",
+      "executed_price": "15652.822499999998",
+      "position_before": "0",
+      "position_after": "635",
+      "gross_pnl": "0.0",
+      "fee": "1490.93",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000004",
+      "signal_id": "",
+      "timestamp": "2026-07-27T10:43:28.763975+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "SELL",
+      "requested_qty": "635",
+      "executed_qty": "635",
+      "requested_price": "15892.050000000001",
+      "executed_price": "15892.050000000001",
+      "position_before": "635",
+      "position_after": "0",
+      "gross_pnl": "151909.46",
+      "fee": "1513.72",
+      "slippage": "6009.3",
+      "net_pnl": "142895.51",
+      "exit_reason": "PROFIT_LOCK",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000005",
+      "signal_id": "20260723_102100_DOWN_BLUE",
+      "timestamp": "2026-07-27T10:43:29.595632+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "BUY",
+      "requested_qty": "974",
+      "executed_qty": "974",
+      "requested_price": "10260.127499999999",
+      "executed_price": "10260.127499999999",
+      "position_before": "0",
+      "position_after": "974",
+      "gross_pnl": "0.0",
+      "fee": "1499.0",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000006",
+      "signal_id": "",
+      "timestamp": "2026-07-27T10:43:30.501717+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "SELL",
+      "requested_qty": "974",
+      "executed_qty": "974",
+      "requested_price": "10424.785",
+      "executed_price": "10424.785",
+      "position_before": "974",
+      "position_after": "0",
+      "gross_pnl": "160376.41",
+      "fee": "1523.06",
+      "slippage": "6044.13",
+      "net_pnl": "151310.21",
+      "exit_reason": "PROFIT_LOCK",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000007",
+      "signal_id": "20260723_114200_UP_RED",
+      "timestamp": "2026-07-27T10:43:36.995562+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "BUY",
+      "requested_qty": "670",
+      "executed_qty": "670",
+      "requested_price": "14907.449999999999",
+      "executed_price": "14907.449999999999",
+      "position_before": "0",
+      "position_after": "670",
+      "gross_pnl": "0.0",
+      "fee": "1498.2",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000008",
+      "signal_id": "",
+      "timestamp": "2026-07-27T10:43:41.163408+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "SELL",
+      "requested_qty": "670",
+      "executed_qty": "670",
+      "requested_price": "15137.427500000002",
+      "executed_price": "15137.427500000002",
+      "position_before": "670",
+      "position_after": "0",
+      "gross_pnl": "154084.93",
+      "fee": "1521.31",
+      "slippage": "6039.02",
+      "net_pnl": "145026.39",
+      "exit_reason": "PROFIT_LOCK",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000009",
+      "signal_id": "20260723_130300_DOWN_BLUE",
+      "timestamp": "2026-07-27T10:43:44.864678+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "BUY",
+      "requested_qty": "935",
+      "executed_qty": "935",
+      "requested_price": "10685.34",
+      "executed_price": "10685.34",
+      "position_before": "0",
+      "position_after": "935",
+      "gross_pnl": "0.0",
+      "fee": "1498.62",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000010",
+      "signal_id": "",
+      "timestamp": "2026-07-27T10:43:45.642586+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "SELL",
+      "requested_qty": "935",
+      "executed_qty": "935",
+      "requested_price": "10449.772500000001",
+      "executed_price": "10449.772500000001",
+      "position_before": "935",
+      "position_after": "0",
+      "gross_pnl": "-220255.61",
+      "fee": "1465.58",
+      "slippage": "5928.4",
+      "net_pnl": "-229148.21",
+      "exit_reason": "STOP_LOSS",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000011",
+      "signal_id": "20260723_131800_UP_RED",
+      "timestamp": "2026-07-27T10:43:46.777979+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "BUY",
+      "requested_qty": "643",
+      "executed_qty": "643",
+      "requested_price": "15532.762499999999",
+      "executed_price": "15532.762499999999",
+      "position_before": "0",
+      "position_after": "643",
+      "gross_pnl": "0.0",
+      "fee": "1498.13",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000012",
+      "signal_id": "20260723_134800_DOWN_BLUE",
+      "timestamp": "2026-07-27T10:43:49.889225+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "SELL",
+      "requested_qty": "643",
+      "executed_qty": "643",
+      "requested_price": "15442.275000000001",
+      "executed_price": "15442.275000000001",
+      "position_before": "643",
+      "position_after": "0",
+      "gross_pnl": "-58183.46",
+      "fee": "1489.41",
+      "slippage": "5975.08",
+      "net_pnl": "-67146.09",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000013",
+      "signal_id": "20260723_134800_DOWN_BLUE",
+      "timestamp": "2026-07-27T10:43:49.908456+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "BUY",
+      "requested_qty": "963",
+      "executed_qty": "963",
+      "requested_price": "10375.185",
+      "executed_price": "10375.185",
+      "position_before": "0",
+      "position_after": "963",
+      "gross_pnl": "0.0",
+      "fee": "1498.7",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000014",
+      "signal_id": "",
+      "timestamp": "2026-07-27T10:43:52.870925+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "SELL",
+      "requested_qty": "963",
+      "executed_qty": "963",
+      "requested_price": "10549.7225",
+      "executed_price": "10549.7225",
+      "position_before": "963",
+      "position_after": "0",
+      "gross_pnl": "168079.61",
+      "fee": "1523.91",
+      "slippage": "6045.21",
+      "net_pnl": "159011.8",
+      "exit_reason": "PROFIT_LOCK",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000015",
+      "signal_id": "20260723_142700_UP_RED",
+      "timestamp": "2026-07-27T10:43:53.821003+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "BUY",
+      "requested_qty": "633",
+      "executed_qty": "633",
+      "requested_price": "15782.887499999999",
+      "executed_price": "15782.887499999999",
+      "position_before": "0",
+      "position_after": "633",
+      "gross_pnl": "0.0",
+      "fee": "1498.59",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000016",
+      "signal_id": "",
+      "timestamp": "2026-07-27T10:43:54.391846+09:00",
+      "mode": "mock",
+      "symbol": "0193T0",
+      "side": "SELL",
+      "requested_qty": "633",
+      "executed_qty": "633",
+      "requested_price": "15537.2275",
+      "executed_price": "15537.2275",
+      "position_before": "633",
+      "position_after": "0",
+      "gross_pnl": "-155502.78",
+      "fee": "1475.26",
+      "slippage": "5947.69",
+      "net_pnl": "-164424.32",
+      "exit_reason": "STOP_LOSS",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000017",
+      "signal_id": "20260723_144200_DOWN_BLUE",
+      "timestamp": "2026-07-27T10:43:55.403812+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "BUY",
+      "requested_qty": "951",
+      "executed_qty": "951",
+      "requested_price": "10500.2475",
+      "executed_price": "10500.2475",
+      "position_before": "0",
+      "position_after": "951",
+      "gross_pnl": "0.0",
+      "fee": "1497.86",
+      "slippage": "0.0",
+      "net_pnl": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "SIM-000018",
+      "signal_id": "",
+      "timestamp": "2026-07-27T10:43:56.750250+09:00",
+      "mode": "mock",
+      "symbol": "0197X0",
+      "side": "SELL",
+      "requested_qty": "951",
+      "executed_qty": "951",
+      "requested_price": "10539.7275",
+      "executed_price": "10539.7275",
+      "position_before": "951",
+      "position_after": "0",
+      "gross_pnl": "37545.48",
+      "fee": "1503.49",
+      "slippage": "6002.7",
+      "net_pnl": "28541.43",
+      "exit_reason": "FORCED_LIQUIDATION",
+      "broker_response": "{}"
+    }
+  ],
+  "signal_rows_count": 9,
+  "summary": {
+    "buy_count": 9,
+    "sell_count": 9,
+    "round_trip_count": 9,
+    "gross_pnl": 194033.09,
+    "total_cost": 26985.56,
+    "net_pnl": 113076.4,
+    "return_pct": 1.1308,
+    "win_rate_pct": 55.56,
+    "profit_factor": 1.2201,
+    "max_drawdown": 301706.82
+  },
+  "final_cash": 10194033.077500012,
+  "final_position": null,
+  "broker_sequence": [
+    "BUY_REQUEST:0197X0",
+    "BUY_FILLED:0197X0",
+    "SELL_REQUEST:0197X0",
+    "SELL_FILLED:0197X0",
+    "BUY_REQUEST:0193T0",
+    "BUY_FILLED:0193T0",
+    "SELL_REQUEST:0193T0",
+    "SELL_FILLED:0193T0",
+    "BUY_REQUEST:0197X0",
+    "BUY_FILLED:0197X0",
+    "SELL_REQUEST:0197X0",
+    "SELL_FILLED:0197X0",
+    "BUY_REQUEST:0193T0",
+    "BUY_FILLED:0193T0",
+    "SELL_REQUEST:0193T0",
+    "SELL_FILLED:0193T0",
+    "BUY_REQUEST:0197X0",
+    "BUY_FILLED:0197X0",
+    "SELL_REQUEST:0197X0",
+    "SELL_FILLED:0197X0",
+    "BUY_REQUEST:0193T0",
+    "BUY_FILLED:0193T0",
+    "SELL_REQUEST:0193T0",
+    "SELL_FILLED:0193T0",
+    "BUY_REQUEST:0197X0",
+    "BUY_FILLED:0197X0",
+    "SELL_REQUEST:0197X0",
+    "SELL_FILLED:0197X0",
+    "BUY_REQUEST:0193T0",
+    "BUY_FILLED:0193T0",
+    "SELL_REQUEST:0193T0",
+    "SELL_FILLED:0193T0",
+    "BUY_REQUEST:0197X0",
+    "BUY_FILLED:0197X0",
+    "SELL_REQUEST:0197X0",
+    "SELL_FILLED:0197X0"
+  ]
+}

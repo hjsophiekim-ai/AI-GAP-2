@@ -118,22 +118,47 @@ def _record_leg(
     *, broker_mode: str, signal_id: str, symbol: str, side: str, qty: int, price: float,
     position_before: int, position_after: int, exit_reason: str, order_result: BrokerOrderResult,
     entry_price: float, confirmed_at: str, requested_qty: Optional[int] = None,
+    requested_price: Optional[float] = None,
 ) -> None:
     cost_engine = OverseasTradeCostEngine()
+    requested = float(requested_price) if requested_price is not None else float(price)
     if side == "SELL":
-        cost = cost_engine.compute_net_pnl_usd(entry_price, price, qty, buy_order_type="limit", sell_order_type="limit")
-        gross_pnl, fee, net_pnl = cost["gross_pnl_usd"], cost["sell_cost_usd"]["total_cost_usd"], cost["net_pnl_usd"]
+        cost = cost_engine.compute_net_pnl_usd(
+            entry_price, price, qty, buy_order_type="limit", sell_order_type="limit",
+            exit_requested_price=requested,
+        )
+        gross_pnl = cost["gross_pnl_usd"]
+        buy_fee = cost["buy_cost_usd"]["fee_usd"]
+        sell_fee = cost["sell_cost_usd"]["fee_usd"]
+        slippage = cost["slippage_usd"]
+        fx_cost = cost["buy_cost_usd"]["fx_cost_usd"] + cost["sell_cost_usd"]["fx_cost_usd"]
+        sec_fee = cost["sell_cost_usd"]["sec_fee_usd"]
+        finra_taf = cost["sell_cost_usd"]["finra_taf_usd"]
+        total_cost = cost["total_cost_usd"]
+        fee, net_pnl = total_cost, cost["net_pnl_usd"]
     else:
         cost = cost_engine.compute_trade_cost_usd("BUY", price, qty, order_type="limit")
-        gross_pnl, fee, net_pnl = 0.0, cost["total_cost_usd"], 0.0
+        buy_fee = cost["fee_usd"]
+        sell_fee = 0.0
+        slippage = round(cost_engine.compute_slippage_usd(
+            requested_price=requested, executed_price=price, quantity=qty, order_type="limit",
+        ), 4)
+        fx_cost = cost["fx_cost_usd"]
+        sec_fee = 0.0
+        finra_taf = 0.0
+        total_cost = round(float(cost["total_cost_usd"]) + float(slippage), 4)
+        gross_pnl, fee, net_pnl = 0.0, total_cost, 0.0
 
     ledger.append_execution({
         "order_id": order_result.order_id, "signal_id": signal_id, "timestamp": confirmed_at,
         "mode": broker_mode, "symbol": symbol, "side": side,
         "requested_qty": requested_qty if requested_qty is not None else qty, "executed_qty": qty,
-        "requested_price": price, "executed_price": price,
+        "requested_price": requested, "executed_price": price,
         "position_before": position_before, "position_after": position_after,
-        "gross_pnl_usd": gross_pnl, "fee_usd": fee, "net_pnl_usd": net_pnl,
+        "gross_pnl_usd": gross_pnl, "buy_fee_usd": buy_fee, "sell_fee_usd": sell_fee,
+        "slippage_usd": slippage, "fx_cost_usd": round(float(fx_cost), 4),
+        "sec_fee_usd": sec_fee, "finra_taf_usd": finra_taf,
+        "total_cost_usd": total_cost, "fee_usd": fee, "net_pnl_usd": net_pnl,
         "exit_reason": exit_reason, "broker_response": str(order_result.raw),
     })
 
@@ -267,7 +292,7 @@ def execute_signal(
             qty=held_qty, price=sell_result.executed_price or (position.avg_price if position else 0.0),
             position_before=held_qty, position_after=0, exit_reason=config.EXIT_OPPOSITE_SIGNAL,
             order_result=sell_result, entry_price=position.avg_price if position else 0.0,
-            confirmed_at=timestamps["sell_confirmed_at"],
+            confirmed_at=timestamps["sell_confirmed_at"], requested_price=sell_result.executed_price,
         )
 
     if not market_state.entry_allowed:
@@ -365,7 +390,7 @@ def execute_signal(
         return outcome
     # docs §13: 수수료 반영한 예상 결제금액이 usable_usd(사용비율 반영 후)를
     # 넘지 않도록 재검증한다.
-    if expected_notional + outcome.expected_fee_usd > usable_usd * config.ORDER_USAGE_RATIO + 1e-6:
+    if expected_notional > usable_usd * config.ORDER_USAGE_RATIO + 1e-6:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_INSUFFICIENT_QTY
         outcome.order_failure_stage = BLOCK_INSUFFICIENT_QTY
@@ -429,7 +454,7 @@ def execute_signal(
         qty=filled_qty, price=filled_avg_price or buy_result.executed_price or order_price,
         position_before=0, position_after=filled_qty, exit_reason="", order_result=buy_result,
         entry_price=filled_avg_price or buy_result.executed_price or order_price,
-        confirmed_at=timestamps["buy_confirmed_at"], requested_qty=requested_qty,
+        confirmed_at=timestamps["buy_confirmed_at"], requested_qty=requested_qty, requested_price=order_price,
     )
     outcome.final_state = SignalState.EXECUTED
     return outcome
@@ -470,7 +495,7 @@ def execute_exit(
         broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=quantity,
         price=sell_result.executed_price or entry_price, position_before=quantity, position_after=0,
         exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
-        confirmed_at=timestamps["sell_confirmed_at"],
+        confirmed_at=timestamps["sell_confirmed_at"], requested_price=sell_result.executed_price,
     )
     outcome.final_state = SignalState.EXECUTED
     outcome.block_reason = exit_reason

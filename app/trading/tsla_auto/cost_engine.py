@@ -21,8 +21,8 @@ from typing import Optional
 _DEFAULT_OVERSEAS_COST_CONFIG = {
     # KIS 해외주식 매매수수료 — 미확인(§KIS_OVERSEAS_API_CONFIRMATION_REQUIRED).
     # 확인 전까지 0.0 유지 — 비용을 과소평가하고 있다는 사실 자체를 숨기지 않는다.
-    "overseas_buy_fee_rate": 0.0,
-    "overseas_sell_fee_rate": 0.0,
+    "overseas_buy_fee_rate": 0.0025,
+    "overseas_sell_fee_rate": 0.0025,
     "min_commission_usd": 0.0,
     # SEC Section 31 fee — 매도 시에만, 명목금액 기준(공개 고시 요율, 수시 변경).
     "sec_section31_fee_rate": 0.000008,
@@ -30,10 +30,12 @@ _DEFAULT_OVERSEAS_COST_CONFIG = {
     "finra_taf_rate_per_share": 0.000166,
     "finra_taf_cap_usd": 8.30,
     # 환전수수료·스프레드 — 미확인, 기본 0.0(자동환전 기본 OFF와 일관).
-    "fx_conversion_fee_rate": 0.0,
+    "fx_base_spread_rate": 0.01,
+    "fx_preference_rate": 0.95,
+    "fx_conversion_fee_rate": None,
     "fx_spread_rate": 0.0,
     "slippage_rate_default": 0.0002,
-    "slippage_rate_limit_order": 0.0001,
+    "slippage_rate_limit_order": 0.0005,
 }
 
 
@@ -62,6 +64,14 @@ class OverseasTradeCostEngine:
     def fee_rate(self, side: str) -> float:
         return self._cfg["overseas_buy_fee_rate"] if side == "BUY" else self._cfg["overseas_sell_fee_rate"]
 
+    def fx_effective_rate(self) -> float:
+        explicit = self._cfg.get("fx_conversion_fee_rate")
+        if explicit is not None:
+            return float(explicit)
+        base = float(self._cfg.get("fx_base_spread_rate", 0.0) or 0.0)
+        preference = float(self._cfg.get("fx_preference_rate", 0.0) or 0.0)
+        return base * max(0.0, 1.0 - preference)
+
     def _regulatory_fees(self, side: str, notional: float, quantity: int) -> tuple[float, float]:
         """(sec_fee, finra_taf) — 매도에만 부과."""
         if side != "SELL":
@@ -86,7 +96,7 @@ class OverseasTradeCostEngine:
         if min_fee and fee < min_fee:
             fee = min_fee
         sec_fee, finra_taf = self._regulatory_fees(side, notional, quantity)
-        fx_cost = notional * (float(self._cfg.get("fx_conversion_fee_rate", 0.0)) + float(self._cfg.get("fx_spread_rate", 0.0)))
+        fx_cost = notional * (self.fx_effective_rate() + float(self._cfg.get("fx_spread_rate", 0.0) or 0.0))
         total = fee + sec_fee + finra_taf + fx_cost
         return {
             "notional_usd": round(notional, 4), "fee_usd": round(fee, 4),
@@ -98,6 +108,7 @@ class OverseasTradeCostEngine:
         self, entry_price: float, exit_price: float, quantity: int,
         buy_order_type: str = "limit", sell_order_type: str = "limit",
         *, actual_cost_usd: Optional[float] = None,
+        entry_requested_price: Optional[float] = None, exit_requested_price: Optional[float] = None,
     ) -> dict:
         """Gross USD PnL -> Net USD PnL. ``actual_cost_usd``(실제 KIS 체결내역
         비용)가 주어지면 추정 비용 대신 그 값을 항상 우선 사용한다(docs §비용·손익:
@@ -105,19 +116,39 @@ class OverseasTradeCostEngine:
         gross_pnl = (exit_price - entry_price) * quantity
         buy_cost = self.compute_trade_cost_usd("BUY", entry_price, quantity, buy_order_type)
         sell_cost = self.compute_trade_cost_usd("SELL", exit_price, quantity, sell_order_type)
-        slippage_cost = (
-            self._slippage_rate(buy_order_type) * entry_price * quantity
-            + self._slippage_rate(sell_order_type) * exit_price * quantity
+        buy_slippage = self.compute_slippage_usd(
+            requested_price=entry_requested_price, executed_price=entry_price,
+            quantity=quantity, order_type=buy_order_type,
         )
+        sell_slippage = self.compute_slippage_usd(
+            requested_price=exit_requested_price, executed_price=exit_price,
+            quantity=quantity, order_type=sell_order_type,
+        )
+        slippage_cost = buy_slippage + sell_slippage
         estimated_total_cost = buy_cost["total_cost_usd"] + sell_cost["total_cost_usd"] + slippage_cost
         total_cost = float(actual_cost_usd) if actual_cost_usd is not None else estimated_total_cost
         net_pnl = gross_pnl - total_cost
         return {
             "gross_pnl_usd": round(gross_pnl, 4),
             "buy_cost_usd": buy_cost, "sell_cost_usd": sell_cost,
+            "buy_slippage_usd": round(buy_slippage, 4),
+            "sell_slippage_usd": round(sell_slippage, 4),
             "slippage_usd": round(slippage_cost, 4),
             "estimated_total_cost_usd": round(estimated_total_cost, 4),
             "total_cost_usd": round(total_cost, 4),
             "cost_source": "actual_kis" if actual_cost_usd is not None else "estimated",
             "net_pnl_usd": round(net_pnl, 4),
         }
+
+    def compute_slippage_usd(
+        self, *, requested_price: Optional[float], executed_price: float, quantity: int, order_type: str = "limit",
+    ) -> float:
+        executed = float(executed_price or 0.0)
+        qty = int(quantity or 0)
+        if qty <= 0 or executed <= 0:
+            return 0.0
+        if requested_price is not None and float(requested_price or 0.0) > 0:
+            actual = abs(executed - float(requested_price)) * qty
+            if actual > 0:
+                return actual
+        return self._slippage_rate(order_type) * executed * qty

@@ -1,0 +1,364 @@
+{
+  "filter_version": "MAJOR_FILTER_HYBRID_V1",
+  "dates": [
+    "20260728",
+    "20260729",
+    "20260730"
+  ],
+  "budget": 10000000.0,
+  "cost_config": {
+    "domestic_buy_fee_rate": 0.00015,
+    "domestic_sell_fee_rate": 0.00015,
+    "etf_buy_fee_rate": 0.00015,
+    "etf_sell_fee_rate": 0.00015,
+    "transaction_tax_rate": 0.0018,
+    "etf_transaction_tax_rate": 0.0,
+    "clearing_fee_rate": 0.0,
+    "slippage_rate_default": 0.0002,
+    "slippage_rate_market_order": 0.0003,
+    "slippage_rate_limit_order": 0.0001,
+    "min_commission_krw": 0.0
+  },
+  "confirmed_flags": 21,
+  "approved_flags": 4,
+  "trades": 3,
+  "by_date": {
+    "20260728": {
+      "trades": 2,
+      "wins": 1,
+      "win_rate_pct": 50.0,
+      "net_pnl": -74583.97,
+      "return_pct_budget": -0.7458
+    },
+    "20260729": {
+      "trades": 1,
+      "wins": 1,
+      "win_rate_pct": 100.0,
+      "net_pnl": 256521.56,
+      "return_pct_budget": 2.5652
+    },
+    "20260730": {
+      "trades": 0,
+      "wins": 0,
+      "win_rate_pct": 0.0,
+      "net_pnl": 0.0,
+      "return_pct_budget": 0.0
+    }
+  },
+  "total_gross_pnl": 208880.0,
+  "total_cost": 26942.41,
+  "total_net_pnl": 181937.59,
+  "total_return_pct_budget": 1.8194,
+  "max_drawdown_krw": 181496.98,
+  "kis_reference_comparison": [
+    {
+      "trading_date": "20260728",
+      "flag_time": "11:06",
+      "direction": "UP_RED",
+      "in_program": false,
+      "approved": false,
+      "score": null,
+      "block_reason": "NOT_IN_PROGRAM_FLAGS"
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "13:09",
+      "direction": "DOWN_BLUE",
+      "in_program": false,
+      "approved": false,
+      "score": null,
+      "block_reason": "NOT_IN_PROGRAM_FLAGS"
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "13:42",
+      "direction": "UP_RED",
+      "in_program": false,
+      "approved": false,
+      "score": null,
+      "block_reason": "NOT_IN_PROGRAM_FLAGS"
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "14:18",
+      "direction": "DOWN_BLUE",
+      "in_program": true,
+      "approved": false,
+      "score": 60.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260729",
+      "flag_time": "09:27",
+      "direction": "DOWN_BLUE",
+      "in_program": true,
+      "approved": false,
+      "score": 50.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260729",
+      "flag_time": "12:39",
+      "direction": "UP_RED",
+      "in_program": false,
+      "approved": false,
+      "score": null,
+      "block_reason": "NOT_IN_PROGRAM_FLAGS"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "09:54",
+      "direction": "UP_RED",
+      "in_program": false,
+      "approved": false,
+      "score": null,
+      "block_reason": "NOT_IN_PROGRAM_FLAGS"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "11:00",
+      "direction": "DOWN_BLUE",
+      "in_program": false,
+      "approved": false,
+      "score": null,
+      "block_reason": "NOT_IN_PROGRAM_FLAGS"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "12:27",
+      "direction": "UP_RED",
+      "in_program": false,
+      "approved": false,
+      "score": null,
+      "block_reason": "NOT_IN_PROGRAM_FLAGS"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "13:09",
+      "direction": "DOWN_BLUE",
+      "in_program": true,
+      "approved": false,
+      "score": 65.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    }
+  ],
+  "program_flags_not_in_kis_reference": [
+    {
+      "trading_date": "20260728",
+      "flag_time": "09:45",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 5.0,
+      "block_reason": "MAJOR_PRICE_CONFIRMATION_FAILED"
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "13:12",
+      "direction": "DOWN_BLUE",
+      "approved": false,
+      "score": 60.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "13:45",
+      "direction": "UP_RED",
+      "approved": true,
+      "score": 75.0,
+      "block_reason": ""
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "14:45",
+      "direction": "UP_RED",
+      "approved": true,
+      "score": 75.0,
+      "block_reason": ""
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "14:57",
+      "direction": "DOWN_BLUE",
+      "approved": false,
+      "score": 65.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "15:00",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 40.0,
+      "block_reason": "MAJOR_PRICE_CONFIRMATION_FAILED"
+    },
+    {
+      "trading_date": "20260728",
+      "flag_time": "15:03",
+      "direction": "DOWN_BLUE",
+      "approved": false,
+      "score": 50.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260729",
+      "flag_time": "11:24",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 30.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260729",
+      "flag_time": "12:30",
+      "direction": "DOWN_BLUE",
+      "approved": true,
+      "score": 75.0,
+      "block_reason": ""
+    },
+    {
+      "trading_date": "20260729",
+      "flag_time": "13:45",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 15.0,
+      "block_reason": "MAJOR_PRICE_CONFIRMATION_FAILED"
+    },
+    {
+      "trading_date": "20260729",
+      "flag_time": "15:00",
+      "direction": "DOWN_BLUE",
+      "approved": false,
+      "score": 35.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "09:57",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 60.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "11:03",
+      "direction": "DOWN_BLUE",
+      "approved": false,
+      "score": 30.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "12:30",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 50.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "13:24",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 60.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "13:48",
+      "direction": "DOWN_BLUE",
+      "approved": false,
+      "score": 60.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "14:06",
+      "direction": "UP_RED",
+      "approved": false,
+      "score": 30.0,
+      "block_reason": "MAJOR_SCORE_BELOW_THRESHOLD"
+    },
+    {
+      "trading_date": "20260730",
+      "flag_time": "15:15",
+      "direction": "DOWN_BLUE",
+      "approved": true,
+      "score": 75.0,
+      "block_reason": ""
+    }
+  ],
+  "rules": {
+    "entry_score": 70.0,
+    "reversal_score": 80.0,
+    "fast_reversal_score": 85.0,
+    "max_daily_entries": 4,
+    "stop_loss_pct": -1.5,
+    "profit_lock_activate": 1.5,
+    "profit_lock_giveback": 0.8,
+    "entry_cutoff": "14:55:00",
+    "force_liquidate": "15:00:00",
+    "fill": "next_1m_open_after_3m_confirm"
+  },
+  "collect": {
+    "fetched": [
+      {
+        "symbol": "000660",
+        "date": "20260728",
+        "rows": 352,
+        "path": "data\\validation\\major_filter_3days\\raw\\000660_20260728_1m.csv"
+      },
+      {
+        "symbol": "0193T0",
+        "date": "20260728",
+        "rows": 350,
+        "path": "data\\validation\\major_filter_3days\\raw\\0193T0_20260728_1m.csv"
+      },
+      {
+        "symbol": "0197X0",
+        "date": "20260728",
+        "rows": 350,
+        "path": "data\\validation\\major_filter_3days\\raw\\0197X0_20260728_1m.csv"
+      },
+      {
+        "symbol": "000660",
+        "date": "20260729",
+        "rows": 351,
+        "path": "data\\validation\\major_filter_3days\\raw\\000660_20260729_1m.csv"
+      },
+      {
+        "symbol": "0193T0",
+        "date": "20260729",
+        "rows": 347,
+        "path": "data\\validation\\major_filter_3days\\raw\\0193T0_20260729_1m.csv"
+      },
+      {
+        "symbol": "0197X0",
+        "date": "20260729",
+        "rows": 347,
+        "path": "data\\validation\\major_filter_3days\\raw\\0197X0_20260729_1m.csv"
+      },
+      {
+        "symbol": "000660",
+        "date": "20260730",
+        "rows": 381,
+        "path": "data\\validation\\major_filter_3days\\raw\\000660_20260730_1m.csv"
+      },
+      {
+        "symbol": "0193T0",
+        "date": "20260730",
+        "rows": 374,
+        "path": "data\\validation\\major_filter_3days\\raw\\0193T0_20260730_1m.csv"
+      },
+      {
+        "symbol": "0197X0",
+        "date": "20260730",
+        "rows": 375,
+        "path": "data\\validation\\major_filter_3days\\raw\\0197X0_20260730_1m.csv"
+      }
+    ],
+    "missing": [],
+    "warmup_date": "20260727",
+    "source": "disk"
+  }
+}

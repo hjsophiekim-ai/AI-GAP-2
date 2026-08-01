@@ -43,12 +43,15 @@ SIGNAL_LEDGER_COLUMNS = [
     "market_regime", "daily_entry_count", "last_entry_at",
     # (신규) 손절 재진입 쿨다운 필드 (docs §12 — MACD2에 없음)
     "stop_loss_reentry_cooldown_active", "stop_loss_reentry_override_used",
+    "last_stop_loss_at", "cooldown_end_at", "elapsed_minutes_after_stop_loss",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [
     "order_id", "signal_id", "timestamp", "mode", "symbol", "side",
     "requested_qty", "executed_qty", "requested_price", "executed_price",
-    "position_before", "position_after", "gross_pnl_usd", "fee_usd", "net_pnl_usd",
+    "position_before", "position_after", "gross_pnl_usd",
+    "buy_fee_usd", "sell_fee_usd", "slippage_usd", "fx_cost_usd",
+    "sec_fee_usd", "finra_taf_usd", "total_cost_usd", "fee_usd", "net_pnl_usd",
     "exit_reason", "broker_response",
 ]
 
@@ -251,14 +254,21 @@ def summarize_daily_trading(
     """docs §UI/§비용·손익 stats: buys/sells, round trips, Gross/Net USD.
     Never raises on an empty or missing execution ledger."""
     budget_usd = budget_usd if budget_usd is not None else config.DEFAULT_BUDGET_USD
-    rows = [r for r in load_execution_ledger() if str(r.get("timestamp") or "").startswith(trading_date)]
+    date_key = str(trading_date or "").replace("-", "")[:8]
+    rows = []
+    for r in load_execution_ledger():
+        timestamp = str(r.get("timestamp") or "")
+        row_date = timestamp[:10].replace("-", "") if len(timestamp) >= 10 else timestamp[:8]
+        if row_date == date_key:
+            rows.append(r)
     if signal_ids is not None:
         rows = [r for r in rows if str(r.get("signal_id") or "") in signal_ids]
     budget_f = float(budget_usd or config.DEFAULT_BUDGET_USD)
 
     empty: dict[str, Any] = {
         "trading_date": trading_date, "has_data": False, "buy_count": 0, "sell_count": 0,
-        "round_trip_count": 0, "gross_pnl_usd": 0.0, "total_cost_usd": 0.0, "net_pnl_usd": 0.0,
+        "round_trip_count": 0, "gross_pnl_usd": 0.0, "total_commission_usd": 0.0,
+        "total_slippage_usd": 0.0, "total_fx_cost_usd": 0.0, "total_cost_usd": 0.0, "net_pnl_usd": 0.0,
         "return_pct": 0.0, "win_rate_pct": 0.0, "budget_usd": budget_f,
     }
     if not rows:
@@ -267,13 +277,18 @@ def summarize_daily_trading(
     buys = [r for r in rows if str(r.get("side") or "").upper() == "BUY"]
     sells = [r for r in rows if str(r.get("side") or "").upper() == "SELL"]
     gross = sum(float(r.get("gross_pnl_usd") or 0.0) for r in sells)
-    fees = sum(float(r.get("fee_usd") or 0.0) for r in rows)
+    commission = sum(float(r.get("buy_fee_usd") or 0.0) + float(r.get("sell_fee_usd") or 0.0) for r in sells)
+    slippage = sum(float(r.get("slippage_usd") or 0.0) for r in sells)
+    fx_cost = sum(float(r.get("fx_cost_usd") or 0.0) for r in sells)
+    total_cost = sum(float(r.get("total_cost_usd") or r.get("fee_usd") or 0.0) for r in sells)
     net = sum(float(r.get("net_pnl_usd") or 0.0) for r in sells)
     wins = sum(1 for r in sells if float(r.get("net_pnl_usd") or 0.0) > 0)
     round_trips = len(sells)
     return {
         "trading_date": trading_date, "has_data": True, "buy_count": len(buys), "sell_count": len(sells),
-        "round_trip_count": round_trips, "gross_pnl_usd": round(gross, 4), "total_cost_usd": round(fees, 4),
+        "round_trip_count": round_trips, "gross_pnl_usd": round(gross, 4),
+        "total_commission_usd": round(commission, 4), "total_slippage_usd": round(slippage, 4),
+        "total_fx_cost_usd": round(fx_cost, 4), "total_cost_usd": round(total_cost, 4),
         "net_pnl_usd": round(net, 4), "return_pct": round((net / budget_f) * 100.0, 4) if budget_f else 0.0,
         "win_rate_pct": round((wins / round_trips) * 100.0, 2) if round_trips else 0.0, "budget_usd": budget_f,
     }

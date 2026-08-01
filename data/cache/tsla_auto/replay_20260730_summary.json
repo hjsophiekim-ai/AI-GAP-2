@@ -1,0 +1,371 @@
+{
+  "target_day": "20260730",
+  "budget_usd": 10000.0,
+  "tsla_rows": 390,
+  "tsll_rows": 390,
+  "tslz_rows": 388,
+  "signals": [
+    {
+      "signal_id": "20260730_103900_DOWN_BLUE",
+      "direction": "DOWN_BLUE",
+      "completed_bar_at": "103900",
+      "bar_start_at_et": "2026-07-30T10:39:00-04:00",
+      "order_result": "EXECUTED",
+      "block_reason": "",
+      "broker_order_id": "FAKE-000001",
+      "final_qty": "559",
+      "order_price": "17.79",
+      "expected_notional_usd": "9944.61"
+    },
+    {
+      "signal_id": "20260730_113900_UP_RED",
+      "direction": "UP_RED",
+      "completed_bar_at": "113900",
+      "bar_start_at_et": "2026-07-30T11:39:00-04:00",
+      "order_result": "EXECUTED",
+      "block_reason": "",
+      "broker_order_id": "FAKE-000003",
+      "final_qty": "1405",
+      "order_price": "7.08",
+      "expected_notional_usd": "9947.4"
+    },
+    {
+      "signal_id": "20260730_123600_DOWN_BLUE",
+      "direction": "DOWN_BLUE",
+      "completed_bar_at": "123600",
+      "bar_start_at_et": "2026-07-30T12:36:00-04:00",
+      "order_result": "EXECUTED",
+      "block_reason": "",
+      "broker_order_id": "FAKE-000005",
+      "final_qty": "557",
+      "order_price": "17.85",
+      "expected_notional_usd": "9942.45"
+    },
+    {
+      "signal_id": "20260730_131500_UP_RED",
+      "direction": "UP_RED",
+      "completed_bar_at": "131500",
+      "bar_start_at_et": "2026-07-30T13:15:00-04:00",
+      "order_result": "EXECUTED",
+      "block_reason": "",
+      "broker_order_id": "FAKE-000007",
+      "final_qty": "1401",
+      "order_price": "7.1",
+      "expected_notional_usd": "9947.1"
+    },
+    {
+      "signal_id": "20260730_140300_DOWN_BLUE",
+      "direction": "DOWN_BLUE",
+      "completed_bar_at": "140300",
+      "bar_start_at_et": "2026-07-30T14:03:00-04:00",
+      "order_result": "EXECUTED",
+      "block_reason": "",
+      "broker_order_id": "FAKE-000009",
+      "final_qty": "561",
+      "order_price": "17.72",
+      "expected_notional_usd": "9940.92"
+    },
+    {
+      "signal_id": "20260730_145400_UP_RED",
+      "direction": "UP_RED",
+      "completed_bar_at": "145400",
+      "bar_start_at_et": "2026-07-30T14:54:00-04:00",
+      "order_result": "EXECUTED",
+      "block_reason": "",
+      "broker_order_id": "FAKE-000011",
+      "final_qty": "1385",
+      "order_price": "7.18",
+      "expected_notional_usd": "9944.3"
+    }
+  ],
+  "executions": [
+    {
+      "order_id": "FAKE-000001",
+      "signal_id": "20260730_103900_DOWN_BLUE",
+      "timestamp": "2026-07-31T18:34:36.458273-04:00",
+      "mode": "mock",
+      "symbol": "TSLZ",
+      "side": "BUY",
+      "requested_qty": "559",
+      "executed_qty": "559",
+      "requested_price": "17.79",
+      "executed_price": "17.79",
+      "position_before": "0",
+      "position_after": "559",
+      "gross_pnl_usd": "0.0",
+      "fee_usd": "0.0",
+      "net_pnl_usd": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000002",
+      "signal_id": "",
+      "timestamp": "2026-07-31T18:34:37.033673-04:00",
+      "mode": "mock",
+      "symbol": "TSLZ",
+      "side": "SELL",
+      "requested_qty": "559",
+      "executed_qty": "559",
+      "requested_price": "18.0",
+      "executed_price": "18.0",
+      "position_before": "559",
+      "position_after": "0",
+      "gross_pnl_usd": "117.39",
+      "fee_usd": "0.1733",
+      "net_pnl_usd": "115.216",
+      "exit_reason": "PROFIT_LOCK",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000003",
+      "signal_id": "20260730_113900_UP_RED",
+      "timestamp": "2026-07-31T18:34:37.720351-04:00",
+      "mode": "mock",
+      "symbol": "TSLL",
+      "side": "BUY",
+      "requested_qty": "1405",
+      "executed_qty": "1405",
+      "requested_price": "7.08",
+      "executed_price": "7.08",
+      "position_before": "0",
+      "position_after": "1405",
+      "gross_pnl_usd": "0.0",
+      "fee_usd": "0.0",
+      "net_pnl_usd": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000004",
+      "signal_id": "20260730_123600_DOWN_BLUE",
+      "timestamp": "2026-07-31T18:34:39.043882-04:00",
+      "mode": "mock",
+      "symbol": "TSLL",
+      "side": "SELL",
+      "requested_qty": "1405",
+      "executed_qty": "1405",
+      "requested_price": "7.0868",
+      "executed_price": "7.0868",
+      "position_before": "1405",
+      "position_after": "0",
+      "gross_pnl_usd": "9.554",
+      "fee_usd": "0.3129",
+      "net_pnl_usd": "7.2507",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000005",
+      "signal_id": "20260730_123600_DOWN_BLUE",
+      "timestamp": "2026-07-31T18:34:39.050665-04:00",
+      "mode": "mock",
+      "symbol": "TSLZ",
+      "side": "BUY",
+      "requested_qty": "557",
+      "executed_qty": "557",
+      "requested_price": "17.85",
+      "executed_price": "17.85",
+      "position_before": "0",
+      "position_after": "557",
+      "gross_pnl_usd": "0.0",
+      "fee_usd": "0.0",
+      "net_pnl_usd": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000006",
+      "signal_id": "20260730_131500_UP_RED",
+      "timestamp": "2026-07-31T18:34:39.976749-04:00",
+      "mode": "mock",
+      "symbol": "TSLZ",
+      "side": "SELL",
+      "requested_qty": "557",
+      "executed_qty": "557",
+      "requested_price": "17.7864",
+      "executed_price": "17.7864",
+      "position_before": "557",
+      "position_after": "0",
+      "gross_pnl_usd": "-35.4252",
+      "fee_usd": "0.1718",
+      "net_pnl_usd": "-37.5819",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000007",
+      "signal_id": "20260730_131500_UP_RED",
+      "timestamp": "2026-07-31T18:34:39.983226-04:00",
+      "mode": "mock",
+      "symbol": "TSLL",
+      "side": "BUY",
+      "requested_qty": "1401",
+      "executed_qty": "1401",
+      "requested_price": "7.1",
+      "executed_price": "7.1",
+      "position_before": "0",
+      "position_after": "1401",
+      "gross_pnl_usd": "0.0",
+      "fee_usd": "0.0",
+      "net_pnl_usd": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000008",
+      "signal_id": "20260730_140300_DOWN_BLUE",
+      "timestamp": "2026-07-31T18:34:41.093483-04:00",
+      "mode": "mock",
+      "symbol": "TSLL",
+      "side": "SELL",
+      "requested_qty": "1401",
+      "executed_qty": "1401",
+      "requested_price": "7.145",
+      "executed_price": "7.145",
+      "position_before": "1401",
+      "position_after": "0",
+      "gross_pnl_usd": "63.045",
+      "fee_usd": "0.3127",
+      "net_pnl_usd": "60.7366",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000009",
+      "signal_id": "20260730_140300_DOWN_BLUE",
+      "timestamp": "2026-07-31T18:34:41.099653-04:00",
+      "mode": "mock",
+      "symbol": "TSLZ",
+      "side": "BUY",
+      "requested_qty": "561",
+      "executed_qty": "561",
+      "requested_price": "17.72",
+      "executed_price": "17.72",
+      "position_before": "0",
+      "position_after": "561",
+      "gross_pnl_usd": "0.0",
+      "fee_usd": "0.0",
+      "net_pnl_usd": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000010",
+      "signal_id": "20260730_145400_UP_RED",
+      "timestamp": "2026-07-31T18:34:42.384407-04:00",
+      "mode": "mock",
+      "symbol": "TSLZ",
+      "side": "SELL",
+      "requested_qty": "561",
+      "executed_qty": "561",
+      "requested_price": "17.6",
+      "executed_price": "17.6",
+      "position_before": "561",
+      "position_after": "0",
+      "gross_pnl_usd": "-67.32",
+      "fee_usd": "0.1721",
+      "net_pnl_usd": "-69.4736",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000011",
+      "signal_id": "20260730_145400_UP_RED",
+      "timestamp": "2026-07-31T18:34:42.391762-04:00",
+      "mode": "mock",
+      "symbol": "TSLL",
+      "side": "BUY",
+      "requested_qty": "1385",
+      "executed_qty": "1385",
+      "requested_price": "7.18",
+      "executed_price": "7.18",
+      "position_before": "0",
+      "position_after": "1385",
+      "gross_pnl_usd": "0.0",
+      "fee_usd": "0.0",
+      "net_pnl_usd": "0.0",
+      "exit_reason": "",
+      "broker_response": "{}"
+    },
+    {
+      "order_id": "FAKE-000012",
+      "signal_id": "",
+      "timestamp": "2026-07-31T18:34:43.663934-04:00",
+      "mode": "mock",
+      "symbol": "TSLL",
+      "side": "SELL",
+      "requested_qty": "1385",
+      "executed_qty": "1385",
+      "requested_price": "7.23",
+      "executed_price": "7.23",
+      "position_before": "1385",
+      "position_after": "0",
+      "gross_pnl_usd": "69.25",
+      "fee_usd": "0.31",
+      "net_pnl_usd": "66.9442",
+      "exit_reason": "FORCED_LIQUIDATION",
+      "broker_response": "{}"
+    }
+  ],
+  "actions": [
+    {
+      "at_et": "2026-07-30T10:42:00-04:00",
+      "actions": [
+        "ENTRY:DOWN_BLUE"
+      ],
+      "position": "PositionSnapshot(symbol='TSLZ', quantity=559, avg_price=17.79, entry_at=datetime.datetime(2026, 7, 31, 18, 34, 36, 661533, tzinfo=zoneinfo.ZoneInfo(key='America/New_York')))"
+    },
+    {
+      "at_et": "2026-07-30T11:03:00-04:00",
+      "actions": [
+        "PROFIT_LOCK:TSLZ"
+      ],
+      "position": "None"
+    },
+    {
+      "at_et": "2026-07-30T11:42:00-04:00",
+      "actions": [
+        "ENTRY:UP_RED"
+      ],
+      "position": "PositionSnapshot(symbol='TSLL', quantity=1405, avg_price=7.08, entry_at=datetime.datetime(2026, 7, 31, 18, 34, 37, 935177, tzinfo=zoneinfo.ZoneInfo(key='America/New_York')))"
+    },
+    {
+      "at_et": "2026-07-30T12:39:00-04:00",
+      "actions": [
+        "OPPOSITE_SIGNAL:DOWN_BLUE"
+      ],
+      "position": "PositionSnapshot(symbol='TSLZ', quantity=557, avg_price=17.85, entry_at=datetime.datetime(2026, 7, 31, 18, 34, 39, 266348, tzinfo=zoneinfo.ZoneInfo(key='America/New_York')))"
+    },
+    {
+      "at_et": "2026-07-30T13:18:00-04:00",
+      "actions": [
+        "OPPOSITE_SIGNAL:UP_RED"
+      ],
+      "position": "PositionSnapshot(symbol='TSLL', quantity=1401, avg_price=7.1, entry_at=datetime.datetime(2026, 7, 31, 18, 34, 40, 195280, tzinfo=zoneinfo.ZoneInfo(key='America/New_York')))"
+    },
+    {
+      "at_et": "2026-07-30T14:06:00-04:00",
+      "actions": [
+        "OPPOSITE_SIGNAL:DOWN_BLUE"
+      ],
+      "position": "PositionSnapshot(symbol='TSLZ', quantity=561, avg_price=17.72, entry_at=datetime.datetime(2026, 7, 31, 18, 34, 41, 308187, tzinfo=zoneinfo.ZoneInfo(key='America/New_York')))"
+    },
+    {
+      "at_et": "2026-07-30T14:57:00-04:00",
+      "actions": [
+        "OPPOSITE_SIGNAL:UP_RED"
+      ],
+      "position": "PositionSnapshot(symbol='TSLL', quantity=1385, avg_price=7.18, entry_at=datetime.datetime(2026, 7, 31, 18, 34, 42, 603801, tzinfo=zoneinfo.ZoneInfo(key='America/New_York')))"
+    },
+    {
+      "at_et": "2026-07-30T15:51:00-04:00",
+      "actions": [
+        "FORCED_LIQUIDATION:TSLL"
+      ],
+      "position": "None"
+    }
+  ],
+  "final_cash_usd": 10156.4938,
+  "final_position": null
+}

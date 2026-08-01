@@ -19,24 +19,6 @@ from app.trading.tsla_auto import config
 from app.trading.tsla_auto.models import ConfirmedMacdFlag, Direction, MacdSnapshot
 
 _THREE_MIN_COLUMNS = ("datetime", "open", "high", "low", "close", "volume")
-_VERIFIED_KIS_FLAGS_BY_DATE = {
-    "20260730": {
-        "104200": Direction.DOWN_BLUE,
-        "112700": Direction.UP_RED,
-        "122400": Direction.DOWN_BLUE,
-        "125100": Direction.UP_RED,
-        "141800": Direction.DOWN_BLUE,
-        "150000": Direction.UP_RED,
-    },
-    "20260731": {
-        "102700": Direction.DOWN_BLUE,
-        "114500": Direction.UP_RED,
-        "152400": Direction.DOWN_BLUE,
-        "160900": Direction.UP_RED,
-        "162700": Direction.DOWN_BLUE,
-        "165700": Direction.UP_RED,
-    },
-}
 
 
 @dataclass(frozen=True)
@@ -229,28 +211,25 @@ def evaluate_macd_crossover(
     previous_direction: Optional[Direction],
 ) -> Direction:
     """Primary MACD crossover onset from previous diff to current diff (docs §8)."""
-    bar_et = macd_snapshot.bar_dt.astimezone(config.ET)
-    verified = _VERIFIED_KIS_FLAGS_BY_DATE.get(f"{bar_et:%Y%m%d}")
-    if verified is not None:
-        pattern = verified.get(f"{bar_et:%H%M%S}", Direction.HOLD)
-        if previous_direction == pattern:
-            return Direction.HOLD
-        return pattern
-
-    h2, h1, h0 = macd_snapshot.hist_last3
-    previous_delta = h1 - h2
-    current_delta = h0 - h1
-
-    if previous_delta <= 0 and current_delta > 0:
-        pattern = Direction.UP_RED
-    elif previous_delta >= 0 and current_delta < 0:
-        pattern = Direction.DOWN_BLUE
-    else:
+    pattern = raw_crossover_direction(macd_snapshot.previous_diff, macd_snapshot.current_diff)
+    if pattern is None:
         return Direction.HOLD
 
     if previous_direction == pattern:
         return Direction.HOLD
     return pattern
+
+
+def raw_crossover_direction(previous_diff: Optional[float], current_diff: Optional[float]) -> Optional[Direction]:
+    if previous_diff is None or current_diff is None:
+        return None
+    prev = float(previous_diff)
+    cur = float(current_diff)
+    if prev <= 0 and cur > 0:
+        return Direction.UP_RED
+    if prev >= 0 and cur < 0:
+        return Direction.DOWN_BLUE
+    return None
 
 
 def raw_color_for_snapshot(macd_snapshot: MacdSnapshot) -> Direction:

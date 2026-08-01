@@ -1,0 +1,86 @@
+{
+  "macd2_convention": "MACD2 signal_id / flag_time uses completed 3m bar OPEN (left label): bar 13:42 covers 13:42/13:43/13:44 and confirms at 13:45.",
+  "kis_chart_hypothesis": "If KIS chart paints the flag on the candle that closed (end label) or on the prior open, displayed clock can differ by one 3m step (+/- 3 minutes).",
+  "pairs": [
+    {
+      "kis_reference": "20260728 11:06 UP_RED",
+      "exact_program_match": false,
+      "program_bar_start_plus3": null,
+      "program_bar_end_if_plus3": null,
+      "program_bar_start_minus3": null,
+      "interpretation": "no nearby program crossover"
+    },
+    {
+      "kis_reference": "20260728 13:09 DOWN_BLUE",
+      "exact_program_match": false,
+      "program_bar_start_plus3": "13:12",
+      "program_bar_end_if_plus3": "13:15",
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time == program bar_start - 3m (KIS may label prior open / end-aligned differently); program bar_end (== confirm) equals KIS+3"
+    },
+    {
+      "kis_reference": "20260728 13:42 UP_RED",
+      "exact_program_match": false,
+      "program_bar_start_plus3": "13:45",
+      "program_bar_end_if_plus3": "13:48",
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time == program bar_start - 3m (KIS may label prior open / end-aligned differently); program bar_end (== confirm) equals KIS+3"
+    },
+    {
+      "kis_reference": "20260728 14:18 DOWN_BLUE",
+      "exact_program_match": true,
+      "program_bar_start_plus3": null,
+      "program_bar_end_if_plus3": null,
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time equals program bar_start+0"
+    },
+    {
+      "kis_reference": "20260729 09:27 DOWN_BLUE",
+      "exact_program_match": true,
+      "program_bar_start_plus3": null,
+      "program_bar_end_if_plus3": null,
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time equals program bar_start+0"
+    },
+    {
+      "kis_reference": "20260729 12:39 UP_RED",
+      "exact_program_match": false,
+      "program_bar_start_plus3": null,
+      "program_bar_end_if_plus3": null,
+      "program_bar_start_minus3": null,
+      "interpretation": "no nearby program crossover"
+    },
+    {
+      "kis_reference": "20260730 09:54 UP_RED",
+      "exact_program_match": false,
+      "program_bar_start_plus3": "09:57",
+      "program_bar_end_if_plus3": "10:00",
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time == program bar_start - 3m (KIS may label prior open / end-aligned differently); program bar_end (== confirm) equals KIS+3"
+    },
+    {
+      "kis_reference": "20260730 11:00 DOWN_BLUE",
+      "exact_program_match": false,
+      "program_bar_start_plus3": "11:03",
+      "program_bar_end_if_plus3": "11:06",
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time == program bar_start - 3m (KIS may label prior open / end-aligned differently); program bar_end (== confirm) equals KIS+3"
+    },
+    {
+      "kis_reference": "20260730 12:27 UP_RED",
+      "exact_program_match": false,
+      "program_bar_start_plus3": "12:30",
+      "program_bar_end_if_plus3": "12:33",
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time == program bar_start - 3m (KIS may label prior open / end-aligned differently); program bar_end (== confirm) equals KIS+3"
+    },
+    {
+      "kis_reference": "20260730 13:09 DOWN_BLUE",
+      "exact_program_match": true,
+      "program_bar_start_plus3": null,
+      "program_bar_end_if_plus3": null,
+      "program_bar_start_minus3": null,
+      "interpretation": "KIS time equals program bar_start+0"
+    }
+  ]
+}

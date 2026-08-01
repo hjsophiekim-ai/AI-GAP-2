@@ -91,7 +91,14 @@ class TickResult:
 def _net_return_pct(entry_price: float, current_price: float, quantity: int) -> float:
     if entry_price <= 0 or quantity <= 0 or current_price <= 0:
         return 0.0
-    cost = OverseasTradeCostEngine().compute_net_pnl_usd(entry_price, current_price, quantity, "limit", "limit")
+    risk_cost_engine = OverseasTradeCostEngine(cost_config={
+        "overseas_buy_fee_rate": 0.0,
+        "overseas_sell_fee_rate": 0.0,
+        "fx_conversion_fee_rate": 0.0,
+        "fx_spread_rate": 0.0,
+        "slippage_rate_limit_order": 0.0001,
+    })
+    cost = risk_cost_engine.compute_net_pnl_usd(entry_price, current_price, quantity, "limit", "limit")
     return float(cost["net_pnl_usd"]) / (entry_price * quantity) * 100.0
 
 
@@ -307,17 +314,7 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
     bar_key = macd_snap.bar_dt.isoformat()
     if state.last_confirmed_bar_ts == bar_key:
         return Direction.HOLD
-    prior_bar_ts = state.last_confirmed_bar_ts
     state.last_confirmed_bar_ts = bar_key
-    is_first_of_day = True
-    if prior_bar_ts:
-        try:
-            prior_date = datetime.fromisoformat(prior_bar_ts).astimezone(ET).date()
-            is_first_of_day = prior_date != macd_snap.bar_dt.astimezone(ET).date()
-        except ValueError:
-            is_first_of_day = True
-    if is_first_of_day:
-        return Direction.HOLD
     flag = evaluate_confirmed_macd_flag(macd_snap, state.last_detected_direction)
     direction = flag.confirmed_flag
     if direction != Direction.HOLD:
@@ -521,12 +518,12 @@ def _record_major_filtered_signal(*, state, macd_snap, direction, signal_type, s
     return outcome
 
 
-def _record_blocked_signal(*, state, macd_snap, direction, signal_type, reason, result, extra_trace=None):
+def _record_blocked_signal(*, state, macd_snap, direction, signal_type, reason, result, extra_trace=None, now=None):
     signal_id = make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
         return
     state.order_block_reason = reason
-    detected_at = datetime.now(ET)
+    detected_at = (now or datetime.now(ET)).astimezone(ET)
     result.signal_detected_at = detected_at.isoformat()
     trace = {"signal_id": signal_id, "direction": direction.value, "signal_type": signal_type, "final_block_reason": reason}
     if extra_trace:
@@ -555,12 +552,21 @@ def _dispatch_confirmed_signal(
         return None
 
     state.current_episode_direction = direction
-    signal_detected_at = datetime.now(ET)
+    signal_detected_at = now.astimezone(ET)
     result.signal_detected_at = signal_detected_at.isoformat()
 
     # (신규) 손절 재진입 쿨다운 — 필터 ON/OFF와 무관하게 항상 평가.
     cooldown_blocked, achieved_score = _check_stop_loss_cooldown(state, direction, now, bars_3m)
     if cooldown_blocked:
+        last_stop_loss_at = _parse_iso_dt(state.last_stop_loss_exit_at)
+        cooldown_end_at = (
+            last_stop_loss_at + timedelta(minutes=config.STOP_LOSS_REENTRY_COOLDOWN_MIN)
+            if last_stop_loss_at is not None else None
+        )
+        elapsed_min = (
+            (now - last_stop_loss_at).total_seconds() / 60.0
+            if last_stop_loss_at is not None else None
+        )
         reason = (
             config.STOP_LOSS_REENTRY_OVERRIDE_USED_TODAY
             if state.stop_loss_reentry_override_used_today
@@ -568,7 +574,13 @@ def _dispatch_confirmed_signal(
         )
         return _record_blocked_signal(
             state=state, macd_snap=macd_snap, direction=direction, signal_type=signal_type, reason=reason, result=result,
-            extra_trace={"stop_loss_reentry_cooldown_active": True},
+            extra_trace={
+                "stop_loss_reentry_cooldown_active": True,
+                "last_stop_loss_at": last_stop_loss_at.isoformat() if last_stop_loss_at is not None else "",
+                "cooldown_end_at": cooldown_end_at.isoformat() if cooldown_end_at is not None else "",
+                "elapsed_minutes_after_stop_loss": round(float(elapsed_min), 6) if elapsed_min is not None else "",
+            },
+            now=now,
         )
     used_override = achieved_score is not None
 
@@ -602,7 +614,7 @@ def _is_filtered(outcome) -> bool:
     ) and outcome.final_state == SignalState.BLOCKED and not outcome.broker_called)
 
 
-def _apply_exit_outcome(state: RuntimeState, outcome, *, exit_reason: str) -> None:
+def _apply_exit_outcome(state: RuntimeState, outcome, *, exit_reason: str, now: Optional[datetime] = None) -> None:
     _record_broker_order_result(state, outcome)
     if outcome.final_state == SignalState.EXECUTED:
         exited_symbol = outcome.target_symbol or (outcome.sell_result.symbol if outcome.sell_result else None)
@@ -613,21 +625,23 @@ def _apply_exit_outcome(state: RuntimeState, outcome, *, exit_reason: str) -> No
         state.strategy_average_price = 0.0
         state.peak_net_return = 0.0
         state.profit_lock_active = False
-        state.last_exit_at = datetime.now(ET).isoformat()
+        event_at = (now or datetime.now(ET)).astimezone(ET)
+        state.last_exit_at = event_at.isoformat()
         state.last_exit_direction = exited_direction
         if exit_reason == config.EXIT_STOP_LOSS and exited_direction is not None:
-            state.last_stop_loss_exit_at = datetime.now(ET).isoformat()
+            state.last_stop_loss_exit_at = event_at.isoformat()
             state.stop_loss_cooldown_direction = exited_direction
             state.stop_loss_reentry_override_used_today = False
     state.order_block_reason = outcome.block_reason
 
 
-def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> None:
+def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, *, now: Optional[datetime] = None) -> None:
+    event_at = (now or datetime.now(ET)).astimezone(ET)
     if outcome.final_state == SignalState.EXECUTED:
         state.position = PositionSnapshot(
             symbol=outcome.target_symbol, quantity=outcome.quantity,
             avg_price=(outcome.filled_avg_price or (outcome.buy_result.executed_price if outcome.buy_result else 0.0)),
-            entry_at=datetime.now(ET),
+            entry_at=event_at,
         )
         state.account_holding_qty = int(outcome.quantity or 0)
         state.strategy_owned_qty = int(outcome.quantity or 0)
@@ -638,7 +652,7 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
         state.last_executed_direction = pattern
         state.peak_net_return = 0.0
         state.profit_lock_active = False
-        state.last_entry_at = datetime.now(ET).isoformat()
+        state.last_entry_at = event_at.isoformat()
         # docs §10: daily_entry_count는 실제 filled_qty>0인 신규 매수 체결
         # 횟수만 — 반대 전환 후 신규 BUY도 1회로 포함, 주문거절·미체결은
         # 증가하지 않는다.
@@ -653,7 +667,7 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
         state.strategy_average_price = 0.0
         state.peak_net_return = 0.0
         state.profit_lock_active = False
-        state.last_exit_at = datetime.now(ET).isoformat()
+        state.last_exit_at = event_at.isoformat()
         state.last_exit_direction = _direction_for_symbol(exited_symbol)
     if _has_order_request(outcome) and outcome.signal_id and outcome.signal_id not in state.processed_signal_ids:
         state.processed_signal_ids = list(state.processed_signal_ids) + [outcome.signal_id]
@@ -831,17 +845,18 @@ def _force_liquidate_managed_positions(*, broker, state: RuntimeState, now: date
             symbol_status["attempts"] = attempts
             symbol_status["state"] = "SELL_SUBMITTED"
             symbol_status["inflight_qty"] = remaining
-            sell_result = broker.sell_market(symbol, remaining, f"{idempotency_key}:{remaining}:{attempts}")
-            state.last_broker_order_id = sell_result.order_id
-            state.last_broker_order_result = "OK" if sell_result.success else (sell_result.message or "SELL_FAILED")
-            state.last_broker_order_symbol = sell_result.symbol
-            state.last_broker_order_side = sell_result.side
-            state.last_broker_order_at = datetime.now(ET).isoformat()
+            outcome = order_executor.execute_exit(
+                broker=broker, symbol=symbol, quantity=remaining, exit_reason=config.EXIT_FORCED_LIQUIDATION,
+                entry_price=_avg, strategy_owned_qty=None,
+                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+            )
+            _record_broker_order_result(state, outcome)
+            sell_result = outcome.sell_result
             result.actions.append(f"FORCED_LIQUIDATION:{symbol}")
-            if not sell_result.success:
-                symbol_status["last_reason"] = sell_result.message or "SELL_FAILED"
+            if sell_result is None or not sell_result.success or outcome.final_state != SignalState.EXECUTED:
+                symbol_status["last_reason"] = outcome.block_reason or (sell_result.message if sell_result else "SELL_FAILED")
                 break
-            remaining = int((broker.reconcile_position(symbol) if hasattr(broker, "reconcile_position") else max(0, remaining - int(sell_result.executed_qty or 0))) or 0)
+            remaining = int(outcome.sell_qty_after if outcome.sell_qty_after is not None else 0)
             symbol_status["remaining_qty"] = remaining
             symbol_status["last_executed_qty"] = int(sell_result.executed_qty or 0)
             symbol_status["last_order_id"] = sell_result.order_id
@@ -942,6 +957,9 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "last_entry_at": state.last_entry_at or "",
         "stop_loss_reentry_cooldown_active": trace.get("stop_loss_reentry_cooldown_active", False),
         "stop_loss_reentry_override_used": trace.get("stop_loss_reentry_override_used", False),
+        "last_stop_loss_at": trace.get("last_stop_loss_at", ""),
+        "cooldown_end_at": trace.get("cooldown_end_at", ""),
+        "elapsed_minutes_after_stop_loss": trace.get("elapsed_minutes_after_stop_loss", ""),
     }
     written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
@@ -1116,7 +1134,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                 entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
                 reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
             )
-            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_STOP_LOSS)
+            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_STOP_LOSS, now=now)
             result.actions.append(f"STOP_LOSS:{pos.symbol}")
             return result
 
@@ -1129,7 +1147,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                 entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
                 reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
             )
-            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_PROFIT_LOCK)
+            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_PROFIT_LOCK, now=now)
             result.actions.append(f"PROFIT_LOCK:{pos.symbol}")
             return result
 
@@ -1141,7 +1159,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                 position=pos, result=result, signal_detected_at=_parse_iso_dt(state.pending_signal.get("detected_at")),
             )
             if outcome is not None:
-                _apply_switch_outcome(state, outcome, pending_dir)
+                _apply_switch_outcome(state, outcome, pending_dir, now=now)
                 result.actions.append(f"OPPOSITE_SIGNAL:{pending_dir.value}")
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
@@ -1157,7 +1175,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                 if _is_filtered(outcome):
                     result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
                 elif outcome is not None:
-                    _apply_switch_outcome(state, outcome, confirmed_direction)
+                    _apply_switch_outcome(state, outcome, confirmed_direction, now=now)
                     result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
                     return result
             else:
@@ -1175,7 +1193,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
             position=None, result=result, signal_detected_at=_parse_iso_dt(state.pending_signal.get("detected_at")),
         )
         if outcome is not None:
-            _apply_switch_outcome(state, outcome, pending_dir)
+            _apply_switch_outcome(state, outcome, pending_dir, now=now)
             result.actions.append(f"ENTRY:{pending_dir.value}")
             state.last_evaluated_bar_ts = bar_ts_str
             return result
@@ -1188,7 +1206,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
         if _is_filtered(outcome):
             result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
         elif outcome is not None:
-            _apply_switch_outcome(state, outcome, confirmed_direction)
+            _apply_switch_outcome(state, outcome, confirmed_direction, now=now)
             result.actions.append(f"ENTRY:{confirmed_direction.value}")
             return result
 

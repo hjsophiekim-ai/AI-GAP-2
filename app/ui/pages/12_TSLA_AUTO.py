@@ -331,10 +331,15 @@ try:
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Gross USD", f"${trade_summary['gross_pnl_usd']:,.2f}")
-    m2.metric("비용 USD", f"${trade_summary['total_cost_usd']:,.2f}")
+    m2.metric("Total Cost USD", f"${trade_summary['total_cost_usd']:,.2f}")
     m3.metric("Net USD", f"${trade_summary['net_pnl_usd']:,.2f}")
     m4.metric("수익률", f"{trade_summary['return_pct']:.4f}%")
     m5.metric("승률", f"{trade_summary['win_rate_pct']:.1f}%")
+
+    cst1, cst2, cst3 = st.columns(3)
+    cst1.metric("Commission USD", f"${trade_summary.get('total_commission_usd', 0.0):,.2f}")
+    cst2.metric("Slippage USD", f"${trade_summary.get('total_slippage_usd', 0.0):,.2f}")
+    cst3.metric("FX Cost USD", f"${trade_summary.get('total_fx_cost_usd', 0.0):,.2f}")
 
     # 오늘 전체 신호 개요 (재계산, 참고용) — LIVE_CONFIRMED vs HISTORICAL_REPLAY_ONLY
     overview = snapshot.get("today_signal_overview") or []

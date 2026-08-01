@@ -1,0 +1,4 @@
+order_id,signal_id,timestamp,mode,symbol,side,requested_qty,executed_qty,requested_price,executed_price,position_before,position_after,gross_pnl_usd,fee_usd,net_pnl_usd,exit_reason,broker_response
+FAKE-000001,replay-regular-buy,2026-07-31T21:12:07.076769-04:00,mock,TSLL,BUY,331,331,30.01,30.01,0,331,0.0,0.0,0.0,,{}
+FAKE-000002,replay-entry-blocked,2026-07-31T21:12:07.130472-04:00,mock,TSLL,SELL,331,331,30.0,30.0,331,0,-3.31,0.1343,-5.4306,OPPOSITE_SIGNAL,{}
+FAKE-000004,,2026-07-31T21:12:07.153472-04:00,mock,TSLL,SELL,2,2,30.0,30.0,2,0,0.0,0.0008,-0.0128,FORCED_LIQUIDATION,{}
