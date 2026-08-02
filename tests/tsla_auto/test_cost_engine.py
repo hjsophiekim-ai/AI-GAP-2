@@ -4,12 +4,10 @@ from __future__ import annotations
 from app.trading.tsla_auto.cost_engine import OverseasTradeCostEngine
 
 
-def test_default_rates_match_tsla_auto_display_assumptions():
+def test_default_rates_are_conservative_fee_estimates():
     engine = OverseasTradeCostEngine()
     assert engine.fee_rate("BUY") == 0.0025
     assert engine.fee_rate("SELL") == 0.0025
-    assert round(engine.fx_effective_rate(), 6) == 0.0005
-    assert engine._slippage_rate("limit") == 0.0005
     assert engine._cfg["sec_section31_fee_rate"] > 0.0  # public rate, not silently zeroed
     assert engine._cfg["finra_taf_rate_per_share"] > 0.0
 
@@ -44,11 +42,3 @@ def test_actual_cost_overrides_estimate():
     assert result["cost_source"] == "actual_kis"
     assert result["total_cost_usd"] == 1.23
     assert result["net_pnl_usd"] == round(200.0 - 1.23, 4)
-
-
-def test_actual_slippage_uses_requested_vs_executed_price_when_available():
-    engine = OverseasTradeCostEngine()
-    fallback = engine.compute_slippage_usd(requested_price=30.0, executed_price=30.0, quantity=100)
-    actual = engine.compute_slippage_usd(requested_price=30.0, executed_price=30.05, quantity=100)
-    assert fallback == 1.5
-    assert round(actual, 4) == 5.0

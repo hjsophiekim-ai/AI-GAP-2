@@ -12,16 +12,16 @@ path is shadow-display only and is designed from the start so it can never
 gain order authority the way MACD2's did in a 2026-07-31 regression — there
 is no candidate-dispatch code path here at all.
 
-Priority order for a held position (docs §12 — TSLA_AUTO's own order, NOT
-identical to MACD2's):
+Priority order for a held position, matched to MACD2:
   1) Forced liquidation (market-close relative cutoff)
-  2) Approved opposite (confirmed) flag switch
-  3) Stop Loss
+  2) Stop Loss
+  3) Approved opposite (confirmed) flag switch
   4) Profit Lock
   5) Hold
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 import time
@@ -609,7 +609,7 @@ def _dispatch_confirmed_signal(
 def _is_filtered(outcome) -> bool:
     return bool(outcome is not None and outcome.block_reason in (
         config.STRONG_SCORE_BELOW_THRESHOLD, config.STRONG_PRICE_CONFIRMATION_FAILED, config.STRONG_SIDEWAYS_BLOCK,
-        config.STRONG_SAME_DIRECTION_COOLDOWN, config.STRONG_MIN_HOLD_BLOCK, "DAILY_ENTRY_LIMIT",
+        config.STRONG_PROFILE_FAILED, config.STRONG_SAME_DIRECTION_COOLDOWN, config.STRONG_MIN_HOLD_BLOCK, "DAILY_ENTRY_LIMIT",
         config.SAME_DIRECTION_POSITION_HELD,
     ) and outcome.final_state == SignalState.BLOCKED and not outcome.broker_called)
 
@@ -953,6 +953,7 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "strong_is_reversal": strong_decision.is_reversal if strong_decision else "",
         "strong_fast_reversal": strong_decision.fast_reversal if strong_decision else "",
         "strong_component_scores": str(strong_decision.component_scores) if strong_decision else "",
+        "strong_metrics": json.dumps(dict(strong_decision.metrics or {}), sort_keys=True) if strong_decision else "",
         "market_regime": state.market_regime, "daily_entry_count": int(state.daily_entry_count or 0),
         "last_entry_at": state.last_entry_at or "",
         "stop_loss_reentry_cooldown_active": trace.get("stop_loss_reentry_cooldown_active", False),
@@ -1109,7 +1110,6 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
     if pos is not None and pos.quantity > 0:
         current_price = quotes.get(pos.symbol)
         profit_lock_should_exit = False
-        stop_loss_should_exit = False
 
         if current_price is not None:
             net_return = _net_return_pct(pos.avg_price, current_price, pos.quantity)
@@ -1118,39 +1118,18 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
             )
             state.peak_net_return = exits.peak_net_return
             state.profit_lock_active = exits.profit_lock_active
-            stop_loss_should_exit = exits.exit_reason == config.EXIT_STOP_LOSS
+            if exits.exit_reason == config.EXIT_STOP_LOSS:
+                outcome = order_executor.execute_exit(
+                    broker=broker, symbol=pos.symbol, quantity=pos.quantity, exit_reason=config.EXIT_STOP_LOSS,
+                    entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
+                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                )
+                _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_STOP_LOSS, now=now)
+                result.actions.append(f"STOP_LOSS:{pos.symbol}")
+                return result
             profit_lock_should_exit = exits.exit_reason == config.EXIT_PROFIT_LOCK
 
-        if entry_window_open and confirmed_direction != Direction.HOLD and not gap_bar_starts:
-            target = order_executor.target_symbol_for_direction(confirmed_direction)
-            if target and target != pos.symbol:
-                stop_loss_should_exit = False
-                profit_lock_should_exit = False
-
-        # Priority 3: Stop Loss when no opposite confirmed flag is waiting
-        if stop_loss_should_exit:
-            outcome = order_executor.execute_exit(
-                broker=broker, symbol=pos.symbol, quantity=pos.quantity, exit_reason=config.EXIT_STOP_LOSS,
-                entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
-                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-            )
-            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_STOP_LOSS, now=now)
-            result.actions.append(f"STOP_LOSS:{pos.symbol}")
-            return result
-
-        # Priority 3: Profit Lock (docs §12 — TSLA_AUTO ordering: BEFORE the
-        # opposite-signal switch check, unlike MACD2 where opposite-signal
-        # gets first refusal).
-        if profit_lock_should_exit:
-            outcome = order_executor.execute_exit(
-                broker=broker, symbol=pos.symbol, quantity=pos.quantity, exit_reason=config.EXIT_PROFIT_LOCK,
-                entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
-                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-            )
-            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_PROFIT_LOCK, now=now)
-            result.actions.append(f"PROFIT_LOCK:{pos.symbol}")
-            return result
-
+        # Pending/opposite confirmed signals get first refusal before Profit Lock.
         if state.pending_signal and not state.pending_signal.get("order_requested"):
             pending_dir = Direction(state.pending_signal["direction"])
             outcome = _execute_or_wait(
@@ -1164,7 +1143,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
 
-        # Priority 2: approved opposite (confirmed) flag switch
+        # Priority 3: approved opposite (confirmed) flag switch
         if entry_window_open and confirmed_direction != Direction.HOLD and not gap_bar_starts:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
@@ -1180,6 +1159,16 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                     return result
             else:
                 _record_blocked_signal(state=state, macd_snap=macd_snap, direction=confirmed_direction, signal_type="HELD_SAME", reason=order_executor.BLOCK_ALREADY_HOLDING, result=result)
+
+        if profit_lock_should_exit:
+            outcome = order_executor.execute_exit(
+                broker=broker, symbol=pos.symbol, quantity=pos.quantity, exit_reason=config.EXIT_PROFIT_LOCK,
+                entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
+                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+            )
+            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_PROFIT_LOCK, now=now)
+            result.actions.append(f"PROFIT_LOCK:{pos.symbol}")
+            return result
 
         state.last_evaluated_bar_ts = bar_ts_str
         return result

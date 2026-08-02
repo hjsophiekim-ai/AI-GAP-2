@@ -36,14 +36,20 @@ def _flat_bars(n: int = _BASE_BARS, *, start=_DAY1, price=_BASE_PRICE, spread=_B
 
 def _shape_last_bar(bars: pd.DataFrame, direction: Direction, *, jump: float = 100.0, volume_mult: float = 5.0) -> pd.DataFrame:
     i = len(bars) - 1
-    base = float(bars["close"].iloc[i - 1])
+    base = float(bars["close"].iloc[i - 3])
     if direction is Direction.UP_RED:
-        close = base + jump
-        high, low = close + _BASE_SPREAD, base - _BASE_SPREAD
+        closes = [base + jump * 0.25, base + jump * 0.60, base + jump]
     else:
-        close = base - jump
-        high, low = base + _BASE_SPREAD, close - _BASE_SPREAD
-    bars.loc[i, ["open", "high", "low", "close", "volume"]] = [base, high, low, close, _BASE_VOLUME * volume_mult]
+        closes = [base - jump * 0.25, base - jump * 0.60, base - jump]
+    prev_close = base
+    for offset, close in zip((2, 1, 0), closes):
+        row = i - offset
+        high = max(prev_close, close) + _BASE_SPREAD
+        low = min(prev_close, close) - _BASE_SPREAD
+        bars.loc[row, ["open", "high", "low", "close", "volume"]] = [
+            prev_close, high, low, close, _BASE_VOLUME * volume_mult,
+        ]
+        prev_close = close
     return bars
 
 
@@ -99,43 +105,43 @@ def test_required_scores_default_window_normal_and_chop():
     now = datetime(2026, 7, 30, 10, 0, tzinfo=ET)
     normal = required_scores_for(now_et=now, regime="NORMAL", daily_filled_entry_count=0)
     chop = required_scores_for(now_et=now, regime="CHOP", daily_filled_entry_count=0)
-    assert normal == {"entry": 68.0, "reversal": 78.0, "fast_reversal": 84.0}
-    assert chop == {"entry": 74.0, "reversal": 82.0, "fast_reversal": 86.0}
+    assert normal == {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0}
+    assert chop == {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0}
 
 
 def test_required_scores_midday_relaxation_gated_by_count():
     now = datetime(2026, 7, 30, 13, 0, tzinfo=ET)
     relaxed = required_scores_for(now_et=now, regime="NORMAL", daily_filled_entry_count=1)
-    assert relaxed["entry"] == 66.0
-    not_relaxed = required_scores_for(now_et=now, regime="NORMAL", daily_filled_entry_count=2)
-    assert not_relaxed["entry"] == 68.0  # count exceeds max_filled=1 -> falls back to default
+    assert relaxed["entry"] == 65.0
+    still_relaxed = required_scores_for(now_et=now, regime="NORMAL", daily_filled_entry_count=4)
+    assert still_relaxed["entry"] == 65.0
 
 
 def test_required_scores_late_window_relaxation_gated_by_count():
     now = datetime(2026, 7, 30, 14, 30, tzinfo=ET)
     relaxed = required_scores_for(now_et=now, regime="NORMAL", daily_filled_entry_count=2)
     assert relaxed["entry"] == 65.0
-    not_relaxed = required_scores_for(now_et=now, regime="NORMAL", daily_filled_entry_count=3)
-    assert not_relaxed["entry"] == 68.0
+    still_relaxed = required_scores_for(now_et=now, regime="NORMAL", daily_filled_entry_count=4)
+    assert still_relaxed["entry"] == 65.0
 
 
 def test_required_scores_1530_to_1545_reverts_to_default_no_relaxation():
     now = datetime(2026, 7, 30, 15, 35, tzinfo=ET)
     thresholds = required_scores_for(now_et=now, regime="CHOP", daily_filled_entry_count=0)
-    assert thresholds == {"entry": 74.0, "reversal": 82.0, "fast_reversal": 86.0}
+    assert thresholds == {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0}
 
 
 def test_absolute_floor_never_relaxed_below_hard_minimum():
-    # Even if a bug tried to push CHOP entry threshold below 72, the floor clamps it.
+    # MACD2 parity floor clamps both NORMAL and CHOP to the same hard minimum.
     now = datetime(2026, 7, 30, 14, 30, tzinfo=ET)
     thresholds = required_scores_for(now_et=now, regime="CHOP", daily_filled_entry_count=0)
-    assert thresholds["entry"] >= 72.0
-    assert thresholds["reversal"] >= 80.0
+    assert thresholds["entry"] >= 65.0
+    assert thresholds["reversal"] >= 75.0
 
 
 def test_daily_max_entries_normal_4_chop_2():
     assert daily_max_entries_for("NORMAL") == 4
-    assert daily_max_entries_for("CHOP") == 2
+    assert daily_max_entries_for("CHOP") == 4
 
 
 def test_sideways_block_when_ema_spread_and_range_both_tight():
@@ -174,8 +180,8 @@ def test_same_direction_position_held_blocks_add():
 
 
 def test_confirmed_signal_is_scored_without_rechecking_crossover():
-    bars = _flat_bars(_BASE_BARS)  # no real crossover — flat hist stays ~0
+    bars = _flat_bars(_BASE_BARS)  # no real crossover - flat hist stays ~0
     now = _decision_now(bars)
     decision = evaluate_strong_flag(bars, Direction.UP_RED, None, None, 0, now)
     assert decision.approved is False
-    assert decision.decision != config.FILTER_INPUT_NOT_CROSSOVER
+    assert decision.decision == config.FILTER_INPUT_NOT_CROSSOVER

@@ -40,6 +40,7 @@ SIGNAL_LEDGER_COLUMNS = [
     "strong_filter_enabled", "strong_filter_version",
     "strong_score", "strong_required_score", "strong_approved", "strong_decision",
     "strong_block_reason", "strong_is_reversal", "strong_fast_reversal", "strong_component_scores",
+    "strong_metrics",
     "market_regime", "daily_entry_count", "last_entry_at",
     # (신규) 손절 재진입 쿨다운 필드 (docs §12 — MACD2에 없음)
     "stop_loss_reentry_cooldown_active", "stop_loss_reentry_override_used",
@@ -124,6 +125,29 @@ def load_signal_ledger(limit: int = 500) -> list[dict[str, Any]]:
 
 def load_execution_ledger(limit: int = 500) -> list[dict[str, Any]]:
     return _load_rows(EXECUTION_LEDGER_PATH, limit=limit)
+
+
+def execution_row_trading_date(row: dict[str, Any]) -> str:
+    text = str(row.get("timestamp") or "").strip()
+    if not text:
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 8:
+        return digits[:8]
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        parsed = parsed.replace(tzinfo=config.ET)
+    return parsed.astimezone(config.ET).strftime("%Y%m%d")
+
+
+def filter_execution_rows_by_trading_date(rows: list[dict[str, Any]], trading_date: str) -> list[dict[str, Any]]:
+    expected = "".join(ch for ch in str(trading_date or "") if ch.isdigit())[:8]
+    if len(expected) != 8:
+        return []
+    return [r for r in rows if execution_row_trading_date(r) == expected]
 
 
 def append_signal(row: dict[str, Any]) -> bool:
@@ -254,13 +278,7 @@ def summarize_daily_trading(
     """docs §UI/§비용·손익 stats: buys/sells, round trips, Gross/Net USD.
     Never raises on an empty or missing execution ledger."""
     budget_usd = budget_usd if budget_usd is not None else config.DEFAULT_BUDGET_USD
-    date_key = str(trading_date or "").replace("-", "")[:8]
-    rows = []
-    for r in load_execution_ledger():
-        timestamp = str(r.get("timestamp") or "")
-        row_date = timestamp[:10].replace("-", "") if len(timestamp) >= 10 else timestamp[:8]
-        if row_date == date_key:
-            rows.append(r)
+    rows = filter_execution_rows_by_trading_date(load_execution_ledger(), trading_date)
     if signal_ids is not None:
         rows = [r for r in rows if str(r.get("signal_id") or "") in signal_ids]
     budget_f = float(budget_usd or config.DEFAULT_BUDGET_USD)

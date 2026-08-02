@@ -11,6 +11,7 @@ service.get_snapshot() 읽기만 수행한다 — MACD 계산·network 호출·W
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -76,6 +77,108 @@ def _worker_status(state, worker_stats: dict) -> str:
     if age <= tsla_config.WORKER_STALL_AGE_SEC:
         return "DELAYED"
     return "STALLED"
+
+
+def _signal_display_time(row: dict) -> str:
+    return _format_dual_time({"et": row.get("bar_start_at_et"), "kst": row.get("bar_start_at_kst")})
+
+
+def _order_requested_at(row: dict) -> str:
+    return _format_dual_time({"et": row.get("order_requested_at_et"), "kst": row.get("order_requested_at_kst")})
+
+
+def _not_ordered_reason(row: dict, requested_at: str) -> str:
+    if requested_at != "-":
+        return "-"
+    for key in ("block_reason", "final_result", "order_result"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return "NO_ORDER_REQUEST"
+
+
+def _as_float(value: object) -> float | None:
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return float(text)
+    except Exception:
+        return None
+
+
+def _as_bool(value: object) -> bool | None:
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return None
+
+
+def _fmt_num(value: object, digits: int = 2) -> str:
+    num = _as_float(value)
+    return "-" if num is None else f"{num:.{digits}f}"
+
+
+def _trade_entered_status(row: dict, requested_at: str) -> str:
+    result = str(row.get("order_result") or "").strip().upper()
+    if result == "EXECUTED":
+        return "YES"
+    if requested_at != "-":
+        return "ORDER_REQUESTED"
+    return "NO"
+
+
+def _load_strong_metrics(row: dict) -> dict:
+    text = str(row.get("strong_metrics") or "").strip()
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _strong_unmet_summary(row: dict) -> tuple[str, str]:
+    enabled = _as_bool(row.get("strong_filter_enabled"))
+    decision = str(row.get("strong_decision") or "").strip()
+    approved = _as_bool(row.get("strong_approved"))
+    if enabled is False:
+        return "OFF", "filter OFF"
+    if not decision and approved is None:
+        return "-", "-"
+    if approved is True or decision == tsla_config.STRONG_APPROVED:
+        return "PASS", "충족"
+
+    metrics_d = _load_strong_metrics(row)
+    reason = str(metrics_d.get("strong_profile_reason") or row.get("strong_block_reason") or row.get("block_reason") or decision or "").strip()
+    score = _fmt_num(row.get("strong_score"), 0)
+    required = _fmt_num(row.get("strong_required_score"), 0)
+    price = _fmt_num(metrics_d.get("price_impulse_atr"))
+    hist = _fmt_num(metrics_d.get("hist_impulse_atr"))
+    volume = _fmt_num(metrics_d.get("volume_ratio"))
+    trend = str(metrics_d.get("ema20_or_vwap_ok") if "ema20_or_vwap_ok" in metrics_d else "-")
+    detail = f"score {score}/{required}, price {price}ATR, hist {hist}, vol {volume}, trend {trend}"
+
+    if decision == tsla_config.STRONG_SCORE_BELOW_THRESHOLD:
+        return "FAIL", f"score 미달 ({score} < {required})"
+    if decision == tsla_config.STRONG_PRICE_CONFIRMATION_FAILED:
+        return "FAIL", f"price confirmation 미달 ({detail})"
+    if decision == tsla_config.STRONG_SIDEWAYS_BLOCK:
+        return "FAIL", f"횡보 차단 ({detail})"
+    if decision == tsla_config.STRONG_PROFILE_FAILED:
+        return "FAIL", f"{reason or 'V6 profile 미일치'} ({detail})"
+    if decision == "DAILY_ENTRY_LIMIT":
+        return "FAIL", "일일 진입 한도"
+    if decision == tsla_config.STRONG_SAME_DIRECTION_COOLDOWN:
+        return "FAIL", "동일방향 재진입 쿨다운"
+    if decision == tsla_config.STRONG_MIN_HOLD_BLOCK:
+        return "FAIL", "최소 보유시간 미충족"
+    if decision == tsla_config.SAME_DIRECTION_POSITION_HELD:
+        return "FAIL", "이미 같은 방향 보유"
+    return "FAIL", f"{reason or decision or 'V6 조건 미충족'} ({detail})"
 
 
 try:
@@ -352,6 +455,37 @@ try:
     if overview:
         st.dataframe(pd.DataFrame(overview), use_container_width=True, height=180)
 
+    onset_rows = sig_summary.get("onset_signals") or []
+    if onset_rows:
+        st.markdown("**플래그별 주문 / 강한 필터 판정**")
+        flag_rows = []
+        for row in onset_rows:
+            requested_at = _order_requested_at(row)
+            strong_result, strong_unmet = _strong_unmet_summary(row)
+            flag_rows.append({
+                "flag_time": _signal_display_time(row),
+                "direction": row.get("direction") or "-",
+                "signal_id": row.get("signal_id") or "-",
+                "entered": _trade_entered_status(row, requested_at),
+                "strong_result": strong_result,
+                "strong_unmet": strong_unmet,
+                "strong_score": row.get("strong_score") or "-",
+                "strong_required": row.get("strong_required_score") or "-",
+                "strong_decision": row.get("strong_decision") or "-",
+                "order_requested": "YES" if requested_at != "-" else "NO",
+                "order_requested_at": requested_at,
+                "order_result": str(row.get("order_result") or "-"),
+                "not_ordered_reason": _not_ordered_reason(row, requested_at),
+                "failure_stage": row.get("failure_stage") or "-",
+                "order_id": row.get("broker_order_id") or "-",
+                "filled_qty": row.get("filled_qty") or "-",
+                "fill_poll_result": row.get("fill_poll_result") or "-",
+                "balance_qty": row.get("balance_qty") or "-",
+            })
+        st.dataframe(pd.DataFrame(flag_rows), use_container_width=True, height=260)
+    else:
+        st.caption("No current-version live flags today.")
+
     excluded = sig_summary.get("excluded_signals") or []
     if excluded:
         with st.expander(f"과거/제외 신호 ({len(excluded)}건)"):
@@ -364,11 +498,13 @@ st.subheader("거래 원장")
 try:
     rows = ledger.load_execution_ledger(limit=300)
     trading_date = state.session_date or datetime.now(ET).strftime("%Y%m%d")
-    today_rows = [r for r in rows if str(r.get("timestamp") or "").startswith(trading_date)]
+    today_rows = ledger.filter_execution_rows_by_trading_date(rows, trading_date)
     st.caption(f"execution ledger path=`{ledger.EXECUTION_LEDGER_PATH}` · loaded_rows={len(rows)} · today_rows={len(today_rows)}")
-    if rows:
-        df = pd.DataFrame(rows)
+    if today_rows:
+        df = pd.DataFrame(today_rows)
         st.dataframe(df.iloc[::-1], use_container_width=True, height=300)
+    elif rows:
+        st.caption("오늘 원장 없음")
     else:
         st.caption("원장 없음")
 except Exception as exc:

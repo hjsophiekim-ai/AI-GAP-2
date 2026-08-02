@@ -181,6 +181,13 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     base = default_state()
     ui_mode_raw = raw.get("ui_mode")
     ui_mode = RuntimeStatus(ui_mode_raw) if ui_mode_raw in _UI_MODE_VALUES else base.ui_mode
+    strong_enabled_default = bool(config.STRONG_FILTER_DEFAULT)
+    stored_strong_filter_version = str(raw.get("strong_filter_version") or "")
+    strong_filter_version = stored_strong_filter_version or config.STRONG_FILTER_VERSION
+    strong_filter_enabled = bool(raw.get("strong_filter_enabled", strong_enabled_default))
+    if stored_strong_filter_version and stored_strong_filter_version != config.STRONG_FILTER_VERSION:
+        strong_filter_version = config.STRONG_FILTER_VERSION
+        strong_filter_enabled = strong_enabled_default
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         strategy_id=str(raw.get("strategy_id") or config.STRATEGY_ID),
@@ -261,10 +268,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         last_quote_stale_signal_id=raw.get("last_quote_stale_signal_id"),
         last_quote_stale_retry_count=raw.get("last_quote_stale_retry_count"),
         last_quote_stale_result=raw.get("last_quote_stale_result"),
-        strong_filter_enabled=bool(raw.get("strong_filter_enabled", bool(config.STRONG_FILTER_DEFAULT))),
+        strong_filter_enabled=strong_filter_enabled,
         strong_filter_enabled_at=raw.get("strong_filter_enabled_at"),
         strong_filter_enabled_by=raw.get("strong_filter_enabled_by"),
-        strong_filter_version=str(raw.get("strong_filter_version") or config.STRONG_FILTER_VERSION),
+        strong_filter_version=strong_filter_version,
         daily_entry_count=int(raw.get("daily_entry_count") or 0),
         last_entry_at=raw.get("last_entry_at"),
         last_exit_at=raw.get("last_exit_at"),

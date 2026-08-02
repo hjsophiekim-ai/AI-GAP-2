@@ -88,6 +88,9 @@ class FakeBroker:
     def get_positions(self) -> list[FakePosition]:
         return list(self._positions.values())
 
+    def get_open_orders(self) -> list:
+        return []
+
     def get_position(self, symbol: str) -> Optional[FakePosition]:
         return self._positions.get(symbol)
 

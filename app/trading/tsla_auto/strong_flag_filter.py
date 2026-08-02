@@ -134,6 +134,14 @@ def _macd_lines(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
     return macd, signal, hist
 
 
+def _raw_confirmed_color_direction(hist_0: float, hist_1: float, hist_2: float) -> Optional[Direction]:
+    if hist_0 < hist_1 and hist_1 < hist_2:
+        return Direction.UP_RED
+    if hist_0 > hist_1 and hist_1 > hist_2:
+        return Direction.DOWN_BLUE
+    return None
+
+
 def _reject(
     *, decision: str, block_reason: str, reasons: Sequence[str], is_reversal: bool = False,
     fast_reversal: bool = False, score: float = 0.0, required_score: float = 0.0,
@@ -330,20 +338,20 @@ def classify_regime(metrics: dict[str, Any]) -> str:
 
 # ── 시간대별 문턱표 (docs §11, 사용자 확정 사양 — 그대로 구현) ──────────────
 _DEFAULT_THRESHOLDS = {
-    MarketRegime.NORMAL.value: {"entry": 68.0, "reversal": 78.0, "fast_reversal": 84.0},
-    MarketRegime.CHOP.value: {"entry": 74.0, "reversal": 82.0, "fast_reversal": 86.0},
+    MarketRegime.NORMAL.value: {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0},
+    MarketRegime.CHOP.value: {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0},
 }
 _MIDDAY_RELAXED = {  # 12:00-14:00 ET
-    MarketRegime.NORMAL.value: {"entry": 66.0, "reversal": 77.0, "fast_reversal": 83.0, "max_filled": 1},
-    MarketRegime.CHOP.value: {"entry": 72.0, "reversal": 80.0, "fast_reversal": 85.0, "max_filled": 0},
+    MarketRegime.NORMAL.value: {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0, "max_filled": 4},
+    MarketRegime.CHOP.value: {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0, "max_filled": 4},
 }
 _LATE_RELAXED = {  # 14:00-15:30 ET
-    MarketRegime.NORMAL.value: {"entry": 65.0, "reversal": 76.0, "fast_reversal": 82.0, "max_filled": 2},
-    MarketRegime.CHOP.value: {"entry": 72.0, "reversal": 80.0, "fast_reversal": 85.0, "max_filled": 1},
+    MarketRegime.NORMAL.value: {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0, "max_filled": 4},
+    MarketRegime.CHOP.value: {"entry": 65.0, "reversal": 75.0, "fast_reversal": 82.0, "max_filled": 4},
 }
 ABSOLUTE_FLOOR = {
-    MarketRegime.NORMAL.value: {"entry": 65.0, "reversal": 76.0},
-    MarketRegime.CHOP.value: {"entry": 72.0, "reversal": 80.0},
+    MarketRegime.NORMAL.value: {"entry": 65.0, "reversal": 75.0},
+    MarketRegime.CHOP.value: {"entry": 65.0, "reversal": 75.0},
 }
 _MIDDAY_START, _MIDDAY_END = dtime(12, 0), dtime(14, 0)
 _LATE_START, _LATE_END = dtime(14, 0), dtime(15, 30)
@@ -373,6 +381,199 @@ def required_scores_for(
     table["entry"] = max(table["entry"], floor["entry"])
     table["reversal"] = max(table["reversal"], floor["reversal"])
     return table
+
+
+def _v6_profile_ok(
+    *,
+    direction: Direction,
+    score: float,
+    metrics: dict[str, Any],
+    now: datetime,
+) -> tuple[bool, str]:
+    """MACD2 V6 profile gate, shifted to the US regular-session clock.
+
+    MACD2's V6 profiles are defined from a 09:00 local open. TSLA_AUTO uses a
+    09:30 ET open, so the same intraday windows are shifted by +30 minutes.
+    """
+    t = now.astimezone(ET).time()
+    price_impulse = float(metrics.get("price_impulse_atr") or 0.0)
+    hist_impulse = float(metrics.get("hist_impulse_atr") or 0.0)
+    body_atr = float(metrics.get("body_atr") or 0.0)
+    volume_ratio = float(metrics.get("volume_ratio") or 0.0)
+    trend_ok = bool(metrics.get("ema20_or_vwap_ok"))
+
+    t_0930 = dtime(9, 30)
+    t_0935 = dtime(9, 35)
+    t_0940 = dtime(9, 40)
+    t_0950 = dtime(9, 50)
+    t_1000 = dtime(10, 0)
+    t_1030 = dtime(10, 30)
+    t_1045 = dtime(10, 45)
+    t_1100 = dtime(11, 0)
+    t_1115 = dtime(11, 15)
+    t_1215 = dtime(12, 15)
+    t_1230 = dtime(12, 30)
+    t_1300 = dtime(13, 0)
+    t_1320 = dtime(13, 20)
+    t_1330 = dtime(13, 30)
+    t_1345 = dtime(13, 45)
+    t_1400 = dtime(14, 0)
+    t_1450 = dtime(14, 50)
+    t_1500 = dtime(15, 0)
+    t_1515 = dtime(15, 15)
+
+    if (
+        t_0930 <= t <= t_1000
+        and score >= 60.0
+        and price_impulse >= 1.00
+        and hist_impulse >= 0.08
+        and volume_ratio >= 0.85
+        and trend_ok
+    ):
+        if direction == Direction.UP_RED and t_0940 <= t <= t_0950 and volume_ratio >= 2.0:
+            return False, "V6 opening red spike blocked"
+        return True, "V6 opening impulse"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_0940 <= t <= t_0950
+        and 35.0 <= score <= 60.0
+        and 0.45 <= price_impulse <= 0.65
+        and 0.06 <= hist_impulse <= 0.16
+        and 0.85 <= volume_ratio <= 1.20
+        and trend_ok
+    ):
+        return True, "V6 opening blue soft trend"
+
+    if (
+        direction == Direction.UP_RED
+        and t_0935 <= t <= t_0950
+        and 35.0 <= score <= 70.0
+        and 0.45 <= price_impulse <= 2.30
+        and hist_impulse >= 0.12
+        and 0.75 <= volume_ratio <= 1.05
+        and trend_ok
+    ):
+        return True, "V6 opening red hist reversal"
+
+    if (
+        direction == Direction.UP_RED
+        and t_1000 <= t <= t_1045
+        and score >= 45.0
+        and price_impulse >= 1.30
+        and hist_impulse >= 0.07
+    ):
+        return True, "V6 morning red recovery"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1100 <= t <= t_1300
+        and 30.0 <= score
+        and 0.65 <= price_impulse
+        and hist_impulse >= 0.04
+        and 0.45 <= volume_ratio
+    ):
+        return True, "V6 morning blue follow"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1030 <= t <= t_1115
+        and score >= 50.0
+        and 0.80 <= price_impulse <= 2.20
+        and 0.005 <= hist_impulse <= 0.03
+        and 0.90 <= volume_ratio <= 1.20
+        and trend_ok
+    ):
+        return True, "V6 morning blue pullback"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1320 <= t <= t_1345
+        and 45.0 <= score <= 55.0
+        and 0.55 <= price_impulse <= 0.70
+        and 0.06 <= hist_impulse <= 0.08
+        and body_atr >= 0.50
+        and 1.00 <= volume_ratio <= 1.20
+        and not trend_ok
+    ):
+        return True, "V6 early afternoon blue reversal"
+
+    if (
+        t_1300 <= t <= t_1500
+        and score >= 70.0
+        and price_impulse >= 1.00
+        and hist_impulse >= 0.06
+        and volume_ratio >= 1.00
+        and trend_ok
+    ):
+        return True, "V6 trend continuation"
+
+    if (
+        direction == Direction.UP_RED
+        and t_1400 <= t <= t_1450
+        and score <= 35.0
+        and price_impulse <= 0.85
+        and 0.00 <= hist_impulse <= 0.05
+        and 0.70 <= volume_ratio <= 1.20
+    ):
+        return True, "V6 late red rebound"
+
+    if (
+        direction == Direction.UP_RED
+        and t_1215 <= t <= t_1230
+        and score <= 20.0
+        and -2.10 <= price_impulse <= -0.20
+        and 0.00 <= hist_impulse <= 0.09
+        and body_atr >= 0.65
+        and 0.65 <= volume_ratio <= 0.80
+    ):
+        return True, "V6 midday red contrarian"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1400 <= t <= t_1515
+        and score >= 60.0
+        and price_impulse >= 1.25
+        and hist_impulse >= 0.06
+        and volume_ratio >= 1.00
+    ):
+        return True, "V6 late blue capitulation"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1330 <= t <= dtime(14, 30)
+        and score <= 30.0
+        and 0.10 <= price_impulse <= 0.45
+        and 0.04 <= hist_impulse <= 0.09
+        and 0.60 <= volume_ratio <= 0.95
+        and trend_ok
+    ):
+        return True, "V6 afternoon blue reversal"
+
+    if (
+        direction == Direction.UP_RED
+        and dtime(11, 30) <= t <= t_1400
+        and score >= 55.0
+        and price_impulse >= 0.90
+        and hist_impulse >= 0.03
+        and 0.55 <= volume_ratio
+    ):
+        if t <= dtime(12, 0) and price_impulse >= 2.20 and not trend_ok:
+            return False, "V6 red overextended blocked"
+        return True, "V6 midday red continuation"
+
+    if (
+        direction == Direction.UP_RED
+        and t_1230 <= t <= t_1400
+        and 45.0 <= score <= 65.0
+        and 0.70 <= price_impulse <= 1.70
+        and 0.025 <= hist_impulse <= 0.08
+        and 0.75 <= volume_ratio <= 1.15
+        and trend_ok
+    ):
+        return True, "V6 moderate red trend"
+
+    return False, "no V6 frequency-profit profile matched"
 
 
 def evaluate_strong_flag(
@@ -406,6 +607,24 @@ def evaluate_strong_flag(
             reasons=["insufficient or invalid completed 3m bars"], is_reversal=is_reversal, fast_reversal=fast_reversal,
         )
 
+    _macd, _signal, hist = _macd_lines(work["close"].astype(float))
+    prev2_hist = float(hist.iloc[-3])
+    prev_hist = float(hist.iloc[-2])
+    curr_hist = float(hist.iloc[-1])
+    if not _finite(prev2_hist) or not _finite(prev_hist) or not _finite(curr_hist):
+        return _reject(
+            decision=config.FILTER_DATA_INSUFFICIENT, block_reason=config.FILTER_DATA_INSUFFICIENT,
+            reasons=["MACD histogram NaN"], is_reversal=is_reversal, fast_reversal=fast_reversal,
+        )
+    raw = _raw_confirmed_color_direction(prev2_hist, prev_hist, curr_hist)
+    if raw is None:
+        return _reject(
+            decision=config.FILTER_INPUT_NOT_CROSSOVER, block_reason=config.FILTER_INPUT_NOT_CROSSOVER,
+            reasons=[f"last three bars are not a confirmed color flag for {direction.value}"],
+            is_reversal=is_reversal, fast_reversal=fast_reversal,
+            metrics={"prev2_hist": prev2_hist, "prev_hist": prev_hist, "hist": curr_hist},
+        )
+
     scores_t, metrics_t, err = compute_component_scores(work)
     if err or scores_t is None or metrics_t is None:
         return _reject(
@@ -414,6 +633,7 @@ def evaluate_strong_flag(
         )
 
     scores, metrics = score_for_direction(scores_t, metrics_t, direction)
+    metrics["raw_color_direction"] = raw.value
     regime = classify_regime(metrics)
     thresholds = required_scores_for(now_et=now.astimezone(ET), regime=regime, daily_filled_entry_count=int(daily_entry_count))
     if fast_reversal:
@@ -425,20 +645,11 @@ def evaluate_strong_flag(
 
     total = float(sum(scores.values()))
     reasons: list[str] = []
-
-    if float(metrics.get("hist_impulse_atr") or 0.0) <= 0:
-        reasons.append("hist impulse is not positive in flag direction")
+    if raw != direction:
         return _reject(
-            decision=config.STRONG_PRICE_CONFIRMATION_FAILED, block_reason=config.STRONG_PRICE_CONFIRMATION_FAILED,
-            reasons=reasons, is_reversal=is_reversal, fast_reversal=fast_reversal, score=total,
-            required_score=required_score, component_scores=scores, metrics=metrics, regime=regime,
-        )
-
-    if not bool(metrics.get("breakout")) and float(metrics.get("price_impulse_atr") or 0.0) < float(config.STRONG_PRICE_IMPULSE_HARD_MIN):
-        reasons.append(f"price impulse < {config.STRONG_PRICE_IMPULSE_HARD_MIN:.2f} ATR without breakout")
-        return _reject(
-            decision=config.STRONG_PRICE_CONFIRMATION_FAILED, block_reason=config.STRONG_PRICE_CONFIRMATION_FAILED,
-            reasons=reasons, is_reversal=is_reversal, fast_reversal=fast_reversal, score=total,
+            decision=config.FILTER_INPUT_NOT_CROSSOVER, block_reason=config.FILTER_INPUT_NOT_CROSSOVER,
+            reasons=[f"raw color {raw.value} does not match {direction.value}"],
+            is_reversal=is_reversal, fast_reversal=fast_reversal, score=total,
             required_score=required_score, component_scores=scores, metrics=metrics, regime=regime,
         )
 
@@ -459,7 +670,11 @@ def evaluate_strong_flag(
         or bool(metrics.get("ema20_ok"))
         or bool(metrics.get("vwap_ok"))
     )
-    if not price_confirm_ok:
+    profile_ok, profile_reason = _v6_profile_ok(
+        direction=direction, score=total, metrics=metrics, now=now,
+    )
+    metrics["strong_profile_reason"] = profile_reason
+    if not price_confirm_ok and not profile_ok:
         reasons.append("price confirmation failed (breakout / impulse>=0.35ATR / EMA20 / VWAP)")
         return _reject(
             decision=config.STRONG_PRICE_CONFIRMATION_FAILED, block_reason=config.STRONG_PRICE_CONFIRMATION_FAILED,
@@ -467,16 +682,23 @@ def evaluate_strong_flag(
             required_score=required_score, component_scores=scores, metrics=metrics, regime=regime,
         )
 
-    if total < required_score:
-        reasons.append(f"score {total:.0f} < required {required_score:.0f} (regime={regime})")
+    if not profile_ok:
+        reasons.append(profile_reason)
+        if total < required_score:
+            return _reject(
+                decision=config.STRONG_SCORE_BELOW_THRESHOLD, block_reason=config.STRONG_SCORE_BELOW_THRESHOLD,
+                reasons=[f"score {total:.0f} < required {required_score:.0f} (regime={regime})", profile_reason],
+                is_reversal=is_reversal, fast_reversal=fast_reversal, score=total,
+                required_score=required_score, component_scores=scores, metrics=metrics, regime=regime,
+            )
         return _reject(
-            decision=config.STRONG_SCORE_BELOW_THRESHOLD, block_reason=config.STRONG_SCORE_BELOW_THRESHOLD,
+            decision=config.STRONG_PROFILE_FAILED, block_reason=config.STRONG_PROFILE_FAILED,
             reasons=reasons, is_reversal=is_reversal, fast_reversal=fast_reversal, score=total,
             required_score=required_score, component_scores=scores, metrics=metrics, regime=regime,
         )
 
     metrics["daily_entry_count"] = int(daily_entry_count)
-    reasons.append("all hybrid gates passed")
+    reasons.append(profile_reason)
     return StrongFlagDecision(
         approved=True, score=total, required_score=required_score, decision=config.STRONG_APPROVED,
         reasons=tuple(reasons), component_scores=scores, metrics=metrics, is_reversal=is_reversal,

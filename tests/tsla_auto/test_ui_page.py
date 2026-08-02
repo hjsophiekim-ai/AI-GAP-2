@@ -51,13 +51,13 @@ def test_start_stop_buttons_render():
     assert "중지 및 일괄매도" in labels
 
 
-def test_strong_filter_toggle_renders_and_defaults_off():
+def test_strong_filter_toggle_renders_and_defaults_on():
     at = _fresh_app()
     at.run()
     assert not at.exception
     checkboxes = {c.label: c.value for c in at.checkbox}
     assert "강한 플래그만 거래" in checkboxes
-    assert checkboxes["강한 플래그만 거래"] is False
+    assert checkboxes["강한 플래그만 거래"] is True
 
 
 def test_real_mode_shows_disabled_warning():

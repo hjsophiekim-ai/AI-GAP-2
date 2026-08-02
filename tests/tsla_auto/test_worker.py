@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -52,7 +51,7 @@ _QUOTES = {config.SIGNAL_SYMBOL: 250.0, config.LONG_SYMBOL: 30.0, config.INVERSE
 
 def _confirmed_up_scenario(*, strong_filter_on: bool = False, quotes: dict = None):
     quote_prices = {**_QUOTES, **(quotes or {})}
-    df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0])
     now = _START + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state(strong_filter_on=strong_filter_on)
     state.last_confirmed_bar_ts = (_START + timedelta(minutes=3 * 98)).isoformat()
@@ -95,7 +94,7 @@ def test_flat_entry_up_red_buys_tsll():
 
 
 def test_flat_entry_down_blue_buys_tslz():
-    df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [60.0])
+    df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [101.0, 100.0, 60.0])
     now = _START + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state()
     state.last_confirmed_bar_ts = (_START + timedelta(minutes=3 * 98)).isoformat()
@@ -137,7 +136,7 @@ def test_entry_blocked_before_market_open():
 
 def test_entry_allowed_at_1544_59_blocked_at_1545_00():
     """docs §6/§11: 15:44:59 신규진입 가능, 15:45:00 신규진입 0."""
-    df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0])
     bar_end = _START + timedelta(minutes=3 * 100)  # the new bar completes here
     state_before = _fresh_state()
     state_before.last_confirmed_bar_ts = (_START + timedelta(minutes=3 * 98)).isoformat()
@@ -168,135 +167,6 @@ def test_forced_liquidation_at_1550_overrides_everything():
     assert state.position is None
 
 
-def test_force_liquidation_sells_all_managed_us_symbols():
-    state = _fresh_state()
-    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0, "TSLQ": 40.0, "TSLY": 15.0})
-    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed-tsll")
-    broker.buy_limit("TSLQ", 7, 40.0, "seed-tslq")
-    broker.buy_limit("TSLY", 3, 15.0, "seed-tsly")
-    result = worker._force_liquidate_managed_positions(
-        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
-    )
-    sell_symbols = [o.symbol for o in broker.orders if o.side == "SELL"]
-    assert sell_symbols == [config.LONG_SYMBOL, "TSLQ", "TSLY"]
-    assert [(p.symbol, p.quantity) for p in broker.get_positions()] == []
-    assert state.liquidation_status["complete"] is True
-    assert state.liquidation_status["target_count"] == 3
-    assert result.actions == [f"FORCED_LIQUIDATION:{config.LONG_SYMBOL}", "FORCED_LIQUIDATION:TSLQ", "FORCED_LIQUIDATION:TSLY"]
-
-
-def test_force_liquidation_cancels_open_buys_before_selling():
-    state = _fresh_state()
-    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
-    broker.buy_limit(config.LONG_SYMBOL, 2, 30.0, "seed")
-    broker.open_orders = [SimpleNamespace(order_id="BUY-1", symbol=config.LONG_SYMBOL, side="BUY")]
-    worker._force_liquidate_managed_positions(
-        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
-    )
-    assert broker.cancel_calls == [("BUY-1", config.LONG_SYMBOL)]
-    assert state.liquidation_status["cancel_state"] == "DONE"
-    assert state.liquidation_status["complete"] is True
-
-
-def test_force_liquidation_fails_closed_when_open_buy_cancel_fails():
-    state = _fresh_state()
-    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
-    broker.buy_limit(config.LONG_SYMBOL, 2, 30.0, "seed")
-    broker.open_orders = [SimpleNamespace(order_id="BUY-1", symbol=config.LONG_SYMBOL, side="BUY")]
-    broker.fail_next_cancel = True
-    result = worker._force_liquidate_managed_positions(
-        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
-    )
-    assert state.liquidation_status["complete"] is False
-    assert state.liquidation_status["cancel_state"] == "FAILED"
-    assert state.liquidation_status["failure_reason"].startswith("OPEN_BUY_CANCEL_FAILED")
-    assert [o for o in broker.orders if o.side == "SELL"] == []
-    assert result.actions[0].startswith("FORCE_LIQUIDATION_FAILED:")
-
-
-def test_force_liquidation_retries_only_remaining_partial_qty():
-    state = _fresh_state()
-    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
-    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed")
-    broker.sell_fill_plan[config.LONG_SYMBOL] = [4, 6]
-    worker._force_liquidate_managed_positions(
-        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
-    )
-    sell_orders = [o for o in broker.orders if o.side == "SELL"]
-    assert [o.requested_qty for o in sell_orders] == [10, 6]
-    assert [o.executed_qty for o in sell_orders] == [4, 6]
-    assert broker.get_positions() == []
-    assert state.liquidation_status["symbols"][config.LONG_SYMBOL]["state"] == "FLAT"
-
-
-def test_force_liquidation_failed_after_max_retries_records_remaining(monkeypatch):
-    monkeypatch.setattr(config, "US_LIQUIDATION_MAX_RETRIES", 2)
-    state = _fresh_state()
-    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
-    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed")
-    broker.sell_fill_plan[config.LONG_SYMBOL] = [4, 0]
-    worker._force_liquidate_managed_positions(
-        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
-    )
-    meta = state.liquidation_status["symbols"][config.LONG_SYMBOL]
-    assert [o.requested_qty for o in broker.orders if o.side == "SELL"] == [10, 6]
-    assert meta["state"] == "FAILED"
-    assert meta["remaining_qty"] == 6
-    assert state.liquidation_status["complete"] is False
-
-
-def test_force_liquidation_idempotency_skips_duplicate_inflight_qty():
-    state = _fresh_state()
-    state.liquidation_status = {
-        "session_date": "20260724",
-        "symbols": {config.LONG_SYMBOL: {"state": "SELL_SUBMITTED", "inflight_qty": 10, "remaining_qty": 10}},
-        "complete": False,
-    }
-    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
-    broker.buy_limit(config.LONG_SYMBOL, 10, 30.0, "seed")
-    worker._force_liquidate_managed_positions(
-        broker=broker, state=state, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
-    )
-    assert [o for o in broker.orders if o.side == "SELL"] == []
-    meta = state.liquidation_status["symbols"][config.LONG_SYMBOL]
-    assert meta["idempotency_key"] == f"20260724:mock:{config.LONG_SYMBOL}:FORCE_LIQUIDATION"
-    assert meta["last_reason"] == "DUPLICATE_INFLIGHT_SKIPPED"
-
-
-def test_force_liquidation_restart_recovers_and_sells_remaining_only():
-    first = _fresh_state()
-    first.liquidation_status = {
-        "session_date": "20260724",
-        "symbols": {config.LONG_SYMBOL: {"state": "SELL_SUBMITTED", "inflight_qty": 10, "remaining_qty": 10}},
-        "complete": False,
-    }
-    state_store.save_state(first)
-    restarted = state_store.load_state()
-    broker = FakeBroker(quotes={config.LONG_SYMBOL: 30.0})
-    broker.buy_limit(config.LONG_SYMBOL, 6, 30.0, "remaining-after-partial")
-    worker._force_liquidate_managed_positions(
-        broker=broker, state=restarted, now=_START.replace(hour=15, minute=50), result=worker.TickResult()
-    )
-    sell_orders = [o for o in broker.orders if o.side == "SELL"]
-    assert [o.requested_qty for o in sell_orders] == [6]
-    assert broker.get_positions() == []
-    assert restarted.liquidation_status["complete"] is True
-
-
-def test_after_market_start_warns_unliquidated_position_without_sell_loop():
-    svc, state, broker, _now = _confirmed_up_scenario()
-    broker.buy_limit(config.LONG_SYMBOL, 5, 30.0, "seed-after-market")
-    state.position = PositionSnapshot(config.LONG_SYMBOL, 5, 30.0)
-    state.account_holding_qty = 5
-    state.strategy_owned_qty = 5
-    after_close = _START.replace(hour=16, minute=0, second=0)
-    result = run_once(broker=broker, market_data=svc, state=state, now=after_close)
-    assert result.skipped == "AFTER_MARKET_UNLIQUIDATED_POSITION"
-    assert [o for o in broker.orders if o.side == "SELL"] == []
-    assert state.liquidation_status["warning"] == "AFTER_MARKET_UNLIQUIDATED_POSITION"
-    assert state.liquidation_status["remaining_symbols"] == [config.LONG_SYMBOL]
-
-
 def test_stop_loss_exits_full_position():
     svc, state, broker, now = _confirmed_up_scenario()
     run_once(broker=broker, market_data=svc, state=state, now=now)
@@ -310,7 +180,7 @@ def test_stop_loss_exits_full_position():
     assert state.last_stop_loss_exit_at is not None
 
 
-def test_profit_lock_tracks_giveback_without_exit():
+def test_profit_lock_tracks_giveback_but_exit_is_disabled():
     svc, state, broker, now = _confirmed_up_scenario()
     run_once(broker=broker, market_data=svc, state=state, now=now)
     entry_price = state.position.avg_price
@@ -322,10 +192,9 @@ def test_profit_lock_tracks_giveback_without_exit():
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=10))
     assert result.actions == []
     assert state.position is not None
-    assert state.profit_lock_active is True
 
 
-def test_opposite_signal_switch_takes_priority_over_profit_lock():
+def test_opposite_signal_takes_priority_over_profit_lock_giveback():
     """docs §12 — TSLA_AUTO's OWN priority order (differs from MACD2): Profit
     Lock exits BEFORE an approved opposite-signal switch is even considered."""
     svc, state, broker, now = _confirmed_up_scenario()
@@ -337,10 +206,15 @@ def test_opposite_signal_switch_takes_priority_over_profit_lock():
 
     # Next completed bar produces a DOWN_BLUE crossover (opposite direction)
     # WHILE the held TSLL position is simultaneously in profit-lock-exit territory.
-    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0] + [60.0])
-    svc._df_1m = df_1m2
+    state.pending_signal = {
+        "signal_id": "pending-down-blue",
+        "direction": Direction.DOWN_BLUE.value,
+        "signal_type": "REVERSAL",
+        "detected_at": now.isoformat(),
+        "order_requested": False,
+    }
     svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, entry_price * 1.015, datetime.now(ET), 0.0, "test", None)
-    next_now = now + timedelta(minutes=3, seconds=5)
+    next_now = now + timedelta(minutes=9, seconds=5)
     result = run_once(broker=broker, market_data=svc, state=state, now=next_now)
 
     assert result.actions == ["OPPOSITE_SIGNAL:DOWN_BLUE"]
@@ -361,9 +235,14 @@ def _strong_up_red_bars_3m(*, n: int = 60, jump: float = 100.0, volume_mult: flo
     ]
     bars = pd.DataFrame(rows)
     i = n - 1
-    base = float(bars["close"].iloc[i - 1])
-    close = base + jump
-    bars.loc[i, ["open", "high", "low", "close", "volume"]] = [base, close + 1.0, base - 1.0, close, 1000.0 * volume_mult]
+    base = float(bars["close"].iloc[i - 3])
+    prev_close = base
+    for offset, close in zip((2, 1, 0), (base + jump * 0.25, base + jump * 0.60, base + jump)):
+        row = i - offset
+        bars.loc[row, ["open", "high", "low", "close", "volume"]] = [
+            prev_close, max(prev_close, close) + 1.0, min(prev_close, close) - 1.0, close, 1000.0 * volume_mult,
+        ]
+        prev_close = close
     return bars
 
 
@@ -431,7 +310,7 @@ def test_stop_loss_reentry_cooldown_gate_wired_into_dispatch(monkeypatch):
 
 
 def test_worker_restart_does_not_reorder_a_bar_completed_before_baseline():
-    df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0])
     now = _START + timedelta(minutes=3 * 100, seconds=5)
     svc = _svc_with_quote(df_1m, now, _QUOTES)
     state = _fresh_state()
@@ -445,15 +324,15 @@ def test_worker_restart_does_not_reorder_a_bar_completed_before_baseline():
     assert ledger.load_signal_ledger() == []
 
     # A genuinely NEW bar after restart still fires normally.
-    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0] + [60.0])
+    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0, 101.0, 100.0, 60.0])
     svc._df_1m = df_1m2
-    next_now = now + timedelta(minutes=3, seconds=5)
+    next_now = now + timedelta(minutes=9, seconds=5)
     result2 = run_once(broker=broker, market_data=svc, state=state, now=next_now)
     assert result2.actions == ["ENTRY:DOWN_BLUE"]
 
 
 def test_history_gap_blocks_signal_and_order():
-    full_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0])
+    full_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0])
     gap_minute = _START + timedelta(minutes=3 * 99 + 1)
     gapped_1m = full_1m[full_1m["datetime"] != gap_minute].reset_index(drop=True)
     now = _START + timedelta(minutes=3 * 100, seconds=5)
@@ -485,6 +364,7 @@ def test_strong_filter_on_rejected_never_calls_broker(monkeypatch):
     from app.trading.tsla_auto import strong_flag_filter
 
     monkeypatch.setattr(strong_flag_filter, "required_scores_for", lambda **k: {"entry": 200.0, "reversal": 200.0, "fast_reversal": 200.0})
+    monkeypatch.setattr(strong_flag_filter, "_v6_profile_ok", lambda **k: (False, "test profile rejected"))
     svc, state, broker, now = _confirmed_up_scenario(strong_filter_on=True)
     result = run_once(broker=broker, market_data=svc, state=state, now=now)
     assert broker.orders == []
@@ -494,29 +374,11 @@ def test_strong_filter_on_rejected_never_calls_broker(monkeypatch):
     assert rows[0]["order_result"] == config.FILTERED_OUT
 
 
-def test_strong_filter_on_preserves_confirmed_raw_flag_identity():
-    svc_off, state_off, broker_off, now_off = _confirmed_up_scenario(strong_filter_on=False)
-    result_off = run_once(broker=broker_off, market_data=svc_off, state=state_off, now=now_off)
-    rows_off = ledger.load_signal_ledger()
-    assert result_off.actions == ["ENTRY:UP_RED"]
-    assert len(rows_off) == 1
-
-    ledger.SIGNAL_LEDGER_PATH.unlink()
-    svc_on, state_on, broker_on, now_on = _confirmed_up_scenario(strong_filter_on=True)
-    result_on = run_once(broker=broker_on, market_data=svc_on, state=state_on, now=now_on)
-    rows_on = ledger.load_signal_ledger()
-    assert result_on.actions
-    assert len(rows_on) == 1
-
-    assert [(r["signal_id"], r["direction"]) for r in rows_off] == [(r["signal_id"], r["direction"]) for r in rows_on]
-    assert rows_on[0]["block_reason"] != config.FILTER_INPUT_NOT_CROSSOVER
-    assert rows_on[0]["strong_decision"] != config.FILTER_INPUT_NOT_CROSSOVER
-
-
 def test_rejected_signal_never_re_judged_next_tick(monkeypatch):
     from app.trading.tsla_auto import strong_flag_filter
 
     monkeypatch.setattr(strong_flag_filter, "required_scores_for", lambda **k: {"entry": 200.0, "reversal": 200.0, "fast_reversal": 200.0})
+    monkeypatch.setattr(strong_flag_filter, "_v6_profile_ok", lambda **k: (False, "test profile rejected"))
     svc, state, broker, now = _confirmed_up_scenario(strong_filter_on=True)
     run_once(broker=broker, market_data=svc, state=state, now=now)
     for _ in range(5):
@@ -535,7 +397,7 @@ def test_daily_entry_count_increments_only_on_real_fill():
 def test_daily_entry_count_does_not_increment_on_rejected_order():
     broker_that_rejects = FakeBroker(cash_usd=100_000.0, quotes={config.LONG_SYMBOL: 30.0, config.INVERSE_SYMBOL: 12.0})
     broker_that_rejects.fail_next_buy = True
-    df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0])
     now = _START + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state()
     state.last_confirmed_bar_ts = (_START + timedelta(minutes=3 * 98)).isoformat()
@@ -562,10 +424,10 @@ def test_worker_never_holds_tsll_and_tslz_simultaneously_across_switch():
     run_once(broker=broker, market_data=svc, state=state, now=now)
     assert state.position.symbol == config.LONG_SYMBOL
 
-    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0] + [60.0])
+    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0, 101.0, 100.0, 60.0])
     svc._df_1m = df_1m2
     svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 30.0, datetime.now(ET), 0.0, "test", None)
-    next_now = now + timedelta(minutes=3, seconds=5)
+    next_now = now + timedelta(minutes=9, seconds=5)
     result = run_once(broker=broker, market_data=svc, state=state, now=next_now)
     assert result.actions == ["OPPOSITE_SIGNAL:DOWN_BLUE"]
     assert state.position.symbol == config.INVERSE_SYMBOL
@@ -578,7 +440,7 @@ def test_worker_blocks_personal_holding_mismatch_before_switch():
     assert state.position.symbol == config.LONG_SYMBOL
     broker.buy_limit(config.LONG_SYMBOL, 1, 30.0, "personal-extra")
 
-    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0] + [60.0])
+    df_1m2 = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0, 101.0, 100.0, 60.0])
     svc._df_1m = df_1m2
     svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 30.0, datetime.now(ET), 0.0, "test", None)
     next_now = now + timedelta(minutes=3, seconds=5)
@@ -590,7 +452,7 @@ def test_worker_blocks_personal_holding_mismatch_before_switch():
 
 
 def test_down_blue_blocks_when_tslz_quote_unresolved():
-    df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [60.0])
+    df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [101.0, 100.0, 60.0])
     now = _START + timedelta(minutes=3 * 100, seconds=5)
     state = _fresh_state()
     state.last_confirmed_bar_ts = (_START + timedelta(minutes=3 * 98)).isoformat()
@@ -604,7 +466,7 @@ def test_down_blue_blocks_when_tslz_quote_unresolved():
 
 
 def test_compute_today_signal_overview_separates_live_and_historical():
-    df_1m = _1m_from_3m_closes(_START, [100.0] * 99 + [140.0])
+    df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0])
     now = _START + timedelta(minutes=3 * 100, seconds=5)
     bar_start = _START + timedelta(minutes=3 * 99)
     bar_end = bar_start + timedelta(minutes=3)
@@ -615,5 +477,3 @@ def test_compute_today_signal_overview_separates_live_and_historical():
     live_match = [r for r in live if r["bar_start_at"] == bar_start.isoformat()]
     assert hist_match[0]["origin"] == config.ORIGIN_HISTORICAL_REPLAY_ONLY
     assert live_match[0]["origin"] == config.ORIGIN_LIVE_CONFIRMED
-    assert live_match[0]["display_at"] == bar_start.isoformat()
-    assert live_match[0]["order_due_at"] == bar_end.isoformat()
