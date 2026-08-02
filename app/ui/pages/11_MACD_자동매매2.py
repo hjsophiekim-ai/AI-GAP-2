@@ -133,6 +133,78 @@ def _not_ordered_reason(row: dict, requested_at: str) -> str:
     return "NO_ORDER_REQUEST"
 
 
+def _as_float(value: object) -> float | None:
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return float(text)
+    except Exception:
+        return None
+
+
+def _as_bool(value: object) -> bool | None:
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return None
+
+
+def _fmt_num(value: object, digits: int = 2) -> str:
+    num = _as_float(value)
+    return "-" if num is None else f"{num:.{digits}f}"
+
+
+def _trade_entered_status(row: dict, requested_at: str) -> str:
+    result = str(row.get("order_result") or "").strip().upper()
+    if result == "EXECUTED":
+        return "YES"
+    if requested_at != "-":
+        return "ORDER_REQUESTED"
+    return "NO"
+
+
+def _v6_unmet_summary(row: dict) -> tuple[str, str]:
+    enabled = _as_bool(row.get("major_filter_enabled"))
+    decision = str(row.get("major_decision") or "").strip()
+    approved = _as_bool(row.get("major_approved"))
+    if enabled is False:
+        return "OFF", "filter OFF"
+    if not decision and approved is None:
+        return "-", "-"
+    if approved is True or decision == macd2_config.MAJOR_APPROVED:
+        return "PASS", "충족"
+
+    reason = str(row.get("major_block_reason") or row.get("block_reason") or decision or "").strip()
+    score = _fmt_num(row.get("major_score"), 0)
+    required = _fmt_num(row.get("major_required_score"), 0)
+    price = _fmt_num(row.get("price_impulse_atr"))
+    hist = _fmt_num(row.get("hist_impulse_atr"))
+    volume = _fmt_num(row.get("volume_ratio"))
+    trend = str(row.get("ema20_or_vwap_ok") or "-")
+    metrics = f"score {score}/{required}, price {price}ATR, hist {hist}, vol {volume}, trend {trend}"
+
+    if decision == macd2_config.MAJOR_SCORE_BELOW_THRESHOLD:
+        return "FAIL", f"score 미달 ({score} < {required})"
+    if decision == macd2_config.MAJOR_PRICE_CONFIRMATION_FAILED:
+        return "FAIL", f"price impulse 미달 ({price}ATR < {macd2_config.MAJOR_PRICE_IMPULSE_ATR_MIN:.2f})"
+    if decision == macd2_config.MAJOR_SIDEWAYS_BLOCK:
+        return "FAIL", f"횡보 차단 ({metrics})"
+    if decision == macd2_config.MAJOR_DAILY_ENTRY_LIMIT:
+        return "FAIL", "일일 진입 한도"
+    if decision == macd2_config.MAJOR_SAME_DIRECTION_COOLDOWN:
+        return "FAIL", "동일방향 재진입 쿨다운"
+    if decision == macd2_config.MAJOR_MIN_HOLD_BLOCK:
+        return "FAIL", "최소 보유시간 미충족"
+    if decision == macd2_config.SAME_DIRECTION_POSITION_HELD:
+        return "FAIL", "이미 같은 방향 보유"
+    if decision == macd2_config.MAJOR_STRONG_PROFILE_FAILED:
+        return "FAIL", f"{reason or 'V6 profile 미일치'} ({metrics})"
+    return "FAIL", f"{reason or decision or 'V6 조건 미충족'} ({metrics})"
+
+
 try:
     from streamlit_autorefresh import st_autorefresh
 
@@ -620,10 +692,17 @@ try:
         flag_rows = []
         for row in onset_rows:
             requested_at = _order_requested_at(row)
+            v6_result, v6_unmet = _v6_unmet_summary(row)
             flag_rows.append({
                 "flag_time": _signal_display_time(row),
                 "direction": row.get("direction") or "-",
                 "signal_id": row.get("signal_id") or "-",
+                "entered": _trade_entered_status(row, requested_at),
+                "v6_result": v6_result,
+                "v6_unmet": v6_unmet,
+                "v6_score": row.get("major_score") or "-",
+                "v6_required": row.get("major_required_score") or "-",
+                "v6_decision": row.get("major_decision") or "-",
                 "order_requested": "YES" if requested_at != "-" else "NO",
                 "order_requested_at": requested_at,
                 "order_result": str(row.get("order_result") or "-"),

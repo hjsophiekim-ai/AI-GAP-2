@@ -109,6 +109,17 @@ def test_daily_stats_show_flag_times_and_order_status():
             "strategy_version": config.STRATEGY_VERSION,
             "signal_rule": config.SIGNAL_RULE,
             "worker_code_sha": current_sha,
+            "major_filter_enabled": "True",
+            "major_filter_version": config.MAJOR_FILTER_VERSION,
+            "major_score": "48",
+            "major_required_score": "65",
+            "major_approved": "False",
+            "major_decision": config.MAJOR_STRONG_PROFILE_FAILED,
+            "major_block_reason": "no V6 July frequency-profit profile matched",
+            "hist_impulse_atr": "0.04",
+            "price_impulse_atr": "0.30",
+            "volume_ratio": "0.70",
+            "ema20_or_vwap_ok": "False",
         },
     ):
         ledger.append_signal(row)
@@ -126,7 +137,12 @@ def test_daily_stats_show_flag_times_and_order_status():
     flag_frame = next(frame for frame in frames if "not_ordered_reason" in frame.columns)
     assert "order_requested" in flag_frame.columns
     assert "not_ordered_reason" in flag_frame.columns
+    assert "entered" in flag_frame.columns
+    assert "v6_result" in flag_frame.columns
+    assert "v6_unmet" in flag_frame.columns
     assert "QUOTE_STALE" in set(flag_frame["not_ordered_reason"])
+    assert "FAIL" in set(flag_frame["v6_result"])
+    assert any("V6" in str(value) or "profile" in str(value) for value in flag_frame["v6_unmet"])
 
 
 def test_start_stop_buttons_render():
