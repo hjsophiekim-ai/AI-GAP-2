@@ -315,9 +315,9 @@ try:
         f"by=`{getattr(state, 'major_filter_enabled_by', None) or '-'}`"
     )
     st.info(
-        "강한 플래그 V2 기준: 10:30 이후 score >= max(required, 70) + price_impulse >= 1.5ATR, "
-        "또는 09:30~09:45 BLUE continuation, 14:00 이후 RED pullback reversal, "
-        "14:00 이후 BLUE capitulation reversal 프로파일만 매수 승인. "
+        "강한 플래그 V6 기준: confirmed 3분봉 플래그 확정 시점에만 판정. "
+        "score, price impulse, MACD hist, volume, EMA/VWAP, 장중 시간대 profile 조건을 사용. "
+        "opening/morning, midday trend/reversal, late rebound/capitulation profile만 진입 승인. "
         "그 외 플래그는 MAJOR_STRONG_PROFILE_FAILED로 차단."
     )
 
@@ -695,14 +695,16 @@ except Exception as exc:
 st.subheader("거래 원장")
 try:
     rows = ledger.load_execution_ledger(limit=300)
-    today_rows = [r for r in rows if str(r.get("timestamp") or "").startswith(trading_date)]
+    today_rows = ledger.filter_execution_rows_by_trading_date(rows, trading_date)
     st.caption(
         f"execution ledger path=`{ledger.EXECUTION_LEDGER_PATH}` · "
         f"loaded_rows={len(rows)} · today_rows={len(today_rows)}"
     )
-    if rows:
-        df = pd.DataFrame(rows)
+    if today_rows:
+        df = pd.DataFrame(today_rows)
         st.dataframe(df.iloc[::-1], use_container_width=True, height=360)
+    elif rows:
+        st.caption("오늘 원장 없음")
     else:
         st.caption("원장 없음")
 except Exception as exc:

@@ -1812,6 +1812,8 @@ This section supersedes older wording in this requirements document for MACD2 an
 This section supersedes older MACD2 V4/V5 strong-flag wording in this requirements document.
 
 - MACD2 strong-flag filter version is `MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT`.
+- MACD2 strong-flag filter default state is ON unless
+  `MACD2_MAJOR_FILTER_DEFAULT=false` is explicitly set.
 - The strong-flag toggle remains an entry gate only. It never creates flags and
   never gates Stop Loss, opposite-signal exits, user liquidation, or forced
   liquidation.

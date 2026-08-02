@@ -53,6 +53,7 @@ def e2e_session():
     state = state_store.default_state()
     state.auto_trade_on = True
     state.budget = 10_000_000.0
+    state.major_filter_enabled = False
     return svc, broker, state
 
 

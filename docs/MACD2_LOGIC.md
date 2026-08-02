@@ -369,7 +369,7 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - 표시명: **강한 플래그만 거래**
 - OFF: 기존 confirmed 신호가 모두 주문권한 보유
 - ON: MAJOR_FLAG 승인 신호만 주문권한 보유
-- 기본값 OFF. 환경변수 `MACD2_MAJOR_FILTER_DEFAULT=false`
+- 기본값 ON. 환경변수 `MACD2_MAJOR_FILTER_DEFAULT=false`를 명시하면 cold-start 기본값만 OFF로 바꿀 수 있다.
 - UI는 `Macd2Service.set_major_filter_enabled()` command만 기록한다. Streamlit이 Worker 상태를 직접 수정하거나 주문 함수를 호출하지 않는다.
 - 전략 실행 중 토글 변경: **다음 신규 confirmed 플래그부터** 적용. 이미 보유한 포지션의 Stop Loss·Profit Lock·강제청산에는 영향 없음. 토글 변경 시 기존 position을 즉시 청산하거나 신규 매수하지 않는다. `major_filter_enabled_at`과 변경 주체(`major_filter_enabled_by`)를 state에 기록한다.
 

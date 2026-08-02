@@ -86,6 +86,7 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     state = state_store.default_state()
     state.auto_trade_on = True
     state.budget = budget
+    state.major_filter_enabled = False
     return state
 
 

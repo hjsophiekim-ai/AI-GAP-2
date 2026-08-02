@@ -265,6 +265,35 @@ def _normalize_execution_timestamp(value: Any) -> str:
     return parsed.astimezone(config.KST).isoformat()
 
 
+def execution_row_trading_date(row: dict[str, Any]) -> str:
+    """Return YYYYMMDD for an execution row timestamp.
+
+    Execution rows are normally written as KST ISO strings
+    (``2026-07-31T09:03:00+09:00``), while some older tests/rows used compact
+    timestamps. Daily UI/stats must treat both forms as the same trading date.
+    """
+    text = str(row.get("timestamp") or "").strip()
+    if not text:
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 8:
+        return digits[:8]
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        parsed = parsed.replace(tzinfo=config.KST)
+    return parsed.astimezone(config.KST).strftime("%Y%m%d")
+
+
+def filter_execution_rows_by_trading_date(rows: list[dict[str, Any]], trading_date: str) -> list[dict[str, Any]]:
+    expected = "".join(ch for ch in str(trading_date or "") if ch.isdigit())[:8]
+    if len(expected) != 8:
+        return []
+    return [r for r in rows if execution_row_trading_date(r) == expected]
+
+
 def append_broker_direct_fill(fill: dict[str, Any], *, mode: str) -> bool:
     order_id = str(fill.get("order_id") or fill.get("odno") or "")
     symbol = str(fill.get("symbol") or fill.get("pdno") or "")
@@ -469,7 +498,7 @@ def summarize_daily_trading(
     or missing execution ledger — an empty ledger produces a well-formed
     zeroed result (UI must keep rendering).
     """
-    rows = [r for r in load_execution_ledger() if str(r.get("timestamp") or "").startswith(trading_date)]
+    rows = filter_execution_rows_by_trading_date(load_execution_ledger(), trading_date)
     if signal_ids is not None:
         rows = [r for r in rows if str(r.get("signal_id") or "") in signal_ids]
     budget_f = float(budget or config.DEFAULT_BUDGET)

@@ -225,6 +225,12 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         Direction(last_major_exit_raw) if last_major_exit_raw in _DIRECTION_VALUES else None
     )
     major_enabled_default = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
+    stored_major_filter_version = str(raw.get("major_filter_version") or "")
+    major_filter_version = stored_major_filter_version or config.MAJOR_FILTER_VERSION
+    major_filter_enabled = bool(raw.get("major_filter_enabled", major_enabled_default))
+    if stored_major_filter_version and stored_major_filter_version != config.MAJOR_FILTER_VERSION:
+        major_filter_version = config.MAJOR_FILTER_VERSION
+        major_filter_enabled = major_enabled_default
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         ui_mode=ui_mode,
@@ -325,10 +331,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         last_quote_stale_quote_ages=raw.get("last_quote_stale_quote_ages"),
         last_quote_stale_retry_count=raw.get("last_quote_stale_retry_count"),
         last_quote_stale_result=raw.get("last_quote_stale_result"),
-        major_filter_enabled=bool(raw.get("major_filter_enabled", major_enabled_default)),
+        major_filter_enabled=major_filter_enabled,
         major_filter_enabled_at=raw.get("major_filter_enabled_at"),
         major_filter_enabled_by=raw.get("major_filter_enabled_by"),
-        major_filter_version=str(raw.get("major_filter_version") or config.MAJOR_FILTER_VERSION),
+        major_filter_version=major_filter_version,
         daily_major_entry_count=int(raw.get("daily_major_entry_count") or 0),
         last_major_entry_at=raw.get("last_major_entry_at"),
         last_major_exit_at=raw.get("last_major_exit_at"),

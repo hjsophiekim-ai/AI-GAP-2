@@ -165,10 +165,11 @@ CONTINUATION_REENTRY_ENABLED = False
 OPENING_PROBE_ENABLED = False
 
 # ── Optional Hybrid MAJOR_FLAG filter (order gate only; confirmed flags unchanged) ──
-# UI toggle defaults OFF. Env MACD2_MAJOR_FILTER_DEFAULT may override the
-# cold-start default; runtime state / UI command still wins after start.
+# UI toggle defaults ON for V6 strong-flag trading. Env
+# MACD2_MAJOR_FILTER_DEFAULT may override the cold-start default; runtime
+# state / UI command still wins after start.
 MAJOR_FILTER_VERSION = "MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT"
-MAJOR_FILTER_DEFAULT = _env_bool("MACD2_MAJOR_FILTER_DEFAULT", False)
+MAJOR_FILTER_DEFAULT = _env_bool("MACD2_MAJOR_FILTER_DEFAULT", True)
 
 MAJOR_ENTRY_SCORE_MIN = _env_float("MACD2_MAJOR_ENTRY_SCORE_MIN", 65.0)
 MAJOR_REVERSAL_SCORE_MIN = _env_float("MACD2_MAJOR_REVERSAL_SCORE_MIN", 75.0)

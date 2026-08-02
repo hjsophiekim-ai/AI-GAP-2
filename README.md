@@ -454,6 +454,7 @@ For MACD2 and TSLA_AUTO, the latest requirements supersede older generic take-pr
 ## Current MACD2 Strong-Flag Filter
 
 - Default version: `MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT`.
+- Default state: ON, unless `MACD2_MAJOR_FILTER_DEFAULT=false` is explicitly set.
 - The filter is an entry gate only; it does not create flags or block exits.
 - July 2026 KIS replay result: 49 trades, 73.47% win rate, +17,560,065.27 KRW
   net PnL on 10,000,000 KRW per trade, +175.6007% return, 2.23 trades/day.

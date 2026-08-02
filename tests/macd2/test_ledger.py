@@ -387,6 +387,28 @@ def test_summarize_daily_trading_computes_pnl_and_stats():
     assert summary["max_drawdown"] == 2000.0  # peak 5000 -> trough 3000
 
 
+def test_summarize_daily_trading_matches_iso_kst_timestamps_only_for_requested_day():
+    row = _execution_row("iso-buy", side="BUY", fee=100.0)
+    row["timestamp"] = "2026-07-31T09:03:05+09:00"
+    ledger.append_execution(row)
+    row = _execution_row("iso-sell", side="SELL", net_pnl=5000.0, gross_pnl=5200.0, fee=200.0)
+    row["timestamp"] = "2026-07-31T09:09:05+09:00"
+    ledger.append_execution(row)
+    row = _execution_row("prior-day-sell", side="SELL", net_pnl=999999.0, gross_pnl=999999.0, fee=1.0)
+    row["timestamp"] = "2026-07-30T15:00:00+09:00"
+    ledger.append_execution(row)
+
+    rows = ledger.load_execution_ledger()
+    today_rows = ledger.filter_execution_rows_by_trading_date(rows, "20260731")
+    summary = ledger.summarize_daily_trading("20260731", budget=10_000_000)
+
+    assert [r["order_id"] for r in today_rows] == ["iso-buy", "iso-sell"]
+    assert summary["has_data"] is True
+    assert summary["buy_count"] == 1
+    assert summary["sell_count"] == 1
+    assert summary["net_pnl"] == 5000.0
+
+
 def test_backfill_broker_direct_fills_inserts_and_updates_by_order_id():
     fill = {
         "order_id": "direct-1",

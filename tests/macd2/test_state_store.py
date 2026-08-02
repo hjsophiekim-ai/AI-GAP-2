@@ -13,6 +13,8 @@ def test_default_state_is_stopped_and_mock():
     assert state.auto_trade_on is False
     assert state.mode == "mock"
     assert state.budget == config.DEFAULT_BUDGET
+    assert state.major_filter_enabled is True
+    assert state.major_filter_version == config.MAJOR_FILTER_VERSION
 
 
 def test_load_state_creates_no_file_until_saved(tmp_path):
@@ -81,6 +83,21 @@ def test_load_state_discards_unexpected_keys():
     loaded = state_store.load_state()
     serialized = state_store.serialize(loaded)
     assert "legacy_v1_only_field" not in serialized
+
+
+def test_load_state_turns_on_default_major_filter_when_saved_version_is_old():
+    state_store.ensure_paths()
+    state_store.STATE_PATH.write_text(
+        '{"schema_version": 1, "ui_mode": "STOPPED", "mode": "mock", '
+        '"auto_trade_on": false, "major_filter_enabled": false, '
+        '"major_filter_version": "MAJOR_FILTER_HYBRID_V5"}',
+        encoding="utf-8",
+    )
+
+    loaded = state_store.load_state()
+
+    assert loaded.major_filter_enabled is True
+    assert loaded.major_filter_version == config.MAJOR_FILTER_VERSION
 
 
 def test_state_path_is_macd2_owned():
