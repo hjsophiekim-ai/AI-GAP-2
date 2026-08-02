@@ -439,3 +439,21 @@ Python `zoneinfo`. Trading days, holidays, and early closes come from
   fail closed for new entries.
 
 See `docs/US_MARKET_SESSION_POLICY.md` for the full phase table.
+
+---
+
+## Current MACD2 / TSLA_AUTO Exit Policy
+
+For MACD2 and TSLA_AUTO, the latest requirements supersede older generic take-profit wording in this README:
+
+- Stop Loss is evaluated on completed 3-minute bars of the traded ETF itself, excluding the entry execution 3-minute bar.
+- Profit Lock exit is disabled: `PROFIT_LOCK_EXIT_ENABLED = False`.
+- Profit Lock peak/giveback values may remain as diagnostics only and must not trigger a sell order.
+- Profitable positions are held until opposite confirmed flag switching, Stop Loss, forced liquidation, or user liquidation.
+
+## Current MACD2 Strong-Flag Filter
+
+- Default version: `MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT`.
+- The filter is an entry gate only; it does not create flags or block exits.
+- July 2026 KIS replay result: 49 trades, 73.47% win rate, +17,560,065.27 KRW
+  net PnL on 10,000,000 KRW per trade, +175.6007% return, 2.23 trades/day.

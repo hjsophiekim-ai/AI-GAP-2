@@ -37,7 +37,8 @@ def update_profit_lock_tracker(
     peak = max(float(peak_net_return), float(current_net_return))
     active = bool(profit_lock_active) or float(current_net_return) >= float(activate_pct)
     giveback = max(0.0, peak - float(current_net_return)) if active else 0.0
-    should_exit = active and giveback >= float(giveback_pp)
+    exit_enabled = bool(getattr(config, "PROFIT_LOCK_EXIT_ENABLED", True))
+    should_exit = exit_enabled and active and giveback >= float(giveback_pp)
     return ProfitLockState(
         peak_net_return=round(peak, 6), current_net_return=round(float(current_net_return), 6),
         giveback_pct=round(giveback, 6), profit_lock_active=active, should_exit=should_exit,

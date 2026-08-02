@@ -357,52 +357,188 @@ def _strong_profit_profile_ok(
 ) -> tuple[bool, str]:
     """Final strong-trade profile gate.
 
-    The base score alone admitted too many quick reversals in the 2026-07-30/31
-    KIS replay. Keep the original component scoring, but only approve profiles
-    that showed positive follow-through in that replay set.
+    V6 keeps the original component score, then admits only the intraday
+    profiles that held up in the 2026-07-01~31 KIS replay with filter OFF,
+    3-minute stop loss, and Profit Lock exit disabled.
     """
     decision_time = now.astimezone(config.KST).time()
     price_impulse = float(metrics.get("price_impulse_atr") or 0.0)
+    hist_impulse = float(metrics.get("hist_impulse_atr") or 0.0)
     body_atr = float(metrics.get("body_atr") or 0.0)
     volume_ratio = float(metrics.get("volume_ratio") or 0.0)
-    ema10_ok = bool(metrics.get("ema10_ok"))
-    ema20_or_vwap_ok = bool(metrics.get("ema20_or_vwap_ok"))
+    trend_ok = bool(metrics.get("ema20_or_vwap_ok"))
+    t_0900 = datetime.strptime("09:00", "%H:%M").time()
+    t_0905 = datetime.strptime("09:05", "%H:%M").time()
+    t_0910 = datetime.strptime("09:10", "%H:%M").time()
+    t_0920 = datetime.strptime("09:20", "%H:%M").time()
+    t_0930 = datetime.strptime("09:30", "%H:%M").time()
+    t_1000 = datetime.strptime("10:00", "%H:%M").time()
+    t_1015 = datetime.strptime("10:15", "%H:%M").time()
+    t_1030 = datetime.strptime("10:30", "%H:%M").time()
+    t_1045 = datetime.strptime("10:45", "%H:%M").time()
+    t_1145 = datetime.strptime("11:45", "%H:%M").time()
+    t_1200 = datetime.strptime("12:00", "%H:%M").time()
+    t_1230 = datetime.strptime("12:30", "%H:%M").time()
+    t_1250 = datetime.strptime("12:50", "%H:%M").time()
+    t_1300 = datetime.strptime("13:00", "%H:%M").time()
+    t_1315 = datetime.strptime("13:15", "%H:%M").time()
+    t_1330 = datetime.strptime("13:30", "%H:%M").time()
+    t_1420 = datetime.strptime("14:20", "%H:%M").time()
+    t_1430 = datetime.strptime("14:30", "%H:%M").time()
+    t_1445 = datetime.strptime("14:45", "%H:%M").time()
 
-    if decision_time >= config.MAJOR_STRONG_START and score >= max(float(required_score), 70.0) and price_impulse >= 1.50:
-        return True, "score>=70 and price_impulse>=1.5ATR after strong-start"
+    if (
+        t_0900 <= decision_time <= t_0930
+        and score >= 60.0
+        and price_impulse >= 1.00
+        and hist_impulse >= 0.08
+        and volume_ratio >= 0.85
+        and trend_ok
+    ):
+        if direction == Direction.UP_RED and t_0910 <= decision_time <= t_0920 and volume_ratio >= 2.0:
+            return False, "V6 opening red spike blocked"
+        return True, "V6 opening impulse"
 
     if (
         direction == Direction.DOWN_BLUE
-        and datetime.strptime("09:30", "%H:%M").time() <= decision_time <= datetime.strptime("09:45", "%H:%M").time()
-        and 0.70 <= price_impulse <= 1.10
-        and body_atr <= 0.25
-        and volume_ratio < 1.0
-        and ema10_ok
-        and ema20_or_vwap_ok
+        and t_0910 <= decision_time <= t_0920
+        and 35.0 <= score <= 60.0
+        and 0.45 <= price_impulse <= 0.65
+        and 0.06 <= hist_impulse <= 0.16
+        and 0.85 <= volume_ratio <= 1.20
+        and trend_ok
     ):
-        return True, "opening blue continuation profile"
+        return True, "V6 opening blue soft trend"
 
     if (
         direction == Direction.UP_RED
-        and decision_time >= datetime.strptime("14:00", "%H:%M").time()
-        and 0.55 <= price_impulse <= 0.90
-        and body_atr <= 0.25
-        and volume_ratio <= 1.0
-        and not ema20_or_vwap_ok
+        and t_0905 <= decision_time <= t_0920
+        and 35.0 <= score <= 70.0
+        and 0.45 <= price_impulse <= 2.30
+        and hist_impulse >= 0.12
+        and 0.75 <= volume_ratio <= 1.05
+        and trend_ok
     ):
-        return True, "late red pullback reversal profile"
+        return True, "V6 opening red hist reversal"
+
+    if (
+        direction == Direction.UP_RED
+        and t_0930 <= decision_time <= t_1015
+        and score >= 45.0
+        and price_impulse >= 1.30
+        and hist_impulse >= 0.07
+    ):
+        return True, "V6 morning red recovery"
 
     if (
         direction == Direction.DOWN_BLUE
-        and decision_time >= datetime.strptime("14:00", "%H:%M").time()
-        and price_impulse >= 0.55
-        and body_atr >= 0.55
-        and volume_ratio >= 1.20
-        and not ema20_or_vwap_ok
+        and t_1030 <= decision_time <= t_1230
+        and 30.0 <= score
+        and 0.65 <= price_impulse
+        and hist_impulse >= 0.04
+        and 0.45 <= volume_ratio
     ):
-        return True, "late blue capitulation reversal profile"
+        return True, "V6 morning blue follow"
 
-    return False, "no strong profit profile matched"
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1000 <= decision_time <= t_1045
+        and score >= 50.0
+        and 0.80 <= price_impulse <= 2.20
+        and 0.005 <= hist_impulse <= 0.03
+        and 0.90 <= volume_ratio <= 1.20
+        and trend_ok
+    ):
+        return True, "V6 morning blue pullback"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1250 <= decision_time <= t_1315
+        and 45.0 <= score <= 55.0
+        and 0.55 <= price_impulse <= 0.70
+        and 0.06 <= hist_impulse <= 0.08
+        and body_atr >= 0.50
+        and 1.00 <= volume_ratio <= 1.20
+        and not trend_ok
+    ):
+        return True, "V6 early afternoon blue reversal"
+
+    if (
+        t_1230 <= decision_time <= t_1430
+        and score >= 70.0
+        and price_impulse >= 1.00
+        and hist_impulse >= 0.06
+        and volume_ratio >= 1.00
+        and trend_ok
+    ):
+        return True, "V6 trend continuation"
+
+    if (
+        direction == Direction.UP_RED
+        and t_1330 <= decision_time <= t_1420
+        and score <= 35.0
+        and price_impulse <= 0.85
+        and 0.00 <= hist_impulse <= 0.05
+        and 0.70 <= volume_ratio <= 1.20
+    ):
+        return True, "V6 late red rebound"
+
+    if (
+        direction == Direction.UP_RED
+        and t_1145 <= decision_time <= t_1200
+        and score <= 20.0
+        and -2.10 <= price_impulse <= -0.20
+        and 0.00 <= hist_impulse <= 0.09
+        and body_atr >= 0.65
+        and 0.65 <= volume_ratio <= 0.80
+    ):
+        return True, "V6 midday red contrarian"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1330 <= decision_time <= t_1445
+        and score >= 60.0
+        and price_impulse >= 1.25
+        and hist_impulse >= 0.06
+        and volume_ratio >= 1.00
+    ):
+        return True, "V6 late blue capitulation"
+
+    if (
+        direction == Direction.DOWN_BLUE
+        and t_1300 <= decision_time <= datetime.strptime("14:00", "%H:%M").time()
+        and score <= 30.0
+        and 0.10 <= price_impulse <= 0.45
+        and 0.04 <= hist_impulse <= 0.09
+        and 0.60 <= volume_ratio <= 0.95
+        and trend_ok
+    ):
+        return True, "V6 afternoon blue reversal"
+
+    if (
+        direction == Direction.UP_RED
+        and datetime.strptime("11:00", "%H:%M").time() <= decision_time <= t_1330
+        and score >= 55.0
+        and price_impulse >= 0.90
+        and hist_impulse >= 0.03
+        and 0.55 <= volume_ratio
+    ):
+        if decision_time <= datetime.strptime("11:30", "%H:%M").time() and price_impulse >= 2.20 and not trend_ok:
+            return False, "V6 red overextended blocked"
+        return True, "V6 midday red continuation"
+
+    if (
+        direction == Direction.UP_RED
+        and t_1200 <= decision_time <= t_1330
+        and 45.0 <= score <= 65.0
+        and 0.70 <= price_impulse <= 1.70
+        and 0.025 <= hist_impulse <= 0.08
+        and 0.75 <= volume_ratio <= 1.15
+        and trend_ok
+    ):
+        return True, "V6 moderate red trend"
+
+    return False, "no V6 July frequency-profit profile matched"
 
 
 def evaluate_major_flag(
@@ -531,14 +667,24 @@ def evaluate_major_flag(
             metrics=metrics,
         )
 
+    strong_ok, strong_reason = _strong_profit_profile_ok(
+        direction=direction,
+        score=total,
+        required_score=required_score,
+        metrics=metrics,
+        now=now,
+    )
+
     # Required price confirmation: 4-bar breakout OR impulse>=0.35 ATR OR EMA20 OR VWAP.
+    # V6 may explicitly approve a narrow contrarian/reversal profile even when
+    # the generic price-confirmation gate fails.
     price_confirm_ok = (
         bool(metrics.get("breakout"))
         or float(metrics.get("price_impulse_atr") or 0.0) >= float(config.MAJOR_PRICE_IMPULSE_T1)
         or bool(metrics.get("ema20_ok"))
         or bool(metrics.get("vwap_ok"))
     )
-    if not price_confirm_ok:
+    if not price_confirm_ok and not strong_ok:
         reasons.append("price confirmation failed (breakout / impulse>=0.35ATR / EMA20 / VWAP)")
         return _reject(
             decision=config.MAJOR_PRICE_CONFIRMATION_FAILED,
@@ -552,13 +698,6 @@ def evaluate_major_flag(
             metrics=metrics,
         )
 
-    strong_ok, strong_reason = _strong_profit_profile_ok(
-        direction=direction,
-        score=total,
-        required_score=required_score,
-        metrics=metrics,
-        now=now,
-    )
     if not strong_ok:
         reasons.append(strong_reason)
         if total < required_score:

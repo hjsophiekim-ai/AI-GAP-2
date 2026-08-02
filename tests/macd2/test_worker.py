@@ -753,7 +753,7 @@ def test_stop_loss_exits_full_position():
     assert rows[-1]["exit_reason"] == config.EXIT_STOP_LOSS
 
 
-def test_profit_lock_exits_on_giveback():
+def test_profit_lock_tracks_giveback_without_exit():
     prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
     df_1m = _1m_frame(prior_day, _sine_1m_closes(300))
     now = prior_day + timedelta(minutes=300, seconds=5)
@@ -772,8 +772,9 @@ def test_profit_lock_exits_on_giveback():
 
     result = run_once(broker=broker, market_data=svc, state=state, now=now)
 
-    assert any(a.startswith("PROFIT_LOCK:") for a in result.actions)
-    assert state.position is None
+    assert not any(a.startswith("PROFIT_LOCK:") for a in result.actions)
+    assert state.position is not None
+    assert state.profit_lock_active is True
 
 
 def test_forced_liquidation_at_1500_overrides_everything():

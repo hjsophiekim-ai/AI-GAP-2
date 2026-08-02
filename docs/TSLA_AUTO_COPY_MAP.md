@@ -30,7 +30,7 @@ MACD2(`app/trading/macd2/`) 파일별 재사용 가능성 분석. 각 파일을 
 | MACD2 원본 파일 | `app/trading/macd2/config.py` |
 | TSLA_AUTO 예정 파일 | `app/trading/tsla_auto/config.py` |
 | 분류 | **COPY_WITH_US_MARKET_CHANGE** |
-| 유지 기능 | `EMA_FAST/SLOW/SIGNAL`, `STOP_LOSS_NET_PCT`, `PROFIT_LOCK_ACTIVATE_NET_PCT`, `PROFIT_LOCK_GIVEBACK_PP`, `MAJOR_*` Hybrid 필터 상수 전체(§`TSLA_AUTO_LOGIC.md` 표), `QUOTE_MAX_AGE_SEC`, `WORKER_INTERVAL_SEC`, ledger/state 파일명 상수 패턴 |
+| 유지 기능 | `EMA_FAST/SLOW/SIGNAL`, `STOP_LOSS_NET_PCT`, Profit Lock 진단용 tracker 상수(`PROFIT_LOCK_ACTIVATE_NET_PCT`, `PROFIT_LOCK_GIVEBACK_PP`), `PROFIT_LOCK_EXIT_ENABLED=False`, `MAJOR_*` Hybrid 필터 상수 전체(§`TSLA_AUTO_LOGIC.md` 표), `QUOTE_MAX_AGE_SEC`, `WORKER_INTERVAL_SEC`, ledger/state 파일명 상수 패턴 |
 | 미국시장 변경점 | `KST`→`America/New_York`(zoneinfo), `SESSION_OPEN(09:00)`→`09:30`, `NEW_ENTRY_CUTOFF(14:55)`→`15:40`(+신규 `LATE_NEW_BUY_CUTOFF_ET=15:45`), `FORCE_LIQUIDATE_AT(15:00)`→`15:50`+최종확인 `15:58`. `TRADE_SYMBOLS=(LONG_SYMBOL, INVERSE_SYMBOL)`→`(TSLL, TSLZ)`, `WATCH_SYMBOL="000660"`→`"TSLA"`. 신규 상수: `STOP_LOSS_REENTRY_COOLDOWN_MIN=15`, `STOP_LOSS_REENTRY_OVERRIDE_SCORE_MIN`(=`max(85, 문턱)` 계산용 베이스), `DEFAULT_BUDGET`→USD 단위, `TSLA_AUTO_ORDER_USAGE_RATIO` |
 | KIS 해외 API 변경점 | 없음(순수 상수 파일) |
 | MACD2와 분리방법 | 별도 모듈 경로, `STRATEGY_NAME="TSLA_AUTO"`, 별도 `RUNTIME_STATE_FILENAME`/`SIGNAL_LEDGER_FILENAME`/`EXECUTION_LEDGER_FILENAME` |
@@ -184,11 +184,11 @@ MACD2(`app/trading/macd2/`) 파일별 재사용 가능성 분석. 각 파일을 
 | MACD2 원본 파일 | `app/trading/macd2/risk_exit.py` |
 | TSLA_AUTO 예정 파일 | `app/trading/tsla_auto/risk_exit.py` |
 | 분류 | **COPY_WITH_US_MARKET_CHANGE** + 신규 로직 추가 |
-| 유지 기능 | `check_stop_loss`/`update_profit_lock_tracker`/`evaluate_position_exits`의 순수 함수 구조와 우선순위(손절 > Profit Lock) |
+| 유지 기능 | `check_stop_loss`/`update_profit_lock_tracker`/`evaluate_position_exits`의 순수 함수 구조. Profit Lock peak/giveback tracker는 유지하지만 `PROFIT_LOCK_EXIT_ENABLED=False` 상태에서는 청산 사유를 만들지 않는다. |
 | 미국시장 변경점 | 없음(비율 계산 자체는 통화 무관) |
 | KIS 해외 API 변경점 | 없음(순수 함수, net_return_pct는 상위에서 계산해 전달받음) |
 | MACD2와 분리방법 | 별도 모듈 |
-| 위험 | **(신규)** 손절 후 15분 쿨다운 + 하루 1회 85점 예외 로직을 이 파일에 추가할지 `worker.py`에 둘지 설계 결정 필요(현재 설계안은 `worker.py`의 게이트로 배치 — §`TSLA_AUTO_LOGIC.md`) — 이 파일 자체의 손절/Profit Lock 판정 함수는 변경하지 않는다 |
+| 위험 | **(신규)** 손절 후 15분 쿨다운 + 하루 1회 85점 예외 로직을 이 파일에 추가할지 `worker.py`에 둘지 설계 결정 필요(현재 설계안은 `worker.py`의 게이트로 배치 — §`TSLA_AUTO_LOGIC.md`). Profit Lock exit는 비활성화되어야 하며, tracker 값이 새 SELL을 만들면 안 된다. |
 | 필수 테스트 | `tests/macd2/test_risk_exit.py` 그대로 이식(로직 변경 없음이므로 값만 확인) |
 
 ## 13. `cost_engine`(`app/trading/trading_cost_engine.py` — MACD2 전용 파일이 아니라 공용 모듈)

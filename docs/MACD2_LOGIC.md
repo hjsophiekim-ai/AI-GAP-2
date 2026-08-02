@@ -11,6 +11,123 @@
 - Histogram sign is not part of the KIS color rule. A less-negative histogram can be `UP_RED`; a less-positive histogram can be `DOWN_BLUE`.
 - `flag_time` and `signal_id` use the completed bar's start timestamp (`bar_start_at`), while tradeable confirmation happens at `bar_start_at + 3 minutes`.
 
+## 2026-08-02 Exit Rule: 3-Minute Confirmed Bars
+
+This rule supersedes any older MACD2 wording that describes Stop Loss or
+Profit Lock as a 1-minute immediate exit check.
+
+- MACD2 still uses KIS 1-minute OHLCV as the raw data source.
+- Exit monitoring resamples the traded ETF itself (`0193T0` or `0197X0`) into
+  completed 3-minute bars using the same left-labeled session grid as signals.
+- The 3-minute bar that contains the entry fill is an execution bar and is not
+  eligible for Stop Loss or Profit Lock evaluation.
+- Stop Loss is evaluated from the next completed 3-minute bar close onward.
+- Stop Loss: net return at the completed 3-minute close is `<= -1.5%`.
+- Profit Lock exit is disabled by the 2026-08-02 rule below. Peak/giveback
+  values may still be tracked for diagnostics only.
+- Opposite confirmed signal switching and forced liquidation keep their existing
+  priority, but risk exits must not be triggered by intra-entry-bar 1-minute
+  lows or closes.
+
+Example: if a `09:51` flag is confirmed and bought at `09:54`, the `09:54`
+3-minute ETF bar is the execution bar. The first eligible risk-exit check is the
+next completed ETF 3-minute bar close.
+
+## 2026-08-02 Profit Lock Exit Disabled
+
+This rule supersedes older MACD2 wording that says Profit Lock should liquidate
+after a `0.8 percentage point` giveback.
+
+- MACD2 still tracks `peak_net_return`, `current_net_return`, `giveback_pct`,
+  and `profit_lock_active` for diagnostics, UI, and ledger continuity.
+- Profit Lock must not create a sell order.
+- A profitable position is held until one of these exits occurs:
+  opposite confirmed flag switch, Stop Loss on completed 3-minute ETF close,
+  forced liquidation, or user liquidation.
+- Stop Loss remains active at completed-3-minute net return `<= -1.5%`.
+- The config flag is `PROFIT_LOCK_EXIT_ENABLED = False`.
+- The legacy constants `PROFIT_LOCK_ACTIVATE_NET_PCT = 1.5` and
+  `PROFIT_LOCK_GIVEBACK_PP = 0.8` remain only as diagnostic tracker thresholds
+  unless Profit Lock exit is explicitly re-enabled by a later requirements
+  change.
+
+## 2026-08-02 MAJOR_FLAG V6 Gate
+
+The default "strong flag only" MACD2 entry filter is now
+`MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT`.
+
+Replay basis:
+- Period: 2026-07-01 through 2026-07-31 KIS 1-minute cache, excluding
+  2026-07-17 because KIS returned zero candles for Hynix, KODEX leverage, and
+  inverse.
+- Exit model: 3-minute net stop loss at -1.5%, opposite confirmed flag, and
+  forced liquidation. Profit Lock tracking remains, but Profit Lock exit is
+  disabled.
+- Result: 49 trades, 36 wins, 13 losses, 73.47% win rate, +17,560,065.27 KRW
+  net PnL on 10,000,000 KRW per trade, +175.6007% return, 2.23 trades/day.
+
+V6 uses only information known at the confirmed flag decision time. It is an
+entry gate only. It never creates flags, changes ETF mapping, or gates Stop
+Loss, opposite-signal exits, user liquidation, or forced liquidation.
+
+V6 approved profiles:
+- Opening impulse: 09:00-09:30, score >= 60, price impulse >= 1.00 ATR, hist
+  impulse >= 0.08 ATR, volume ratio >= 0.85, and EMA20/VWAP trend confirmation.
+  Opening RED spike at 09:10-09:20 with volume ratio >= 2.0 is blocked.
+- Opening BLUE soft trend: 09:10-09:20, BLUE, score 35-60, price impulse
+  0.45-0.65 ATR, hist impulse 0.06-0.16 ATR, volume ratio 0.85-1.20, trend
+  confirmation.
+- Opening RED histogram reversal: 09:05-09:20, RED, score 35-70, price impulse
+  0.45-2.30 ATR, hist impulse >= 0.12 ATR, volume ratio 0.75-1.05, trend
+  confirmation.
+- Morning RED recovery: 09:30-10:15, RED, score >= 45, price impulse >= 1.30
+  ATR, hist impulse >= 0.07 ATR.
+- Morning BLUE follow: 10:30-12:30, BLUE, score >= 30, price impulse
+  >= 0.65 ATR, hist impulse >= 0.04 ATR, volume ratio >= 0.45.
+- Morning BLUE pullback: 10:00-10:45, BLUE, score >= 50, price impulse
+  0.80-2.20 ATR, hist impulse 0.005-0.03 ATR, volume ratio 0.90-1.20, trend
+  confirmation.
+- Early afternoon BLUE reversal: 12:50-13:15, BLUE, score 45-55, price impulse
+  0.55-0.70 ATR, hist impulse 0.06-0.08 ATR, body >= 0.50 ATR, volume ratio
+  1.00-1.20, without trend confirmation.
+- Trend continuation: 12:30-14:30, any direction, score >= 70, price impulse
+  >= 1.00 ATR, hist impulse >= 0.06 ATR, volume ratio >= 1.00, trend
+  confirmation.
+- Late RED rebound: 13:30-14:20, RED, score <= 35, price impulse <= 0.85 ATR,
+  hist impulse 0.00-0.05 ATR, volume ratio 0.70-1.20.
+- Midday RED contrarian: 11:45-12:00, RED, score <= 20, price impulse
+  -2.10 to -0.20 ATR, hist impulse 0.00-0.09 ATR, body >= 0.65 ATR, volume
+  ratio 0.65-0.80.
+- Late BLUE capitulation: 13:30-14:45, BLUE, score >= 60, price impulse
+  >= 1.25 ATR, hist impulse >= 0.06 ATR, volume ratio >= 1.00.
+- Afternoon BLUE reversal: 13:00-14:00, BLUE, score <= 30, price impulse
+  0.10-0.45 ATR, hist impulse 0.04-0.09 ATR, volume ratio 0.60-0.95, trend
+  confirmation.
+- Midday RED continuation: 11:00-13:30, RED, score >= 55, price impulse
+  >= 0.90 ATR, hist impulse >= 0.03 ATR, volume ratio >= 0.55. 11:00-11:30
+  RED with price impulse >= 2.20 ATR and no trend confirmation is blocked as
+  overextended.
+- Moderate RED trend: 12:00-13:30, RED, score 45-65, price impulse 0.70-1.70
+  ATR, hist impulse 0.025-0.08 ATR, volume ratio 0.75-1.15, trend confirmation.
+
+## 2026-08-02 MAJOR_FLAG V4 Gate
+
+When the "강한 플래그만 거래" toggle is ON, MACD2 uses the V4 frequency-profit
+gate below for order approval. Confirmed flags are still generated and recorded
+even when V4 blocks the order.
+
+- Version label: `MAJOR_FILTER_HYBRID_V4_FREQ_PROFIT`.
+- Confirmation time window: `09:00 <= confirmed_at < 14:30`.
+- Minimum total score: `score >= 60`.
+- Minimum price impulse: `price_impulse_atr >= 0.55`.
+- RED (`UP_RED`) additional condition: `hist_impulse_atr >= 0.08`.
+- BLUE (`DOWN_BLUE`) additional condition: if EMA20/VWAP trend confirmation is
+  false, require `volume_ratio >= 0.80`.
+- V4 is an entry filter only. Stop Loss, opposite-signal sell leg, user
+  liquidation, and forced liquidation remain active regardless of the toggle.
+  Profit Lock exit remains disabled unless a later requirements change
+  explicitly re-enables it.
+
 본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가, 2026-07-31 플래그 정합성 수정 — 진행봉 candidate 주문권한 재제거·1분봉 완전성 게이트·Worker 세션/SHA 기준 통계 분리). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
 
 ## 목적

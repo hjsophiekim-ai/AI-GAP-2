@@ -633,6 +633,57 @@ MACD2와 TSLA_AUTO를 동시에 실행할 수 있어야 한다. 필수:
 - ETF 방향 변경 금지(`UP_RED→TSLL`, `DOWN_BLUE→TSLZ` 고정)
 - Stop Loss, Profit Lock, 15:40/15:45 ET 신규진입 금지, 15:50 ET 강제청산 규칙 임의 변경 금지
 - MACD2/MACD v1/Enhanced 수정 금지
+
+---
+
+## 2026-08-02 Exit Rule: 3-Minute Confirmed Bars
+
+This rule supersedes older TSLA_AUTO wording that describes Stop Loss or Profit
+Lock as a 1-minute or instant fresh-price exit check.
+
+- TSLA_AUTO still uses TSLA and traded ETF 1-minute OHLCV as raw source data.
+- Stop Loss and Profit Lock must be evaluated on completed 3-minute bars of the
+  traded ETF itself (`TSLL` for `UP_RED`, `TSLZ` for `DOWN_BLUE`).
+- The 3-minute bar that contains the entry fill is an execution bar and is not
+  eligible for risk-exit judgment.
+- The first eligible Stop Loss / Profit Lock check is the next completed
+  3-minute ETF bar close.
+- Stop Loss remains net return `<= -1.5%`.
+- Profit Lock exit is disabled. Peak/giveback values may still be tracked for
+  diagnostics only, but they must not create a sell order.
+- Profitable positions are held until opposite confirmed flag switching, Stop
+  Loss on completed 3-minute ETF close, forced liquidation, or user liquidation.
+- Forced liquidation and opposite-signal sell legs keep their existing priority.
+- A 1-minute low/close inside the entry execution bar must not trigger Stop Loss.
+
+## 2026-08-02 Strong-Flag V4 Baseline
+
+TSLA_AUTO copies the MACD2 V4 strong-flag baseline unless a later TSLA-specific
+walk-forward study changes it.
+
+- Version label: `MAJOR_FILTER_HYBRID_V4_FREQ_PROFIT`.
+- Confirmation time window uses the active US market session equivalent of
+  `09:00 <= confirmed_at < 14:30` in MACD2. The exact TSLA_AUTO clock must be
+  derived from `USMarketSessionState`; fixed KST examples are display-only.
+- Minimum total score: `score >= 60`.
+- Minimum price impulse: `price_impulse_atr >= 0.55`.
+- RED (`UP_RED`, TSLL) requires `hist_impulse_atr >= 0.08`.
+- BLUE (`DOWN_BLUE`, TSLZ) requires `volume_ratio >= 0.80` when EMA20/VWAP trend
+  confirmation is false.
+- V4 gates entries only. Stop Loss, opposite-signal sell, user liquidation, and
+  forced liquidation are independent of the strong-flag toggle. Profit Lock exit
+  remains disabled unless a later requirements change explicitly re-enables it.
+
+## 2026-08-02 Profit Lock Exit Disabled
+
+This rule supersedes older TSLA_AUTO wording that says Profit Lock should exit
+after a giveback.
+
+- Config flag: `PROFIT_LOCK_EXIT_ENABLED = False`.
+- `PROFIT_LOCK_ACTIVATE_NET_PCT` and `PROFIT_LOCK_GIVEBACK_PP` remain only as
+  diagnostic tracker thresholds while this flag is false.
+- `EXIT_PROFIT_LOCK` may remain as a legacy ledger value for old rows, but new
+  strategy exits must not use it while Profit Lock exit is disabled.
 - 운영 `data/` 파일 수정 금지
 - 실제 KIS 주문 테스트 금지
 - 새 프레임워크 도입 또는 대규모 리팩토링 금지

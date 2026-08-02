@@ -1790,3 +1790,38 @@ MOCK·REAL 동일 규칙. 워커 틱(≈5초)마다 보유 ETF **실제 시세(m
 - 고정 +3% TP를 live MOCK/REAL에 재도입하는 것.
 - 기본값으로 continuation re-entry 또는 opening probe를 다시 켜는 것.
 
+
+---
+
+## 2026-08-02 Latest Requirements: 3-Minute Exit, Profit Lock Disabled, MACD2 V4
+
+This section supersedes older wording in this requirements document for MACD2 and TSLA_AUTO risk exits and MACD2 V4 strong-flag filtering.
+
+- MACD2 and TSLA_AUTO Stop Loss checks must use completed 3-minute bars of the traded ETF itself, not immediate 1-minute-bar checks.
+- The 3-minute bar that contains the entry fill is an execution bar and must be excluded from Stop Loss judgment.
+- Profit Lock exit is disabled for both MACD2 and TSLA_AUTO: `PROFIT_LOCK_EXIT_ENABLED = False`.
+- Profit Lock peak/giveback fields may remain for diagnostics, UI, and backwards compatible ledgers, but must not trigger a sell order.
+- Profitable positions are held until opposite confirmed flag switching, Stop Loss on completed 3-minute ETF close, forced liquidation, or user liquidation.
+- Stop Loss threshold remains net return `<= -1.5%`.
+- Legacy Profit Lock constants `PROFIT_LOCK_ACTIVATE_NET_PCT = 1.5` and `PROFIT_LOCK_GIVEBACK_PP = 0.8` remain diagnostic only unless a later requirements change explicitly re-enables Profit Lock exits.
+- MACD2 V4 strong-flag gate is `MAJOR_FILTER_HYBRID_V4_FREQ_PROFIT`: `09:00 <= confirmed_at < 14:30`, `score >= 60`, `price_impulse_atr >= 0.55`, RED requires `hist_impulse_atr >= 0.08`, and BLUE without EMA20/VWAP trend confirmation requires `volume_ratio >= 0.80`.
+- V4 gates entries only. Stop Loss, opposite-signal sell, forced liquidation, and user liquidation remain active regardless of the strong-flag toggle.
+
+## 2026-08-02 Latest Requirements: MACD2 V6 Strong-Flag Default
+
+This section supersedes older MACD2 V4/V5 strong-flag wording in this requirements document.
+
+- MACD2 strong-flag filter version is `MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT`.
+- The strong-flag toggle remains an entry gate only. It never creates flags and
+  never gates Stop Loss, opposite-signal exits, user liquidation, or forced
+  liquidation.
+- V6 is evaluated at confirmed 3-minute flag decision time using only completed
+  3-minute bars known at that time.
+- The July 2026 replay basis is 2026-07-01 through 2026-07-31 KIS 1-minute
+  data, excluding 2026-07-17 because KIS returned zero candles for Hynix,
+  KODEX leverage, and inverse.
+- Replay result with 3-minute Stop Loss and Profit Lock exit disabled:
+  49 trades, 36 wins, 13 losses, 73.47% win rate, +17,560,065.27 KRW net PnL
+  on 10,000,000 KRW per trade, +175.6007% return, 2.23 trades/day.
+- V6 approved profiles are documented in `docs/MACD2_LOGIC.md` under
+  `2026-08-02 MAJOR_FLAG V6 Gate`.

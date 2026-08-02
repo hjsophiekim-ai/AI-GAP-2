@@ -30,11 +30,11 @@ def test_profit_lock_not_active_below_threshold():
     assert tracker.should_exit is False
 
 
-def test_profit_lock_exits_on_giveback_boundary():
-    # peak 4.2, current 3.4 -> giveback 0.8pp == threshold -> exit
+def test_profit_lock_tracks_giveback_without_exit():
+    # peak 4.2, current 3.4 -> giveback 0.8pp, but Profit Lock exits are disabled.
     tracker = update_profit_lock_tracker(current_net_return=3.4, peak_net_return=4.2, profit_lock_active=True)
     assert tracker.giveback_pct == 0.8
-    assert tracker.should_exit is True
+    assert tracker.should_exit is False
 
 
 def test_profit_lock_no_exit_just_under_giveback_boundary():
@@ -54,9 +54,9 @@ def test_evaluate_position_exits_stop_loss_takes_priority_over_profit_lock():
     assert decision.exit_reason == config.EXIT_STOP_LOSS
 
 
-def test_evaluate_position_exits_profit_lock_when_no_stop_loss():
+def test_evaluate_position_exits_holds_when_profit_lock_would_have_triggered():
     decision = evaluate_position_exits(current_net_return=3.4, peak_net_return=4.2, profit_lock_active=True)
-    assert decision.exit_reason == config.EXIT_PROFIT_LOCK
+    assert decision.exit_reason is None
 
 
 def test_evaluate_position_exits_hold_when_neither_triggered():
@@ -70,4 +70,4 @@ def test_evaluate_position_exits_example_from_docs():
     assert decision.peak_net_return == 4.2
     assert decision.current_net_return == 3.4
     assert decision.giveback_pct == 0.8
-    assert decision.exit_reason == config.EXIT_PROFIT_LOCK
+    assert decision.exit_reason is None

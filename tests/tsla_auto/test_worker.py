@@ -310,7 +310,7 @@ def test_stop_loss_exits_full_position():
     assert state.last_stop_loss_exit_at is not None
 
 
-def test_profit_lock_exits_on_giveback():
+def test_profit_lock_tracks_giveback_without_exit():
     svc, state, broker, now = _confirmed_up_scenario()
     run_once(broker=broker, market_data=svc, state=state, now=now)
     entry_price = state.position.avg_price
@@ -320,8 +320,9 @@ def test_profit_lock_exits_on_giveback():
     assert state.profit_lock_active is True
     svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, entry_price * 1.015, datetime.now(ET), 0.0, "test", None)
     result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=10))
-    assert result.actions == [f"PROFIT_LOCK:{config.LONG_SYMBOL}"]
-    assert state.position is None
+    assert result.actions == []
+    assert state.position is not None
+    assert state.profit_lock_active is True
 
 
 def test_opposite_signal_switch_takes_priority_over_profit_lock():

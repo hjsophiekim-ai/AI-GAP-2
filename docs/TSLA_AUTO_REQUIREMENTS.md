@@ -342,6 +342,26 @@ UI는 snapshot 표시와 command 기록만 수행하고 Streamlit rerun이 Worke
 - [x] `docs/TSLA_AUTO_LOGIC.md`
 - [x] `docs/TSLA_AUTO_COPY_MAP.md`
 - [ ] 코드 작성 — **다음 단계에서 사용자 확인 후 진행**
+## 2026-08-02 Requirements Addendum: 3-Minute Exit And Profit Lock Disabled
+
+This section supersedes older TSLA_AUTO requirements that describe Profit Lock
+as an active liquidation path or describe Stop Loss / Profit Lock as immediate
+1-minute checks.
+
+- Stop Loss must be evaluated on completed 3-minute bars of the traded ETF
+  itself, excluding the entry execution 3-minute bar.
+- Profit Lock exit is disabled: `PROFIT_LOCK_EXIT_ENABLED = False`.
+- Profit Lock peak/giveback fields may remain for diagnostics and backwards
+  compatible ledger/UI display, but they must not trigger a sell order.
+- Profitable positions are held until opposite confirmed flag switching, Stop
+  Loss on completed 3-minute ETF close, forced liquidation, or user liquidation.
+- Legacy Profit Lock constants remain diagnostic only unless a later
+  requirements change explicitly re-enables Profit Lock exits.
+- MACD2 V4 strong-flag baseline applies to TSLA_AUTO until a TSLA-specific
+  study replaces it: `score >= 60`, `price_impulse_atr >= 0.55`, RED requires
+  `hist_impulse_atr >= 0.08`, and BLUE without EMA20/VWAP trend confirmation
+  requires `volume_ratio >= 0.80`.
+
 # TSLA_AUTO Requirements Addendum: US Market Session
 
 아래 정책은 본 문서의 과거 고정 시각 설명(예: 15:45 ET, 15:50 ET,

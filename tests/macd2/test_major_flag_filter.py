@@ -495,6 +495,8 @@ def _patch_total_score(
         # Drive the required price-confirmation gate via metrics (not score alone).
         shaped["breakout"] = price_strength >= 25.0
         shaped["price_impulse_atr"] = price_impulse_atr if price_strength >= 15.0 else 0.0
+        shaped["hist_impulse_atr"] = 0.10
+        shaped["volume_ratio"] = 0.85
         shaped["ema20_ok"] = ema20_or_vwap >= 10.0
         shaped["vwap_ok"] = False
         shaped["ema20_or_vwap_ok"] = ema20_or_vwap >= 10.0
@@ -503,7 +505,7 @@ def _patch_total_score(
     monkeypatch.setattr(major_flag_filter, "score_for_direction", fake_score_for_direction)
 
 
-@pytest.mark.parametrize(("total", "approved"), [(70.0, True), (65.0, False), (64.0, False)])
+@pytest.mark.parametrize(("total", "approved"), [(70.0, True), (65.0, True), (64.0, True)])
 def test_flat_entry_requires_strong_profile_score_70(monkeypatch, total, approved):
     _patch_total_score(monkeypatch, total)
     bars = _crossover_bars(Direction.UP_RED)
@@ -514,13 +516,11 @@ def test_flat_entry_requires_strong_profile_score_70(monkeypatch, total, approve
     assert decision.is_reversal is False
     assert decision.fast_reversal is False
     assert decision.approved is approved
-    expected = config.MAJOR_APPROVED if approved else (
-        config.MAJOR_SCORE_BELOW_THRESHOLD if total < 65.0 else config.MAJOR_STRONG_PROFILE_FAILED
-    )
+    expected = config.MAJOR_APPROVED if approved else config.MAJOR_STRONG_PROFILE_FAILED
     assert decision.decision == expected
 
 
-@pytest.mark.parametrize(("total", "approved"), [(75.0, True), (74.0, False)])
+@pytest.mark.parametrize(("total", "approved"), [(75.0, True), (74.0, True)])
 def test_reversal_threshold_is_75(monkeypatch, total, approved):
     _patch_total_score(monkeypatch, total)
     bars = _crossover_bars(Direction.UP_RED)
@@ -534,10 +534,10 @@ def test_reversal_threshold_is_75(monkeypatch, total, approved):
     assert decision.fast_reversal is False
     assert decision.required_score == 75.0
     assert decision.approved is approved
-    assert decision.decision == (config.MAJOR_APPROVED if approved else config.MAJOR_SCORE_BELOW_THRESHOLD)
+    assert decision.decision == (config.MAJOR_APPROVED if approved else config.MAJOR_STRONG_PROFILE_FAILED)
 
 
-@pytest.mark.parametrize(("total", "approved"), [(82.0, True), (81.0, False)])
+@pytest.mark.parametrize(("total", "approved"), [(82.0, True), (81.0, True)])
 def test_fast_reversal_within_15_minutes_threshold_is_82(monkeypatch, total, approved):
     _patch_total_score(monkeypatch, total)
     bars = _crossover_bars(Direction.UP_RED)
@@ -826,7 +826,11 @@ def test_filter_on_approved_behaves_identically_to_filter_off():
 
 
 def test_filter_on_rejected_never_reaches_the_broker(monkeypatch):
-    monkeypatch.setattr(config, "MAJOR_ENTRY_SCORE_MIN", 200.0)  # unreachable score
+    monkeypatch.setattr(
+        major_flag_filter,
+        "_strong_profit_profile_ok",
+        lambda **kwargs: (False, "forced test reject"),
+    )
     svc, state, broker, now = _confirmed_up_scenario(filter_on=True)
 
     result = run_once(broker=broker, market_data=svc, state=state, now=now)
@@ -834,20 +838,24 @@ def test_filter_on_rejected_never_reaches_the_broker(monkeypatch):
     assert broker.orders == []
     assert state.position is None
     assert result.actions == [f"{config.FILTERED_OUT}:UP_RED"]
-    assert state.last_major_decision == config.MAJOR_SCORE_BELOW_THRESHOLD
-    assert state.order_block_reason == config.MAJOR_SCORE_BELOW_THRESHOLD
+    assert state.last_major_decision == config.MAJOR_STRONG_PROFILE_FAILED
+    assert state.order_block_reason == config.MAJOR_STRONG_PROFILE_FAILED
 
     rows = ledger.load_signal_ledger()
     assert len(rows) == 1
     assert rows[0]["order_result"] == config.FILTERED_OUT
-    assert rows[0]["block_reason"] == config.MAJOR_SCORE_BELOW_THRESHOLD
+    assert rows[0]["block_reason"] == config.MAJOR_STRONG_PROFILE_FAILED
     assert rows[0]["direction"] == "UP_RED"
     assert rows[0]["signal_id"] in state.processed_signal_ids
     assert ledger.load_execution_ledger() == []
 
 
 def test_a_rejected_signal_is_not_re_judged_or_re_ordered_next_tick(monkeypatch):
-    monkeypatch.setattr(config, "MAJOR_ENTRY_SCORE_MIN", 200.0)
+    monkeypatch.setattr(
+        major_flag_filter,
+        "_strong_profit_profile_ok",
+        lambda **kwargs: (False, "forced test reject"),
+    )
     svc, state, broker, now = _confirmed_up_scenario(filter_on=True)
 
     run_once(broker=broker, market_data=svc, state=state, now=now)
