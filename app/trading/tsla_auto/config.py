@@ -98,7 +98,7 @@ ORDER_USAGE_RATIO = _env_float("TSLA_AUTO_ORDER_USAGE_RATIO", 0.995)
 
 # ── Feature/safety toggles (docs §16) ───────────────────────────────────────
 TSLA_AUTO_ENABLED = _env_bool("TSLA_AUTO_ENABLED", False)
-TSLA_AUTO_MODE_DEFAULT = _env_str("TSLA_AUTO_MODE", "READ_ONLY")  # READ_ONLY | MOCK | REAL
+TSLA_AUTO_MODE_DEFAULT = _env_str("TSLA_AUTO_MODE", "MOCK")  # READ_ONLY | MOCK | REAL
 ALLOW_REAL_ORDER = _env_bool("TSLA_AUTO_ALLOW_REAL_ORDER", False)
 ALLOW_PREMARKET = _env_bool("TSLA_AUTO_ALLOW_PREMARKET", False)
 ALLOW_AFTERMARKET = _env_bool("TSLA_AUTO_ALLOW_AFTERMARKET", False)

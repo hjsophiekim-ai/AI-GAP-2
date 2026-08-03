@@ -12,6 +12,7 @@ def test_default_state_uses_tsla_auto_identity():
     assert state.strategy_id == config.STRATEGY_ID
     assert state.strategy_name == config.STRATEGY_NAME
     assert state.budget_usd == config.DEFAULT_BUDGET_USD
+    assert state.mode == config.TSLA_AUTO_MODE_DEFAULT
 
 
 def test_save_and_load_round_trip_preserves_fields():
@@ -59,6 +60,16 @@ def test_load_state_missing_file_returns_default():
     loaded = state_store.load_state()
     assert isinstance(loaded, RuntimeState)
     assert loaded.position is None
+
+
+def test_stopped_legacy_read_only_state_migrates_to_default_mode():
+    state_store.ensure_paths()
+    state_store.STATE_PATH.write_text(
+        '{"mode": "READ_ONLY", "auto_trade_on": false, "session_started_at": null}',
+        encoding="utf-8",
+    )
+    loaded = state_store.load_state()
+    assert loaded.mode == config.TSLA_AUTO_MODE_DEFAULT
 
 
 def test_state_path_never_touches_macd2():

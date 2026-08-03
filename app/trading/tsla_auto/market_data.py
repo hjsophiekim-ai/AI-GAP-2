@@ -16,7 +16,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Optional
 
 import pandas as pd
@@ -39,6 +39,31 @@ KIS_MAX_PAGES = 4  # 120*4 = 480분 — 하루 세션(09:30~16:00=390분)을 여
 MAX_TRADING_DATE_LOOKBACK_DAYS = 10
 
 CACHE_DIR = data_path("cache", "tsla_auto")
+
+
+def _cache_path(symbol: str, trading_day: date) -> Any:
+    return CACHE_DIR / f"{symbol.upper()}_{trading_day:%Y%m%d}_1m.csv"
+
+
+def _normalize_1m_frame(df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    if df is None or df.empty:
+        return _empty_1m_frame()
+    work = df.copy()
+    missing = [c for c in _1M_COLUMNS if c not in work.columns]
+    if missing:
+        return _empty_1m_frame()
+    work["datetime"] = pd.to_datetime(work["datetime"], errors="coerce")
+    if work["datetime"].dt.tz is None:
+        return _empty_1m_frame()
+    for col in ("open", "high", "low", "close", "volume"):
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = (
+        work.dropna(subset=["datetime", "open", "high", "low", "close"])
+        .sort_values("datetime")
+        .drop_duplicates(subset=["datetime"], keep="last")
+        .reset_index(drop=True)
+    )
+    return work[list(_1M_COLUMNS)] if not work.empty else _empty_1m_frame()
 
 
 def _empty_1m_frame() -> pd.DataFrame:
@@ -79,6 +104,48 @@ class MarketDataService:
         self._history_updater_thread: Optional[threading.Thread] = None
         self._history_updater_stop = threading.Event()
         self._last_bootstrap_diag: dict[str, Any] = {}
+
+    def _read_cached_day(self, symbol: str, trading_day: date) -> pd.DataFrame:
+        path = _cache_path(symbol, trading_day)
+        if not path.exists():
+            return _empty_1m_frame()
+        try:
+            return _normalize_1m_frame(pd.read_csv(path))
+        except Exception:
+            return _empty_1m_frame()
+
+    def _write_cache_days(self, symbol: str, df: pd.DataFrame) -> None:
+        work = _normalize_1m_frame(df)
+        if work.empty:
+            return
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        days = work["datetime"].dt.tz_convert(ET).dt.date
+        for trading_day in sorted(set(days)):
+            day_df = work.loc[days == trading_day].copy()
+            if day_df.empty:
+                continue
+            path = _cache_path(symbol, trading_day)
+            day_df.to_csv(path, index=False)
+
+    def _cached_warmup(self, symbol: str, now: datetime) -> pd.DataFrame:
+        """Load recent TSLA 1m cache as MACD warmup seed.
+
+        The overseas minute endpoint may return no regular-session bars before
+        the US open. Prior regular-session cache lets the next session's first
+        completed 3m bar be evaluated immediately after 09:33 ET instead of
+        waiting for a same-day 100-bar warmup.
+        """
+        now_et = now.astimezone(ET)
+        days: list[date] = []
+        prev = market_session.previous_us_trading_day(now_et.date())
+        if prev is not None:
+            days.append(prev)
+        days.append(now_et.date())
+        frames = [self._read_cached_day(symbol, d) for d in days]
+        frames = [df for df in frames if not df.empty]
+        if not frames:
+            return _empty_1m_frame()
+        return _normalize_1m_frame(pd.concat(frames, ignore_index=True))
 
     def _kis_mode(self) -> str:
         # kis_overseas_adapter expects "real"/"mock" (lowercase, matching
@@ -166,12 +233,18 @@ class MarketDataService:
         t0 = datetime.now(ET)
         today_ymd = now.astimezone(ET).strftime("%Y%m%d")
 
-        df, page_diags = self._fetch_paged(config.SIGNAL_SYMBOL)
+        cached = self._cached_warmup(config.SIGNAL_SYMBOL, now)
+        live_df, page_diags = self._fetch_paged(config.SIGNAL_SYMBOL)
+        frames = [df for df in (cached, live_df) if not df.empty]
+        df = _normalize_1m_frame(pd.concat(frames, ignore_index=True)) if frames else _empty_1m_frame()
+        self._write_cache_days(config.SIGNAL_SYMBOL, df)
         elapsed = (datetime.now(ET) - t0).total_seconds()
 
         self._last_bootstrap_diag = {
             "requested_trading_date": today_ymd,
             "pages": page_diags,
+            "cached_warmup_count": int(len(cached)),
+            "live_1m_count": int(len(live_df)),
             "merged_oldest": df["datetime"].iloc[0].isoformat() if not df.empty else None,
             "merged_newest": df["datetime"].iloc[-1].isoformat() if not df.empty else None,
         }
@@ -216,6 +289,7 @@ class MarketDataService:
                 .reset_index(drop=True)
             )
             self._df_1m = merged
+            self._write_cache_days(config.SIGNAL_SYMBOL, merged)
             return merged.copy()
 
     def get_history_df(self) -> pd.DataFrame:

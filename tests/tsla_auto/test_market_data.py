@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from app.trading.tsla_auto import config
+from app.trading.tsla_auto import config, market_data
 from app.trading.tsla_auto.market_data import MarketDataService, filter_complete_3m_bars
 from app.trading.tsla_auto.signal_engine import resample_completed_3m
 
@@ -44,6 +44,24 @@ def test_bootstrap_fails_when_too_few_bars():
     result = svc.bootstrap(now=start + timedelta(minutes=20))
     assert result.ok is False
     assert result.reason.startswith("WARMUP_1M_LT_")
+
+
+def test_bootstrap_uses_prior_trading_day_cache_before_us_open():
+    prior = datetime(2026, 7, 31, 9, 30, tzinfo=ET)
+    prior_df = _fake_bars_df(prior, 390)
+    market_data.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    prior_df.to_csv(market_data.CACHE_DIR / "TSLA_20260731_1m.csv", index=False)
+
+    empty_live = pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+    svc = MarketDataService(mode="MOCK", fetch_minute_candles=lambda *a: (empty_live, {}), fetch_quote=lambda *a: (None, None))
+    next_open = datetime(2026, 8, 3, 9, 30, tzinfo=ET)
+    result = svc.bootstrap(now=next_open)
+
+    assert result.ok is True
+    assert result.prior_day_1m_bars == 390
+    assert result.today_1m_bars == 0
+    assert result.completed_3m_count >= config.WARMUP_3M_BARS_MIN
+    assert svc.get_last_bootstrap_diag()["cached_warmup_count"] == 390
 
 
 def test_merge_incremental_appends_and_dedups():

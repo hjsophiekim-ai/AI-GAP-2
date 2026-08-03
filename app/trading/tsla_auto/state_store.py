@@ -188,12 +188,15 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_strong_filter_version and stored_strong_filter_version != config.STRONG_FILTER_VERSION:
         strong_filter_version = config.STRONG_FILTER_VERSION
         strong_filter_enabled = strong_enabled_default
+    mode = str(raw.get("mode", base.mode))
+    if mode == "READ_ONLY" and not bool(raw.get("auto_trade_on", base.auto_trade_on)) and not raw.get("session_started_at"):
+        mode = base.mode
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         strategy_id=str(raw.get("strategy_id") or config.STRATEGY_ID),
         ui_mode=ui_mode,
         auto_trade_on=bool(raw.get("auto_trade_on", base.auto_trade_on)),
-        mode=str(raw.get("mode", base.mode)),
+        mode=mode,
         budget_usd=float(raw.get("budget_usd", base.budget_usd)),
         stopped=bool(raw.get("stopped", base.stopped)),
         stopped_reason=raw.get("stopped_reason"),

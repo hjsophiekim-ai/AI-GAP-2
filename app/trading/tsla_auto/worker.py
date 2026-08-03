@@ -336,6 +336,29 @@ def _compute_regime(bars_3m: pd.DataFrame) -> str:
     return strong_flag_filter.classify_regime(metrics)
 
 
+def _update_history_diagnostics(state: RuntimeState, df_1m: pd.DataFrame, bars_3m: pd.DataFrame, now: datetime) -> None:
+    if df_1m is None or df_1m.empty or "datetime" not in df_1m.columns:
+        state.today_1m_bar_count = 0
+        state.history_newest_at = None
+        state.last_completed_3m_bar_at = None
+        return
+    work = df_1m.copy()
+    work["datetime"] = pd.to_datetime(work["datetime"], errors="coerce")
+    if work["datetime"].dt.tz is None:
+        state.today_1m_bar_count = 0
+        state.history_newest_at = None
+        state.last_completed_3m_bar_at = None
+        return
+    work = work.dropna(subset=["datetime"]).sort_values("datetime")
+    today = now.astimezone(ET).strftime("%Y%m%d")
+    state.today_1m_bar_count = int((work["datetime"].dt.tz_convert(ET).dt.strftime("%Y%m%d") == today).sum())
+    state.history_newest_at = work["datetime"].iloc[-1].isoformat() if not work.empty else None
+    if bars_3m is not None and not bars_3m.empty:
+        state.last_completed_3m_bar_at = pd.Timestamp(bars_3m["datetime"].iloc[-1]).isoformat()
+    else:
+        state.last_completed_3m_bar_at = None
+
+
 def _judge_strong_flag(*, state: RuntimeState, bars_3m, direction: Direction, position, now: datetime, signal_id: str):
     position_direction = _position_direction(position)
     last_entry_at = _parse_iso_dt(state.last_entry_at)
@@ -1041,6 +1064,7 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
     # docs §7: 3개 완성 1분봉이 모두 있어야 confirmed 3분봉으로 취급 — 공백
     # 포함 bucket은 HISTORY_GAP으로 그 시점의 평가·필터·주문을 전부 차단한다.
     bars_3m, gap_bar_starts = filter_complete_3m_bars(bars_3m, df_1m)
+    _update_history_diagnostics(state, df_1m, bars_3m, now)
     if gap_bar_starts:
         state.order_block_reason = config.HISTORY_GAP
     macd_snap = calculate_macd(bars_3m)
