@@ -571,6 +571,35 @@ def test_compute_today_signal_overview_classifies_by_session_started_at():
     assert matching_live[0]["origin"] == "LIVE_CONFIRMED"
 
 
+def test_compute_today_signal_overview_skips_first_today_bar_as_baseline(monkeypatch):
+    today_start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(today_start, [100.0, 100.0])
+    now = today_start + timedelta(minutes=6, seconds=5)
+
+    def fake_calculate_macd(window):
+        bar_dt = window.iloc[-1]["datetime"]
+        return MacdSnapshot(
+            bar_dt=bar_dt,
+            macd=-10.0,
+            signal=-5.0,
+            hist=-5.0,
+            hist_last3=(-3.0, -4.0, -5.0),
+            completed_3m_count=len(window),
+            previous_diff=-4.0,
+            current_diff=-5.0,
+            previous_macd=-9.0,
+            previous_signal=-4.0,
+        )
+
+    monkeypatch.setattr(worker, "calculate_macd", fake_calculate_macd)
+
+    overview = worker.compute_today_signal_overview(
+        df_1m, now=now, session_started_at=today_start.isoformat(),
+    )
+
+    assert overview == []
+
+
 def test_entry_cutoff_blocks_new_entry_after_1455(ready_market_data):
     svc, now0 = ready_market_data
     state = _fresh_state()

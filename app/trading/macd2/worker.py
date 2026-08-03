@@ -54,6 +54,7 @@ from app.trading.macd2.models import (
 )
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    confirmed_macd_flag_condition,
     evaluate_confirmed_macd_color_onset,
     evaluate_macd_crossover,
     evaluate_primary_forming_crossover,
@@ -88,6 +89,8 @@ MAJOR_FILTERED_TS_KEY = "major_filtered_at"
 TEMPORARY_BLOCK_REASONS = {
     QUOTE_STALE,
     order_executor.BLOCK_ORDER_DATA_INVALID,
+    order_executor.BLOCK_KIS_BUYABLE_QUERY_FAILED,
+    order_executor.BLOCK_INSUFFICIENT_QTY,
     POSITION_DATA_ERROR,
 }
 
@@ -286,6 +289,13 @@ def compute_today_signal_overview(
         snap = calculate_macd(window)
         if snap is None:
             continue
+        if pos == 0:
+            baseline_direction = confirmed_macd_flag_condition(snap)
+            last_direction = baseline_direction if baseline_direction != Direction.HOLD else None
+            pending_direction = None
+            pending_count = 0
+            last_regime = "RAW_DIRECT" if last_direction is not None else None
+            continue
         bar_end = snap.bar_dt + timedelta(minutes=3)
         decision = evaluate_confirmed_macd_color_onset(
             snap,
@@ -476,11 +486,17 @@ def _pending_age_sec(pending: dict[str, Any], now: datetime) -> Optional[float]:
 
 
 def _pending_direction_still_active(pending_dir: Optional[Direction], macd_snap) -> bool:
-    if pending_dir == Direction.UP_RED:
-        return (macd_snap.current_diff if macd_snap.current_diff is not None else macd_snap.macd - macd_snap.signal) > 0
-    if pending_dir == Direction.DOWN_BLUE:
-        return (macd_snap.current_diff if macd_snap.current_diff is not None else macd_snap.macd - macd_snap.signal) < 0
-    return False
+    if pending_dir not in (Direction.UP_RED, Direction.DOWN_BLUE):
+        return False
+    return confirmed_macd_flag_condition(macd_snap) == pending_dir
+
+
+def _seed_primary_baseline_from_snapshot(state: RuntimeState, macd_snap) -> None:
+    baseline_direction = confirmed_macd_flag_condition(macd_snap)
+    state.last_detected_direction = baseline_direction if baseline_direction != Direction.HOLD else None
+    state.macd_color_pending_direction = None
+    state.macd_color_pending_count = 0
+    state.macd_color_last_regime = "RAW_DIRECT" if state.last_detected_direction is not None else None
 
 
 def _quote_valid_for_provisional(market_data: MarketDataService, symbol: str) -> bool:
@@ -712,8 +728,23 @@ def _has_order_request(outcome) -> bool:
 
 
 def _mark_processed_after_request(state: RuntimeState, outcome) -> None:
-    if _has_order_request(outcome) and outcome.signal_id and outcome.signal_id not in state.processed_signal_ids:
+    if (
+        _has_order_request(outcome)
+        and not _sell_cleared_but_buy_not_requested(outcome)
+        and outcome.signal_id
+        and outcome.signal_id not in state.processed_signal_ids
+    ):
         state.processed_signal_ids = list(state.processed_signal_ids) + [outcome.signal_id]
+
+
+def _sell_cleared_but_buy_not_requested(outcome) -> bool:
+    return bool(
+        outcome is not None
+        and outcome.sell_result is not None
+        and outcome.sell_result.success
+        and outcome.sell_qty_after == 0
+        and not outcome.timestamps.get("buy_requested_at")
+    )
 
 
 def _execute_or_wait(
@@ -887,7 +918,8 @@ def _execute_or_wait(
     result.signal_dispatch_trace["fill_poll_result"] = outcome.fill_poll_result
     result.signal_dispatch_trace["balance_qty"] = outcome.balance_qty
     result.signal_dispatch_trace["failure_stage"] = outcome.order_failure_stage or ""
-    if _has_order_request(outcome):
+    sell_only_switch_needs_buy_retry = _sell_cleared_but_buy_not_requested(outcome)
+    if _has_order_request(outcome) and not sell_only_switch_needs_buy_retry:
         if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
             state.pending_signal["status"] = SignalState.ORDER_REQUESTED.value
             state.pending_signal["order_requested"] = True
@@ -928,6 +960,11 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
     prior_bar_ts = state.last_confirmed_bar_ts
     state.last_confirmed_bar_ts = bar_key
     if not prior_bar_ts:
+        _seed_primary_baseline_from_snapshot(state, macd_snap)
+        return Direction.HOLD
+    prior_dt = _parse_iso_dt(prior_bar_ts)
+    if prior_dt is not None and prior_dt.astimezone(KST).date() != macd_snap.bar_dt.astimezone(KST).date():
+        _seed_primary_baseline_from_snapshot(state, macd_snap)
         return Direction.HOLD
     bar_end = macd_snap.bar_dt.astimezone(KST) + timedelta(minutes=3)
     decision = evaluate_confirmed_macd_color_onset(
@@ -1560,7 +1597,12 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
         state.peak_net_return = 0.0
         state.profit_lock_active = False
         _record_major_exit(state, exited_symbol)
-    if _has_order_request(outcome) and outcome.signal_id and outcome.signal_id not in state.processed_signal_ids:
+    if (
+        _has_order_request(outcome)
+        and not _sell_cleared_but_buy_not_requested(outcome)
+        and outcome.signal_id
+        and outcome.signal_id not in state.processed_signal_ids
+    ):
         state.processed_signal_ids = list(state.processed_signal_ids) + [outcome.signal_id]
     state.order_block_reason = outcome.block_reason
 

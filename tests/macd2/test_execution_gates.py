@@ -5,9 +5,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from app.trading.macd2 import config, ledger, worker
+from app.trading.macd2 import config, ledger, order_executor, worker
+from app.trading.macd2.broker_adapter import BrokerOrderResult
 from app.trading.macd2.market_data import MarketDataService
-from app.trading.macd2.models import Direction, MacdSnapshot, PositionSnapshot, QuoteSnapshot
+from app.trading.macd2.models import Direction, MacdSnapshot, PositionSnapshot, QuoteSnapshot, SignalState
 from app.trading.macd2.signal_engine import (
     calculate_macd,
     evaluate_confirmed_macd_flag,
@@ -195,6 +196,24 @@ def test_prior_day_last_down_blue_with_no_today_bar_orders_zero(monkeypatch):
     assert ledger.load_signal_ledger() == []
 
 
+def test_first_completed_bar_after_prior_day_baseline_is_baseline_only(monkeypatch):
+    state = _primed_state(baseline_bar_dt=datetime(2026, 7, 23, 15, 27, tzinfo=KST))
+    state.session_date = "20260724"
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
+    first_bar = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    now = first_bar + timedelta(minutes=3)
+    _patch_snap(monkeypatch, _snap(first_bar, Direction.DOWN_BLUE), svc, now)
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == []
+    assert broker.orders == []
+    assert ledger.load_signal_ledger() == []
+    assert state.last_confirmed_bar_ts == first_bar.isoformat()
+    assert state.last_detected_direction == Direction.DOWN_BLUE
+
+
 def test_before_first_completed_today_bar_orders_zero(monkeypatch):
     now = datetime(2026, 7, 24, 9, 2, tzinfo=KST)
     svc = _svc()
@@ -305,6 +324,40 @@ def test_crossover_opposite_signal_sells_then_buys(monkeypatch):
     ]
     assert broker.get_position(config.LONG_SYMBOL) is None
     assert broker.get_position(config.INVERSE_SYMBOL).quantity > 0
+
+
+def test_switch_sell_cleared_buy_not_requested_keeps_signal_pending(monkeypatch):
+    state = _primed_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=20, avg_price=10_000.0)
+    svc = _svc()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 20, "seed")
+    bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    now = bar_dt + timedelta(minutes=3)
+    _patch_snap(monkeypatch, _snap(bar_dt, Direction.UP_RED), svc, now)
+
+    def fake_execute_signal(**kwargs):
+        return order_executor.ExecutionOutcome(
+            signal_id=kwargs["signal_id"],
+            direction=kwargs["direction"],
+            target_symbol=config.LONG_SYMBOL,
+            final_state=SignalState.BLOCKED,
+            block_reason=order_executor.BLOCK_INSUFFICIENT_QTY,
+            sell_result=BrokerOrderResult(True, "SELL-1", config.INVERSE_SYMBOL, "SELL", 20, 20, 10_000.0, "OK"),
+            sell_qty_after=0,
+            timestamps={"sell_requested_at": now.isoformat(), "sell_confirmed_at": now.isoformat()},
+        )
+
+    monkeypatch.setattr(worker.order_executor, "execute_signal", fake_execute_signal)
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == ["OPPOSITE_SIGNAL:UP_RED"]
+    assert state.position is None
+    assert state.pending_signal is not None
+    assert state.pending_signal["signal_id"] == "20260724_090000_UP_RED"
+    assert state.pending_signal["order_requested"] is False
+    assert state.processed_signal_ids == []
 
 
 def test_down_blue_crossover_flat_buys_inverse_once(monkeypatch):

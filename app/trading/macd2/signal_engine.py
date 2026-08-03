@@ -328,19 +328,25 @@ def _color_publication_regime(macd_snapshot: MacdSnapshot, raw_color: Direction)
     Raw histogram color answers only "is this completed bar red/blue?" KIS
     arrows are state changes. A new published color state is immediate for a
     positive zero-breakout red and for the first blue deceleration after that
-    breakout. Pullback colors inside the opposite MACD/Signal regime require
-    three stable raw-color observations before publication.
+    breakout. Pullback colors inside the opposite MACD/Signal regime are not
+    publishable until the MACD line itself turns in the flag direction; a
+    rising histogram while MACD is still falling is only early deceleration,
+    not KIS's chart arrow.
     """
     if raw_color == Direction.UP_RED:
         previous_diff = macd_snapshot.previous_diff
         if macd_snapshot.hist > 0 and previous_diff is not None and previous_diff <= 0:
             return "POSITIVE_BREAKOUT_RED", 1
         if macd_snapshot.hist < 0 and macd_snapshot.macd < 0 and macd_snapshot.signal < 0:
-            return "NEGATIVE_REGIME_RED", 3
+            if macd_snapshot.previous_macd is not None and macd_snapshot.macd > macd_snapshot.previous_macd:
+                return "NEGATIVE_REGIME_RED_MACD_TURN", 1
+            return None, 0
         return None, 0
     if raw_color == Direction.DOWN_BLUE:
         if macd_snapshot.hist > 0 and macd_snapshot.macd > 0 and macd_snapshot.signal > 0:
-            return "POSITIVE_REGIME_BLUE", 3
+            if macd_snapshot.previous_macd is not None and macd_snapshot.macd < macd_snapshot.previous_macd:
+                return "POSITIVE_REGIME_BLUE_MACD_TURN", 1
+            return None, 0
         return None, 0
     return None, 0
 
@@ -361,9 +367,24 @@ def evaluate_confirmed_macd_color_onset(
     """
     raw_color = confirmed_macd_flag_condition(macd_snapshot)
     regime, required_count = _color_publication_regime(macd_snapshot, raw_color)
+    opposite_regime_pullback = (
+        (
+            raw_color == Direction.UP_RED
+            and macd_snapshot.hist < 0
+            and macd_snapshot.macd < 0
+            and macd_snapshot.signal < 0
+        )
+        or (
+            raw_color == Direction.DOWN_BLUE
+            and macd_snapshot.hist > 0
+            and macd_snapshot.macd > 0
+            and macd_snapshot.signal > 0
+        )
+    )
     if (
         raw_color != Direction.HOLD
         and regime is None
+        and not opposite_regime_pullback
         and (
             previous_color_state is None
             or previous_regime == "RAW_DIRECT"
@@ -377,7 +398,7 @@ def evaluate_confirmed_macd_color_onset(
         required_count = 1
     if (
         raw_color == Direction.DOWN_BLUE
-        and regime == "POSITIVE_REGIME_BLUE"
+        and regime == "POSITIVE_REGIME_BLUE_MACD_TURN"
         and previous_regime == "POSITIVE_BREAKOUT_RED"
     ):
         required_count = 1

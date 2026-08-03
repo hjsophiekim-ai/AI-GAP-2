@@ -329,34 +329,6 @@ def execute_signal(
 
     outcome = ExecutionOutcome(signal_id, direction, target_symbol, SignalState.DETECTED, timestamps=timestamps)
 
-    if held_symbol is not None:
-        timestamps["sell_requested_at"] = _now_iso()
-        sell_result = broker.sell_market(held_symbol, held_qty, f"{signal_id}:SELL:{held_symbol}")
-        outcome.sell_result = sell_result
-        if not sell_result.success:
-            outcome.final_state = SignalState.FAILED
-            outcome.block_reason = FAIL_SELL
-            return outcome
-        timestamps["sell_confirmed_at"] = _now_iso()
-
-        qty_after = _reconcile_to_zero(
-            broker, held_symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec,
-        )
-        outcome.sell_qty_after = qty_after
-        timestamps["sell_reconciled_at"] = _now_iso()
-        if qty_after != 0:
-            outcome.final_state = SignalState.FAILED
-            outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
-            return outcome
-
-        _record_leg(
-            broker_mode=broker.mode, signal_id=signal_id, symbol=held_symbol, side="SELL",
-            qty=held_qty, price=sell_result.executed_price or (position.avg_price if position else 0.0),
-            position_before=held_qty, position_after=0, exit_reason=config.EXIT_OPPOSITE_SIGNAL,
-            order_result=sell_result, entry_price=position.avg_price if position else 0.0,
-            confirmed_at=timestamps["sell_confirmed_at"],
-        )
-
     quote_price = quotes.get(target_symbol)
     if quote_price is None or quote_price <= 0:
         outcome.final_state = SignalState.BLOCKED
@@ -393,6 +365,35 @@ def execute_signal(
         return outcome
     order_price = float(int(ask1 + get_tick_size(ask1)))
     outcome.order_price = order_price
+
+    if held_symbol is not None:
+        timestamps["sell_requested_at"] = _now_iso()
+        sell_result = broker.sell_market(held_symbol, held_qty, f"{signal_id}:SELL:{held_symbol}")
+        outcome.sell_result = sell_result
+        if not sell_result.success:
+            outcome.final_state = SignalState.FAILED
+            outcome.block_reason = FAIL_SELL
+            return outcome
+        timestamps["sell_confirmed_at"] = _now_iso()
+
+        qty_after = _reconcile_to_zero(
+            broker, held_symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec,
+        )
+        outcome.sell_qty_after = qty_after
+        timestamps["sell_reconciled_at"] = _now_iso()
+        if qty_after != 0:
+            outcome.final_state = SignalState.FAILED
+            outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
+            return outcome
+
+        _record_leg(
+            broker_mode=broker.mode, signal_id=signal_id, symbol=held_symbol, side="SELL",
+            qty=held_qty, price=sell_result.executed_price or (position.avg_price if position else 0.0),
+            position_before=held_qty, position_after=0, exit_reason=config.EXIT_OPPOSITE_SIGNAL,
+            order_result=sell_result, entry_price=position.avg_price if position else 0.0,
+            confirmed_at=timestamps["sell_confirmed_at"],
+        )
+
     sizing_getter = getattr(broker, "get_buy_sizing_quote", None)
     if sizing_getter is not None:
         sizing_quote = sizing_getter(target_symbol, price=order_price, order_type="limit")

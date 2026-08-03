@@ -293,6 +293,24 @@ def test_stale_or_missing_quote_blocks_order_data_invalid():
     assert outcome.block_reason == order_executor.BLOCK_ORDER_DATA_INVALID
 
 
+def test_switch_target_ask_failure_blocks_before_selling_current_position():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0, "0197X0": 10_000.0})
+    broker.buy_market("0197X0", 20, "seed")
+    broker.fail_next_ask = True
+    position = PositionSnapshot(symbol="0197X0", quantity=20, avg_price=10_000.0)
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-switch-ask-fail",
+        quotes={"0193T0": 15_000.0, "0197X0": 10_000.0}, position=position, budget=10_000_000.0,
+    )
+
+    assert outcome.final_state == SignalState.BLOCKED
+    assert outcome.block_reason == order_executor.BLOCK_ASK_QUOTE_FAILED
+    assert broker.get_position("0197X0").quantity == 20
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", "0197X0")]
+    assert ledger.load_execution_ledger() == []
+
+
 def test_insufficient_cash_blocks_qty_lt_1():
     broker = FakeBroker(cash=50.0, quotes={"0193T0": 15_000.0})
     outcome = order_executor.execute_signal(
