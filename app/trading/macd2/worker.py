@@ -1165,6 +1165,67 @@ def _is_major_filtered(outcome) -> bool:
     return bool(outcome is not None and (outcome.timestamps or {}).get(MAJOR_FILTERED_TS_KEY))
 
 
+def _execute_reversal_exit_only_for_filtered_entry(
+    *,
+    broker,
+    state: RuntimeState,
+    macd_snap,
+    direction: Direction,
+    position: PositionSnapshot,
+    decision: MajorFlagDecision,
+    result: TickResult,
+):
+    """Opposite confirmed flag with MAJOR filter rejected: exit the old ETF,
+    but do not enter the opposite ETF."""
+    signal_id = make_signal_id(macd_snap.bar_dt, direction)
+    if signal_id in state.processed_signal_ids:
+        state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
+        return None
+    signal_detected_at = datetime.now(KST)
+    result.signal_detected_at = signal_detected_at.isoformat()
+    block_reason = decision.block_reason or decision.decision or config.FILTERED_OUT
+    outcome = order_executor.execute_exit(
+        broker=broker,
+        symbol=position.symbol,
+        quantity=position.quantity,
+        exit_reason=config.EXIT_OPPOSITE_SIGNAL,
+        entry_price=position.avg_price,
+        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
+        reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+    )
+    result.order_requested_at = outcome.timestamps.get("sell_requested_at")
+    broker_result = outcome.sell_result
+    result.signal_dispatch_trace = {
+        "signal_id": signal_id,
+        "direction": direction.value,
+        "signal_type": "REVERSAL",
+        "completed_bar_at": macd_snap.bar_dt.isoformat(),
+        "order_executor_called": True,
+        "order_requested_at": result.order_requested_at or "",
+        "broker_called": bool(broker_result is not None),
+        "broker_order_id": broker_result.order_id if broker_result else "",
+        "broker_raw": dict(broker_result.raw or {}) if broker_result else {},
+        "final_block_reason": block_reason,
+        "order_result_override": (
+            "SELL_EXECUTED_ENTRY_FILTERED"
+            if outcome.final_state == SignalState.EXECUTED
+            else outcome.final_state.value
+        ),
+        "major_fields": _major_ledger_fields(state, decision),
+        "failure_stage": outcome.order_failure_stage or "",
+    }
+    outcome.signal_id = signal_id
+    outcome.direction = direction
+    outcome.block_reason = block_reason
+    _record_signal_ledger(
+        state, macd_snap, direction, "REVERSAL", signal_id, signal_detected_at,
+        outcome, result.signal_dispatch_trace,
+    )
+    if signal_id not in state.processed_signal_ids:
+        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+    return outcome
+
+
 def _dispatch_confirmed_signal(
     *,
     broker,
@@ -1177,6 +1238,7 @@ def _dispatch_confirmed_signal(
     position: Optional[PositionSnapshot],
     result: TickResult,
     signal_id_override: Optional[str] = None,
+    major_decision_override: Optional[MajorFlagDecision] = None,
     bars_3m=None,
 ):
     signal_id = signal_id_override or make_signal_id(macd_snap.bar_dt, direction)
@@ -1193,8 +1255,10 @@ def _dispatch_confirmed_signal(
     # Optional Hybrid MAJOR_FLAG gate — the ONLY filter judgment point, and
     # only for a brand-new confirmed signal (pending retries already cleared
     # this gate when they were first approved).
-    decision: Optional[MajorFlagDecision] = None
-    if state.major_filter_enabled:
+    decision: Optional[MajorFlagDecision] = major_decision_override
+    # REVERSAL is judged by the held-position branch: weak opposite flags
+    # must still liquidate the old ETF but must not enter the opposite ETF.
+    if state.major_filter_enabled and signal_type != "REVERSAL":
         decision = _judge_major_flag(
             state=state, bars_3m=bars_3m, direction=direction, position=position,
             now=now, signal_id=signal_id,
@@ -1247,6 +1311,14 @@ def _record_confirmed_blocked_signal(
         block_reason=reason,
     )
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
+
+
+def _confirmed_signal_order_gate_block_reason(state: RuntimeState, now: datetime) -> str:
+    if now.time() < config.SESSION_OPEN:
+        return "BEFORE_SESSION_OPEN"
+    if now.time() >= config.NEW_ENTRY_CUTOFF:
+        return "NEW_ENTRY_CUTOFF"
+    return state.quote_history_mismatch_reason or "ENTRY_WINDOW_CLOSED"
 
 
 def run_once(
@@ -1448,20 +1520,47 @@ def run_once(
         # never call order_executor, the MAJOR_FLAG filter, or mutate
         # confirmed state/processed_signal_ids/the signal ledger. Only the
         # confirmed, completed-3m-bar crossover below has order authority.
-        if entry_window_open and confirmed_direction != Direction.HOLD:
+        if confirmed_direction != Direction.HOLD and not entry_window_open:
+            target = order_executor.target_symbol_for_direction(confirmed_direction)
+            _record_confirmed_blocked_signal(
+                state=state, macd_snap=macd_snap, direction=confirmed_direction,
+                signal_type="REVERSAL" if target != pos.symbol else "HELD_SAME",
+                reason=_confirmed_signal_order_gate_block_reason(state, now),
+                result=result,
+            )
+        elif entry_window_open and confirmed_direction != Direction.HOLD:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
-                outcome = _dispatch_confirmed_signal(
-                    broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
-                    direction=confirmed_direction, signal_type="REVERSAL", position=pos, result=result,
-                    bars_3m=bars_3m,
-                )
-                if _is_major_filtered(outcome):
-                    result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
-                elif outcome is not None:
-                    _apply_switch_outcome(state, outcome, confirmed_direction)
-                    result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
-                    return result
+                reversal_decision: Optional[MajorFlagDecision] = None
+                if state.major_filter_enabled:
+                    reversal_decision = _judge_major_flag(
+                        state=state, bars_3m=bars_3m, direction=confirmed_direction,
+                        position=pos, now=now,
+                        signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
+                    )
+                if reversal_decision is not None and not reversal_decision.approved:
+                    outcome = _execute_reversal_exit_only_for_filtered_entry(
+                        broker=broker, state=state, macd_snap=macd_snap,
+                        direction=confirmed_direction, position=pos,
+                        decision=reversal_decision, result=result,
+                    )
+                    if outcome is not None:
+                        _apply_exit_outcome(state, outcome)
+                        result.actions.append(f"OPPOSITE_SIGNAL_SELL_ONLY:{confirmed_direction.value}")
+                        return result
+                else:
+                    outcome = _dispatch_confirmed_signal(
+                        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                        direction=confirmed_direction, signal_type="REVERSAL", position=pos, result=result,
+                        major_decision_override=reversal_decision,
+                        bars_3m=bars_3m,
+                    )
+                    if _is_major_filtered(outcome):
+                        result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
+                    elif outcome is not None:
+                        _apply_switch_outcome(state, outcome, confirmed_direction)
+                        result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
+                        return result
             elif state.major_filter_enabled:
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
@@ -1508,7 +1607,14 @@ def run_once(
     # NOTE: see the held-position branch above — the forming-bar candidate
     # never dispatches an entry order either; only the confirmed crossover
     # below (order authority stays exclusively with the completed 3m bar).
-    if entry_window_open and confirmed_direction != Direction.HOLD:
+    if confirmed_direction != Direction.HOLD and not entry_window_open:
+        _record_confirmed_blocked_signal(
+            state=state, macd_snap=macd_snap, direction=confirmed_direction,
+            signal_type="INITIAL",
+            reason=_confirmed_signal_order_gate_block_reason(state, now),
+            result=result,
+        )
+    elif entry_window_open and confirmed_direction != Direction.HOLD:
         outcome = _dispatch_confirmed_signal(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
             direction=confirmed_direction, signal_type="INITIAL", position=None, result=result,

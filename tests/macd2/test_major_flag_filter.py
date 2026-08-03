@@ -1005,6 +1005,71 @@ def test_stop_loss_is_not_gated_even_when_the_filter_rejects_everything(monkeypa
     assert ledger.load_execution_ledger()[-1]["exit_reason"] == config.EXIT_STOP_LOSS
 
 
+def test_opposite_reversal_filter_rejection_sells_old_etf_without_new_entry(monkeypatch):
+    """The strong-flag filter gates only the new entry leg of a reversal. A
+    weak opposite confirmed flag still liquidates the old ETF, but does not
+    buy the opposite ETF."""
+    monkeypatch.setattr(
+        major_flag_filter,
+        "_strong_profit_profile_ok",
+        lambda **kwargs: (False, "forced test reject"),
+    )
+    monkeypatch.setattr(config, "MAJOR_ENTRY_SCORE_MIN", 200.0)
+    monkeypatch.setattr(config, "MAJOR_REVERSAL_SCORE_MIN", 200.0)
+    monkeypatch.setattr(config, "MAJOR_FAST_REVERSAL_SCORE_MIN", 200.0)
+    svc, state, broker, now = _confirmed_up_scenario(filter_on=True)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")
+    state.position = PositionSnapshot(
+        symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=_WORKER_QUOTES[config.INVERSE_SYMBOL],
+        entry_at=now - timedelta(minutes=12),
+    )
+    state.last_detected_direction = Direction.DOWN_BLUE
+    state.macd_color_last_regime = "RAW_DIRECT"
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == ["OPPOSITE_SIGNAL_SELL_ONLY:UP_RED"]
+    assert state.position is None
+    assert broker.get_position(config.INVERSE_SYMBOL) is None
+    assert broker.get_position(config.LONG_SYMBOL) is None
+    assert [(o.side, o.symbol) for o in broker.orders] == [
+        ("BUY", config.INVERSE_SYMBOL),
+        ("SELL", config.INVERSE_SYMBOL),
+    ]
+    rows = ledger.load_signal_ledger()
+    assert rows[-1]["signal_type"] == "REVERSAL"
+    assert rows[-1]["order_result"] == "SELL_EXECUTED_ENTRY_FILTERED"
+    assert rows[-1]["major_approved"] == "False"
+    assert ledger.load_execution_ledger()[-1]["exit_reason"] == config.EXIT_OPPOSITE_SIGNAL
+
+
+def test_opposite_reversal_filter_approval_sells_old_etf_and_buys_new_entry():
+    svc, state, broker, now = _confirmed_up_scenario(filter_on=True)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")
+    state.position = PositionSnapshot(
+        symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=_WORKER_QUOTES[config.INVERSE_SYMBOL],
+        entry_at=now - timedelta(minutes=12),
+    )
+    state.last_detected_direction = Direction.DOWN_BLUE
+    state.macd_color_last_regime = "RAW_DIRECT"
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == ["OPPOSITE_SIGNAL:UP_RED"]
+    assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
+    assert broker.get_position(config.INVERSE_SYMBOL) is None
+    assert broker.get_position(config.LONG_SYMBOL) is not None
+    assert [(o.side, o.symbol) for o in broker.orders] == [
+        ("BUY", config.INVERSE_SYMBOL),
+        ("SELL", config.INVERSE_SYMBOL),
+        ("BUY", config.LONG_SYMBOL),
+    ]
+    rows = ledger.load_signal_ledger()
+    assert rows[-1]["signal_type"] == "REVERSAL"
+    assert rows[-1]["order_result"] == "EXECUTED"
+    assert rows[-1]["major_approved"] == "True"
+
+
 def test_forced_liquidation_still_runs_with_the_filter_on():
     df_1m = _1m_from_3m_closes(_WORKER_START, [100.0] * 100)
     bootstrap_now = _WORKER_START + timedelta(minutes=3 * 100, seconds=5)

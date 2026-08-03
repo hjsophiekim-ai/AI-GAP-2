@@ -575,6 +575,41 @@ def test_production_path_up_then_down_sells_to_zero_then_buys_inverse():
     assert broker.get_position(config.INVERSE_SYMBOL).quantity > 0
 
 
+def test_opposite_flag_is_ledgered_even_when_order_gate_blocks_switch():
+    """A confirmed opposite color flag must remain visible in the app even when
+    a non-filter order gate blocks the actual sell/buy switch."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
+    now = start + timedelta(minutes=3 * 100, seconds=5)
+    state = _primed_state(baseline_bar_dt=start + timedelta(minutes=3 * 98))
+    state.last_detected_direction = Direction.DOWN_BLUE
+    state.macd_color_last_regime = "RAW_DIRECT"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0)
+    svc = _history_svc(
+        df_1m,
+        prices={
+            config.WATCH_SYMBOL: 1_000.0,  # Deliberate quote/history mismatch: blocks orders only.
+            config.LONG_SYMBOL: 15_000.0,
+            config.INVERSE_SYMBOL: 10_000.0,
+        },
+    )
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert result.actions == []
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
+    assert state.latest_primary_signal_id == "20260724_135700_UP_RED"
+    rows = ledger.load_signal_ledger()
+    assert len(rows) == 1
+    assert rows[0]["signal_id"] == "20260724_135700_UP_RED"
+    assert rows[0]["signal_type"] == "REVERSAL"
+    assert rows[0]["direction"] == "UP_RED"
+    assert rows[0]["order_result"] == "BLOCKED"
+    assert rows[0]["block_reason"] == "QUOTE_HISTORY_PRICE_MISMATCH"
+
+
 def test_quote_age_27_seconds_is_stale_not_ready():
     svc = _svc()
     old = datetime.now(KST) - timedelta(seconds=27)
