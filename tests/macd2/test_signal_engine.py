@@ -10,7 +10,6 @@ from app.trading.macd2 import config
 from app.trading.macd2.models import Direction, MacdSnapshot
 from app.trading.macd2.signal_engine import (
     calculate_macd,
-    evaluate_confirmed_macd_color_onset,
     evaluate_confirmed_macd_flag,
     evaluate_primary_forming_crossover,
     evaluate_macd_crossover,
@@ -182,47 +181,6 @@ def test_evaluate_macd_crossover(previous_diff, current_diff, previous_direction
 def test_evaluate_confirmed_macd_flag_matches_kis_histogram_color(hist_last3, previous_direction, expected):
     snap = _macd_snapshot(hist_last3)
     assert evaluate_confirmed_macd_flag(snap, previous_direction) == expected
-
-
-def test_negative_regime_red_waits_for_macd_line_turn():
-    last = Direction.DOWN_BLUE
-    pending = None
-    pending_count = 0
-    regime = "RAW_DIRECT"
-    snapshots = [
-        MacdSnapshot(
-            bar_dt=datetime(2026, 8, 3, 9, 15 + 3 * i, tzinfo=KST),
-            macd=macd,
-            signal=signal,
-            hist=hist3[-1],
-            hist_last3=hist3,
-            completed_3m_count=100 + i,
-            previous_diff=hist3[-2],
-            current_diff=hist3[-1],
-            previous_macd=prev_macd,
-            previous_signal=signal,
-        )
-        for i, (prev_macd, macd, signal, hist3) in enumerate([
-            (-26000.0, -28000.0, -13200.0, (-16000.0, -15000.0, -14800.0)),
-            (-28000.0, -30000.0, -17200.0, (-15000.0, -14800.0, -12800.0)),
-            (-30000.0, -32000.0, -20200.0, (-14800.0, -12800.0, -11800.0)),
-            (-32000.0, -31000.0, -26000.0, (-11800.0, -7600.0, -5000.0)),
-        ])
-    ]
-
-    decisions = []
-    for snap in snapshots:
-        decision = evaluate_confirmed_macd_color_onset(
-            snap, last, pending, pending_count, previous_regime=regime,
-        )
-        pending = decision.pending_direction
-        pending_count = decision.pending_count
-        if decision.direction != Direction.HOLD:
-            last = decision.direction
-            regime = decision.regime
-        decisions.append(decision.direction)
-
-    assert decisions == [Direction.HOLD, Direction.HOLD, Direction.HOLD, Direction.UP_RED]
 
 
 def test_evaluate_primary_forming_crossover_uses_current_quote_for_up_signal():

@@ -211,7 +211,11 @@ def test_first_completed_bar_after_prior_day_baseline_is_baseline_only(monkeypat
     assert broker.orders == []
     assert ledger.load_signal_ledger() == []
     assert state.last_confirmed_bar_ts == first_bar.isoformat()
-    assert state.last_detected_direction == Direction.DOWN_BLUE
+    # 6a2fd07 known-good baseline gate: a day-boundary bar sets ONLY
+    # last_confirmed_bar_ts (so the next NEW bar is a same-day continuation)
+    # — it never seeds last_detected_direction from the baseline bar's own
+    # color, since previous_diff there can span yesterday's close.
+    assert state.last_detected_direction is None
 
 
 def test_before_first_completed_today_bar_orders_zero(monkeypatch):
@@ -439,7 +443,7 @@ def test_production_path_up_crossover_buys_long_once():
     price jump on the 100th bar (13:57) is what makes previous_diff<=0,
     current_diff>0 — the SAME confirmed MACD(12,26,9) KIS itself charts."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
     now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _primed_state(baseline_bar_dt=start + timedelta(minutes=3 * 98))
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
@@ -454,7 +458,7 @@ def test_production_path_up_crossover_buys_long_once():
 
 def test_production_path_down_crossover_buys_inverse_once():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [80.0, 60.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [60.0])
     now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _primed_state(baseline_bar_dt=start + timedelta(minutes=3 * 98))
     broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
@@ -472,20 +476,18 @@ def test_production_path_down_crossover_buys_inverse_once():
 
 
 def test_production_path_uses_latest_confirmed_color_when_cache_jumps_ahead():
+    """_advance_confirmed_primary (6a2fd07 known-good rule) evaluates ONLY the
+    single latest completed bar each tick — it never re-scans intermediate
+    bars the cache jumped past. Baseline is primed to an early, already-flat
+    bar (12:51); by the time the cache has jumped ahead to the latest bar
+    (13:03), a genuine previous_diff<=0 -> current_diff>0/<0 crossing must
+    still exist AT that latest bar for it to fire — it is not retroactively
+    applied from an earlier intermediate bar."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    # Index 79 is 12:57. Later 13:00/13:03 bars are already in cache, so the
-    # latest bar is no longer the crossover bar.
-    df_1m = _1m_from_3m_closes(start, [100.0] * 78 + [90.0, 80.0, 70.0, 60.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 81 + [60.0])
     now = start + timedelta(minutes=3 * 82)
-    crossover_snap = calculate_macd(resample_completed_3m(df_1m.iloc[: 80 * 3], now=start + timedelta(minutes=3 * 80)))
-    latest_snap = calculate_macd(resample_completed_3m(df_1m, now=now))
-    assert crossover_snap is not None
-    assert latest_snap is not None
-    assert crossover_snap.bar_dt == datetime(2026, 7, 24, 12, 57, tzinfo=KST)
-    assert evaluate_confirmed_macd_flag(crossover_snap, None) == Direction.DOWN_BLUE
-    assert evaluate_confirmed_macd_flag(latest_snap, Direction.DOWN_BLUE) == Direction.HOLD
-    state = _primed_state(baseline_bar_dt=datetime(2026, 7, 24, 12, 54, tzinfo=KST))
-    state.last_evaluated_bar_ts = datetime(2026, 7, 24, 12, 54, tzinfo=KST).isoformat()
+    state = _primed_state(baseline_bar_dt=datetime(2026, 7, 24, 12, 51, tzinfo=KST))
+    state.last_evaluated_bar_ts = datetime(2026, 7, 24, 12, 51, tzinfo=KST).isoformat()
     broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 10_000.0})
 
     result = worker.run_once(broker=broker, market_data=_history_svc(df_1m), state=state, now=now)
@@ -500,7 +502,7 @@ def test_production_path_treats_post_baseline_1300_bar_as_new_signal():
     then a real drop on the bar at 13:03 (index 81) — a bar strictly AFTER
     the established baseline must still fire as a genuine new signal."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 80 + [80.0, 60.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 81 + [60.0])
     now = start + timedelta(minutes=3 * 82, seconds=5)
     state = _primed_state(baseline_bar_dt=datetime(2026, 7, 24, 12, 57, tzinfo=KST))
     state.last_evaluated_bar_ts = datetime(2026, 7, 24, 12, 57, tzinfo=KST).isoformat()
@@ -538,7 +540,7 @@ def test_production_path_signed_b_only_without_crossover_orders_zero():
 
 def test_production_path_same_crossover_bar_twenty_ticks_orders_once():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
     now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _primed_state(baseline_bar_dt=start + timedelta(minutes=3 * 98))
     svc = _history_svc(df_1m, prices={config.WATCH_SYMBOL: 140.0, config.LONG_SYMBOL: 15_000.0})
@@ -552,8 +554,8 @@ def test_production_path_same_crossover_bar_twenty_ticks_orders_once():
 
 def test_production_path_up_then_down_sells_to_zero_then_buys_inverse():
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    up_df = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
-    down_df = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0, 100.0, 60.0])
+    up_df = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
+    down_df = _1m_from_3m_closes(start, [100.0] * 99 + [140.0, 140.0, 60.0])
     up_now = start + timedelta(minutes=3 * 100, seconds=5)
     down_now = start + timedelta(minutes=3 * 102, seconds=5)
     state = _primed_state(baseline_bar_dt=start + timedelta(minutes=3 * 98))
@@ -579,11 +581,10 @@ def test_opposite_flag_is_ledgered_even_when_order_gate_blocks_switch():
     """A confirmed opposite color flag must remain visible in the app even when
     a non-filter order gate blocks the actual sell/buy switch."""
     start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
-    df_1m = _1m_from_3m_closes(start, [100.0] * 98 + [120.0, 140.0])
+    df_1m = _1m_from_3m_closes(start, [100.0] * 99 + [140.0])
     now = start + timedelta(minutes=3 * 100, seconds=5)
     state = _primed_state(baseline_bar_dt=start + timedelta(minutes=3 * 98))
     state.last_detected_direction = Direction.DOWN_BLUE
-    state.macd_color_last_regime = "RAW_DIRECT"
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
     broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0)

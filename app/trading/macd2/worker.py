@@ -54,8 +54,6 @@ from app.trading.macd2.models import (
 )
 from app.trading.macd2.signal_engine import (
     calculate_macd,
-    confirmed_macd_flag_condition,
-    evaluate_confirmed_macd_color_onset,
     evaluate_macd_crossover,
     evaluate_primary_forming_crossover,
     forming_bar_window,
@@ -167,9 +165,6 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.session_date = today_str
     state.last_signal_direction = None
     state.last_detected_direction = None
-    state.macd_color_pending_direction = None
-    state.macd_color_pending_count = 0
-    state.macd_color_last_regime = None
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.last_evaluated_bar_ts = None
@@ -209,9 +204,6 @@ def initialize_strategy_session(
     state.worker_instance_id = worker_instance_id
     state.pending_signal = None
     state.last_detected_direction = None
-    state.macd_color_pending_direction = None
-    state.macd_color_pending_count = 0
-    state.macd_color_last_regime = None
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.processed_signal_ids = []
@@ -253,9 +245,9 @@ def compute_today_signal_overview(
     """Recompute every one of TODAY's confirmed completed-3m-bar MACD flags
     from raw 1-minute history, for the 신호 통계 panel ONLY — never called by
     run_once, never touches order_executor/major_flag_filter/processed_signal_ids
-    (docs §3/§5). Uses the exact same pure functions as the live Worker
+    (docs §3/§5). Uses the exact same pure function as the live Worker
     (resample_completed_3m / filter_complete_3m_bars / calculate_macd /
-    evaluate_confirmed_macd_color_onset) so a bar's classification here always agrees
+    evaluate_macd_crossover) so a bar's classification here always agrees
     with what run_once would have decided had it been running at that moment.
 
     A bar whose window closed strictly before ``session_started_at`` (this
@@ -281,37 +273,22 @@ def compute_today_signal_overview(
     session_start_dt = _parse_iso_dt(session_started_at)
     overview: list[dict[str, Any]] = []
     last_direction: Optional[Direction] = None
-    pending_direction: Optional[Direction] = None
-    pending_count = 0
-    last_regime: Optional[str] = None
     for pos, idx in enumerate(today_indices):
         window = bars_3m.iloc[: idx + 1]
         snap = calculate_macd(window)
         if snap is None:
             continue
         if pos == 0:
-            baseline_direction = confirmed_macd_flag_condition(snap)
-            last_direction = baseline_direction if baseline_direction != Direction.HOLD else None
-            pending_direction = None
-            pending_count = 0
-            last_regime = "RAW_DIRECT" if last_direction is not None else None
+            # Baseline only — mirrors _advance_confirmed_primary's own
+            # is-first-of-day gate (previous_diff here can span yesterday's
+            # last bar into today's first, so any zero-crossing would be an
+            # overnight-gap artifact, not an intraday reversal).
             continue
         bar_end = snap.bar_dt + timedelta(minutes=3)
-        decision = evaluate_confirmed_macd_color_onset(
-            snap,
-            last_direction,
-            pending_direction,
-            pending_count,
-            previous_regime=last_regime,
-            publishable=bar_end.time() < config.NEW_ENTRY_CUTOFF,
-        )
-        pending_direction = decision.pending_direction
-        pending_count = decision.pending_count
-        direction = decision.direction
+        direction = evaluate_macd_crossover(snap, last_direction)
         if direction == Direction.HOLD:
             continue
         last_direction = direction
-        last_regime = decision.regime
         origin = (
             ORIGIN_HISTORICAL_REPLAY_ONLY
             if session_start_dt is not None and bar_end <= session_start_dt
@@ -486,17 +463,11 @@ def _pending_age_sec(pending: dict[str, Any], now: datetime) -> Optional[float]:
 
 
 def _pending_direction_still_active(pending_dir: Optional[Direction], macd_snap) -> bool:
-    if pending_dir not in (Direction.UP_RED, Direction.DOWN_BLUE):
-        return False
-    return confirmed_macd_flag_condition(macd_snap) == pending_dir
-
-
-def _seed_primary_baseline_from_snapshot(state: RuntimeState, macd_snap) -> None:
-    baseline_direction = confirmed_macd_flag_condition(macd_snap)
-    state.last_detected_direction = baseline_direction if baseline_direction != Direction.HOLD else None
-    state.macd_color_pending_direction = None
-    state.macd_color_pending_count = 0
-    state.macd_color_last_regime = "RAW_DIRECT" if state.last_detected_direction is not None else None
+    if pending_dir == Direction.UP_RED:
+        return (macd_snap.current_diff if macd_snap.current_diff is not None else macd_snap.macd - macd_snap.signal) > 0
+    if pending_dir == Direction.DOWN_BLUE:
+        return (macd_snap.current_diff if macd_snap.current_diff is not None else macd_snap.macd - macd_snap.signal) < 0
+    return False
 
 
 def _quote_valid_for_provisional(market_data: MarketDataService, symbol: str) -> bool:
@@ -939,11 +910,18 @@ def _execute_or_wait(
 
 def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
     """Primary (order-authoritative) crossover — completed 3m bars ONLY
-    (docs 2026-07-27 KIS-parity fix): previous_diff/current_diff come solely
-    from calculate_macd(bars_3m), the same confirmed MACD(12,26,9) KIS itself
-    charts a flag on for a completed bar. Evaluated exactly once per new
-    completed-bar timestamp — a repeat tick against the same bar_dt is
-    always HOLD here, regardless of direction.
+    (docs 2026-07-27 KIS-parity fix; restored 2026-08-03 to the exact
+    known-good rule from commit 6a2fd07, which ran unmodified 2026-07-28
+    through 2026-07-30 and reproduces the 2026-08-03 KIS chart's 14
+    confirmed flags exactly — see docs/MACD2_LOGIC.md for the git-archaeology
+    writeup. The 2026-07-31 color+regime/debounce rewrite that briefly
+    replaced this was found to under-detect real KIS flags by ~85% and is
+    removed; do not reintroduce color-state/regime/pending debounce here):
+    previous_diff/current_diff come solely from calculate_macd(bars_3m), the
+    same confirmed MACD(12,26,9) KIS itself charts a flag on for a completed
+    bar. Evaluated exactly once per new completed-bar timestamp — a repeat
+    tick against the same bar_dt is always HOLD here, regardless of
+    direction.
 
     The very first completed bar this state has ever evaluated (or the
     first one on a NEW calendar date relative to the previously evaluated
@@ -959,28 +937,15 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
         return Direction.HOLD
     prior_bar_ts = state.last_confirmed_bar_ts
     state.last_confirmed_bar_ts = bar_key
-    if not prior_bar_ts:
-        _seed_primary_baseline_from_snapshot(state, macd_snap)
+    is_first_of_day = True
+    if prior_bar_ts:
+        prior_dt = _parse_iso_dt(prior_bar_ts)
+        is_first_of_day = prior_dt is None or prior_dt.astimezone(KST).date() != macd_snap.bar_dt.astimezone(KST).date()
+    if is_first_of_day:
         return Direction.HOLD
-    prior_dt = _parse_iso_dt(prior_bar_ts)
-    if prior_dt is not None and prior_dt.astimezone(KST).date() != macd_snap.bar_dt.astimezone(KST).date():
-        _seed_primary_baseline_from_snapshot(state, macd_snap)
-        return Direction.HOLD
-    bar_end = macd_snap.bar_dt.astimezone(KST) + timedelta(minutes=3)
-    decision = evaluate_confirmed_macd_color_onset(
-        macd_snap,
-        state.last_detected_direction,
-        state.macd_color_pending_direction,
-        state.macd_color_pending_count,
-        previous_regime=state.macd_color_last_regime,
-        publishable=bar_end.time() < config.NEW_ENTRY_CUTOFF,
-    )
-    state.macd_color_pending_direction = decision.pending_direction
-    state.macd_color_pending_count = decision.pending_count
-    direction = decision.direction
+    direction = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
     if direction != Direction.HOLD:
         state.last_detected_direction = direction
-        state.macd_color_last_regime = decision.regime
         state.latest_primary_flag = direction
         state.latest_primary_signal_id = make_signal_id(macd_snap.bar_dt, direction)
     return direction
@@ -1346,9 +1311,6 @@ def run_once(
         state.signal_rule = config.SIGNAL_RULE
         state.pending_signal = None
         state.last_detected_direction = None
-        state.macd_color_pending_direction = None
-        state.macd_color_pending_count = 0
-        state.macd_color_last_regime = None
         state.last_evaluated_bar_ts = None
         state.last_confirmed_bar_ts = None
 

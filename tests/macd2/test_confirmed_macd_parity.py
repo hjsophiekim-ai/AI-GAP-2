@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.trading.macd2 import config
+from app.trading.macd2 import config, state_store
 from app.trading.macd2.models import Direction
 from app.trading.macd2.signal_engine import (
     calculate_macd,
@@ -20,9 +20,11 @@ from app.trading.macd2.signal_engine import (
     make_signal_id,
     resample_completed_3m,
 )
+from app.trading.macd2.worker import _advance_confirmed_primary
 
 KST = config.KST
 ROOT = Path(__file__).resolve().parents[2]
+KIS_EXPECTED_FLAGS_CSV = ROOT / "data" / "validation" / "macd2" / "kis_expected_flags.csv"
 
 
 def _load_original_hynix_1m(*dates: str) -> pd.DataFrame:
@@ -150,3 +152,62 @@ def test_today_kis_confirmed_flags_reproduce_from_original_1m_bars():
 
     assert color_by_bar["11:27"] == Direction.UP_RED
     assert color_by_bar["12:45"] == Direction.DOWN_BLUE
+
+
+def _load_kis_expected_flags(trading_date: str) -> list[tuple[str, str]]:
+    df = pd.read_csv(KIS_EXPECTED_FLAGS_CSV, dtype=str)
+    df = df[(df["trading_date"] == trading_date) & (df["confirmed_by_user"].str.lower() == "true")]
+    return sorted(((row["flag_time"], row["direction"]) for _, row in df.iterrows()), key=lambda x: x[0])
+
+
+def test_golden_2026_08_03_confirmed_flags_match_kis_chart_exactly():
+    """GOLDEN TEST — pins the confirmed-flag rule restored 2026-08-03 from
+    commit 6a2fd07 (the exact code that ran unmodified 2026-07-28 through
+    2026-07-30; git-archaeology confirmed zero commits touched
+    app/trading/macd2/ in that window). The 2026-07-31 color+regime/debounce
+    rewrite that briefly replaced it under-detected real KIS flags by ~85%
+    and was reverted the same day this test was added.
+
+    Do NOT relax, retune, or replace this rule to make some other date pass.
+    If this test fails after a signal_engine.py/worker.py change, the change
+    is the regression — not this fixture. Ground truth is
+    data/validation/macd2/kis_expected_flags.csv's 2026-08-03 rows: the 14
+    flags the user read directly off the live KIS chart that day.
+
+    Replays the REAL, unmodified ``_advance_confirmed_primary()`` (not a
+    re-implementation) against the real 000660 1-minute candles for
+    2026-07-31 (prior trading day warm-up) + 2026-08-03.
+    """
+    expected = _load_kis_expected_flags("20260803")
+    assert len(expected) == 14, "fixture must have exactly the 14 confirmed 2026-08-03 KIS flags"
+
+    df_1m = _load_original_hynix_1m("20260731", "20260803")
+    now = datetime(2026, 8, 3, 15, 30, tzinfo=KST)
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    today_idx = list(bars_3m.index[bars_3m["datetime"].dt.strftime("%Y%m%d") == "20260803"])
+
+    state = state_store.default_state()
+    produced: list[tuple[str, str]] = []
+    for idx in today_idx:
+        snap = calculate_macd(bars_3m.iloc[: idx + 1])
+        if snap is None:
+            continue
+        direction = _advance_confirmed_primary(state, snap)
+        if direction == Direction.HOLD:
+            continue
+        produced.append((snap.bar_dt.strftime("%H:%M"), direction.value))
+
+    for i in range(1, len(produced)):
+        assert produced[i][1] != produced[i - 1][1], (
+            f"same-direction-consecutive duplicate: {produced[i - 1]} then {produced[i]}"
+        )
+
+    assert len(produced) == len(expected), f"expected {len(expected)} flags, got {len(produced)}: {produced}"
+
+    def _to_min(hhmm: str) -> int:
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
+    for (exp_t, exp_d), (prod_t, prod_d) in zip(expected, produced):
+        assert prod_d == exp_d, f"direction mismatch at expected {exp_t}: got {prod_t} {prod_d}"
+        assert abs(_to_min(prod_t) - _to_min(exp_t)) <= 3, f"time mismatch: expected {exp_t}, got {prod_t}"

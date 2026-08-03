@@ -199,6 +199,15 @@ class KISClient:
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json; charset=utf-8"})
         self._token_lock = threading.Lock()
+        # get_minute_candles()/get_minute_candles_for_date() always return []
+        # on any failure (never raise) so callers can page unconditionally —
+        # but that means a transient HTTP error (e.g. KIS 500) is otherwise
+        # indistinguishable from a genuine empty page (market closed / no more
+        # history). market_data.py's backward-paging retry logic needs that
+        # distinction (a real error should retry; a genuine empty page should
+        # stop), so this records the last failure's reason for it to read
+        # right after the call — cleared to None on the next successful call.
+        self.last_minute_candle_error: str | None = None
 
     # ── 레이트리밋 적용 HTTP 요청(EGW00201 대응) ────────────────────────────
     def _get(self, url: str, **kwargs):
@@ -1179,9 +1188,11 @@ class KISClient:
                     "close": close,
                     "volume": int(row.get("cntg_vol", 0) or 0),
                 })
+            self.last_minute_candle_error = None
             return result
         except Exception as e:
             logger.warning(f"[KIS] 분봉 조회 실패 {symbol}: {e}")
+            self.last_minute_candle_error = repr(e)
             return []
 
     def get_minute_candles_for_date(
@@ -1233,9 +1244,11 @@ class KISClient:
                     "close": close,
                     "volume": int(row.get("cntg_vol", 0) or 0),
                 })
+            self.last_minute_candle_error = None
             return result
         except Exception as e:
             logger.warning(f"[KIS] 거래일 지정 분봉 조회 실패 {symbol} date={date}: {e}")
+            self.last_minute_candle_error = repr(e)
             return []
 
     # ── 외국인/기관 매매동향 조회 ──────────────────────────────────────────

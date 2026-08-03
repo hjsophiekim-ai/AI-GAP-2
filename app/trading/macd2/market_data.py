@@ -336,6 +336,18 @@ class MarketDataService:
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return _empty_1m_frame(), {"error": repr(exc)}
         df = _candles_to_df(candles)
+        if df.empty:
+            # get_minute_candles() itself never raises (docs: 실패 시 [] 반환) —
+            # a transient HTTP/network failure (KIS 500, timeout, ...) is
+            # otherwise indistinguishable here from a genuine empty page
+            # (today's own paging walk truly has no more bars), which would
+            # silently stop the backward walk early instead of retrying and
+            # truncate today's history (2026-08-03 발견: 정상 재시도 없이 당일
+            # 09:00 이후 분봉이 통째로 누락됨). last_minute_candle_error is set
+            # by get_minute_candles() right before returning [] on failure.
+            client_error = getattr(client, "last_minute_candle_error", None)
+            if client_error:
+                return df, {"error": client_error}
         return df, {"received_count": int(len(df))}
 
     def _default_fetch_minute_candles_for_date(
@@ -352,6 +364,16 @@ class MarketDataService:
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return _empty_1m_frame(), {"error": repr(exc)}
         df = _candles_to_df(candles)
+        if df.empty:
+            # Same silent-swallow gap as _default_fetch_minute_candles above —
+            # get_minute_candles_for_date() never raises either, so surface
+            # its last_minute_candle_error the same way (this is exactly the
+            # 2026-07-27 "20260724 조회가 500으로 실패해 20260723으로 잘못
+            # 대체됨" bug config.py already documents; PRIOR_DAY_FETCH_RETRIES
+            # never actually retried anything without this signal).
+            client_error = getattr(client, "last_minute_candle_error", None)
+            if client_error:
+                return df, {"error": client_error}
         return df, {"received_count": int(len(df))}
 
     def _default_fetch_quote(self, mode: str, symbol: str) -> tuple[Optional[float], Optional[str]]:

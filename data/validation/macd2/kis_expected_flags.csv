@@ -1,0 +1,19 @@
+trading_date,flag_time,direction,source,confirmed_by_user,note
+20260731,09:00,UP_RED,scripts/macd2_verify_20260731_color_flags.py EXPECTED fixture,true,pre-existing verified fixture from 2026-07-27 KIS-parity revision work
+20260731,09:15,DOWN_BLUE,scripts/macd2_verify_20260731_color_flags.py EXPECTED fixture,true,pre-existing verified fixture from 2026-07-27 KIS-parity revision work
+20260731,11:27,UP_RED,scripts/macd2_verify_20260731_color_flags.py EXPECTED fixture,true,pre-existing verified fixture from 2026-07-27 KIS-parity revision work
+20260731,12:45,DOWN_BLUE,scripts/macd2_verify_20260731_color_flags.py EXPECTED fixture,true,pre-existing verified fixture from 2026-07-27 KIS-parity revision work
+20260803,09:36,UP_RED,user KIS chart read 2026-08-03 session,true,
+20260803,10:30,DOWN_BLUE,user KIS chart read 2026-08-03 session,true,
+20260803,10:42,UP_RED,user KIS chart read 2026-08-03 session,true,
+20260803,11:30,DOWN_BLUE,user KIS chart read 2026-08-03 session,true,
+20260803,11:39,UP_RED,user KIS chart read 2026-08-03 session,true,
+20260803,11:45,DOWN_BLUE,user KIS chart read 2026-08-03 session,true,
+20260803,12:00,UP_RED,user KIS chart read 2026-08-03 session,true,
+20260803,12:09,DOWN_BLUE,user KIS chart read 2026-08-03 session,true,
+20260803,12:42,UP_RED,user KIS chart read 2026-08-03 session,true,
+20260803,13:00,DOWN_BLUE,user KIS chart read 2026-08-03 session,true,
+20260803,13:06,UP_RED,user KIS chart read 2026-08-03 session,true,
+20260803,13:39,DOWN_BLUE,user KIS chart read 2026-08-03 session,true,
+20260803,14:24,UP_RED,user KIS chart read 2026-08-03 session,true,
+20260803,14:57,DOWN_BLUE,user KIS chart read 2026-08-03 session,true,
