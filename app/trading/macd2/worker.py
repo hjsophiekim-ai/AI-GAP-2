@@ -1342,10 +1342,11 @@ def _execute_reversal_exit_only_for_filtered_entry(
     decision: MajorFlagDecision,
     result: TickResult,
     gate_mode: str = "MAJOR",
+    signal_id_override: Optional[str] = None,
 ):
     """Opposite confirmed flag with the active entry gate (MAJOR_FLAG or
     추세전환장) rejected: exit the old ETF, but do not enter the opposite ETF."""
-    signal_id = make_signal_id(macd_snap.bar_dt, direction)
+    signal_id = signal_id_override or make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
         state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
         return None
@@ -1631,6 +1632,23 @@ def run_once(
     # ── Held position: priority chain (docs §10) ───────────────────────
     if pos is not None and pos.quantity > 0:
         current_price = quotes.get(pos.symbol)
+        if current_price is None:
+            # 2026-08-04 fix: STOP_LOSS/Quick-Profit are risk-safety checks
+            # on an ALREADY-held position, not a decision to take on new
+            # risk — unlike a new entry (where requiring a fresh quote is
+            # the correct, safe default), silently skipping the stop-loss
+            # check just because this tick's quote missed the strict
+            # QUOTE_MAX_AGE_SEC freshness window left a real position
+            # completely unmonitored for however long the quote stayed
+            # stale, letting a loss run past -1.5% with no exit at all
+            # (2026-08-04 real incident: SOL 인버스 -1.5%+ 손실, 손절 미발동).
+            # Fall back to the last known price for this symbol (even if
+            # stale) so the checks below still run off a real, recent
+            # price instead of none. Entry/reversal quote-freshness
+            # requirements elsewhere are unchanged.
+            stale_snap = market_data.get_quote(pos.symbol)
+            if stale_snap is not None and not stale_snap.error and stale_snap.price > 0:
+                current_price = stale_snap.price
         profit_lock_should_exit = False
 
         if force_liquidate_time:
@@ -1755,6 +1773,44 @@ def run_once(
                         _apply_switch_outcome(state, outcome, confirmed_direction)
                         result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
                         return result
+                    elif result.skipped == config.MISSED_SIGNAL_QUOTE_STALE and state.position is not None and state.position.symbol == pos.symbol:
+                        # 2026-08-04 fix: a stale/unavailable quote for the NEW
+                        # target must never also block exiting the ALREADY-held
+                        # position -- entering late into a possibly-reversed
+                        # move is riskier than staying in cash, but leaving
+                        # real exposure unmonitored is the opposite of what a
+                        # risk system should do. Liquidate the held ETF right
+                        # now (reusing the filtered-entry sell-only path with a
+                        # distinct signal_id so it never collides with the
+                        # MISSED_SIGNAL_QUOTE_STALE row _dispatch_confirmed_
+                        # signal already recorded for the original signal_id
+                        # above) and leave a pending signal so the Flat
+                        # branch's existing retry mechanism completes the new
+                        # BUY the moment its own quote recovers.
+                        base_signal_id = make_signal_id(macd_snap.bar_dt, confirmed_direction)
+                        stale_recovery_decision = MajorFlagDecision(
+                            approved=False, score=0.0, required_score=0.0,
+                            decision=config.MISSED_SIGNAL_QUOTE_STALE,
+                            reasons=("target quote unavailable/stale after retries",),
+                            component_scores={}, metrics={}, is_reversal=True, fast_reversal=False,
+                            block_reason=config.MISSED_SIGNAL_QUOTE_STALE,
+                        )
+                        sell_outcome = _execute_reversal_exit_only_for_filtered_entry(
+                            broker=broker, state=state, macd_snap=macd_snap,
+                            direction=confirmed_direction, position=pos,
+                            decision=stale_recovery_decision, result=result,
+                            gate_mode="NONE",
+                            signal_id_override=f"{base_signal_id}:QUOTE_STALE_RECOVERY_SELL",
+                        )
+                        if sell_outcome is not None:
+                            _apply_exit_outcome(state, sell_outcome)
+                            _set_pending_signal(
+                                state, signal_id=f"{base_signal_id}:QUOTE_STALE_RECOVERY_BUY",
+                                direction=confirmed_direction, signal_type="INITIAL",
+                                macd_snap=macd_snap, detected_at=now, reason=config.MISSED_SIGNAL_QUOTE_STALE,
+                            )
+                            result.actions.append(f"OPPOSITE_SIGNAL_SELL_ONLY:{confirmed_direction.value}")
+                            return result
             elif state.major_filter_enabled or state.sideways_filter_enabled:
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
