@@ -26,13 +26,14 @@ from datetime import datetime
 from typing import Any, Optional
 
 from app.trading import strategy_ownership
-from app.trading.macd2 import config, order_executor, state_store
+from app.trading.macd2 import config, ledger, order_executor, state_store
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
-from app.trading.macd2.models import RuntimeStatus
+from app.trading.macd2.models import Direction, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
 from app.trading.macd2.worker import (
     Macd2Worker,
+    _apply_switch_outcome,
     _parse_iso_dt,
     compute_today_signal_overview,
     git_sha,
@@ -45,6 +46,49 @@ KST = config.KST
 def other_strategy_active() -> tuple[bool, str]:
     """docs §15: block MACD2 start if Enhanced or MACD v1 is really active."""
     return strategy_ownership.other_owner_active(strategy_ownership.MACD2)
+
+
+def _record_manual_entry_signal(state, direction: Direction, signal_id: str, now: datetime, outcome) -> None:
+    """Signal-ledger row for a manual entry button click (2026-08-04) —
+    execution-ledger recording already happens inside
+    order_executor.execute_signal itself (_record_leg); this only adds the
+    signal-ledger side so the click shows up next to normal MACD-confirmed
+    signals, tagged ``signal_type=MANUAL_ENTRY`` (no macd_snap backs it, so
+    the MACD-specific columns are left blank rather than faked)."""
+    block_reason = outcome.block_reason or ""
+    row = {
+        "trading_date": now.strftime("%Y%m%d"),
+        "completed_bar_at": now.strftime("%H%M%S"),
+        "signal_id": signal_id,
+        "signal_type": "MANUAL_ENTRY",
+        "direction": direction.value,
+        "detected_at": now.isoformat(),
+        "order_requested_at": outcome.timestamps.get("buy_requested_at", ""),
+        "order_result": outcome.final_state.value,
+        "block_reason": block_reason,
+        "signal_bar_at": now.isoformat(),
+        "signal_confirmed_at": now.isoformat(),
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": "MANUAL_ENTRY_UI_BUTTON",
+        "worker_code_sha": git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        "confirmed_direction": direction.value,
+        "executor_called": True,
+        "broker_called": bool(outcome.broker_called),
+        "broker_order_id": outcome.buy_result.order_id if outcome.buy_result else "",
+        "order_price": outcome.order_price,
+        "order_type": outcome.order_type or "",
+        "requested_qty": outcome.final_qty,
+        "final_qty": outcome.quantity,
+        "filled_qty": outcome.filled_qty,
+        "fill_poll_result": outcome.fill_poll_result or "",
+        "balance_qty": outcome.balance_qty,
+        "failure_stage": outcome.order_failure_stage or "",
+        "final_result": f"{outcome.final_state.value}:{block_reason}" if block_reason else outcome.final_state.value,
+    }
+    ledger.append_signal(row)
 
 
 class Macd2Service:
@@ -338,6 +382,61 @@ class Macd2Service:
             "previous": prev,
             "quick_profit_enabled_at": state.quick_profit_enabled_at,
             "quick_profit_enabled_by": state.quick_profit_enabled_by,
+        }
+
+    def manual_entry(self, direction: str) -> dict[str, Any]:
+        """UI 수동 진입 버튼 ("현재시점 레버리지/인버스 전량매수") — 2026-08-04
+        추가. MACD 신호 확정이나 강한 플래그/추세전환장 필터를 전혀 거치지
+        않고, 지정한 방향의 ETF를 예산 내에서 즉시 지정가 매수한다(기존
+        order_executor.execute_signal을 그대로 재사용 — 별도 매수 로직
+        재구현 없음). 프리마켓 등 시스템이 못 본 신호를 사람이 판단해서
+        수동으로 진입시키는 용도이므로, 이미 포지션을 보유 중이면 거부하고
+        아무 것도 하지 않는다(전량매도 후 스위칭은 이 버튼의 범위 밖).
+        체결 성공 시 이후의 손절/퀵프로핏/반대플래그청산/강제청산은 전부
+        기존 run_once 로직이 정상적으로 이 포지션을 관리한다. 체결원장은
+        execute_signal이 이미 기록하고, 신호원장에는 signal_type=
+        "MANUAL_ENTRY"로 별도 기록한다.
+        """
+        if direction not in (Direction.UP_RED.value, Direction.DOWN_BLUE.value):
+            return {"ok": False, "message": "INVALID_DIRECTION"}
+        if self._worker is None or not self._worker.is_alive():
+            return {"ok": False, "message": "WORKER_NOT_RUNNING"}
+        if self._broker is None or self._market_data is None:
+            return {"ok": False, "message": "NOT_STARTED"}
+
+        state = state_store.load_state()
+        if not state.auto_trade_on:
+            return {"ok": False, "message": "AUTO_TRADE_OFF"}
+        if state.position is not None and state.position.quantity > 0:
+            return {"ok": False, "message": "ALREADY_HOLDING_POSITION"}
+
+        direction_enum = Direction(direction)
+        target_symbol = order_executor.target_symbol_for_direction(direction_enum)
+        now = datetime.now(KST)
+        quote_snap = self._market_data.get_quote(target_symbol)
+        if quote_snap is None or quote_snap.error or quote_snap.price <= 0:
+            return {"ok": False, "message": "QUOTE_UNAVAILABLE"}
+
+        signal_id = f"MANUAL_{direction}_{now.strftime('%Y%m%d%H%M%S')}"
+        outcome = order_executor.execute_signal(
+            broker=self._broker, direction=direction_enum, signal_id=signal_id,
+            quotes={target_symbol: quote_snap.price}, position=None, budget=state.budget,
+        )
+
+        if outcome.final_state == SignalState.EXECUTED:
+            _apply_switch_outcome(state, outcome, direction_enum)
+        else:
+            state.order_block_reason = outcome.block_reason
+        _record_manual_entry_signal(state, direction_enum, signal_id, now, outcome)
+        state_store.save_state(state)
+
+        return {
+            "ok": outcome.final_state == SignalState.EXECUTED,
+            "final_state": outcome.final_state.value,
+            "block_reason": outcome.block_reason,
+            "symbol": target_symbol,
+            "quantity": outcome.quantity,
+            "price": outcome.filled_avg_price or outcome.order_price,
         }
 
     def get_snapshot(self) -> dict[str, Any]:

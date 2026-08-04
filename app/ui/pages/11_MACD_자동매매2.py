@@ -387,6 +387,29 @@ with b4:
             st.error(res.get("message") or "Bootstrap 재시도 실패")
         st.rerun()
 
+# 수동 진입 버튼 (2026-08-04) — MACD 신호/필터를 전혀 거치지 않고 지정한
+# 방향의 ETF를 예산 내 즉시 매수(프리마켓 등 시스템이 못 본 신호를 사람이
+# 판단해서 넣는 용도). 이미 포지션 보유 중이면 거부만 하고 아무 것도 안 함.
+# 체결 후에는 기존 손절/퀵프로핏/반대플래그청산 로직이 그대로 관리.
+st.caption("수동 진입 (MACD 신호·필터 무시, 예산 내 즉시 전량매수 — 이미 보유 중이면 거부)")
+m1, m2 = st.columns(2)
+with m1:
+    if st.button("현재시점 레버리지(레드) 전량매수", use_container_width=True):
+        res = service.manual_entry("UP_RED")
+        if res.get("ok"):
+            st.success(f"레버리지 매수 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
+        else:
+            st.error(f"레버리지 매수 실패: {res.get('message') or res.get('block_reason')}")
+        st.rerun()
+with m2:
+    if st.button("현재시점 인버스(블루) 전량매수", use_container_width=True):
+        res = service.manual_entry("DOWN_BLUE")
+        if res.get("ok"):
+            st.success(f"인버스 매수 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
+        else:
+            st.error(f"인버스 매수 실패: {res.get('message') or res.get('block_reason')}")
+        st.rerun()
+
 # Re-read after potential command
 snapshot = service.get_snapshot()
 state = snapshot["state"]

@@ -225,25 +225,77 @@ def initialize_strategy_session(
     state.session_started_at = now.isoformat()
     state.worker_instance_id = worker_instance_id
     state.pending_signal = None
-    state.last_detected_direction = None
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.processed_signal_ids = []
 
     df_1m = market_data.get_history_df()
-    macd_snap = calculate_macd(resample_completed_3m(df_1m, now=now))
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    today_str = now.astimezone(KST).strftime("%Y%m%d")
+    today_indices = (
+        list(bars_3m.index[bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str])
+        if not bars_3m.empty else []
+    )
+
+    # 2026-08-04 fix: this used to always jump straight to "whichever bar is
+    # newest right now" as the new baseline, silently absorbing any
+    # crossover that happened on an EARLIER today bar while the Worker
+    # process was not actually ticking (Render idle-sleep/redeploy/crash —
+    # see the auto-recovery added in service.py the same day). evaluate_
+    # macd_crossover's sign-flip check is inherently bar-local (this bar's
+    # own previous/current diff vs the immediately prior bar), so once a
+    # bar is skipped that crossover can never be recovered from a later
+    # bar — a real flag (and its order) was silently lost this way.
+    #
+    # If this state already has a same-day last_confirmed_bar_ts (a
+    # mid-session RESTART, not a true first start today), replay every bar
+    # after it in order — same pattern as the read-only
+    # compute_today_signal_overview() — deliberately stopping ONE bar short
+    # of the newest so the Worker's very first live run_once() tick still
+    # evaluates+dispatches that final bar itself through the normal path
+    # (never duplicated here). A true first start today (no matching prior
+    # bar) keeps the original single-newest-bar baseline — bars before a
+    # Worker's first-ever session start are legitimately never live-actable
+    # (same HISTORICAL_REPLAY_ONLY distinction compute_today_signal_overview
+    # already makes for display).
+    resuming_today = False
+    resume_from = 0
+    last_direction: Optional[Direction] = None
+    prior_confirmed = _parse_iso_dt(state.last_confirmed_bar_ts)
+    if prior_confirmed is not None and today_indices:
+        prior_confirmed_kst = prior_confirmed.astimezone(KST)
+        if prior_confirmed_kst.strftime("%Y%m%d") == today_str:
+            for pos, idx in enumerate(today_indices):
+                if bars_3m["datetime"].iloc[idx] == prior_confirmed_kst:
+                    resume_from = pos + 1
+                    last_direction = state.last_detected_direction
+                    resuming_today = True
+                    break
+
+    macd_snap = None
+    if resuming_today:
+        for pos in range(resume_from, len(today_indices) - 1):
+            snap = calculate_macd(bars_3m.iloc[: today_indices[pos] + 1])
+            if snap is None:
+                continue
+            direction = evaluate_macd_crossover(snap, last_direction)
+            state.last_confirmed_bar_ts = snap.bar_dt.isoformat()
+            if direction != Direction.HOLD:
+                last_direction = direction
+                state.latest_primary_flag = direction
+                state.latest_primary_signal_id = make_signal_id(snap.bar_dt, direction)
+        state.last_detected_direction = last_direction
+        if today_indices:
+            macd_snap = calculate_macd(bars_3m.iloc[: today_indices[-1] + 1])
+    else:
+        state.last_detected_direction = None
+        macd_snap = calculate_macd(bars_3m)
+        if macd_snap is not None:
+            state.last_confirmed_bar_ts = macd_snap.bar_dt.isoformat()
+
     if macd_snap is not None:
         state.session_baseline_bar_ts = macd_snap.bar_dt.isoformat()
         state.last_evaluated_bar_ts = macd_snap.bar_dt.isoformat()
-        # Marks THIS bar as already baseline'd so run_once's Primary gate
-        # (_advance_confirmed_primary) treats the next NEW completed bar as a
-        # genuine same-day continuation (mid-session Worker (re)start with
-        # plenty of already-completed today bars) rather than mistakenly
-        # re-treating it as "the very first bar ever evaluated" — while a
-        # real overnight gap (this baseline bar dated yesterday, the next one
-        # dated today) is still correctly caught by that gate's own date
-        # comparison.
-        state.last_confirmed_bar_ts = macd_snap.bar_dt.isoformat()
         state.baseline_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
         state.primary_previous_diff = macd_snap.previous_diff
         state.primary_current_diff = macd_snap.current_diff
