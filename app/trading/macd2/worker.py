@@ -149,6 +149,46 @@ def _update_quick_profit_minute_high(state: RuntimeState, symbol: str, current_p
     return float(state.quick_profit_minute_high)
 
 
+def _advance_stop_loss_bar(state: RuntimeState, symbol: str, current_price: float, now: datetime) -> Optional[float]:
+    """Track the held ETF's own completed 3-minute bar close for Stop Loss
+    (docs 2026-08-02 Exit Rule: 3-Minute Confirmed Bars) -- no real ETF 1분봉
+    feed exists (market_data.py only tracks WATCH_SYMBOL history), so this
+    approximates the traded ETF's completed 3-minute close from the live
+    quote stream, tick-sampled the same way _update_quick_profit_minute_high
+    approximates a 1분봉 고가 above. Returns the just-completed bar's close
+    the first tick after that bar rolls over, but ONLY once it is strictly
+    after the entry execution bar (the 3-minute bar containing the entry
+    fill is never eligible for Stop Loss) -- otherwise None (still mid-bar,
+    or the bar that just completed is the execution bar itself).
+    """
+    bar_start, _bar_end = forming_bar_window(now)
+    bar_key = bar_start.isoformat()
+
+    if state.stop_loss_bar_symbol != symbol or state.stop_loss_entry_bar_ts is None:
+        # Normally already seeded at entry (see _apply_switch_outcome) --
+        # this is a defensive fallback for a held position that appeared
+        # without going through that path (e.g. broker-reconciled recovery).
+        # Treat the CURRENT bar as the (pseudo-)execution bar so it is
+        # excluded, same as a real entry.
+        state.stop_loss_bar_symbol = symbol
+        state.stop_loss_entry_bar_ts = bar_key
+        state.stop_loss_bar_ts = bar_key
+        state.stop_loss_bar_close = current_price
+        return None
+
+    if bar_key == state.stop_loss_bar_ts:
+        state.stop_loss_bar_close = current_price
+        return None
+
+    completed_bar_ts = state.stop_loss_bar_ts
+    completed_close = state.stop_loss_bar_close
+    state.stop_loss_bar_ts = bar_key
+    state.stop_loss_bar_close = current_price
+    if completed_bar_ts is None or completed_bar_ts <= state.stop_loss_entry_bar_ts:
+        return None
+    return completed_close
+
+
 def _fresh_quote_prices(market_data: MarketDataService, symbols: tuple[str, ...]) -> dict[str, float]:
     """Only symbols whose cached quote age <= QUOTE_MAX_AGE_SEC are considered
     valid for order sizing/exit decisions (docs §12) — stale/missing quotes
@@ -1704,15 +1744,24 @@ def run_once(
             state.peak_net_return = exits.peak_net_return
             state.profit_lock_active = exits.profit_lock_active
 
-            if exits.exit_reason == config.EXIT_STOP_LOSS:
-                outcome = order_executor.execute_exit(
-                    broker=broker, symbol=pos.symbol, quantity=pos.quantity,
-                    exit_reason=config.EXIT_STOP_LOSS, entry_price=pos.avg_price,
-                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-                )
-                _apply_exit_outcome(state, outcome)
-                result.actions.append(f"STOP_LOSS:{pos.symbol}")
-                return result
+            # Stop Loss is evaluated from the completed 3-minute ETF bar
+            # close onward, excluding the bar that contains the entry fill
+            # (docs 2026-08-02 Exit Rule: 3-Minute Confirmed Bars) -- NOT off
+            # this tick's live/instantaneous quote. risk_exit's own -1.5%
+            # threshold (check_stop_loss) is reused unchanged, just fed the
+            # completed-bar close instead of the live `net_return` above.
+            completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
+            if completed_bar_close is not None:
+                bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
+                if risk_exit.check_stop_loss(bar_net_return):
+                    outcome = order_executor.execute_exit(
+                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                        exit_reason=config.EXIT_STOP_LOSS, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    _apply_exit_outcome(state, outcome)
+                    result.actions.append(f"STOP_LOSS:{pos.symbol}")
+                    return result
 
             # Quick-Profit take-profit filter (2026-08-04 user spec) — EXIT
             # LOGIC ONLY, completely independent of major_filter_enabled/
@@ -1766,7 +1815,7 @@ def run_once(
                     signal_detected_at=_pending_detected_at(state.pending_signal, now),
                 )
                 if outcome is not None:
-                    _apply_switch_outcome(state, outcome, pending_dir)
+                    _apply_switch_outcome(state, outcome, pending_dir, now)
                     result.actions.append(f"OPPOSITE_SIGNAL:{pending_dir.value}")
                     state.last_evaluated_bar_ts = bar_ts_str
                     return result
@@ -1814,7 +1863,7 @@ def run_once(
                     if _is_major_filtered(outcome):
                         result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
                     elif outcome is not None:
-                        _apply_switch_outcome(state, outcome, confirmed_direction)
+                        _apply_switch_outcome(state, outcome, confirmed_direction, now)
                         result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
                         return result
                     elif result.skipped == config.MISSED_SIGNAL_QUOTE_STALE and state.position is not None and state.position.symbol == pos.symbol:
@@ -1893,7 +1942,7 @@ def run_once(
                 signal_detected_at=_pending_detected_at(state.pending_signal, now),
             )
             if outcome is not None:
-                _apply_switch_outcome(state, outcome, pending_dir)
+                _apply_switch_outcome(state, outcome, pending_dir, now)
                 result.actions.append(f"ENTRY:{pending_dir.value}")
                 state.last_evaluated_bar_ts = bar_ts_str
                 return result
@@ -1917,7 +1966,7 @@ def run_once(
         if _is_major_filtered(outcome):
             result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
         elif outcome is not None:
-            _apply_switch_outcome(state, outcome, confirmed_direction)
+            _apply_switch_outcome(state, outcome, confirmed_direction, now)
             result.actions.append(f"ENTRY:{confirmed_direction.value}")
             return result
 
@@ -1960,11 +2009,15 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
         state.quick_profit_minute_symbol = None
         state.quick_profit_minute_bucket = None
         state.quick_profit_minute_high = None
+        state.stop_loss_bar_symbol = None
+        state.stop_loss_entry_bar_ts = None
+        state.stop_loss_bar_ts = None
+        state.stop_loss_bar_close = None
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 
 
-def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> None:
+def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now: datetime) -> None:
     """Retry policy (docs §2): every signal_id is single-shot regardless of
     outcome — success, failure, or block — so it is never automatically
     retried; a later, genuinely new signal_id (a different bar) is still
@@ -1989,6 +2042,18 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
         state.quick_profit_minute_symbol = None
         state.quick_profit_minute_bucket = None
         state.quick_profit_minute_high = None
+        # Stop Loss 3-minute bar gating starts fresh at this new position's
+        # entry fill -- the bar containing the fill is the execution bar
+        # (excluded from Stop Loss, docs 2026-08-02 Exit Rule: 3-Minute
+        # Confirmed Bars); see _advance_stop_loss_bar. Uses this tick's
+        # logical ``now`` (not state.position.entry_at, which is real
+        # wall-clock time used elsewhere e.g. MAJOR_FLAG cooldowns and left
+        # unchanged) so it lines up with every later tick's own ``now``.
+        entry_bar_start, _entry_bar_end = forming_bar_window(now)
+        state.stop_loss_bar_symbol = state.position.symbol
+        state.stop_loss_entry_bar_ts = entry_bar_start.isoformat()
+        state.stop_loss_bar_ts = entry_bar_start.isoformat()
+        state.stop_loss_bar_close = state.position.avg_price
         # MAJOR_FLAG/추세전환장 daily budget counts only a really-filled BUY
         # leg, never a mere filter approval or a rejected/unfilled order. The
         # two toggles are mutually exclusive (same precedence as

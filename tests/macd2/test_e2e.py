@@ -172,6 +172,17 @@ def test_e2e_stop_loss_then_profit_lock_then_forced_liquidation_are_distinct_pat
     loss_svc.refresh_quotes()
     broker.set_quote(pos.symbol, pos.avg_price * 0.9)
 
-    result = run_once(broker=broker, market_data=loss_svc, state=state, now=entry_now + timedelta(minutes=3))
+    # Stop Loss is evaluated from the completed 3-minute ETF bar close onward,
+    # excluding the entry/execution bar (docs 2026-08-02 Exit Rule): the tick
+    # right after entry_now (the execution bar just completing) must NOT stop
+    # out yet; only the tick after THAT (the next bar closing at the loss
+    # price) is eligible.
+    still_in_execution_bar = run_once(
+        broker=broker, market_data=loss_svc, state=state, now=entry_now + timedelta(minutes=3),
+    )
+    assert not any(a.startswith("STOP_LOSS:") for a in still_in_execution_bar.actions)
+    assert state.position is not None
+
+    result = run_once(broker=broker, market_data=loss_svc, state=state, now=entry_now + timedelta(minutes=6))
     assert any(a.startswith("STOP_LOSS:") for a in result.actions)
     assert state.position is None

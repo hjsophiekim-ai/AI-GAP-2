@@ -213,6 +213,10 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "quick_profit_minute_symbol": state.quick_profit_minute_symbol,
         "quick_profit_minute_bucket": state.quick_profit_minute_bucket,
         "quick_profit_minute_high": state.quick_profit_minute_high,
+        "stop_loss_bar_symbol": state.stop_loss_bar_symbol,
+        "stop_loss_entry_bar_ts": state.stop_loss_entry_bar_ts,
+        "stop_loss_bar_ts": state.stop_loss_bar_ts,
+        "stop_loss_bar_close": state.stop_loss_bar_close,
     }
 
 
@@ -404,6 +408,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         quick_profit_minute_symbol=raw.get("quick_profit_minute_symbol"),
         quick_profit_minute_bucket=raw.get("quick_profit_minute_bucket"),
         quick_profit_minute_high=raw.get("quick_profit_minute_high"),
+        stop_loss_bar_symbol=raw.get("stop_loss_bar_symbol"),
+        stop_loss_entry_bar_ts=raw.get("stop_loss_entry_bar_ts"),
+        stop_loss_bar_ts=raw.get("stop_loss_bar_ts"),
+        stop_loss_bar_close=raw.get("stop_loss_bar_close"),
     )
 
 

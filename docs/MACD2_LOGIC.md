@@ -33,6 +33,17 @@ Example: if a `09:51` flag is confirmed and bought at `09:54`, the `09:54`
 3-minute ETF bar is the execution bar. The first eligible risk-exit check is the
 next completed ETF 3-minute bar close.
 
+**구현 방식 (2026-08-05)**: `market_data.py`는 `000660`(WATCH_SYMBOL) 1분봉만
+누적 저장하며, 매매 대상 ETF(`0193T0`/`0197X0`)의 별도 1분봉 이력 캐시는 없다.
+Stop Loss의 완성 3분봉 종가는 이 ETF 이력 대신, Worker가 이미 폴링 중인 실시간
+quote를 매 tick 샘플링해 근사한다(`worker._advance_stop_loss_bar` — 09:00 기준
+3분 그리드로 "현재 진행 중인 3분봉"을 판정하고, 그 봉이 끝나 다음 봉으로 넘어가는
+순간 직전까지 관측된 마지막 quote를 그 봉의 "종가"로 확정한다). 이는 Quick-Profit
+필터의 `_update_quick_profit_minute_high`가 진짜 ETF 1분봉 없이 1분봉 고가를
+근사하는 것과 동일한 방식이다. 포지션 진입 시 진입 체결이 속한 3분봉을
+execution bar로 기록하며(`stop_loss_entry_bar_ts`), 그 봉이 완성되어도(즉 진입
+직후 첫 봉 롤오버) 제외되고, 그다음 완성봉부터 Stop Loss 평가 대상이 된다.
+
 ## 2026-08-02 Profit Lock Exit Disabled
 
 This rule supersedes older MACD2 wording that says Profit Lock should liquidate
@@ -342,6 +353,7 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - MAJOR 필터 OFF이면 기존 `_execute_or_wait` 주문 경로·테스트 결과 불변
 - MAJOR 필터 ON이면 승인 신호만 주문, 탈락 신호 broker 호출 0, 동일 `signal_id` 재심사·재주문 0
 - Stop Loss / Profit Lock / 강제청산은 필터와 무관하게 기존 규칙 유지
+- 진입 체결이 속한 3분봉(execution bar) 내 손실은 Stop Loss를 유발하지 않고, 그다음 완성 3분봉 종가부터 -1.5% 기준으로 평가됨(`tests/macd2/test_worker.py::test_stop_loss_excludes_entry_bar_then_fires_on_next_completed_bar_close`)
 - `tests/macd2/test_major_flag_filter.py` 통과
 - read-only 검증 스크립트 `scripts/macd2_validate_major_filter.py`는 운영 state/ledger/cache·broker를 변경하지 않는다
 - 13:42~13:44 완성봉의 `completed_bar_at`/`signal_id`는 `13:42:00`/`134200`을 포함하고, `detected_at`/`order_requested_at`은 13:45 이후

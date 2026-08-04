@@ -28,7 +28,7 @@ from app.trading.macd2.major_flag_filter import (
 )
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, MajorFlagDecision, PositionSnapshot, RuntimeState
-from app.trading.macd2.signal_engine import calculate_macd
+from app.trading.macd2.signal_engine import calculate_macd, forming_bar_window
 from app.trading.macd2.worker import run_once
 from tests.macd2.fake_broker import FakeBroker
 
@@ -974,6 +974,15 @@ def test_stop_loss_still_exits_with_the_filter_on():
     broker.set_quote(config.LONG_SYMBOL, 14_000.0)
     state = _fresh_state(filter_on=True)
     state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=15_000.0)
+    # Stop Loss is evaluated from the completed 3-minute ETF bar close onward,
+    # excluding the entry/execution bar (docs 2026-08-02 Exit Rule) -- seed the
+    # tracker as if entry happened bars ago and the immediately-prior bar
+    # already completed at the loss price, so this tick's bar rollover fires.
+    bar_start, _ = forming_bar_window(now)
+    state.stop_loss_bar_symbol = config.LONG_SYMBOL
+    state.stop_loss_entry_bar_ts = (bar_start - timedelta(minutes=6)).isoformat()
+    state.stop_loss_bar_ts = (bar_start - timedelta(minutes=3)).isoformat()
+    state.stop_loss_bar_close = 14_000.0
 
     result = run_once(broker=broker, market_data=svc, state=state, now=now)
 
@@ -997,6 +1006,15 @@ def test_stop_loss_is_not_gated_even_when_the_filter_rejects_everything(monkeypa
     state = _fresh_state(filter_on=True)
     state.last_confirmed_bar_ts = (_WORKER_START + timedelta(minutes=3 * 98)).isoformat()
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0)
+    # Stop Loss is evaluated from the completed 3-minute ETF bar close onward,
+    # excluding the entry/execution bar (docs 2026-08-02 Exit Rule) -- seed the
+    # tracker as if entry happened bars ago and the immediately-prior bar
+    # already completed at the loss price, so this tick's bar rollover fires.
+    bar_start, _ = forming_bar_window(now)
+    state.stop_loss_bar_symbol = config.INVERSE_SYMBOL
+    state.stop_loss_entry_bar_ts = (bar_start - timedelta(minutes=6)).isoformat()
+    state.stop_loss_bar_ts = (bar_start - timedelta(minutes=3)).isoformat()
+    state.stop_loss_bar_close = 9_000.0
 
     result = run_once(broker=broker, market_data=svc, state=state, now=now)
 

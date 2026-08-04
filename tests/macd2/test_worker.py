@@ -11,6 +11,7 @@ import pytest
 from app.trading.macd2 import config, ledger, state_store, worker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, MacdSnapshot, PositionSnapshot, QuoteSnapshot, RuntimeState
+from app.trading.macd2.signal_engine import forming_bar_window
 from app.trading.macd2.worker import Macd2Worker, run_once
 from tests.macd2.fake_broker import FakeBroker
 
@@ -773,12 +774,72 @@ def test_stop_loss_exits_full_position():
     broker.set_quote(config.LONG_SYMBOL, 14_000.0)
     state = _fresh_state()
     state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=15_000.0)
+    # Stop Loss is evaluated from the completed 3-minute ETF bar close onward,
+    # excluding the entry/execution bar (docs 2026-08-02 Exit Rule) -- seed the
+    # tracker as if entry happened bars ago and the immediately-prior bar
+    # already completed at the loss price, so this tick's bar rollover fires.
+    bar_start, _ = forming_bar_window(now)
+    state.stop_loss_bar_symbol = config.LONG_SYMBOL
+    state.stop_loss_entry_bar_ts = (bar_start - timedelta(minutes=6)).isoformat()
+    state.stop_loss_bar_ts = (bar_start - timedelta(minutes=3)).isoformat()
+    state.stop_loss_bar_close = 14_000.0
 
     result = run_once(broker=broker, market_data=svc, state=state, now=now)
 
     assert any(a.startswith("STOP_LOSS:") for a in result.actions)
     assert state.position is None
     assert broker.get_position(config.LONG_SYMBOL) is None
+    rows = ledger.load_execution_ledger()
+    assert rows[-1]["exit_reason"] == config.EXIT_STOP_LOSS
+
+
+def test_stop_loss_excludes_entry_bar_then_fires_on_next_completed_bar_close():
+    """docs 2026-08-02 Exit Rule: 3-Minute Confirmed Bars -- a deep loss that
+    happens WITHIN the entry/execution 3-minute bar must not stop out; Stop
+    Loss only becomes eligible once the NEXT 3-minute bar has fully closed.
+    Three ticks: T0 (inside the execution bar, deep loss quote -> no exit),
+    T0+3min (the execution bar just completed -- still excluded -> no exit),
+    T0+6min (the bar AFTER the execution bar just completed at the loss
+    price -- first eligible check -> STOP_LOSS)."""
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    df_1m = _1m_frame(prior_day, _sine_1m_closes(300))
+    t0 = prior_day + timedelta(minutes=300, seconds=5)
+    bar1_start, _ = forming_bar_window(t0)
+    assert bar1_start == t0.replace(second=0, microsecond=0)
+
+    quote_prices = {config.LONG_SYMBOL: 14_000.0}  # -6.67% raw vs 15,000 entry -- well past -1.5%
+    svc = _svc_with_quote(df_1m, t0, quote_prices)
+
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 10, "seed")
+    broker.set_quote(config.LONG_SYMBOL, 14_000.0)
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=15_000.0)
+    # Seed the tracker exactly as _apply_switch_outcome would right after a
+    # real entry fill at t0: the execution bar is bar1 itself.
+    state.stop_loss_bar_symbol = config.LONG_SYMBOL
+    state.stop_loss_entry_bar_ts = bar1_start.isoformat()
+    state.stop_loss_bar_ts = bar1_start.isoformat()
+    state.stop_loss_bar_close = 15_000.0
+
+    # Tick 1: still inside bar1 (the execution bar) -- no exit despite the
+    # deep-loss quote.
+    result1 = run_once(broker=broker, market_data=svc, state=state, now=t0)
+    assert not any(a.startswith("STOP_LOSS:") for a in result1.actions)
+    assert state.position is not None
+
+    # Tick 2: bar1 (execution bar) just completed -- still excluded.
+    t1 = t0 + timedelta(minutes=3)
+    result2 = run_once(broker=broker, market_data=svc, state=state, now=t1)
+    assert not any(a.startswith("STOP_LOSS:") for a in result2.actions)
+    assert state.position is not None
+
+    # Tick 3: bar2 (the bar AFTER the execution bar) just completed at the
+    # loss price -- first eligible check -> Stop Loss fires.
+    t2 = t0 + timedelta(minutes=6)
+    result3 = run_once(broker=broker, market_data=svc, state=state, now=t2)
+    assert any(a.startswith("STOP_LOSS:") for a in result3.actions)
+    assert state.position is None
     rows = ledger.load_execution_ledger()
     assert rows[-1]["exit_reason"] == config.EXIT_STOP_LOSS
 

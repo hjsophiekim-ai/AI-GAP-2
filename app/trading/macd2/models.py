@@ -368,3 +368,13 @@ class RuntimeState:
     quick_profit_minute_symbol: Optional[str] = None
     quick_profit_minute_bucket: Optional[str] = None
     quick_profit_minute_high: Optional[float] = None
+
+    # ── Stop Loss 3-minute completed-bar gating (docs 2026-08-02 Exit Rule:
+    # 3-Minute Confirmed Bars) — no real ETF 1분봉 feed exists (market_data.py
+    # only tracks WATCH_SYMBOL history), so the traded ETF's own completed
+    # 3-minute bar close is approximated from the live quote stream the same
+    # way quick_profit_minute_high approximates a 1분봉 고가 above.
+    stop_loss_bar_symbol: Optional[str] = None
+    stop_loss_entry_bar_ts: Optional[str] = None
+    stop_loss_bar_ts: Optional[str] = None
+    stop_loss_bar_close: Optional[float] = None
