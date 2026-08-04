@@ -38,6 +38,7 @@ def default_state() -> RuntimeState:
     state.budget_usd = config.DEFAULT_BUDGET_USD
     state.strong_filter_enabled = bool(config.STRONG_FILTER_DEFAULT)
     state.strong_filter_version = config.STRONG_FILTER_VERSION
+    state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
     return state
 
 
@@ -169,6 +170,12 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_stop_loss_exit_at": state.last_stop_loss_exit_at,
         "stop_loss_cooldown_direction": _direction_value(state.stop_loss_cooldown_direction),
         "stop_loss_reentry_override_used_today": bool(state.stop_loss_reentry_override_used_today),
+        "quick_profit_enabled": bool(state.quick_profit_enabled),
+        "quick_profit_enabled_at": state.quick_profit_enabled_at,
+        "quick_profit_enabled_by": state.quick_profit_enabled_by,
+        "quick_profit_minute_symbol": state.quick_profit_minute_symbol,
+        "quick_profit_minute_bucket": state.quick_profit_minute_bucket,
+        "quick_profit_minute_high": state.quick_profit_minute_high,
     }
 
 
@@ -293,6 +300,12 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         last_stop_loss_exit_at=raw.get("last_stop_loss_exit_at"),
         stop_loss_cooldown_direction=_direction_from_raw(raw.get("stop_loss_cooldown_direction")),
         stop_loss_reentry_override_used_today=bool(raw.get("stop_loss_reentry_override_used_today", False)),
+        quick_profit_enabled=bool(raw.get("quick_profit_enabled", bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False)))),
+        quick_profit_enabled_at=raw.get("quick_profit_enabled_at"),
+        quick_profit_enabled_by=raw.get("quick_profit_enabled_by"),
+        quick_profit_minute_symbol=raw.get("quick_profit_minute_symbol"),
+        quick_profit_minute_bucket=raw.get("quick_profit_minute_bucket"),
+        quick_profit_minute_high=raw.get("quick_profit_minute_high"),
     )
 
 

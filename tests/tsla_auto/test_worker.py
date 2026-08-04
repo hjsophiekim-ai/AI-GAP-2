@@ -180,6 +180,54 @@ def test_stop_loss_exits_full_position():
     assert state.last_stop_loss_exit_at is not None
 
 
+def test_stop_loss_falls_back_to_stale_quote_when_fresh_quote_missing():
+    """MACD2 parity (2026-08-04): STOP_LOSS is a risk-safety check on an
+    ALREADY-held position, so a quote that misses the strict freshness
+    window must never silently skip it — falls back to the last known
+    (stale) price instead of leaving the position unmonitored."""
+    svc, state, broker, now = _confirmed_up_scenario()
+    run_once(broker=broker, market_data=svc, state=state, now=now)
+    entry_price = state.position.avg_price
+    # A real, but STALE (fetched 100 real seconds ago > QUOTE_MAX_AGE_SEC)
+    # quote showing a -3% crash -- _fresh_quote_prices excludes it from
+    # `quotes`, so only the market_data.get_quote() fallback can catch this.
+    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(
+        config.LONG_SYMBOL, entry_price * 0.97, datetime.now(ET) - timedelta(seconds=100), None, "test", None,
+    )
+    result = run_once(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5))
+    assert result.actions == [f"STOP_LOSS:{config.LONG_SYMBOL}"]
+    assert state.position is None
+
+
+def test_quick_profit_requires_both_stale_peak_and_live_price_to_clear_bar():
+    """MACD2 parity (2026-08-04): Quick-Profit must never fire off a
+    same-minute peak that has already reversed by execution time -- the
+    live price must ALSO independently clear +1.5%, or a 'take profit'
+    could sell at/below entry."""
+    svc, state, broker, now = _confirmed_up_scenario()
+    state.quick_profit_enabled = True
+    run_once(broker=broker, market_data=svc, state=state, now=now)
+    entry_price = state.position.avg_price
+
+    tick_now = now + timedelta(seconds=5)
+    # Seed a stale same-minute peak far above the +1.5% bar...
+    state.quick_profit_minute_symbol = config.LONG_SYMBOL
+    state.quick_profit_minute_bucket = tick_now.astimezone(ET).replace(second=0, microsecond=0).isoformat()
+    state.quick_profit_minute_high = entry_price * 1.05
+    # ...but the LIVE price has already reverted to roughly breakeven.
+    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, entry_price * 1.001, datetime.now(ET), 0.0, "test", None)
+    outcome = run_once(broker=broker, market_data=svc, state=state, now=tick_now)
+    assert "QUICK_PROFIT_TAKE_PROFIT:TSLL" not in outcome.actions
+    assert state.position is not None
+
+    # Now the LIVE price also genuinely clears +1.5% -- the exit fires.
+    later_now = tick_now + timedelta(seconds=5)
+    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, entry_price * 1.02, datetime.now(ET), 0.0, "test", None)
+    outcome2 = run_once(broker=broker, market_data=svc, state=state, now=later_now)
+    assert outcome2.actions == [f"QUICK_PROFIT_TAKE_PROFIT:{config.LONG_SYMBOL}"]
+    assert state.position is None
+
+
 def test_profit_lock_tracks_giveback_but_exit_is_disabled():
     svc, state, broker, now = _confirmed_up_scenario()
     run_once(broker=broker, market_data=svc, state=state, now=now)
@@ -296,17 +344,29 @@ def test_stop_loss_reentry_cooldown_gate_expires_after_15_minutes():
     assert blocked is False
 
 
-def test_stop_loss_reentry_cooldown_gate_wired_into_dispatch(monkeypatch):
-    """Integration check: run_once actually consults the cooldown gate for a
-    genuinely new confirmed signal, and records the correct block_reason —
-    without needing to hand-craft a MACD dataset that satisfies both the
-    crossover AND the score requirements simultaneously."""
+def test_stop_loss_reentry_cooldown_gate_wired_into_dispatch_when_strong_filter_on(monkeypatch):
+    """Integration check: with strong_filter_enabled ON, run_once still
+    consults the cooldown gate for a genuinely new confirmed signal, and
+    records the correct block_reason — without needing to hand-craft a MACD
+    dataset that satisfies both the crossover AND the score requirements
+    simultaneously."""
     monkeypatch.setattr(worker, "_check_stop_loss_cooldown", lambda state, direction, now, bars_3m: (True, None))
-    svc, state, broker, now = _confirmed_up_scenario()
+    svc, state, broker, now = _confirmed_up_scenario(strong_filter_on=True)
     result = run_once(broker=broker, market_data=svc, state=state, now=now)
     assert result.actions == []
     assert broker.orders == []
     assert state.order_block_reason == config.STOP_LOSS_REENTRY_COOLDOWN_BLOCK
+
+
+def test_stop_loss_reentry_cooldown_gate_not_consulted_when_strong_filter_off(monkeypatch):
+    """MACD2 parity (2026-08-04): MACD2 has no stop-loss re-entry cooldown at
+    all, so with strong_filter_enabled OFF (the default), TSLA_AUTO must not
+    consult the cooldown gate either — a genuinely new confirmed signal
+    orders immediately, exactly like MACD2 with its own filters off."""
+    monkeypatch.setattr(worker, "_check_stop_loss_cooldown", lambda state, direction, now, bars_3m: (True, None))
+    svc, state, broker, now = _confirmed_up_scenario(strong_filter_on=False)
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+    assert result.actions == ["ENTRY:UP_RED"]
 
 
 def test_worker_restart_does_not_reorder_a_bar_completed_before_baseline():

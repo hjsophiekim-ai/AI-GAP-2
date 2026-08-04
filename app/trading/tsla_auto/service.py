@@ -149,6 +149,16 @@ class TslaAutoService:
             _write_command("set_strong_filter_enabled", enabled=bool(enabled), changed_by=changed_by)
             return {"ok": True, "strong_filter_enabled_at": state.strong_filter_enabled_at}
 
+    def set_quick_profit_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        with self._lock:
+            state = state_store.load_state()
+            state.quick_profit_enabled = bool(enabled)
+            state.quick_profit_enabled_at = datetime.now(ET).isoformat()
+            state.quick_profit_enabled_by = changed_by
+            state_store.save_state(state)
+            _write_command("set_quick_profit_enabled", enabled=bool(enabled), changed_by=changed_by)
+            return {"ok": True, "quick_profit_enabled_at": state.quick_profit_enabled_at}
+
     def retry_bootstrap(self) -> dict[str, Any]:
         with self._lock:
             if self._market_data is None:

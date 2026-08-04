@@ -169,5 +169,5 @@ def test_worker_and_service_identifiers_are_unique_to_tsla_auto():
     assert config.WORKER_LOCK_FILENAME == "tsla_auto_worker.lock"
     assert config.STRATEGY_VERSION == "TSLA_AUTO_V1"
     assert config.SIGNAL_RULE == "TSLA_3M_CONFIRMED_MACD"
-    assert config.STRONG_FILTER_VERSION == "TSLA_STRONG_FLAG_V6_MACD2_PARITY"
+    assert config.STRONG_FILTER_VERSION == "TSLA_STRONG_FLAG_V7_DEFAULT_OFF_20260804"
     assert config.STRATEGY_ID != "MACD2"

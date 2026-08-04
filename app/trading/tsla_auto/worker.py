@@ -102,6 +102,23 @@ def _net_return_pct(entry_price: float, current_price: float, quantity: int) -> 
     return float(cost["net_pnl_usd"]) / (entry_price * quantity) * 100.0
 
 
+def _update_quick_profit_minute_high(state: RuntimeState, symbol: str, current_price: float, now: datetime) -> float:
+    """Approximate "1분봉 고가" for the Quick-Profit take-profit check (MACD2
+    parity, 2026-08-04) — mirrors app/trading/macd2/worker.py's function of
+    the same name exactly, only KST -> ET. Resets to ``current_price``
+    whenever the held symbol changes or a new calendar minute (:00) starts,
+    then tracks the running max of the already-polled live quote within that
+    minute. Never called when ``state.quick_profit_enabled`` is False."""
+    bucket = now.astimezone(ET).replace(second=0, microsecond=0).isoformat()
+    if state.quick_profit_minute_symbol != symbol or state.quick_profit_minute_bucket != bucket:
+        state.quick_profit_minute_symbol = symbol
+        state.quick_profit_minute_bucket = bucket
+        state.quick_profit_minute_high = current_price
+    else:
+        state.quick_profit_minute_high = max(float(state.quick_profit_minute_high or 0.0), current_price)
+    return float(state.quick_profit_minute_high)
+
+
 def _fresh_quote_prices(market_data: MarketDataService, symbols: tuple[str, ...]) -> dict[str, float]:
     prices: dict[str, float] = {}
     for symbol in symbols:
@@ -578,37 +595,43 @@ def _dispatch_confirmed_signal(
     signal_detected_at = now.astimezone(ET)
     result.signal_detected_at = signal_detected_at.isoformat()
 
-    # (신규) 손절 재진입 쿨다운 — 필터 ON/OFF와 무관하게 항상 평가.
-    cooldown_blocked, achieved_score = _check_stop_loss_cooldown(state, direction, now, bars_3m)
-    if cooldown_blocked:
-        last_stop_loss_at = _parse_iso_dt(state.last_stop_loss_exit_at)
-        cooldown_end_at = (
-            last_stop_loss_at + timedelta(minutes=config.STOP_LOSS_REENTRY_COOLDOWN_MIN)
-            if last_stop_loss_at is not None else None
-        )
-        elapsed_min = (
-            (now - last_stop_loss_at).total_seconds() / 60.0
-            if last_stop_loss_at is not None else None
-        )
-        reason = (
-            config.STOP_LOSS_REENTRY_OVERRIDE_USED_TODAY
-            if state.stop_loss_reentry_override_used_today
-            else config.STOP_LOSS_REENTRY_COOLDOWN_BLOCK
-        )
-        return _record_blocked_signal(
-            state=state, macd_snap=macd_snap, direction=direction, signal_type=signal_type, reason=reason, result=result,
-            extra_trace={
-                "stop_loss_reentry_cooldown_active": True,
-                "last_stop_loss_at": last_stop_loss_at.isoformat() if last_stop_loss_at is not None else "",
-                "cooldown_end_at": cooldown_end_at.isoformat() if cooldown_end_at is not None else "",
-                "elapsed_minutes_after_stop_loss": round(float(elapsed_min), 6) if elapsed_min is not None else "",
-            },
-            now=now,
-        )
-    used_override = achieved_score is not None
-
+    # (신규) 손절 재진입 쿨다운 — 2026-08-04 MACD2 parity 수정: MACD2에는 이런
+    # 손절 재진입 쿨다운이 전혀 없다(필터가 꺼져 있으면 확정 플래그가 곧바로
+    # 매매로 이어짐). strong_filter_enabled가 꺼져 있는 기본 상태에서는 이
+    # 쿨다운도 함께 꺼서 손절 규칙이 MACD2와 완전히 동일하게 동작하도록 하고,
+    # strong_filter_enabled를 다시 켠 사용자에게는 기존의 안전장치(쿨다운
+    # 포함)를 그대로 유지한다.
+    used_override = False
     decision = None
     if state.strong_filter_enabled:
+        cooldown_blocked, achieved_score = _check_stop_loss_cooldown(state, direction, now, bars_3m)
+        if cooldown_blocked:
+            last_stop_loss_at = _parse_iso_dt(state.last_stop_loss_exit_at)
+            cooldown_end_at = (
+                last_stop_loss_at + timedelta(minutes=config.STOP_LOSS_REENTRY_COOLDOWN_MIN)
+                if last_stop_loss_at is not None else None
+            )
+            elapsed_min = (
+                (now - last_stop_loss_at).total_seconds() / 60.0
+                if last_stop_loss_at is not None else None
+            )
+            reason = (
+                config.STOP_LOSS_REENTRY_OVERRIDE_USED_TODAY
+                if state.stop_loss_reentry_override_used_today
+                else config.STOP_LOSS_REENTRY_COOLDOWN_BLOCK
+            )
+            return _record_blocked_signal(
+                state=state, macd_snap=macd_snap, direction=direction, signal_type=signal_type, reason=reason, result=result,
+                extra_trace={
+                    "stop_loss_reentry_cooldown_active": True,
+                    "last_stop_loss_at": last_stop_loss_at.isoformat() if last_stop_loss_at is not None else "",
+                    "cooldown_end_at": cooldown_end_at.isoformat() if cooldown_end_at is not None else "",
+                    "elapsed_minutes_after_stop_loss": round(float(elapsed_min), 6) if elapsed_min is not None else "",
+                },
+                now=now,
+            )
+        used_override = achieved_score is not None
+
         decision = _judge_strong_flag(state=state, bars_3m=bars_3m, direction=direction, position=position, now=now, signal_id=signal_id)
         if not decision.approved:
             return _record_major_filtered_signal(
@@ -648,6 +671,9 @@ def _apply_exit_outcome(state: RuntimeState, outcome, *, exit_reason: str, now: 
         state.strategy_average_price = 0.0
         state.peak_net_return = 0.0
         state.profit_lock_active = False
+        state.quick_profit_minute_symbol = None
+        state.quick_profit_minute_bucket = None
+        state.quick_profit_minute_high = None
         event_at = (now or datetime.now(ET)).astimezone(ET)
         state.last_exit_at = event_at.isoformat()
         state.last_exit_direction = exited_direction
@@ -675,6 +701,9 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, *, n
         state.last_executed_direction = pattern
         state.peak_net_return = 0.0
         state.profit_lock_active = False
+        state.quick_profit_minute_symbol = None
+        state.quick_profit_minute_bucket = None
+        state.quick_profit_minute_high = None
         state.last_entry_at = event_at.isoformat()
         # docs §10: daily_entry_count는 실제 filled_qty>0인 신규 매수 체결
         # 횟수만 — 반대 전환 후 신규 BUY도 1회로 포함, 주문거절·미체결은
@@ -1133,6 +1162,17 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
 
     if pos is not None and pos.quantity > 0:
         current_price = quotes.get(pos.symbol)
+        if current_price is None:
+            # MACD2 parity (2026-08-04): STOP_LOSS/Quick-Profit are risk-safety
+            # checks on an ALREADY-held position, not a decision to take on new
+            # risk, so silently skipping them just because this tick's quote
+            # missed the strict freshness window would leave a real position
+            # unmonitored. Fall back to the last known price for this symbol
+            # (even if stale) so the checks below still run off a real,
+            # recent price instead of none.
+            stale_snap = market_data.get_quote(pos.symbol)
+            if stale_snap is not None and not stale_snap.error and stale_snap.price > 0:
+                current_price = stale_snap.price
         profit_lock_should_exit = False
 
         if current_price is not None:
@@ -1151,6 +1191,31 @@ def run_once(*, broker, market_data: MarketDataService, state: RuntimeState, now
                 _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_STOP_LOSS, now=now)
                 result.actions.append(f"STOP_LOSS:{pos.symbol}")
                 return result
+
+            # Quick-Profit take-profit filter (MACD2 parity, 2026-08-04) — EXIT
+            # LOGIC ONLY, independent of strong_filter_enabled (entry gating is
+            # untouched). Always yields to STOP_LOSS (already returned above if
+            # it fired this tick). Both the remembered same-minute peak AND the
+            # live price must clear the bar, so a spike that has already
+            # reversed by execution time can never fire a "take profit" that
+            # actually sells at/below entry.
+            if state.quick_profit_enabled:
+                minute_high = _update_quick_profit_minute_high(state, pos.symbol, current_price, now)
+                quick_profit_net_return = _net_return_pct(pos.avg_price, minute_high, pos.quantity)
+                current_net_return = _net_return_pct(pos.avg_price, current_price, pos.quantity)
+                if (
+                    quick_profit_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT
+                    and current_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT
+                ):
+                    outcome = order_executor.execute_exit(
+                        broker=broker, symbol=pos.symbol, quantity=pos.quantity, exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT,
+                        entry_price=pos.avg_price, strategy_owned_qty=state.strategy_owned_qty,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT, now=now)
+                    result.actions.append(f"QUICK_PROFIT_TAKE_PROFIT:{pos.symbol}")
+                    return result
+
             profit_lock_should_exit = exits.exit_reason == config.EXIT_PROFIT_LOCK
 
         # Pending/opposite confirmed signals get first refusal before Profit Lock.

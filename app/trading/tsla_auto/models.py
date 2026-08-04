@@ -267,5 +267,13 @@ class RuntimeState:
     stop_loss_cooldown_direction: Optional[Direction] = None
     stop_loss_reentry_override_used_today: bool = False
 
+    # ── Optional Quick-Profit take-profit exit (MACD2 parity, 2026-08-04) ───
+    quick_profit_enabled: bool = False
+    quick_profit_enabled_at: Optional[str] = None
+    quick_profit_enabled_by: Optional[str] = None
+    quick_profit_minute_symbol: Optional[str] = None
+    quick_profit_minute_bucket: Optional[str] = None
+    quick_profit_minute_high: Optional[float] = None
+
     def __post_init__(self) -> None:
         pass

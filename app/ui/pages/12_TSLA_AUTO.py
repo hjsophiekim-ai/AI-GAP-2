@@ -339,6 +339,23 @@ with _filter_cols[1]:
     else:
         st.caption(f"강한 플래그 필터={'ON' if state.strong_filter_enabled else 'OFF'} · version=`{getattr(state, 'strong_filter_version', None) or tsla_config.STRONG_FILTER_VERSION}`")
 
+# Optional Quick-Profit take-profit exit toggle (MACD2 parity, 2026-08-04).
+_qp_cols = st.columns([1.4, 1.6])
+with _qp_cols[0]:
+    _qp_on = st.checkbox(
+        "퀵 Profit 익절", value=bool(getattr(state, "quick_profit_enabled", False)),
+        key="tsla_auto_quick_profit_toggle",
+        help=f"보유 중 순손익률이 +{tsla_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}% 도달 시 즉시 전량 익절 (손절과 독립적인 별도 청산 로직)",
+    )
+with _qp_cols[1]:
+    if bool(_qp_on) != bool(getattr(state, "quick_profit_enabled", False)):
+        res = service.set_quick_profit_enabled(bool(_qp_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(f"퀵 Profit 익절 → {'ON' if _qp_on else 'OFF'} (`{res.get('quick_profit_enabled_at')}`)")
+            st.rerun()
+    else:
+        st.caption(f"퀵 Profit 익절={'ON' if state.quick_profit_enabled else 'OFF'}")
+
 # ── State panel (isolated) ───────────────────────────────────────────────
 st.subheader("상태 / 시세 / MACD")
 try:
