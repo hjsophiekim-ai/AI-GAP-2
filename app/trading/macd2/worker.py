@@ -219,6 +219,7 @@ def initialize_strategy_session(
     worker_instance_id: Optional[str] = None,
 ) -> RuntimeState:
     now = now or datetime.now(KST)
+    prior_session_started_at = state.session_started_at
     state.strategy_name = config.STRATEGY_NAME
     state.strategy_version = config.STRATEGY_VERSION
     state.signal_rule = config.SIGNAL_RULE
@@ -271,6 +272,18 @@ def initialize_strategy_session(
                     last_direction = state.last_detected_direction
                     resuming_today = True
                     break
+
+    if resuming_today and prior_session_started_at:
+        # 2026-08-04 fix: a mid-day restart used to always bump
+        # session_started_at to "now", which retroactively reclassified
+        # every already-LIVE_CONFIRMED flag from earlier today as
+        # HISTORICAL_REPLAY_ONLY in compute_today_signal_overview's display
+        # the moment a later restart happened — even though a live Worker
+        # genuinely was running and (should have) traded them at the time.
+        # Preserving the ORIGINAL same-day session start keeps that display
+        # accurate across restarts; a true first start today still gets a
+        # fresh session_started_at (set above) as before.
+        state.session_started_at = prior_session_started_at
 
     macd_snap = None
     if resuming_today:

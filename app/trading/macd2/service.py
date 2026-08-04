@@ -38,6 +38,7 @@ from app.trading.macd2.worker import (
     compute_today_signal_overview,
     git_sha,
     initialize_strategy_session,
+    run_once,
 )
 
 KST = config.KST
@@ -234,6 +235,26 @@ class Macd2Service:
         state.auto_trade_on = True
         state.ui_mode = RuntimeStatus.RUNNING
         state_store.save_state(state)
+
+        # 2026-08-04 fix: run_once() synchronously, once, right here — BEFORE
+        # spawning the background thread — so a same-day restart's "leave
+        # the newest bar for a live tick" catch-up (initialize_strategy_
+        # session) always actually gets that tick, even if the hosting
+        # process dies again immediately after this call returns (Render
+        # idle-sleep/redeploy can be that abrupt, and relying on the
+        # background thread's first loop iteration left a window where a
+        # confirmed flag was found on the NEXT restart's catch-up walk but
+        # its order was never dispatched, repeating for every flag until a
+        # restart happened to survive long enough). run_once()'s own
+        # bar-key dedup makes a second evaluation of the same bar (e.g. by
+        # the Worker thread's own first loop iteration moments later) a
+        # safe no-op — never duplicated.
+        try:
+            run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
+        except Exception:
+            pass  # best-effort catch-up tick; the Worker's own loop retries every tick regardless
+        state_store.save_state(state)
+
         self._worker.start()
         return {"ok": True, "bootstrap": boot.__dict__}
 
