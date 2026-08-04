@@ -369,6 +369,20 @@ def test_stop_loss_reentry_cooldown_gate_not_consulted_when_strong_filter_off(mo
     assert result.actions == ["ENTRY:UP_RED"]
 
 
+def test_daily_entry_limit_and_other_strong_filter_gates_do_not_apply_when_off():
+    """MACD2 parity (2026-08-04): MACD2 has no daily entry cap, no min-hold
+    block, no same-direction cooldown, no sideways/profile gate at all --
+    those only exist inside strong_flag_filter.py, which is only consulted
+    when strong_filter_enabled is True. With the new default (off), a
+    genuinely new confirmed flag must enter immediately regardless of how
+    high daily_entry_count already is (well past NORMAL_MAX_ENTRIES=4)."""
+    svc, state, broker, now = _confirmed_up_scenario(strong_filter_on=False)
+    state.daily_entry_count = 10  # already far past config.NORMAL_MAX_ENTRIES (4)
+    result = run_once(broker=broker, market_data=svc, state=state, now=now)
+    assert result.actions == ["ENTRY:UP_RED"]
+    assert state.position is not None
+
+
 def test_worker_restart_does_not_reorder_a_bar_completed_before_baseline():
     df_1m = _1m_from_3m_closes(_START, [100.0] * 97 + [99.0, 100.0, 140.0])
     now = _START + timedelta(minutes=3 * 100, seconds=5)
