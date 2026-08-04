@@ -828,10 +828,22 @@ try:
         budget=state.budget,
     )
 
+    # 2026-08-05 fix: "오늘 빨간/파란 플래그" 개수는 신호 원장(signal ledger) 기반
+    # sig_summary 대신, 오늘 하루 전체를 KIS 1분봉 이력에서 그대로 재계산하는
+    # today_signal_overview(worker.compute_today_signal_overview)로 표시한다.
+    # Render 무료 플랜은 재배포 시 data/ 아래 원장 CSV가 초기화되므로(docs
+    # deploy_render.md), 원장 기반 집계는 재배포 이전 플래그를 계속 0건으로
+    # 잃어버렸다 — 1분봉 이력은 재배포 후에도 KIS에서 당일치를 다시 받아오므로
+    # 재배포 여부와 무관하게 오늘 발생한 플래그 전체가 항상 표시된다.
+    _overview_all_today = snapshot.get("today_signal_overview") or []
+    _today_red_count = sum(1 for r in _overview_all_today if r.get("direction") == "UP_RED")
+    _today_blue_count = sum(1 for r in _overview_all_today if r.get("direction") == "DOWN_BLUE")
+
     g1, g2, g3 = st.columns(3)
-    g1.metric("오늘 빨간 플래그", f"{sig_summary['red_count']}건")
-    g2.metric("오늘 파란 플래그", f"{sig_summary['blue_count']}건")
+    g1.metric("오늘 빨간 플래그", f"{_today_red_count}건")
+    g2.metric("오늘 파란 플래그", f"{_today_blue_count}건")
     g3.metric("완료 거래", f"{trade_summary['round_trip_count']}건")
+    st.caption("재배포와 무관하게 오늘 하루 전체 1분봉 이력에서 재계산한 건수입니다.")
 
     # MAJOR filter stats (원본 flag vs 승인 분리)
     _all_today = [r for r in ledger.load_signal_ledger() if r.get("trading_date") == trading_date]
@@ -850,8 +862,8 @@ try:
     ]
     _filled_entries = int(trade_summary.get("buy_count") or 0)
     mg1, mg2, mg3, mg4, mg5, mg6 = st.columns(6)
-    mg1.metric("원본 빨간 플래그", sig_summary["red_count"])
-    mg2.metric("원본 파란 플래그", sig_summary["blue_count"])
+    mg1.metric("원본 빨간 플래그", _today_red_count)
+    mg2.metric("원본 파란 플래그", _today_blue_count)
     mg3.metric("MAJOR 승인 빨강", _major_red)
     mg4.metric("MAJOR 승인 파랑", _major_blue)
     mg5.metric("필터 탈락", len(_filtered))
