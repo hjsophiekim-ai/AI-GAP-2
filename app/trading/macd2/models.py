@@ -231,6 +231,9 @@ class RuntimeState:
     session_baseline_bar_ts: Optional[str] = None
     baseline_relation: Optional[str] = None
     worker_instance_id: Optional[str] = None
+    # 2026-08-04 fix: last time get_snapshot() auto-restarted a WORKER_STALLED
+    # worker (rate-limits recovery attempts — see config.WORKER_AUTO_RECOVER_COOLDOWN_SEC).
+    last_auto_recover_attempt_at: Optional[str] = None
     primary_previous_diff: Optional[float] = None
     primary_current_diff: Optional[float] = None
     primary_relation: Optional[str] = None

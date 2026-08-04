@@ -31,7 +31,13 @@ from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import RuntimeStatus
 from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
-from app.trading.macd2.worker import Macd2Worker, compute_today_signal_overview, git_sha, initialize_strategy_session
+from app.trading.macd2.worker import (
+    Macd2Worker,
+    _parse_iso_dt,
+    compute_today_signal_overview,
+    git_sha,
+    initialize_strategy_session,
+)
 
 KST = config.KST
 
@@ -52,9 +58,37 @@ class Macd2Service:
         self._last_bootstrap_at: Optional[str] = None
         self._last_bootstrap_result: Optional[dict[str, Any]] = None
 
+    def _auto_recover_worker(self, state) -> bool:
+        """2026-08-04 fix: a fresh process (Render free-tier idle-sleep,
+        redeploy, or crash — the Worker/broker/market-data live only as
+        this instance's Python attributes, docs/deploy_render.md's
+        ephemeral filesystem) previously left ``auto_trade_on=True``
+        permanently WORKER_STALLED with no automatic recovery, silently
+        producing 0 flags/orders until a human noticed and clicked
+        "자동매매 시작" again. Retries the same ``start()`` path
+        automatically — MOCK mode only (REAL mode must always go through
+        the UI's explicit confirm-text re-entry, never auto-reactivated),
+        and rate-limited by WORKER_AUTO_RECOVER_COOLDOWN_SEC so a
+        persistently-failing bootstrap can't hammer KIS on every
+        auto-refresh tick. Returns True if a live worker resulted.
+        """
+        if state.mode != "mock":
+            return False
+        last_attempt = _parse_iso_dt(state.last_auto_recover_attempt_at)
+        now = datetime.now(KST)
+        if last_attempt is not None and (now - last_attempt).total_seconds() < config.WORKER_AUTO_RECOVER_COOLDOWN_SEC:
+            return False
+        state.last_auto_recover_attempt_at = now.isoformat()
+        state_store.save_state(state)
+        result = self.start(mode=state.mode, budget=state.budget)
+        return bool(result.get("ok")) and bool(self._worker and self._worker.is_alive())
+
     def _persist_worker_stall_if_needed(self, state):
         worker_alive = bool(self._worker and self._worker.is_alive())
         if state.auto_trade_on and not worker_alive:
+            if self._auto_recover_worker(state):
+                return state_store.load_state()
+            state = state_store.load_state()
             state.ui_mode = RuntimeStatus.WORKER_STALLED
             state.order_block_reason = "WORKER_THREAD_DEAD"
             state_store.save_state(state)

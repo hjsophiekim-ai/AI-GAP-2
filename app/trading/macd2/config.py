@@ -107,6 +107,17 @@ WORKER_TICK_MAX_SEC = 10.0
 SIGNAL_TO_ORDER_REQUEST_MAX_SEC = 5.0
 WORKER_STALL_AGE_SEC = 15.0
 
+# 2026-08-04 fix: a fresh process (Render free-tier idle-sleep, redeploy, or
+# crash — docs/deploy_render.md: ephemeral filesystem, in-process Worker
+# singleton) previously left auto_trade_on=True permanently WORKER_STALLED
+# with no automatic recovery — 0 flags/orders for however long nobody
+# noticed and clicked "자동매매 시작" again. get_snapshot() now retries
+# start() automatically (MOCK mode only — see service._auto_recover_worker)
+# whenever it finds auto_trade_on=True but no live worker thread, at most
+# once per this cooldown so a persistently-failing bootstrap does not
+# hammer KIS on every UI auto-refresh tick.
+WORKER_AUTO_RECOVER_COOLDOWN_SEC = 30.0
+
 # ── Market data validity (strategy-fixed) ──────────────────────────────────
 QUOTE_MAX_AGE_SEC = 10.0
 PENDING_SIGNAL_RETRY_SEC = 30.0
