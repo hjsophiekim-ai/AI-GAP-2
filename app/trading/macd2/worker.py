@@ -287,6 +287,7 @@ def initialize_strategy_session(
 
     macd_snap = None
     if resuming_today:
+        last_flag_snap = None
         for pos in range(resume_from, len(today_indices) - 1):
             snap = calculate_macd(bars_3m.iloc[: today_indices[pos] + 1])
             if snap is None:
@@ -295,11 +296,42 @@ def initialize_strategy_session(
             state.last_confirmed_bar_ts = snap.bar_dt.isoformat()
             if direction != Direction.HOLD:
                 last_direction = direction
+                last_flag_snap = snap
                 state.latest_primary_flag = direction
                 state.latest_primary_signal_id = make_signal_id(snap.bar_dt, direction)
         state.last_detected_direction = last_direction
         if today_indices:
             macd_snap = calculate_macd(bars_3m.iloc[: today_indices[-1] + 1])
+
+        # 2026-08-04 fix: an outage spanning MULTIPLE missed bars (not just
+        # one) used to lose a reversal that happened on an EARLIER bar
+        # within the catch-up walk, not the newest one — the walk correctly
+        # recorded latest_primary_flag/last_detected_direction for it, but
+        # never gave it an actual dispatch chance, and the crossover itself
+        # is bar-local so it can never re-fire later. The live tick that
+        # follows only evaluates the NEWEST bar, which has no reason to
+        # show a fresh crossover of its own, so the held position was left
+        # silently pointing at the wrong side of the market indefinitely.
+        # If the fully-resolved direction from the walk doesn't match what
+        # is actually held, hand it to the SAME pending_signal retry path
+        # already used for quote-stale delayed entries (worker.py's held/
+        # flat branches both consult it every tick) so the very next tick
+        # corrects the position immediately — without replaying every
+        # intermediate historical switch, which cannot be executed
+        # retroactively anyway.
+        if last_flag_snap is not None:
+            held_symbol = state.position.symbol if state.position and state.position.quantity > 0 else None
+            target_symbol = order_executor.target_symbol_for_direction(last_direction)
+            if target_symbol != held_symbol:
+                _set_pending_signal(
+                    state,
+                    signal_id=make_signal_id(last_flag_snap.bar_dt, last_direction),
+                    direction=last_direction,
+                    signal_type="REVERSAL" if held_symbol is not None else "INITIAL",
+                    macd_snap=last_flag_snap,
+                    detected_at=now,
+                    reason="RESTART_CATCH_UP_MULTI_BAR_GAP",
+                )
     else:
         state.last_detected_direction = None
         macd_snap = calculate_macd(bars_3m)

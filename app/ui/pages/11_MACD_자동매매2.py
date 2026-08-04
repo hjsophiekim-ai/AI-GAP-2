@@ -744,6 +744,63 @@ try:
 except Exception as exc:
     st.error(f"운영 진단 패널 오류 — 나머지 화면은 계속 표시됩니다 (`{exc}`)")
 
+# ── 데이터 저장 경로(Persistent Disk) 진단 — Render 등에서 컨테이너 로컬(휘발성)
+# 경로에 계속 쓰고 있으면 재배포/재시작마다 state/원장이 사라지고, session_
+# started_at이 매번 "방금 재시작한 시각"으로 리셋되어 오늘 이미 실시간으로
+# 발생했던 플래그가 전부 HISTORICAL_REPLAY_ONLY로 잘못 표시된다(2026-08-04
+# 실측). AI_GAP_DATA_DIR이 실제로 적용됐는지, 그 경로가 진짜로 쓰기 가능한지,
+# 그리고 지금 이 세션이 언제부터 이어져 온 것인지를 항상 보이는 곳에 표시한다.
+st.subheader("데이터 저장 경로 / 세션 연속성 진단")
+try:
+    import os as _os
+
+    from app.trading.macd2 import state_store as _macd2_state_store
+    from app.utils.data_paths import DATA_ROOT, DATA_ROOT_ENV_VAR, check_writable, file_info
+
+    _data_writable_status = check_writable()
+    _dp_cols = st.columns(3)
+    _dp_cols[0].metric(
+        f"Data root ({'env' if _os.environ.get(DATA_ROOT_ENV_VAR) else 'default'})",
+        str(DATA_ROOT),
+    )
+    _dp_cols[1].metric(
+        "Persistent 쓰기 가능",
+        "🟢 YES" if _data_writable_status.get("writable") else "🔴 NO",
+    )
+    _dp_cols[2].metric(f"{DATA_ROOT_ENV_VAR}", _os.environ.get(DATA_ROOT_ENV_VAR) or "(미설정 — 기본값 사용)")
+    if not _data_writable_status.get("writable"):
+        st.error(
+            f"🔴 데이터 루트({DATA_ROOT})에 쓰기 실패 — state/원장이 저장되지 않습니다: "
+            f"{_data_writable_status.get('error')}"
+        )
+
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("session_started_at (오늘 이어져 온 시각)", state.session_started_at or "-")
+    sc2.metric("last_confirmed_bar_ts", state.last_confirmed_bar_ts or "-")
+    sc3.metric("worker_instance_id", state.worker_instance_id or "-")
+    st.caption(
+        "session_started_at이 실제로 오늘 처음 자동매매를 시작한 시각이 아니라 "
+        "최근 재배포/재시작 시각으로 자주 바뀐다면, 위 쓰기 테스트가 성공이어도 "
+        "실제로는 재시작 사이에 state 파일이 이어지지 않고 있다는 뜻입니다."
+    )
+
+    with st.expander("💾 데이터 저장 경로 상세(state/원장 파일 실제 경로·크기·수정시각)"):
+        _macd2_state_info = file_info(_macd2_state_store.STATE_PATH)
+        _macd2_signal_ledger_info = file_info(ledger.SIGNAL_LEDGER_PATH)
+        _macd2_execution_ledger_info = file_info(ledger.EXECUTION_LEDGER_PATH)
+        st.markdown(f"**MACD2 state 실제 경로**: `{_macd2_state_info['path']}`")
+        st.json(_macd2_state_info)
+        st.markdown(f"**신호원장(signal ledger) 실제 경로**: `{_macd2_signal_ledger_info['path']}`")
+        st.json(_macd2_signal_ledger_info)
+        st.markdown(f"**체결원장(execution ledger) 실제 경로**: `{_macd2_execution_ledger_info['path']}`")
+        st.json(_macd2_execution_ledger_info)
+        st.caption(
+            f"마지막 쓰기 테스트: {_data_writable_status.get('checked_at') or '—'} "
+            f"({'성공' if _data_writable_status.get('writable') else '실패: ' + str(_data_writable_status.get('error'))})"
+        )
+except Exception as exc:
+    st.error(f"데이터 저장 경로 진단 실패 — 나머지 화면은 계속 표시됩니다 (`{exc}`)")
+
 # ── Daily stats (isolated) ──────────────────────────────────────────────
 st.subheader("오늘 신호·거래 통계")
 try:

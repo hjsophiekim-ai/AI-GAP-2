@@ -859,3 +859,70 @@ def test_worker_lifecycle_single_thread_and_stats():
 
     # stop() must not leave a reusable thread object — start() always creates a fresh one.
     assert w._thread is None
+
+
+def test_restart_catchup_recovers_a_reversal_missed_inside_a_multi_bar_gap():
+    """2026-08-04 fix: a restart that occurs after MULTIPLE bars have already
+    formed since the last live tick (not just one) used to lose a reversal
+    that happened on an EARLIER bar within that gap, not the newest one —
+    initialize_strategy_session's catch-up walk correctly recorded
+    latest_primary_flag/last_detected_direction for it, but never gave it an
+    actual order-dispatch chance (the crossover itself is bar-local and can
+    never re-fire on a later bar), silently leaving the position on the
+    wrong side of the market indefinitely. Verified crossovers for this
+    close sequence (via calculate_macd bar-by-bar): bar99=DOWN_BLUE,
+    bar102=UP_RED, bar105=DOWN_BLUE."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    closes = [100.0] * 99 + [92.0, 96.0, 103.0, 104.0, 103.0, 98.0, 90.0, 85.0, 84.0]
+    df_1m_full = _1m_from_3m_closes(start, closes)
+    bar99_dt = start + timedelta(minutes=3 * 99)
+
+    state = _fresh_state()
+
+    # A genuine first start of the day, baselined right before any
+    # crossover has happened yet (Case A).
+    df_1m_at_start = df_1m_full[df_1m_full["datetime"] < bar99_dt]
+    svc0 = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_start, {}))
+    svc0.bootstrap(now=bar99_dt)
+    worker.initialize_strategy_session(state, svc0, now=bar99_dt)
+
+    # A genuine LIVE tick (not a restart) evaluates bar99 normally.
+    quote_prices = {config.WATCH_SYMBOL: 92.0, config.LONG_SYMBOL: 9_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=10_000_000.0, quotes=quote_prices)
+    df_1m_bar99 = df_1m_full[df_1m_full["datetime"] < bar99_dt + timedelta(minutes=3)]
+    svc1 = MarketDataService(
+        mode="mock", fetch_minute_candles=lambda *a: (df_1m_bar99, {}),
+        fetch_quote=lambda mode, symbol: (quote_prices.get(symbol), None),
+    )
+    tick1_now = bar99_dt + timedelta(minutes=3, seconds=5)
+    svc1.bootstrap(now=tick1_now)
+    svc1.refresh_quotes()
+    result1 = run_once(broker=broker, market_data=svc1, state=state, now=tick1_now)
+    assert result1.actions == ["ENTRY:DOWN_BLUE"]
+    assert state.position is not None and state.position.symbol == config.INVERSE_SYMBOL
+
+    # The process now dies for an EXTENDED outage spanning MULTIPLE new
+    # bars (100, 101, 102-UP_RED, 103) before it ever gets another live
+    # tick — data available at restart time goes up through bar 103.
+    bar103_end = start + timedelta(minutes=3 * 104)
+    df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < bar103_end]
+    svc2 = MarketDataService(
+        mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}),
+        fetch_quote=lambda mode, symbol: (quote_prices.get(symbol), None),
+    )
+    restart_now = bar103_end + timedelta(seconds=5)
+    svc2.bootstrap(now=restart_now)
+    worker.initialize_strategy_session(state, svc2, now=restart_now)
+
+    # The walk must have found bar102's UP_RED and queued a correction —
+    # the position hasn't changed YET (that's the next tick's job).
+    assert state.last_detected_direction == Direction.UP_RED
+    assert state.position is not None and state.position.symbol == config.INVERSE_SYMBOL
+    assert state.pending_signal is not None and state.pending_signal.get("direction") == "UP_RED"
+
+    # The very next tick after restart must consult that pending signal and
+    # actually correct the position to LONG — the whole point of this test.
+    svc2.refresh_quotes()
+    result2 = run_once(broker=broker, market_data=svc2, state=state, now=restart_now)
+    assert result2.actions == ["OPPOSITE_SIGNAL:UP_RED"]
+    assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
