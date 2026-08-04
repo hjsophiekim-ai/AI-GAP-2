@@ -303,7 +303,7 @@ with _sideways_cols[0]:
         "추세전환장 거래",
         value=bool(getattr(state, "sideways_filter_enabled", False)),
         key="macd2_sideways_filter_toggle",
-        help="OFF=기존 로직 그대로 / ON=score+body+volume 기준 통과 신호만 주문권한(강한 플래그 필터보다 우선)",
+        help="OFF=기존 로직 그대로 / ON=약한 점수(score 낮음)+비돌파 신호만 주문권한(강한 플래그 필터보다 우선)",
     )
 with _sideways_cols[1]:
     if bool(_sideways_on) != bool(getattr(state, "sideways_filter_enabled", False)):
@@ -468,10 +468,10 @@ try:
         f"decision=`{getattr(state, 'last_sideways_decision', None) or '-'}`"
     )
     st.info(
-        f"추세전환장 기준(ON일 때 강한 플래그 필터보다 우선 적용, 진입권한만 결정): "
-        f"score ≥ {macd2_config.SIDEWAYS_ENTRY_SCORE_MIN:.0f}, "
-        f"body ≥ ATR×{macd2_config.SIDEWAYS_BODY_ATR_MIN}, "
-        f"volume ≥ 20봉 중앙값×{macd2_config.SIDEWAYS_VOLUME_RATIO_MIN} 모두 충족해야 진입."
+        f"추세전환장 기준 v2(ON일 때 강한 플래그 필터보다 우선 적용, 진입권한만 결정): "
+        f"score < {macd2_config.SIDEWAYS_ENTRY_SCORE_MAX:.0f} (약한 플래그만) "
+        f"AND 4봉 돌파(breakout) 없음 — 둘 다 충족해야 진입. "
+        "최근 20거래일 중 확정 플래그가 하루 5건 이상이었던 추세전환장 7일만 뽑아 재검증한 기준."
     )
 
     st.markdown("**퀵 Profit 익절 필터 (청산 로직 전용)**")

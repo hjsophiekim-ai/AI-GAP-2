@@ -222,24 +222,34 @@ MAJOR_MIN_HOLD_BLOCK = "MAJOR_MIN_HOLD_BLOCK"
 FILTERED_OUT = "FILTERED_OUT"
 
 # ── Optional 추세전환장(sideways/whipsaw) entry filter — order gate only ────
-# 2026-08-04: user-specified criterion derived from a single day's
-# (2026-08-03) 14-flag Quick-Profit backtest — reuses the SAME hist/price-
-# impulse/body/volume/EMA metrics MAJOR_FLAG already computes
-# (major_flag_filter.compute_component_scores/score_for_direction), just a
-# different, simpler threshold combination (score + body + volume) tuned to
-# admit ~3-4 entries/day in a choppy/trend-reversal market. Off by default
-# (opt-in toggle). When ON it takes priority over major_filter_enabled — the
-# two gates are never both active at once (worker._judge_entry_gate).
+# 2026-08-04 v2 (tight): re-derived from the last 20 real trading days.
+# Classified each day by confirmed-flag count (natural gap at 3 vs 5+) into
+# 13 "확실한 추세" days (<=3 flags/day, mostly profitable even unfiltered)
+# and 7 "추세전환장" days (>=5 flags/day: 07/15,16,20,21,22,23,08/03; often
+# choppy/whipsaw and prone to big losses when every flag trades). Pooling
+# all 55 real trades from just those 7 days (all-entries baseline + the
+# Quick-Profit +1.5% take-profit exit) showed the INVERSE of the v1
+# relationship: LOW major_flag_filter score predicted the winners on these
+# choppy days, not high score (e.g. score 30-45 netted +1.08M across 11
+# trades, score 60-90 netted -850K across 26 trades). Requiring
+# breakout==False on top removed one more clean outlier loss for free
+# (zero winners cost). Final: score < SIDEWAYS_ENTRY_SCORE_MAX AND
+# breakout == False -> 16/55 trades kept (~2.3/day), 12W/4L (75% win
+# rate), net +1.81M vs +0.81M unfiltered — the "타이트한" variant (fewer
+# trades than the 3-4/day target, prioritizing win quality). Still reuses
+# the SAME hist/price-impulse/body/volume/EMA/breakout metrics MAJOR_FLAG
+# already computes (major_flag_filter.compute_component_scores/
+# score_for_direction) — only the threshold combination is new. Off by
+# default (opt-in toggle). When ON it takes priority over
+# major_filter_enabled — the two gates are never both active at once
+# (worker._judge_entry_gate).
 SIDEWAYS_FILTER_DEFAULT = _env_bool("MACD2_SIDEWAYS_FILTER_DEFAULT", False)
-SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V1_20260804"
-SIDEWAYS_ENTRY_SCORE_MIN = _env_float("MACD2_SIDEWAYS_ENTRY_SCORE_MIN", 75.0)
-SIDEWAYS_BODY_ATR_MIN = _env_float("MACD2_SIDEWAYS_BODY_ATR_MIN", 0.6)
-SIDEWAYS_VOLUME_RATIO_MIN = _env_float("MACD2_SIDEWAYS_VOLUME_RATIO_MIN", 1.2)
+SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V2_TIGHT_20260804"
+SIDEWAYS_ENTRY_SCORE_MAX = _env_float("MACD2_SIDEWAYS_ENTRY_SCORE_MAX", 45.0)
 
 SIDEWAYS_APPROVED = "SIDEWAYS_APPROVED"
-SIDEWAYS_SCORE_BELOW_THRESHOLD = "SIDEWAYS_SCORE_BELOW_THRESHOLD"
-SIDEWAYS_BODY_BELOW_THRESHOLD = "SIDEWAYS_BODY_BELOW_THRESHOLD"
-SIDEWAYS_VOLUME_BELOW_THRESHOLD = "SIDEWAYS_VOLUME_BELOW_THRESHOLD"
+SIDEWAYS_SCORE_ABOVE_THRESHOLD = "SIDEWAYS_SCORE_ABOVE_THRESHOLD"
+SIDEWAYS_BREAKOUT_BLOCKED = "SIDEWAYS_BREAKOUT_BLOCKED"
 
 # ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
 # 2026-08-04: standalone toggle, completely independent of BOTH
