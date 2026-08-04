@@ -33,6 +33,7 @@ from app.trading.macd2.models import Direction, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
 from app.trading.macd2.worker import (
     Macd2Worker,
+    _apply_exit_outcome,
     _apply_switch_outcome,
     _parse_iso_dt,
     compute_today_signal_overview,
@@ -87,6 +88,42 @@ def _record_manual_entry_signal(state, direction: Direction, signal_id: str, now
         "fill_poll_result": outcome.fill_poll_result or "",
         "balance_qty": outcome.balance_qty,
         "failure_stage": outcome.order_failure_stage or "",
+        "final_result": f"{outcome.final_state.value}:{block_reason}" if block_reason else outcome.final_state.value,
+    }
+    ledger.append_signal(row)
+
+
+def _record_manual_liquidation_signal(
+    state, symbol: str, direction: Optional[Direction], signal_id: str, now: datetime, outcome, signal_type: str,
+) -> None:
+    """Signal-ledger row for a manual full-sell (2026-08-04) — mirrors
+    ``_record_manual_entry_signal`` so a user-initiated liquidation shows up
+    in the same audit trail as MACD-confirmed signals instead of leaving
+    only the execution-ledger leg (previously the only place "수동 매도"
+    appeared at all, an asymmetry with manual_entry's signal-ledger row)."""
+    block_reason = outcome.block_reason or ""
+    row = {
+        "trading_date": now.strftime("%Y%m%d"),
+        "completed_bar_at": now.strftime("%H%M%S"),
+        "signal_id": signal_id,
+        "signal_type": signal_type,
+        "direction": direction.value if direction is not None else "",
+        "detected_at": now.isoformat(),
+        "order_requested_at": outcome.timestamps.get("sell_requested_at", ""),
+        "order_result": outcome.final_state.value,
+        "block_reason": block_reason,
+        "signal_bar_at": now.isoformat(),
+        "signal_confirmed_at": now.isoformat(),
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": "MANUAL_LIQUIDATION_UI_BUTTON",
+        "worker_code_sha": git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        "confirmed_direction": direction.value if direction is not None else "",
+        "executor_called": True,
+        "broker_called": bool(outcome.sell_result is not None),
+        "broker_order_id": outcome.sell_result.order_id if outcome.sell_result else "",
         "final_result": f"{outcome.final_state.value}:{block_reason}" if block_reason else outcome.final_state.value,
     }
     ledger.append_signal(row)
@@ -306,6 +343,15 @@ class Macd2Service:
                 broker=self._broker, symbol=symbol, quantity=qty,
                 exit_reason=config.EXIT_USER_LIQUIDATION, entry_price=entry_price,
             )
+            if symbol == config.LONG_SYMBOL:
+                direction = Direction.UP_RED
+            elif symbol == config.INVERSE_SYMBOL:
+                direction = Direction.DOWN_BLUE
+            else:
+                direction = None
+            now = datetime.now(KST)
+            signal_id = f"USER_LIQUIDATION_{symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+            _record_manual_liquidation_signal(state, symbol, direction, signal_id, now, outcome, "USER_LIQUIDATION")
             results.append({
                 "symbol": symbol, "quantity": qty,
                 "ok": outcome.final_state.value == "EXECUTED",
@@ -458,6 +504,58 @@ class Macd2Service:
             "symbol": target_symbol,
             "quantity": outcome.quantity,
             "price": outcome.filled_avg_price or outcome.order_price,
+        }
+
+    def manual_exit(self) -> dict[str, Any]:
+        """UI 수동 진입 버튼과 짝을 이루는 "수동 전량매도" 버튼 (2026-08-04
+        추가) — 현재 보유 중인 포지션을 지금 즉시 시장가로 전량 매도한다
+        (기존 order_executor.execute_exit를 그대로 재사용 — STOP_LOSS/
+        FORCED_LIQUIDATION과 동일한, 이미 검증된 매도 경로). "자동매매 중지
+        및 일괄매도"와 달리 auto_trade_on은 그대로 두므로, 다음 확정 신호부터
+        기존 run_once 로직이 계속 정상적으로 감시/매매한다. 체결원장은
+        execute_exit가 이미 기록하고, 신호원장에는 signal_type=
+        "MANUAL_LIQUIDATION"으로 별도 기록해 수동매수 버튼과 동일하게
+        원장에서 추적 가능하게 한다.
+        """
+        if self._worker is None or not self._worker.is_alive():
+            return {"ok": False, "message": "WORKER_NOT_RUNNING"}
+        if self._broker is None:
+            return {"ok": False, "message": "NOT_STARTED"}
+
+        state = state_store.load_state()
+        if not state.auto_trade_on:
+            return {"ok": False, "message": "AUTO_TRADE_OFF"}
+        if state.position is None or state.position.quantity <= 0:
+            return {"ok": False, "message": "NO_POSITION_TO_SELL"}
+
+        pos = state.position
+        now = datetime.now(KST)
+        signal_id = f"MANUAL_EXIT_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+        outcome = order_executor.execute_exit(
+            broker=self._broker, symbol=pos.symbol, quantity=pos.quantity,
+            exit_reason=config.EXIT_MANUAL_LIQUIDATION, entry_price=pos.avg_price,
+        )
+
+        if pos.symbol == config.LONG_SYMBOL:
+            direction = Direction.UP_RED
+        elif pos.symbol == config.INVERSE_SYMBOL:
+            direction = Direction.DOWN_BLUE
+        else:
+            direction = None
+        if outcome.final_state == SignalState.EXECUTED:
+            _apply_exit_outcome(state, outcome)
+        else:
+            state.order_block_reason = outcome.block_reason
+        _record_manual_liquidation_signal(state, pos.symbol, direction, signal_id, now, outcome, "MANUAL_LIQUIDATION")
+        state_store.save_state(state)
+
+        return {
+            "ok": outcome.final_state == SignalState.EXECUTED,
+            "final_state": outcome.final_state.value,
+            "block_reason": outcome.block_reason,
+            "symbol": pos.symbol,
+            "quantity": pos.quantity,
+            "price": outcome.sell_result.executed_price if outcome.sell_result else None,
         }
 
     def get_snapshot(self) -> dict[str, Any]:

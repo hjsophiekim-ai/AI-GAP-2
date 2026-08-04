@@ -234,6 +234,26 @@ def _record_leg(
     })
 
 
+def _fallback_sell_price(broker, symbol: str) -> Optional[float]:
+    """A market SELL's own order-submission response never carries a real
+    fill price (KIS's order-cash endpoint only acknowledges the order; the
+    actual 체결가 needs a separate fill/balance query, and our SELL requests
+    always pass price=0 for a market order) — so ``BrokerOrderResult.
+    executed_price`` is always 0/falsy for every SELL, which previously made
+    ``_record_leg`` silently fall back to ``entry_price`` and record every
+    single exit as if the price never moved (2026-08-04 real-money incident:
+    a real ~-30만원 loss showed as -8,775원 in the ledger). Best-effort: ask
+    the broker for a fresh quote right after the sell clears — far closer to
+    the true fill than reusing the entry price, without needing a new KIS
+    fill-history endpoint. Never raises — a quote failure here must not turn
+    a successful, already-confirmed sell into a recording error."""
+    try:
+        price = broker.get_quote(symbol)
+    except Exception:
+        return None
+    return float(price) if price and price > 0 else None
+
+
 def _reconcile_to_zero(broker, symbol: str, *, retries: int, delay_sec: float) -> int:
     qty_after = -1
     for attempt in range(max(1, retries)):
@@ -388,7 +408,12 @@ def execute_signal(
 
         _record_leg(
             broker_mode=broker.mode, signal_id=signal_id, symbol=held_symbol, side="SELL",
-            qty=held_qty, price=sell_result.executed_price or (position.avg_price if position else 0.0),
+            qty=held_qty,
+            price=(
+                sell_result.executed_price
+                or _fallback_sell_price(broker, held_symbol)
+                or (position.avg_price if position else 0.0)
+            ),
             position_before=held_qty, position_after=0, exit_reason=config.EXIT_OPPOSITE_SIGNAL,
             order_result=sell_result, entry_price=position.avg_price if position else 0.0,
             confirmed_at=timestamps["sell_confirmed_at"],
@@ -553,7 +578,8 @@ def execute_exit(
 
     _record_leg(
         broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=quantity,
-        price=sell_result.executed_price or entry_price, position_before=quantity, position_after=0,
+        price=sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price,
+        position_before=quantity, position_after=0,
         exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
         confirmed_at=timestamps["sell_confirmed_at"],
     )

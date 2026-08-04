@@ -1697,7 +1697,19 @@ def run_once(
             if state.quick_profit_enabled:
                 minute_high = _update_quick_profit_minute_high(state, pos.symbol, current_price, now)
                 quick_profit_net_return = _net_return_pct(pos.symbol, pos.avg_price, minute_high, pos.quantity)
-                if quick_profit_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT:
+                # 2026-08-04 fix: minute_high is a running max across the
+                # whole still-forming minute, so it can remember a spike that
+                # has ALREADY reversed by the time this tick's market SELL
+                # would actually fill — a "take profit" label must never
+                # execute at a price that isn't ALSO still at/above the
+                # target right now (real incident: exited at the same price
+                # as entry, net loss, under QUICK_PROFIT_TAKE_PROFIT). Both
+                # the remembered peak AND the live price must clear the bar.
+                current_net_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
+                if (
+                    quick_profit_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT
+                    and current_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT
+                ):
                     outcome = order_executor.execute_exit(
                         broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                         exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT, entry_price=pos.avg_price,

@@ -410,6 +410,19 @@ with m2:
             st.error(f"인버스 매수 실패: {res.get('message') or res.get('block_reason')}")
         st.rerun()
 
+# 수동 전량매도 버튼 (2026-08-04) — "자동매매 중지 및 일괄매도"와 달리
+# 자동매매는 계속 유지한 채 현재 보유 포지션만 지금 즉시 시장가로 전량
+# 매도한다. 체결/신호 원장에 모두 기록되며, 이후 확정 신호부터는 다시
+# 기존 로직이 정상적으로 감시/매매한다.
+st.caption("수동 전량매도 (자동매매는 계속 유지, 현재 보유 포지션만 지금 즉시 매도)")
+if st.button("현재 보유 포지션 수동 전량매도", use_container_width=True):
+    res = service.manual_exit()
+    if res.get("ok"):
+        st.success(f"수동 매도 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
+    else:
+        st.error(f"수동 매도 실패: {res.get('message') or res.get('block_reason')}")
+    st.rerun()
+
 # Re-read after potential command
 snapshot = service.get_snapshot()
 state = snapshot["state"]
