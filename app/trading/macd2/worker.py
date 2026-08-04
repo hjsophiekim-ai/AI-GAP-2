@@ -42,7 +42,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from app.trading.macd2 import config, ledger, major_flag_filter, order_executor, risk_exit
+from app.trading.macd2 import config, ledger, major_flag_filter, order_executor, risk_exit, sideways_filter
 from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
 from app.trading.macd2.models import (
     Direction,
@@ -131,6 +131,24 @@ def _net_return_pct(symbol: str, entry_price: float, current_price: float, quant
     return float(cost["net_pnl"]) / (entry_price * quantity) * 100.0
 
 
+def _update_quick_profit_minute_high(state: RuntimeState, symbol: str, current_price: float, now: datetime) -> float:
+    """Approximate "1분봉 고가" for the Quick-Profit take-profit check without
+    a real ETF 1-minute candle feed (market_data.py only tracks WATCH_SYMBOL
+    1m history — docs §8). Resets to ``current_price`` whenever the held
+    symbol changes or a new calendar minute (:00) starts, then tracks the
+    running max of the already-polled live quote within that minute. Never
+    called when ``state.quick_profit_enabled`` is False (2026-08-04 user
+    spec — tick-sampling approximation, not a genuine KIS 1분봉 fetch)."""
+    bucket = now.astimezone(KST).replace(second=0, microsecond=0).isoformat()
+    if state.quick_profit_minute_symbol != symbol or state.quick_profit_minute_bucket != bucket:
+        state.quick_profit_minute_symbol = symbol
+        state.quick_profit_minute_bucket = bucket
+        state.quick_profit_minute_high = current_price
+    else:
+        state.quick_profit_minute_high = max(float(state.quick_profit_minute_high or 0.0), current_price)
+    return float(state.quick_profit_minute_high)
+
+
 def _fresh_quote_prices(market_data: MarketDataService, symbols: tuple[str, ...]) -> dict[str, float]:
     """Only symbols whose cached quote age <= QUOTE_MAX_AGE_SEC are considered
     valid for order sizing/exit decisions (docs §12) — stale/missing quotes
@@ -177,6 +195,10 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # (major_filter_enabled) is user state and survives the rollover.
     state.daily_major_entry_count = 0
     state.last_major_entry_at = None
+    # 추세전환장 filter's daily entry count is likewise session-scoped; its
+    # toggle (sideways_filter_enabled) also survives the rollover.
+    state.daily_sideways_entry_count = 0
+    state.last_sideways_entry_at = None
 
 
 def _relation_from_diff(diff: Optional[float]) -> str:
@@ -1038,6 +1060,57 @@ def _judge_major_flag(
     return decision
 
 
+def _persist_sideways_decision(state: RuntimeState, decision: MajorFlagDecision, signal_id: str) -> None:
+    state.sideways_filter_version = config.SIDEWAYS_FILTER_VERSION
+    state.last_sideways_score = float(decision.score)
+    state.last_sideways_required_score = float(decision.required_score)
+    state.last_sideways_approved = bool(decision.approved)
+    state.last_sideways_decision = decision.decision
+    state.last_sideways_block_reason = decision.block_reason
+    state.last_sideways_component_scores = dict(decision.component_scores or {})
+    state.last_sideways_metrics = dict(decision.metrics or {})
+    state.last_sideways_signal_id = signal_id
+
+
+def _judge_sideways_flag(
+    *, state: RuntimeState, bars_3m, direction: Direction, now: datetime, signal_id: str,
+) -> MajorFlagDecision:
+    """Score + gate an ALREADY-confirmed crossover for the 추세전환장 mode
+    (order authority only). Never called when
+    ``state.sideways_filter_enabled`` is False; never creates or suppresses
+    a confirmed flag itself, and never touches STOP_LOSS / PROFIT_LOCK /
+    FORCED_LIQUIDATION."""
+    decision = sideways_filter.evaluate_sideways_flag(bars_3m, direction, now)
+    _persist_sideways_decision(state, decision, signal_id)
+    return decision
+
+
+def _judge_entry_gate(
+    *,
+    state: RuntimeState,
+    bars_3m,
+    direction: Direction,
+    position: Optional[PositionSnapshot],
+    now: datetime,
+    signal_id: str,
+) -> tuple[Optional[MajorFlagDecision], str]:
+    """Single order-authority gate dispatcher for a confirmed crossover.
+
+    ``sideways_filter_enabled`` takes PRIORITY over ``major_filter_enabled``
+    — the two optional filters are never both active for the same signal
+    (2026-08-04 추세전환장 toggle spec: "위 로직 우선으로 들어가는 거야").
+    Returns ``(None, "NONE")`` when neither toggle is on — legacy behavior
+    (every confirmed flag has order authority) is completely unchanged.
+    """
+    if state.sideways_filter_enabled:
+        return _judge_sideways_flag(state=state, bars_3m=bars_3m, direction=direction, now=now, signal_id=signal_id), "SIDEWAYS"
+    if state.major_filter_enabled:
+        return _judge_major_flag(
+            state=state, bars_3m=bars_3m, direction=direction, position=position, now=now, signal_id=signal_id,
+        ), "MAJOR"
+    return None, "NONE"
+
+
 _MAJOR_METRIC_LEDGER_KEYS = (
     "hist_impulse_atr", "breakout", "price_impulse_atr", "body_atr", "volume_ratio",
     "ema10_ok", "ema20_or_vwap_ok", "recent_range_ratio", "ema_spread_ratio",
@@ -1082,6 +1155,68 @@ def _major_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecisi
     return row
 
 
+def _sideways_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+    """sideways_* ledger columns — mirrors ``_major_ledger_fields`` exactly,
+    for the separate 추세전환장 toggle. Shares the same generic
+    ``_MAJOR_METRIC_LEDGER_KEYS`` metric columns (hist_impulse_atr, body_atr,
+    volume_ratio, ...) since they come from the identical
+    major_flag_filter.compute_component_scores computation either way —
+    ``_entry_gate_ledger_fields`` decides which side's values actually land
+    in those shared columns for a given row."""
+    row: dict[str, Any] = {
+        "sideways_filter_enabled": bool(state.sideways_filter_enabled),
+        "sideways_filter_version": state.sideways_filter_version or config.SIDEWAYS_FILTER_VERSION,
+        "sideways_score": "",
+        "sideways_required_score": "",
+        "sideways_approved": "",
+        "sideways_decision": "",
+        "sideways_block_reason": "",
+        "sideways_component_scores": "",
+        "daily_sideways_entry_count": int(state.daily_sideways_entry_count or 0),
+        "last_sideways_entry_at": state.last_sideways_entry_at or "",
+    }
+    for key in _MAJOR_METRIC_LEDGER_KEYS:
+        row[key] = ""
+    if decision is None:
+        return row
+    row.update({
+        "sideways_score": float(decision.score),
+        "sideways_required_score": float(decision.required_score),
+        "sideways_approved": bool(decision.approved),
+        "sideways_decision": decision.decision or "",
+        "sideways_block_reason": decision.block_reason or "",
+        "sideways_component_scores": json.dumps(dict(decision.component_scores or {}), sort_keys=True),
+    })
+    metrics = dict(decision.metrics or {})
+    for key in _MAJOR_METRIC_LEDGER_KEYS:
+        value = metrics.get(key)
+        row[key] = "" if value is None else value
+    return row
+
+
+def _entry_gate_ledger_fields(
+    state: RuntimeState, decision: Optional[MajorFlagDecision], mode: str,
+) -> dict[str, Any]:
+    """Merge major_* and sideways_* ledger columns for one signal row.
+
+    Both column families are always present (never omitted), so every
+    ledger row shows the current state of BOTH toggles — but the shared
+    generic metric columns (``_MAJOR_METRIC_LEDGER_KEYS``) are populated
+    only by whichever gate actually judged this signal (``mode``), never
+    blanked out afterward by the inactive side.
+    """
+    major_fields = _major_ledger_fields(state, decision if mode == "MAJOR" else None)
+    sideways_fields = _sideways_ledger_fields(state, decision if mode == "SIDEWAYS" else None)
+    merged = dict(major_fields)
+    for key, value in sideways_fields.items():
+        if key in _MAJOR_METRIC_LEDGER_KEYS:
+            if mode == "SIDEWAYS":
+                merged[key] = value
+            continue
+        merged[key] = value
+    return merged
+
+
 def _record_major_filtered_signal(
     *,
     state: RuntimeState,
@@ -1092,10 +1227,12 @@ def _record_major_filtered_signal(
     decision: MajorFlagDecision,
     detected_at: datetime,
     result: TickResult,
+    gate_mode: str = "MAJOR",
 ):
-    """MAJOR_FLAG rejection: ledger only (order_result=FILTERED_OUT), never an
-    order_executor/broker call. The signal_id is consumed so the same flag is
-    not re-judged/re-dispatched on a later tick."""
+    """Entry-gate rejection (MAJOR_FLAG or 추세전환장, per ``gate_mode``):
+    ledger only (order_result=FILTERED_OUT), never an order_executor/broker
+    call. The signal_id is consumed so the same flag is not re-judged/
+    re-dispatched on a later tick."""
     block_reason = decision.block_reason or decision.decision or config.FILTERED_OUT
     state.order_block_reason = block_reason
     if signal_id not in state.processed_signal_ids:
@@ -1109,7 +1246,7 @@ def _record_major_filtered_signal(
         "broker_called": False,
         "final_block_reason": block_reason,
         "order_result_override": config.FILTERED_OUT,
-        "major_fields": _major_ledger_fields(state, decision),
+        "major_fields": _entry_gate_ledger_fields(state, decision, gate_mode),
     }
     outcome = order_executor.ExecutionOutcome(
         signal_id=signal_id,
@@ -1139,9 +1276,10 @@ def _execute_reversal_exit_only_for_filtered_entry(
     position: PositionSnapshot,
     decision: MajorFlagDecision,
     result: TickResult,
+    gate_mode: str = "MAJOR",
 ):
-    """Opposite confirmed flag with MAJOR filter rejected: exit the old ETF,
-    but do not enter the opposite ETF."""
+    """Opposite confirmed flag with the active entry gate (MAJOR_FLAG or
+    추세전환장) rejected: exit the old ETF, but do not enter the opposite ETF."""
     signal_id = make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
         state.order_block_reason = order_executor.BLOCK_DUPLICATE_SIGNAL
@@ -1176,7 +1314,7 @@ def _execute_reversal_exit_only_for_filtered_entry(
             if outcome.final_state == SignalState.EXECUTED
             else outcome.final_state.value
         ),
-        "major_fields": _major_ledger_fields(state, decision),
+        "major_fields": _entry_gate_ledger_fields(state, decision, gate_mode),
         "failure_stage": outcome.order_failure_stage or "",
     }
     outcome.signal_id = signal_id
@@ -1204,6 +1342,7 @@ def _dispatch_confirmed_signal(
     result: TickResult,
     signal_id_override: Optional[str] = None,
     major_decision_override: Optional[MajorFlagDecision] = None,
+    major_gate_mode_override: str = "MAJOR",
     bars_3m=None,
 ):
     signal_id = signal_id_override or make_signal_id(macd_snap.bar_dt, direction)
@@ -1217,21 +1356,24 @@ def _dispatch_confirmed_signal(
     signal_detected_at = datetime.now(KST)
     result.signal_detected_at = signal_detected_at.isoformat()
 
-    # Optional Hybrid MAJOR_FLAG gate — the ONLY filter judgment point, and
-    # only for a brand-new confirmed signal (pending retries already cleared
-    # this gate when they were first approved).
+    # Optional entry gate (MAJOR_FLAG or 추세전환장, sideways takes priority
+    # — see _judge_entry_gate) — the ONLY filter judgment point, and only for
+    # a brand-new confirmed signal (pending retries already cleared this gate
+    # when they were first approved).
     decision: Optional[MajorFlagDecision] = major_decision_override
+    gate_mode = major_gate_mode_override
     # REVERSAL is judged by the held-position branch: weak opposite flags
     # must still liquidate the old ETF but must not enter the opposite ETF.
-    if state.major_filter_enabled and signal_type != "REVERSAL":
-        decision = _judge_major_flag(
+    if signal_type != "REVERSAL":
+        decision, gate_mode = _judge_entry_gate(
             state=state, bars_3m=bars_3m, direction=direction, position=position,
             now=now, signal_id=signal_id,
         )
-        if not decision.approved:
+        if decision is not None and not decision.approved:
             return _record_major_filtered_signal(
                 state=state, macd_snap=macd_snap, direction=direction, signal_type=signal_type,
                 signal_id=signal_id, decision=decision, detected_at=signal_detected_at, result=result,
+                gate_mode=gate_mode,
             )
 
     outcome = _execute_or_wait(
@@ -1239,7 +1381,7 @@ def _dispatch_confirmed_signal(
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
         signal_detected_at=signal_detected_at,
     )
-    result.signal_dispatch_trace["major_fields"] = _major_ledger_fields(state, decision)
+    result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, gate_mode)
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
     return outcome
 
@@ -1457,6 +1599,31 @@ def run_once(
                 result.actions.append(f"STOP_LOSS:{pos.symbol}")
                 return result
 
+            # Quick-Profit take-profit filter (2026-08-04 user spec) — EXIT
+            # LOGIC ONLY, completely independent of major_filter_enabled/
+            # sideways_filter_enabled (entry gating is untouched — see
+            # _judge_entry_gate). Never touches risk_exit.py's own
+            # STOP_LOSS/PROFIT_LOCK functions (unaffected, unchanged above)
+            # and always yields to STOP_LOSS (checked first, already
+            # returned by now if it fired this tick). Judged off the
+            # current 1-minute bar's HIGH (approximated from the live quote
+            # stream — see _update_quick_profit_minute_high), not the
+            # instantaneous live tick price ``current_price`` used above for
+            # stop-loss/profit-lock — a fleeting sub-minute spike is still
+            # enough to trigger it, matching a real 1분봉 고가 check.
+            if state.quick_profit_enabled:
+                minute_high = _update_quick_profit_minute_high(state, pos.symbol, current_price, now)
+                quick_profit_net_return = _net_return_pct(pos.symbol, pos.avg_price, minute_high, pos.quantity)
+                if quick_profit_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT:
+                    outcome = order_executor.execute_exit(
+                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                        exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    _apply_exit_outcome(state, outcome)
+                    result.actions.append(f"QUICK_PROFIT_TAKE_PROFIT:{pos.symbol}")
+                    return result
+
             # Opposite-signal check (priority 3, below) gets first refusal —
             # Profit Lock's own exit (priority 4) only fires afterward if the
             # opposite-signal branch does not switch this tick.
@@ -1493,18 +1660,17 @@ def run_once(
         elif entry_window_open and confirmed_direction != Direction.HOLD:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
-                reversal_decision: Optional[MajorFlagDecision] = None
-                if state.major_filter_enabled:
-                    reversal_decision = _judge_major_flag(
-                        state=state, bars_3m=bars_3m, direction=confirmed_direction,
-                        position=pos, now=now,
-                        signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
-                    )
+                reversal_decision, reversal_gate_mode = _judge_entry_gate(
+                    state=state, bars_3m=bars_3m, direction=confirmed_direction,
+                    position=pos, now=now,
+                    signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
+                )
                 if reversal_decision is not None and not reversal_decision.approved:
                     outcome = _execute_reversal_exit_only_for_filtered_entry(
                         broker=broker, state=state, macd_snap=macd_snap,
                         direction=confirmed_direction, position=pos,
                         decision=reversal_decision, result=result,
+                        gate_mode=reversal_gate_mode,
                     )
                     if outcome is not None:
                         _apply_exit_outcome(state, outcome)
@@ -1515,6 +1681,7 @@ def run_once(
                         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                         direction=confirmed_direction, signal_type="REVERSAL", position=pos, result=result,
                         major_decision_override=reversal_decision,
+                        major_gate_mode_override=reversal_gate_mode,
                         bars_3m=bars_3m,
                     )
                     if _is_major_filtered(outcome):
@@ -1523,7 +1690,7 @@ def run_once(
                         _apply_switch_outcome(state, outcome, confirmed_direction)
                         result.actions.append(f"OPPOSITE_SIGNAL:{confirmed_direction.value}")
                         return result
-            elif state.major_filter_enabled:
+            elif state.major_filter_enabled or state.sideways_filter_enabled:
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=confirmed_direction, signal_type="HELD_SAME", position=pos, result=result,
@@ -1625,6 +1792,9 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
         state.position = None
         state.peak_net_return = 0.0
         state.profit_lock_active = False
+        state.quick_profit_minute_symbol = None
+        state.quick_profit_minute_bucket = None
+        state.quick_profit_minute_high = None
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 
@@ -1651,12 +1821,20 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction) -> N
         state.last_signal_bar_ts = outcome.timestamps.get("evaluated_at")
         state.peak_net_return = 0.0
         state.profit_lock_active = False
-        # MAJOR_FLAG daily budget counts only a really-filled BUY leg, never a
-        # mere filter approval or a rejected/unfilled order.
+        state.quick_profit_minute_symbol = None
+        state.quick_profit_minute_bucket = None
+        state.quick_profit_minute_high = None
+        # MAJOR_FLAG/추세전환장 daily budget counts only a really-filled BUY
+        # leg, never a mere filter approval or a rejected/unfilled order. The
+        # two toggles are mutually exclusive (same precedence as
+        # _judge_entry_gate), so at most one counter increments per fill.
         filled_qty = int(outcome.quantity or 0) or int(
             (outcome.buy_result.executed_qty if outcome.buy_result else 0) or 0
         )
-        if state.major_filter_enabled and filled_qty > 0:
+        if filled_qty > 0 and state.sideways_filter_enabled:
+            state.daily_sideways_entry_count = int(state.daily_sideways_entry_count or 0) + 1
+            state.last_sideways_entry_at = datetime.now(KST).isoformat()
+        elif filled_qty > 0 and state.major_filter_enabled:
             state.daily_major_entry_count = int(state.daily_major_entry_count or 0) + 1
             state.last_major_entry_at = datetime.now(KST).isoformat()
     elif outcome.sell_result is not None and outcome.sell_result.success and outcome.sell_qty_after == 0:

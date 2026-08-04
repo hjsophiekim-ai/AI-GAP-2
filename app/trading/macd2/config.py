@@ -221,6 +221,44 @@ MAJOR_SAME_DIRECTION_COOLDOWN = "MAJOR_SAME_DIRECTION_COOLDOWN"
 MAJOR_MIN_HOLD_BLOCK = "MAJOR_MIN_HOLD_BLOCK"
 FILTERED_OUT = "FILTERED_OUT"
 
+# ── Optional 추세전환장(sideways/whipsaw) entry filter — order gate only ────
+# 2026-08-04: user-specified criterion derived from a single day's
+# (2026-08-03) 14-flag Quick-Profit backtest — reuses the SAME hist/price-
+# impulse/body/volume/EMA metrics MAJOR_FLAG already computes
+# (major_flag_filter.compute_component_scores/score_for_direction), just a
+# different, simpler threshold combination (score + body + volume) tuned to
+# admit ~3-4 entries/day in a choppy/trend-reversal market. Off by default
+# (opt-in toggle). When ON it takes priority over major_filter_enabled — the
+# two gates are never both active at once (worker._judge_entry_gate).
+SIDEWAYS_FILTER_DEFAULT = _env_bool("MACD2_SIDEWAYS_FILTER_DEFAULT", False)
+SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V1_20260804"
+SIDEWAYS_ENTRY_SCORE_MIN = _env_float("MACD2_SIDEWAYS_ENTRY_SCORE_MIN", 75.0)
+SIDEWAYS_BODY_ATR_MIN = _env_float("MACD2_SIDEWAYS_BODY_ATR_MIN", 0.6)
+SIDEWAYS_VOLUME_RATIO_MIN = _env_float("MACD2_SIDEWAYS_VOLUME_RATIO_MIN", 1.2)
+
+SIDEWAYS_APPROVED = "SIDEWAYS_APPROVED"
+SIDEWAYS_SCORE_BELOW_THRESHOLD = "SIDEWAYS_SCORE_BELOW_THRESHOLD"
+SIDEWAYS_BODY_BELOW_THRESHOLD = "SIDEWAYS_BODY_BELOW_THRESHOLD"
+SIDEWAYS_VOLUME_BELOW_THRESHOLD = "SIDEWAYS_VOLUME_BELOW_THRESHOLD"
+
+# ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
+# 2026-08-04: standalone toggle, completely independent of BOTH
+# major_filter_enabled and sideways_filter_enabled — it never affects which
+# entries are placed (worker._judge_entry_gate/order_executor untouched),
+# only what happens to an ALREADY-held position. Works underneath any entry
+# mode (일반거래 / 강한 플래그 거래 / 추세전환장 모두), taking priority over the
+# normal exit chain the moment it fires. ON: net return (TradeCostEngine
+# basis, same as STOP_LOSS_NET_PCT/_net_return_pct) reaching
+# QUICK_PROFIT_TAKE_PROFIT_NET_PCT exits the position in full immediately.
+# OFF: risk_exit.py's own STOP_LOSS/PROFIT_LOCK and order_executor's
+# OPPOSITE_SIGNAL/FORCED_LIQUIDATION exits are entirely unchanged — this
+# toggle adds nothing when OFF. Checked in worker.py right after STOP_LOSS
+# and before the OPPOSITE_SIGNAL switch check, so stop-loss and flag-switch
+# exits are never preempted by it.
+QUICK_PROFIT_FILTER_DEFAULT = _env_bool("MACD2_QUICK_PROFIT_FILTER_DEFAULT", False)
+QUICK_PROFIT_TAKE_PROFIT_NET_PCT = _env_float("MACD2_QUICK_PROFIT_TAKE_PROFIT_NET_PCT", 1.5)
+EXIT_QUICK_PROFIT_TAKE_PROFIT = "QUICK_PROFIT_TAKE_PROFIT"
+
 # ── Isolated MACD2 runtime/ledger paths (never shared with MACD v1) ───────
 # Resolved lazily via app.utils.data_paths inside state_store.py/ledger.py so
 # tests can monkeypatch those modules' own path constants, not these names.

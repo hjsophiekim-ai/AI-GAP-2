@@ -293,6 +293,63 @@ with _filter_cols[1]:
             f"version=`{getattr(state, 'major_filter_version', None) or macd2_config.MAJOR_FILTER_VERSION}`"
         )
 
+# Optional 추세전환장(sideways/whipsaw) filter toggle (command only — never
+# places orders). When ON, this gate takes PRIORITY over "강한 플래그만 거래"
+# above (the two are never both active for the same signal). ENTRY GATING
+# ONLY — the take-profit exit below is a completely separate toggle now.
+_sideways_cols = st.columns([1.4, 1.6])
+with _sideways_cols[0]:
+    _sideways_on = st.checkbox(
+        "추세전환장 거래",
+        value=bool(getattr(state, "sideways_filter_enabled", False)),
+        key="macd2_sideways_filter_toggle",
+        help="OFF=기존 로직 그대로 / ON=score+body+volume 기준 통과 신호만 주문권한(강한 플래그 필터보다 우선)",
+    )
+with _sideways_cols[1]:
+    if bool(_sideways_on) != bool(getattr(state, "sideways_filter_enabled", False)):
+        res = service.set_sideways_filter_enabled(bool(_sideways_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(
+                f"추세전환장 필터 → {'ON' if _sideways_on else 'OFF'} "
+                f"(다음 confirmed 플래그부터 · `{res.get('sideways_filter_enabled_at')}`)"
+            )
+            st.rerun()
+    else:
+        st.caption(
+            f"추세전환장 필터={'ON' if state.sideways_filter_enabled else 'OFF'} · "
+            f"version=`{getattr(state, 'sideways_filter_version', None) or macd2_config.SIDEWAYS_FILTER_VERSION}`"
+        )
+
+# Optional Quick-Profit take-profit filter toggle (command only — never
+# places orders). EXIT LOGIC ONLY — completely independent of both
+# "강한 플래그만 거래" and "추세전환장 거래" above; applies underneath whichever
+# of those (or neither) is active. ON: a held position exits in full the
+# moment net return reaches +1.5%. OFF: existing 손절(-1.5%)/반대플래그 청산/
+# 장마감 강제청산 규칙만 적용 (지금까지와 동일).
+_qp_cols = st.columns([1.4, 1.6])
+with _qp_cols[0]:
+    _qp_on = st.checkbox(
+        "퀵 Profit 익절",
+        value=bool(getattr(state, "quick_profit_enabled", False)),
+        key="macd2_quick_profit_toggle",
+        help=(
+            f"OFF=기존 손절·반대플래그청산·강제청산만 적용 / "
+            f"ON=보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하면 즉시 전량 익절 "
+            "(일반거래/강한 플래그 거래/추세전환장 어떤 진입 모드에서도 동일하게 적용, 진입 로직은 전혀 안 바뀜)"
+        ),
+    )
+with _qp_cols[1]:
+    if bool(_qp_on) != bool(getattr(state, "quick_profit_enabled", False)):
+        res = service.set_quick_profit_enabled(bool(_qp_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(
+                f"퀵 Profit 익절 → {'ON' if _qp_on else 'OFF'} "
+                f"(다음 tick부터 · `{res.get('quick_profit_enabled_at')}`)"
+            )
+            st.rerun()
+    else:
+        st.caption(f"퀵 Profit 익절={'ON' if state.quick_profit_enabled else 'OFF'}")
+
 b1, b2, b3, b4 = st.columns(4)
 with b1:
     if st.button("자동매매 시작", type="primary", use_container_width=True):
@@ -391,6 +448,45 @@ try:
         "score, price impulse, MACD hist, volume, EMA/VWAP, 장중 시간대 profile 조건을 사용. "
         "opening/morning, midday trend/reversal, late rebound/capitulation profile만 진입 승인. "
         "그 외 플래그는 MAJOR_STRONG_PROFILE_FAILED로 차단."
+    )
+
+    st.markdown("**추세전환장 필터 (횡보/휩쏘 대응)**")
+    sf1, sf2, sf3, sf4 = st.columns(4)
+    sf1.metric("추세전환장 필터", "ON" if getattr(state, "sideways_filter_enabled", False) else "OFF")
+    sf2.metric("filter version", getattr(state, "sideways_filter_version", None) or macd2_config.SIDEWAYS_FILTER_VERSION)
+    sf3.metric("오늘 추세전환장 승인 진입", f"{int(getattr(state, 'daily_sideways_entry_count', 0) or 0)}")
+    sf4.metric(
+        "마지막 추세전환장 승인 시각",
+        _format_signal_time(getattr(state, "last_sideways_entry_at", None)) if getattr(state, "last_sideways_entry_at", None) else "-",
+    )
+    _sw_score = getattr(state, "last_sideways_score", None)
+    _sw_req = getattr(state, "last_sideways_required_score", None)
+    st.caption(
+        f"enabled_at=`{getattr(state, 'sideways_filter_enabled_at', None) or '-'}` · "
+        f"by=`{getattr(state, 'sideways_filter_enabled_by', None) or '-'}` · "
+        f"최근 판정 score=`{f'{_sw_score:.0f}/{_sw_req:.0f}' if _sw_score is not None and _sw_req is not None else '-'}` "
+        f"decision=`{getattr(state, 'last_sideways_decision', None) or '-'}`"
+    )
+    st.info(
+        f"추세전환장 기준(ON일 때 강한 플래그 필터보다 우선 적용, 진입권한만 결정): "
+        f"score ≥ {macd2_config.SIDEWAYS_ENTRY_SCORE_MIN:.0f}, "
+        f"body ≥ ATR×{macd2_config.SIDEWAYS_BODY_ATR_MIN}, "
+        f"volume ≥ 20봉 중앙값×{macd2_config.SIDEWAYS_VOLUME_RATIO_MIN} 모두 충족해야 진입."
+    )
+
+    st.markdown("**퀵 Profit 익절 필터 (청산 로직 전용)**")
+    qp1, qp2 = st.columns(2)
+    qp1.metric("퀵 Profit 익절", "ON" if getattr(state, "quick_profit_enabled", False) else "OFF")
+    qp2.metric("익절 문턱", f"+{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%")
+    st.caption(
+        f"enabled_at=`{getattr(state, 'quick_profit_enabled_at', None) or '-'}` · "
+        f"by=`{getattr(state, 'quick_profit_enabled_by', None) or '-'}`"
+    )
+    st.info(
+        f"진입권한(일반거래/강한 플래그/추세전환장)과 무관하게 독립 적용되는 청산 전용 필터. "
+        f"ON이면 보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절"
+        f"({macd2_config.EXIT_QUICK_PROFIT_TAKE_PROFIT}) — 기존 -1.5% 손절/반대 플래그 청산/15:00 강제청산 규칙은 그대로 적용되고, "
+        "이 필터는 그 위에 얹혀서만 동작함. OFF면 이 규칙 자체가 없던 것과 동일."
     )
 
     st.markdown("**현재 confirmed 신호 / MAJOR 판정**")

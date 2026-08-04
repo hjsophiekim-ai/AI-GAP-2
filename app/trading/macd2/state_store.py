@@ -34,6 +34,9 @@ def default_state() -> RuntimeState:
     state = RuntimeState()
     state.major_filter_enabled = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
     state.major_filter_version = config.MAJOR_FILTER_VERSION
+    state.sideways_filter_enabled = bool(getattr(config, "SIDEWAYS_FILTER_DEFAULT", False))
+    state.sideways_filter_version = config.SIDEWAYS_FILTER_VERSION
+    state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
     return state
 
 
@@ -189,6 +192,26 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_major_component_scores": dict(state.last_major_component_scores or {}) if state.last_major_component_scores else None,
         "last_major_metrics": dict(state.last_major_metrics or {}) if state.last_major_metrics else None,
         "last_major_signal_id": state.last_major_signal_id,
+        "sideways_filter_enabled": bool(state.sideways_filter_enabled),
+        "sideways_filter_enabled_at": state.sideways_filter_enabled_at,
+        "sideways_filter_enabled_by": state.sideways_filter_enabled_by,
+        "sideways_filter_version": state.sideways_filter_version or config.SIDEWAYS_FILTER_VERSION,
+        "daily_sideways_entry_count": int(state.daily_sideways_entry_count or 0),
+        "last_sideways_entry_at": state.last_sideways_entry_at,
+        "last_sideways_score": state.last_sideways_score,
+        "last_sideways_required_score": state.last_sideways_required_score,
+        "last_sideways_approved": state.last_sideways_approved,
+        "last_sideways_decision": state.last_sideways_decision,
+        "last_sideways_block_reason": state.last_sideways_block_reason,
+        "last_sideways_component_scores": dict(state.last_sideways_component_scores or {}) if state.last_sideways_component_scores else None,
+        "last_sideways_metrics": dict(state.last_sideways_metrics or {}) if state.last_sideways_metrics else None,
+        "last_sideways_signal_id": state.last_sideways_signal_id,
+        "quick_profit_enabled": bool(state.quick_profit_enabled),
+        "quick_profit_enabled_at": state.quick_profit_enabled_at,
+        "quick_profit_enabled_by": state.quick_profit_enabled_by,
+        "quick_profit_minute_symbol": state.quick_profit_minute_symbol,
+        "quick_profit_minute_bucket": state.quick_profit_minute_bucket,
+        "quick_profit_minute_high": state.quick_profit_minute_high,
     }
 
 
@@ -224,6 +247,14 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_major_filter_version and stored_major_filter_version != config.MAJOR_FILTER_VERSION:
         major_filter_version = config.MAJOR_FILTER_VERSION
         major_filter_enabled = major_enabled_default
+
+    sideways_enabled_default = bool(getattr(config, "SIDEWAYS_FILTER_DEFAULT", False))
+    stored_sideways_filter_version = str(raw.get("sideways_filter_version") or "")
+    sideways_filter_version = stored_sideways_filter_version or config.SIDEWAYS_FILTER_VERSION
+    sideways_filter_enabled = bool(raw.get("sideways_filter_enabled", sideways_enabled_default))
+    if stored_sideways_filter_version and stored_sideways_filter_version != config.SIDEWAYS_FILTER_VERSION:
+        sideways_filter_version = config.SIDEWAYS_FILTER_VERSION
+        sideways_filter_enabled = sideways_enabled_default
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         ui_mode=ui_mode,
@@ -345,6 +376,32 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
             if isinstance(raw.get("last_major_metrics"), dict) else None
         ),
         last_major_signal_id=raw.get("last_major_signal_id"),
+        sideways_filter_enabled=sideways_filter_enabled,
+        sideways_filter_enabled_at=raw.get("sideways_filter_enabled_at"),
+        sideways_filter_enabled_by=raw.get("sideways_filter_enabled_by"),
+        sideways_filter_version=sideways_filter_version,
+        daily_sideways_entry_count=int(raw.get("daily_sideways_entry_count") or 0),
+        last_sideways_entry_at=raw.get("last_sideways_entry_at"),
+        last_sideways_score=raw.get("last_sideways_score"),
+        last_sideways_required_score=raw.get("last_sideways_required_score"),
+        last_sideways_approved=raw.get("last_sideways_approved"),
+        last_sideways_decision=raw.get("last_sideways_decision"),
+        last_sideways_block_reason=raw.get("last_sideways_block_reason"),
+        last_sideways_component_scores=(
+            dict(raw.get("last_sideways_component_scores"))
+            if isinstance(raw.get("last_sideways_component_scores"), dict) else None
+        ),
+        last_sideways_metrics=(
+            dict(raw.get("last_sideways_metrics"))
+            if isinstance(raw.get("last_sideways_metrics"), dict) else None
+        ),
+        last_sideways_signal_id=raw.get("last_sideways_signal_id"),
+        quick_profit_enabled=bool(raw.get("quick_profit_enabled", bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False)))),
+        quick_profit_enabled_at=raw.get("quick_profit_enabled_at"),
+        quick_profit_enabled_by=raw.get("quick_profit_enabled_by"),
+        quick_profit_minute_symbol=raw.get("quick_profit_minute_symbol"),
+        quick_profit_minute_bucket=raw.get("quick_profit_minute_bucket"),
+        quick_profit_minute_high=raw.get("quick_profit_minute_high"),
     )
 
 

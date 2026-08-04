@@ -49,6 +49,15 @@ SIGNAL_LEDGER_COLUMNS = [
     "hist_impulse_atr", "breakout", "price_impulse_atr", "body_atr", "volume_ratio",
     "ema10_ok", "ema20_or_vwap_ok", "recent_range_ratio", "ema_spread_ratio",
     "daily_major_entry_count", "last_major_entry_at",
+    # Optional 추세전환장(sideways/whipsaw) entry filter fields (appended
+    # 2026-08-04; never rename/delete older cols). Shares the same generic
+    # hist_impulse_atr/body_atr/volume_ratio/... metric columns above — those
+    # are populated by whichever gate (major or sideways) actually judged
+    # this signal, never both, since the two toggles are mutually exclusive.
+    "sideways_filter_enabled", "sideways_filter_version",
+    "sideways_score", "sideways_required_score", "sideways_approved", "sideways_decision",
+    "sideways_block_reason", "sideways_component_scores",
+    "daily_sideways_entry_count", "last_sideways_entry_at",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

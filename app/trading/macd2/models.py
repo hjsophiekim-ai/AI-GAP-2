@@ -334,3 +334,34 @@ class RuntimeState:
     last_major_component_scores: Optional[dict[str, Any]] = None
     last_major_metrics: Optional[dict[str, Any]] = None
     last_major_signal_id: Optional[str] = None
+
+    # ── Optional 추세전환장(sideways/whipsaw) entry filter (order authority
+    # gate only) — mutually exclusive with MAJOR_FLAG: when this is ON it
+    # takes priority over major_filter_enabled (see worker._judge_entry_gate).
+    sideways_filter_enabled: bool = False
+    sideways_filter_enabled_at: Optional[str] = None
+    sideways_filter_enabled_by: Optional[str] = None
+    sideways_filter_version: str = ""
+    daily_sideways_entry_count: int = 0
+    last_sideways_entry_at: Optional[str] = None
+    last_sideways_score: Optional[float] = None
+    last_sideways_required_score: Optional[float] = None
+    last_sideways_approved: Optional[bool] = None
+    last_sideways_decision: Optional[str] = None
+    last_sideways_block_reason: Optional[str] = None
+    last_sideways_component_scores: Optional[dict[str, Any]] = None
+    last_sideways_metrics: Optional[dict[str, Any]] = None
+    last_sideways_signal_id: Optional[str] = None
+
+    # ── Optional Quick-Profit take-profit filter (EXIT LOGIC ONLY) —
+    # independent of major_filter_enabled/sideways_filter_enabled; never
+    # affects which entries are placed, only exits an already-held position.
+    quick_profit_enabled: bool = False
+    quick_profit_enabled_at: Optional[str] = None
+    quick_profit_enabled_by: Optional[str] = None
+    # 1분봉 고가 근사치 — 진짜 KIS 1분봉 대신, 이미 폴링 중인 실시간 시세를 매
+    # 분(00초) 리셋하며 그 분 안에서 관측된 최고가만 추적한다(market_data.py
+    # 변경 없이 구현하기 위한 근사; 2026-08-04 사용자 선택).
+    quick_profit_minute_symbol: Optional[str] = None
+    quick_profit_minute_bucket: Optional[str] = None
+    quick_profit_minute_high: Optional[float] = None

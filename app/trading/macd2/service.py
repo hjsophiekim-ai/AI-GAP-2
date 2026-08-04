@@ -254,6 +254,58 @@ class Macd2Service:
             "major_filter_version": state.major_filter_version,
         }
 
+    def set_sideways_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional 추세전환장(sideways/whipsaw) order
+        gate. Only updates runtime state — never places orders or liquidates.
+        Takes effect from the next confirmed flag; open positions unchanged.
+        When ON, this gate takes priority over major_filter_enabled — the
+        two gates are never both active at once (worker._judge_entry_gate).
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.sideways_filter_enabled)
+        state.sideways_filter_enabled = enabled_bool
+        state.sideways_filter_version = config.SIDEWAYS_FILTER_VERSION
+        state.sideways_filter_enabled_at = datetime.now(KST).isoformat()
+        state.sideways_filter_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "sideways_filter_enabled": enabled_bool,
+            "previous": prev,
+            "sideways_filter_enabled_at": state.sideways_filter_enabled_at,
+            "sideways_filter_enabled_by": state.sideways_filter_enabled_by,
+            "sideways_filter_version": state.sideways_filter_version,
+        }
+
+    def set_quick_profit_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional Quick-Profit take-profit filter.
+
+        EXIT LOGIC ONLY — never places/changes an entry, never touches
+        major_filter_enabled or sideways_filter_enabled (entry gating is
+        completely independent of this toggle). Only updates runtime state.
+        Takes effect from the next tick; ON makes an already-held position
+        exit in full the moment its net return reaches
+        config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT, on top of whichever entry
+        mode (일반거래/강한 플래그/추세전환장) is currently active. OFF restores
+        the existing STOP_LOSS/OPPOSITE_SIGNAL/FORCED_LIQUIDATION-only exit
+        behavior exactly as before this toggle existed.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.quick_profit_enabled)
+        state.quick_profit_enabled = enabled_bool
+        state.quick_profit_enabled_at = datetime.now(KST).isoformat()
+        state.quick_profit_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "quick_profit_enabled": enabled_bool,
+            "previous": prev,
+            "quick_profit_enabled_at": state.quick_profit_enabled_at,
+            "quick_profit_enabled_by": state.quick_profit_enabled_by,
+        }
+
     def get_snapshot(self) -> dict[str, Any]:
         state = state_store.load_state()
         state = self._persist_worker_stall_if_needed(state)
