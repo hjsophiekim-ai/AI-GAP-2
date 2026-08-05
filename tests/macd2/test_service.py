@@ -11,8 +11,9 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from app.trading.macd2 import config, service as service_module, state_store
-from app.trading.macd2.models import PositionSnapshot, RuntimeStatus
+from app.trading.macd2 import config, order_executor, service as service_module, state_store
+from app.trading.macd2.models import Direction, PositionSnapshot, QuoteSnapshot, RuntimeStatus
+from app.trading.macd2.worker import ORDER_FILL_RECONCILE_DELAY_SEC, ORDER_FILL_RECONCILE_RETRIES
 from tests.macd2.fake_broker import FakeBroker
 
 KST = config.KST
@@ -252,6 +253,83 @@ def test_stop_sets_stopped_state_and_kills_worker(monkeypatch):
     assert state.stopped is True
     assert state.stopped_reason == "test_stop"
     assert state.ui_mode == RuntimeStatus.STOPPED
+
+
+class _FakeMarketDataServiceWithQuotes(_FakeMarketDataServiceOK):
+    """Adds real get_quote() so manual_entry() passes its QUOTE_UNAVAILABLE check."""
+
+    def get_quote(self, symbol):
+        return QuoteSnapshot(
+            symbol=symbol, price=100.0, fetched_at=datetime.now(KST), age_sec=0.1, source="fake",
+        )
+
+
+def _patch_ok_construction_with_broker_quotes(monkeypatch, market_data_cls=_FakeMarketDataServiceWithQuotes):
+    quotes = {config.LONG_SYMBOL: 100.0, config.INVERSE_SYMBOL: 100.0}
+    monkeypatch.setattr(
+        service_module, "create_macd2_broker",
+        lambda mode, **kw: FakeBroker(cash=10_000_000.0, quotes=quotes),
+    )
+    monkeypatch.setattr(service_module, "MarketDataService", market_data_cls)
+
+
+def test_manual_entry_uses_worker_reconcile_window(monkeypatch):
+    """2026-08-05 fix: manual_entry() must pass the same fill-confirmation
+    poll window (ORDER_FILL_RECONCILE_RETRIES/DELAY_SEC, 60s @ 1s) as the
+    auto-trade Worker path — not order_executor.execute_signal's short
+    default (5 @ 0.5s = 2.5s). The short default let a slow KIS fill
+    response (e.g. at market open) time out the confirmation poll, so the
+    order was silently dropped from the 거래원장 even though it filled."""
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction_with_broker_quotes(monkeypatch)
+
+    captured = {}
+    real_execute_signal = order_executor.execute_signal
+
+    def _spy_execute_signal(**kwargs):
+        captured.update(kwargs)
+        return real_execute_signal(**kwargs)
+
+    monkeypatch.setattr(order_executor, "execute_signal", _spy_execute_signal)
+
+    svc = service_module.Macd2Service()
+    try:
+        svc.start(mode="mock", budget=1_000_000.0)
+        res = svc.manual_entry(Direction.DOWN_BLUE.value)
+        assert res["ok"] is True
+        assert captured["reconcile_retries"] == ORDER_FILL_RECONCILE_RETRIES
+        assert captured["reconcile_delay_sec"] == ORDER_FILL_RECONCILE_DELAY_SEC
+    finally:
+        svc.stop()
+
+
+def test_manual_exit_uses_worker_reconcile_window(monkeypatch):
+    """Same fix as test_manual_entry_uses_worker_reconcile_window, for the
+    수동 전량매도 button's execute_exit() call."""
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction_with_broker_quotes(monkeypatch)
+
+    captured = {}
+    real_execute_exit = order_executor.execute_exit
+
+    def _spy_execute_exit(**kwargs):
+        captured.update(kwargs)
+        return real_execute_exit(**kwargs)
+
+    monkeypatch.setattr(order_executor, "execute_exit", _spy_execute_exit)
+
+    svc = service_module.Macd2Service()
+    try:
+        svc.start(mode="mock", budget=1_000_000.0)
+        entry = svc.manual_entry(Direction.DOWN_BLUE.value)
+        assert entry["ok"] is True
+
+        res = svc.manual_exit()
+        assert res["ok"] is True
+        assert captured["reconcile_retries"] == ORDER_FILL_RECONCILE_RETRIES
+        assert captured["reconcile_delay_sec"] == ORDER_FILL_RECONCILE_DELAY_SEC
+    finally:
+        svc.stop()
 
 
 def test_stop_and_liquidate_all_sells_held_position(monkeypatch):

@@ -2233,6 +2233,16 @@ class Macd2Worker:
                 state = self._get_state()
                 state.worker_instance_id = self._instance_id
                 stage_timing["state_load"] = time.monotonic() - t_stage
+                # Unlike this tick loop, the quote-updater background thread
+                # (market_data.py) has no supervisor of its own — if it ever
+                # dies, quotes freeze permanently and every confirmed signal
+                # fails order dispatch with MISSED_SIGNAL_QUOTE_STALE forever
+                # after (2026-08-05 real incident: quote_updater_status=
+                # STOPPED for ~48min, zero auto trades all day). start_quote_
+                # updater() is itself a no-op while already alive, so this is
+                # safe to check every tick.
+                if not self._market_data.quote_updater_alive():
+                    self._market_data.start_quote_updater(interval_sec=1.0)
                 tick_result = run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
                 stage_timing.update(tick_result.timing)
                 t_stage = time.monotonic()

@@ -32,6 +32,8 @@ from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
 from app.trading.macd2.worker import (
+    ORDER_FILL_RECONCILE_DELAY_SEC,
+    ORDER_FILL_RECONCILE_RETRIES,
     Macd2Worker,
     _apply_exit_outcome,
     _apply_switch_outcome,
@@ -488,10 +490,12 @@ class Macd2Service:
         outcome = order_executor.execute_signal(
             broker=self._broker, direction=direction_enum, signal_id=signal_id,
             quotes={target_symbol: quote_snap.price}, position=None, budget=state.budget,
+            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
+            reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
         )
 
         if outcome.final_state == SignalState.EXECUTED:
-            _apply_switch_outcome(state, outcome, direction_enum)
+            _apply_switch_outcome(state, outcome, direction_enum, now)
         else:
             state.order_block_reason = outcome.block_reason
         _record_manual_entry_signal(state, direction_enum, signal_id, now, outcome)
@@ -534,6 +538,8 @@ class Macd2Service:
         outcome = order_executor.execute_exit(
             broker=self._broker, symbol=pos.symbol, quantity=pos.quantity,
             exit_reason=config.EXIT_MANUAL_LIQUIDATION, entry_price=pos.avg_price,
+            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
+            reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
         )
 
         if pos.symbol == config.LONG_SYMBOL:
