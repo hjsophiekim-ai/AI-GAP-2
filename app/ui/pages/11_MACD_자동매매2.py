@@ -269,6 +269,20 @@ if mode == "real":
 else:
     st.info("MOCK 모드 (기본값) — KIS 모의투자 계좌")
 
+# 2026-08-05 fix: state.json이 오늘 도중 유실된(재배포/디스크 문제 등) 것으로
+# 보이는 재시작을 감지했을 때 표시 — 강한 플래그/추세전환장/퀵Profit/Profit
+# Lock 토글이 그 순간 기본값으로 조용히 되돌아갔을 수 있으니 반드시 아래
+# 토글들의 현재 ON/OFF를 다시 확인해야 한다(잃어버린 토글 값은 시세 데이터로
+# 복원할 방법이 없어 코드로 자동 교정할 수 없다 — 원인 자체(재배포 시 데이터
+# 유실)는 Render Persistent Disk/AI_GAP_DATA_DIR 설정을 직접 점검해야 한다).
+if getattr(state, "possible_toggle_reset_at", None):
+    st.warning(
+        f"⚠️ 오늘 {state.possible_toggle_reset_at} 무렵 자동매매 상태가 초기화된 것으로 보입니다 "
+        "(재배포·재시작 등으로 state 파일이 유실됐을 가능성). 이 시점에 강한 플래그 거래/추세전환장 거래/"
+        "퀵 Profit 익절/Profit Lock 토글이 기본값으로 조용히 되돌아갔을 수 있으니, 아래 토글들이 "
+        "원하시는 설정대로 켜져 있는지 지금 꼭 다시 확인해 주세요."
+    )
+
 # Optional Hybrid MAJOR_FLAG filter toggle (command only — never places orders).
 _filter_cols = st.columns([1.4, 1.6])
 with _filter_cols[0]:
@@ -320,12 +334,53 @@ with _sideways_cols[1]:
             f"version=`{getattr(state, 'sideways_filter_version', None) or macd2_config.SIDEWAYS_FILTER_VERSION}`"
         )
 
+# Profit Lock — MACD convergence early exit (2026-08-05 spec; replaces the
+# old net-return-giveback Profit Lock entirely). EXIT LOGIC ONLY — never
+# places/changes an entry, never touches Stop Loss/forced liquidation/
+# opposite-flag switching. Default OFF (2026-08-05: all filters default OFF).
+# Mutually exclusive with "퀵 Profit 익절" below — never both ON at once
+# (service.py refuses the second toggle).
+_pl_cols = st.columns([1.4, 1.6])
+with _pl_cols[0]:
+    _pl_on = st.checkbox(
+        "Profit Lock",
+        value=bool(getattr(state, "profit_lock_enabled", False)),
+        key="macd2_profit_lock_toggle",
+        help=(
+            "OFF(기본값)=Profit Lock 매도 완전 비활성화(기존 손절·반대플래그청산·강제청산·퀵Profit만 적용) / "
+            f"ON=보유 방향 MACD-Signal 간격 수렴을 감지해 조기 청산 — "
+            f"수익률 +{macd2_config.PROFIT_LOCK_MIN_NET_RETURN_PCT}% 이상, 완성 3분봉 "
+            f"{macd2_config.PROFIT_LOCK_MIN_BARS_SINCE_ENTRY}개 이상 경과, 간격 "
+            f"{macd2_config.PROFIT_LOCK_MIN_CONSECUTIVE_CONTRACTIONS}봉 연속 축소, 간격비율 "
+            f"{macd2_config.PROFIT_LOCK_MAX_GAP_RATIO*100:.0f}% 이하, 최고수익 대비 "
+            f"{macd2_config.PROFIT_LOCK_MIN_DRAWDOWN_PP}%p 이상 반납 — 5개 조건 모두 충족 시 전량 매도. "
+            "퀵 Profit 익절과 동시 ON 불가."
+        ),
+    )
+with _pl_cols[1]:
+    if bool(_pl_on) != bool(getattr(state, "profit_lock_enabled", False)):
+        res = service.set_profit_lock_enabled(bool(_pl_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(
+                f"Profit Lock → {'ON' if _pl_on else 'OFF'} "
+                f"(다음 완성 3분봉부터 · `{res.get('profit_lock_enabled_at')}`)"
+            )
+            st.rerun()
+        else:
+            st.error("Profit Lock은 퀵 Profit 익절과 동시에 켤 수 없습니다 — 퀵 Profit 익절을 먼저 꺼주세요.")
+    else:
+        st.caption(f"Profit Lock={'ON' if getattr(state, 'profit_lock_enabled', False) else 'OFF'}")
+
 # Optional Quick-Profit take-profit filter toggle (command only — never
 # places orders). EXIT LOGIC ONLY — completely independent of both
 # "강한 플래그만 거래" and "추세전환장 거래" above; applies underneath whichever
 # of those (or neither) is active. ON: a held position exits in full the
-# moment net return reaches +1.5%. OFF: existing 손절(-1.5%)/반대플래그 청산/
-# 장마감 강제청산 규칙만 적용 (지금까지와 동일).
+# moment net return reaches +2.0% (2026-08-05: raised from 1.5%, and judged
+# directly off each tick's live quote — no "1분 고점 기억" delay any more, so
+# turning this ON while already holding a qualifying position sells on the
+# very next tick). OFF: existing 손절(-1.5%)/반대플래그 청산/장마감 강제청산
+# 규칙만 적용 (지금까지와 동일). 2026-08-05: 상호배타 — Profit Lock과 동시에
+# ON 불가 (service.py가 두 번째 토글 시도를 거부).
 _qp_cols = st.columns([1.4, 1.6])
 with _qp_cols[0]:
     _qp_on = st.checkbox(
@@ -334,8 +389,9 @@ with _qp_cols[0]:
         key="macd2_quick_profit_toggle",
         help=(
             f"OFF=기존 손절·반대플래그청산·강제청산만 적용 / "
-            f"ON=보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하면 즉시 전량 익절 "
-            "(일반거래/강한 플래그 거래/추세전환장 어떤 진입 모드에서도 동일하게 적용, 진입 로직은 전혀 안 바뀜)"
+            f"ON=보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시(1분봉 확정 전 실시간 시세 기준) 전량 익절 "
+            "(일반거래/강한 플래그 거래/추세전환장 어떤 진입 모드에서도 동일하게 적용, 수동매수 포함, 진입 로직은 전혀 안 바뀜). "
+            "Profit Lock과 동시 ON 불가."
         ),
     )
 with _qp_cols[1]:
@@ -347,6 +403,8 @@ with _qp_cols[1]:
                 f"(다음 tick부터 · `{res.get('quick_profit_enabled_at')}`)"
             )
             st.rerun()
+        else:
+            st.error("퀵 Profit 익절은 Profit Lock과 동시에 켤 수 없습니다 — Profit Lock을 먼저 꺼주세요.")
     else:
         st.caption(f"퀵 Profit 익절={'ON' if state.quick_profit_enabled else 'OFF'}")
 
@@ -464,7 +522,10 @@ try:
         p1.metric("보유 종목", f"{state.position.symbol} · {state.position.quantity}주 · 평단 {state.position.avg_price:,.0f}")
     else:
         p1.metric("보유 종목", "flat")
-    p2.metric("Profit Lock", "ON" if state.profit_lock_active else "OFF", delta=f"peak {state.peak_net_return:.2f}%")
+    p2.metric(
+        "Profit Lock", "ON" if getattr(state, "profit_lock_enabled", False) else "OFF",
+        delta=f"peak {getattr(state, 'profit_lock_peak_return_pct', 0.0):.2f}%",
+    )
 
     st.markdown("**Major filter (강한 플래그)**")
     mf1, mf2, mf3, mf4 = st.columns(4)
@@ -510,6 +571,33 @@ try:
         "최근 20거래일 중 확정 플래그가 하루 5건 이상이었던 추세전환장 7일만 뽑아 재검증한 기준."
     )
 
+    st.markdown("**Profit Lock — MACD 수렴 조기청산 (청산 로직 전용, 기본 OFF)**")
+    pl1, pl2, pl3, pl4 = st.columns(4)
+    pl1.metric("Profit Lock", "ON" if getattr(state, "profit_lock_enabled", False) else "OFF")
+    pl2.metric("진입 후 경과 완성봉", f"{int(getattr(state, 'profit_lock_bars_since_entry', 0) or 0)} / {macd2_config.PROFIT_LOCK_MIN_BARS_SINCE_ENTRY}")
+    pl3.metric("연속 축소 봉수", f"{int(getattr(state, 'profit_lock_contraction_count', 0) or 0)} / {macd2_config.PROFIT_LOCK_MIN_CONSECUTIVE_CONTRACTIONS}")
+    _pl_gap_ratio = getattr(state, "profit_lock_gap_ratio", None)
+    pl4.metric("간격비율", f"{_pl_gap_ratio*100:.1f}%" if _pl_gap_ratio is not None else "-")
+    pl5, pl6, pl7 = st.columns(3)
+    pl5.metric("현재 support_gap", f"{getattr(state, 'profit_lock_current_support_gap', None):.4f}" if getattr(state, "profit_lock_current_support_gap", None) is not None else "-")
+    pl6.metric("최고수익률", f"{float(getattr(state, 'profit_lock_peak_return_pct', 0.0) or 0.0):.2f}%")
+    pl7.metric("최고수익 반납", f"{float(getattr(state, 'profit_lock_drawdown_pct', 0.0) or 0.0):.2f}%p")
+    st.caption(
+        f"enabled_at=`{getattr(state, 'profit_lock_enabled_at', None) or '-'}` · "
+        f"by=`{getattr(state, 'profit_lock_enabled_by', None) or '-'}`"
+    )
+    st.info(
+        f"진입권한(일반거래/강한 플래그/추세전환장)과 무관하게 독립 적용되는 청산 전용 필터, 퀵 Profit 익절과 동시 ON 불가. "
+        f"ON이면(기본값 OFF) 보유 방향 기준 MACD-Signal 간격(0193T0 보유: MACD-Signal / 0197X0 보유: Signal-MACD)이 완성 3분봉마다 "
+        f"수렴하는지 판정해서, ①실제 ETF 수익률 +{macd2_config.PROFIT_LOCK_MIN_NET_RETURN_PCT}% 이상 ②진입 후 완성 3분봉 "
+        f"{macd2_config.PROFIT_LOCK_MIN_BARS_SINCE_ENTRY}개 이상 경과 ③간격 {macd2_config.PROFIT_LOCK_MIN_CONSECUTIVE_CONTRACTIONS}개 "
+        f"완성봉 연속 축소 ④간격이 보유 중 최대 간격의 {macd2_config.PROFIT_LOCK_MAX_GAP_RATIO*100:.0f}% 이하 ⑤최고수익률에서 "
+        f"{macd2_config.PROFIT_LOCK_MIN_DRAWDOWN_PP}%p 이상 반납 — 5개 조건을 모두 만족하면 전량 매도"
+        f"({macd2_config.EXIT_PROFIT_LOCK_MACD_CONVERGENCE}). 진행 중인(미완성) 3분봉으로는 절대 판정하지 않음. "
+        "support_gap이 0 이하가 되면 반대 플래그 청산이 우선 적용되어 이 필터는 관여하지 않음. "
+        "기존 -1.5% 손절/반대 플래그 청산/15:00 강제청산 규칙은 그대로, 이보다 우선 적용됨. OFF면 이 규칙 자체가 없던 것과 동일."
+    )
+
     st.markdown("**퀵 Profit 익절 필터 (청산 로직 전용)**")
     qp1, qp2 = st.columns(2)
     qp1.metric("퀵 Profit 익절", "ON" if getattr(state, "quick_profit_enabled", False) else "OFF")
@@ -519,9 +607,9 @@ try:
         f"by=`{getattr(state, 'quick_profit_enabled_by', None) or '-'}`"
     )
     st.info(
-        f"진입권한(일반거래/강한 플래그/추세전환장)과 무관하게 독립 적용되는 청산 전용 필터. "
+        f"진입권한(일반거래/강한 플래그/추세전환장)과 무관하게 독립 적용되는 청산 전용 필터, Profit Lock과 동시 ON 불가. "
         f"ON이면 보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절"
-        f"({macd2_config.EXIT_QUICK_PROFIT_TAKE_PROFIT}) — 기존 -1.5% 손절/반대 플래그 청산/15:00 강제청산 규칙은 그대로 적용되고, "
+        f"({macd2_config.EXIT_QUICK_PROFIT_TAKE_PROFIT}) — 기존 -1.5% 손절/반대 플래그 청산/15:00 강제청산/Profit Lock 규칙은 그대로 적용되고, "
         "이 필터는 그 위에 얹혀서만 동작함. OFF면 이 규칙 자체가 없던 것과 동일."
     )
 

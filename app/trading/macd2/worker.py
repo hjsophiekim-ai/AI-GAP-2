@@ -25,8 +25,9 @@ source of truth per the 2026-07-23 design decision):
   1) 15:00 FORCED_LIQUIDATION
   2) STOP_LOSS
   3) OPPOSITE_SIGNAL (a new, confirmed opposite signed-B direction)
-  4) PROFIT_LOCK
-  5) HOLD
+  4) PROFIT_LOCK (MACD convergence early exit, 2026-08-05 spec)
+  5) QUICK_PROFIT (optional take-profit filter, EXIT LOGIC ONLY)
+  6) HOLD
 """
 from __future__ import annotations
 
@@ -131,31 +132,12 @@ def _net_return_pct(symbol: str, entry_price: float, current_price: float, quant
     return float(cost["net_pnl"]) / (entry_price * quantity) * 100.0
 
 
-def _update_quick_profit_minute_high(state: RuntimeState, symbol: str, current_price: float, now: datetime) -> float:
-    """Approximate "1분봉 고가" for the Quick-Profit take-profit check without
-    a real ETF 1-minute candle feed (market_data.py only tracks WATCH_SYMBOL
-    1m history — docs §8). Resets to ``current_price`` whenever the held
-    symbol changes or a new calendar minute (:00) starts, then tracks the
-    running max of the already-polled live quote within that minute. Never
-    called when ``state.quick_profit_enabled`` is False (2026-08-04 user
-    spec — tick-sampling approximation, not a genuine KIS 1분봉 fetch)."""
-    bucket = now.astimezone(KST).replace(second=0, microsecond=0).isoformat()
-    if state.quick_profit_minute_symbol != symbol or state.quick_profit_minute_bucket != bucket:
-        state.quick_profit_minute_symbol = symbol
-        state.quick_profit_minute_bucket = bucket
-        state.quick_profit_minute_high = current_price
-    else:
-        state.quick_profit_minute_high = max(float(state.quick_profit_minute_high or 0.0), current_price)
-    return float(state.quick_profit_minute_high)
-
-
 def _advance_stop_loss_bar(state: RuntimeState, symbol: str, current_price: float, now: datetime) -> Optional[float]:
     """Track the held ETF's own completed 3-minute bar close for Stop Loss
     (docs 2026-08-02 Exit Rule: 3-Minute Confirmed Bars) -- no real ETF 1분봉
     feed exists (market_data.py only tracks WATCH_SYMBOL history), so this
     approximates the traded ETF's completed 3-minute close from the live
-    quote stream, tick-sampled the same way _update_quick_profit_minute_high
-    approximates a 1분봉 고가 above. Returns the just-completed bar's close
+    quote stream, tick-sampled the same way. Returns the just-completed bar's close
     the first tick after that bar rolls over, but ONLY once it is strictly
     after the entry execution bar (the 3-minute bar containing the entry
     fill is never eligible for Stop Loss) -- otherwise None (still mid-bar,
@@ -187,6 +169,112 @@ def _advance_stop_loss_bar(state: RuntimeState, symbol: str, current_price: floa
     if completed_bar_ts is None or completed_bar_ts <= state.stop_loss_entry_bar_ts:
         return None
     return completed_close
+
+
+def _held_direction_support_gap(direction: Optional[Direction], macd_snap) -> Optional[float]:
+    """docs 2026-08-05 Profit Lock spec: 0193T0(UP_RED) held -> MACD-Signal;
+    0197X0(DOWN_BLUE) held -> Signal-MACD. Positive while the held direction's
+    trend is still supported by the confirmed MACD; <=0 means the trend has
+    already reversed (OPPOSITE_SIGNAL owns that case, checked first)."""
+    if direction == Direction.UP_RED:
+        return float(macd_snap.macd) - float(macd_snap.signal)
+    if direction == Direction.DOWN_BLUE:
+        return float(macd_snap.signal) - float(macd_snap.macd)
+    return None
+
+
+def _advance_profit_lock(
+    state: RuntimeState, *, symbol: str, direction: Direction, macd_snap,
+    current_price: float, entry_price: float, quantity: int,
+) -> bool:
+    """Profit Lock — MACD convergence early exit (docs §10 priority 4,
+    2026-08-05 spec; replaces the old net-return-giveback Profit Lock
+    entirely). Evaluated once per newly-completed WATCH_SYMBOL(000660)
+    3-minute bar while a position is held, off the SAME confirmed
+    MACD(12,26,9)/Signal already computed for flag generation (``macd_snap``)
+    — never a second MACD calculation, never the forming bar (진행봉으로 청산
+    금지: a repeat call against the same ``macd_snap.bar_dt`` is always a
+    no-op here). Returns True the one tick all 5 conditions (config.py's
+    PROFIT_LOCK_*) are met; the caller executes the exit and
+    ``_apply_exit_outcome`` resets all profit_lock_* fields for the next
+    holding period.
+
+    Lazily (re-)seeds its own baseline the first time it runs for a symbol it
+    hasn't tracked yet (fresh entry, or a held position that appeared without
+    going through the normal entry path e.g. broker-reconciled recovery) —
+    same convention as ``_advance_stop_loss_bar``'s own defensive fallback.
+    ``_apply_exit_outcome`` clears ``profit_lock_symbol``/``profit_lock_entry_
+    bar_ts`` on every exit, so a later same-symbol re-entry always re-seeds
+    fresh rather than inheriting a previous holding period's history.
+    """
+    bar_key = macd_snap.bar_dt.isoformat()
+
+    if state.profit_lock_symbol != symbol or state.profit_lock_entry_bar_ts is None:
+        state.profit_lock_symbol = symbol
+        state.profit_lock_entry_bar_ts = bar_key
+        state.profit_lock_last_bar_ts = bar_key
+        state.profit_lock_bars_since_entry = 0
+        state.profit_lock_gap_history = []
+        state.profit_lock_peak_return_pct = 0.0
+        state.profit_lock_current_support_gap = None
+        state.profit_lock_max_support_gap = None
+        state.profit_lock_gap_ratio = None
+        state.profit_lock_contraction_count = 0
+        state.profit_lock_drawdown_pct = 0.0
+        return False
+
+    if bar_key == state.profit_lock_last_bar_ts:
+        return False  # same completed bar as last time -- no new bar-close data yet
+
+    state.profit_lock_last_bar_ts = bar_key
+    if bar_key <= state.profit_lock_entry_bar_ts:
+        return False  # still (at or before) the entry bar -- not eligible yet
+
+    state.profit_lock_bars_since_entry = int(state.profit_lock_bars_since_entry or 0) + 1
+
+    support_gap = _held_direction_support_gap(direction, macd_snap)
+    if support_gap is None:
+        return False
+    support_gap = float(support_gap)
+    state.profit_lock_current_support_gap = round(support_gap, 6)
+
+    gap_history = list(state.profit_lock_gap_history or [])
+    gap_history.append(support_gap)
+    state.profit_lock_gap_history = gap_history[-3:]
+
+    prior_max = state.profit_lock_max_support_gap
+    max_gap = support_gap if prior_max is None else max(float(prior_max), support_gap)
+    state.profit_lock_max_support_gap = round(max_gap, 6)
+
+    current_return = _net_return_pct(symbol, entry_price, current_price, quantity)
+    prior_peak = float(state.profit_lock_peak_return_pct or 0.0)
+    peak_return = max(prior_peak, current_return)
+    state.profit_lock_peak_return_pct = round(peak_return, 6)
+    drawdown = max(0.0, peak_return - current_return)
+    state.profit_lock_drawdown_pct = round(drawdown, 6)
+
+    hist = state.profit_lock_gap_history
+    contraction_count = 0
+    if len(hist) >= 3 and hist[-3] > hist[-2] > hist[-1]:
+        contraction_count = 2
+    elif len(hist) >= 2 and hist[-2] > hist[-1]:
+        contraction_count = 1
+    state.profit_lock_contraction_count = contraction_count
+
+    gap_ratio = (support_gap / max_gap) if max_gap > 0 else None
+    state.profit_lock_gap_ratio = round(gap_ratio, 6) if gap_ratio is not None else None
+
+    if support_gap <= 0:
+        # 반대 플래그 청산이 우선 적용되는 영역 -- Profit Lock은 관여하지 않는다.
+        return False
+
+    return bool(
+        current_return >= config.PROFIT_LOCK_MIN_NET_RETURN_PCT
+        and state.profit_lock_bars_since_entry >= config.PROFIT_LOCK_MIN_BARS_SINCE_ENTRY
+        and contraction_count >= config.PROFIT_LOCK_MIN_CONSECUTIVE_CONTRACTIONS
+        and gap_ratio is not None and gap_ratio <= config.PROFIT_LOCK_MAX_GAP_RATIO
+        and drawdown >= config.PROFIT_LOCK_MIN_DRAWDOWN_PP
+    )
 
 
 def _fresh_quote_prices(market_data: MarketDataService, symbols: tuple[str, ...]) -> dict[str, float]:
@@ -231,6 +319,7 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.pending_signal = None
     state.peak_net_return = 0.0
     state.profit_lock_active = False
+    state.possible_toggle_reset_at = None
     # MAJOR_FLAG daily entry budget is session-scoped; the toggle itself
     # (major_filter_enabled) is user state and survives the rollover.
     state.daily_major_entry_count = 0
@@ -312,6 +401,36 @@ def initialize_strategy_session(
                     last_direction = state.last_detected_direction
                     resuming_today = True
                     break
+
+    if not resuming_today and len(today_indices) > 1:
+        # 2026-08-05 fix: a same-day restart whose PERSISTED state was lost
+        # (e.g. a Render redeploy/disk hiccup wiping data/state/
+        # macd2_runtime.json, not a genuine brand-new trading day) used to be
+        # indistinguishable from a true first-ever start today, because
+        # last_confirmed_bar_ts is simply absent either way -- the cold-start
+        # branch below then silently swallowed whichever bar was newest AT
+        # THAT MOMENT as a no-dispatch baseline, discarding a real intraday
+        # crossover with zero record (2026-08-05 real incident: a confirmed
+        # UP_RED mid-afternoon never dispatched a SELL/BUY switch for an
+        # already-held position). A trading day already more than one
+        # completed bar past its own open (len(today_indices) > 1, i.e. at
+        # least 6 minutes into the session) can never be a genuine first bar
+        # of the day, so replay every one of today's own bars the same way an
+        # ordinary same-day resume already does (resume_from=0) -- this
+        # reuses the exact same multi-bar-gap correction machinery below
+        # (RESTART_CATCH_UP_MULTI_BAR_GAP pending_signal) instead of
+        # inventing new recovery logic.
+        resuming_today = True
+        resume_from = 0
+        last_direction = None
+        # 2026-08-05 fix: a toggle the user set earlier today (major_filter_
+        # enabled/sideways_filter_enabled/quick_profit_enabled/profit_lock_
+        # enabled) may have silently reverted to its config default the
+        # moment state.json was lost -- unlike signal history, a toggle
+        # preference can never be reconstructed from market data, so this can
+        # only be surfaced, not auto-corrected. The UI shows a prominent
+        # warning while this is set (cleared on the next day's rollover).
+        state.possible_toggle_reset_at = now.isoformat()
 
     if resuming_today and prior_session_started_at:
         # 2026-08-04 fix: a mid-day restart used to always bump
@@ -1721,7 +1840,6 @@ def run_once(
             stale_snap = market_data.get_quote(pos.symbol)
             if stale_snap is not None and not stale_snap.error and stale_snap.price > 0:
                 current_price = stale_snap.price
-        profit_lock_should_exit = False
 
         if force_liquidate_time:
             outcome = order_executor.execute_exit(
@@ -1734,22 +1852,12 @@ def run_once(
             return result
 
         if current_price is not None:
-            net_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
-            exits = risk_exit.evaluate_position_exits(
-                current_net_return=net_return, peak_net_return=state.peak_net_return,
-                profit_lock_active=state.profit_lock_active,
-            )
-            # Bookkeeping (peak/active) updates every tick regardless of which
-            # exit (if any) actually fires this tick.
-            state.peak_net_return = exits.peak_net_return
-            state.profit_lock_active = exits.profit_lock_active
-
             # Stop Loss is evaluated from the completed 3-minute ETF bar
             # close onward, excluding the bar that contains the entry fill
             # (docs 2026-08-02 Exit Rule: 3-Minute Confirmed Bars) -- NOT off
             # this tick's live/instantaneous quote. risk_exit's own -1.5%
             # threshold (check_stop_loss) is reused unchanged, just fed the
-            # completed-bar close instead of the live `net_return` above.
+            # completed-bar close instead of the live quote.
             completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
             if completed_bar_close is not None:
                 bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
@@ -1762,48 +1870,6 @@ def run_once(
                     _apply_exit_outcome(state, outcome)
                     result.actions.append(f"STOP_LOSS:{pos.symbol}")
                     return result
-
-            # Quick-Profit take-profit filter (2026-08-04 user spec) — EXIT
-            # LOGIC ONLY, completely independent of major_filter_enabled/
-            # sideways_filter_enabled (entry gating is untouched — see
-            # _judge_entry_gate). Never touches risk_exit.py's own
-            # STOP_LOSS/PROFIT_LOCK functions (unaffected, unchanged above)
-            # and always yields to STOP_LOSS (checked first, already
-            # returned by now if it fired this tick). Judged off the
-            # current 1-minute bar's HIGH (approximated from the live quote
-            # stream — see _update_quick_profit_minute_high), not the
-            # instantaneous live tick price ``current_price`` used above for
-            # stop-loss/profit-lock — a fleeting sub-minute spike is still
-            # enough to trigger it, matching a real 1분봉 고가 check.
-            if state.quick_profit_enabled:
-                minute_high = _update_quick_profit_minute_high(state, pos.symbol, current_price, now)
-                quick_profit_net_return = _net_return_pct(pos.symbol, pos.avg_price, minute_high, pos.quantity)
-                # 2026-08-04 fix: minute_high is a running max across the
-                # whole still-forming minute, so it can remember a spike that
-                # has ALREADY reversed by the time this tick's market SELL
-                # would actually fill — a "take profit" label must never
-                # execute at a price that isn't ALSO still at/above the
-                # target right now (real incident: exited at the same price
-                # as entry, net loss, under QUICK_PROFIT_TAKE_PROFIT). Both
-                # the remembered peak AND the live price must clear the bar.
-                current_net_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
-                if (
-                    quick_profit_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT
-                    and current_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT
-                ):
-                    outcome = order_executor.execute_exit(
-                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
-                        exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT, entry_price=pos.avg_price,
-                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-                    )
-                    _apply_exit_outcome(state, outcome)
-                    result.actions.append(f"QUICK_PROFIT_TAKE_PROFIT:{pos.symbol}")
-                    return result
-
-            # Opposite-signal check (priority 3, below) gets first refusal —
-            # Profit Lock's own exit (priority 4) only fires afterward if the
-            # opposite-signal branch does not switch this tick.
-            profit_lock_should_exit = exits.exit_reason == config.EXIT_PROFIT_LOCK
 
         if state.pending_signal and not state.pending_signal.get("order_requested"):
             pending_dir = Direction(state.pending_signal["direction"])
@@ -1918,15 +1984,84 @@ def run_once(
                     result=result,
                 )
 
-        if profit_lock_should_exit:
-            outcome = order_executor.execute_exit(
-                broker=broker, symbol=pos.symbol, quantity=pos.quantity,
-                exit_reason=config.EXIT_PROFIT_LOCK, entry_price=pos.avg_price,
-                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-            )
-            _apply_exit_outcome(state, outcome)
-            result.actions.append(f"PROFIT_LOCK:{pos.symbol}")
-            return result
+        # Profit Lock — MACD convergence early exit (docs §10 priority 4,
+        # 2026-08-05 spec; replaces the old net-return-giveback Profit Lock
+        # entirely). Only reached once the opposite-signal branch above had
+        # first refusal and did not switch/exit the position this tick.
+        # Mutually exclusive with Quick-Profit below (UI/service enforce
+        # never both ON) — evaluated off the SAME confirmed WATCH_SYMBOL
+        # MACD/Signal already computed for flag generation above (macd_snap),
+        # never a second MACD calculation and never the forming bar.
+        if (
+            state.profit_lock_enabled and current_price is not None
+            and state.position is not None and state.position.symbol == pos.symbol
+            and state.position.quantity > 0
+        ):
+            profit_lock_direction = _direction_for_symbol(pos.symbol)
+            if profit_lock_direction is not None:
+                should_profit_lock_exit = _advance_profit_lock(
+                    state, symbol=pos.symbol, direction=profit_lock_direction, macd_snap=macd_snap,
+                    current_price=current_price, entry_price=pos.avg_price, quantity=pos.quantity,
+                )
+                if should_profit_lock_exit:
+                    # Snapshot BEFORE _apply_exit_outcome resets these fields
+                    # for the next holding period — record_profit_lock_
+                    # convergence_fields() patches the ledger row execute_exit
+                    # is about to write via order_executor's own (unmodified)
+                    # _record_leg, purely additive columns (docs §10 "상태·
+                    # 원장 기록"), never touching order/fill/balance fields.
+                    profit_lock_ledger_fields = {
+                        "profit_lock_enabled": True,
+                        "profit_lock_peak_return_pct": state.profit_lock_peak_return_pct,
+                        "profit_lock_max_support_gap": state.profit_lock_max_support_gap,
+                        "profit_lock_current_support_gap": state.profit_lock_current_support_gap,
+                        "profit_lock_gap_ratio": state.profit_lock_gap_ratio,
+                        "profit_lock_contraction_count": state.profit_lock_contraction_count,
+                        "profit_lock_drawdown_pct": state.profit_lock_drawdown_pct,
+                    }
+                    outcome = order_executor.execute_exit(
+                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                        exit_reason=config.EXIT_PROFIT_LOCK_MACD_CONVERGENCE, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    _apply_exit_outcome(state, outcome)
+                    if outcome.final_state == SignalState.EXECUTED and outcome.sell_result is not None:
+                        ledger.record_profit_lock_convergence_fields(
+                            str(outcome.sell_result.order_id or ""), profit_lock_ledger_fields,
+                        )
+                    result.actions.append(f"PROFIT_LOCK_MACD_CONVERGENCE:{pos.symbol}")
+                    return result
+
+        # Quick-Profit take-profit filter (2026-08-04 user spec, priority 5 —
+        # below Profit Lock above) — EXIT LOGIC ONLY, completely independent
+        # of major_filter_enabled/sideways_filter_enabled (entry gating is
+        # untouched — see _judge_entry_gate). Never touches risk_exit.py's
+        # own STOP_LOSS function and always yields to STOP_LOSS/OPPOSITE_
+        # SIGNAL/PROFIT_LOCK (checked first, already returned by now if any
+        # of them fired this tick).
+        #
+        # 2026-08-05 redesign (사용자 요청): 더 이상 "1분 고점 기억"으로 판정하지
+        # 않는다 — 매 tick의 실시간 quote(``current_price``, 아직 확정되지 않은
+        # 진행 중인 1분봉이라도 상관없이)만으로 그 자리에서 즉시 순수익률을 계산해
+        # 문턱(기본 +2.0%) 이상이면 바로 전량 매도한다. 기억된 값이 없으므로
+        # "이미 반전된 옛 고점 기준으로 팔리는" 문제 자체가 구조적으로 없다(2026
+        # -08-04에 고쳤던 문제의 근본 원인 제거). 이 토글은 진입 경로(수동매수 포함
+        # — manual_entry도 동일한 state.position/run_once 경로를 타므로 자동으로
+        # 적용됨)나 이력과 무관하게, ON으로 바뀐 바로 다음 tick부터 즉시 이 조건으로
+        # 판정한다 — 이미 보유 중인 포지션이 이미 조건을 만족한 상태라면 그 tick에
+        # 바로 매도된다. OFF면 이 블록 전체가 스킵되어 기존처럼 다음 플래그까지
+        # 그대로 보유한다.
+        if current_price is not None and state.quick_profit_enabled:
+            current_net_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
+            if current_net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT:
+                outcome = order_executor.execute_exit(
+                    broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                    exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT, entry_price=pos.avg_price,
+                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                )
+                _apply_exit_outcome(state, outcome)
+                result.actions.append(f"QUICK_PROFIT_TAKE_PROFIT:{pos.symbol}")
+                return result
 
         state.last_evaluated_bar_ts = bar_ts_str
         return result
@@ -2006,13 +2141,21 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
         state.position = None
         state.peak_net_return = 0.0
         state.profit_lock_active = False
-        state.quick_profit_minute_symbol = None
-        state.quick_profit_minute_bucket = None
-        state.quick_profit_minute_high = None
         state.stop_loss_bar_symbol = None
         state.stop_loss_entry_bar_ts = None
         state.stop_loss_bar_ts = None
         state.stop_loss_bar_close = None
+        state.profit_lock_symbol = None
+        state.profit_lock_entry_bar_ts = None
+        state.profit_lock_last_bar_ts = None
+        state.profit_lock_bars_since_entry = 0
+        state.profit_lock_gap_history = []
+        state.profit_lock_peak_return_pct = 0.0
+        state.profit_lock_current_support_gap = None
+        state.profit_lock_max_support_gap = None
+        state.profit_lock_gap_ratio = None
+        state.profit_lock_contraction_count = 0
+        state.profit_lock_drawdown_pct = 0.0
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 
@@ -2039,9 +2182,6 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now:
         state.last_signal_bar_ts = outcome.timestamps.get("evaluated_at")
         state.peak_net_return = 0.0
         state.profit_lock_active = False
-        state.quick_profit_minute_symbol = None
-        state.quick_profit_minute_bucket = None
-        state.quick_profit_minute_high = None
         # Stop Loss 3-minute bar gating starts fresh at this new position's
         # entry fill -- the bar containing the fill is the execution bar
         # (excluded from Stop Loss, docs 2026-08-02 Exit Rule: 3-Minute

@@ -65,6 +65,14 @@ EXECUTION_LEDGER_COLUMNS = [
     "requested_qty", "executed_qty", "requested_price", "executed_price",
     "position_before", "position_after", "gross_pnl", "fee", "slippage",
     "net_pnl", "exit_reason", "broker_response",
+    # Profit Lock — MACD convergence early exit diagnostic snapshot (appended
+    # 2026-08-05; never rename/delete older cols). order_executor._record_leg
+    # never populates these — they're patched in afterward, ONLY for the
+    # exit_reason == config.EXIT_PROFIT_LOCK_MACD_CONVERGENCE row, by
+    # record_profit_lock_convergence_fields() below; empty for every other row.
+    "profit_lock_enabled", "profit_lock_peak_return_pct", "profit_lock_max_support_gap",
+    "profit_lock_current_support_gap", "profit_lock_gap_ratio", "profit_lock_contraction_count",
+    "profit_lock_drawdown_pct",
 ]
 
 LOGS_DIR_PATH: Path = LOGS_DIR
@@ -178,6 +186,54 @@ def append_execution(row: dict[str, Any]) -> bool:
             if existing.get("order_id") == order_id:
                 return False
         _append_row(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS, row)
+        return True
+
+
+PROFIT_LOCK_LEDGER_COLUMNS = [
+    "profit_lock_enabled", "profit_lock_peak_return_pct", "profit_lock_max_support_gap",
+    "profit_lock_current_support_gap", "profit_lock_gap_ratio", "profit_lock_contraction_count",
+    "profit_lock_drawdown_pct",
+]
+
+
+def record_profit_lock_convergence_fields(order_id: str, fields: dict[str, Any]) -> bool:
+    """Patch the just-written execution-ledger row for a
+    PROFIT_LOCK_MACD_CONVERGENCE exit with its diagnostic snapshot (docs §10
+    2026-08-05 spec) — additive columns only (see EXECUTION_LEDGER_COLUMNS),
+    never touches order_id/signal_id/side/qty/price/pnl/exit_reason or any
+    other field order_executor._record_leg already wrote for that row (주문
+    수량·체결·잔고 처리 미변경). Caller must pass the SAME order_id
+    ``execute_exit``'s returned ``outcome.sell_result.order_id`` already
+    recorded via the normal append_execution() call. No-op (returns False,
+    never raises) if the ledger file or that order_id doesn't exist yet —
+    a missing diagnostic snapshot must never affect the already-confirmed
+    exit itself.
+    """
+    if not order_id:
+        return False
+    with _EXECUTION_LOCK:
+        if not EXECUTION_LEDGER_PATH.exists():
+            return False
+        _ensure_columns(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS)
+        with open(EXECUTION_LEDGER_PATH, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        found = False
+        for row in rows:
+            if str(row.get("order_id") or "") == str(order_id):
+                for col in PROFIT_LOCK_LEDGER_COLUMNS:
+                    if col in fieldnames:
+                        row[col] = fields.get(col, "")
+                found = True
+                break
+        if not found:
+            return False
+        with open(EXECUTION_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({col: row.get(col, "") for col in fieldnames})
         return True
 
 

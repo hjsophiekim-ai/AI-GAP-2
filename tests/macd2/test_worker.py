@@ -987,3 +987,98 @@ def test_restart_catchup_recovers_a_reversal_missed_inside_a_multi_bar_gap():
     result2 = run_once(broker=broker, market_data=svc2, state=state, now=restart_now)
     assert result2.actions == ["OPPOSITE_SIGNAL:UP_RED"]
     assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
+
+
+def test_restart_with_fully_lost_state_still_catches_up_when_today_already_has_bars():
+    """2026-08-05 fix: a same-day restart whose PERSISTED state.json was lost
+    entirely (last_confirmed_bar_ts empty -- e.g. a Render redeploy/disk
+    hiccup resetting data/state/macd2_runtime.json -- not a genuine brand-new
+    trading day) used to be indistinguishable from a true first-ever start
+    today, silently swallowing whichever bar was newest at restart time as a
+    no-dispatch baseline (2026-08-05 real incident: an already-held INVERSE
+    position was never switched to LONG on a confirmed UP_RED mid-afternoon).
+    Once today already has more than one completed bar, initialize_strategy_
+    session must treat this the same as an ordinary same-day resume (replay
+    from bar 0) instead of a cold start."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    closes = [100.0] * 99 + [92.0, 96.0, 103.0, 104.0, 103.0, 98.0, 90.0, 85.0, 84.0]
+    df_1m_full = _1m_from_3m_closes(start, closes)
+
+    # Simulate: the Worker was genuinely running earlier today (already held
+    # an INVERSE position from a real DOWN_BLUE entry), but its entire
+    # persisted state was then lost -- last_confirmed_bar_ts is empty even
+    # though a real position is still held.
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0)
+    assert state.last_confirmed_bar_ts is None
+
+    # Data available at "restart" time goes up through bar103 (right after
+    # bar102's UP_RED crossover) -- several bars already completed today
+    # (len(today_indices) > 1), so this can never be a fresh 09:00 cold start.
+    bar103_end = start + timedelta(minutes=3 * 104)
+    df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < bar103_end]
+    svc = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}))
+    restart_now = bar103_end + timedelta(seconds=5)
+    svc.bootstrap(now=restart_now)
+
+    worker.initialize_strategy_session(state, svc, now=restart_now)
+
+    # bar102's UP_RED must be recovered from the catch-up walk (not silently
+    # swallowed as a baseline) and queued as a pending correction, since it
+    # conflicts with the still-held INVERSE position.
+    assert state.last_detected_direction == Direction.UP_RED
+    assert state.pending_signal is not None
+    assert state.pending_signal.get("direction") == "UP_RED"
+    assert state.pending_signal.get("reason") == "RESTART_CATCH_UP_MULTI_BAR_GAP"
+
+    # 2026-08-05 fix: this same-day-restart-with-lost-state detection must
+    # also flag that user toggles (major_filter_enabled etc.) may have
+    # silently reverted to their config defaults, so the UI can warn.
+    assert state.possible_toggle_reset_at is not None
+    assert state.possible_toggle_reset_at == restart_now.isoformat()
+
+    # The very next live tick must consult that pending signal and actually
+    # switch the position to LONG.
+    quote_prices = {config.WATCH_SYMBOL: 92.0, config.LONG_SYMBOL: 9_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=10_000_000.0, quotes=quote_prices)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed")
+    svc2 = MarketDataService(
+        mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}),
+        fetch_quote=lambda mode, symbol: (quote_prices.get(symbol), None),
+    )
+    svc2.bootstrap(now=restart_now)
+    svc2.refresh_quotes()
+    result = run_once(broker=broker, market_data=svc2, state=state, now=restart_now)
+    assert result.actions == ["OPPOSITE_SIGNAL:UP_RED"]
+    assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
+
+
+def test_restart_with_fully_lost_state_at_true_market_open_still_baselines_only():
+    """The 2026-08-05 fix above must NOT fire for a genuine first bar of the
+    day (len(today_indices) <= 1) -- that case still baselines silently with
+    no catch-up, exactly as before."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    # Exactly ONE completed 3-minute bar exists today (09:00-09:03) -- a
+    # genuine market-open cold start, not a restart deep into the session.
+    df_1m_at_start = _1m_from_3m_closes(start, [100.0])
+    call_now = start + timedelta(minutes=3, seconds=5)
+
+    state = _fresh_state()
+    svc = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_start, {}))
+    svc.bootstrap(now=call_now)
+
+    worker.initialize_strategy_session(state, svc, now=call_now)
+
+    assert state.pending_signal is None
+    assert state.last_detected_direction is None
+    assert state.possible_toggle_reset_at is None
+
+
+def test_day_rollover_clears_possible_toggle_reset_warning():
+    state = _fresh_state()
+    state.session_date = "20260804"
+    state.possible_toggle_reset_at = "2026-08-04T13:30:00+09:00"
+
+    worker._apply_day_rollover(state, datetime(2026, 8, 5, 9, 0, tzinfo=KST))
+
+    assert state.possible_toggle_reset_at is None

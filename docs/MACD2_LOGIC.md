@@ -11,6 +11,47 @@
 - Histogram sign is not part of the KIS color rule. A less-negative histogram can be `UP_RED`; a less-positive histogram can be `DOWN_BLUE`.
 - `flag_time` and `signal_id` use the completed bar's start timestamp (`bar_start_at`), while tradeable confirmation happens at `bar_start_at + 3 minutes`.
 
+## 2026-08-05 Same-day restart with lost persisted state
+
+`initialize_strategy_session()` (`worker.py`) already had a "resuming today"
+catch-up path: if the persisted `last_confirmed_bar_ts` is from earlier
+*today*, it replays every bar after it (stopping one bar short of the newest,
+so the Worker's own next live tick still dispatches that final bar normally)
+instead of silently baselining on whichever bar happens to be newest at
+restart time. That path only ever triggered when `last_confirmed_bar_ts` was
+actually present and from today.
+
+**Real incident**: a Render redeploy/disk hiccup mid-session wiped
+`data/state/macd2_runtime.json` entirely. With `last_confirmed_bar_ts` gone,
+the function fell to its "true first start of the day" branch — indistinguishable
+from a genuine 09:00 cold start — and silently baselined on whichever bar was
+newest at that moment, discarding a real, confirmed reversal with zero record
+(an already-held position was never switched).
+
+**Fix**: a trading day that already has more than one completed
+`WATCH_SYMBOL` bar (`len(today_indices) > 1`, i.e. at least 6 minutes into the
+session) can never genuinely be at its own first bar, regardless of whether
+`last_confirmed_bar_ts` survived. In that case `initialize_strategy_session`
+now treats it exactly like an ordinary same-day resume (replay from bar 0,
+`resume_from=0`) — reusing the existing multi-bar-gap correction machinery
+(`RESTART_CATCH_UP_MULTI_BAR_GAP` pending-signal retry) instead of inventing
+new recovery logic. A genuine first bar of the day (`len(today_indices) <= 1`)
+is unaffected — it still baselines silently as before.
+
+**What this fix does NOT cover**: a lost state.json also resets every user
+toggle (`major_filter_enabled`/`sideways_filter_enabled`/
+`quick_profit_enabled`/`profit_lock_enabled`) back to its `config.py` default,
+silently overriding whatever the user had set earlier that day — unlike
+signal history, a toggle preference cannot be reconstructed from market data,
+so this can only be surfaced, never auto-corrected. Whenever the
+same-day-restart-with-lost-state condition above is detected,
+`state.possible_toggle_reset_at` is set to the restart's timestamp (cleared
+on the next day's rollover), and the UI (`11_MACD_자동매매2.py`) shows a
+prominent warning telling the user to re-check every toggle. Full prevention
+requires verifying the Render deployment's persistent disk (`AI_GAP_DATA_DIR`
+env var, see `docs/deploy_render.md`) actually survives a redeploy — outside
+what application code can guarantee.
+
 ## 2026-08-02 Exit Rule: 3-Minute Confirmed Bars
 
 This rule supersedes any older MACD2 wording that describes Stop Loss or
@@ -23,8 +64,9 @@ Profit Lock as a 1-minute immediate exit check.
   eligible for Stop Loss or Profit Lock evaluation.
 - Stop Loss is evaluated from the next completed 3-minute bar close onward.
 - Stop Loss: net return at the completed 3-minute close is `<= -1.5%`.
-- Profit Lock exit is disabled by the 2026-08-02 rule below. Peak/giveback
-  values may still be tracked for diagnostics only.
+- Profit Lock exit is superseded by the 2026-08-05 MACD Convergence rule
+  below (no longer disabled — see that section for the current 5-condition
+  exit and its own completed-bar gating).
 - Opposite confirmed signal switching and forced liquidation keep their existing
   priority, but risk exits must not be triggered by intra-entry-bar 1-minute
   lows or closes.
@@ -38,31 +80,126 @@ next completed ETF 3-minute bar close.
 Stop Loss의 완성 3분봉 종가는 이 ETF 이력 대신, Worker가 이미 폴링 중인 실시간
 quote를 매 tick 샘플링해 근사한다(`worker._advance_stop_loss_bar` — 09:00 기준
 3분 그리드로 "현재 진행 중인 3분봉"을 판정하고, 그 봉이 끝나 다음 봉으로 넘어가는
-순간 직전까지 관측된 마지막 quote를 그 봉의 "종가"로 확정한다). 이는 Quick-Profit
-필터의 `_update_quick_profit_minute_high`가 진짜 ETF 1분봉 없이 1분봉 고가를
-근사하는 것과 동일한 방식이다. 포지션 진입 시 진입 체결이 속한 3분봉을
+순간 직전까지 관측된 마지막 quote를 그 봉의 "종가"로 확정한다). 포지션 진입 시 진입 체결이 속한 3분봉을
 execution bar로 기록하며(`stop_loss_entry_bar_ts`), 그 봉이 완성되어도(즉 진입
 직후 첫 봉 롤오버) 제외되고, 그다음 완성봉부터 Stop Loss 평가 대상이 된다.
 
-## 2026-08-02 Profit Lock Exit Disabled
+## 2026-08-02 Profit Lock Exit Disabled (superseded 2026-08-05)
 
-This rule supersedes older MACD2 wording that says Profit Lock should liquidate
-after a `0.8 percentage point` giveback.
+This rule described the OLD net-return-giveback Profit Lock
+(`PROFIT_LOCK_ACTIVATE_NET_PCT`/`PROFIT_LOCK_GIVEBACK_PP`/
+`PROFIT_LOCK_EXIT_ENABLED`), which was disabled (tracked for diagnostics only,
+never exited a position). `risk_exit.py`'s own
+`update_profit_lock_tracker()`/`evaluate_position_exits()` still define and
+unit-test this old mechanism as pure functions, but `worker.py`'s live tick no
+longer calls them — see the 2026-08-05 rule immediately below, which is the
+CURRENT Profit Lock behavior.
 
-- MACD2 still tracks `peak_net_return`, `current_net_return`, `giveback_pct`,
-  and `profit_lock_active` for diagnostics, UI, and ledger continuity.
-- Profit Lock must not create a sell order.
-- A profitable position is held until one of these exits occurs:
-  opposite confirmed flag switch, Stop Loss on completed 3-minute ETF close,
-  forced liquidation, or user liquidation.
-- Stop Loss remains active at completed-3-minute net return `<= -1.5%`.
-- The config flag is `PROFIT_LOCK_EXIT_ENABLED = False`.
-- The legacy constants `PROFIT_LOCK_ACTIVATE_NET_PCT = 1.5` and
-  `PROFIT_LOCK_GIVEBACK_PP = 0.8` remain only as diagnostic tracker thresholds
-  unless Profit Lock exit is explicitly re-enabled by a later requirements
-  change.
+## 2026-08-05 Profit Lock — MACD Convergence Early Exit
 
-## 2026-08-02 MAJOR_FLAG V6 Gate
+Priority order for a held position (supersedes any older ordering that omits
+Quick-Profit or the old Profit Lock):
+
+1. 15:00 FORCED_LIQUIDATION
+2. STOP_LOSS (completed 3-minute ETF bar close `<= -1.5%` net return)
+3. OPPOSITE_SIGNAL (a new, confirmed opposite completed-bar crossover — a
+   held-direction `support_gap <= 0`, see below, always falls under this
+   priority instead of Profit Lock)
+4. **PROFIT_LOCK_MACD_CONVERGENCE** (this section)
+5. QUICK_PROFIT (optional take-profit filter — see "2026-08-05 Quick-Profit redesign" below)
+6. HOLD
+
+Toggle: `profit_lock_enabled` (UI label **Profit Lock**), state-only, default
+**OFF** (`config.PROFIT_LOCK_DEFAULT_ENABLED = False` — 2026-08-05: all
+filters default OFF). EXIT LOGIC ONLY — never
+places/changes an entry, never touches MAJOR/추세전환장 filters, Stop Loss,
+forced liquidation, or opposite-flag switching. OFF disables the Profit Lock
+exit completely (existing STOP_LOSS/OPPOSITE_SIGNAL/FORCED_LIQUIDATION/
+QUICK_PROFIT behavior is entirely unaffected either way). **Mutually
+exclusive with `quick_profit_enabled`** — `service.py`'s
+`set_profit_lock_enabled()`/`set_quick_profit_enabled()` each refuse to turn
+their own toggle ON while the other is already ON; the UI shows an inline
+error explaining the conflict.
+
+Evaluated once per newly-completed `WATCH_SYMBOL`(000660) 3-minute bar while a
+position is held, off the SAME confirmed MACD(12,26,9)/Signal already
+computed for flag generation (`macd_snap` — never a second MACD calculation,
+never the forming/incomplete bar; a repeat tick against the same bar is
+always a no-op). The bar containing the entry fill is excluded (same
+execution-bar convention as Stop Loss above).
+
+Held-direction support_gap:
+
+- `0193T0` (UP_RED) held: `support_gap = MACD - Signal`
+- `0197X0` (DOWN_BLUE) held: `support_gap = Signal - MACD`
+- `support_gap <= 0` means the held direction's trend has already reversed —
+  OPPOSITE_SIGNAL (priority 3) owns that case; Profit Lock never exits there.
+
+All 5 conditions must hold on the same completed bar for a full-quantity
+exit (`exit_reason = PROFIT_LOCK_MACD_CONVERGENCE`):
+
+1. Actual ETF net return (TradeCostEngine basis, same as `STOP_LOSS_NET_PCT`)
+   `>= PROFIT_LOCK_MIN_NET_RETURN_PCT` (1.0%)
+2. `>= PROFIT_LOCK_MIN_BARS_SINCE_ENTRY` (3) completed WATCH_SYMBOL bars have
+   elapsed since entry (the entry bar itself never counts)
+3. `support_gap` has contracted for `PROFIT_LOCK_MIN_CONSECUTIVE_CONTRACTIONS`
+   (2) consecutive completed bars
+4. current `support_gap` / max `support_gap` since entry `<=
+   PROFIT_LOCK_MAX_GAP_RATIO` (0.25)
+5. actual ETF return has given back `>= PROFIT_LOCK_MIN_DRAWDOWN_PP` (0.25)
+   percentage points from its peak since entry
+
+### 모델·state
+
+`RuntimeState`(`models.py`)에 최소 다음을 저장한다: `profit_lock_enabled`,
+`profit_lock_enabled_at`, `profit_lock_enabled_by`, `profit_lock_symbol`,
+`profit_lock_entry_bar_ts`, `profit_lock_last_bar_ts`,
+`profit_lock_bars_since_entry`, `profit_lock_gap_history`,
+`profit_lock_peak_return_pct`, `profit_lock_current_support_gap`,
+`profit_lock_max_support_gap`, `profit_lock_gap_ratio`,
+`profit_lock_contraction_count`, `profit_lock_drawdown_pct`. 모든 필드는
+`state_store.py`의 `default_state()`/`serialize()`/`deserialize()`를 통해
+재시작 후에도 복원된다. 토글(`profit_lock_enabled`)을 제외한 나머지는 매
+청산 시(`worker._apply_exit_outcome`) 초기화되고, 새 포지션 진입 후 첫
+`_advance_profit_lock` 호출에서 그 시점의 완성봉을 기준으로 다시 시딩된다
+(같은 종목 재진입이어도 이전 보유 기간의 이력을 이어받지 않는다).
+
+### 원장
+
+Execution ledger에 다음 컬럼이 추가된다(기존 컬럼 삭제·이름변경 없음):
+`profit_lock_enabled`, `profit_lock_peak_return_pct`,
+`profit_lock_max_support_gap`, `profit_lock_current_support_gap`,
+`profit_lock_gap_ratio`, `profit_lock_contraction_count`,
+`profit_lock_drawdown_pct`. `order_executor._record_leg`(BUY/SELL 수량·체결·
+잔고 처리)는 이 컬럼들을 전혀 모른다 — `PROFIT_LOCK_MACD_CONVERGENCE` 청산이
+확정된 뒤 `ledger.record_profit_lock_convergence_fields()`가 `_record_leg`가
+이미 쓴 그 행(같은 `order_id`)에 이 진단 값만 추가로 patch한다.
+
+## 2026-08-05 Quick-Profit redesign (2.0% + 즉시 판정)
+
+이 절은 2026-08-04에 추가된 Quick-Profit 필터의 문턱값과 판정 방식을 대체한다
+(토글 이름/우선순위/상호배타/entry-filter-independence는 그대로 유지).
+
+- 문턱값: `config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT`를 1.5%에서 **2.0%**로 변경.
+- 판정 방식: 구 `_update_quick_profit_minute_high`("1분 고점 기억" — 진행 중인
+  분이 바뀌는 순간 그 이전 분의 고점 기억을 잃는 허점이 있었다)를 완전히
+  제거했다. 이제 매 tick마다 그 시점의 실시간 quote(``current_price`` — 아직
+  확정되지 않은 진행 중인 1분봉이라도 상관없다) 하나만으로 그 자리에서 즉시
+  순수익률을 계산해 문턱 이상이면 바로 전량 매도한다. "기억된 고점"이 없으므로
+  이미 반전된 옛 고점 기준으로(즉 실제로는 이미 조건을 벗어난 가격에) 팔리는
+  문제(2026-08-04에 고쳤던 문제) 자체가 구조적으로 재발할 수 없다.
+- `quick_profit_minute_symbol`/`quick_profit_minute_bucket`/`quick_profit_minute_high`
+  state 필드와 `_update_quick_profit_minute_high()` 함수는 삭제했다(더 이상 어떤
+  판정에도 쓰이지 않음 — MACD2 자체 테스트에서도 참조하는 곳이 없었다. TSLA_AUTO의
+  동일 이름 필드/함수는 완전히 별개 모듈이라 변경하지 않았다).
+- 진입 경로 독립: 이 판정은 오직 `state.position`/`state.quick_profit_enabled`만
+  보고 그 자리에서 즉시 실행되므로, 수동매수(`manual_entry`)로 진입한 포지션도
+  자동 진입과 동일하게 적용된다. 토글을 이미 조건을 만족한 포지션을 보유한 채로
+  ON으로 바꾸는 경우에도, 그다음 tick에 즉시(과거 이력·"이전 분" 상태와 무관하게)
+  판정되어 매도된다 — 별도의 "몇 틱 대기/시딩" 지연이 없다.
+- OFF: 이 블록 전체가 스킵되어 기존처럼 다음 확정 플래그(반대 신호)/Stop
+  Loss/Profit Lock/강제청산까지 그대로 보유한다 — OFF 상태에서의 동작은 전혀
+  바뀌지 않았다.
 
 The default "strong flag only" MACD2 entry filter is now
 `MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT`.
@@ -136,8 +273,8 @@ even when V4 blocks the order.
   false, require `volume_ratio >= 0.80`.
 - V4 is an entry filter only. Stop Loss, opposite-signal sell leg, user
   liquidation, and forced liquidation remain active regardless of the toggle.
-  Profit Lock exit remains disabled unless a later requirements change
-  explicitly re-enables it.
+  Profit Lock (2026-08-05 MACD Convergence rule) is also unaffected by this
+  toggle — it is an exit-only, entry-filter-independent check.
 
 본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가, 2026-07-31 플래그 정합성 수정 — 진행봉 candidate 주문권한 재제거·1분봉 완전성 게이트·Worker 세션/SHA 기준 통계 분리). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
 
@@ -265,7 +402,7 @@ Worker는 5초 tick으로 동작한다.
 - 반대 신호 + 보유: 기존 ETF SELL → 체결 확인 → 잔량 0 확인 → 반대 ETF BUY
 - 14:55 이후 신규 진입 금지
 - 15:00 이후 강제청산 우선
-- Stop Loss(-1.5%)와 Profit Lock(+1.5% 활성화, 0.8%p 반납 청산)은 기존 규칙을 유지한다.
+- Stop Loss(-1.5%)는 기존 규칙을 유지한다. Profit Lock은 2026-08-05부터 MACD 수렴 조기청산 방식(5개 조건, "2026-08-05 Profit Lock — MACD Convergence Early Exit" 절 참조)이다.
 - 신규 BUY 수량은 시장가가 아니라 fresh 매도 1호가 기반 일반 지정가(`ORD_DVSN=00`, `order_type=limit`)로 계산한다. IOC(`ORD_DVSN=11`)는 신규 BUY 경로에서 사용하지 않는다. 주문 직전 KIS 호가조회에서 `ask1`을 받고 `order_price=ask1+1틱`(KRX 호가단위 정규화)으로 정한다. ask1이 0/stale/조회실패면 시장가 전환 없이 차단한다. 같은 계좌·종목·`ORD_DVSN=00`·`order_price`로 KIS 매수가능조회 후 `usable_cash = min(UI 예산, KIS 실제 주문가능금액)`, `budget_qty = floor((usable_cash * 0.995) / order_price)`, `final_qty = min(budget_qty, limit_buyable_qty)`를 사용한다. `expected_amount`는 항상 `usable_cash * 0.995` 이하로 재검증하며, 과도한 수량 차감은 하지 않고 필요 시 최대 1주만 줄인다. 호가조회 실패/stale 또는 `final_qty=0`이면 시장가로 자동 전환하지 않고 주문을 차단해 원장/UI에 `ask1`, `order_price`, `order_type`, `usable_cash`, `limit_buyable_qty`, `budget_qty`, `final_qty`, `expected_amount`, `filled_qty`를 기록한다.
 - 주문가능금액 부족 시 주문하지 않고 KIS의 실제 코드·메시지를 신호 원장에 그대로 기록한다. 같은 `signal_id`로 무한 재시도하지 않는다(signal_id 단발성 원칙).
 - 체결은 주문 성공 응답만으로 확정하지 않고, 주문번호 기준 실제 체결/잔고 재조회로 확인한다(최대 60초 폴링, 부분체결 반영).
@@ -354,6 +491,9 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - MAJOR 필터 ON이면 승인 신호만 주문, 탈락 신호 broker 호출 0, 동일 `signal_id` 재심사·재주문 0
 - Stop Loss / Profit Lock / 강제청산은 필터와 무관하게 기존 규칙 유지
 - 진입 체결이 속한 3분봉(execution bar) 내 손실은 Stop Loss를 유발하지 않고, 그다음 완성 3분봉 종가부터 -1.5% 기준으로 평가됨(`tests/macd2/test_worker.py::test_stop_loss_excludes_entry_bar_then_fires_on_next_completed_bar_close`)
+- Profit Lock(MACD 수렴 조기청산, `tests/macd2/test_profit_lock.py`): 기본값 OFF(2026-08-05: 모든 필터 기본값 OFF) / OFF 시 기존 동작(Stop Loss·반대플래그·강제청산·퀵Profit)만 그대로 동작하고 Profit Lock 매도 0건 / 수익률 +1.0% 미만 청산 0건 / 진입 후 완성 3분봉 3개 미만 청산 0건 / support_gap 2개 완성봉 연속 축소가 아니면 청산 0건 / gap ratio가 25% 초과면 청산 0건 / 최고수익 대비 0.25%p 미만 반납이면 청산 0건 / 5개 조건 모두 충족 시 보유수량 전량 매도 정확히 1회, `exit_reason=PROFIT_LOCK_MACD_CONVERGENCE`로 원장 기록 / 0193T0(UP_RED)·0197X0(DOWN_BLUE) 보유 각각의 support_gap 부호 계산 검증 / 진행봉(미완성 3분봉)으로는 절대 청산하지 않음 / 중복 매도 0건(같은 완성봉 재평가 시 재청산 없음) / Worker 재시작 후 profit_lock_* state가 그대로 복원되어 이어서 판정됨 / Stop Loss·반대 플래그·강제청산이 Profit Lock보다 우선순위가 높아 먼저 발동하면 Profit Lock은 평가되지 않음 / 퀵 Profit과 동시 ON 토글 시도는 거부되고 UI에 상호배타 안내 표시
+- Quick-Profit 2026-08-05 재설계(`tests/macd2/test_quick_profit.py`): 기본 문턱 2.0% / "1분 고점 기억" state 필드·헬퍼 완전 삭제 확인 / 첫 tick의 실시간 quote만으로 즉시 청산(사전 기억·워밍업 불필요) / 문턱 미만이면 청산 0건 / 이전 tick에서 반전되어 이미 사라진 스파이크는 기억하지 않고 현재 tick 값만으로 판정 / OFF면 기존처럼 다음 플래그까지 보유(청산 0건) / 이미 조건을 만족한 채 보유 중인 포지션이라도 토글을 ON으로 바꾼 바로 다음 tick에 즉시 매도 / 수동매수(`manual_entry`)로 진입한 포지션도 자동 진입과 동일하게 즉시 적용됨
+- 같은 날 재시작 + state 유실(`tests/macd2/test_worker.py`): `last_confirmed_bar_ts`가 완전히 없어도 오늘 이미 완성봉이 2개 이상이면 일반 재시작 캐치업과 동일하게 처리되어 반전 신호가 유실되지 않고 `pending_signal`로 큐잉됨(`test_restart_with_fully_lost_state_still_catches_up_when_today_already_has_bars`) / 진짜 당일 첫 완성봉(1개 이하)에서는 여전히 조용히 baseline만 잡음(`test_restart_with_fully_lost_state_at_true_market_open_still_baselines_only`) / 이때 `state.possible_toggle_reset_at`이 설정되어 UI에 토글 재확인 경고가 뜨고, 다음날 롤오버 시 초기화됨(`test_day_rollover_clears_possible_toggle_reset_warning`)
 - `tests/macd2/test_major_flag_filter.py` 통과
 - read-only 검증 스크립트 `scripts/macd2_validate_major_filter.py`는 운영 state/ledger/cache·broker를 변경하지 않는다
 - 13:42~13:44 완성봉의 `completed_bar_at`/`signal_id`는 `13:42:00`/`134200`을 포함하고, `detected_at`/`order_requested_at`은 13:45 이후
@@ -381,7 +521,7 @@ UI는 Worker state와 ledger summary만 읽는다. UI가 별도 MACD 주문 판�
 - 표시명: **강한 플래그만 거래**
 - OFF: 기존 confirmed 신호가 모두 주문권한 보유
 - ON: MAJOR_FLAG 승인 신호만 주문권한 보유
-- 기본값 ON. 환경변수 `MACD2_MAJOR_FILTER_DEFAULT=false`를 명시하면 cold-start 기본값만 OFF로 바꿀 수 있다.
+- 기본값 OFF(2026-08-05: 모든 필터 기본값 OFF). 환경변수 `MACD2_MAJOR_FILTER_DEFAULT=true`를 명시하면 cold-start 기본값만 ON으로 바꿀 수 있다.
 - UI는 `Macd2Service.set_major_filter_enabled()` command만 기록한다. Streamlit이 Worker 상태를 직접 수정하거나 주문 함수를 호출하지 않는다.
 - 전략 실행 중 토글 변경: **다음 신규 confirmed 플래그부터** 적용. 이미 보유한 포지션의 Stop Loss·Profit Lock·강제청산에는 영향 없음. 토글 변경 시 기존 position을 즉시 청산하거나 신규 매수하지 않는다. `major_filter_enabled_at`과 변경 주체(`major_filter_enabled_by`)를 state에 기록한다.
 

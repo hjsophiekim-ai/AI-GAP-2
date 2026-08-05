@@ -37,6 +37,7 @@ def default_state() -> RuntimeState:
     state.sideways_filter_enabled = bool(getattr(config, "SIDEWAYS_FILTER_DEFAULT", False))
     state.sideways_filter_version = config.SIDEWAYS_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
+    state.profit_lock_enabled = bool(getattr(config, "PROFIT_LOCK_DEFAULT_ENABLED", True))
     return state
 
 
@@ -104,6 +105,7 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "session_baseline_bar_ts": state.session_baseline_bar_ts,
         "baseline_relation": state.baseline_relation,
         "worker_instance_id": state.worker_instance_id,
+        "possible_toggle_reset_at": state.possible_toggle_reset_at,
         "last_auto_recover_attempt_at": state.last_auto_recover_attempt_at,
         "primary_previous_diff": state.primary_previous_diff,
         "primary_current_diff": state.primary_current_diff,
@@ -210,13 +212,24 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "quick_profit_enabled": bool(state.quick_profit_enabled),
         "quick_profit_enabled_at": state.quick_profit_enabled_at,
         "quick_profit_enabled_by": state.quick_profit_enabled_by,
-        "quick_profit_minute_symbol": state.quick_profit_minute_symbol,
-        "quick_profit_minute_bucket": state.quick_profit_minute_bucket,
-        "quick_profit_minute_high": state.quick_profit_minute_high,
         "stop_loss_bar_symbol": state.stop_loss_bar_symbol,
         "stop_loss_entry_bar_ts": state.stop_loss_entry_bar_ts,
         "stop_loss_bar_ts": state.stop_loss_bar_ts,
         "stop_loss_bar_close": state.stop_loss_bar_close,
+        "profit_lock_enabled": bool(state.profit_lock_enabled),
+        "profit_lock_enabled_at": state.profit_lock_enabled_at,
+        "profit_lock_enabled_by": state.profit_lock_enabled_by,
+        "profit_lock_symbol": state.profit_lock_symbol,
+        "profit_lock_entry_bar_ts": state.profit_lock_entry_bar_ts,
+        "profit_lock_last_bar_ts": state.profit_lock_last_bar_ts,
+        "profit_lock_bars_since_entry": int(state.profit_lock_bars_since_entry or 0),
+        "profit_lock_gap_history": list(state.profit_lock_gap_history or []),
+        "profit_lock_peak_return_pct": float(state.profit_lock_peak_return_pct or 0.0),
+        "profit_lock_current_support_gap": state.profit_lock_current_support_gap,
+        "profit_lock_max_support_gap": state.profit_lock_max_support_gap,
+        "profit_lock_gap_ratio": state.profit_lock_gap_ratio,
+        "profit_lock_contraction_count": int(state.profit_lock_contraction_count or 0),
+        "profit_lock_drawdown_pct": float(state.profit_lock_drawdown_pct or 0.0),
     }
 
 
@@ -291,6 +304,7 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         session_baseline_bar_ts=raw.get("session_baseline_bar_ts"),
         baseline_relation=raw.get("baseline_relation"),
         worker_instance_id=raw.get("worker_instance_id"),
+        possible_toggle_reset_at=raw.get("possible_toggle_reset_at"),
         last_auto_recover_attempt_at=raw.get("last_auto_recover_attempt_at"),
         primary_previous_diff=raw.get("primary_previous_diff"),
         primary_current_diff=raw.get("primary_current_diff"),
@@ -405,13 +419,24 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         quick_profit_enabled=bool(raw.get("quick_profit_enabled", bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False)))),
         quick_profit_enabled_at=raw.get("quick_profit_enabled_at"),
         quick_profit_enabled_by=raw.get("quick_profit_enabled_by"),
-        quick_profit_minute_symbol=raw.get("quick_profit_minute_symbol"),
-        quick_profit_minute_bucket=raw.get("quick_profit_minute_bucket"),
-        quick_profit_minute_high=raw.get("quick_profit_minute_high"),
         stop_loss_bar_symbol=raw.get("stop_loss_bar_symbol"),
         stop_loss_entry_bar_ts=raw.get("stop_loss_entry_bar_ts"),
         stop_loss_bar_ts=raw.get("stop_loss_bar_ts"),
         stop_loss_bar_close=raw.get("stop_loss_bar_close"),
+        profit_lock_enabled=bool(raw.get("profit_lock_enabled", bool(getattr(config, "PROFIT_LOCK_DEFAULT_ENABLED", True)))),
+        profit_lock_enabled_at=raw.get("profit_lock_enabled_at"),
+        profit_lock_enabled_by=raw.get("profit_lock_enabled_by"),
+        profit_lock_symbol=raw.get("profit_lock_symbol"),
+        profit_lock_entry_bar_ts=raw.get("profit_lock_entry_bar_ts"),
+        profit_lock_last_bar_ts=raw.get("profit_lock_last_bar_ts"),
+        profit_lock_bars_since_entry=int(raw.get("profit_lock_bars_since_entry") or 0),
+        profit_lock_gap_history=list(raw.get("profit_lock_gap_history") or []),
+        profit_lock_peak_return_pct=float(raw.get("profit_lock_peak_return_pct") or 0.0),
+        profit_lock_current_support_gap=raw.get("profit_lock_current_support_gap"),
+        profit_lock_max_support_gap=raw.get("profit_lock_max_support_gap"),
+        profit_lock_gap_ratio=raw.get("profit_lock_gap_ratio"),
+        profit_lock_contraction_count=int(raw.get("profit_lock_contraction_count") or 0),
+        profit_lock_drawdown_pct=float(raw.get("profit_lock_drawdown_pct") or 0.0),
     )
 
 

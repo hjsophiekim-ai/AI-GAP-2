@@ -84,6 +84,13 @@ WARMUP_1M_BARS_MIN = WARMUP_3M_BARS_MIN * 3  # >=300
 
 # ── Risk / exit (strategy-fixed) ────────────────────────────────────────────
 STOP_LOSS_NET_PCT = -1.5
+# 2026-08-05: PROFIT_LOCK_ACTIVATE_NET_PCT/GIVEBACK_PP/EXIT_ENABLED and
+# EXIT_PROFIT_LOCK below are the OLD net-return-giveback Profit Lock —
+# risk_exit.py's own update_profit_lock_tracker()/evaluate_position_exits()
+# still define/test it as a pure function, but worker.py's live tick no
+# longer calls it at all (replaced by the MACD-convergence Profit Lock
+# further down — see PROFIT_LOCK_DEFAULT_ENABLED et al.). Left in place only
+# for risk_exit.py's own existing unit tests; never reachable from a live run.
 PROFIT_LOCK_ACTIVATE_NET_PCT = 1.5
 PROFIT_LOCK_GIVEBACK_PP = 0.8
 PROFIT_LOCK_EXIT_ENABLED = False
@@ -94,6 +101,39 @@ EXIT_OPPOSITE_SIGNAL = "OPPOSITE_SIGNAL"
 EXIT_FORCED_LIQUIDATION = "FORCED_LIQUIDATION"
 EXIT_USER_LIQUIDATION = "USER_LIQUIDATION"  # UI "자동매매 중지 및 일괄매도" 버튼
 EXIT_MANUAL_LIQUIDATION = "MANUAL_LIQUIDATION"  # UI "수동 전량매도" 버튼 (자동매매는 계속 유지)
+
+# ── Profit Lock — MACD convergence early exit (2026-08-05 spec) ───────────
+# EXIT LOGIC ONLY (never affects entries/MAJOR filter/Stop Loss/forced
+# liquidation/opposite-flag switching — docs §10 priority: FORCED_LIQUIDATION
+# > STOP_LOSS > OPPOSITE_SIGNAL > PROFIT_LOCK_MACD_CONVERGENCE > QUICK_PROFIT).
+# 2026-08-05 (사용자 요청 — 모든 필터 기본값 OFF): Default OFF; mutually
+# exclusive with QUICK_PROFIT_FILTER_DEFAULT's toggle — the UI/service block
+# turning either on while the other is already on.
+# Evaluated once per newly-completed WATCH_SYMBOL(000660) 3-minute bar while a
+# position is held, off the SAME confirmed MACD(12,26,9)/Signal already
+# computed for flag generation (never a second MACD calc, never the forming
+# bar). All 5 conditions below must hold on that bar for the full-quantity
+# exit to fire:
+#   1) actual ETF net return (TradeCostEngine basis, same as STOP_LOSS_NET_PCT)
+#      >= PROFIT_LOCK_MIN_NET_RETURN_PCT
+#   2) >= PROFIT_LOCK_MIN_BARS_SINCE_ENTRY completed WATCH_SYMBOL bars have
+#      elapsed since entry (the entry bar itself never counts)
+#   3) the held-direction support_gap has contracted for
+#      PROFIT_LOCK_MIN_CONSECUTIVE_CONTRACTIONS consecutive completed bars
+#      (0193T0 held: support_gap = MACD - Signal; 0197X0 held: support_gap =
+#      Signal - MACD — a support_gap <= 0 defers entirely to the
+#      OPPOSITE_SIGNAL priority above instead)
+#   4) current support_gap / max support_gap since entry <=
+#      PROFIT_LOCK_MAX_GAP_RATIO
+#   5) actual ETF return has given back >= PROFIT_LOCK_MIN_DRAWDOWN_PP
+#      percentage points from its peak since entry
+PROFIT_LOCK_DEFAULT_ENABLED = _env_bool("MACD2_PROFIT_LOCK_DEFAULT_ENABLED", False)
+PROFIT_LOCK_MIN_NET_RETURN_PCT = 1.0
+PROFIT_LOCK_MIN_BARS_SINCE_ENTRY = 3
+PROFIT_LOCK_MIN_CONSECUTIVE_CONTRACTIONS = 2
+PROFIT_LOCK_MAX_GAP_RATIO = 0.25
+PROFIT_LOCK_MIN_DRAWDOWN_PP = 0.25
+EXIT_PROFIT_LOCK_MACD_CONVERGENCE = "PROFIT_LOCK_MACD_CONVERGENCE"
 
 # ── Session timing (strategy-fixed, KST) ───────────────────────────────────
 SESSION_OPEN = time(9, 0)
@@ -177,11 +217,11 @@ CONTINUATION_REENTRY_ENABLED = False
 OPENING_PROBE_ENABLED = False
 
 # ── Optional Hybrid MAJOR_FLAG filter (order gate only; confirmed flags unchanged) ──
-# UI toggle defaults ON for V6 strong-flag trading. Env
+# 2026-08-05 (사용자 요청 — 모든 필터 기본값 OFF): UI toggle defaults OFF. Env
 # MACD2_MAJOR_FILTER_DEFAULT may override the cold-start default; runtime
 # state / UI command still wins after start.
 MAJOR_FILTER_VERSION = "MAJOR_FILTER_HYBRID_V6_JULY_FREQ_PROFIT"
-MAJOR_FILTER_DEFAULT = _env_bool("MACD2_MAJOR_FILTER_DEFAULT", True)
+MAJOR_FILTER_DEFAULT = _env_bool("MACD2_MAJOR_FILTER_DEFAULT", False)
 
 MAJOR_ENTRY_SCORE_MIN = _env_float("MACD2_MAJOR_ENTRY_SCORE_MIN", 65.0)
 MAJOR_REVERSAL_SCORE_MIN = _env_float("MACD2_MAJOR_REVERSAL_SCORE_MIN", 75.0)
@@ -269,16 +309,23 @@ SIDEWAYS_BREAKOUT_BLOCKED = "SIDEWAYS_BREAKOUT_BLOCKED"
 # entries are placed (worker._judge_entry_gate/order_executor untouched),
 # only what happens to an ALREADY-held position. Works underneath any entry
 # mode (일반거래 / 강한 플래그 거래 / 추세전환장 모두), taking priority over the
-# normal exit chain the moment it fires. ON: net return (TradeCostEngine
-# basis, same as STOP_LOSS_NET_PCT/_net_return_pct) reaching
-# QUICK_PROFIT_TAKE_PROFIT_NET_PCT exits the position in full immediately.
-# OFF: risk_exit.py's own STOP_LOSS/PROFIT_LOCK and order_executor's
-# OPPOSITE_SIGNAL/FORCED_LIQUIDATION exits are entirely unchanged — this
-# toggle adds nothing when OFF. Checked in worker.py right after STOP_LOSS
-# and before the OPPOSITE_SIGNAL switch check, so stop-loss and flag-switch
-# exits are never preempted by it.
+# normal exit chain the moment it fires (checked in worker.py right after
+# STOP_LOSS/OPPOSITE_SIGNAL/PROFIT_LOCK, so those are never preempted by it).
+# OFF: entirely unchanged existing exit behavior — this toggle adds nothing
+# when OFF, and turning it back OFF simply returns to holding until the next
+# flag/Stop Loss/forced liquidation, exactly as before this toggle existed.
+#
+# 2026-08-05 (사용자 요청 — 기준치 변경 및 즉시-판정 재설계): 문턱을 1.5%->2.0%로
+# 올리고, "1분 고점 기억" 근사(구 _update_quick_profit_minute_high, 진행 중인
+# 분이 바뀌는 순간 그 이전 분의 고점 기억을 잃는 허점이 있었음)를 완전히 없앴다.
+# 이제 매 tick의 실시간 quote(진행 중인/미확정 1분봉이든 상관없이) 하나만 보고
+# 그 자리에서 즉시 순수익률 >= QUICK_PROFIT_TAKE_PROFIT_NET_PCT면 바로 전량
+# 매도한다 — "기억된 고점"이 없으므로 그 기억이 이미 반전된 뒤 팔리는 문제 자체가
+# 구조적으로 발생할 수 없다(2026-08-04에 고쳤던 문제의 근본 원인 제거). ON 상태로
+# 전환된 바로 다음 tick부터(직전 이력과 무관하게) 즉시 이 조건으로 판정한다 —
+# 이미 보유 중인 포지션이 이미 조건을 만족한 상태라면 그 tick에 바로 매도된다.
 QUICK_PROFIT_FILTER_DEFAULT = _env_bool("MACD2_QUICK_PROFIT_FILTER_DEFAULT", False)
-QUICK_PROFIT_TAKE_PROFIT_NET_PCT = _env_float("MACD2_QUICK_PROFIT_TAKE_PROFIT_NET_PCT", 1.5)
+QUICK_PROFIT_TAKE_PROFIT_NET_PCT = _env_float("MACD2_QUICK_PROFIT_TAKE_PROFIT_NET_PCT", 2.0)
 EXIT_QUICK_PROFIT_TAKE_PROFIT = "QUICK_PROFIT_TAKE_PROFIT"
 
 # ── Isolated MACD2 runtime/ledger paths (never shared with MACD v1) ───────

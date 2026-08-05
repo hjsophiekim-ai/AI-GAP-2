@@ -231,6 +231,15 @@ class RuntimeState:
     session_baseline_bar_ts: Optional[str] = None
     baseline_relation: Optional[str] = None
     worker_instance_id: Optional[str] = None
+    # 2026-08-05 fix: initialize_strategy_session sets this when a same-day
+    # restart is detected with NO persisted last_confirmed_bar_ts (state.json
+    # was lost, e.g. a Render redeploy/disk hiccup) — a toggle the user set
+    # earlier today (major_filter_enabled/sideways_filter_enabled/
+    # quick_profit_enabled/profit_lock_enabled) may have silently reverted to
+    # its config default at that moment, since a lost toggle preference can
+    # never be reconstructed from market data (unlike signal history). UI
+    # shows a prominent warning while this is set; cleared on day rollover.
+    possible_toggle_reset_at: Optional[str] = None
     # 2026-08-04 fix: last time get_snapshot() auto-restarted a WORKER_STALLED
     # worker (rate-limits recovery attempts — see config.WORKER_AUTO_RECOVER_COOLDOWN_SEC).
     last_auto_recover_attempt_at: Optional[str] = None
@@ -359,22 +368,39 @@ class RuntimeState:
     # ── Optional Quick-Profit take-profit filter (EXIT LOGIC ONLY) —
     # independent of major_filter_enabled/sideways_filter_enabled; never
     # affects which entries are placed, only exits an already-held position.
+    # 2026-08-05: judged directly off each tick's live quote (no remembered
+    # "1분 고점" state needed any more — see worker.py's exit-check block).
     quick_profit_enabled: bool = False
     quick_profit_enabled_at: Optional[str] = None
     quick_profit_enabled_by: Optional[str] = None
-    # 1분봉 고가 근사치 — 진짜 KIS 1분봉 대신, 이미 폴링 중인 실시간 시세를 매
-    # 분(00초) 리셋하며 그 분 안에서 관측된 최고가만 추적한다(market_data.py
-    # 변경 없이 구현하기 위한 근사; 2026-08-04 사용자 선택).
-    quick_profit_minute_symbol: Optional[str] = None
-    quick_profit_minute_bucket: Optional[str] = None
-    quick_profit_minute_high: Optional[float] = None
 
     # ── Stop Loss 3-minute completed-bar gating (docs 2026-08-02 Exit Rule:
     # 3-Minute Confirmed Bars) — no real ETF 1분봉 feed exists (market_data.py
     # only tracks WATCH_SYMBOL history), so the traded ETF's own completed
-    # 3-minute bar close is approximated from the live quote stream the same
-    # way quick_profit_minute_high approximates a 1분봉 고가 above.
+    # 3-minute bar close is approximated from the live quote stream.
     stop_loss_bar_symbol: Optional[str] = None
     stop_loss_entry_bar_ts: Optional[str] = None
     stop_loss_bar_ts: Optional[str] = None
     stop_loss_bar_close: Optional[float] = None
+
+    # ── Profit Lock — MACD convergence early exit (2026-08-05: replaces the
+    # old net-return-giveback Profit Lock — EXIT LOGIC ONLY, mutually
+    # exclusive with quick_profit_enabled). Evaluated once per newly-completed
+    # WATCH_SYMBOL(000660) 3-minute bar while a position is held, off the SAME
+    # confirmed MACD/Signal already computed for flag generation — never a
+    # second MACD calculation, never the forming bar. See config.py's
+    # PROFIT_LOCK_* constants for the 5 exit conditions.
+    profit_lock_enabled: bool = False
+    profit_lock_enabled_at: Optional[str] = None
+    profit_lock_enabled_by: Optional[str] = None
+    profit_lock_symbol: Optional[str] = None
+    profit_lock_entry_bar_ts: Optional[str] = None
+    profit_lock_last_bar_ts: Optional[str] = None
+    profit_lock_bars_since_entry: int = 0
+    profit_lock_gap_history: list[float] = field(default_factory=list)
+    profit_lock_peak_return_pct: float = 0.0
+    profit_lock_current_support_gap: Optional[float] = None
+    profit_lock_max_support_gap: Optional[float] = None
+    profit_lock_gap_ratio: Optional[float] = None
+    profit_lock_contraction_count: int = 0
+    profit_lock_drawdown_pct: float = 0.0

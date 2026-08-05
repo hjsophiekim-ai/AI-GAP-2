@@ -375,6 +375,17 @@ class Macd2Service:
             state.position = None
             state.peak_net_return = 0.0
             state.profit_lock_active = False
+            state.profit_lock_symbol = None
+            state.profit_lock_entry_bar_ts = None
+            state.profit_lock_last_bar_ts = None
+            state.profit_lock_bars_since_entry = 0
+            state.profit_lock_gap_history = []
+            state.profit_lock_peak_return_pct = 0.0
+            state.profit_lock_current_support_gap = None
+            state.profit_lock_max_support_gap = None
+            state.profit_lock_gap_ratio = None
+            state.profit_lock_contraction_count = 0
+            state.profit_lock_drawdown_pct = 0.0
         state_store.save_state(state)
         return {"ok": all_ok, "results": results}
 
@@ -437,9 +448,15 @@ class Macd2Service:
         mode (일반거래/강한 플래그/추세전환장) is currently active. OFF restores
         the existing STOP_LOSS/OPPOSITE_SIGNAL/FORCED_LIQUIDATION-only exit
         behavior exactly as before this toggle existed.
+
+        2026-08-05: mutually exclusive with profit_lock_enabled (docs §10
+        Profit Lock spec) — turning this ON while Profit Lock is already ON
+        is refused; Profit Lock must be turned off first.
         """
         state = state_store.load_state()
         enabled_bool = bool(enabled)
+        if enabled_bool and bool(state.profit_lock_enabled):
+            return {"ok": False, "message": "PROFIT_LOCK_ALREADY_ON", "quick_profit_enabled": bool(state.quick_profit_enabled)}
         prev = bool(state.quick_profit_enabled)
         state.quick_profit_enabled = enabled_bool
         state.quick_profit_enabled_at = datetime.now(KST).isoformat()
@@ -451,6 +468,38 @@ class Macd2Service:
             "previous": prev,
             "quick_profit_enabled_at": state.quick_profit_enabled_at,
             "quick_profit_enabled_by": state.quick_profit_enabled_by,
+        }
+
+    def set_profit_lock_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the Profit Lock MACD-convergence early exit
+        (docs §10 2026-08-05 spec — replaces the old net-return-giveback
+        Profit Lock entirely).
+
+        EXIT LOGIC ONLY — never places/changes an entry, never touches
+        major_filter_enabled/sideways_filter_enabled/Stop Loss/forced
+        liquidation/opposite-flag switching. Only updates runtime state;
+        takes effect from the next newly-completed WATCH_SYMBOL 3-minute bar.
+        Default OFF (2026-08-05: all filters default OFF). Mutually exclusive with quick_profit_enabled — turning
+        this ON while Quick Profit is already ON is refused; Quick Profit
+        must be turned off first. OFF disables the Profit Lock exit
+        completely (existing STOP_LOSS/OPPOSITE_SIGNAL/FORCED_LIQUIDATION/
+        QUICK_PROFIT behavior is entirely unaffected either way).
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        if enabled_bool and bool(state.quick_profit_enabled):
+            return {"ok": False, "message": "QUICK_PROFIT_ALREADY_ON", "profit_lock_enabled": bool(state.profit_lock_enabled)}
+        prev = bool(state.profit_lock_enabled)
+        state.profit_lock_enabled = enabled_bool
+        state.profit_lock_enabled_at = datetime.now(KST).isoformat()
+        state.profit_lock_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "profit_lock_enabled": enabled_bool,
+            "previous": prev,
+            "profit_lock_enabled_at": state.profit_lock_enabled_at,
+            "profit_lock_enabled_by": state.profit_lock_enabled_by,
         }
 
     def manual_entry(self, direction: str) -> dict[str, Any]:

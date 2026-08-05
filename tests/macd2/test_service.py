@@ -412,3 +412,61 @@ def test_get_service_returns_process_singleton(monkeypatch):
     a = service_module.get_service()
     b = service_module.get_service()
     assert a is b
+
+
+def test_profit_lock_enabled_defaults_off_and_toggles_on():
+    """2026-08-05 (사용자 요청 — 모든 필터 기본값 OFF): 기본값 OFF, ON으로 토글 가능."""
+    svc = service_module.Macd2Service()
+    state = state_store.load_state()
+    assert state.profit_lock_enabled is False
+
+    res = svc.set_profit_lock_enabled(True, changed_by="test")
+    assert res == {
+        "ok": True, "profit_lock_enabled": True, "previous": False,
+        "profit_lock_enabled_at": res["profit_lock_enabled_at"],
+        "profit_lock_enabled_by": "test",
+    }
+    state = state_store.load_state()
+    assert state.profit_lock_enabled is True
+    assert state.profit_lock_enabled_by == "test"
+
+
+def test_profit_lock_and_quick_profit_are_mutually_exclusive():
+    """docs §10 2026-08-05 spec: 퀵 Profit과 Profit Lock 동시 ON 불가 — 둘 다
+    양방향으로 두 번째 토글 시도를 거부한다. 2026-08-05부터 둘 다 기본값 OFF이므로
+    각 방향을 테스트하려면 먼저 명시적으로 하나를 ON으로 켜야 한다."""
+    svc = service_module.Macd2Service()
+    state = state_store.load_state()
+    assert state.quick_profit_enabled is False
+    assert state.profit_lock_enabled is False
+
+    # Turn Profit Lock ON first -- Quick Profit ON must then be refused.
+    assert svc.set_profit_lock_enabled(True, changed_by="test")["ok"] is True
+    res = svc.set_quick_profit_enabled(True, changed_by="test")
+    assert res["ok"] is False
+    assert res["message"] == "PROFIT_LOCK_ALREADY_ON"
+    state = state_store.load_state()
+    assert state.quick_profit_enabled is False
+    assert state.profit_lock_enabled is True
+
+    # Turn Profit Lock off first -- Quick Profit can now be enabled.
+    assert svc.set_profit_lock_enabled(False, changed_by="test")["ok"] is True
+    res = svc.set_quick_profit_enabled(True, changed_by="test")
+    assert res["ok"] is True
+    state = state_store.load_state()
+    assert state.quick_profit_enabled is True
+    assert state.profit_lock_enabled is False
+
+    # Now the reverse: Quick Profit is ON -- turning Profit Lock ON is refused.
+    res = svc.set_profit_lock_enabled(True, changed_by="test")
+    assert res["ok"] is False
+    assert res["message"] == "QUICK_PROFIT_ALREADY_ON"
+    state = state_store.load_state()
+    assert state.profit_lock_enabled is False
+    assert state.quick_profit_enabled is True
+
+    # Turning either OFF is never blocked by the other being ON.
+    res = svc.set_quick_profit_enabled(False, changed_by="test")
+    assert res["ok"] is True
+    state = state_store.load_state()
+    assert state.quick_profit_enabled is False
