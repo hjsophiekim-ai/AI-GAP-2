@@ -1042,14 +1042,76 @@ def test_restart_with_fully_lost_state_still_catches_up_when_today_already_has_b
     quote_prices = {config.WATCH_SYMBOL: 92.0, config.LONG_SYMBOL: 9_000.0, config.INVERSE_SYMBOL: 10_000.0}
     broker = FakeBroker(cash=10_000_000.0, quotes=quote_prices)
     broker.buy_market(config.INVERSE_SYMBOL, 10, "seed")
+    svc = MarketDataService(
+        mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}),
+        fetch_quote=lambda mode, symbol: (quote_prices.get(symbol), None),
+    )
+    svc.bootstrap(now=restart_now)
+    svc.refresh_quotes()
+    result = run_once(broker=broker, market_data=svc, state=state, now=restart_now)
+    assert result.actions == ["OPPOSITE_SIGNAL:UP_RED"]
+    assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
+
+
+def test_second_restart_does_not_discard_a_still_pending_catchup_signal():
+    """2026-08-06 fix: a THIRD restart back-to-back used to unconditionally
+    wipe state.pending_signal to None every single call, regardless of
+    resuming_today -- on a host that restarts the whole process every minute
+    or two (2026-08-06 real incident: 6+ distinct worker_instance_id values
+    inside 30 minutes), a genuine RESTART_CATCH_UP_MULTI_BAR_GAP pending
+    signal set by one restart could be silently discarded by the VERY NEXT
+    restart before any live tick ever got a chance to act on it -- and since
+    the catch-up walk also marks every bar it visits as already-evaluated,
+    that flag could never be re-detected either (a filter-approved 12:03
+    DOWN_BLUE entry never even reached order_executor). This test starts
+    FLAT (an INITIAL entry, not a held-position REVERSAL) and fires TWO
+    restarts back to back with no new market data between them and more than
+    config.PENDING_SIGNAL_RETRY_SEC (30s) of wall-clock time apart, so the
+    second restart's own catch-up walk finds nothing new -- the only way the
+    signal survives is by not being wiped, with its detected_at refreshed to
+    the second restart's own `now` (not restart 1's stale one) so the retry
+    window is judged fairly from this restart's live tick."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    closes = [100.0] * 99 + [92.0, 96.0, 103.0, 104.0, 103.0, 98.0, 90.0, 85.0, 84.0]
+    df_1m_full = _1m_from_3m_closes(start, closes)
+
+    state = _fresh_state()  # flat -- no position
+    bar103_end = start + timedelta(minutes=3 * 104)
+    df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < bar103_end]
+    svc1 = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}))
+    restart1_now = bar103_end + timedelta(seconds=5)
+    svc1.bootstrap(now=restart1_now)
+    worker.initialize_strategy_session(state, svc1, now=restart1_now)
+
+    assert state.pending_signal is not None
+    assert state.pending_signal.get("direction") == "UP_RED"
+    assert state.pending_signal.get("signal_type") == "INITIAL"
+    assert state.pending_signal.get("detected_at") == restart1_now.isoformat()
+
+    # Process dies again almost immediately, well past PENDING_SIGNAL_RETRY_
+    # SEC (30s) later, with NO new market data -- restart 2's own catch-up
+    # walk has nothing left to find (resume_from already sits past bar102).
+    restart2_now = restart1_now + timedelta(seconds=90)
+    assert 90 > config.PENDING_SIGNAL_RETRY_SEC
+    quote_prices = {config.WATCH_SYMBOL: 100.0, config.LONG_SYMBOL: 9_000.0, config.INVERSE_SYMBOL: 10_000.0}
     svc2 = MarketDataService(
         mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}),
         fetch_quote=lambda mode, symbol: (quote_prices.get(symbol), None),
     )
-    svc2.bootstrap(now=restart_now)
+    svc2.bootstrap(now=restart2_now)
+    worker.initialize_strategy_session(state, svc2, now=restart2_now)
+
+    assert state.pending_signal is not None  # must survive -- not wiped
+    assert state.pending_signal.get("direction") == "UP_RED"
+    assert state.pending_signal.get("signal_type") == "INITIAL"
+    assert state.pending_signal.get("reason") == "RESTART_CATCH_UP_MULTI_BAR_GAP"
+    assert state.pending_signal.get("detected_at") == restart2_now.isoformat()  # refreshed
+
+    # And it must actually be actionable on the very next live tick.
+    broker = FakeBroker(cash=10_000_000.0, quotes=quote_prices)
     svc2.refresh_quotes()
-    result = run_once(broker=broker, market_data=svc2, state=state, now=restart_now)
-    assert result.actions == ["OPPOSITE_SIGNAL:UP_RED"]
+    result = run_once(broker=broker, market_data=svc2, state=state, now=restart2_now)
+    assert result.actions == ["ENTRY:UP_RED"]
     assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
 
 

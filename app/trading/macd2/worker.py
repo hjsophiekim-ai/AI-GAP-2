@@ -361,7 +361,6 @@ def initialize_strategy_session(
     state.signal_rule = config.SIGNAL_RULE
     state.session_started_at = now.isoformat()
     state.worker_instance_id = worker_instance_id
-    state.pending_signal = None
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.processed_signal_ids = []
@@ -503,6 +502,32 @@ def initialize_strategy_session(
         macd_snap = calculate_macd(bars_3m)
         if macd_snap is not None:
             state.last_confirmed_bar_ts = macd_snap.bar_dt.isoformat()
+
+    # 2026-08-06 fix: a same-day restart used to unconditionally wipe
+    # state.pending_signal to None (regardless of resuming_today) before any
+    # of the above catch-up logic ran. Under an unstable host that restarts
+    # the whole process every minute or two (2026-08-06 real incident: 6+
+    # distinct worker_instance_id values inside 30 minutes), a genuine
+    # RESTART_CATCH_UP_MULTI_BAR_GAP pending_signal set by restart N could be
+    # silently discarded by restart N+1 before the live tick that follows
+    # restart N ever got a chance to act on it -- and because the catch-up
+    # walk above also marks every bar it visits as already-evaluated
+    # (state.last_confirmed_bar_ts advances past it), that bar's flag could
+    # never be re-detected either: the opportunity vanished with zero record
+    # (a confirmed, filter-APPROVED 12:03 DOWN_BLUE entry never even reached
+    # order_executor). A true first start today (not resuming_today) still
+    # clears it -- there is no same-day continuity to preserve. Otherwise the
+    # existing pending_signal (whether just freshly set by the walk above, or
+    # carried over untouched from an earlier restart) survives, with its
+    # detected_at refreshed to THIS restart's `now` so config.PENDING_SIGNAL_
+    # RETRY_SEC's short retry window (30s, sized for a live QUOTE_STALE
+    # retry within one running session) is judged against this restart's own
+    # live tick, not against wall-clock time that piled up across however
+    # many prior restarts happened before this one got a fair chance.
+    if not resuming_today:
+        state.pending_signal = None
+    elif state.pending_signal and not state.pending_signal.get("order_requested"):
+        state.pending_signal["detected_at"] = now.isoformat()
 
     if macd_snap is not None:
         state.session_baseline_bar_ts = macd_snap.bar_dt.isoformat()
