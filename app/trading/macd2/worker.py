@@ -2001,12 +2001,41 @@ def run_once(
         # confirmed, completed-3m-bar crossover below has order authority.
         if confirmed_direction != Direction.HOLD and not entry_window_open:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
-            _record_confirmed_blocked_signal(
-                state=state, macd_snap=macd_snap, direction=confirmed_direction,
-                signal_type="REVERSAL" if target != pos.symbol else "HELD_SAME",
-                reason=_confirmed_signal_order_gate_block_reason(state, now),
-                result=result,
-            )
+            gate_reason = _confirmed_signal_order_gate_block_reason(state, now)
+            if target == pos.symbol:
+                _record_confirmed_blocked_signal(
+                    state=state, macd_snap=macd_snap, direction=confirmed_direction,
+                    signal_type="HELD_SAME", reason=gate_reason, result=result,
+                )
+            else:
+                # 2026-08-06 fix: entry_window_open being False (NEW_ENTRY_
+                # CUTOFF or quote_history_mismatch_reason -- a WATCH_SYMBOL
+                # 000660 data-quality doubt, unrelated to the traded ETF's own
+                # quote) used to block EVERYTHING for a confirmed REVERSAL,
+                # including selling the already-held, now-wrong-direction
+                # position -- leaving it completely unmonitored for the rest
+                # of the day (2026-08-06 real incident: a confirmed DOWN_BLUE
+                # while holding 0193T0 produced zero order attempts at all;
+                # the position sat losing money until a manual sell). Still
+                # never re-enters the new direction under the same doubt --
+                # same sell-only/no-re-entry semantics already used for a
+                # MAJOR/추세전환장-filtered reversal (_execute_reversal_exit_
+                # only_for_filtered_entry), just reused with this reason.
+                window_closed_decision = MajorFlagDecision(
+                    approved=False, score=0.0, required_score=0.0, decision=gate_reason,
+                    reasons=(f"entry window closed: {gate_reason}",),
+                    component_scores={}, metrics={}, is_reversal=True, fast_reversal=False,
+                    block_reason=gate_reason,
+                )
+                outcome = _execute_reversal_exit_only_for_filtered_entry(
+                    broker=broker, state=state, macd_snap=macd_snap,
+                    direction=confirmed_direction, position=pos,
+                    decision=window_closed_decision, result=result, gate_mode="NONE",
+                )
+                if outcome is not None:
+                    _apply_exit_outcome(state, outcome)
+                    result.actions.append(f"OPPOSITE_SIGNAL_SELL_ONLY:{confirmed_direction.value}")
+                    return result
         elif entry_window_open and confirmed_direction != Direction.HOLD:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
