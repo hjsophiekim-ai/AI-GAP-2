@@ -14,6 +14,23 @@ free (cost zero winners). The old v1 body/volume-floor conditions did NOT
 hold up on this larger sample (winner/loser ranges overlapped too much)
 and are dropped entirely.
 
+2026-08-07 v3 (time-aware): re-validated on an expanded 10-day 추세전환장
+set (added 06/24, 08/04, 08/05) by bucketing every confirmed flag's outcome
+into 09:00-11:00 / 11:00-14:00 / 14:00-15:30 KST. The score<max-and-not-
+breakout gate below still wins net P&L INSIDE 11:00-14:00 (mean score of
+winners 44.2 vs losers 58.8 there — the inverted relationship above is
+tightest in this window), but a full tick-by-tick replay of all 10 days
+showed dropping the gate entirely OUTSIDE that window (every confirmed
+flag enters in 09:00-11:00 and 14:00-15:30) beats both the gate applied
+all day (avg net/day +291,071) and a "require a HIGH score outside
+11:00-14:00" variant (+85,348 — tested and rejected: the low-score-wins
+relationship is not actually 11:00-14:00-specific, so requiring a high
+score outside it just selects worse trades). The no-gate-outside-window
+form nets +317,978/day at ~4 trades/day vs ~2/day for the other two.
+SIDEWAYS_TIME_GATE_START/_END (11:00/14:00) bound the still-gated window;
+outside it every already-confirmed crossover is approved unconditionally
+(breakout included) instead of being scored against the threshold.
+
 Deliberately reuses major_flag_filter.compute_component_scores/
 score_for_direction/_as_direction/_prepare_bars (docs §17: no duplicated
 MACD/EMA/ATR/volume computation) — this module only adds a NEW, simpler
@@ -40,6 +57,15 @@ from app.trading.macd2.major_flag_filter import (
 from app.trading.macd2.models import Direction, MajorFlagDecision
 
 
+def _within_time_gate_window(now: datetime) -> bool:
+    """True inside the still-gated 11:00-14:00 KST window (start inclusive,
+    end exclusive). Outside it, evaluate_sideways_flag approves every
+    already-confirmed crossover unconditionally — see module docstring
+    (2026-08-07 v3)."""
+    t = now.astimezone(config.KST).time()
+    return config.SIDEWAYS_TIME_GATE_START <= t < config.SIDEWAYS_TIME_GATE_END
+
+
 def _reject(*, decision: str, block_reason: str, reasons: list[str],
             score: float = 0.0, required_score: float = 0.0,
             component_scores: Optional[dict] = None, metrics: Optional[dict] = None) -> MajorFlagDecision:
@@ -57,16 +83,22 @@ def evaluate_sideways_flag(
 ) -> MajorFlagDecision:
     """Score + gate an ALREADY-confirmed crossover for the 추세전환장 mode.
 
-    Approval requires BOTH:
+    Inside SIDEWAYS_TIME_GATE_START-SIDEWAYS_TIME_GATE_END (11:00-14:00
+    KST), approval requires BOTH:
       - MAJOR_FLAG's own component score < SIDEWAYS_ENTRY_SCORE_MAX (a LOW
         score, not a high one — see module docstring for why this is
         inverted from a naive "strong flag" filter)
       - confirmation candle did NOT 4-bar breakout (breakout == False)
 
+    Outside that window every already-confirmed crossover is approved
+    unconditionally (2026-08-07 v3 — see module docstring for the 10-day
+    replay evidence). Score/breakout are still computed and returned in
+    all cases for observability (state.last_sideways_score etc.), even
+    when the outside-window path does not gate on them.
+
     Pure: same inputs -> same output. Never called when
     ``state.sideways_filter_enabled`` is False.
     """
-    del now  # not used by this simpler gate (no reversal-cooldown/time-of-day logic)
     required_score = float(config.SIDEWAYS_ENTRY_SCORE_MAX)
 
     direction = _as_direction(flag_direction)
@@ -93,6 +125,14 @@ def evaluate_sideways_flag(
     scores, metrics = score_for_direction(scores_t, metrics_t, direction)
     total = float(sum(scores.values()))
     breakout = bool(metrics.get("breakout"))
+
+    if not _within_time_gate_window(now):
+        return MajorFlagDecision(
+            approved=True, score=total, required_score=required_score,
+            decision=config.SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW,
+            reasons=("09:00-11:00/14:00-15:30 — no score gate, 추세전환장 모드 무조건 승인",),
+            component_scores=scores, metrics=metrics, is_reversal=False, fast_reversal=False, block_reason=None,
+        )
 
     if total >= required_score:
         return _reject(

@@ -302,13 +302,33 @@ FILTERED_OUT = "FILTERED_OUT"
 # default (opt-in toggle). When ON it takes priority over
 # major_filter_enabled — the two gates are never both active at once
 # (worker._judge_entry_gate).
+#
+# 2026-08-07 v3 (time-aware): re-validated on an expanded 10-day 추세전환장
+# set (added 06/24, 08/04, 08/05 to the 7 above) by bucketing every
+# confirmed flag's outcome into 09:00-11:00 / 11:00-14:00 / 14:00-15:30.
+# The score<45-and-not-breakout gate still wins net P&L INSIDE 11:00-14:00
+# (that bucket alone: win_rate 50%, mean score of winners 44.2 vs losers
+# 58.8 — the inverted low-score-wins relationship above is tightest here),
+# but a full tick-by-tick replay of all 10 days showed removing the gate
+# entirely OUTSIDE that window (every confirmed flag enters in 09:00-11:00
+# and 14:00-15:30; 11:00-14:00 unchanged) beats BOTH the score<45 gate
+# applied all day (avg net/day +291,071) and a "require HIGH score outside
+# 11:00-14:00" variant (+85,348 — the naive "확실한 추세엔 강한 플래그"
+# idea; REJECTED because the low-score-wins relationship is not actually
+# 11:00-14:00-specific, so requiring a high score outside it just selects
+# worse trades). The no-gate-outside-window variant nets +317,978/day at
+# ~4 trades/day vs ~2/day for the other two. SIDEWAYS_TIME_GATE_START/_END
+# bound the still-gated middle window.
 SIDEWAYS_FILTER_DEFAULT = _env_bool("MACD2_SIDEWAYS_FILTER_DEFAULT", False)
-SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V2_TIGHT_20260804"
+SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V3_TIMEAWARE_20260807"
 SIDEWAYS_ENTRY_SCORE_MAX = _env_float("MACD2_SIDEWAYS_ENTRY_SCORE_MAX", 45.0)
+SIDEWAYS_TIME_GATE_START = time(11, 0)
+SIDEWAYS_TIME_GATE_END = time(14, 0)
 
 SIDEWAYS_APPROVED = "SIDEWAYS_APPROVED"
 SIDEWAYS_SCORE_ABOVE_THRESHOLD = "SIDEWAYS_SCORE_ABOVE_THRESHOLD"
 SIDEWAYS_BREAKOUT_BLOCKED = "SIDEWAYS_BREAKOUT_BLOCKED"
+SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW = "SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW"
 
 # ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
 # 2026-08-04: standalone toggle, completely independent of BOTH

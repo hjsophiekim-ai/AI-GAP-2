@@ -276,6 +276,33 @@ even when V4 blocks the order.
   Profit Lock (2026-08-05 MACD Convergence rule) is also unaffected by this
   toggle — it is an exit-only, entry-filter-independent check.
 
+## 2026-08-04/2026-08-07 추세전환장(sideways/whipsaw) entry filter
+
+Optional order-gate toggle (`sideways_filter_enabled`), mutually exclusive
+with the MAJOR_FLAG V4 gate above — when both are set, sideways takes
+priority (`worker._judge_entry_gate`). Off by default. Reuses MAJOR_FLAG's
+own `compute_component_scores`/`score_for_direction` (no duplicated
+MACD/EMA/ATR/volume computation); only adds a new threshold combination on
+top. Confirmed flags are still generated and recorded even when this filter
+blocks the order; Stop Loss, Profit Lock, and forced liquidation are
+unaffected.
+
+- Version label: `SIDEWAYS_FILTER_V3_TIMEAWARE_20260807`.
+- Score threshold: `SIDEWAYS_ENTRY_SCORE_MAX = 45` — this filter approves
+  a LOW score, the inverse of MAJOR_FLAG V4's high-score requirement (derived
+  from a 7-day, then 10-day, 추세전환장 sample where low-scoring flags
+  outperformed high-scoring ones — see `app/trading/macd2/sideways_filter.py`
+  module docstring for the full derivation).
+- **2026-08-07 v3 (time-aware):** the score-gate above only applies inside
+  `SIDEWAYS_TIME_GATE_START`-`SIDEWAYS_TIME_GATE_END` (11:00-14:00 KST).
+  Outside that window (09:00-11:00 and 14:00-15:30) every already-confirmed
+  crossover is approved unconditionally — a full 10-day tick-by-tick replay
+  showed this beats both applying the score gate all day and a "require a
+  high score outside 11:00-14:00" variant (see config.py's `SIDEWAYS_FILTER_VERSION`
+  comment for the compared net-P&L numbers).
+- Breakout condition (11:00-14:00 window only): confirmation candle must NOT
+  4-bar breakout (`breakout == False`).
+
 본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가, 2026-07-31 플래그 정합성 수정 — 진행봉 candidate 주문권한 재제거·1분봉 완전성 게이트·Worker 세션/SHA 기준 통계 분리). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.
 
 ## 목적
