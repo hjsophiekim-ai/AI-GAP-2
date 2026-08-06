@@ -502,6 +502,41 @@ class Macd2Service:
             "profit_lock_enabled_by": state.profit_lock_enabled_by,
         }
 
+    def arm_scheduled_entry(self, direction: str, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI "09:03 예약 매수" 버튼 (2026-08-06) — 지금 즉시 매수하지 않고,
+        오늘 config.SCHEDULED_ENTRY_TIME(09:03) 이후 첫 tick에 worker.run_once가
+        자동으로 지정 방향 ETF를 예산 내 전량매수하도록 예약만 한다(개장 직후
+        데이터 부족으로 이른 시간대 MACD 플래그를 놓치기 쉬운 문제 대응).
+        같은 방향 버튼을 다시 누르면 예약 해제(토글) — 다른 방향을 누르면
+        기존 예약을 그 방향으로 교체한다. 오늘 이미 체결/포기됐으면
+        (scheduled_entry_executed_at) 재예약을 거부한다(하루 1회).
+        Only updates runtime state — never places an order itself; the
+        actual buy happens inside worker.run_once at fire time, using the
+        SAME order_executor.execute_signal path as manual_entry, so it is
+        recorded in both ledgers and managed by the normal held-position
+        priority chain (손절/반대플래그청산/프로핏락/퀵프로핏) afterward.
+        """
+        if direction not in (Direction.UP_RED.value, Direction.DOWN_BLUE.value):
+            return {"ok": False, "message": "INVALID_DIRECTION"}
+        state = state_store.load_state()
+        if state.scheduled_entry_executed_at:
+            return {"ok": False, "message": "ALREADY_DECIDED_TODAY", "last_result": state.scheduled_entry_last_result}
+
+        direction_enum = Direction(direction)
+        now = datetime.now(KST)
+        if state.scheduled_entry_armed_direction == direction_enum:
+            state.scheduled_entry_armed_direction = None
+            state.scheduled_entry_armed_at = None
+            state.scheduled_entry_armed_by = None
+            state_store.save_state(state)
+            return {"ok": True, "armed": False, "direction": direction}
+
+        state.scheduled_entry_armed_direction = direction_enum
+        state.scheduled_entry_armed_at = now.isoformat()
+        state.scheduled_entry_armed_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {"ok": True, "armed": True, "direction": direction, "armed_at": state.scheduled_entry_armed_at}
+
     def manual_entry(self, direction: str) -> dict[str, Any]:
         """UI 수동 진입 버튼 ("현재시점 레버리지/인버스 전량매수") — 2026-08-04
         추가. MACD 신호 확정이나 강한 플래그/추세전환장 필터를 전혀 거치지

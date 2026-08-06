@@ -140,6 +140,13 @@ SESSION_OPEN = time(9, 0)
 NEW_ENTRY_CUTOFF = time(14, 55)
 FORCE_LIQUIDATE_AT = time(15, 0)
 
+# ── 09:03 예약 매수 (2026-08-06) — 개장 직후에는 아직 데이터가 부족해 MACD가
+# 이른 시간대 플래그를 잘 못 잡는 문제 대응용 사용자 예약 매수. 오늘 이 시각
+# 이후 첫 tick에 자동 발동, SCHEDULED_ENTRY_FIRE_WINDOW_SEC 안에 체결되지
+# 못하면 그날은 놓친 것으로 처리(다음날 다시 예약해야 함).
+SCHEDULED_ENTRY_TIME = time(9, 3)
+SCHEDULED_ENTRY_FIRE_WINDOW_SEC = 180.0
+
 # ── Worker (strategy-fixed) ─────────────────────────────────────────────────
 WORKER_INTERVAL_SEC = 5.0
 WORKER_TICK_MEAN_MAX_SEC = 5.5

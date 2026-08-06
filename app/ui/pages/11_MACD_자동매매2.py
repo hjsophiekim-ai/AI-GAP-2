@@ -468,6 +468,46 @@ with m2:
             st.error(f"인버스 매수 실패: {res.get('message') or res.get('block_reason')}")
         st.rerun()
 
+# 09:03 예약 매수 버튼 (2026-08-06) — 개장 직후 데이터 부족으로 이른 시간대
+# MACD 플래그를 놓치기 쉬운 문제 대응. 지금 눌러두면 오늘 09:03(창 3분)에
+# worker.run_once가 자동으로 지정 방향 ETF를 예산 내 전량매수한다(하루 1회).
+# 체결 후에는 기존 손절/반대플래그청산/프로핏락/퀵프로핏 로직이 그대로
+# 감시하며(수동매수와 동일한 경로), 체결·신호 원장에도 동일하게 기록된다.
+_sched_dir = getattr(state, "scheduled_entry_armed_direction", None)
+_sched_done = getattr(state, "scheduled_entry_executed_at", None)
+if _sched_done:
+    st.caption(f"09:03 예약 매수 — 오늘 처리 완료: `{state.scheduled_entry_last_result or '-'}`")
+else:
+    _sched_label = "레버리지(레드)" if (_sched_dir and _sched_dir.value == "UP_RED") else (
+        "인버스(블루)" if (_sched_dir and _sched_dir.value == "DOWN_BLUE") else "없음"
+    )
+    st.caption(f"09:03 예약 매수 (개장 직후 이른 플래그 대응, 하루 1회) — 현재 예약: {_sched_label}")
+sch1, sch2 = st.columns(2)
+with sch1:
+    _armed_up = bool(_sched_dir and _sched_dir.value == "UP_RED")
+    if st.button(
+        ("[예약중] " if _armed_up else "") + "09시03분 레버리지(레드) 전량매수 예약",
+        use_container_width=True, disabled=bool(_sched_done),
+    ):
+        res = service.arm_scheduled_entry("UP_RED")
+        if res.get("ok"):
+            st.success("09:03 레버리지 전량매수 예약됨" if res.get("armed") else "예약 해제됨")
+        else:
+            st.error(res.get("message") or "예약 실패")
+        st.rerun()
+with sch2:
+    _armed_down = bool(_sched_dir and _sched_dir.value == "DOWN_BLUE")
+    if st.button(
+        ("[예약중] " if _armed_down else "") + "09시03분 인버스(블루) 전량매수 예약",
+        use_container_width=True, disabled=bool(_sched_done),
+    ):
+        res = service.arm_scheduled_entry("DOWN_BLUE")
+        if res.get("ok"):
+            st.success("09:03 인버스 전량매수 예약됨" if res.get("armed") else "예약 해제됨")
+        else:
+            st.error(res.get("message") or "예약 실패")
+        st.rerun()
+
 # 수동 전량매도 버튼 (2026-08-04) — "자동매매 중지 및 일괄매도"와 달리
 # 자동매매는 계속 유지한 채 현재 보유 포지션만 지금 즉시 시장가로 전량
 # 매도한다. 체결/신호 원장에 모두 기록되며, 이후 확정 신호부터는 다시

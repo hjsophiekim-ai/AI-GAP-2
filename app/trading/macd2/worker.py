@@ -328,6 +328,13 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # toggle (sideways_filter_enabled) also survives the rollover.
     state.daily_sideways_entry_count = 0
     state.last_sideways_entry_at = None
+    # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
+    # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
+    state.scheduled_entry_armed_direction = None
+    state.scheduled_entry_armed_at = None
+    state.scheduled_entry_armed_by = None
+    state.scheduled_entry_executed_at = None
+    state.scheduled_entry_last_result = None
 
 
 def _relation_from_diff(diff: Optional[float]) -> str:
@@ -1685,6 +1692,107 @@ def _confirmed_signal_order_gate_block_reason(state: RuntimeState, now: datetime
     return state.quote_history_mismatch_reason or "ENTRY_WINDOW_CLOSED"
 
 
+def _record_scheduled_entry_signal(state: RuntimeState, direction: Direction, signal_id: str, now: datetime, outcome) -> None:
+    """Signal-ledger row for the 09:03 예약 매수 (2026-08-06) — mirrors
+    service.py's _record_manual_entry_signal so a scheduled auto-buy shows up
+    in the same audit trail as manual/MACD-confirmed signals, tagged
+    signal_type=SCHEDULED_ENTRY_0903 (no macd_snap backs it, same convention
+    as MANUAL_ENTRY). Execution-ledger recording already happens inside
+    order_executor.execute_signal itself (_record_leg)."""
+    block_reason = outcome.block_reason or ""
+    row = {
+        "trading_date": now.strftime("%Y%m%d"),
+        "completed_bar_at": now.strftime("%H%M%S"),
+        "signal_id": signal_id,
+        "signal_type": "SCHEDULED_ENTRY_0903",
+        "direction": direction.value,
+        "detected_at": now.isoformat(),
+        "order_requested_at": outcome.timestamps.get("buy_requested_at", ""),
+        "order_result": outcome.final_state.value,
+        "block_reason": block_reason,
+        "signal_bar_at": now.isoformat(),
+        "signal_confirmed_at": now.isoformat(),
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": "SCHEDULED_ENTRY_0903_UI_BUTTON",
+        "worker_code_sha": git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        "confirmed_direction": direction.value,
+        "executor_called": True,
+        "broker_called": bool(outcome.broker_called),
+        "broker_order_id": outcome.buy_result.order_id if outcome.buy_result else "",
+        "order_price": outcome.order_price,
+        "order_type": outcome.order_type or "",
+        "requested_qty": outcome.final_qty,
+        "final_qty": outcome.quantity,
+        "filled_qty": outcome.filled_qty,
+        "fill_poll_result": outcome.fill_poll_result or "",
+        "balance_qty": outcome.balance_qty,
+        "failure_stage": outcome.order_failure_stage or "",
+        "final_result": f"{outcome.final_state.value}:{block_reason}" if block_reason else outcome.final_state.value,
+    }
+    ledger.append_signal(row)
+
+
+def _scheduled_entry_should_fire(state: RuntimeState, now: datetime) -> bool:
+    """09:03 예약 매수(2026-08-06) 발동 여부 — 오늘 이미 체결/포기됐으면
+    (scheduled_entry_executed_at) 다시 발동하지 않고(하루 1회), 예약된 게
+    없어도 당연히 발동하지 않는다. 발동 시각 이후 SCHEDULED_ENTRY_FIRE_
+    WINDOW_SEC 안에서만 유효 -- 그 창을 넘기면 오늘은 놓친 것으로 조용히
+    끝난다(사용자가 다음날 다시 눌러야 함)."""
+    if state.scheduled_entry_armed_direction is None or state.scheduled_entry_executed_at:
+        return False
+    if now.time() < config.SCHEDULED_ENTRY_TIME:
+        return False
+    fire_deadline = datetime.combine(now.date(), config.SCHEDULED_ENTRY_TIME, tzinfo=KST) + timedelta(
+        seconds=config.SCHEDULED_ENTRY_FIRE_WINDOW_SEC,
+    )
+    return now <= fire_deadline
+
+
+def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: RuntimeState, now: datetime):
+    """Fires the armed 09:03 예약 매수 -- reuses order_executor.execute_signal
+    exactly like service.py's manual_entry (no separate buy logic), then
+    records it in both the execution ledger (already inside execute_signal)
+    and a SCHEDULED_ENTRY_0903 signal-ledger row. Once fired (position taken),
+    it is managed by the exact same held-position priority chain as any other
+    entry (손절/반대플래그청산/프로핏락/퀵프로핏 -- no special-casing needed).
+
+    Marks scheduled_entry_executed_at (stopping further attempts today) on a
+    real EXECUTED fill, OR on a non-transient block reason (the executor
+    itself structurally refused the order) -- but NOT on a merely transient
+    one (state's own TEMPORARY_BLOCK_REASONS, e.g. a stale/missing quote),
+    which instead retries on the next tick still inside the same fire window.
+    """
+    direction = state.scheduled_entry_armed_direction
+    target_symbol = order_executor.target_symbol_for_direction(direction)
+    quote_snap = market_data.get_quote(target_symbol)
+    if quote_snap is None or quote_snap.error or quote_snap.price <= 0:
+        state.order_block_reason = "SCHEDULED_ENTRY_QUOTE_UNAVAILABLE"
+        return None
+
+    signal_id = f"SCHEDULED_0903_{direction.value}_{now.strftime('%Y%m%d')}"
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=direction, signal_id=signal_id,
+        quotes={target_symbol: quote_snap.price}, position=None, budget=state.budget,
+        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+    )
+    _record_scheduled_entry_signal(state, direction, signal_id, now, outcome)
+
+    if outcome.final_state == SignalState.EXECUTED:
+        _apply_switch_outcome(state, outcome, direction, now)
+        state.scheduled_entry_executed_at = now.isoformat()
+        state.scheduled_entry_last_result = "EXECUTED"
+        return outcome
+
+    state.order_block_reason = outcome.block_reason
+    state.scheduled_entry_last_result = f"{outcome.final_state.value}:{outcome.block_reason or ''}"
+    if outcome.block_reason not in TEMPORARY_BLOCK_REASONS:
+        state.scheduled_entry_executed_at = now.isoformat()
+    return None
+
+
 def run_once(
     *,
     broker,
@@ -2067,6 +2175,13 @@ def run_once(
         return result
 
     # ── Flat: new-entry evaluation ──────────────────────────────────────
+    if _scheduled_entry_should_fire(state, now):
+        scheduled_outcome = _execute_scheduled_entry(broker=broker, market_data=market_data, state=state, now=now)
+        if scheduled_outcome is not None:
+            result.actions.append(f"SCHEDULED_ENTRY_0903:{scheduled_outcome.target_symbol}")
+            state.last_evaluated_bar_ts = bar_ts_str
+            return result
+
     if state.pending_signal and not state.pending_signal.get("order_requested"):
         pending_dir = Direction(state.pending_signal["direction"])
         if _pending_direction_still_active(pending_dir, macd_snap):

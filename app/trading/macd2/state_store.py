@@ -230,6 +230,13 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "profit_lock_gap_ratio": state.profit_lock_gap_ratio,
         "profit_lock_contraction_count": int(state.profit_lock_contraction_count or 0),
         "profit_lock_drawdown_pct": float(state.profit_lock_drawdown_pct or 0.0),
+        "scheduled_entry_armed_direction": (
+            state.scheduled_entry_armed_direction.value if state.scheduled_entry_armed_direction else None
+        ),
+        "scheduled_entry_armed_at": state.scheduled_entry_armed_at,
+        "scheduled_entry_armed_by": state.scheduled_entry_armed_by,
+        "scheduled_entry_executed_at": state.scheduled_entry_executed_at,
+        "scheduled_entry_last_result": state.scheduled_entry_last_result,
     }
 
 
@@ -257,6 +264,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     last_major_exit_raw = raw.get("last_major_exit_direction")
     last_major_exit_direction = (
         Direction(last_major_exit_raw) if last_major_exit_raw in _DIRECTION_VALUES else None
+    )
+    scheduled_entry_raw = raw.get("scheduled_entry_armed_direction")
+    scheduled_entry_armed_direction = (
+        Direction(scheduled_entry_raw) if scheduled_entry_raw in _DIRECTION_VALUES else None
     )
     major_enabled_default = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
     stored_major_filter_version = str(raw.get("major_filter_version") or "")
@@ -437,6 +448,11 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         profit_lock_gap_ratio=raw.get("profit_lock_gap_ratio"),
         profit_lock_contraction_count=int(raw.get("profit_lock_contraction_count") or 0),
         profit_lock_drawdown_pct=float(raw.get("profit_lock_drawdown_pct") or 0.0),
+        scheduled_entry_armed_direction=scheduled_entry_armed_direction,
+        scheduled_entry_armed_at=raw.get("scheduled_entry_armed_at"),
+        scheduled_entry_armed_by=raw.get("scheduled_entry_armed_by"),
+        scheduled_entry_executed_at=raw.get("scheduled_entry_executed_at"),
+        scheduled_entry_last_result=raw.get("scheduled_entry_last_result"),
     )
 
 

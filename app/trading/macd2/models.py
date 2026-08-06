@@ -404,3 +404,16 @@ class RuntimeState:
     profit_lock_gap_ratio: Optional[float] = None
     profit_lock_contraction_count: int = 0
     profit_lock_drawdown_pct: float = 0.0
+
+    # ── 09:03 예약 매수 (2026-08-06) — 개장 직후 데이터 부족으로 이른 시간대
+    # MACD 플래그를 놓치기 쉬운 문제 대응: 미리 방향을 예약해두면 오늘
+    # config.SCHEDULED_ENTRY_TIME(09:03)에 worker.run_once가 자동으로 지정
+    # 방향 ETF를 전량매수한다 (하루 1회, 체결 후에는 기존 손절/반대플래그청산/
+    # 프로핏락/퀵프로핏 로직이 그대로 관리 — manual_entry와 동일한 경로).
+    # armed_direction/executed_at은 매일 자정 이후 첫 tick에서
+    # _apply_day_rollover가 초기화하므로 매일 다시 예약해야 한다.
+    scheduled_entry_armed_direction: Optional[Direction] = None
+    scheduled_entry_armed_at: Optional[str] = None
+    scheduled_entry_armed_by: Optional[str] = None
+    scheduled_entry_executed_at: Optional[str] = None
+    scheduled_entry_last_result: Optional[str] = None
