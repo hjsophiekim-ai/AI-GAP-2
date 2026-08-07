@@ -32,7 +32,11 @@ import pytest
 from app.trading.macd2 import config, ledger, sideways_filter, state_store
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeState
-from app.trading.macd2.sideways_filter import _within_time_gate_window, evaluate_sideways_flag
+from app.trading.macd2.sideways_filter import (
+    _within_time_gate_window,
+    evaluate_primary_trend_pullback,
+    evaluate_sideways_flag,
+)
 from app.trading.macd2.signal_engine import forming_bar_window
 from app.trading.macd2.worker import run_once
 from tests.macd2.fake_broker import FakeBroker
@@ -302,3 +306,116 @@ def test_stop_loss_still_exits_outside_the_gate_window():
     assert state.position is None
     assert broker.get_position(config.LONG_SYMBOL) is None
     assert ledger.load_execution_ledger()[-1]["exit_reason"] == config.EXIT_STOP_LOSS
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# F. PRIMARY_TREND pullback filter (2026-08-07, folded into sideways_filter) —
+# a confirmed flag running AGAINST today's dominant trend is rejected as a
+# pullback regardless of the score gate above; a flag AGREEING with the
+# dominant trend (or any flag on a RANGE day) is untouched by this check.
+# ══════════════════════════════════════════════════════════════════════════
+def _trending_1m_bars(start: datetime, n: int, *, per_bar_pct: float, base: float = 1000.0) -> pd.DataFrame:
+    """A monotonic per-bar % move — enough duration for compute_primary_
+    trend's 15m/30m EMA-slope and swing-structure votes to read a real
+    trend instead of defaulting to RANGE."""
+    rows = []
+    price = base
+    for i in range(n):
+        price = price * (1 + per_bar_pct / 100.0)
+        rows.append({
+            "datetime": start + timedelta(minutes=i),
+            "open": price, "high": price + 0.3, "low": price - 0.3, "close": price,
+            "volume": 1000.0,
+        })
+    return pd.DataFrame(rows)
+
+
+def test_primary_trend_pullback_rejects_counter_trend_flag_on_down_day():
+    start = _at(9, 0)
+    df_1m = _trending_1m_bars(start, 90, per_bar_pct=-0.08)
+    now = start + timedelta(minutes=90)
+
+    decision = evaluate_primary_trend_pullback(df_1m, Direction.UP_RED, now)
+
+    assert decision is not None
+    assert decision.approved is False
+    assert decision.decision == config.SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED
+    assert decision.metrics.get("primary_trend") == "DOWN"
+
+
+def test_primary_trend_pullback_allows_aligned_flag_on_down_day():
+    start = _at(9, 0)
+    df_1m = _trending_1m_bars(start, 90, per_bar_pct=-0.08)
+    now = start + timedelta(minutes=90)
+
+    assert evaluate_primary_trend_pullback(df_1m, Direction.DOWN_BLUE, now) is None
+
+
+def test_primary_trend_pullback_never_rejects_on_range_day():
+    start = _at(9, 0)
+    df_1m = _1m_from_3m_closes(start, [100.0] * 40)
+    now = start + timedelta(minutes=120)
+
+    assert evaluate_primary_trend_pullback(df_1m, Direction.UP_RED, now) is None
+    assert evaluate_primary_trend_pullback(df_1m, Direction.DOWN_BLUE, now) is None
+
+
+def test_primary_trend_pullback_follows_a_genuine_mid_day_reversal():
+    """A brief counter-trend flag is rejected while the decline is still the
+    dominant trend, but once price has genuinely reversed (VWAP/15m-30m
+    slope/swing structure all flip together over a real stretch of time,
+    not just a 1-2 bar blip), the SAME direction is no longer a pullback —
+    PRIMARY_TREND is recomputed fresh every call, never frozen from earlier
+    in the session."""
+    start = _at(9, 0)
+    down_leg = _trending_1m_bars(start, 90, per_bar_pct=-0.08)
+    up_start = start + timedelta(minutes=90)
+    up_leg = _trending_1m_bars(up_start, 90, per_bar_pct=0.12, base=float(down_leg["close"].iloc[-1]))
+    df_1m = pd.concat([down_leg, up_leg], ignore_index=True)
+
+    mid_now = up_start
+    still_down_decision = evaluate_primary_trend_pullback(
+        df_1m[df_1m["datetime"] <= mid_now], Direction.UP_RED, mid_now,
+    )
+    assert still_down_decision is not None and still_down_decision.approved is False
+
+    late_now = start + timedelta(minutes=180)
+    reversed_decision = evaluate_primary_trend_pullback(df_1m, Direction.UP_RED, late_now)
+    assert reversed_decision is None
+
+
+def test_worker_sells_held_position_without_reentry_when_flag_is_a_pullback(monkeypatch):
+    """End-to-end wiring check (worker.run_once): a confirmed opposite flag
+    classified as a PRIMARY_TREND pullback liquidates the held ETF (same
+    sell-only/no-re-entry path already used for a MAJOR/score-gate-rejected
+    reversal) but never buys the opposite ETF. The classification itself is
+    covered by the direct evaluate_primary_trend_pullback tests above; this
+    monkeypatches it to a fixed verdict (same style test_major_flag_filter.py
+    uses for its own filter-rejection worker test) so this test only proves
+    the plumbing, not the trend math."""
+    def _force_pullback_rejection(df_1m, flag_direction, now):
+        del df_1m, now
+        if sideways_filter._as_direction(flag_direction) != Direction.UP_RED:
+            return None
+        return sideways_filter._reject(
+            decision=config.SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED,
+            block_reason=config.SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED,
+            reasons=["forced test pullback"],
+        )
+
+    monkeypatch.setattr(sideways_filter, "evaluate_primary_trend_pullback", _force_pullback_rejection)
+    svc, state, broker, confirm_at = _confirmed_flag_scenario(n=35)  # confirmed UP_RED flag, outside gate window
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")
+    state.position = PositionSnapshot(
+        symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=_WORKER_QUOTES[config.INVERSE_SYMBOL],
+        entry_at=confirm_at - timedelta(minutes=12),
+    )
+    state.last_detected_direction = Direction.DOWN_BLUE
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=confirm_at)
+
+    assert result.actions == ["OPPOSITE_SIGNAL_SELL_ONLY:UP_RED"]
+    assert state.position is None
+    assert broker.get_position(config.INVERSE_SYMBOL) is None
+    assert broker.get_position(config.LONG_SYMBOL) is None
+    assert state.last_sideways_decision == config.SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED

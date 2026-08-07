@@ -47,6 +47,7 @@ from typing import Optional, Union
 
 import pandas as pd
 
+from app.trading import hynix_primary_trend
 from app.trading.macd2 import config
 from app.trading.macd2.major_flag_filter import (
     _as_direction,
@@ -55,6 +56,60 @@ from app.trading.macd2.major_flag_filter import (
     score_for_direction,
 )
 from app.trading.macd2.models import Direction, MajorFlagDecision
+
+
+def evaluate_primary_trend_pullback(
+    df_1m: Optional[pd.DataFrame], flag_direction: Union[Direction, str], now: datetime,
+) -> Optional[MajorFlagDecision]:
+    """2026-08-07 (사용자 요청): reject a confirmed flag that runs AGAINST
+    today's dominant trend as a brief PULLBACK, not a real reversal — the
+    held position still gets liquidated by the caller (worker.py reuses the
+    existing sell-only/no-re-entry path, same as a MAJOR/추세전환장-filtered
+    reversal), it just doesn't flip into the counter-trend ETF. Returns
+    ``None`` (never rejects) when the flag direction AGREES with today's
+    trend, or when PRIMARY_TREND itself is still RANGE (not enough votes yet
+    to call a real trend — the existing score-gated logic in
+    evaluate_sideways_flag decides those cases, unchanged).
+
+    PRIMARY_TREND is recomputed fresh from the day's 1-minute bars on every
+    call (never cached/frozen from earlier in the session) — reusing
+    ``hynix_primary_trend.compute_primary_trend``'s own vote-based
+    classification means a genuine mid-day trend change (VWAP/EMA slope/
+    swing structure all shifting together) naturally flips PRIMARY_TREND on
+    its own, and a flag matching the NEW direction is then ALIGNED (not a
+    pullback) and passes straight through — no separate reversal-
+    confirmation delay for now (see module docstring for the stricter
+    2-consecutive-check variant this project's sibling hynix_switch_
+    position_manager uses; not ported here to start simple)."""
+    if df_1m is None or df_1m.empty or "datetime" not in df_1m.columns:
+        return None
+    now_kst = now.astimezone(config.KST)
+    dt_col = pd.to_datetime(df_1m["datetime"])
+    dt_col = dt_col.dt.tz_convert(config.KST) if dt_col.dt.tz is not None else dt_col.dt.tz_localize(config.KST)
+    today_mask = dt_col.dt.date == now_kst.date()
+    today_df = df_1m[today_mask.to_numpy()]
+    prior_df = df_1m[~today_mask.to_numpy()]
+    if today_df.empty:
+        return None
+    prev_close = float(prior_df["close"].iloc[-1]) if not prior_df.empty else None
+
+    trend_result = hynix_primary_trend.compute_primary_trend(today_df, prev_close=prev_close, now=now_kst)
+    primary_trend = trend_result.get("primary_trend")
+    if primary_trend == hynix_primary_trend.PRIMARY_TREND_RANGE:
+        return None
+
+    direction = _as_direction(flag_direction)
+    short_term_direction = "UP" if direction == Direction.UP_RED else "DOWN"
+    move = hynix_primary_trend.classify_short_term_move(primary_trend, short_term_direction)
+    if move != hynix_primary_trend.MOVE_PULLBACK:
+        return None
+
+    return _reject(
+        decision=config.SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED,
+        block_reason=config.SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED,
+        reasons=[f"primary_trend={primary_trend} vs flag={short_term_direction} — pullback, sell-only/no-re-entry"],
+        metrics=trend_result,
+    )
 
 
 def _within_time_gate_window(now: datetime) -> bool:

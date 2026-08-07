@@ -320,7 +320,7 @@ FILTERED_OUT = "FILTERED_OUT"
 # ~4 trades/day vs ~2/day for the other two. SIDEWAYS_TIME_GATE_START/_END
 # bound the still-gated middle window.
 SIDEWAYS_FILTER_DEFAULT = _env_bool("MACD2_SIDEWAYS_FILTER_DEFAULT", False)
-SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V3_TIMEAWARE_20260807"
+SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V4_PRIMARY_TREND_20260807"
 SIDEWAYS_ENTRY_SCORE_MAX = _env_float("MACD2_SIDEWAYS_ENTRY_SCORE_MAX", 45.0)
 SIDEWAYS_TIME_GATE_START = time(11, 0)
 SIDEWAYS_TIME_GATE_END = time(14, 0)
@@ -329,6 +329,15 @@ SIDEWAYS_APPROVED = "SIDEWAYS_APPROVED"
 SIDEWAYS_SCORE_ABOVE_THRESHOLD = "SIDEWAYS_SCORE_ABOVE_THRESHOLD"
 SIDEWAYS_BREAKOUT_BLOCKED = "SIDEWAYS_BREAKOUT_BLOCKED"
 SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW = "SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW"
+
+# 2026-08-07 (사용자 요청): while sideways_filter_enabled(추세전환장 거래) is ON,
+# also reject a confirmed flag running AGAINST today's dominant PRIMARY_TREND
+# as a pullback (checked BEFORE the score gate above — see
+# sideways_filter.evaluate_primary_trend_pullback). A separate on/off knob
+# (not a new UI toggle — folded into the existing 추세전환장 toggle per the
+# user's request) purely as a backtest/rollback escape hatch.
+SIDEWAYS_PRIMARY_TREND_FILTER_ENABLED = _env_bool("MACD2_SIDEWAYS_PRIMARY_TREND_FILTER_ENABLED", True)
+SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED = "SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED"
 
 # ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
 # 2026-08-04: standalone toggle, completely independent of BOTH

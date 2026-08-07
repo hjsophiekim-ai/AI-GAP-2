@@ -80,6 +80,7 @@ MATCH_FLAT = "MATCH_FLAT"
 MATCH_POSITION = "MATCH_POSITION"
 RECOVERED_FROM_BROKER = "RECOVERED_FROM_BROKER"
 RECOVERED_TO_FLAT = "RECOVERED_TO_FLAT"
+RECOVERED_QTY_MISMATCH = "RECOVERED_QTY_MISMATCH"
 SIGNAL_NOT_DISPATCHED = "SIGNAL_NOT_DISPATCHED"
 # Marker key inside ExecutionOutcome.timestamps for a signal the optional
 # Hybrid MAJOR_FLAG gate rejected — no broker/order_executor call ever
@@ -694,6 +695,35 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
             state.position_reconcile_diag = diag
             state.last_position_reconcile_at = now.isoformat()
             return MATCH_POSITION
+        if broker_row and int(broker_row["qty"]) > 0:
+            # 2026-08-07 real incident: runtime recorded qty from a partial
+            # fill (e.g. 528/1269 requested) but the broker's own reported
+            # qty for the SAME symbol later settled to a different number --
+            # this used to fall straight into the POSITION_MISMATCH catch-all
+            # below, which blocks every order (entry/switch/exit) and never
+            # self-heals (nothing else in this function ever revisits a
+            # same-symbol qty difference), so a genuine opposite-flag/STOP_LOSS
+            # exit could stay silently blocked tick after tick forever. The
+            # broker is always the authority on live holdings (same principle
+            # as RECOVERED_FROM_BROKER/RECOVERED_TO_FLAT below) -- adopt its
+            # qty/avg_price immediately so this tick's own exit/switch
+            # evaluation (the caller re-reads state.position right after this
+            # call) already sees the corrected, sellable quantity.
+            old_qty = int(runtime["qty"])
+            new_qty = int(broker_row["qty"])
+            prior_entry_at = state.position.entry_at if state.position else now
+            state.position = PositionSnapshot(
+                symbol=runtime["symbol"], quantity=new_qty,
+                avg_price=float(broker_row.get("avg_price") or runtime["avg_price"] or 0.0),
+                entry_at=prior_entry_at,
+            )
+            diag.update({
+                "comparison_result": RECOVERED_QTY_MISMATCH,
+                "mismatch_reason": f"runtime_qty={old_qty}_broker_qty={new_qty}",
+            })
+            state.position_reconcile_diag = diag
+            state.last_position_reconcile_at = now.isoformat()
+            return RECOVERED_QTY_MISMATCH
         if not broker_owned:
             state.position = None
             state.peak_net_return = 0.0
@@ -1074,7 +1104,15 @@ def _execute_or_wait(
         result.skipped = RECOVERED_FROM_BROKER
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
-    if reconcile in (POSITION_DATA_ERROR, POSITION_MISMATCH):
+    if reconcile == RECOVERED_QTY_MISMATCH:
+        # Broker-corrected qty for the SAME held symbol (see
+        # reconcile_position_state) -- not a hard block. Use the freshly
+        # corrected snapshot for this order (the caller's ``position``
+        # argument is a snapshot captured before this reconcile ran and
+        # would otherwise still carry the stale quantity into
+        # order_executor.execute_signal's SELL leg).
+        position = state.position
+    elif reconcile in (POSITION_DATA_ERROR, POSITION_MISMATCH):
         state.order_block_reason = reconcile
         result.signal_dispatch_trace["final_block_reason"] = reconcile
         _set_pending_signal(
@@ -1361,13 +1399,23 @@ def _persist_sideways_decision(state: RuntimeState, decision: MajorFlagDecision,
 
 
 def _judge_sideways_flag(
-    *, state: RuntimeState, bars_3m, direction: Direction, now: datetime, signal_id: str,
+    *, state: RuntimeState, bars_3m, df_1m, direction: Direction, now: datetime, signal_id: str,
 ) -> MajorFlagDecision:
     """Score + gate an ALREADY-confirmed crossover for the 추세전환장 mode
     (order authority only). Never called when
     ``state.sideways_filter_enabled`` is False; never creates or suppresses
     a confirmed flag itself, and never touches STOP_LOSS / PROFIT_LOCK /
-    FORCED_LIQUIDATION."""
+    FORCED_LIQUIDATION.
+
+    2026-08-07: the PRIMARY_TREND pullback check runs FIRST and, if it
+    rejects, short-circuits the existing score gate entirely (a counter-
+    trend pullback is rejected regardless of score) — see
+    sideways_filter.evaluate_primary_trend_pullback."""
+    if config.SIDEWAYS_PRIMARY_TREND_FILTER_ENABLED:
+        pullback_decision = sideways_filter.evaluate_primary_trend_pullback(df_1m, direction, now)
+        if pullback_decision is not None:
+            _persist_sideways_decision(state, pullback_decision, signal_id)
+            return pullback_decision
     decision = sideways_filter.evaluate_sideways_flag(bars_3m, direction, now)
     _persist_sideways_decision(state, decision, signal_id)
     return decision
@@ -1377,6 +1425,7 @@ def _judge_entry_gate(
     *,
     state: RuntimeState,
     bars_3m,
+    df_1m=None,
     direction: Direction,
     position: Optional[PositionSnapshot],
     now: datetime,
@@ -1391,7 +1440,7 @@ def _judge_entry_gate(
     (every confirmed flag has order authority) is completely unchanged.
     """
     if state.sideways_filter_enabled:
-        return _judge_sideways_flag(state=state, bars_3m=bars_3m, direction=direction, now=now, signal_id=signal_id), "SIDEWAYS"
+        return _judge_sideways_flag(state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, now=now, signal_id=signal_id), "SIDEWAYS"
     if state.major_filter_enabled:
         return _judge_major_flag(
             state=state, bars_3m=bars_3m, direction=direction, position=position, now=now, signal_id=signal_id,
@@ -1633,6 +1682,7 @@ def _dispatch_confirmed_signal(
     major_decision_override: Optional[MajorFlagDecision] = None,
     major_gate_mode_override: str = "MAJOR",
     bars_3m=None,
+    df_1m=None,
 ):
     signal_id = signal_id_override or make_signal_id(macd_snap.bar_dt, direction)
     if signal_id in state.processed_signal_ids:
@@ -1655,7 +1705,7 @@ def _dispatch_confirmed_signal(
     # must still liquidate the old ETF but must not enter the opposite ETF.
     if signal_type != "REVERSAL":
         decision, gate_mode = _judge_entry_gate(
-            state=state, bars_3m=bars_3m, direction=direction, position=position,
+            state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, position=position,
             now=now, signal_id=signal_id,
         )
         if decision is not None and not decision.approved:
@@ -1849,7 +1899,24 @@ def run_once(
     t0 = time.monotonic()
     reconcile = reconcile_position_state(broker, state, now)
     result.timing["position_reconcile"] = time.monotonic() - t0
-    if reconcile in (POSITION_DATA_ERROR, POSITION_MISMATCH, RECOVERED_FROM_BROKER, RECOVERED_TO_FLAT):
+    if reconcile in (
+        POSITION_DATA_ERROR, POSITION_MISMATCH, RECOVERED_FROM_BROKER, RECOVERED_TO_FLAT,
+        RECOVERED_QTY_MISMATCH,
+    ):
+        # 2026-08-07 real incident: a same-symbol qty mismatch (e.g. a
+        # partial-fill entry whose broker-side qty later settled to a
+        # different number than what was recorded at fill time) used to
+        # report as POSITION_MISMATCH forever -- nothing ever corrected it,
+        # so this early-return fired on EVERY tick from then on, silently
+        # skipping STOP_LOSS/OPPOSITE_SIGNAL/PROFIT_LOCK for the held
+        # position indefinitely (no forced liquidation, no dispatch, nothing
+        # -- the position just sat unmonitored until a human manually sold
+        # it). RECOVERED_QTY_MISMATCH (see reconcile_position_state) already
+        # adopted the broker's true qty into state.position this call, so
+        # skipping only THIS tick (same as RECOVERED_FROM_BROKER/
+        # RECOVERED_TO_FLAT already do) is safe -- the very next tick sees
+        # MATCH_POSITION and resumes full evaluation with the corrected,
+        # sellable quantity.
         state.order_block_reason = reconcile
         result.skipped = reconcile
         result.timing["total"] = time.monotonic() - tick_started
@@ -2065,7 +2132,7 @@ def run_once(
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
                 reversal_decision, reversal_gate_mode = _judge_entry_gate(
-                    state=state, bars_3m=bars_3m, direction=confirmed_direction,
+                    state=state, bars_3m=bars_3m, df_1m=df_1m, direction=confirmed_direction,
                     position=pos, now=now,
                     signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
                 )
@@ -2086,7 +2153,7 @@ def run_once(
                         direction=confirmed_direction, signal_type="REVERSAL", position=pos, result=result,
                         major_decision_override=reversal_decision,
                         major_gate_mode_override=reversal_gate_mode,
-                        bars_3m=bars_3m,
+                        bars_3m=bars_3m, df_1m=df_1m,
                     )
                     if _is_major_filtered(outcome):
                         result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
@@ -2136,7 +2203,7 @@ def run_once(
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=confirmed_direction, signal_type="HELD_SAME", position=pos, result=result,
-                    bars_3m=bars_3m,
+                    bars_3m=bars_3m, df_1m=df_1m,
                 )
             else:
                 _record_confirmed_blocked_signal(
@@ -2265,7 +2332,7 @@ def run_once(
         outcome = _dispatch_confirmed_signal(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
             direction=confirmed_direction, signal_type="INITIAL", position=None, result=result,
-            bars_3m=bars_3m,
+            bars_3m=bars_3m, df_1m=df_1m,
         )
         if _is_major_filtered(outcome):
             result.actions.append(f"{config.FILTERED_OUT}:{confirmed_direction.value}")
