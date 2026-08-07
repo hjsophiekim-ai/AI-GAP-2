@@ -293,14 +293,22 @@ unaffected.
   from a 7-day, then 10-day, 추세전환장 sample where low-scoring flags
   outperformed high-scoring ones — see `app/trading/macd2/sideways_filter.py`
   module docstring for the full derivation).
-- **2026-08-07 v3 (time-aware):** the score-gate above only applies inside
-  `SIDEWAYS_TIME_GATE_START`-`SIDEWAYS_TIME_GATE_END` (11:00-14:00 KST).
-  Outside that window (09:00-11:00 and 14:00-15:30) every already-confirmed
-  crossover is approved unconditionally — a full 10-day tick-by-tick replay
-  showed this beats both applying the score gate all day and a "require a
-  high score outside 11:00-14:00" variant (see config.py's `SIDEWAYS_FILTER_VERSION`
-  comment for the compared net-P&L numbers).
-- Breakout condition (11:00-14:00 window only): confirmation candle must NOT
+- **2026-08-07 v3 (time-aware, superseded by v5 below):** the score-gate above
+  only applied inside `SIDEWAYS_TIME_GATE_START`-`SIDEWAYS_TIME_GATE_END`
+  (11:00-14:00 KST); outside it every already-confirmed crossover was
+  approved unconditionally.
+- **2026-08-07 v5 (현재):** replayed 4 candidate designs tick-by-tick over a
+  real trading week (08/03-08/07) and replaced v3/v4 with: **09:00-11:00**
+  — PRIMARY_TREND-pullback-only (a flag against today's dominant trend is
+  rejected as a pullback; a trend-aligned flag, or any flag while
+  PRIMARY_TREND is still RANGE, is approved regardless of score/breakout);
+  **11:00 onward (no more upper bound — 14:00-15:30 now gets the identical
+  treatment 11:00-14:00 always had)** — the unchanged score<45-and-not-
+  breakout gate. This beat both the v3/v4 design and an even-stricter
+  post-14:00 variant (see `app/trading/macd2/sideways_filter.py` module
+  docstring and config.py's `SIDEWAYS_FILTER_VERSION` comment for the
+  compared net-P&L numbers). `SIDEWAYS_TIME_GATE_END` no longer exists.
+- Breakout condition (11:00+ window only): confirmation candle must NOT
   4-bar breakout (`breakout == False`).
 
 본 문서는 독립 모듈 `app/trading/macd2/`의 현재 운용 기준이다(2026-07-27 KIS-parity 개정, 2026-07-30 Optional Hybrid MAJOR_FLAG 필터 추가, 2026-07-31 플래그 정합성 수정 — 진행봉 candidate 주문권한 재제거·1분봉 완전성 게이트·Worker 세션/SHA 기준 통계 분리). MACD v1, Enhanced 전략과 파일·상태·원장을 공유하지 않는다.

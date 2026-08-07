@@ -338,6 +338,28 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.scheduled_entry_last_result = None
 
 
+def _apply_sideways_exit_tier(state: RuntimeState, now: datetime) -> None:
+    """2026-08-07 (사용자 요청): while 추세전환장(sideways_filter_enabled) is
+    ON, the EXIT mode auto-switches by time of day every tick instead of
+    requiring a manual toggle click -- 09:00-11:00 uses Profit Lock (let a
+    big trend run via the MACD-convergence exit, matching the C-logic entry
+    gate's own permissive morning window), 11:00 onward (through end of
+    day) switches to Quick Profit (take the first +2% and get out, since
+    flags admitted by the score+breakout gate from 11:00 on are more prone
+    to reversing quickly -- same boundary as
+    ``sideways_filter.evaluate_sideways_flag``'s SIDEWAYS_TIME_GATE_START).
+    Overwrites whatever profit_lock_enabled/quick_profit_enabled the user
+    last set manually while this mode is on -- turning sideways_filter_
+    enabled OFF returns both to ordinary manual UI control (this function is
+    never called in that case)."""
+    if now.astimezone(config.KST).time() < config.SIDEWAYS_TIME_GATE_START:
+        state.profit_lock_enabled = True
+        state.quick_profit_enabled = False
+    else:
+        state.profit_lock_enabled = False
+        state.quick_profit_enabled = True
+
+
 def _relation_from_diff(diff: Optional[float]) -> str:
     if diff is None:
         return "EQUAL"
@@ -1407,16 +1429,10 @@ def _judge_sideways_flag(
     a confirmed flag itself, and never touches STOP_LOSS / PROFIT_LOCK /
     FORCED_LIQUIDATION.
 
-    2026-08-07: the PRIMARY_TREND pullback check runs FIRST and, if it
-    rejects, short-circuits the existing score gate entirely (a counter-
-    trend pullback is rejected regardless of score) — see
-    sideways_filter.evaluate_primary_trend_pullback."""
-    if config.SIDEWAYS_PRIMARY_TREND_FILTER_ENABLED:
-        pullback_decision = sideways_filter.evaluate_primary_trend_pullback(df_1m, direction, now)
-        if pullback_decision is not None:
-            _persist_sideways_decision(state, pullback_decision, signal_id)
-            return pullback_decision
-    decision = sideways_filter.evaluate_sideways_flag(bars_3m, direction, now)
+    2026-08-07 v5: sideways_filter.evaluate_sideways_flag now owns the full
+    time-window decision itself (09:00-11:00 PRIMARY_TREND-pullback-only vs
+    11:00+ score+breakout gate) -- this wrapper only persists the result."""
+    decision = sideways_filter.evaluate_sideways_flag(bars_3m, df_1m, direction, now)
     _persist_sideways_decision(state, decision, signal_id)
     return decision
 
@@ -1887,6 +1903,8 @@ def run_once(
         return result
 
     _apply_day_rollover(state, now)
+    if state.sideways_filter_enabled:
+        _apply_sideways_exit_tier(state, now)
     if state.strategy_version != config.STRATEGY_VERSION or state.signal_rule != config.SIGNAL_RULE:
         state.strategy_name = config.STRATEGY_NAME
         state.strategy_version = config.STRATEGY_VERSION

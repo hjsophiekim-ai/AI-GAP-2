@@ -31,6 +31,26 @@ SIDEWAYS_TIME_GATE_START/_END (11:00/14:00) bound the still-gated window;
 outside it every already-confirmed crossover is approved unconditionally
 (breakout included) instead of being scored against the threshold.
 
+2026-08-07 v5 (사용자 요청 — 시간대별 로직 재설계): the v3/v4 "unconditional
+outside 11:00-14:00" design above was replayed tick-by-tick through the REAL
+worker.run_once() over the most recent real trading week (08/03-08/07 Mon-Fri,
+Fri partial to ~14:58) alongside 3 alternatives: (A) no filter at all,
+(C) 09:00-11:00 PRIMARY_TREND-pullback-only + the SAME score<45-and-not-
+breakout gate extended from 11:00 through end of day (no unconditional
+window left at all), (D) same as C but even stricter after 14:00
+(score<30). Results: A=+2.95% cum (36% win rate, 89 trades), v3/v4-as-B=
++12.59% (57%, 29 trades), C=+13.87% (67%, 24 trades, zero days left an open
+position at the data cutoff), D=+12.61% (64%, 22 trades) — D's extra
+afternoon strictness bought nothing over C. (C) wins and is now shipped:
+PRIMARY_TREND pullback moved from "checked every tick all day" (v3/v4) to
+"checked ONLY inside 09:00-11:00" (evaluate_sideways_flag now owns that
+call directly instead of worker.py calling it separately beforehand), and
+the 11:00-14:00 score+breakout gate now simply has no upper time bound —
+14:00-15:30 gets the identical treatment 11:00-14:00 already had, so
+SIDEWAYS_TIME_GATE_END no longer exists. Sample caveat: only 5 real trading
+days (~48 confirmed flags total) backed this comparison; re-validate after
+a few more weeks of live data.
+
 Deliberately reuses major_flag_filter.compute_component_scores/
 score_for_direction/_as_direction/_prepare_bars (docs §17: no duplicated
 MACD/EMA/ATR/volume computation) — this module only adds a NEW, simpler
@@ -112,13 +132,12 @@ def evaluate_primary_trend_pullback(
     )
 
 
-def _within_time_gate_window(now: datetime) -> bool:
-    """True inside the still-gated 11:00-14:00 KST window (start inclusive,
-    end exclusive). Outside it, evaluate_sideways_flag approves every
-    already-confirmed crossover unconditionally — see module docstring
-    (2026-08-07 v3)."""
-    t = now.astimezone(config.KST).time()
-    return config.SIDEWAYS_TIME_GATE_START <= t < config.SIDEWAYS_TIME_GATE_END
+def _is_morning_window(now: datetime) -> bool:
+    """True strictly before SIDEWAYS_TIME_GATE_START (09:00-11:00 KST) --
+    the PRIMARY_TREND-pullback-only window. At/after it (11:00 through end
+    of day), the score+breakout gate is the sole authority — see
+    evaluate_sideways_flag's docstring (2026-08-07 v5)."""
+    return now.astimezone(config.KST).time() < config.SIDEWAYS_TIME_GATE_START
 
 
 def _reject(*, decision: str, block_reason: str, reasons: list[str],
@@ -133,23 +152,31 @@ def _reject(*, decision: str, block_reason: str, reasons: list[str],
 
 def evaluate_sideways_flag(
     bars_3m: Optional[pd.DataFrame],
+    df_1m: Optional[pd.DataFrame],
     flag_direction: Union[Direction, str],
     now: datetime,
 ) -> MajorFlagDecision:
-    """Score + gate an ALREADY-confirmed crossover for the 추세전환장 mode.
+    """Gate an ALREADY-confirmed crossover for the 추세전환장 mode — two
+    time windows, no more unconditional-approval branch (2026-08-07 v5; see
+    module docstring for the 4-candidate week-long replay that picked this
+    combination over the v3/v4 "unconditional outside 11:00-14:00" design):
 
-    Inside SIDEWAYS_TIME_GATE_START-SIDEWAYS_TIME_GATE_END (11:00-14:00
-    KST), approval requires BOTH:
-      - MAJOR_FLAG's own component score < SIDEWAYS_ENTRY_SCORE_MAX (a LOW
-        score, not a high one — see module docstring for why this is
-        inverted from a naive "strong flag" filter)
-      - confirmation candle did NOT 4-bar breakout (breakout == False)
+    - 09:00-11:00 (before SIDEWAYS_TIME_GATE_START): PRIMARY_TREND-pullback
+      check ONLY (evaluate_primary_trend_pullback) — a flag running against
+      today's dominant trend is rejected as a pullback (sell-only/no-re-
+      entry for a held position); a flag AGREEING with the trend, or any
+      flag while PRIMARY_TREND is still RANGE, is approved regardless of
+      score/breakout (SIDEWAYS_MORNING_TREND_APPROVED).
+    - 11:00 onward (through end of day — NEW_ENTRY_CUTOFF already caps real
+      entries at 14:55): the score+breakout gate, UNCHANGED from v2/v3/v4 —
+      approval requires BOTH MAJOR_FLAG's own component score <
+      SIDEWAYS_ENTRY_SCORE_MAX (a LOW score, not a high one — see module
+      docstring for why this is inverted from a naive "strong flag" filter)
+      AND no 4-bar breakout.
 
-    Outside that window every already-confirmed crossover is approved
-    unconditionally (2026-08-07 v3 — see module docstring for the 10-day
-    replay evidence). Score/breakout are still computed and returned in
-    all cases for observability (state.last_sideways_score etc.), even
-    when the outside-window path does not gate on them.
+    Score/breakout are still computed and returned for observability
+    (state.last_sideways_score etc.) even in the morning branch, which does
+    not gate on them.
 
     Pure: same inputs -> same output. Never called when
     ``state.sideways_filter_enabled`` is False.
@@ -181,11 +208,14 @@ def evaluate_sideways_flag(
     total = float(sum(scores.values()))
     breakout = bool(metrics.get("breakout"))
 
-    if not _within_time_gate_window(now):
+    if _is_morning_window(now):
+        pullback = evaluate_primary_trend_pullback(df_1m, direction, now)
+        if pullback is not None:
+            return pullback
         return MajorFlagDecision(
-            approved=True, score=total, required_score=required_score,
-            decision=config.SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW,
-            reasons=("09:00-11:00/14:00-15:30 — no score gate, 추세전환장 모드 무조건 승인",),
+            approved=True, score=total, required_score=0.0,
+            decision=config.SIDEWAYS_MORNING_TREND_APPROVED,
+            reasons=("09:00-11:00 trend-aligned (or PRIMARY_TREND still RANGE) — no score gate here",),
             component_scores=scores, metrics=metrics, is_reversal=False, fast_reversal=False, block_reason=None,
         )
 

@@ -317,26 +317,53 @@ FILTERED_OUT = "FILTERED_OUT"
 # idea; REJECTED because the low-score-wins relationship is not actually
 # 11:00-14:00-specific, so requiring a high score outside it just selects
 # worse trades). The no-gate-outside-window variant nets +317,978/day at
-# ~4 trades/day vs ~2/day for the other two. SIDEWAYS_TIME_GATE_START/_END
-# bound the still-gated middle window.
+# ~4 trades/day vs ~2/day for the other two.
+#
+# 2026-08-07 v5 (사용자 요청 — 시간대별 로직 재설계): replayed 4 candidate
+# entry-gate designs tick-by-tick through the REAL worker.run_once() over
+# the most recent real trading week (08/03-08/07, Fri partial to ~14:58):
+# (A) no filter at all, (B) the v3/v4 design just above (unconditional
+# outside 11:00-14:00 + PRIMARY_TREND pullback check all day), (C) 09:00-
+# 11:00 PRIMARY_TREND-pullback-only + the SAME score<45-and-not-breakout
+# gate extended from 11:00 all the way through end of day (no more
+# unconditional-outside-window branch at all), (D) same as C but with an
+# even stricter 14:00+ threshold (score<30). Results: A=+2.95% cum
+# (36% win rate, 89 trades), B=+12.59% (57%, 29 trades), C=+13.87% (67%,
+# 24 trades, ZERO days left an open position at cutoff), D=+12.61% (64%,
+# 22 trades) — D's extra afternoon strictness bought nothing over C, so
+# (C) is adopted: PRIMARY_TREND pullback is now checked ONLY in the
+# 09:00-11:00 window (not all day like v3/v4), and every confirmed flag at
+# or after SIDEWAYS_TIME_GATE_START gets the unchanged score<45-and-not-
+# breakout gate with NO unconditional-approval window anymore (there is no
+# more "outside the gate" case in the score-based sense — 14:00-15:30 is
+# now gated the same as 11:00-14:00 always was). See
+# sideways_filter.evaluate_sideways_flag's docstring for the exact branch
+# logic. Sample caveat: only 5 real trading days (~48 confirmed flags total)
+# backed this comparison — re-validate after a few more weeks of live data.
 SIDEWAYS_FILTER_DEFAULT = _env_bool("MACD2_SIDEWAYS_FILTER_DEFAULT", False)
-SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V4_PRIMARY_TREND_20260807"
+SIDEWAYS_FILTER_VERSION = "SIDEWAYS_FILTER_V5_MORNING_TREND_ALLDAY_SCORE_GATE_20260807"
 SIDEWAYS_ENTRY_SCORE_MAX = _env_float("MACD2_SIDEWAYS_ENTRY_SCORE_MAX", 45.0)
+# 09:00-11:00 (morning, before this): PRIMARY_TREND-pullback-only gate.
+# At/after this time (11:00 through end of day): the score+breakout gate.
+# There is no longer a separate end boundary -- the score gate now runs
+# all the way to NEW_ENTRY_CUTOFF (14:55), which already caps real entries.
 SIDEWAYS_TIME_GATE_START = time(11, 0)
-SIDEWAYS_TIME_GATE_END = time(14, 0)
 
 SIDEWAYS_APPROVED = "SIDEWAYS_APPROVED"
 SIDEWAYS_SCORE_ABOVE_THRESHOLD = "SIDEWAYS_SCORE_ABOVE_THRESHOLD"
 SIDEWAYS_BREAKOUT_BLOCKED = "SIDEWAYS_BREAKOUT_BLOCKED"
-SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW = "SIDEWAYS_APPROVED_OUTSIDE_GATE_WINDOW"
+# 09:00-11:00 approval -- either the flag AGREES with today's PRIMARY_TREND,
+# or PRIMARY_TREND is still RANGE (not enough votes yet to call a trend).
+SIDEWAYS_MORNING_TREND_APPROVED = "SIDEWAYS_MORNING_TREND_APPROVED"
 
-# 2026-08-07 (사용자 요청): while sideways_filter_enabled(추세전환장 거래) is ON,
-# also reject a confirmed flag running AGAINST today's dominant PRIMARY_TREND
-# as a pullback (checked BEFORE the score gate above — see
-# sideways_filter.evaluate_primary_trend_pullback). A separate on/off knob
-# (not a new UI toggle — folded into the existing 추세전환장 toggle per the
-# user's request) purely as a backtest/rollback escape hatch.
-SIDEWAYS_PRIMARY_TREND_FILTER_ENABLED = _env_bool("MACD2_SIDEWAYS_PRIMARY_TREND_FILTER_ENABLED", True)
+# 2026-08-07: while sideways_filter_enabled(추세전환장 거래) is ON, a confirmed
+# flag in the 09:00-11:00 morning window that runs AGAINST today's dominant
+# PRIMARY_TREND is rejected as a pullback (see
+# sideways_filter.evaluate_primary_trend_pullback) -- the held position still
+# gets liquidated by the caller (sell-only/no-re-entry), it just doesn't flip
+# into the counter-trend ETF. v5 (above) confines this check to the morning
+# window only; from 11:00 onward the score+breakout gate is the sole
+# authority (re-validated as the better combination for that window).
 SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED = "SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED"
 
 # ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
