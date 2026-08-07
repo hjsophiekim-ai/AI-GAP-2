@@ -331,11 +331,28 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.last_sideways_entry_at = None
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
-    state.scheduled_entry_armed_direction = None
-    state.scheduled_entry_armed_at = None
-    state.scheduled_entry_armed_by = None
+    #
+    # 2026-08-07 fix (real incident: armed 09:03 예약매수가 전혀 체결되지
+    # 않고 09:20 실제 플래그로만 체결됨) -- arm_scheduled_entry (service.py)
+    # writes armed_direction/armed_at straight to disk OUTSIDE run_once,
+    # with NO coordination with session_date. A very normal morning order
+    # of operations (1. 예약매수 버튼 누르기, 2. 자동매매 시작 버튼 누르기)
+    # means the FIRST tick of the new day -- which is exactly when THIS
+    # rollover fires -- happens AFTER the arm, not before it. Unconditionally
+    # wiping the armed fields here silently discarded an arm made only
+    # seconds earlier for TODAY, before 09:03 ever arrived. Only a STALE arm
+    # (armed_at from a PRIOR calendar day, i.e. left over because it never
+    # fired and the user never re-armed) should be cleared; an arm already
+    # made for today must survive this same-day-rollover race.
+    armed_at = _parse_iso_dt(state.scheduled_entry_armed_at)
+    armed_today = armed_at is not None and armed_at.astimezone(KST).strftime("%Y%m%d") == today_str
+    if not armed_today:
+        state.scheduled_entry_armed_direction = None
+        state.scheduled_entry_armed_at = None
+        state.scheduled_entry_armed_by = None
     state.scheduled_entry_executed_at = None
     state.scheduled_entry_last_result = None
+    state.scheduled_entry_protected = False
 
 
 def _apply_sideways_exit_tier(state: RuntimeState, now: datetime) -> None:
@@ -1842,13 +1859,28 @@ def _scheduled_entry_should_fire(state: RuntimeState, now: datetime) -> bool:
     return now <= fire_deadline
 
 
+def _scheduled_entry_protection_active(state: RuntimeState, now: datetime) -> bool:
+    """2026-08-07 (사용자 요청): True only while the CURRENTLY held position
+    came from the scheduled entry AND ``now`` is still before
+    config.SCHEDULED_ENTRY_PROTECTION_UNTIL (09:10 KST) -- see
+    scheduled_entry_protected's own docstring for what this gates
+    (OPPOSITE_SIGNAL sell/switch only; every other exit is unaffected)."""
+    if not state.scheduled_entry_protected:
+        return False
+    return now.astimezone(KST).time() < config.SCHEDULED_ENTRY_PROTECTION_UNTIL
+
+
 def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: RuntimeState, now: datetime):
     """Fires the armed 09:03 예약 매수 -- reuses order_executor.execute_signal
     exactly like service.py's manual_entry (no separate buy logic), then
     records it in both the execution ledger (already inside execute_signal)
     and a SCHEDULED_ENTRY_0903 signal-ledger row. Once fired (position taken),
-    it is managed by the exact same held-position priority chain as any other
-    entry (손절/반대플래그청산/프로핏락/퀵프로핏 -- no special-casing needed).
+    it is managed by the same held-position priority chain as any other entry
+    (손절/프로핏락/퀵프로핏/강제청산 identical) EXCEPT a confirmed OPPOSITE flag
+    is protected (caught/logged but not acted on) until
+    config.SCHEDULED_ENTRY_PROTECTION_UNTIL (2026-08-07 사용자 요청 -- 개장
+    직후 MACD가 아직 불안정해 진짜 반전이 아닌 노이즈성 반대 플래그로 방금 넣은
+    포지션이 바로 뒤집히는 것을 막기 위함); see scheduled_entry_protected.
 
     Marks scheduled_entry_executed_at (stopping further attempts today) on a
     real EXECUTED fill, OR on a non-transient block reason (the executor
@@ -1875,6 +1907,7 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
         _apply_switch_outcome(state, outcome, direction, now)
         state.scheduled_entry_executed_at = now.isoformat()
         state.scheduled_entry_last_result = "EXECUTED"
+        state.scheduled_entry_protected = True
         return outcome
 
     state.order_block_reason = outcome.block_reason
@@ -2040,6 +2073,7 @@ def run_once(
 
     # ── Held position: priority chain (docs §10) ───────────────────────
     if pos is not None and pos.quantity > 0:
+        scheduled_protected = _scheduled_entry_protection_active(state, now)
         current_price = quotes.get(pos.symbol)
         if current_price is None:
             # 2026-08-04 fix: STOP_LOSS/Quick-Profit are risk-safety checks
@@ -2091,7 +2125,10 @@ def run_once(
 
         if state.pending_signal and not state.pending_signal.get("order_requested"):
             pending_dir = Direction(state.pending_signal["direction"])
-            if _pending_direction_still_active(pending_dir, macd_snap):
+            pending_opposes_held = order_executor.target_symbol_for_direction(pending_dir) != pos.symbol
+            if scheduled_protected and pending_opposes_held:
+                pass  # 예약매수 보호 구간 -- 반대 방향 pending signal은 이 tick엔 무시(자연 만료/재시도에 맡김)
+            elif _pending_direction_still_active(pending_dir, macd_snap):
                 outcome = _execute_or_wait(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
@@ -2109,7 +2146,20 @@ def run_once(
         # never call order_executor, the MAJOR_FLAG filter, or mutate
         # confirmed state/processed_signal_ids/the signal ledger. Only the
         # confirmed, completed-3m-bar crossover below has order authority.
-        if confirmed_direction != Direction.HOLD and not entry_window_open:
+        if (
+            confirmed_direction != Direction.HOLD
+            and scheduled_protected
+            and order_executor.target_symbol_for_direction(confirmed_direction) != pos.symbol
+        ):
+            # 2026-08-07 (사용자 요청): 예약매수 보호 구간(09:03~09:10) -- 반대
+            # 방향 확정 플래그는 캐치/기록만 하고 청산/스위치는 하지 않는다.
+            # STOP_LOSS/PROFIT_LOCK/QUICK_PROFIT/강제청산은 이 위 코드에서 이미
+            # 먼저 평가되므로 이 보호와 무관하게 그대로 작동한다.
+            _record_confirmed_blocked_signal(
+                state=state, macd_snap=macd_snap, direction=confirmed_direction,
+                signal_type="REVERSAL", reason=config.SCHEDULED_ENTRY_PROTECTION_ACTIVE, result=result,
+            )
+        elif confirmed_direction != Direction.HOLD and not entry_window_open:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             gate_reason = _confirmed_signal_order_gate_block_reason(state, now)
             if target == pos.symbol:
@@ -2410,6 +2460,7 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
         state.profit_lock_gap_ratio = None
         state.profit_lock_contraction_count = 0
         state.profit_lock_drawdown_pct = 0.0
+        state.scheduled_entry_protected = False
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 
@@ -2424,7 +2475,14 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now:
     symbol (docs: 스위칭 부분실패 상태 처리) — this also prevents a duplicate
     SELL next tick, since the held-position branch will no longer see a
     stale position for that symbol.
+
+    Always clears scheduled_entry_protected first -- a switch always forms
+    either a brand-new (non-scheduled) position or ends up flat, neither of
+    which should inherit a stale scheduled-entry protection window.
+    _execute_scheduled_entry re-sets it True right after calling this, for
+    its own fill specifically.
     """
+    state.scheduled_entry_protected = False
     if outcome.final_state == SignalState.EXECUTED:
         state.position = PositionSnapshot(
             symbol=outcome.target_symbol, quantity=outcome.quantity,

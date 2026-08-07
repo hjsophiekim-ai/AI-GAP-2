@@ -237,6 +237,7 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "scheduled_entry_armed_by": state.scheduled_entry_armed_by,
         "scheduled_entry_executed_at": state.scheduled_entry_executed_at,
         "scheduled_entry_last_result": state.scheduled_entry_last_result,
+        "scheduled_entry_protected": bool(state.scheduled_entry_protected),
     }
 
 
@@ -453,6 +454,7 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         scheduled_entry_armed_by=raw.get("scheduled_entry_armed_by"),
         scheduled_entry_executed_at=raw.get("scheduled_entry_executed_at"),
         scheduled_entry_last_result=raw.get("scheduled_entry_last_result"),
+        scheduled_entry_protected=bool(raw.get("scheduled_entry_protected") or False),
     )
 
 

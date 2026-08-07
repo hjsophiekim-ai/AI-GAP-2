@@ -493,7 +493,11 @@ with m2:
 _sched_dir = getattr(state, "scheduled_entry_armed_direction", None)
 _sched_done = getattr(state, "scheduled_entry_executed_at", None)
 if _sched_done:
-    st.caption(f"09:03 예약 매수 — 오늘 처리 완료: `{state.scheduled_entry_last_result or '-'}`")
+    _protect_note = (
+        f" · 반대 플래그 보호 중(~{macd2_config.SCHEDULED_ENTRY_PROTECTION_UNTIL.strftime('%H:%M')}까지 반대신호청산 무시)"
+        if getattr(state, "scheduled_entry_protected", False) else ""
+    )
+    st.caption(f"09:03 예약 매수 — 오늘 처리 완료: `{state.scheduled_entry_last_result or '-'}`{_protect_note}")
 else:
     _sched_label = "레버리지(레드)" if (_sched_dir and _sched_dir.value == "UP_RED") else (
         "인버스(블루)" if (_sched_dir and _sched_dir.value == "DOWN_BLUE") else "없음"

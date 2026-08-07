@@ -417,3 +417,10 @@ class RuntimeState:
     scheduled_entry_armed_by: Optional[str] = None
     scheduled_entry_executed_at: Optional[str] = None
     scheduled_entry_last_result: Optional[str] = None
+    # 2026-08-07 (사용자 요청): True from the moment the scheduled entry
+    # actually fills until config.SCHEDULED_ENTRY_PROTECTION_UNTIL (09:10) --
+    # while True, a confirmed OPPOSITE flag is caught/logged but does not
+    # sell/switch the held position (STOP_LOSS/PROFIT_LOCK/QUICK_PROFIT/
+    # forced liquidation are unaffected). Reset to False on any position
+    # close/switch and on day rollover.
+    scheduled_entry_protected: bool = False

@@ -147,6 +147,19 @@ FORCE_LIQUIDATE_AT = time(15, 0)
 SCHEDULED_ENTRY_TIME = time(9, 3)
 SCHEDULED_ENTRY_FIRE_WINDOW_SEC = 180.0
 
+# 2026-08-07 (사용자 요청 — 실제 사고: 예약매수 후 09:20에야 진짜 플래그로 체결됨.
+# 근본 원인은 arm_scheduled_entry가 run_once 밖에서 state를 직접 저장해, 예약
+# 이후 첫 tick의 _apply_day_rollover가 "어제 값"으로 오인해 armed_direction을
+# 지워버리는 경쟁 상태였음 — 그 부분은 _apply_day_rollover 자체를 고쳐 해결).
+# 이 상수는 별개의 추가 보호 기능: 예약매수가 실제 체결된 뒤, 개장 직후 MACD가
+# 아직 불안정해 반대 방향 확정 플래그가 바로 뜨더라도(진짜 반전이 아니라 노이즈일
+# 가능성이 높음) 이 시각까지는 청산하지 않고 보유를 유지한다. 이 시각 이후로는
+# 같은 방향 플래그는 그대로 보유, 반대 방향 플래그는 기존 반대신호청산 규칙을
+# 정상 적용한다. STOP_LOSS/PROFIT_LOCK/QUICK_PROFIT/15:00 강제청산은 이 보호와
+# 무관하게 항상 그대로 작동한다(오직 확정 반대 플래그로 인한 청산/스위치만 보호).
+SCHEDULED_ENTRY_PROTECTION_UNTIL = time(9, 10)
+SCHEDULED_ENTRY_PROTECTION_ACTIVE = "SCHEDULED_ENTRY_PROTECTION_ACTIVE"
+
 # ── Worker (strategy-fixed) ─────────────────────────────────────────────────
 WORKER_INTERVAL_SEC = 5.0
 WORKER_TICK_MEAN_MAX_SEC = 5.5
