@@ -23,11 +23,11 @@ F. PRIMARY_TREND pullback filter (the underlying pure function) — a
    RANGE day) is untouched by this check. Unchanged by the v5 refactor
    (only its CALL SITE moved: from worker.py calling it every tick all day,
    to evaluate_sideways_flag calling it itself, morning-window only).
-G. Exit-mode auto-tier (worker._apply_sideways_exit_tier, 2026-08-07 사용자
-   요청) — while sideways_filter_enabled is ON, profit_lock_enabled/
-   quick_profit_enabled auto-switch by time of day every tick (09:00-11:00
-   Profit Lock, 11:00+ Quick Profit) with NO manual toggle needed; when the
-   mode is OFF, both remain under ordinary manual control untouched.
+G. Exit-mode tier (worker._apply_sideways_exit_tier, 2026-08-10 사용자 요청)
+   — while sideways_filter_enabled is ON, profit_lock_enabled/quick_profit_
+   enabled are both forced OFF every tick regardless of time of day (the
+   prior 2026-08-07 09:00-11:00/11:00+ time-of-day auto-switch was removed);
+   when the mode is OFF, both remain under ordinary manual control untouched.
 
 Reuses the exact production compute_component_scores (via flat synthetic
 bars, no crossover shaping needed since sideways_filter doesn't judge
@@ -483,45 +483,47 @@ def test_worker_sells_held_position_without_reentry_when_flag_is_a_pullback(monk
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# G. Exit-mode auto-tier while 추세전환장 mode is ON (2026-08-07 사용자 요청)
+# G. Exit-mode tier while 추세전환장 mode is ON (2026-08-10 사용자 요청: 청산
+#    로직 기본값을 모든 필터 OFF로 변경 — time-of-day auto-switch removed, both
+#    Profit Lock/Quick Profit now forced OFF regardless of time of day)
 # ══════════════════════════════════════════════════════════════════════════
-def test_exit_tier_sets_profit_lock_before_eleven():
+def test_exit_tier_forces_both_off_before_eleven():
     state = _fresh_state()
-    state.profit_lock_enabled = False
-    state.quick_profit_enabled = True  # deliberately the "wrong" prior manual state
+    state.profit_lock_enabled = True  # deliberately the "wrong" prior manual state
+    state.quick_profit_enabled = True
 
     worker._apply_sideways_exit_tier(state, _at(10, 59, 59))
 
-    assert state.profit_lock_enabled is True
+    assert state.profit_lock_enabled is False
     assert state.quick_profit_enabled is False
 
 
-def test_exit_tier_sets_quick_profit_at_and_after_eleven():
+def test_exit_tier_forces_both_off_at_and_after_eleven():
     state = _fresh_state()
     state.profit_lock_enabled = True  # deliberately the "wrong" prior manual state
-    state.quick_profit_enabled = False
+    state.quick_profit_enabled = True
 
     worker._apply_sideways_exit_tier(state, _at(11, 0, 0))
 
     assert state.profit_lock_enabled is False
-    assert state.quick_profit_enabled is True
+    assert state.quick_profit_enabled is False
 
 
-def test_run_once_auto_overrides_exit_mode_when_sideways_enabled():
-    """No manual toggle click needed -- run_once itself flips the exit mode
-    by time of day the moment sideways_filter_enabled is ON, overwriting
+def test_run_once_forces_exit_filters_off_when_sideways_enabled():
+    """No manual toggle click needed -- run_once itself forces both exit
+    filters OFF the moment sideways_filter_enabled is ON, overwriting
     whatever the user last set manually."""
     now = _at(10, 0)
     df_1m = _1m_from_3m_closes(now - timedelta(minutes=300), [100.0] * 100)
     svc = _svc_with_quote(df_1m, now, _WORKER_QUOTES)
     broker = FakeBroker(cash=10_000_000.0, quotes=dict(_WORKER_QUOTES))
     state = _fresh_state()
-    state.profit_lock_enabled = False
+    state.profit_lock_enabled = True  # stale manual setting
     state.quick_profit_enabled = True  # stale manual setting from a prior afternoon
 
     run_once(broker=broker, market_data=svc, state=state, now=now)
 
-    assert state.profit_lock_enabled is True
+    assert state.profit_lock_enabled is False
     assert state.quick_profit_enabled is False
 
 
