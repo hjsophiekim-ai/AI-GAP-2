@@ -334,6 +334,71 @@ with _sideways_cols[1]:
             f"version=`{getattr(state, 'sideways_filter_version', None) or macd2_config.SIDEWAYS_FILTER_VERSION}`"
         )
 
+# Optional Trend Persistence filter toggle (command only — never places
+# orders). When ON, this gate is LOWEST priority — both "강한 플래그만 거래"
+# and "추세전환장 거래" above take priority over it (the three are never more
+# than one active for the same signal). ENTRY GATING ONLY.
+_tp_cols = st.columns([1.4, 1.6])
+with _tp_cols[0]:
+    _tp_on = st.checkbox(
+        "Trend Persistence 거래",
+        value=bool(getattr(state, "trend_persistence_filter_enabled", False)),
+        key="macd2_trend_persistence_filter_toggle",
+        help=(
+            "OFF=기존 로직 그대로 / ON=VWAP 체류시간+EMA5/10/20 정렬+최근 3봉 HH/HL(또는 LH/LL) 구조로 "
+            f"산출한 점수가 {macd2_config.TREND_PERSISTENCE_SCORE_MIN:.0f}점 이상인 confirmed 신호만 주문권한 "
+            "(강한 플래그 필터·추세전환장 필터보다 우선순위 낮음 — 둘 중 하나라도 ON이면 이 필터는 적용되지 않음)"
+        ),
+    )
+with _tp_cols[1]:
+    if bool(_tp_on) != bool(getattr(state, "trend_persistence_filter_enabled", False)):
+        res = service.set_trend_persistence_filter_enabled(bool(_tp_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(
+                f"Trend Persistence 필터 → {'ON' if _tp_on else 'OFF'} "
+                f"(다음 confirmed 플래그부터 · `{res.get('trend_persistence_filter_enabled_at')}`)"
+            )
+            st.rerun()
+    else:
+        st.caption(
+            f"Trend Persistence 필터={'ON' if state.trend_persistence_filter_enabled else 'OFF'} · "
+            f"version=`{getattr(state, 'trend_persistence_filter_version', None) or macd2_config.TREND_PERSISTENCE_FILTER_VERSION}`"
+        )
+
+# Optional Daily Single-Entry filter toggle (command only — never places
+# orders). When ON, this gate is LOWEST priority of the four — "강한 플래그만
+# 거래"/"추세전환장 거래"/"Trend Persistence 거래" above all take priority over
+# it. ENTRY GATING ONLY: blocks every entry before 11:00, then allows
+# exactly the first confirmed crossover after that each day.
+_se_cols = st.columns([1.4, 1.6])
+with _se_cols[0]:
+    _se_on = st.checkbox(
+        "일일 1회 진입 (11시 이후)",
+        value=bool(getattr(state, "single_entry_filter_enabled", False)),
+        key="macd2_single_entry_filter_toggle",
+        help=(
+            f"OFF=기존 로직 그대로 / ON={macd2_config.SINGLE_ENTRY_CUTOFF_TIME.strftime('%H:%M')} 이전 신호는 전부 차단, "
+            f"{macd2_config.SINGLE_ENTRY_CUTOFF_TIME.strftime('%H:%M')} 이후 그날의 첫 confirmed 신호만 진입하고 이후엔 청산만 "
+            "(강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음 — 셋 중 하나라도 ON이면 이 필터는 적용되지 않음). "
+            "2026-08-08 검증: 15거래일 기준 필터 없음(71건, 승률 39.44%) 대비 거래 15건·승률 66.67%·"
+            "Profit Factor 31.71·MDD 87% 축소, 순수익은 65% 수준 유지."
+        ),
+    )
+with _se_cols[1]:
+    if bool(_se_on) != bool(getattr(state, "single_entry_filter_enabled", False)):
+        res = service.set_single_entry_filter_enabled(bool(_se_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(
+                f"일일 1회 진입 필터 → {'ON' if _se_on else 'OFF'} "
+                f"(다음 confirmed 플래그부터 · `{res.get('single_entry_filter_enabled_at')}`)"
+            )
+            st.rerun()
+    else:
+        st.caption(
+            f"일일 1회 진입 필터={'ON' if state.single_entry_filter_enabled else 'OFF'} · "
+            f"version=`{getattr(state, 'single_entry_filter_version', None) or macd2_config.SINGLE_ENTRY_FILTER_VERSION}`"
+        )
+
 # Profit Lock — MACD convergence early exit (2026-08-05 spec; replaces the
 # old net-return-giveback Profit Lock entirely). EXIT LOGIC ONLY — never
 # places/changes an entry, never touches Stop Loss/forced liquidation/
@@ -631,6 +696,53 @@ try:
         f"11:00부터 장 마감까지는 score < {macd2_config.SIDEWAYS_ENTRY_SCORE_MAX:.0f} (약한 플래그만) "
         f"AND 4봉 돌파(breakout) 없음 — 둘 다 충족해야 진입. "
         "2026-08-03~08-07 실거래 5일 tick-by-tick 재현으로 4개 후보 중 최고 성과(순수익 13.87%, 승률 67%) 기준."
+    )
+
+    st.markdown("**Trend Persistence 필터 (VWAP/EMA/구조 점수, 기본 OFF)**")
+    tp1, tp2, tp3, tp4 = st.columns(4)
+    tp1.metric("Trend Persistence 필터", "ON" if getattr(state, "trend_persistence_filter_enabled", False) else "OFF")
+    tp2.metric("filter version", getattr(state, "trend_persistence_filter_version", None) or macd2_config.TREND_PERSISTENCE_FILTER_VERSION)
+    tp3.metric("오늘 Trend Persistence 승인 진입", f"{int(getattr(state, 'daily_trend_persistence_entry_count', 0) or 0)}")
+    tp4.metric(
+        "마지막 승인 시각",
+        _format_signal_time(getattr(state, "last_trend_persistence_entry_at", None)) if getattr(state, "last_trend_persistence_entry_at", None) else "-",
+    )
+    _tp_score = getattr(state, "last_trend_persistence_score", None)
+    _tp_req = getattr(state, "last_trend_persistence_required_score", None)
+    st.caption(
+        f"enabled_at=`{getattr(state, 'trend_persistence_filter_enabled_at', None) or '-'}` · "
+        f"by=`{getattr(state, 'trend_persistence_filter_enabled_by', None) or '-'}` · "
+        f"최근 판정 score=`{f'{_tp_score:.0f}/{_tp_req:.0f}' if _tp_score is not None and _tp_req is not None else '-'}` "
+        f"decision=`{getattr(state, 'last_trend_persistence_decision', None) or '-'}`"
+    )
+    st.info(
+        f"Trend Persistence 기준 v1(ON일 때 강한 플래그 필터·추세전환장 필터보다 우선순위 낮음, 진입권한만 결정): "
+        f"VWAP 체류시간 + EMA5/10/20 정렬 + 최근 3개 완성 3분봉 HH/HL(또는 LH/LL) 구조로 산출한 "
+        f"0-100 점수가 {macd2_config.TREND_PERSISTENCE_SCORE_MIN:.0f}점 이상이면 진입 승인. "
+        "2026-07-20~08-07 15거래일 리플레이 백테스트로 50/55/60/65/70 스윕 검증 — "
+        "70이 순수익/승률/MDD/profit factor 전 지표에서 최고 성과."
+    )
+
+    st.markdown("**일일 1회 진입 필터 (11시 이후 첫 신호만, 기본 OFF)**")
+    se1, se2, se3, se4 = st.columns(4)
+    se1.metric("일일 1회 진입 필터", "ON" if getattr(state, "single_entry_filter_enabled", False) else "OFF")
+    se2.metric("filter version", getattr(state, "single_entry_filter_version", None) or macd2_config.SINGLE_ENTRY_FILTER_VERSION)
+    se3.metric("오늘 사용 여부", f"{int(getattr(state, 'daily_single_entry_count', 0) or 0)} / 1")
+    se4.metric(
+        "마지막 승인 시각",
+        _format_signal_time(getattr(state, "last_single_entry_at", None)) if getattr(state, "last_single_entry_at", None) else "-",
+    )
+    st.caption(
+        f"enabled_at=`{getattr(state, 'single_entry_filter_enabled_at', None) or '-'}` · "
+        f"by=`{getattr(state, 'single_entry_filter_enabled_by', None) or '-'}` · "
+        f"decision=`{getattr(state, 'last_single_entry_decision', None) or '-'}`"
+    )
+    st.info(
+        f"일일 1회 진입 기준 v1(ON일 때 강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음, 진입권한만 결정): "
+        f"{macd2_config.SINGLE_ENTRY_CUTOFF_TIME.strftime('%H:%M')} 이전 confirmed 신호는 전부 차단, 그 이후 첫 신호만 "
+        "진입 승인하고 이후엔 반대 신호가 나와도 청산만(재진입 없음) — Stop Loss/Profit Lock/15:00 강제청산은 그대로 적용. "
+        "2026-07-20~08-07 15거래일 리플레이: 필터 없음(71건, 순수익 23,071,667, 승률 39.44%, MDD 1,630,948) 대비 "
+        "거래 15건(1일 1회), 순수익 15,100,401(65%), 승률 66.67%, Profit Factor 31.71, MDD 216,241(87% 축소)."
     )
 
     st.markdown("**Profit Lock — MACD 수렴 조기청산 (청산 로직 전용, 기본 OFF)**")

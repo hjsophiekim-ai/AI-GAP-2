@@ -58,6 +58,25 @@ SIGNAL_LEDGER_COLUMNS = [
     "sideways_score", "sideways_required_score", "sideways_approved", "sideways_decision",
     "sideways_block_reason", "sideways_component_scores",
     "daily_sideways_entry_count", "last_sideways_entry_at",
+    # Optional Trend Persistence entry filter fields (appended 2026-08-07;
+    # never rename/delete older cols). Its score comes from
+    # compute_trend_persistence_score's VWAP/EMA/structure inputs, not the
+    # major/sideways hist_impulse_atr/... metric set, so it gets its own
+    # dedicated metric columns instead of sharing those.
+    "trend_persistence_filter_enabled", "trend_persistence_filter_version",
+    "trend_persistence_score", "trend_persistence_required_score",
+    "trend_persistence_approved", "trend_persistence_decision", "trend_persistence_block_reason",
+    "trend_persistence_ema5", "trend_persistence_ema10", "trend_persistence_ema20",
+    "trend_persistence_minutes_above_vwap", "trend_persistence_minutes_below_vwap",
+    "trend_persistence_higher_high_count_last3", "trend_persistence_higher_low_count_last3",
+    "trend_persistence_lower_high_count_last3", "trend_persistence_lower_low_count_last3",
+    "daily_trend_persistence_entry_count", "last_trend_persistence_entry_at",
+    # Optional Daily Single-Entry filter fields (appended 2026-08-08; never
+    # rename/delete older cols). No score/metrics of its own — cutoff-time
+    # + daily fill count only — so no dedicated metric columns are needed.
+    "single_entry_filter_enabled", "single_entry_filter_version",
+    "single_entry_approved", "single_entry_decision", "single_entry_block_reason",
+    "daily_single_entry_count", "last_single_entry_at",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

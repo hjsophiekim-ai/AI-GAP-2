@@ -436,6 +436,59 @@ class Macd2Service:
             "sideways_filter_version": state.sideways_filter_version,
         }
 
+    def set_trend_persistence_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional Trend Persistence order gate.
+
+        Only updates runtime state — never places orders or liquidates.
+        Takes effect from the next confirmed flag; open positions unchanged.
+        When ON, sideways_filter_enabled and major_filter_enabled both take
+        priority over this gate — the three are never more than one active
+        for the same signal (worker._judge_entry_gate).
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.trend_persistence_filter_enabled)
+        state.trend_persistence_filter_enabled = enabled_bool
+        state.trend_persistence_filter_version = config.TREND_PERSISTENCE_FILTER_VERSION
+        state.trend_persistence_filter_enabled_at = datetime.now(KST).isoformat()
+        state.trend_persistence_filter_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "trend_persistence_filter_enabled": enabled_bool,
+            "previous": prev,
+            "trend_persistence_filter_enabled_at": state.trend_persistence_filter_enabled_at,
+            "trend_persistence_filter_enabled_by": state.trend_persistence_filter_enabled_by,
+            "trend_persistence_filter_version": state.trend_persistence_filter_version,
+        }
+
+    def set_single_entry_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional Daily Single-Entry order gate.
+
+        Only updates runtime state — never places orders or liquidates.
+        Takes effect from the next confirmed flag; open positions unchanged.
+        When ON, sideways_filter_enabled, major_filter_enabled, and
+        trend_persistence_filter_enabled all take priority over this gate —
+        the four are never more than one active for the same signal
+        (worker._judge_entry_gate).
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.single_entry_filter_enabled)
+        state.single_entry_filter_enabled = enabled_bool
+        state.single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
+        state.single_entry_filter_enabled_at = datetime.now(KST).isoformat()
+        state.single_entry_filter_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "single_entry_filter_enabled": enabled_bool,
+            "previous": prev,
+            "single_entry_filter_enabled_at": state.single_entry_filter_enabled_at,
+            "single_entry_filter_enabled_by": state.single_entry_filter_enabled_by,
+            "single_entry_filter_version": state.single_entry_filter_version,
+        }
+
     def set_quick_profit_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """UI command: toggle the optional Quick-Profit take-profit filter.
 

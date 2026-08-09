@@ -43,7 +43,16 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from app.trading.macd2 import config, ledger, major_flag_filter, order_executor, risk_exit, sideways_filter
+from app.trading.macd2 import (
+    config,
+    ledger,
+    major_flag_filter,
+    order_executor,
+    risk_exit,
+    sideways_filter,
+    single_entry_filter,
+    trend_persistence_filter,
+)
 from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
 from app.trading.macd2.models import (
     Direction,
@@ -329,6 +338,14 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # toggle (sideways_filter_enabled) also survives the rollover.
     state.daily_sideways_entry_count = 0
     state.last_sideways_entry_at = None
+    # Trend Persistence filter's daily entry count is likewise session-scoped;
+    # its toggle (trend_persistence_filter_enabled) also survives the rollover.
+    state.daily_trend_persistence_entry_count = 0
+    state.last_trend_persistence_entry_at = None
+    # Single-Entry filter's daily fill count is likewise session-scoped; its
+    # toggle (single_entry_filter_enabled) also survives the rollover.
+    state.daily_single_entry_count = 0
+    state.last_single_entry_at = None
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -356,25 +373,19 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
 
 
 def _apply_sideways_exit_tier(state: RuntimeState, now: datetime) -> None:
-    """2026-08-07 (사용자 요청): while 추세전환장(sideways_filter_enabled) is
-    ON, the EXIT mode auto-switches by time of day every tick instead of
-    requiring a manual toggle click -- 09:00-11:00 uses Profit Lock (let a
-    big trend run via the MACD-convergence exit, matching the C-logic entry
-    gate's own permissive morning window), 11:00 onward (through end of
-    day) switches to Quick Profit (take the first +2% and get out, since
-    flags admitted by the score+breakout gate from 11:00 on are more prone
-    to reversing quickly -- same boundary as
-    ``sideways_filter.evaluate_sideways_flag``'s SIDEWAYS_TIME_GATE_START).
-    Overwrites whatever profit_lock_enabled/quick_profit_enabled the user
-    last set manually while this mode is on -- turning sideways_filter_
-    enabled OFF returns both to ordinary manual UI control (this function is
-    never called in that case)."""
-    if now.astimezone(config.KST).time() < config.SIDEWAYS_TIME_GATE_START:
-        state.profit_lock_enabled = True
-        state.quick_profit_enabled = False
-    else:
-        state.profit_lock_enabled = False
-        state.quick_profit_enabled = True
+    """2026-08-10 (사용자 요청 — 청산로직 기본값을 모든 필터 OFF로 변경):
+    while 추세전환장(sideways_filter_enabled) is ON, the EXIT mode used to
+    auto-switch by time of day every tick (09:00-11:00 Profit Lock, 11:00
+    onward Quick Profit — see git history for the prior 2026-08-07 logic).
+    Both exit filters now default OFF regardless of time of day; this
+    function keeps overwriting whatever profit_lock_enabled/quick_profit_
+    enabled the user last set manually while sideways_filter_enabled is on,
+    same as before -- turning sideways_filter_enabled OFF returns both to
+    ordinary manual UI control (this function is never called in that
+    case)."""
+    del now  # no longer time-gated; kept in the signature for call-site compatibility
+    state.profit_lock_enabled = False
+    state.quick_profit_enabled = False
 
 
 def _relation_from_diff(diff: Optional[float]) -> str:
@@ -1454,6 +1465,55 @@ def _judge_sideways_flag(
     return decision
 
 
+def _persist_trend_persistence_decision(state: RuntimeState, decision: MajorFlagDecision, signal_id: str) -> None:
+    state.trend_persistence_filter_version = config.TREND_PERSISTENCE_FILTER_VERSION
+    state.last_trend_persistence_score = float(decision.score)
+    state.last_trend_persistence_required_score = float(decision.required_score)
+    state.last_trend_persistence_approved = bool(decision.approved)
+    state.last_trend_persistence_decision = decision.decision
+    state.last_trend_persistence_block_reason = decision.block_reason
+    state.last_trend_persistence_component_scores = dict(decision.component_scores or {})
+    state.last_trend_persistence_metrics = dict(decision.metrics or {})
+    state.last_trend_persistence_signal_id = signal_id
+
+
+def _judge_trend_persistence_flag(
+    *, state: RuntimeState, bars_3m, df_1m, direction: Direction, now: datetime, signal_id: str,
+) -> MajorFlagDecision:
+    """Score + gate an ALREADY-confirmed crossover against
+    trend_persistence_filter.evaluate_trend_persistence (order authority
+    only). Never called when ``state.trend_persistence_filter_enabled`` is
+    False; never creates or suppresses a confirmed flag itself, and never
+    touches STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION."""
+    decision = trend_persistence_filter.evaluate_trend_persistence(
+        bars_3m, df_1m, direction, now, score_min=config.TREND_PERSISTENCE_SCORE_MIN,
+    )
+    _persist_trend_persistence_decision(state, decision, signal_id)
+    return decision
+
+
+def _persist_single_entry_decision(state: RuntimeState, decision: MajorFlagDecision, signal_id: str) -> None:
+    state.single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
+    state.last_single_entry_approved = bool(decision.approved)
+    state.last_single_entry_decision = decision.decision
+    state.last_single_entry_block_reason = decision.block_reason
+    state.last_single_entry_signal_id = signal_id
+
+
+def _judge_single_entry_flag(
+    *, state: RuntimeState, direction: Direction, now: datetime, signal_id: str,
+) -> MajorFlagDecision:
+    """Gate an ALREADY-confirmed crossover against single_entry_filter.
+    evaluate_single_entry (order authority only) — approves exactly the
+    first confirmed crossover at/after config.SINGLE_ENTRY_CUTOFF_TIME each
+    day, rejects every other one. Never called when ``state.single_entry_
+    filter_enabled`` is False; never creates or suppresses a confirmed flag
+    itself, and never touches STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION."""
+    decision = single_entry_filter.evaluate_single_entry(direction, now, state.daily_single_entry_count)
+    _persist_single_entry_decision(state, decision, signal_id)
+    return decision
+
+
 def _judge_entry_gate(
     *,
     state: RuntimeState,
@@ -1466,11 +1526,14 @@ def _judge_entry_gate(
 ) -> tuple[Optional[MajorFlagDecision], str]:
     """Single order-authority gate dispatcher for a confirmed crossover.
 
-    ``sideways_filter_enabled`` takes PRIORITY over ``major_filter_enabled``
-    — the two optional filters are never both active for the same signal
-    (2026-08-04 추세전환장 toggle spec: "위 로직 우선으로 들어가는 거야").
-    Returns ``(None, "NONE")`` when neither toggle is on — legacy behavior
-    (every confirmed flag has order authority) is completely unchanged.
+    ``sideways_filter_enabled`` takes PRIORITY over ``major_filter_enabled``,
+    which in turn takes priority over ``trend_persistence_filter_enabled``,
+    which in turn takes priority over ``single_entry_filter_enabled`` — the
+    four optional filters are never more than one active for the same
+    signal (2026-08-04 추세전환장 toggle spec: "위 로직 우선으로 들어가는 거야",
+    extended 2026-08-07 to Trend Persistence and 2026-08-08 to Single-Entry).
+    Returns ``(None, "NONE")`` when no toggle is on — legacy behavior (every
+    confirmed flag has order authority) is completely unchanged.
     """
     if state.sideways_filter_enabled:
         return _judge_sideways_flag(state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, now=now, signal_id=signal_id), "SIDEWAYS"
@@ -1478,6 +1541,10 @@ def _judge_entry_gate(
         return _judge_major_flag(
             state=state, bars_3m=bars_3m, direction=direction, position=position, now=now, signal_id=signal_id,
         ), "MAJOR"
+    if state.trend_persistence_filter_enabled:
+        return _judge_trend_persistence_flag(state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, now=now, signal_id=signal_id), "TREND_PERSISTENCE"
+    if state.single_entry_filter_enabled:
+        return _judge_single_entry_flag(state=state, direction=direction, now=now, signal_id=signal_id), "SINGLE_ENTRY"
     return None, "NONE"
 
 
@@ -1564,19 +1631,85 @@ def _sideways_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDec
     return row
 
 
+_TREND_PERSISTENCE_METRIC_LEDGER_KEYS = (
+    "ema5", "ema10", "ema20",
+    "minutes_above_vwap", "minutes_below_vwap",
+    "higher_high_count_last3", "higher_low_count_last3",
+    "lower_high_count_last3", "lower_low_count_last3",
+)
+
+
+def _trend_persistence_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+    """trend_persistence_* ledger columns. Unlike major/sideways, this gate's
+    metrics (VWAP dwell/EMA stack/HH-LL structure) are its own dedicated
+    columns — never shared with ``_MAJOR_METRIC_LEDGER_KEYS``."""
+    row: dict[str, Any] = {
+        "trend_persistence_filter_enabled": bool(state.trend_persistence_filter_enabled),
+        "trend_persistence_filter_version": state.trend_persistence_filter_version or config.TREND_PERSISTENCE_FILTER_VERSION,
+        "trend_persistence_score": "",
+        "trend_persistence_required_score": "",
+        "trend_persistence_approved": "",
+        "trend_persistence_decision": "",
+        "trend_persistence_block_reason": "",
+        "daily_trend_persistence_entry_count": int(state.daily_trend_persistence_entry_count or 0),
+        "last_trend_persistence_entry_at": state.last_trend_persistence_entry_at or "",
+    }
+    for key in _TREND_PERSISTENCE_METRIC_LEDGER_KEYS:
+        row[f"trend_persistence_{key}"] = ""
+    if decision is None:
+        return row
+    row.update({
+        "trend_persistence_score": float(decision.score),
+        "trend_persistence_required_score": float(decision.required_score),
+        "trend_persistence_approved": bool(decision.approved),
+        "trend_persistence_decision": decision.decision or "",
+        "trend_persistence_block_reason": decision.block_reason or "",
+    })
+    metrics = dict(decision.metrics or {})
+    for key in _TREND_PERSISTENCE_METRIC_LEDGER_KEYS:
+        value = metrics.get(key)
+        row[f"trend_persistence_{key}"] = "" if value is None else value
+    return row
+
+
+def _single_entry_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+    """single_entry_* ledger columns. No score/metrics of its own — cutoff-
+    time + daily fill count only."""
+    row: dict[str, Any] = {
+        "single_entry_filter_enabled": bool(state.single_entry_filter_enabled),
+        "single_entry_filter_version": state.single_entry_filter_version or config.SINGLE_ENTRY_FILTER_VERSION,
+        "single_entry_approved": "",
+        "single_entry_decision": "",
+        "single_entry_block_reason": "",
+        "daily_single_entry_count": int(state.daily_single_entry_count or 0),
+        "last_single_entry_at": state.last_single_entry_at or "",
+    }
+    if decision is None:
+        return row
+    row.update({
+        "single_entry_approved": bool(decision.approved),
+        "single_entry_decision": decision.decision or "",
+        "single_entry_block_reason": decision.block_reason or "",
+    })
+    return row
+
+
 def _entry_gate_ledger_fields(
     state: RuntimeState, decision: Optional[MajorFlagDecision], mode: str,
 ) -> dict[str, Any]:
-    """Merge major_* and sideways_* ledger columns for one signal row.
+    """Merge major_*, sideways_*, trend_persistence_*, and single_entry_*
+    ledger columns for one signal row.
 
-    Both column families are always present (never omitted), so every
-    ledger row shows the current state of BOTH toggles — but the shared
+    All four column families are always present (never omitted), so every
+    ledger row shows the current state of all toggles — but the shared
     generic metric columns (``_MAJOR_METRIC_LEDGER_KEYS``) are populated
-    only by whichever gate actually judged this signal (``mode``), never
-    blanked out afterward by the inactive side.
+    only by whichever of major/sideways actually judged this signal
+    (``mode``), never blanked out afterward by the inactive side.
     """
     major_fields = _major_ledger_fields(state, decision if mode == "MAJOR" else None)
     sideways_fields = _sideways_ledger_fields(state, decision if mode == "SIDEWAYS" else None)
+    trend_persistence_fields = _trend_persistence_ledger_fields(state, decision if mode == "TREND_PERSISTENCE" else None)
+    single_entry_fields = _single_entry_ledger_fields(state, decision if mode == "SINGLE_ENTRY" else None)
     merged = dict(major_fields)
     for key, value in sideways_fields.items():
         if key in _MAJOR_METRIC_LEDGER_KEYS:
@@ -1584,6 +1717,8 @@ def _entry_gate_ledger_fields(
                 merged[key] = value
             continue
         merged[key] = value
+    merged.update(trend_persistence_fields)
+    merged.update(single_entry_fields)
     return merged
 
 
@@ -2267,7 +2402,10 @@ def run_once(
                             )
                             result.actions.append(f"OPPOSITE_SIGNAL_SELL_ONLY:{confirmed_direction.value}")
                             return result
-            elif state.major_filter_enabled or state.sideways_filter_enabled:
+            elif (
+                state.major_filter_enabled or state.sideways_filter_enabled
+                or state.trend_persistence_filter_enabled or state.single_entry_filter_enabled
+            ):
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                     direction=confirmed_direction, signal_type="HELD_SAME", position=pos, result=result,
@@ -2519,6 +2657,12 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now:
         elif filled_qty > 0 and state.major_filter_enabled:
             state.daily_major_entry_count = int(state.daily_major_entry_count or 0) + 1
             state.last_major_entry_at = datetime.now(KST).isoformat()
+        elif filled_qty > 0 and state.trend_persistence_filter_enabled:
+            state.daily_trend_persistence_entry_count = int(state.daily_trend_persistence_entry_count or 0) + 1
+            state.last_trend_persistence_entry_at = datetime.now(KST).isoformat()
+        elif filled_qty > 0 and state.single_entry_filter_enabled:
+            state.daily_single_entry_count = int(state.daily_single_entry_count or 0) + 1
+            state.last_single_entry_at = datetime.now(KST).isoformat()
     elif outcome.sell_result is not None and outcome.sell_result.success and outcome.sell_qty_after == 0:
         exited_symbol = outcome.sell_result.symbol
         state.position = None

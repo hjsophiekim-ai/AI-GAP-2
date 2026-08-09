@@ -36,6 +36,10 @@ def default_state() -> RuntimeState:
     state.major_filter_version = config.MAJOR_FILTER_VERSION
     state.sideways_filter_enabled = bool(getattr(config, "SIDEWAYS_FILTER_DEFAULT", False))
     state.sideways_filter_version = config.SIDEWAYS_FILTER_VERSION
+    state.trend_persistence_filter_enabled = bool(getattr(config, "TREND_PERSISTENCE_FILTER_DEFAULT", False))
+    state.trend_persistence_filter_version = config.TREND_PERSISTENCE_FILTER_VERSION
+    state.single_entry_filter_enabled = bool(getattr(config, "SINGLE_ENTRY_FILTER_DEFAULT", False))
+    state.single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
     state.profit_lock_enabled = bool(getattr(config, "PROFIT_LOCK_DEFAULT_ENABLED", True))
     return state
@@ -209,6 +213,30 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_sideways_component_scores": dict(state.last_sideways_component_scores or {}) if state.last_sideways_component_scores else None,
         "last_sideways_metrics": dict(state.last_sideways_metrics or {}) if state.last_sideways_metrics else None,
         "last_sideways_signal_id": state.last_sideways_signal_id,
+        "trend_persistence_filter_enabled": bool(state.trend_persistence_filter_enabled),
+        "trend_persistence_filter_enabled_at": state.trend_persistence_filter_enabled_at,
+        "trend_persistence_filter_enabled_by": state.trend_persistence_filter_enabled_by,
+        "trend_persistence_filter_version": state.trend_persistence_filter_version or config.TREND_PERSISTENCE_FILTER_VERSION,
+        "daily_trend_persistence_entry_count": int(state.daily_trend_persistence_entry_count or 0),
+        "last_trend_persistence_entry_at": state.last_trend_persistence_entry_at,
+        "last_trend_persistence_score": state.last_trend_persistence_score,
+        "last_trend_persistence_required_score": state.last_trend_persistence_required_score,
+        "last_trend_persistence_approved": state.last_trend_persistence_approved,
+        "last_trend_persistence_decision": state.last_trend_persistence_decision,
+        "last_trend_persistence_block_reason": state.last_trend_persistence_block_reason,
+        "last_trend_persistence_component_scores": dict(state.last_trend_persistence_component_scores or {}) if state.last_trend_persistence_component_scores else None,
+        "last_trend_persistence_metrics": dict(state.last_trend_persistence_metrics or {}) if state.last_trend_persistence_metrics else None,
+        "last_trend_persistence_signal_id": state.last_trend_persistence_signal_id,
+        "single_entry_filter_enabled": bool(state.single_entry_filter_enabled),
+        "single_entry_filter_enabled_at": state.single_entry_filter_enabled_at,
+        "single_entry_filter_enabled_by": state.single_entry_filter_enabled_by,
+        "single_entry_filter_version": state.single_entry_filter_version or config.SINGLE_ENTRY_FILTER_VERSION,
+        "daily_single_entry_count": int(state.daily_single_entry_count or 0),
+        "last_single_entry_at": state.last_single_entry_at,
+        "last_single_entry_approved": state.last_single_entry_approved,
+        "last_single_entry_decision": state.last_single_entry_decision,
+        "last_single_entry_block_reason": state.last_single_entry_block_reason,
+        "last_single_entry_signal_id": state.last_single_entry_signal_id,
         "quick_profit_enabled": bool(state.quick_profit_enabled),
         "quick_profit_enabled_at": state.quick_profit_enabled_at,
         "quick_profit_enabled_by": state.quick_profit_enabled_by,
@@ -285,6 +313,22 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_sideways_filter_version and stored_sideways_filter_version != config.SIDEWAYS_FILTER_VERSION:
         sideways_filter_version = config.SIDEWAYS_FILTER_VERSION
         sideways_filter_enabled = sideways_enabled_default
+
+    trend_persistence_enabled_default = bool(getattr(config, "TREND_PERSISTENCE_FILTER_DEFAULT", False))
+    stored_trend_persistence_filter_version = str(raw.get("trend_persistence_filter_version") or "")
+    trend_persistence_filter_version = stored_trend_persistence_filter_version or config.TREND_PERSISTENCE_FILTER_VERSION
+    trend_persistence_filter_enabled = bool(raw.get("trend_persistence_filter_enabled", trend_persistence_enabled_default))
+    if stored_trend_persistence_filter_version and stored_trend_persistence_filter_version != config.TREND_PERSISTENCE_FILTER_VERSION:
+        trend_persistence_filter_version = config.TREND_PERSISTENCE_FILTER_VERSION
+        trend_persistence_filter_enabled = trend_persistence_enabled_default
+
+    single_entry_enabled_default = bool(getattr(config, "SINGLE_ENTRY_FILTER_DEFAULT", False))
+    stored_single_entry_filter_version = str(raw.get("single_entry_filter_version") or "")
+    single_entry_filter_version = stored_single_entry_filter_version or config.SINGLE_ENTRY_FILTER_VERSION
+    single_entry_filter_enabled = bool(raw.get("single_entry_filter_enabled", single_entry_enabled_default))
+    if stored_single_entry_filter_version and stored_single_entry_filter_version != config.SINGLE_ENTRY_FILTER_VERSION:
+        single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
+        single_entry_filter_enabled = single_entry_enabled_default
     return RuntimeState(
         schema_version=SCHEMA_VERSION,
         ui_mode=ui_mode,
@@ -428,6 +472,36 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
             if isinstance(raw.get("last_sideways_metrics"), dict) else None
         ),
         last_sideways_signal_id=raw.get("last_sideways_signal_id"),
+        trend_persistence_filter_enabled=trend_persistence_filter_enabled,
+        trend_persistence_filter_enabled_at=raw.get("trend_persistence_filter_enabled_at"),
+        trend_persistence_filter_enabled_by=raw.get("trend_persistence_filter_enabled_by"),
+        trend_persistence_filter_version=trend_persistence_filter_version,
+        daily_trend_persistence_entry_count=int(raw.get("daily_trend_persistence_entry_count") or 0),
+        last_trend_persistence_entry_at=raw.get("last_trend_persistence_entry_at"),
+        last_trend_persistence_score=raw.get("last_trend_persistence_score"),
+        last_trend_persistence_required_score=raw.get("last_trend_persistence_required_score"),
+        last_trend_persistence_approved=raw.get("last_trend_persistence_approved"),
+        last_trend_persistence_decision=raw.get("last_trend_persistence_decision"),
+        last_trend_persistence_block_reason=raw.get("last_trend_persistence_block_reason"),
+        last_trend_persistence_component_scores=(
+            dict(raw.get("last_trend_persistence_component_scores"))
+            if isinstance(raw.get("last_trend_persistence_component_scores"), dict) else None
+        ),
+        last_trend_persistence_metrics=(
+            dict(raw.get("last_trend_persistence_metrics"))
+            if isinstance(raw.get("last_trend_persistence_metrics"), dict) else None
+        ),
+        last_trend_persistence_signal_id=raw.get("last_trend_persistence_signal_id"),
+        single_entry_filter_enabled=single_entry_filter_enabled,
+        single_entry_filter_enabled_at=raw.get("single_entry_filter_enabled_at"),
+        single_entry_filter_enabled_by=raw.get("single_entry_filter_enabled_by"),
+        single_entry_filter_version=single_entry_filter_version,
+        daily_single_entry_count=int(raw.get("daily_single_entry_count") or 0),
+        last_single_entry_at=raw.get("last_single_entry_at"),
+        last_single_entry_approved=raw.get("last_single_entry_approved"),
+        last_single_entry_decision=raw.get("last_single_entry_decision"),
+        last_single_entry_block_reason=raw.get("last_single_entry_block_reason"),
+        last_single_entry_signal_id=raw.get("last_single_entry_signal_id"),
         quick_profit_enabled=bool(raw.get("quick_profit_enabled", bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False)))),
         quick_profit_enabled_at=raw.get("quick_profit_enabled_at"),
         quick_profit_enabled_by=raw.get("quick_profit_enabled_by"),

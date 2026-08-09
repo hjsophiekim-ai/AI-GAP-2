@@ -365,6 +365,41 @@ class RuntimeState:
     last_sideways_metrics: Optional[dict[str, Any]] = None
     last_sideways_signal_id: Optional[str] = None
 
+    # ── Optional Trend Persistence entry filter (order authority gate only)
+    # — mutually exclusive with MAJOR_FLAG/sideways: sideways > major >
+    # trend_persistence in priority (see worker._judge_entry_gate). Gates a
+    # NEW BUY only; never affects an already-held position's exit.
+    trend_persistence_filter_enabled: bool = False
+    trend_persistence_filter_enabled_at: Optional[str] = None
+    trend_persistence_filter_enabled_by: Optional[str] = None
+    trend_persistence_filter_version: str = ""
+    daily_trend_persistence_entry_count: int = 0
+    last_trend_persistence_entry_at: Optional[str] = None
+    last_trend_persistence_score: Optional[float] = None
+    last_trend_persistence_required_score: Optional[float] = None
+    last_trend_persistence_approved: Optional[bool] = None
+    last_trend_persistence_decision: Optional[str] = None
+    last_trend_persistence_block_reason: Optional[str] = None
+    last_trend_persistence_component_scores: Optional[dict[str, Any]] = None
+    last_trend_persistence_metrics: Optional[dict[str, Any]] = None
+    last_trend_persistence_signal_id: Optional[str] = None
+
+    # ── Optional Daily Single-Entry filter (order authority gate only) —
+    # mutually exclusive with MAJOR_FLAG/sideways/trend_persistence:
+    # sideways > major > trend_persistence > single_entry in priority (see
+    # worker._judge_entry_gate). Gates a NEW BUY only; never affects an
+    # already-held position's exit.
+    single_entry_filter_enabled: bool = False
+    single_entry_filter_enabled_at: Optional[str] = None
+    single_entry_filter_enabled_by: Optional[str] = None
+    single_entry_filter_version: str = ""
+    daily_single_entry_count: int = 0
+    last_single_entry_at: Optional[str] = None
+    last_single_entry_approved: Optional[bool] = None
+    last_single_entry_decision: Optional[str] = None
+    last_single_entry_block_reason: Optional[str] = None
+    last_single_entry_signal_id: Optional[str] = None
+
     # ── Optional Quick-Profit take-profit filter (EXIT LOGIC ONLY) —
     # independent of major_filter_enabled/sideways_filter_enabled; never
     # affects which entries are placed, only exits an already-held position.

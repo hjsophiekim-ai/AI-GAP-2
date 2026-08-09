@@ -379,6 +379,57 @@ SIDEWAYS_MORNING_TREND_APPROVED = "SIDEWAYS_MORNING_TREND_APPROVED"
 # authority (re-validated as the better combination for that window).
 SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED = "SIDEWAYS_PRIMARY_TREND_PULLBACK_BLOCKED"
 
+# ── Optional Trend Persistence entry filter (order authority gate only) ───
+# 2026-08-07: reuses hynix_big_trend_engine.compute_trend_persistence_score
+# (VWAP dwell + EMA5/10/20 stack + HH/HL or LH/LL structure, 0-100) to gate a
+# NEW BUY only — mutually exclusive with sideways_filter_enabled/
+# major_filter_enabled (worker._judge_entry_gate priority chain), OFF by
+# default. Threshold validated via a 3-week read-only backtest sweep of
+# 50/55/60/65/70 (scripts/backtest_trend_persistence_3week.py, 15 trading
+# days 2026-07-20~2026-08-07): net_pnl/win_rate/profit_factor rose and
+# max_drawdown fell monotonically across that whole range, so 70 — the top
+# of the swept range — dominates every metric (net 1,952,444 / win rate 50%
+# / MDD 182,982 / profit_factor 6.58 vs e.g. 50's 936,700 / 32.35% /
+# 1,723,469 / 1.39), beating even the V6 major-flag filter on every metric.
+TREND_PERSISTENCE_FILTER_DEFAULT = _env_bool("MACD2_TREND_PERSISTENCE_FILTER_DEFAULT", False)
+TREND_PERSISTENCE_FILTER_VERSION = "TREND_PERSISTENCE_FILTER_V1_20260807"
+TREND_PERSISTENCE_SCORE_MIN = _env_float("MACD2_TREND_PERSISTENCE_SCORE_MIN", 70.0)
+
+TREND_PERSISTENCE_APPROVED = "TREND_PERSISTENCE_APPROVED"
+TREND_PERSISTENCE_BELOW_THRESHOLD = "TREND_PERSISTENCE_BELOW_THRESHOLD"
+
+# ── Optional Daily Single-Entry filter (order authority gate only) ────────
+# 2026-08-08: blocks every NEW BUY/reversal before SINGLE_ENTRY_CUTOFF_TIME
+# (11:00 — the same AM/PM boundary sideways_filter's own v5 already uses),
+# then allows exactly ONE fill for the rest of the day (a rejected later
+# reversal is sell-only/no-re-entry, same convention as the other three
+# optional filters) — mutually exclusive with sideways_filter_enabled/
+# major_filter_enabled/trend_persistence_filter_enabled (worker.
+# _judge_entry_gate priority chain, lowest priority of the four), OFF by
+# default. Exit management (Stop Loss/Profit Lock/Forced Liquidation at
+# 15:00) is completely untouched — this gate only decides which confirmed
+# crossover gets to open the day's one position.
+#
+# Backtested (scripts/backtest_gate_sweep_15day.py + a follow-up 11:00/
+# 11:30 x one-shot sweep) against the SAME verified 15-trading-day window
+# (2026-07-20~2026-08-07) as the Trend Persistence threshold above: taking
+# EVERY confirmed crossover all day (no gate at all) produced the highest
+# raw net_pnl (23,071,667) but at 71 trades/39.44% win rate/1,630,948 MDD —
+# most of its losses are rapid-fire same-morning whipsaw reversals that
+# never survive to a real trend. Cutting entries before 11:00 and capping
+# at one fill/day keeps net_pnl at 15,100,401 (65% of the no-gate figure)
+# while cutting trade count to 15 (one/day), lifting win rate to 66.67% and
+# profit factor to 31.71, and cutting MDD to 216,241 (13% of the no-gate
+# figure) — every large winning trade in the 15-day window happened to be
+# each day's FIRST post-11:00 crossover, so this loses none of them.
+SINGLE_ENTRY_FILTER_DEFAULT = _env_bool("MACD2_SINGLE_ENTRY_FILTER_DEFAULT", False)
+SINGLE_ENTRY_FILTER_VERSION = "SINGLE_ENTRY_FILTER_V1_20260808"
+SINGLE_ENTRY_CUTOFF_TIME = time(11, 0)
+
+SINGLE_ENTRY_APPROVED = "SINGLE_ENTRY_APPROVED"
+SINGLE_ENTRY_BEFORE_CUTOFF = "SINGLE_ENTRY_BEFORE_CUTOFF"
+SINGLE_ENTRY_ALREADY_USED_TODAY = "SINGLE_ENTRY_ALREADY_USED_TODAY"
+
 # ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
 # 2026-08-04: standalone toggle, completely independent of BOTH
 # major_filter_enabled and sideways_filter_enabled — it never affects which
