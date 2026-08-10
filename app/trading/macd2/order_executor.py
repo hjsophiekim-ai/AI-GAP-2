@@ -45,6 +45,17 @@ CANCEL_FAILED = "CANCEL_FAILED"
 BALANCE_MISMATCH = "BALANCE_MISMATCH"
 BUY_FILL_POLL_MAX_SEC = 10.0
 BUY_FILL_POLL_INTERVAL_SEC = 1.0
+# 2026-08-11 fix (real incident: a BUY filled ~10s after the fill-poll
+# timeout, right around a cancel attempt, on a day KIS was already
+# returning repeated 500s for this exact symbol) -- the 2026-08-10
+# "never drop a real fill" recheck (see execute_signal/execute_exit below)
+# originally used a single INSTANT recheck (retries=1, delay_sec=0.0)
+# right after cancel/timeout. That is too thin against real KIS latency:
+# a fill landing even one second late still fell through as unrecorded.
+# Give the post-cancel/post-timeout recheck the same few-second window the
+# primary poll gets, instead of a single instant snapshot.
+POST_CANCEL_RECHECK_RETRIES = 3
+POST_CANCEL_RECHECK_DELAY_SEC = 1.0
 
 
 @dataclass
@@ -516,17 +527,20 @@ def execute_signal(
     timestamps["buy_reconciled_at"] = _now_iso()
     if filled_qty < requested_qty:
         _cancel_unfilled(broker, outcome, buy_result.order_id, target_symbol)
-        # 2026-08-10 fix (real incident: every real fill must land in the
-        # ledger) -- a "cancel succeeded" response never guarantees the
+        # 2026-08-10/11 fix (real incident: every real fill must land in
+        # the ledger) -- a "cancel succeeded" response never guarantees the
         # order actually stopped; it can still fill at the broker right
-        # after (or even during) cancellation. Re-verify against the
-        # broker ONE more time before trusting the pre-cancel snapshot --
-        # otherwise a real fill silently vanishes: no ledger row now, and
-        # no way to write an accurate one later (reconcile_position_state
-        # can only adopt the mystery qty going forward, with no BUY record
-        # at all, discovered only once/if it gets stopped out).
+        # after (or even during) cancellation, and that fill can take a few
+        # seconds to become visible under real KIS latency. Re-verify
+        # against the broker over the same short window the primary poll
+        # gets (not a single instant snapshot) before trusting the
+        # pre-cancel snapshot -- otherwise a real fill silently vanishes:
+        # no ledger row now, and no way to write an accurate one later
+        # (reconcile_position_state can only adopt the mystery qty going
+        # forward, with no BUY record at all, discovered only once/if it
+        # gets stopped out).
         recheck_qty, recheck_avg_price, recheck_poll_result, recheck_balance = _reconcile_buy_fill(
-            broker, target_symbol, retries=1, delay_sec=0.0,
+            broker, target_symbol, retries=POST_CANCEL_RECHECK_RETRIES, delay_sec=POST_CANCEL_RECHECK_DELAY_SEC,
         )
         if recheck_qty != filled_qty:
             filled_qty, filled_avg_price = recheck_qty, recheck_avg_price
@@ -591,15 +605,18 @@ def execute_exit(
     qty_after = _reconcile_to_zero(broker, symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec)
     outcome.sell_qty_after = qty_after
     if qty_after != 0:
-        # 2026-08-10 fix (same "every real fill must land in the ledger"
-        # principle as the BUY path): a confirmed sell that hasn't
+        # 2026-08-10/11 fix (same "every real fill must land in the
+        # ledger" principle as the BUY path): a confirmed sell that hasn't
         # reconciled to zero yet may just be a slow broker-side settlement
-        # (KIS mock server lag observed directly today), not a genuine
-        # failure. One more re-check before giving up -- if it settles to
-        # zero here, this is a completed exit and must
-        # be recorded exactly like any other; the ledger must never miss a
-        # real fill just because the FIRST poll window came up short.
-        qty_after = _reconcile_to_zero(broker, symbol, retries=1, delay_sec=0.0)
+        # (real KIS latency/500s observed directly on this exact symbol),
+        # not a genuine failure. Give it the same few-second recheck window
+        # as the BUY path (not a single instant snapshot) before giving up
+        # -- if it settles to zero within that window, this is a completed
+        # exit (this matters most for FORCED_LIQUIDATION at 15:00: without
+        # this, a real fill lands but the ledger/state.position never
+        # reflects it, so nothing catches the still-held position) and
+        # must be recorded exactly like any other.
+        qty_after = _reconcile_to_zero(broker, symbol, retries=POST_CANCEL_RECHECK_RETRIES, delay_sec=POST_CANCEL_RECHECK_DELAY_SEC)
         outcome.sell_qty_after = qty_after
     timestamps["sell_reconciled_at"] = _now_iso()
     if qty_after != 0:
