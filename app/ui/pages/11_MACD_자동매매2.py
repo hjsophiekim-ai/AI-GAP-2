@@ -405,17 +405,14 @@ with _se_cols[1]:
 # opposite-flag switching. Default OFF (2026-08-05: all filters default OFF).
 # Mutually exclusive with "퀵 Profit 익절" below — never both ON at once
 # (service.py refuses the second toggle).
-_sideways_auto_exit = bool(getattr(state, "sideways_filter_enabled", False))
 _pl_cols = st.columns([1.4, 1.6])
 with _pl_cols[0]:
     _pl_on = st.checkbox(
         "Profit Lock",
         value=bool(getattr(state, "profit_lock_enabled", False)),
         key="macd2_profit_lock_toggle",
-        disabled=_sideways_auto_exit,
         help=(
-            "추세전환장 모드 ON일 때는 09:00-11:00 자동 ON/11:00 이후 자동 OFF로 시간대에 따라 "
-            "자동 전환되어 수동 토글이 비활성화됩니다 (추세전환장을 꺼야 다시 수동 제어). "
+            "추세전환장 모드 ON/OFF와 무관하게 항상 수동 제어 가능. "
             "OFF(기본값)=Profit Lock 매도 완전 비활성화(기존 손절·반대플래그청산·강제청산·퀵Profit만 적용) / "
             f"ON=보유 방향 MACD-Signal 간격 수렴을 감지해 조기 청산 — "
             f"수익률 +{macd2_config.PROFIT_LOCK_MIN_NET_RETURN_PCT}% 이상, 완성 3분봉 "
@@ -427,12 +424,7 @@ with _pl_cols[0]:
         ),
     )
 with _pl_cols[1]:
-    if _sideways_auto_exit:
-        st.caption(
-            f"추세전환장 자동관리: Profit Lock={'ON' if getattr(state, 'profit_lock_enabled', False) else 'OFF'} "
-            "(09:00-11:00 ON / 11:00~ OFF)"
-        )
-    elif bool(_pl_on) != bool(getattr(state, "profit_lock_enabled", False)):
+    if bool(_pl_on) != bool(getattr(state, "profit_lock_enabled", False)):
         res = service.set_profit_lock_enabled(bool(_pl_on), changed_by="ui")
         if res.get("ok"):
             st.caption(
@@ -461,10 +453,8 @@ with _qp_cols[0]:
         "퀵 Profit 익절",
         value=bool(getattr(state, "quick_profit_enabled", False)),
         key="macd2_quick_profit_toggle",
-        disabled=_sideways_auto_exit,
         help=(
-            "추세전환장 모드 ON일 때는 11:00 이후 자동 ON/09:00-11:00 자동 OFF로 시간대에 따라 "
-            "자동 전환되어 수동 토글이 비활성화됩니다 (추세전환장을 꺼야 다시 수동 제어). "
+            "추세전환장 모드 ON/OFF와 무관하게 항상 수동 제어 가능. "
             f"OFF=기존 손절·반대플래그청산·강제청산만 적용 / "
             f"ON=보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시(1분봉 확정 전 실시간 시세 기준) 전량 익절 "
             "(일반거래/강한 플래그 거래/추세전환장 어떤 진입 모드에서도 동일하게 적용, 수동매수 포함, 진입 로직은 전혀 안 바뀜). "
@@ -472,12 +462,7 @@ with _qp_cols[0]:
         ),
     )
 with _qp_cols[1]:
-    if _sideways_auto_exit:
-        st.caption(
-            f"추세전환장 자동관리: 퀵 Profit 익절={'ON' if getattr(state, 'quick_profit_enabled', False) else 'OFF'} "
-            "(09:00-11:00 OFF / 11:00~ ON)"
-        )
-    elif bool(_qp_on) != bool(getattr(state, "quick_profit_enabled", False)):
+    if bool(_qp_on) != bool(getattr(state, "quick_profit_enabled", False)):
         res = service.set_quick_profit_enabled(bool(_qp_on), changed_by="ui")
         if res.get("ok"):
             st.caption(

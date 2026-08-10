@@ -372,22 +372,6 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.scheduled_entry_protected = False
 
 
-def _apply_sideways_exit_tier(state: RuntimeState, now: datetime) -> None:
-    """2026-08-10 (사용자 요청 — 청산로직 기본값을 모든 필터 OFF로 변경):
-    while 추세전환장(sideways_filter_enabled) is ON, the EXIT mode used to
-    auto-switch by time of day every tick (09:00-11:00 Profit Lock, 11:00
-    onward Quick Profit — see git history for the prior 2026-08-07 logic).
-    Both exit filters now default OFF regardless of time of day; this
-    function keeps overwriting whatever profit_lock_enabled/quick_profit_
-    enabled the user last set manually while sideways_filter_enabled is on,
-    same as before -- turning sideways_filter_enabled OFF returns both to
-    ordinary manual UI control (this function is never called in that
-    case)."""
-    del now  # no longer time-gated; kept in the signature for call-site compatibility
-    state.profit_lock_enabled = False
-    state.quick_profit_enabled = False
-
-
 def _relation_from_diff(diff: Optional[float]) -> str:
     if diff is None:
         return "EQUAL"
@@ -2071,8 +2055,6 @@ def run_once(
         return result
 
     _apply_day_rollover(state, now)
-    if state.sideways_filter_enabled:
-        _apply_sideways_exit_tier(state, now)
     if state.strategy_version != config.STRATEGY_VERSION or state.signal_rule != config.SIGNAL_RULE:
         state.strategy_name = config.STRATEGY_NAME
         state.strategy_version = config.STRATEGY_VERSION
