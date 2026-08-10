@@ -52,6 +52,7 @@ KIS_PAGE_SIZE = 120
 # paging walk가 오늘 데이터의 앞부분을 빠뜨렸다). A full KRX session is 09:00
 # ~15:30 = 390 minutes -> needs >=13 pages at 30 rows/page; sized with margin.
 KIS_MAX_PAGES = 20
+KIS_PAGE_MINUTES = 30  # matches the ~30-rows-per-page fact above
 
 # Bounds how far back _load_prior_trading_day() searches for the most recent
 # actual trading day (docs §21 2026-07-24 warm-up fix: 주말·공휴일이면 과거
@@ -78,6 +79,14 @@ def _prior_weekday_candidates(today_ymd: str, max_candidates: int) -> list[str]:
 
 def _empty_1m_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=list(_1M_COLUMNS))
+
+
+def _parse_hour1(hour1: str) -> datetime:
+    """``hour1`` cursor ("HHMMSS") -> a time-of-day anchor to back off from
+    when a page fails. Empty ``hour1`` means "latest" (no cursor sent yet);
+    anchor that case at market close so the very first page skips backward
+    from end-of-session, same as any other stuck boundary."""
+    return datetime.strptime(hour1 or "153000", "%H%M%S")
 
 
 def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -405,6 +414,7 @@ class MarketDataService:
         page_diags: list[dict[str, Any]] = []
         hour1 = ""
         prev_count = 0
+        consecutive_error_skips = 0
         for page_i in range(KIS_MAX_PAGES):
             if page_i > 0:
                 time.sleep(config.KIS_PAGE_FETCH_PACING_SEC)
@@ -427,7 +437,27 @@ class MarketDataService:
                 "error": _diag.get("error"),
             })
             if part.empty:
+                if _diag.get("error") and consecutive_error_skips < config.MAX_CONSECUTIVE_PAGE_ERROR_SKIPS:
+                    # Retries exhausted on a genuine fetch error (transient
+                    # KIS 500/timeout), not a legitimate "no earlier data"
+                    # signal -- 2026-08-10 fix (real incident: 000660's
+                    # itemchartprice intermittently 500s at one specific
+                    # hour1 boundary while other symbols sail through,
+                    # permanently truncating everything earlier than that
+                    # boundary for the rest of the session since only this
+                    # one-shot walk ever populates it). Skip past the stuck
+                    # boundary by one page-width instead of giving up the
+                    # whole walk, so an isolated bad page never silently
+                    # amputates the rest of the trading day. Capped at
+                    # MAX_CONSECUTIVE_PAGE_ERROR_SKIPS so a genuinely
+                    # fully-down endpoint still gives up promptly.
+                    page_diags[-1]["stop_reason"] = "FETCH_ERROR_SKIPPED"
+                    consecutive_error_skips += 1
+                    base = _parse_hour1(hour1)
+                    hour1 = (base - timedelta(minutes=KIS_PAGE_MINUTES)).strftime("%H%M%S")
+                    continue
                 break
+            consecutive_error_skips = 0
             pages.append(part)
             merged = (
                 pd.concat(pages, ignore_index=True)
@@ -518,6 +548,7 @@ class MarketDataService:
         pages: list[pd.DataFrame] = []
         hour1 = ""
         prev_count = 0
+        consecutive_error_skips = 0
         for page_i in range(KIS_MAX_PAGES):
             if page_i > 0:
                 time.sleep(config.KIS_PAGE_FETCH_PACING_SEC)
@@ -540,7 +571,21 @@ class MarketDataService:
                 "error": _diag.get("error"),
             })
             if part.empty:
+                if _diag.get("error") and consecutive_error_skips < config.MAX_CONSECUTIVE_PAGE_ERROR_SKIPS:
+                    # Same 2026-08-10 fix as _fetch_trading_day_candles above
+                    # -- retries exhausted on a genuine fetch error, not a
+                    # real "no earlier data today" signal. Skip past the
+                    # stuck boundary by one page-width instead of truncating
+                    # every earlier bar of today's session. Capped at
+                    # MAX_CONSECUTIVE_PAGE_ERROR_SKIPS so a genuinely
+                    # fully-down endpoint still gives up promptly.
+                    page_diags[-1]["stop_reason"] = "FETCH_ERROR_SKIPPED"
+                    consecutive_error_skips += 1
+                    base = _parse_hour1(hour1)
+                    hour1 = (base - timedelta(minutes=KIS_PAGE_MINUTES)).strftime("%H%M%S")
+                    continue
                 break
+            consecutive_error_skips = 0
             pages.append(part)
             merged_today = (
                 pd.concat(pages, ignore_index=True)

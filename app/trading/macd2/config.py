@@ -225,6 +225,17 @@ HISTORY_STALE_MAX_SEC = 180.0
 PRIOR_DAY_FETCH_RETRIES = 5
 PRIOR_DAY_FETCH_RETRY_DELAY_SEC = 2.0
 
+# 2026-08-10 fix: a page whose retries are ALL exhausted on a genuine error
+# (not a legitimate empty/no-more-data response) now backs off past that one
+# stuck hour1 boundary and keeps walking, instead of silently truncating the
+# rest of the day (real incident: 000660's inquire-time-itemchartprice
+# intermittently 500s at one specific early-morning boundary while other
+# symbols' requests succeed, permanently amputating everything earlier than
+# that boundary for the whole session). Capped separately from KIS_MAX_PAGES
+# so a genuinely fully-down endpoint still gives up quickly rather than
+# burning the entire page budget in retries.
+MAX_CONSECUTIVE_PAGE_ERROR_SKIPS = 2
+
 # 백워드 페이징(주식일별분봉조회/inquire-time-itemchartprice)에서 연속 요청을
 # 텀 없이 쏘면 KIS 초당 거래건수 제한에 걸려 일부 페이지가 오류 없이 조용히
 # 빈 결과로 돌아온다 (2026-07-27 발견 — page당 실수신 30건인데 지연 없이

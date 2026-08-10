@@ -11,6 +11,7 @@ from app.trading.macd2 import config, market_data as market_data_module
 from app.trading.macd2.market_data import (
     MarketDataService,
     _candles_to_df,
+    _empty_1m_frame,
     _load_prior_day_1m_cache,
     _prior_weekday_candidates,
     filter_complete_3m_bars,
@@ -332,6 +333,60 @@ def test_bootstrap_kis_page_no_growth_stops_without_infinite_loop():
     assert result.today_1m_bars == 5
     diag = svc.get_last_bootstrap_diag()
     assert diag["kis_pages"][-1]["stop_reason"] == "PAGE_NO_GROWTH"
+
+
+def test_bootstrap_skips_past_persistent_page_error_instead_of_truncating():
+    """2026-08-10 fix (real incident: 000660's minute-chart endpoint
+    intermittently 500s at one specific hour1 boundary while other symbols'
+    requests succeed) -- a page whose retries are ALL exhausted on a genuine
+    fetch error must back off past that one stuck boundary and keep walking,
+    not silently give up and amputate every earlier bar of the session."""
+    today_open = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
+    recent_chunk = _fake_bars_df(today_open + timedelta(minutes=30), 30)  # 09:30-09:59
+    early_chunk = _fake_bars_df(today_open, 30)  # 09:00-09:29
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count
+        if hour1 == "":
+            return recent_chunk.copy(), {}
+        if hour1 == "092900":  # boundary right before the earlier chunk -- always errors
+            return _empty_1m_frame(), {"error": "KIS_500"}
+        if hour1 == "085900":  # one page-width back-off past the stuck boundary
+            return early_chunk.copy(), {}
+        return _empty_1m_frame(), {}  # legitimate end of data
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch)
+    result = svc.bootstrap(now=today_open + timedelta(minutes=65))
+
+    assert result.today_1m_bars == 60  # both chunks recovered, none amputated
+    diag = svc.get_last_bootstrap_diag()
+    stop_reasons = [p.get("stop_reason") for p in diag["kis_pages"]]
+    assert "FETCH_ERROR_SKIPPED" in stop_reasons
+    history = svc.get_history_df()
+    assert (history["datetime"] == today_open).any()  # 09:00 bar survived
+
+
+def test_bootstrap_gives_up_after_max_consecutive_page_error_skips():
+    """A persistently, fully-down endpoint (every page errors, not just one
+    stuck boundary) must still fail fast -- capped at
+    MAX_CONSECUTIVE_PAGE_ERROR_SKIPS -- rather than burning the whole
+    KIS_MAX_PAGES budget in retries."""
+    call_count = {"n": 0}
+
+    def fake_fetch_always_error(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        call_count["n"] += 1
+        return _empty_1m_frame(), {"error": "KIS_500"}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch_always_error)
+    result = svc.bootstrap(now=datetime(2026, 1, 6, 9, 10, tzinfo=KST))
+
+    assert result.today_1m_bars == 0
+    diag = svc.get_last_bootstrap_diag()
+    # 1 initial page + MAX_CONSECUTIVE_PAGE_ERROR_SKIPS more before giving up
+    assert len(diag["kis_pages"]) == 1 + config.MAX_CONSECUTIVE_PAGE_ERROR_SKIPS
+    # each attempt retried PRIOR_DAY_FETCH_RETRIES times
+    assert call_count["n"] == (1 + config.MAX_CONSECUTIVE_PAGE_ERROR_SKIPS) * config.PRIOR_DAY_FETCH_RETRIES
 
 
 def test_bootstrap_warns_but_runs_when_today_history_starts_after_open():
