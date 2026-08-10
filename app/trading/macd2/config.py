@@ -409,46 +409,69 @@ TREND_PERSISTENCE_SCORE_MIN = _env_float("MACD2_TREND_PERSISTENCE_SCORE_MIN", 70
 TREND_PERSISTENCE_APPROVED = "TREND_PERSISTENCE_APPROVED"
 TREND_PERSISTENCE_BELOW_THRESHOLD = "TREND_PERSISTENCE_BELOW_THRESHOLD"
 
-# ── Optional Daily Single-Entry filter (order authority gate only) ────────
-# 2026-08-10 redesign (사용자 요청 — 하루 안에서 몇 번째 확정 플래그인지로 승인
-# 여부를 결정, 시간대 컷오프는 폐지): re-analyzed 000660's confirmed flags
-# over the same verified 15-trading-day window (2026-07-20~2026-08-07),
-# this time grouping every confirmed flag by ITS OWN SEQUENCE NUMBER within
-# that trading day (1st confirmed flag, 2nd, 3rd, ...) and asking "did the
-# traded ETF's price ever reach +2% net from this flag's entry before the
-# next opposite flag (or EOD)?" (114 flags total, 50/114 = 43.9% baseline
-# hit rate taking every flag). Result was a clean, monotonic decay by
-# sequence position, NOT by time of day (time-of-day looked predictive only
-# because early flags happen to cluster in the morning):
-#   1st flag/day: 80.0% hit rate, avg peak +5.67% (15 samples)
-#   2nd flag/day: 60.0% hit rate, avg peak +5.23% (15 samples)
-#   3rd flag/day: 53.3% hit rate, avg peak +3.41% (15 samples)
-#   4th flag/day: 35.7% hit rate, avg peak +2.83% (14 samples) -- below the
-#     43.9% no-filter baseline, i.e. worse than taking a random flag
-#   5th+ flag/day: 20-38% hit rate, avg peak <=1.5% mostly (noise/chop)
-# Capping at the first SINGLE_ENTRY_MAX_DAILY_ENTRIES confirmed flags of
-# each day (default 3, the flags with real edge) keeps realized exit
-# return (reversal-to-reversal, no take-profit) at +0.96%/trade average
-# across all 45 sampled trades vs +0.35%/trade taking every flag, with
-# 64.4% of those 45 trades reaching +2% peak at some point -- meant to be
-# paired with quick_profit_enabled (QUICK_PROFIT_TAKE_PROFIT_NET_PCT is
-# already 2.0) so a qualifying flag actually locks in the +2% instead of
-# riding back down to the next reversal. Bumping the cap to 4 (still within
-# the requested "3~4/day" range) trades some of that edge for one more
-# entry/day (57.6% hit rate, +0.83%/trade average, 3.93 entries/day).
+# ── "2% 3회진입" filter — Optional Daily Single-Entry filter (order
+# authority gate only) ─────────────────────────────────────────────────────
+# 2026-08-10 v3 (사용자 요청 — 하루 전체 확정 플래그를 계속 평가하고, 신규진입
+# 3회 캡만 유지하되 4번째 이후를 자동 차단하지 않음): v2's pure sequence-only
+# cap (SINGLE_ENTRY_FILTER_V2, seq<=3 unconditional) is replaced with a
+# SCORE, so a low-quality 1st/2nd/3rd flag can be skipped and a
+# high-quality 4th+ flag can still enter, as long as fewer than
+# SINGLE_ENTRY_MAX_DAILY_ENTRIES fills have happened so far today:
+#   score = major_flag_filter's existing 0-100 component score
+#         + seq bonus (SINGLE_ENTRY_SEQ_BONUS_1/_2/_3, 0 for 4th+)
+#         + gap-expansion / EMA10-slope / 15m-price-slope bonuses (each
+#           direction-aligned, computed AT the confirming bar only)
+#         - overheat penalty (price_impulse_atr >= SINGLE_ENTRY_OVERHEAT_
+#           THRESHOLD in the flag's own direction)
+#   approved = (daily fill count < SINGLE_ENTRY_MAX_DAILY_ENTRIES)
+#              and (score >= SINGLE_ENTRY_SCORE_MIN)
+# 25-trading-day (2026-07-03~2026-08-07) READ-ONLY replay comparison,
+# BOTH variants driven through the REAL worker.run_once()/order_executor/
+# TradeCostEngine tick-by-tick (v2 reproduced via an in-memory-only
+# monkeypatch of this same evaluate_single_entry, never touching this file
+# — same order-gate dispatch, same Stop Loss/Quick Profit/Opposite-Signal/
+# cost model as v3): v2 baseline = 75 trades (3.00/day), 53.3% win rate,
+# 50.7% quick-profit-exit rate, net 1,737,014, PF 1.25, MDD 1,282,201,
+# 16.0% of entries saw an opposite flag within 15min. This v3 score design
+# (threshold=42) = 73 trades (2.92/day), 54.8% win rate, 53.4%
+# quick-profit-exit rate, net 2,658,576 (+53% vs v2), PF 1.43, MDD
+# 1,445,338 (+12.7% vs v2, the one metric that got worse), 13.7% opposite-
+# flag-within-15min. v3 beats v2 on win rate/quick-profit rate/Net/PF; MDD
+# is the tradeoff. The 4th+ leniency genuinely fires (7 of 73 v3 trades
+# were seq>=4) but on THIS sample those 4th+ entries underperformed the
+# 1st-3rd badly (28.6% win rate, avg net -37,921 vs 1st-3rd's 57.6%/+44,303)
+# — kept anyway per explicit user spec ("4번째 이후 플래그라고 해서 자동
+# 차단하지 않는다"), but re-validate this specific claim after more days
+# of live data before leaning on it.
+# near-zero BLUE (abs(macd) < SINGLE_ENTRY_NEAR_ZERO_MACD_THRESHOLD) is
+# diagnostic-only (state.last_single_entry_near_zero_blue) — NOT added to
+# the score; a 20-25 day sweep of 1000/1500/2000/2500/3000 found the
+# unconditional near-zero BLUE cohort has a LOWER (not higher) +2% hit rate
+# than the rest, so no bonus is applied pending more data.
 #
 # Mutually exclusive with sideways_filter_enabled/major_filter_enabled/
 # trend_persistence_filter_enabled (worker._judge_entry_gate priority
 # chain, lowest priority of the four), OFF by default. Exit management
-# (Stop Loss/Profit Lock/Quick Profit/Forced Liquidation) is completely
-# untouched — this gate only decides which confirmed crossovers get order
-# authority.
+# (Stop Loss/Profit Lock/Quick Profit/Forced Liquidation) and the flag
+# generation logic itself (signal_engine) are both completely untouched —
+# this gate only decides which confirmed crossovers get order authority.
 SINGLE_ENTRY_FILTER_DEFAULT = _env_bool("MACD2_SINGLE_ENTRY_FILTER_DEFAULT", False)
-SINGLE_ENTRY_FILTER_VERSION = "SINGLE_ENTRY_FILTER_V2_20260810"
+SINGLE_ENTRY_FILTER_VERSION = "SINGLE_ENTRY_FILTER_V3_20260810"
 SINGLE_ENTRY_MAX_DAILY_ENTRIES = _env_int("MACD2_SINGLE_ENTRY_MAX_DAILY_ENTRIES", 3)
+SINGLE_ENTRY_SCORE_MIN = _env_float("MACD2_SINGLE_ENTRY_SCORE_MIN", 42.0)
+SINGLE_ENTRY_SEQ_BONUS_1 = _env_float("MACD2_SINGLE_ENTRY_SEQ_BONUS_1", 25.0)
+SINGLE_ENTRY_SEQ_BONUS_2 = _env_float("MACD2_SINGLE_ENTRY_SEQ_BONUS_2", 15.0)
+SINGLE_ENTRY_SEQ_BONUS_3 = _env_float("MACD2_SINGLE_ENTRY_SEQ_BONUS_3", 8.0)
+SINGLE_ENTRY_GAP_EXPANSION_BONUS = _env_float("MACD2_SINGLE_ENTRY_GAP_EXPANSION_BONUS", 2.0)
+SINGLE_ENTRY_EMA10_SLOPE_BONUS = _env_float("MACD2_SINGLE_ENTRY_EMA10_SLOPE_BONUS", 2.0)
+SINGLE_ENTRY_PRICE_SLOPE_15M_BONUS = _env_float("MACD2_SINGLE_ENTRY_PRICE_SLOPE_15M_BONUS", 2.0)
+SINGLE_ENTRY_OVERHEAT_THRESHOLD = _env_float("MACD2_SINGLE_ENTRY_OVERHEAT_THRESHOLD", 0.5)
+SINGLE_ENTRY_OVERHEAT_PENALTY = _env_float("MACD2_SINGLE_ENTRY_OVERHEAT_PENALTY", 10.0)
+SINGLE_ENTRY_NEAR_ZERO_MACD_THRESHOLD = _env_float("MACD2_SINGLE_ENTRY_NEAR_ZERO_MACD_THRESHOLD", 3000.0)
 
 SINGLE_ENTRY_APPROVED = "SINGLE_ENTRY_APPROVED"
 SINGLE_ENTRY_DAILY_LIMIT_REACHED = "SINGLE_ENTRY_DAILY_LIMIT_REACHED"
+SINGLE_ENTRY_SCORE_BELOW_THRESHOLD = "SINGLE_ENTRY_SCORE_BELOW_THRESHOLD"
 
 # ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
 # 2026-08-04: standalone toggle, completely independent of BOTH

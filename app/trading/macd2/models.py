@@ -399,6 +399,17 @@ class RuntimeState:
     last_single_entry_decision: Optional[str] = None
     last_single_entry_block_reason: Optional[str] = None
     last_single_entry_signal_id: Optional[str] = None
+    # 2026-08-10 v3 (score-based, evaluates EVERY confirmed flag all day —
+    # no longer hard-blocks the 4th+ flag): daily_confirmed_flag_count is
+    # the day's running "which confirmed flag is this" ordinal, incremented
+    # once per confirmed flag regardless of approval/fill (distinct from
+    # daily_single_entry_count, which only counts actual fills toward the
+    # 3/day entry cap). last_single_entry_score/flag_seq/near_zero_blue are
+    # diagnostics only (near-zero is never added to the score itself).
+    daily_confirmed_flag_count: int = 0
+    last_single_entry_score: Optional[float] = None
+    last_single_entry_flag_seq: Optional[int] = None
+    last_single_entry_near_zero_blue: Optional[bool] = None
 
     # ── Optional Quick-Profit take-profit filter (EXIT LOGIC ONLY) —
     # independent of major_filter_enabled/sideways_filter_enabled; never

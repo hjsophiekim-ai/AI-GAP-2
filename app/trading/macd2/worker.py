@@ -346,6 +346,10 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # toggle (single_entry_filter_enabled) also survives the rollover.
     state.daily_single_entry_count = 0
     state.last_single_entry_at = None
+    # v3's "which confirmed flag number is this" ordinal is a SEPARATE
+    # session-scoped counter from the fill count above (incremented on
+    # every confirmed flag regardless of approval/fill).
+    state.daily_confirmed_flag_count = 0
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -1482,22 +1486,29 @@ def _persist_single_entry_decision(state: RuntimeState, decision: MajorFlagDecis
     state.last_single_entry_decision = decision.decision
     state.last_single_entry_block_reason = decision.block_reason
     state.last_single_entry_signal_id = signal_id
+    state.last_single_entry_score = decision.score
+    state.last_single_entry_flag_seq = decision.metrics.get("flag_seq")
+    state.last_single_entry_near_zero_blue = decision.metrics.get("near_zero_blue")
 
 
 def _judge_single_entry_flag(
-    *, state: RuntimeState, direction: Direction, now: datetime, signal_id: str,
+    *, state: RuntimeState, bars_3m, df_1m, direction: Direction, now: datetime, signal_id: str,
 ) -> MajorFlagDecision:
     """Gate an ALREADY-confirmed crossover against single_entry_filter.
-    evaluate_single_entry (order authority only) — approves the confirmed
-    crossover only while today's fill count is still below
-    config.SINGLE_ENTRY_MAX_DAILY_ENTRIES, rejects every one after. Never
+    evaluate_single_entry (order authority only) — v3: scores EVERY
+    confirmed flag of the day (daily_confirmed_flag_count, incremented
+    here once per confirmed flag regardless of approval/fill — distinct
+    from daily_single_entry_count, which only counts actual fills toward
+    the SINGLE_ENTRY_MAX_DAILY_ENTRIES cap), so a 4th+ flag is never
+    auto-blocked and a weak 1st-3rd flag is never auto-approved. Never
     called when ``state.single_entry_filter_enabled`` is False; never
     creates or suppresses a confirmed flag itself, and never touches
-    STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION. ``now`` is accepted only
-    for dispatch-signature parity with the other three optional filters —
-    the sequence-count rule itself is time-independent."""
-    del now
-    decision = single_entry_filter.evaluate_single_entry(direction, state.daily_single_entry_count)
+    STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION."""
+    state.daily_confirmed_flag_count = int(state.daily_confirmed_flag_count or 0) + 1
+    flag_seq = state.daily_confirmed_flag_count
+    decision = single_entry_filter.evaluate_single_entry(
+        bars_3m, df_1m, direction, now, flag_seq, state.daily_single_entry_count,
+    )
     _persist_single_entry_decision(state, decision, signal_id)
     return decision
 
@@ -1532,7 +1543,7 @@ def _judge_entry_gate(
     if state.trend_persistence_filter_enabled:
         return _judge_trend_persistence_flag(state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, now=now, signal_id=signal_id), "TREND_PERSISTENCE"
     if state.single_entry_filter_enabled:
-        return _judge_single_entry_flag(state=state, direction=direction, now=now, signal_id=signal_id), "SINGLE_ENTRY"
+        return _judge_single_entry_flag(state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, now=now, signal_id=signal_id), "SINGLE_ENTRY"
     return None, "NONE"
 
 
@@ -1661,8 +1672,9 @@ def _trend_persistence_ledger_fields(state: RuntimeState, decision: Optional[Maj
 
 
 def _single_entry_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
-    """single_entry_* ledger columns. No score/metrics of its own — daily
-    fill count vs config.SINGLE_ENTRY_MAX_DAILY_ENTRIES only."""
+    """single_entry_* ledger columns — v3: score/flag_seq/near_zero_blue
+    diagnostics alongside the daily fill count vs
+    config.SINGLE_ENTRY_MAX_DAILY_ENTRIES."""
     row: dict[str, Any] = {
         "single_entry_filter_enabled": bool(state.single_entry_filter_enabled),
         "single_entry_filter_version": state.single_entry_filter_version or config.SINGLE_ENTRY_FILTER_VERSION,
@@ -1671,6 +1683,9 @@ def _single_entry_ledger_fields(state: RuntimeState, decision: Optional[MajorFla
         "single_entry_block_reason": "",
         "daily_single_entry_count": int(state.daily_single_entry_count or 0),
         "last_single_entry_at": state.last_single_entry_at or "",
+        "single_entry_score": "",
+        "single_entry_flag_seq": "",
+        "single_entry_near_zero_blue": "",
     }
     if decision is None:
         return row
@@ -1678,6 +1693,9 @@ def _single_entry_ledger_fields(state: RuntimeState, decision: Optional[MajorFla
         "single_entry_approved": bool(decision.approved),
         "single_entry_decision": decision.decision or "",
         "single_entry_block_reason": decision.block_reason or "",
+        "single_entry_score": decision.score,
+        "single_entry_flag_seq": decision.metrics.get("flag_seq", ""),
+        "single_entry_near_zero_blue": decision.metrics.get("near_zero_blue", ""),
     })
     return row
 

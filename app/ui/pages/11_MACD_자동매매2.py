@@ -368,22 +368,29 @@ with _tp_cols[1]:
 # Optional Daily Single-Entry filter toggle (command only — never places
 # orders). When ON, this gate is LOWEST priority of the four — "강한 플래그만
 # 거래"/"추세전환장 거래"/"Trend Persistence 거래" above all take priority over
-# it. ENTRY GATING ONLY: approves only the first
-# config.SINGLE_ENTRY_MAX_DAILY_ENTRIES confirmed crossovers of the day
-# (2026-08-10 redesign — see config.py for the 15-day sequence analysis).
+# it. ENTRY GATING ONLY: v3 (2026-08-10) scores EVERY confirmed flag of the
+# day (MAJOR score + seq bonus + gap/EMA10/15m-slope bonuses - overheat
+# penalty); approves only while under config.SINGLE_ENTRY_MAX_DAILY_
+# ENTRIES fills AND score>=config.SINGLE_ENTRY_SCORE_MIN — the 4th+ flag is
+# no longer auto-blocked, and a weak 1st-3rd flag is no longer auto-approved.
 _se_cols = st.columns([1.4, 1.6])
 with _se_cols[0]:
     _se_on = st.checkbox(
-        "일 3번진입",
+        "2% 3회진입",
         value=bool(getattr(state, "single_entry_filter_enabled", False)),
         key="macd2_single_entry_filter_toggle",
         help=(
-            f"OFF=기존 로직 그대로 / ON=그날 몇 번째 confirmed 플래그인지로 승인 — 1번째부터 "
-            f"{macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}번째까지만 진입하고 그 이후는 청산만 "
+            "OFF=기존 로직 그대로 / ON=그날의 모든 confirmed 플래그를 계속 평가 — "
+            f"MAJOR 점수 + 순번가산(1번째+{macd2_config.SINGLE_ENTRY_SEQ_BONUS_1:.0f}/2번째+{macd2_config.SINGLE_ENTRY_SEQ_BONUS_2:.0f}/3번째+{macd2_config.SINGLE_ENTRY_SEQ_BONUS_3:.0f}, 4번째부터는 가산 없음, 자동차단도 없음) "
+            "+ MACD gap확장/EMA10기울기/최근15분 기울기 방향일치 가점 "
+            f"- 과열감점(price_impulse_atr>={macd2_config.SINGLE_ENTRY_OVERHEAT_THRESHOLD:.1f}) 합산 점수가 "
+            f"{macd2_config.SINGLE_ENTRY_SCORE_MIN:.0f}점 이상이면 진입, 오늘 신규진입이 이미 "
+            f"{macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}회면 그때부터는 차단(반대신호 청산은 그대로 적용). "
+            "near-zero BLUE(|MACD|<3000)는 진단값만 기록하고 점수에는 미반영. "
             "(강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음 — 셋 중 하나라도 ON이면 이 필터는 적용되지 않음). "
-            "2026-08-10 검증(15거래일, 000660 기준): 1번째 플래그 적중률(2% 도달) 80.0%, 2번째 60.0%, 3번째 53.3%, "
-            "4번째부터는 35.7% 이하로 필터 없음 기준선(43.9%)보다도 낮음 — 3회 캡 기준 실현수익률 평균 +0.96%/건 "
-            "(필터 없음 +0.35%/건 대비), 2%피크 도달 비율 64.4%. 퀵 Profit 익절(2% 자동 익절)과 함께 켜는 것을 권장."
+            "2026-08-10 실제 worker.run_once() 재현 검증(25거래일, 000660): 기존 순번캡(v2, 75건) 대비 "
+            "거래 73건(2.92/일), 승률 54.8%(v2 53.3%), 퀵Profit청산률 53.4%(v2 50.7%), Net 2,658,576(v2 1,737,014) — "
+            "MDD만 12.7% 높음(1,445,338 vs 1,282,201). 퀵 Profit 익절(2% 자동 익절)과 함께 켜는 것을 권장."
         ),
     )
 with _se_cols[1]:
@@ -391,13 +398,13 @@ with _se_cols[1]:
         res = service.set_single_entry_filter_enabled(bool(_se_on), changed_by="ui")
         if res.get("ok"):
             st.caption(
-                f"일 3번진입 → {'ON' if _se_on else 'OFF'} "
+                f"2% 3회진입 → {'ON' if _se_on else 'OFF'} "
                 f"(다음 confirmed 플래그부터 · `{res.get('single_entry_filter_enabled_at')}`)"
             )
             st.rerun()
     else:
         st.caption(
-            f"일 3번진입={'ON' if state.single_entry_filter_enabled else 'OFF'} · "
+            f"2% 3회진입={'ON' if state.single_entry_filter_enabled else 'OFF'} · "
             f"version=`{getattr(state, 'single_entry_filter_version', None) or macd2_config.SINGLE_ENTRY_FILTER_VERSION}`"
         )
 
@@ -710,27 +717,42 @@ try:
         "70이 순수익/승률/MDD/profit factor 전 지표에서 최고 성과."
     )
 
-    st.markdown(f"**일 3번진입 (최대 {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}회/일, 기본 OFF)**")
+    st.markdown(f"**2% 3회진입 (최대 {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}회/일, 기본 OFF)**")
     se1, se2, se3, se4 = st.columns(4)
-    se1.metric("일 3번진입", "ON" if getattr(state, "single_entry_filter_enabled", False) else "OFF")
+    se1.metric("2% 3회진입", "ON" if getattr(state, "single_entry_filter_enabled", False) else "OFF")
     se2.metric("filter version", getattr(state, "single_entry_filter_version", None) or macd2_config.SINGLE_ENTRY_FILTER_VERSION)
-    se3.metric("오늘 사용 횟수", f"{int(getattr(state, 'daily_single_entry_count', 0) or 0)} / {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}")
+    se3.metric("오늘 신규진입", f"{int(getattr(state, 'daily_single_entry_count', 0) or 0)} / {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}")
     se4.metric(
         "마지막 승인 시각",
         _format_signal_time(getattr(state, "last_single_entry_at", None)) if getattr(state, "last_single_entry_at", None) else "-",
     )
+    se5, se6, se7 = st.columns(3)
+    se5.metric("오늘 확인한 플래그 수", int(getattr(state, "daily_confirmed_flag_count", 0) or 0))
+    _se_score = getattr(state, "last_single_entry_score", None)
+    se6.metric("마지막 점수", f"{_se_score:.1f} / {macd2_config.SINGLE_ENTRY_SCORE_MIN:.0f}" if _se_score is not None else "-")
+    _se_seq = getattr(state, "last_single_entry_flag_seq", None)
+    se7.metric("마지막 플래그 순번", int(_se_seq) if _se_seq is not None else "-")
     st.caption(
         f"enabled_at=`{getattr(state, 'single_entry_filter_enabled_at', None) or '-'}` · "
         f"by=`{getattr(state, 'single_entry_filter_enabled_by', None) or '-'}` · "
-        f"decision=`{getattr(state, 'last_single_entry_decision', None) or '-'}`"
+        f"decision=`{getattr(state, 'last_single_entry_decision', None) or '-'}` · "
+        f"near_zero_blue=`{getattr(state, 'last_single_entry_near_zero_blue', None)}`"
     )
     st.info(
-        f"일 3번진입 기준 v2(ON일 때 강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음, 진입권한만 결정): "
-        f"그날 {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}번째까지의 confirmed 신호만 진입 승인하고 이후엔 반대 신호가 나와도 "
-        "청산만(재진입 없음) — Stop Loss/Profit Lock/퀵 Profit 익절/15:00 강제청산은 그대로 적용. "
-        "2026-07-20~08-07 15거래일 분석(000660 기준, 필터 없이 모든 플래그 진입 가정): 1번째 플래그의 2%피크 도달률 80.0%, "
-        "2번째 60.0%, 3번째 53.3%, 4번째부터는 35.7% 이하(필터 없음 전체 평균 43.9%보다 낮음). "
-        "3회 캡 기준 실현수익률(반대신호 청산 시점) 평균 +0.96%/건 vs 필터 없음 +0.35%/건. "
+        f"2% 3회진입 기준 v3(ON일 때 강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음, 진입권한만 결정): "
+        "그날의 모든 confirmed 플래그를 계속 평가 — 4번째 이후도 자동차단하지 않고, 1~3번째도 점수 미달이면 진입하지 않음. "
+        f"점수 = MAJOR 0-100점 + 순번가산(1번째+{macd2_config.SINGLE_ENTRY_SEQ_BONUS_1:.0f}/2번째+{macd2_config.SINGLE_ENTRY_SEQ_BONUS_2:.0f}/3번째+{macd2_config.SINGLE_ENTRY_SEQ_BONUS_3:.0f}/4번째부터+0) "
+        "+ gap확장·EMA10기울기·최근15분기울기 방향일치 가점 각 "
+        f"+{macd2_config.SINGLE_ENTRY_GAP_EXPANSION_BONUS:.0f}/+{macd2_config.SINGLE_ENTRY_EMA10_SLOPE_BONUS:.0f}/+{macd2_config.SINGLE_ENTRY_PRICE_SLOPE_15M_BONUS:.0f} "
+        f"- 과열감점 -{macd2_config.SINGLE_ENTRY_OVERHEAT_PENALTY:.0f}(price_impulse_atr>={macd2_config.SINGLE_ENTRY_OVERHEAT_THRESHOLD:.1f}), "
+        f"합산 {macd2_config.SINGLE_ENTRY_SCORE_MIN:.0f}점 이상이면 진입 승인, 신규진입이 이미 {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}회면 차단 — "
+        "이후엔 반대 신호가 나와도 청산만(재진입 없음), Stop Loss/Profit Lock/퀵 Profit 익절/15:00 강제청산은 그대로 적용. "
+        "near-zero BLUE(|MACD|<3000)는 진단값만 기록, 점수 미반영. "
+        "2026-07-03~08-07 25거래일, 실제 worker.run_once()로 두 방식 모두 재현(000660, 동일 비용/청산 규칙): "
+        "구 순번캡 방식(v2) 거래 75건(3.00/일)·승률 53.3%·퀵Profit청산률 50.7%·Net 1,737,014·PF 1.25·MDD 1,282,201 대비, "
+        "이 v3 방식(threshold=42)은 거래 73건(2.92/일)·승률 54.8%·퀵Profit청산률 53.4%·Net 2,658,576(+53%)·PF 1.43·MDD 1,445,338 "
+        "(MDD만 12.7% 높고 승률/청산률/Net/PF는 전부 개선). 단, v3에서 승인된 4번째 이후 플래그(73건 중 7건)는 이 표본에서 "
+        "1~3번째보다 성과가 낮았음(승률 28.6% vs 57.6%) — 사용자 요청에 따라 그대로 두었으나 데이터가 더 쌓이면 재검증 필요. "
         "퀵 Profit 익절(기본 +2.0% 익절)을 함께 켜면 2% 도달 시점에 실제로 확정 가능."
     )
 

@@ -72,11 +72,12 @@ SIGNAL_LEDGER_COLUMNS = [
     "trend_persistence_lower_high_count_last3", "trend_persistence_lower_low_count_last3",
     "daily_trend_persistence_entry_count", "last_trend_persistence_entry_at",
     # Optional Daily Single-Entry filter fields (appended 2026-08-08; never
-    # rename/delete older cols). No score/metrics of its own — cutoff-time
-    # + daily fill count only — so no dedicated metric columns are needed.
+    # rename/delete older cols).
     "single_entry_filter_enabled", "single_entry_filter_version",
     "single_entry_approved", "single_entry_decision", "single_entry_block_reason",
     "daily_single_entry_count", "last_single_entry_at",
+    # v3 score-based redesign (appended 2026-08-10; additive only).
+    "single_entry_score", "single_entry_flag_seq", "single_entry_near_zero_blue",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [
