@@ -34,6 +34,12 @@ class FakeBroker:
         self.next_buy_fill_qty: Optional[int] = None
         self.cancel_calls: list[tuple[str, str]] = []
         self.fail_next_cancel = False
+        # Simulates a real KIS race: cancel_order() reports success, but the
+        # order actually fills (fully or partially) right after/during the
+        # cancel attempt anyway. None means "cancel genuinely stops the
+        # order" (the default, existing behavior).
+        self.fill_on_next_cancel_qty: Optional[int] = None
+        self.fill_on_next_cancel_price: Optional[float] = None
 
     def set_quote(self, symbol: str, price: float) -> None:
         self._quotes[symbol] = price
@@ -200,6 +206,22 @@ class FakeBroker:
 
     def cancel_order(self, order_id: str, symbol: str = "") -> BrokerOrderResult:
         self.cancel_calls.append((str(order_id), str(symbol)))
+        if self.fill_on_next_cancel_qty:
+            qty = self.fill_on_next_cancel_qty
+            price = self.fill_on_next_cancel_price or self._quotes.get(symbol) or 0.0
+            self.fill_on_next_cancel_qty = None
+            self.fill_on_next_cancel_price = None
+            existing = self._positions.get(symbol)
+            if existing:
+                total_qty = existing.quantity + qty
+                new_avg = (existing.avg_price * existing.quantity + price * qty) / total_qty
+                self._positions[symbol] = Position(
+                    symbol=symbol, name=symbol, quantity=total_qty, avg_price=new_avg, current_price=price,
+                )
+            else:
+                self._positions[symbol] = Position(
+                    symbol=symbol, name=symbol, quantity=qty, avg_price=price, current_price=price,
+                )
         if self.fail_next_cancel:
             self.fail_next_cancel = False
             return BrokerOrderResult(

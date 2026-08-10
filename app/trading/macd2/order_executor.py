@@ -514,20 +514,40 @@ def execute_signal(
     outcome.balance_qty = balance_qty
     outcome.unfilled_qty = max(requested_qty - filled_qty, 0)
     timestamps["buy_reconciled_at"] = _now_iso()
-    if filled_qty <= 0:
-        _cancel_unfilled(broker, outcome, buy_result.order_id, target_symbol)
-        outcome.final_state = SignalState.FAILED
-        outcome.block_reason = FAIL_BUY_NOT_CONFIRMED
-        outcome.order_failure_stage = (
-            CANCEL_FAILED if outcome.cancel_result == CANCEL_FAILED else FILL_TIMEOUT_CANCELLED
-        )
-        return outcome
     if filled_qty < requested_qty:
         _cancel_unfilled(broker, outcome, buy_result.order_id, target_symbol)
-        if outcome.cancel_result == CANCEL_FAILED:
-            outcome.order_failure_stage = CANCEL_FAILED
-        else:
-            outcome.order_failure_stage = BALANCE_MISMATCH
+        # 2026-08-10 fix (real incident: every real fill must land in the
+        # ledger) -- a "cancel succeeded" response never guarantees the
+        # order actually stopped; it can still fill at the broker right
+        # after (or even during) cancellation. Re-verify against the
+        # broker ONE more time before trusting the pre-cancel snapshot --
+        # otherwise a real fill silently vanishes: no ledger row now, and
+        # no way to write an accurate one later (reconcile_position_state
+        # can only adopt the mystery qty going forward, with no BUY record
+        # at all, discovered only once/if it gets stopped out).
+        recheck_qty, recheck_avg_price, recheck_poll_result, recheck_balance = _reconcile_buy_fill(
+            broker, target_symbol, retries=1, delay_sec=0.0,
+        )
+        if recheck_qty != filled_qty:
+            filled_qty, filled_avg_price = recheck_qty, recheck_avg_price
+            outcome.filled_qty = filled_qty
+            outcome.fill_poll_result = recheck_poll_result
+            outcome.balance_qty = recheck_balance
+            outcome.unfilled_qty = max(requested_qty - filled_qty, 0)
+        if filled_qty <= 0:
+            outcome.final_state = SignalState.FAILED
+            outcome.block_reason = FAIL_BUY_NOT_CONFIRMED
+            outcome.order_failure_stage = (
+                CANCEL_FAILED if outcome.cancel_result == CANCEL_FAILED else FILL_TIMEOUT_CANCELLED
+            )
+            return outcome
+        # Fell through: the order filled (fully or partially) despite the
+        # cancel attempt -- record the TRUE quantity below instead of the
+        # FAILED path above.
+        if filled_qty < requested_qty:
+            outcome.order_failure_stage = (
+                CANCEL_FAILED if outcome.cancel_result == CANCEL_FAILED else BALANCE_MISMATCH
+            )
 
     outcome.quantity = filled_qty
     outcome.filled_avg_price = filled_avg_price
@@ -570,6 +590,17 @@ def execute_exit(
 
     qty_after = _reconcile_to_zero(broker, symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec)
     outcome.sell_qty_after = qty_after
+    if qty_after != 0:
+        # 2026-08-10 fix (same "every real fill must land in the ledger"
+        # principle as the BUY path): a confirmed sell that hasn't
+        # reconciled to zero yet may just be a slow broker-side settlement
+        # (KIS mock server lag observed directly today), not a genuine
+        # failure. One more re-check before giving up -- if it settles to
+        # zero here, this is a completed exit and must
+        # be recorded exactly like any other; the ledger must never miss a
+        # real fill just because the FIRST poll window came up short.
+        qty_after = _reconcile_to_zero(broker, symbol, retries=1, delay_sec=0.0)
+        outcome.sell_qty_after = qty_after
     timestamps["sell_reconciled_at"] = _now_iso()
     if qty_after != 0:
         outcome.final_state = SignalState.FAILED

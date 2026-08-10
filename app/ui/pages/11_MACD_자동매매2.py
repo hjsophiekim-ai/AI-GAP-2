@@ -368,20 +368,22 @@ with _tp_cols[1]:
 # Optional Daily Single-Entry filter toggle (command only — never places
 # orders). When ON, this gate is LOWEST priority of the four — "강한 플래그만
 # 거래"/"추세전환장 거래"/"Trend Persistence 거래" above all take priority over
-# it. ENTRY GATING ONLY: blocks every entry before 11:00, then allows
-# exactly the first confirmed crossover after that each day.
+# it. ENTRY GATING ONLY: approves only the first
+# config.SINGLE_ENTRY_MAX_DAILY_ENTRIES confirmed crossovers of the day
+# (2026-08-10 redesign — see config.py for the 15-day sequence analysis).
 _se_cols = st.columns([1.4, 1.6])
 with _se_cols[0]:
     _se_on = st.checkbox(
-        "일일 1회 진입 (11시 이후)",
+        "일 3번진입",
         value=bool(getattr(state, "single_entry_filter_enabled", False)),
         key="macd2_single_entry_filter_toggle",
         help=(
-            f"OFF=기존 로직 그대로 / ON={macd2_config.SINGLE_ENTRY_CUTOFF_TIME.strftime('%H:%M')} 이전 신호는 전부 차단, "
-            f"{macd2_config.SINGLE_ENTRY_CUTOFF_TIME.strftime('%H:%M')} 이후 그날의 첫 confirmed 신호만 진입하고 이후엔 청산만 "
+            f"OFF=기존 로직 그대로 / ON=그날 몇 번째 confirmed 플래그인지로 승인 — 1번째부터 "
+            f"{macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}번째까지만 진입하고 그 이후는 청산만 "
             "(강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음 — 셋 중 하나라도 ON이면 이 필터는 적용되지 않음). "
-            "2026-08-08 검증: 15거래일 기준 필터 없음(71건, 승률 39.44%) 대비 거래 15건·승률 66.67%·"
-            "Profit Factor 31.71·MDD 87% 축소, 순수익은 65% 수준 유지."
+            "2026-08-10 검증(15거래일, 000660 기준): 1번째 플래그 적중률(2% 도달) 80.0%, 2번째 60.0%, 3번째 53.3%, "
+            "4번째부터는 35.7% 이하로 필터 없음 기준선(43.9%)보다도 낮음 — 3회 캡 기준 실현수익률 평균 +0.96%/건 "
+            "(필터 없음 +0.35%/건 대비), 2%피크 도달 비율 64.4%. 퀵 Profit 익절(2% 자동 익절)과 함께 켜는 것을 권장."
         ),
     )
 with _se_cols[1]:
@@ -389,13 +391,13 @@ with _se_cols[1]:
         res = service.set_single_entry_filter_enabled(bool(_se_on), changed_by="ui")
         if res.get("ok"):
             st.caption(
-                f"일일 1회 진입 필터 → {'ON' if _se_on else 'OFF'} "
+                f"일 3번진입 → {'ON' if _se_on else 'OFF'} "
                 f"(다음 confirmed 플래그부터 · `{res.get('single_entry_filter_enabled_at')}`)"
             )
             st.rerun()
     else:
         st.caption(
-            f"일일 1회 진입 필터={'ON' if state.single_entry_filter_enabled else 'OFF'} · "
+            f"일 3번진입={'ON' if state.single_entry_filter_enabled else 'OFF'} · "
             f"version=`{getattr(state, 'single_entry_filter_version', None) or macd2_config.SINGLE_ENTRY_FILTER_VERSION}`"
         )
 
@@ -708,11 +710,11 @@ try:
         "70이 순수익/승률/MDD/profit factor 전 지표에서 최고 성과."
     )
 
-    st.markdown("**일일 1회 진입 필터 (11시 이후 첫 신호만, 기본 OFF)**")
+    st.markdown(f"**일 3번진입 (최대 {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}회/일, 기본 OFF)**")
     se1, se2, se3, se4 = st.columns(4)
-    se1.metric("일일 1회 진입 필터", "ON" if getattr(state, "single_entry_filter_enabled", False) else "OFF")
+    se1.metric("일 3번진입", "ON" if getattr(state, "single_entry_filter_enabled", False) else "OFF")
     se2.metric("filter version", getattr(state, "single_entry_filter_version", None) or macd2_config.SINGLE_ENTRY_FILTER_VERSION)
-    se3.metric("오늘 사용 여부", f"{int(getattr(state, 'daily_single_entry_count', 0) or 0)} / 1")
+    se3.metric("오늘 사용 횟수", f"{int(getattr(state, 'daily_single_entry_count', 0) or 0)} / {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}")
     se4.metric(
         "마지막 승인 시각",
         _format_signal_time(getattr(state, "last_single_entry_at", None)) if getattr(state, "last_single_entry_at", None) else "-",
@@ -723,11 +725,13 @@ try:
         f"decision=`{getattr(state, 'last_single_entry_decision', None) or '-'}`"
     )
     st.info(
-        f"일일 1회 진입 기준 v1(ON일 때 강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음, 진입권한만 결정): "
-        f"{macd2_config.SINGLE_ENTRY_CUTOFF_TIME.strftime('%H:%M')} 이전 confirmed 신호는 전부 차단, 그 이후 첫 신호만 "
-        "진입 승인하고 이후엔 반대 신호가 나와도 청산만(재진입 없음) — Stop Loss/Profit Lock/15:00 강제청산은 그대로 적용. "
-        "2026-07-20~08-07 15거래일 리플레이: 필터 없음(71건, 순수익 23,071,667, 승률 39.44%, MDD 1,630,948) 대비 "
-        "거래 15건(1일 1회), 순수익 15,100,401(65%), 승률 66.67%, Profit Factor 31.71, MDD 216,241(87% 축소)."
+        f"일 3번진입 기준 v2(ON일 때 강한 플래그·추세전환장·Trend Persistence 필터보다 우선순위 낮음, 진입권한만 결정): "
+        f"그날 {macd2_config.SINGLE_ENTRY_MAX_DAILY_ENTRIES}번째까지의 confirmed 신호만 진입 승인하고 이후엔 반대 신호가 나와도 "
+        "청산만(재진입 없음) — Stop Loss/Profit Lock/퀵 Profit 익절/15:00 강제청산은 그대로 적용. "
+        "2026-07-20~08-07 15거래일 분석(000660 기준, 필터 없이 모든 플래그 진입 가정): 1번째 플래그의 2%피크 도달률 80.0%, "
+        "2번째 60.0%, 3번째 53.3%, 4번째부터는 35.7% 이하(필터 없음 전체 평균 43.9%보다 낮음). "
+        "3회 캡 기준 실현수익률(반대신호 청산 시점) 평균 +0.96%/건 vs 필터 없음 +0.35%/건. "
+        "퀵 Profit 익절(기본 +2.0% 익절)을 함께 켜면 2% 도달 시점에 실제로 확정 가능."
     )
 
     st.markdown("**Profit Lock — MACD 수렴 조기청산 (청산 로직 전용, 기본 OFF)**")

@@ -444,6 +444,31 @@ def test_primary_trend_pullback_follows_a_genuine_mid_day_reversal():
     assert reversed_decision is None
 
 
+def test_primary_trend_pullback_ignores_bars_after_now_even_if_caller_passes_them():
+    """2026-08-10 fix: a caller holding history PAST `now` (a replay/backtest
+    driving many ticks off one static df_1m, or a live restart's catch-up
+    replay) must get the SAME verdict as a caller that only ever has data up
+    to `now` -- this module's own docstring already promises "no future
+    bars"; passing the mid-day decision the FULL day (down leg + a later
+    reversal up leg the real world hasn't reached yet at `mid_now`) must not
+    leak that future reversal into "today's dominant trend"."""
+    start = _at(9, 0)
+    down_leg = _trending_1m_bars(start, 90, per_bar_pct=-0.08)
+    up_start = start + timedelta(minutes=90)
+    up_leg = _trending_1m_bars(up_start, 90, per_bar_pct=0.12, base=float(down_leg["close"].iloc[-1]))
+    full_df_1m = pd.concat([down_leg, up_leg], ignore_index=True)
+
+    mid_now = up_start
+    bounded_decision = evaluate_primary_trend_pullback(
+        full_df_1m[full_df_1m["datetime"] <= mid_now], Direction.UP_RED, mid_now,
+    )
+    unbounded_decision = evaluate_primary_trend_pullback(full_df_1m, Direction.UP_RED, mid_now)
+
+    assert bounded_decision is not None and bounded_decision.approved is False
+    assert unbounded_decision is not None and unbounded_decision.approved is False
+    assert unbounded_decision.decision == bounded_decision.decision
+
+
 def test_worker_sells_held_position_without_reentry_when_flag_is_a_pullback(monkeypatch):
     """End-to-end wiring check (worker.run_once): a confirmed opposite flag
     classified as a PRIMARY_TREND pullback liquidates the held ETF (same

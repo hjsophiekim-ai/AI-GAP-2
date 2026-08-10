@@ -356,6 +356,50 @@ def test_reconcile_failure_blocks_before_buy(monkeypatch):
     assert broker.get_position("0193T0") is None
 
 
+def test_sell_settles_to_zero_on_recheck_after_slow_reconcile(monkeypatch):
+    """2026-08-10 fix: reconcile_position() lagging past the first poll
+    window is not the same as a genuine sell failure (KIS mock server lag
+    observed directly today) -- one more re-check must still record a
+    real, fully-settled exit instead of discarding it."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0, "0197X0": 10_000.0})
+    broker.buy_market("0197X0", 20, "seed")
+    real_reconcile = broker.reconcile_position
+    call_count = {"n": 0}
+
+    def flaky_reconcile(symbol):
+        call_count["n"] += 1
+        return 20 if call_count["n"] <= 2 else real_reconcile(symbol)
+
+    monkeypatch.setattr(broker, "reconcile_position", flaky_reconcile)
+
+    outcome = order_executor.execute_exit(
+        broker=broker, symbol="0197X0", quantity=20, exit_reason="STOP_LOSS",
+        entry_price=10_000.0, reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1 and rows[0]["side"] == "SELL"
+
+
+def test_sell_genuinely_never_confirmed_stays_failed(monkeypatch):
+    """The post-timeout recheck must not turn a genuine non-settlement into
+    a false positive -- unchanged existing behavior when reconcile never
+    clears."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0, "0197X0": 10_000.0})
+    broker.buy_market("0197X0", 20, "seed")
+    monkeypatch.setattr(broker, "reconcile_position", lambda symbol: 20)
+
+    outcome = order_executor.execute_exit(
+        broker=broker, symbol="0197X0", quantity=20, exit_reason="STOP_LOSS",
+        entry_price=10_000.0, reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.FAILED
+    assert outcome.block_reason == order_executor.FAIL_SELL_NOT_CONFIRMED
+    assert ledger.load_execution_ledger() == []
+
+
 def test_buy_accepted_but_unfilled_never_recorded_as_executed():
     """주문 접수 성공 != 체결 성공: broker.buy_market() returns success=True but
     the account never actually shows the position (order accepted, 0 filled)."""
@@ -376,6 +420,49 @@ def test_buy_accepted_but_unfilled_never_recorded_as_executed():
     assert outcome.cancel_called is True
     assert broker.get_position("0193T0") is None
     assert ledger.load_execution_ledger() == []  # never recorded as a confirmed leg
+
+
+def test_buy_fills_anyway_after_cancel_is_still_recorded():
+    """2026-08-10 fix (real incident): cancel_order() reports success, but
+    the order was actually filling right through the cancel attempt -- the
+    ledger must still record the real fill instead of silently discarding
+    it (previously: FAILED, zero ledger rows, position only rediscovered
+    much later via reconcile_position_state with no BUY trace at all)."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 0  # nothing visible during the poll window
+    broker.fill_on_next_cancel_qty = 300
+    broker.fill_on_next_cancel_price = 15_000.0
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-fills-after-cancel",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.filled_qty == 300
+    assert broker.get_position("0193T0").quantity == 300
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["side"] == "BUY" and int(rows[0]["executed_qty"]) == 300
+
+
+def test_buy_still_genuinely_unfilled_after_cancel_recheck_stays_failed():
+    """The post-cancel recheck must not turn a genuine non-fill into a
+    false positive -- unchanged existing behavior when nothing ever fills."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 0
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-genuinely-unfilled",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.FAILED
+    assert outcome.block_reason == order_executor.FAIL_BUY_NOT_CONFIRMED
+    assert broker.get_position("0193T0") is None
+    assert ledger.load_execution_ledger() == []
 
 
 def test_buy_rejected_is_classified_order_rejected_with_kis_fields():

@@ -106,9 +106,16 @@ def evaluate_primary_trend_pullback(
     now_kst = now.astimezone(config.KST)
     dt_col = pd.to_datetime(df_1m["datetime"])
     dt_col = dt_col.dt.tz_convert(config.KST) if dt_col.dt.tz is not None else dt_col.dt.tz_localize(config.KST)
-    today_mask = dt_col.dt.date == now_kst.date()
+    # 2026-08-10 fix: bound by <= now_kst, not just by calendar date -- a
+    # caller holding history PAST `now` (a replay/backtest driving many
+    # ticks off one static df_1m, or a live restart's catch-up replay) must
+    # never leak later-today bars into "today's dominant trend" for an
+    # earlier tick. This module's own docstring already promises "no future
+    # bars" — the date-only filter silently broke that promise whenever
+    # df_1m outran `now`.
+    today_mask = (dt_col.dt.date == now_kst.date()) & (dt_col <= now_kst)
     today_df = df_1m[today_mask.to_numpy()]
-    prior_df = df_1m[~today_mask.to_numpy()]
+    prior_df = df_1m[(dt_col.dt.date != now_kst.date()).to_numpy()]
     if today_df.empty:
         return None
     prev_close = float(prior_df["close"].iloc[-1]) if not prior_df.empty else None

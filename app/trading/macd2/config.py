@@ -410,36 +410,45 @@ TREND_PERSISTENCE_APPROVED = "TREND_PERSISTENCE_APPROVED"
 TREND_PERSISTENCE_BELOW_THRESHOLD = "TREND_PERSISTENCE_BELOW_THRESHOLD"
 
 # ── Optional Daily Single-Entry filter (order authority gate only) ────────
-# 2026-08-08: blocks every NEW BUY/reversal before SINGLE_ENTRY_CUTOFF_TIME
-# (11:00 — the same AM/PM boundary sideways_filter's own v5 already uses),
-# then allows exactly ONE fill for the rest of the day (a rejected later
-# reversal is sell-only/no-re-entry, same convention as the other three
-# optional filters) — mutually exclusive with sideways_filter_enabled/
-# major_filter_enabled/trend_persistence_filter_enabled (worker.
-# _judge_entry_gate priority chain, lowest priority of the four), OFF by
-# default. Exit management (Stop Loss/Profit Lock/Forced Liquidation at
-# 15:00) is completely untouched — this gate only decides which confirmed
-# crossover gets to open the day's one position.
+# 2026-08-10 redesign (사용자 요청 — 하루 안에서 몇 번째 확정 플래그인지로 승인
+# 여부를 결정, 시간대 컷오프는 폐지): re-analyzed 000660's confirmed flags
+# over the same verified 15-trading-day window (2026-07-20~2026-08-07),
+# this time grouping every confirmed flag by ITS OWN SEQUENCE NUMBER within
+# that trading day (1st confirmed flag, 2nd, 3rd, ...) and asking "did the
+# traded ETF's price ever reach +2% net from this flag's entry before the
+# next opposite flag (or EOD)?" (114 flags total, 50/114 = 43.9% baseline
+# hit rate taking every flag). Result was a clean, monotonic decay by
+# sequence position, NOT by time of day (time-of-day looked predictive only
+# because early flags happen to cluster in the morning):
+#   1st flag/day: 80.0% hit rate, avg peak +5.67% (15 samples)
+#   2nd flag/day: 60.0% hit rate, avg peak +5.23% (15 samples)
+#   3rd flag/day: 53.3% hit rate, avg peak +3.41% (15 samples)
+#   4th flag/day: 35.7% hit rate, avg peak +2.83% (14 samples) -- below the
+#     43.9% no-filter baseline, i.e. worse than taking a random flag
+#   5th+ flag/day: 20-38% hit rate, avg peak <=1.5% mostly (noise/chop)
+# Capping at the first SINGLE_ENTRY_MAX_DAILY_ENTRIES confirmed flags of
+# each day (default 3, the flags with real edge) keeps realized exit
+# return (reversal-to-reversal, no take-profit) at +0.96%/trade average
+# across all 45 sampled trades vs +0.35%/trade taking every flag, with
+# 64.4% of those 45 trades reaching +2% peak at some point -- meant to be
+# paired with quick_profit_enabled (QUICK_PROFIT_TAKE_PROFIT_NET_PCT is
+# already 2.0) so a qualifying flag actually locks in the +2% instead of
+# riding back down to the next reversal. Bumping the cap to 4 (still within
+# the requested "3~4/day" range) trades some of that edge for one more
+# entry/day (57.6% hit rate, +0.83%/trade average, 3.93 entries/day).
 #
-# Backtested (scripts/backtest_gate_sweep_15day.py + a follow-up 11:00/
-# 11:30 x one-shot sweep) against the SAME verified 15-trading-day window
-# (2026-07-20~2026-08-07) as the Trend Persistence threshold above: taking
-# EVERY confirmed crossover all day (no gate at all) produced the highest
-# raw net_pnl (23,071,667) but at 71 trades/39.44% win rate/1,630,948 MDD —
-# most of its losses are rapid-fire same-morning whipsaw reversals that
-# never survive to a real trend. Cutting entries before 11:00 and capping
-# at one fill/day keeps net_pnl at 15,100,401 (65% of the no-gate figure)
-# while cutting trade count to 15 (one/day), lifting win rate to 66.67% and
-# profit factor to 31.71, and cutting MDD to 216,241 (13% of the no-gate
-# figure) — every large winning trade in the 15-day window happened to be
-# each day's FIRST post-11:00 crossover, so this loses none of them.
+# Mutually exclusive with sideways_filter_enabled/major_filter_enabled/
+# trend_persistence_filter_enabled (worker._judge_entry_gate priority
+# chain, lowest priority of the four), OFF by default. Exit management
+# (Stop Loss/Profit Lock/Quick Profit/Forced Liquidation) is completely
+# untouched — this gate only decides which confirmed crossovers get order
+# authority.
 SINGLE_ENTRY_FILTER_DEFAULT = _env_bool("MACD2_SINGLE_ENTRY_FILTER_DEFAULT", False)
-SINGLE_ENTRY_FILTER_VERSION = "SINGLE_ENTRY_FILTER_V1_20260808"
-SINGLE_ENTRY_CUTOFF_TIME = time(11, 0)
+SINGLE_ENTRY_FILTER_VERSION = "SINGLE_ENTRY_FILTER_V2_20260810"
+SINGLE_ENTRY_MAX_DAILY_ENTRIES = _env_int("MACD2_SINGLE_ENTRY_MAX_DAILY_ENTRIES", 3)
 
 SINGLE_ENTRY_APPROVED = "SINGLE_ENTRY_APPROVED"
-SINGLE_ENTRY_BEFORE_CUTOFF = "SINGLE_ENTRY_BEFORE_CUTOFF"
-SINGLE_ENTRY_ALREADY_USED_TODAY = "SINGLE_ENTRY_ALREADY_USED_TODAY"
+SINGLE_ENTRY_DAILY_LIMIT_REACHED = "SINGLE_ENTRY_DAILY_LIMIT_REACHED"
 
 # ── Optional Quick-Profit take-profit filter — EXIT LOGIC ONLY ─────────────
 # 2026-08-04: standalone toggle, completely independent of BOTH

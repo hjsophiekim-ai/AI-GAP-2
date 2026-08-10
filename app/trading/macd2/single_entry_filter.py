@@ -3,23 +3,24 @@ authority gate only (never creates/suppresses a confirmed MACD crossover;
 worker.py's signal_engine crossover detection is completely untouched).
 
 Unlike major_flag_filter/sideways_filter/trend_persistence_filter, this
-gate needs no bars/score at all: it blocks every confirmed crossover before
-config.SINGLE_ENTRY_CUTOFF_TIME (11:00), then approves exactly the first
-one after that cutoff each day and rejects every one after (daily_entry_
-count already tracks "how many fills today", the same counter the other
-three optional filters use for their own daily caps).
+gate needs no bars/score at all: it approves a confirmed crossover purely
+by ITS OWN SEQUENCE NUMBER within the trading day — the 1st, 2nd, ... up to
+``config.SINGLE_ENTRY_MAX_DAILY_ENTRIES``-th confirmed flag of the day is
+approved, every later one is rejected (daily_entry_count already tracks
+"how many fills today", the same counter the other three optional filters
+use for their own daily caps).
 
-2026-08-08: new gate, OFF by default (config.SINGLE_ENTRY_FILTER_DEFAULT).
-Mutually exclusive with sideways_filter_enabled/major_filter_enabled/
-trend_persistence_filter_enabled (see worker._judge_entry_gate priority
-chain) — never touches STOP_LOSS/PROFIT_LOCK/order-fill/ledger logic, and
-gates a NEW BUY only — the caller still liquidates a held position on a
-rejected reversal (sell-only/no-re-entry, exactly like the other three
-optional filters).
+2026-08-10 redesign (see config.py for the full 15-trading-day sequence
+analysis this replaced the old 11:00-cutoff/one-shot design with): OFF by
+default (config.SINGLE_ENTRY_FILTER_DEFAULT). Mutually exclusive with
+sideways_filter_enabled/major_filter_enabled/trend_persistence_filter_enabled
+(see worker._judge_entry_gate priority chain) — never touches STOP_LOSS/
+PROFIT_LOCK/order-fill/ledger logic, and gates a NEW BUY only — the caller
+still liquidates a held position on a rejected reversal (sell-only/no-re-
+entry, exactly like the other three optional filters).
 """
 from __future__ import annotations
 
-from datetime import datetime, time as dt_time
 from typing import Optional, Union
 
 from app.trading.macd2 import config
@@ -37,16 +38,14 @@ def _decision(*, approved: bool, decision: str, block_reason: Optional[str], rea
 
 def evaluate_single_entry(
     flag_direction: Union["Direction", str],  # noqa: F821 - typing only, avoids a hard Direction import cycle
-    now: datetime,
     daily_entry_count: int,
     *,
-    cutoff_time: Optional[dt_time] = None,
+    max_daily_entries: Optional[int] = None,
 ) -> MajorFlagDecision:
-    """Approve exactly the first confirmed crossover of the day at/after
-    ``cutoff_time`` (defaults to config.SINGLE_ENTRY_CUTOFF_TIME); reject
-    everything before that cutoff and every later one the same day. Pure:
-    same inputs -> same output. Never called when ``state.single_entry_
-    filter_enabled`` is False.
+    """Approve a confirmed crossover if today's fill count is still below
+    ``max_daily_entries`` (defaults to config.SINGLE_ENTRY_MAX_DAILY_ENTRIES);
+    reject once the cap is reached. Pure: same inputs -> same output. Never
+    called when ``state.single_entry_filter_enabled`` is False.
     """
     if _as_direction(flag_direction) is None:
         return _decision(
@@ -55,20 +54,15 @@ def evaluate_single_entry(
             reasons=["flag_direction must be UP_RED or DOWN_BLUE"],
         )
 
-    effective_cutoff = cutoff_time if cutoff_time is not None else config.SINGLE_ENTRY_CUTOFF_TIME
-    if now.time() < effective_cutoff:
+    limit = int(max_daily_entries if max_daily_entries is not None else config.SINGLE_ENTRY_MAX_DAILY_ENTRIES)
+    count = int(daily_entry_count or 0)
+    if count >= limit:
         return _decision(
-            approved=False, decision=config.SINGLE_ENTRY_BEFORE_CUTOFF,
-            block_reason=config.SINGLE_ENTRY_BEFORE_CUTOFF,
-            reasons=[f"now {now.time()} < cutoff {effective_cutoff}"],
-        )
-    if int(daily_entry_count or 0) >= 1:
-        return _decision(
-            approved=False, decision=config.SINGLE_ENTRY_ALREADY_USED_TODAY,
-            block_reason=config.SINGLE_ENTRY_ALREADY_USED_TODAY,
-            reasons=[f"daily_entry_count {daily_entry_count} >= 1"],
+            approved=False, decision=config.SINGLE_ENTRY_DAILY_LIMIT_REACHED,
+            block_reason=config.SINGLE_ENTRY_DAILY_LIMIT_REACHED,
+            reasons=[f"daily_entry_count {count} >= {limit}"],
         )
     return _decision(
         approved=True, decision=config.SINGLE_ENTRY_APPROVED, block_reason=None,
-        reasons=[f"first confirmed crossover at/after {effective_cutoff}"],
+        reasons=[f"entry #{count + 1} of {limit} today"],
     )

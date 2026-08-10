@@ -1488,12 +1488,16 @@ def _judge_single_entry_flag(
     *, state: RuntimeState, direction: Direction, now: datetime, signal_id: str,
 ) -> MajorFlagDecision:
     """Gate an ALREADY-confirmed crossover against single_entry_filter.
-    evaluate_single_entry (order authority only) — approves exactly the
-    first confirmed crossover at/after config.SINGLE_ENTRY_CUTOFF_TIME each
-    day, rejects every other one. Never called when ``state.single_entry_
-    filter_enabled`` is False; never creates or suppresses a confirmed flag
-    itself, and never touches STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION."""
-    decision = single_entry_filter.evaluate_single_entry(direction, now, state.daily_single_entry_count)
+    evaluate_single_entry (order authority only) — approves the confirmed
+    crossover only while today's fill count is still below
+    config.SINGLE_ENTRY_MAX_DAILY_ENTRIES, rejects every one after. Never
+    called when ``state.single_entry_filter_enabled`` is False; never
+    creates or suppresses a confirmed flag itself, and never touches
+    STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION. ``now`` is accepted only
+    for dispatch-signature parity with the other three optional filters —
+    the sequence-count rule itself is time-independent."""
+    del now
+    decision = single_entry_filter.evaluate_single_entry(direction, state.daily_single_entry_count)
     _persist_single_entry_decision(state, decision, signal_id)
     return decision
 
@@ -1657,8 +1661,8 @@ def _trend_persistence_ledger_fields(state: RuntimeState, decision: Optional[Maj
 
 
 def _single_entry_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
-    """single_entry_* ledger columns. No score/metrics of its own — cutoff-
-    time + daily fill count only."""
+    """single_entry_* ledger columns. No score/metrics of its own — daily
+    fill count vs config.SINGLE_ENTRY_MAX_DAILY_ENTRIES only."""
     row: dict[str, Any] = {
         "single_entry_filter_enabled": bool(state.single_entry_filter_enabled),
         "single_entry_filter_version": state.single_entry_filter_version or config.SINGLE_ENTRY_FILTER_VERSION,
