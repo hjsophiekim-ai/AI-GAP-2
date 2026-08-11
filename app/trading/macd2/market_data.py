@@ -673,10 +673,28 @@ class MarketDataService:
         return BootstrapResult(True, None, int(len(df)), prior_n, today_n, completed_3m_count, round(elapsed, 3))
 
     def merge_incremental_1m(self, now: Optional[datetime] = None) -> pd.DataFrame:
-        """Latest-page-only merge — never re-walks the full bootstrap history (docs §4)."""
+        """Latest-page-only merge — never re-walks the full bootstrap history (docs §4).
+
+        2026-08-11 fix (real incident: a confirmed flag's 3m bin silently
+        never became actionable — no exit of an already-held position, no
+        new entry — because the one KIS fetch this function makes had no
+        retry at all; a single transient 500 on this exact call left
+        _df_1m stale until some LATER cycle happened to succeed on its
+        own). Retries on a genuine fetch error the same way the bootstrap/
+        prior-day paging walks already do (PRIOR_DAY_FETCH_RETRIES /
+        PRIOR_DAY_FETCH_RETRY_DELAY_SEC) — an empty response with NO error
+        (legitimately nothing new yet) still returns immediately, unretried.
+        """
         now = now or datetime.now(KST)
-        with self._io_lock:
-            live_df, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, 10, "")
+        live_df = _empty_1m_frame()
+        _diag: dict[str, Any] = {}
+        for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
+            with self._io_lock:
+                live_df, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, 10, "")
+            if not live_df.empty or not _diag.get("error"):
+                break
+            if retry_i < config.PRIOR_DAY_FETCH_RETRIES - 1:
+                time.sleep(config.PRIOR_DAY_FETCH_RETRY_DELAY_SEC)
         with self._history_lock:
             base = self._df_1m
             if live_df.empty:

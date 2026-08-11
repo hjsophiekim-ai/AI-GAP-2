@@ -293,10 +293,13 @@ def test_stale_or_missing_quote_blocks_order_data_invalid():
     assert outcome.block_reason == order_executor.BLOCK_ORDER_DATA_INVALID
 
 
-def test_switch_target_ask_failure_blocks_before_selling_current_position():
+def test_switch_target_ask_failure_blocks_after_exhausting_all_retries():
+    """2026-08-11 fix: a GENUINELY persistent ask1 failure (every retry
+    fails, not just one) must still block -- this is the "real outage"
+    case the retry loop is not meant to paper over."""
     broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0, "0197X0": 10_000.0})
     broker.buy_market("0197X0", 20, "seed")
-    broker.fail_next_ask = True
+    broker.fail_ask_count = order_executor.ASK1_FETCH_RETRIES
     position = PositionSnapshot(symbol="0197X0", quantity=20, avg_price=10_000.0)
 
     outcome = order_executor.execute_signal(
@@ -309,6 +312,27 @@ def test_switch_target_ask_failure_blocks_before_selling_current_position():
     assert broker.get_position("0197X0").quantity == 20
     assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", "0197X0")]
     assert ledger.load_execution_ledger() == []
+
+
+def test_switch_target_ask_transient_failure_is_retried_and_succeeds():
+    """2026-08-11 fix (real incident: a confirmed REVERSAL never placed
+    either leg because get_fresh_ask1() was tried exactly once) -- a
+    single transient ask1 failure must be retried and, once it succeeds,
+    the switch (sell held ETF + buy the new one) must go through exactly
+    as if the first call had never failed."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0, "0197X0": 10_000.0})
+    broker.buy_market("0197X0", 20, "seed")
+    broker.fail_ask_count = 1  # fewer failures than ASK1_FETCH_RETRIES -- must recover
+    position = PositionSnapshot(symbol="0197X0", quantity=20, avg_price=10_000.0)
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-switch-ask-retry-ok",
+        quotes={"0193T0": 15_000.0, "0197X0": 10_000.0}, position=position, budget=10_000_000.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert broker.get_position("0197X0") is None
+    assert broker.get_position("0193T0") is not None
 
 
 def test_insufficient_cash_blocks_qty_lt_1():

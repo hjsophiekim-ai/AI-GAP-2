@@ -27,6 +27,12 @@ class FakeBroker:
         self.next_nrcvb_buy_qty: Optional[int] = None
         self.next_ask1: Optional[float] = None
         self.fail_next_ask = False
+        # Persistent failure simulation: fails the next N get_fresh_ask1()
+        # calls in a row (decrementing each call), then succeeds normally.
+        # Distinct from fail_next_ask (always exactly one failure) so tests
+        # can exercise "genuinely exhausts every retry" vs "one transient
+        # failure, retried successfully".
+        self.fail_ask_count = 0
         self.buy_sizing_quotes: list[BuySizingQuote] = []
         # Partial/zero-fill simulation: caps the NEXT buy's actual fill below
         # the requested qty (docs: 부분체결 / BUY 후 보유 0). None means "fill
@@ -80,6 +86,9 @@ class FakeBroker:
     def get_fresh_ask1(self, symbol: str) -> dict:
         if self.fail_next_ask:
             self.fail_next_ask = False
+            return {"ok": False, "symbol": symbol, "ask1": 0.0, "rt_cd": "1", "msg_cd": "FAKE_ASK", "msg1": "ask failed"}
+        if self.fail_ask_count > 0:
+            self.fail_ask_count -= 1
             return {"ok": False, "symbol": symbol, "ask1": 0.0, "rt_cd": "1", "msg_cd": "FAKE_ASK", "msg1": "ask failed"}
         ask1 = self.next_ask1 if self.next_ask1 is not None else self._quotes.get(symbol)
         return {

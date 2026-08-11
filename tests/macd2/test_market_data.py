@@ -107,6 +107,63 @@ def test_merge_incremental_does_not_refetch_full_history():
     assert merged["datetime"].duplicated().sum() == 0
 
 
+def test_merge_incremental_1m_retries_a_transient_fetch_error():
+    """2026-08-11 fix (real incident: a confirmed flag's 3m bin never
+    became actionable -- no exit of an already-held position, no new
+    entry -- because this call had zero retry on a transient KIS error).
+    A single failed attempt (empty + error) must not be treated the same
+    as a genuine no-data-yet response; it must retry and pick up the real
+    new bar once the fetch succeeds."""
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
+    bootstrap_frame = pd.concat([_fake_bars_df(prior_day, 200), _fake_bars_df(today, 150)], ignore_index=True)
+    incremental_frame = _fake_bars_df(today + timedelta(minutes=150), 3)
+    attempt_count = {"n": 0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, hour1
+        if count > 10:
+            return bootstrap_frame, {}
+        attempt_count["n"] += 1
+        if attempt_count["n"] == 1:
+            return _empty_1m_frame(), {"error": "KIS_500"}
+        return incremental_frame, {}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch)
+    svc.bootstrap(now=today + timedelta(minutes=150, seconds=5))
+    before = svc.get_history_df()
+
+    merged = svc.merge_incremental_1m(now=today + timedelta(minutes=153, seconds=5))
+
+    assert attempt_count["n"] == 2  # first attempt errored, retried once, second succeeded
+    assert len(merged) == len(before) + 3  # the real new bars were NOT lost
+
+
+def test_merge_incremental_1m_no_error_empty_response_returns_immediately():
+    """A legitimately empty response (no error -- nothing new yet) must
+    NOT be retried; only a genuine fetch error triggers a retry."""
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
+    bootstrap_frame = pd.concat([_fake_bars_df(prior_day, 200), _fake_bars_df(today, 150)], ignore_index=True)
+    attempt_count = {"n": 0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, hour1
+        if count > 10:
+            return bootstrap_frame, {}
+        attempt_count["n"] += 1
+        return _empty_1m_frame(), {}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch)
+    svc.bootstrap(now=today + timedelta(minutes=150, seconds=5))
+    before = svc.get_history_df()
+
+    merged = svc.merge_incremental_1m(now=today + timedelta(minutes=153, seconds=5))
+
+    assert attempt_count["n"] == 1  # no retry for a clean empty (no error) response
+    assert len(merged) == len(before)
+
+
 def test_refresh_quotes_populates_all_three_symbols_with_age():
     def fake_quote(mode, symbol):
         del mode

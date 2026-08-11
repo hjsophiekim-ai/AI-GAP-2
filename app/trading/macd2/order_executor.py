@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from app.trading.macd2 import config, ledger
 from app.trading.macd2.broker_adapter import BrokerOrderResult, BuySizingQuote
@@ -56,6 +56,17 @@ BUY_FILL_POLL_INTERVAL_SEC = 1.0
 # primary poll gets, instead of a single instant snapshot.
 POST_CANCEL_RECHECK_RETRIES = 3
 POST_CANCEL_RECHECK_DELAY_SEC = 1.0
+# 2026-08-11 fix (real incident: a confirmed REVERSAL never placed either
+# leg -- no exit of the held position, no new entry -- because the
+# get_fresh_ask1() call backing it was tried exactly once; a transient KIS
+# failure permanently blocked that signal_id with no retry ANYWHERE
+# downstream (unlike a stale-quote block, this one is never revisited by a
+# pending-signal retry on a later tick)). Retry a genuine fetch failure the
+# same few-second window every other KIS-backed retry in this file already
+# gets -- a legitimately STALE ask1 (ask_quote.get("stale")) is a distinct,
+# real signal and is NOT retried here.
+ASK1_FETCH_RETRIES = 3
+ASK1_FETCH_RETRY_DELAY_SEC = 1.0
 
 
 @dataclass
@@ -372,7 +383,15 @@ def execute_signal(
         outcome.block_reason = BLOCK_ASK_QUOTE_FAILED
         outcome.order_failure_stage = BLOCK_ASK_QUOTE_FAILED
         return outcome
-    ask_quote = dict(ask_getter(target_symbol) or {})
+    ask_quote: dict[str, Any] = {}
+    for retry_i in range(ASK1_FETCH_RETRIES):
+        ask_quote = dict(ask_getter(target_symbol) or {})
+        if ask_quote.get("stale") or ask_quote.get("is_stale"):
+            break  # a real, distinct signal -- never retried here
+        if ask_quote.get("ok", False) and float(ask_quote.get("ask1") or 0.0) > 0:
+            break  # succeeded
+        if retry_i < ASK1_FETCH_RETRIES - 1:
+            time.sleep(ASK1_FETCH_RETRY_DELAY_SEC)
     ask1 = float(ask_quote.get("ask1") or 0.0)
     outcome.ask1 = ask1 if ask1 > 0 else None
     outcome.ask1_age = float(ask_quote["age_sec"]) if ask_quote.get("age_sec") is not None else None
