@@ -81,10 +81,24 @@ STOP_LOSS_NET_PCT = _env_float("MU_MACD_STOP_LOSS_NET_PCT", -1.5)
 #   the US DAY SESSION specifically (BAQ=NASDAQ day session, per that file's
 #   own docstring: "미국주간거래(10:00~16:00)... 나스닥: BAQ"). Verified
 #   LIVE_DAY_SESSION empirically on 2026-08-12 (continuously updating LAST/
-#   TVOL/PBID/PASK for 5+ minutes straight, matching the live KIS app). ────
+#   TVOL/PBID/PASK for 5+ minutes straight, matching the live KIS app).
+#
+#   NOT YET RESOLVED (2026-08-12): this module only subscribes to RBAQMU
+#   (day session, 10:00-16:00 KST). The official aftermarket feed DNASMU
+#   ("D"+official rsym from the KIS NASDAQ master file, confirmed "NASMU")
+#   nominally covers 05:00-09:00 KST per THIS PROJECT's own
+#   kis_overseas_minute.classify_session() boundaries -- but that boundary
+#   is this project's own labeling, not something confirmed in KIS's own
+#   docs/master data. Whether DNASMU is actually still LIVE through
+#   09:00-10:00 KST (the gap between that boundary and RBAQMU's 10:00 start)
+#   is UNVERIFIED as of this commit -- a live 3-channel probe
+#   (DNASMU/RBAQMU/the non-official RNASMU, tested only, never for
+#   production) covering 08:55-10:05 KST is planned for the next live
+#   trading day. Do not assume the gap is real, and do not assume DNASMU
+#   integration for pre-09:00 warm-up until that test confirms it. ────────
 WS_URL = "ws://ops.koreainvestment.com:21000/tryitout"
 WS_TR_ID = "HDFSCNT0"
-WS_TR_KEY = f"RBAQ{WATCH_ASSET}"  # "RBAQMU"
+WS_TR_KEY = f"RBAQ{WATCH_ASSET}"  # "RBAQMU" -- DNASMU (aftermarket) integration pending the live boundary test above
 WS_COLUMNS = ("SYMB", "ZDIV", "TYMD", "XYMD", "XHMS", "KYMD", "KHMS", "OPEN", "HIGH", "LOW",
               "LAST", "SIGN", "DIFF", "RATE", "PBID", "PASK", "VBID", "VASK", "EVOL", "TVOL",
               "TAMT", "BIVL", "ASVL", "STRN", "MTYP")
