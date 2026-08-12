@@ -1,9 +1,12 @@
 """MU_MACD market data — KIS overseas WebSocket (official TR_ID=HDFSCNT0,
-tr_key="RBAQMU", per koreainvestment/open-trading-api examples_user/
-overseas_stock/overseas_stock_functions_ws.py) tick stream, aggregated into
-real 1-minute OHLCV bars entirely in-process (no REST minute-chart fallback
-— REST's EXCD=NAS/BAQ paths are both confirmed unable to backfill the day
-session; see the 2026-08-12 research scratchpad for that verification).
+tr_key="RBAQMU" + "DNASMU" on the same connection, per koreainvestment/
+open-trading-api examples_user/overseas_stock/overseas_stock_functions_ws.py)
+tick stream, aggregated into real 1-minute OHLCV bars entirely in-process
+(no REST minute-chart fallback — REST's EXCD=NAS/BAQ paths are both
+confirmed unable to backfill the day session; see the 2026-08-12 research
+scratchpad for that verification). See config.py's WS_TR_KEY_EXTENDED note
+for why DNASMU was added (pre-10:00 KST warm-up gap) and its scope (warm-up
+only -- RBAQMU alone still gates live 10:00-16:00 signals).
 
 Completely separate from app.trading.macd2.market_data.MarketDataService —
 no shared instance, no shared file, no shared symbol history. Only the
@@ -255,12 +258,19 @@ class MUMarketDataService:
         while self._stop_event is not None and not self._stop_event.is_set():
             try:
                 approval_key = get_approval_key(self.mode if self.mode == "real" else "real")
-                subscribe_msg = {
-                    "header": {"approval_key": approval_key, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
-                    "body": {"input": {"tr_id": config.WS_TR_ID, "tr_key": config.WS_TR_KEY}},
-                }
+
+                def _subscribe_msg(tr_key: str) -> str:
+                    return json.dumps({
+                        "header": {"approval_key": approval_key, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
+                        "body": {"input": {"tr_id": config.WS_TR_ID, "tr_key": tr_key}},
+                    })
+
                 async with websockets.connect(config.WS_URL) as ws:
-                    await ws.send(json.dumps(subscribe_msg))
+                    # RBAQMU: live day-session (10:00-16:00 KST) -- gates real signals.
+                    await ws.send(_subscribe_msg(config.WS_TR_KEY))
+                    # DNASMU: pre/after-hours delayed feed on the SAME connection --
+                    # warm-up bars only, see config.py's WS_TR_KEY_EXTENDED note.
+                    await ws.send(_subscribe_msg(config.WS_TR_KEY_EXTENDED))
                     self.ws_connected = True
                     self.ws_subscribed_at = datetime.now(KST)
                     self._ws_reconnect_failures = 0  # connect+subscribe worked -- approval_key is good

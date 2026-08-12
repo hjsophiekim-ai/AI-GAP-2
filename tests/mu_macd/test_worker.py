@@ -128,6 +128,21 @@ def test_new_entry_blocked_when_ws_stale_even_with_valid_flag():
     assert rows[-1]["order_result"] == "BLOCKED"
 
 
+def test_entry_gate_blocks_before_day_session_live_start_even_if_ws_fresh_and_warmed_up():
+    """2026-08-13: DNASMU (pre-day-session feed, see config.WS_TR_KEY_EXTENDED)
+    can now keep ws_last_tick_at fresh and warmup_ready True well before
+    10:00 KST -- this must NOT be enough to allow a real entry before RBAQMU
+    (the actual day-session feed) is live."""
+    now = datetime(2026, 8, 13, 9, 30, tzinfo=KST)  # after SESSION_OPEN(09:00), before DAY_SESSION_LIVE_START(10:00)
+    state = state_store.default_state()
+    state.ws_connected = True
+    state.ws_last_tick_at = now.isoformat()
+    state.warmup_bars_3m_count = config.WARMUP_MIN_3M_BARS
+    state.warmup_ready = True
+
+    assert worker._entry_gate_block_reason(state, now) == config.BLOCK_DAY_SESSION_NOT_LIVE
+
+
 def test_new_entry_blocked_when_warmup_insufficient():
     svc = _build_flat_then_ramp_service(now_minutes_total=20)  # far short of WARMUP_MIN_3M_BARS
     now = _now_after(svc)
