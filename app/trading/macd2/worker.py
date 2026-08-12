@@ -800,7 +800,24 @@ def _quote_status_for_order(market_data: MarketDataService, symbols: tuple[str, 
 
 
 def _required_quote_symbols(direction: Direction, position: Optional[PositionSnapshot]) -> tuple[str, ...]:
-    symbols = [config.WATCH_SYMBOL]
+    """Only the symbols an actual order touches (the currently-held ETF, if
+    any, and the new target ETF) -- never WATCH_SYMBOL(000660).
+
+    2026-08-12 real incident: WATCH_SYMBOL is signal-source-only (never
+    priced/sized/ordered anywhere in order_executor.py) but used to be
+    unconditionally required fresh here too. market_data.refresh_quotes()
+    fetches its 3 symbols sequentially over one real KIS call each (single
+    io_lock, no concurrent KIS calls by design), and WATCH_SYMBOL is fetched
+    first in that sequence -- so by the time the cycle comes back around, its
+    quote is consistently the stalest of the three (observed 13-21s old vs
+    ~2-8s for the traded ETFs on this exact incident date). That alone kept
+    tripping the >QUOTE_MAX_AGE_SEC(10s) check and produced
+    MISSED_SIGNAL_QUOTE_STALE on every single confirmed flag that day (4/4),
+    even though the actually-traded ETF's own quote was fresh enough every
+    time. Dropping the never-traded symbol from this requirement removes a
+    check that was never protecting anything real.
+    """
+    symbols: list[str] = []
     if position is not None and position.quantity > 0 and position.symbol:
         symbols.append(position.symbol)
     target = order_executor.target_symbol_for_direction(direction)
