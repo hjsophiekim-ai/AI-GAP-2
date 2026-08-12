@@ -63,6 +63,22 @@ with c2:
         st.write(result)
         st.rerun()
 
+_qp_cols = st.columns([1.4, 1.6])
+with _qp_cols[0]:
+    _qp_on = st.checkbox(
+        "퀵 Profit 익절", value=bool(status["quick_profit_enabled"]),
+        key="mu_macd_quick_profit_toggle",
+        help=f"보유 중 순수익률이 +{mu_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}% 도달 시 즉시 전량 익절 (MU 플래그/손절과 독립적인 별도 청산 로직)",
+    )
+with _qp_cols[1]:
+    if bool(_qp_on) != bool(status["quick_profit_enabled"]):
+        res = service.set_quick_profit_enabled(bool(_qp_on))
+        if res.get("ok"):
+            st.caption(f"퀵 Profit 익절 → {'ON' if _qp_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(f"퀵 Profit 익절={'ON' if status['quick_profit_enabled'] else 'OFF'}")
+
 st.subheader("WebSocket / Warm-up 상태")
 w1, w2, w3, w4 = st.columns(4)
 w1.metric("WS 연결", "OK" if status["ws_connected"] else "끊김")
@@ -77,6 +93,12 @@ s1, s2, s3 = st.columns(3)
 s1.metric("마이크론 현재가", status["last_mu_price"] if status["last_mu_price"] is not None else "-")
 s2.metric("마지막 플래그 시각(bar 시작 기준)", status["last_flag_display_time"] or "-")
 s3.metric("마지막 플래그 방향", status["last_flag_direction"] or "-")
+
+st.subheader("실시간 ETF 가격")
+e1, e2, e3 = st.columns(3)
+e1.metric(f"레버리지 {mu_config.LONG_SYMBOL}", f"{status['last_long_etf_price']:,.1f}" if status["last_long_etf_price"] is not None else "-")
+e2.metric(f"인버스 {mu_config.INVERSE_SYMBOL}", f"{status['last_inverse_etf_price']:,.1f}" if status["last_inverse_etf_price"] is not None else "-")
+e3.metric("조회 시각", status["last_etf_quote_at"] or "-")
 
 pos = status["position"]
 if pos is not None:
@@ -111,6 +133,7 @@ with st.expander("전략 설명"):
 - **방향→매수**: MU RED → 0193T0(레버리지), MU BLUE → 0197X0(인버스).
 - **반대 플래그**: 보유 포지션 전량매도 후 반대 ETF 매수(entry_gate 통과 시에만 재매수, 매도는 항상 실행).
 - **리스크**: 손절 {mu_config.STOP_LOSS_NET_PCT}%, {mu_config.FORCE_LIQUIDATE_AT} 강제청산 — 매 tick마다 플래그 발생 여부와 무관하게 확인.
+- **퀵 Profit 익절(옵션, 기본 OFF)**: ON이면 순수익률이 +{mu_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절 — MU 플래그와 무관하게 매 tick 확인.
 - **신규진입 차단 조건**(청산에는 영향 없음): WS 끊김/stale(>{mu_config.WS_STALE_MAX_SEC}s), 웜업 3분봉 {mu_config.WARMUP_MIN_3M_BARS}개 미달, 09:00 이전/{mu_config.NEW_ENTRY_CUTOFF} 이후.
         """
     )

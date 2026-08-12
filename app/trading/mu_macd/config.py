@@ -75,6 +75,13 @@ FORCE_LIQUIDATE_AT = time(15, 0)
 # ── Risk (mirrors macd2.config defaults) ────────────────────────────────────
 STOP_LOSS_NET_PCT = _env_float("MU_MACD_STOP_LOSS_NET_PCT", -1.5)
 
+# ── Quick Profit 익절 (optional, OFF by default -- toggled via
+# state.quick_profit_enabled) — when ON, closes the held position the
+# instant its net return reaches this threshold, independent of MU flag
+# state, checked every tick right alongside Stop Loss/Forced Liquidation. ──
+QUICK_PROFIT_TAKE_PROFIT_NET_PCT = _env_float("MU_MACD_QUICK_PROFIT_TAKE_PROFIT_NET_PCT", 2.5)
+QUICK_PROFIT_ENABLED_DEFAULT = _env_bool("MU_MACD_QUICK_PROFIT_ENABLED_DEFAULT", False)
+
 # ── KIS WebSocket (official koreainvestment/open-trading-api spec — see
 # examples_user/overseas_stock/overseas_stock_functions_ws.py):
 #   TR_ID=HDFSCNT0 "해외주식 실시간지연체결가"; tr_key="R"+market+symbol for
@@ -146,6 +153,7 @@ EXIT_STOP_LOSS = "MU_MACD_STOP_LOSS"
 EXIT_FORCED_LIQUIDATION = "MU_MACD_FORCED_LIQUIDATION"
 EXIT_OPPOSITE_SIGNAL = "MU_MACD_OPPOSITE_SIGNAL"
 EXIT_MANUAL_LIQUIDATION = "MU_MACD_MANUAL_LIQUIDATION"
+EXIT_QUICK_PROFIT_TAKE_PROFIT = "MU_MACD_QUICK_PROFIT_TAKE_PROFIT"
 BLOCK_WS_STALE = "MU_MACD_WS_STALE"
 BLOCK_WS_DISCONNECTED = "MU_MACD_WS_DISCONNECTED"
 BLOCK_WARMUP_INSUFFICIENT = "MU_MACD_WARMUP_INSUFFICIENT"

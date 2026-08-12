@@ -182,6 +182,19 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
     state.last_mu_price = market_data.last_price
     state.last_mu_tvol = market_data.last_tvol
 
+    # ── ETF quotes for display -- fetched every tick regardless of position
+    # (existing entry/exit logic below fetches its own quotes when it needs
+    # them for order sizing; this is purely for the UI to show live ETF
+    # prices, not used for any order decision). ─────────────────────────────
+    if hasattr(broker, "get_quote"):
+        long_quote = broker.get_quote(config.LONG_SYMBOL)
+        if long_quote:
+            state.last_long_etf_price = float(long_quote)
+        inverse_quote = broker.get_quote(config.INVERSE_SYMBOL)
+        if inverse_quote:
+            state.last_inverse_etf_price = float(inverse_quote)
+        state.last_etf_quote_at = _now_iso(now)
+
     reconcile = _reconcile_position(broker, state, now)
     result.actions.append(f"RECONCILE:{reconcile}")
 
@@ -203,6 +216,15 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
                 if outcome.final_state == SignalState.EXECUTED:
                     state.position = None
                     result.actions.append(f"STOP_LOSS:{pos.symbol}")
+                    return result
+            elif state.quick_profit_enabled and net_return >= config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT:
+                outcome = order_executor.execute_exit(
+                    broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                    exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT, entry_price=pos.avg_price,
+                )
+                if outcome.final_state == SignalState.EXECUTED:
+                    state.position = None
+                    result.actions.append(f"QUICK_PROFIT_TAKE_PROFIT:{pos.symbol}")
                     return result
         if now.astimezone(KST).time() >= config.FORCE_LIQUIDATE_AT:
             outcome = order_executor.execute_exit(

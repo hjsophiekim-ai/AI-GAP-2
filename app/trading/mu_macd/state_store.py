@@ -32,6 +32,7 @@ def default_state() -> RuntimeState:
     state.mode = config.DEFAULT_MODE_DEFAULT
     state.budget = config.DEFAULT_BUDGET
     state.auto_trade_on = config.AUTO_TRADE_ON_DEFAULT
+    state.quick_profit_enabled = config.QUICK_PROFIT_ENABLED_DEFAULT
     return state
 
 

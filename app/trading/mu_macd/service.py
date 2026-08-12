@@ -75,6 +75,18 @@ class MUMacdService:
             self._worker_thread.start()
             return {"ok": True}
 
+    def set_quick_profit_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional 2.5% Quick Profit take-profit
+        exit. Only updates runtime state -- worker.run_once() reads
+        state.quick_profit_enabled fresh every tick, so this takes effect
+        on the very next tick without a service restart."""
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.quick_profit_enabled)
+        state.quick_profit_enabled = enabled_bool
+        state_store.save_state(state)
+        return {"ok": True, "quick_profit_enabled": enabled_bool, "previous": prev}
+
     def stop(self) -> dict[str, Any]:
         with _LOCK:
             if self._stop_event is not None:
@@ -111,11 +123,15 @@ class MUMacdService:
         return {
             "auto_trade_on": state.auto_trade_on, "mode": state.mode, "budget": state.budget,
             "position": state.position, "worker_alive": self.is_alive(),
+            "quick_profit_enabled": state.quick_profit_enabled,
             "ws_connected": state.ws_connected, "ws_last_tick_at": state.ws_last_tick_at,
             "ws_last_error": state.ws_last_error,
             "warmup_bars_1m_count": state.warmup_bars_1m_count,
             "warmup_bars_3m_count": state.warmup_bars_3m_count, "warmup_ready": state.warmup_ready,
-            "last_mu_price": state.last_mu_price, "last_flag_display_time": state.last_flag_display_time,
+            "last_mu_price": state.last_mu_price,
+            "last_long_etf_price": state.last_long_etf_price, "last_inverse_etf_price": state.last_inverse_etf_price,
+            "last_etf_quote_at": state.last_etf_quote_at,
+            "last_flag_display_time": state.last_flag_display_time,
             "last_flag_direction": state.last_flag_direction, "order_block_reason": state.order_block_reason,
         }
 

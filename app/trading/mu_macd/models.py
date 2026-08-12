@@ -30,6 +30,7 @@ class RuntimeState:
     auto_trade_on: bool = False
     mode: str = "mock"  # "mock" | "real"
     budget: float = 0.0
+    quick_profit_enabled: bool = False
 
     # ── position ─────────────────────────────────────────────────────────
     position: Optional[PositionSnapshot] = None
@@ -60,6 +61,9 @@ class RuntimeState:
     # ── last-tick diagnostics ────────────────────────────────────────────
     last_mu_price: Optional[float] = None
     last_mu_tvol: Optional[int] = None
+    last_long_etf_price: Optional[float] = None  # config.LONG_SYMBOL (0193T0) broker quote
+    last_inverse_etf_price: Optional[float] = None  # config.INVERSE_SYMBOL (0197X0) broker quote
+    last_etf_quote_at: Optional[str] = None
 
     # ── order/gate diagnostics ───────────────────────────────────────────
     order_block_reason: Optional[str] = None

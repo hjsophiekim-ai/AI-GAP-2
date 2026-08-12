@@ -326,3 +326,57 @@ def test_stop_loss_exit_never_blocked_by_ws_staleness():
 
     assert state.position is None
     assert any(a.startswith("STOP_LOSS") for a in result.actions)
+
+
+def test_quick_profit_take_profit_fires_when_enabled_and_threshold_reached():
+    """When quick_profit_enabled is ON, a held position must be closed the
+    instant net return reaches QUICK_PROFIT_TAKE_PROFIT_NET_PCT (2.5%),
+    independent of MU flag state -- mirrors the Stop Loss exit's own
+    'checked every tick, never gated on WS health' behavior."""
+    svc = _build_flat_then_ramp_service(now_minutes_total=100)
+    now = _now_after(svc)
+    svc.ws_connected = False  # exits are never gated on WS health
+    svc.ws_last_tick_at = None
+
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 10_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 100, "seed-long")
+    from app.trading.mu_macd.models import PositionSnapshot
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.auto_trade_on = True
+    state.quick_profit_enabled = True
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=100, avg_price=10_000.0, entry_at=now - timedelta(minutes=30))
+    broker.set_quote(config.LONG_SYMBOL, 10_250.0)  # exactly +2.5% net return
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert state.position is None
+    assert any(a.startswith("QUICK_PROFIT_TAKE_PROFIT") for a in result.actions)
+    long_positions = [p for p in broker.get_positions() if p.symbol == config.LONG_SYMBOL and p.quantity > 0]
+    assert long_positions == []
+
+
+def test_quick_profit_take_profit_does_not_fire_when_disabled():
+    """Default state has quick_profit_enabled=False -- a position past the
+    2.5% threshold must stay held (no auto take-profit) until the user
+    explicitly turns the filter on."""
+    svc = _build_flat_then_ramp_service(now_minutes_total=100)
+    now = _now_after(svc)
+    svc.ws_connected = False
+    svc.ws_last_tick_at = None
+
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 10_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 100, "seed-long")
+    from app.trading.mu_macd.models import PositionSnapshot
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.auto_trade_on = True
+    assert state.quick_profit_enabled is False  # default OFF
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=100, avg_price=10_000.0, entry_at=now - timedelta(minutes=30))
+    broker.set_quote(config.LONG_SYMBOL, 10_500.0)  # +5%, well past the threshold
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert state.position is not None
+    assert state.position.symbol == config.LONG_SYMBOL
+    assert not any(a.startswith("QUICK_PROFIT_TAKE_PROFIT") for a in result.actions)
