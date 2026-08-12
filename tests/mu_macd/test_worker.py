@@ -128,19 +128,20 @@ def test_new_entry_blocked_when_ws_stale_even_with_valid_flag():
     assert rows[-1]["order_result"] == "BLOCKED"
 
 
-def test_entry_gate_blocks_before_day_session_live_start_even_if_ws_fresh_and_warmed_up():
-    """2026-08-13: DNASMU (pre-day-session feed, see config.WS_TR_KEY_EXTENDED)
-    can now keep ws_last_tick_at fresh and warmup_ready True well before
-    10:00 KST -- this must NOT be enough to allow a real entry before RBAQMU
-    (the actual day-session feed) is live."""
-    now = datetime(2026, 8, 13, 9, 30, tzinfo=KST)  # after SESSION_OPEN(09:00), before DAY_SESSION_LIVE_START(10:00)
+def test_entry_gate_allows_entry_at_krx_open_when_dnasmu_warmup_ready():
+    """2026-08-13: explicit product decision -- DNASMU (pre-day-session
+    feed, see config.WS_TR_KEY_EXTENDED) is trusted to drive real entries
+    from KRX open (09:00 KST) onward, same as RBAQMU does from 10:00. A
+    service started ~07:30 should have WARMUP_MIN_3M_BARS by 09:00 and no
+    longer be blocked once WS is fresh and warmed up."""
+    now = datetime(2026, 8, 13, 9, 0, tzinfo=KST)  # exactly SESSION_OPEN
     state = state_store.default_state()
     state.ws_connected = True
     state.ws_last_tick_at = now.isoformat()
     state.warmup_bars_3m_count = config.WARMUP_MIN_3M_BARS
     state.warmup_ready = True
 
-    assert worker._entry_gate_block_reason(state, now) == config.BLOCK_DAY_SESSION_NOT_LIVE
+    assert worker._entry_gate_block_reason(state, now) is None
 
 
 def test_new_entry_blocked_when_warmup_insufficient():

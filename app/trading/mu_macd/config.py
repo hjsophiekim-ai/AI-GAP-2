@@ -69,13 +69,16 @@ EMA_SIGNAL = 9
 
 # ── Session / order-gate times (KST) ────────────────────────────────────────
 SESSION_OPEN = time(9, 0)  # KRX open — the traded ETFs cannot fill before this
-# 2026-08-13: separate from SESSION_OPEN. Before DNASMU (see WS_TR_KEY_EXTENDED),
-# RBAQMU's own silence before 10:00 implicitly blocked entries (WS_STALE).
-# Now that DNASMU can keep ws_last_tick_at fresh from ~05:00 onward, that
-# implicit gate is gone -- this makes the 10:00 day-session-live requirement
-# explicit so a 09:00-10:00 flag computed off delayed premarket ticks can
-# never place a real entry (see worker._entry_gate_block_reason).
-DAY_SESSION_LIVE_START = time(10, 0)
+# 2026-08-13: briefly added a DAY_SESSION_LIVE_START=10:00 gate here (on top
+# of SESSION_OPEN) to stop DNASMU-fed premarket ticks from ever driving a
+# real entry before RBAQMU's day session actually opened. Removed the same
+# day on explicit request: the user wants entries live from KRX open
+# (09:00) itself, having started the WS feed at ~07:30 (90min -> exactly
+# WARMUP_MIN_3M_BARS=30 3m bars by 09:00) and confirmed DNASMU is tracking
+# real MU prices correctly. SESSION_OPEN=09:00 is therefore once again the
+# sole lower bound -- 09:00-10:00 entries now run on DNASMU-fed MACD, same
+# as 10:00-16:00 runs on RBAQMU (both feed the same on_tick aggregator, so
+# the crossover math doesn't care which subscription produced a given bar).
 NEW_ENTRY_CUTOFF = time(14, 55)
 FORCE_LIQUIDATE_AT = time(15, 0)
 
@@ -101,21 +104,24 @@ QUICK_PROFIT_ENABLED_DEFAULT = _env_bool("MU_MACD_QUICK_PROFIT_ENABLED_DEFAULT",
 #   ticks at all before the day session opens) -- explicitly requested by
 #   the user to be closed today ("MU 실시간 장외거래 가격 지금 바로"). Now
 #   ALSO subscribing to DNASMU ("D"+official rsym "NASMU" from the KIS
-#   NASDAQ master file) on the SAME WS connection -- this is the standard
-#   HDFSCNT0 15-min-delayed overseas quote that (per KIS's general
-#   pre/regular/after-hours convention for "D"-prefixed tr_keys) should
-#   continuously cover the pre-day-session morning window, feeding
-#   warm-up bars only. This was previously flagged UNVERIFIED (a live
-#   08:55-10:05 KST boundary probe was planned but never run/committed) --
-#   it is being enabled now on that explicit request, not because the
-#   probe happened. RBAQMU remains the sole feed actually gating/driving
-#   live 10:00-16:00 order signals; DNASMU only ever fills warmup_bars_*
-#   before that. Watch ws_last_error / warmup_bars_3m_count closely the
-#   first few mornings this runs. ────────────────────────────────────────
+#   NASDAQ master file) on the SAME WS connection to cover the
+#   pre-day-session morning window. This was previously flagged UNVERIFIED
+#   (a live boundary probe was planned but never run/committed) -- the
+#   user has since redeployed and confirmed DNASMU prices track real MU
+#   prices correctly.
+#
+#   Same day: explicit product decision to trade on it, not just warm up
+#   with it -- the user starts the WS feed ~07:30 KST (90min -> exactly
+#   WARMUP_MIN_3M_BARS=30 3m bars by KRX open) specifically so real entries
+#   can fire from SESSION_OPEN=09:00 onward, same as RBAQMU drives them from
+#   10:00. There is no code-level distinction between the two feeds once
+#   ticks reach on_tick() -- both are trusted as real signal input across
+#   their respective windows. Watch ws_last_error / warmup_bars_3m_count
+#   closely if this is ever revisited. ────────────────────────────────────
 WS_URL = "ws://ops.koreainvestment.com:21000/tryitout"
 WS_TR_ID = "HDFSCNT0"
 WS_TR_KEY = f"RBAQ{WATCH_ASSET}"  # "RBAQMU" -- day session, 10:00-16:00 KST, LIVE (verified 2026-08-12)
-WS_TR_KEY_EXTENDED = f"DNAS{WATCH_ASSET}"  # "DNASMU" -- pre/after-hours delayed feed, warm-up only (see note above)
+WS_TR_KEY_EXTENDED = f"DNAS{WATCH_ASSET}"  # "DNASMU" -- pre/after-hours feed, drives 09:00-10:00 entries too (see note above)
 WS_COLUMNS = ("SYMB", "ZDIV", "TYMD", "XYMD", "XHMS", "KYMD", "KHMS", "OPEN", "HIGH", "LOW",
               "LAST", "SIGN", "DIFF", "RATE", "PBID", "PASK", "VBID", "VASK", "EVOL", "TVOL",
               "TAMT", "BIVL", "ASVL", "STRN", "MTYP")
@@ -168,6 +174,5 @@ BLOCK_WS_STALE = "MU_MACD_WS_STALE"
 BLOCK_WS_DISCONNECTED = "MU_MACD_WS_DISCONNECTED"
 BLOCK_WARMUP_INSUFFICIENT = "MU_MACD_WARMUP_INSUFFICIENT"
 BLOCK_ENTRY_WINDOW_CLOSED = "MU_MACD_ENTRY_WINDOW_CLOSED"
-BLOCK_DAY_SESSION_NOT_LIVE = "MU_MACD_DAY_SESSION_NOT_LIVE"  # before DAY_SESSION_LIVE_START -- see its comment above
 BLOCK_SAME_DIRECTION_HELD = "MU_MACD_SAME_DIRECTION_HELD"
 BLOCK_DUPLICATE_SIGNAL = "MU_MACD_DUPLICATE_SIGNAL"

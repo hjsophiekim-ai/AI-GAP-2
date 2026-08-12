@@ -5,8 +5,8 @@ tick stream, aggregated into real 1-minute OHLCV bars entirely in-process
 (no REST minute-chart fallback — REST's EXCD=NAS/BAQ paths are both
 confirmed unable to backfill the day session; see the 2026-08-12 research
 scratchpad for that verification). See config.py's WS_TR_KEY_EXTENDED note
-for why DNASMU was added (pre-10:00 KST warm-up gap) and its scope (warm-up
-only -- RBAQMU alone still gates live 10:00-16:00 signals).
+for why DNASMU was added (pre-10:00 KST warm-up gap) -- as of 2026-08-13 it
+also drives real 09:00-10:00 entries (product decision, not just warm-up).
 
 Completely separate from app.trading.macd2.market_data.MarketDataService —
 no shared instance, no shared file, no shared symbol history. Only the
@@ -266,10 +266,11 @@ class MUMarketDataService:
                     })
 
                 async with websockets.connect(config.WS_URL) as ws:
-                    # RBAQMU: live day-session (10:00-16:00 KST) -- gates real signals.
+                    # RBAQMU: live day-session (10:00-16:00 KST).
                     await ws.send(_subscribe_msg(config.WS_TR_KEY))
-                    # DNASMU: pre/after-hours delayed feed on the SAME connection --
-                    # warm-up bars only, see config.py's WS_TR_KEY_EXTENDED note.
+                    # DNASMU: pre/after-hours feed on the SAME connection -- feeds
+                    # warm-up AND (since 2026-08-13) real 09:00-10:00 entries too,
+                    # see config.py's WS_TR_KEY_EXTENDED note.
                     await ws.send(_subscribe_msg(config.WS_TR_KEY_EXTENDED))
                     self.ws_connected = True
                     self.ws_subscribed_at = datetime.now(KST)
