@@ -224,7 +224,7 @@ def _record_leg(
     *, broker_mode: str, signal_id: str, symbol: str, side: str, qty: int,
     price: float, position_before: int, position_after: int, exit_reason: str,
     order_result: BrokerOrderResult, entry_price: float, confirmed_at: str,
-    requested_qty: Optional[int] = None,
+    requested_qty: Optional[int] = None, ledger_module: Any = None,
 ) -> None:
     """``qty`` is the REAL (reconciled) quantity that changed hands — used for
     fee/PnL math and the ledger's own ``executed_qty`` column (never the
@@ -233,7 +233,15 @@ def _record_leg(
     ``requested_qty`` (defaults to ``qty`` — true for every SELL/exit leg,
     which already reconciles to the exact held quantity) records the
     originally-requested BUY size separately so a partial fill stays visible
-    in the ledger."""
+    in the ledger.
+
+    ``ledger_module`` (2026-08-13) — defaults to this module's own
+    app.trading.macd2.ledger import, so every existing macd2 caller is
+    byte-for-byte unaffected. A caller outside macd2 (e.g. mu_macd's worker,
+    which reuses this generic executor) passes its OWN ledger module here so
+    its executions land in its own execution ledger file instead of
+    silently writing into macd2's."""
+    lm = ledger_module if ledger_module is not None else ledger
     cost_engine = TradeCostEngine()
     if side == "SELL":
         cost = cost_engine.compute_net_pnl(
@@ -244,7 +252,7 @@ def _record_leg(
         cost = cost_engine.compute_trade_cost(symbol, "BUY", price, qty, order_type="market")
         gross_pnl, fee, slippage, net_pnl = 0.0, cost["fee"], 0.0, 0.0
 
-    ledger.append_execution({
+    lm.append_execution({
         "order_id": order_result.order_id, "signal_id": signal_id, "timestamp": confirmed_at,
         "mode": broker_mode, "symbol": symbol, "side": side,
         "requested_qty": requested_qty if requested_qty is not None else qty,
@@ -338,6 +346,7 @@ def execute_signal(
     processed_signal_ids: frozenset[str] = frozenset(),
     reconcile_retries: int = 5,
     reconcile_delay_sec: float = 0.5,
+    ledger_module: Any = None,
 ) -> ExecutionOutcome:
     """Idempotent signal_id execution: entry (flat) or direction switch.
 
@@ -446,7 +455,7 @@ def execute_signal(
             ),
             position_before=held_qty, position_after=0, exit_reason=config.EXIT_OPPOSITE_SIGNAL,
             order_result=sell_result, entry_price=position.avg_price if position else 0.0,
-            confirmed_at=timestamps["sell_confirmed_at"],
+            confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
         )
 
     sizing_getter = getattr(broker, "get_buy_sizing_quote", None)
@@ -591,6 +600,7 @@ def execute_signal(
         exit_reason="", order_result=buy_result,
         entry_price=filled_avg_price or buy_result.executed_price or order_price,
         confirmed_at=timestamps["buy_confirmed_at"], requested_qty=requested_qty,
+        ledger_module=ledger_module,
     )
     outcome.final_state = SignalState.EXECUTED
     return outcome
@@ -605,6 +615,7 @@ def execute_exit(
     entry_price: float,
     reconcile_retries: int = 5,
     reconcile_delay_sec: float = 0.5,
+    ledger_module: Any = None,
 ) -> ExecutionOutcome:
     """Sell-only exit (STOP_LOSS / PROFIT_LOCK / FORCED_LIQUIDATION) — no follow-up BUY.
     Confirms execution then reconciles the holding to 0 before recording it.
@@ -648,7 +659,7 @@ def execute_exit(
         price=sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price,
         position_before=quantity, position_after=0,
         exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
-        confirmed_at=timestamps["sell_confirmed_at"],
+        confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
     )
     outcome.final_state = SignalState.EXECUTED
     outcome.block_reason = exit_reason

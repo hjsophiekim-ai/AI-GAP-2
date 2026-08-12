@@ -63,6 +63,34 @@ with c2:
         st.write(result)
         st.rerun()
 
+st.caption("수동 진입 (MU MACD 신호 확정 무시, 현재 예산 내 즉시 전량매수 — 이미 보유 중이면 거부)")
+m1, m2 = st.columns(2)
+with m1:
+    if st.button("현재시점 레드(레버리지) 전량매수", use_container_width=True):
+        res = service.manual_entry("UP_RED")
+        if res.get("ok"):
+            st.success(f"레버리지 매수 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
+        else:
+            st.error(f"레버리지 매수 실패: {res.get('message') or res.get('block_reason')}")
+        st.rerun()
+with m2:
+    if st.button("현재시점 블루(인버스) 전량매수", use_container_width=True):
+        res = service.manual_entry("DOWN_BLUE")
+        if res.get("ok"):
+            st.success(f"인버스 매수 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
+        else:
+            st.error(f"인버스 매수 실패: {res.get('message') or res.get('block_reason')}")
+        st.rerun()
+
+st.caption("수동 전량청산 (자동매매는 계속 유지, 현재 보유 포지션만 지금 즉시 매도)")
+if st.button("현재 보유물량 전량청산", use_container_width=True):
+    res = service.manual_exit()
+    if res.get("ok"):
+        st.success(f"전량청산 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
+    else:
+        st.error(f"전량청산 실패: {res.get('message') or res.get('block_reason')}")
+    st.rerun()
+
 _qp_cols = st.columns([1.4, 1.6])
 with _qp_cols[0]:
     _qp_on = st.checkbox(

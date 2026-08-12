@@ -106,6 +106,15 @@ def test_worker_matches_independent_macd_recomputation_and_places_expected_order
     assert rows[0]["signal_rule"] == config.SIGNAL_RULE
     assert rows[0]["strategy_name"] == config.STRATEGY_NAME
 
+    # 2026-08-13 regression lock: order_executor.execute_signal is shared
+    # with macd2 -- its _record_leg used to hardcode macd2's OWN ledger
+    # module, so every MU_MACD execution silently landed in macd2's
+    # execution ledger instead of mu_macd's own. Must land here now.
+    exec_rows = ledger.load_execution_ledger()
+    assert len(exec_rows) == 1
+    assert exec_rows[0]["symbol"] == config.LONG_SYMBOL
+    assert exec_rows[0]["side"] == "BUY"
+
 
 def test_new_entry_blocked_when_ws_stale_even_with_valid_flag():
     svc = _build_flat_then_ramp_service()

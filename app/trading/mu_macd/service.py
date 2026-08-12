@@ -12,15 +12,47 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
+from app.trading.macd2 import order_executor
 from app.trading.macd2.broker_adapter import create_macd2_broker
+from app.trading.macd2.models import SignalState
 from app.trading.mu_macd import config, ledger, state_store, worker
 from app.trading.mu_macd.market_data import MUMarketDataService
-from app.trading.mu_macd.models import RuntimeState
+from app.trading.mu_macd.models import Direction, PositionSnapshot, RuntimeState
 
 KST = config.KST
 WORKER_INTERVAL_SEC = 2.0
 
 _LOCK = threading.Lock()  # MU_MACD's own in-process lock — never shared with macd2/tsla_auto
+
+
+def _record_manual_signal(
+    state: RuntimeState, *, signal_id: str, signal_type: str, direction: Optional[Direction],
+    now: datetime, order_result: str, block_reason: Optional[str],
+) -> None:
+    """Signal-ledger row for a manual buy/liquidate button click (2026-08-13)
+    — mirrors macd2.service's _record_manual_entry_signal/
+    _record_manual_liquidation_signal, adapted to MU_MACD's own (smaller)
+    SIGNAL_LEDGER_COLUMNS schema. Execution-ledger recording already
+    happens inside order_executor.execute_signal/execute_exit itself (via
+    ledger_module=ledger, MU_MACD's OWN ledger module -- never macd2's)."""
+    ledger.append_signal({
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "confirmed_at": now.isoformat(),
+        "signal_id": signal_id,
+        "signal_type": signal_type,
+        "direction": direction.value if direction is not None else "",
+        "detected_at": now.isoformat(),
+        "order_result": order_result,
+        "block_reason": block_reason or "",
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": f"{signal_type}_UI_BUTTON",
+        "worker_instance_id": state.worker_instance_id or "",
+        "ws_connected": state.ws_connected, "ws_last_tick_at": state.ws_last_tick_at or "",
+        "ws_last_error": state.ws_last_error or "",
+        "warmup_bars_3m_count": state.warmup_bars_3m_count, "warmup_ready": state.warmup_ready,
+        "final_result": f"{order_result}:{block_reason}" if block_reason else order_result,
+    })
 
 
 class MUMacdService:
@@ -86,6 +118,123 @@ class MUMacdService:
         state.quick_profit_enabled = enabled_bool
         state_store.save_state(state)
         return {"ok": True, "quick_profit_enabled": enabled_bool, "previous": prev}
+
+    def manual_entry(self, direction: str) -> dict[str, Any]:
+        """UI 수동 진입 버튼 ("현재시점 레드(레버리지)/블루(인버스) 전량매수")
+        — 2026-08-13 추가, macd2.service.manual_entry와 동일한 정책을 그대로
+        따른다. MU MACD 신호 확정(3분봉 크로스오버)을 전혀 거치지 않고,
+        지정한 방향의 ETF를 현재 예산 내에서 즉시 시장가 매수한다
+        (order_executor.execute_signal 재사용 — 별도 매수/사이징 로직 재구현
+        없음, ledger_module=MU_MACD 자신의 ledger 모듈이라 체결이 macd2
+        원장이 아니라 mu_macd_execution_ledger.csv에 기록된다). 이미
+        포지션을 보유 중이면 거부하고 아무 것도 하지 않는다(전량매도 후
+        스위칭은 이 버튼의 범위 밖 — 먼저 수동 전량청산을 누른 뒤 다시
+        호출해야 한다). 체결 성공 시 이후의 손절/퀵프로핏/반대플래그청산/
+        강제청산은 전부 기존 run_once가 매 tick(WORKER_INTERVAL_SEC=2초)마다
+        정상적으로 이 포지션을 관리한다 — state.position이 어떻게
+        채워졌는지 worker.py는 구분하지 않는다."""
+        if direction not in (Direction.UP_RED.value, Direction.DOWN_BLUE.value):
+            return {"ok": False, "message": "INVALID_DIRECTION"}
+        if not self.is_alive():
+            return {"ok": False, "message": "WORKER_NOT_RUNNING"}
+        if self._broker is None:
+            return {"ok": False, "message": "NOT_STARTED"}
+
+        state = state_store.load_state()
+        if not state.auto_trade_on:
+            return {"ok": False, "message": "AUTO_TRADE_OFF"}
+        if state.position is not None and state.position.quantity > 0:
+            return {"ok": False, "message": "ALREADY_HOLDING_POSITION"}
+
+        direction_enum = Direction(direction)
+        target_symbol = order_executor.target_symbol_for_direction(direction_enum)
+        now = datetime.now(KST)
+        quote = self._broker.get_quote(target_symbol) if hasattr(self._broker, "get_quote") else None
+        if not quote:
+            return {"ok": False, "message": "QUOTE_UNAVAILABLE"}
+
+        signal_id = f"MANUAL_{direction}_{now.strftime('%Y%m%d%H%M%S')}"
+        outcome = order_executor.execute_signal(
+            broker=self._broker, direction=direction_enum, signal_id=signal_id,
+            quotes={target_symbol: float(quote)}, position=None, budget=state.budget,
+            ledger_module=ledger,
+        )
+
+        if outcome.final_state == SignalState.EXECUTED:
+            state.position = PositionSnapshot(
+                symbol=target_symbol, quantity=outcome.quantity,
+                avg_price=outcome.filled_avg_price or 0.0, entry_at=now,
+            )
+        else:
+            state.order_block_reason = outcome.block_reason
+        _record_manual_signal(
+            state, signal_id=signal_id, signal_type="MANUAL_ENTRY", direction=direction_enum,
+            now=now, order_result=outcome.final_state.value, block_reason=outcome.block_reason,
+        )
+        state_store.save_state(state)
+
+        return {
+            "ok": outcome.final_state == SignalState.EXECUTED,
+            "final_state": outcome.final_state.value,
+            "block_reason": outcome.block_reason,
+            "symbol": target_symbol,
+            "quantity": outcome.quantity,
+            "price": outcome.filled_avg_price or outcome.order_price,
+        }
+
+    def manual_exit(self) -> dict[str, Any]:
+        """수동 진입 버튼과 짝을 이루는 "현재 보유물량 전량청산" 버튼
+        (2026-08-13 추가) — 현재 보유 중인 포지션을 지금 즉시 시장가로
+        전량 매도한다(order_executor.execute_exit 재사용 — STOP_LOSS/
+        FORCED_LIQUIDATION과 동일한, 이미 검증된 매도 경로,
+        exit_reason=EXIT_MANUAL_LIQUIDATION). auto_trade_on은 그대로
+        두므로 다음 확정 신호부터 기존 run_once가 계속 정상적으로
+        감시/매매한다."""
+        if not self.is_alive():
+            return {"ok": False, "message": "WORKER_NOT_RUNNING"}
+        if self._broker is None:
+            return {"ok": False, "message": "NOT_STARTED"}
+
+        state = state_store.load_state()
+        if not state.auto_trade_on:
+            return {"ok": False, "message": "AUTO_TRADE_OFF"}
+        if state.position is None or state.position.quantity <= 0:
+            return {"ok": False, "message": "NO_POSITION_TO_SELL"}
+
+        pos = state.position
+        now = datetime.now(KST)
+        signal_id = f"MANUAL_EXIT_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+        outcome = order_executor.execute_exit(
+            broker=self._broker, symbol=pos.symbol, quantity=pos.quantity,
+            exit_reason=config.EXIT_MANUAL_LIQUIDATION, entry_price=pos.avg_price,
+            ledger_module=ledger,
+        )
+
+        if pos.symbol == config.LONG_SYMBOL:
+            direction: Optional[Direction] = Direction.UP_RED
+        elif pos.symbol == config.INVERSE_SYMBOL:
+            direction = Direction.DOWN_BLUE
+        else:
+            direction = None
+
+        if outcome.final_state == SignalState.EXECUTED:
+            state.position = None
+        else:
+            state.order_block_reason = outcome.block_reason
+        _record_manual_signal(
+            state, signal_id=signal_id, signal_type="MANUAL_LIQUIDATION", direction=direction,
+            now=now, order_result=outcome.final_state.value, block_reason=outcome.block_reason,
+        )
+        state_store.save_state(state)
+
+        return {
+            "ok": outcome.final_state == SignalState.EXECUTED,
+            "final_state": outcome.final_state.value,
+            "block_reason": outcome.block_reason,
+            "symbol": pos.symbol,
+            "quantity": pos.quantity,
+            "price": outcome.sell_result.executed_price if outcome.sell_result else None,
+        }
 
     def stop(self) -> dict[str, Any]:
         with _LOCK:

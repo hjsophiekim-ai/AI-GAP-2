@@ -212,6 +212,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
                 outcome = order_executor.execute_exit(
                     broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                     exit_reason=config.EXIT_STOP_LOSS, entry_price=pos.avg_price,
+                    ledger_module=ledger,
                 )
                 if outcome.final_state == SignalState.EXECUTED:
                     state.position = None
@@ -221,6 +222,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
                 outcome = order_executor.execute_exit(
                     broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                     exit_reason=config.EXIT_QUICK_PROFIT_TAKE_PROFIT, entry_price=pos.avg_price,
+                    ledger_module=ledger,
                 )
                 if outcome.final_state == SignalState.EXECUTED:
                     state.position = None
@@ -230,6 +232,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
             outcome = order_executor.execute_exit(
                 broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                 exit_reason=config.EXIT_FORCED_LIQUIDATION, entry_price=pos.avg_price,
+                ledger_module=ledger,
             )
             if outcome.final_state == SignalState.EXECUTED:
                 state.position = None
@@ -293,6 +296,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
             outcome = order_executor.execute_exit(
                 broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                 exit_reason=config.EXIT_OPPOSITE_SIGNAL, entry_price=pos.avg_price,
+                ledger_module=ledger,
             )
             signal_id = _record_signal(
                 state=state, bar_start=bar_start, confirmed_at=confirmed_at, direction=confirmed_direction,
@@ -315,6 +319,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
         outcome = order_executor.execute_signal(
             broker=broker, direction=confirmed_direction, signal_id=str(uuid.uuid4()),
             quotes=quotes, position=pos, budget=state.budget,
+            ledger_module=ledger,
         )
         signal_id = _record_signal(
             state=state, bar_start=bar_start, confirmed_at=confirmed_at, direction=confirmed_direction,
@@ -350,6 +355,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
     outcome = order_executor.execute_signal(
         broker=broker, direction=confirmed_direction, signal_id=str(uuid.uuid4()),
         quotes=quotes, position=None, budget=state.budget,
+        ledger_module=ledger,
     )
     _record_signal(
         state=state, bar_start=bar_start, confirmed_at=confirmed_at, direction=confirmed_direction,
