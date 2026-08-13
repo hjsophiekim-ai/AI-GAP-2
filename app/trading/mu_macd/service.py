@@ -265,6 +265,36 @@ class MUMacdService:
             "price": outcome.sell_result.executed_price if outcome.sell_result else None,
         }
 
+    def _auto_recover_worker(self, state: RuntimeState) -> bool:
+        """2026-08-13 fix (real incident: a held position rode a real loss
+        past STOP_LOSS_NET_PCT and a confirmed flag with neither ever
+        acting, because the process had restarted -- Render idle-sleep or
+        a redeploy -- and nobody had clicked "시작" again since; MU_MACD's
+        Worker/broker/market-data are plain in-process attributes with no
+        persistence, so run_once() simply stopped executing entirely).
+        Mirrors macd2.service._auto_recover_worker exactly: retries the
+        same start() path automatically -- MOCK mode only, REAL mode must
+        always go through the UI's explicit confirm-text re-entry, never
+        silently reactivated -- rate-limited by
+        config.WORKER_AUTO_RECOVER_COOLDOWN_SEC so a persistently-failing
+        bootstrap can't hammer KIS on every UI auto-refresh tick. Returns
+        True if a live worker resulted."""
+        if state.mode != "mock":
+            return False
+        last_attempt = None
+        if state.last_auto_recover_attempt_at:
+            try:
+                last_attempt = datetime.fromisoformat(state.last_auto_recover_attempt_at)
+            except ValueError:
+                last_attempt = None
+        now = datetime.now(KST)
+        if last_attempt is not None and (now - last_attempt).total_seconds() < config.WORKER_AUTO_RECOVER_COOLDOWN_SEC:
+            return False
+        state.last_auto_recover_attempt_at = now.isoformat()
+        state_store.save_state(state)
+        result = self.start(mode=state.mode, budget=state.budget)
+        return bool(result.get("ok")) and self.is_alive()
+
     def stop(self) -> dict[str, Any]:
         with _LOCK:
             if self._stop_event is not None:
@@ -307,6 +337,9 @@ class MUMacdService:
 
     def status(self) -> dict[str, Any]:
         state = state_store.load_state()
+        if state.auto_trade_on and not self.is_alive():
+            if self._auto_recover_worker(state):
+                state = state_store.load_state()
         return {
             "auto_trade_on": state.auto_trade_on, "mode": state.mode, "budget": state.budget,
             "position": state.position, "worker_alive": self.is_alive(),

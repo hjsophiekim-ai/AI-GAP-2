@@ -77,6 +77,10 @@ class RuntimeState:
     worker_started_at: Optional[str] = None
     tick_seq_total: int = 0
     last_tick_at: Optional[str] = None
+    # 2026-08-13 fix: last time status() auto-restarted a dead worker thread
+    # after a process restart (Render idle-sleep/redeploy) -- rate-limits
+    # recovery attempts, see config.WORKER_AUTO_RECOVER_COOLDOWN_SEC.
+    last_auto_recover_attempt_at: Optional[str] = None
 
 
 @dataclass

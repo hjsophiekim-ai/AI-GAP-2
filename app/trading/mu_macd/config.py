@@ -150,6 +150,20 @@ RECONCILE_INTERVAL_SEC_WHEN_FLAT = _env_float("MU_MACD_RECONCILE_INTERVAL_SEC_WH
 # its EMA can be trusted; this gate exists for exactly that reason.
 WARMUP_MIN_3M_BARS = _env_int("MU_MACD_WARMUP_MIN_3M_BARS", 30)  # ~90 min
 
+# 2026-08-13 real incident: a held leverage position rode a real -190,000원
+# loss (well past STOP_LOSS_NET_PCT) and a confirmed BLUE flag with NEITHER
+# ever acting -- because the process had restarted (Render idle-sleep or a
+# redeploy; MU_MACD's Worker/broker/market-data are plain in-process
+# attributes with no persistence) and nobody had clicked "시작" again since,
+# so run_once() simply never executed. macd2 hit and fixed this exact class
+# of bug on 2026-08-04 (see its WORKER_AUTO_RECOVER_COOLDOWN_SEC/
+# _auto_recover_worker) -- MU_MACD never got the same fix until now.
+# status() retries start() automatically (MOCK mode only -- REAL mode still
+# always requires the human to re-enter confirm text) whenever it finds
+# auto_trade_on=True but no live worker, rate-limited by this cooldown so a
+# persistently-failing bootstrap can't hammer KIS on every UI auto-refresh.
+WORKER_AUTO_RECOVER_COOLDOWN_SEC = _env_float("MU_MACD_WORKER_AUTO_RECOVER_COOLDOWN_SEC", 30.0)
+
 # ── Runtime file paths — ALL distinct from macd2/tsla_auto, same LOGS_DIR/
 # STATE_DIR/CACHE_DIR root (app.utils.data_paths — Render-persistent-disk
 # aware) so redeploys don't lose history, but never the same filename. ─────

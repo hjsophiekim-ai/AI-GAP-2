@@ -208,3 +208,55 @@ def test_quick_profit_toggle_survives_concurrent_stale_worker_tick_save():
 
     assert result_holder["result"]["ok"] is True
     assert state_store.load_state().quick_profit_enabled is True  # NOT clobbered
+
+
+# ── auto-recovery after a process restart (2026-08-13 fix) — mirrors ────────
+# macd2's own auto-recovery for the exact same incident class: a real held
+# position rode a loss past STOP_LOSS_NET_PCT and a confirmed flag with
+# neither ever acting, because the process had restarted (Render idle-sleep
+# or a redeploy) and nobody had clicked "시작" again -- run_once() simply
+# never executed. status() must now recover on its own instead of silently
+# doing nothing until a human notices.
+
+def test_status_auto_recovers_worker_when_auto_trade_on_but_dead():
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.budget = 1_000_000.0
+    state.auto_trade_on = True
+    state_store.save_state(state)
+
+    svc = MUMacdService()
+    assert not svc.is_alive()
+
+    status = svc.status()
+
+    assert status["worker_alive"] is True
+    assert svc.is_alive()
+    svc.stop()  # cleanup: stop the real threads this recovery spun up
+
+
+def test_auto_recover_worker_respects_cooldown():
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.auto_trade_on = True
+    state.last_auto_recover_attempt_at = datetime.now(KST).isoformat()  # just attempted
+    state_store.save_state(state)
+
+    svc = MUMacdService()
+    recovered = svc._auto_recover_worker(state_store.load_state())
+
+    assert recovered is False  # cooldown still active -- no new attempt
+    assert not svc.is_alive()
+
+
+def test_auto_recover_worker_never_triggers_for_real_mode():
+    state = state_store.default_state()
+    state.mode = "real"
+    state.auto_trade_on = True
+    state_store.save_state(state)
+
+    svc = MUMacdService()
+    recovered = svc._auto_recover_worker(state_store.load_state())
+
+    assert recovered is False
+    assert not svc.is_alive()
