@@ -439,6 +439,21 @@ def execute_signal(
             broker, held_symbol, retries=reconcile_retries, delay_sec=reconcile_delay_sec,
         )
         outcome.sell_qty_after = qty_after
+        if qty_after != 0:
+            # 2026-08-13 fix (real incident: a MU_MACD reversal's SELL
+            # cleared at the broker, but real KIS settlement latency meant
+            # the primary reconcile window gave up before the position
+            # actually hit zero -- the whole reversal aborted with NO
+            # execution-ledger row for a sell that really happened, and the
+            # follow-up BUY into the opposite ETF was never even attempted).
+            # execute_exit already got this exact "give real settlement one
+            # more window" recheck on 2026-08-10 (see
+            # test_sell_settles_to_zero_on_recheck_after_slow_reconcile) --
+            # this reversal-SELL leg never did. Same recheck now, here too.
+            qty_after = _reconcile_to_zero(
+                broker, held_symbol, retries=POST_CANCEL_RECHECK_RETRIES, delay_sec=POST_CANCEL_RECHECK_DELAY_SEC,
+            )
+            outcome.sell_qty_after = qty_after
         timestamps["sell_reconciled_at"] = _now_iso()
         if qty_after != 0:
             outcome.final_state = SignalState.FAILED

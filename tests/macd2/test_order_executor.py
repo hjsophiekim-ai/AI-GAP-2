@@ -380,6 +380,41 @@ def test_reconcile_failure_blocks_before_buy(monkeypatch):
     assert broker.get_position("0193T0") is None
 
 
+def test_reversal_sell_settles_to_zero_on_recheck_after_slow_reconcile(monkeypatch):
+    """2026-08-13 fix (real MU_MACD incident: a BLUE flag while holding the
+    leverage ETF should SELL it then BUY the inverse ETF; the SELL cleared
+    at the broker but reconcile lagged past the primary window, aborting
+    the whole reversal with block_reason=SELL_NOT_CONFIRMED_QTY_NONZERO --
+    no execution-ledger row for the real sell, and the inverse BUY never
+    even attempted). execute_exit already had this exact recheck (see
+    test_sell_settles_to_zero_on_recheck_after_slow_reconcile above) --
+    execute_signal's own reversal-SELL leg did not, until this fix."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0, "0197X0": 10_000.0})
+    broker.buy_market("0193T0", 20, "seed")  # holding leverage
+    position = PositionSnapshot(symbol="0193T0", quantity=20, avg_price=15_000.0)
+    real_reconcile = broker.reconcile_position
+    call_count = {"n": 0}
+
+    def flaky_reconcile(symbol):
+        call_count["n"] += 1
+        return 20 if call_count["n"] <= 2 else real_reconcile(symbol)
+
+    monkeypatch.setattr(broker, "reconcile_position", flaky_reconcile)
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.DOWN_BLUE, signal_id="sig-reversal",
+        quotes={"0193T0": 15_000.0, "0197X0": 10_000.0}, position=position, budget=10_000_000.0,
+        reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED  # reversal completed -- BUY leg also ran
+    assert outcome.target_symbol == "0197X0"
+    rows = ledger.load_execution_ledger()
+    sides = {r["symbol"]: r["side"] for r in rows}
+    assert sides.get("0193T0") == "SELL"  # the real sell is now recorded
+    assert sides.get("0197X0") == "BUY"   # and the follow-up buy actually ran
+
+
 def test_sell_settles_to_zero_on_recheck_after_slow_reconcile(monkeypatch):
     """2026-08-10 fix: reconcile_position() lagging past the first poll
     window is not the same as a genuine sell failure (KIS mock server lag
