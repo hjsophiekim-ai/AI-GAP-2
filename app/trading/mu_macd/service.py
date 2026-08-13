@@ -118,12 +118,26 @@ class MUMacdService:
         """UI command: toggle the optional 2.5% Quick Profit take-profit
         exit. Only updates runtime state -- worker.run_once() reads
         state.quick_profit_enabled fresh every tick, so this takes effect
-        on the very next tick without a service restart."""
-        state = state_store.load_state()
-        enabled_bool = bool(enabled)
-        prev = bool(state.quick_profit_enabled)
-        state.quick_profit_enabled = enabled_bool
-        state_store.save_state(state)
+        on the very next tick without a service restart.
+
+        2026-08-13 fix (real incident: toggling ON, then a later page
+        refresh showed it OFF again): this load-modify-save had NO locking
+        against _run_loop's OWN load-run_once-save cycle (every
+        WORKER_INTERVAL_SEC=2s, on a separate thread). If a toggle landed
+        between the worker tick's load and its save, the tick's save would
+        silently clobber the toggle back to whatever it loaded (a classic
+        lost-update race) -- invisible mid-session because the checkbox
+        widget itself keeps showing Streamlit's own session_state value
+        until a fresh page load reveals the true (reverted) persisted
+        value. Both sides now share _LOCK so a toggle and a worker tick can
+        never interleave.
+        """
+        with _LOCK:
+            state = state_store.load_state()
+            enabled_bool = bool(enabled)
+            prev = bool(state.quick_profit_enabled)
+            state.quick_profit_enabled = enabled_bool
+            state_store.save_state(state)
         return {"ok": True, "quick_profit_enabled": enabled_bool, "previous": prev}
 
     def manual_entry(self, direction: str) -> dict[str, Any]:
@@ -147,38 +161,43 @@ class MUMacdService:
         if self._broker is None:
             return {"ok": False, "message": "NOT_STARTED"}
 
-        state = state_store.load_state()
-        if not state.auto_trade_on:
-            return {"ok": False, "message": "AUTO_TRADE_OFF"}
-        if state.position is not None and state.position.quantity > 0:
-            return {"ok": False, "message": "ALREADY_HOLDING_POSITION"}
+        # 2026-08-13 fix: shares _LOCK with _run_loop/set_quick_profit_enabled
+        # (see set_quick_profit_enabled's docstring) -- without it, a worker
+        # tick's own load-run_once-save cycle could clobber this button's
+        # state.position update with a stale save.
+        with _LOCK:
+            state = state_store.load_state()
+            if not state.auto_trade_on:
+                return {"ok": False, "message": "AUTO_TRADE_OFF"}
+            if state.position is not None and state.position.quantity > 0:
+                return {"ok": False, "message": "ALREADY_HOLDING_POSITION"}
 
-        direction_enum = Direction(direction)
-        target_symbol = order_executor.target_symbol_for_direction(direction_enum)
-        now = datetime.now(KST)
-        quote = self._broker.get_quote(target_symbol) if hasattr(self._broker, "get_quote") else None
-        if not quote:
-            return {"ok": False, "message": "QUOTE_UNAVAILABLE"}
+            direction_enum = Direction(direction)
+            target_symbol = order_executor.target_symbol_for_direction(direction_enum)
+            now = datetime.now(KST)
+            quote = self._broker.get_quote(target_symbol) if hasattr(self._broker, "get_quote") else None
+            if not quote:
+                return {"ok": False, "message": "QUOTE_UNAVAILABLE"}
 
-        signal_id = f"MANUAL_{direction}_{now.strftime('%Y%m%d%H%M%S')}"
-        outcome = order_executor.execute_signal(
-            broker=self._broker, direction=direction_enum, signal_id=signal_id,
-            quotes={target_symbol: float(quote)}, position=None, budget=state.budget,
-            ledger_module=ledger,
-        )
-
-        if outcome.final_state == SignalState.EXECUTED:
-            state.position = PositionSnapshot(
-                symbol=target_symbol, quantity=outcome.quantity,
-                avg_price=outcome.filled_avg_price or 0.0, entry_at=now,
+            signal_id = f"MANUAL_{direction}_{now.strftime('%Y%m%d%H%M%S')}"
+            outcome = order_executor.execute_signal(
+                broker=self._broker, direction=direction_enum, signal_id=signal_id,
+                quotes={target_symbol: float(quote)}, position=None, budget=state.budget,
+                ledger_module=ledger,
             )
-        else:
-            state.order_block_reason = outcome.block_reason
-        _record_manual_signal(
-            state, signal_id=signal_id, signal_type="MANUAL_ENTRY", direction=direction_enum,
-            now=now, order_result=outcome.final_state.value, block_reason=outcome.block_reason,
-        )
-        state_store.save_state(state)
+
+            if outcome.final_state == SignalState.EXECUTED:
+                state.position = PositionSnapshot(
+                    symbol=target_symbol, quantity=outcome.quantity,
+                    avg_price=outcome.filled_avg_price or 0.0, entry_at=now,
+                )
+            else:
+                state.order_block_reason = outcome.block_reason
+            _record_manual_signal(
+                state, signal_id=signal_id, signal_type="MANUAL_ENTRY", direction=direction_enum,
+                now=now, order_result=outcome.final_state.value, block_reason=outcome.block_reason,
+            )
+            state_store.save_state(state)
 
         return {
             "ok": outcome.final_state == SignalState.EXECUTED,
@@ -202,37 +221,40 @@ class MUMacdService:
         if self._broker is None:
             return {"ok": False, "message": "NOT_STARTED"}
 
-        state = state_store.load_state()
-        if not state.auto_trade_on:
-            return {"ok": False, "message": "AUTO_TRADE_OFF"}
-        if state.position is None or state.position.quantity <= 0:
-            return {"ok": False, "message": "NO_POSITION_TO_SELL"}
+        # 2026-08-13 fix: see manual_entry's comment -- same _LOCK sharing
+        # against _run_loop's own load-run_once-save cycle.
+        with _LOCK:
+            state = state_store.load_state()
+            if not state.auto_trade_on:
+                return {"ok": False, "message": "AUTO_TRADE_OFF"}
+            if state.position is None or state.position.quantity <= 0:
+                return {"ok": False, "message": "NO_POSITION_TO_SELL"}
 
-        pos = state.position
-        now = datetime.now(KST)
-        signal_id = f"MANUAL_EXIT_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
-        outcome = order_executor.execute_exit(
-            broker=self._broker, symbol=pos.symbol, quantity=pos.quantity,
-            exit_reason=config.EXIT_MANUAL_LIQUIDATION, entry_price=pos.avg_price,
-            ledger_module=ledger,
-        )
+            pos = state.position
+            now = datetime.now(KST)
+            signal_id = f"MANUAL_EXIT_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+            outcome = order_executor.execute_exit(
+                broker=self._broker, symbol=pos.symbol, quantity=pos.quantity,
+                exit_reason=config.EXIT_MANUAL_LIQUIDATION, entry_price=pos.avg_price,
+                ledger_module=ledger,
+            )
 
-        if pos.symbol == config.LONG_SYMBOL:
-            direction: Optional[Direction] = Direction.UP_RED
-        elif pos.symbol == config.INVERSE_SYMBOL:
-            direction = Direction.DOWN_BLUE
-        else:
-            direction = None
+            if pos.symbol == config.LONG_SYMBOL:
+                direction: Optional[Direction] = Direction.UP_RED
+            elif pos.symbol == config.INVERSE_SYMBOL:
+                direction = Direction.DOWN_BLUE
+            else:
+                direction = None
 
-        if outcome.final_state == SignalState.EXECUTED:
-            state.position = None
-        else:
-            state.order_block_reason = outcome.block_reason
-        _record_manual_signal(
-            state, signal_id=signal_id, signal_type="MANUAL_LIQUIDATION", direction=direction,
-            now=now, order_result=outcome.final_state.value, block_reason=outcome.block_reason,
-        )
-        state_store.save_state(state)
+            if outcome.final_state == SignalState.EXECUTED:
+                state.position = None
+            else:
+                state.order_block_reason = outcome.block_reason
+            _record_manual_signal(
+                state, signal_id=signal_id, signal_type="MANUAL_LIQUIDATION", direction=direction,
+                now=now, order_result=outcome.final_state.value, block_reason=outcome.block_reason,
+            )
+            state_store.save_state(state)
 
         return {
             "ok": outcome.final_state == SignalState.EXECUTED,
@@ -260,16 +282,25 @@ class MUMacdService:
     def _run_loop(self) -> None:
         while self._stop_event is not None and not self._stop_event.is_set():
             try:
-                state = state_store.load_state()
-                if state.auto_trade_on and self._broker is not None and self._market_data is not None:
-                    now = datetime.now(KST)
-                    worker.run_once(broker=self._broker, market_data=self._market_data, state=state, now=now)
-                    state_store.save_state(state)
+                # 2026-08-13 fix: this whole load-run_once-save cycle now
+                # shares _LOCK with set_quick_profit_enabled/manual_entry/
+                # manual_exit -- see set_quick_profit_enabled's docstring
+                # for the lost-update race this closes. Held for the
+                # duration of one tick (including run_once's broker calls),
+                # so a UI mutation waits at most ~one tick instead of ever
+                # racing a stale save.
+                with _LOCK:
+                    state = state_store.load_state()
+                    if state.auto_trade_on and self._broker is not None and self._market_data is not None:
+                        now = datetime.now(KST)
+                        worker.run_once(broker=self._broker, market_data=self._market_data, state=state, now=now)
+                        state_store.save_state(state)
             except Exception as exc:  # pragma: no cover - defensive top-level guard
                 try:
-                    state = state_store.load_state()
-                    state.order_block_reason = f"WORKER_LOOP_ERROR:{exc!r}"
-                    state_store.save_state(state)
+                    with _LOCK:
+                        state = state_store.load_state()
+                        state.order_block_reason = f"WORKER_LOOP_ERROR:{exc!r}"
+                        state_store.save_state(state)
                 except Exception:
                     pass
             self._stop_event.wait(WORKER_INTERVAL_SEC)

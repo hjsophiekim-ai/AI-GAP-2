@@ -5,11 +5,12 @@
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 
 import pytest
 
-from app.trading.mu_macd import config, ledger, state_store, worker
+from app.trading.mu_macd import config, ledger, service as mu_service, state_store, worker
 from app.trading.mu_macd.config import KST
 from app.trading.mu_macd.models import Direction
 from app.trading.mu_macd.service import MUMacdService
@@ -161,3 +162,49 @@ class _FlatMarketData:
 
     def warmup_bars_1m_count(self) -> int:
         return 0
+
+
+# ── set_quick_profit_enabled vs _run_loop lost-update race (2026-08-13 fix) ──
+
+def test_quick_profit_toggle_survives_concurrent_stale_worker_tick_save():
+    """Real incident: user turns Quick Profit ON, then a later page refresh
+    shows it OFF again. Root cause: _run_loop's own load-run_once-save cycle
+    (every WORKER_INTERVAL_SEC, on a separate thread) had no locking against
+    set_quick_profit_enabled's load-modify-save -- a tick that loaded state
+    BEFORE the toggle, then saved AFTER it, silently clobbered the toggle
+    back to whatever it saw at its own load time. This reproduces that
+    exact interleaving with a real background thread holding _LOCK, and
+    asserts the toggle is no longer lost."""
+    state_store.save_state(state_store.default_state())  # quick_profit_enabled=False
+
+    tick_started = threading.Event()
+    proceed_with_stale_save = threading.Event()
+
+    def fake_stale_tick():
+        with mu_service._LOCK:
+            stale_state = state_store.load_state()  # reads False, BEFORE the toggle below
+            tick_started.set()
+            proceed_with_stale_save.wait(timeout=2)
+            state_store.save_state(stale_state)  # the lost-update: re-saves the stale False
+
+    tick_thread = threading.Thread(target=fake_stale_tick)
+    tick_thread.start()
+    assert tick_started.wait(timeout=2)
+
+    svc = MUMacdService()
+    result_holder: dict = {}
+
+    def do_toggle():
+        result_holder["result"] = svc.set_quick_profit_enabled(True)
+
+    toggle_thread = threading.Thread(target=do_toggle)
+    toggle_thread.start()
+    toggle_thread.join(timeout=0.2)
+    assert toggle_thread.is_alive()  # blocked on _LOCK, held by the fake stale tick
+
+    proceed_with_stale_save.set()
+    tick_thread.join(timeout=2)
+    toggle_thread.join(timeout=2)
+
+    assert result_holder["result"]["ok"] is True
+    assert state_store.load_state().quick_profit_enabled is True  # NOT clobbered
