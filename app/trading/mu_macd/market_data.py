@@ -24,10 +24,22 @@ matches the observed symptom of "~40s of ticks then permanently stuck,
 restart doesn't recover." approval_key is now cached in-memory + on disk
 (same CACHE_DIR convention as kis_overseas_minute's kis_token_{mode}.json)
 and reconnects back off exponentially instead of a flat 3s retry.
+
+2026-08-13 fix #2: self._bars (finalized 1-minute bars, the sole warm-up
+source) lived ONLY in this process's memory -- any restart (e.g. a
+mid-day code deploy) reset warmup_bars_1m_count to 0, forcing a fresh
+WARMUP_MIN_3M_BARS*3min (90min) blind wait with no order/flag authority
+even though today's bars had already accumulated before the restart.
+Finalized bars are now ALSO persisted to config.BARS_1M_CACHE_FILENAME
+(same CACHE_DIR, pruned to today's KST date on every write so the file
+never grows across days) and reloaded via load_today_bars() before start()
+begins subscribing -- a same-day restart resumes warmup instead of
+restarting it.
 """
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import threading
 import time
@@ -42,7 +54,7 @@ import requests
 
 from app.data_sources import kis_overseas_minute as _kis_overseas
 from app.trading.mu_macd import config
-from app.utils.data_paths import CACHE_DIR as _APPROVAL_KEY_CACHE_DIR
+from app.utils.data_paths import CACHE_DIR as _CACHE_DIR
 
 KST = config.KST
 
@@ -82,7 +94,68 @@ class MinuteBar:
 
 
 def _approval_key_cache_path(mode: str) -> Path:
-    return _APPROVAL_KEY_CACHE_DIR / f"mu_macd_approval_key_{mode}.json"
+    return _CACHE_DIR / f"mu_macd_approval_key_{mode}.json"
+
+
+def _bars_1m_cache_path() -> Path:
+    return _CACHE_DIR / config.BARS_1M_CACHE_FILENAME
+
+
+_BARS_1M_CACHE_COLUMNS = ("date", "minute", "open", "high", "low", "close", "volume")
+_BARS_1M_CACHE_LOCK = threading.Lock()
+
+
+def _persist_bar(bar: MinuteBar) -> None:
+    """Append one finalized bar to the on-disk warm-up cache, pruning any
+    rows from a PRIOR day first -- a new trading day must never seed its
+    warmup from yesterday's bars, and this keeps the file bounded to a
+    single day's ~390 rows instead of growing forever. Never raises --
+    a cache-write failure must not break live tick processing."""
+    try:
+        with _BARS_1M_CACHE_LOCK:
+            path = _bars_1m_cache_path()
+            rows: list[dict] = []
+            if path.exists():
+                with open(path, newline="", encoding="utf-8") as fh:
+                    rows = [r for r in csv.DictReader(fh) if r.get("date") == bar.date]
+            rows.append({
+                "date": bar.date, "minute": bar.minute, "open": bar.open, "high": bar.high,
+                "low": bar.low, "close": bar.close, "volume": bar.volume,
+            })
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(".csv.tmp")
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(_BARS_1M_CACHE_COLUMNS))
+                writer.writeheader()
+                writer.writerows(rows)
+            tmp_path.replace(path)
+    except Exception:
+        pass
+
+
+def _load_today_bars_from_cache(today_ymd: str) -> list[MinuteBar]:
+    path = _bars_1m_cache_path()
+    if not path.exists():
+        return []
+    bars: list[MinuteBar] = []
+    try:
+        with _BARS_1M_CACHE_LOCK:
+            with open(path, newline="", encoding="utf-8") as fh:
+                for row in csv.DictReader(fh):
+                    if row.get("date") != today_ymd:
+                        continue
+                    try:
+                        bars.append(MinuteBar(
+                            date=row["date"], minute=row["minute"],
+                            open=float(row["open"]), high=float(row["high"]),
+                            low=float(row["low"]), close=float(row["close"]),
+                            volume=int(row["volume"]),
+                        ))
+                    except (KeyError, ValueError):
+                        continue
+    except Exception:
+        return bars
+    return bars
 
 
 def _load_approval_key_file_cache(mode: str) -> Optional[str]:
@@ -104,7 +177,7 @@ def _load_approval_key_file_cache(mode: str) -> Optional[str]:
 
 def _save_approval_key_file_cache(mode: str, key: str, issued_at: datetime) -> None:
     try:
-        _APPROVAL_KEY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _approval_key_cache_path(mode)
         tmp_path = path.with_suffix(".json.tmp")
         tmp_path.write_text(
@@ -180,7 +253,10 @@ class MUMarketDataService:
             if minute_key != self._current_minute_key:
                 if self._current_bar is not None:
                     self._current_bar["volume"] = max(0, (self._last_tvol or 0) - (self._minute_start_tvol or 0))
-                    self._bars.append(MinuteBar(**self._current_bar))
+                    finalized = MinuteBar(**self._current_bar)
+                    self._bars.append(finalized)
+                    if self.mode == "real":
+                        _persist_bar(finalized)
                 self._current_minute_key = minute_key
                 self._minute_start_tvol = self._last_tvol
                 self._current_bar = {
@@ -218,6 +294,28 @@ class MUMarketDataService:
     def warmup_bars_1m_count(self) -> int:
         with self._lock:
             return len(self._bars)
+
+    def load_today_bars(self, now: Optional[datetime] = None) -> int:
+        """Restore today's already-persisted 1-minute bars (see
+        _persist_bar) before the WS starts subscribing -- call once, right
+        before start(). A same-day restart (e.g. right after a code
+        deploy) then resumes warmup instead of forcing another blind
+        WARMUP_MIN_3M_BARS*3min wait with zero order/flag authority."""
+        today_ymd = (now or datetime.now(KST)).astimezone(KST).strftime("%Y%m%d")
+        bars = _load_today_bars_from_cache(today_ymd)
+        if not bars:
+            return 0
+        with self._lock:
+            existing_keys = {(b.date, b.minute) for b in self._bars}
+            added = 0
+            for bar in bars:
+                if (bar.date, bar.minute) in existing_keys:
+                    continue
+                self._bars.append(bar)
+                existing_keys.add((bar.date, bar.minute))
+                added += 1
+            self._bars.sort(key=lambda b: (b.date, b.minute))
+        return added
 
     def is_stale(self, now: datetime, max_age_sec: float) -> bool:
         if self.ws_last_tick_at is None:

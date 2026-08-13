@@ -100,6 +100,13 @@ class MUMacdService:
             # tests that never call .start() at all (they inject ticks
             # directly) -- never for this live service path.
             self._market_data = MUMarketDataService(mode="real")
+            # 2026-08-13 fix: restore today's already-persisted 1-minute bars
+            # BEFORE subscribing, so a same-day restart (e.g. right after a
+            # code deploy) resumes warmup instead of blindly waiting out
+            # WARMUP_MIN_3M_BARS*3min (90min) again with zero order/flag
+            # authority in the meantime -- see market_data.py's module
+            # docstring "fix #2".
+            self._market_data.load_today_bars()
             self._market_data.start()
 
             self._stop_event = threading.Event()

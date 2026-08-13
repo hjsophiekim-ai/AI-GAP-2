@@ -105,7 +105,7 @@ def _isolate_approval_key_cache(tmp_path, monkeypatch):
     touch the real data/cache/ directory."""
     monkeypatch.setattr(mu_market_data, "_APPROVAL_KEY_CACHE", {})
     monkeypatch.setattr(mu_market_data, "_APPROVAL_KEY_ISSUED_AT", {})
-    monkeypatch.setattr(mu_market_data, "_APPROVAL_KEY_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(mu_market_data, "_CACHE_DIR", tmp_path)
     yield
 
 
@@ -175,3 +175,73 @@ def test_get_approval_key_refetches_once_file_cache_expires(monkeypatch):
     second = mu_market_data.get_approval_key("real")
     assert call_count["n"] == 2  # expired cache -- forced a fresh network call
     assert second == "fake-approval-key-2"
+
+
+# ── 1-minute bar disk cache (2026-08-13 fix) — a same-day restart must
+# resume warmup instead of starting it over from zero. ──────────────────────
+
+def test_real_mode_on_tick_persists_finalized_bars_to_disk():
+    svc = MUMarketDataService(mode="real")
+    svc.on_tick("093601", 880.0, 1000, "20260812")
+    svc.on_tick("093701", 881.0, 1005, "20260812")  # finalizes the 09:36 bar
+    cache_path = mu_market_data._bars_1m_cache_path()
+    assert cache_path.exists()
+    saved = mu_market_data._load_today_bars_from_cache("20260812")
+    assert len(saved) == 1
+    assert saved[0].minute == "0936"
+    assert saved[0].open == 880.0
+
+
+def test_mock_mode_on_tick_never_writes_to_disk():
+    svc = MUMarketDataService(mode="mock")
+    svc.on_tick("093601", 880.0, 1000, "20260812")
+    svc.on_tick("093701", 881.0, 1005, "20260812")
+    assert not mu_market_data._bars_1m_cache_path().exists()
+
+
+def test_persist_bar_prunes_rows_from_a_prior_day():
+    svc = MUMarketDataService(mode="real")
+    svc.on_tick("093601", 880.0, 1000, "20260812")
+    svc.on_tick("093701", 881.0, 1005, "20260812")  # finalizes a 08/12 bar
+    svc.on_tick("093601", 890.0, 2000, "20260813")
+    svc.on_tick("093701", 891.0, 2005, "20260813")  # finalizes a 08/13 bar -> should prune 08/12
+
+    assert mu_market_data._load_today_bars_from_cache("20260812") == []
+    today_bars = mu_market_data._load_today_bars_from_cache("20260813")
+    assert len(today_bars) == 1
+    assert today_bars[0].open == 890.0
+
+
+def test_load_today_bars_restores_warmup_after_a_simulated_restart():
+    """Simulates the real scenario: a service ticks for a while (warming up
+    naturally, persisting bars as it goes), the process restarts (a FRESH
+    MUMarketDataService instance, memory wiped), and load_today_bars() must
+    resume warmup instead of starting over from zero."""
+    first_run = MUMarketDataService(mode="real")
+    for m in range(35):
+        minute = f"{9 + m // 60:02d}{m % 60:02d}"
+        next_minute = f"{9 + (m + 1) // 60:02d}{(m + 1) % 60:02d}"
+        first_run.on_tick(f"{minute}01", 880.0 + m, 1000 + m, "20260813")
+        first_run.on_tick(f"{next_minute}01", 880.0 + m, 1000 + m, "20260813")  # finalizes it
+    assert first_run.warmup_bars_1m_count() >= 30
+
+    # simulated restart: brand new instance, memory-only state is gone
+    restarted = MUMarketDataService(mode="real")
+    assert restarted.warmup_bars_1m_count() == 0
+    restored = restarted.load_today_bars(now=datetime(2026, 8, 13, 10, 0, tzinfo=KST))
+    assert restored >= 30
+    assert restarted.warmup_bars_1m_count() == first_run.warmup_bars_1m_count()
+
+
+def test_load_today_bars_ignores_a_prior_day_and_never_duplicates():
+    seed = MUMarketDataService(mode="real")
+    seed.on_tick("093601", 880.0, 1000, "20260812")
+    seed.on_tick("093701", 881.0, 1005, "20260812")  # finalizes a stale (yesterday) bar
+
+    svc = MUMarketDataService(mode="mock")  # mode doesn't matter for load_today_bars itself
+    added_first = svc.load_today_bars(now=datetime(2026, 8, 13, 9, 40, tzinfo=KST))
+    assert added_first == 0  # only 08/12 bars exist on disk -- today (08/13) has none yet
+    assert svc.warmup_bars_1m_count() == 0
+
+    added_again = svc.load_today_bars(now=datetime(2026, 8, 13, 9, 40, tzinfo=KST))
+    assert added_again == 0  # still nothing to add, and re-calling never duplicates
