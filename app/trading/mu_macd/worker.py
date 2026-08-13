@@ -74,12 +74,42 @@ def _reconcile_position(broker, state: RuntimeState, now: datetime) -> str:
     if not _should_reconcile(state, now):
         return str((state.position_reconcile_diag or {}).get("comparison_result") or "SKIPPED_THROTTLED")
     state.last_position_reconcile_at = now.astimezone(KST).isoformat()
-    result = _do_reconcile(broker, state)
+    result = _do_reconcile(broker, state, now)
     state.position_reconcile_diag = {"comparison_result": result}
     return result
 
 
-def _do_reconcile(broker, state: RuntimeState) -> str:
+def _record_reconcile_correction(
+    *, symbol: str, side: str, qty_delta: int, price: Optional[float],
+    position_before: int, position_after: int, note: str, now: datetime,
+) -> None:
+    """Execution-ledger row for a quantity jump discovered ONLY via broker
+    reconciliation, never through a normal order fill (2026-08-13 real
+    incident: a partial-fill BUY's cancel attempt did not actually stop the
+    resting KIS limit order, which kept filling in the background for
+    ~24 minutes -- state.position silently jumped from 110 to 994 shares
+    with zero ledger trace, because _do_reconcile only ever overwrote
+    state.position and returned a diagnostic string, never wrote a ledger
+    row). ``price`` is a best-effort IMPLIED average for the newly
+    discovered quantity (derived from the before/after blended avg_price
+    that IS available from the broker) -- KIS never gives us a genuine
+    per-fill price for shares we never placed/tracked an order for, so this
+    is clearly marked via ``note`` as an inferred correction, not a real
+    order confirmation."""
+    order_id = f"RECONCILE:{symbol}:{now.strftime('%Y%m%d%H%M%S%f')}"
+    ledger.append_execution({
+        "timestamp": now.isoformat(), "signal_id": "", "order_id": order_id,
+        "symbol": symbol, "side": side,
+        "requested_qty": abs(qty_delta), "executed_qty": abs(qty_delta),
+        "requested_price": price if price is not None else "",
+        "executed_price": price if price is not None else "",
+        "success": True, "exit_reason": note,
+        "position_before": position_before, "position_after": position_after,
+        "strategy_name": config.STRATEGY_NAME, "strategy_version": config.STRATEGY_VERSION,
+    })
+
+
+def _do_reconcile(broker, state: RuntimeState, now: datetime) -> str:
     try:
         broker_positions = broker.get_positions()
     except Exception as exc:
@@ -105,22 +135,48 @@ def _do_reconcile(broker, state: RuntimeState) -> str:
         if broker_qty == runtime_qty:
             return "MATCH_POSITION"
         # Broker is authority on real holdings.
+        old_qty, old_avg = runtime_qty, state.position.avg_price
+        new_avg = float(getattr(broker_row, "avg_price", 0.0) or old_avg)
+        delta = broker_qty - old_qty
+        if delta > 0:
+            implied_price = ((new_avg * broker_qty) - (old_avg * old_qty)) / delta
+            _record_reconcile_correction(
+                symbol=runtime_symbol, side="BUY", qty_delta=delta, price=implied_price,
+                position_before=old_qty, position_after=broker_qty,
+                note="RECONCILE_QTY_INCREASE_UNTRACKED_FILL", now=now,
+            )
+        else:
+            _record_reconcile_correction(
+                symbol=runtime_symbol, side="SELL", qty_delta=-delta, price=new_avg,
+                position_before=old_qty, position_after=broker_qty,
+                note="RECONCILE_QTY_DECREASE_UNTRACKED", now=now,
+            )
         state.position = PositionSnapshot(
-            symbol=runtime_symbol, quantity=broker_qty,
-            avg_price=float(getattr(broker_row, "avg_price", 0.0) or state.position.avg_price),
+            symbol=runtime_symbol, quantity=broker_qty, avg_price=new_avg,
             entry_at=state.position.entry_at,
         )
         return "RECOVERED_QTY_MISMATCH"
 
     if runtime_qty <= 0 and held:
         symbol, row = next(iter(held.items()))
-        state.position = PositionSnapshot(
-            symbol=symbol, quantity=int(getattr(row, "quantity", 0) or 0),
-            avg_price=float(getattr(row, "avg_price", 0.0) or 0.0), entry_at=datetime.now(KST),
+        broker_qty = int(getattr(row, "quantity", 0) or 0)
+        avg_price = float(getattr(row, "avg_price", 0.0) or 0.0)
+        _record_reconcile_correction(
+            symbol=symbol, side="BUY", qty_delta=broker_qty, price=avg_price,
+            position_before=0, position_after=broker_qty,
+            note="RECONCILE_POSITION_DISCOVERED_UNTRACKED", now=now,
         )
+        state.position = PositionSnapshot(symbol=symbol, quantity=broker_qty, avg_price=avg_price, entry_at=now)
         return "RECOVERED_FROM_BROKER"
 
     if runtime_qty > 0 and not held:
+        # Broker shows flat but we don't know the sell price at all (get_positions()
+        # never tells us that) -- price is left blank rather than fabricated.
+        _record_reconcile_correction(
+            symbol=runtime_symbol, side="SELL", qty_delta=runtime_qty, price=None,
+            position_before=runtime_qty, position_after=0,
+            note="RECONCILE_POSITION_VANISHED_UNTRACKED", now=now,
+        )
         state.position = None
         return "RECOVERED_TO_FLAT"
 

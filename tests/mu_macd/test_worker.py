@@ -17,7 +17,7 @@ from app.trading.macd2.signal_engine import calculate_macd, evaluate_macd_crosso
 from app.trading.mu_macd import config, ledger, state_store, worker
 from app.trading.mu_macd.config import KST
 from app.trading.mu_macd.market_data import MUMarketDataService
-from app.trading.mu_macd.models import Direction
+from app.trading.mu_macd.models import Direction, PositionSnapshot
 from tests.macd2.fake_broker import FakeBroker
 
 
@@ -405,3 +405,70 @@ def test_quick_profit_take_profit_does_not_fire_when_disabled():
     assert state.position is not None
     assert state.position.symbol == config.LONG_SYMBOL
     assert not any(a.startswith("QUICK_PROFIT_TAKE_PROFIT") for a in result.actions)
+
+
+# ── _do_reconcile ledger corrections (2026-08-13 fix) — a quantity jump
+# discovered only via broker reconciliation (never a normal order fill)
+# must leave an execution-ledger trace, not silently overwrite state.position
+# with no trace. Real incident: a partial-fill BUY's "cancel" didn't
+# actually stop the resting KIS limit order, which kept filling in the
+# background for ~24 minutes -- state.position silently jumped 110 -> 994
+# shares with zero ledger row until this fix. ──────────────────────────────
+
+def test_reconcile_qty_increase_records_ledger_correction_with_implied_price():
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.INVERSE_SYMBOL: 8_425.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 994, "seed")  # broker already shows the full untracked fill
+    state = state_store.default_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=110, avg_price=8_425.0)
+
+    now = datetime(2026, 8, 13, 10, 40, tzinfo=KST)
+    result = worker._do_reconcile(broker, state, now)
+
+    assert result == "RECOVERED_QTY_MISMATCH"
+    assert state.position.quantity == 994
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == config.INVERSE_SYMBOL
+    assert rows[0]["side"] == "BUY"
+    assert int(rows[0]["executed_qty"]) == 884
+    assert rows[0]["exit_reason"] == "RECONCILE_QTY_INCREASE_UNTRACKED_FILL"
+    assert float(rows[0]["executed_price"]) == pytest.approx(8_425.0)
+
+
+def test_reconcile_position_discovered_while_flat_records_ledger():
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 9_500.0})
+    broker.buy_market(config.LONG_SYMBOL, 50, "seed")
+    state = state_store.default_state()
+    state.position = None
+
+    now = datetime(2026, 8, 13, 11, 0, tzinfo=KST)
+    result = worker._do_reconcile(broker, state, now)
+
+    assert result == "RECOVERED_FROM_BROKER"
+    assert state.position is not None and state.position.quantity == 50
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["exit_reason"] == "RECONCILE_POSITION_DISCOVERED_UNTRACKED"
+
+
+def test_reconcile_position_vanished_records_ledger_with_blank_price():
+    """Broker shows flat but state thought it held a position -- get_positions()
+    never tells us a sell price, so the ledger row must leave price blank
+    rather than fabricate one (e.g. from the entry price, which would imply
+    a false zero P&L)."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 9_500.0})
+    state = state_store.default_state()
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=100, avg_price=9_000.0)
+
+    now = datetime(2026, 8, 13, 11, 30, tzinfo=KST)
+    result = worker._do_reconcile(broker, state, now)
+
+    assert result == "RECOVERED_TO_FLAT"
+    assert state.position is None
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["side"] == "SELL"
+    assert int(rows[0]["executed_qty"]) == 100
+    assert rows[0]["exit_reason"] == "RECONCILE_POSITION_VANISHED_UNTRACKED"
+    assert rows[0]["executed_price"] == ""
