@@ -82,6 +82,16 @@ SESSION_OPEN = time(9, 0)  # KRX open — the traded ETFs cannot fill before thi
 NEW_ENTRY_CUTOFF = time(14, 55)
 FORCE_LIQUIDATE_AT = time(15, 0)
 
+# 2026-08-14: "점심시간 신규진입 휴식" (MIDDAY_ENTRY_PAUSE) -- user-requested
+# schedule: entries ON 09:00-11:00, OFF 11:00-14:00, ON again 14:00 through
+# the existing NEW_ENTRY_CUTOFF/FORCE_LIQUIDATE_AT close-of-day logic
+# (both untouched). Gates NEW entries only, exactly like every other
+# _entry_gate_block_reason check -- an opposite flag during the OFF window
+# still sells 100% of a held position (existing sell-always/buy-only-if-
+# gate-clear reversal logic, unchanged), it just never re-buys until 14:00.
+MIDDAY_ENTRY_PAUSE_START = time(11, 0)
+MIDDAY_ENTRY_PAUSE_END = time(14, 0)
+
 # ── Risk (mirrors macd2.config defaults) ────────────────────────────────────
 STOP_LOSS_NET_PCT = _env_float("MU_MACD_STOP_LOSS_NET_PCT", -1.5)
 
@@ -203,6 +213,11 @@ BLOCK_WS_STALE = "MU_MACD_WS_STALE"
 BLOCK_WS_DISCONNECTED = "MU_MACD_WS_DISCONNECTED"
 BLOCK_WARMUP_INSUFFICIENT = "MU_MACD_WARMUP_INSUFFICIENT"
 BLOCK_ENTRY_WINDOW_CLOSED = "MU_MACD_ENTRY_WINDOW_CLOSED"
+# 2026-08-14: scheduled 11:00-14:00 KST no-new-entry window (see
+# MIDDAY_ENTRY_PAUSE_START/END above) -- distinct from BLOCK_ENTRY_WINDOW_CLOSED
+# so the ledger/dashboard can tell "outside 09:00-14:55 entirely" apart from
+# "inside the trading day but in the scheduled midday pause".
+BLOCK_MIDDAY_ENTRY_PAUSE = "MU_MACD_MIDDAY_ENTRY_PAUSE"
 BLOCK_SAME_DIRECTION_HELD = "MU_MACD_SAME_DIRECTION_HELD"
 BLOCK_DUPLICATE_SIGNAL = "MU_MACD_DUPLICATE_SIGNAL"
 # 2026-08-14: user-toggled "신규진입 정지" -- MU price collection (WS/1m bars),

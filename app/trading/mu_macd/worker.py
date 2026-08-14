@@ -261,6 +261,8 @@ def _entry_gate_block_reason(state: RuntimeState, now: datetime) -> Optional[str
         return config.BLOCK_ENTRY_WINDOW_CLOSED
     if now.astimezone(KST).time() >= config.NEW_ENTRY_CUTOFF:
         return config.BLOCK_ENTRY_WINDOW_CLOSED
+    if config.MIDDAY_ENTRY_PAUSE_START <= now.astimezone(KST).time() < config.MIDDAY_ENTRY_PAUSE_END:
+        return config.BLOCK_MIDDAY_ENTRY_PAUSE
     if not state.ws_connected:
         return config.BLOCK_WS_DISCONNECTED
     if state.ws_last_tick_at is None:

@@ -238,7 +238,8 @@ with st.expander("전략 설명"):
 - **반대 플래그**: 보유 포지션 전량매도 후 반대 ETF 매수(entry_gate 통과 시에만 재매수, 매도는 항상 실행).
 - **리스크**: 손절 {mu_config.STOP_LOSS_NET_PCT}%, {mu_config.FORCE_LIQUIDATE_AT} 강제청산 — 매 tick마다 플래그 발생 여부와 무관하게 확인.
 - **퀵 Profit 익절(옵션, 기본 OFF)**: ON이면 순수익률이 +{mu_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절 — MU 플래그와 무관하게 매 tick 확인.
-- **신규진입 차단 조건**(청산에는 영향 없음): WS 끊김/stale(>{mu_config.WS_STALE_MAX_SEC}s), 웜업 3분봉 {mu_config.WARMUP_MIN_3M_BARS}개 미달, 09:00 이전/{mu_config.NEW_ENTRY_CUTOFF} 이후, 사용자가 "신규진입 일시정지"를 켠 경우.
+- **신규진입 차단 조건**(청산에는 영향 없음): WS 끊김/stale(>{mu_config.WS_STALE_MAX_SEC}s), 웜업 3분봉 {mu_config.WARMUP_MIN_3M_BARS}개 미달, 09:00 이전/{mu_config.NEW_ENTRY_CUTOFF} 이후, {mu_config.MIDDAY_ENTRY_PAUSE_START}~{mu_config.MIDDAY_ENTRY_PAUSE_END} 점심시간 신규진입 휴식, 사용자가 "신규진입 일시정지"를 켠 경우.
+- **점심시간 신규진입 휴식(고정 스케줄)**: {mu_config.MIDDAY_ENTRY_PAUSE_START}~{mu_config.MIDDAY_ENTRY_PAUSE_END}에는 신규 진입(플랫 진입, 반대 플래그의 재매수)만 막힘 — 이 시간에 반대 플래그가 뜨면 보유 포지션은 평소처럼 전량 매도되지만 재매수는 하지 않음. {mu_config.MIDDAY_ENTRY_PAUSE_END} 이후 다시 정상적으로 신규 진입.
 - **신규진입 일시정지(옵션, 기본 OFF)**: MU 시세 수집·3분봉 MACD 플래그 판정·신호 원장 기록·손절/퀵프로핏/강제청산/reconcile은 전부 그대로 동작 — 새 매수(플랫 진입, 반대 플래그의 재매수)만 막힘. 자동매매 자체를 끄는 "자동매매 중지"와 달리 데이터 수집/웜업은 끊기지 않음.
 - **REAL 모드 재시작 시 안전장치**: 서버 재시작(재배포/idle-sleep) 후에는 REAL 계좌 인증이 자동으로 복구되지 않음(확인 문구 재입력 필요) — MOCK만 자동 복구됨. 다만 MU 시세 수집·플래그 감지는 REAL이어도 인증 없이 계속 동작(위 경고 배너 참고) — 단 이 동안은 reconcile/손절/퀵프로핏/강제청산 등 실제 포지션 보호는 전혀 이뤄지지 않으니, 실전 포지션이 있다면 최대한 빨리 다시 로그인해야 함.
         """

@@ -9,6 +9,7 @@ that worker.py didn't silently drift from those functions' real behavior.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Optional
 
 import pandas as pd
 import pytest
@@ -21,15 +22,23 @@ from app.trading.mu_macd.models import Direction, PositionSnapshot
 from tests.macd2.fake_broker import FakeBroker
 
 
-def _build_flat_then_ramp_service(now_minutes_total: int = 170) -> MUMarketDataService:
+def _build_flat_then_ramp_service(now_minutes_total: int = 170, start: Optional[datetime] = None) -> MUMarketDataService:
     """150 minutes flat at 880.0 (warms EMA well past EMA_SLOW=26 * 3min --
     50 completed 3m bars, comfortably clearing WARMUP_MIN_3M_BARS=30 even at
     the crossing bar itself), then a steady ramp for the remaining minutes --
     guaranteed to eventually push the histogram from <=0 to >0 (a real
-    UP_RED-equivalent crossover)."""
+    UP_RED-equivalent crossover).
+
+    2026-08-14: default ``start`` moved 2h earlier than KRX open (was
+    09:00, now 07:00) so the DEFAULT crossing (~09:33) lands clear of the
+    new 11:00-14:00 MIDDAY_ENTRY_PAUSE window -- every existing caller here
+    wants an ordinary, unblocked crossing. Tests that specifically want a
+    crossing INSIDE the pause window pass the original
+    ``start=datetime(2026, 8, 12, 9, 0, tzinfo=KST)`` explicitly (crossing
+    ~11:33)."""
     svc = MUMarketDataService(mode="mock")
     date_str = "20260812"
-    start = datetime(2026, 8, 12, 9, 0, tzinfo=KST)
+    start = start or datetime(2026, 8, 12, 7, 0, tzinfo=KST)
     flat_minutes = 150
     for i in range(now_minutes_total):
         t = start + timedelta(minutes=i)
@@ -232,6 +241,93 @@ def test_run_flags_only_records_flag_without_touching_broker_or_position():
     assert rows[0]["direction"] == "UP_RED"
 
 
+def test_entry_gate_midday_pause_window_boundaries():
+    """2026-08-14 user-requested schedule: entries ON 09:00-11:00, OFF
+    11:00-14:00, ON again 14:00 through the existing NEW_ENTRY_CUTOFF/
+    FORCE_LIQUIDATE_AT close-of-day logic (both untouched). Exercises the
+    exact boundaries directly against _entry_gate_block_reason (WS/warmup
+    already satisfied, so only the midday window itself can be blocking)."""
+    base_state = state_store.default_state()
+    base_state.ws_connected = True
+    base_state.warmup_ready = True
+
+    for hh, mm, expected_blocked in [
+        (10, 59, False), (11, 0, True), (12, 30, True), (13, 59, True), (14, 0, False),
+    ]:
+        now = datetime(2026, 8, 13, hh, mm, tzinfo=KST)
+        state = state_store.default_state()
+        state.ws_connected = True
+        state.warmup_ready = True
+        state.ws_last_tick_at = now.isoformat()
+        reason = worker._entry_gate_block_reason(state, now)
+        if expected_blocked:
+            assert reason == config.BLOCK_MIDDAY_ENTRY_PAUSE, f"{hh:02d}:{mm:02d} should be blocked"
+        else:
+            assert reason is None, f"{hh:02d}:{mm:02d} should be clear, got {reason}"
+
+
+def test_new_entry_blocked_during_midday_pause_but_flag_still_recorded():
+    """User's own example: reuses the shared flat-then-ramp fixture with its
+    ORIGINAL 09:00 start (rather than the shared default's 07:00), whose
+    first real crossover lands at 11:33 KST -- squarely inside the new
+    11:00-14:00 pause window."""
+    svc = _build_flat_then_ramp_service(start=datetime(2026, 8, 12, 9, 0, tzinfo=KST))
+    now = _find_crossing_now(svc)
+    assert now.time() >= config.MIDDAY_ENTRY_PAUSE_START and now.time() < config.MIDDAY_ENTRY_PAUSE_END
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now
+
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.auto_trade_on = True
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert state.position is None
+    assert result.skipped == config.BLOCK_MIDDAY_ENTRY_PAUSE
+    assert broker.orders == []
+    rows = ledger.load_signal_ledger()
+    assert len(rows) == 1
+    assert rows[-1]["block_reason"] == config.BLOCK_MIDDAY_ENTRY_PAUSE
+    assert rows[-1]["order_result"] == "BLOCKED"
+
+
+def test_opposite_flag_sells_but_never_rebuys_during_midday_pause():
+    """User's own example: 10:50에 보유 중, 11:05(-ish)에 반대 플래그가 뜨면
+    보유 포지션은 전량 청산하되 신규(재)진입은 하지 않는다. Reuses the same
+    11:33 KST crossing as above (explicit 09:00 start override)."""
+    svc = _build_flat_then_ramp_service(start=datetime(2026, 8, 12, 9, 0, tzinfo=KST))
+    now = _find_crossing_now(svc)
+    assert now.time() >= config.MIDDAY_ENTRY_PAUSE_START and now.time() < config.MIDDAY_ENTRY_PAUSE_END
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now
+
+    df_1m = svc.get_history_df()
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    macd_snap = calculate_macd(bars_3m)
+    expected_direction = evaluate_macd_crossover(macd_snap, None)
+    assert expected_direction == Direction.UP_RED
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    broker.buy_market(config.INVERSE_SYMBOL, 100, "seed-inverse")  # held OPPOSITE of the incoming UP_RED flag
+
+    from app.trading.mu_macd.models import PositionSnapshot
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.auto_trade_on = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=100, avg_price=10_000.0, entry_at=now - timedelta(minutes=30))
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert state.position is None  # sold out -- never re-entered LONG_SYMBOL
+    assert any(a.startswith("OPPOSITE_SIGNAL_SELL_ONLY") for a in result.actions)
+    assert [(o.side, o.symbol) for o in broker.orders] == [
+        ("BUY", config.INVERSE_SYMBOL), ("SELL", config.INVERSE_SYMBOL),
+    ]  # the seed buy, then the sell-only exit -- no third (re-entry buy) order
+
+
 def test_entry_gate_allows_entry_at_krx_open_when_dnasmu_warmup_ready():
     """2026-08-13: explicit product decision -- DNASMU (pre-day-session
     feed, see config.WS_TR_KEY_EXTENDED) is trusted to drive real entries
@@ -363,7 +459,11 @@ def test_full_sequence_entry_then_reversal_across_separate_run_once_calls():
     across ticks did not)."""
     svc = MUMarketDataService(mode="mock")
     date_str = "20260812"
-    start = datetime(2026, 8, 12, 9, 0, tzinfo=KST)
+    # 2026-08-14: starts 2h before KRX open (was 09:00) so both crossings
+    # below (~09:33 UP_RED, ~10:21 DOWN_BLUE) land clear of the new
+    # 11:00-14:00 MIDDAY_ENTRY_PAUSE window -- this test is about the
+    # multi-tick reversal mechanics, not that window.
+    start = datetime(2026, 8, 12, 7, 0, tzinfo=KST)
     # flat (150) -> ramp up (30) -> flat at the peak (10) -> ramp down (30)
     prices = [880.0] * 150 + [880.0 + 3.0 * i for i in range(1, 31)] + [970.0] * 10 + [970.0 - 3.0 * i for i in range(1, 31)]
     for i, price in enumerate(prices):
