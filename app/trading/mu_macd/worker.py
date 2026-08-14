@@ -23,9 +23,10 @@ read or written.
 """
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from app.trading.macd2 import order_executor
 from app.trading.macd2.models import SignalState
@@ -109,22 +110,69 @@ def _record_reconcile_correction(
     })
 
 
-def _do_reconcile(broker, state: RuntimeState, now: datetime) -> str:
+def _query_held_positions(broker) -> Optional[dict[str, Any]]:
+    """Returns {symbol: Position} for config.TRADE_SYMBOLS currently held
+    (qty>0), or None if the broker call itself raised."""
     try:
         broker_positions = broker.get_positions()
-    except Exception as exc:
-        return f"ERROR:{exc!r}"
-
-    held = {}
+    except Exception:
+        return None
+    held: dict[str, Any] = {}
     for p in broker_positions or []:
         symbol = str(getattr(p, "symbol", "") or "")
         qty = int(getattr(p, "quantity", 0) or 0)
         if symbol in config.TRADE_SYMBOLS and qty > 0:
             held[symbol] = p
+    return held
+
+
+def _matches_runtime(held: dict[str, Any], runtime_symbol: Optional[str], runtime_qty: int) -> bool:
+    if runtime_qty <= 0:
+        return not held
+    if runtime_symbol not in held:
+        return False
+    return int(getattr(held[runtime_symbol], "quantity", 0) or 0) == runtime_qty
+
+
+def _do_reconcile(
+    broker, state: RuntimeState, now: datetime, *,
+    confirm_retries: int = config.RECONCILE_CONFIRM_RETRIES,
+    confirm_delay_sec: float = config.RECONCILE_CONFIRM_DELAY_SEC,
+) -> str:
+    held = _query_held_positions(broker)
+    if held is None:
+        return "ERROR:get_positions_failed"
 
     runtime_symbol = state.position.symbol if state.position else None
     runtime_qty = int(state.position.quantity) if state.position else 0
 
+    if _matches_runtime(held, runtime_symbol, runtime_qty):
+        if runtime_qty <= 0:
+            state.position = None
+            return "MATCH_FLAT"
+        return "MATCH_POSITION"
+
+    # A single KIS inquire-balance read that disagrees with our own tracked
+    # position can be stale/settlement-lagged (the same latency class
+    # order_executor.py's _reconcile_to_zero/_reconcile_buy_fill already
+    # retry a real SELL/BUY around) -- re-confirm before trusting it enough
+    # to overwrite state.position and write an untracked-correction ledger
+    # row (2026-08-14 real incident: exactly one such stale read wiped a
+    # genuinely still-held position with zero fill info).
+    for _ in range(max(0, confirm_retries)):
+        if confirm_delay_sec > 0:
+            time.sleep(confirm_delay_sec)
+        recheck = _query_held_positions(broker)
+        if recheck is None:
+            continue
+        held = recheck
+        if _matches_runtime(held, runtime_symbol, runtime_qty):
+            if runtime_qty <= 0:
+                state.position = None
+                return "MATCH_FLAT"
+            return "MATCH_POSITION"
+
+    # Mismatch persisted across the recheck window -- treat as real.
     if runtime_qty <= 0 and not held:
         state.position = None
         return "MATCH_FLAT"
@@ -132,8 +180,6 @@ def _do_reconcile(broker, state: RuntimeState, now: datetime) -> str:
     if runtime_qty > 0 and runtime_symbol in held:
         broker_row = held[runtime_symbol]
         broker_qty = int(getattr(broker_row, "quantity", 0) or 0)
-        if broker_qty == runtime_qty:
-            return "MATCH_POSITION"
         # Broker is authority on real holdings.
         old_qty, old_avg = runtime_qty, state.position.avg_price
         new_avg = float(getattr(broker_row, "avg_price", 0.0) or old_avg)
@@ -209,6 +255,8 @@ def _record_signal(
 
 def _entry_gate_block_reason(state: RuntimeState, now: datetime) -> Optional[str]:
     """NEW-ENTRY-ONLY gates (never applied to an exit)."""
+    if state.entry_paused:
+        return config.BLOCK_ENTRY_PAUSED_BY_USER
     if now.astimezone(KST).time() < config.SESSION_OPEN:
         return config.BLOCK_ENTRY_WINDOW_CLOSED
     if now.astimezone(KST).time() >= config.NEW_ENTRY_CUTOFF:
@@ -425,4 +473,75 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
     else:
         result.actions.append(f"ENTRY_BLOCKED:{confirmed_direction.value}")
     state.order_block_reason = outcome.block_reason
+    return result
+
+
+def run_flags_only(*, market_data: MUMarketDataService, state: RuntimeState, now: datetime) -> TickResult:
+    """No-broker MU flag detection -- keeps MU price collection/warmup and
+    MACD flag detection + signal-ledger recording running even when there is
+    no authenticated broker to trade with (2026-08-14: REAL mode's
+    KisRealBroker refuses to even construct without the confirm phrase, so
+    after a process restart a real held position's reconcile/stop-loss/
+    quick-profit/forced-liquidation genuinely cannot resume until the human
+    re-enters it -- see service.py's _auto_recover_flags_only/
+    config.BLOCK_REAL_BROKER_NOT_AUTHENTICATED).
+
+    This function NEVER reads or writes state.position, NEVER calls
+    order_executor, and NEVER reconciles against a broker -- it only
+    advances the exact same day-rollover/MACD-baseline bookkeeping
+    run_once() does (same pure resample_completed_3m/calculate_macd/
+    evaluate_macd_crossover functions), so the dashboard/signal ledger keep
+    showing real flags forming while order authority stays fully paused.
+    """
+    result = TickResult()
+    _apply_day_rollover(state, now)
+
+    state.tick_seq_total += 1
+    state.last_tick_at = _now_iso(now)
+    state.ws_connected = bool(market_data.ws_connected)
+    state.ws_last_error = market_data.ws_last_error
+    if market_data.ws_last_tick_at is not None:
+        state.ws_last_tick_at = market_data.ws_last_tick_at.astimezone(KST).isoformat()
+    state.last_mu_price = market_data.last_price
+    state.last_mu_tvol = market_data.last_tvol
+
+    df_1m = market_data.get_history_df()
+    state.warmup_bars_1m_count = market_data.warmup_bars_1m_count()
+
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    state.warmup_bars_3m_count = int(len(bars_3m))
+    state.warmup_ready = state.warmup_bars_3m_count >= config.WARMUP_MIN_3M_BARS
+
+    macd_snap = calculate_macd(bars_3m)
+    if macd_snap is None:
+        result.skipped = "NOT_READY"
+        return result
+
+    bar_start = macd_snap.bar_dt
+    confirmed_at = bar_start.astimezone(KST) + timedelta(minutes=3)
+    bar_ts_str = bar_start.isoformat()
+    if bar_ts_str == state.last_confirmed_bar_ts:
+        result.skipped = "SAME_BAR_ALREADY_EVALUATED"
+        return result
+    state.last_confirmed_bar_ts = bar_ts_str
+
+    prev_direction = Direction(state.last_detected_direction) if state.last_detected_direction else None
+    confirmed_direction = evaluate_macd_crossover(macd_snap, prev_direction)
+    if confirmed_direction == Direction.HOLD:
+        return result
+
+    state.last_detected_direction = confirmed_direction.value
+    state.last_flag_display_time = bar_start.isoformat()
+    state.last_flag_confirmed_at = confirmed_at.isoformat()
+    state.last_flag_direction = confirmed_direction.value
+
+    signal_type = "REVERSAL" if (state.position is not None and state.position.quantity > 0) else "INITIAL"
+    _record_signal(
+        state=state, bar_start=bar_start, confirmed_at=confirmed_at, direction=confirmed_direction,
+        macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
+        signal_type=signal_type, order_result="BLOCKED", block_reason=config.BLOCK_REAL_BROKER_NOT_AUTHENTICATED,
+    )
+    state.order_block_reason = config.BLOCK_REAL_BROKER_NOT_AUTHENTICATED
+    result.skipped = config.BLOCK_REAL_BROKER_NOT_AUTHENTICATED
+    result.actions.append(f"FLAGS_ONLY_NO_BROKER:{confirmed_direction.value}")
     return result

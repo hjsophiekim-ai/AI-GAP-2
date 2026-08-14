@@ -140,6 +140,21 @@ WS_STALE_MAX_SEC = _env_float("MU_MACD_WS_STALE_MAX_SEC", 15.0)
 # state only reconciles once per this interval — mirrors macd2's own
 # FLAT_POSITION_RECONCILE_INTERVAL_SEC throttling philosophy exactly.
 RECONCILE_INTERVAL_SEC_WHEN_FLAT = _env_float("MU_MACD_RECONCILE_INTERVAL_SEC_WHEN_FLAT", 20.0)
+
+# 2026-08-14 real incident: a SINGLE broker.get_positions() snapshot that
+# disagreed with our own tracked position was trusted immediately and wrote
+# RECONCILE_POSITION_VANISHED_UNTRACKED with NO fill price at all -- even
+# though nothing in this worker's own order paths (stop loss/quick
+# profit/opposite signal/forced liquidation/manual buttons) had ever placed
+# a matching sell. This is the exact same "one instant KIS read can be
+# stale/settlement-lagged" class of issue app.trading.macd2.order_executor's
+# _reconcile_to_zero/_reconcile_buy_fill already retry around for a fresh
+# SELL/BUY (see that module's 2026-08-10/11 fix comments) -- _do_reconcile
+# never had the same guard. Mirrors those retry defaults exactly (3 @ 1.0s)
+# before a mismatch is believed enough to overwrite state.position and write
+# an untracked-correction ledger row.
+RECONCILE_CONFIRM_RETRIES = _env_int("MU_MACD_RECONCILE_CONFIRM_RETRIES", 3)
+RECONCILE_CONFIRM_DELAY_SEC = _env_float("MU_MACD_RECONCILE_CONFIRM_DELAY_SEC", 1.0)
 # 2026-08-12 real incident: an EMA seeded cold (mid-session, ~11:38 start, no
 # real prior history) produced 5 confirmed flags in ~2h on a manual replay —
 # a warm-seeded (real prior-history) recompute of the SAME window was used to
@@ -190,3 +205,23 @@ BLOCK_WARMUP_INSUFFICIENT = "MU_MACD_WARMUP_INSUFFICIENT"
 BLOCK_ENTRY_WINDOW_CLOSED = "MU_MACD_ENTRY_WINDOW_CLOSED"
 BLOCK_SAME_DIRECTION_HELD = "MU_MACD_SAME_DIRECTION_HELD"
 BLOCK_DUPLICATE_SIGNAL = "MU_MACD_DUPLICATE_SIGNAL"
+# 2026-08-14: user-toggled "신규진입 정지" -- MU price collection (WS/1m bars),
+# the worker tick loop, MACD flag detection/signal-ledger recording, and
+# existing-position management (stop loss/quick profit/forced liquidation/
+# reconcile) all keep running exactly as before; only a FRESH entry (flat
+# BUY or a reversal's re-buy leg) is blocked. Distinct from stopping the
+# service entirely (service.stop(), which also tears down the WS feed and
+# ends warmup) -- this is a lighter-weight pause within an already-running
+# session.
+BLOCK_ENTRY_PAUSED_BY_USER = "MU_MACD_ENTRY_PAUSED_BY_USER"
+# 2026-08-14: REAL mode's broker (KisRealBroker) refuses to even CONSTRUCT
+# without the confirm phrase (safety gate enforced at __init__, not just
+# per-order) -- so after a process restart, a real held position's
+# reconcile/stop-loss/quick-profit/forced-liquidation genuinely cannot
+# resume until the human re-enters it. MU price collection and MACD flag
+# detection do NOT need that broker at all, though, so they keep running
+# via worker.run_flags_only() in the meantime (see service.py's
+# _auto_recover_flags_only) -- flags recorded during this window carry this
+# block_reason instead of a normal entry-gate reason, and state.position is
+# never touched by it.
+BLOCK_REAL_BROKER_NOT_AUTHENTICATED = "MU_MACD_REAL_BROKER_NOT_AUTHENTICATED"

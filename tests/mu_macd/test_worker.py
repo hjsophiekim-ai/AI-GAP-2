@@ -137,6 +137,101 @@ def test_new_entry_blocked_when_ws_stale_even_with_valid_flag():
     assert rows[-1]["order_result"] == "BLOCKED"
 
 
+def test_new_entry_blocked_when_entry_paused_but_flag_still_recorded():
+    """2026-08-14 feature: user-toggled "신규진입 일시정지" must still let MU
+    price collection / MACD flag detection / signal-ledger recording happen
+    exactly as normal -- only the resulting BUY is blocked."""
+    svc = _build_flat_then_ramp_service()
+    now = _find_crossing_now(svc)  # a real, non-HOLD flag definitely fires at this exact now
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now  # fresh -- WS/warmup gates are clear, ONLY entry_paused should block
+
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.auto_trade_on = True
+    state.entry_paused = True
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert state.position is None
+    assert result.skipped == config.BLOCK_ENTRY_PAUSED_BY_USER
+    assert broker.orders == []  # no BUY was ever placed
+    rows = ledger.load_signal_ledger()
+    assert len(rows) == 1  # the flag itself was still recorded
+    assert rows[-1]["signal_type"] == "INITIAL"
+    assert rows[-1]["block_reason"] == config.BLOCK_ENTRY_PAUSED_BY_USER
+    assert rows[-1]["order_result"] == "BLOCKED"
+
+
+def test_opposite_flag_sells_but_never_rebuys_when_entry_paused():
+    """Same "sell always, buy only if the gate is clear" principle as the
+    WS-stale case, exercised for the entry_paused gate instead."""
+    svc = _build_flat_then_ramp_service()
+    now = _find_crossing_now(svc)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now  # fresh -- ONLY entry_paused should block the re-buy leg
+
+    df_1m = svc.get_history_df()
+    bars_3m = resample_completed_3m(df_1m, now=now)
+    macd_snap = calculate_macd(bars_3m)
+    expected_direction = evaluate_macd_crossover(macd_snap, None)
+    assert expected_direction == Direction.UP_RED
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    broker.buy_market(config.INVERSE_SYMBOL, 100, "seed-inverse")  # held OPPOSITE of the incoming UP_RED flag
+
+    from app.trading.mu_macd.models import PositionSnapshot
+    state = state_store.default_state()
+    state.mode = "mock"
+    state.auto_trade_on = True
+    state.entry_paused = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=100, avg_price=10_000.0, entry_at=now - timedelta(minutes=30))
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
+
+    assert state.position is None  # sold out -- never re-entered LONG_SYMBOL
+    assert any(a.startswith("OPPOSITE_SIGNAL_SELL_ONLY") for a in result.actions)
+    assert [(o.side, o.symbol) for o in broker.orders] == [
+        ("BUY", config.INVERSE_SYMBOL), ("SELL", config.INVERSE_SYMBOL),
+    ]  # the seed buy, then the sell-only exit -- no third (re-entry buy) order
+
+
+def test_run_flags_only_records_flag_without_touching_broker_or_position():
+    """2026-08-14: after a REAL-mode restart, the broker can't be
+    reconstructed without the human re-entering the confirm phrase, but MU
+    price collection/MACD flag detection must keep running via this
+    broker-less path -- a real flag must still get logged (BLOCKED, with
+    the dedicated block_reason) and state.position must be left EXACTLY as
+    it was (this function must never guess/clear/touch it -- it has no
+    broker to verify anything against)."""
+    svc = _build_flat_then_ramp_service()
+    now = _find_crossing_now(svc)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now
+
+    from app.trading.mu_macd.models import PositionSnapshot
+    state = state_store.default_state()
+    state.mode = "real"
+    state.auto_trade_on = True
+    stale_position = PositionSnapshot(
+        symbol=config.INVERSE_SYMBOL, quantity=50, avg_price=8_000.0, entry_at=now - timedelta(hours=2),
+    )
+    state.position = stale_position
+
+    result = worker.run_flags_only(market_data=svc, state=state, now=now)
+
+    assert state.position is stale_position  # completely untouched
+    assert result.skipped == config.BLOCK_REAL_BROKER_NOT_AUTHENTICATED
+    assert any(a.startswith("FLAGS_ONLY_NO_BROKER") for a in result.actions)
+    rows = ledger.load_signal_ledger()
+    assert len(rows) == 1
+    assert rows[0]["order_result"] == "BLOCKED"
+    assert rows[0]["block_reason"] == config.BLOCK_REAL_BROKER_NOT_AUTHENTICATED
+    assert rows[0]["direction"] == "UP_RED"
+
+
 def test_entry_gate_allows_entry_at_krx_open_when_dnasmu_warmup_ready():
     """2026-08-13: explicit product decision -- DNASMU (pre-day-session
     feed, see config.WS_TR_KEY_EXTENDED) is trusted to drive real entries
@@ -422,7 +517,7 @@ def test_reconcile_qty_increase_records_ledger_correction_with_implied_price():
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=110, avg_price=8_425.0)
 
     now = datetime(2026, 8, 13, 10, 40, tzinfo=KST)
-    result = worker._do_reconcile(broker, state, now)
+    result = worker._do_reconcile(broker, state, now, confirm_retries=0)
 
     assert result == "RECOVERED_QTY_MISMATCH"
     assert state.position.quantity == 994
@@ -442,7 +537,7 @@ def test_reconcile_position_discovered_while_flat_records_ledger():
     state.position = None
 
     now = datetime(2026, 8, 13, 11, 0, tzinfo=KST)
-    result = worker._do_reconcile(broker, state, now)
+    result = worker._do_reconcile(broker, state, now, confirm_retries=0)
 
     assert result == "RECOVERED_FROM_BROKER"
     assert state.position is not None and state.position.quantity == 50
@@ -462,7 +557,7 @@ def test_reconcile_position_vanished_records_ledger_with_blank_price():
     state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=100, avg_price=9_000.0)
 
     now = datetime(2026, 8, 13, 11, 30, tzinfo=KST)
-    result = worker._do_reconcile(broker, state, now)
+    result = worker._do_reconcile(broker, state, now, confirm_retries=0)
 
     assert result == "RECOVERED_TO_FLAT"
     assert state.position is None
@@ -472,3 +567,43 @@ def test_reconcile_position_vanished_records_ledger_with_blank_price():
     assert int(rows[0]["executed_qty"]) == 100
     assert rows[0]["exit_reason"] == "RECONCILE_POSITION_VANISHED_UNTRACKED"
     assert rows[0]["executed_price"] == ""
+
+
+class _GlitchOnceBroker:
+    """Wraps a real FakeBroker but returns a WRONG get_positions() snapshot
+    on its first call only, then delegates normally -- simulates a single
+    stale/settlement-lagged KIS inquire-balance read."""
+
+    def __init__(self, inner, wrong_positions):
+        self._inner = inner
+        self._wrong = wrong_positions
+        self._calls = 0
+
+    def get_positions(self):
+        self._calls += 1
+        if self._calls == 1:
+            return self._wrong
+        return self._inner.get_positions()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_reconcile_transient_mismatch_is_reconfirmed_before_correcting():
+    """2026-08-14 real incident regression: a genuinely still-held position
+    got recorded as RECONCILE_POSITION_VANISHED_UNTRACKED (no fill price at
+    all) from exactly one stale broker.get_positions() read. _do_reconcile
+    must re-check before believing a first mismatch enough to overwrite
+    state.position / write an untracked-correction ledger row."""
+    inner = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 9_500.0})
+    inner.buy_market(config.LONG_SYMBOL, 100, "seed")
+    broker = _GlitchOnceBroker(inner, wrong_positions=[])  # first read: falsely "flat"
+    state = state_store.default_state()
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=100, avg_price=9_000.0)
+
+    now = datetime(2026, 8, 14, 11, 30, tzinfo=KST)
+    result = worker._do_reconcile(broker, state, now, confirm_retries=1, confirm_delay_sec=0.0)
+
+    assert result == "MATCH_POSITION"
+    assert state.position is not None and state.position.quantity == 100
+    assert ledger.load_execution_ledger() == []

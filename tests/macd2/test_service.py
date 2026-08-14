@@ -118,6 +118,29 @@ def test_start_blocks_when_enhanced_active(monkeypatch):
     assert state_store.load_state().auto_trade_on is False
 
 
+def test_start_blocks_when_hard_disabled(monkeypatch):
+    """2026-08-14 user decision: MU_MACD only, for now -- MACD2 must refuse
+    to start (and force any stale auto_trade_on=True back off) whenever
+    config.AUTO_TRADE_HARD_DISABLED is set, with no dependency on the
+    Enhanced/MACD-v1 ownership check."""
+    monkeypatch.setattr(config, "AUTO_TRADE_HARD_DISABLED", True)
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction(monkeypatch)
+
+    state = state_store.load_state()
+    state.auto_trade_on = True
+    state_store.save_state(state)
+
+    svc = service_module.Macd2Service()
+    res = svc.start(mode="mock", budget=1_000_000.0)
+
+    assert res["ok"] is False
+    assert res["message"] == "MACD2_AUTO_TRADE_HARD_DISABLED"
+    state = state_store.load_state()
+    assert state.auto_trade_on is False
+    assert state.order_block_reason == "MACD2_AUTO_TRADE_HARD_DISABLED"
+
+
 def test_start_full_lifecycle_reaches_running(monkeypatch):
     monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
     _patch_ok_construction(monkeypatch)

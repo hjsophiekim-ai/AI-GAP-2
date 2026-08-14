@@ -156,6 +156,15 @@ class Macd2Service:
         persistently-failing bootstrap can't hammer KIS on every
         auto-refresh tick. Returns True if a live worker resulted.
         """
+        if config.AUTO_TRADE_HARD_DISABLED:
+            # Don't leave a stale auto_trade_on=True sitting around looking
+            # like it merely stalled -- make the persisted state say plainly
+            # why it will never come back on its own.
+            state.auto_trade_on = False
+            state.ui_mode = RuntimeStatus.STOPPED
+            state.order_block_reason = "MACD2_AUTO_TRADE_HARD_DISABLED"
+            state_store.save_state(state)
+            return False
         if state.mode != "mock":
             return False
         last_attempt = _parse_iso_dt(state.last_auto_recover_attempt_at)
@@ -187,6 +196,13 @@ class Macd2Service:
     ) -> dict[str, Any]:
         if self._worker is not None and self._worker.is_alive():
             return {"ok": False, "message": "ALREADY_RUNNING"}
+
+        if config.AUTO_TRADE_HARD_DISABLED:
+            state = state_store.load_state()
+            state.auto_trade_on = False
+            state.order_block_reason = "MACD2_AUTO_TRADE_HARD_DISABLED"
+            state_store.save_state(state)
+            return {"ok": False, "message": "MACD2_AUTO_TRADE_HARD_DISABLED"}
 
         active, reason = other_strategy_active()
         if active:

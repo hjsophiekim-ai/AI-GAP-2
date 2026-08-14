@@ -11,6 +11,7 @@ UI는 command 기록(시작/중지)과 service.status()/ledger 읽기만 수행�
 from __future__ import annotations
 
 import sys
+from datetime import datetime, time as _time
 from pathlib import Path
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
@@ -24,9 +25,35 @@ from app.ui.auth_gate import require_login
 
 require_login()
 
+from app.config import get_config, get_kis_account_config, mask_account  # noqa: E402
 from app.trading.mu_macd import config as mu_config  # noqa: E402
 from app.trading.mu_macd import ledger  # noqa: E402
 from app.trading.mu_macd.service import get_service  # noqa: E402
+
+# 정규거래시간(KRX 09:00-15:30) 밖 데이터는 24시간 MU 시세 수집을 위해 계속
+# 쌓이지만(웜업이 끊기면 플래그가 못 나옴), 대시보드에는 "오늘 + 정규거래시간"
+# 신호/체결만 보여준다 -- 원장 CSV 자체나 worker 로직은 건드리지 않는다.
+_REGULAR_SESSION_CLOSE = _time(15, 30)
+
+
+def _today_regular_session_rows(rows: list[dict], ts_col: str) -> list[dict]:
+    today_str = datetime.now(mu_config.KST).strftime("%Y%m%d")
+    filtered = []
+    for row in rows:
+        raw = row.get(ts_col)
+        if not raw:
+            continue
+        try:
+            ts_kst = datetime.fromisoformat(raw).astimezone(mu_config.KST)
+        except ValueError:
+            continue
+        if ts_kst.strftime("%Y%m%d") != today_str:
+            continue
+        if not (mu_config.SESSION_OPEN <= ts_kst.time() < _REGULAR_SESSION_CLOSE):
+            continue
+        filtered.append(row)
+    return filtered
+
 
 st.title("MU MACD 자동매매")
 st.caption(
@@ -37,28 +64,60 @@ st.caption(
 
 service = get_service()
 status = service.status()
-
-st.warning(
-    "⚠️ 아직 MOCK 검증 단계입니다 — REAL 주문은 비활성화되어 있습니다 "
-    "(운영 승인 전까지 mode='real' 시작 버튼 없음).",
-    icon="⚠️",
-)
+cfg = get_config()
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Worker 상태", "RUNNING" if status["worker_alive"] else "STOPPED")
 col2.metric("모드", status["mode"])
 col3.metric("예산", f"{status['budget']:,.0f}원")
 
-st.subheader("제어")
-c1, c2 = st.columns(2)
+if status.get("flags_only_active"):
+    st.warning(
+        "⚠️ REAL 주문 인증이 끊긴 상태입니다 — MU 시세 수집과 3분봉 MACD 플래그 감지/기록은 계속 진행 중이지만, "
+        "실제 계좌의 주문 실행·보유 포지션 감시(reconcile/손절/퀵프로핏/강제청산)는 전부 멈춰 있습니다. "
+        "실제 보유 중인 포지션을 다시 보호하려면 아래에서 확인 문구를 다시 입력하고 \"자동매매 시작\"을 눌러주세요.",
+        icon="⚠️",
+    )
+
+st.subheader("계좌 / 제어")
+c1, c2, c3 = st.columns([1.2, 1.2, 1])
 with c1:
-    budget = st.number_input("예산(원)", min_value=100_000.0, value=float(mu_config.DEFAULT_BUDGET), step=100_000.0)
-    if st.button("MOCK 모드로 자동매매 시작", disabled=status["worker_alive"]):
-        result = service.start(mode="mock", budget=budget)
+    mode = st.radio(
+        "계좌 모드", ["mock", "real"], index=0 if status["mode"] != "real" else 1,
+        horizontal=True, key="mu_macd_mode",
+    )
+with c2:
+    budget = st.number_input("예산(원)", min_value=100_000.0, value=float(status["budget"] or mu_config.DEFAULT_BUDGET), step=100_000.0)
+with c3:
+    try:
+        acct = get_kis_account_config(mode)
+        masked = acct.get("masked_account") or mask_account(acct.get("account_no", ""))
+    except Exception:
+        masked = None
+    st.metric("계좌", masked or "(미설정)")
+
+start_kwargs: dict = {}
+if mode == "real":
+    st.error("REAL(실전) 모드 — 확인 문구 입력 후에만 시작 가능. 실제 계좌에서 실제 주문이 체결됩니다.")
+    expected = str(cfg.real_confirm_text() or "LIVE")
+    confirm_in = st.text_input(f"REAL 확인 문구 (정확히 `{expected}` 입력)", type="password", key="mu_macd_real_confirm")
+    real_toggle = st.checkbox("REAL 주문 활성화", key="mu_macd_real_toggle")
+    start_kwargs = {
+        "confirm_text": confirm_in,
+        "runtime_enable_real_buy": bool(real_toggle),
+        "runtime_enable_real_sell": bool(real_toggle),
+    }
+else:
+    st.info("MOCK 모드 — KIS 모의투자 계좌")
+
+b1, b2 = st.columns(2)
+with b1:
+    if st.button("자동매매 시작", type="primary", use_container_width=True, disabled=status["worker_alive"]):
+        result = service.start(mode=mode, budget=budget, **start_kwargs)
         st.write(result)
         st.rerun()
-with c2:
-    if st.button("자동매매 중지", disabled=not status["worker_alive"]):
+with b2:
+    if st.button("자동매매 중지", use_container_width=True, disabled=not status["worker_alive"]):
         result = service.stop()
         st.write(result)
         st.rerun()
@@ -107,6 +166,23 @@ with _qp_cols[1]:
     else:
         st.caption(f"퀵 Profit 익절={'ON' if status['quick_profit_enabled'] else 'OFF'}")
 
+_ep_cols = st.columns([1.4, 1.6])
+with _ep_cols[0]:
+    _ep_on = st.checkbox(
+        "신규진입 일시정지", value=bool(status["entry_paused"]),
+        key="mu_macd_entry_paused_toggle",
+        help="켜면 MU 시세 수집·3분봉 MACD 플래그 판정·손절/퀵프로핏/강제청산/reconcile은 전부 그대로 동작하고, "
+             "새로 진입하는 매수(플랫 진입 및 반대 플래그의 재매수)만 막습니다. 반대 플래그가 뜨면 보유 포지션은 그대로 매도됩니다.",
+    )
+with _ep_cols[1]:
+    if bool(_ep_on) != bool(status["entry_paused"]):
+        res = service.set_entry_paused(bool(_ep_on))
+        if res.get("ok"):
+            st.caption(f"신규진입 → {'일시정지' if _ep_on else '재개'}")
+            st.rerun()
+    else:
+        st.caption(f"신규진입={'일시정지' if status['entry_paused'] else '정상'}")
+
 st.subheader("WebSocket / Warm-up 상태")
 w1, w2, w3, w4 = st.columns(4)
 w1.metric("WS 연결", "OK" if status["ws_connected"] else "끊김")
@@ -137,19 +213,19 @@ else:
 if status["order_block_reason"]:
     st.write(f"최근 block/skip 사유: `{status['order_block_reason']}`")
 
-st.subheader("신호 원장 (최근 100건)")
-signal_rows = ledger.load_signal_ledger(limit=100)
+st.subheader("신호 원장 (오늘 · 정규거래시간 09:00-15:30, 최근 100건)")
+signal_rows = _today_regular_session_rows(ledger.load_signal_ledger(limit=2000), "confirmed_at")[-100:]
 if signal_rows:
     st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
 else:
-    st.caption("아직 기록된 신호가 없습니다.")
+    st.caption("오늘 정규거래시간 중 기록된 신호가 없습니다.")
 
-st.subheader("체결 원장 (최근 100건)")
-exec_rows = ledger.load_execution_ledger(limit=100)
+st.subheader("체결 원장 (오늘 · 정규거래시간 09:00-15:30, 최근 100건)")
+exec_rows = _today_regular_session_rows(ledger.load_execution_ledger(limit=2000), "timestamp")[-100:]
 if exec_rows:
     st.dataframe(pd.DataFrame(exec_rows), use_container_width=True)
 else:
-    st.caption("아직 기록된 체결이 없습니다.")
+    st.caption("오늘 정규거래시간 중 기록된 체결이 없습니다.")
 
 with st.expander("전략 설명"):
     st.markdown(
@@ -162,6 +238,8 @@ with st.expander("전략 설명"):
 - **반대 플래그**: 보유 포지션 전량매도 후 반대 ETF 매수(entry_gate 통과 시에만 재매수, 매도는 항상 실행).
 - **리스크**: 손절 {mu_config.STOP_LOSS_NET_PCT}%, {mu_config.FORCE_LIQUIDATE_AT} 강제청산 — 매 tick마다 플래그 발생 여부와 무관하게 확인.
 - **퀵 Profit 익절(옵션, 기본 OFF)**: ON이면 순수익률이 +{mu_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절 — MU 플래그와 무관하게 매 tick 확인.
-- **신규진입 차단 조건**(청산에는 영향 없음): WS 끊김/stale(>{mu_config.WS_STALE_MAX_SEC}s), 웜업 3분봉 {mu_config.WARMUP_MIN_3M_BARS}개 미달, 09:00 이전/{mu_config.NEW_ENTRY_CUTOFF} 이후.
+- **신규진입 차단 조건**(청산에는 영향 없음): WS 끊김/stale(>{mu_config.WS_STALE_MAX_SEC}s), 웜업 3분봉 {mu_config.WARMUP_MIN_3M_BARS}개 미달, 09:00 이전/{mu_config.NEW_ENTRY_CUTOFF} 이후, 사용자가 "신규진입 일시정지"를 켠 경우.
+- **신규진입 일시정지(옵션, 기본 OFF)**: MU 시세 수집·3분봉 MACD 플래그 판정·신호 원장 기록·손절/퀵프로핏/강제청산/reconcile은 전부 그대로 동작 — 새 매수(플랫 진입, 반대 플래그의 재매수)만 막힘. 자동매매 자체를 끄는 "자동매매 중지"와 달리 데이터 수집/웜업은 끊기지 않음.
+- **REAL 모드 재시작 시 안전장치**: 서버 재시작(재배포/idle-sleep) 후에는 REAL 계좌 인증이 자동으로 복구되지 않음(확인 문구 재입력 필요) — MOCK만 자동 복구됨. 다만 MU 시세 수집·플래그 감지는 REAL이어도 인증 없이 계속 동작(위 경고 배너 참고) — 단 이 동안은 reconcile/손절/퀵프로핏/강제청산 등 실제 포지션 보호는 전혀 이뤄지지 않으니, 실전 포지션이 있다면 최대한 빨리 다시 로그인해야 함.
         """
     )

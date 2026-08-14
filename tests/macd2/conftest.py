@@ -25,6 +25,15 @@ def _fast_prior_day_fetch_retries(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _allow_auto_trade_in_tests(monkeypatch):
+    """Production defaults config.AUTO_TRADE_HARD_DISABLED=True (2026-08-14
+    user decision: MU_MACD only, for now) -- tests still need to exercise
+    the real start()/_auto_recover_worker() mechanics, so keep it off here
+    regardless of the production default."""
+    monkeypatch.setattr(config, "AUTO_TRADE_HARD_DISABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_service_singleton(monkeypatch):
     """Never let one test's Macd2Service process-level singleton leak into
     another test (across any file in tests/macd2)."""

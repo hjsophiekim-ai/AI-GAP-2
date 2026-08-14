@@ -17,7 +17,7 @@ from streamlit.testing.v1 import AppTest
 
 from app.trading.macd2 import config, ledger, worker
 
-_APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
+_APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages_disabled" / "11_MACD_자동매매2.py")
 
 
 def _fresh_app() -> AppTest:

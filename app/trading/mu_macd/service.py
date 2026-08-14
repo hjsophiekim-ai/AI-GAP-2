@@ -61,9 +61,18 @@ class MUMacdService:
         self._market_data: Optional[MUMarketDataService] = None
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event: Optional[threading.Event] = None
+        # 2026-08-14: broker-less "flags only" shadow (see
+        # _auto_recover_flags_only) -- its OWN market_data/thread/event,
+        # never shared with the real worker's own attributes above.
+        self._flags_only_market_data: Optional[MUMarketDataService] = None
+        self._flags_only_thread: Optional[threading.Thread] = None
+        self._flags_only_stop_event: Optional[threading.Event] = None
 
     def is_alive(self) -> bool:
         return bool(self._worker_thread and self._worker_thread.is_alive())
+
+    def _flags_only_alive(self) -> bool:
+        return bool(self._flags_only_thread and self._flags_only_thread.is_alive())
 
     def start(
         self, *, mode: str = "mock", budget: float = config.DEFAULT_BUDGET,
@@ -76,6 +85,15 @@ class MUMacdService:
         with _LOCK:
             if self.is_alive():
                 return {"ok": False, "message": "ALREADY_RUNNING"}
+
+            # 2026-08-14: release the broker-less flags-only shadow's WS
+            # connection first -- about to open the real one below, and two
+            # simultaneous MU WS subscriptions on the same KIS account would
+            # be wasteful/risk a duplicate-subscription issue. Today's bars
+            # were already being persisted to disk by the shadow the whole
+            # time, so load_today_bars() below picks up right where it left
+            # off -- no warmup gap from this handoff.
+            self._stop_flags_only()
 
             state = state_store.load_state()
             state.mode = mode
@@ -139,6 +157,23 @@ class MUMacdService:
             state.quick_profit_enabled = enabled_bool
             state_store.save_state(state)
         return {"ok": True, "quick_profit_enabled": enabled_bool, "previous": prev}
+
+    def set_entry_paused(self, enabled: bool) -> dict[str, Any]:
+        """UI command: pause/resume NEW entries only (2026-08-14) -- MU price
+        collection (WS/1m bars), the worker tick loop, MACD flag detection/
+        signal-ledger recording, and existing-position management (stop
+        loss/quick profit/forced liquidation/reconcile) all keep running
+        unaffected; see worker._entry_gate_block_reason /
+        config.BLOCK_ENTRY_PAUSED_BY_USER. Shares _LOCK with _run_loop for
+        the same reason set_quick_profit_enabled does -- see its docstring.
+        """
+        with _LOCK:
+            state = state_store.load_state()
+            enabled_bool = bool(enabled)
+            prev = bool(state.entry_paused)
+            state.entry_paused = enabled_bool
+            state_store.save_state(state)
+        return {"ok": True, "entry_paused": enabled_bool, "previous": prev}
 
     def manual_entry(self, direction: str) -> dict[str, Any]:
         """UI 수동 진입 버튼 ("현재시점 레드(레버리지)/블루(인버스) 전량매수")
@@ -303,11 +338,86 @@ class MUMacdService:
                 self._worker_thread.join(timeout=5.0)
             if self._market_data is not None:
                 self._market_data.stop()
+            self._stop_flags_only()
             state = state_store.load_state()
             state.auto_trade_on = False
             state_store.save_state(state)
             self._worker_thread = None
             return {"ok": True}
+
+    def _stop_flags_only(self) -> None:
+        """Never acquires _LOCK itself -- callers (start()/stop(), both
+        already holding it) rely on the exact same "loop only re-checks its
+        stop event outside the lock" pattern _run_loop/stop() already use,
+        so join() below can never deadlock against a lock the caller holds.
+
+        Deliberately never nulls self._flags_only_stop_event (mirrors
+        _run_loop/stop() never nulling self._stop_event either) -- if
+        join() times out because the loop thread is currently blocked
+        acquiring _LOCK (held by this very call's caller), the thread will
+        still dereference self._flags_only_stop_event once it finally gets
+        the lock and finishes that one last tick; nulling it here raced
+        that dereference into an AttributeError in practice.
+        """
+        if self._flags_only_stop_event is not None:
+            self._flags_only_stop_event.set()
+        if self._flags_only_thread is not None:
+            self._flags_only_thread.join(timeout=5.0)
+        if self._flags_only_market_data is not None:
+            self._flags_only_market_data.stop()
+        self._flags_only_thread = None
+        self._flags_only_market_data = None
+
+    def _auto_recover_flags_only(self, state: RuntimeState) -> bool:
+        """2026-08-14: when _auto_recover_worker refuses (REAL mode's
+        KisRealBroker can't even be constructed without the human
+        re-entering the confirm phrase, so real order/reconcile authority
+        genuinely cannot come back on its own), MU price collection + MACD
+        flag detection don't need that broker at all -- keep them alive via
+        a broker-less worker.run_flags_only() loop, so the dashboard/signal
+        ledger keep showing real flags forming while order authority stays
+        paused for re-authentication. No-op (returns False) for mode=="mock"
+        -- mock's own _auto_recover_worker already brings back a full
+        worker+broker, no shadow needed. Idempotent: a no-op if the shadow
+        is already running."""
+        if state.mode == "mock":
+            return False
+        with _LOCK:
+            if self._flags_only_alive():
+                return True
+            if self.is_alive():
+                return False  # the real worker came back between the caller's check and now
+            self._flags_only_market_data = MUMarketDataService(mode="real")
+            self._flags_only_market_data.load_today_bars()
+            self._flags_only_market_data.start()
+            self._flags_only_stop_event = threading.Event()
+            self._flags_only_thread = threading.Thread(
+                target=self._run_flags_only_loop, daemon=True, name="mu-macd-flags-only",
+            )
+            self._flags_only_thread.start()
+            return True
+
+    def _run_flags_only_loop(self) -> None:
+        while self._flags_only_stop_event is not None and not self._flags_only_stop_event.is_set():
+            try:
+                with _LOCK:
+                    state = state_store.load_state()
+                    if (
+                        state.auto_trade_on and not self.is_alive()
+                        and self._flags_only_market_data is not None
+                    ):
+                        now = datetime.now(KST)
+                        worker.run_flags_only(market_data=self._flags_only_market_data, state=state, now=now)
+                        state_store.save_state(state)
+            except Exception as exc:  # pragma: no cover - defensive top-level guard
+                try:
+                    with _LOCK:
+                        state = state_store.load_state()
+                        state.order_block_reason = f"FLAGS_ONLY_LOOP_ERROR:{exc!r}"
+                        state_store.save_state(state)
+                except Exception:
+                    pass
+            self._flags_only_stop_event.wait(WORKER_INTERVAL_SEC)
 
     def _run_loop(self) -> None:
         while self._stop_event is not None and not self._stop_event.is_set():
@@ -340,10 +450,20 @@ class MUMacdService:
         if state.auto_trade_on and not self.is_alive():
             if self._auto_recover_worker(state):
                 state = state_store.load_state()
+            else:
+                # 2026-08-14: REAL mode can't auto-recover the broker itself
+                # (requires the human's confirm phrase), but MU price
+                # collection + flag detection can keep running in the
+                # meantime -- see _auto_recover_flags_only's docstring.
+                self._auto_recover_flags_only(state)
+        elif self.is_alive():
+            self._stop_flags_only()  # the real worker is up -- no shadow needed
         return {
             "auto_trade_on": state.auto_trade_on, "mode": state.mode, "budget": state.budget,
             "position": state.position, "worker_alive": self.is_alive(),
+            "flags_only_active": self._flags_only_alive(),
             "quick_profit_enabled": state.quick_profit_enabled,
+            "entry_paused": state.entry_paused,
             "ws_connected": state.ws_connected, "ws_last_tick_at": state.ws_last_tick_at,
             "ws_last_error": state.ws_last_error,
             "warmup_bars_1m_count": state.warmup_bars_1m_count,

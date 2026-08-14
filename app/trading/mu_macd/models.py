@@ -31,6 +31,11 @@ class RuntimeState:
     mode: str = "mock"  # "mock" | "real"
     budget: float = 0.0
     quick_profit_enabled: bool = False
+    # 2026-08-14: pause NEW entries only -- MU price collection, flag
+    # detection/signal-ledger recording, and existing-position management
+    # (stop loss/quick profit/forced liquidation/reconcile) all keep running
+    # unaffected; see config.BLOCK_ENTRY_PAUSED_BY_USER.
+    entry_paused: bool = False
 
     # ── position ─────────────────────────────────────────────────────────
     position: Optional[PositionSnapshot] = None

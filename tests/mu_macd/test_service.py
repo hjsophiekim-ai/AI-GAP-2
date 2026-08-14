@@ -164,6 +164,21 @@ class _FlatMarketData:
         return 0
 
 
+# ── set_entry_paused (2026-08-14) ────────────────────────────────────────────
+
+def test_set_entry_paused_toggles_and_persists():
+    state_store.save_state(state_store.default_state())  # entry_paused=False
+    svc = MUMacdService()
+
+    res_on = svc.set_entry_paused(True)
+    assert res_on == {"ok": True, "entry_paused": True, "previous": False}
+    assert state_store.load_state().entry_paused is True
+
+    res_off = svc.set_entry_paused(False)
+    assert res_off == {"ok": True, "entry_paused": False, "previous": True}
+    assert state_store.load_state().entry_paused is False
+
+
 # ── set_quick_profit_enabled vs _run_loop lost-update race (2026-08-13 fix) ──
 
 def test_quick_profit_toggle_survives_concurrent_stale_worker_tick_save():
@@ -233,6 +248,50 @@ def test_status_auto_recovers_worker_when_auto_trade_on_but_dead():
     assert status["worker_alive"] is True
     assert svc.is_alive()
     svc.stop()  # cleanup: stop the real threads this recovery spun up
+
+
+# ── broker-less "flags only" shadow for REAL mode (2026-08-14) — REAL's
+# KisRealBroker refuses to even construct without the human re-entering the
+# confirm phrase, so unlike MOCK, _auto_recover_worker can never bring the
+# real worker back on its own. MU price collection/MACD flag detection don't
+# need that broker at all, though, so status() must still keep them alive.
+
+def test_status_starts_flags_only_shadow_when_real_mode_worker_dead():
+    state = state_store.default_state()
+    state.mode = "real"
+    state.auto_trade_on = True
+    state_store.save_state(state)
+
+    svc = MUMacdService()
+    assert not svc.is_alive()
+
+    status = svc.status()
+
+    assert status["worker_alive"] is False  # REAL never auto-recovers the broker itself
+    assert status["flags_only_active"] is True
+    assert svc._flags_only_alive()
+    svc.stop()  # cleanup: joins the shadow thread before the test ends
+
+
+def test_starting_real_worker_stops_flags_only_shadow():
+    """Once the human re-authenticates and the real worker actually starts,
+    the broker-less shadow must be torn down -- no duplicate MU WS
+    subscription running alongside the real one."""
+    state = state_store.default_state()
+    state.mode = "real"
+    state.auto_trade_on = True
+    state_store.save_state(state)
+
+    svc = MUMacdService()
+    svc.status()  # brings up the flags-only shadow
+    assert svc._flags_only_alive()
+
+    result = svc.start(mode="mock", budget=1_000_000.0)  # simulates re-auth
+
+    assert result["ok"] is True
+    assert svc.is_alive()
+    assert not svc._flags_only_alive()
+    svc.stop()
 
 
 def test_auto_recover_worker_respects_cooldown():

@@ -49,6 +49,14 @@ TRADE_SYMBOLS = (LONG_SYMBOL, INVERSE_SYMBOL)
 # ── Budget (UI-overridable; this is only the default) ──────────────────────
 DEFAULT_BUDGET = 10_000_000.0
 
+# 2026-08-14: user decision to run MU_MACD only for now -- MACD2 auto-trading
+# is hard-disabled here (start()/_auto_recover_worker() both refuse
+# immediately, regardless of any stale persisted state.auto_trade_on=True
+# left over from before this flag existed) so a redeploy/idle-sleep restart
+# can never silently bring it back. Re-enable by setting
+# MACD2_AUTO_TRADE_HARD_DISABLED=false when MACD2 is wanted again.
+AUTO_TRADE_HARD_DISABLED = _env_bool("MACD2_AUTO_TRADE_HARD_DISABLED", True)
+
 STRATEGY_NAME = "MACD2"
 # 2026-07-27 KIS-parity fix: order authority moved OFF the forming/provisional
 # bar and onto the confirmed, completed-3m-bar MACD(12,26,9) crossover — the
