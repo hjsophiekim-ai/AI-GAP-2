@@ -83,8 +83,17 @@ class MUMacdService:
         never silently placing a live order. Per current instructions, REAL
         orders remain disabled until explicitly validated further."""
         with _LOCK:
+            # 2026-08-14 fix (real incident: after every commit/redeploy the
+            # user has to click "자동매매 시작" again, but a still-alive
+            # worker thread -- e.g. MOCK's own auto-recovery already having
+            # kicked in from an earlier status() poll before they even
+            # looked at the page -- disabled the button entirely with no
+            # way to force a clean restart). Treat a re-click while already
+            # alive as "restart", not "refuse": tear down the existing
+            # worker/market_data first, then fall through to start fresh
+            # exactly as if nothing had been running.
             if self.is_alive():
-                return {"ok": False, "message": "ALREADY_RUNNING"}
+                self._stop_worker_and_market_data_locked()
 
             # 2026-08-14: release the broker-less flags-only shadow's WS
             # connection first -- about to open the real one below, and two
@@ -107,7 +116,27 @@ class MUMacdService:
                 "confirm_text": confirm_text, "runtime_real_mode": True,
                 "runtime_enable_real_buy": runtime_enable_real_buy, "runtime_enable_real_sell": runtime_enable_real_sell,
             }
-            self._broker = create_macd2_broker(mode, **broker_kwargs)
+            # 2026-08-14 fix: a wrong REAL confirm phrase (or any other
+            # KisRealBroker.__init__ safety-gate failure -- missing env
+            # vars, account conflict, etc.) raises a plain RuntimeError.
+            # Uncaught, that would both (a) propagate out of start() as an
+            # unhandled exception instead of a clean {"ok": False, ...}
+            # (mirrors the exact try/except macd2's own service.start()
+            # already has around this same call) and (b) leave
+            # auto_trade_on=True/worker_started_at stamped above even
+            # though no worker ever actually started -- status() would
+            # then treat it as a stalled-but-still-wanted-on REAL session
+            # and spin up the flags-only shadow for a login attempt that
+            # never even happened.
+            try:
+                self._broker = create_macd2_broker(mode, **broker_kwargs)
+            except Exception as exc:
+                state.auto_trade_on = False
+                state.worker_instance_id = None
+                state.worker_started_at = None
+                state.order_block_reason = f"BROKER_CREATE_FAILED:{exc}"
+                state_store.save_state(state)
+                return {"ok": False, "message": str(exc)}
             # 2026-08-12 fix: market data mode is DELIBERATELY always "real"
             # here, regardless of the broker's mock/real trading mode. There
             # is no mock WebSocket feed to fall back to -- MU's day-session
@@ -332,18 +361,28 @@ class MUMacdService:
 
     def stop(self) -> dict[str, Any]:
         with _LOCK:
-            if self._stop_event is not None:
-                self._stop_event.set()
-            if self._worker_thread is not None:
-                self._worker_thread.join(timeout=5.0)
-            if self._market_data is not None:
-                self._market_data.stop()
+            self._stop_worker_and_market_data_locked()
             self._stop_flags_only()
             state = state_store.load_state()
             state.auto_trade_on = False
             state_store.save_state(state)
-            self._worker_thread = None
             return {"ok": True}
+
+    def _stop_worker_and_market_data_locked(self) -> None:
+        """Tears down the current worker thread + its market_data. Never
+        acquires _LOCK itself -- callers (stop(), and start() re-starting
+        an already-alive worker) already hold it, and rely on the same
+        "loop only re-checks its stop event outside the lock" pattern
+        _run_loop uses so join() below can never deadlock. Deliberately
+        never nulls self._stop_event (see _stop_flags_only's docstring for
+        why -- the same race applies here)."""
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if self._worker_thread is not None:
+            self._worker_thread.join(timeout=5.0)
+        if self._market_data is not None:
+            self._market_data.stop()
+        self._worker_thread = None
 
     def _stop_flags_only(self) -> None:
         """Never acquires _LOCK itself -- callers (start()/stop(), both

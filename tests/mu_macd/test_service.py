@@ -179,6 +179,48 @@ def test_set_entry_paused_toggles_and_persists():
     assert state_store.load_state().entry_paused is False
 
 
+def test_entry_paused_toggle_survives_concurrent_stale_worker_tick_save():
+    """Same lost-update race set_quick_profit_enabled was fixed for
+    (2026-08-13) -- set_entry_paused shares the exact same _LOCK-protected
+    load-modify-save pattern, so reproduce the identical interleaving here
+    too: a worker tick that loaded state BEFORE the toggle must not be
+    allowed to silently clobber it back to the pre-toggle value once the
+    tick's OWN (stale) save finally goes through."""
+    state_store.save_state(state_store.default_state())  # entry_paused=False
+
+    tick_started = threading.Event()
+    proceed_with_stale_save = threading.Event()
+
+    def fake_stale_tick():
+        with mu_service._LOCK:
+            stale_state = state_store.load_state()  # reads False, BEFORE the toggle below
+            tick_started.set()
+            proceed_with_stale_save.wait(timeout=2)
+            state_store.save_state(stale_state)  # the lost-update: re-saves the stale False
+
+    tick_thread = threading.Thread(target=fake_stale_tick)
+    tick_thread.start()
+    assert tick_started.wait(timeout=2)
+
+    svc = MUMacdService()
+    result_holder: dict = {}
+
+    def do_toggle():
+        result_holder["result"] = svc.set_entry_paused(True)
+
+    toggle_thread = threading.Thread(target=do_toggle)
+    toggle_thread.start()
+    toggle_thread.join(timeout=0.2)
+    assert toggle_thread.is_alive()  # blocked on _LOCK, held by the fake stale tick
+
+    proceed_with_stale_save.set()
+    tick_thread.join(timeout=2)
+    toggle_thread.join(timeout=2)
+
+    assert result_holder["result"]["ok"] is True
+    assert state_store.load_state().entry_paused is True  # NOT clobbered
+
+
 # ── set_quick_profit_enabled vs _run_loop lost-update race (2026-08-13 fix) ──
 
 def test_quick_profit_toggle_survives_concurrent_stale_worker_tick_save():
@@ -233,6 +275,29 @@ def test_quick_profit_toggle_survives_concurrent_stale_worker_tick_save():
 # never executed. status() must now recover on its own instead of silently
 # doing nothing until a human notices.
 
+def test_start_restarts_cleanly_when_already_alive():
+    """2026-08-14 fix (real incident: after every commit/redeploy the user
+    has to click "자동매매 시작" again, but a still-alive worker -- e.g.
+    MOCK's own auto-recovery already having kicked in from an earlier
+    status() poll -- used to make start() refuse with ALREADY_RUNNING, with
+    no way to force a clean restart from the UI). start() must now tear
+    down the existing worker and spin up a genuinely fresh one instead."""
+    svc = MUMacdService()
+    first = svc.start(mode="mock", budget=1_000_000.0)
+    assert first["ok"] is True
+    assert svc.is_alive()
+    first_instance_id = state_store.load_state().worker_instance_id
+
+    second = svc.start(mode="mock", budget=2_000_000.0)
+
+    assert second["ok"] is True
+    assert svc.is_alive()
+    state = state_store.load_state()
+    assert state.worker_instance_id != first_instance_id  # genuinely fresh, not a no-op
+    assert state.budget == 2_000_000.0
+    svc.stop()  # cleanup
+
+
 def test_status_auto_recovers_worker_when_auto_trade_on_but_dead():
     state = state_store.default_state()
     state.mode = "mock"
@@ -271,6 +336,29 @@ def test_status_starts_flags_only_shadow_when_real_mode_worker_dead():
     assert status["flags_only_active"] is True
     assert svc._flags_only_alive()
     svc.stop()  # cleanup: joins the shadow thread before the test ends
+
+
+def test_start_real_mode_broker_failure_returns_clean_error_without_leaving_auto_trade_on(monkeypatch):
+    """2026-08-14 REAL-mode readiness check: start() persists
+    auto_trade_on=True BEFORE constructing the broker, with no try/except
+    around create_macd2_broker() -- a wrong confirm phrase (or any other
+    KisRealBroker safety-gate RuntimeError) would otherwise propagate
+    uncaught out of start() AND leave auto_trade_on=True/worker_started_at
+    stamped despite no worker ever actually starting. Mirrors macd2's own
+    service.start(), which already wraps this exact call in try/except."""
+    def _boom(mode, **kwargs):
+        raise RuntimeError("실전투자 확인 문구가 틀립니다. 'LIVE'를 정확히 입력하세요.")
+
+    monkeypatch.setattr(mu_service, "create_macd2_broker", _boom)
+
+    svc = MUMacdService()
+    result = svc.start(mode="real", budget=1_000_000.0, confirm_text="wrong")
+
+    assert result["ok"] is False
+    assert "확인 문구가 틀립니다" in result["message"]
+    state = state_store.load_state()
+    assert state.auto_trade_on is False
+    assert not svc.is_alive()
 
 
 def test_starting_real_worker_stops_flags_only_shadow():

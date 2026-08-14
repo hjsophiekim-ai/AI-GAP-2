@@ -112,7 +112,11 @@ else:
 
 b1, b2 = st.columns(2)
 with b1:
-    if st.button("자동매매 시작", type="primary", use_container_width=True, disabled=status["worker_alive"]):
+    _start_label = "자동매매 재시작" if status["worker_alive"] else "자동매매 시작"
+    if st.button(_start_label, type="primary", use_container_width=True):
+        # 2026-08-14 fix: 재배포 뒤 이미 켜져 있는 것처럼 보여 버튼이 막히던
+        # 문제 -- 이미 돌고 있어도 눌리면 기존 worker/시세수집을 정리하고
+        # 깨끗하게 새로 시작한다(service.start()가 내부에서 처리).
         result = service.start(mode=mode, budget=budget, **start_kwargs)
         st.write(result)
         st.rerun()
