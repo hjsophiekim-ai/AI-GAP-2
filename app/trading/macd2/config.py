@@ -570,25 +570,31 @@ MAX_AFTERNOON_ENTRIES = _env_int("MACD2_TW_MAX_AFTERNOON_ENTRIES", 2)
 MAX_DAILY_ENTRIES = _env_int("MACD2_TW_MAX_DAILY_ENTRIES", 5)
 
 # §11-12 morning position management.
-# 2026-08-15 사용자 요청(승률 개선 튜닝): TP1/TP2를 원 스펙(2.5%/5.0%)에서
-# 0.6%/1.2%로 축소 — 20거래일 백테스트에서 "오전만 진입 + 이 축소된 익절폭"
-# 조합이 승률 67.5%(앞10일 71.4%/뒤10일 63.2%, 총수익 +18.95%)로 원 스펙
-# (승률 37.3%, +11.4%)보다 승률·수익 모두 개선됨을 확인했다. 손절선은
-# 원 스펙 그대로(-1.5%) 유지 — 승률은 TP 축소만으로 충분히 개선됐고 손절까지
-# 축소하면 오히려 승률이 원래 수준으로 돌아가는 것을 확인했다(스케일 축소
-# 스윕 결과 참고).
-MORNING_TP1 = _env_float("MACD2_TW_MORNING_TP1", 0.006)
+# 2026-08-15 튜닝 히스토리 (사용자 요청으로 두 차례 조정, 둘 다 환경변수로
+# 서로 되돌리기 가능):
+#   1차(승률 우선): TP1/TP2를 원 스펙(2.5%/5.0%)에서 0.6%/1.2%로 축소 —
+#     20거래일에서 승률 67.5%(+18.95%)로 원 스펙(37.3%, +11.4%)보다 승률은
+#     크게 개선됐지만, 평균익절(1.47%)이 평균손절(-1.59%)보다 겨우 조금 큰
+#     구조라 실제 aug-10~14 아웃오브샘플 5일에서는 승률 54.5%까지만 내려가도
+#     순수익이 마이너스(-1.07%)로 뒤집혔다(사용자 지적: "평균 손절이 더 크니까
+#     당연히 수익이 안좋지").
+#   2차(현재, 원 스펙 TP 값으로 복원): TP1/TP2를 2.5%/5.0%로 되돌림 — 승률은
+#     낮아지지만(20일 50.0%, aug10-14 5일 36.4%) 평균익절이 평균손절의 2~3배로
+#     커져 두 구간 모두 순수익이 개선됐다(20일 +29.27%/PF 1.93, 5일 +6.94%/
+#     PF 1.65 — 1차 튜닝에서 마이너스였던 5일 구간이 플러스로 전환). 승률
+#     자체보다 리워드:리스크 비율이 총수익을 좌우한다는 결론.
+MORNING_TP1 = _env_float("MACD2_TW_MORNING_TP1", 0.025)
 MORNING_TP1_SELL_RATIO = _env_float("MACD2_TW_MORNING_TP1_SELL_RATIO", 0.50)
-MORNING_TP2 = _env_float("MACD2_TW_MORNING_TP2", 0.012)
+MORNING_TP2 = _env_float("MACD2_TW_MORNING_TP2", 0.05)
 MORNING_STOP_LOSS = _env_float("MACD2_TW_MORNING_STOP_LOSS", -0.015)
 MORNING_AFTER_TP1_STOP = _env_float("MACD2_TW_MORNING_AFTER_TP1_STOP", 0.003)
 MORNING_TRAILING_TRIGGER = _env_float("MACD2_TW_MORNING_TRAILING_TRIGGER", 0.035)
 MORNING_TRAILING_STOP = _env_float("MACD2_TW_MORNING_TRAILING_STOP", 0.020)
 
 # §13-14 afternoon position management (2026-08-15: afternoon entries are
-# disabled by default via TW_MORNING_ONLY below; kept in the same tuned
-# 0.6% scale as morning for consistency if that toggle is ever turned off).
-AFTERNOON_TP = _env_float("MACD2_TW_AFTERNOON_TP", 0.006)
+# disabled by default via TW_MORNING_ONLY below; kept at the original spec
+# value for consistency with MORNING_TP1 if that toggle is ever turned off).
+AFTERNOON_TP = _env_float("MACD2_TW_AFTERNOON_TP", 0.025)
 AFTERNOON_STOP_LOSS = _env_float("MACD2_TW_AFTERNOON_STOP_LOSS", -0.012)
 AFTERNOON_BREAKEVEN_TRIGGER = _env_float("MACD2_TW_AFTERNOON_BREAKEVEN_TRIGGER", 0.015)
 AFTERNOON_BREAKEVEN_STOP = _env_float("MACD2_TW_AFTERNOON_BREAKEVEN_STOP", 0.002)
