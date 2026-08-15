@@ -87,6 +87,23 @@ class RuntimeState:
     # recovery attempts, see config.WORKER_AUTO_RECOVER_COOLDOWN_SEC.
     last_auto_recover_attempt_at: Optional[str] = None
 
+    # ── Optional "시간대별 최적거래 필터" (2026-08-15) — reuses macd2's own
+    # time_window_filter/time_window_position_manager pure functions by
+    # import; this state only tracks the two-bar (T -> T+3) pending
+    # candidate and, once a position is opened by this filter, its own
+    # ladder progress. Default OFF (config.TIME_WINDOW_FILTER_ENABLED_DEFAULT).
+    time_window_filter_enabled: bool = False
+    time_window_pending_flag_direction: Optional[str] = None  # Direction.value
+    time_window_pending_flag_bar_ts: Optional[str] = None
+    time_window_position_active: bool = False
+    time_window_tp1_done: bool = False
+    time_window_peak_net_return: float = 0.0
+    time_window_morning_entry_count: int = 0
+    time_window_afternoon_entry_count: int = 0
+    last_time_window_score: Optional[float] = None
+    last_time_window_decision: Optional[str] = None
+    last_time_window_block_reason: Optional[str] = None
+
 
 @dataclass
 class TickResult:

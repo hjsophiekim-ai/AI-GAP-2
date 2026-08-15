@@ -33,6 +33,7 @@ def default_state() -> RuntimeState:
     state.budget = config.DEFAULT_BUDGET
     state.auto_trade_on = config.AUTO_TRADE_ON_DEFAULT
     state.quick_profit_enabled = config.QUICK_PROFIT_ENABLED_DEFAULT
+    state.time_window_filter_enabled = config.TIME_WINDOW_FILTER_ENABLED_DEFAULT
     return state
 
 
@@ -84,6 +85,8 @@ def state_from_dict(raw: dict[str, Any]) -> RuntimeState:
         if not hasattr(state, key):
             continue
         if key == "last_detected_direction" and value not in _DIRECTION_VALUES and value is not None:
+            continue
+        if key == "time_window_pending_flag_direction" and value not in _DIRECTION_VALUES and value is not None:
             continue
         setattr(state, key, value)
     return state

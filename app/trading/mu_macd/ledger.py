@@ -25,6 +25,10 @@ SIGNAL_LEDGER_COLUMNS = [
     "position_reconcile", "executor_called",
     "broker_called", "broker_order_id", "broker_rt_cd", "broker_msg_cd", "broker_msg1",
     "final_qty", "final_result",
+    # Optional "시간대별 최적거래 필터" fields (appended 2026-08-15; never
+    # rename/delete older cols).
+    "time_window_filter_enabled", "time_window_score", "time_window_decision",
+    "time_window_block_reason",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

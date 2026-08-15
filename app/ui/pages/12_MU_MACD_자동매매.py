@@ -187,6 +187,29 @@ with _ep_cols[1]:
     else:
         st.caption(f"신규진입={'일시정지' if status['entry_paused'] else '정상'}")
 
+_tw_cols = st.columns([1.4, 1.6])
+with _tw_cols[0]:
+    _tw_on = st.checkbox(
+        "시간대별 최적거래 필터", value=bool(status["time_window_filter_enabled"]),
+        key="mu_macd_time_window_filter_toggle",
+        help="app.trading.macd2의 시간대별 최적거래 필터를 그대로 재사용(동일한 진입/손절/익절 로직). "
+             "켜면 완성봉 플래그가 뜬 즉시 진입하지 않고 다음 완성 3분봉(T+3)에서 방향유지+gap확대를 재확인한 뒤에만 "
+             "진입하며, 09:00-13:00 구간 품질점수 게이트(오전만, 13:00 이후 신규진입 없음)와 "
+             "손절 -1.5%/TP1 +2.5%(50%)/TP2 +5.0% 래더로 관리합니다. 기본 OFF — 기존 즉시진입+단순손절/퀵프로핏 로직은 그대로 유지됩니다.",
+    )
+with _tw_cols[1]:
+    if bool(_tw_on) != bool(status["time_window_filter_enabled"]):
+        res = service.set_time_window_filter_enabled(bool(_tw_on))
+        if res.get("ok"):
+            st.caption(f"시간대별 최적거래 필터 → {'ON' if _tw_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"시간대별 최적거래 필터={'ON' if status['time_window_filter_enabled'] else 'OFF'} · "
+            f"오전 진입 {status['time_window_morning_entry_count']} · "
+            f"포지션관리 활성={'Y' if status['time_window_position_active'] else '-'}"
+        )
+
 st.subheader("WebSocket / Warm-up 상태")
 w1, w2, w3, w4 = st.columns(4)
 w1.metric("WS 연결", "OK" if status["ws_connected"] else "끊김")

@@ -187,6 +187,22 @@ class MUMacdService:
             state_store.save_state(state)
         return {"ok": True, "quick_profit_enabled": enabled_bool, "previous": prev}
 
+    def set_time_window_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional "시간대별 최적거래 필터" (reuses
+        macd2.time_window_filter/time_window_position_manager directly, same
+        entry logic and same stop-loss/take-profit ladder as that module's
+        own filter). Only updates runtime state -- worker.run_once() reads
+        state.time_window_filter_enabled fresh every tick. Shares _LOCK with
+        _run_loop for the same reason set_quick_profit_enabled does.
+        """
+        with _LOCK:
+            state = state_store.load_state()
+            enabled_bool = bool(enabled)
+            prev = bool(state.time_window_filter_enabled)
+            state.time_window_filter_enabled = enabled_bool
+            state_store.save_state(state)
+        return {"ok": True, "time_window_filter_enabled": enabled_bool, "previous": prev}
+
     def set_entry_paused(self, enabled: bool) -> dict[str, Any]:
         """UI command: pause/resume NEW entries only (2026-08-14) -- MU price
         collection (WS/1m bars), the worker tick loop, MACD flag detection/
@@ -512,6 +528,14 @@ class MUMacdService:
             "last_etf_quote_at": state.last_etf_quote_at,
             "last_flag_display_time": state.last_flag_display_time,
             "last_flag_direction": state.last_flag_direction, "order_block_reason": state.order_block_reason,
+            "time_window_filter_enabled": state.time_window_filter_enabled,
+            "time_window_position_active": state.time_window_position_active,
+            "time_window_tp1_done": state.time_window_tp1_done,
+            "time_window_morning_entry_count": state.time_window_morning_entry_count,
+            "time_window_afternoon_entry_count": state.time_window_afternoon_entry_count,
+            "last_time_window_score": state.last_time_window_score,
+            "last_time_window_decision": state.last_time_window_decision,
+            "last_time_window_block_reason": state.last_time_window_block_reason,
         }
 
 

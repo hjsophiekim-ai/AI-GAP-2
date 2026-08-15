@@ -29,11 +29,21 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from app.trading.macd2 import order_executor
+from app.trading.macd2 import time_window_filter as twf
+from app.trading.macd2 import time_window_position_manager as twpm
 from app.trading.macd2.models import SignalState
 from app.trading.macd2.signal_engine import calculate_macd, evaluate_macd_crossover, resample_completed_3m
 from app.trading.mu_macd import config, ledger
 from app.trading.mu_macd.market_data import MUMarketDataService
 from app.trading.mu_macd.models import Direction, PositionSnapshot, RuntimeState, TickResult
+
+_TW_EXIT_REASON_MAP = {
+    "TIME_WINDOW_STOP_LOSS": config.EXIT_TW_STOP_LOSS,
+    "TIME_WINDOW_TP1_PARTIAL": config.EXIT_TW_TP1_PARTIAL,
+    "TIME_WINDOW_TP2_FULL": config.EXIT_TW_TP2_FULL,
+    "TIME_WINDOW_AFTER_TP1_STOP": config.EXIT_TW_AFTER_TP1_STOP,
+    "TIME_WINDOW_TRAILING_STOP": config.EXIT_TW_TRAILING_STOP,
+}
 
 KST = config.KST
 
@@ -50,6 +60,14 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.last_detected_direction = None
     state.last_confirmed_bar_ts = None
     state.processed_signal_ids = []
+    # Time-window filter's daily entry counts and any pending (unresolved)
+    # T+3 candidate are session-scoped; the toggle itself and an ALREADY-open
+    # position's own ladder state survive the rollover (mirrors macd2's own
+    # _apply_day_rollover exactly).
+    state.time_window_morning_entry_count = 0
+    state.time_window_afternoon_entry_count = 0
+    state.time_window_pending_flag_direction = None
+    state.time_window_pending_flag_bar_ts = None
 
 
 def _should_reconcile(state: RuntimeState, now: datetime) -> bool:
@@ -275,6 +293,136 @@ def _entry_gate_block_reason(state: RuntimeState, now: datetime) -> Optional[str
     return None
 
 
+def _reset_time_window_position_state(state: RuntimeState) -> None:
+    state.time_window_position_active = False
+    state.time_window_tp1_done = False
+    state.time_window_peak_net_return = 0.0
+
+
+def _advance_time_window_filter(
+    *, broker, state: RuntimeState, now: datetime, bars_3m, macd_snap,
+    confirmed_direction: Direction, pos: Optional[PositionSnapshot],
+) -> Optional[str]:
+    """Optional "시간대별 최적거래 필터" (2026-08-15 사용자 요청) — reuses
+    app.trading.macd2.time_window_filter.evaluate_time_window_entry (same
+    two-bar T->T+3 delayed confirmation + per-window quality-score gate) and
+    app.trading.macd2.time_window_position_manager.evaluate_morning_position
+    (same STOP_LOSS -1.5%/TP1 +2.5%-50%/ratcheted-stop/TP2 +5.0% ladder) BY
+    IMPORT ONLY — no file under app/trading/macd2/ is read-write here, only
+    called (mirrors this module's own existing signal_engine/order_executor
+    reuse pattern). Only invoked when state.time_window_filter_enabled is
+    True. Returns a short action label for TickResult.actions, or None when
+    nothing happened this tick (still waiting on a pending T+3 candidate).
+    """
+    # 1) position management for a position THIS filter opened — checked
+    #    before anything else. MU_MACD's own STOP_LOSS/QUICK_PROFIT/FORCED_
+    #    LIQUIDATION check already ran earlier in run_once and would have
+    #    returned already if it fired, but that check is only reached when
+    #    state.time_window_position_active is False (see run_once) so there
+    #    is no double-management of the same position.
+    if pos is not None and pos.quantity > 0 and state.time_window_position_active:
+        current_price = broker.get_quote(pos.symbol) if hasattr(broker, "get_quote") else None
+        if current_price:
+            net_return = (float(current_price) - pos.avg_price) / pos.avg_price * 100.0
+            pm = twpm.evaluate_morning_position(
+                net_return_pct=net_return, tp1_done=state.time_window_tp1_done,
+                peak_net_return=state.time_window_peak_net_return,
+            )
+            state.time_window_peak_net_return = pm.peak_net_return
+            state.time_window_tp1_done = pm.tp1_done
+            if pm.exit_reason is not None:
+                mu_exit_reason = _TW_EXIT_REASON_MAP.get(pm.exit_reason, pm.exit_reason)
+                if pm.exit_reason == "TIME_WINDOW_TP1_PARTIAL" and pos.quantity > 1:
+                    sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * pm.sell_fraction)))
+                    remaining = pos.quantity - sell_qty
+                    outcome = order_executor.execute_partial_exit(
+                        broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining,
+                        exit_reason=mu_exit_reason, entry_price=pos.avg_price, ledger_module=ledger,
+                    )
+                    if outcome.final_state == SignalState.EXECUTED:
+                        state.position = PositionSnapshot(
+                            symbol=pos.symbol, quantity=remaining, avg_price=pos.avg_price, entry_at=pos.entry_at,
+                        )
+                    return f"{mu_exit_reason}:{pos.symbol}"
+                outcome = order_executor.execute_exit(
+                    broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                    exit_reason=mu_exit_reason, entry_price=pos.avg_price, ledger_module=ledger,
+                )
+                if outcome.final_state == SignalState.EXECUTED:
+                    state.position = None
+                    _reset_time_window_position_state(state)
+                return f"{mu_exit_reason}:{pos.symbol}"
+
+    # 2) a fresh confirmed crossover always becomes (replaces) the pending
+    #    T+3 candidate — never dispatched on its own bar.
+    if confirmed_direction != Direction.HOLD:
+        state.time_window_pending_flag_direction = confirmed_direction.value
+        state.time_window_pending_flag_bar_ts = macd_snap.bar_dt.isoformat()
+        state.last_time_window_decision = config.BLOCK_TW_PENDING_CONFIRMATION
+        state.last_time_window_block_reason = config.BLOCK_TW_PENDING_CONFIRMATION
+        return f"TW_PENDING:{confirmed_direction.value}"
+
+    # 3) resolve a pending candidate exactly one bar after its own flag bar
+    if not state.time_window_pending_flag_direction or not state.time_window_pending_flag_bar_ts:
+        return None
+    flag_bar_dt = datetime.fromisoformat(state.time_window_pending_flag_bar_ts)
+    if macd_snap.bar_dt == flag_bar_dt:
+        return None  # still sitting on the flag's own bar -- wait for T+3
+
+    direction = Direction(state.time_window_pending_flag_direction)
+    state.time_window_pending_flag_direction = None
+    state.time_window_pending_flag_bar_ts = None
+
+    position_direction = None
+    if pos is not None and pos.quantity > 0:
+        position_direction = Direction.UP_RED if pos.symbol == config.LONG_SYMBOL else Direction.DOWN_BLUE
+
+    decision = twf.evaluate_time_window_entry(
+        bars_3m, direction, flag_bar_dt, now,
+        position_direction=position_direction,
+        morning_entry_count=int(state.time_window_morning_entry_count or 0),
+        afternoon_entry_count=int(state.time_window_afternoon_entry_count or 0),
+    )
+    state.last_time_window_score = decision.score
+    state.last_time_window_decision = decision.decision
+    state.last_time_window_block_reason = decision.block_reason
+
+    if not decision.approved:
+        return f"TW_REJECTED:{direction.value}:{decision.decision}"
+
+    target_symbol = order_executor.target_symbol_for_direction(direction)
+    quotes: dict[str, float] = {}
+    if hasattr(broker, "get_quote"):
+        symbols_needed = {target_symbol}
+        if pos is not None:
+            symbols_needed.add(pos.symbol)
+        for sym in symbols_needed:
+            q = broker.get_quote(sym)
+            if q:
+                quotes[sym] = float(q)
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=direction, signal_id=str(uuid.uuid4()),
+        quotes=quotes, position=pos, budget=state.budget, ledger_module=ledger,
+    )
+    if outcome.final_state == SignalState.EXECUTED:
+        state.position = PositionSnapshot(
+            symbol=target_symbol, quantity=outcome.quantity,
+            avg_price=outcome.filled_avg_price or 0.0, entry_at=now,
+        )
+        state.time_window_position_active = True
+        state.time_window_tp1_done = False
+        state.time_window_peak_net_return = 0.0
+        window = decision.metrics.get("window") if decision.metrics else None
+        session = twf.session_for_window(window)
+        if session == "MORNING":
+            state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
+        elif session == "AFTERNOON":
+            state.time_window_afternoon_entry_count = int(state.time_window_afternoon_entry_count or 0) + 1
+        return f"TW_ENTRY:{direction.value}"
+    return f"TW_ENTRY_BLOCKED:{direction.value}"
+
+
 def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, now: datetime) -> TickResult:
     result = TickResult()
     _apply_day_rollover(state, now)
@@ -311,7 +459,13 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
     # traded ETF's own broker quote, never the MU feed. ─────────────────────
     pos = state.position
     if pos is not None and pos.quantity > 0:
-        current_price = broker.get_quote(pos.symbol) if hasattr(broker, "get_quote") else None
+        # A position opened by the time-window filter manages its own
+        # STOP_LOSS/take-profit ladder (see _advance_time_window_filter,
+        # called further below) -- this plain STOP_LOSS/QUICK_PROFIT check
+        # must not also act on the SAME position. FORCED_LIQUIDATION right
+        # below stays universal regardless (applies to every position).
+        tw_managed = state.time_window_filter_enabled and state.time_window_position_active
+        current_price = broker.get_quote(pos.symbol) if (not tw_managed and hasattr(broker, "get_quote")) else None
         if current_price:
             net_return = (float(current_price) - pos.avg_price) / pos.avg_price * 100.0
             if net_return <= config.STOP_LOSS_NET_PCT:
@@ -342,6 +496,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
             )
             if outcome.final_state == SignalState.EXECUTED:
                 state.position = None
+                _reset_time_window_position_state(state)
                 result.actions.append(f"FORCED_LIQUIDATION:{pos.symbol}")
                 return result
         pos = state.position  # re-read: still held if neither exit fired
@@ -372,6 +527,25 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
 
     entry_block_reason = _entry_gate_block_reason(state, now)
     pos = state.position  # re-read again -- the Stop Loss/Forced Liquidation block above may have cleared it
+
+    if state.time_window_filter_enabled:
+        # Fully replaces the legacy immediate-entry/reversal logic below with
+        # macd2's own two-bar (T -> T+3) delayed confirmation + ladder (see
+        # _advance_time_window_filter) -- this branch always returns, whether
+        # or not anything actually happened this tick, so the legacy code
+        # further down is structurally unreachable while this toggle is ON.
+        tw_action = _advance_time_window_filter(
+            broker=broker, state=state, now=now, bars_3m=bars_3m, macd_snap=macd_snap,
+            confirmed_direction=confirmed_direction, pos=pos,
+        )
+        if tw_action is not None:
+            result.actions.append(tw_action)
+        if confirmed_direction != Direction.HOLD:
+            state.last_detected_direction = confirmed_direction.value
+            state.last_flag_display_time = bar_start.isoformat()
+            state.last_flag_confirmed_at = confirmed_at.isoformat()
+            state.last_flag_direction = confirmed_direction.value
+        return result
 
     if confirmed_direction == Direction.HOLD:
         # Still advance the baseline so a later real flag isn't compared

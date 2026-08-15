@@ -240,3 +240,31 @@ BLOCK_ENTRY_PAUSED_BY_USER = "MU_MACD_ENTRY_PAUSED_BY_USER"
 # block_reason instead of a normal entry-gate reason, and state.position is
 # never touched by it.
 BLOCK_REAL_BROKER_NOT_AUTHENTICATED = "MU_MACD_REAL_BROKER_NOT_AUTHENTICATED"
+
+# ── Optional "시간대별 최적거래 필터" (Time-Window Optimal Trading Filter,
+# 2026-08-15 사용자 요청) — SAME entry logic and SAME stop-loss/take-profit
+# ladder as app.trading.macd2's own time-window filter, reused directly by
+# import (app.trading.macd2.time_window_filter.evaluate_time_window_entry /
+# app.trading.macd2.time_window_position_manager.evaluate_morning_position),
+# exactly the same way this module already reuses macd2's signal_engine/
+# order_executor. NEVER modifies any file under app/trading/macd2/ -- pure
+# import only, mirroring this module's own existing house rule.
+#
+# Default OFF: MU_MACD is the currently-live auto-trading module (2026-08-14
+# user decision), so this new gate must never silently change already-
+# running behavior. Turning it ON replaces the plain "any confirmed MACD
+# crossover enters immediately" flat-entry/reversal logic with macd2's own
+# two-bar (T -> T+3) delayed confirmation + per-window quality-score gate,
+# and replaces the plain STOP_LOSS(-1.5%)/QUICK_PROFIT(optional) exit check
+# with macd2's own morning position-management ladder (STOP_LOSS -1.5%,
+# TP1 +2.5%/50% partial, ratcheted stops, TP2 +5.0% full) for any position
+# this filter itself opened. MIDDAY_ENTRY_PAUSE/NEW_ENTRY_CUTOFF/
+# FORCE_LIQUIDATE_AT above are UNCHANGED and still apply on top.
+TIME_WINDOW_FILTER_ENABLED_DEFAULT = _env_bool("MU_MACD_TIME_WINDOW_FILTER_ENABLED_DEFAULT", False)
+
+EXIT_TW_STOP_LOSS = "MU_MACD_TW_STOP_LOSS"
+EXIT_TW_TP1_PARTIAL = "MU_MACD_TW_TP1_PARTIAL"
+EXIT_TW_TP2_FULL = "MU_MACD_TW_TP2_FULL"
+EXIT_TW_AFTER_TP1_STOP = "MU_MACD_TW_AFTER_TP1_STOP"
+EXIT_TW_TRAILING_STOP = "MU_MACD_TW_TRAILING_STOP"
+BLOCK_TW_PENDING_CONFIRMATION = "MU_MACD_TW_PENDING_CONFIRMATION"
