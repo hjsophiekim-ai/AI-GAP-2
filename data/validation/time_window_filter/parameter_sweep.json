@@ -1,0 +1,196 @@
+{
+  "trading_days": 20,
+  "data_notes": [],
+  "sweep": {
+    "MIN_FLAG_INTERVAL_MINUTES": [
+      {
+        "value": 6,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 9,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 12,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 15,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      }
+    ],
+    "MORNING_TP1": [
+      {
+        "value": 0.02,
+        "entries": 43,
+        "win_rate_pct": 30.23,
+        "net_simple_cumulative_return_pct": -10.1184,
+        "profit_factor": 0.7726,
+        "max_drawdown_pct": 10.1184
+      },
+      {
+        "value": 0.025,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 0.03,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      }
+    ],
+    "MORNING_TP1_SELL_RATIO": [
+      {
+        "value": 0.3,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 0.5,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 0.7,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      }
+    ],
+    "MORNING_TP2": [
+      {
+        "value": 0.04,
+        "entries": 43,
+        "win_rate_pct": 34.88,
+        "net_simple_cumulative_return_pct": -0.06,
+        "profit_factor": 0.9986,
+        "max_drawdown_pct": 8.0511
+      },
+      {
+        "value": 0.05,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 0.06,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -9.3058,
+        "profit_factor": 0.7848,
+        "max_drawdown_pct": 11.2272
+      }
+    ],
+    "MORNING_STOP_LOSS": [
+      {
+        "value": -0.01,
+        "entries": 42,
+        "win_rate_pct": 30.95,
+        "net_simple_cumulative_return_pct": -9.8901,
+        "profit_factor": 0.7593,
+        "max_drawdown_pct": 11.2342
+      },
+      {
+        "value": -0.015,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": -0.02,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -14.2842,
+        "profit_factor": 0.7241,
+        "max_drawdown_pct": 14.2842
+      }
+    ],
+    "AFTERNOON_TP": [
+      {
+        "value": 0.02,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -3.9205,
+        "profit_factor": 0.9093,
+        "max_drawdown_pct": 8.0597
+      },
+      {
+        "value": 0.025,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": 0.03,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -4.28,
+        "profit_factor": 0.901,
+        "max_drawdown_pct": 8.0511
+      }
+    ],
+    "AFTERNOON_STOP_LOSS": [
+      {
+        "value": -0.008,
+        "entries": 42,
+        "win_rate_pct": 30.95,
+        "net_simple_cumulative_return_pct": -2.9296,
+        "profit_factor": 0.9264,
+        "max_drawdown_pct": 9.2586
+      },
+      {
+        "value": -0.012,
+        "entries": 42,
+        "win_rate_pct": 33.33,
+        "net_simple_cumulative_return_pct": -5.7492,
+        "profit_factor": 0.867,
+        "max_drawdown_pct": 8.1771
+      },
+      {
+        "value": -0.015,
+        "entries": 41,
+        "win_rate_pct": 34.15,
+        "net_simple_cumulative_return_pct": -11.7021,
+        "profit_factor": 0.751,
+        "max_drawdown_pct": 12.753
+      }
+    ]
+  }
+}

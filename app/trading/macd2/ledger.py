@@ -78,6 +78,17 @@ SIGNAL_LEDGER_COLUMNS = [
     "daily_single_entry_count", "last_single_entry_at",
     # v3 score-based redesign (appended 2026-08-10; additive only).
     "single_entry_score", "single_entry_flag_seq", "single_entry_near_zero_blue",
+    # Optional "시간대별 최적거래 필터" (Time-Window Optimal Trading Filter,
+    # appended 2026-08-15; never rename/delete older cols). This filter's own
+    # two-bar (T -> T+3) confirmation timestamps and 0-5 quality score are
+    # dedicated columns since they don't map onto any other filter's fields.
+    "time_window_filter_enabled", "time_window_filter_version",
+    "time_window_score", "time_window_required_score", "time_window_approved",
+    "time_window_decision", "time_window_block_reason",
+    "time_window_window", "time_window_session",
+    "time_window_flag_bar_at", "time_window_confirm_bar_at",
+    "time_window_gap_flag", "time_window_gap_now", "time_window_quality_score",
+    "time_window_morning_entry_count", "time_window_afternoon_entry_count",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

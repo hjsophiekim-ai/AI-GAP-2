@@ -134,6 +134,39 @@ def calculate_macd(three_minute_bars: Optional[pd.DataFrame]) -> Optional[MacdSn
     )
 
 
+def calculate_macd_series(three_minute_bars: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """Full-series MACD(12,26,9) — same EMA formula as ``calculate_macd``
+    (fast=12, slow=26, signal=9, ``adjust=False``), but returns every bar's
+    macd/signal/hist instead of only the latest one.
+
+    Additive only (no existing function changed): callers that need a
+    per-bar gap history (e.g. the time-window filter's ``is_valid_reset``/
+    flag-interval checks) can use this instead of recomputing the EMA
+    formula themselves. Returns ``None`` on the same "not enough data"
+    conditions as ``calculate_macd``.
+    """
+    if three_minute_bars is None or three_minute_bars.empty:
+        return None
+    if "datetime" not in three_minute_bars.columns or "close" not in three_minute_bars.columns:
+        raise ValueError("calculate_macd_series: three_minute_bars must have 'datetime' and 'close' columns")
+
+    closes = pd.to_numeric(three_minute_bars["close"], errors="coerce")
+    if closes.dropna().shape[0] < config.EMA_SLOW:
+        return None
+
+    ema_fast = closes.ewm(span=config.EMA_FAST, adjust=False).mean()
+    ema_slow = closes.ewm(span=config.EMA_SLOW, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal = macd.ewm(span=config.EMA_SIGNAL, adjust=False).mean()
+    hist = macd - signal
+    return pd.DataFrame({
+        "datetime": three_minute_bars["datetime"].reset_index(drop=True),
+        "macd": macd.reset_index(drop=True),
+        "signal": signal.reset_index(drop=True),
+        "hist": hist.reset_index(drop=True),
+    })
+
+
 def _floor_3m(dt: datetime) -> datetime:
     return dt.replace(minute=dt.minute - (dt.minute % 3), second=0, microsecond=0)
 

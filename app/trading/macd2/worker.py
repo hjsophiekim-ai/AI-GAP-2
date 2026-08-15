@@ -51,6 +51,8 @@ from app.trading.macd2 import (
     risk_exit,
     sideways_filter,
     single_entry_filter,
+    time_window_filter,
+    time_window_position_manager,
     trend_persistence_filter,
 )
 from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
@@ -350,6 +352,19 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # session-scoped counter from the fill count above (incremented on
     # every confirmed flag regardless of approval/fill).
     state.daily_confirmed_flag_count = 0
+    # Time-window filter's morning/afternoon entry counts and any pending
+    # (unresolved) T+3 candidate are session-scoped; its toggle
+    # (time_window_filter_enabled) and an ALREADY-open position's own
+    # management state (time_window_position_active/tp1_done/etc.) survive
+    # the rollover unchanged -- a position can still be open across
+    # midnight only in the sense that FORCED_LIQUIDATION already empties it
+    # by 15:00 every day, so this never actually matters in practice, but is
+    # not reset here regardless (mirrors how state.position itself is never
+    # reset on rollover).
+    state.time_window_morning_entry_count = 0
+    state.time_window_afternoon_entry_count = 0
+    state.time_window_pending_flag_direction = None
+    state.time_window_pending_flag_bar_ts = None
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -1530,6 +1545,156 @@ def _judge_single_entry_flag(
     return decision
 
 
+def _persist_time_window_decision(state: RuntimeState, decision: MajorFlagDecision, signal_id: str) -> None:
+    state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
+    state.last_time_window_score = float(decision.score)
+    state.last_time_window_required_score = float(decision.required_score)
+    state.last_time_window_approved = bool(decision.approved)
+    state.last_time_window_decision = decision.decision
+    state.last_time_window_block_reason = decision.block_reason
+    state.last_time_window_component_scores = dict(decision.component_scores or {})
+    state.last_time_window_metrics = dict(decision.metrics or {})
+    state.last_time_window_signal_id = signal_id
+
+
+def _judge_time_window_flag(
+    *, state: RuntimeState, bars_3m, direction: Direction, signal_id: str,
+) -> MajorFlagDecision:
+    """Records this newly-confirmed flag as the pending T+3 candidate and
+    returns a not-yet-confirmed rejection (spec §1: a flag never has order
+    authority on its own bar). The REAL time_window_filter.
+    evaluate_time_window_entry() check happens one bar later, in
+    _resolve_time_window_candidate() below, off bars_3m truncated through
+    that later bar. Never called when state.time_window_filter_enabled is
+    False; never creates or suppresses the confirmed flag itself, and never
+    touches STOP_LOSS/OPPOSITE_SIGNAL/FORCED_LIQUIDATION.
+
+    IMPORTANT: a rejection here must NEVER trigger
+    _execute_reversal_exit_only_for_filtered_entry's sell-only liquidation
+    (unlike every other filter's rejection) — the held position (if any)
+    must stay untouched until _resolve_time_window_candidate resolves the
+    candidate at T+3. Callers gate that explicitly on gate_mode ==
+    "TIME_WINDOW".
+    """
+    flag_bar_dt = pd.Timestamp(bars_3m["datetime"].iloc[-1]).to_pydatetime()
+    state.time_window_pending_flag_direction = direction
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    decision = MajorFlagDecision(
+        approved=False, score=0.0, required_score=0.0,
+        decision=config.TW_PENDING_CONFIRMATION,
+        reasons=("awaiting T+3 bar re-confirmation (spec §1)",),
+        component_scores={}, metrics={"flag_bar_at": flag_bar_dt.isoformat()},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_PENDING_CONFIRMATION,
+    )
+    _persist_time_window_decision(state, decision, signal_id)
+    return decision
+
+
+def _resolve_time_window_candidate(
+    *,
+    broker,
+    market_data: MarketDataService,
+    state: RuntimeState,
+    now: datetime,
+    macd_snap,
+    bars_3m,
+    df_1m,
+    position: Optional[PositionSnapshot],
+    result: TickResult,
+):
+    """Resolves a pending time-window candidate (spec §1's T -> T+3 wait) on
+    the completed bar immediately after its own flag bar, via the single
+    shared time_window_filter.evaluate_time_window_entry() decision function
+    (no duplicated entry-condition logic vs the backtest driver). Returns
+    the dispatch outcome if an entry/switch was actually placed this tick,
+    else ``None`` (still waiting, expired, or rejected — all safe no-ops).
+    Never called when ``state.time_window_filter_enabled`` is False.
+    """
+    if not state.time_window_filter_enabled or not state.time_window_pending_flag_direction:
+        return None
+    flag_bar_dt = _parse_iso_dt(state.time_window_pending_flag_bar_ts)
+    if flag_bar_dt is None:
+        state.time_window_pending_flag_direction = None
+        state.time_window_pending_flag_bar_ts = None
+        return None
+    if macd_snap.bar_dt == flag_bar_dt:
+        return None  # still sitting on the flag's own bar T -- wait for T+3
+
+    direction = state.time_window_pending_flag_direction
+    signal_id = f"{make_signal_id(flag_bar_dt, direction)}:TW_CONFIRM"
+    state.time_window_pending_flag_direction = None
+    state.time_window_pending_flag_bar_ts = None
+    if signal_id in state.processed_signal_ids:
+        return None
+
+    # bars_3m must end EXACTLY one completed bar after flag_bar_dt for
+    # evaluate_time_window_entry to accept it (its own T+3 confirmation
+    # contract) -- a multi-bar gap (e.g. the Worker was down) means this
+    # candidate has expired; drop it rather than confirm off stale bars.
+    decision = time_window_filter.evaluate_time_window_entry(
+        bars_3m, direction, flag_bar_dt, now,
+        position_direction=_position_direction(position),
+        morning_entry_count=int(state.time_window_morning_entry_count or 0),
+        afternoon_entry_count=int(state.time_window_afternoon_entry_count or 0),
+    )
+    _persist_time_window_decision(state, decision, signal_id)
+
+    if not decision.approved:
+        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+        dispatch_trace = {
+            "signal_id": signal_id, "direction": direction.value, "signal_type": "TIME_WINDOW_CONFIRM",
+            "completed_bar_at": macd_snap.bar_dt.isoformat(),
+            "order_executor_called": False, "broker_called": False,
+            "final_block_reason": decision.block_reason or decision.decision or "",
+            "order_result_override": config.FILTERED_OUT,
+            "major_fields": _entry_gate_ledger_fields(state, decision, "TIME_WINDOW"),
+        }
+        outcome = order_executor.ExecutionOutcome(
+            signal_id=signal_id, direction=direction,
+            target_symbol=order_executor.target_symbol_for_direction(direction),
+            final_state=SignalState.BLOCKED, block_reason=decision.block_reason or decision.decision,
+        )
+        _record_signal_ledger(
+            state, macd_snap, direction, "TIME_WINDOW_CONFIRM", signal_id, datetime.now(KST), outcome, dispatch_trace,
+        )
+        result.actions.append(f"{config.FILTERED_OUT}:{direction.value}")
+        return None
+
+    signal_detected_at = datetime.now(KST)
+    result.signal_detected_at = signal_detected_at.isoformat()
+    signal_type = "REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL"
+    outcome = _execute_or_wait(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
+        signal_detected_at=signal_detected_at,
+    )
+    result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, "TIME_WINDOW")
+    _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
+
+    if outcome is not None and outcome.final_state == SignalState.EXECUTED:
+        # _apply_switch_outcome is the SAME function every other entry/switch
+        # path uses to actually set state.position on a fill (docs: no
+        # duplicated position-adoption logic) -- it also registers
+        # outcome.signal_id in processed_signal_ids, so this candidate's
+        # signal_id is not separately appended here.
+        _apply_switch_outcome(state, outcome, direction, now)
+        window = decision.metrics.get("window") if decision.metrics else None
+        session = time_window_filter.session_for_window(window)
+        state.time_window_position_active = True
+        state.time_window_entry_session = session
+        state.time_window_tp1_done = False
+        state.time_window_peak_net_return = 0.0
+        state.time_window_initial_quantity = outcome.quantity
+        state.last_time_window_entry_at = signal_detected_at.isoformat()
+        if session == "MORNING":
+            state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
+            state.time_window_entry_session_seq = state.time_window_morning_entry_count
+        elif session == "AFTERNOON":
+            state.time_window_afternoon_entry_count = int(state.time_window_afternoon_entry_count or 0) + 1
+            state.time_window_entry_session_seq = state.time_window_afternoon_entry_count
+    return outcome
+
+
 def _judge_entry_gate(
     *,
     state: RuntimeState,
@@ -1542,15 +1707,19 @@ def _judge_entry_gate(
 ) -> tuple[Optional[MajorFlagDecision], str]:
     """Single order-authority gate dispatcher for a confirmed crossover.
 
-    ``sideways_filter_enabled`` takes PRIORITY over ``major_filter_enabled``,
-    which in turn takes priority over ``trend_persistence_filter_enabled``,
-    which in turn takes priority over ``single_entry_filter_enabled`` — the
-    four optional filters are never more than one active for the same
-    signal (2026-08-04 추세전환장 toggle spec: "위 로직 우선으로 들어가는 거야",
-    extended 2026-08-07 to Trend Persistence and 2026-08-08 to Single-Entry).
+    ``time_window_filter_enabled`` takes TOP PRIORITY (2026-08-15 사용자
+    요청: the newest, most complete redesign supersedes the simpler
+    entry-only gates when a user opts into it), then ``sideways_filter_enabled``,
+    then ``major_filter_enabled``, then ``trend_persistence_filter_enabled``,
+    then ``single_entry_filter_enabled`` — the five optional filters are
+    never more than one active for the same signal (2026-08-04 추세전환장
+    toggle spec: "위 로직 우선으로 들어가는 거야", extended 2026-08-07 to Trend
+    Persistence, 2026-08-08 to Single-Entry, 2026-08-15 to Time-Window).
     Returns ``(None, "NONE")`` when no toggle is on — legacy behavior (every
     confirmed flag has order authority) is completely unchanged.
     """
+    if state.time_window_filter_enabled:
+        return _judge_time_window_flag(state=state, bars_3m=bars_3m, direction=direction, signal_id=signal_id), "TIME_WINDOW"
     if state.sideways_filter_enabled:
         return _judge_sideways_flag(state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, now=now, signal_id=signal_id), "SIDEWAYS"
     if state.major_filter_enabled:
@@ -1717,13 +1886,57 @@ def _single_entry_ledger_fields(state: RuntimeState, decision: Optional[MajorFla
     return row
 
 
+def _time_window_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+    """time_window_* ledger columns — mirrors the other filters' _*_ledger_
+    fields pattern. metrics carries the two-bar gap_flag/gap_now/window/
+    session values computed by time_window_filter.evaluate_time_window_entry
+    (or the bar-T "pending confirmation" placeholder from
+    _judge_time_window_flag)."""
+    row: dict[str, Any] = {
+        "time_window_filter_enabled": bool(state.time_window_filter_enabled),
+        "time_window_filter_version": state.time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION,
+        "time_window_score": "",
+        "time_window_required_score": "",
+        "time_window_approved": "",
+        "time_window_decision": "",
+        "time_window_block_reason": "",
+        "time_window_window": "",
+        "time_window_session": "",
+        "time_window_flag_bar_at": "",
+        "time_window_confirm_bar_at": "",
+        "time_window_gap_flag": "",
+        "time_window_gap_now": "",
+        "time_window_quality_score": "",
+        "time_window_morning_entry_count": int(state.time_window_morning_entry_count or 0),
+        "time_window_afternoon_entry_count": int(state.time_window_afternoon_entry_count or 0),
+    }
+    if decision is None:
+        return row
+    metrics = dict(decision.metrics or {})
+    row.update({
+        "time_window_score": decision.score,
+        "time_window_required_score": decision.required_score,
+        "time_window_approved": bool(decision.approved),
+        "time_window_decision": decision.decision or "",
+        "time_window_block_reason": decision.block_reason or "",
+        "time_window_window": metrics.get("window") or "",
+        "time_window_session": metrics.get("session") or "",
+        "time_window_flag_bar_at": metrics.get("flag_bar_at") or "",
+        "time_window_confirm_bar_at": metrics.get("confirm_bar_at") or "",
+        "time_window_gap_flag": metrics.get("gap_flag") if metrics.get("gap_flag") is not None else "",
+        "time_window_gap_now": metrics.get("gap_now") if metrics.get("gap_now") is not None else "",
+        "time_window_quality_score": metrics.get("quality_score") if metrics.get("quality_score") is not None else "",
+    })
+    return row
+
+
 def _entry_gate_ledger_fields(
     state: RuntimeState, decision: Optional[MajorFlagDecision], mode: str,
 ) -> dict[str, Any]:
-    """Merge major_*, sideways_*, trend_persistence_*, and single_entry_*
-    ledger columns for one signal row.
+    """Merge major_*, sideways_*, trend_persistence_*, single_entry_*, and
+    time_window_* ledger columns for one signal row.
 
-    All four column families are always present (never omitted), so every
+    All five column families are always present (never omitted), so every
     ledger row shows the current state of all toggles — but the shared
     generic metric columns (``_MAJOR_METRIC_LEDGER_KEYS``) are populated
     only by whichever of major/sideways actually judged this signal
@@ -1733,6 +1946,7 @@ def _entry_gate_ledger_fields(
     sideways_fields = _sideways_ledger_fields(state, decision if mode == "SIDEWAYS" else None)
     trend_persistence_fields = _trend_persistence_ledger_fields(state, decision if mode == "TREND_PERSISTENCE" else None)
     single_entry_fields = _single_entry_ledger_fields(state, decision if mode == "SINGLE_ENTRY" else None)
+    time_window_fields = _time_window_ledger_fields(state, decision if mode == "TIME_WINDOW" else None)
     merged = dict(major_fields)
     for key, value in sideways_fields.items():
         if key in _MAJOR_METRIC_LEDGER_KEYS:
@@ -1742,6 +1956,7 @@ def _entry_gate_ledger_fields(
         merged[key] = value
     merged.update(trend_persistence_fields)
     merged.update(single_entry_fields)
+    merged.update(time_window_fields)
     return merged
 
 
@@ -2259,6 +2474,70 @@ def run_once(
             result.actions.append(f"FORCED_LIQUIDATION:{pos.symbol}")
             return result
 
+        # Time-window filter: resolve any pending T+3 candidate FIRST (may
+        # switch this held position — sell current, buy the new direction —
+        # or simply clear a rejected/expired candidate). Only ever acts when
+        # state.time_window_filter_enabled is True; a no-op otherwise.
+        tw_resolve_outcome = _resolve_time_window_candidate(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+            bars_3m=bars_3m, df_1m=df_1m, position=pos, result=result,
+        )
+        if tw_resolve_outcome is not None and tw_resolve_outcome.final_state == SignalState.EXECUTED:
+            result.actions.append(f"TIME_WINDOW_SWITCH:{tw_resolve_outcome.target_symbol}")
+            return result
+
+        if (
+            state.time_window_filter_enabled and state.time_window_position_active
+            and state.position is not None and state.position.symbol == pos.symbol
+            and current_price is not None
+        ):
+            # This position was opened by the time-window filter — its own
+            # position-management ladder (§11-14) fully replaces the legacy
+            # STOP_LOSS/PROFIT_LOCK/QUICK_PROFIT checks below for as long as
+            # it is held (OPPOSITE_SIGNAL is instead handled by the T+3
+            # candidate resolution above). Evaluated off the traded ETF's own
+            # completed 3-minute bar close, excluding the entry bar — same
+            # convention _advance_stop_loss_bar already uses for the legacy
+            # STOP_LOSS check.
+            completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
+            if completed_bar_close is not None:
+                bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
+                pm_decision = time_window_position_manager.evaluate_position(
+                    session=state.time_window_entry_session or "MORNING",
+                    net_return_pct=bar_net_return,
+                    tp1_done=bool(state.time_window_tp1_done),
+                    peak_net_return=float(state.time_window_peak_net_return or 0.0),
+                )
+                state.time_window_peak_net_return = pm_decision.peak_net_return
+                state.time_window_tp1_done = pm_decision.tp1_done
+                if pm_decision.exit_reason is not None:
+                    sell_fraction = max(0.0, min(1.0, pm_decision.sell_fraction))
+                    full_exit = sell_fraction >= 1.0
+                    if full_exit:
+                        outcome = order_executor.execute_exit(
+                            broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                            exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
+                            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                        )
+                        _apply_exit_outcome(state, outcome)
+                        if outcome.final_state == SignalState.EXECUTED:
+                            state.time_window_position_active = False
+                        result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
+                        return result
+                    sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
+                    remaining_qty = pos.quantity - sell_qty
+                    outcome = order_executor.execute_partial_exit(
+                        broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
+                        exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    if outcome.final_state == SignalState.EXECUTED:
+                        state.position.quantity = remaining_qty
+                    result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
+                    return result
+            state.last_evaluated_bar_ts = bar_ts_str
+            return result
+
         if current_price is not None:
             # Stop Loss is evaluated from the completed 3-minute ETF bar
             # close onward, excluding the bar that contains the entry fill
@@ -2361,16 +2640,27 @@ def run_once(
                     signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
                 )
                 if reversal_decision is not None and not reversal_decision.approved:
-                    outcome = _execute_reversal_exit_only_for_filtered_entry(
-                        broker=broker, state=state, macd_snap=macd_snap,
-                        direction=confirmed_direction, position=pos,
-                        decision=reversal_decision, result=result,
-                        gate_mode=reversal_gate_mode,
-                    )
-                    if outcome is not None:
-                        _apply_exit_outcome(state, outcome)
-                        result.actions.append(f"OPPOSITE_SIGNAL_SELL_ONLY:{confirmed_direction.value}")
-                        return result
+                    if reversal_gate_mode == "TIME_WINDOW":
+                        # Two-bar (T -> T+3) confirmation model (spec §1/§12):
+                        # a not-yet-confirmed TW candidate must NEVER trigger
+                        # the sell-only liquidation below — the held position
+                        # stays untouched until _resolve_time_window_candidate
+                        # (checked at T+3) decides to switch or hold. The
+                        # candidate itself is already recorded by
+                        # _judge_time_window_flag above; nothing else happens
+                        # on this bar.
+                        pass
+                    else:
+                        outcome = _execute_reversal_exit_only_for_filtered_entry(
+                            broker=broker, state=state, macd_snap=macd_snap,
+                            direction=confirmed_direction, position=pos,
+                            decision=reversal_decision, result=result,
+                            gate_mode=reversal_gate_mode,
+                        )
+                        if outcome is not None:
+                            _apply_exit_outcome(state, outcome)
+                            result.actions.append(f"OPPOSITE_SIGNAL_SELL_ONLY:{confirmed_direction.value}")
+                            return result
                 else:
                     outcome = _dispatch_confirmed_signal(
                         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
@@ -2426,6 +2716,7 @@ def run_once(
             elif (
                 state.major_filter_enabled or state.sideways_filter_enabled
                 or state.trend_persistence_filter_enabled or state.single_entry_filter_enabled
+                or state.time_window_filter_enabled
             ):
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
@@ -2523,6 +2814,14 @@ def run_once(
         return result
 
     # ── Flat: new-entry evaluation ──────────────────────────────────────
+    tw_resolve_outcome = _resolve_time_window_candidate(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        bars_3m=bars_3m, df_1m=df_1m, position=None, result=result,
+    )
+    if tw_resolve_outcome is not None and tw_resolve_outcome.final_state == SignalState.EXECUTED:
+        result.actions.append(f"TIME_WINDOW_ENTRY:{tw_resolve_outcome.target_symbol}")
+        return result
+
     if _scheduled_entry_should_fire(state, now):
         scheduled_outcome = _execute_scheduled_entry(broker=broker, market_data=market_data, state=state, now=now)
         if scheduled_outcome is not None:
@@ -2620,6 +2919,18 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
         state.profit_lock_contraction_count = 0
         state.profit_lock_drawdown_pct = 0.0
         state.scheduled_entry_protected = False
+        # Any full exit (STOP_LOSS/FORCED_LIQUIDATION/PROFIT_LOCK/QUICK_PROFIT/
+        # OPPOSITE_SIGNAL switch/the time-window filter's own ladder) clears
+        # the time-window filter's position-management state the same way —
+        # a stale time_window_position_active=True must never survive past
+        # the position it described.
+        state.time_window_position_active = False
+        state.time_window_entry_session = None
+        state.time_window_entry_flag_seq = None
+        state.time_window_entry_session_seq = None
+        state.time_window_tp1_done = False
+        state.time_window_initial_quantity = 0
+        state.time_window_peak_net_return = 0.0
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 

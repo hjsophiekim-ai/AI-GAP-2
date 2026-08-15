@@ -691,6 +691,170 @@ pending 재시도는 최초 승인(또는 필터 OFF) 당시 게이트를 이미
 
 수정 금지: `signal_engine.py`의 MACD·confirmed crossover, `market_data.py` 기존 수집·봉 생성, `broker_adapter.py`, `order_executor.py`, `kis_client.py` 주문 함수, BUY/SELL 수량 산식, 체결 polling·잔고 동기화, STOP_LOSS, PROFIT_LOCK, 강제청산, REAL gate, 다른 전략 모듈, 광범위 리팩토링.
 
+## "시간대별 최적거래 필터" (Time-Window Optimal Trading Filter, 2026-08-15)
+
+선택형 진입 게이트이자 — 다른 4개 필터(MAJOR_FLAG/추세전환장/Trend Persistence/
+Single-Entry, 모두 진입 게이트 전용)와 달리 — **자체 포지션 관리(익절/손절
+래더)까지 함께 담당하는** 유일한 필터다. `time_window_filter_enabled` ON 시
+`worker._judge_entry_gate`에서 다른 네 토글보다 **최우선** 적용된다(다섯
+필터 중 동시에 하나만 활성). 기본값 OFF. `AUTO_TRADE_HARD_DISABLED=True`로
+MACD2 자동매매 자체가 하드 비활성화된 상태는 이 필터 추가와 무관하게 그대로
+유지된다 — 이 절은 휴면 모듈의 로직을 구축/검증하는 것이지 실거래를
+재활성화하는 것이 아니다.
+
+버전: `config.TIME_WINDOW_FILTER_VERSION = "TIME_WINDOW_OPTIMAL_FILTER_V1_20260815"`.
+구현: `app/trading/macd2/time_window_filter.py`(진입 게이트, 순수함수),
+`app/trading/macd2/time_window_position_manager.py`(익절/손절 래더, 순수함수).
+기존 `signal_engine.evaluate_macd_crossover`(빨강/파랑 플래그 판정 자체)와
+`major_flag_filter`의 EMA10/EMA20/ATR/`_prepare_bars` 계산은 그대로
+재사용하며 중복 구현하지 않는다.
+
+### 2단계(T → T+3) 확정
+
+다른 필터와 달리, 확정 3분봉(T)에서 플래그가 뜬 순간에는 주문권한을 주지
+않는다. `worker._judge_time_window_flag`가 그 플래그를 `state.time_window_
+pending_flag_direction`/`_bar_ts`에 후보로 기록하고 `TIME_WINDOW_PENDING_
+CONFIRMATION`으로 즉시 거절(broker 호출 0)한다. **다음** 완성 3분봉(T+3)에서
+`worker._resolve_time_window_candidate`가 그 시점까지의 bars_3m으로
+`time_window_filter.evaluate_time_window_entry()`(라이브·백테스트 공용 순수
+함수, look-ahead 없음)를 호출해 다음을 확인한다: MACD-Signal 관계가 T+3에도
+같은 방향으로 유지되는지, gap(`MACD-Signal`, 방향 부호 적용)이 T 시점보다
+확대됐는지. 두 조건 중 하나라도 실패하면 그 후보는 소비되고 진입하지 않는다
+(`REJECT_NOT_CONFIRMED`/`REJECT_MACD_GAP_NOT_EXPANDING`). 반대 확정 플래그가
+보유 포지션에 대해 뜬 경우도 동일하게 T+3 재확인을 거친 뒤에만 스위치되며,
+미확정 상태에서는 기존 포지션을 절대 매도하지 않는다(`worker.py`의
+`reversal_gate_mode == "TIME_WINDOW"` 분기).
+
+### 짧은 왕복 교차 제거 — `is_valid_reset()`
+
+직전 반대 방향 확정 플래그와의 간격이 `config.MIN_FLAG_INTERVAL_MINUTES`
+(기본 9분) 미만이면 `time_window_filter.is_valid_reset()`이 다음 중 하나를
+만족할 때만 진입을 허용한다: (1) 반대 MACD 상태가 `TW_RESET_MIN_OPPOSITE_
+BARS`(기본 2) 완성봉 이상 유지, (2) gap이 직전 반대 플래그 대비 `TW_RESET_
+GAP_CONTRACTION_RATIO`(기본 0.5) 이하로 축소된 뒤 재확대, (3) 가격이
+EMA10/EMA20 부근까지 되돌림 후 플래그 방향으로 재출발. 09:45-10:20(W2) 진입과
+오후 두 번째 진입은 간격과 무관하게 이 함수를 항상 별도로 한 번 더 요구한다.
+
+### 시간대별 진입 조건
+
+`time_window_filter.classify_window()`가 결정시각(T+3 봉 마감시각) 기준으로
+분류한다.
+
+- **09:00-09:45**: 플래그 + T+3 유지 + gap 확대, 세 조건만으로 진입(이동평균
+  조건 없음).
+- **09:45-10:20**: 위 조건 + 간격 9분 이상 + `is_valid_reset()==True`(항상).
+- **10:20-10:50**: `calculate_flag_quality_score()`(가격vsEMA10, EMA10vsEMA20,
+  거래량vs최근5봉평균, gap확대, 3분확정 — 0~5점) `>= config.QUALITY_SCORE_
+  THRESHOLD`(기본 4)일 때만 진입. price_ema_ref="ema10".
+- **10:50-13:00**: 신규진입 금지(`REJECT_TIME_WINDOW`). 기존 포지션 관리는
+  계속 동작.
+- **13:00-14:00**: 10:20-10:50과 동일한 점수 게이트, price_ema_ref="ema20".
+- **14:00-15:00**: 가격/EMA20 방향일치(필수) + 위 확정/gap 조건. 오후 두
+  번째 진입은 `is_valid_reset()`도 추가 필수. `TW_AFTERNOON_ENTRY_HARD_
+  CUTOFF`(14:57) 이후는 신규진입 금지(15:00 전 T+3 확정 불가능).
+
+하루 진입 횟수: 오전 `MAX_MORNING_ENTRIES`(3), 오후 `MAX_AFTERNOON_ENTRIES`
+(2), 전체 `MAX_DAILY_ENTRIES`(5). `config.ALLOW_PYRAMIDING=False` — 동일
+방향 포지션 보유 중 동일 방향 승인은 `REJECT_DUPLICATE_POSITION`.
+
+### 포지션 관리(익절/손절 래더) — `time_window_position_manager.py`
+
+이 필터가 연 포지션에만 적용되며(`state.time_window_position_active`), 기존
+STOP_LOSS(-1.5% 고정)/PROFIT_LOCK/QUICK_PROFIT 체크를 완전히 대체한다(다른
+필터로 연 포지션에는 이 절이 전혀 영향을 주지 않는다). 진입 체결이 속한
+3분봉은 제외하고 그다음 완성 3분봉 종가부터 평가한다(`_advance_stop_loss_bar`
+재사용, 기존 STOP_LOSS와 동일한 관행).
+
+- **오전** (`evaluate_morning_position`): `< +2.5%`이면 손절 `MORNING_STOP_
+  LOSS`(-1.5%). `+2.5%`(`MORNING_TP1`) 도달 & 미실현 시 `MORNING_TP1_SELL_
+  RATIO`(50%) 분할매도, 잔량 stop을 `MORNING_AFTER_TP1_STOP`(+0.3%)로 상향.
+  이후 peak(진입 이후 최고수익률)가 `MORNING_TRAILING_TRIGGER`(+3.5%) 도달
+  시 잔량 stop을 `MORNING_TRAILING_STOP`(+2.0%)로 재상향. `+5.0%`
+  (`MORNING_TP2`) 도달 시 잔량 전량 익절.
+- **오후** (`evaluate_afternoon_position`): 기본 손절 `AFTERNOON_STOP_LOSS`
+  (-1.2%). peak가 `AFTERNOON_BREAKEVEN_TRIGGER`(+1.5%) 도달 시 stop을
+  `AFTERNOON_BREAKEVEN_STOP`(+0.2%)로, `AFTERNOON_PROFIT_LOCK_TRIGGER`
+  (+2.0%) 도달 시 `AFTERNOON_PROFIT_LOCK_STOP`(+1.0%)로 상향. `+2.5%`
+  (`AFTERNOON_TP`) 도달 시 전량 익절(분할 없음).
+
+TP1 분할매도는 `order_executor.execute_partial_exit()`(신규 additive 함수)로
+실행한다 — 기존 `execute_exit()`(항상 잔고 0으로 정산)은 전혀 변경하지 않고,
+지정 수량만 매도해 잔고를 목표 잔량으로 정산하는 별도 함수를 새로 추가했다.
+
+### 원장/로그
+
+`strategy_name`은 신호 원장의 기존 `strategy_name`(`"MACD2"`) 컬럼과 별개로,
+이 필터가 승인한 신호의 의미상 전략명은 `config.TIME_WINDOW_STRATEGY_NAME
+= "시간대별 최적거래 필터"`다. 신호 원장에 `time_window_filter_enabled`,
+`time_window_filter_version`, `time_window_score`, `time_window_required_
+score`, `time_window_approved`, `time_window_decision`, `time_window_block_
+reason`, `time_window_window`, `time_window_session`, `time_window_flag_bar_
+at`, `time_window_confirm_bar_at`, `time_window_gap_flag`, `time_window_gap_
+now`, `time_window_quality_score`, `time_window_morning_entry_count`,
+`time_window_afternoon_entry_count` 컬럼을 뒤에 추가했다(기존 컬럼 삭제·
+이름변경 없음). 탈락 사유는 `REJECT_SHORT_FLAG_INTERVAL`/`REJECT_NOT_
+CONFIRMED`/`REJECT_MACD_GAP_NOT_EXPANDING`/`REJECT_LOW_QUALITY_SCORE`/
+`REJECT_NO_RESET`/`REJECT_TIME_WINDOW`/`REJECT_MAX_ENTRY_COUNT`/`REJECT_
+DUPLICATE_POSITION`/`TIME_WINDOW_PENDING_CONFIRMATION`으로 세분화되어
+필터 탈락 신호도 이유를 확인할 수 있다.
+
+### 2026-08-15 승률 개선 튜닝 (기본값 변경)
+
+초기 스펙 그대로(품질점수 임계 4, 10:50-13:00 신규진입 금지, 오전/오후 모두
+진입, 오전 TP1 2.5%/TP2 5.0%)로 20거래일 백테스트한 결과 승률 37.3%·
+순수익 −5.7%로 실측 성과가 나빴다. 사용자 요청으로 원인 분석(quality_score는
+승률과 비례하지 않았고, 오히려 세션(오전>오후)과 방향(하락>상승)이 승률을
+갈랐다) 후 다음과 같이 기본값을 변경했다 — 전부 환경변수로 원 스펙값으로
+복원 가능:
+
+- `QUALITY_SCORE_THRESHOLD`: 4 → **3** (`MACD2_TW_QUALITY_SCORE_THRESHOLD`)
+- `TW_ALLOW_ENTRY_1050_1300`: False → **True** (10:50-13:00도 W3/W5와 동일한
+  점수 게이트로 개방)
+- `TW_MORNING_ONLY` (신규): **True** — 13:00-15:00(오후) 신규 진입 자체를
+  차단(오후 세션의 승률·수익이 20일 표본에서 뚜렷하게 낮았다). 기존 보유
+  포지션의 오후 청산 로직(`evaluate_afternoon_position`)은 그대로 동작 —
+  이 토글은 신규 진입만 막는다.
+- `MORNING_TP1`: 2.5% → **0.6%**, `MORNING_TP2`: 5.0% → **1.2%** (익절폭을
+  좁혀 승률을 끌어올림 — 손절선(-1.5%)은 원 스펙 그대로 유지). `AFTERNOON_TP`
+  도 동일 비율로 0.6%로 맞췄다(현재는 `TW_MORNING_ONLY`로 오후 신규진입이
+  막혀 있어 직접 영향은 없음).
+
+결과(20거래일, 오전만 + 위 튜닝): **승률 67.5%, 진입 40회(2.0회/일), 단순
+누적 +18.95%, 복리 +20.18%, PF 1.92** — 튜닝 전(37.3%, −5.7%, PF 0.87) 대비
+승률·수익 모두 크게 개선. 앞10일/뒤10일 분할검증: 승률 71.4%/63.2%, 누적
++15.2%/+3.75% — 양쪽 다 플러스로 과최적화 징후 없음. 사용자가 원한 "승률
+70%대"에는 오전+하락방향(인버스)만 추가로 제한하면 84.2%까지 오르지만
+거래빈도가 하루 1회 미만으로 떨어져(0.95회) 목표 빈도(3~4회)와 상충 —
+현재 기본값은 빈도와 승률/수익의 균형점으로 선택했다.
+
+### 백테스트
+
+`scripts/backtest_time_window_filter.py`가 실제 데이터(`data/cache/replay_
+YYYYMMDD_{hynix,long,inverse}_1m.csv`, 최근 20거래일 2026-07-10~2026-08-07,
+0193T0/0197X0 실제 체결가 기준 — proxy 아님)로 A(기존 추세전환장 시간필터
+재사용)/B(이 신규 필터)/C(시간필터 없음) 3방식을 동일 확정 플래그 스트림에서
+비교한다. 결과는 `data/validation/time_window_filter/`에 저장되며 실거래
+경로와 동일한 `time_window_filter.evaluate_time_window_entry`/
+`time_window_position_manager.evaluate_position` 함수를 그대로 호출한다
+(중복 로직 없음).
+
+### 수정 범위 / 금지
+
+허용(최소 수정): `time_window_filter.py`(신규), `time_window_position_
+manager.py`(신규), `config.py`, `models.py`, `worker.py`(`_judge_time_window_
+flag`/`_resolve_time_window_candidate`/포지션 관리 분기만 추가), `state_
+store.py`, `ledger.py`, `service.py`, `order_executor.py`(`execute_partial_
+exit` 추가만), `signal_engine.py`(`calculate_macd_series` 추가만), UI, 본
+문서, `tests/macd2/test_time_window_filter.py`,
+`tests/macd2/test_time_window_position_manager.py`,
+`scripts/backtest_time_window_filter.py`.
+
+수정 금지: `signal_engine.py`의 기존 MACD·confirmed crossover 함수, `market_
+data.py`, `broker_adapter.py`, `order_executor.py`의 기존 BUY/SELL 수량
+산식·`execute_exit`, STOP_LOSS(-1.5%)/PROFIT_LOCK/QUICK_PROFIT의 기존 동작
+(이 필터가 관리하지 않는 포지션에는 완전히 그대로 유지), 14:55/15:00
+청산, REAL gate, 다른 전략 모듈, 다른 4개 필터의 기존 동작.
+
 ## 금지 사항
 
 - MACD 12/26/9 파라미터 변경 금지

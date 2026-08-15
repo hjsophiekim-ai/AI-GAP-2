@@ -506,6 +506,136 @@ QUICK_PROFIT_FILTER_DEFAULT = _env_bool("MACD2_QUICK_PROFIT_FILTER_DEFAULT", Fal
 QUICK_PROFIT_TAKE_PROFIT_NET_PCT = _env_float("MACD2_QUICK_PROFIT_TAKE_PROFIT_NET_PCT", 2.0)
 EXIT_QUICK_PROFIT_TAKE_PROFIT = "QUICK_PROFIT_TAKE_PROFIT"
 
+# ── Optional "시간대별 최적거래 필터" (Time-Window Optimal Trading Filter) —
+# order gate + its OWN position-management ladder (2026-08-15 사용자 요청).
+# Unlike major_flag_filter/sideways_filter/trend_persistence_filter/
+# single_entry_filter (entry-gate only, exit logic untouched), this filter
+# also owns take-profit/stop-loss ladder management for any position it
+# opened — see app/trading/macd2/time_window_filter.py (entry gate) and
+# app/trading/macd2/time_window_position_manager.py (exit ladder). Reuses
+# signal_engine's confirmed MACD(12,26,9) crossover unchanged (no new flag
+# creation, no change to which bar is "confirmed") and major_flag_filter's
+# EMA10/EMA20/ATR/_prepare_bars helpers (no duplicated indicator math).
+# Mutually exclusive with the other four entry filters — takes TOP priority
+# in worker._judge_entry_gate when enabled (2026-08-15 사용자 요청: this is
+# the newest, most complete redesign, meant to supersede the simpler
+# entry-only gates when a user opts into it). OFF by default. The MACD2
+# module itself remains hard-disabled (AUTO_TRADE_HARD_DISABLED above) —
+# this only builds/tests the dormant module's logic, it does not re-enable
+# live trading.
+TIME_WINDOW_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_FILTER_DEFAULT", False)
+TIME_WINDOW_FILTER_VERSION = "TIME_WINDOW_OPTIMAL_FILTER_V1_20260815"
+TIME_WINDOW_STRATEGY_NAME = "시간대별 최적거래 필터"
+
+# Session time windows (KST) — 20260815 spec §4-9.
+TW_WINDOW1_START = time(9, 0)
+TW_WINDOW1_END = time(9, 45)
+TW_WINDOW2_START = time(9, 45)
+TW_WINDOW2_END = time(10, 20)
+TW_WINDOW3_START = time(10, 20)
+TW_WINDOW3_END = time(10, 50)
+TW_NO_NEW_ENTRY_START = time(10, 50)
+TW_NO_NEW_ENTRY_END = time(13, 0)
+TW_WINDOW5_START = time(13, 0)
+TW_WINDOW5_END = time(14, 0)
+TW_WINDOW6_START = time(14, 0)
+TW_WINDOW6_END = time(15, 0)
+# §9: "14:57 이후에는 새로운 플래그가 발생해도 15:00 이전 3분 확정이 불가능하므로
+# 신규 진입시키지 않는다" — a flag confirmed at/after this time cannot complete
+# its 3-minute confirmation before 15:00 forced liquidation.
+TW_AFTERNOON_ENTRY_HARD_CUTOFF = time(14, 57)
+
+# §3 짧은 왕복 교차 제거 + is_valid_reset().
+MIN_FLAG_INTERVAL_MINUTES = _env_int("MACD2_TW_MIN_FLAG_INTERVAL_MINUTES", 9)
+# is_valid_reset() sub-condition thresholds (not enumerated by name in the
+# spec's "최소 다음 항목" list, but hardcoding them inline would violate its
+# spirit — kept configurable and documented here):
+#   1) opposite MACD state held for >= this many completed 3m bars before
+#      the new flag ("최소 2개의 완성된 3분봉").
+TW_RESET_MIN_OPPOSITE_BARS = _env_int("MACD2_TW_RESET_MIN_OPPOSITE_BARS", 2)
+#   2) gap contraction ratio: the MACD-Signal gap must have shrunk to <= this
+#      fraction of its value at the prior opposite flag before re-expanding.
+TW_RESET_GAP_CONTRACTION_RATIO = _env_float("MACD2_TW_RESET_GAP_CONTRACTION_RATIO", 0.5)
+
+# §4-9 windowed entry requirements.
+# 2026-08-15 사용자 요청(승률 개선 튜닝 — 20거래일 백테스트로 검증, 앞/뒤 10일
+# 분할검증 결과 승률 71.4%/63.2%, 총수익 +15.2%/+3.75%로 양쪽 다 양호): 원
+# 스펙 기본값 4에서 3으로 완화. 4는 여전히 환경변수로 원복 가능.
+QUALITY_SCORE_THRESHOLD = _env_int("MACD2_TW_QUALITY_SCORE_THRESHOLD", 3)
+TW_QUALITY_VOLUME_LOOKBACK_BARS = 5  # "최근 5개 완성봉 평균 거래량" — fixed by spec, not a sweep target
+
+# §10 daily entry counts.
+MAX_MORNING_ENTRIES = _env_int("MACD2_TW_MAX_MORNING_ENTRIES", 3)
+MAX_AFTERNOON_ENTRIES = _env_int("MACD2_TW_MAX_AFTERNOON_ENTRIES", 2)
+MAX_DAILY_ENTRIES = _env_int("MACD2_TW_MAX_DAILY_ENTRIES", 5)
+
+# §11-12 morning position management.
+# 2026-08-15 사용자 요청(승률 개선 튜닝): TP1/TP2를 원 스펙(2.5%/5.0%)에서
+# 0.6%/1.2%로 축소 — 20거래일 백테스트에서 "오전만 진입 + 이 축소된 익절폭"
+# 조합이 승률 67.5%(앞10일 71.4%/뒤10일 63.2%, 총수익 +18.95%)로 원 스펙
+# (승률 37.3%, +11.4%)보다 승률·수익 모두 개선됨을 확인했다. 손절선은
+# 원 스펙 그대로(-1.5%) 유지 — 승률은 TP 축소만으로 충분히 개선됐고 손절까지
+# 축소하면 오히려 승률이 원래 수준으로 돌아가는 것을 확인했다(스케일 축소
+# 스윕 결과 참고).
+MORNING_TP1 = _env_float("MACD2_TW_MORNING_TP1", 0.006)
+MORNING_TP1_SELL_RATIO = _env_float("MACD2_TW_MORNING_TP1_SELL_RATIO", 0.50)
+MORNING_TP2 = _env_float("MACD2_TW_MORNING_TP2", 0.012)
+MORNING_STOP_LOSS = _env_float("MACD2_TW_MORNING_STOP_LOSS", -0.015)
+MORNING_AFTER_TP1_STOP = _env_float("MACD2_TW_MORNING_AFTER_TP1_STOP", 0.003)
+MORNING_TRAILING_TRIGGER = _env_float("MACD2_TW_MORNING_TRAILING_TRIGGER", 0.035)
+MORNING_TRAILING_STOP = _env_float("MACD2_TW_MORNING_TRAILING_STOP", 0.020)
+
+# §13-14 afternoon position management (2026-08-15: afternoon entries are
+# disabled by default via TW_MORNING_ONLY below; kept in the same tuned
+# 0.6% scale as morning for consistency if that toggle is ever turned off).
+AFTERNOON_TP = _env_float("MACD2_TW_AFTERNOON_TP", 0.006)
+AFTERNOON_STOP_LOSS = _env_float("MACD2_TW_AFTERNOON_STOP_LOSS", -0.012)
+AFTERNOON_BREAKEVEN_TRIGGER = _env_float("MACD2_TW_AFTERNOON_BREAKEVEN_TRIGGER", 0.015)
+AFTERNOON_BREAKEVEN_STOP = _env_float("MACD2_TW_AFTERNOON_BREAKEVEN_STOP", 0.002)
+AFTERNOON_PROFIT_LOCK_TRIGGER = _env_float("MACD2_TW_AFTERNOON_PROFIT_LOCK_TRIGGER", 0.020)
+AFTERNOON_PROFIT_LOCK_STOP = _env_float("MACD2_TW_AFTERNOON_PROFIT_LOCK_STOP", 0.010)
+
+# §15 중복 진입 방지.
+ALLOW_PYRAMIDING = _env_bool("MACD2_TW_ALLOW_PYRAMIDING", False)
+
+# 2026-08-15 사용자 요청 (승률/완화 튜닝 — 20거래일 백테스트로 검증): 기본을
+# True로 변경 — 이 구간도 W3/W5와 동일한 quality-score 게이트(QUALITY_SCORE_
+# THRESHOLD, EMA20 기준)로 진입을 허용한다. 원 스펙(§7, 이 구간 전면 금지)은
+# 환경변수로 여전히 복원 가능(False).
+TW_ALLOW_ENTRY_1050_1300 = _env_bool("MACD2_TW_ALLOW_ENTRY_1050_1300", True)
+
+# 2026-08-15 사용자 요청(승률 개선 튜닝): 오후 구간(13:00-15:00)은 20거래일
+# 백테스트에서 오전보다 뚜렷하게 승률·수익이 낮았다(오전만 필터링 시 승률
+# 67.5%/+18.95%, 전체 세션 포함 시 58.6%/+8.4%) -- 기본을 "오전만 진입"으로
+# 바꾼다. True면 13:00-14:00(W5)/14:00-15:00(W6) confirmed 플래그는 신규
+# 진입 없이 REJECT_TIME_WINDOW로 거절된다(원 스펙 §7-9는 환경변수로 복원 가능,
+# False). 기존 포지션의 오후 청산 로직(time_window_position_manager.
+# evaluate_afternoon_position)은 이 토글과 무관하게 그대로 동작한다 — 이건
+# 신규 진입만 막는 게이트다.
+TW_MORNING_ONLY = _env_bool("MACD2_TW_MORNING_ONLY", True)
+
+# Decision / reject-reason labels (§16 debug log examples).
+TW_APPROVED = "TIME_WINDOW_APPROVED"
+TW_PENDING_CONFIRMATION = "TIME_WINDOW_PENDING_CONFIRMATION"
+TW_REJECT_SHORT_FLAG_INTERVAL = "REJECT_SHORT_FLAG_INTERVAL"
+TW_REJECT_NOT_CONFIRMED = "REJECT_NOT_CONFIRMED"
+TW_REJECT_MACD_GAP_NOT_EXPANDING = "REJECT_MACD_GAP_NOT_EXPANDING"
+TW_REJECT_LOW_QUALITY_SCORE = "REJECT_LOW_QUALITY_SCORE"
+TW_REJECT_NO_RESET = "REJECT_NO_RESET"
+TW_REJECT_TIME_WINDOW = "REJECT_TIME_WINDOW"
+TW_REJECT_MAX_ENTRY_COUNT = "REJECT_MAX_ENTRY_COUNT"
+TW_REJECT_DUPLICATE_POSITION = "REJECT_DUPLICATE_POSITION"
+
+# Exit-reason labels for the position-management ladder (§11-14).
+EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
+EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"
+EXIT_TW_TP2_FULL = "TIME_WINDOW_TP2_FULL"
+EXIT_TW_AFTER_TP1_STOP = "TIME_WINDOW_AFTER_TP1_STOP"
+EXIT_TW_TRAILING_STOP = "TIME_WINDOW_TRAILING_STOP"
+EXIT_TW_AFTERNOON_TP = "TIME_WINDOW_AFTERNOON_TP"
+EXIT_TW_BREAKEVEN_STOP = "TIME_WINDOW_BREAKEVEN_STOP"
+EXIT_TW_PROFIT_LOCK_STOP = "TIME_WINDOW_PROFIT_LOCK_STOP"
+
 # ── Isolated MACD2 runtime/ledger paths (never shared with MACD v1) ───────
 # Resolved lazily via app.utils.data_paths inside state_store.py/ledger.py so
 # tests can monkeypatch those modules' own path constants, not these names.

@@ -40,6 +40,8 @@ def default_state() -> RuntimeState:
     state.trend_persistence_filter_version = config.TREND_PERSISTENCE_FILTER_VERSION
     state.single_entry_filter_enabled = bool(getattr(config, "SINGLE_ENTRY_FILTER_DEFAULT", False))
     state.single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
+    state.time_window_filter_enabled = bool(getattr(config, "TIME_WINDOW_FILTER_DEFAULT", False))
+    state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
     state.profit_lock_enabled = bool(getattr(config, "PROFIT_LOCK_DEFAULT_ENABLED", True))
     return state
@@ -270,6 +272,32 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "scheduled_entry_executed_at": state.scheduled_entry_executed_at,
         "scheduled_entry_last_result": state.scheduled_entry_last_result,
         "scheduled_entry_protected": bool(state.scheduled_entry_protected),
+        "time_window_filter_enabled": bool(state.time_window_filter_enabled),
+        "time_window_filter_enabled_at": state.time_window_filter_enabled_at,
+        "time_window_filter_enabled_by": state.time_window_filter_enabled_by,
+        "time_window_filter_version": state.time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION,
+        "time_window_morning_entry_count": int(state.time_window_morning_entry_count or 0),
+        "time_window_afternoon_entry_count": int(state.time_window_afternoon_entry_count or 0),
+        "last_time_window_entry_at": state.last_time_window_entry_at,
+        "last_time_window_score": state.last_time_window_score,
+        "last_time_window_required_score": state.last_time_window_required_score,
+        "last_time_window_approved": state.last_time_window_approved,
+        "last_time_window_decision": state.last_time_window_decision,
+        "last_time_window_block_reason": state.last_time_window_block_reason,
+        "last_time_window_component_scores": dict(state.last_time_window_component_scores or {}) if state.last_time_window_component_scores else None,
+        "last_time_window_metrics": dict(state.last_time_window_metrics or {}) if state.last_time_window_metrics else None,
+        "last_time_window_signal_id": state.last_time_window_signal_id,
+        "time_window_pending_flag_direction": (
+            state.time_window_pending_flag_direction.value if state.time_window_pending_flag_direction else None
+        ),
+        "time_window_pending_flag_bar_ts": state.time_window_pending_flag_bar_ts,
+        "time_window_position_active": bool(state.time_window_position_active),
+        "time_window_entry_session": state.time_window_entry_session,
+        "time_window_entry_flag_seq": state.time_window_entry_flag_seq,
+        "time_window_entry_session_seq": state.time_window_entry_session_seq,
+        "time_window_tp1_done": bool(state.time_window_tp1_done),
+        "time_window_initial_quantity": int(state.time_window_initial_quantity or 0),
+        "time_window_peak_net_return": float(state.time_window_peak_net_return or 0.0),
     }
 
 
@@ -302,6 +330,17 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     scheduled_entry_armed_direction = (
         Direction(scheduled_entry_raw) if scheduled_entry_raw in _DIRECTION_VALUES else None
     )
+    tw_pending_raw = raw.get("time_window_pending_flag_direction")
+    time_window_pending_flag_direction = (
+        Direction(tw_pending_raw) if tw_pending_raw in _DIRECTION_VALUES else None
+    )
+    time_window_enabled_default = bool(getattr(config, "TIME_WINDOW_FILTER_DEFAULT", False))
+    stored_time_window_filter_version = str(raw.get("time_window_filter_version") or "")
+    time_window_filter_version = stored_time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION
+    time_window_filter_enabled = bool(raw.get("time_window_filter_enabled", time_window_enabled_default))
+    if stored_time_window_filter_version and stored_time_window_filter_version != config.TIME_WINDOW_FILTER_VERSION:
+        time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
+        time_window_filter_enabled = time_window_enabled_default
     major_enabled_default = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
     stored_major_filter_version = str(raw.get("major_filter_version") or "")
     major_filter_version = stored_major_filter_version or config.MAJOR_FILTER_VERSION
@@ -537,6 +576,36 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         scheduled_entry_executed_at=raw.get("scheduled_entry_executed_at"),
         scheduled_entry_last_result=raw.get("scheduled_entry_last_result"),
         scheduled_entry_protected=bool(raw.get("scheduled_entry_protected") or False),
+        time_window_filter_enabled=time_window_filter_enabled,
+        time_window_filter_enabled_at=raw.get("time_window_filter_enabled_at"),
+        time_window_filter_enabled_by=raw.get("time_window_filter_enabled_by"),
+        time_window_filter_version=time_window_filter_version,
+        time_window_morning_entry_count=int(raw.get("time_window_morning_entry_count") or 0),
+        time_window_afternoon_entry_count=int(raw.get("time_window_afternoon_entry_count") or 0),
+        last_time_window_entry_at=raw.get("last_time_window_entry_at"),
+        last_time_window_score=raw.get("last_time_window_score"),
+        last_time_window_required_score=raw.get("last_time_window_required_score"),
+        last_time_window_approved=raw.get("last_time_window_approved"),
+        last_time_window_decision=raw.get("last_time_window_decision"),
+        last_time_window_block_reason=raw.get("last_time_window_block_reason"),
+        last_time_window_component_scores=(
+            dict(raw.get("last_time_window_component_scores"))
+            if isinstance(raw.get("last_time_window_component_scores"), dict) else None
+        ),
+        last_time_window_metrics=(
+            dict(raw.get("last_time_window_metrics"))
+            if isinstance(raw.get("last_time_window_metrics"), dict) else None
+        ),
+        last_time_window_signal_id=raw.get("last_time_window_signal_id"),
+        time_window_pending_flag_direction=time_window_pending_flag_direction,
+        time_window_pending_flag_bar_ts=raw.get("time_window_pending_flag_bar_ts"),
+        time_window_position_active=bool(raw.get("time_window_position_active") or False),
+        time_window_entry_session=raw.get("time_window_entry_session"),
+        time_window_entry_flag_seq=raw.get("time_window_entry_flag_seq"),
+        time_window_entry_session_seq=raw.get("time_window_entry_session_seq"),
+        time_window_tp1_done=bool(raw.get("time_window_tp1_done") or False),
+        time_window_initial_quantity=int(raw.get("time_window_initial_quantity") or 0),
+        time_window_peak_net_return=float(raw.get("time_window_peak_net_return") or 0.0),
     )
 
 

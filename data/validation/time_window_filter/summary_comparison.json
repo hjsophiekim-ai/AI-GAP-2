@@ -1,0 +1,278 @@
+{
+  "generated_at": "SEE_REPORT",
+  "read_only": true,
+  "data_window": {
+    "dates": [
+      "20260710",
+      "20260713",
+      "20260714",
+      "20260715",
+      "20260716",
+      "20260720",
+      "20260721",
+      "20260722",
+      "20260723",
+      "20260724",
+      "20260727",
+      "20260728",
+      "20260729",
+      "20260730",
+      "20260731",
+      "20260803",
+      "20260804",
+      "20260805",
+      "20260806",
+      "20260807"
+    ],
+    "count": 20
+  },
+  "proxy_dates_2x": [],
+  "data_notes": [],
+  "policy_A_definition": "existing time-window filter reused as-is: sideways_filter.evaluate_sideways_flag (production's only time-of-day entry gate); exits are unchanged production rules (STOP_LOSS -1.5%, immediate opposite-flag switch, 15:00 forced liquidation) -- no partial TP.",
+  "policy_B_definition": "new '시간대별 최적거래 필터': two-bar (T->T+3) delayed entry confirmation + windowed quality gates + its own partial-TP/ratcheted-stop position management.",
+  "policy_C_definition": "no time filter at all -- every confirmed flag has immediate order authority (production default with all optional filters OFF); same legacy exits as A.",
+  "metrics": {
+    "A": {
+      "trading_days": 20,
+      "total_entries": 49,
+      "avg_entries_per_day": 2.45,
+      "morning_entries": 33,
+      "afternoon_entries": 16,
+      "wins": 18,
+      "losses": 31,
+      "win_rate_pct": 36.73,
+      "avg_return_pct": 0.1967,
+      "avg_win_pct": 3.4399,
+      "avg_loss_pct": -1.6864,
+      "total_simple_cumulative_return_pct": 9.6379,
+      "compounded_cumulative_return_pct": 6.4315,
+      "profit_factor": 1.1844,
+      "expectancy_pct": 0.1967,
+      "max_drawdown_pct": 16.6216,
+      "max_consecutive_losses": 9,
+      "morning_tp2_hits": 0,
+      "morning_tp1_hits": 0,
+      "afternoon_tp_hits": 0,
+      "stop_loss_exits": 17,
+      "opposite_flag_exits": 25
+    },
+    "B": {
+      "trading_days": 20,
+      "total_entries": 40,
+      "avg_entries_per_day": 2.0,
+      "morning_entries": 40,
+      "afternoon_entries": 0,
+      "wins": 27,
+      "losses": 13,
+      "win_rate_pct": 67.5,
+      "avg_return_pct": 0.4738,
+      "avg_win_pct": 1.4653,
+      "avg_loss_pct": -1.5855,
+      "total_simple_cumulative_return_pct": 18.9514,
+      "compounded_cumulative_return_pct": 20.1778,
+      "profit_factor": 1.9195,
+      "expectancy_pct": 0.4738,
+      "max_drawdown_pct": 5.6175,
+      "max_consecutive_losses": 2,
+      "morning_tp2_hits": 23,
+      "morning_tp1_hits": 21,
+      "afternoon_tp_hits": 0,
+      "stop_loss_exits": 8,
+      "opposite_flag_exits": 1
+    },
+    "C": {
+      "trading_days": 20,
+      "total_entries": 153,
+      "avg_entries_per_day": 7.65,
+      "morning_entries": 73,
+      "afternoon_entries": 80,
+      "wins": 57,
+      "losses": 96,
+      "win_rate_pct": 37.25,
+      "avg_return_pct": 0.1523,
+      "avg_win_pct": 2.8651,
+      "avg_loss_pct": -1.4585,
+      "total_simple_cumulative_return_pct": 23.2964,
+      "compounded_cumulative_return_pct": 17.4574,
+      "profit_factor": 1.1664,
+      "expectancy_pct": 0.1523,
+      "max_drawdown_pct": 24.713,
+      "max_consecutive_losses": 8,
+      "morning_tp2_hits": 0,
+      "morning_tp1_hits": 0,
+      "afternoon_tp_hits": 0,
+      "stop_loss_exits": 48,
+      "opposite_flag_exits": 79
+    }
+  },
+  "time_window_breakdown": {
+    "A": {
+      "09:00-09:45": {
+        "candidate_entries": 9,
+        "win_rate_pct": 22.22,
+        "avg_return_pct": -0.8148,
+        "cumulative_return_pct": -7.3328,
+        "profit_factor": 0.4953,
+        "max_loss_pct": -3.0323,
+        "avg_holding_minutes": 35.3
+      },
+      "09:45-10:20": {
+        "candidate_entries": 5,
+        "win_rate_pct": 80.0,
+        "avg_return_pct": 1.3238,
+        "cumulative_return_pct": 6.619,
+        "profit_factor": 27.4827,
+        "max_loss_pct": -0.2499,
+        "avg_holding_minutes": 37.2
+      },
+      "10:20-10:50": {
+        "candidate_entries": 2,
+        "win_rate_pct": 0.0,
+        "avg_return_pct": -1.8814,
+        "cumulative_return_pct": -3.7627,
+        "profit_factor": 0.0,
+        "max_loss_pct": -2.611,
+        "avg_holding_minutes": 7.5
+      },
+      "10:50-13:00": {
+        "candidate_entries": 18,
+        "win_rate_pct": 27.78,
+        "avg_return_pct": -0.5952,
+        "cumulative_return_pct": -10.714,
+        "profit_factor": 0.4751,
+        "max_loss_pct": -3.3705,
+        "avg_holding_minutes": 32.0
+      },
+      "13:00-14:00": {
+        "candidate_entries": 8,
+        "win_rate_pct": 50.0,
+        "avg_return_pct": 3.3344,
+        "cumulative_return_pct": 26.6753,
+        "profit_factor": 4.6086,
+        "max_loss_pct": -3.1664,
+        "avg_holding_minutes": 46.5
+      },
+      "14:00-15:00": {
+        "candidate_entries": 5,
+        "win_rate_pct": 60.0,
+        "avg_return_pct": 0.2421,
+        "cumulative_return_pct": 1.2105,
+        "profit_factor": 1.4208,
+        "max_loss_pct": -2.132,
+        "avg_holding_minutes": 16.2
+      }
+    },
+    "B": {
+      "09:00-09:45": {
+        "candidate_entries": 8,
+        "win_rate_pct": 50.0,
+        "avg_return_pct": -0.4779,
+        "cumulative_return_pct": -3.8228,
+        "profit_factor": 0.6087,
+        "max_loss_pct": -3.5922,
+        "avg_holding_minutes": 9.4
+      },
+      "09:45-10:20": {
+        "candidate_entries": 8,
+        "win_rate_pct": 62.5,
+        "avg_return_pct": 1.1387,
+        "cumulative_return_pct": 9.1095,
+        "profit_factor": 5.1097,
+        "max_loss_pct": -1.5912,
+        "avg_holding_minutes": 9.0
+      },
+      "10:20-10:50": {
+        "candidate_entries": 5,
+        "win_rate_pct": 80.0,
+        "avg_return_pct": 0.9672,
+        "cumulative_return_pct": 4.836,
+        "profit_factor": 3.5689,
+        "max_loss_pct": -1.8825,
+        "avg_holding_minutes": 7.2
+      },
+      "10:50-13:00": {
+        "candidate_entries": 19,
+        "win_rate_pct": 73.68,
+        "avg_return_pct": 0.4647,
+        "cumulative_return_pct": 8.8288,
+        "profit_factor": 2.3093,
+        "max_loss_pct": -1.9208,
+        "avg_holding_minutes": 21.8
+      },
+      "13:00-14:00": {
+        "candidate_entries": 0,
+        "win_rate_pct": 0.0,
+        "avg_return_pct": 0.0,
+        "cumulative_return_pct": 0,
+        "profit_factor": null,
+        "max_loss_pct": 0.0,
+        "avg_holding_minutes": 0.0
+      },
+      "14:00-15:00": {
+        "candidate_entries": 0,
+        "win_rate_pct": 0.0,
+        "avg_return_pct": 0.0,
+        "cumulative_return_pct": 0,
+        "profit_factor": null,
+        "max_loss_pct": 0.0,
+        "avg_holding_minutes": 0.0
+      }
+    },
+    "C": {
+      "09:00-09:45": {
+        "candidate_entries": 9,
+        "win_rate_pct": 22.22,
+        "avg_return_pct": -0.8148,
+        "cumulative_return_pct": -7.3328,
+        "profit_factor": 0.4953,
+        "max_loss_pct": -3.0323,
+        "avg_holding_minutes": 35.3
+      },
+      "09:45-10:20": {
+        "candidate_entries": 11,
+        "win_rate_pct": 45.45,
+        "avg_return_pct": 0.168,
+        "cumulative_return_pct": 1.8479,
+        "profit_factor": 1.2073,
+        "max_loss_pct": -2.1737,
+        "avg_holding_minutes": 29.7
+      },
+      "10:20-10:50": {
+        "candidate_entries": 7,
+        "win_rate_pct": 42.86,
+        "avg_return_pct": 2.0594,
+        "cumulative_return_pct": 14.4161,
+        "profit_factor": 2.9817,
+        "max_loss_pct": -2.611,
+        "avg_holding_minutes": 30.4
+      },
+      "10:50-13:00": {
+        "candidate_entries": 55,
+        "win_rate_pct": 34.55,
+        "avg_return_pct": -0.29,
+        "cumulative_return_pct": -15.95,
+        "profit_factor": 0.7012,
+        "max_loss_pct": -3.3705,
+        "avg_holding_minutes": 29.9
+      },
+      "13:00-14:00": {
+        "candidate_entries": 38,
+        "win_rate_pct": 28.95,
+        "avg_return_pct": 0.7386,
+        "cumulative_return_pct": 28.0661,
+        "profit_factor": 1.7991,
+        "max_loss_pct": -3.3353,
+        "avg_holding_minutes": 33.6
+      },
+      "14:00-15:00": {
+        "candidate_entries": 23,
+        "win_rate_pct": 52.17,
+        "avg_return_pct": 0.098,
+        "cumulative_return_pct": 2.2532,
+        "profit_factor": 1.1364,
+        "max_loss_pct": -2.4481,
+        "avg_holding_minutes": 20.3
+      }
+    }
+  }
+}

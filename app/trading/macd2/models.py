@@ -470,3 +470,40 @@ class RuntimeState:
     # forced liquidation are unaffected). Reset to False on any position
     # close/switch and on day rollover.
     scheduled_entry_protected: bool = False
+
+    # ── Optional "시간대별 최적거래 필터" (Time-Window Optimal Trading Filter,
+    # 2026-08-15) — entry gate AND its own position-management ladder (see
+    # time_window_filter.py / time_window_position_manager.py). Mutually
+    # exclusive with the other four entry filters; takes top priority in
+    # worker._judge_entry_gate. daily morning/afternoon entry counts are
+    # session-scoped (reset on day rollover); the toggle itself survives.
+    time_window_filter_enabled: bool = False
+    time_window_filter_enabled_at: Optional[str] = None
+    time_window_filter_enabled_by: Optional[str] = None
+    time_window_filter_version: str = ""
+    time_window_morning_entry_count: int = 0
+    time_window_afternoon_entry_count: int = 0
+    last_time_window_entry_at: Optional[str] = None
+    last_time_window_score: Optional[float] = None
+    last_time_window_required_score: Optional[float] = None
+    last_time_window_approved: Optional[bool] = None
+    last_time_window_decision: Optional[str] = None
+    last_time_window_block_reason: Optional[str] = None
+    last_time_window_component_scores: Optional[dict[str, Any]] = None
+    last_time_window_metrics: Optional[dict[str, Any]] = None
+    last_time_window_signal_id: Optional[str] = None
+    # Two-bar (T -> T+3) candidate awaiting re-confirmation (§1) — cleared
+    # every time it resolves (approved, rejected, or superseded by a fresh
+    # opposite crossover), never carried past one extra bar.
+    time_window_pending_flag_direction: Optional[Direction] = None
+    time_window_pending_flag_bar_ts: Optional[str] = None
+    # Position-management state — meaningful only while
+    # time_window_position_active is True (the CURRENTLY held position was
+    # opened by this filter); reset on every entry/exit under this filter.
+    time_window_position_active: bool = False
+    time_window_entry_session: Optional[str] = None  # "MORNING" / "AFTERNOON"
+    time_window_entry_flag_seq: Optional[int] = None
+    time_window_entry_session_seq: Optional[int] = None  # which morning/afternoon entry # this was
+    time_window_tp1_done: bool = False
+    time_window_initial_quantity: int = 0
+    time_window_peak_net_return: float = 0.0

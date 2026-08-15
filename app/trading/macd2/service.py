@@ -505,6 +505,33 @@ class Macd2Service:
             "single_entry_filter_version": state.single_entry_filter_version,
         }
 
+    def set_time_window_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional "시간대별 최적거래 필터" (time-window
+        optimal trading filter) order gate + its own position-management
+        ladder. Only updates runtime state — never places orders or
+        liquidates. Takes effect from the next confirmed flag; an already-
+        open position keeps whichever exit rules it was opened under. When
+        ON, this gate takes TOP priority over sideways/major/trend_
+        persistence/single_entry — never more than one active for the same
+        signal (worker._judge_entry_gate).
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.time_window_filter_enabled)
+        state.time_window_filter_enabled = enabled_bool
+        state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
+        state.time_window_filter_enabled_at = datetime.now(KST).isoformat()
+        state.time_window_filter_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "time_window_filter_enabled": enabled_bool,
+            "previous": prev,
+            "time_window_filter_enabled_at": state.time_window_filter_enabled_at,
+            "time_window_filter_enabled_by": state.time_window_filter_enabled_by,
+            "time_window_filter_version": state.time_window_filter_version,
+        }
+
     def set_quick_profit_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """UI command: toggle the optional Quick-Profit take-profit filter.
 

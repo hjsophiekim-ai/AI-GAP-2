@@ -408,6 +408,50 @@ with _se_cols[1]:
             f"version=`{getattr(state, 'single_entry_filter_version', None) or macd2_config.SINGLE_ENTRY_FILTER_VERSION}`"
         )
 
+# Optional "시간대별 최적거래 필터" toggle (2026-08-15 사용자 요청, command
+# only — never places orders). TOP priority of the five entry gates when ON
+# — the other four toggles above are ignored for the same signal
+# (worker._judge_entry_gate). Unlike the other four, this filter ALSO owns
+# its own position-management ladder (partial TP1 + TP2 in the morning,
+# ratcheted stop in the afternoon) for any position it opens — see
+# time_window_filter.py / time_window_position_manager.py.
+_tw_cols = st.columns([1.4, 1.6])
+with _tw_cols[0]:
+    _tw_on = st.checkbox(
+        "시간대별 최적거래 필터",
+        value=bool(getattr(state, "time_window_filter_enabled", False)),
+        key="macd2_time_window_filter_toggle",
+        help=(
+            "OFF=기존 로직 그대로 / ON=이 필터가 다른 4개 진입 필터보다 최우선 적용. "
+            "완성봉 플래그 발생 후 바로 진입하지 않고 다음 완성 3분봉(T+3)에서 MACD-Signal 관계 유지 + "
+            "gap 확대를 재확인한 뒤에만 진입. 09:00-09:45/09:45-10:20/10:20-10:50 구간별로 다른 "
+            "조건(품질점수 0-5점, is_valid_reset())을 적용하고 10:50-13:00은 신규진입 금지, "
+            "13:00-14:00/14:00-15:00 구간도 별도 조건 적용. 하루 최대 "
+            f"{macd2_config.MAX_MORNING_ENTRIES}(오전)+{macd2_config.MAX_AFTERNOON_ENTRIES}(오후)="
+            f"{macd2_config.MAX_DAILY_ENTRIES}회. 오전 포지션은 +{macd2_config.MORNING_TP1*100:.1f}%에서 "
+            f"{macd2_config.MORNING_TP1_SELL_RATIO*100:.0f}% 분할익절 후 잔량 +{macd2_config.MORNING_TP2*100:.1f}% 익절, "
+            f"손절 {macd2_config.MORNING_STOP_LOSS*100:.1f}%. 오후 포지션은 +{macd2_config.AFTERNOON_TP*100:.1f}% 전량익절, "
+            f"손절 {macd2_config.AFTERNOON_STOP_LOSS*100:.1f}% (구간별 stop 상향 포함). "
+            "(다른 네 필터보다 우선순위 높음 — ON이면 강한 플래그/추세전환장/Trend Persistence/2% 3회진입은 이 신호에 적용되지 않음)."
+        ),
+    )
+with _tw_cols[1]:
+    if bool(_tw_on) != bool(getattr(state, "time_window_filter_enabled", False)):
+        res = service.set_time_window_filter_enabled(bool(_tw_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(
+                f"시간대별 최적거래 필터 → {'ON' if _tw_on else 'OFF'} "
+                f"(다음 confirmed 플래그부터 · `{res.get('time_window_filter_enabled_at')}`)"
+            )
+            st.rerun()
+    else:
+        st.caption(
+            f"시간대별 최적거래 필터={'ON' if state.time_window_filter_enabled else 'OFF'} · "
+            f"version=`{getattr(state, 'time_window_filter_version', None) or macd2_config.TIME_WINDOW_FILTER_VERSION}` · "
+            f"오전 진입 {int(getattr(state, 'time_window_morning_entry_count', 0) or 0)}/{macd2_config.MAX_MORNING_ENTRIES} · "
+            f"오후 진입 {int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)}/{macd2_config.MAX_AFTERNOON_ENTRIES}"
+        )
+
 # Profit Lock — MACD convergence early exit (2026-08-05 spec; replaces the
 # old net-return-giveback Profit Lock entirely). EXIT LOGIC ONLY — never
 # places/changes an entry, never touches Stop Loss/forced liquidation/
@@ -754,6 +798,43 @@ try:
         "(MDD만 12.7% 높고 승률/청산률/Net/PF는 전부 개선). 단, v3에서 승인된 4번째 이후 플래그(73건 중 7건)는 이 표본에서 "
         "1~3번째보다 성과가 낮았음(승률 28.6% vs 57.6%) — 사용자 요청에 따라 그대로 두었으나 데이터가 더 쌓이면 재검증 필요. "
         "퀵 Profit 익절(기본 +2.0% 익절)을 함께 켜면 2% 도달 시점에 실제로 확정 가능."
+    )
+
+    st.markdown(f"**시간대별 최적거래 필터 (최대 {macd2_config.MAX_DAILY_ENTRIES}회/일, 기본 OFF)**")
+    tw1, tw2, tw3, tw4 = st.columns(4)
+    tw1.metric("시간대별 최적거래 필터", "ON" if getattr(state, "time_window_filter_enabled", False) else "OFF")
+    tw2.metric("filter version", getattr(state, "time_window_filter_version", None) or macd2_config.TIME_WINDOW_FILTER_VERSION)
+    tw3.metric("오전 진입", f"{int(getattr(state, 'time_window_morning_entry_count', 0) or 0)} / {macd2_config.MAX_MORNING_ENTRIES}")
+    tw4.metric("오후 진입", f"{int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)} / {macd2_config.MAX_AFTERNOON_ENTRIES}")
+    tw5, tw6, tw7 = st.columns(3)
+    _tw_score = getattr(state, "last_time_window_score", None)
+    tw5.metric("마지막 품질점수", f"{_tw_score:.0f}/5" if _tw_score is not None else "-")
+    tw6.metric("포지션 관리 활성", "Y" if getattr(state, "time_window_position_active", False) else "-")
+    tw7.metric("TP1 완료", "Y" if getattr(state, "time_window_tp1_done", False) else "-")
+    st.caption(
+        f"enabled_at=`{getattr(state, 'time_window_filter_enabled_at', None) or '-'}` · "
+        f"by=`{getattr(state, 'time_window_filter_enabled_by', None) or '-'}` · "
+        f"decision=`{getattr(state, 'last_time_window_decision', None) or '-'}` · "
+        f"block_reason=`{getattr(state, 'last_time_window_block_reason', None) or '-'}`"
+    )
+    st.info(
+        "시간대별 최적거래 필터(ON이면 다른 네 필터보다 최우선, 진입권한 + 포지션 관리 모두 담당): "
+        "완성봉에서 플래그가 뜨면 즉시 진입하지 않고 다음 완성 3분봉(T+3)까지 MACD-Signal 관계 유지 + gap 확대를 재확인. "
+        "09:00-09:45 공격적 진입 / 09:45-10:20 두 번째 진입(is_valid_reset 필수) / 10:20-10:50 세 번째 진입(품질점수 "
+        f"{macd2_config.QUALITY_SCORE_THRESHOLD}/5 이상) / 10:50-13:00 신규진입 금지 / 13:00-14:00 A급만(품질점수 "
+        f"{macd2_config.QUALITY_SCORE_THRESHOLD}/5 이상) / 14:00-15:00 메인 오후 진입(EMA20 방향일치 필수, 2번째부터 "
+        "is_valid_reset 필수, 14:57 이후 신규진입 금지). "
+        f"오전 포지션: +{macd2_config.MORNING_TP1*100:.1f}%에서 {macd2_config.MORNING_TP1_SELL_RATIO*100:.0f}% 분할익절 → "
+        f"잔량 stop +{macd2_config.MORNING_AFTER_TP1_STOP*100:.1f}% → +{macd2_config.MORNING_TRAILING_TRIGGER*100:.1f}% 도달 시 "
+        f"stop +{macd2_config.MORNING_TRAILING_STOP*100:.1f}% → +{macd2_config.MORNING_TP2*100:.1f}% 전량 익절, "
+        f"손절 {macd2_config.MORNING_STOP_LOSS*100:.1f}%. "
+        f"오후 포지션: +{macd2_config.AFTERNOON_BREAKEVEN_TRIGGER*100:.1f}%에서 stop +{macd2_config.AFTERNOON_BREAKEVEN_STOP*100:.1f}% → "
+        f"+{macd2_config.AFTERNOON_PROFIT_LOCK_TRIGGER*100:.1f}%에서 stop +{macd2_config.AFTERNOON_PROFIT_LOCK_STOP*100:.1f}% → "
+        f"+{macd2_config.AFTERNOON_TP*100:.1f}% 전량 익절, 손절 {macd2_config.AFTERNOON_STOP_LOSS*100:.1f}%. "
+        "반대 확정 플래그도 동일한 3분(T+3) 재확인 방식으로만 청산/스위치 처리 — 즉시 청산하지 않음. "
+        "직전 반대 플래그와 간격이 "
+        f"{macd2_config.MIN_FLAG_INTERVAL_MINUTES}분 미만이면 is_valid_reset() 통과 시에만 진입. 피라미딩 없음(중복 진입 방지). "
+        "2026-08-15 신규 필터 — docs/MACD2_LOGIC.md 및 data/validation/time_window_filter/의 20거래일 백테스트 참고."
     )
 
     st.markdown("**Profit Lock — MACD 수렴 조기청산 (청산 로직 전용, 기본 OFF)**")

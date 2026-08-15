@@ -679,3 +679,75 @@ def execute_exit(
     outcome.final_state = SignalState.EXECUTED
     outcome.block_reason = exit_reason
     return outcome
+
+
+def _reconcile_to_target(broker, symbol: str, target_qty: int, *, retries: int, delay_sec: float) -> int:
+    qty_after = -1
+    for attempt in range(max(1, retries)):
+        qty_after = broker.reconcile_position(symbol)
+        if qty_after == target_qty:
+            return qty_after
+        if attempt < retries - 1:
+            time.sleep(delay_sec)
+    return qty_after
+
+
+def execute_partial_exit(
+    *,
+    broker,
+    symbol: str,
+    sell_qty: int,
+    remaining_qty: int,
+    exit_reason: str,
+    entry_price: float,
+    reconcile_retries: int = 5,
+    reconcile_delay_sec: float = 0.5,
+    ledger_module: Any = None,
+) -> ExecutionOutcome:
+    """Sell-only PARTIAL exit — the time-window filter's TP1 ladder (docs
+    §11) is the only caller. Sells exactly ``sell_qty`` and reconciles the
+    holding down to ``remaining_qty`` (NOT necessarily 0), unlike
+    ``execute_exit`` (always a full liquidation reconciled to exactly 0).
+
+    Purely additive: does not modify ``execute_exit`` or any other exit
+    path, so every existing full-exit caller (STOP_LOSS/PROFIT_LOCK/
+    OPPOSITE_SIGNAL/FORCED_LIQUIDATION/QUICK_PROFIT) is byte-for-byte
+    unaffected by this function's existence.
+    """
+    timestamps = {"sell_requested_at": _now_iso()}
+    outcome = ExecutionOutcome("", Direction.HOLD, symbol, SignalState.DETECTED, timestamps=timestamps)
+    if sell_qty < 1:
+        outcome.final_state = SignalState.FAILED
+        outcome.block_reason = BLOCK_ORDER_DATA_INVALID
+        return outcome
+
+    client_order_id = f"PARTIAL_EXIT:{exit_reason}:{symbol}:{timestamps['sell_requested_at']}"
+    sell_result = broker.sell_market(symbol, sell_qty, client_order_id)
+    outcome.sell_result = sell_result
+    if not sell_result.success:
+        outcome.final_state = SignalState.FAILED
+        outcome.block_reason = FAIL_SELL
+        return outcome
+    timestamps["sell_confirmed_at"] = _now_iso()
+
+    qty_after = _reconcile_to_target(
+        broker, symbol, remaining_qty, retries=reconcile_retries, delay_sec=reconcile_delay_sec,
+    )
+    outcome.sell_qty_after = qty_after
+    timestamps["sell_reconciled_at"] = _now_iso()
+    if qty_after != remaining_qty:
+        outcome.final_state = SignalState.FAILED
+        outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
+        return outcome
+
+    _record_leg(
+        broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=sell_qty,
+        price=sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price,
+        position_before=sell_qty + remaining_qty, position_after=remaining_qty,
+        exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
+        confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
+    )
+    outcome.final_state = SignalState.EXECUTED
+    outcome.block_reason = exit_reason
+    outcome.quantity = sell_qty
+    return outcome
