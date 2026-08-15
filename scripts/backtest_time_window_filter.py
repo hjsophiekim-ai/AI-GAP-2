@@ -45,8 +45,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.trading.macd2 import config, risk_exit, sideways_filter, time_window_filter as twf  # noqa: E402
-from app.trading.macd2 import time_window_position_manager as twpm  # noqa: E402
+from app.trading.macd2 import config, major_flag_filter, risk_exit, sideways_filter, time_window_filter as twf  # noqa: E402
+from app.trading.macd2 import time_window_position_manager as twpm, trend_persistence_filter  # noqa: E402
 from app.trading.macd2.models import Direction  # noqa: E402
 from app.trading.macd2.signal_engine import calculate_macd, evaluate_macd_crossover, resample_completed_3m  # noqa: E402
 from app.trading.macd2.worker import _net_return_pct  # noqa: E402
@@ -502,6 +502,140 @@ def simulate_time_window(
                      reason="END_OF_DATA", entry_price=position.entry_price, symbol=position.symbol)
         trades.append(position.trade)
     return trades, rejected
+
+
+# ── 2026-08-15 사용자 요청: 기존 4개 필터를 time_window_position_manager의
+# 동일한 손절/익절 래더(evaluate_morning_position — STOP_LOSS -1.5%, TP1
+# 2.5%/50%, TP1 이후 stop, peak 3.5% 이후 trailing stop 2.0%, TP2 5.0%)로
+# 통일해 "진입 로직 자체의 우열"만 비교한다. 각 필터 고유의 진입 판단 함수는
+# 그대로 재사용(중복 구현 없음) — 시간대별 최적거래 필터만 자신의 원래
+# T->T+3 2단계 확정을 유지(그게 이 필터의 정체성이므로), 나머지 3개는
+# production과 동일하게 완성봉 즉시(1단계) 판정한다.
+def simulate_generic_ladder(
+    date: str, hynix_bars_3m: pd.DataFrame, hynix_1m: pd.DataFrame, flags: list[tuple[int, Direction]],
+    etf_close: dict[str, dict[pd.Timestamp, float]], proxy_dates: set[str], start_idx: int,
+    decision_fn, policy_name: str,
+) -> list[Trade]:
+    trades: list[Trade] = []
+    position: Optional[OpenPosition] = None
+    flags_by_idx = dict(flags)
+    daily_count = 0
+    last_entry_at: Optional[datetime] = None
+    last_exit_at: dict[Direction, datetime] = {}
+
+    for idx in range(start_idx, len(hynix_bars_3m)):
+        bar_dt = pd.Timestamp(hynix_bars_3m["datetime"].iloc[idx]).to_pydatetime()
+        bar_ts = hynix_bars_3m["datetime"].iloc[idx]
+
+        if position is not None and idx > position.entry_idx:
+            close = etf_close[position.symbol].get(bar_ts)
+            if close is not None:
+                net = _net_pct(position.symbol, position.entry_price, close)
+                pm = twpm.evaluate_morning_position(
+                    net_return_pct=net, tp1_done=position.tp1_done, peak_net_return=position.peak_net_return,
+                )
+                position.peak_net_return = pm.peak_net_return
+                position.tp1_done = pm.tp1_done
+                if pm.exit_reason is not None:
+                    if pm.exit_reason == config.EXIT_TW_TP1_PARTIAL:
+                        position.trade.tp1_hit = True
+                        position.qty *= (1.0 - pm.sell_fraction)
+                    else:
+                        if pm.exit_reason == config.EXIT_TW_TP2_FULL:
+                            position.trade.tp2_hit = True
+                        _close_trade(position.trade, exit_time=bar_dt, exit_price=close,
+                                     reason=pm.exit_reason, entry_price=position.entry_price, symbol=position.symbol)
+                        trades.append(position.trade)
+                        last_exit_at[_direction_for_symbol(position.symbol)] = bar_dt
+                        position = None
+
+        if position is not None and bar_dt.astimezone(KST).time() >= config.FORCE_LIQUIDATE_AT:
+            close = etf_close[position.symbol].get(bar_ts)
+            if close is not None:
+                _close_trade(position.trade, exit_time=bar_dt, exit_price=close,
+                             reason=config.EXIT_FORCED_LIQUIDATION, entry_price=position.entry_price, symbol=position.symbol)
+                trades.append(position.trade)
+                position = None
+
+        if idx in flags_by_idx:
+            direction = flags_by_idx[idx]
+            target = _target_symbol(direction)
+            position_direction = _direction_for_symbol(position.symbol) if position is not None else None
+            decision_at = bar_dt + timedelta(minutes=3)
+            decision = decision_fn(
+                hynix_bars_3m.iloc[: idx + 1], hynix_1m, direction, decision_at,
+                position_direction, daily_count, last_entry_at, last_exit_at.get(direction),
+            )
+            fill = etf_close[target].get(bar_ts)
+            if not decision.approved:
+                if position is not None and position.symbol != target:
+                    exit_price = etf_close[position.symbol].get(bar_ts)
+                    if exit_price is not None:
+                        _close_trade(position.trade, exit_time=bar_dt, exit_price=exit_price,
+                                     reason=config.EXIT_OPPOSITE_SIGNAL, entry_price=position.entry_price, symbol=position.symbol)
+                        trades.append(position.trade)
+                        last_exit_at[_direction_for_symbol(position.symbol)] = bar_dt
+                        position = None
+                continue
+            if fill is None:
+                continue
+            if position is not None and position.symbol == target:
+                continue
+            if position is not None and position.symbol != target:
+                close_now = etf_close[position.symbol].get(bar_ts, position.entry_price)
+                _close_trade(position.trade, exit_time=bar_dt, exit_price=close_now,
+                             reason=config.EXIT_OPPOSITE_SIGNAL, entry_price=position.entry_price, symbol=position.symbol)
+                trades.append(position.trade)
+                last_exit_at[_direction_for_symbol(position.symbol)] = bar_dt
+                position = None
+            new_trade = Trade(
+                trading_date=date, policy=policy_name, flag_seq_overall=len([f for f in flags if f[0] <= idx]),
+                direction=direction.value, flag_time=bar_dt.isoformat(), confirm_time=bar_dt.isoformat(),
+                entry_time=bar_dt.isoformat(), entry_symbol=target, entry_price=fill,
+                session="MORNING" if bar_dt.astimezone(KST).time() < dtime(12, 30) else "AFTERNOON",
+                session_seq=None, quality_score=round(float(decision.score), 1) if decision.score else None,
+                proxy_used=(date in proxy_dates),
+            )
+            position = OpenPosition(
+                symbol=target, entry_idx=idx, entry_price=fill, entry_time=bar_dt, qty=1.0, initial_qty=1.0,
+                session=new_trade.session, session_seq=None, quality_score=new_trade.quality_score,
+                flag_seq_overall=new_trade.flag_seq_overall, flag_time=new_trade.flag_time,
+                confirm_time=new_trade.confirm_time, trade=new_trade,
+            )
+            daily_count += 1
+            last_entry_at = bar_dt
+
+    if position is not None:
+        last_dt = pd.Timestamp(hynix_bars_3m["datetime"].iloc[-1]).to_pydatetime()
+        close = etf_close[position.symbol].get(hynix_bars_3m["datetime"].iloc[-1], position.entry_price)
+        _close_trade(position.trade, exit_time=last_dt, exit_price=close,
+                     reason="END_OF_DATA", entry_price=position.entry_price, symbol=position.symbol)
+        trades.append(position.trade)
+    return trades
+
+
+def _sideways_decision_fn(bars_3m, hynix_1m, direction, decision_at, position_direction, daily_count, last_entry_at, last_exit_at):
+    del position_direction, daily_count, last_entry_at, last_exit_at
+    df_1m_upto = hynix_1m[hynix_1m["datetime"] <= bars_3m["datetime"].iloc[-1]]
+    return sideways_filter.evaluate_sideways_flag(bars_3m, df_1m_upto, direction, decision_at)
+
+
+def _trend_persistence_decision_fn(bars_3m, hynix_1m, direction, decision_at, position_direction, daily_count, last_entry_at, last_exit_at):
+    del position_direction, daily_count, last_entry_at, last_exit_at
+    df_1m_upto = hynix_1m[hynix_1m["datetime"] <= bars_3m["datetime"].iloc[-1]]
+    return trend_persistence_filter.evaluate_trend_persistence(bars_3m, df_1m_upto, direction, decision_at)
+
+
+def _major_flag_decision_fn(bars_3m, hynix_1m, direction, decision_at, position_direction, daily_count, last_entry_at, last_exit_at):
+    del hynix_1m
+    decision = major_flag_filter.evaluate_major_flag(
+        bars_3m, direction, position_direction, last_entry_at, daily_count, decision_at,
+    )
+    return major_flag_filter.apply_major_trade_gates(
+        decision, flag_direction=direction, position_direction=position_direction,
+        last_entry_at=last_entry_at, last_same_direction_exit_at=last_exit_at,
+        daily_major_entry_count=daily_count, now=decision_at,
+    )
 
 
 # ── metrics ──────────────────────────────────────────────────────────────
