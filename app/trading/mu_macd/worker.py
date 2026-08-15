@@ -299,61 +299,81 @@ def _reset_time_window_position_state(state: RuntimeState) -> None:
     state.time_window_peak_net_return = 0.0
 
 
+def _advance_time_window_position_management(
+    *, broker, state: RuntimeState, pos: Optional[PositionSnapshot],
+) -> Optional[str]:
+    """Position-management half of the time-window filter — a position THIS
+    filter opened manages its own STOP_LOSS(-1.5%)/TP1(+2.5%-50%)/ratcheted-
+    stop/TP2(+5.0%) ladder via app.trading.macd2.time_window_position_
+    manager.evaluate_morning_position (import only, same as everywhere else
+    in this integration).
+
+    CRITICAL: called EARLY in run_once, using ONLY the traded ETF's own
+    broker quote — same as MU_MACD's own plain STOP_LOSS check and for the
+    exact same reason (this module's own docstring: "Never gated on WS
+    health -- an exit always uses the traded ETF's own broker quote, never
+    the MU feed"). It must NEVER be gated behind bars_3m/macd_snap
+    readiness (WARMUP_MIN_3M_BARS) the way flag/candidate detection
+    legitimately is -- a held position's risk management must keep running
+    even during a post-restart warm-up window when the MU feed has no
+    history yet (this module always starts cold, per config.py's own
+    WARMUP_MIN_3M_BARS comment), otherwise a real loss could run
+    completely unmonitored for up to ~90 minutes after every restart.
+    Returns a short action label, or None if nothing happened this tick.
+    """
+    if pos is None or pos.quantity <= 0 or not state.time_window_position_active:
+        return None
+    current_price = broker.get_quote(pos.symbol) if hasattr(broker, "get_quote") else None
+    if not current_price:
+        return None
+    net_return = (float(current_price) - pos.avg_price) / pos.avg_price * 100.0
+    pm = twpm.evaluate_morning_position(
+        net_return_pct=net_return, tp1_done=state.time_window_tp1_done,
+        peak_net_return=state.time_window_peak_net_return,
+    )
+    state.time_window_peak_net_return = pm.peak_net_return
+    state.time_window_tp1_done = pm.tp1_done
+    if pm.exit_reason is None:
+        return None
+    mu_exit_reason = _TW_EXIT_REASON_MAP.get(pm.exit_reason, pm.exit_reason)
+    if pm.exit_reason == "TIME_WINDOW_TP1_PARTIAL" and pos.quantity > 1:
+        sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * pm.sell_fraction)))
+        remaining = pos.quantity - sell_qty
+        outcome = order_executor.execute_partial_exit(
+            broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining,
+            exit_reason=mu_exit_reason, entry_price=pos.avg_price, ledger_module=ledger,
+        )
+        if outcome.final_state == SignalState.EXECUTED:
+            state.position = PositionSnapshot(
+                symbol=pos.symbol, quantity=remaining, avg_price=pos.avg_price, entry_at=pos.entry_at,
+            )
+        return f"{mu_exit_reason}:{pos.symbol}"
+    outcome = order_executor.execute_exit(
+        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+        exit_reason=mu_exit_reason, entry_price=pos.avg_price, ledger_module=ledger,
+    )
+    if outcome.final_state == SignalState.EXECUTED:
+        state.position = None
+        _reset_time_window_position_state(state)
+    return f"{mu_exit_reason}:{pos.symbol}"
+
+
 def _advance_time_window_filter(
     *, broker, state: RuntimeState, now: datetime, bars_3m, macd_snap,
     confirmed_direction: Direction, pos: Optional[PositionSnapshot],
 ) -> Optional[str]:
-    """Optional "시간대별 최적거래 필터" (2026-08-15 사용자 요청) — reuses
-    app.trading.macd2.time_window_filter.evaluate_time_window_entry (same
-    two-bar T->T+3 delayed confirmation + per-window quality-score gate) and
-    app.trading.macd2.time_window_position_manager.evaluate_morning_position
-    (same STOP_LOSS -1.5%/TP1 +2.5%-50%/ratcheted-stop/TP2 +5.0% ladder) BY
-    IMPORT ONLY — no file under app/trading/macd2/ is read-write here, only
-    called (mirrors this module's own existing signal_engine/order_executor
-    reuse pattern). Only invoked when state.time_window_filter_enabled is
-    True. Returns a short action label for TickResult.actions, or None when
+    """Candidate-tracking half of the time-window filter (2026-08-15 사용자
+    요청) — reuses app.trading.macd2.time_window_filter.evaluate_time_
+    window_entry (same two-bar T->T+3 delayed confirmation + per-window
+    quality-score gate) BY IMPORT ONLY. Only reached once bars_3m/macd_snap
+    are ready (entry decisions legitimately need MACD data) -- position
+    MANAGEMENT for an already-open position is handled separately and
+    earlier by _advance_time_window_position_management, which does NOT
+    have this readiness requirement. Only invoked when state.time_window_
+    filter_enabled is True. Returns a short action label, or None when
     nothing happened this tick (still waiting on a pending T+3 candidate).
     """
-    # 1) position management for a position THIS filter opened — checked
-    #    before anything else. MU_MACD's own STOP_LOSS/QUICK_PROFIT/FORCED_
-    #    LIQUIDATION check already ran earlier in run_once and would have
-    #    returned already if it fired, but that check is only reached when
-    #    state.time_window_position_active is False (see run_once) so there
-    #    is no double-management of the same position.
-    if pos is not None and pos.quantity > 0 and state.time_window_position_active:
-        current_price = broker.get_quote(pos.symbol) if hasattr(broker, "get_quote") else None
-        if current_price:
-            net_return = (float(current_price) - pos.avg_price) / pos.avg_price * 100.0
-            pm = twpm.evaluate_morning_position(
-                net_return_pct=net_return, tp1_done=state.time_window_tp1_done,
-                peak_net_return=state.time_window_peak_net_return,
-            )
-            state.time_window_peak_net_return = pm.peak_net_return
-            state.time_window_tp1_done = pm.tp1_done
-            if pm.exit_reason is not None:
-                mu_exit_reason = _TW_EXIT_REASON_MAP.get(pm.exit_reason, pm.exit_reason)
-                if pm.exit_reason == "TIME_WINDOW_TP1_PARTIAL" and pos.quantity > 1:
-                    sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * pm.sell_fraction)))
-                    remaining = pos.quantity - sell_qty
-                    outcome = order_executor.execute_partial_exit(
-                        broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining,
-                        exit_reason=mu_exit_reason, entry_price=pos.avg_price, ledger_module=ledger,
-                    )
-                    if outcome.final_state == SignalState.EXECUTED:
-                        state.position = PositionSnapshot(
-                            symbol=pos.symbol, quantity=remaining, avg_price=pos.avg_price, entry_at=pos.entry_at,
-                        )
-                    return f"{mu_exit_reason}:{pos.symbol}"
-                outcome = order_executor.execute_exit(
-                    broker=broker, symbol=pos.symbol, quantity=pos.quantity,
-                    exit_reason=mu_exit_reason, entry_price=pos.avg_price, ledger_module=ledger,
-                )
-                if outcome.final_state == SignalState.EXECUTED:
-                    state.position = None
-                    _reset_time_window_position_state(state)
-                return f"{mu_exit_reason}:{pos.symbol}"
-
-    # 2) a fresh confirmed crossover always becomes (replaces) the pending
+    # 1) a fresh confirmed crossover always becomes (replaces) the pending
     #    T+3 candidate — never dispatched on its own bar.
     if confirmed_direction != Direction.HOLD:
         state.time_window_pending_flag_direction = confirmed_direction.value
@@ -460,11 +480,20 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
     pos = state.position
     if pos is not None and pos.quantity > 0:
         # A position opened by the time-window filter manages its own
-        # STOP_LOSS/take-profit ladder (see _advance_time_window_filter,
-        # called further below) -- this plain STOP_LOSS/QUICK_PROFIT check
-        # must not also act on the SAME position. FORCED_LIQUIDATION right
-        # below stays universal regardless (applies to every position).
+        # STOP_LOSS/take-profit ladder via _advance_time_window_position_
+        # management, called HERE (not gated on bars_3m/macd_snap warm-up
+        # readiness the way flag/candidate detection legitimately is below --
+        # see that function's own docstring for why this must never go dark)
+        # -- this plain STOP_LOSS/QUICK_PROFIT check must not also act on the
+        # SAME position. FORCED_LIQUIDATION right below stays universal
+        # regardless (applies to every position).
         tw_managed = state.time_window_filter_enabled and state.time_window_position_active
+        if tw_managed:
+            tw_pm_action = _advance_time_window_position_management(broker=broker, state=state, pos=pos)
+            if tw_pm_action is not None:
+                result.actions.append(tw_pm_action)
+                if state.position is None or state.position.quantity != pos.quantity:
+                    return result
         current_price = broker.get_quote(pos.symbol) if (not tw_managed and hasattr(broker, "get_quote")) else None
         if current_price:
             net_return = (float(current_price) - pos.avg_price) / pos.avg_price * 100.0
@@ -530,10 +559,14 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
 
     if state.time_window_filter_enabled:
         # Fully replaces the legacy immediate-entry/reversal logic below with
-        # macd2's own two-bar (T -> T+3) delayed confirmation + ladder (see
-        # _advance_time_window_filter) -- this branch always returns, whether
-        # or not anything actually happened this tick, so the legacy code
-        # further down is structurally unreachable while this toggle is ON.
+        # macd2's own two-bar (T -> T+3) delayed confirmation (see
+        # _advance_time_window_filter; ladder/position-management for an
+        # already-open position was already handled earlier via
+        # _advance_time_window_position_management, independent of whether
+        # bars_3m/macd_snap were ready this tick) -- this branch always
+        # returns, whether or not anything actually happened this tick, so
+        # the legacy code further down is structurally unreachable while
+        # this toggle is ON.
         tw_action = _advance_time_window_filter(
             broker=broker, state=state, now=now, bars_3m=bars_3m, macd_snap=macd_snap,
             confirmed_direction=confirmed_direction, pos=pos,
