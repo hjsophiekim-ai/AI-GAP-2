@@ -1,0 +1,895 @@
+{
+  "confirmed_at": "2026-08-17",
+  "confirmed_by_instruction": "사용자 명시적 확정 지시 (2026-08-17) — 이후 OOS 결과로 파라미터 재조정 금지",
+  "status": "CONFIRMED (backtest) -- NOT YET DEPLOYED to production; see production_readiness_review",
+  "data_split": {
+    "train_days": 34,
+    "train_range": "2026-05-27 ~ 2026-07-14",
+    "val_days": 11,
+    "val_range": "2026-07-15 ~ 2026-07-30",
+    "oos_days": 11,
+    "oos_range": "2026-07-31 ~ 2026-08-14"
+  },
+  "entry_conditions": {
+    "trading_window": "09:00-15:00 (time_window_filter.classify_window W1-W6)",
+    "confirmation": "T+3 (confirmed MACD/Signal crossover bar, then re-check exactly one 3-min bar later)",
+    "gap_must_still_hold": "gap_now > 0 in the flag's own direction at confirmation bar",
+    "gap_expansion_required": true,
+    "quality_score_base_threshold": 3,
+    "quality_score_direction_bonus": {
+      "UP_RED(레버리지 매수)": "+1 -> 실질 임계값 4",
+      "DOWN_BLUE(인버스)": "+0 -> 실질 임계값 3"
+    },
+    "quality_score_components": [
+      "1. T+3 확정 유지(구조적으로 항상 True)",
+      "2. MACD-Signal gap이 flag bar 대비 확대",
+      "3. 종가가 EMA10(W1-W3)/EMA20(W4-W6) 대비 방향에 맞게 위치",
+      "4. EMA10 vs EMA20 추세정렬",
+      "5. 확정봉 거래량 >= 직전 5개 완성봉 평균"
+    ],
+    "min_flag_interval_minutes": 9,
+    "short_interval_fallback": "9분 미만이면 is_valid_reset()으로 유효 리셋 여부 재확인, 실패시 거부",
+    "max_morning_entries": 3,
+    "max_afternoon_entries": 2,
+    "max_daily_entries": 5,
+    "max_flag_seq_of_day": 4,
+    "max_flag_seq_of_day_note": "당일 원시 MACD 크로스오버(양방향 합산) 5번째 이후는 진입 대상에서 제외 (TRAIN/VAL 양쪽에서 확인된 구조적 손실 구간)",
+    "excluded_entry_seq_of_day": [
+      4
+    ],
+    "excluded_entry_seq_of_day_note": "당일 4번째 진입(오전 3회를 모두 소진한 뒤 첫 오후 진입)은 제외 -- TRAIN/VAL 양쪽에서 확인된 구조적 손실 구간. 5번째 진입(오후 두번째 슬롯)은 정상 유지",
+    "no_pyramiding": true,
+    "blocked_windows": "없음 (W4_NO_NEW_ENTRY 포함 전 구간 진입 허용 -- '게이트 전체 완화' 정신 유지)"
+  },
+  "exit_conditions": {
+    "morning_ladder": {
+      "tp1_pct": 2.5,
+      "tp1_sell_ratio": 0.3,
+      "tp2_pct": 5.0,
+      "tp2_note": "고정값, 스윕 대상 아니었음",
+      "stop_loss_pct": -1.5,
+      "after_tp1_stop_pct": 0.3,
+      "after_tp1_stop_note": "기본값 유지, 스윕 대상 아니었음",
+      "trailing_trigger_pct": 3.5,
+      "trailing_stop_pct": 2.0,
+      "trailing_note": "기본값 유지"
+    },
+    "afternoon_ladder": {
+      "tp_pct": 2.0,
+      "stop_loss_pct": -0.8,
+      "breakeven_trigger_pct": 1.5,
+      "breakeven_stop_pct": 0.2,
+      "breakeven_note": "기본값 유지",
+      "profit_lock_trigger_pct": 2.0,
+      "profit_lock_stop_pct": 1.0,
+      "profit_lock_note": "기본값 유지"
+    },
+    "force_liquidate_at": "15:00"
+  },
+  "results_overall": {
+    "TRAIN": {
+      "trading_days": 34,
+      "total_entries": 75,
+      "avg_entries_per_day": 2.206,
+      "morning_entries": 65,
+      "afternoon_entries": 10,
+      "wins": 29,
+      "losses": 46,
+      "win_rate_pct": 38.67,
+      "avg_daily_return_pct": 0.477,
+      "total_simple_cumulative_return_pct": 16.2196,
+      "compounded_cumulative_return_pct": 14.4364,
+      "profit_factor": 1.2088,
+      "max_drawdown_pct": 12.8646,
+      "max_consecutive_losses": 4
+    },
+    "VAL": {
+      "trading_days": 11,
+      "total_entries": 17,
+      "avg_entries_per_day": 1.545,
+      "morning_entries": 10,
+      "afternoon_entries": 7,
+      "wins": 9,
+      "losses": 8,
+      "win_rate_pct": 52.94,
+      "avg_daily_return_pct": 1.8116,
+      "total_simple_cumulative_return_pct": 19.9273,
+      "compounded_cumulative_return_pct": 21.083,
+      "profit_factor": 2.4998,
+      "max_drawdown_pct": 5.8919,
+      "max_consecutive_losses": 3
+    },
+    "OOS": {
+      "trading_days": 11,
+      "total_entries": 23,
+      "avg_entries_per_day": 2.091,
+      "morning_entries": 19,
+      "afternoon_entries": 4,
+      "wins": 10,
+      "losses": 13,
+      "win_rate_pct": 43.48,
+      "avg_daily_return_pct": 0.3923,
+      "total_simple_cumulative_return_pct": 4.3158,
+      "compounded_cumulative_return_pct": 3.8574,
+      "profit_factor": 1.2316,
+      "max_drawdown_pct": 4.5359,
+      "max_consecutive_losses": 3
+    },
+    "full_span_chained_compounded_pct": 43.908
+  },
+  "results_by_direction": {
+    "TRAIN": {
+      "LONG(레버리지)": {
+        "n": 31,
+        "win_rate_pct": 35.48,
+        "cum_pct": -3.077,
+        "compounded_pct": -4.041,
+        "pf": 0.915,
+        "avg_pct": -0.0992
+      },
+      "INV(인버스)": {
+        "n": 44,
+        "win_rate_pct": 40.91,
+        "cum_pct": 19.296,
+        "compounded_pct": 19.256,
+        "pf": 1.467,
+        "avg_pct": 0.4386
+      }
+    },
+    "VAL": {
+      "LONG(레버리지)": {
+        "n": 5,
+        "win_rate_pct": 40.0,
+        "cum_pct": 3.043,
+        "compounded_pct": 2.888,
+        "pf": 1.634,
+        "avg_pct": 0.6087
+      },
+      "INV(인버스)": {
+        "n": 12,
+        "win_rate_pct": 58.33,
+        "cum_pct": 16.884,
+        "compounded_pct": 17.684,
+        "pf": 2.99,
+        "avg_pct": 1.407
+      }
+    },
+    "OOS": {
+      "LONG(레버리지)": {
+        "n": 7,
+        "win_rate_pct": 42.86,
+        "cum_pct": 2.224,
+        "compounded_pct": 2.089,
+        "pf": 1.431,
+        "avg_pct": 0.3177
+      },
+      "INV(인버스)": {
+        "n": 16,
+        "win_rate_pct": 43.75,
+        "cum_pct": 2.092,
+        "compounded_pct": 1.732,
+        "pf": 1.155,
+        "avg_pct": 0.1307
+      }
+    }
+  },
+  "results_by_session_and_entry_seq": {
+    "TRAIN": {
+      "MORNING_entry1": {
+        "n": 33,
+        "win_rate_pct": 42.42,
+        "cum_pct": 5.368,
+        "compounded_pct": 4.021,
+        "pf": 1.136,
+        "avg_pct": 0.1627
+      },
+      "MORNING_entry2": {
+        "n": 22,
+        "win_rate_pct": 40.91,
+        "cum_pct": 10.088,
+        "compounded_pct": 9.803,
+        "pf": 1.535,
+        "avg_pct": 0.4585
+      },
+      "MORNING_entry3": {
+        "n": 10,
+        "win_rate_pct": 50.0,
+        "cum_pct": 9.329,
+        "compounded_pct": 9.216,
+        "pf": 1.938,
+        "avg_pct": 0.9329
+      },
+      "AFTERNOON_entry2": {
+        "n": 6,
+        "win_rate_pct": 0.0,
+        "cum_pct": -6.489,
+        "compounded_pct": -6.318,
+        "pf": 0.0,
+        "avg_pct": -1.0815
+      },
+      "AFTERNOON_entry3": {
+        "n": 4,
+        "win_rate_pct": 25.0,
+        "cum_pct": -2.075,
+        "compounded_pct": -2.077,
+        "pf": 0.264,
+        "avg_pct": -0.5189
+      }
+    },
+    "VAL": {
+      "MORNING_entry1": {
+        "n": 7,
+        "win_rate_pct": 57.14,
+        "cum_pct": 9.619,
+        "compounded_pct": 9.589,
+        "pf": 2.301,
+        "avg_pct": 1.3741
+      },
+      "MORNING_entry2": {
+        "n": 3,
+        "win_rate_pct": 66.67,
+        "cum_pct": 6.445,
+        "compounded_pct": 6.445,
+        "pf": 4.885,
+        "avg_pct": 2.1485
+      },
+      "AFTERNOON_entry1": {
+        "n": 3,
+        "win_rate_pct": 66.67,
+        "cum_pct": 4.955,
+        "compounded_pct": 4.977,
+        "pf": 5.461,
+        "avg_pct": 1.6515
+      },
+      "AFTERNOON_entry2": {
+        "n": 3,
+        "win_rate_pct": 33.33,
+        "cum_pct": 0.121,
+        "compounded_pct": 0.092,
+        "pf": 1.063,
+        "avg_pct": 0.0404
+      },
+      "AFTERNOON_entry3": {
+        "n": 1,
+        "win_rate_pct": 0.0,
+        "cum_pct": -1.213,
+        "compounded_pct": -1.213,
+        "pf": 0.0,
+        "avg_pct": -1.2127
+      }
+    },
+    "OOS": {
+      "MORNING_entry1": {
+        "n": 10,
+        "win_rate_pct": 50.0,
+        "cum_pct": 6.117,
+        "compounded_pct": 5.977,
+        "pf": 1.784,
+        "avg_pct": 0.6117
+      },
+      "MORNING_entry2": {
+        "n": 6,
+        "win_rate_pct": 50.0,
+        "cum_pct": -1.598,
+        "compounded_pct": -1.665,
+        "pf": 0.7,
+        "avg_pct": -0.2663
+      },
+      "MORNING_entry3": {
+        "n": 3,
+        "win_rate_pct": 66.67,
+        "cum_pct": 3.667,
+        "compounded_pct": 3.619,
+        "pf": 3.236,
+        "avg_pct": 1.2222
+      },
+      "AFTERNOON_entry1": {
+        "n": 1,
+        "win_rate_pct": 0.0,
+        "cum_pct": -1.228,
+        "compounded_pct": -1.228,
+        "pf": 0.0,
+        "avg_pct": -1.2279
+      },
+      "AFTERNOON_entry2": {
+        "n": 2,
+        "win_rate_pct": 0.0,
+        "cum_pct": -0.902,
+        "compounded_pct": -0.902,
+        "pf": 0.0,
+        "avg_pct": -0.4511
+      },
+      "AFTERNOON_entry3": {
+        "n": 1,
+        "win_rate_pct": 0.0,
+        "cum_pct": -1.739,
+        "compounded_pct": -1.739,
+        "pf": 0.0,
+        "avg_pct": -1.7393
+      }
+    }
+  },
+  "oos_all_23_trades": [
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260731",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W5_EARLY_AFTERNOON_A_GRADE",
+      "quality_score": 3,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-07-31T13:39:00+09:00",
+      "entry_price": "8345.0",
+      "exit_time": "2026-07-31T13:54:00+09:00",
+      "exit_price": "8250.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -1.227920910724985,
+      "legs": "[[1.0, 8250.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "AFTERNOON"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260803",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W3_MORNING_THIRD_STRICT",
+      "quality_score": 5,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-03T10:33:00+09:00",
+      "entry_price": "9480.0",
+      "exit_time": "2026-08-03T10:39:00+09:00",
+      "exit_price": "9310.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -1.8824894514767936,
+      "legs": "[[1.0, 9310.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260803",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 3,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-03T11:33:00+09:00",
+      "entry_price": "9275.0",
+      "exit_time": "2026-08-03T15:00:00+09:00",
+      "exit_price": "9475.0",
+      "exit_reason": "FORCED_LIQUIDATION",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": 2.0654447439353096,
+      "legs": "[[1.0, 9475.0, \"FORCED_LIQUIDATION\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260804",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 4,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-04T11:18:00+09:00",
+      "entry_price": "9935.0",
+      "exit_time": "2026-08-04T11:36:00+09:00",
+      "exit_price": "9780.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -1.6494212380473074,
+      "legs": "[[1.0, 9780.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260804",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W5_EARLY_AFTERNOON_A_GRADE",
+      "quality_score": 5,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-04T12:57:00+09:00",
+      "entry_price": "10150.0",
+      "exit_time": "2026-08-04T13:24:00+09:00",
+      "exit_price": "10155.0",
+      "exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -0.04068965517241379,
+      "legs": "[[1.0, 10155.0, \"TIME_WINDOW_BREAKEVEN_STOP\"]]",
+      "session": "AFTERNOON"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260805",
+      "direction": "UP_RED",
+      "entry_symbol": "0193T0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 4,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-05T10:57:00+09:00",
+      "entry_price": "10510.0",
+      "exit_time": "2026-08-05T11:09:00+09:00",
+      "exit_price": "10380.0",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -1.3264509990485251,
+      "legs": "[[1.0, 10380.0, \"OPPOSITE_SIGNAL\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260805",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 3,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-05T11:09:00+09:00",
+      "entry_price": "8310.0",
+      "exit_time": "2026-08-05T12:00:00+09:00",
+      "exit_price": "8310.0",
+      "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": 0.7037665463297231,
+      "legs": "[[0.3, 8530.0, \"TIME_WINDOW_TP1_PARTIAL\"], [0.7, 8310.0, \"TIME_WINDOW_AFTER_TP1_STOP\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260805",
+      "direction": "UP_RED",
+      "entry_symbol": "0193T0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 5,
+      "flag_seq_of_day": 3,
+      "entry_time": "2026-08-05T12:03:00+09:00",
+      "entry_price": "10390.0",
+      "exit_time": "2026-08-05T14:36:00+09:00",
+      "exit_price": "10420.0",
+      "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": 0.9201539942252166,
+      "legs": "[[0.3, 10670.0, \"TIME_WINDOW_TP1_PARTIAL\"], [0.7, 10420.0, \"TIME_WINDOW_AFTER_TP1_STOP\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260806",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 5,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-06T12:06:00+09:00",
+      "entry_price": "9795.0",
+      "exit_time": "2026-08-06T13:24:00+09:00",
+      "exit_price": "9870.0",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": 0.6753445635528331,
+      "legs": "[[1.0, 9870.0, \"OPPOSITE_SIGNAL\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260806",
+      "direction": "UP_RED",
+      "entry_symbol": "0193T0",
+      "window": "W5_EARLY_AFTERNOON_A_GRADE",
+      "quality_score": 4,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-06T13:24:00+09:00",
+      "entry_price": "8420.0",
+      "exit_time": "2026-08-06T13:27:00+09:00",
+      "exit_price": "8355.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -0.861520190023753,
+      "legs": "[[1.0, 8355.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "AFTERNOON"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260806",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W5_EARLY_AFTERNOON_A_GRADE",
+      "quality_score": 4,
+      "flag_seq_of_day": 3,
+      "entry_time": "2026-08-06T13:45:00+09:00",
+      "entry_price": "10000.0",
+      "exit_time": "2026-08-06T14:00:00+09:00",
+      "exit_price": "9835.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -1.7393000000000003,
+      "legs": "[[1.0, 9835.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "AFTERNOON"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260807",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W2_MORNING_SECOND",
+      "quality_score": 5,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-07T10:12:00+09:00",
+      "entry_price": "10680.0",
+      "exit_time": "2026-08-07T11:09:00+09:00",
+      "exit_price": "10880.0",
+      "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": 2.0205149812734082,
+      "legs": "[[0.3, 10965.0, \"TIME_WINDOW_TP1_PARTIAL\"], [0.7, 10880.0, \"TIME_WINDOW_TRAILING_STOP\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260807",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 5,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-07T12:24:00+09:00",
+      "entry_price": "10980.0",
+      "exit_time": "2026-08-07T15:00:00+09:00",
+      "exit_price": "11095.0",
+      "exit_reason": "FORCED_LIQUIDATION",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": 0.9569216757741348,
+      "legs": "[[1.0, 11095.0, \"FORCED_LIQUIDATION\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260810",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W1_MORNING_AGGRESSIVE",
+      "quality_score": 3,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-10T09:39:00+09:00",
+      "entry_price": "10640.0",
+      "exit_time": "2026-08-10T10:51:00+09:00",
+      "exit_price": "10545.0",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -0.9825187969924813,
+      "legs": "[[1.0, 10545.0, \"OPPOSITE_SIGNAL\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260810",
+      "direction": "UP_RED",
+      "entry_symbol": "0193T0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 5,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-10T10:51:00+09:00",
+      "entry_price": "7700.0",
+      "exit_time": "2026-08-10T11:00:00+09:00",
+      "exit_price": "7550.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -2.0370129870129867,
+      "legs": "[[1.0, 7550.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260810",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 4,
+      "flag_seq_of_day": 3,
+      "entry_time": "2026-08-10T11:06:00+09:00",
+      "entry_price": "10730.0",
+      "exit_time": "2026-08-10T13:51:00+09:00",
+      "exit_price": "11290.0",
+      "exit_reason": "TIME_WINDOW_TP2_FULL",
+      "tp1_hit": "False",
+      "tp2_hit": "True",
+      "net_return_pct": 4.386076421248835,
+      "legs": "[[0.3, 11025.0, \"TIME_WINDOW_TP1_PARTIAL\"], [0.7, 11290.0, \"TIME_WINDOW_TP2_FULL\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260811",
+      "direction": "UP_RED",
+      "entry_symbol": "0193T0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 5,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-11T11:48:00+09:00",
+      "entry_price": "7360.0",
+      "exit_time": "2026-08-11T14:03:00+09:00",
+      "exit_price": "7505.0",
+      "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": 2.1033152173913043,
+      "legs": "[[0.3, 7560.0, \"TIME_WINDOW_TP1_PARTIAL\"], [0.7, 7505.0, \"TIME_WINDOW_TRAILING_STOP\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260812",
+      "direction": "UP_RED",
+      "entry_symbol": "0193T0",
+      "window": "W3_MORNING_THIRD_STRICT",
+      "quality_score": 4,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-12T10:30:00+09:00",
+      "entry_price": "7785.0",
+      "exit_time": "2026-08-12T11:27:00+09:00",
+      "exit_price": "8190.0",
+      "exit_reason": "TIME_WINDOW_TP2_FULL",
+      "tp1_hit": "False",
+      "tp2_hit": "True",
+      "net_return_pct": 4.358856775850995,
+      "legs": "[[0.3, 7995.0, \"TIME_WINDOW_TP1_PARTIAL\"], [0.7, 8190.0, \"TIME_WINDOW_TP2_FULL\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260813",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W2_MORNING_SECOND",
+      "quality_score": 4,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-13T09:42:00+09:00",
+      "entry_price": "8540.0",
+      "exit_time": "2026-08-13T09:48:00+09:00",
+      "exit_price": "8380.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -1.9627634660421545,
+      "legs": "[[1.0, 8380.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260813",
+      "direction": "UP_RED",
+      "entry_symbol": "0193T0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 5,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-13T11:57:00+09:00",
+      "entry_price": "9480.0",
+      "exit_time": "2026-08-13T12:33:00+09:00",
+      "exit_price": "9400.0",
+      "exit_reason": "OPPOSITE_SIGNAL",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -0.9334388185654009,
+      "legs": "[[1.0, 9400.0, \"OPPOSITE_SIGNAL\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260813",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 3,
+      "flag_seq_of_day": 3,
+      "entry_time": "2026-08-13T12:33:00+09:00",
+      "entry_price": "8385.0",
+      "exit_time": "2026-08-13T12:48:00+09:00",
+      "exit_price": "8255.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -1.639713774597496,
+      "legs": "[[1.0, 8255.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260814",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W2_MORNING_SECOND",
+      "quality_score": 3,
+      "flag_seq_of_day": 1,
+      "entry_time": "2026-08-14T09:48:00+09:00",
+      "entry_price": "7725.0",
+      "exit_time": "2026-08-14T10:30:00+09:00",
+      "exit_price": "8160.0",
+      "exit_reason": "TIME_WINDOW_TP2_FULL",
+      "tp1_hit": "False",
+      "tp2_hit": "True",
+      "net_return_pct": 4.762161812297735,
+      "legs": "[[0.3, 7960.0, \"TIME_WINDOW_TP1_PARTIAL\"], [0.7, 8160.0, \"TIME_WINDOW_TP2_FULL\"]]",
+      "session": "MORNING"
+    },
+    {
+      "strategy": "FINAL",
+      "period": "OOS",
+      "trading_date": "20260814",
+      "direction": "DOWN_BLUE",
+      "entry_symbol": "0197X0",
+      "window": "W4_NO_NEW_ENTRY",
+      "quality_score": 3,
+      "flag_seq_of_day": 2,
+      "entry_time": "2026-08-14T11:54:00+09:00",
+      "entry_price": "8170.0",
+      "exit_time": "2026-08-14T13:15:00+09:00",
+      "exit_price": "7985.0",
+      "exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "tp1_hit": "False",
+      "tp2_hit": "False",
+      "net_return_pct": -2.353488372093023,
+      "legs": "[[1.0, 7985.0, \"TIME_WINDOW_STOP_LOSS\"]]",
+      "session": "MORNING"
+    }
+  ],
+  "oos_loss_pattern_summary": {
+    "note": "OOS 23건 중 13건(56.5%) 손실이지만 승리거래 평균이 커서 전체 PF 1.23 플러스. 조건 수정 없이 관찰만 기록.",
+    "by_session": "오후 진입 4건 전부 손실(전부 W5_EARLY_AFTERNOON_A_GRADE 창) vs 오전 19건 중 9건 손실(승률 52.6%) -- 오후 표본이 4건뿐이라 결론 보류, 주시 필요",
+    "by_direction": "INV 16건 중 9패(43.75%->대략 균형), LONG 7건 중 4패(42.9%->유사) -- OOS에서는 TRAIN에서 보였던 LONG 구조적 약세가 뚜렷하지 않음(표본 작음)",
+    "by_quality": "quality 3/4/5 손실 각각 4/5/4건으로 고르게 분포 -- OOS 표본에서는 quality 점수가 손실을 잘 구분하지 못함",
+    "by_exit_reason": "정상 손절(STOP_LOSS) 9건, 반대신호 청산 3건, 손익분기손절 1건 -- 반복적 버그성 패턴 없음, 정상적 리스크관리 결과로 판단"
+  },
+  "production_gap_notes": "backtest와 production(worker.py)이 완전히 동일한 진입판단 함수를 쓰지 못함 -- 별도 안전성 검토 보고서 참고. quality_score 방향별 보너스, max_flag_seq_of_day, excluded_entry_seq_of_day는 현재 production time_window_filter.evaluate_time_window_entry에 없는 knob임.",
+  "production_readiness_review": {
+    "reviewed_at": "2026-08-17",
+    "method": "Direct code read of app/trading/macd2/{worker.py,time_window_filter.py,time_window_position_manager.py,signal_engine.py,order_executor.py,ledger.py} -- no production files modified.",
+    "entry_function_and_t3_parity": {
+      "verdict": "PARTIAL PARITY -- T+3 confirmation mechanics are identical; the per-window quality gate is NOT identical",
+      "t3_confirmation_identical": true,
+      "t3_evidence": [
+        "worker.py:1561 _judge_time_window_flag never grants order authority on the flag bar itself; only records state.time_window_pending_flag_direction/pending_flag_bar_ts (worker.py:1580-1591)",
+        "worker.py:1730 _resolve_time_window_candidate calls time_window_filter.evaluate_time_window_entry(...) exactly one completed bar later (worker.py:1771-1776) -- the SAME primitives the backtest reuses (calculate_flag_quality_score/classify_window/is_valid_reset/_find_previous_opposite_flag/_gap_series/_prepare_bars in time_window_filter.py)",
+        "evaluate_time_window_entry rejects if the bar alignment has drifted (worker downtime etc.): flag_rows[-1] != len(series)-2 -> TW_REJECT_NOT_CONFIRMED (time_window_filter.py:352-357)",
+        "bars_3m passed in is produced by signal_engine.resample_completed_3m(one_minute_bars, now=...), which only includes 3m windows fully closed as of now (signal_engine.py:43-48) -- no forming bar ever reaches the decision function"
+      ],
+      "structural_difference_found": "Production's evaluate_time_window_entry applies a DIFFERENT quality gate per window (time_window_filter.py:435-506): W1_MORNING_AGGRESSIVE has no quality-score check at all (no branch, required_score=0.0); W2_MORNING_SECOND only checks is_valid_reset(), no score check; W3/W4/W5 check quality_score >= config.QUALITY_SCORE_THRESHOLD (a single global value, currently 4); W6_LATE_AFTERNOON_MAIN checks only quality_detail['price_vs_ema'] plus a reset requirement on the 2nd afternoon entry, not a score threshold at all. The backtest's evaluate_relaxed_entry (scripts/tw_gate_relaxed_optimization.py) applies ONE uniform quality_score >= threshold+bonus check to every window with no exemptions. This means the confirmed strategy is not simply 'production + 3 new knobs' -- it also silently drops W1's exemption, W2's skip, and W6's component-only check. Deploying the 3 new knobs onto unchanged production logic would NOT reproduce the backtested behavior in W1/W2/W6.",
+      "open_decision_required": "Before implementing, decide: (A) keep W1/W2/W6 production special-cases as-is and only add the uniform threshold+bonus to W3/W4/W5 (closer to today's live behavior, but then W1/W2/W6 were never actually backtested under this confirmed strategy), or (B) unify all windows to the flat quality_score>=threshold+bonus check the backtest used (matches what was actually validated, but changes W1/W2/W6 live behavior). Recommendation: (B), since it's the only option that matches what TRAIN/VAL/OOS actually measured -- but this is a strategy-semantics call, not a pure implementation detail, so flagging explicitly rather than deciding silently.",
+      "new_knob_minimal_change_sketch_pseudocode_only": [
+        "(a) per-direction quality bonus: config.py add TW_QUALITY_SCORE_BONUS_UP_RED (default 1); time_window_filter.py's threshold branches use required_score = config.QUALITY_SCORE_THRESHOLD + (bonus if direction==UP_RED else 0)",
+        "(b) daily raw flag-rank cap: production ALREADY increments state.daily_confirmed_flag_count on every confirmed flag (worker.py:1540-1541, used by single_entry_filter) and already resets it on day rollover (worker.py:355) -- no new counter needed. _judge_time_window_flag should additionally stash state.time_window_pending_flag_seq = state.daily_confirmed_flag_count when recording the pending flag; _resolve_time_window_candidate passes flag_seq=... into evaluate_time_window_entry, which adds one reject branch if flag_seq > config.TW_MAX_FLAG_SEQ_OF_DAY",
+        "(c) exclude a specific entry_seq: production only counts morning/afternoon entries separately (worker.py:1826-1831); add a new state.time_window_daily_entry_seq counter incremented at the same point, pass entry_seq=... into evaluate_time_window_entry, add one reject branch if entry_seq in config.TW_EXCLUDED_ENTRY_SEQ_OF_DAY"
+      ]
+    },
+    "safety_sweep": [
+      {
+        "category": "look_ahead_bias",
+        "verdict": "SAFE",
+        "evidence": "signal_engine.py:43-48 resample_completed_3m only returns 3m windows fully closed as of `now`, forming bars never included; time_window_filter.py:352-357 rejects if bars_3m doesn't end exactly one bar after the flag bar."
+      },
+      {
+        "category": "duplicate_entry",
+        "verdict": "SAFE",
+        "evidence": "order_executor.py:351-379 execute_signal blocks BLOCK_DUPLICATE_SIGNAL for a signal_id already in processed_signal_ids, and BLOCK_ALREADY_HOLDING for an already-held same-direction position."
+      },
+      {
+        "category": "incomplete_3m_bar_used_as_completed",
+        "verdict": "SAFE",
+        "evidence": "Same mechanism as look_ahead_bias: signal_engine.py:43-48."
+      },
+      {
+        "category": "day_rollover_state_reset",
+        "verdict": "SAFE",
+        "evidence": "worker.py:2448 calls _apply_day_rollover every tick; on a session_date change it resets time_window_morning_entry_count/afternoon_entry_count/pending_flag_direction/daily_confirmed_flag_count etc. exactly once (worker.py:310-324, 355, 365-368). The filter's enable/disable toggle and any already-held position are intentionally preserved across rollover."
+      },
+      {
+        "category": "duplicate_order_submission",
+        "verdict": "SAFE",
+        "evidence": "Entry side reuses the duplicate_entry guard above. Exit side: _advance_stop_loss_bar silently ignores a second call for the same completed bar (worker.py:1594-1637 docstring) so the TW ladder decision fires at most once per bar; order_executor issues a single buy/sell_market call per decision; ledger.py:191-200's append_signal rejects a duplicate signal_id at the persistence layer too."
+      },
+      {
+        "category": "partial_tp_quantity_handling",
+        "verdict": "CAUTION -- narrow edge case found",
+        "evidence": "worker.py:1678-1679 sets state.time_window_tp1_done = pm_decision.tp1_done BEFORE the partial-exit order is confirmed filled, while state.position's quantity is only updated later, gated on outcome.final_state == EXECUTED (worker.py:1701). If the partial-exit order fails, tp1_done stays True even though the full original quantity is still held -- the tighter post-TP1 stop (+0.3%/trailing) then applies to a position that was never actually reduced. This is a narrow failure-path edge case (order rejection/failure only) and biases toward an earlier, more conservative stop rather than a missed stop -- not a look-ahead or overstatement risk, but worth fixing before relying on it in a fast market with order failures."
+      },
+      {
+        "category": "trading_cost_calculation",
+        "verdict": "SAFE",
+        "evidence": "Live decision math (worker._net_return_pct, worker.py:139-145), live ledger recording (order_executor.py's _record_leg calling cost_engine.compute_net_pnl, order_executor.py:245-247), and the backtest (scripts/tw_gate_relaxed_optimization.py's _net_pct calls worker._net_return_pct directly, worker.py:78) all route through the identical TradeCostEngine().compute_net_pnl -- no separate/simplified cost model in the backtest."
+      }
+    ],
+    "existing_test_coverage_confirmed_passing": [
+      "tests/macd2/test_time_window_filter.py (incl. TestNoLookAhead::test_evaluate_time_window_entry_never_reads_past_confirm_bar, TestEntryCaps::test_duplicate_position_same_direction_rejects)",
+      "tests/macd2/test_time_window_position_manager.py",
+      "tests/macd2/test_worker_time_window.py (incl. test_day_rollover_resets_time_window_session_counters, test_no_lookahead_run_once_only_uses_bars_up_to_now)",
+      "tests/mu_macd/test_worker_time_window_filter.py",
+      "tests/test_trading_cost_engine.py",
+      "52 tests passed, 0 failed as of this review"
+    ]
+  },
+  "production_deployment_plan": {
+    "status": "PROPOSED ONLY -- no production file has been modified",
+    "open_decision_before_implementation": "Before implementing, decide: (A) keep W1/W2/W6 production special-cases as-is and only add the uniform threshold+bonus to W3/W4/W5 (closer to today's live behavior, but then W1/W2/W6 were never actually backtested under this confirmed strategy), or (B) unify all windows to the flat quality_score>=threshold+bonus check the backtest used (matches what was actually validated, but changes W1/W2/W6 live behavior). Recommendation: (B), since it's the only option that matches what TRAIN/VAL/OOS actually measured -- but this is a strategy-semantics call, not a pure implementation detail, so flagging explicitly rather than deciding silently.",
+    "files": [
+      {
+        "file": "app/trading/macd2/config.py",
+        "changes": [
+          "Add TW_QUALITY_SCORE_BONUS_UP_RED = _env_int('MACD2_TW_QUALITY_SCORE_BONUS_UP_RED', 1)",
+          "Add TW_MAX_FLAG_SEQ_OF_DAY = _env_int('MACD2_TW_MAX_FLAG_SEQ_OF_DAY', 4) (0/None = disabled)",
+          "Add TW_EXCLUDED_ENTRY_SEQ_OF_DAY (parsed int tuple), default (4,)",
+          "Change MORNING_TP1_SELL_RATIO default 0.50 -> 0.30",
+          "Change AFTERNOON_TP default 0.025 -> 0.020",
+          "Change AFTERNOON_STOP_LOSS default -0.012 -> -0.008"
+        ]
+      },
+      {
+        "file": "app/trading/macd2/time_window_filter.py",
+        "changes": [
+          "In evaluate_time_window_entry's W3/W4/W5 threshold branches (~lines 445-470): required_score = config.QUALITY_SCORE_THRESHOLD + (config.TW_QUALITY_SCORE_BONUS_UP_RED if direction==Direction.UP_RED else 0)",
+          "RESOLVE OPEN DECISION FIRST: whether W1's exemption / W2's skip / W6's component-only check stay as-is or get unified to the same flat threshold check (see open_decision_before_implementation)",
+          "Add optional flag_seq / entry_seq parameters to evaluate_time_window_entry; add one reject branch each for TW_MAX_FLAG_SEQ_OF_DAY and TW_EXCLUDED_ENTRY_SEQ_OF_DAY"
+        ]
+      },
+      {
+        "file": "app/trading/macd2/worker.py",
+        "changes": [
+          "_judge_time_window_flag (~line 1561/1581): also store state.time_window_pending_flag_seq = state.daily_confirmed_flag_count (that counter already exists and already resets on day rollover)",
+          "Add new state.time_window_daily_entry_seq counter, incremented alongside the existing morning/afternoon counters (~lines 1826-1831)",
+          "_resolve_time_window_candidate (~line 1771): pass flag_seq=state.time_window_pending_flag_seq, entry_seq=state.time_window_daily_entry_seq+1 into evaluate_time_window_entry",
+          "Day-rollover reset block (~lines 355-368): also reset time_window_pending_flag_seq and time_window_daily_entry_seq",
+          "KNOWN CONSTRAINT (optional hardening, not required to deploy): in _advance_held_position_risk_management (~lines 1678-1701), consider gating state.time_window_tp1_done's assignment on outcome.final_state == EXECUTED the same way the quantity update already is, to close the narrow partial-exit-order-failure edge case found in the safety review"
+        ]
+      },
+      {
+        "file": "app/trading/macd2/models.py (RuntimeState) + state_store schema/version",
+        "changes": [
+          "Add the two new persisted fields: time_window_pending_flag_seq, time_window_daily_entry_seq (with a state-store version bump per existing convention)"
+        ]
+      },
+      {
+        "file": "tests/macd2/test_time_window_filter.py, tests/macd2/test_worker_time_window.py",
+        "changes": [
+          "Add coverage for the 3 new knobs once implemented (flag-seq cap rejection, entry-seq exclusion rejection, per-direction quality bonus) plus a regression test locking in whichever choice is made for the W1/W2/W6 open decision"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,5247 @@
+{
+  "overall": {
+    "train": {
+      "n": 148,
+      "win_rate_pct": 37.84,
+      "avg_return_pct": 0.0512,
+      "cum_return_pct": 7.585,
+      "pf": 1.0534,
+      "stop_rate_pct": 58.11
+    },
+    "val": {
+      "n": 39,
+      "win_rate_pct": 43.59,
+      "avg_return_pct": 0.272,
+      "cum_return_pct": 10.6072,
+      "pf": 1.32,
+      "stop_rate_pct": 56.41
+    }
+  },
+  "breakdowns": {
+    "window": {
+      "W1_MORNING_AGGRESSIVE": {
+        "train": {
+          "n": 19,
+          "win_rate_pct": 26.32,
+          "avg_return_pct": -0.8302,
+          "cum_return_pct": -15.7729,
+          "pf": 0.5219,
+          "stop_rate_pct": 78.95
+        },
+        "val": {
+          "n": 4,
+          "win_rate_pct": 25.0,
+          "avg_return_pct": -1.1576,
+          "cum_return_pct": -4.6302,
+          "pf": 0.3597,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W2_MORNING_SECOND": {
+        "train": {
+          "n": 15,
+          "win_rate_pct": 53.33,
+          "avg_return_pct": 1.3226,
+          "cum_return_pct": 19.8383,
+          "pf": 3.0912,
+          "stop_rate_pct": 46.67
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 66.67,
+          "avg_return_pct": 2.0749,
+          "cum_return_pct": 6.2248,
+          "pf": 4.4991,
+          "stop_rate_pct": 66.67
+        }
+      },
+      "W3_MORNING_THIRD_STRICT": {
+        "train": {
+          "n": 13,
+          "win_rate_pct": 38.46,
+          "avg_return_pct": 0.0082,
+          "cum_return_pct": 0.1069,
+          "pf": 1.0088,
+          "stop_rate_pct": 61.54
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 4.2263,
+          "cum_return_pct": 4.2263,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "W4_NO_NEW_ENTRY": {
+        "train": {
+          "n": 43,
+          "win_rate_pct": 44.19,
+          "avg_return_pct": 0.3569,
+          "cum_return_pct": 15.3485,
+          "pf": 1.4154,
+          "stop_rate_pct": 48.84
+        },
+        "val": {
+          "n": 12,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": -0.1252,
+          "cum_return_pct": -1.5023,
+          "pf": 0.8686,
+          "stop_rate_pct": 41.67
+        }
+      },
+      "W5_EARLY_AFTERNOON_A_GRADE": {
+        "train": {
+          "n": 33,
+          "win_rate_pct": 27.27,
+          "avg_return_pct": -0.4938,
+          "cum_return_pct": -16.2966,
+          "pf": 0.5079,
+          "stop_rate_pct": 60.61
+        },
+        "val": {
+          "n": 18,
+          "win_rate_pct": 44.44,
+          "avg_return_pct": 0.3334,
+          "cum_return_pct": 6.0004,
+          "pf": 1.4722,
+          "stop_rate_pct": 61.11
+        }
+      },
+      "W6_LATE_AFTERNOON_MAIN": {
+        "train": {
+          "n": 25,
+          "win_rate_pct": 40.0,
+          "avg_return_pct": 0.1744,
+          "cum_return_pct": 4.3608,
+          "pf": 1.2503,
+          "stop_rate_pct": 60.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 0.2882,
+          "cum_return_pct": 0.2882,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      }
+    },
+    "direction": {
+      "DOWN_BLUE": {
+        "train": {
+          "n": 73,
+          "win_rate_pct": 41.1,
+          "avg_return_pct": 0.2011,
+          "cum_return_pct": 14.6795,
+          "pf": 1.2358,
+          "stop_rate_pct": 57.53
+        },
+        "val": {
+          "n": 18,
+          "win_rate_pct": 55.56,
+          "avg_return_pct": 0.8768,
+          "cum_return_pct": 15.7816,
+          "pf": 2.2261,
+          "stop_rate_pct": 44.44
+        }
+      },
+      "UP_RED": {
+        "train": {
+          "n": 75,
+          "win_rate_pct": 34.67,
+          "avg_return_pct": -0.0946,
+          "cum_return_pct": -7.0945,
+          "pf": 0.9111,
+          "stop_rate_pct": 58.67
+        },
+        "val": {
+          "n": 21,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": -0.2464,
+          "cum_return_pct": -5.1744,
+          "pf": 0.7448,
+          "stop_rate_pct": 66.67
+        }
+      }
+    },
+    "quality_score": {
+      "2": {
+        "train": {
+          "n": 30,
+          "win_rate_pct": 43.33,
+          "avg_return_pct": -0.128,
+          "cum_return_pct": -3.8393,
+          "pf": 0.8668,
+          "stop_rate_pct": 70.0
+        },
+        "val": {
+          "n": 8,
+          "win_rate_pct": 25.0,
+          "avg_return_pct": -0.4205,
+          "cum_return_pct": -3.3641,
+          "pf": 0.6367,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "3": {
+        "train": {
+          "n": 33,
+          "win_rate_pct": 45.45,
+          "avg_return_pct": 0.2845,
+          "cum_return_pct": 9.3882,
+          "pf": 1.3496,
+          "stop_rate_pct": 57.58
+        },
+        "val": {
+          "n": 12,
+          "win_rate_pct": 66.67,
+          "avg_return_pct": 0.8366,
+          "cum_return_pct": 10.0395,
+          "pf": 2.5109,
+          "stop_rate_pct": 58.33
+        }
+      },
+      "4": {
+        "train": {
+          "n": 52,
+          "win_rate_pct": 30.77,
+          "avg_return_pct": -0.2181,
+          "cum_return_pct": -11.3426,
+          "pf": 0.8107,
+          "stop_rate_pct": 57.69
+        },
+        "val": {
+          "n": 9,
+          "win_rate_pct": 44.44,
+          "avg_return_pct": 0.5423,
+          "cum_return_pct": 4.8803,
+          "pf": 1.5682,
+          "stop_rate_pct": 44.44
+        }
+      },
+      "5": {
+        "train": {
+          "n": 33,
+          "win_rate_pct": 36.36,
+          "avg_return_pct": 0.4054,
+          "cum_return_pct": 13.3787,
+          "pf": 1.5052,
+          "stop_rate_pct": 48.48
+        },
+        "val": {
+          "n": 10,
+          "win_rate_pct": 30.0,
+          "avg_return_pct": -0.0948,
+          "cum_return_pct": -0.9484,
+          "pf": 0.8904,
+          "stop_rate_pct": 70.0
+        }
+      }
+    },
+    "entry_seq_of_day": {
+      "1": {
+        "train": {
+          "n": 34,
+          "win_rate_pct": 35.29,
+          "avg_return_pct": -0.1949,
+          "cum_return_pct": -6.6259,
+          "pf": 0.8471,
+          "stop_rate_pct": 55.88
+        },
+        "val": {
+          "n": 11,
+          "win_rate_pct": 36.36,
+          "avg_return_pct": 0.3293,
+          "cum_return_pct": 3.6226,
+          "pf": 1.3691,
+          "stop_rate_pct": 45.45
+        }
+      },
+      "2": {
+        "train": {
+          "n": 33,
+          "win_rate_pct": 42.42,
+          "avg_return_pct": 0.4195,
+          "cum_return_pct": 13.8419,
+          "pf": 1.576,
+          "stop_rate_pct": 45.45
+        },
+        "val": {
+          "n": 10,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.3736,
+          "cum_return_pct": 3.7355,
+          "pf": 1.4372,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "3": {
+        "train": {
+          "n": 33,
+          "win_rate_pct": 39.39,
+          "avg_return_pct": 0.2624,
+          "cum_return_pct": 8.658,
+          "pf": 1.2621,
+          "stop_rate_pct": 66.67
+        },
+        "val": {
+          "n": 8,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.6014,
+          "cum_return_pct": 4.8114,
+          "pf": 1.7167,
+          "stop_rate_pct": 62.5
+        }
+      },
+      "4": {
+        "train": {
+          "n": 32,
+          "win_rate_pct": 31.25,
+          "avg_return_pct": -0.4655,
+          "cum_return_pct": -14.8973,
+          "pf": 0.5079,
+          "stop_rate_pct": 65.62
+        },
+        "val": {
+          "n": 7,
+          "win_rate_pct": 28.57,
+          "avg_return_pct": -0.6011,
+          "cum_return_pct": -4.208,
+          "pf": 0.4558,
+          "stop_rate_pct": 85.71
+        }
+      },
+      "5": {
+        "train": {
+          "n": 16,
+          "win_rate_pct": 43.75,
+          "avg_return_pct": 0.413,
+          "cum_return_pct": 6.6083,
+          "pf": 1.5786,
+          "stop_rate_pct": 56.25
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 66.67,
+          "avg_return_pct": 0.8819,
+          "cum_return_pct": 2.6456,
+          "pf": 8.6917,
+          "stop_rate_pct": 33.33
+        }
+      }
+    },
+    "flag_seq_of_day": {
+      "1": {
+        "train": {
+          "n": 31,
+          "win_rate_pct": 35.48,
+          "avg_return_pct": -0.1715,
+          "cum_return_pct": -5.3171,
+          "pf": 0.8592,
+          "stop_rate_pct": 54.84
+        },
+        "val": {
+          "n": 8,
+          "win_rate_pct": 25.0,
+          "avg_return_pct": 0.0415,
+          "cum_return_pct": 0.3317,
+          "pf": 1.0533,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "2": {
+        "train": {
+          "n": 29,
+          "win_rate_pct": 44.83,
+          "avg_return_pct": 0.5913,
+          "cum_return_pct": 17.1468,
+          "pf": 1.8143,
+          "stop_rate_pct": 44.83
+        },
+        "val": {
+          "n": 9,
+          "win_rate_pct": 55.56,
+          "avg_return_pct": 0.3902,
+          "cum_return_pct": 3.512,
+          "pf": 1.4006,
+          "stop_rate_pct": 44.44
+        }
+      },
+      "3": {
+        "train": {
+          "n": 29,
+          "win_rate_pct": 31.03,
+          "avg_return_pct": -0.2109,
+          "cum_return_pct": -6.1161,
+          "pf": 0.8191,
+          "stop_rate_pct": 68.97
+        },
+        "val": {
+          "n": 7,
+          "win_rate_pct": 57.14,
+          "avg_return_pct": 1.2292,
+          "cum_return_pct": 8.6046,
+          "pf": 2.9355,
+          "stop_rate_pct": 42.86
+        }
+      },
+      "4": {
+        "train": {
+          "n": 17,
+          "win_rate_pct": 47.06,
+          "avg_return_pct": 0.4311,
+          "cum_return_pct": 7.3287,
+          "pf": 1.5959,
+          "stop_rate_pct": 47.06
+        },
+        "val": {
+          "n": 5,
+          "win_rate_pct": 60.0,
+          "avg_return_pct": 0.6707,
+          "cum_return_pct": 3.3533,
+          "pf": 2.1677,
+          "stop_rate_pct": 80.0
+        }
+      },
+      "5": {
+        "train": {
+          "n": 15,
+          "win_rate_pct": 26.67,
+          "avg_return_pct": -0.6719,
+          "cum_return_pct": -10.0784,
+          "pf": 0.4276,
+          "stop_rate_pct": 73.33
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": -1.2295,
+          "cum_return_pct": -3.6885,
+          "pf": 0.0725,
+          "stop_rate_pct": 66.67
+        }
+      },
+      "6": {
+        "train": {
+          "n": 8,
+          "win_rate_pct": 37.5,
+          "avg_return_pct": -0.158,
+          "cum_return_pct": -1.2643,
+          "pf": 0.7709,
+          "stop_rate_pct": 87.5
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.7624,
+          "cum_return_pct": -3.5249,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "7": {
+        "train": {
+          "n": 6,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.9984,
+          "cum_return_pct": 5.9904,
+          "pf": 3.0409,
+          "stop_rate_pct": 33.33
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.4957,
+          "cum_return_pct": -1.4957,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "8": {
+        "train": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.1958,
+          "cum_return_pct": -1.1958,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "9": {
+        "train": {
+          "n": 5,
+          "win_rate_pct": 40.0,
+          "avg_return_pct": 0.1606,
+          "cum_return_pct": 0.8029,
+          "pf": 1.206,
+          "stop_rate_pct": 60.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 2.7014,
+          "cum_return_pct": 2.7014,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "10": {
+        "train": {
+          "n": 6,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.279,
+          "cum_return_pct": 1.6737,
+          "pf": 1.362,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.5786,
+          "cum_return_pct": 1.1572,
+          "pf": 1.7717,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "11": {
+        "train": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -0.344,
+          "cum_return_pct": -0.344,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "12": {
+        "train": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.3858,
+          "cum_return_pct": -1.3858,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      }
+    },
+    "window_x_direction": {
+      "W1_MORNING_AGGRESSIVE|DOWN_BLUE": {
+        "train": {
+          "n": 9,
+          "win_rate_pct": 22.22,
+          "avg_return_pct": -1.0389,
+          "cum_return_pct": -9.3498,
+          "pf": 0.4113,
+          "stop_rate_pct": 77.78
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -3.5922,
+          "cum_return_pct": -3.5922,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W1_MORNING_AGGRESSIVE|UP_RED": {
+        "train": {
+          "n": 10,
+          "win_rate_pct": 30.0,
+          "avg_return_pct": -0.6423,
+          "cum_return_pct": -6.4231,
+          "pf": 0.6245,
+          "stop_rate_pct": 80.0
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": -0.346,
+          "cum_return_pct": -1.0381,
+          "pf": 0.7147,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W2_MORNING_SECOND|DOWN_BLUE": {
+        "train": {
+          "n": 5,
+          "win_rate_pct": 60.0,
+          "avg_return_pct": 1.5752,
+          "cum_return_pct": 7.8761,
+          "pf": 5.8816,
+          "stop_rate_pct": 40.0
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 4.0019,
+          "cum_return_pct": 8.0037,
+          "pf": Infinity,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "W2_MORNING_SECOND|UP_RED": {
+        "train": {
+          "n": 10,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 1.1962,
+          "cum_return_pct": 11.9622,
+          "pf": 2.5194,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.779,
+          "cum_return_pct": -1.779,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W3_MORNING_THIRD_STRICT|DOWN_BLUE": {
+        "train": {
+          "n": 5,
+          "win_rate_pct": 80.0,
+          "avg_return_pct": 1.8367,
+          "cum_return_pct": 9.1835,
+          "pf": 6.2208,
+          "stop_rate_pct": 60.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 4.2263,
+          "cum_return_pct": 4.2263,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "W3_MORNING_THIRD_STRICT|UP_RED": {
+        "train": {
+          "n": 8,
+          "win_rate_pct": 12.5,
+          "avg_return_pct": -1.1346,
+          "cum_return_pct": -9.0766,
+          "pf": 0.1247,
+          "stop_rate_pct": 62.5
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W4_NO_NEW_ENTRY|DOWN_BLUE": {
+        "train": {
+          "n": 23,
+          "win_rate_pct": 47.83,
+          "avg_return_pct": 0.6499,
+          "cum_return_pct": 14.9477,
+          "pf": 1.894,
+          "stop_rate_pct": 47.83
+        },
+        "val": {
+          "n": 4,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.3116,
+          "cum_return_pct": 1.2465,
+          "pf": 1.4255,
+          "stop_rate_pct": 25.0
+        }
+      },
+      "W4_NO_NEW_ENTRY|UP_RED": {
+        "train": {
+          "n": 20,
+          "win_rate_pct": 40.0,
+          "avg_return_pct": 0.02,
+          "cum_return_pct": 0.4008,
+          "pf": 1.0198,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 8,
+          "win_rate_pct": 25.0,
+          "avg_return_pct": -0.3436,
+          "cum_return_pct": -2.7487,
+          "pf": 0.6767,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "W5_EARLY_AFTERNOON_A_GRADE|DOWN_BLUE": {
+        "train": {
+          "n": 17,
+          "win_rate_pct": 17.65,
+          "avg_return_pct": -0.7679,
+          "cum_return_pct": -13.0539,
+          "pf": 0.2872,
+          "stop_rate_pct": 64.71
+        },
+        "val": {
+          "n": 10,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.5897,
+          "cum_return_pct": 5.8972,
+          "pf": 1.9288,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "W5_EARLY_AFTERNOON_A_GRADE|UP_RED": {
+        "train": {
+          "n": 16,
+          "win_rate_pct": 37.5,
+          "avg_return_pct": -0.2027,
+          "cum_return_pct": -3.2427,
+          "pf": 0.781,
+          "stop_rate_pct": 56.25
+        },
+        "val": {
+          "n": 8,
+          "win_rate_pct": 37.5,
+          "avg_return_pct": 0.0129,
+          "cum_return_pct": 0.1032,
+          "pf": 1.0162,
+          "stop_rate_pct": 75.0
+        }
+      },
+      "W6_LATE_AFTERNOON_MAIN|DOWN_BLUE": {
+        "train": {
+          "n": 14,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.3626,
+          "cum_return_pct": 5.0759,
+          "pf": 1.6368,
+          "stop_rate_pct": 57.14
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W6_LATE_AFTERNOON_MAIN|UP_RED": {
+        "train": {
+          "n": 11,
+          "win_rate_pct": 27.27,
+          "avg_return_pct": -0.065,
+          "cum_return_pct": -0.7151,
+          "pf": 0.9244,
+          "stop_rate_pct": 63.64
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 0.2882,
+          "cum_return_pct": 0.2882,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      }
+    },
+    "window_x_quality": {
+      "W1_MORNING_AGGRESSIVE|q2": {
+        "train": {
+          "n": 2,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -2.3275,
+          "cum_return_pct": -4.655,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W1_MORNING_AGGRESSIVE|q3": {
+        "train": {
+          "n": 2,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 1.16,
+          "cum_return_pct": 2.32,
+          "pf": 2.1693,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.4457,
+          "cum_return_pct": 0.8913,
+          "pf": 1.5214,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W1_MORNING_AGGRESSIVE|q4": {
+        "train": {
+          "n": 10,
+          "win_rate_pct": 20.0,
+          "avg_return_pct": -1.1914,
+          "cum_return_pct": -11.9144,
+          "pf": 0.4154,
+          "stop_rate_pct": 70.0
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -2.7608,
+          "cum_return_pct": -5.5216,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W1_MORNING_AGGRESSIVE|q5": {
+        "train": {
+          "n": 5,
+          "win_rate_pct": 40.0,
+          "avg_return_pct": -0.3047,
+          "cum_return_pct": -1.5236,
+          "pf": 0.7448,
+          "stop_rate_pct": 100.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W2_MORNING_SECOND|q2": {
+        "train": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 4.2794,
+          "cum_return_pct": 4.2794,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.779,
+          "cum_return_pct": -1.779,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W2_MORNING_SECOND|q3": {
+        "train": {
+          "n": 7,
+          "win_rate_pct": 57.14,
+          "avg_return_pct": 1.1064,
+          "cum_return_pct": 7.7451,
+          "pf": 2.4755,
+          "stop_rate_pct": 71.43
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 5.3034,
+          "cum_return_pct": 5.3034,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "W2_MORNING_SECOND|q4": {
+        "train": {
+          "n": 4,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 1.1001,
+          "cum_return_pct": 4.4002,
+          "pf": 2.7491,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W2_MORNING_SECOND|q5": {
+        "train": {
+          "n": 3,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": 1.1378,
+          "cum_return_pct": 3.4135,
+          "pf": 2.9827,
+          "stop_rate_pct": 0.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 2.7003,
+          "cum_return_pct": 2.7003,
+          "pf": Infinity,
+          "stop_rate_pct": 100.0
+        }
+      },
+      "W3_MORNING_THIRD_STRICT|q2": {
+        "train": {
+          "n": 3,
+          "win_rate_pct": 66.67,
+          "avg_return_pct": 0.5724,
+          "cum_return_pct": 1.7171,
+          "pf": 2.0957,
+          "stop_rate_pct": 66.67
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W3_MORNING_THIRD_STRICT|q3": {
+        "train": {
+          "n": 2,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.8189,
+          "cum_return_pct": -3.6378,
+          "pf": 0.0,
+          "stop_rate_pct": 100.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 4.2263,
+          "cum_return_pct": 4.2263,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "W3_MORNING_THIRD_STRICT|q4": {
+        "train": {
+          "n": 6,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.7131,
+          "cum_return_pct": 4.2788,
+          "pf": 1.9157,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W3_MORNING_THIRD_STRICT|q5": {
+        "train": {
+          "n": 2,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.1256,
+          "cum_return_pct": -2.2512,
+          "pf": 0.0,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W4_NO_NEW_ENTRY|q2": {
+        "train": {
+          "n": 9,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": -0.7886,
+          "cum_return_pct": -7.0971,
+          "pf": 0.408,
+          "stop_rate_pct": 88.89
+        },
+        "val": {
+          "n": 5,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.4963,
+          "cum_return_pct": -7.4813,
+          "pf": 0.0,
+          "stop_rate_pct": 60.0
+        }
+      },
+      "W4_NO_NEW_ENTRY|q3": {
+        "train": {
+          "n": 9,
+          "win_rate_pct": 44.44,
+          "avg_return_pct": 0.3774,
+          "cum_return_pct": 3.3966,
+          "pf": 1.5242,
+          "stop_rate_pct": 33.33
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": -0.8496,
+          "cum_return_pct": -1.6991,
+          "pf": 0.1154,
+          "stop_rate_pct": 50.0
+        }
+      },
+      "W4_NO_NEW_ENTRY|q4": {
+        "train": {
+          "n": 17,
+          "win_rate_pct": 35.29,
+          "avg_return_pct": -0.1715,
+          "cum_return_pct": -2.9148,
+          "pf": 0.8218,
+          "stop_rate_pct": 52.94
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 66.67,
+          "avg_return_pct": 2.1585,
+          "cum_return_pct": 6.4755,
+          "pf": 4.903,
+          "stop_rate_pct": 33.33
+        }
+      },
+      "W4_NO_NEW_ENTRY|q5": {
+        "train": {
+          "n": 8,
+          "win_rate_pct": 75.0,
+          "avg_return_pct": 2.7455,
+          "cum_return_pct": 21.9638,
+          "pf": 11.3347,
+          "stop_rate_pct": 12.5
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.6013,
+          "cum_return_pct": 1.2026,
+          "pf": 4.2394,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "W5_EARLY_AFTERNOON_A_GRADE|q2": {
+        "train": {
+          "n": 7,
+          "win_rate_pct": 42.86,
+          "avg_return_pct": 0.0576,
+          "cum_return_pct": 0.4031,
+          "pf": 1.0815,
+          "stop_rate_pct": 57.14
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 2.9481,
+          "cum_return_pct": 5.8962,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "W5_EARLY_AFTERNOON_A_GRADE|q3": {
+        "train": {
+          "n": 9,
+          "win_rate_pct": 44.44,
+          "avg_return_pct": -0.2513,
+          "cum_return_pct": -2.2613,
+          "pf": 0.7272,
+          "stop_rate_pct": 55.56
+        },
+        "val": {
+          "n": 5,
+          "win_rate_pct": 60.0,
+          "avg_return_pct": 0.2059,
+          "cum_return_pct": 1.0293,
+          "pf": 1.3415,
+          "stop_rate_pct": 80.0
+        }
+      },
+      "W5_EARLY_AFTERNOON_A_GRADE|q4": {
+        "train": {
+          "n": 8,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -1.3133,
+          "cum_return_pct": -10.5065,
+          "pf": 0.0,
+          "stop_rate_pct": 62.5
+        },
+        "val": {
+          "n": 4,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.9816,
+          "cum_return_pct": 3.9263,
+          "pf": 3.788,
+          "stop_rate_pct": 25.0
+        }
+      },
+      "W5_EARLY_AFTERNOON_A_GRADE|q5": {
+        "train": {
+          "n": 9,
+          "win_rate_pct": 22.22,
+          "avg_return_pct": -0.4369,
+          "cum_return_pct": -3.932,
+          "pf": 0.5808,
+          "stop_rate_pct": 66.67
+        },
+        "val": {
+          "n": 7,
+          "win_rate_pct": 14.29,
+          "avg_return_pct": -0.6931,
+          "cum_return_pct": -4.8514,
+          "pf": 0.4143,
+          "stop_rate_pct": 85.71
+        }
+      },
+      "W6_LATE_AFTERNOON_MAIN|q2": {
+        "train": {
+          "n": 8,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.1891,
+          "cum_return_pct": 1.5131,
+          "pf": 1.2667,
+          "stop_rate_pct": 62.5
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W6_LATE_AFTERNOON_MAIN|q3": {
+        "train": {
+          "n": 4,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.4564,
+          "cum_return_pct": 1.8255,
+          "pf": 2.4989,
+          "stop_rate_pct": 75.0
+        },
+        "val": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 0.2882,
+          "cum_return_pct": 0.2882,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "W6_LATE_AFTERNOON_MAIN|q4": {
+        "train": {
+          "n": 7,
+          "win_rate_pct": 42.86,
+          "avg_return_pct": 0.7592,
+          "cum_return_pct": 5.3141,
+          "pf": 1.9668,
+          "stop_rate_pct": 57.14
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      },
+      "W6_LATE_AFTERNOON_MAIN|q5": {
+        "train": {
+          "n": 6,
+          "win_rate_pct": 16.67,
+          "avg_return_pct": -0.7153,
+          "cum_return_pct": -4.2919,
+          "pf": 0.1478,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 0,
+          "win_rate_pct": null,
+          "avg_return_pct": null,
+          "cum_return_pct": null,
+          "pf": null,
+          "stop_rate_pct": null
+        }
+      }
+    },
+    "session_x_entryseq": {
+      "session=AFTERNOON|entry_seq=1": {
+        "train": {
+          "n": 1,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 2.6888,
+          "cum_return_pct": 2.6888,
+          "pf": Infinity,
+          "stop_rate_pct": 0.0
+        },
+        "val": {
+          "n": 2,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 1.2306,
+          "cum_return_pct": 2.4611,
+          "pf": 13.5802,
+          "stop_rate_pct": 0.0
+        }
+      },
+      "session=AFTERNOON|entry_seq=2": {
+        "train": {
+          "n": 1,
+          "win_rate_pct": 0.0,
+          "avg_return_pct": -0.8269,
+          "cum_return_pct": -0.8269,
+          "pf": 0.0,
+          "stop_rate_pct": 0.0
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 100.0,
+          "avg_return_pct": 2.2513,
+          "cum_return_pct": 6.7538,
+          "pf": Infinity,
+          "stop_rate_pct": 33.33
+        }
+      },
+      "session=AFTERNOON|entry_seq=3": {
+        "train": {
+          "n": 8,
+          "win_rate_pct": 12.5,
+          "avg_return_pct": -0.6886,
+          "cum_return_pct": -5.5087,
+          "pf": 0.3131,
+          "stop_rate_pct": 62.5
+        },
+        "val": {
+          "n": 4,
+          "win_rate_pct": 25.0,
+          "avg_return_pct": -0.341,
+          "cum_return_pct": -1.364,
+          "pf": 0.6924,
+          "stop_rate_pct": 75.0
+        }
+      },
+      "session=AFTERNOON|entry_seq=4": {
+        "train": {
+          "n": 32,
+          "win_rate_pct": 31.25,
+          "avg_return_pct": -0.4655,
+          "cum_return_pct": -14.8973,
+          "pf": 0.5079,
+          "stop_rate_pct": 65.62
+        },
+        "val": {
+          "n": 7,
+          "win_rate_pct": 28.57,
+          "avg_return_pct": -0.6011,
+          "cum_return_pct": -4.208,
+          "pf": 0.4558,
+          "stop_rate_pct": 85.71
+        }
+      },
+      "session=AFTERNOON|entry_seq=5": {
+        "train": {
+          "n": 16,
+          "win_rate_pct": 43.75,
+          "avg_return_pct": 0.413,
+          "cum_return_pct": 6.6083,
+          "pf": 1.5786,
+          "stop_rate_pct": 56.25
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 66.67,
+          "avg_return_pct": 0.8819,
+          "cum_return_pct": 2.6456,
+          "pf": 8.6917,
+          "stop_rate_pct": 33.33
+        }
+      },
+      "session=MORNING|entry_seq=1": {
+        "train": {
+          "n": 33,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": -0.2823,
+          "cum_return_pct": -9.3147,
+          "pf": 0.785,
+          "stop_rate_pct": 57.58
+        },
+        "val": {
+          "n": 9,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": 0.1291,
+          "cum_return_pct": 1.1615,
+          "pf": 1.1207,
+          "stop_rate_pct": 55.56
+        }
+      },
+      "session=MORNING|entry_seq=2": {
+        "train": {
+          "n": 32,
+          "win_rate_pct": 43.75,
+          "avg_return_pct": 0.4584,
+          "cum_return_pct": 14.6688,
+          "pf": 1.6322,
+          "stop_rate_pct": 46.88
+        },
+        "val": {
+          "n": 7,
+          "win_rate_pct": 28.57,
+          "avg_return_pct": -0.4312,
+          "cum_return_pct": -3.0183,
+          "pf": 0.6467,
+          "stop_rate_pct": 57.14
+        }
+      },
+      "session=MORNING|entry_seq=3": {
+        "train": {
+          "n": 25,
+          "win_rate_pct": 48.0,
+          "avg_return_pct": 0.5667,
+          "cum_return_pct": 14.1667,
+          "pf": 1.5662,
+          "stop_rate_pct": 68.0
+        },
+        "val": {
+          "n": 4,
+          "win_rate_pct": 75.0,
+          "avg_return_pct": 1.5438,
+          "cum_return_pct": 6.1754,
+          "pf": 3.7096,
+          "stop_rate_pct": 50.0
+        }
+      }
+    },
+    "direction_x_quality": {
+      "DOWN_BLUE|q2": {
+        "train": {
+          "n": 17,
+          "win_rate_pct": 64.71,
+          "avg_return_pct": 0.5412,
+          "cum_return_pct": 9.1996,
+          "pf": 2.0429,
+          "stop_rate_pct": 58.82
+        },
+        "val": {
+          "n": 3,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": -0.0344,
+          "cum_return_pct": -0.1033,
+          "pf": 0.9648,
+          "stop_rate_pct": 33.33
+        }
+      },
+      "DOWN_BLUE|q3": {
+        "train": {
+          "n": 11,
+          "win_rate_pct": 45.45,
+          "avg_return_pct": 0.3923,
+          "cum_return_pct": 4.315,
+          "pf": 1.4608,
+          "stop_rate_pct": 72.73
+        },
+        "val": {
+          "n": 6,
+          "win_rate_pct": 83.33,
+          "avg_return_pct": 1.9015,
+          "cum_return_pct": 11.4089,
+          "pf": 7.7205,
+          "stop_rate_pct": 33.33
+        }
+      },
+      "DOWN_BLUE|q4": {
+        "train": {
+          "n": 27,
+          "win_rate_pct": 29.63,
+          "avg_return_pct": -0.1079,
+          "cum_return_pct": -2.9136,
+          "pf": 0.9022,
+          "stop_rate_pct": 55.56
+        },
+        "val": {
+          "n": 4,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": 0.7,
+          "cum_return_pct": 2.7998,
+          "pf": 1.7392,
+          "stop_rate_pct": 25.0
+        }
+      },
+      "DOWN_BLUE|q5": {
+        "train": {
+          "n": 18,
+          "win_rate_pct": 33.33,
+          "avg_return_pct": 0.2266,
+          "cum_return_pct": 4.0785,
+          "pf": 1.2855,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 5,
+          "win_rate_pct": 40.0,
+          "avg_return_pct": 0.3352,
+          "cum_return_pct": 1.6761,
+          "pf": 1.3761,
+          "stop_rate_pct": 80.0
+        }
+      },
+      "UP_RED|q2": {
+        "train": {
+          "n": 13,
+          "win_rate_pct": 15.38,
+          "avg_return_pct": -1.003,
+          "cum_return_pct": -13.0389,
+          "pf": 0.3483,
+          "stop_rate_pct": 84.62
+        },
+        "val": {
+          "n": 5,
+          "win_rate_pct": 20.0,
+          "avg_return_pct": -0.6522,
+          "cum_return_pct": -3.2608,
+          "pf": 0.4849,
+          "stop_rate_pct": 60.0
+        }
+      },
+      "UP_RED|q3": {
+        "train": {
+          "n": 22,
+          "win_rate_pct": 45.45,
+          "avg_return_pct": 0.2306,
+          "cum_return_pct": 5.0732,
+          "pf": 1.29,
+          "stop_rate_pct": 50.0
+        },
+        "val": {
+          "n": 6,
+          "win_rate_pct": 50.0,
+          "avg_return_pct": -0.2282,
+          "cum_return_pct": -1.3694,
+          "pf": 0.7232,
+          "stop_rate_pct": 83.33
+        }
+      },
+      "UP_RED|q4": {
+        "train": {
+          "n": 25,
+          "win_rate_pct": 32.0,
+          "avg_return_pct": -0.3372,
+          "cum_return_pct": -8.4289,
+          "pf": 0.7203,
+          "stop_rate_pct": 60.0
+        },
+        "val": {
+          "n": 5,
+          "win_rate_pct": 40.0,
+          "avg_return_pct": 0.4161,
+          "cum_return_pct": 2.0804,
+          "pf": 1.4333,
+          "stop_rate_pct": 60.0
+        }
+      },
+      "UP_RED|q5": {
+        "train": {
+          "n": 15,
+          "win_rate_pct": 40.0,
+          "avg_return_pct": 0.62,
+          "cum_return_pct": 9.3002,
+          "pf": 1.7625,
+          "stop_rate_pct": 46.67
+        },
+        "val": {
+          "n": 5,
+          "win_rate_pct": 20.0,
+          "avg_return_pct": -0.5249,
+          "cum_return_pct": -2.6246,
+          "pf": 0.3749,
+          "stop_rate_pct": 60.0
+        }
+      }
+    }
+  },
+  "raw_trades": {
+    "train": [
+      {
+        "trading_date": "20260527",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-05-27T11:18:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 2.7045005114217524,
+        "legs": [
+          [
+            0.5,
+            30330.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            29970.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260527",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-05-27T11:54:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+        "net_return_pct": 1.3179826086956523,
+        "legs": [
+          [
+            0.5,
+            14780.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            14375.0,
+            "TIME_WINDOW_AFTER_TP1_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260527",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-05-27T13:54:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.5349319727891155,
+        "legs": [
+          [
+            1.0,
+            28975.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260527",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-05-27T14:30:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6005211047420531,
+        "legs": [
+          [
+            1.0,
+            28350.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260528",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-05-28T09:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.180951526032316,
+        "legs": [
+          [
+            0.5,
+            28780.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            29300.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260528",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-05-28T11:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7049877063575696,
+        "legs": [
+          [
+            1.0,
+            28010.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260528",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-05-28T11:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.453401360544218,
+        "legs": [
+          [
+            0.5,
+            16665.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            17145.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260528",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 7,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-05-28T13:30:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.2187841144362883,
+        "legs": [
+          [
+            1.0,
+            26265.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260529",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-05-29T09:39:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.304242216900445,
+        "legs": [
+          [
+            0.5,
+            15020.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            15495.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260529",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-05-29T12:03:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.4437141894169195,
+        "legs": [
+          [
+            1.0,
+            29565.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260529",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-05-29T13:09:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.3065131578947369,
+        "legs": [
+          [
+            1.0,
+            15015.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260529",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-05-29T13:33:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.3774841083974574,
+        "legs": [
+          [
+            1.0,
+            29505.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260601",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-01T09:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6267582597317631,
+        "legs": [
+          [
+            1.0,
+            15050.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260601",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-01T09:39:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 2.2173,
+        "legs": [
+          [
+            0.5,
+            30900.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            30485.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260601",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-01T11:24:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 2.1975541579315165,
+        "legs": [
+          [
+            0.5,
+            14760.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            14515.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260601",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-01T13:18:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 0.0711820674084825,
+        "legs": [
+          [
+            1.0,
+            31055.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260601",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-01T14:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_PROFIT_LOCK_STOP",
+        "net_return_pct": 0.5323417502594259,
+        "legs": [
+          [
+            1.0,
+            14545.0,
+            "TIME_WINDOW_PROFIT_LOCK_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260602",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-02T09:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.695096921322691,
+        "legs": [
+          [
+            1.0,
+            29895.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260602",
+        "direction": "DOWN_BLUE",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-02T09:54:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -1.3958197256694969,
+        "legs": [
+          [
+            1.0,
+            15110.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260602",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-02T10:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.5167422334172964,
+        "legs": [
+          [
+            1.0,
+            29350.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260602",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 9,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-02T13:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.2749759692406282,
+        "legs": [
+          [
+            1.0,
+            15420.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260604",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-04T09:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.254856175972927,
+        "legs": [
+          [
+            1.0,
+            28910.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260604",
+        "direction": "DOWN_BLUE",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-04T09:54:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.217613273771538,
+        "legs": [
+          [
+            1.0,
+            15650.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260604",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-04T10:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.5670723226703753,
+        "legs": [
+          [
+            1.0,
+            28335.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260604",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 9,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-04T13:42:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 0.1165489925951438,
+        "legs": [
+          [
+            1.0,
+            29095.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260604",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-04T14:21:00+09:00",
+        "exit_reason": "FORCED_LIQUIDATION",
+        "net_return_pct": 0.45942450695118003,
+        "legs": [
+          [
+            1.0,
+            15550.0,
+            "FORCED_LIQUIDATION"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260605",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-05T09:42:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.044627418690819,
+        "legs": [
+          [
+            1.0,
+            23815.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260605",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-05T11:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 3.9220617961305226,
+        "legs": [
+          [
+            0.5,
+            17800.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            18220.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260605",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-05T13:39:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.2777709485761113,
+        "legs": [
+          [
+            1.0,
+            24115.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260605",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-05T14:48:00+09:00",
+        "exit_reason": "FORCED_LIQUIDATION",
+        "net_return_pct": -0.007280750137892996,
+        "legs": [
+          [
+            1.0,
+            18145.0,
+            "FORCED_LIQUIDATION"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260608",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-08T10:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.2981433607520563,
+        "legs": [
+          [
+            1.0,
+            20805.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260608",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-08T12:00:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6945263157894734,
+        "legs": [
+          [
+            1.0,
+            18695.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260608",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-08T14:30:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6402290622763063,
+        "legs": [
+          [
+            1.0,
+            20630.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260608",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-08T14:39:00+09:00",
+        "exit_reason": "FORCED_LIQUIDATION",
+        "net_return_pct": 0.7444144365332678,
+        "legs": [
+          [
+            1.0,
+            20535.0,
+            "FORCED_LIQUIDATION"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260609",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-09T10:36:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.04547884187082406,
+        "legs": [
+          [
+            1.0,
+            22460.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260609",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-09T11:09:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7204194581998251,
+        "legs": [
+          [
+            1.0,
+            16885.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260609",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-09T12:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.166461267605634,
+        "legs": [
+          [
+            0.5,
+            23355.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            24020.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260609",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-09T13:51:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7673287671232873,
+        "legs": [
+          [
+            1.0,
+            14355.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260609",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-09T14:36:00+09:00",
+        "exit_reason": "FORCED_LIQUIDATION",
+        "net_return_pct": -0.9667836257309942,
+        "legs": [
+          [
+            1.0,
+            25425.0,
+            "FORCED_LIQUIDATION"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260610",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-10T10:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.5392309308678294,
+        "legs": [
+          [
+            1.0,
+            23450.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260610",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-10T10:54:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 2.306664315937941,
+        "legs": [
+          [
+            0.5,
+            14555.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            14485.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260610",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-10T11:42:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.9487201925180486,
+        "legs": [
+          [
+            1.0,
+            22430.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260610",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-10T13:54:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6506742370475516,
+        "legs": [
+          [
+            1.0,
+            20805.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260611",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-11T09:06:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -4.592180168908351,
+        "legs": [
+          [
+            1.0,
+            15265.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260611",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-11T09:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.20059674087675,
+        "legs": [
+          [
+            1.0,
+            21325.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260611",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-11T09:51:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 5.1352410995944116,
+        "legs": [
+          [
+            1.0,
+            23350.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260611",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-11T13:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7314139475367882,
+        "legs": [
+          [
+            1.0,
+            23060.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260611",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 12,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-11T14:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.3858053175126344,
+        "legs": [
+          [
+            1.0,
+            22460.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260612",
+        "direction": "DOWN_BLUE",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-12T09:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 2.399366821443647,
+        "legs": [
+          [
+            0.5,
+            12230.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            12050.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260612",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-12T11:54:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.5028346161066266,
+        "legs": [
+          [
+            1.0,
+            26525.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260612",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-12T12:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6289637952559302,
+        "legs": [
+          [
+            1.0,
+            11830.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260612",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-12T13:06:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.4789052631578947,
+        "legs": [
+          [
+            1.0,
+            11710.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260612",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 9,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-12T14:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 4.58357203032856,
+        "legs": [
+          [
+            1.0,
+            12425.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260615",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-15T11:30:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 0.2051300978040229,
+        "legs": [
+          [
+            1.0,
+            27175.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260615",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-15T12:39:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.9385398981324279,
+        "legs": [
+          [
+            1.0,
+            11680.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260615",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-15T13:12:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.10822542403793543,
+        "legs": [
+          [
+            1.0,
+            27410.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260615",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-15T13:39:00+09:00",
+        "exit_reason": "FORCED_LIQUIDATION",
+        "net_return_pct": 1.970876288659794,
+        "legs": [
+          [
+            1.0,
+            11880.0,
+            "FORCED_LIQUIDATION"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260616",
+        "direction": "DOWN_BLUE",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-16T09:42:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.568911685994648,
+        "legs": [
+          [
+            0.5,
+            11590.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            11875.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260616",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-16T10:33:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 1.2932931156848828,
+        "legs": [
+          [
+            1.0,
+            28570.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260616",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-16T11:42:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6084897229669346,
+        "legs": [
+          [
+            1.0,
+            11020.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260616",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-16T13:06:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.9982735120399818,
+        "legs": [
+          [
+            1.0,
+            10905.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260616",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-16T14:09:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.2030837759122837,
+        "legs": [
+          [
+            1.0,
+            28860.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260617",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-17T09:39:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -1.1939254486884492,
+        "legs": [
+          [
+            1.0,
+            10745.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260617",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-17T10:15:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.3258722400134839,
+        "legs": [
+          [
+            1.0,
+            29595.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260617",
+        "direction": "DOWN_BLUE",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-17T10:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7589981447124303,
+        "legs": [
+          [
+            1.0,
+            10600.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260617",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 7,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-17T14:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.247532729103726,
+        "legs": [
+          [
+            1.0,
+            9815.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260617",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 9,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-17T14:30:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.210290371879776,
+        "legs": [
+          [
+            1.0,
+            9705.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260618",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-18T11:09:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 0.27860992907801413,
+        "legs": [
+          [
+            1.0,
+            35380.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260618",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-18T11:30:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -1.1672149744753262,
+        "legs": [
+          [
+            1.0,
+            8720.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260618",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-18T11:48:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 3.096937491259964,
+        "legs": [
+          [
+            0.5,
+            36820.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            36970.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260618",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-18T13:42:00+09:00",
+        "exit_reason": "TIME_WINDOW_PROFIT_LOCK_STOP",
+        "net_return_pct": 0.6881437125748503,
+        "legs": [
+          [
+            1.0,
+            8415.0,
+            "TIME_WINDOW_PROFIT_LOCK_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260618",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 7,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-18T14:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 3.5515854810416947,
+        "legs": [
+          [
+            1.0,
+            38405.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260619",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-19T10:21:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.49005297233666867,
+        "legs": [
+          [
+            1.0,
+            42305.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260619",
+        "direction": "DOWN_BLUE",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-19T10:36:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 1.7361911454673224,
+        "legs": [
+          [
+            0.5,
+            7320.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            7170.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260619",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-19T11:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.268627918056217,
+        "legs": [
+          [
+            1.0,
+            41065.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260619",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-19T13:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.47229161356105,
+        "legs": [
+          [
+            1.0,
+            38295.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260619",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-19T13:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.3714285714285714,
+        "legs": [
+          [
+            1.0,
+            8085.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260622",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-22T09:09:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.9842072015161087,
+        "legs": [
+          [
+            1.0,
+            7765.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260622",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-22T09:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.283664349553129,
+        "legs": [
+          [
+            0.5,
+            41625.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            42460.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260622",
+        "direction": "DOWN_BLUE",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-22T10:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+        "net_return_pct": 1.5479970866715225,
+        "legs": [
+          [
+            0.5,
+            7090.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            6865.0,
+            "TIME_WINDOW_AFTER_TP1_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260622",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-22T14:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+        "net_return_pct": -0.00760715967969854,
+        "legs": [
+          [
+            1.0,
+            42495.0,
+            "TIME_WINDOW_BREAKEVEN_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260623",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-23T09:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6288313505948215,
+        "legs": [
+          [
+            1.0,
+            7035.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260623",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-23T11:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7402295885463694,
+        "legs": [
+          [
+            1.0,
+            38125.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260623",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-23T12:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+        "net_return_pct": 1.0818757921419517,
+        "legs": [
+          [
+            0.5,
+            8100.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            7865.0,
+            "TIME_WINDOW_AFTER_TP1_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260623",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 7,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-23T13:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.599624530663329,
+        "legs": [
+          [
+            1.0,
+            8205.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260624",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-24T10:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7611600796133067,
+        "legs": [
+          [
+            1.0,
+            34582.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260624",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-24T11:06:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.637592137592138,
+        "legs": [
+          [
+            0.5,
+            8400.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            8650.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260624",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-24T12:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6080683436165164,
+        "legs": [
+          [
+            1.0,
+            31125.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260624",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-24T13:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.0521264994547437,
+        "legs": [
+          [
+            1.0,
+            8990.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260624",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-24T13:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 3.065292317603479,
+        "legs": [
+          [
+            1.0,
+            32025.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260625",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-25T13:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.688799355358582,
+        "legs": [
+          [
+            1.0,
+            12755.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260626",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-26T10:54:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 3.900952380952381,
+        "legs": [
+          [
+            0.5,
+            7015.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            7180.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260626",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-26T13:39:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.8269436997319034,
+        "legs": [
+          [
+            1.0,
+            7405.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260626",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-26T14:00:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.5110780669144983,
+        "legs": [
+          [
+            1.0,
+            34500.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260629",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-29T11:06:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.02541935483870968,
+        "legs": [
+          [
+            1.0,
+            7755.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260629",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-29T11:45:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -1.2783078585765015,
+        "legs": [
+          [
+            1.0,
+            32000.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260629",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-29T11:51:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.3834289356277885,
+        "legs": [
+          [
+            1.0,
+            7665.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260629",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 7,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-29T13:24:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.46885660138976626,
+        "legs": [
+          [
+            1.0,
+            7885.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260629",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-06-29T14:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.6756170413457006,
+        "legs": [
+          [
+            1.0,
+            32685.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260630",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-06-30T10:12:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 2.935859922178988,
+        "legs": [
+          [
+            0.5,
+            33235.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            32960.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260630",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-06-30T11:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.5319344262295083,
+        "legs": [
+          [
+            1.0,
+            7515.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260630",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-06-30T11:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.424952212909867,
+        "legs": [
+          [
+            0.5,
+            34950.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            36132.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260630",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-06-30T14:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.5820809248554912,
+        "legs": [
+          [
+            1.0,
+            7105.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260701",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-01T10:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.121048549713045,
+        "legs": [
+          [
+            1.0,
+            31580.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260701",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-01T11:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.122365988909427,
+        "legs": [
+          [
+            1.0,
+            7950.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260701",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-01T11:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.047140600315956,
+        "legs": [
+          [
+            0.5,
+            32535.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            33385.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260701",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-01T13:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7624195624195624,
+        "legs": [
+          [
+            1.0,
+            7640.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260701",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-01T14:00:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.4512321660181582,
+        "legs": [
+          [
+            1.0,
+            7605.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260702",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-02T09:54:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.279447619047619,
+        "legs": [
+          [
+            0.5,
+            27125.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            27670.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260702",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-02T11:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.8961038961038963,
+        "legs": [
+          [
+            1.0,
+            8695.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260702",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-02T13:36:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.8904431393486385,
+        "legs": [
+          [
+            1.0,
+            9290.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260702",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-02T13:51:00+09:00",
+        "exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+        "net_return_pct": -0.7001907668828692,
+        "legs": [
+          [
+            1.0,
+            26050.0,
+            "TIME_WINDOW_BREAKEVEN_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260703",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-03T09:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -3.0454104148278907,
+        "legs": [
+          [
+            1.0,
+            21990.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260703",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-03T09:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 2.2284552845528456,
+        "legs": [
+          [
+            0.5,
+            10895.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            10500.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260703",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-03T10:06:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 5.137613822087323,
+        "legs": [
+          [
+            1.0,
+            22535.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260703",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-03T13:00:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.848077310247634,
+        "legs": [
+          [
+            1.0,
+            25565.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260703",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 8,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-03T14:42:00+09:00",
+        "exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+        "net_return_pct": -1.195820528580209,
+        "legs": [
+          [
+            1.0,
+            8045.0,
+            "TIME_WINDOW_BREAKEVEN_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260706",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-06T09:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -3.15958348040946,
+        "legs": [
+          [
+            1.0,
+            27460.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260706",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-06T09:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.318343949044586,
+        "legs": [
+          [
+            1.0,
+            7675.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260706",
+        "direction": "DOWN_BLUE",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-06T09:57:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 2.5212962962962964,
+        "legs": [
+          [
+            0.5,
+            7805.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            7710.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260706",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 7,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-06T13:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.7743478260869563,
+        "legs": [
+          [
+            1.0,
+            26025.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260706",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-06T14:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 3.1620626151012896,
+        "legs": [
+          [
+            1.0,
+            8410.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260707",
+        "direction": "UP_RED",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-07T10:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.868304244774833,
+        "legs": [
+          [
+            1.0,
+            22560.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260707",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-07T11:18:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 2.220403825717322,
+        "legs": [
+          [
+            0.5,
+            9700.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            9555.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260707",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-07T12:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.353824820892073,
+        "legs": [
+          [
+            1.0,
+            21145.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260707",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-07T13:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.4407407407407409,
+        "legs": [
+          [
+            1.0,
+            9855.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260708",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-08T09:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.139927365947447,
+        "legs": [
+          [
+            1.0,
+            22925.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260708",
+        "direction": "DOWN_BLUE",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-08T10:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 3.214511410181393,
+        "legs": [
+          [
+            0.5,
+            8975.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            8680.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260708",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-08T11:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.9726780688460703,
+        "legs": [
+          [
+            1.0,
+            22660.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260708",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-08T14:00:00+09:00",
+        "exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+        "net_return_pct": -1.1855134619966643,
+        "legs": [
+          [
+            1.0,
+            20755.0,
+            "TIME_WINDOW_BREAKEVEN_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260708",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-08T14:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+        "net_return_pct": -1.1733004926108375,
+        "legs": [
+          [
+            1.0,
+            10040.0,
+            "TIME_WINDOW_BREAKEVEN_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260709",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-09T11:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.254613333333333,
+        "legs": [
+          [
+            0.5,
+            9645.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            9920.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260709",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-09T12:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+        "net_return_pct": 1.7021515658618218,
+        "legs": [
+          [
+            0.5,
+            21595.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            20985.0,
+            "TIME_WINDOW_AFTER_TP1_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260709",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-09T13:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.2616717635066257,
+        "legs": [
+          [
+            1.0,
+            9695.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260709",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-09T13:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.735175644028103,
+        "legs": [
+          [
+            1.0,
+            20785.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260710",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-10T09:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.538232161874334,
+        "legs": [
+          [
+            1.0,
+            9160.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260710",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-10T10:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 2.3470786516853934,
+        "legs": [
+          [
+            0.5,
+            23070.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            22515.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260710",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-10T10:54:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+        "net_return_pct": 1.3749154453213077,
+        "legs": [
+          [
+            0.5,
+            9150.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            8850.0,
+            "TIME_WINDOW_AFTER_TP1_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260710",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 9,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-10T13:33:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.41196089706728,
+        "legs": [
+          [
+            1.0,
+            8580.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260713",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-13T10:06:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.665192148189107,
+        "legs": [
+          [
+            1.0,
+            17800.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260713",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-13T12:03:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.002877070619006103,
+        "legs": [
+          [
+            1.0,
+            11480.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260713",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-13T12:39:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7872043662825954,
+        "legs": [
+          [
+            1.0,
+            16210.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260713",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-13T14:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6858823529411766,
+        "legs": [
+          [
+            1.0,
+            11710.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260713",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-13T14:39:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.463836285888821,
+        "legs": [
+          [
+            1.0,
+            16145.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260714",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-14T09:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6095945945945946,
+        "legs": [
+          [
+            1.0,
+            14575.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260714",
+        "direction": "DOWN_BLUE",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-14T10:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.443755274261603,
+        "legs": [
+          [
+            0.5,
+            12170.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            12605.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260714",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-14T11:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.615884476534296,
+        "legs": [
+          [
+            1.0,
+            13500.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260714",
+        "direction": "DOWN_BLUE",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-14T14:42:00+09:00",
+        "exit_reason": "TIME_WINDOW_PROFIT_LOCK_STOP",
+        "net_return_pct": 0.9833557046979866,
+        "legs": [
+          [
+            1.0,
+            11295.0,
+            "TIME_WINDOW_PROFIT_LOCK_STOP"
+          ]
+        ]
+      }
+    ],
+    "val": [
+      {
+        "trading_date": "20260715",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-15T11:09:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.3712458429265797,
+        "legs": [
+          [
+            1.0,
+            19490.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260715",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-15T11:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.9229799426934098,
+        "legs": [
+          [
+            1.0,
+            8565.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260715",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-15T12:27:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 1.573871374527112,
+        "legs": [
+          [
+            1.0,
+            20155.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260715",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-15T13:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_PROFIT_LOCK_STOP",
+        "net_return_pct": 0.6984223300970873,
+        "legs": [
+          [
+            1.0,
+            8305.0,
+            "TIME_WINDOW_PROFIT_LOCK_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260716",
+        "direction": "UP_RED",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-16T09:51:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7789793849273403,
+        "legs": [
+          [
+            1.0,
+            14545.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260716",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-16T12:21:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": 0.22164810690423165,
+        "legs": [
+          [
+            1.0,
+            11260.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260716",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-16T13:03:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.3168087282645755,
+        "legs": [
+          [
+            1.0,
+            14485.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260716",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-16T13:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.537340939008337,
+        "legs": [
+          [
+            1.0,
+            11230.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260720",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-20T09:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.9294117647058822,
+        "legs": [
+          [
+            1.0,
+            14935.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260720",
+        "direction": "DOWN_BLUE",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-20T09:51:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 5.303405572755418,
+        "legs": [
+          [
+            0.5,
+            11800.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            12030.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260720",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-20T11:09:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.279064587973274,
+        "legs": [
+          [
+            1.0,
+            13175.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260720",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-20T13:15:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.4995165189363417,
+        "legs": [
+          [
+            1.0,
+            12235.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260720",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 11,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-20T13:33:00+09:00",
+        "exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+        "net_return_pct": -0.343956442831216,
+        "legs": [
+          [
+            1.0,
+            13740.0,
+            "TIME_WINDOW_BREAKEVEN_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260721",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-21T09:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 2.600828313253012,
+        "legs": [
+          [
+            0.5,
+            13765.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            13510.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260721",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-21T10:54:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -1.006637554585153,
+        "legs": [
+          [
+            1.0,
+            11345.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260721",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-21T11:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.180239099859353,
+        "legs": [
+          [
+            0.5,
+            14640.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            15015.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260721",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-21T13:12:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.826352941176471,
+        "legs": [
+          [
+            1.0,
+            10935.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260721",
+        "direction": "UP_RED",
+        "window": "W6_LATE_AFTERNOON_MAIN",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-21T14:48:00+09:00",
+        "exit_reason": "FORCED_LIQUIDATION",
+        "net_return_pct": 0.28820089439284485,
+        "legs": [
+          [
+            1.0,
+            14590.0,
+            "FORCED_LIQUIDATION"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260722",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-22T12:30:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.027517198248905566,
+        "legs": [
+          [
+            1.0,
+            16000.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260722",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-22T13:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.6331987891019173,
+        "legs": [
+          [
+            1.0,
+            10180.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260723",
+        "direction": "DOWN_BLUE",
+        "window": "W3_MORNING_THIRD_STRICT",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-23T10:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 4.226297913634158,
+        "legs": [
+          [
+            0.5,
+            10615.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            10885.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260723",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-23T11:45:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6591182364729458,
+        "legs": [
+          [
+            1.0,
+            14735.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260723",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 5,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-23T13:06:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.6976348155156102,
+        "legs": [
+          [
+            1.0,
+            10400.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260723",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 6,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-23T13:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.9875160875160878,
+        "legs": [
+          [
+            1.0,
+            15245.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260724",
+        "direction": "DOWN_BLUE",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-24T10:54:00+09:00",
+        "exit_reason": "TIME_WINDOW_TP2_FULL",
+        "net_return_pct": 3.954424188528235,
+        "legs": [
+          [
+            0.5,
+            11570.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            11830.0,
+            "TIME_WINDOW_TP2_FULL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260724",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 2,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-24T12:09:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -2.2451301115241638,
+        "legs": [
+          [
+            1.0,
+            13160.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260724",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-24T13:00:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.4193682460515378,
+        "legs": [
+          [
+            1.0,
+            11870.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260724",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-24T13:24:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.2126544365406213,
+        "legs": [
+          [
+            1.0,
+            13205.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260727",
+        "direction": "DOWN_BLUE",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 4,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-27T09:18:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -3.592168178070899,
+        "legs": [
+          [
+            1.0,
+            11705.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260727",
+        "direction": "UP_RED",
+        "window": "W1_MORNING_AGGRESSIVE",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-27T09:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.7094951017332327,
+        "legs": [
+          [
+            1.0,
+            13055.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260727",
+        "direction": "DOWN_BLUE",
+        "window": "W2_MORNING_SECOND",
+        "session": "MORNING",
+        "quality_score": 5,
+        "flag_seq_of_day": 4,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-27T10:09:00+09:00",
+        "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+        "net_return_pct": 2.7003308519437548,
+        "legs": [
+          [
+            0.5,
+            12520.0,
+            "TIME_WINDOW_TP1_PARTIAL"
+          ],
+          [
+            0.5,
+            12335.0,
+            "TIME_WINDOW_TRAILING_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260727",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 7,
+        "entry_seq_of_day": 4,
+        "entry_time": "2026-07-27T13:21:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.4957050551121245,
+        "legs": [
+          [
+            1.0,
+            12970.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260727",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 9,
+        "entry_seq_of_day": 5,
+        "entry_time": "2026-07-27T13:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.7013771996939555,
+        "legs": [
+          [
+            1.0,
+            13435.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260728",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 4,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-28T13:15:00+09:00",
+        "exit_reason": "OPPOSITE_SIGNAL",
+        "net_return_pct": -0.1956338028169014,
+        "legs": [
+          [
+            1.0,
+            14185.0,
+            "OPPOSITE_SIGNAL"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260728",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-28T13:48:00+09:00",
+        "exit_reason": "TIME_WINDOW_PROFIT_LOCK_STOP",
+        "net_return_pct": 0.6886075949367089,
+        "legs": [
+          [
+            1.0,
+            10350.0,
+            "TIME_WINDOW_PROFIT_LOCK_STOP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260729",
+        "direction": "UP_RED",
+        "window": "W4_NO_NEW_ENTRY",
+        "session": "MORNING",
+        "quality_score": 3,
+        "flag_seq_of_day": 1,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-29T11:27:00+09:00",
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "net_return_pct": -1.9207570207570208,
+        "legs": [
+          [
+            1.0,
+            8040.0,
+            "TIME_WINDOW_STOP_LOSS"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260729",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 5,
+        "flag_seq_of_day": 2,
+        "entry_seq_of_day": 2,
+        "entry_time": "2026-07-29T13:00:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 3.432013111171811,
+        "legs": [
+          [
+            1.0,
+            18950.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260729",
+        "direction": "UP_RED",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 2,
+        "flag_seq_of_day": 3,
+        "entry_seq_of_day": 3,
+        "entry_time": "2026-07-29T13:48:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 3.0698535080956053,
+        "legs": [
+          [
+            1.0,
+            6690.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      },
+      {
+        "trading_date": "20260730",
+        "direction": "DOWN_BLUE",
+        "window": "W5_EARLY_AFTERNOON_A_GRADE",
+        "session": "AFTERNOON",
+        "quality_score": 3,
+        "flag_seq_of_day": 10,
+        "entry_seq_of_day": 1,
+        "entry_time": "2026-07-30T13:36:00+09:00",
+        "exit_reason": "TIME_WINDOW_AFTERNOON_TP",
+        "net_return_pct": 2.6567390735409577,
+        "legs": [
+          [
+            1.0,
+            19630.0,
+            "TIME_WINDOW_AFTERNOON_TP"
+          ]
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+1_best_AMsl-1.0
+  TRAIN(34d): entries/day=2.35 win= 51.2% simple=  58.75% compounded=  76.18% PF=2.2321 maxDD=6.90 maxConsecLoss=3
+  VAL  (11d): entries/day=1.73 win= 26.3% simple=  -3.25% compounded=  -3.60% PF=0.8212 maxDD=6.10 maxConsecLoss=5
+2_AMsl-1.5(default)
+  TRAIN(34d): entries/day=2.32 win= 55.7% simple=  58.65% compounded=  75.04% PF=1.9735 maxDD=8.53 maxConsecLoss=3
+  VAL  (11d): entries/day=1.73 win= 26.3% simple=  -9.59% compounded=  -9.61% PF=0.6092 maxDD=9.86 maxConsecLoss=5
+3_entryA_noW6excl
+  TRAIN(34d): entries/day=2.62 win= 48.3% simple=  59.56% compounded=  77.33% PF=2.1068 maxDD=7.99 maxConsecLoss=4
+  VAL  (11d): entries/day=2.00 win= 27.3% simple=  -6.12% compounded=  -6.35% PF=0.7135 maxDD=7.82 maxConsecLoss=5
+4_simple_md3_noDirExcl
+  TRAIN(34d): entries/day=2.85 win= 43.3% simple=  43.42% compounded=  50.94% PF=1.6826 maxDD=8.37 maxConsecLoss=7
+  VAL  (11d): entries/day=2.18 win= 33.3% simple=   2.25% compounded=   1.66% PF=1.1063 maxDD=6.30 maxConsecLoss=5
+5_qt3_stricter
+  TRAIN(34d): entries/day=1.76 win= 51.7% simple=  52.73% compounded=  66.48% PF=2.5561 maxDD=9.44 maxConsecLoss=3
+  VAL  (11d): entries/day=0.91 win= 30.0% simple=   1.90% compounded=   1.57% PF=1.1837 maxDD=5.84 maxConsecLoss=4

@@ -1,0 +1,1151 @@
+{
+  "locked_entry": "LOCKED_entry_Q3_dirbonus_maxflag4_noseq4",
+  "pass_a_all": [
+    {
+      "label": "AM_TP1=2.5%@30%_SL=-1.5%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.3858,
+        "total_simple_cumulative_return_pct": 13.1155,
+        "compounded_cumulative_return_pct": 10.8874,
+        "profit_factor": 1.1624,
+        "max_drawdown_pct": 13.1315,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.539,
+        "total_simple_cumulative_return_pct": 16.9285,
+        "compounded_cumulative_return_pct": 17.5016,
+        "profit_factor": 2.1323,
+        "max_drawdown_pct": 7.097,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.1624,
+        -13.1315,
+        30.044
+      ]
+    },
+    {
+      "label": "AM_TP1=2.5%@50%_SL=-1.5%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.5,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 30,
+        "losses": 45,
+        "win_rate_pct": 40.0,
+        "avg_daily_return_pct": 0.3437,
+        "total_simple_cumulative_return_pct": 11.6859,
+        "compounded_cumulative_return_pct": 9.5682,
+        "profit_factor": 1.1448,
+        "max_drawdown_pct": 12.7725,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.3987,
+        "total_simple_cumulative_return_pct": 15.386,
+        "compounded_cumulative_return_pct": 15.7898,
+        "profit_factor": 2.0291,
+        "max_drawdown_pct": 6.7911,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.1448,
+        -12.7725,
+        27.0719
+      ]
+    },
+    {
+      "label": "AM_TP1=2.0%@30%_SL=-1.5%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.0,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 30,
+        "losses": 45,
+        "win_rate_pct": 40.0,
+        "avg_daily_return_pct": 0.2044,
+        "total_simple_cumulative_return_pct": 6.9512,
+        "compounded_cumulative_return_pct": 4.5148,
+        "profit_factor": 1.0878,
+        "max_drawdown_pct": 14.214,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 18,
+        "avg_entries_per_day": 1.636,
+        "morning_entries": 11,
+        "afternoon_entries": 7,
+        "wins": 11,
+        "losses": 7,
+        "win_rate_pct": 61.11,
+        "avg_daily_return_pct": 1.505,
+        "total_simple_cumulative_return_pct": 16.5552,
+        "compounded_cumulative_return_pct": 17.2203,
+        "profit_factor": 2.2657,
+        "max_drawdown_pct": 7.5187,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.0878,
+        -14.214,
+        23.5064
+      ]
+    },
+    {
+      "label": "AM_TP1=2.5%@30%_SL=-1.0%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.0,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 76,
+        "avg_entries_per_day": 2.235,
+        "morning_entries": 66,
+        "afternoon_entries": 10,
+        "wins": 25,
+        "losses": 51,
+        "win_rate_pct": 32.89,
+        "avg_daily_return_pct": 0.1455,
+        "total_simple_cumulative_return_pct": 4.9468,
+        "compounded_cumulative_return_pct": 2.8415,
+        "profit_factor": 1.0694,
+        "max_drawdown_pct": 16.1443,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 18,
+        "avg_entries_per_day": 1.636,
+        "morning_entries": 11,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 9,
+        "win_rate_pct": 50.0,
+        "avg_daily_return_pct": 1.3719,
+        "total_simple_cumulative_return_pct": 15.0904,
+        "compounded_cumulative_return_pct": 15.4119,
+        "profit_factor": 1.9911,
+        "max_drawdown_pct": 7.097,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.0694,
+        -16.1443,
+        20.0372
+      ]
+    },
+    {
+      "label": "AM_TP1=2.5%@50%_SL=-1.0%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.5,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.0,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 76,
+        "avg_entries_per_day": 2.235,
+        "morning_entries": 66,
+        "afternoon_entries": 10,
+        "wins": 26,
+        "losses": 50,
+        "win_rate_pct": 34.21,
+        "avg_daily_return_pct": 0.1418,
+        "total_simple_cumulative_return_pct": 4.8206,
+        "compounded_cumulative_return_pct": 2.8786,
+        "profit_factor": 1.0677,
+        "max_drawdown_pct": 14.0209,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 18,
+        "avg_entries_per_day": 1.636,
+        "morning_entries": 11,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 9,
+        "win_rate_pct": 50.0,
+        "avg_daily_return_pct": 1.2251,
+        "total_simple_cumulative_return_pct": 13.4764,
+        "compounded_cumulative_return_pct": 13.6517,
+        "profit_factor": 1.8851,
+        "max_drawdown_pct": 6.7911,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.0677,
+        -14.0209,
+        18.297
+      ]
+    },
+    {
+      "label": "AM_TP1=2.0%@50%_SL=-1.5%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.0,
+        "MORNING_TP1_SELL_RATIO": 0.5,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 31,
+        "losses": 44,
+        "win_rate_pct": 41.33,
+        "avg_daily_return_pct": 0.1254,
+        "total_simple_cumulative_return_pct": 4.2636,
+        "compounded_cumulative_return_pct": 2.0206,
+        "profit_factor": 1.0539,
+        "max_drawdown_pct": 13.3421,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 18,
+        "avg_entries_per_day": 1.636,
+        "morning_entries": 11,
+        "afternoon_entries": 7,
+        "wins": 11,
+        "losses": 7,
+        "win_rate_pct": 61.11,
+        "avg_daily_return_pct": 1.3632,
+        "total_simple_cumulative_return_pct": 14.9955,
+        "compounded_cumulative_return_pct": 15.5168,
+        "profit_factor": 2.1464,
+        "max_drawdown_pct": 7.4939,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.0539,
+        -13.3421,
+        19.2591
+      ]
+    },
+    {
+      "label": "AM_TP1=2.0%@30%_SL=-1.0%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.0,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.0,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 76,
+        "avg_entries_per_day": 2.235,
+        "morning_entries": 66,
+        "afternoon_entries": 10,
+        "wins": 26,
+        "losses": 50,
+        "win_rate_pct": 34.21,
+        "avg_daily_return_pct": -0.0198,
+        "total_simple_cumulative_return_pct": -0.6735,
+        "compounded_cumulative_return_pct": -2.5645,
+        "profit_factor": 0.9903,
+        "max_drawdown_pct": 17.4783,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 19,
+        "avg_entries_per_day": 1.727,
+        "morning_entries": 12,
+        "afternoon_entries": 7,
+        "wins": 11,
+        "losses": 8,
+        "win_rate_pct": 57.89,
+        "avg_daily_return_pct": 1.3837,
+        "total_simple_cumulative_return_pct": 15.2211,
+        "compounded_cumulative_return_pct": 15.7028,
+        "profit_factor": 2.1397,
+        "max_drawdown_pct": 7.5187,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "label": "AM_TP1=2.0%@30%_SL=-1.25%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.0,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.25,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 26,
+        "losses": 49,
+        "win_rate_pct": 34.67,
+        "avg_daily_return_pct": -0.2823,
+        "total_simple_cumulative_return_pct": -9.5995,
+        "compounded_cumulative_return_pct": -11.0072,
+        "profit_factor": 0.8774,
+        "max_drawdown_pct": 20.9721,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 19,
+        "avg_entries_per_day": 1.727,
+        "morning_entries": 12,
+        "afternoon_entries": 7,
+        "wins": 11,
+        "losses": 8,
+        "win_rate_pct": 57.89,
+        "avg_daily_return_pct": 1.3837,
+        "total_simple_cumulative_return_pct": 15.2211,
+        "compounded_cumulative_return_pct": 15.7028,
+        "profit_factor": 2.1397,
+        "max_drawdown_pct": 7.5187,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "label": "AM_TP1=2.0%@50%_SL=-1.0%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.0,
+        "MORNING_TP1_SELL_RATIO": 0.5,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.0,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 76,
+        "avg_entries_per_day": 2.235,
+        "morning_entries": 66,
+        "afternoon_entries": 10,
+        "wins": 27,
+        "losses": 49,
+        "win_rate_pct": 35.53,
+        "avg_daily_return_pct": -0.0499,
+        "total_simple_cumulative_return_pct": -1.6949,
+        "compounded_cumulative_return_pct": -3.3707,
+        "profit_factor": 0.9757,
+        "max_drawdown_pct": 16.2442,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 19,
+        "avg_entries_per_day": 1.727,
+        "morning_entries": 12,
+        "afternoon_entries": 7,
+        "wins": 11,
+        "losses": 8,
+        "win_rate_pct": 57.89,
+        "avg_daily_return_pct": 1.266,
+        "total_simple_cumulative_return_pct": 13.9259,
+        "compounded_cumulative_return_pct": 14.3164,
+        "profit_factor": 2.0428,
+        "max_drawdown_pct": 7.4939,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "label": "AM_TP1=2.0%@50%_SL=-1.25%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.0,
+        "MORNING_TP1_SELL_RATIO": 0.5,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.25,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 27,
+        "losses": 48,
+        "win_rate_pct": 36.0,
+        "avg_daily_return_pct": -0.3134,
+        "total_simple_cumulative_return_pct": -10.6546,
+        "compounded_cumulative_return_pct": -11.7738,
+        "profit_factor": 0.8638,
+        "max_drawdown_pct": 19.738,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 19,
+        "avg_entries_per_day": 1.727,
+        "morning_entries": 12,
+        "afternoon_entries": 7,
+        "wins": 11,
+        "losses": 8,
+        "win_rate_pct": 57.89,
+        "avg_daily_return_pct": 1.266,
+        "total_simple_cumulative_return_pct": 13.9259,
+        "compounded_cumulative_return_pct": 14.3164,
+        "profit_factor": 2.0428,
+        "max_drawdown_pct": 7.4939,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "label": "AM_TP1=2.5%@30%_SL=-1.25%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.25,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 25,
+        "losses": 50,
+        "win_rate_pct": 33.33,
+        "avg_daily_return_pct": -0.1143,
+        "total_simple_cumulative_return_pct": -3.8857,
+        "compounded_cumulative_return_pct": -5.9854,
+        "profit_factor": 0.9514,
+        "max_drawdown_pct": 19.6381,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 18,
+        "avg_entries_per_day": 1.636,
+        "morning_entries": 11,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 9,
+        "win_rate_pct": 50.0,
+        "avg_daily_return_pct": 1.3719,
+        "total_simple_cumulative_return_pct": 15.0904,
+        "compounded_cumulative_return_pct": 15.4119,
+        "profit_factor": 1.9911,
+        "max_drawdown_pct": 7.097,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "label": "AM_TP1=2.5%@50%_SL=-1.25%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.5,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.25,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 26,
+        "losses": 49,
+        "win_rate_pct": 34.67,
+        "avg_daily_return_pct": -0.1172,
+        "total_simple_cumulative_return_pct": -3.9833,
+        "compounded_cumulative_return_pct": -5.9269,
+        "profit_factor": 0.9501,
+        "max_drawdown_pct": 17.5146,
+        "max_consecutive_losses": 6
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 18,
+        "avg_entries_per_day": 1.636,
+        "morning_entries": 11,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 9,
+        "win_rate_pct": 50.0,
+        "avg_daily_return_pct": 1.2251,
+        "total_simple_cumulative_return_pct": 13.4764,
+        "compounded_cumulative_return_pct": 13.6517,
+        "profit_factor": 1.8851,
+        "max_drawdown_pct": 6.7911,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        -1,
+        0,
+        0
+      ]
+    }
+  ],
+  "pass_a_winner": {
+    "label": "AM_TP1=2.5%@30%_SL=-1.5%",
+    "overrides": {
+      "MORNING_TP1_PCT": 2.5,
+      "MORNING_TP1_SELL_RATIO": 0.3,
+      "MORNING_TP2_PCT": 5.0,
+      "MORNING_STOP_LOSS_PCT": -1.5,
+      "AFTERNOON_TP_PCT": 2.5,
+      "AFTERNOON_STOP_LOSS_PCT": -1.2
+    },
+    "train": {
+      "trading_days": 34,
+      "total_entries": 75,
+      "avg_entries_per_day": 2.206,
+      "morning_entries": 65,
+      "afternoon_entries": 10,
+      "wins": 29,
+      "losses": 46,
+      "win_rate_pct": 38.67,
+      "avg_daily_return_pct": 0.3858,
+      "total_simple_cumulative_return_pct": 13.1155,
+      "compounded_cumulative_return_pct": 10.8874,
+      "profit_factor": 1.1624,
+      "max_drawdown_pct": 13.1315,
+      "max_consecutive_losses": 4
+    },
+    "val": {
+      "trading_days": 11,
+      "total_entries": 17,
+      "avg_entries_per_day": 1.545,
+      "morning_entries": 10,
+      "afternoon_entries": 7,
+      "wins": 9,
+      "losses": 8,
+      "win_rate_pct": 52.94,
+      "avg_daily_return_pct": 1.539,
+      "total_simple_cumulative_return_pct": 16.9285,
+      "compounded_cumulative_return_pct": 17.5016,
+      "profit_factor": 2.1323,
+      "max_drawdown_pct": 7.097,
+      "max_consecutive_losses": 3
+    },
+    "score": [
+      1.1624,
+      -13.1315,
+      30.044
+    ]
+  },
+  "pass_b_all": [
+    {
+      "label": "PM_TP=2.0%_SL=-0.8%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.0,
+        "AFTERNOON_STOP_LOSS_PCT": -0.8
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.477,
+        "total_simple_cumulative_return_pct": 16.2196,
+        "compounded_cumulative_return_pct": 14.4364,
+        "profit_factor": 1.2088,
+        "max_drawdown_pct": 12.8646,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.8116,
+        "total_simple_cumulative_return_pct": 19.9273,
+        "compounded_cumulative_return_pct": 21.083,
+        "profit_factor": 2.4998,
+        "max_drawdown_pct": 5.8919,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.2088,
+        -12.8646,
+        36.1469
+      ]
+    },
+    {
+      "label": "PM_TP=3.0%_SL=-0.8%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 3.0,
+        "AFTERNOON_STOP_LOSS_PCT": -0.8
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.477,
+        "total_simple_cumulative_return_pct": 16.2196,
+        "compounded_cumulative_return_pct": 14.4364,
+        "profit_factor": 1.2088,
+        "max_drawdown_pct": 12.8646,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.7682,
+        "total_simple_cumulative_return_pct": 19.4504,
+        "compounded_cumulative_return_pct": 20.4979,
+        "profit_factor": 2.4639,
+        "max_drawdown_pct": 5.8919,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.2088,
+        -12.8646,
+        35.67
+      ]
+    },
+    {
+      "label": "PM_TP=2.5%_SL=-0.8%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -0.8
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.477,
+        "total_simple_cumulative_return_pct": 16.2196,
+        "compounded_cumulative_return_pct": 14.4364,
+        "profit_factor": 1.2088,
+        "max_drawdown_pct": 12.8646,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.6903,
+        "total_simple_cumulative_return_pct": 18.593,
+        "compounded_cumulative_return_pct": 19.4995,
+        "profit_factor": 2.3994,
+        "max_drawdown_pct": 5.8919,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.2088,
+        -12.8646,
+        34.8126
+      ]
+    },
+    {
+      "label": "PM_TP=2.0%_SL=-1.0%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.0,
+        "AFTERNOON_STOP_LOSS_PCT": -1.0
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.3931,
+        "total_simple_cumulative_return_pct": 13.3664,
+        "compounded_cumulative_return_pct": 11.1694,
+        "profit_factor": 1.166,
+        "max_drawdown_pct": 13.1315,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.7861,
+        "total_simple_cumulative_return_pct": 19.6475,
+        "compounded_cumulative_return_pct": 20.7414,
+        "profit_factor": 2.4483,
+        "max_drawdown_pct": 5.8919,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.166,
+        -13.1315,
+        33.0139
+      ]
+    },
+    {
+      "label": "PM_TP=3.0%_SL=-1.0%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 3.0,
+        "AFTERNOON_STOP_LOSS_PCT": -1.0
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.3931,
+        "total_simple_cumulative_return_pct": 13.3664,
+        "compounded_cumulative_return_pct": 11.1694,
+        "profit_factor": 1.166,
+        "max_drawdown_pct": 13.1315,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.7428,
+        "total_simple_cumulative_return_pct": 19.1706,
+        "compounded_cumulative_return_pct": 20.1579,
+        "profit_factor": 2.4131,
+        "max_drawdown_pct": 5.8919,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.166,
+        -13.1315,
+        32.537
+      ]
+    },
+    {
+      "label": "PM_TP=2.5%_SL=-1.0%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.0
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.3931,
+        "total_simple_cumulative_return_pct": 13.3664,
+        "compounded_cumulative_return_pct": 11.1694,
+        "profit_factor": 1.166,
+        "max_drawdown_pct": 13.1315,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.6648,
+        "total_simple_cumulative_return_pct": 18.3132,
+        "compounded_cumulative_return_pct": 19.1624,
+        "profit_factor": 2.3499,
+        "max_drawdown_pct": 5.8919,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.166,
+        -13.1315,
+        31.6796
+      ]
+    },
+    {
+      "label": "PM_TP=2.0%_SL=-1.2%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.0,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.3858,
+        "total_simple_cumulative_return_pct": 13.1155,
+        "compounded_cumulative_return_pct": 10.8874,
+        "profit_factor": 1.1624,
+        "max_drawdown_pct": 13.1315,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.6603,
+        "total_simple_cumulative_return_pct": 18.2628,
+        "compounded_cumulative_return_pct": 19.0586,
+        "profit_factor": 2.2215,
+        "max_drawdown_pct": 7.097,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.1624,
+        -13.1315,
+        31.3783
+      ]
+    },
+    {
+      "label": "PM_TP=3.0%_SL=-1.2%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 3.0,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.3858,
+        "total_simple_cumulative_return_pct": 13.1155,
+        "compounded_cumulative_return_pct": 10.8874,
+        "profit_factor": 1.1624,
+        "max_drawdown_pct": 13.1315,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.6169,
+        "total_simple_cumulative_return_pct": 17.7859,
+        "compounded_cumulative_return_pct": 18.4832,
+        "profit_factor": 2.1896,
+        "max_drawdown_pct": 7.097,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.1624,
+        -13.1315,
+        30.901400000000002
+      ]
+    },
+    {
+      "label": "PM_TP=2.5%_SL=-1.2%",
+      "overrides": {
+        "MORNING_TP1_PCT": 2.5,
+        "MORNING_TP1_SELL_RATIO": 0.3,
+        "MORNING_TP2_PCT": 5.0,
+        "MORNING_STOP_LOSS_PCT": -1.5,
+        "AFTERNOON_TP_PCT": 2.5,
+        "AFTERNOON_STOP_LOSS_PCT": -1.2
+      },
+      "train": {
+        "trading_days": 34,
+        "total_entries": 75,
+        "avg_entries_per_day": 2.206,
+        "morning_entries": 65,
+        "afternoon_entries": 10,
+        "wins": 29,
+        "losses": 46,
+        "win_rate_pct": 38.67,
+        "avg_daily_return_pct": 0.3858,
+        "total_simple_cumulative_return_pct": 13.1155,
+        "compounded_cumulative_return_pct": 10.8874,
+        "profit_factor": 1.1624,
+        "max_drawdown_pct": 13.1315,
+        "max_consecutive_losses": 4
+      },
+      "val": {
+        "trading_days": 11,
+        "total_entries": 17,
+        "avg_entries_per_day": 1.545,
+        "morning_entries": 10,
+        "afternoon_entries": 7,
+        "wins": 9,
+        "losses": 8,
+        "win_rate_pct": 52.94,
+        "avg_daily_return_pct": 1.539,
+        "total_simple_cumulative_return_pct": 16.9285,
+        "compounded_cumulative_return_pct": 17.5016,
+        "profit_factor": 2.1323,
+        "max_drawdown_pct": 7.097,
+        "max_consecutive_losses": 3
+      },
+      "score": [
+        1.1624,
+        -13.1315,
+        30.044
+      ]
+    }
+  ],
+  "pass_b_winner": {
+    "label": "PM_TP=2.0%_SL=-0.8%",
+    "overrides": {
+      "MORNING_TP1_PCT": 2.5,
+      "MORNING_TP1_SELL_RATIO": 0.3,
+      "MORNING_TP2_PCT": 5.0,
+      "MORNING_STOP_LOSS_PCT": -1.5,
+      "AFTERNOON_TP_PCT": 2.0,
+      "AFTERNOON_STOP_LOSS_PCT": -0.8
+    },
+    "train": {
+      "trading_days": 34,
+      "total_entries": 75,
+      "avg_entries_per_day": 2.206,
+      "morning_entries": 65,
+      "afternoon_entries": 10,
+      "wins": 29,
+      "losses": 46,
+      "win_rate_pct": 38.67,
+      "avg_daily_return_pct": 0.477,
+      "total_simple_cumulative_return_pct": 16.2196,
+      "compounded_cumulative_return_pct": 14.4364,
+      "profit_factor": 1.2088,
+      "max_drawdown_pct": 12.8646,
+      "max_consecutive_losses": 4
+    },
+    "val": {
+      "trading_days": 11,
+      "total_entries": 17,
+      "avg_entries_per_day": 1.545,
+      "morning_entries": 10,
+      "afternoon_entries": 7,
+      "wins": 9,
+      "losses": 8,
+      "win_rate_pct": 52.94,
+      "avg_daily_return_pct": 1.8116,
+      "total_simple_cumulative_return_pct": 19.9273,
+      "compounded_cumulative_return_pct": 21.083,
+      "profit_factor": 2.4998,
+      "max_drawdown_pct": 5.8919,
+      "max_consecutive_losses": 3
+    },
+    "score": [
+      1.2088,
+      -12.8646,
+      36.1469
+    ]
+  },
+  "final_overrides": {
+    "MORNING_TP1_PCT": 2.5,
+    "MORNING_TP1_SELL_RATIO": 0.3,
+    "MORNING_TP2_PCT": 5.0,
+    "MORNING_STOP_LOSS_PCT": -1.5,
+    "AFTERNOON_TP_PCT": 2.0,
+    "AFTERNOON_STOP_LOSS_PCT": -0.8
+  },
+  "final_train": {
+    "trading_days": 34,
+    "total_entries": 75,
+    "avg_entries_per_day": 2.206,
+    "morning_entries": 65,
+    "afternoon_entries": 10,
+    "wins": 29,
+    "losses": 46,
+    "win_rate_pct": 38.67,
+    "avg_daily_return_pct": 0.477,
+    "total_simple_cumulative_return_pct": 16.2196,
+    "compounded_cumulative_return_pct": 14.4364,
+    "profit_factor": 1.2088,
+    "max_drawdown_pct": 12.8646,
+    "max_consecutive_losses": 4
+  },
+  "final_val": {
+    "trading_days": 11,
+    "total_entries": 17,
+    "avg_entries_per_day": 1.545,
+    "morning_entries": 10,
+    "afternoon_entries": 7,
+    "wins": 9,
+    "losses": 8,
+    "win_rate_pct": 52.94,
+    "avg_daily_return_pct": 1.8116,
+    "total_simple_cumulative_return_pct": 19.9273,
+    "compounded_cumulative_return_pct": 21.083,
+    "profit_factor": 2.4998,
+    "max_drawdown_pct": 5.8919,
+    "max_consecutive_losses": 3
+  }
+}
