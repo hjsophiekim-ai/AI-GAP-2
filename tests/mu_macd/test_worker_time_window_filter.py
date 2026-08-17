@@ -277,3 +277,81 @@ def test_full_day_dry_run_forces_liquidation_by_close_with_no_exceptions():
     assert state.time_window_position_active is False
     assert config.LONG_SYMBOL not in broker._positions
     assert config.INVERSE_SYMBOL not in broker._positions
+
+
+def _force_approved_decision(direction: Direction, *, window: str = "WINDOW1"):
+    """Builds a MajorFlagDecision that always approves, for monkeypatching
+    twf.evaluate_time_window_entry -- isolates these entry_paused wiring
+    tests from the real quality-score/gap-expansion decision logic (already
+    covered elsewhere), so a flaky synthetic ramp can't make them approve on
+    one run and reject on another."""
+    from app.trading.macd2.models import MajorFlagDecision
+
+    return MajorFlagDecision(
+        approved=True, score=10.0, required_score=0.0, decision="TW_APPROVED",
+        reasons=(), component_scores={}, metrics={"window": window},
+        is_reversal=False, fast_reversal=False, block_reason=None,
+    )
+
+
+def test_entry_paused_blocks_flat_new_entry_even_when_tw_filter_is_on(monkeypatch):
+    """신규진입 일시정지 must block a flat (no-position) new entry under the
+    TW filter exactly like it already does under the legacy path -- this is
+    the 2026-08-15 fix: previously state.entry_paused was never even
+    checked inside _advance_time_window_filter."""
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **k: _force_approved_decision(Direction.UP_RED))
+
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now0
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    state = _fresh_state_with_tw_enabled()
+    state.entry_paused = True
+
+    worker.run_once(broker=broker, market_data=svc, state=state, now=now0)  # -> TW_PENDING
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_last_tick_at = now1
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)  # -> candidate resolution
+
+    assert any(a.startswith("TW_ENTRY_PAUSED:") for a in result.actions)
+    assert broker.orders == []
+    assert state.position is None
+
+
+def test_entry_paused_still_sells_opposite_held_position_when_tw_filter_is_on(monkeypatch):
+    """Mirrors the legacy entry_paused semantics exactly (see its own UI
+    help text: "반대 플래그가 뜨면 보유 포지션은 그대로 매도됩니다") -- an opposite-
+    direction position already held under the TW filter must still be SOLD
+    on a fresh confirmed opposite flag even while new entries are paused;
+    only the follow-up re-buy is skipped."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **k: _force_approved_decision(Direction.UP_RED))
+
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)  # this fixture's flag direction is UP_RED (LONG_SYMBOL)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now0
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")  # opposite-direction holding
+
+    state = _fresh_state_with_tw_enabled()
+    state.entry_paused = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+
+    worker.run_once(broker=broker, market_data=svc, state=state, now=now0)  # -> TW_PENDING
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_last_tick_at = now1
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)  # -> resolves: sell-only
+
+    assert any(a.startswith("TW_ENTRY_PAUSED_SELL_ONLY:") for a in result.actions)
+    assert state.position is None  # opposite holding was sold
+    assert state.time_window_position_active is False
+    assert config.INVERSE_SYMBOL not in broker._positions
+    assert config.LONG_SYMBOL not in broker._positions  # paused -- no re-buy happened

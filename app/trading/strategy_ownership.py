@@ -1,14 +1,25 @@
-"""Cross-strategy order-ownership adapter (Enhanced / MACD2).
+"""Cross-strategy order-ownership adapter (Enhanced / MACD2 / MU_MACD).
 
-Real orders for this KIS account may be placed by exactly one of two
-independent engines at a time: Enhanced (app.services.hynix_switch_engine)
-and MACD2 (app.trading.macd2.*). This module is the one place that answers
-"is a given other engine really placing orders right now?", and Enhanced's
-start gate (``app/ui/pages/9_SK하이닉스_자동매매.py``) also checks MACD2
-through it.
+Real orders for this KIS account may be placed by exactly one of three
+independent engines at a time: Enhanced (app.services.hynix_switch_engine),
+MACD2 (app.trading.macd2.*), and MU_MACD (app.trading.mu_macd.*). This
+module is the one place that answers "is a given other engine really
+placing orders right now?", and Enhanced's start gate (``app/ui/pages/
+9_SK하이닉스_자동매매.py``) also checks MACD2 through it.
 
 2026-07-31: the retired Hynix MACD engine has been removed from the active
 ownership gate. Enhanced<->MACD2 mutual exclusion is unaffected.
+
+2026-08-15: added MU_MACD as a third claimant. MACD2 and MU_MACD trade the
+EXACT SAME two ETF symbols (0193T0/0197X0, see each module's own config.py)
+in the same KIS account from two independent signal sources (SK하이닉스 vs
+Micron) -- with no exclusion between them, reactivating MACD2 while
+MU_MACD is live would let both place real orders on the same underlying
+instruments with no coordination, each with its own separate state.position
+belief about a single shared real broker position (a genuine "정보가
+섞이는" risk, not just a theoretical one). MU_MACD's own start() gate was
+updated to call other_owner_active(MU_MACD) the same way MACD2's already
+does -- see app/trading/mu_macd/service.py.
 
 Each ``*_active()`` check starts from that engine's own persisted
 auto_trade_on-equivalent flag, then looks for POSITIVE evidence the flag is
@@ -50,11 +61,15 @@ from app.utils.data_paths import STATE_DIR
 
 ENHANCED = "ENHANCED"
 MACD2 = "MACD2"
-_ALL_CLAIMANTS = (ENHANCED, MACD2)
+MU_MACD = "MU_MACD"
+_ALL_CLAIMANTS = (ENHANCED, MACD2, MU_MACD)
 
 # Module-level (not function-local) so tests can monkeypatch these, the same
 # way app.trading.macd2.state_store.STATE_PATH is monkeypatched.
 MACD2_RUNTIME_PATH: Path = STATE_DIR / "macd2_runtime.json"
+# app.trading.mu_macd.config.RUNTIME_STATE_FILENAME — read as plain JSON only
+# (never imports mu_macd production code), same pattern as MACD2_RUNTIME_PATH.
+MU_MACD_RUNTIME_PATH: Path = STATE_DIR / "mu_macd_runtime.json"
 
 # 3x FAST_WATCHER_INTERVAL_SECONDS(30s) — the fastest cadence Enhanced's own
 # heartbeat file is rewritten at, even outside market hours (see
@@ -63,6 +78,10 @@ ENHANCED_HEARTBEAT_STALE_SEC = 90.0
 # 2x WORKER_STALL_AGE_SEC(15s) — the same margin app.trading.macd2.config /
 # Macd2Worker.tick_stats() already uses to call a MACD2 tick "stalled".
 MACD2_HEARTBEAT_STALE_SEC = 30.0
+# 5x app.trading.mu_macd.service.WORKER_INTERVAL_SEC(2s) -- generous enough
+# margin for ordinary tick jitter, same "small multiple of the engine's own
+# tick cadence" philosophy as the two constants above.
+MU_MACD_HEARTBEAT_STALE_SEC = 10.0
 
 
 def _age_sec(iso_ts: Optional[str]) -> Optional[float]:
@@ -146,9 +165,26 @@ def macd2_active() -> tuple[bool, str]:
     return True, "MACD2_ACTIVE"
 
 
+def mu_macd_active() -> tuple[bool, str]:
+    """True only if MU_MACD's own auto_trade_on is True AND its state
+    last_tick_at is fresh (rewritten every Worker tick — see
+    app.trading.mu_macd.models.RuntimeState.last_tick_at). Plain JSON read —
+    never imports MU_MACD code, mirrors macd2_active() exactly."""
+    raw = _read_json(MU_MACD_RUNTIME_PATH)
+    if raw is _READ_ERROR:
+        return True, "MU_MACD_READ_UNCERTAIN_FAILSAFE"
+    if not bool(raw.get("auto_trade_on")):
+        return False, ""
+    age = _age_sec(raw.get("last_tick_at"))
+    if age is not None and age > MU_MACD_HEARTBEAT_STALE_SEC:
+        return False, ""
+    return True, "MU_MACD_ACTIVE"
+
+
 _CHECKS = {
     ENHANCED: enhanced_active,
     MACD2: macd2_active,
+    MU_MACD: mu_macd_active,
 }
 
 

@@ -125,12 +125,67 @@ def test_macd2_active_handles_tz_aware_updated_at(tmp_path, monkeypatch):
     assert reason == "MACD2_ACTIVE"
 
 
+# ── mu_macd_active() ─────────────────────────────────────────────────────────
+# 2026-08-15: MACD2 and MU_MACD trade the identical two ETF symbols in the
+# same KIS account -- added as a third claimant so reactivating MACD2 can
+# never silently run concurrently with a live MU_MACD (or vice versa).
+
+def test_mu_macd_active_when_flag_true_and_last_tick_at_fresh(tmp_path, monkeypatch):
+    monkeypatch.setattr(so, "MU_MACD_RUNTIME_PATH", tmp_path / "mu_macd_runtime.json")
+    _write(so.MU_MACD_RUNTIME_PATH, {
+        "auto_trade_on": True,
+        "last_tick_at": datetime.now().isoformat(),
+    })
+    active, reason = so.mu_macd_active()
+    assert active is True
+    assert reason == "MU_MACD_ACTIVE"
+
+
+def test_mu_macd_not_active_when_flag_false(tmp_path, monkeypatch):
+    monkeypatch.setattr(so, "MU_MACD_RUNTIME_PATH", tmp_path / "mu_macd_runtime.json")
+    _write(so.MU_MACD_RUNTIME_PATH, {
+        "auto_trade_on": False, "last_tick_at": datetime.now().isoformat(),
+    })
+    active, _ = so.mu_macd_active()
+    assert active is False
+
+
+def test_mu_macd_not_active_when_last_tick_at_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr(so, "MU_MACD_RUNTIME_PATH", tmp_path / "mu_macd_runtime.json")
+    stale = datetime.now() - timedelta(seconds=so.MU_MACD_HEARTBEAT_STALE_SEC + 1)
+    _write(so.MU_MACD_RUNTIME_PATH, {"auto_trade_on": True, "last_tick_at": stale.isoformat()})
+    active, _ = so.mu_macd_active()
+    assert active is False
+
+
+def test_mu_macd_active_handles_tz_aware_last_tick_at(tmp_path, monkeypatch):
+    """MU_MACD's real last_tick_at is tz-aware KST (datetime.now(KST).isoformat())."""
+    from app.trading.mu_macd.config import KST
+
+    monkeypatch.setattr(so, "MU_MACD_RUNTIME_PATH", tmp_path / "mu_macd_runtime.json")
+    _write(so.MU_MACD_RUNTIME_PATH, {
+        "auto_trade_on": True, "last_tick_at": datetime.now(KST).isoformat(),
+    })
+    active, reason = so.mu_macd_active()
+    assert active is True
+    assert reason == "MU_MACD_ACTIVE"
+
+
+def test_mu_macd_active_fails_safe_on_corrupt_existing_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(so, "MU_MACD_RUNTIME_PATH", tmp_path / "mu_macd_runtime.json")
+    so.MU_MACD_RUNTIME_PATH.write_text("{not valid json", encoding="utf-8")
+    active, reason = so.mu_macd_active()
+    assert active is True
+    assert reason == "MU_MACD_READ_UNCERTAIN_FAILSAFE"
+
+
 # ── Bidirectional pairwise blocking (docs requirement: exactly one owner) ──
 
-def _patch_checks(monkeypatch, *, enhanced=(False, ""), macd2=(False, "")):
+def _patch_checks(monkeypatch, *, enhanced=(False, ""), macd2=(False, ""), mu_macd=(False, "")):
     monkeypatch.setattr(so, "_CHECKS", {
         so.ENHANCED: lambda: enhanced,
         so.MACD2: lambda: macd2,
+        so.MU_MACD: lambda: mu_macd,
     })
 
 
@@ -148,9 +203,40 @@ def test_enhanced_blocked_by_macd2_active(monkeypatch):
     assert reason == "MACD2_ACTIVE"
 
 
+def test_macd2_blocked_by_mu_macd_active(monkeypatch):
+    """The core 2026-08-15 requirement: MACD2 must refuse to start while
+    MU_MACD is live, since both would otherwise trade the same two ETFs."""
+    _patch_checks(monkeypatch, mu_macd=(True, "MU_MACD_ACTIVE"))
+    blocked, reason = so.other_owner_active(so.MACD2)
+    assert blocked is True
+    assert reason == "MU_MACD_ACTIVE"
+
+
+def test_mu_macd_blocked_by_macd2_active(monkeypatch):
+    """The reverse direction of the same requirement."""
+    _patch_checks(monkeypatch, macd2=(True, "MACD2_ACTIVE"))
+    blocked, reason = so.other_owner_active(so.MU_MACD)
+    assert blocked is True
+    assert reason == "MACD2_ACTIVE"
+
+
+def test_mu_macd_blocked_by_enhanced_active(monkeypatch):
+    _patch_checks(monkeypatch, enhanced=(True, "ENHANCED_ACTIVE"))
+    blocked, reason = so.other_owner_active(so.MU_MACD)
+    assert blocked is True
+    assert reason == "ENHANCED_ACTIVE"
+
+
+def test_enhanced_blocked_by_mu_macd_active(monkeypatch):
+    _patch_checks(monkeypatch, mu_macd=(True, "MU_MACD_ACTIVE"))
+    blocked, reason = so.other_owner_active(so.ENHANCED)
+    assert blocked is True
+    assert reason == "MU_MACD_ACTIVE"
+
+
 def test_nothing_active_allows_any_claimant_to_start(monkeypatch):
     _patch_checks(monkeypatch)
-    for claimant in (so.ENHANCED, so.MACD2):
+    for claimant in (so.ENHANCED, so.MACD2, so.MU_MACD):
         blocked, reason = so.other_owner_active(claimant)
         assert blocked is False
         assert reason == ""

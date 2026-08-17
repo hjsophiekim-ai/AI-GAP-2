@@ -372,6 +372,10 @@ def _advance_time_window_filter(
     have this readiness requirement. Only invoked when state.time_window_
     filter_enabled is True. Returns a short action label, or None when
     nothing happened this tick (still waiting on a pending T+3 candidate).
+
+    2026-08-15: state.entry_paused ("신규진입 일시정지") is honored here too,
+    independently of this filter's own toggle -- see the entry_paused check
+    right before the buy leg below.
     """
     # 1) a fresh confirmed crossover always becomes (replaces) the pending
     #    T+3 candidate — never dispatched on its own bar.
@@ -411,6 +415,27 @@ def _advance_time_window_filter(
         return f"TW_REJECTED:{direction.value}:{decision.decision}"
 
     target_symbol = order_executor.target_symbol_for_direction(direction)
+
+    # "신규진입 일시정지" (state.entry_paused) must function independently of
+    # this filter's own ON/OFF toggle -- same semantics as the legacy path's
+    # entry_block_reason gate (see its own UI help text): an opposite-
+    # direction held position is still SOLD (mirrors the legacy "opposite
+    # flag sells regardless of the entry gate" rule), only the follow-up
+    # re-buy leg is what's paused. A flat/no-position tick simply records no
+    # entry at all.
+    if state.entry_paused:
+        if pos is not None and pos.quantity > 0 and pos.symbol != target_symbol:
+            outcome = order_executor.execute_exit(
+                broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                exit_reason=config.EXIT_OPPOSITE_SIGNAL, entry_price=pos.avg_price,
+                ledger_module=ledger,
+            )
+            if outcome.final_state == SignalState.EXECUTED:
+                state.position = None
+                _reset_time_window_position_state(state)
+            return f"TW_ENTRY_PAUSED_SELL_ONLY:{direction.value}"
+        return f"TW_ENTRY_PAUSED:{direction.value}"
+
     quotes: dict[str, float] = {}
     if hasattr(broker, "get_quote"):
         symbols_needed = {target_symbol}

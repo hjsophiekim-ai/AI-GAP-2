@@ -17,6 +17,24 @@ from app.trading.mu_macd.service import MUMacdService
 from tests.macd2.fake_broker import FakeBroker
 
 
+# Captured at import time, before the autouse fixture below ever patches it —
+# lets test_other_strategy_active_checks_mu_macd_ownership restore the real
+# function within its own test body.
+_REAL_OTHER_STRATEGY_ACTIVE = mu_service.other_strategy_active
+
+
+@pytest.fixture(autouse=True)
+def _no_other_strategy_active(monkeypatch):
+    """2026-08-15: MUMacdService.start() now refuses to start while MACD2
+    (or Enhanced) is really active (see mu_service.other_strategy_active).
+    Every test in this file wants "no other engine active" by default,
+    the same way tests/macd2/test_service.py stubs its own
+    other_strategy_active to (False, "") everywhere -- tests that
+    specifically exercise the gate itself override this within their own
+    body (monkeypatch's last-write-wins is fine here)."""
+    monkeypatch.setattr(mu_service, "other_strategy_active", lambda: (False, ""))
+
+
 def _alive_service(broker: FakeBroker, *, budget: float = 1_000_000.0) -> MUMacdService:
     svc = MUMacdService()
     svc._broker = broker
@@ -407,3 +425,52 @@ def test_auto_recover_worker_never_triggers_for_real_mode():
 
     assert recovered is False
     assert not svc.is_alive()
+
+
+# ── Cross-strategy ownership gate (2026-08-15) — MACD2 and MU_MACD trade the
+# identical two ETFs (0193T0/0197X0) in the same KIS account; start() must
+# refuse whenever the OTHER engine is really active, mirroring macd2.service
+# .start()'s own existing gate (see app.trading.strategy_ownership).
+
+def test_start_refuses_when_other_strategy_is_active(monkeypatch):
+    monkeypatch.setattr(mu_service, "other_strategy_active", lambda: (True, "MACD2_ACTIVE"))
+
+    svc = MUMacdService()
+    result = svc.start(mode="mock", budget=1_000_000.0)
+
+    assert result["ok"] is False
+    assert result["message"] == "MACD2_ACTIVE"
+    assert not svc.is_alive()
+    state = state_store.load_state()
+    assert state.auto_trade_on is False
+    assert state.order_block_reason == "MACD2_ACTIVE"
+
+
+def test_start_proceeds_when_no_other_strategy_active(monkeypatch):
+    monkeypatch.setattr(mu_service, "other_strategy_active", lambda: (False, ""))
+
+    svc = MUMacdService()
+    result = svc.start(mode="mock", budget=1_000_000.0)
+
+    assert result["ok"] is True
+    assert svc.is_alive()
+    svc.stop()  # cleanup
+
+
+def test_other_strategy_active_checks_mu_macd_ownership(monkeypatch):
+    """other_strategy_active() itself must be wired to strategy_ownership's
+    MU_MACD claimant, not some hand-rolled duplicate check. Restores the
+    REAL function first -- the autouse _no_other_strategy_active fixture
+    above stubs mu_service.other_strategy_active for every other test in
+    this file, which would otherwise make this specific wiring check
+    vacuous (it would just call its own stub)."""
+    from app.trading import strategy_ownership
+
+    monkeypatch.setattr(mu_service, "other_strategy_active", _REAL_OTHER_STRATEGY_ACTIVE)
+    calls = []
+    monkeypatch.setattr(
+        strategy_ownership, "other_owner_active",
+        lambda claimant: (calls.append(claimant) or (False, "")),
+    )
+    mu_service.other_strategy_active()
+    assert calls == [strategy_ownership.MU_MACD]

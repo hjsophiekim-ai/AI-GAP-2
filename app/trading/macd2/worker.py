@@ -31,6 +31,7 @@ source of truth per the 2026-07-23 design decision):
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 import time
@@ -1590,6 +1591,142 @@ def _judge_time_window_flag(
     return decision
 
 
+def _advance_held_position_risk_management(
+    *,
+    broker,
+    state: RuntimeState,
+    market_data: MarketDataService,
+    now: datetime,
+    quotes: dict,
+    pos: PositionSnapshot,
+    result: TickResult,
+) -> bool:
+    """docs §10 priorities 1-2 (15:00 FORCED_LIQUIDATION, then STOP_LOSS —
+    the time-window filter's own ladder fully replaces STOP_LOSS for a
+    position it opened) for an ALREADY-HELD position — extracted to run
+    BEFORE bars_3m/macd_snap are computed in run_once() (2026-08-15 fix).
+
+    None of these three actually need macd_snap (FORCED_LIQUIDATION is a
+    plain time-of-day check; the legacy STOP_LOSS and the time-window
+    ladder are both evaluated off the traded ETF's OWN completed-bar close
+    via _advance_stop_loss_bar, never off macd_snap) — so gating them
+    behind macd_snap's NOT_READY early return left a held position with
+    literally no risk management on any tick where warm-up wasn't ready
+    yet. Narrower for MACD2 specifically than for MU_MACD's own version of
+    this same fix (MACD2 backfills real prior-day 1-minute history at
+    startup, so NOT_READY is normally just a few seconds right after a
+    fresh process boot, not ~90 minutes on every restart like MU_MACD's
+    intentional cold-start design) — but the same class of gap, and the
+    user explicitly asked for it to be closed the same way.
+
+    docs §10 priorities 3-5 (OPPOSITE_SIGNAL/PROFIT_LOCK/QUICK_PROFIT) all
+    genuinely need macd_snap and are UNCHANGED, still evaluated later in
+    run_once() once it's available — this function only ever returns True
+    (an exit fired) or False (nothing fired, continue normal evaluation);
+    it never itself decides to skip the rest of the tick just because a
+    position happens to be time-window-managed (that would wrongly starve
+    _resolve_time_window_candidate — called later, needs macd_snap — of
+    ever running for that position).
+
+    _advance_stop_loss_bar's own per-symbol "last completed bar" tracking
+    means calling it twice for the same tick/bar would silently swallow the
+    second call's result (see its own docstring) — this function is now
+    the ONLY caller for a held position; the equivalent checks that used to
+    live later in run_once()'s "Held position" chain were removed, not
+    duplicated.
+    """
+    current_price = quotes.get(pos.symbol)
+    if current_price is None:
+        # 2026-08-04 fix: STOP_LOSS/Quick-Profit are risk-safety checks on an
+        # ALREADY-held position, not a decision to take on new risk — fall
+        # back to the last known price for this symbol (even if stale) so
+        # the checks below still run off a real, recent price instead of
+        # none (2026-08-04 real incident: SOL 인버스 -1.5%+ 손실, 손절 미발동).
+        stale_snap = market_data.get_quote(pos.symbol)
+        if stale_snap is not None and not stale_snap.error and stale_snap.price > 0:
+            current_price = stale_snap.price
+
+    if now.time() >= config.FORCE_LIQUIDATE_AT:
+        outcome = order_executor.execute_exit(
+            broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+            exit_reason=config.EXIT_FORCED_LIQUIDATION, entry_price=pos.avg_price,
+            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        )
+        _apply_exit_outcome(state, outcome)
+        result.actions.append(f"FORCED_LIQUIDATION:{pos.symbol}")
+        return True
+
+    if (
+        state.time_window_filter_enabled and state.time_window_position_active
+        and state.position is not None and state.position.symbol == pos.symbol
+        and current_price is not None
+    ):
+        # This position was opened by the time-window filter — its own
+        # position-management ladder (§11-14) fully replaces the legacy
+        # STOP_LOSS check below for as long as it is held (OPPOSITE_SIGNAL
+        # is instead handled by _resolve_time_window_candidate, further
+        # down in run_once() once macd_snap is ready).
+        completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
+        if completed_bar_close is not None:
+            bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
+            pm_decision = time_window_position_manager.evaluate_position(
+                session=state.time_window_entry_session or "MORNING",
+                net_return_pct=bar_net_return,
+                tp1_done=bool(state.time_window_tp1_done),
+                peak_net_return=float(state.time_window_peak_net_return or 0.0),
+            )
+            state.time_window_peak_net_return = pm_decision.peak_net_return
+            state.time_window_tp1_done = pm_decision.tp1_done
+            if pm_decision.exit_reason is not None:
+                sell_fraction = max(0.0, min(1.0, pm_decision.sell_fraction))
+                full_exit = sell_fraction >= 1.0
+                if full_exit:
+                    outcome = order_executor.execute_exit(
+                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                        exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    _apply_exit_outcome(state, outcome)
+                    if outcome.final_state == SignalState.EXECUTED:
+                        state.time_window_position_active = False
+                    result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
+                    return True
+                sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
+                remaining_qty = pos.quantity - sell_qty
+                outcome = order_executor.execute_partial_exit(
+                    broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
+                    exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
+                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                )
+                if outcome.final_state == SignalState.EXECUTED:
+                    state.position = dataclasses.replace(state.position, quantity=remaining_qty)
+                result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
+                return True
+        return False
+
+    if current_price is not None:
+        # Stop Loss is evaluated from the completed 3-minute ETF bar close
+        # onward, excluding the bar that contains the entry fill (docs
+        # 2026-08-02 Exit Rule: 3-Minute Confirmed Bars) -- NOT off this
+        # tick's live/instantaneous quote. risk_exit's own -1.5% threshold
+        # (check_stop_loss) is reused unchanged, just fed the completed-bar
+        # close instead of the live quote.
+        completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
+        if completed_bar_close is not None:
+            bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
+            if risk_exit.check_stop_loss(bar_net_return):
+                outcome = order_executor.execute_exit(
+                    broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                    exit_reason=config.EXIT_STOP_LOSS, entry_price=pos.avg_price,
+                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                )
+                _apply_exit_outcome(state, outcome)
+                result.actions.append(f"STOP_LOSS:{pos.symbol}")
+                return True
+
+    return False
+
+
 def _resolve_time_window_candidate(
     *,
     broker,
@@ -2348,6 +2485,22 @@ def run_once(
     quotes = _fresh_quote_prices(market_data, (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL))
     result.timing["quote_cache_read"] = time.monotonic() - t0
 
+    # 2026-08-15 fix: FORCED_LIQUIDATION/STOP_LOSS/the time-window filter's
+    # own ladder for an already-held position must never depend on
+    # macd_snap readiness — checked here, ahead of the NOT_READY warm-up
+    # gate below, so a real held position is never left unmonitored during
+    # any tick where warm-up isn't ready yet (see
+    # _advance_held_position_risk_management's own docstring for why, and
+    # for the analogous same-day MU_MACD fix this mirrors).
+    _held_pos = state.position
+    if _held_pos is not None and _held_pos.quantity > 0:
+        if _advance_held_position_risk_management(
+            broker=broker, state=state, market_data=market_data, now=now,
+            quotes=quotes, pos=_held_pos, result=result,
+        ):
+            result.timing["total"] = time.monotonic() - tick_started
+            return result
+
     # Worker never calls KIS itself and never triggers the incremental merge —
     # MarketDataService's own history-updater thread refreshes this cache in
     # the background (docs §8/§11); this only reads the cached snapshot.
@@ -2431,7 +2584,6 @@ def run_once(
 
     before_open = now.time() < config.SESSION_OPEN
     entry_cutoff_passed = now.time() >= config.NEW_ENTRY_CUTOFF
-    force_liquidate_time = now.time() >= config.FORCE_LIQUIDATE_AT
     entry_window_open = (not before_open) and (not entry_cutoff_passed) and not state.quote_history_mismatch_reason
     t0 = time.monotonic()
     # A pending (blocked-on-retry) signal is always confirmed-bar-sourced now
@@ -2443,40 +2595,27 @@ def run_once(
     pos = state.position
 
     # ── Held position: priority chain (docs §10) ───────────────────────
+    # Priorities 1-2 (FORCED_LIQUIDATION, STOP_LOSS/time-window ladder) were
+    # already evaluated earlier in this function, before macd_snap was even
+    # computed (see _advance_held_position_risk_management above) — if
+    # either had fired, run_once() would already have returned. Only
+    # priorities 3-5 (OPPOSITE_SIGNAL/PROFIT_LOCK/QUICK_PROFIT), which
+    # genuinely need macd_snap, remain below.
     if pos is not None and pos.quantity > 0:
         scheduled_protected = _scheduled_entry_protection_active(state, now)
         current_price = quotes.get(pos.symbol)
         if current_price is None:
-            # 2026-08-04 fix: STOP_LOSS/Quick-Profit are risk-safety checks
-            # on an ALREADY-held position, not a decision to take on new
-            # risk — unlike a new entry (where requiring a fresh quote is
-            # the correct, safe default), silently skipping the stop-loss
-            # check just because this tick's quote missed the strict
-            # QUOTE_MAX_AGE_SEC freshness window left a real position
-            # completely unmonitored for however long the quote stayed
-            # stale, letting a loss run past -1.5% with no exit at all
-            # (2026-08-04 real incident: SOL 인버스 -1.5%+ 손실, 손절 미발동).
-            # Fall back to the last known price for this symbol (even if
-            # stale) so the checks below still run off a real, recent
-            # price instead of none. Entry/reversal quote-freshness
-            # requirements elsewhere are unchanged.
+            # See _advance_held_position_risk_management's own stale-quote
+            # fallback comment (2026-08-04 fix) — same reasoning, just
+            # re-fetched here since that call's own current_price is local
+            # to it, for PROFIT_LOCK/QUICK_PROFIT's use below.
             stale_snap = market_data.get_quote(pos.symbol)
             if stale_snap is not None and not stale_snap.error and stale_snap.price > 0:
                 current_price = stale_snap.price
 
-        if force_liquidate_time:
-            outcome = order_executor.execute_exit(
-                broker=broker, symbol=pos.symbol, quantity=pos.quantity,
-                exit_reason=config.EXIT_FORCED_LIQUIDATION, entry_price=pos.avg_price,
-                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-            )
-            _apply_exit_outcome(state, outcome)
-            result.actions.append(f"FORCED_LIQUIDATION:{pos.symbol}")
-            return result
-
-        # Time-window filter: resolve any pending T+3 candidate FIRST (may
-        # switch this held position — sell current, buy the new direction —
-        # or simply clear a rejected/expired candidate). Only ever acts when
+        # Time-window filter: resolve any pending T+3 candidate (may switch
+        # this held position — sell current, buy the new direction — or
+        # simply clear a rejected/expired candidate). Only ever acts when
         # state.time_window_filter_enabled is True; a no-op otherwise.
         tw_resolve_outcome = _resolve_time_window_candidate(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
@@ -2486,77 +2625,15 @@ def run_once(
             result.actions.append(f"TIME_WINDOW_SWITCH:{tw_resolve_outcome.target_symbol}")
             return result
 
-        if (
-            state.time_window_filter_enabled and state.time_window_position_active
-            and state.position is not None and state.position.symbol == pos.symbol
-            and current_price is not None
-        ):
-            # This position was opened by the time-window filter — its own
-            # position-management ladder (§11-14) fully replaces the legacy
-            # STOP_LOSS/PROFIT_LOCK/QUICK_PROFIT checks below for as long as
-            # it is held (OPPOSITE_SIGNAL is instead handled by the T+3
-            # candidate resolution above). Evaluated off the traded ETF's own
-            # completed 3-minute bar close, excluding the entry bar — same
-            # convention _advance_stop_loss_bar already uses for the legacy
-            # STOP_LOSS check.
-            completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
-            if completed_bar_close is not None:
-                bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
-                pm_decision = time_window_position_manager.evaluate_position(
-                    session=state.time_window_entry_session or "MORNING",
-                    net_return_pct=bar_net_return,
-                    tp1_done=bool(state.time_window_tp1_done),
-                    peak_net_return=float(state.time_window_peak_net_return or 0.0),
-                )
-                state.time_window_peak_net_return = pm_decision.peak_net_return
-                state.time_window_tp1_done = pm_decision.tp1_done
-                if pm_decision.exit_reason is not None:
-                    sell_fraction = max(0.0, min(1.0, pm_decision.sell_fraction))
-                    full_exit = sell_fraction >= 1.0
-                    if full_exit:
-                        outcome = order_executor.execute_exit(
-                            broker=broker, symbol=pos.symbol, quantity=pos.quantity,
-                            exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
-                            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-                        )
-                        _apply_exit_outcome(state, outcome)
-                        if outcome.final_state == SignalState.EXECUTED:
-                            state.time_window_position_active = False
-                        result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
-                        return result
-                    sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
-                    remaining_qty = pos.quantity - sell_qty
-                    outcome = order_executor.execute_partial_exit(
-                        broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
-                        exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
-                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-                    )
-                    if outcome.final_state == SignalState.EXECUTED:
-                        state.position.quantity = remaining_qty
-                    result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
-                    return result
-            state.last_evaluated_bar_ts = bar_ts_str
+        if state.time_window_filter_enabled and state.time_window_position_active:
+            # This position is (still) managed by the time-window filter's
+            # own ladder, fully replacing PROFIT_LOCK/QUICK_PROFIT below for
+            # as long as it is held — its STOP_LOSS/TP1/TP2 checks already
+            # ran earlier this tick via _advance_held_position_risk_
+            # management; nothing else in this priority chain should touch
+            # this position (OPPOSITE_SIGNAL is instead handled by the T+3
+            # candidate resolution just above).
             return result
-
-        if current_price is not None:
-            # Stop Loss is evaluated from the completed 3-minute ETF bar
-            # close onward, excluding the bar that contains the entry fill
-            # (docs 2026-08-02 Exit Rule: 3-Minute Confirmed Bars) -- NOT off
-            # this tick's live/instantaneous quote. risk_exit's own -1.5%
-            # threshold (check_stop_loss) is reused unchanged, just fed the
-            # completed-bar close instead of the live quote.
-            completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
-            if completed_bar_close is not None:
-                bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
-                if risk_exit.check_stop_loss(bar_net_return):
-                    outcome = order_executor.execute_exit(
-                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
-                        exit_reason=config.EXIT_STOP_LOSS, entry_price=pos.avg_price,
-                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-                    )
-                    _apply_exit_outcome(state, outcome)
-                    result.actions.append(f"STOP_LOSS:{pos.symbol}")
-                    return result
 
         if state.pending_signal and not state.pending_signal.get("order_requested"):
             pending_dir = Direction(state.pending_signal["direction"])

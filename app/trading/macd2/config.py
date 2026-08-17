@@ -50,12 +50,19 @@ TRADE_SYMBOLS = (LONG_SYMBOL, INVERSE_SYMBOL)
 DEFAULT_BUDGET = 10_000_000.0
 
 # 2026-08-14: user decision to run MU_MACD only for now -- MACD2 auto-trading
-# is hard-disabled here (start()/_auto_recover_worker() both refuse
+# was hard-disabled here (start()/_auto_recover_worker() both refused
 # immediately, regardless of any stale persisted state.auto_trade_on=True
 # left over from before this flag existed) so a redeploy/idle-sleep restart
-# can never silently bring it back. Re-enable by setting
-# MACD2_AUTO_TRADE_HARD_DISABLED=false when MACD2 is wanted again.
-AUTO_TRADE_HARD_DISABLED = _env_bool("MACD2_AUTO_TRADE_HARD_DISABLED", True)
+# could never silently bring it back.
+#
+# 2026-08-15: user decision to reactivate MACD2 (alongside today's 시간대별
+# 최적거래 필터 button/toggle). MACD2 and MU_MACD trade the identical two
+# ETFs in the same KIS account, so app.trading.strategy_ownership now also
+# arbitrates between them directly (MU_MACD added as a third claimant,
+# 2026-08-15) -- see other_strategy_active() below and
+# app/trading/mu_macd/service.py's own matching gate. Set
+# MACD2_AUTO_TRADE_HARD_DISABLED=true to hard-disable again if needed.
+AUTO_TRADE_HARD_DISABLED = _env_bool("MACD2_AUTO_TRADE_HARD_DISABLED", False)
 
 STRATEGY_NAME = "MACD2"
 # 2026-07-27 KIS-parity fix: order authority moved OFF the forming/provisional
@@ -519,10 +526,9 @@ EXIT_QUICK_PROFIT_TAKE_PROFIT = "QUICK_PROFIT_TAKE_PROFIT"
 # Mutually exclusive with the other four entry filters — takes TOP priority
 # in worker._judge_entry_gate when enabled (2026-08-15 사용자 요청: this is
 # the newest, most complete redesign, meant to supersede the simpler
-# entry-only gates when a user opts into it). OFF by default. The MACD2
-# module itself remains hard-disabled (AUTO_TRADE_HARD_DISABLED above) —
-# this only builds/tests the dormant module's logic, it does not re-enable
-# live trading.
+# entry-only gates when a user opts into it). OFF by default — toggled at
+# runtime via the UI checkbox (app/ui/pages/11_MACD_자동매매2.py) /
+# service.set_time_window_filter_enabled(), same as MU_MACD's own toggle.
 TIME_WINDOW_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_FILTER_DEFAULT", False)
 TIME_WINDOW_FILTER_VERSION = "TIME_WINDOW_OPTIMAL_FILTER_V1_20260815"
 TIME_WINDOW_STRATEGY_NAME = "시간대별 최적거래 필터"

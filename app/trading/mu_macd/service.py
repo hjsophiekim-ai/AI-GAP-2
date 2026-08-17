@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
+from app.trading import strategy_ownership
 from app.trading.macd2 import order_executor
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.models import SignalState
@@ -23,6 +24,15 @@ KST = config.KST
 WORKER_INTERVAL_SEC = 2.0
 
 _LOCK = threading.Lock()  # MU_MACD's own in-process lock — never shared with macd2/tsla_auto
+
+
+def other_strategy_active() -> tuple[bool, str]:
+    """2026-08-15: MACD2 and MU_MACD trade the identical two ETF symbols
+    (0193T0/0197X0) in the same KIS account from independent signal sources
+    -- block MU_MACD start() if MACD2 (or Enhanced) is really active, the
+    same way app.trading.macd2.service.other_strategy_active() already
+    blocks MACD2's own start() against MU_MACD (and Enhanced)."""
+    return strategy_ownership.other_owner_active(strategy_ownership.MU_MACD)
 
 
 def _record_manual_signal(
@@ -103,6 +113,19 @@ class MUMacdService:
             # time, so load_today_bars() below picks up right where it left
             # off -- no warmup gap from this handoff.
             self._stop_flags_only()
+
+            # 2026-08-15: refuse to start while MACD2 (or Enhanced) is
+            # really live -- see other_strategy_active()'s own docstring.
+            # Checked here (same relative position macd2.service.start()
+            # itself uses: after the restart-cleanly teardown, before any
+            # state mutation/broker construction) so a blocked start never
+            # half-mutates state.auto_trade_on/worker_started_at first.
+            active, reason = other_strategy_active()
+            if active:
+                state = state_store.load_state()
+                state.order_block_reason = reason
+                state_store.save_state(state)
+                return {"ok": False, "message": reason}
 
             state = state_store.load_state()
             state.mode = mode
