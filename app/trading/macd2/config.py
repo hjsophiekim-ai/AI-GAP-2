@@ -567,7 +567,14 @@ TW_RESET_GAP_CONTRACTION_RATIO = _env_float("MACD2_TW_RESET_GAP_CONTRACTION_RATI
 # 2026-08-15 사용자 요청(승률 개선 튜닝 — 20거래일 백테스트로 검증, 앞/뒤 10일
 # 분할검증 결과 승률 71.4%/63.2%, 총수익 +15.2%/+3.75%로 양쪽 다 양호): 원
 # 스펙 기본값 4에서 3으로 완화. 4는 여전히 환경변수로 원복 가능.
-QUALITY_SCORE_THRESHOLD = _env_int("MACD2_TW_QUALITY_SCORE_THRESHOLD", 3)
+# 2026-08-17 사용자 요청(승률/거래빈도 재튜닝 — 최근 20거래일(07/20~08/14)
+# 백테스트로 검증): 3에서 4로 강화. 최근 20일 기준 승률 51.4%→58.6%(앞10일
+# 55.6%/뒤10일 60.0% — 양쪽 다 개선, 과최적화 아님), 거래빈도 1.85→1.45회/일,
+# 20일 누적수익 39.5%→30.6%, 최대낙폭 5.30%→5.30%. 이전 20일 구간(07/10~08/07)
+# 재검증에서도 승률 개선 확인됨. 거래빈도를 늘리는 모든 시도(오후 세션 개방,
+# 진입한도 상향 등)는 예외 없이 승률을 40%대로 떨어뜨려 반대 효과였음 — 3에서
+# 4로 원복 가능(환경변수).
+QUALITY_SCORE_THRESHOLD = _env_int("MACD2_TW_QUALITY_SCORE_THRESHOLD", 4)
 TW_QUALITY_VOLUME_LOOKBACK_BARS = 5  # "최근 5개 완성봉 평균 거래량" — fixed by spec, not a sweep target
 
 # §10 daily entry counts.
