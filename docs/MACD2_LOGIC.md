@@ -740,18 +740,18 @@ EMA10/EMA20 부근까지 되돌림 후 플래그 방향으로 재출발. 09:45-1
 `time_window_filter.classify_window()`가 결정시각(T+3 봉 마감시각) 기준으로
 분류한다.
 
-- **09:00-09:45**: 플래그 + T+3 유지 + gap 확대, 세 조건만으로 진입(이동평균
-  조건 없음).
-- **09:45-10:20**: 위 조건 + 간격 9분 이상 + `is_valid_reset()==True`(항상).
-- **10:20-10:50**: `calculate_flag_quality_score()`(가격vsEMA10, EMA10vsEMA20,
-  거래량vs최근5봉평균, gap확대, 3분확정 — 0~5점) `>= config.QUALITY_SCORE_
-  THRESHOLD`(기본 4)일 때만 진입. price_ema_ref="ema10".
-- **10:50-13:00**: 신규진입 금지(`REJECT_TIME_WINDOW`). 기존 포지션 관리는
-  계속 동작.
-- **13:00-14:00**: 10:20-10:50과 동일한 점수 게이트, price_ema_ref="ema20".
-- **14:00-15:00**: 가격/EMA20 방향일치(필수) + 위 확정/gap 조건. 오후 두
-  번째 진입은 `is_valid_reset()`도 추가 필수. `TW_AFTERNOON_ENTRY_HARD_
-  CUTOFF`(14:57) 이후는 신규진입 금지(15:00 전 T+3 확정 불가능).
+**2026-08-18부터 (아래 "baseline 재확정" 참고): 창(window) 구분 없이 09:00-
+15:00 전 구간에 동일한 단일 규칙을 적용한다** — `calculate_flag_quality_
+score()`(가격vsEMA10/EMA20, EMA10vsEMA20, 거래량vs최근5봉평균, gap확대,
+3분확정 — 0~5점, W1-W3/W4는 price_ema_ref="ema10", W5/W6/10:50-13:00은
+"ema20") `>= config.QUALITY_SCORE_THRESHOLD`(기본 2)일 때만 진입. 예전에
+있었던 창별 예외(09:00-09:45 품질검사 면제, 09:45-10:20 reset만 확인하고
+점수 미확인, 14:00-15:00 점수 대신 EMA방향 컴포넌트만 확인)는 전부
+제거했다 — 백테스트가 검증한 "게이트 전체 완화" baseline이 모든 창에 동일한
+규칙을 썼는데 실전만 창별 특례를 쓰면 백테스트와 실전이 어긋나기 때문이다
+(`scripts/tw_gate_production_regression_check.py`로 완전 일치 재검증됨).
+`TW_AFTERNOON_ENTRY_HARD_CUTOFF`(14:57) 이후는 여전히 신규진입 금지(15:00
+전 T+3 확정 불가능) — 이건 시간 산술 문제라 창별 특례가 아니다.
 
 하루 진입 횟수: 오전 `MAX_MORNING_ENTRIES`(3), 오후 `MAX_AFTERNOON_ENTRIES`
 (2), 전체 `MAX_DAILY_ENTRIES`(5). `config.ALLOW_PYRAMIDING=False` — 동일
@@ -837,6 +837,39 @@ DUPLICATE_POSITION`/`TIME_WINDOW_PENDING_CONFIRMATION`으로 세분화되어
 "승률 70%대"를 원하면 오전+하락방향(인버스)만 추가로 제한 시 84.2%까지
 오르지만 거래빈도가 하루 1회 미만(0.95회)으로 떨어진다 — 목표 빈도(3~4회)와
 상충하여 기본값에는 반영하지 않았다.
+
+### 2026-08-18 baseline 재확정 — 위 20일 튜닝 대체 (기본값 변경)
+
+위 2026-08-15 튜닝은 20거래일 표본으로만 검증됐다. 사용자 요청으로 시간순
+60%/20%/20% 분할 — TRAIN(34일, 2026-05-27~07-14)/VAL(11일, 07-15~07-30)/
+FINAL OOS(11일, 07-31~08-14, 전략 확정 후 딱 1회만 실행) — 로 과최적화 여부를
+재검증한 결과, 위 튜닝(quality_threshold=3, 오전만 진입)과 그 위에 여러
+데이터기반 필터를 추가한 "최종 전략" 후보들이 전부 VAL 또는 OOS에서 성과가
+무너지거나(과최적화) baseline보다 못한 결과를 보인 반면, **원 스펙에 가까운
+"게이트 전체 완화" baseline**(quality_score>=2, 전 창 동일 적용, 오전+오후
+모두 거래, TP/SL은 원 스펙값 그대로)이 세 구간 전부에서 가장 안정적으로
+플러스였다 — TRAIN PF 1.05/MDD 24.60%, VAL PF 1.32/MDD 11.57%, **FINAL OOS
+PF 1.18/MDD 7.29%/복리 +6.11%/최대연속손실 6회**
+(`data/validation/tw_gate_relaxed_optimization/baseline_vs_final_summary.json`
+의 `baseline` 항목, 상세 거래 348건은 `baseline_vs_final_all_trades.csv`).
+사용자가 이 baseline을 "시간대별 최적거래 필터"의 확정 버전으로 지정했다.
+
+변경된 기본값(전부 환경변수로 이전 값 복원 가능):
+
+- `QUALITY_SCORE_THRESHOLD`: 4 → **2** (`MACD2_TW_QUALITY_SCORE_THRESHOLD`)
+- `TW_MORNING_ONLY`: True → **False** (오후 신규진입 재개)
+- `TW_ALLOW_ENTRY_1050_1300`: 변경 없음(이미 True)
+
+코드 변경(설정값 변경과 별개, 반드시 함께 적용): `time_window_filter.py`의
+`evaluate_time_window_entry`에서 창별 품질검사 특례(W1 면제/W2 reset-only/
+W6 EMA-only, §"시간대별 진입 조건" 참고)를 제거하고 전 창 동일한
+`quality_score >= QUALITY_SCORE_THRESHOLD` 단일 규칙으로 통일했다 — 이
+특례들은 예전부터 있던 코드였지만 이번에 검증한 baseline에는 없던 조건이라,
+설정값만 바꾸면 W1/W2/W6에서 여전히 실전과 백테스트가 어긋났을 것이다.
+`scripts/tw_gate_production_regression_check.py`가 production의 실제
+`evaluate_time_window_entry()`(연구용 재구현이 아닌 진짜 함수)로 TRAIN/VAL/
+OOS를 다시 돌려 위 baseline 수치와 정확히 일치함을 확인한다(entries/day,
+승률, 단순/복리누적, PF, MDD, 최대연속손실 전부 일치).
 
 ### 백테스트
 
