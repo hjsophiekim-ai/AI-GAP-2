@@ -28,6 +28,15 @@ try:
 except Exception:
     pass
 
+# 2026-08-18 사용자 요청: 시간대별 최적거래 필터 검증용 하이닉스/레버리지/인버스
+# 1분봉을 영업일 장 종료 후 16:00(KST)마다 자동 저장 -- 위와 동일한 이유로 auth
+# gate보다 먼저 부팅한다.
+try:
+    from app.services.minute_bar_archive_scheduler import ensure_minute_bar_archive_thread_running
+    ensure_minute_bar_archive_thread_running()
+except Exception:
+    pass
+
 from app.ui.auth_gate import require_login
 require_login()
 

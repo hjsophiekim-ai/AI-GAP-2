@@ -100,6 +100,51 @@ Render 무료 플랜은 ephemeral 파일 시스템입니다.
 `data/`, `logs/`, `models/` 디렉토리에 저장되는 CSV/DB/모델 파일은 재배포 시 초기화됩니다.  
 영구 저장이 필요하면 Render Disk 또는 외부 스토리지(S3 등)를 사용하세요.
 
+`app/utils/data_paths.py`가 이 문제의 표준 해결책입니다 — 환경변수 `AI_GAP_DATA_DIR`이
+설정돼 있으면 그 경로(Render Persistent Disk 마운트 경로, 예: `/var/data`)를 데이터
+루트로 쓰고, 없으면 프로젝트 로컬 `data/`로 되돌아갑니다. **`data/...` 상대경로를
+직접 하드코딩하는 새 코드를 추가하지 마십시오** — 반드시 `app.utils.data_paths`의
+`CACHE_DIR`/`STATE_DIR`/`LOGS_DIR` 등을 import해서 씁니다.
+
+**확인 필요**: Render 대시보드 > 해당 Web Service > Disks 탭에 Persistent Disk가
+연결돼 있고, Environment 탭의 `AI_GAP_DATA_DIR` 값이 그 디스크의 마운트 경로와
+정확히 일치하는지 확인하세요. 연결돼 있지 않으면 거래원장/포지션 상태/아래 1분봉
+아카이브가 전부 재배포 때마다 유실됩니다.
+
+---
+
+## 하이닉스/레버리지/인버스 1분봉 자동 저장 (2026-08-18 추가)
+
+`app.services.minute_bar_archive_scheduler`가 `app/ui/streamlit_app.py` 시작 시
+(다른 백그라운드 스레드들과 동일하게) 자동으로 뜨는 백그라운드 스레드입니다.
+15분마다 깨어나서, 영업일 KST 16:00 이후이고 오늘 날짜가 아직 저장 안 됐으면
+`app.services.minute_bar_archiver.run_archive()`를 호출해 000660(하이닉스)/
+0193T0(레버리지)/0197X0(인버스) 1분봉을 KIS 주식일별분봉조회로 가져와
+`<AI_GAP_DATA_DIR>/cache/replay_<날짜>_{hynix,long,inverse}_1m.csv`에 저장합니다.
+SK MACD2와 MU_MACD는 이 세 종목을 동일하게 거래하므로(MU_MACD가 macd2.config의
+LONG_SYMBOL/INVERSE_SYMBOL을 그대로 import) 두 모듈에 대해 별도로 데이터를 모을
+필요가 없습니다.
+
+안전장치(전부 `tests/test_minute_bar_archiver.py`로 검증됨):
+- 요청한 날짜와 KIS가 실제로 반환한 날짜가 다르면(휴장일 등) 저장하지 않음
+- 3개 종목 중 하나라도 조회 실패 시 그 날짜 전체를 저장하지 않음(부분 저장 없음)
+- 이미 저장된 날짜는 재조회하지 않음(멱등)
+- 서버가 재시작돼도 스레드가 다시 뜨고, 최근 10 영업일 안의 누락분을 자동
+  보충(`LOOKBACK_CALENDAR_DAYS`)하므로 재시작으로 정확히 16:00 트리거 한 번을
+  놓쳐도 다음 체크 주기에 그 날짜가 채워짐
+- 모든 실행 결과(성공/실패)는 `<AI_GAP_DATA_DIR>/state/minute_bar_archive_log.json`에
+  누적 기록됨
+
+수동 실행/백필(예: 10 영업일보다 오래된 날짜):
+```bash
+python scripts/save_daily_minute_bars.py                  # 자동 보충
+python scripts/save_daily_minute_bars.py 20260601 20260602 # 특정 날짜 지정
+```
+
+**주의**: 이 기능은 REAL KIS 클라이언트를 사용합니다(주문은 하지 않는 읽기 전용
+과거 시세 조회) — `KIS_REAL_APP_KEY`/`KIS_REAL_APP_SECRET`가 Render 환경변수에
+설정돼 있어야 동작합니다.
+
 ---
 
 ## 로컬 검증
