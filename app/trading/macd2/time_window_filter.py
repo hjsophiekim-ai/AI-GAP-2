@@ -432,18 +432,58 @@ def evaluate_time_window_entry(
     base_metrics["quality_score"] = quality_score
     base_metrics["quality_detail"] = quality_detail
 
-    # 2026-08-18 사용자 확정 지시: "게이트 전체 완화" baseline은 모든 창(W1-W6)에
-    # quality_score>=QUALITY_SCORE_THRESHOLD를 동일하게 적용해 백테스트됐다 --
-    # 이전의 창별 특례(W1 면제/W2 reset-only/W6 EMA-only)는 백테스트에 없던
-    # 조건이라 실전과 백테스트가 어긋나는 원인이었다. 백테스트와 실전이 반드시
-    # 같은 판단을 하도록 창 구분 없이 단일 규칙으로 통일한다.
-    required_score = float(config.QUALITY_SCORE_THRESHOLD)
-    if quality_score < required_score:
-        return _reject(
-            decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
-            reasons=[f"quality_score {quality_score} < {required_score:.0f}"],
-            score=quality_score, required_score=required_score, metrics=base_metrics,
-        )
+    required_score = 0.0
+    if window == WINDOW_MORNING_2:
+        reset_ok, reset_detail = is_valid_reset(bars_3m, direction, flag_bar_dt)
+        base_metrics.setdefault("reset_detail", reset_detail)
+        if not reset_ok:
+            return _reject(
+                decision=config.TW_REJECT_NO_RESET, block_reason=config.TW_REJECT_NO_RESET,
+                reasons=["W2 requires is_valid_reset() == True"], score=quality_score,
+                metrics=base_metrics,
+            )
+    elif window == WINDOW_MORNING_3:
+        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        if quality_score < required_score:
+            return _reject(
+                decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
+                reasons=[f"quality_score {quality_score} < {required_score:.0f} (W3)"],
+                score=quality_score, required_score=required_score, metrics=base_metrics,
+            )
+    elif window == WINDOW_AFTERNOON_1:
+        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        if quality_score < required_score:
+            return _reject(
+                decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
+                reasons=[f"quality_score {quality_score} < {required_score:.0f} (W5)"],
+                score=quality_score, required_score=required_score, metrics=base_metrics,
+            )
+    elif window == WINDOW_NO_NEW_ENTRY:
+        # Only reachable when TW_ALLOW_ENTRY_1050_1300 is True (opt-in
+        # relaxation, §7 spec default keeps this window closed entirely).
+        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        if quality_score < required_score:
+            return _reject(
+                decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
+                reasons=[f"quality_score {quality_score} < {required_score:.0f} (10:50-13:00 relaxed)"],
+                score=quality_score, required_score=required_score, metrics=base_metrics,
+            )
+    elif window == WINDOW_AFTERNOON_2:
+        if not quality_detail.get("price_vs_ema", False):
+            return _reject(
+                decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
+                reasons=["W6 requires price/EMA20 direction agreement"],
+                score=quality_score, metrics=base_metrics,
+            )
+        if afternoon_entry_count >= 1:
+            reset_ok, reset_detail = is_valid_reset(bars_3m, direction, flag_bar_dt)
+            base_metrics.setdefault("reset_detail", reset_detail)
+            if not reset_ok:
+                return _reject(
+                    decision=config.TW_REJECT_NO_RESET, block_reason=config.TW_REJECT_NO_RESET,
+                    reasons=["2nd afternoon entry requires is_valid_reset() == True"],
+                    score=quality_score, metrics=base_metrics,
+                )
 
     if window in _MORNING_WINDOWS and morning_entry_count >= config.MAX_MORNING_ENTRIES:
         return _reject(

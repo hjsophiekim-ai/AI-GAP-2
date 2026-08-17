@@ -740,16 +740,25 @@ EMA10/EMA20 부근까지 되돌림 후 플래그 방향으로 재출발. 09:45-1
 `time_window_filter.classify_window()`가 결정시각(T+3 봉 마감시각) 기준으로
 분류한다.
 
-**2026-08-18부터 (아래 "baseline 재확정" 참고): 창(window) 구분 없이 09:00-
-15:00 전 구간에 동일한 단일 규칙을 적용한다** — `calculate_flag_quality_
-score()`(가격vsEMA10/EMA20, EMA10vsEMA20, 거래량vs최근5봉평균, gap확대,
-3분확정 — 0~5점, W1-W3/W4는 price_ema_ref="ema10", W5/W6/10:50-13:00은
-"ema20") `>= config.QUALITY_SCORE_THRESHOLD`(기본 2)일 때만 진입. 예전에
-있었던 창별 예외(09:00-09:45 품질검사 면제, 09:45-10:20 reset만 확인하고
-점수 미확인, 14:00-15:00 점수 대신 EMA방향 컴포넌트만 확인)는 전부
-제거했다 — 백테스트가 검증한 "게이트 전체 완화" baseline이 모든 창에 동일한
-규칙을 썼는데 실전만 창별 특례를 쓰면 백테스트와 실전이 어긋나기 때문이다
-(`scripts/tw_gate_production_regression_check.py`로 완전 일치 재검증됨).
+**(2026-08-18 "baseline 재확정" 시도는 아래 절에서 다시 원복됐다 — 이 구간은
+2026-08-18 이전과 동일한 창별 규칙이 현재도 유효하다.)**
+
+- **09:00-09:45**: 플래그 + T+3 유지 + gap 확대, 세 조건만으로 진입(이동평균
+  조건 없음).
+- **09:45-10:20**: 위 조건 + 간격 9분 이상 + `is_valid_reset()==True`(항상).
+- **10:20-10:50**: `calculate_flag_quality_score()`(가격vsEMA10, EMA10vsEMA20,
+  거래량vs최근5봉평균, gap확대, 3분확정 — 0~5점) `>= config.QUALITY_SCORE_
+  THRESHOLD`(기본 4)일 때만 진입. price_ema_ref="ema10".
+- **10:50-13:00**: `TW_ALLOW_ENTRY_1050_1300`(기본 True) 시 위와 동일한
+  점수 게이트로 개방, False면 신규진입 금지(`REJECT_TIME_WINDOW`). 기존
+  포지션 관리는 토글과 무관하게 계속 동작.
+- **13:00-15:00**: `TW_MORNING_ONLY`(기본 True) 시 신규진입 금지 — 13:00
+  이후 confirmed 플래그는 `REJECT_TIME_WINDOW`로 거절된다(기존 보유 포지션의
+  오후 청산 로직은 이 토글과 무관하게 그대로 동작). False로 두면 13:00-14:00은
+  10:20-10:50과 동일한 점수 게이트(price_ema_ref="ema20"), 14:00-15:00은
+  가격/EMA20 방향일치(필수) + 확정/gap 조건(오후 두 번째 진입은
+  `is_valid_reset()`도 추가 필수), `TW_AFTERNOON_ENTRY_HARD_CUTOFF`(14:57)
+  이후는 신규진입 금지.
 `TW_AFTERNOON_ENTRY_HARD_CUTOFF`(14:57) 이후는 여전히 신규진입 금지(15:00
 전 T+3 확정 불가능) — 이건 시간 산술 문제라 창별 특례가 아니다.
 
@@ -870,6 +879,43 @@ W6 EMA-only, §"시간대별 진입 조건" 참고)를 제거하고 전 창 동�
 `evaluate_time_window_entry()`(연구용 재구현이 아닌 진짜 함수)로 TRAIN/VAL/
 OOS를 다시 돌려 위 baseline 수치와 정확히 일치함을 확인한다(entries/day,
 승률, 단순/복리누적, PF, MDD, 최대연속손실 전부 일치).
+
+### 2026-08-18 (같은 날) 재원복 — baseline 재확정 취소, 직전 커밋으로 복귀
+
+위 "baseline 재확정"이 검증한 것은 "창 구분 없는 quality_score>=2, 전 구간
+거래"라는 **한 가지 구조**였을 뿐, 그 구조 자체가 유일한 대안은 아니었다.
+사용자 요청으로 **직전 커밋 버전(quality_threshold=4 + 창별 특례 + 13시
+이후 신규진입 금지)을 코드/설정 어느 것도 바꾸지 않고 그대로** 동일한
+TRAIN(34일)/VAL(11일)/FINAL OOS(11일) 56일 분할에 재실행해 baseline과
+나란히 비교한 결과, **직전 커밋 버전이 세 구간 전부에서 baseline보다
+뚜렷하게 우수했다**:
+
+| 구간 | 전략 | 거래/일 | PF | MDD | 복리누적 |
+|---|---|---|---|---|---|
+| TRAIN | baseline(게이트 전체 완화) | 4.35 | 1.05 | 24.60% | +3.77% |
+| TRAIN | 직전 커밋(13시까지만) | 2.18 | 1.17 | 18.00% | +12.49% |
+| VAL | baseline | 3.55 | 1.32 | 11.57% | +10.04% |
+| VAL | 직전 커밋 | 1.00 | 2.00 | 5.30% | +10.63% |
+| OOS | baseline | 4.18 | 1.18 | 7.29% | +6.11% |
+| OOS | 직전 커밋 | 1.82 | 2.30 | 3.63% | +18.46% |
+
+전체기간 연쇄복리: baseline +21.17% vs 직전 커밋 **+47.42%**
+(`data/validation/tw_gate_relaxed_optimization/prev_commit_vs_current_full_split.json`).
+
+원인: 이번 세션의 체계적 탐색은 전부 "모든 창에 동일한 quality 임계값"이라는
+구조만 스윕했다 (임계값 2/3, 방향별 보너스, flag순번 제한, 진입순번 제외
+등 — 전부 균일 게이트 위에 예외를 추가하는 방식). 직전 커밋의 실제 구조 —
+W1/W2는 품질검사를 사실상 생략하고 W3/W4(10:20-13:00)만 엄격하게(임계값 4)
+거르며 13시 이후는 아예 막는, **창별 비대칭 + 시간대 하드컷** — 은 이
+탐색 범위에 없었던 조합이라 이번에 처음 정량 비교됐다. 결론: "게이트 전체
+완화(균일 규칙)"가 "창별 비대칭 규칙"보다 우월하다는 근거는 없었고, 오히려
+반대였다. `config.QUALITY_SCORE_THRESHOLD`/`TW_MORNING_ONLY`를 4/True로,
+`evaluate_time_window_entry`의 창별 특례(W1 면제/W2 reset-only/W6
+EMA-only)를 직전 커밋 상태로 되돌렸다 — 즉 위 "baseline 재확정" 절의 코드
+변경 부분은 취소됐고, §"시간대별 진입 조건"은 다시 창별 규칙을 서술한다.
+MU_MACD(`app/trading/mu_macd/worker.py`)는 이 함수를 import로만 재사용하므로
+(중복 구현 없음) 같은 되돌림이 MU_MACD에도 자동 적용되며, 두 모듈의 로직은
+항상 동일하다.
 
 ### 백테스트
 

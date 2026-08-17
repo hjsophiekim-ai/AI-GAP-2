@@ -574,14 +574,7 @@ TW_RESET_GAP_CONTRACTION_RATIO = _env_float("MACD2_TW_RESET_GAP_CONTRACTION_RATI
 # 재검증에서도 승률 개선 확인됨. 거래빈도를 늘리는 모든 시도(오후 세션 개방,
 # 진입한도 상향 등)는 예외 없이 승률을 40%대로 떨어뜨려 반대 효과였음 — 3에서
 # 4로 원복 가능(환경변수).
-#
-# 2026-08-18 사용자 확정 지시: 위 20거래일 튜닝은 TRAIN(34일)/VAL(11일)/
-# FINAL OOS(11일, 1회만 실행)로 분리한 엄밀한 재검증에서 과최적화로 판정돼
-# 대체됐다 -- "게이트 전체 완화" baseline(quality_score>=2, 전 창 동일 적용,
-# 오전+오후 모두 거래)이 세 구간 모두에서 더 안정적으로 플러스였다
-# (data/validation/tw_gate_relaxed_optimization/baseline_vs_final_summary.json
-# 의 "baseline" 항목, OOS PF 1.18/MDD 7.29%). 4 -> 2로 원복.
-QUALITY_SCORE_THRESHOLD = _env_int("MACD2_TW_QUALITY_SCORE_THRESHOLD", 2)
+QUALITY_SCORE_THRESHOLD = _env_int("MACD2_TW_QUALITY_SCORE_THRESHOLD", 4)
 TW_QUALITY_VOLUME_LOOKBACK_BARS = 5  # "최근 5개 완성봉 평균 거래량" — fixed by spec, not a sweep target
 
 # §10 daily entry counts.
@@ -638,10 +631,7 @@ TW_ALLOW_ENTRY_1050_1300 = _env_bool("MACD2_TW_ALLOW_ENTRY_1050_1300", True)
 # False). 기존 포지션의 오후 청산 로직(time_window_position_manager.
 # evaluate_afternoon_position)은 이 토글과 무관하게 그대로 동작한다 — 이건
 # 신규 진입만 막는 게이트다.
-#
-# 2026-08-18 사용자 확정 지시: QUALITY_SCORE_THRESHOLD와 동일한 이유로 원복 --
-# baseline("게이트 전체 완화")은 오전+오후 전 구간 거래로 검증됐다. True -> False.
-TW_MORNING_ONLY = _env_bool("MACD2_TW_MORNING_ONLY", False)
+TW_MORNING_ONLY = _env_bool("MACD2_TW_MORNING_ONLY", True)
 
 # Decision / reject-reason labels (§16 debug log examples).
 TW_APPROVED = "TIME_WINDOW_APPROVED"

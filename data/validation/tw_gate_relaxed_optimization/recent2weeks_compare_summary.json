@@ -1,0 +1,50 @@
+{
+  "period": {
+    "dates": [
+      "20260731",
+      "20260803",
+      "20260804",
+      "20260805",
+      "20260806",
+      "20260807",
+      "20260810",
+      "20260811",
+      "20260812",
+      "20260813",
+      "20260814"
+    ],
+    "trading_days": 11
+  },
+  "scenario_1_gate_relaxed_current": {
+    "trading_days": 11,
+    "total_entries": 46,
+    "avg_entries_per_day": 4.182,
+    "morning_entries": 28,
+    "afternoon_entries": 18,
+    "wins": 17,
+    "losses": 29,
+    "win_rate_pct": 36.96,
+    "avg_daily_return_pct": 0.635,
+    "total_simple_cumulative_return_pct": 6.9855,
+    "compounded_cumulative_return_pct": 6.1134,
+    "profit_factor": 1.1816,
+    "max_drawdown_pct": 7.2925,
+    "max_consecutive_losses": 6
+  },
+  "scenario_2_morning_only_previous": {
+    "trading_days": 11,
+    "total_entries": 20,
+    "avg_entries_per_day": 1.818,
+    "morning_entries": 20,
+    "afternoon_entries": 0,
+    "wins": 12,
+    "losses": 8,
+    "win_rate_pct": 60.0,
+    "avg_daily_return_pct": 1.5922,
+    "total_simple_cumulative_return_pct": 17.5139,
+    "compounded_cumulative_return_pct": 18.4588,
+    "profit_factor": 2.3035,
+    "max_drawdown_pct": 3.6343,
+    "max_consecutive_losses": 2
+  }
+}
