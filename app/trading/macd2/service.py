@@ -532,6 +532,32 @@ class Macd2Service:
             "time_window_filter_version": state.time_window_filter_version,
         }
 
+    def set_down_blue_exception_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional "탈락 DOWN_BLUE 예외진입" sub-filter
+        of the time-window optimal trading filter -- a DOWN_BLUE candidate the
+        TW gate itself rejects still gets one extra entry per trading day, no
+        other condition (2026-08-18, backtest rationale in config.py's
+        TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT docstring). Only updates runtime
+        state -- never places orders. Has no effect while time_window_filter_
+        enabled is False (no TW candidates ever exist to reject).
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.down_blue_exception_filter_enabled)
+        state.down_blue_exception_filter_enabled = enabled_bool
+        state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
+        state.down_blue_exception_filter_enabled_at = datetime.now(KST).isoformat()
+        state.down_blue_exception_filter_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "down_blue_exception_filter_enabled": enabled_bool,
+            "previous": prev,
+            "down_blue_exception_filter_enabled_at": state.down_blue_exception_filter_enabled_at,
+            "down_blue_exception_filter_enabled_by": state.down_blue_exception_filter_enabled_by,
+            "down_blue_exception_filter_version": state.down_blue_exception_filter_version,
+        }
+
     def set_quick_profit_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """UI command: toggle the optional Quick-Profit take-profit filter.
 

@@ -297,6 +297,31 @@ with _tw_cols[1]:
             f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
         )
 
+_dbe_cols = st.columns([1.4, 1.6])
+with _dbe_cols[0]:
+    _dbe_on = st.checkbox(
+        "└ 탈락 DOWN_BLUE 예외진입",
+        value=bool(getattr(state, "down_blue_exception_filter_enabled", False)),
+        key="macd2_down_blue_exception_toggle",
+        disabled=not bool(state.time_window_filter_enabled),
+        help=(
+            "시간대별 최적거래 필터가 거절한 DOWN_BLUE 플래그 중, 다른 조건 없이 하루 최대 1회만 추가로 진입합니다. "
+            "56거래일 TRAIN/VAL/OOS 백테스트에서 조건 없이 그대로 허용하는 쪽이 세 구간 모두 일관되게 개선되어 채택됨"
+            "(연쇄복리 69.3%→105.3%). 시간대별 최적거래 필터가 꺼져있으면 효과 없음. 기본 OFF."
+        ),
+    )
+with _dbe_cols[1]:
+    if bool(_dbe_on) != bool(getattr(state, "down_blue_exception_filter_enabled", False)):
+        res = service.set_down_blue_exception_filter_enabled(bool(_dbe_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(f"탈락 DOWN_BLUE 예외진입 → {'ON' if _dbe_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"탈락 DOWN_BLUE 예외진입={'ON' if state.down_blue_exception_filter_enabled else 'OFF'} · "
+            f"오늘 사용={'Y' if getattr(state, 'daily_down_blue_exception_used', False) else '-'}"
+        )
+
 # Re-read after potential command
 snapshot = service.get_snapshot()
 state = snapshot["state"]
@@ -360,6 +385,7 @@ with st.expander("전략 설명"):
 - **리스크**: {macd2_config.FORCE_LIQUIDATE_AT} 강제청산 — 매 tick마다 플래그 발생 여부와 무관하게 확인.
 - **퀵 Profit 익절(옵션, 기본 OFF)**: ON이면 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절 — 확정 플래그와 무관하게 매 tick 확인.
 - **시간대별 최적거래 필터(옵션, 기본 OFF)**: ON이면 다른 진입 로직 대신 이 필터가 진입권한 + 포지션 관리(TP1/TP2/손절 래더)를 모두 담당 — 완성봉 플래그 확정 후 다음 완성 3분봉(T+3)에서 재확인해야만 진입.
+- **└ 탈락 DOWN_BLUE 예외진입(옵션, 기본 OFF, 시간대별 최적거래 필터 하위)**: ON이면 위 필터가 거절한 DOWN_BLUE 플래그 중 하루 최대 1회만 다른 조건 없이 추가로 진입.
 - **09:03 예약 매수(옵션)**: 개장 직후 데이터 부족으로 이른 플래그를 놓치는 문제 대응 — 미리 예약해두면 09:03에 지정 방향 ETF를 자동으로 전량매수(하루 1회).
         """
     )

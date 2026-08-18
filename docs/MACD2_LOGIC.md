@@ -810,6 +810,37 @@ CONFIRMED`/`REJECT_MACD_GAP_NOT_EXPANDING`/`REJECT_LOW_QUALITY_SCORE`/
 DUPLICATE_POSITION`/`TIME_WINDOW_PENDING_CONFIRMATION`으로 세분화되어
 필터 탈락 신호도 이유를 확인할 수 있다.
 
+### 탈락 DOWN_BLUE 예외진입 (2026-08-18, 옵션, 기본 OFF)
+
+시간대별 최적거래 필터가 REJECT한 DOWN_BLUE 플래그만, 다른 조건 없이 하루
+최대 1회 추가로 진입을 허용하는 하위(sub) 토글이다(`config.
+TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT` / `state.down_blue_exception_filter_
+enabled` / `service.set_down_blue_exception_filter_enabled()` / UI의
+"└ 탈락 DOWN_BLUE 예외진입" 체크박스). 시간대별 최적거래 필터 자체가 꺼져
+있으면(`time_window_filter_enabled=False`) 이 토글은 아무 효과가 없다 —
+진입 후보 자체가 생기지 않기 때문이다.
+
+배선 지점은 `worker._resolve_time_window_candidate`의 `evaluate_time_
+window_entry` 거절 분기(`decision.approved=False`) 딱 한 곳이다 — 방향이
+DOWN_BLUE이고, 이 토글이 켜져 있고, 오늘 아직 예외를 안 썼고(`daily_down_
+blue_exception_used`, day rollover 시 리셋되지만 토글 자체는 유지), 현재
+포지션이 없을 때만(기존 TW 포지션을 절대 override/스위치하지 않음) 정상
+거절 경로 대신 승인 처리한다. 진입 이후의 포지션 관리(TP1/TP2/손절 래더,
+`time_window_position_manager`)는 정상 TW 진입과 완전히 동일하다. 신호
+원장에는 `time_window_down_blue_exception_enabled`/`time_window_down_
+blue_exception_applied` 컬럼이 추가되어, 어떤 체결이 이 예외를 통해
+들어왔는지 구분할 수 있다.
+
+56거래일(TRAIN 34/VAL 11/OOS 11) 백테스트에서 검증된 근거
+(`scripts/scratch_down_blue_exception_research.py`): 탈락 DOWN_BLUE를
+조건 없이 그대로 허용하는 쪽이 TRAIN/VAL/OOS 세 구간 전부에서 일관되게
+개선됐다(56일 연쇄복리 69.34%→105.33%, PF 1.38→1.40, MDD 21.25%→21.11%로
+거의 불변). "직전 반대플래그 지속≥45분" 조건을 추가로 요구하는 버전은
+표본이 줄면서 VAL이 오히려 역전(-1.1%p)되어 재현성이 낮다고 판단해 조건
+없이 채택했다 — 이 결과는 해당 56일 구간에서 DOWN_BLUE 방향이 유독 유리했던
+레짐 편향일 가능성이 있어, 다른 기간에도 이 편향이 유지될지는 확정할 수
+없다는 한계가 있다.
+
 ### 2026-08-15 승률 개선 튜닝 (기본값 변경)
 
 초기 스펙 그대로(품질점수 임계 4, 10:50-13:00 신규진입 금지, 오전/오후 모두

@@ -682,6 +682,21 @@ TW_REJECT_TIME_WINDOW = "REJECT_TIME_WINDOW"
 TW_REJECT_MAX_ENTRY_COUNT = "REJECT_MAX_ENTRY_COUNT"
 TW_REJECT_DUPLICATE_POSITION = "REJECT_DUPLICATE_POSITION"
 
+# ── Optional "탈락 DOWN_BLUE 예외진입" (하루 최대 1회) — 2026-08-18 사용자
+# 요청. TW 필터(time_window_filter.evaluate_time_window_entry)가 REJECT한
+# DOWN_BLUE 플래그만, 다른 조건 없이 하루 최대 1회 추가로 진입을 허용한다.
+# 56거래일 TRAIN(34)/VAL(11)/OOS(11) 백테스트에서 검증된 3가지 중 채택된
+# 버전(scripts/scratch_down_blue_exception_research.py variant B):
+#   - "무조건 허용"이 TRAIN/VAL/OOS 세 구간 전부에서 개선 (56일 연쇄복리
+#     69.34%->105.33%, PF 1.38->1.40, MDD 거의 불변 21.25%->21.11%).
+#   - "+직전 반대플래그 지속>=45분" 조건을 추가한 버전은 오히려 VAL이
+#     역전(-1.1%p)되어 재현성이 떨어져 기각 — 조건 없이 채택.
+# TW 필터 자체(time_window_filter_enabled)가 꺼져 있으면 이 토글은 아무
+# 효과가 없다(진입 후보 자체가 생기지 않음). OFF가 기본값.
+TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT = _env_bool("MACD2_TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False)
+TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION = "TW_DOWN_BLUE_EXCEPTION_V1_20260818"
+TW_EXCEPTION_DOWN_BLUE_ENTRY = "TIME_WINDOW_EXCEPTION_DOWN_BLUE_ENTRY"
+
 # Exit-reason labels for the position-management ladder (§11-14).
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
 EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"

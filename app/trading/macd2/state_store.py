@@ -42,6 +42,8 @@ def default_state() -> RuntimeState:
     state.single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
     state.time_window_filter_enabled = bool(getattr(config, "TIME_WINDOW_FILTER_DEFAULT", False))
     state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
+    state.down_blue_exception_filter_enabled = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
+    state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
     state.profit_lock_enabled = bool(getattr(config, "PROFIT_LOCK_DEFAULT_ENABLED", True))
     return state
@@ -298,6 +300,12 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "time_window_tp1_done": bool(state.time_window_tp1_done),
         "time_window_initial_quantity": int(state.time_window_initial_quantity or 0),
         "time_window_peak_net_return": float(state.time_window_peak_net_return or 0.0),
+        "down_blue_exception_filter_enabled": bool(state.down_blue_exception_filter_enabled),
+        "down_blue_exception_filter_enabled_at": state.down_blue_exception_filter_enabled_at,
+        "down_blue_exception_filter_enabled_by": state.down_blue_exception_filter_enabled_by,
+        "down_blue_exception_filter_version": state.down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION,
+        "daily_down_blue_exception_used": bool(state.daily_down_blue_exception_used),
+        "last_down_blue_exception_at": state.last_down_blue_exception_at,
     }
 
 
@@ -341,6 +349,13 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_time_window_filter_version and stored_time_window_filter_version != config.TIME_WINDOW_FILTER_VERSION:
         time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
         time_window_filter_enabled = time_window_enabled_default
+    down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
+    stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
+    down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
+    down_blue_exception_filter_enabled = bool(raw.get("down_blue_exception_filter_enabled", down_blue_exception_enabled_default))
+    if stored_down_blue_exception_filter_version and stored_down_blue_exception_filter_version != config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION:
+        down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
+        down_blue_exception_filter_enabled = down_blue_exception_enabled_default
     major_enabled_default = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
     stored_major_filter_version = str(raw.get("major_filter_version") or "")
     major_filter_version = stored_major_filter_version or config.MAJOR_FILTER_VERSION
@@ -606,6 +621,12 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_tp1_done=bool(raw.get("time_window_tp1_done") or False),
         time_window_initial_quantity=int(raw.get("time_window_initial_quantity") or 0),
         time_window_peak_net_return=float(raw.get("time_window_peak_net_return") or 0.0),
+        down_blue_exception_filter_enabled=down_blue_exception_filter_enabled,
+        down_blue_exception_filter_enabled_at=raw.get("down_blue_exception_filter_enabled_at"),
+        down_blue_exception_filter_enabled_by=raw.get("down_blue_exception_filter_enabled_by"),
+        down_blue_exception_filter_version=down_blue_exception_filter_version,
+        daily_down_blue_exception_used=bool(raw.get("daily_down_blue_exception_used") or False),
+        last_down_blue_exception_at=raw.get("last_down_blue_exception_at"),
     )
 
 

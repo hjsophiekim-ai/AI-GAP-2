@@ -366,6 +366,9 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.time_window_afternoon_entry_count = 0
     state.time_window_pending_flag_direction = None
     state.time_window_pending_flag_bar_ts = None
+    # 탈락 DOWN_BLUE 예외진입(2026-08-18)의 "하루 1회" 소진 플래그도 마찬가지로
+    # session-scoped; 토글(down_blue_exception_filter_enabled)은 그대로 유지.
+    state.daily_down_blue_exception_used = False
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -1801,7 +1804,22 @@ def _resolve_time_window_candidate(
     )
     _persist_time_window_decision(state, decision, signal_id)
 
-    if not decision.approved:
+    # Optional "탈락 DOWN_BLUE 예외진입" (2026-08-18) -- see config.py's
+    # TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT docstring for the backtest
+    # rationale. A DOWN_BLUE candidate the real TW gate above just rejected
+    # (for ANY reason) still gets exactly one extra entry per trading day,
+    # no other condition -- but never while a position is already open
+    # (never overrides/switches an existing TW-managed position; that stays
+    # governed by the real gate only).
+    down_blue_exception_applied = (
+        not decision.approved
+        and state.down_blue_exception_filter_enabled
+        and direction == Direction.DOWN_BLUE
+        and not state.daily_down_blue_exception_used
+        and position is None
+    )
+
+    if not decision.approved and not down_blue_exception_applied:
         state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
         dispatch_trace = {
             "signal_id": signal_id, "direction": direction.value, "signal_type": "TIME_WINDOW_CONFIRM",
@@ -1822,6 +1840,11 @@ def _resolve_time_window_candidate(
         result.actions.append(f"{config.FILTERED_OUT}:{direction.value}")
         return None
 
+    if down_blue_exception_applied:
+        state.daily_down_blue_exception_used = True
+        state.last_down_blue_exception_at = datetime.now(KST).isoformat()
+        result.actions.append(f"{config.TW_EXCEPTION_DOWN_BLUE_ENTRY}:{direction.value}")
+
     signal_detected_at = datetime.now(KST)
     result.signal_detected_at = signal_detected_at.isoformat()
     signal_type = "REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL"
@@ -1830,7 +1853,9 @@ def _resolve_time_window_candidate(
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
         signal_detected_at=signal_detected_at,
     )
-    result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, "TIME_WINDOW")
+    result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(
+        state, decision, "TIME_WINDOW", down_blue_exception_applied=down_blue_exception_applied,
+    )
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
 
     if outcome is not None and outcome.final_state == SignalState.EXECUTED:
@@ -1841,6 +1866,11 @@ def _resolve_time_window_candidate(
         # signal_id is not separately appended here.
         _apply_switch_outcome(state, outcome, direction, now)
         window = decision.metrics.get("window") if decision.metrics else None
+        if window is None:
+            # A rejected decision (down_blue_exception_applied path) may not
+            # have classified a window at all -- e.g. an early reject like
+            # macd_signal_not_held short-circuits before window lookup.
+            window = time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
         session = time_window_filter.session_for_window(window)
         state.time_window_position_active = True
         state.time_window_entry_session = session
@@ -2048,7 +2078,9 @@ def _single_entry_ledger_fields(state: RuntimeState, decision: Optional[MajorFla
     return row
 
 
-def _time_window_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+def _time_window_ledger_fields(
+    state: RuntimeState, decision: Optional[MajorFlagDecision] = None, *, down_blue_exception_applied: bool = False,
+) -> dict[str, Any]:
     """time_window_* ledger columns — mirrors the other filters' _*_ledger_
     fields pattern. metrics carries the two-bar gap_flag/gap_now/window/
     session values computed by time_window_filter.evaluate_time_window_entry
@@ -2057,6 +2089,8 @@ def _time_window_ledger_fields(state: RuntimeState, decision: Optional[MajorFlag
     row: dict[str, Any] = {
         "time_window_filter_enabled": bool(state.time_window_filter_enabled),
         "time_window_filter_version": state.time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION,
+        "time_window_down_blue_exception_enabled": bool(state.down_blue_exception_filter_enabled),
+        "time_window_down_blue_exception_applied": bool(down_blue_exception_applied),
         "time_window_score": "",
         "time_window_required_score": "",
         "time_window_approved": "",
@@ -2093,7 +2127,7 @@ def _time_window_ledger_fields(state: RuntimeState, decision: Optional[MajorFlag
 
 
 def _entry_gate_ledger_fields(
-    state: RuntimeState, decision: Optional[MajorFlagDecision], mode: str,
+    state: RuntimeState, decision: Optional[MajorFlagDecision], mode: str, *, down_blue_exception_applied: bool = False,
 ) -> dict[str, Any]:
     """Merge major_*, sideways_*, trend_persistence_*, single_entry_*, and
     time_window_* ledger columns for one signal row.
@@ -2108,7 +2142,9 @@ def _entry_gate_ledger_fields(
     sideways_fields = _sideways_ledger_fields(state, decision if mode == "SIDEWAYS" else None)
     trend_persistence_fields = _trend_persistence_ledger_fields(state, decision if mode == "TREND_PERSISTENCE" else None)
     single_entry_fields = _single_entry_ledger_fields(state, decision if mode == "SINGLE_ENTRY" else None)
-    time_window_fields = _time_window_ledger_fields(state, decision if mode == "TIME_WINDOW" else None)
+    time_window_fields = _time_window_ledger_fields(
+        state, decision if mode == "TIME_WINDOW" else None, down_blue_exception_applied=down_blue_exception_applied,
+    )
     merged = dict(major_fields)
     for key, value in sideways_fields.items():
         if key in _MAJOR_METRIC_LEDGER_KEYS:

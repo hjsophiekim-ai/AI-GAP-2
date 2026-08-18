@@ -12,7 +12,7 @@ import pytest
 
 from app.trading.macd2 import config, ledger, state_store, worker
 from app.trading.macd2.market_data import MarketDataService
-from app.trading.macd2.models import Direction, RuntimeState
+from app.trading.macd2.models import Direction, MajorFlagDecision, RuntimeState
 from app.trading.macd2.worker import run_once
 from tests.macd2.fake_broker import FakeBroker
 
@@ -175,3 +175,107 @@ def test_no_lookahead_run_once_only_uses_bars_up_to_now(tw_market_data):
         "a run that later sees more of the day's bars must not have altered "
         "any decision already made for an earlier tick"
     )
+
+
+# ── 탈락 DOWN_BLUE 예외진입 (2026-08-18) ────────────────────────────────────
+def _rejected_decision(block_reason: str = config.TW_REJECT_LOW_QUALITY_SCORE) -> MajorFlagDecision:
+    return MajorFlagDecision(
+        approved=False, score=1.0, required_score=4.0, decision=block_reason,
+        reasons=(block_reason,), component_scores={}, metrics={}, is_reversal=False,
+        fast_reversal=False, block_reason=block_reason,
+    )
+
+
+def _prime_pending(state: RuntimeState, direction: Direction, *, before: datetime) -> None:
+    state.time_window_pending_flag_direction = direction
+    state.time_window_pending_flag_bar_ts = before.isoformat()
+
+
+def test_down_blue_exception_off_by_default_leaves_rejected_flag_filtered_out(tw_market_data, monkeypatch):
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    assert state.down_blue_exception_filter_enabled is False  # default OFF, matches config.TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    _prime_pending(state, Direction.DOWN_BLUE, before=_PRIOR_DAY)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert f"{config.FILTERED_OUT}:DOWN_BLUE" in result.actions
+    assert not any(a.startswith(config.TW_EXCEPTION_DOWN_BLUE_ENTRY) for a in result.actions)
+    assert broker.orders == []
+    assert state.daily_down_blue_exception_used is False
+
+
+def test_down_blue_exception_on_enters_a_rejected_down_blue_flag_once(tw_market_data, monkeypatch):
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.down_blue_exception_filter_enabled = True
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    _prime_pending(state, Direction.DOWN_BLUE, before=_PRIOR_DAY)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert f"{config.TW_EXCEPTION_DOWN_BLUE_ENTRY}:DOWN_BLUE" in result.actions
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
+    assert state.daily_down_blue_exception_used is True
+    assert state.position is not None and state.position.symbol == config.INVERSE_SYMBOL
+
+    # a SECOND rejected DOWN_BLUE candidate the same day must NOT fire again
+    broker2 = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    _prime_pending(state, Direction.DOWN_BLUE, before=_PRIOR_DAY + timedelta(minutes=3))
+    result2 = run_once(broker=broker2, market_data=svc, state=state, now=now0 + timedelta(minutes=3))
+    assert not any(a.startswith(config.TW_EXCEPTION_DOWN_BLUE_ENTRY) for a in result2.actions)
+
+
+def test_down_blue_exception_never_applies_to_up_red(tw_market_data, monkeypatch):
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.down_blue_exception_filter_enabled = True
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    _prime_pending(state, Direction.UP_RED, before=_PRIOR_DAY)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert f"{config.FILTERED_OUT}:UP_RED" in result.actions
+    assert not any(a.startswith(config.TW_EXCEPTION_DOWN_BLUE_ENTRY) for a in result.actions)
+    assert broker.orders == []
+    assert state.daily_down_blue_exception_used is False
+
+
+def test_down_blue_exception_never_overrides_an_already_open_position(tw_market_data, monkeypatch):
+    """Per design, the exception only ever fires while flat -- it never
+    switches/overrides a position the real TW gate already opened."""
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.down_blue_exception_filter_enabled = True
+    state.position = worker.PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=1, avg_price=15_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    _prime_pending(state, Direction.DOWN_BLUE, before=_PRIOR_DAY)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert not any(a.startswith(config.TW_EXCEPTION_DOWN_BLUE_ENTRY) for a in result.actions)
+    assert state.daily_down_blue_exception_used is False
+
+
+def test_day_rollover_resets_down_blue_exception_daily_flag_but_not_toggle():
+    state = _fresh_state()
+    state.down_blue_exception_filter_enabled = True
+    state.session_date = "20260105"
+    state.daily_down_blue_exception_used = True
+
+    worker._apply_day_rollover(state, datetime(2026, 1, 6, 9, 0, tzinfo=KST))
+
+    assert state.daily_down_blue_exception_used is False
+    assert state.down_blue_exception_filter_enabled is True  # the toggle itself survives rollover
+
+
+def test_default_state_has_down_blue_exception_off():
+    state = state_store.default_state()
+    assert state.down_blue_exception_filter_enabled is False

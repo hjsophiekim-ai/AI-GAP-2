@@ -507,3 +507,15 @@ class RuntimeState:
     time_window_tp1_done: bool = False
     time_window_initial_quantity: int = 0
     time_window_peak_net_return: float = 0.0
+
+    # Optional "탈락 DOWN_BLUE 예외진입" (2026-08-18 사용자 요청) — a sub-toggle
+    # of the TW filter (meaningless when time_window_filter_enabled is False):
+    # a DOWN_BLUE candidate the TW gate itself REJECTS still gets one extra
+    # entry per day, no other condition. daily_down_blue_exception_used is
+    # session-scoped (reset on day rollover); the toggle itself survives.
+    down_blue_exception_filter_enabled: bool = False
+    down_blue_exception_filter_enabled_at: Optional[str] = None
+    down_blue_exception_filter_enabled_by: Optional[str] = None
+    down_blue_exception_filter_version: str = ""
+    daily_down_blue_exception_used: bool = False
+    last_down_blue_exception_at: Optional[str] = None
