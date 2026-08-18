@@ -113,6 +113,32 @@ def _session_end_dt(date: str) -> datetime:
 
 
 def detect_confirmed_flags(bars_3m: pd.DataFrame, current_date: str) -> list[tuple[int, Direction]]:
+    """Mirrors app/trading/macd2/worker.py's REAL two-part day-boundary
+    behavior exactly (found broken here 2026-08-18 -- see below):
+
+    1. ``_advance_confirmed_primary`` never dispatches a flag on the first
+       completed bar it evaluates on a new calendar date (its own docstring:
+       "any zero-crossing [there] is an overnight-gap artifact, not an
+       intraday reversal") -- that bar sets a direction baseline only.
+    2. Separately, worker.py's day-rollover handling (~line 316-330) resets
+       ``state.last_detected_direction = None`` at the start of every new
+       trading day -- so the SECOND bar of the day evaluates against a fresh
+       ``None`` baseline, never against yesterday's lingering direction.
+
+    The version of this function before 2026-08-18 only implemented (1) (skip
+    the first bar of the day) WITHOUT (2) (reset previous_direction) --
+    ``previous_direction`` was a single loop-local variable that kept
+    whatever value it held from the PRIOR day's last flag. That combination
+    is strictly worse than doing nothing: on a real trading day it swallowed
+    that day's genuine first flag (via the skip) AND then, via the stale
+    cross-day previous_direction, also swallowed the very next real flag
+    whenever it happened to match yesterday's last direction (verified: a
+    real day with 6 true flags -- the first at 09:00 legitimately suppressed
+    by rule (1), same as production -- was reported as only 5, additionally
+    losing the 09:51 flag to stale dedup). Restoring part (2) here (one
+    added line, `previous_direction = None` on the day-boundary branch)
+    reproduces production's actual behavior instead.
+    """
     flags: list[tuple[int, Direction]] = []
     previous_direction: Optional[Direction] = None
     last_bar_date: Optional[str] = None
@@ -124,7 +150,8 @@ def detect_confirmed_flags(bars_3m: pd.DataFrame, current_date: str) -> list[tup
         is_first_of_day = last_bar_date is None or bar_date != last_bar_date
         last_bar_date = bar_date
         if is_first_of_day:
-            continue
+            previous_direction = None  # mirrors worker.py's day-rollover state reset
+            continue  # mirrors _advance_confirmed_primary's is_first_of_day: never dispatches
         direction = evaluate_macd_crossover(snap, previous_direction)
         if direction in (Direction.UP_RED, Direction.DOWN_BLUE):
             previous_direction = direction
