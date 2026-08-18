@@ -210,6 +210,31 @@ with _tw_cols[1]:
             f"포지션관리 활성={'Y' if status['time_window_position_active'] else '-'}"
         )
 
+_dbe_cols = st.columns([1.4, 1.6])
+with _dbe_cols[0]:
+    _dbe_on = st.checkbox(
+        "└ TW 1 blue",
+        value=bool(status["down_blue_exception_filter_enabled"]),
+        key="mu_macd_down_blue_exception_toggle",
+        disabled=not bool(status["time_window_filter_enabled"]),
+        help=(
+            "시간대별 최적거래 필터가 거절한 DOWN_BLUE 플래그 중, 다른 조건 없이 하루 최대 1회만 추가로 진입합니다. "
+            "app.trading.macd2의 동일 기능(56거래일 TRAIN/VAL/OOS 백테스트로 검증)과 완전히 동일한 조건/로직입니다. "
+            "시간대별 최적거래 필터가 꺼져있으면 효과 없음. 기본 OFF."
+        ),
+    )
+with _dbe_cols[1]:
+    if bool(_dbe_on) != bool(status["down_blue_exception_filter_enabled"]):
+        res = service.set_down_blue_exception_filter_enabled(bool(_dbe_on))
+        if res.get("ok"):
+            st.caption(f"TW 1 blue → {'ON' if _dbe_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"TW 1 blue={'ON' if status['down_blue_exception_filter_enabled'] else 'OFF'} · "
+            f"오늘 사용={'Y' if status['daily_down_blue_exception_used'] else '-'}"
+        )
+
 st.subheader("WebSocket / Warm-up 상태")
 w1, w2, w3, w4 = st.columns(4)
 w1.metric("WS 연결", "OK" if status["ws_connected"] else "끊김")
@@ -268,6 +293,7 @@ with st.expander("전략 설명"):
 - **신규진입 차단 조건**(청산에는 영향 없음): WS 끊김/stale(>{mu_config.WS_STALE_MAX_SEC}s), 웜업 3분봉 {mu_config.WARMUP_MIN_3M_BARS}개 미달, 09:00 이전/{mu_config.NEW_ENTRY_CUTOFF} 이후, {mu_config.MIDDAY_ENTRY_PAUSE_START}~{mu_config.MIDDAY_ENTRY_PAUSE_END} 점심시간 신규진입 휴식, 사용자가 "신규진입 일시정지"를 켠 경우.
 - **점심시간 신규진입 휴식(고정 스케줄)**: {mu_config.MIDDAY_ENTRY_PAUSE_START}~{mu_config.MIDDAY_ENTRY_PAUSE_END}에는 신규 진입(플랫 진입, 반대 플래그의 재매수)만 막힘 — 이 시간에 반대 플래그가 뜨면 보유 포지션은 평소처럼 전량 매도되지만 재매수는 하지 않음. {mu_config.MIDDAY_ENTRY_PAUSE_END} 이후 다시 정상적으로 신규 진입.
 - **신규진입 일시정지(옵션, 기본 OFF)**: MU 시세 수집·3분봉 MACD 플래그 판정·신호 원장 기록·손절/퀵프로핏/강제청산/reconcile은 전부 그대로 동작 — 새 매수(플랫 진입, 반대 플래그의 재매수)만 막힘. 자동매매 자체를 끄는 "자동매매 중지"와 달리 데이터 수집/웜업은 끊기지 않음.
+- **└ TW 1 blue(옵션, 기본 OFF, 시간대별 최적거래 필터 하위)**: ON이면 위 필터가 거절한 DOWN_BLUE 플래그 중 하루 최대 1회만 다른 조건 없이 추가로 진입. app.trading.macd2의 동일 기능과 완전히 동일한 조건/로직.
 - **REAL 모드 재시작 시 안전장치**: 서버 재시작(재배포/idle-sleep) 후에는 REAL 계좌 인증이 자동으로 복구되지 않음(확인 문구 재입력 필요) — MOCK만 자동 복구됨. 다만 MU 시세 수집·플래그 감지는 REAL이어도 인증 없이 계속 동작(위 경고 배너 참고) — 단 이 동안은 reconcile/손절/퀵프로핏/강제청산 등 실제 포지션 보호는 전혀 이뤄지지 않으니, 실전 포지션이 있다면 최대한 빨리 다시 로그인해야 함.
         """
     )

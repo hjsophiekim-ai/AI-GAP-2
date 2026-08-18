@@ -68,6 +68,9 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.time_window_afternoon_entry_count = 0
     state.time_window_pending_flag_direction = None
     state.time_window_pending_flag_bar_ts = None
+    # "TW 1 blue" 예외진입(2026-08-19)의 "하루 1회" 소진 플래그도 마찬가지로
+    # session-scoped; 토글(down_blue_exception_filter_enabled)은 그대로 유지.
+    state.daily_down_blue_exception_used = False
 
 
 def _should_reconcile(state: RuntimeState, now: datetime) -> bool:
@@ -453,13 +456,33 @@ def _advance_time_window_filter(
     state.last_time_window_decision = decision.decision
     state.last_time_window_block_reason = decision.block_reason
 
-    if not decision.approved:
+    # Optional "TW 1 blue" 예외진입 (2026-08-19) -- mirrors app.trading.macd2's
+    # own down_blue_exception_filter_enabled sub-toggle exactly (same
+    # conditions/logic, see that module's config.py for the backtest
+    # rationale this was ported from). A DOWN_BLUE candidate the real TW
+    # gate above just rejected (for ANY reason) still gets exactly one extra
+    # entry per trading day, no other condition -- but never while a
+    # position is already open (never overrides/switches an existing
+    # TW-managed position; that stays governed by the real gate only).
+    down_blue_exception_applied = (
+        not decision.approved
+        and state.down_blue_exception_filter_enabled
+        and direction == Direction.DOWN_BLUE
+        and not state.daily_down_blue_exception_used
+        and not (pos is not None and pos.quantity > 0)
+    )
+
+    if not decision.approved and not down_blue_exception_applied:
         _record_signal(
             state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
             macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
             signal_type=signal_type, order_result="BLOCKED", block_reason=decision.block_reason,
         )
         return f"TW_REJECTED:{direction.value}:{decision.decision}"
+
+    if down_blue_exception_applied:
+        state.daily_down_blue_exception_used = True
+        state.last_down_blue_exception_at = now.astimezone(KST).isoformat()
 
     target_symbol = order_executor.target_symbol_for_direction(direction)
 
@@ -533,12 +556,17 @@ def _advance_time_window_filter(
         state.time_window_stop_loss_bar_ts = _entry_bar_start.isoformat()
         state.time_window_stop_loss_bar_close = state.position.avg_price
         window = decision.metrics.get("window") if decision.metrics else None
+        if window is None:
+            # A rejected decision (down_blue_exception_applied path) may not
+            # have classified a window at all -- e.g. an early reject like
+            # macd_signal_not_held short-circuits before window lookup.
+            window = twf.classify_window(macd_snap.bar_dt.astimezone(KST).time())
         session = twf.session_for_window(window)
         if session == "MORNING":
             state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
         elif session == "AFTERNOON":
             state.time_window_afternoon_entry_count = int(state.time_window_afternoon_entry_count or 0) + 1
-        return f"TW_ENTRY:{direction.value}"
+        return f"TW_ENTRY_VIA_DOWN_BLUE_EXCEPTION:{direction.value}" if down_blue_exception_applied else f"TW_ENTRY:{direction.value}"
     return f"TW_ENTRY_BLOCKED:{direction.value}"
 
 

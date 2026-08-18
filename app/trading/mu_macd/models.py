@@ -116,6 +116,20 @@ class RuntimeState:
     last_time_window_decision: Optional[str] = None
     last_time_window_block_reason: Optional[str] = None
 
+    # ── Optional "TW 1 blue" 예외진입 (2026-08-19) — a sub-toggle of the TW
+    # filter (meaningless when time_window_filter_enabled is False): a
+    # DOWN_BLUE candidate the TW gate itself REJECTS still gets one extra
+    # entry per day, no other condition. Mirrors app.trading.macd2's own
+    # down_blue_exception_filter_enabled field exactly (same conditions/logic,
+    # ported here per user request). daily_down_blue_exception_used is
+    # session-scoped (reset on day rollover); the toggle itself survives.
+    down_blue_exception_filter_enabled: bool = False
+    down_blue_exception_filter_enabled_at: Optional[str] = None
+    down_blue_exception_filter_enabled_by: Optional[str] = None
+    down_blue_exception_filter_version: str = ""
+    daily_down_blue_exception_used: bool = False
+    last_down_blue_exception_at: Optional[str] = None
+
 
 @dataclass
 class TickResult:

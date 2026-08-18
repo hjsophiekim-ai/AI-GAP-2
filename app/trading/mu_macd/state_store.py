@@ -34,6 +34,8 @@ def default_state() -> RuntimeState:
     state.auto_trade_on = config.AUTO_TRADE_ON_DEFAULT
     state.quick_profit_enabled = config.QUICK_PROFIT_ENABLED_DEFAULT
     state.time_window_filter_enabled = config.TIME_WINDOW_FILTER_ENABLED_DEFAULT
+    state.down_blue_exception_filter_enabled = config.TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT
+    state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
     return state
 
 

@@ -268,3 +268,13 @@ EXIT_TW_TP2_FULL = "MU_MACD_TW_TP2_FULL"
 EXIT_TW_AFTER_TP1_STOP = "MU_MACD_TW_AFTER_TP1_STOP"
 EXIT_TW_TRAILING_STOP = "MU_MACD_TW_TRAILING_STOP"
 BLOCK_TW_PENDING_CONFIRMATION = "MU_MACD_TW_PENDING_CONFIRMATION"
+
+# ── Optional "TW 1 blue" 예외진입 (하루 최대 1회) — 2026-08-19 사용자 요청,
+# app.trading.macd2의 동일한 기능(config.TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT,
+# 2026-08-18, 56거래일 TRAIN/VAL/OOS 백테스트로 검증됨 -- 그 모듈의 주석 참고)을
+# MU_MACD에 동일한 조건/로직으로 그대로 이식한 것 -- 이 필터(time_window_filter_
+# enabled)가 거절한 DOWN_BLUE 플래그만, 다른 조건 없이 하루 최대 1회 추가로
+# 진입을 허용한다. TW 필터 자체가 꺼져 있으면 이 토글은 아무 효과가 없다.
+# OFF가 기본값.
+TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT = _env_bool("MU_MACD_TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False)
+TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION = "TW_1_BLUE_V1_20260819"

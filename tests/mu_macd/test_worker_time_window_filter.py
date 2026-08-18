@@ -448,3 +448,156 @@ def test_entry_paused_still_sells_opposite_held_position_when_tw_filter_is_on(mo
     assert state.time_window_position_active is False
     assert config.INVERSE_SYMBOL not in broker._positions
     assert config.LONG_SYMBOL not in broker._positions  # paused -- no re-buy happened
+
+
+# ── "TW 1 blue" 예외진입 (2026-08-19) -- ported from app.trading.macd2's own
+# down_blue_exception_filter_enabled with identical conditions/logic. The
+# flat-then-ramp fixture only ever crosses UP_RED naturally, so these tests
+# manually prime state.time_window_pending_flag_direction to DOWN_BLUE
+# (bypassing a real crossover) and resolve it on a later tick where the
+# fixture's OWN natural confirmed_direction is HOLD (no real crossover there
+# to clobber the manually-primed candidate) -- mirrors tests/macd2/
+# test_worker_time_window.py's own _prime_pending technique.
+def _rejected_decision(block_reason: str = "REJECT_LOW_QUALITY_SCORE"):
+    from app.trading.macd2.models import MajorFlagDecision
+
+    return MajorFlagDecision(
+        approved=False, score=1.0, required_score=4.0, decision=block_reason,
+        reasons=(block_reason,), component_scores={}, metrics={}, is_reversal=False,
+        fast_reversal=False, block_reason=block_reason,
+    )
+
+
+def _prime_down_blue_pending(state, *, resolve_at) -> None:
+    """Primes a pending DOWN_BLUE candidate whose flag bar_dt is exactly one
+    completed 3m bar before ``resolve_at``'s own completed bar_dt (this
+    fixture's minute grid means bar_dt(T) == T - 3min, so the bar strictly
+    BEFORE that one starts 6 minutes before T) -- calling
+    run_once(..., now=resolve_at) resolves it on that exact call, matching
+    _advance_time_window_filter's own "macd_snap.bar_dt == flag_bar_dt: wait"
+    check. Also seeds state.session_date to resolve_at's own date -- a fresh
+    state's session_date is None, and run_once's FIRST call is always
+    _apply_day_rollover(state, now), which treats None as "new day" and
+    wipes time_window_pending_flag_direction/_bar_ts right back out before
+    ever reaching _advance_time_window_filter."""
+    state.session_date = resolve_at.astimezone(KST).strftime("%Y%m%d")
+    state.time_window_pending_flag_direction = Direction.DOWN_BLUE.value
+    state.time_window_pending_flag_bar_ts = (resolve_at - timedelta(minutes=6)).isoformat()
+
+
+def test_down_blue_exception_off_by_default_leaves_rejected_flag_filtered_out(monkeypatch):
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now1
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    state = _fresh_state_with_tw_enabled()
+    assert state.down_blue_exception_filter_enabled is False  # default OFF
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    _prime_down_blue_pending(state, resolve_at=now1)
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)
+
+    assert any(a.startswith("TW_REJECTED:DOWN_BLUE") for a in result.actions)
+    assert not any(a.startswith("TW_ENTRY_VIA_DOWN_BLUE_EXCEPTION") for a in result.actions)
+    assert broker.orders == []
+    assert state.daily_down_blue_exception_used is False
+
+
+def test_down_blue_exception_on_enters_a_rejected_down_blue_flag_once(monkeypatch):
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now1
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    state = _fresh_state_with_tw_enabled()
+    state.down_blue_exception_filter_enabled = True
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    _prime_down_blue_pending(state, resolve_at=now1)
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)
+
+    assert any(a.startswith("TW_ENTRY_VIA_DOWN_BLUE_EXCEPTION:DOWN_BLUE") for a in result.actions)
+    assert state.daily_down_blue_exception_used is True
+    assert state.position is not None and state.position.symbol == config.INVERSE_SYMBOL
+
+    # a SECOND rejected DOWN_BLUE candidate the same day must NOT fire again
+    now2 = now1 + timedelta(minutes=3)
+    svc.ws_last_tick_at = now2
+    _prime_down_blue_pending(state, resolve_at=now2)
+    result2 = worker.run_once(broker=broker, market_data=svc, state=state, now=now2)
+    assert not any(a.startswith("TW_ENTRY_VIA_DOWN_BLUE_EXCEPTION") for a in result2.actions)
+
+
+def test_down_blue_exception_never_applies_to_up_red(monkeypatch):
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now1
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    state = _fresh_state_with_tw_enabled()
+    state.down_blue_exception_filter_enabled = True
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    state.session_date = now1.astimezone(KST).strftime("%Y%m%d")
+    state.time_window_pending_flag_direction = Direction.UP_RED.value
+    state.time_window_pending_flag_bar_ts = (now1 - timedelta(minutes=6)).isoformat()
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)
+
+    assert any(a.startswith("TW_REJECTED:UP_RED") for a in result.actions)
+    assert not any(a.startswith("TW_ENTRY_VIA_DOWN_BLUE_EXCEPTION") for a in result.actions)
+    assert broker.orders == []
+    assert state.daily_down_blue_exception_used is False
+
+
+def test_down_blue_exception_never_overrides_an_already_open_position(monkeypatch):
+    """Per design, the exception only ever fires while flat -- it never
+    switches/overrides a position the real TW gate already opened."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now1
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    broker.buy_market(config.LONG_SYMBOL, 1, "seed-order")
+    state = _fresh_state_with_tw_enabled()
+    state.down_blue_exception_filter_enabled = True
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=1, avg_price=15_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision())
+    _prime_down_blue_pending(state, resolve_at=now1)
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)
+
+    assert not any(a.startswith("TW_ENTRY_VIA_DOWN_BLUE_EXCEPTION") for a in result.actions)
+    assert state.daily_down_blue_exception_used is False
+
+
+def test_day_rollover_resets_down_blue_exception_daily_flag_but_not_toggle():
+    state = state_store.default_state()
+    state.down_blue_exception_filter_enabled = True
+    state.session_date = "20260105"
+    state.daily_down_blue_exception_used = True
+
+    worker._apply_day_rollover(state, datetime(2026, 1, 6, 9, 0, tzinfo=KST))
+
+    assert state.daily_down_blue_exception_used is False
+    assert state.down_blue_exception_filter_enabled is True  # the toggle itself survives rollover
+
+
+def test_default_state_has_down_blue_exception_off():
+    state = state_store.default_state()
+    assert state.down_blue_exception_filter_enabled is False

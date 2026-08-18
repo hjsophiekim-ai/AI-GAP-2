@@ -227,6 +227,36 @@ class MUMacdService:
             state_store.save_state(state)
         return {"ok": True, "time_window_filter_enabled": enabled_bool, "previous": prev}
 
+    def set_down_blue_exception_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional "TW 1 blue" sub-filter of the
+        time-window optimal trading filter -- a DOWN_BLUE candidate the TW
+        gate itself rejects still gets one extra entry per trading day, no
+        other condition (2026-08-19, ported from app.trading.macd2's own
+        down_blue_exception_filter_enabled with identical conditions/logic --
+        see that module's config.py for the backtest rationale). Only updates
+        runtime state -- never places orders. Has no effect while time_window_
+        filter_enabled is False (no TW candidates ever exist to reject).
+        Shares _LOCK with _run_loop for the same reason set_quick_profit_
+        enabled does.
+        """
+        with _LOCK:
+            state = state_store.load_state()
+            enabled_bool = bool(enabled)
+            prev = bool(state.down_blue_exception_filter_enabled)
+            state.down_blue_exception_filter_enabled = enabled_bool
+            state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
+            state.down_blue_exception_filter_enabled_at = datetime.now(KST).isoformat()
+            state.down_blue_exception_filter_enabled_by = str(changed_by or "ui")
+            state_store.save_state(state)
+        return {
+            "ok": True,
+            "down_blue_exception_filter_enabled": enabled_bool,
+            "previous": prev,
+            "down_blue_exception_filter_enabled_at": state.down_blue_exception_filter_enabled_at,
+            "down_blue_exception_filter_enabled_by": state.down_blue_exception_filter_enabled_by,
+            "down_blue_exception_filter_version": state.down_blue_exception_filter_version,
+        }
+
     def set_entry_paused(self, enabled: bool) -> dict[str, Any]:
         """UI command: pause/resume NEW entries only (2026-08-14) -- MU price
         collection (WS/1m bars), the worker tick loop, MACD flag detection/
@@ -560,6 +590,8 @@ class MUMacdService:
             "last_time_window_score": state.last_time_window_score,
             "last_time_window_decision": state.last_time_window_decision,
             "last_time_window_block_reason": state.last_time_window_block_reason,
+            "down_blue_exception_filter_enabled": state.down_blue_exception_filter_enabled,
+            "daily_down_blue_exception_used": state.daily_down_blue_exception_used,
         }
 
 
