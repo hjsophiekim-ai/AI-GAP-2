@@ -624,6 +624,25 @@ AFTERNOON_PROFIT_LOCK_STOP = _env_float("MACD2_TW_AFTERNOON_PROFIT_LOCK_STOP", 0
 # §15 중복 진입 방지.
 ALLOW_PYRAMIDING = _env_bool("MACD2_TW_ALLOW_PYRAMIDING", False)
 
+# 2026-08-18 사용자 요청: 원래 스펙(§1)은 플래그 확정 bar T에서 order 권한을
+# 안 주고, 한 bar(T+3) 더 기다려 MACD-Signal gap이 실제로 더 벌어졌는지 재확인
+# 한 뒤에만 진입한다 — 이 "한 bar 대기"가 진입을 너무 늦춰 승률/수익을 깎는다는
+# 지적. True면 evaluate_time_window_entry_immediate()(gap 재확인 없이 flag
+# bar T 자신의 데이터만으로 판단)가 대신 쓰인다.
+# scripts/tw_gate_immediate_entry_research.py로 TRAIN(34)/VAL(11)/OOS(11)
+# 검증: "gap 확장 재확인" 대신 gap/ATR 비율(decisive-cross)이나 MACD 가속도로
+# 약한 크로스를 거르는 두 후보 모두 어떤 임계값에서도 필터 없음(0.0)보다
+# 나빴다(TRAIN에서 진입수/누적수익/PF 전부 하락) -- 이 두 leading indicator는
+# 실제로 나쁜 플래그를 걸러내지 못하고 좋은 진입까지 함께 쳐냈다. 필터 없이
+# 즉시진입만 했을 때는 TRAIN/VAL에서 기존 T+3 대비 누적수익·PF가 개선됐지만,
+# 진짜 holdout인 OOS(11일)에서는 승률 60%->50%/PF 2.46->1.64/MDD 3.6%->5.7%로
+# 오히려 악화됐다 -- 아직 프로덕션에 자신있게 켤 만큼 검증되지 않았다는 뜻이라
+# 기본은 False로 유지. TW_IMMEDIATE_MIN_GAP_ATR_RATIO은 0.0(비활성 -- 필터
+# 없음이 테스트한 것 중 최선이었으므로)이 기본이며, 더 나은 leading filter가
+# 검증되기 전까지 이 값을 올리는 것은 TRAIN 결과만으로도 역효과가 확인됨.
+TW_IMMEDIATE_ENTRY_ENABLED = _env_bool("MACD2_TW_IMMEDIATE_ENTRY_ENABLED", False)
+TW_IMMEDIATE_MIN_GAP_ATR_RATIO = _env_float("MACD2_TW_IMMEDIATE_MIN_GAP_ATR_RATIO", 0.0)
+
 # 2026-08-15 사용자 요청 (승률/완화 튜닝 — 20거래일 백테스트로 검증): 기본을
 # True로 변경 — 이 구간도 W3/W5와 동일한 quality-score 게이트(QUALITY_SCORE_
 # THRESHOLD, EMA20 기준)로 진입을 허용한다. 원 스펙(§7, 이 구간 전면 금지)은
