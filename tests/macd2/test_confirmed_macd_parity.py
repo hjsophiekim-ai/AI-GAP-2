@@ -192,7 +192,7 @@ def test_golden_2026_08_03_confirmed_flags_match_kis_chart_exactly():
         snap = calculate_macd(bars_3m.iloc[: idx + 1])
         if snap is None:
             continue
-        direction = _advance_confirmed_primary(state, snap)
+        direction = _advance_confirmed_primary(state, snap, now)
         if direction == Direction.HOLD:
             continue
         produced.append((snap.bar_dt.strftime("%H:%M"), direction.value))

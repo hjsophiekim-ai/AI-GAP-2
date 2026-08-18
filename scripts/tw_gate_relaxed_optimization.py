@@ -113,31 +113,25 @@ def _session_end_dt(date: str) -> datetime:
 
 
 def detect_confirmed_flags(bars_3m: pd.DataFrame, current_date: str) -> list[tuple[int, Direction]]:
-    """Mirrors app/trading/macd2/worker.py's REAL two-part day-boundary
-    behavior exactly (found broken here 2026-08-18 -- see below):
+    """Mirrors app/trading/macd2/worker.py's REAL day-boundary behavior
+    exactly (2026-08-18 second fix -- see worker.py's _advance_confirmed_
+    primary docstring for the full writeup).
 
-    1. ``_advance_confirmed_primary`` never dispatches a flag on the first
-       completed bar it evaluates on a new calendar date (its own docstring:
-       "any zero-crossing [there] is an overnight-gap artifact, not an
-       intraday reversal") -- that bar sets a direction baseline only.
-    2. Separately, worker.py's day-rollover handling (~line 316-330) resets
-       ``state.last_detected_direction = None`` at the start of every new
-       trading day -- so the SECOND bar of the day evaluates against a fresh
-       ``None`` baseline, never against yesterday's lingering direction.
-
-    The version of this function before 2026-08-18 only implemented (1) (skip
-    the first bar of the day) WITHOUT (2) (reset previous_direction) --
-    ``previous_direction`` was a single loop-local variable that kept
-    whatever value it held from the PRIOR day's last flag. That combination
-    is strictly worse than doing nothing: on a real trading day it swallowed
-    that day's genuine first flag (via the skip) AND then, via the stale
-    cross-day previous_direction, also swallowed the very next real flag
-    whenever it happened to match yesterday's last direction (verified: a
-    real day with 6 true flags -- the first at 09:00 legitimately suppressed
-    by rule (1), same as production -- was reported as only 5, additionally
-    losing the 09:51 flag to stale dedup). Restoring part (2) here (one
-    added line, `previous_direction = None` on the day-boundary branch)
-    reproduces production's actual behavior instead.
+    Old (pre-2026-08-18) behavior forced HOLD on the first completed bar of
+    every new calendar date, on the theory that a zero-crossing spanning
+    yesterday's last bar into today's first is always an overnight-gap
+    artifact rather than a genuine reversal. Real KIS has no "trading day"
+    concept at all -- it is one continuous EMA/MACD line -- so a large
+    genuine overnight-gap crossing DOES show up as a real KIS flag (verified
+    2026-08-18: a +5.53% gap produced a real 09:00 UP_RED KIS flag this used
+    to silently swallow). The gate is now removed entirely: every completed
+    bar, including the day's first, is evaluated the same way via
+    evaluate_macd_crossover. ``previous_direction`` is still reset to None
+    on the day-boundary branch (mirrors worker.py's separate day-rollover
+    reset of ``state.last_detected_direction``), so the first crossover of a
+    new day is never suppressed as a stale repeat of yesterday's last
+    direction -- it just now actually dispatches instead of being forced to
+    HOLD.
     """
     flags: list[tuple[int, Direction]] = []
     previous_direction: Optional[Direction] = None
@@ -151,7 +145,6 @@ def detect_confirmed_flags(bars_3m: pd.DataFrame, current_date: str) -> list[tup
         last_bar_date = bar_date
         if is_first_of_day:
             previous_direction = None  # mirrors worker.py's day-rollover state reset
-            continue  # mirrors _advance_confirmed_primary's is_first_of_day: never dispatches
         direction = evaluate_macd_crossover(snap, previous_direction)
         if direction in (Direction.UP_RED, Direction.DOWN_BLUE):
             previous_direction = direction

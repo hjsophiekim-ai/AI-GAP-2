@@ -196,7 +196,15 @@ def test_prior_day_last_down_blue_with_no_today_bar_orders_zero(monkeypatch):
     assert ledger.load_signal_ledger() == []
 
 
-def test_first_completed_bar_after_prior_day_baseline_is_baseline_only(monkeypatch):
+def test_first_completed_bar_of_new_day_with_genuine_crossover_now_dispatches(monkeypatch):
+    """2026-08-18 fix: a day's first completed bar used to be forced to
+    baseline-only (see git history), which silently swallowed a genuine
+    overnight-gap-driven crossover — verified against a real KIS chart read
+    the gate used to miss. The bar's own date (today) matches ``now``'s date
+    and it has actually completed by ``now``, so it now dispatches like any
+    other bar; only a bar that's still anchored to a PRIOR date (see
+    test_prior_day_last_*_with_no_today_bar_orders_zero below) stays
+    baseline-only."""
     state = _primed_state(baseline_bar_dt=datetime(2026, 7, 23, 15, 27, tzinfo=KST))
     state.session_date = "20260724"
     svc = _svc()
@@ -207,15 +215,11 @@ def test_first_completed_bar_after_prior_day_baseline_is_baseline_only(monkeypat
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
 
-    assert result.actions == []
-    assert broker.orders == []
-    assert ledger.load_signal_ledger() == []
+    assert result.actions == ["ENTRY:DOWN_BLUE"]
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.INVERSE_SYMBOL)]
+    assert [r["direction"] for r in ledger.load_signal_ledger()] == ["DOWN_BLUE"]
     assert state.last_confirmed_bar_ts == first_bar.isoformat()
-    # 6a2fd07 known-good baseline gate: a day-boundary bar sets ONLY
-    # last_confirmed_bar_ts (so the next NEW bar is a same-day continuation)
-    # — it never seeds last_detected_direction from the baseline bar's own
-    # color, since previous_diff there can span yesterday's close.
-    assert state.last_detected_direction is None
+    assert state.last_detected_direction == Direction.DOWN_BLUE
 
 
 def test_before_first_completed_today_bar_orders_zero(monkeypatch):
@@ -242,10 +246,13 @@ def test_today_date_and_completed_bar_date_mismatch_creates_no_signal(monkeypatc
     assert ledger.load_signal_ledger() == []
 
 
-def test_first_ever_evaluated_bar_sets_baseline_without_ordering(monkeypatch):
-    """docs 2026-07-27 Primary flag §2: the first completed bar this state
-    has ever evaluated sets direction baseline only, even when its own
-    diff would otherwise read as a crossover — never dispatched."""
+def test_first_ever_evaluated_bar_with_genuine_crossover_now_dispatches(monkeypatch):
+    """2026-08-18 fix (see test_first_completed_bar_of_new_day_with_genuine_
+    crossover_now_dispatches above): the first completed bar this state has
+    EVER evaluated is treated the same as any other same-day bar once its
+    own date matches ``now``'s date and it has actually completed — a real
+    crossover on it now dispatches instead of being forced to baseline-only
+    HOLD."""
     bar_dt = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
     now = bar_dt + timedelta(minutes=3)
     svc = _svc()
@@ -255,10 +262,11 @@ def test_first_ever_evaluated_bar_sets_baseline_without_ordering(monkeypatch):
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now)
 
-    assert result.actions == []
-    assert broker.orders == []
-    assert ledger.load_signal_ledger() == []
+    assert result.actions == ["ENTRY:UP_RED"]
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
+    assert [r["direction"] for r in ledger.load_signal_ledger()] == ["UP_RED"]
     assert state.last_confirmed_bar_ts == bar_dt.isoformat()
+    assert state.last_detected_direction == Direction.UP_RED
 
 
 def test_five_continuous_up_red_condition_bars_create_one_red_flag(monkeypatch):

@@ -1327,40 +1327,65 @@ def _execute_or_wait(
     return outcome
 
 
-def _advance_confirmed_primary(state: RuntimeState, macd_snap) -> Direction:
+def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) -> Direction:
     """Primary (order-authoritative) crossover — completed 3m bars ONLY
-    (docs 2026-07-27 KIS-parity fix; restored 2026-08-03 to the exact
-    known-good rule from commit 6a2fd07, which ran unmodified 2026-07-28
-    through 2026-07-30 and reproduces the 2026-08-03 KIS chart's 14
-    confirmed flags exactly — see docs/MACD2_LOGIC.md for the git-archaeology
-    writeup. The 2026-07-31 color+regime/debounce rewrite that briefly
-    replaced this was found to under-detect real KIS flags by ~85% and is
-    removed; do not reintroduce color-state/regime/pending debounce here):
-    previous_diff/current_diff come solely from calculate_macd(bars_3m), the
-    same confirmed MACD(12,26,9) KIS itself charts a flag on for a completed
-    bar. Evaluated exactly once per new completed-bar timestamp — a repeat
-    tick against the same bar_dt is always HOLD here, regardless of
-    direction.
+    (docs 2026-07-27 KIS-parity fix; restored 2026-08-03 to the known-good
+    zero-line-crossing rule from commit 6a2fd07 — see docs/MACD2_LOGIC.md
+    for the git-archaeology writeup. The 2026-07-31 color+regime/debounce
+    rewrite that briefly replaced this was found to under-detect real KIS
+    flags by ~85% and is removed; do not reintroduce color-state/regime/
+    pending debounce here): previous_diff/current_diff come solely from
+    calculate_macd(bars_3m), the same confirmed MACD(12,26,9) KIS itself
+    charts a flag on for a completed bar. Evaluated exactly once per new
+    completed-bar timestamp — a repeat tick against the same bar_dt is
+    always HOLD here, regardless of direction.
 
-    The very first completed bar this state has ever evaluated (or the
-    first one on a NEW calendar date relative to the previously evaluated
-    bar) sets direction baseline only, never dispatches: previous_diff there
-    can span across a trading-day gap (yesterday's last bar vs. today's
-    first), so any zero-crossing is an overnight-gap artifact, not an
-    intraday reversal. It is also never counted toward the repeat-direction
-    suppression state, so a genuine later same-direction crossing still
-    fires normally.
+    2026-08-18 fix: this used to force HOLD (baseline-only, never dispatch)
+    on the first completed bar evaluated on a new CALENDAR DATE relative to
+    the PREVIOUSLY EVALUATED bar, on the theory that any such zero-crossing
+    is always an overnight-gap artifact rather than a genuine reversal. Real
+    KIS has no such "trading day" concept at all — it is one continuous
+    EMA/MACD line — so a large genuine overnight-gap crossing DOES show up
+    as a real flag on KIS (verified against the user's own KIS chart read on
+    2026-08-18: a +5.53% gap produced a real 09:00 UP_RED flag that this
+    gate silently swallowed; confirmed against the 2026-08-03 golden day too
+    — the narrower replacement check below does not change that day's
+    14-flag count, since 08-03 had no bar-1 crossing to begin with).
+
+    That gate conflated two different things and only one of them should
+    still block dispatch:
+      - genuinely stale data: ``macd_snap`` is still anchored to a PRIOR
+        calendar date's last bar because today's own first bar hasn't
+        completed yet (e.g. 09:00:00-09:02:59, before any of today's 3m
+        bars exist) — dispatching off that would trade on yesterday's
+        close, not today's market. This is a real trading-day-boundary
+        risk and is still blocked, now checked directly against ``now``
+        (the actual current tick time) rather than against whatever bar
+        this particular state object last happened to evaluate.
+      - a genuine same-day reversal that merely happens to be the first
+        bar this state has evaluated today — this is exactly the case the
+        old gate wrongly swallowed and is now allowed to dispatch like any
+        other bar.
+      A defense-in-depth twin of the same idea also blocks a bar that
+      technically hasn't closed yet as of ``now`` (bar_dt + 3min > now) —
+      this can't happen via the real resample_completed_3m -> calculate_macd
+      pipeline (it only ever returns bars already closed by ``now``), but
+      costs nothing to guard directly here too.
+
+    ``state.last_detected_direction`` is still reset to None on every day
+    rollover (``_apply_day_rollover``), so the first crossover of a new day
+    is still never suppressed as a stale repeat of yesterday's last
+    direction. (MU_MACD's own worker.py never had the old blanket gate to
+    begin with — see app/trading/mu_macd/worker.py's run_once — so this
+    brings SK-MACD2 in line with it.)
     """
     bar_key = macd_snap.bar_dt.isoformat()
     if state.last_confirmed_bar_ts == bar_key:
         return Direction.HOLD
-    prior_bar_ts = state.last_confirmed_bar_ts
     state.last_confirmed_bar_ts = bar_key
-    is_first_of_day = True
-    if prior_bar_ts:
-        prior_dt = _parse_iso_dt(prior_bar_ts)
-        is_first_of_day = prior_dt is None or prior_dt.astimezone(KST).date() != macd_snap.bar_dt.astimezone(KST).date()
-    if is_first_of_day:
+    now_kst = now.astimezone(KST)
+    bar_kst = macd_snap.bar_dt.astimezone(KST)
+    if bar_kst.date() != now_kst.date() or bar_kst + timedelta(minutes=3) > now_kst:
         return Direction.HOLD
     direction = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
     if direction != Direction.HOLD:
@@ -2576,9 +2601,11 @@ def run_once(
     # ── Primary (order-authoritative): completed 3m bars ONLY — same
     # confirmed MACD(12,26,9) KIS itself charts a flag on (docs 2026-07-27
     # KIS-parity fix). Evaluated exactly once per new completed-bar
-    # timestamp; the first completed bar this state has ever evaluated (or
-    # the first on a new calendar date) sets baseline only.
-    confirmed_direction = _advance_confirmed_primary(state, macd_snap)
+    # timestamp; a bar not actually dated today (per `now`) or not yet
+    # closed sets baseline only — see _advance_confirmed_primary's own
+    # docstring (2026-08-18 fix) for why a genuine same-day first bar no
+    # longer does.
+    confirmed_direction = _advance_confirmed_primary(state, macd_snap, now)
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
 
