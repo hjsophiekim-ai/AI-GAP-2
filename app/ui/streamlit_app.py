@@ -37,6 +37,17 @@ try:
 except Exception:
     pass
 
+# 2026-08-18 사용자 요청: "시간대별 최적거래 필터" 즉시진입 하이브리드 연구
+# 후보(scripts/tw_gate_hybrid_immediate_before10_research.py)를 실거래에는
+# 연결하지 않고, 매일 새로 쌓이는 실제 1분봉으로 현재 T+3 방식과 나란히
+# shadow forward-test만 기록한다 -- 완전히 read-only, 실거래 상태/원장/주문에
+# 관여하지 않는다(app.services.tw_shadow_forward_test 자체 로그 파일에만 씀).
+try:
+    from app.services.tw_shadow_forward_test import ensure_tw_shadow_forward_test_thread_running
+    ensure_tw_shadow_forward_test_thread_running()
+except Exception:
+    pass
+
 from app.ui.auth_gate import require_login
 require_login()
 
