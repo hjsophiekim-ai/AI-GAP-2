@@ -64,8 +64,8 @@ def _seed_held_position(state, *, symbol: str, entry_price: float, quantity: int
     state.stop_loss_bar_close = entry_price
 
 
-def test_quick_profit_threshold_default_is_2_percent():
-    assert config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT == 2.0
+def test_quick_profit_threshold_default_is_2pt5_percent():
+    assert config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT == 2.5
 
 
 def test_quick_profit_no_longer_has_minute_high_state_fields():
@@ -78,18 +78,18 @@ def test_quick_profit_no_longer_has_minute_high_state_fields():
 
 
 def test_quick_profit_fires_immediately_off_live_tick_no_memory_needed():
-    """A single tick whose live quote already clears +2.0% exits immediately
+    """A single tick whose live quote already clears +2.5% exits immediately
     -- no prior "remembered peak" tick is required (unlike the old design)."""
     prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
     df_1m = _1m_frame(prior_day, _sine_1m_closes(300))
     now = prior_day + timedelta(minutes=300, seconds=5)
     entry_price = 15_000.0
 
-    quote_prices = {config.LONG_SYMBOL: entry_price * 1.021}  # +2.1%, first tick ever for this position
+    quote_prices = {config.LONG_SYMBOL: entry_price * 1.026}  # +2.6%, first tick ever for this position
     svc = _svc_with_quote(df_1m, now, quote_prices)
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: entry_price})
     broker.buy_market(config.LONG_SYMBOL, 10, "seed")
-    broker.set_quote(config.LONG_SYMBOL, entry_price * 1.021)
+    broker.set_quote(config.LONG_SYMBOL, entry_price * 1.026)
 
     state = _fresh_state()
     state.quick_profit_enabled = True
@@ -109,11 +109,11 @@ def test_quick_profit_below_threshold_does_not_exit():
     now = prior_day + timedelta(minutes=300, seconds=5)
     entry_price = 15_000.0
 
-    quote_prices = {config.LONG_SYMBOL: entry_price * 1.019}  # +1.9% -- below 2.0%
+    quote_prices = {config.LONG_SYMBOL: entry_price * 1.024}  # +2.4% -- below 2.5%
     svc = _svc_with_quote(df_1m, now, quote_prices)
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: entry_price})
     broker.buy_market(config.LONG_SYMBOL, 10, "seed")
-    broker.set_quote(config.LONG_SYMBOL, entry_price * 1.019)
+    broker.set_quote(config.LONG_SYMBOL, entry_price * 1.024)
 
     state = _fresh_state()
     state.quick_profit_enabled = True
@@ -192,11 +192,11 @@ def test_quick_profit_toggled_on_mid_holding_sells_immediately_next_tick():
     now = prior_day + timedelta(minutes=300, seconds=5)
     entry_price = 15_000.0
 
-    quote_prices = {config.LONG_SYMBOL: entry_price * 1.025}
+    quote_prices = {config.LONG_SYMBOL: entry_price * 1.026}
     svc = _svc_with_quote(df_1m, now, quote_prices)
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: entry_price})
     broker.buy_market(config.LONG_SYMBOL, 10, "seed")
-    broker.set_quote(config.LONG_SYMBOL, entry_price * 1.025)
+    broker.set_quote(config.LONG_SYMBOL, entry_price * 1.026)
 
     state = _fresh_state()
     state.quick_profit_enabled = False  # was OFF while the position ran up
@@ -261,11 +261,11 @@ def test_quick_profit_applies_to_manually_entered_position(monkeypatch):
         state.quick_profit_enabled = True
         state_store.save_state(state)
 
-        # Price spikes past +2.0% -- the next Worker tick (using the SAME
+        # Price spikes past +2.5% -- the next Worker tick (using the SAME
         # run_once path manual_entry's position now flows through) must
         # sell immediately, exactly like an automatically-entered position.
-        quotes[config.LONG_SYMBOL] = avg_price * 1.025
-        fake_broker.set_quote(config.LONG_SYMBOL, avg_price * 1.025)
+        quotes[config.LONG_SYMBOL] = avg_price * 1.026
+        fake_broker.set_quote(config.LONG_SYMBOL, avg_price * 1.026)
         market_data = svc._market_data
         market_data.refresh_quotes()
 

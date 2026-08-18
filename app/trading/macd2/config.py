@@ -510,7 +510,8 @@ SINGLE_ENTRY_SCORE_BELOW_THRESHOLD = "SINGLE_ENTRY_SCORE_BELOW_THRESHOLD"
 # 전환된 바로 다음 tick부터(직전 이력과 무관하게) 즉시 이 조건으로 판정한다 —
 # 이미 보유 중인 포지션이 이미 조건을 만족한 상태라면 그 tick에 바로 매도된다.
 QUICK_PROFIT_FILTER_DEFAULT = _env_bool("MACD2_QUICK_PROFIT_FILTER_DEFAULT", False)
-QUICK_PROFIT_TAKE_PROFIT_NET_PCT = _env_float("MACD2_QUICK_PROFIT_TAKE_PROFIT_NET_PCT", 2.0)
+# 2026-08-18 사용자 요청: 문턱을 2.0%->2.5%로 상향.
+QUICK_PROFIT_TAKE_PROFIT_NET_PCT = _env_float("MACD2_QUICK_PROFIT_TAKE_PROFIT_NET_PCT", 2.5)
 EXIT_QUICK_PROFIT_TAKE_PROFIT = "QUICK_PROFIT_TAKE_PROFIT"
 
 # ── Optional "시간대별 최적거래 필터" (Time-Window Optimal Trading Filter) —
