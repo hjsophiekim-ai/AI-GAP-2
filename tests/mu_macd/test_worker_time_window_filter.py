@@ -323,7 +323,7 @@ def test_tw_stop_loss_still_fires_normally_once_warmup_is_ready():
     quotes = {config.LONG_SYMBOL: 1_000.0, config.INVERSE_SYMBOL: 10_000.0}
     broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
-    broker.set_quote(config.LONG_SYMBOL, 984.0)  # -1.6% net return -- past MORNING_STOP_LOSS (-1.5%)
+    broker.set_quote(config.LONG_SYMBOL, 982.0)  # -1.8% net return -- past MORNING_STOP_LOSS (-1.7%)
 
     # 2026-08-18 fix: seed a completed bar (closed at the stop-loss-crossing
     # price) two bars into the past so this one run_once() call evaluates it.
@@ -331,7 +331,7 @@ def test_tw_stop_loss_still_fires_normally_once_warmup_is_ready():
     state = _fresh_state_with_tw_enabled()
     state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=entered_at)
     state.time_window_position_active = True
-    _seed_tw_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=984.0)
+    _seed_tw_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=982.0)
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0 + timedelta(seconds=1))
 

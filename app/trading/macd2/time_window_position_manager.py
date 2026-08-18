@@ -53,7 +53,7 @@ def evaluate_morning_position(
 ) -> PositionManagementDecision:
     """§11-12 morning ladder.
 
-    < TP1 (3.0%): plain stop-loss at MORNING_STOP_LOSS (-1.5%).
+    < TP1 (3.0%): plain stop-loss at MORNING_STOP_LOSS (-1.7%).
     >= TP1, not yet taken: sell MORNING_TP1_SELL_RATIO (50%), remaining
       quantity's stop rises to MORNING_AFTER_TP1_STOP (+0.3%).
     after TP1: once peak-since-entry reaches MORNING_TRAILING_TRIGGER

@@ -774,8 +774,11 @@ STOP_LOSS(-1.5% 고정)/PROFIT_LOCK/QUICK_PROFIT 체크를 완전히 대체한�
 3분봉은 제외하고 그다음 완성 3분봉 종가부터 평가한다(`_advance_stop_loss_bar`
 재사용, 기존 STOP_LOSS와 동일한 관행).
 
-- **오전** (`evaluate_morning_position`): `< +2.5%`이면 손절 `MORNING_STOP_
-  LOSS`(-1.5%). `+2.5%`(`MORNING_TP1`) 도달 & 미실현 시 `MORNING_TP1_SELL_
+- **오전** (`evaluate_morning_position`): `< +3.0%`이면 손절 `MORNING_STOP_
+  LOSS`(-1.7%, 2026-08-18 -1.5%→-1.7%로 완화 — TRAIN/VAL/OOS 분리 스윕에서
+  -1.65~-1.75% 구간 전체가 안정적으로 우세했고 그중 -1.7%가 세 구간 모두
+  고르게 좋아 채택). `+3.0%`(`MORNING_TP1`, 2026-08-18 2.5%→3.0%로 상향)
+  도달 & 미실현 시 `MORNING_TP1_SELL_
   RATIO`(50%) 분할매도, 잔량 stop을 `MORNING_AFTER_TP1_STOP`(+0.3%)로 상향.
   이후 peak(진입 이후 최고수익률)가 `MORNING_TRAILING_TRIGGER`(+3.5%) 도달
   시 잔량 stop을 `MORNING_TRAILING_STOP`(+2.0%)로 재상향. `+5.0%`

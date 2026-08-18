@@ -607,7 +607,17 @@ MAX_DAILY_ENTRIES = _env_int("MACD2_TW_MAX_DAILY_ENTRIES", 5)
 MORNING_TP1 = _env_float("MACD2_TW_MORNING_TP1", 0.03)
 MORNING_TP1_SELL_RATIO = _env_float("MACD2_TW_MORNING_TP1_SELL_RATIO", 0.50)
 MORNING_TP2 = _env_float("MACD2_TW_MORNING_TP2", 0.05)
-MORNING_STOP_LOSS = _env_float("MACD2_TW_MORNING_STOP_LOSS", -0.015)
+#   4차(현재, 2026-08-18): 손절을 -1.5%->-1.7%로 완화 — 완성 3분봉 종가 기준
+#     TRAIN(34일)/VAL(11일)/OOS(11일)을 나눠 -1.55~-1.80% 스윕한 결과,
+#     -1.65~-1.75% 구간 전체가 세 구간 모두에서 -1.5%대보다 승률/복리수익/PF가
+#     고르게 좋았고(단일 최고점이 아니라 구간 전체가 안정적), 그중 -1.7%가
+#     TRAIN 2위·VAL 1위·OOS 2위로 어느 한 구간에도 치우치지 않아 과최적화
+#     위험이 가장 낮았다. MDD는 VAL/OOS에서 소폭(1%p 미만) 상승, 최대연속손실은
+#     전 구간에서 불변. MU_MACD도 이 모듈(time_window_position_manager)을 그대로
+#     import해서 쓰므로 이 상수 하나의 변경이 SK-MACD2/MU_MACD 양쪽에 모두
+#     적용된다 -- MU_MACD 자체의 (별도) 비-TW-필터 기본 손절(config.
+#     STOP_LOSS_NET_PCT)은 이 필터가 검증 대상으로 삼은 적이 없어 그대로 둔다.
+MORNING_STOP_LOSS = _env_float("MACD2_TW_MORNING_STOP_LOSS", -0.017)
 MORNING_AFTER_TP1_STOP = _env_float("MACD2_TW_MORNING_AFTER_TP1_STOP", 0.003)
 MORNING_TRAILING_TRIGGER = _env_float("MACD2_TW_MORNING_TRAILING_TRIGGER", 0.035)
 MORNING_TRAILING_STOP = _env_float("MACD2_TW_MORNING_TRAILING_STOP", 0.020)

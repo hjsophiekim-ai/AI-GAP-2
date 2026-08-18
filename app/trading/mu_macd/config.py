@@ -256,7 +256,7 @@ BLOCK_REAL_BROKER_NOT_AUTHENTICATED = "MU_MACD_REAL_BROKER_NOT_AUTHENTICATED"
 # crossover enters immediately" flat-entry/reversal logic with macd2's own
 # two-bar (T -> T+3) delayed confirmation + per-window quality-score gate,
 # and replaces the plain STOP_LOSS(-1.5%)/QUICK_PROFIT(optional) exit check
-# with macd2's own morning position-management ladder (STOP_LOSS -1.5%,
+# with macd2's own morning position-management ladder (STOP_LOSS -1.7%,
 # TP1 +3.0%/50% partial, ratcheted stops, TP2 +5.0% full) for any position
 # this filter itself opened. MIDDAY_ENTRY_PAUSE/NEW_ENTRY_CUTOFF/
 # FORCE_LIQUIDATE_AT above are UNCHANGED and still apply on top.

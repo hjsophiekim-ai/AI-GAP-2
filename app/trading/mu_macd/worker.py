@@ -341,7 +341,7 @@ def _advance_time_window_position_management(
     *, broker, state: RuntimeState, pos: Optional[PositionSnapshot], now: datetime,
 ) -> Optional[str]:
     """Position-management half of the time-window filter — a position THIS
-    filter opened manages its own STOP_LOSS(-1.5%)/TP1(+3.0%-50%)/ratcheted-
+    filter opened manages its own STOP_LOSS(-1.7%)/TP1(+3.0%-50%)/ratcheted-
     stop/TP2(+5.0%) ladder via app.trading.macd2.time_window_position_
     manager.evaluate_morning_position (import only, same as everywhere else
     in this integration).
