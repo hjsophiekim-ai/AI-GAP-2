@@ -131,6 +131,7 @@ class MUMacdService:
             state.mode = mode
             state.budget = budget
             state.auto_trade_on = True
+            state.order_block_reason = None
             state.worker_instance_id = uuid.uuid4().hex[:12]
             state.worker_started_at = datetime.now(KST).isoformat()
             state_store.save_state(state)

@@ -591,12 +591,19 @@ MAX_DAILY_ENTRIES = _env_int("MACD2_TW_MAX_DAILY_ENTRIES", 5)
 #     구조라 실제 aug-10~14 아웃오브샘플 5일에서는 승률 54.5%까지만 내려가도
 #     순수익이 마이너스(-1.07%)로 뒤집혔다(사용자 지적: "평균 손절이 더 크니까
 #     당연히 수익이 안좋지").
-#   2차(현재, 원 스펙 TP 값으로 복원): TP1/TP2를 2.5%/5.0%로 되돌림 — 승률은
+#   2차(원 스펙 TP 값으로 복원): TP1/TP2를 2.5%/5.0%로 되돌림 — 승률은
 #     낮아지지만(20일 50.0%, aug10-14 5일 36.4%) 평균익절이 평균손절의 2~3배로
 #     커져 두 구간 모두 순수익이 개선됐다(20일 +29.27%/PF 1.93, 5일 +6.94%/
 #     PF 1.65 — 1차 튜닝에서 마이너스였던 5일 구간이 플러스로 전환). 승률
 #     자체보다 리워드:리스크 비율이 총수익을 좌우한다는 결론.
-MORNING_TP1 = _env_float("MACD2_TW_MORNING_TP1", 0.025)
+#   3차(현재, 2026-08-18): TP1을 2.5%→3.0%로 상향(TP2 5.0%는 유지) — 최근
+#     20영업일/56영업일 시뮬레이션 모두에서 승률·MDD·최대연속손실은 거의
+#     동일하거나 유지되면서 누적수익(복리)과 Profit Factor가 함께 개선됨을
+#     확인(20일: PF 2.23→2.33, 복리 30.09%→33.04%; 56일: PF 1.39→1.45, 복리
+#     47.42%→56.87%). MU_MACD는 이 모듈(time_window_position_manager)을 그대로
+#     import해서 쓰므로 이 상수 하나의 변경이 SK-MACD2/MU_MACD 양쪽에 모두
+#     적용된다.
+MORNING_TP1 = _env_float("MACD2_TW_MORNING_TP1", 0.03)
 MORNING_TP1_SELL_RATIO = _env_float("MACD2_TW_MORNING_TP1_SELL_RATIO", 0.50)
 MORNING_TP2 = _env_float("MACD2_TW_MORNING_TP2", 0.05)
 MORNING_STOP_LOSS = _env_float("MACD2_TW_MORNING_STOP_LOSS", -0.015)

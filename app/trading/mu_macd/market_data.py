@@ -372,6 +372,7 @@ class MUMarketDataService:
                     await ws.send(_subscribe_msg(config.WS_TR_KEY_EXTENDED))
                     self.ws_connected = True
                     self.ws_subscribed_at = datetime.now(KST)
+                    self.ws_last_error = None  # clear a prior disconnect's error -- it no longer reflects reality
                     self._ws_reconnect_failures = 0  # connect+subscribe worked -- approval_key is good
                     while self._stop_event is not None and not self._stop_event.is_set():
                         try:

@@ -165,8 +165,8 @@ def test_tw_stop_loss_fires_even_when_warmup_is_not_ready():
     assert result.skipped != "NOT_READY"
 
 
-def test_tw_tp1_partial_fires_at_2pt5_percent_and_leaves_position_active():
-    """TP1: +2.5% sells 50% of the held quantity, keeps the remaining
+def test_tw_tp1_partial_fires_at_3pt0_percent_and_leaves_position_active():
+    """TP1: +3.0% sells 50% of the held quantity, keeps the remaining
     position under this filter's management (tp1_done=True, position still
     active) rather than a full exit."""
     from app.trading.mu_macd.models import PositionSnapshot
@@ -176,7 +176,7 @@ def test_tw_tp1_partial_fires_at_2pt5_percent_and_leaves_position_active():
 
     broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_000.0, config.INVERSE_SYMBOL: 10_000.0})
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
-    broker.set_quote(config.LONG_SYMBOL, 1_025.0)  # +2.5% net return -- exactly TP1
+    broker.set_quote(config.LONG_SYMBOL, 1_030.0)  # +3.0% net return -- exactly TP1
 
     state = _fresh_state_with_tw_enabled()
     state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=now0)

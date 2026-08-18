@@ -303,7 +303,7 @@ def _advance_time_window_position_management(
     *, broker, state: RuntimeState, pos: Optional[PositionSnapshot],
 ) -> Optional[str]:
     """Position-management half of the time-window filter — a position THIS
-    filter opened manages its own STOP_LOSS(-1.5%)/TP1(+2.5%-50%)/ratcheted-
+    filter opened manages its own STOP_LOSS(-1.5%)/TP1(+3.0%-50%)/ratcheted-
     stop/TP2(+5.0%) ladder via app.trading.macd2.time_window_position_
     manager.evaluate_morning_position (import only, same as everywhere else
     in this integration).
@@ -396,6 +396,7 @@ def _advance_time_window_filter(
     direction = Direction(state.time_window_pending_flag_direction)
     state.time_window_pending_flag_direction = None
     state.time_window_pending_flag_bar_ts = None
+    signal_type = "REVERSAL" if (pos is not None and pos.quantity > 0) else "INITIAL"
 
     position_direction = None
     if pos is not None and pos.quantity > 0:
@@ -412,6 +413,11 @@ def _advance_time_window_filter(
     state.last_time_window_block_reason = decision.block_reason
 
     if not decision.approved:
+        _record_signal(
+            state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
+            macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
+            signal_type=signal_type, order_result="BLOCKED", block_reason=decision.block_reason,
+        )
         return f"TW_REJECTED:{direction.value}:{decision.decision}"
 
     target_symbol = order_executor.target_symbol_for_direction(direction)
@@ -433,7 +439,18 @@ def _advance_time_window_filter(
             if outcome.final_state == SignalState.EXECUTED:
                 state.position = None
                 _reset_time_window_position_state(state)
+            _record_signal(
+                state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
+                macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
+                signal_type=signal_type, order_result=outcome.final_state.value,
+                block_reason=config.BLOCK_ENTRY_PAUSED_BY_USER,
+            )
             return f"TW_ENTRY_PAUSED_SELL_ONLY:{direction.value}"
+        _record_signal(
+            state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
+            macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
+            signal_type=signal_type, order_result="BLOCKED", block_reason=config.BLOCK_ENTRY_PAUSED_BY_USER,
+        )
         return f"TW_ENTRY_PAUSED:{direction.value}"
 
     quotes: dict[str, float] = {}
@@ -449,6 +466,11 @@ def _advance_time_window_filter(
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=str(uuid.uuid4()),
         quotes=quotes, position=pos, budget=state.budget, ledger_module=ledger,
+    )
+    _record_signal(
+        state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
+        macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
+        signal_type=signal_type, order_result=outcome.final_state.value, block_reason=outcome.block_reason,
     )
     if outcome.final_state == SignalState.EXECUTED:
         state.position = PositionSnapshot(

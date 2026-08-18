@@ -133,7 +133,7 @@ def test_tw_ladder_stop_loss_fires_even_when_macd_snap_not_ready():
 
 
 def test_tw_ladder_tp1_partial_fires_even_when_macd_snap_not_ready():
-    quotes = {config.LONG_SYMBOL: 15_400.0, config.INVERSE_SYMBOL: 10_000.0, config.WATCH_SYMBOL: 100.0}
+    quotes = {config.LONG_SYMBOL: 15_470.0, config.INVERSE_SYMBOL: 10_000.0, config.WATCH_SYMBOL: 100.0}
     market_data = _cold_market_data(quotes)
     broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")  # so sell_market/partial exit has a real position to reduce
@@ -144,10 +144,10 @@ def test_tw_ladder_tp1_partial_fires_even_when_macd_snap_not_ready():
     entered_at = datetime(2026, 1, 7, 9, 0, 0, tzinfo=KST)
     now0 = entered_at + timedelta(minutes=9)
     state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=15_000.0, entry_at=entered_at)
-    # avg_price 15,000 vs a completed-bar close of 15,400 -> +2.67% gross, but
+    # avg_price 15,000 vs a completed-bar close of 15,470 -> +3.13% gross, but
     # _net_return_pct is fee/slippage-adjusted (TradeCostEngine), so this is
-    # +2.58% NET -- past MORNING_TP1 (2.5% net, not gross).
-    _seed_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=15_400.0)
+    # +3.04% NET -- past MORNING_TP1 (3.0% net, not gross).
+    _seed_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=15_470.0)
 
     result = run_once(broker=broker, market_data=market_data, state=state, now=now0)
 

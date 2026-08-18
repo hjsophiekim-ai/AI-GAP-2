@@ -257,7 +257,7 @@ BLOCK_REAL_BROKER_NOT_AUTHENTICATED = "MU_MACD_REAL_BROKER_NOT_AUTHENTICATED"
 # two-bar (T -> T+3) delayed confirmation + per-window quality-score gate,
 # and replaces the plain STOP_LOSS(-1.5%)/QUICK_PROFIT(optional) exit check
 # with macd2's own morning position-management ladder (STOP_LOSS -1.5%,
-# TP1 +2.5%/50% partial, ratcheted stops, TP2 +5.0% full) for any position
+# TP1 +3.0%/50% partial, ratcheted stops, TP2 +5.0% full) for any position
 # this filter itself opened. MIDDAY_ENTRY_PAUSE/NEW_ENTRY_CUTOFF/
 # FORCE_LIQUIDATE_AT above are UNCHANGED and still apply on top.
 TIME_WINDOW_FILTER_ENABLED_DEFAULT = _env_bool("MU_MACD_TIME_WINDOW_FILTER_ENABLED_DEFAULT", False)
