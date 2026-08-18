@@ -32,7 +32,7 @@ from app.trading.macd2 import order_executor
 from app.trading.macd2 import time_window_filter as twf
 from app.trading.macd2 import time_window_position_manager as twpm
 from app.trading.macd2.models import SignalState
-from app.trading.macd2.signal_engine import calculate_macd, evaluate_macd_crossover, resample_completed_3m
+from app.trading.macd2.signal_engine import calculate_macd, evaluate_macd_crossover, forming_bar_window, resample_completed_3m
 from app.trading.mu_macd import config, ledger
 from app.trading.mu_macd.market_data import MUMarketDataService
 from app.trading.mu_macd.models import Direction, PositionSnapshot, RuntimeState, TickResult
@@ -297,10 +297,48 @@ def _reset_time_window_position_state(state: RuntimeState) -> None:
     state.time_window_position_active = False
     state.time_window_tp1_done = False
     state.time_window_peak_net_return = 0.0
+    state.time_window_stop_loss_bar_symbol = None
+    state.time_window_stop_loss_entry_bar_ts = None
+    state.time_window_stop_loss_bar_ts = None
+    state.time_window_stop_loss_bar_close = None
+
+
+def _advance_time_window_stop_loss_bar(state: RuntimeState, symbol: str, current_price: float, now: datetime) -> Optional[float]:
+    """Mirrors app.trading.macd2.worker._advance_stop_loss_bar exactly (same
+    completed-3m-bar-close tracking, tick-sampled from repeated broker quotes
+    -- no dependency on the MU signal feed, same as that function's own
+    docstring requires): a single live tick touching TP1/TP2/STOP_LOSS is
+    NOT enough to fire the ladder any more -- only a bar that has FULLY
+    completed past the entry bar counts. 2026-08-18 real incident: a
+    momentary spike-then-drop tripped STOP_LOSS on a single bad tick right
+    before the position would have gone deeply profitable; macd2's own
+    time-window ladder already avoided this exact failure mode via this same
+    pattern -- MU_MACD's copy of the ladder had never been given it."""
+    bar_start, _bar_end = forming_bar_window(now)
+    bar_key = bar_start.isoformat()
+
+    if state.time_window_stop_loss_bar_symbol != symbol or state.time_window_stop_loss_entry_bar_ts is None:
+        state.time_window_stop_loss_bar_symbol = symbol
+        state.time_window_stop_loss_entry_bar_ts = bar_key
+        state.time_window_stop_loss_bar_ts = bar_key
+        state.time_window_stop_loss_bar_close = current_price
+        return None
+
+    if bar_key == state.time_window_stop_loss_bar_ts:
+        state.time_window_stop_loss_bar_close = current_price
+        return None
+
+    completed_bar_ts = state.time_window_stop_loss_bar_ts
+    completed_close = state.time_window_stop_loss_bar_close
+    state.time_window_stop_loss_bar_ts = bar_key
+    state.time_window_stop_loss_bar_close = current_price
+    if completed_bar_ts is None or completed_bar_ts <= state.time_window_stop_loss_entry_bar_ts:
+        return None
+    return completed_close
 
 
 def _advance_time_window_position_management(
-    *, broker, state: RuntimeState, pos: Optional[PositionSnapshot],
+    *, broker, state: RuntimeState, pos: Optional[PositionSnapshot], now: datetime,
 ) -> Optional[str]:
     """Position-management half of the time-window filter — a position THIS
     filter opened manages its own STOP_LOSS(-1.5%)/TP1(+3.0%-50%)/ratcheted-
@@ -326,7 +364,10 @@ def _advance_time_window_position_management(
     current_price = broker.get_quote(pos.symbol) if hasattr(broker, "get_quote") else None
     if not current_price:
         return None
-    net_return = (float(current_price) - pos.avg_price) / pos.avg_price * 100.0
+    completed_close = _advance_time_window_stop_loss_bar(state, pos.symbol, float(current_price), now)
+    if completed_close is None:
+        return None
+    net_return = (float(completed_close) - pos.avg_price) / pos.avg_price * 100.0
     pm = twpm.evaluate_morning_position(
         net_return_pct=net_return, tp1_done=state.time_window_tp1_done,
         peak_net_return=state.time_window_peak_net_return,
@@ -480,6 +521,17 @@ def _advance_time_window_filter(
         state.time_window_position_active = True
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
+        # Seed the completed-bar stop-loss tracker so the bar CONTAINING this
+        # entry fill is excluded from its own first evaluation (mirrors
+        # macd2.worker._apply_switch_outcome's identical seeding) -- without
+        # this, _advance_time_window_stop_loss_bar's own defensive fallback
+        # would still self-seed correctly on its first call, just up to one
+        # tick later than the true entry bar.
+        _entry_bar_start, _ = forming_bar_window(now)
+        state.time_window_stop_loss_bar_symbol = target_symbol
+        state.time_window_stop_loss_entry_bar_ts = _entry_bar_start.isoformat()
+        state.time_window_stop_loss_bar_ts = _entry_bar_start.isoformat()
+        state.time_window_stop_loss_bar_close = state.position.avg_price
         window = decision.metrics.get("window") if decision.metrics else None
         session = twf.session_for_window(window)
         if session == "MORNING":
@@ -536,7 +588,7 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
         # regardless (applies to every position).
         tw_managed = state.time_window_filter_enabled and state.time_window_position_active
         if tw_managed:
-            tw_pm_action = _advance_time_window_position_management(broker=broker, state=state, pos=pos)
+            tw_pm_action = _advance_time_window_position_management(broker=broker, state=state, pos=pos, now=now)
             if tw_pm_action is not None:
                 result.actions.append(tw_pm_action)
                 if state.position is None or state.position.quantity != pos.quantity:

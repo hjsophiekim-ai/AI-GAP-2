@@ -17,6 +17,22 @@ from tests.macd2.fake_broker import FakeBroker
 from tests.mu_macd.test_worker import _build_flat_then_ramp_service, _find_crossing_now
 
 
+def _seed_tw_held_since(state, *, symbol: str, entered_at: datetime, last_bar_close: float) -> None:
+    """Simulates a TW-managed position entered two completed 3-minute bars
+    ago, whose most recently completed bar closed at ``last_bar_close`` --
+    so the very next run_once() call (at ``entered_at`` + 6 minutes or later)
+    evaluates that close as eligible (strictly after the entry bar). Mirrors
+    tests/macd2/test_worker_held_position_risk_management_warmup.py's own
+    ``_seed_held_since`` exactly, for worker._advance_time_window_stop_loss_
+    bar's mu_macd-namespaced fields (2026-08-18 fix)."""
+    entry_bar_start, _ = worker.forming_bar_window(entered_at)
+    last_bar_start = entry_bar_start + timedelta(minutes=3)
+    state.time_window_stop_loss_bar_symbol = symbol
+    state.time_window_stop_loss_entry_bar_ts = entry_bar_start.isoformat()
+    state.time_window_stop_loss_bar_ts = last_bar_start.isoformat()
+    state.time_window_stop_loss_bar_close = last_bar_close
+
+
 def _fresh_state_with_tw_enabled() -> "worker.RuntimeState":
     state = state_store.default_state()
     state.mode = "mock"
@@ -120,9 +136,16 @@ def test_tw_managed_position_skips_plain_stop_loss_and_uses_ladder():
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
     broker._positions[config.LONG_SYMBOL].avg_price = 200.0  # force a large loss vs the 100.0 quote
 
+    # 2026-08-18 fix: the ladder now requires a COMPLETED 3m bar close past
+    # the entry bar (not a single live tick) -- seed it two bars into the
+    # past (mirrors tests/macd2/test_worker_held_position_risk_management_
+    # warmup.py's own _seed_held_since exactly), so this one run_once() call
+    # evaluates it immediately.
+    entered_at = now0 - timedelta(minutes=9)
     state = _fresh_state_with_tw_enabled()
-    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=200.0, entry_at=now0)
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=200.0, entry_at=entered_at)
     state.time_window_position_active = True
+    _seed_tw_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=100.0)
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0 + timedelta(seconds=1))
     assert any("MU_MACD_TW_STOP_LOSS" in a for a in result.actions)
@@ -152,9 +175,15 @@ def test_tw_stop_loss_fires_even_when_warmup_is_not_ready():
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
     broker._positions[config.LONG_SYMBOL].avg_price = 200.0  # -50% vs the 100.0 quote, well past -1.5%
 
+    # 2026-08-18 fix: seed a completed bar two bars into the past (macd_snap
+    # stays None throughout -- zero ticks ever injected into svc -- proving
+    # the completed-bar stop-loss tracker is independent of bars_3m/macd_snap
+    # readiness, same as before this fix).
+    entered_at = now0 - timedelta(minutes=9)
     state = _fresh_state_with_tw_enabled()
-    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=200.0, entry_at=now0)
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=200.0, entry_at=entered_at)
     state.time_window_position_active = True
+    _seed_tw_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=100.0)
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0)
 
@@ -174,13 +203,16 @@ def test_tw_tp1_partial_fires_at_3pt0_percent_and_leaves_position_active():
     svc = MUMarketDataService(mode="mock")
     now0 = datetime(2026, 8, 18, 9, 1, tzinfo=KST)
 
-    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_030.0, config.INVERSE_SYMBOL: 10_000.0})
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
-    broker.set_quote(config.LONG_SYMBOL, 1_030.0)  # +3.0% net return -- exactly TP1
 
+    # 2026-08-18 fix: seed a completed bar (closed at the TP1-crossing price)
+    # two bars into the past so this one run_once() call evaluates it.
+    entered_at = now0 - timedelta(minutes=9)
     state = _fresh_state_with_tw_enabled()
-    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=now0)
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=entered_at)
     state.time_window_position_active = True
+    _seed_tw_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=1_030.0)  # +3.0% net return -- exactly TP1
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0)
 
@@ -201,15 +233,18 @@ def test_tw_tp2_fires_full_exit_after_tp1_already_done():
     svc = MUMarketDataService(mode="mock")
     now0 = datetime(2026, 8, 18, 9, 1, tzinfo=KST)
 
-    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_050.0, config.INVERSE_SYMBOL: 10_000.0})
     broker.buy_market(config.LONG_SYMBOL, 5, "seed-order")  # remaining half after an earlier TP1
-    broker.set_quote(config.LONG_SYMBOL, 1_050.0)  # +5.0% net return -- exactly TP2
 
+    # 2026-08-18 fix: seed a completed bar (closed at the TP2-crossing price)
+    # two bars into the past so this one run_once() call evaluates it.
+    entered_at = now0 - timedelta(minutes=9)
     state = _fresh_state_with_tw_enabled()
-    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=5, avg_price=1_000.0, entry_at=now0)
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=5, avg_price=1_000.0, entry_at=entered_at)
     state.time_window_position_active = True
     state.time_window_tp1_done = True
     state.time_window_peak_net_return = 2.5
+    _seed_tw_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=1_050.0)  # +5.0% net return -- exactly TP2
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0)
 
@@ -218,6 +253,60 @@ def test_tw_tp2_fires_full_exit_after_tp1_already_done():
     assert state.time_window_position_active is False
     assert state.time_window_tp1_done is False
     assert state.time_window_peak_net_return == 0.0
+
+
+def test_tw_stop_loss_ignores_a_momentary_spike_that_recovers_within_the_same_bar():
+    """2026-08-18 real incident: MU_MACD bought 0197X0 on a confirmed BLUE
+    flag, then 하이닉스 briefly rebounded (a normal countermove) before
+    resuming its real (large, favorable) move -- the position was stopped
+    out DURING that brief countermove and missed the payoff entirely,
+    because the ladder used to judge STOP_LOSS off every single live tick
+    with no smoothing. This is the exact whipsaw macd2's OWN time-window
+    ladder already avoided via a completed-bar-close requirement (see
+    app.trading.macd2.worker._advance_stop_loss_bar's own docstring) --
+    MU_MACD's copy of the ladder had never been given the same protection.
+    Proves the fix: a spike that touches -2.0% mid-bar but the bar's LAST
+    tick recovers to a safe price must NOT fire STOP_LOSS."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    svc = MUMarketDataService(mode="mock")
+    entered_at = datetime(2026, 8, 18, 9, 54, tzinfo=KST)
+
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
+
+    state = _fresh_state_with_tw_enabled()
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=entered_at)
+    state.time_window_position_active = True
+
+    # Tick 1: establishes the entry bar (defensive-fallback seed) -- excluded
+    # from its own evaluation by design.
+    worker.run_once(broker=broker, market_data=svc, state=state, now=entered_at)
+
+    # Tick 2: rolls into the NEXT bar (bar "N+1"); bar N (the entry bar) is
+    # evaluated here but excluded (it IS the entry bar) -- this call also
+    # starts tracking bar N+1's own forming close.
+    worker.run_once(broker=broker, market_data=svc, state=state, now=entered_at + timedelta(minutes=3))
+    assert state.position is not None
+
+    # Tick 3: still bar N+1 -- a momentary spike well past -1.5% stop-loss.
+    broker.set_quote(config.LONG_SYMBOL, 980.0)  # -2.0%
+    worker.run_once(broker=broker, market_data=svc, state=state, now=entered_at + timedelta(minutes=3, seconds=30))
+    assert state.position is not None  # bar N+1 not completed yet -- no evaluation this tick
+
+    # Tick 4: still bar N+1 -- price recovers before the bar closes. Bar
+    # N+1's own recorded "close" is now this LAST value (998.0), not the
+    # -2.0% spike that briefly touched in between.
+    broker.set_quote(config.LONG_SYMBOL, 998.0)  # -0.2% -- comfortably safe
+    worker.run_once(broker=broker, market_data=svc, state=state, now=entered_at + timedelta(minutes=3, seconds=90))
+    assert state.position is not None
+
+    # Tick 5: bar N+2 -- evaluates bar N+1's completed close (998.0, safe).
+    # Must NOT fire STOP_LOSS despite the -2.0% mid-bar spike in tick 3.
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=entered_at + timedelta(minutes=6))
+    assert not any("MU_MACD_TW_STOP_LOSS" in a for a in result.actions)
+    assert state.position is not None
+    assert state.position.quantity == 10
 
 
 def test_tw_stop_loss_still_fires_normally_once_warmup_is_ready():
@@ -236,9 +325,13 @@ def test_tw_stop_loss_still_fires_normally_once_warmup_is_ready():
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
     broker.set_quote(config.LONG_SYMBOL, 984.0)  # -1.6% net return -- past MORNING_STOP_LOSS (-1.5%)
 
+    # 2026-08-18 fix: seed a completed bar (closed at the stop-loss-crossing
+    # price) two bars into the past so this one run_once() call evaluates it.
+    entered_at = now0 - timedelta(minutes=9)
     state = _fresh_state_with_tw_enabled()
-    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=now0)
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=entered_at)
     state.time_window_position_active = True
+    _seed_tw_held_since(state, symbol=config.LONG_SYMBOL, entered_at=entered_at, last_bar_close=984.0)
 
     result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0 + timedelta(seconds=1))
 

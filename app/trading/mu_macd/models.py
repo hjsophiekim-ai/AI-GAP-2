@@ -98,6 +98,18 @@ class RuntimeState:
     time_window_position_active: bool = False
     time_window_tp1_done: bool = False
     time_window_peak_net_return: float = 0.0
+    # 2026-08-18 real-incident fix: TP1/TP2/STOP_LOSS used to be judged off the
+    # traded ETF's raw live tick every ~2s (see worker._advance_time_window_
+    # position_management), so a single-tick spike/dip could trip STOP_LOSS
+    # and never recover -- exactly what macd2's OWN time-window ladder already
+    # avoids via _advance_stop_loss_bar's completed-3m-bar-close requirement.
+    # These three mirror that same state shape (kept "time_window"-namespaced
+    # since only THIS filter's ladder uses them, unlike macd2's module-level
+    # stop_loss_bar_* fields which back its plain non-TW Stop Loss too).
+    time_window_stop_loss_bar_symbol: Optional[str] = None
+    time_window_stop_loss_entry_bar_ts: Optional[str] = None
+    time_window_stop_loss_bar_ts: Optional[str] = None
+    time_window_stop_loss_bar_close: Optional[float] = None
     time_window_morning_entry_count: int = 0
     time_window_afternoon_entry_count: int = 0
     last_time_window_score: Optional[float] = None
