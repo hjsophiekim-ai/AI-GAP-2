@@ -1820,6 +1820,35 @@ def _resolve_time_window_candidate(
     )
 
     if not decision.approved and not down_blue_exception_applied:
+        target_symbol = order_executor.target_symbol_for_direction(direction)
+        if position is not None and position.symbol != target_symbol:
+            # 2026-08-19 real incident fix: a genuine opposite flag the real
+            # TW gate just rejected (for ANY reason -- low quality score,
+            # gap not expanding, window closed, whatever) used to leave the
+            # held position completely untouched here -- neither switched
+            # NOR explicitly liquidated, contradicting this exact function's
+            # own docstring ("the held position stays untouched until
+            # _resolve_time_window_candidate ... decides to switch or
+            # hold") and _judge_time_window_flag's ("must stay untouched
+            # UNTIL _resolve_time_window_candidate resolves the candidate at
+            # T+3") -- both assume THIS function makes a real decision on
+            # reject, not a silent no-op. Every OTHER optional filter
+            # (MAJOR/SIDEWAYS/TREND_PERSISTENCE/SINGLE_ENTRY) already always
+            # sells the held position on a rejected reversal via
+            # _execute_reversal_exit_only_for_filtered_entry (docs: "반대
+            # 플래그가 뜨면 보유 포지션은 그대로 매도됩니다", same principle
+            # MU_MACD's own TW integration follows) -- re-entry into the new
+            # direction is a separate decision the gate still owns
+            # (down_blue_exception_applied above is the one deliberate
+            # exception), but the SELL itself must never depend on it.
+            outcome = _execute_reversal_exit_only_for_filtered_entry(
+                broker=broker, state=state, macd_snap=macd_snap, direction=direction,
+                position=position, decision=decision, result=result, gate_mode="TIME_WINDOW",
+                signal_id_override=signal_id,
+            )
+            if outcome is not None:
+                _apply_exit_outcome(state, outcome)
+            return outcome
         state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
         dispatch_trace = {
             "signal_id": signal_id, "direction": direction.value, "signal_type": "TIME_WINDOW_CONFIRM",
@@ -1831,7 +1860,7 @@ def _resolve_time_window_candidate(
         }
         outcome = order_executor.ExecutionOutcome(
             signal_id=signal_id, direction=direction,
-            target_symbol=order_executor.target_symbol_for_direction(direction),
+            target_symbol=target_symbol,
             final_state=SignalState.BLOCKED, block_reason=decision.block_reason or decision.decision,
         )
         _record_signal_ledger(
@@ -2685,7 +2714,16 @@ def run_once(
             bars_3m=bars_3m, df_1m=df_1m, position=pos, result=result,
         )
         if tw_resolve_outcome is not None and tw_resolve_outcome.final_state == SignalState.EXECUTED:
-            result.actions.append(f"TIME_WINDOW_SWITCH:{tw_resolve_outcome.target_symbol}")
+            # Distinguish by the ACTUAL resulting state, not just which
+            # helper produced the outcome: a rejected reversal's sell-only
+            # exit (2026-08-19 fix) leaves state.position None, same
+            # final_state=EXECUTED as a real switch -- labeling that
+            # "TIME_WINDOW_SWITCH:<sold symbol>" would misleadingly imply a
+            # new position was opened when the account is actually flat.
+            if state.position is not None:
+                result.actions.append(f"TIME_WINDOW_SWITCH:{tw_resolve_outcome.target_symbol}")
+            else:
+                result.actions.append(f"TIME_WINDOW_SELL_ONLY:{tw_resolve_outcome.target_symbol}")
             return result
 
         if state.time_window_filter_enabled and state.time_window_position_active:

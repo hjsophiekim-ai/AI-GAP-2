@@ -178,6 +178,67 @@ def test_fresh_opposite_flag_registers_a_pending_candidate_while_position_held(t
     del result
 
 
+def test_rejected_reversal_still_liquidates_the_held_tw_position(tw_market_data, monkeypatch):
+    """Regression test for a SECOND real 2026-08-19 incident (found right
+    after the first fix above shipped): with the first bug fixed, a fresh
+    opposite flag now DOES register as a pending candidate and DOES reach
+    its own T+3 re-confirmation -- but if the real TW gate then REJECTS that
+    candidate (low quality score, gap not expanding, whatever),
+    _resolve_time_window_candidate's reject branch did nothing at all: no
+    switch, but also no sell. This directly contradicts this exact
+    function's own docstring ("the held position stays untouched until
+    _resolve_time_window_candidate ... decides to switch or hold") and
+    _judge_time_window_flag's ("must stay untouched UNTIL
+    _resolve_time_window_candidate resolves the candidate at T+3") -- both
+    assume a real decision happens on reject, not a silent no-op. Every
+    OTHER optional filter (MAJOR/SIDEWAYS/etc.) already always sells the
+    held position on a rejected reversal (docs: "반대 플래그가 뜨면 보유
+    포지션은 그대로 매도됩니다") -- only the NEW direction's re-entry is a
+    separate, gate-owned decision. Real example: 11:48 RED flag confirmed
+    (system recorded it correctly, proving the first fix worked) but the
+    held INVERSE position was never sold and no LONG was ever bought."""
+    from app.trading.macd2.models import Direction as _Direction, MajorFlagDecision, PositionSnapshot
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+
+    # Prime a pending UP_RED candidate so it resolves (T+3) on this very
+    # call. now0's own completed bar_dt is (now0 - 3min) (resample_completed_
+    # 3m's bar-start labeling) -- the flag bar must be a further bar back
+    # (now0 - 6min) so _resolve_time_window_candidate's own "still sitting on
+    # the flag's own bar, wait for T+3" guard does not fire.
+    flag_bar_dt = now0 - timedelta(minutes=6)
+    state.time_window_pending_flag_direction = _Direction.UP_RED
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+
+    rejected = MajorFlagDecision(
+        approved=False, score=1.0, required_score=4.0, decision=config.TW_REJECT_LOW_QUALITY_SCORE,
+        reasons=(config.TW_REJECT_LOW_QUALITY_SCORE,), component_scores={}, metrics={},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
+    )
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: rejected)
+    # avoid the real (60s @ 1s) fill-reconcile poll window this sell-only
+    # exit path uses -- FakeBroker fills synchronously, so 1 retry suffices.
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith("TIME_WINDOW_SELL_ONLY") for a in result.actions), (
+        "a rejected reversal must still fully liquidate the held TW position -- "
+        f"got actions={result.actions!r}"
+    )
+    assert state.position is None, "the held INVERSE position must be sold even though the new LONG entry was rejected"
+    assert config.INVERSE_SYMBOL not in broker._positions
+    assert state.time_window_position_active is False
+
+
 def test_day_rollover_resets_time_window_session_counters():
     state = _fresh_state()
     state.session_date = "20260105"
