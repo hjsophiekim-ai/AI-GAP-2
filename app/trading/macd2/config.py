@@ -682,6 +682,18 @@ TW_REJECT_TIME_WINDOW = "REJECT_TIME_WINDOW"
 TW_REJECT_MAX_ENTRY_COUNT = "REJECT_MAX_ENTRY_COUNT"
 TW_REJECT_DUPLICATE_POSITION = "REJECT_DUPLICATE_POSITION"
 
+# ── 반대신호 청산 T+3 재확인("휩쏘-내성", 2026-08-19 사용자 요청) ──────────
+# evaluate_time_window_entry가 반대방향 재진입 후보를 거절했을 때, 그 사유가
+# 이 두 가지("MACD-Signal 관계가 T+3에도 유지 안 됨" / "gap이 확대 안 됨")면
+# 원래 방향으로 복귀한 휩쏘로 보고 보유 포지션을 그대로 둔다(그 외 사유
+# -- 품질점수/시간대/최대진입횟수/중복포지션 -- 는 기존과 동일하게 무조건
+# 매도). 56거래일 TRAIN/VAL/OOS 백테스트(scripts/tw_gate_relaxed_optimization.py
+# 계열 -- OOS/TRAIN 둘 다 손해 없이 개선, VAL은 휩쏘 이벤트 자체가 없어
+# 동일)로 검증. gap 절대값 임계값 같은 추가 조건은 아직 없음(단순 버전).
+# -1.7% 하드 손절(STOP_LOSS_NET_PCT/MORNING_STOP_LOSS 등)은 이 로직과
+# 완전히 무관하게 매 tick 즉시 평가되므로 영향받지 않는다.
+TW_WHIPSAW_REJECT_REASONS = frozenset({TW_REJECT_NOT_CONFIRMED, TW_REJECT_MACD_GAP_NOT_EXPANDING})
+
 # ── Optional "탈락 DOWN_BLUE 예외진입" (하루 최대 1회) — 2026-08-18 사용자
 # 요청. TW 필터(time_window_filter.evaluate_time_window_entry)가 REJECT한
 # DOWN_BLUE 플래그만, 다른 조건 없이 하루 최대 1회 추가로 진입을 허용한다.

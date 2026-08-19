@@ -420,6 +420,14 @@ def _advance_time_window_filter(
     2026-08-15: state.entry_paused ("신규진입 일시정지") is honored here too,
     independently of this filter's own toggle -- see the entry_paused check
     right before the buy leg below.
+
+    2026-08-19: a rejected REVERSAL candidate (opposite direction vs an
+    already-held position) now always sells that position UNLESS decision.
+    block_reason is in config.TW_WHIPSAW_REJECT_REASONS (T+3 재확인 실패 --
+    "휩쏘"), in which case it is left untouched instead -- identical logic to
+    app.trading.macd2.worker._resolve_time_window_candidate, applied here so
+    both modules' opposite-signal exit behavior never diverges. A rejected
+    same-direction/no-position candidate is still a pure no-op either way.
     """
     # 1) a fresh confirmed crossover always becomes (replaces) the pending
     #    T+3 candidate — never dispatched on its own bar.
@@ -473,6 +481,44 @@ def _advance_time_window_filter(
     )
 
     if not decision.approved and not down_blue_exception_applied:
+        target_symbol_for_reject = order_executor.target_symbol_for_direction(direction)
+        is_reversal = pos is not None and pos.quantity > 0 and pos.symbol != target_symbol_for_reject
+
+        # 2026-08-19 사용자 요청 ("반대신호 청산만 T+3 재확인 방식으로 변경",
+        # MACD2와 완전히 동일하게 MU_MACD에도 적용): 반대방향 후보가 거절됐을 때,
+        # 그 사유가 휩쏘(config.TW_WHIPSAW_REJECT_REASONS -- MACD/Signal 관계가
+        # T+3에도 유지 안 됨, 또는 gap이 확대 안 됨)면 보유 포지션을 그대로
+        # 두고 매도하지 않는다(정상 SL(-1.7%)/TP1/TP2/trailing stop 래더는
+        # _advance_time_window_position_management에서 이 로직과 무관하게 매
+        # tick 계속 평가됨). 그 외 사유(품질점수/시간대/최대진입횟수/중복포지션)
+        # 는 반대방향 보유 포지션이 있으면 무조건 매도 -- 재진입 여부만 게이트가
+        # 계속 판단하고, 매도 자체는 그 사유들에 좌우되지 않는다. 반대방향
+        # 포지션이 없는(같은 방향 재진입/무포지션) 거절은 기존대로 아무 일도
+        # 하지 않는다.
+        if is_reversal and decision.block_reason in config.TW_WHIPSAW_REJECT_REASONS:
+            _record_signal(
+                state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
+                macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
+                signal_type=signal_type, order_result="BLOCKED", block_reason=decision.block_reason,
+            )
+            return f"TW_WHIPSAW_HOLD:{direction.value}"
+
+        if is_reversal:
+            outcome = order_executor.execute_exit(
+                broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                exit_reason=config.EXIT_OPPOSITE_SIGNAL, entry_price=pos.avg_price,
+                ledger_module=ledger,
+            )
+            if outcome.final_state == SignalState.EXECUTED:
+                state.position = None
+                _reset_time_window_position_state(state)
+            _record_signal(
+                state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
+                macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,
+                signal_type=signal_type, order_result=outcome.final_state.value, block_reason=decision.block_reason,
+            )
+            return f"TW_REJECTED_SELL_ONLY:{direction.value}:{decision.decision}"
+
         _record_signal(
             state=state, bar_start=flag_bar_dt, confirmed_at=now, direction=direction,
             macd_val=macd_snap.macd, signal_val=macd_snap.signal, hist_val=macd_snap.hist,

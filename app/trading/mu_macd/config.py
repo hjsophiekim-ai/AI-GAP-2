@@ -7,8 +7,14 @@ write a MACD2 or TSLA_AUTO state/ledger/cache/lock file.
 The two traded ETF symbols (LONG_SYMBOL/INVERSE_SYMBOL) ARE imported from
 macd2.config on purpose — they identify the exact same two real-world
 tradable instruments (KODEX 레버리지 0193T0 / SOL 인버스2X 0197X0), so this is
-sharing a physical-instrument identity constant, not runtime state. Nothing
-else is imported from macd2.
+sharing a physical-instrument identity constant, not runtime state.
+TW_WHIPSAW_REJECT_REASONS (2026-08-19) is likewise imported directly rather
+than redefined — it classifies block_reason values produced by macd2's own
+time_window_filter.evaluate_time_window_entry, which this module calls BY
+IMPORT (see the time-window filter section below), so a second, independently
+maintained copy of the same two string constants would risk silently
+drifting apart from what that shared function actually returns. Nothing else
+is imported from macd2.
 """
 from __future__ import annotations
 
@@ -268,6 +274,21 @@ EXIT_TW_TP2_FULL = "MU_MACD_TW_TP2_FULL"
 EXIT_TW_AFTER_TP1_STOP = "MU_MACD_TW_AFTER_TP1_STOP"
 EXIT_TW_TRAILING_STOP = "MU_MACD_TW_TRAILING_STOP"
 BLOCK_TW_PENDING_CONFIRMATION = "MU_MACD_TW_PENDING_CONFIRMATION"
+
+# ── 반대신호 청산 T+3 재확인("휩쏘-내성", 2026-08-19 사용자 요청) ──────────
+# app.trading.macd2와 완전히 동일한 조건/로직을 MU_MACD에도 그대로 적용한다
+# (사용자 요청: "MACD2 모듈과 MU-MACD모듈의 반대플래그 청산 로직에 전부 똑같이
+# 반영해줘"). evaluate_time_window_entry가 반대방향 재진입 후보를 거절했을 때,
+# 그 사유가 이 두 가지("MACD-Signal 관계가 T+3에도 유지 안 됨" / "gap이 확대
+# 안 됨")면 원래 방향으로 복귀한 휩쏘로 보고 보유 포지션을 그대로 둔다(그 외
+# 사유 -- 품질점수/시간대/최대진입횟수/중복포지션 -- 는 기존과 동일하게
+# 무조건 매도). macd2.config에서 직접 가져온 값 그 자체(별도 정의 아님) --
+# time_window_filter.evaluate_time_window_entry가 그 두 reject 문자열을
+# 만들어내는 바로 그 함수이므로, 복제하면 나중에 서로 어긋날 위험이 있다.
+# gap 절대값 임계값 같은 추가 조건은 없음(단순 버전, macd2와 동일).
+# -1.7% 하드 손절/TP1/TP2/trailing stop은 이 로직과 완전히 무관하게 매 tick
+# 즉시 평가되므로 영향받지 않는다.
+TW_WHIPSAW_REJECT_REASONS = _macd2_config.TW_WHIPSAW_REJECT_REASONS
 
 # ── Optional "TW 1 blue" 예외진입 (하루 최대 1회) — 2026-08-19 사용자 요청,
 # app.trading.macd2의 동일한 기능(config.TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT,

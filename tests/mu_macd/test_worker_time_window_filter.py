@@ -601,3 +601,127 @@ def test_day_rollover_resets_down_blue_exception_daily_flag_but_not_toggle():
 def test_default_state_has_down_blue_exception_off():
     state = state_store.default_state()
     assert state.down_blue_exception_filter_enabled is False
+
+
+# ── 반대신호 청산 T+3 재확인 ("휩쏘-내성", 2026-08-19) -- ported from
+# app.trading.macd2's own identical worker._resolve_time_window_candidate
+# whipsaw branch, so both modules' opposite-signal exit behavior never
+# diverges. config.TW_WHIPSAW_REJECT_REASONS is imported straight from
+# macd2.config (see mu_macd/config.py), never redefined here.
+import pytest  # noqa: E402
+
+from app.trading.macd2 import config as macd2_config  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "whipsaw_reason", [macd2_config.TW_REJECT_NOT_CONFIRMED, macd2_config.TW_REJECT_MACD_GAP_NOT_EXPANDING],
+)
+def test_whipsaw_classified_reversal_holds_instead_of_selling(monkeypatch, whipsaw_reason):
+    """A rejected REVERSAL candidate (opposite direction vs a held position)
+    whose block_reason is a whipsaw reason must leave the held position
+    completely untouched -- no sell, no new entry."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)  # this fixture's flag direction is UP_RED (LONG_SYMBOL)
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now1
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")  # opposite-direction holding
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+
+    state = _fresh_state_with_tw_enabled()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision(whipsaw_reason))
+    _prime_down_blue_pending(state, resolve_at=now1)  # helper is direction-agnostic despite its name
+    state.time_window_pending_flag_direction = Direction.UP_RED.value  # override to the reversal direction
+
+    orders_before = len(broker.orders)
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)
+
+    assert any(a.startswith("TW_WHIPSAW_HOLD:UP_RED") for a in result.actions), (
+        f"a {whipsaw_reason} rejection must be classified a whipsaw and hold, not sell -- got actions={result.actions!r}"
+    )
+    assert not any(a.startswith("TW_REJECTED_SELL_ONLY") for a in result.actions)
+    assert state.position is not None and state.position.symbol == config.INVERSE_SYMBOL
+    assert state.time_window_position_active is True
+    assert len(broker.orders) == orders_before, "no order should be placed for a whipsaw-classified rejection"
+
+
+def test_rejected_reversal_for_a_non_whipsaw_reason_still_sells_the_held_position(monkeypatch):
+    """A rejected REVERSAL candidate for any OTHER reason (quality score,
+    time window, max entries, duplicate position) must still fully
+    liquidate the held opposite position -- unchanged from before this
+    feature, only the whipsaw reasons are new exceptions."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    svc = _build_flat_then_ramp_service()
+    now0 = _find_crossing_now(svc)
+    now1 = now0 + timedelta(minutes=3)
+    svc.ws_connected = True
+    svc.ws_last_tick_at = now1
+
+    quotes = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-inverse")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+
+    state = _fresh_state_with_tw_enabled()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision("REJECT_LOW_QUALITY_SCORE"))
+    _prime_down_blue_pending(state, resolve_at=now1)
+    state.time_window_pending_flag_direction = Direction.UP_RED.value
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now1)
+
+    assert any(a.startswith("TW_REJECTED_SELL_ONLY:UP_RED") for a in result.actions), (
+        f"a non-whipsaw rejection must still fully liquidate the held position -- got actions={result.actions!r}"
+    )
+    assert state.position is None
+    assert config.INVERSE_SYMBOL not in broker._positions
+    assert state.time_window_position_active is False
+
+
+def test_stop_loss_still_fires_while_a_whipsaw_reversal_candidate_is_pending(monkeypatch):
+    """SL(-1.7%)/TP1/TP2/trailing stop must keep firing normally even when a
+    T+3 reversal candidate is pending resolution this same tick, and even
+    when that candidate would resolve as a whipsaw-hold. Production ordering
+    (_advance_time_window_position_management runs before
+    _advance_time_window_filter and returns early on a fired exit)
+    guarantees this -- mirrors tests/macd2/test_worker_time_window.py's own
+    identical parity test."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    svc = MUMarketDataService(mode="mock")
+    now0 = datetime(2026, 8, 18, 9, 1, tzinfo=KST)
+
+    quotes = {config.LONG_SYMBOL: 100.0, config.INVERSE_SYMBOL: 9_700.0}
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes=quotes)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0  # -3% vs the 9_700.0 quote
+
+    entered_at = now0 - timedelta(minutes=9)
+    state = _fresh_state_with_tw_enabled()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=entered_at)
+    state.time_window_position_active = True
+    _seed_tw_held_since(state, symbol=config.INVERSE_SYMBOL, entered_at=entered_at, last_bar_close=9_700.0)
+
+    # A pending reversal candidate exists this very tick, primed to resolve
+    # as a whipsaw-hold if it were ever reached.
+    monkeypatch.setattr(worker.twf, "evaluate_time_window_entry", lambda *a, **kw: _rejected_decision(macd2_config.TW_REJECT_NOT_CONFIRMED))
+    _prime_down_blue_pending(state, resolve_at=now0)
+    state.time_window_pending_flag_direction = Direction.UP_RED.value
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any("MU_MACD_TW_STOP_LOSS" in a for a in result.actions), (
+        f"the TW ladder's -1.7% stop-loss must fire even with a pending whipsaw-classified "
+        f"reversal candidate this same tick -- got actions={result.actions!r}"
+    )
+    assert not any("WHIPSAW_HOLD" in a for a in result.actions)
+    assert state.position is None

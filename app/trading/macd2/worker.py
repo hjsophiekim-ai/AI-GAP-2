@@ -1823,11 +1823,10 @@ def _resolve_time_window_candidate(
         target_symbol = order_executor.target_symbol_for_direction(direction)
         if position is not None and position.symbol != target_symbol:
             # 2026-08-19 real incident fix: a genuine opposite flag the real
-            # TW gate just rejected (for ANY reason -- low quality score,
-            # gap not expanding, window closed, whatever) used to leave the
-            # held position completely untouched here -- neither switched
-            # NOR explicitly liquidated, contradicting this exact function's
-            # own docstring ("the held position stays untouched until
+            # TW gate just rejected used to leave the held position
+            # completely untouched here -- neither switched NOR explicitly
+            # liquidated, contradicting this exact function's own docstring
+            # ("the held position stays untouched until
             # _resolve_time_window_candidate ... decides to switch or
             # hold") and _judge_time_window_flag's ("must stay untouched
             # UNTIL _resolve_time_window_candidate resolves the candidate at
@@ -1835,12 +1834,38 @@ def _resolve_time_window_candidate(
             # reject, not a silent no-op. Every OTHER optional filter
             # (MAJOR/SIDEWAYS/TREND_PERSISTENCE/SINGLE_ENTRY) already always
             # sells the held position on a rejected reversal via
-            # _execute_reversal_exit_only_for_filtered_entry (docs: "반대
-            # 플래그가 뜨면 보유 포지션은 그대로 매도됩니다", same principle
-            # MU_MACD's own TW integration follows) -- re-entry into the new
-            # direction is a separate decision the gate still owns
-            # (down_blue_exception_applied above is the one deliberate
-            # exception), but the SELL itself must never depend on it.
+            # _execute_reversal_exit_only_for_filtered_entry.
+            #
+            # 2026-08-19 "휩쏘-내성" T+3 재확인 (사용자 요청, 56일 TRAIN/VAL/
+            # OOS 백테스트로 검증 -- scripts/tw_gate_relaxed_optimization.py
+            # 계열): decision.block_reason이 config.TW_WHIPSAW_REJECT_REASONS
+            # (MACD/Signal 관계가 T+3에도 유지 안 됨, 또는 gap이 확대 안 됨)에
+            # 속하면 -- 즉 원래 방향으로 도로 복귀한 휩쏘로 판단되면 -- 매도하지
+            # 않고 보유 포지션을 그대로 둔다(정상 TP1/TP2/-1.7% 손절 래더는
+            # _advance_held_position_risk_management에서 이 로직과 무관하게
+            # 매 tick 계속 평가됨). 그 외 사유(품질점수/시간대/최대진입횟수/
+            # 중복포지션)는 기존과 동일하게 무조건 매도 -- 재진입 여부만 게이트가
+            # 계속 판단하고, 매도 자체는 그 사유들에 좌우되지 않는다.
+            if decision.block_reason in config.TW_WHIPSAW_REJECT_REASONS:
+                state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+                whipsaw_trace = {
+                    "signal_id": signal_id, "direction": direction.value, "signal_type": "TIME_WINDOW_CONFIRM",
+                    "completed_bar_at": macd_snap.bar_dt.isoformat(),
+                    "order_executor_called": False, "broker_called": False,
+                    "final_block_reason": decision.block_reason or decision.decision or "",
+                    "order_result_override": "TIME_WINDOW_WHIPSAW_HOLD",
+                    "major_fields": _entry_gate_ledger_fields(state, decision, "TIME_WINDOW"),
+                }
+                whipsaw_outcome = order_executor.ExecutionOutcome(
+                    signal_id=signal_id, direction=direction, target_symbol=target_symbol,
+                    final_state=SignalState.BLOCKED, block_reason=decision.block_reason or decision.decision,
+                )
+                _record_signal_ledger(
+                    state, macd_snap, direction, "TIME_WINDOW_CONFIRM", signal_id, datetime.now(KST),
+                    whipsaw_outcome, whipsaw_trace,
+                )
+                result.actions.append(f"TIME_WINDOW_WHIPSAW_HOLD:{direction.value}")
+                return None
             outcome = _execute_reversal_exit_only_for_filtered_entry(
                 broker=broker, state=state, macd_snap=macd_snap, direction=direction,
                 position=position, decision=decision, result=result, gate_mode="TIME_WINDOW",

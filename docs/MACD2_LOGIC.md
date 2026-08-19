@@ -725,6 +725,39 @@ CONFIRMATION`으로 즉시 거절(broker 호출 0)한다. **다음** 완성 3분
 미확정 상태에서는 기존 포지션을 절대 매도하지 않는다(`worker.py`의
 `reversal_gate_mode == "TIME_WINDOW"` 분기).
 
+### 반대신호 청산 — 휩쏘-내성 T+3 재확인 (2026-08-19)
+
+시간대별 최적거래 필터가 관리하는 포지션의 **반대신호(OPPOSITE_SIGNAL) 청산은
+더 이상 즉시 매도가 아니다.** 확정 반대 플래그가 뜨면 다음 완성 3분봉(T+3)까지
+그대로 보유하고, `worker._resolve_time_window_candidate`(백테스트는
+`time_window_filter.evaluate_time_window_entry`를 동일하게 호출하는
+`scripts/tw_gate_whipsaw_reversal_backtest.py`)가 T+3 시점의 재확인 결과에
+따라 다음과 같이 처리한다:
+
+- **승인(gap 확대 유지)** → 기존 포지션 매도 → 새 방향 진입(SWITCH).
+- **거절, 사유가 `config.TW_WHIPSAW_REJECT_REASONS`(`REJECT_NOT_CONFIRMED` /
+  `REJECT_MACD_GAP_NOT_EXPANDING` — MACD-Signal 관계가 T+3에도 유지되지
+  않았거나 gap이 확대되지 않음, 즉 원래 방향으로 복귀한 휩쏘)에 속함** →
+  매도하지 않고 기존 포지션을 그대로 보유(`TIME_WINDOW_WHIPSAW_HOLD`).
+- **거절, 그 외 사유(품질점수 미달/시간대 마감/최대진입횟수/중복포지션)** →
+  기존과 동일하게 무조건 매도(sell-only, 새 방향 재진입은 하지 않음).
+
+gap 절대값이나 시간대 조건 등의 추가 임계값은 없다(단순 버전 — 56거래일
+TRAIN/VAL/OOS 백테스트에서 그런 조건을 추가할 근거를 찾지 못했음, 2026-08-19).
+이 로직은 반대신호 청산에만 적용되며, **SL(-1.7%)/TP1/TP2/trailing stop/15:00
+강제청산은 이 판단과 완전히 무관하게 매 tick 즉시 그대로 평가된다** —
+반대신호 후보가 대기 중이거나 방금 WHIPSAW_HOLD로 보유가 유지된 상태여도
+전혀 영향받지 않는다(`_advance_held_position_risk_management`가
+`_resolve_time_window_candidate`보다 먼저 평가되고, 발동 시 그 tick에
+즉시 반환됨).
+
+MU_MACD의 동일 필터(`app/trading/mu_macd/worker.py`의
+`_advance_time_window_filter`)도 완전히 동일한 조건/순서로 구현되어 있다 —
+두 모듈이 서로 다른 반대신호 청산 로직을 갖지 않도록, `config.
+TW_WHIPSAW_REJECT_REASONS` 판정에 쓰이는 reject 문자열 자체가
+`time_window_filter.evaluate_time_window_entry`라는 같은 공용 함수에서
+나온다.
+
 ### 짧은 왕복 교차 제거 — `is_valid_reset()`
 
 직전 반대 방향 확정 플래그와의 간격이 `config.MIN_FLAG_INTERVAL_MINUTES`
