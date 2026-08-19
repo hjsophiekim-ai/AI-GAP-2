@@ -2694,8 +2694,39 @@ def run_once(
             # as long as it is held — its STOP_LOSS/TP1/TP2 checks already
             # ran earlier this tick via _advance_held_position_risk_
             # management; nothing else in this priority chain should touch
-            # this position (OPPOSITE_SIGNAL is instead handled by the T+3
-            # candidate resolution just above).
+            # this position directly (OPPOSITE_SIGNAL is instead handled by
+            # the T+3 candidate resolution just above).
+            #
+            # 2026-08-19 real incident fix: _resolve_time_window_candidate
+            # just above only RESOLVES an ALREADY-pending candidate (a no-op
+            # if state.time_window_pending_flag_direction is still None) --
+            # it never CREATES one from a crossover confirmed on THIS bar.
+            # The only code that does that (_judge_entry_gate ->
+            # _judge_time_window_flag) lived further down in this function,
+            # in the "confirmed_direction != HOLD" reversal branch, which
+            # this early `return result` made structurally unreachable
+            # whenever a TW-managed position was already open. Net effect: a
+            # genuinely fresh opposite (or same-direction) confirmed flag
+            # that occurred WHILE a TW position was held was recorded in
+            # state.last_detected_direction (via _advance_confirmed_primary,
+            # called earlier and unaffected by this branch) but NEVER became
+            # a pending candidate -- so it could never reach its own T+3
+            # re-confirmation, could never dispatch OPPOSITE_SIGNAL, and the
+            # held position could only ever exit via its own TP1/TP2/
+            # stop-loss/trailing ladder or 15:00 forced liquidation, no
+            # matter how many later opposite flags fired (real-world
+            # example: BLUE flag 09:00 -> entered 0197X0 at 09:06; a genuine
+            # RED flag at 09:30 updated last_detected_direction but was
+            # silently dropped -- position never switched). Registering it
+            # here (a pure bookkeeping write, no order placed) lets a LATER
+            # tick's _resolve_time_window_candidate pick it up and run the
+            # real evaluate_time_window_entry decision at T+3, exactly like
+            # a fresh flag while flat already works.
+            if confirmed_direction != Direction.HOLD:
+                _judge_time_window_flag(
+                    state=state, bars_3m=bars_3m, direction=confirmed_direction,
+                    signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
+                )
             return result
 
         if state.pending_signal and not state.pending_signal.get("order_requested"):

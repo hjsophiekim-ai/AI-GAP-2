@@ -122,6 +122,62 @@ def test_entry_confirms_on_a_later_completed_bar_not_the_flag_bar(tw_market_data
     assert state.time_window_position_active is True
 
 
+def test_fresh_opposite_flag_registers_a_pending_candidate_while_position_held(tw_market_data, monkeypatch):
+    """Regression test for a 2026-08-19 real incident: a TW-managed position
+    (state.time_window_position_active=True) sat completely unmonitored by
+    any FRESH confirmed crossover -- _resolve_time_window_candidate only
+    resolves an ALREADY-pending candidate, and the code that actually
+    registers a NEW one from a crossover confirmed while a position is held
+    was unreachable behind an early `return result`. Net effect: a genuine
+    later opposite flag updated state.last_detected_direction but never
+    became a pending candidate, so it could never reach its own T+3
+    re-confirmation, could never dispatch OPPOSITE_SIGNAL, and the held
+    position could only ever exit via its own TP1/TP2/stop-loss/trailing
+    ladder or 15:00 forced liquidation (real example: BLUE flag 09:00 ->
+    entered 0197X0 at 09:06; a genuine RED flag at 09:30 was silently
+    dropped -- position never switched).
+
+    Forces the exact scenario deterministically (monkeypatching
+    _advance_confirmed_primary to report a fresh UP_RED on one specific tick,
+    rather than hunting for an organic crossover in synthetic data) while an
+    INVERSE (0197X0) position is already held and TW-managed -- asserts the
+    fresh, opposite-direction UP_RED candidate gets registered as pending, so
+    a later tick's _resolve_time_window_candidate can actually act on it.
+    """
+    from app.trading.macd2.models import Direction as _Direction, PositionSnapshot
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    # reconcile_position_state compares state.position against the BROKER's
+    # own holdings -- must seed the broker's side too, or the very first
+    # tick reconciles state.position back to flat (RECOVERED_TO_FLAT) before
+    # ever reaching the crossover logic this test targets.
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+
+    monkeypatch.setattr(worker, "_advance_confirmed_primary", lambda state, macd_snap, now: _Direction.UP_RED)
+
+    assert state.time_window_pending_flag_direction is None
+    orders_before = len(broker.orders)  # 1: the seed buy above, not from run_once
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert state.time_window_pending_flag_direction == _Direction.UP_RED, (
+        "a fresh opposite confirmed crossover must register as a pending TW candidate "
+        "even while an existing TW-managed position is held -- otherwise it can never "
+        "reach T+3 re-confirmation and the position can never exit via OPPOSITE_SIGNAL"
+    )
+    assert state.time_window_pending_flag_bar_ts is not None
+    # the held position itself must NOT have been touched on this same tick --
+    # OPPOSITE_SIGNAL only fires later, once the candidate resolves at T+3.
+    assert state.position is not None and state.position.symbol == config.INVERSE_SYMBOL
+    assert len(broker.orders) == orders_before, "run_once must not place any order on the flag's own bar"
+    del result
+
+
 def test_day_rollover_resets_time_window_session_counters():
     state = _fresh_state()
     state.session_date = "20260105"
