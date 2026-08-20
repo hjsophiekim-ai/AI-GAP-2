@@ -2693,6 +2693,16 @@ def run_once(
     bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(bars_3m, df_1m)
     if _history_gap_bar_starts:
         state.order_block_reason = "HISTORY_GAP"
+    elif state.order_block_reason == "HISTORY_GAP":
+        # 2026-08-20 fix (real incident: dashboard showed "HISTORY_GAP" /
+        # bootstrap_status FAILED indefinitely after a real 1-minute gap in
+        # the WATCH_SYMBOL history had already been backfilled by a later
+        # incremental merge). This was the only place that ever SET
+        # order_block_reason to "HISTORY_GAP", but nothing ever cleared it
+        # back once the gap resolved -- clear it here, and only here (never
+        # touch any OTHER reason a different code path set later this same
+        # tick), the first tick this exact bar_starts check comes back clean.
+        state.order_block_reason = None
     macd_snap = calculate_macd(bars_3m)
     result.timing["macd_calculation"] = time.monotonic() - t0
     if macd_snap is None:

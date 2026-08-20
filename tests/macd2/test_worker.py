@@ -542,6 +542,12 @@ def test_history_gap_blocks_confirmed_signal_until_backfilled():
 
     assert result2.actions == ["ENTRY:UP_RED"]
     assert len(ledger.load_signal_ledger()) == 1
+    # 2026-08-20 fix (real incident: dashboard kept showing "HISTORY_GAP" /
+    # bootstrap_status FAILED forever after a real gap had already been
+    # backfilled -- order_block_reason was set to HISTORY_GAP above but
+    # nothing ever cleared it back). Must go back to None once the SAME
+    # check comes back clean, not linger from the earlier gapped tick.
+    assert state.order_block_reason is None
 
 
 def test_compute_today_signal_overview_classifies_by_session_started_at():
