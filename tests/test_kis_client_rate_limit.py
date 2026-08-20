@@ -269,3 +269,32 @@ def test_get_minute_candles_for_date_does_not_silently_return_empty_when_still_r
 
     assert rows == []
     assert client.last_minute_candle_error is not None
+
+
+def test_get_current_price_defaults_to_j_and_accepts_nx(monkeypatch):
+    """2026-08-20 fix: 대시보드 실시간 현재가(inquire-price)도 market_div를
+    받는다 -- 기본값 "J"는 기존 호출자와의 하위호환을 위해 유지되고, "NX"를
+    넘기면 FID_COND_MRKT_DIV_CODE에 그대로 실린다(정규장 마감 이후에도 계속
+    갱신되는 NXT 체결가를 받기 위함)."""
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", mode="mock")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    captured = {}
+
+    class _FakeResponse:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            return {"rt_cd": "0", "output": {"stck_prpr": "1692000"}}
+
+    def _fake_get(url, **kwargs):
+        captured["params"] = kwargs.get("params")
+        return _FakeResponse()
+
+    monkeypatch.setattr(client, "_get", _fake_get)
+
+    client.get_current_price("000660")
+    assert captured["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
+
+    client.get_current_price("000660", market_div="NX")
+    assert captured["params"]["FID_COND_MRKT_DIV_CODE"] == "NX"

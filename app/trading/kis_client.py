@@ -578,17 +578,23 @@ class KISClient:
 
     # ── 현재가 조회 ────────────────────────────────────────────────────────
 
-    def get_current_price(self, symbol: str) -> dict | None:
+    def get_current_price(self, symbol: str, *, market_div: str = "J") -> dict | None:
         """국내주식 현재가 조회. 실패 시 None 반환.
 
         ``symbol`` must remain a string (ETF codes like 0193T0 / 0197X0).
         HTTP timeout is (connect=3s, read=8s) — do not use a 2s read that
         hides real latency behind futures.TimeoutError before the socket fails.
+
+        ``market_div``: FID_COND_MRKT_DIV_CODE. 기본값 "J"(KRX 정규장 전용)는
+        기존 호출자와의 하위호환을 위해 유지된다. "NX"를 넘기면 NXT 포함
+        실시간 체결가를 반환한다 — 정규장 마감(15:30) 이후에도 "J"는 마지막
+        정규장 체결가에서 멈추는 반면 "NX"는 시간외/프리마켓 동안도 계속
+        갱신됨을 실측 확인함(2026-08-20).
         """
         symbol = str(symbol)
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
         headers = self._auth_headers(TR_CURRENT_PRICE)
-        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+        params = {"FID_COND_MRKT_DIV_CODE": market_div, "FID_INPUT_ISCD": symbol}
         t0 = time.monotonic()
         try:
             resp = self._get(url, headers=headers, params=params, timeout=(3.0, 8.0))

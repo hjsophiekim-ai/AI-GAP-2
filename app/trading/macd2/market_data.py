@@ -394,13 +394,20 @@ class MarketDataService:
         return df, {"received_count": int(len(df))}
 
     def _default_fetch_quote(self, mode: str, symbol: str) -> tuple[Optional[float], Optional[str]]:
-        """Real KIS call — the one and only network entry point for a live quote."""
+        """Real KIS call — the one and only network entry point for a live quote.
+
+        WATCH_SYMBOL(000660)만 NX(NXT 포함 실시간 체결가)로 조회한다 — 이
+        값이 MACD 계산의 입력이자 대시보드에 표시되는 "현재가"이므로, 1분봉
+        히스토리(market_div="NX", 2026-08-20 fix)와 같은 소스여야 정규장
+        마감 이후에도 계속 갱신된다. 실제 매매 대상인 LONG_SYMBOL/
+        INVERSE_SYMBOL(ETF)은 이번 변경 범위 밖이라 그대로 "J"를 쓴다."""
         del mode
         client = self._get_kis_client()
         if client is None:
             return None, "kis_client_none"
+        market_div = config.NXT_MARKET_DIV_CODE if symbol == config.WATCH_SYMBOL else "J"
         try:
-            result = client.get_current_price(symbol)
+            result = client.get_current_price(symbol, market_div=market_div)
             return (float(result["current_price"]) if result else None), None
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return None, repr(exc)

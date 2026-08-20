@@ -285,7 +285,7 @@ def test_default_kis_client_created_once_and_reused(monkeypatch):
         def get_minute_candles_for_date(self, symbol, date, period_min, count, hour1, market_div="J"):
             return []
 
-        def get_current_price(self, symbol):
+        def get_current_price(self, symbol, market_div="J"):
             return {"current_price": 100.0}
 
     def fake_create_kis_client(mode):
@@ -321,7 +321,7 @@ def test_default_fetchers_request_nxt_market_div(monkeypatch):
             seen_market_divs.append(("prior_day", market_div))
             return []
 
-        def get_current_price(self, symbol):
+        def get_current_price(self, symbol, market_div="J"):
             return {"current_price": 100.0}
 
     import app.trading.kis_client as kis_client_module
@@ -333,6 +333,37 @@ def test_default_fetchers_request_nxt_market_div(monkeypatch):
 
     assert seen_market_divs, "no fetch was made"
     assert all(div == config.NXT_MARKET_DIV_CODE for _kind, div in seen_market_divs)
+
+
+def test_live_quote_requests_nxt_for_watch_symbol_only(monkeypatch):
+    """2026-08-20 fix: 정규장 마감(15:30) 이후 대시보드 현재가가 그대로
+    멈춰있던 문제 -- get_current_price도 WATCH_SYMBOL(000660)에 한해 NX로
+    조회해야 한다(실측: 장외 시간 J=1,691,000 vs NX=1,692,000, 계속 갱신되는
+    쪽은 NX). 실제로 매매되는 ETF(LONG_SYMBOL/INVERSE_SYMBOL)는 이번 변경
+    범위 밖이라 그대로 J를 써야 한다."""
+    seen_market_divs = {}
+
+    class _FakeKisClient:
+        def get_minute_candles(self, symbol, period_min, count, hour1, market_div="J"):
+            return []
+
+        def get_minute_candles_for_date(self, symbol, date, period_min, count, hour1, market_div="J"):
+            return []
+
+        def get_current_price(self, symbol, market_div="J"):
+            seen_market_divs[symbol] = market_div
+            return {"current_price": 100.0}
+
+    import app.trading.kis_client as kis_client_module
+
+    monkeypatch.setattr(kis_client_module, "create_kis_client", lambda mode: _FakeKisClient())
+
+    svc = MarketDataService(mode="mock")
+    svc.refresh_quotes()
+
+    assert seen_market_divs[config.WATCH_SYMBOL] == config.NXT_MARKET_DIV_CODE
+    assert seen_market_divs[config.LONG_SYMBOL] == "J"
+    assert seen_market_divs[config.INVERSE_SYMBOL] == "J"
 
 
 def test_bootstrap_fails_when_today_page_budget_exhausted_without_natural_stop(monkeypatch):
