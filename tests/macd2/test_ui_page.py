@@ -155,6 +155,23 @@ def test_start_stop_buttons_render():
     assert "Bootstrap 재시도" in labels
 
 
+def test_last_tick_and_quote_check_metrics_render_even_without_a_running_worker():
+    """2026-08-21 fix: "마지막 tick 시간"/"마지막 조회시간"/"누적 tick 수"는
+    `if worker_stats:`로 감싸여 있어, self._worker가 아직 없는(자동매매 시작
+    전이거나 STALLED로 죽어 self._worker가 None인) 상태에서는 worker_stats가
+    빈 dict가 되어 화면에서 이 셋이 통째로 사라졌다 — 정작 이 진단이 가장
+    필요한 순간(Worker가 죽었을 때)에 안 보이는 문제였다. Worker가 없어도
+    "-"로라도 항상 렌더링돼야 한다."""
+    at = _fresh_app()
+    at.run()
+    assert not at.exception
+    metric_labels = [m.label for m in at.metric]
+    for expected in ("마지막 tick 시간", "마지막 조회시간", "누적 tick 수"):
+        assert expected in metric_labels, f"missing metric: {expected}"
+    last_tick_metric = next(m for m in at.metric if m.label == "마지막 tick 시간")
+    assert last_tick_metric.value == "-"
+
+
 def test_operational_diagnostics_panel_renders_before_start():
     """Worker/quote/bootstrap heartbeat diagnostics (docs §21 2026-07-24 UI
     addition) must render even with no Worker ever started — worker_status
