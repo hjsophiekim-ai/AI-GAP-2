@@ -3569,6 +3569,7 @@ class Macd2Worker:
         self._lock = threading.RLock()
         self._instance_id = uuid.uuid4().hex[:12]
         self._started_at: Optional[datetime] = None
+        self._last_quote_updater_restart_at: Optional[datetime] = None
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -3631,14 +3632,41 @@ class Macd2Worker:
                     # a brand-new one takes over, exactly mirroring how
                     # Macd2Service.start() already recovers a stuck Worker
                     # thread.
+                    #
+                    # 2026-08-21 fix (real incident: Render OOM after this
+                    # fired on every single 5s tick for as long as quotes
+                    # stayed stale): a genuinely healthy refresh_quotes() call
+                    # can now legitimately take much longer than
+                    # QUOTE_UPDATER_STALL_AGE_SEC (30s) under sustained KIS
+                    # rate limiting -- 3 symbols x up to 8 retry attempts x 5s
+                    # mock-mode delay = up to ~120s in the worst case (see
+                    # kis_client._get_with_rate_limit_retry). Without a
+                    # cooldown, every tick during that window re-triggered
+                    # stop+start, abandoning a thread that was still
+                    # legitimately working and spawning a fresh one on top of
+                    # it (each old one is orphaned, not actually killed, until
+                    # its own current blocked call returns) -- over hours this
+                    # accumulated dozens of live orphaned threads, all still
+                    # polling KIS (worsening the very rate limiting that
+                    # caused this), until the container ran out of memory.
+                    # Only force a restart once per QUOTE_UPDATER_STALL_AGE_SEC
+                    # so a slow-but-working retry sequence gets a real chance
+                    # to finish before being abandoned.
                     stalest_age = 0.0
                     for _sym in (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL):
                         _snap = self._market_data.get_quote(_sym)
                         if _snap is not None and _snap.age_sec is not None:
                             stalest_age = max(stalest_age, _snap.age_sec)
-                    if stalest_age > config.QUOTE_UPDATER_STALL_AGE_SEC:
+                    _since_last_restart = (
+                        (datetime.now(KST) - self._last_quote_updater_restart_at).total_seconds()
+                        if self._last_quote_updater_restart_at else None
+                    )
+                    if stalest_age > config.QUOTE_UPDATER_STALL_AGE_SEC and (
+                        _since_last_restart is None or _since_last_restart > config.QUOTE_UPDATER_STALL_AGE_SEC
+                    ):
                         self._market_data.stop_quote_updater(join_timeout=0.5)
                         self._market_data.start_quote_updater(interval_sec=1.0)
+                        self._last_quote_updater_restart_at = datetime.now(KST)
                 tick_result = run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
                 stage_timing.update(tick_result.timing)
                 t_stage = time.monotonic()

@@ -846,15 +846,40 @@ class MarketDataService:
     def start_quote_updater(self, interval_sec: float = 1.0) -> None:
         if self._quote_updater_thread is not None and self._quote_updater_thread.is_alive():
             return
-        self._quote_updater_stop.clear()
+        # 2026-08-21 fix (real incident: Render OOM after this thread quietly
+        # multiplied for hours): this used to clear() the SAME self._quote_
+        # updater_stop Event every restart. worker.py's own stuck-thread
+        # self-heal (_run_loop, "stalest_age > QUOTE_UPDATER_STALL_AGE_SEC")
+        # calls stop_quote_updater()+start_quote_updater() every tick while a
+        # refresh_quotes() call is stuck deep in the (now-retrying, up to
+        # ~40s/attempt-cycle under sustained KIS rate limiting)
+        # _get_with_rate_limit_retry loop -- stop_quote_updater()'s
+        # join(timeout=0.5) can't wait that long, so it gives up and returns
+        # while the OLD thread is still blocked inside that same loop. The
+        # very next start_quote_updater() then called .clear() on that SAME
+        # Event out from under it -- so once the OLD thread's blocked call
+        # finally returned and it re-checked the loop condition, the flag it
+        # was waiting on had been reset to "keep going" and it just kept
+        # looping FOREVER, alongside the brand new thread. Every subsequent
+        # stall re-triggered this, so live-orphaned "macd2-quote-updater"
+        # threads accumulated unbounded over hours -- each still polling KIS
+        # (worsening the very rate limiting that caused this), each held
+        # forever by the Python interpreter. A fresh, private Event per
+        # generation means stop_quote_updater() only ever retires the thread
+        # generation it actually targets: an old thread's own captured
+        # reference stays set even after a new generation clears ITS OWN new
+        # Event, so the old thread genuinely exits the first time it gets to
+        # recheck the loop condition, instead of resuming.
+        stop_event = threading.Event()
+        self._quote_updater_stop = stop_event
 
         def _loop() -> None:
-            while not self._quote_updater_stop.is_set():
+            while not stop_event.is_set():
                 try:
                     self.refresh_quotes()
                 except Exception:
                     pass
-                self._quote_updater_stop.wait(interval_sec)
+                stop_event.wait(interval_sec)
 
         self._quote_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-quote-updater")
         self._quote_updater_thread.start()
@@ -877,15 +902,19 @@ class MarketDataService:
         itself (docs: Worker tick에서 KIS network 호출 제거)."""
         if self._history_updater_thread is not None and self._history_updater_thread.is_alive():
             return
-        self._history_updater_stop.clear()
+        # Same fresh-Event-per-generation fix as start_quote_updater() above —
+        # a shared Event across restarts lets an old, still-blocked thread
+        # resume forever instead of exiting once its current call returns.
+        stop_event = threading.Event()
+        self._history_updater_stop = stop_event
 
         def _loop() -> None:
-            while not self._history_updater_stop.is_set():
+            while not stop_event.is_set():
                 try:
                     self.merge_incremental_1m()
                 except Exception:
                     pass
-                self._history_updater_stop.wait(interval_sec)
+                stop_event.wait(interval_sec)
 
         self._history_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-history-updater")
         self._history_updater_thread.start()
