@@ -365,6 +365,31 @@ w4.metric("전략 상태", state.ui_mode.value)
 if state.order_block_reason:
     st.write(f"최근 block/skip 사유: `{state.order_block_reason}`")
 
+# 2026-08-20 추가: Worker._run_loop이 이미 내부적으로 추적하고 있던
+# last_exception/last_tick_age_sec/stalled가 지금까지 UI 어디에도 노출되지
+# 않아, "틱이 왜 멈췄는지" 진단할 방법이 대시보드에 전혀 없었다(사용자가
+# 직접 코드/서버 로그를 봐야만 알 수 있었음). Worker 상태가 STALLED/DEAD가
+# 아니라도(스레드 자체는 is_alive()=True로 살아있는데 내부적으로 멈춰있는
+# 경우) age/exception을 그대로 보여줘 다음에 이런 상황이 재발하면 여기서
+# 바로 원인을 볼 수 있게 한다.
+if worker_stats:
+    last_tick_age = worker_stats.get("last_tick_age_sec")
+    stalled = bool(worker_stats.get("stalled"))
+    last_exc = worker_stats.get("last_exception")
+    last_tick_at_raw = worker_stats.get("last_tick_at")
+    try:
+        last_tick_at_display = datetime.fromisoformat(last_tick_at_raw).astimezone(macd2_config.KST).strftime("%H:%M:%S") if last_tick_at_raw else "-"
+    except ValueError:
+        last_tick_at_display = "-"
+    quote_fetch_times = [snap.fetched_at for snap in quotes.values() if snap is not None and snap.fetched_at]
+    last_quote_checked_display = max(quote_fetch_times).astimezone(macd2_config.KST).strftime("%H:%M:%S") if quote_fetch_times else "-"
+    d1, d2, d3 = st.columns(3)
+    d1.metric("마지막 tick 시간", last_tick_at_display, delta="STALLED" if stalled else None, delta_color="inverse" if stalled else "normal")
+    d2.metric("마지막 조회시간", last_quote_checked_display)
+    d3.metric("누적 tick 수", worker_stats.get("tick_n", "-"))
+    if last_exc:
+        st.error(f"Worker 마지막 예외 (다음 성공 tick까지 유지됨):\n```\n{last_exc}\n```")
+
 st.subheader("현재 신호 / 포지션")
 q1, q2, q3 = st.columns(3)
 for col, symbol, label in (
