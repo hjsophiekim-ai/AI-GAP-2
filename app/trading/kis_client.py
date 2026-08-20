@@ -528,6 +528,37 @@ class KISClient:
             resp = request_fn(url, headers=headers, **kwargs)
         return resp
 
+    def _get_with_rate_limit_retry(self, url: str, **kwargs):
+        """분봉류 조회 전용: 헤더/TR_ID는 호출자가 이미 구성해 ``kwargs``로
+        넘긴다(``_request_with_token_retry``와 달리 여기선 토큰 재발급을
+        하지 않음 — 분봉 조회는 토큰 만료 케이스가 드물고, 호출자가 이미
+        ``headers``를 직접 만들어 넘기는 기존 구조를 유지하기 위함).
+
+        NX(NXT 포함) 분봉 조회는 초당 요청 제한(msg_cd=EGW00201, "초당
+        거래건수를 초과하였습니다")에 특히 잘 걸린다 — 과거 이 재시도가
+        없어 페이징 도중 빈 응답을 "더 이상 과거 데이터 없음"으로 잘못
+        해석해 특정 시간대가 통째로 누락된 적이 있다. 반드시 재시도로
+        구분해야 한다.
+        """
+        resp = None
+        for attempt in range(1, _RATE_LIMIT_RETRY_MAX_ATTEMPTS + 1):
+            resp = self._get(url, **kwargs)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            if _is_rate_limited_response(data) and attempt < _RATE_LIMIT_RETRY_MAX_ATTEMPTS:
+                delay = _RATE_LIMIT_RETRY_DELAY_SECONDS.get(self.mode, _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS)
+                logger.warning(
+                    f"[KIS-{self.mode.upper()}] 분봉 조회 rate limited; retrying "
+                    f"attempt={attempt}/{_RATE_LIMIT_RETRY_MAX_ATTEMPTS} delay={delay:.1f}s "
+                    f"url={url} msg_cd={data.get('msg_cd')!r} msg1={data.get('msg1')!r}"
+                )
+                time.sleep(delay)
+                continue
+            break
+        return resp
+
     # ── hashkey ────────────────────────────────────────────────────────────
 
     def get_hashkey(self, body: dict) -> str:
@@ -1154,26 +1185,40 @@ class KISClient:
         count: int = 60,
         *,
         hour1: str = "",
+        market_div: str = "J",
     ) -> list[dict]:
         """국내주식 분봉 조회. 최신 순으로 count개 반환. 실패 시 [] 반환.
 
         ``hour1`` (HHMMSS): KIS pagination cursor — empty = latest page;
         set to oldest time from prior page to walk backwards.
+
+        ``market_div``: FID_COND_MRKT_DIV_CODE. 기본값 "J"(KRX 정규장 전용,
+        09:00-15:30 캡)는 기존 호출자와의 하위호환을 위해 유지된다. "NX"를
+        넘기면 NXT(넥스트레이드) 포함 통합 체결가(08:00~20:00, KIS 차트가
+        실제로 사용하는 것과 동일한 소스)를 반환한다.
         """
         tr_id = "FHKST03010200"
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
         headers = self._auth_headers(tr_id)
         params = {
             "FID_ETC_CLS_CODE": "",
-            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_MRKT_DIV_CODE": market_div,
             "FID_INPUT_ISCD": symbol,
             "FID_INPUT_HOUR_1": str(hour1 or ""),
             "FID_PW_DATA_INCU_YN": "N",
         }
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._get_with_rate_limit_retry(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
-            output = resp.json().get("output2", [])
+            data = resp.json()
+            if _is_rate_limited_response(data):
+                # 재시도를 다 써도 여전히 rate limit인 경우 — 이 응답은 "이
+                # 시간대에 거래가 없었다"는 정상적인 빈 페이지가 아니라 조회
+                # 자체가 실패한 것이다. 조용히 []를 반환하면 페이징 루프가
+                # "더 이상 과거 데이터 없음"으로 오인해 구간이 통째로
+                # 누락될 수 있으므로 명시적으로 예외를 발생시킨다.
+                raise RuntimeError(f"rate limit persisted after retries: {data.get('msg_cd')!r} {data.get('msg1')!r}")
+            output = data.get("output2", [])
             result = []
             for row in output[:count]:
                 close = float(row.get("stck_prpr", 0) or 0)
@@ -1203,6 +1248,7 @@ class KISClient:
         count: int = 60,
         *,
         hour1: str = "",
+        market_div: str = "J",
     ) -> list[dict]:
         """국내주식 주식일별분봉조회 — 특정 거래일(``date``, YYYYMMDD)의 분봉을
         명시적으로 조회한다. ``get_minute_candles()``(inquire-time-itemchartprice)
@@ -1213,12 +1259,16 @@ class KISClient:
 
         최신 순으로 최대 ``count``개 반환. ``hour1`` (HHMMSS): 페이징 커서
         (비우면 해당 날짜의 마지막 시각부터). 실패 시 [] 반환.
+
+        ``market_div``: FID_COND_MRKT_DIV_CODE. 기본값 "J"는 기존 호출자와의
+        하위호환을 위해 유지된다. "NX"를 넘기면 NXT 포함 통합 체결가
+        (08:00~20:00)를 반환한다 — KIS 실제 차트가 사용하는 것과 동일한 소스.
         """
         tr_id = "FHKST03010230"
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
         headers = self._auth_headers(tr_id)
         params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_MRKT_DIV_CODE": market_div,
             "FID_INPUT_ISCD": symbol,
             "FID_INPUT_DATE_1": str(date),
             "FID_INPUT_HOUR_1": str(hour1 or ""),
@@ -1226,9 +1276,11 @@ class KISClient:
             "FID_FAKE_TICK_INCU_YN": "N",
         }
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(3, 10))
+            resp = self._get_with_rate_limit_retry(url, headers=headers, params=params, timeout=(3, 10))
             resp.raise_for_status()
             data = resp.json()
+            if _is_rate_limited_response(data):
+                raise RuntimeError(f"rate limit persisted after retries: {data.get('msg_cd')!r} {data.get('msg1')!r}")
             output = data.get("output2", [])
             result = []
             for row in output[:count]:

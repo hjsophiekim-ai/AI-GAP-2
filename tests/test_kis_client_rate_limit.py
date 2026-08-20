@@ -171,3 +171,101 @@ def test_get_today_fills_retries_egw00201_until_success(monkeypatch):
     assert result["ok"] is True
     assert result["fills"][0]["order_id"] == "ORD-FILL-1"
     assert sleep_calls == [0.01]
+
+
+def _fake_candle_response(rows):
+    class _FakeResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._body
+
+    return _FakeResponse({"rt_cd": "0", "msg_cd": "0", "output2": rows})
+
+
+def _rate_limited_response():
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}
+
+    return _FakeResponse()
+
+
+def test_get_minute_candles_defaults_to_j_market_div(monkeypatch):
+    """기존 호출자와의 하위호환 — market_div를 넘기지 않으면 여전히 "J"."""
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", mode="mock")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    captured = {}
+
+    def _fake_get(url, **kwargs):
+        captured["params"] = kwargs.get("params")
+        return _fake_candle_response([])
+
+    monkeypatch.setattr(client, "_get", _fake_get)
+    client.get_minute_candles("000660", count=10)
+    assert captured["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
+
+
+def test_get_minute_candles_for_date_passes_through_nx_market_div(monkeypatch):
+    """NXT 통합 체결가 조회 — market_div="NX"가 그대로 FID_COND_MRKT_DIV_CODE에 실린다."""
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", mode="mock")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    captured = {}
+
+    def _fake_get(url, **kwargs):
+        captured["params"] = kwargs.get("params")
+        return _fake_candle_response([
+            {"stck_bsop_date": "20260820", "stck_cntg_hour": "080100", "stck_oprc": "1600", "stck_hgpr": "1600", "stck_lwpr": "1600", "stck_prpr": "1600", "cntg_vol": "10"},
+        ])
+
+    monkeypatch.setattr(client, "_get", _fake_get)
+    rows = client.get_minute_candles_for_date("000660", "20260820", count=10, market_div="NX")
+    assert captured["params"]["FID_COND_MRKT_DIV_CODE"] == "NX"
+    assert rows[0]["time"] == "080100"
+
+
+def test_get_minute_candles_retries_egw00201_until_success(monkeypatch):
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", mode="mock")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    monkeypatch.setitem(kc._RATE_LIMIT_RETRY_DELAY_SECONDS, "mock", 0.01)
+    sleep_calls = []
+    monkeypatch.setattr(kc.time, "sleep", lambda s: sleep_calls.append(s))
+
+    responses = [
+        _rate_limited_response(),
+        _rate_limited_response(),
+        _fake_candle_response([
+            {"stck_bsop_date": "20260820", "stck_cntg_hour": "090000", "stck_oprc": "1600", "stck_hgpr": "1600", "stck_lwpr": "1600", "stck_prpr": "1600", "cntg_vol": "10"},
+        ]),
+    ]
+    monkeypatch.setattr(client, "_get", lambda *a, **kw: responses.pop(0))
+
+    rows = client.get_minute_candles("000660", count=10, market_div="NX")
+
+    assert len(rows) == 1
+    assert sleep_calls == [0.01, 0.01]
+    assert client.last_minute_candle_error is None
+
+
+def test_get_minute_candles_for_date_does_not_silently_return_empty_when_still_rate_limited(monkeypatch):
+    """조건 6: 재시도를 모두 소진하고도 여전히 rate limit이면, 이 시간대에
+    실제로 거래가 없었다는 정상 빈 페이지와 구분되도록 last_minute_candle_error
+    를 남기고 []를 반환해야 한다(조용히 "성공"으로 보이면 안 됨) — market_data.py
+    의 페이징 루프는 이 error 신호로만 진짜 없음/일시 실패를 구분한다."""
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", mode="mock")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    monkeypatch.setitem(kc._RATE_LIMIT_RETRY_DELAY_SECONDS, "mock", 0.01)
+    monkeypatch.setattr(kc.time, "sleep", lambda s: None)
+    monkeypatch.setattr(client, "_get", lambda *a, **kw: _rate_limited_response())
+
+    rows = client.get_minute_candles_for_date("000660", "20260820", count=10, market_div="NX")
+
+    assert rows == []
+    assert client.last_minute_candle_error is not None

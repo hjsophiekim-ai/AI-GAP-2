@@ -49,9 +49,10 @@ KIS_PAGE_SIZE = 120
 # inquire-time-itemchartprice / 주식일별분봉조회 both actually return ~30 rows
 # per call regardless of the requested count (KIS 서버측 고정 page size —
 # 2026-07-27 발견: 장 시작 후 3시간(6 pages * 30 rows = 180분)이 지나면 이후
-# paging walk가 오늘 데이터의 앞부분을 빠뜨렸다). A full KRX session is 09:00
-# ~15:30 = 390 minutes -> needs >=13 pages at 30 rows/page; sized with margin.
-KIS_MAX_PAGES = 20
+# paging walk가 오늘 데이터의 앞부분을 빠뜨렸다). NXT 포함(market_div="NX")
+# 전환 이후 세션은 08:00~20:00 = 720분으로 늘어났다 (2026-08-20) -> needs
+# >=24 pages at 30 rows/page; sized with margin.
+KIS_MAX_PAGES = 30
 KIS_PAGE_MINUTES = 30  # matches the ~30-rows-per-page fact above
 
 # Bounds how far back _load_prior_trading_day() searches for the most recent
@@ -84,9 +85,10 @@ def _empty_1m_frame() -> pd.DataFrame:
 def _parse_hour1(hour1: str) -> datetime:
     """``hour1`` cursor ("HHMMSS") -> a time-of-day anchor to back off from
     when a page fails. Empty ``hour1`` means "latest" (no cursor sent yet);
-    anchor that case at market close so the very first page skips backward
-    from end-of-session, same as any other stuck boundary."""
-    return datetime.strptime(hour1 or "153000", "%H%M%S")
+    anchor that case at NXT session close (20:00, market_div="NX" 2026-08-20)
+    so the very first page skips backward from end-of-session, same as any
+    other stuck boundary."""
+    return datetime.strptime(hour1 or "200000", "%H%M%S")
 
 
 def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -341,7 +343,10 @@ class MarketDataService:
         if client is None:
             return _empty_1m_frame(), {"error": "kis_client_none"}
         try:
-            candles = client.get_minute_candles(symbol, period_min=1, count=count, hour1=hour1) or []
+            candles = client.get_minute_candles(
+                symbol, period_min=1, count=count, hour1=hour1,
+                market_div=config.NXT_MARKET_DIV_CODE,
+            ) or []
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return _empty_1m_frame(), {"error": repr(exc)}
         df = _candles_to_df(candles)
@@ -369,7 +374,10 @@ class MarketDataService:
             client = self._get_watch_symbol_history_client()
             if client is None:
                 return _empty_1m_frame(), {"error": "kis_client_none"}
-            candles = client.get_minute_candles_for_date(symbol, date_ymd, period_min=1, count=count, hour1=hour1) or []
+            candles = client.get_minute_candles_for_date(
+                symbol, date_ymd, period_min=1, count=count, hour1=hour1,
+                market_div=config.NXT_MARKET_DIV_CODE,
+            ) or []
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return _empty_1m_frame(), {"error": repr(exc)}
         df = _candles_to_df(candles)
@@ -475,6 +483,16 @@ class MarketDataService:
                 page_diags[-1]["stop_reason"] = "CURSOR_NOT_MOVING"
                 break
             hour1 = next_hour1
+        else:
+            # Same 2026-08-20 condition-6 fix as bootstrap()'s today-walk:
+            # the loop consumed every one of KIS_MAX_PAGES pages without ever
+            # hitting a genuine stop signal, meaning data was still growing
+            # when the page budget ran out -- there may be earlier history
+            # (e.g. this date's own NXT premarket/evening) we simply never
+            # asked for. Flag it so the caller does not treat this date as a
+            # clean, complete fetch.
+            if pages:
+                page_diags[-1]["stop_reason"] = "MAX_PAGES_EXHAUSTED"
 
         df = (
             pd.concat(pages, ignore_index=True)
@@ -483,7 +501,11 @@ class MarketDataService:
             .reset_index(drop=True)
             if pages else _empty_1m_frame()
         )
-        return df, {"date": date_ymd, "pages": page_diags, "received_count": int(len(df))}
+        page_budget_exhausted = bool(page_diags) and page_diags[-1].get("stop_reason") == "MAX_PAGES_EXHAUSTED"
+        return df, {
+            "date": date_ymd, "pages": page_diags, "received_count": int(len(df)),
+            "page_budget_exhausted": page_budget_exhausted,
+        }
 
     def _load_prior_trading_day(self, today_ymd: str) -> tuple[pd.DataFrame, dict[str, Any]]:
         """Fallback chain (docs §21 2026-07-24 warm-up fix) — never requires
@@ -511,6 +533,7 @@ class MarketDataService:
                     "candidates_tried": len(attempts), "attempts": attempts,
                     "received_count": int(len(df)),
                     "oldest": df["datetime"].iloc[0].isoformat(), "newest": df["datetime"].iloc[-1].isoformat(),
+                    "page_budget_exhausted": bool(diag.get("page_budget_exhausted")),
                 }
 
         cache_df, cache_diag = _load_prior_day_1m_cache(config.WATCH_SYMBOL, today_ymd)
@@ -549,6 +572,7 @@ class MarketDataService:
         hour1 = ""
         prev_count = 0
         consecutive_error_skips = 0
+        today_page_exhausted = False
         for page_i in range(KIS_MAX_PAGES):
             if page_i > 0:
                 time.sleep(config.KIS_PAGE_FETCH_PACING_SEC)
@@ -603,6 +627,19 @@ class MarketDataService:
                 page_diags[-1]["stop_reason"] = "CURSOR_NOT_MOVING"
                 break  # never repeat an identical request (today-only data would loop forever)
             hour1 = next_hour1
+        else:
+            # for-loop exhausted every one of KIS_MAX_PAGES iterations without
+            # ever hitting a genuine stop signal (PAGE_NO_GROWTH/CURSOR_NOT_
+            # MOVING/legitimate-empty-break above) -- every page up to the
+            # last still returned fresh, growing data, so there may well be
+            # MORE history earlier than what we stopped asking for (2026-08-20
+            # condition 6: market_div="NX" extends a full session to 08:00-
+            # 20:00/720min, so an insufficient page budget here would silently
+            # truncate exactly the premarket window this whole fix depends
+            # on). Flag it explicitly rather than reporting success.
+            if pages:
+                page_diags[-1]["stop_reason"] = "MAX_PAGES_EXHAUSTED"
+                today_page_exhausted = True
 
         today_df = (
             pd.concat(pages, ignore_index=True)
@@ -649,6 +686,28 @@ class MarketDataService:
                 self._last_bootstrap_diag["today_history_warning"] = (
                     f"TODAY_1M_START_AFTER_OPEN:{today_start.strftime('%H:%M:%S')}"
                 )
+
+        # 페이지 예산 소진으로 인한 조용한 결측 검증 (2026-08-20, 조건 6) —
+        # 아래 두 페이징 루프 모두 KIS_MAX_PAGES를 다 쓰고도(page_i가 마지막
+        # 인덱스에 도달) 여전히 더 받아올 데이터가 남아있는 것처럼 보이며
+        # 끝난 경우(PAGE_NO_GROWTH/CURSOR_NOT_MOVING 같은 "진짜 끝" 신호 없이
+        # for 루프 자체가 그냥 소진된 경우), 실제로는 더 이전 시각의 데이터가
+        # 남아있을 수 있는데도 조용히 "성공"으로 보고될 위험이 있다 — market_
+        # div="NX" 전환으로 하루 세션이 08:00~20:00(720분)까지 늘어났으므로
+        # (기존 09:00~15:30 390분 가정보다 훨씬 김) 이 위험이 실제로 커졌다.
+        # stop_reason 없이(=자연스러운 종료 신호 없이) 루프가 그냥 다 돌았다면
+        # 하드 실패로 처리해 결측을 성공으로 위장하지 않는다.
+        nxt_gap_reason: Optional[str] = None
+        if today_page_exhausted:
+            nxt_gap_reason = "NXT_TODAY_PAGE_BUDGET_EXHAUSTED"
+        elif prior_diag.get("page_budget_exhausted"):
+            nxt_gap_reason = "NXT_PRIOR_DAY_PAGE_BUDGET_EXHAUSTED"
+        if nxt_gap_reason is not None:
+            self._last_bootstrap_diag["nxt_coverage_gap"] = nxt_gap_reason
+            return BootstrapResult(
+                False, nxt_gap_reason, int(len(df)), prior_n, today_n,
+                completed_3m_count, round(elapsed, 3),
+            )
 
         if prior_n <= 0:
             # Fallback A (KIS official date-scoped API) and fallback B

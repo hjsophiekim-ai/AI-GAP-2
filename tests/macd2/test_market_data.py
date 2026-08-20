@@ -279,10 +279,10 @@ def test_default_kis_client_created_once_and_reused(monkeypatch):
     created = []
 
     class _FakeKisClient:
-        def get_minute_candles(self, symbol, period_min, count, hour1):
+        def get_minute_candles(self, symbol, period_min, count, hour1, market_div="J"):
             return []
 
-        def get_minute_candles_for_date(self, symbol, date, period_min, count, hour1):
+        def get_minute_candles_for_date(self, symbol, date, period_min, count, hour1, market_div="J"):
             return []
 
         def get_current_price(self, symbol):
@@ -304,6 +304,76 @@ def test_default_kis_client_created_once_and_reused(monkeypatch):
 
     assert created.count("mock") == 1  # exactly one mock client, reused every call
     assert created.count("real") <= 1  # at most one dedicated read-only warm-up client, reused
+
+
+def test_default_fetchers_request_nxt_market_div(monkeypatch):
+    """2026-08-20 NXT fix: WATCH_SYMBOL(000660)의 1분봉은 이제 J(정규장 단독)가
+    아니라 NX(NXT 포함 통합 체결가)를 유일한 소스로 써야 한다 — KIS 실제 차트가
+    쓰는 것과 같은 소스(사용자 조건 1: J와 병합하지 말고 NX 단일 기준)."""
+    seen_market_divs = []
+
+    class _FakeKisClient:
+        def get_minute_candles(self, symbol, period_min, count, hour1, market_div="J"):
+            seen_market_divs.append(("today", market_div))
+            return []
+
+        def get_minute_candles_for_date(self, symbol, date, period_min, count, hour1, market_div="J"):
+            seen_market_divs.append(("prior_day", market_div))
+            return []
+
+        def get_current_price(self, symbol):
+            return {"current_price": 100.0}
+
+    import app.trading.kis_client as kis_client_module
+
+    monkeypatch.setattr(kis_client_module, "create_kis_client", lambda mode: _FakeKisClient())
+
+    svc = MarketDataService(mode="mock")
+    svc.bootstrap(now=datetime(2026, 1, 6, 9, 30, tzinfo=KST))
+
+    assert seen_market_divs, "no fetch was made"
+    assert all(div == config.NXT_MARKET_DIV_CODE for _kind, div in seen_market_divs)
+
+
+def test_bootstrap_fails_when_today_page_budget_exhausted_without_natural_stop(monkeypatch):
+    """조건 6 회귀 테스트: 오늘 페이징 walk가 KIS_MAX_PAGES를 전부 소진할
+    때까지 계속 새 데이터가 들어왔다면(PAGE_NO_GROWTH/CURSOR_NOT_MOVING 같은
+    자연스러운 종료 신호 없이), 실제로는 더 이전 데이터가 남아있을 수 있는데도
+    이를 "성공"으로 보고하면 안 된다 — market_div="NX" 전환으로 하루 세션이
+    길어져(08:00~20:00) 이 위험이 커졌다."""
+    monkeypatch.setattr(market_data_module, "KIS_MAX_PAGES", 3)
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
+    prior_frame = _fake_bars_df(prior_day, 200)
+
+    call_n = {"n": 0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count
+        # Every page (up to KIS_MAX_PAGES=3) keeps returning fresh, growing,
+        # never-repeating data -- there is never a natural PAGE_NO_GROWTH/
+        # CURSOR_NOT_MOVING stop, so the walk only stops because it ran out
+        # of page budget.
+        call_n["n"] += 1
+        anchor = today if not hour1 else datetime.strptime(hour1, "%H%M%S").replace(
+            year=today.year, month=today.month, day=today.day, tzinfo=KST,
+        )
+        start = anchor - timedelta(minutes=30 * call_n["n"])
+        return _fake_bars_df(start, 30), {}
+
+    def fake_fetch_for_date(mode, symbol, date_ymd, count, hour1):
+        del mode, symbol, date_ymd, count, hour1
+        return prior_frame, {}
+
+    svc = MarketDataService(
+        mode="mock",
+        fetch_minute_candles=fake_fetch,
+        fetch_minute_candles_for_date=fake_fetch_for_date,
+    )
+    result = svc.bootstrap(now=today + timedelta(hours=1))
+
+    assert result.ok is False
+    assert result.reason == "NXT_TODAY_PAGE_BUDGET_EXHAUSTED"
 
 
 def test_prior_day_cache_loads_most_recent_prior_trading_date(tmp_path, monkeypatch):

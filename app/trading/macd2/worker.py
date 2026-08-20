@@ -324,7 +324,21 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
         return
     state.session_date = today_str
     state.last_signal_direction = None
-    state.last_detected_direction = None
+    # last_detected_direction is intentionally NOT reset here (2026-08-20 NXT
+    # fix). It is the running "last confirmed crossover direction" that
+    # evaluate_macd_crossover() uses to suppress a same-direction repeat —
+    # now that WATCH_SYMBOL's 1m history is a single continuous NXT-inclusive
+    # series with no artificial day-boundary gap (market_data.py market_div=
+    # "NX"), a calendar-date change is no longer a real discontinuity in the
+    # underlying MACD/Signal relationship. Resetting this to None at midnight
+    # used to matter only as a safety net against a stale-gap false crossover
+    # at the first bar of a new day (see _advance_confirmed_primary's
+    # docstring); with continuous NXT data that gap no longer exists, and
+    # resetting it would instead let a genuinely still-held direction (e.g.
+    # 08:45 BLUE persisting through 09:00) be re-dispatched as if it were a
+    # brand-new flag the moment the date rolls over — exactly the "09:00 must
+    # be BLUE-state-maintained, not a new BLUE event" requirement this fix
+    # exists for.
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.last_evaluated_bar_ts = None
@@ -557,10 +571,41 @@ def initialize_strategy_session(
                     reason="RESTART_CATCH_UP_MULTI_BAR_GAP",
                 )
     else:
-        state.last_detected_direction = None
-        macd_snap = calculate_macd(bars_3m)
-        if macd_snap is not None:
-            state.last_confirmed_bar_ts = macd_snap.bar_dt.isoformat()
+        # 2026-08-20 NXT fix: a TRUE cold start (no same-day
+        # last_confirmed_bar_ts at all — first-ever launch, or state.json
+        # lost) used to blindly seed last_detected_direction=None here,
+        # discarding whatever direction the continuous NXT-inclusive history
+        # already establishes (e.g. an 08:45 BLUE still in force at restart
+        # time). Since day rollover no longer resets this field either
+        # (_apply_day_rollover), a cold start must derive the SAME direction
+        # a continuously-running Worker would already be holding, or a
+        # mid-session restart could re-announce an already-known state as a
+        # "new" flag, or (condition 3 regression risk) suppress a genuine one
+        # via a wrong seed — replay the full continuous bars_3m the exact
+        # same way the resuming_today branch above replays today's bars,
+        # just over the whole history instead of only today's slice, so
+        # restart-before/after state is identical (condition 4).
+        last_flag_snap = None
+        last_direction = None
+        macd_snap = None
+        if not bars_3m.empty:
+            for pos in range(len(bars_3m)):
+                snap = calculate_macd(bars_3m.iloc[: pos + 1])
+                if snap is None:
+                    continue
+                macd_snap = snap
+                direction = evaluate_macd_crossover(snap, last_direction)
+                if direction != Direction.HOLD:
+                    last_direction = direction
+                    last_flag_snap = snap
+            state.last_detected_direction = last_direction
+            if last_flag_snap is not None:
+                state.latest_primary_flag = last_direction
+                state.latest_primary_signal_id = make_signal_id(last_flag_snap.bar_dt, last_direction)
+            if macd_snap is not None:
+                state.last_confirmed_bar_ts = macd_snap.bar_dt.isoformat()
+        else:
+            state.last_detected_direction = None
 
     # 2026-08-06 fix: a same-day restart used to unconditionally wipe
     # state.pending_signal to None (regardless of resuming_today) before any
@@ -624,9 +669,18 @@ def compute_today_signal_overview(
     ``HISTORICAL_REPLAY_ONLY`` — display only, no order authority ever
     existed for it. A bar closing at/after ``session_started_at`` is
     ``LIVE_CONFIRMED`` — the same bar the live run_once() loop had a genuine
-    chance to evaluate and dispatch on. The very first bar of the day is
-    baseline-only (mirrors ``_advance_confirmed_primary``'s own
-    is-first-of-day gate) and never produces a signal.
+    chance to evaluate and dispatch on.
+
+    2026-08-20 NXT fix: today's first bar used to be treated as baseline-only
+    and skipped (mirroring _advance_confirmed_primary's OLD is-first-of-day
+    gate) — that live-path gate was already narrowed on 2026-08-18, and is
+    removed entirely here on 2026-08-20 now that ``df_1m`` is a single
+    continuous NXT-inclusive series with no artificial day boundary. This
+    function now instead REPLAYS every bar strictly before today (same
+    continuous ``bars_3m`` frame) purely to seed ``last_direction`` before
+    entering today's loop, so today's first bar is judged against the real
+    last-known direction (e.g. still BLUE from yesterday evening) exactly
+    like the live path now does — it is never treated as a fresh start.
     """
     bars_3m = resample_completed_3m(df_1m, now=now)
     bars_3m, _dropped = filter_complete_3m_bars(bars_3m, df_1m)
@@ -639,19 +693,22 @@ def compute_today_signal_overview(
     if not today_indices:
         return []
 
-    session_start_dt = _parse_iso_dt(session_started_at)
-    overview: list[dict[str, Any]] = []
     last_direction: Optional[Direction] = None
-    for pos, idx in enumerate(today_indices):
+    for idx in bars_3m.index[bars_3m.index < today_indices[0]]:
         window = bars_3m.iloc[: idx + 1]
         snap = calculate_macd(window)
         if snap is None:
             continue
-        if pos == 0:
-            # Baseline only — mirrors _advance_confirmed_primary's own
-            # is-first-of-day gate (previous_diff here can span yesterday's
-            # last bar into today's first, so any zero-crossing would be an
-            # overnight-gap artifact, not an intraday reversal).
+        direction = evaluate_macd_crossover(snap, last_direction)
+        if direction != Direction.HOLD:
+            last_direction = direction
+
+    session_start_dt = _parse_iso_dt(session_started_at)
+    overview: list[dict[str, Any]] = []
+    for idx in today_indices:
+        window = bars_3m.iloc[: idx + 1]
+        snap = calculate_macd(window)
+        if snap is None:
             continue
         bar_end = snap.bar_dt + timedelta(minutes=3)
         direction = evaluate_macd_crossover(snap, last_direction)
@@ -1421,12 +1478,25 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) ->
       pipeline (it only ever returns bars already closed by ``now``), but
       costs nothing to guard directly here too.
 
-    ``state.last_detected_direction`` is still reset to None on every day
-    rollover (``_apply_day_rollover``), so the first crossover of a new day
-    is still never suppressed as a stale repeat of yesterday's last
-    direction. (MU_MACD's own worker.py never had the old blanket gate to
-    begin with — see app/trading/mu_macd/worker.py's run_once — so this
-    brings SK-MACD2 in line with it.)
+    2026-08-20 NXT fix: ``state.last_detected_direction`` is now NO LONGER
+    reset on day rollover (``_apply_day_rollover``). Once WATCH_SYMBOL's 1m
+    history became a single continuous NXT-inclusive series (market_data.py
+    market_div="NX", 08:00-20:00 every day, no J-only 09:00-15:30 gap), a
+    calendar-date change stopped being a real discontinuity in the MACD/
+    Signal relationship — KIS itself has no such boundary, per the note
+    above. Resetting this at midnight used to be a harmless-looking safety
+    net (it only ever suppressed a stale same-direction repeat), but it
+    actively broke the "a still-held direction survives the date change
+    without being re-announced as a new flag" requirement: e.g. an 08:45
+    BLUE crossover must still read as BLUE at 09:00 with no new event, not
+    get treated as directionless just because ``session_date`` ticked over.
+    The staleness gate directly above (bar_kst.date() != now_kst.date()) is
+    unrelated and unchanged — it blocks dispatch only while today's own
+    first bar genuinely hasn't completed yet, not because of any rollover
+    reset. (MU_MACD's own worker.py never had the old blanket gate to begin
+    with — see app/trading/mu_macd/worker.py's run_once — and is out of
+    scope for this NXT fix, since MU_MACD trades US-listed Micron where
+    Korean NXT does not apply.)
     """
     bar_key = macd_snap.bar_dt.isoformat()
     if state.last_confirmed_bar_ts == bar_key:

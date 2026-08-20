@@ -11,7 +11,13 @@ import pytest
 from app.trading.macd2 import config, ledger, state_store, worker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, MacdSnapshot, PositionSnapshot, QuoteSnapshot, RuntimeState
-from app.trading.macd2.signal_engine import forming_bar_window
+from app.trading.macd2.signal_engine import (
+    calculate_macd,
+    evaluate_macd_crossover,
+    forming_bar_window,
+    make_signal_id,
+    resample_completed_3m,
+)
 from app.trading.macd2.worker import Macd2Worker, run_once
 from tests.macd2.fake_broker import FakeBroker
 
@@ -738,6 +744,103 @@ def test_day_rollover_resets_session_fields_but_allows_same_direction_signal():
         "order_requested_at": "", "order_result": "EXECUTED", "block_reason": "",
     })
     assert len(ledger.load_signal_ledger()) == 1  # still there after rollover
+
+
+def _macd_snap(bar_dt, previous_diff, current_diff, macd=0.0, signal=0.0):
+    return MacdSnapshot(
+        bar_dt=bar_dt, macd=macd, signal=signal, hist=current_diff,
+        hist_last3=(previous_diff, previous_diff, current_diff), completed_3m_count=200,
+        previous_diff=previous_diff, current_diff=current_diff,
+        relation="ABOVE" if current_diff > 0 else ("BELOW" if current_diff < 0 else "EQUAL"),
+    )
+
+
+def test_day_rollover_does_not_reset_last_detected_direction():
+    """2026-08-20 NXT fix (조건 3 핵심): last_detected_direction을 자정마다
+    reset하던 옛 동작을 제거했다 — NXT 포함 연속 시계열에서는 날짜가 바뀐다고
+    MACD 상태가 실제로 끊기지 않으므로, 08:45 BLUE가 09:00에도 "유지"로
+    남아야 한다(새 이벤트 아님)."""
+    state = _fresh_state()
+    state.session_date = "20260819"
+    state.last_detected_direction = Direction.DOWN_BLUE
+
+    worker._apply_day_rollover(state, datetime(2026, 8, 20, 8, 0, tzinfo=KST))
+
+    assert state.session_date == "20260820"
+    assert state.last_detected_direction == Direction.DOWN_BLUE
+
+
+def test_day_rollover_does_not_cause_duplicate_flag_on_a_borderline_zero_diff_bar():
+    """조건 3 회귀 테스트: 날짜가 바뀌는 시점에 하필 직전 확정봉의 diff가
+    정확히 0.0(경계값)이었다가 그대로 같은 방향(BLUE)으로 이어지는 경우,
+    last_detected_direction이 rollover에 의해 None으로 리셋됐었다면
+    evaluate_macd_crossover의 "동일 방향 반복 억제"가 무력화되어 이미 발생한
+    BLUE 이벤트가 자정 이후 첫 봉에서 또 한 번 "새 이벤트"로 잘못 발행됐을
+    것이다. 리셋을 제거한 이후에는 이 봉이 HOLD로 남아야 한다."""
+    state = _fresh_state()
+
+    # Day 1: a genuine DOWN_BLUE crossover (bar A), then a same-direction bar
+    # (bar B) whose OWN previous_diff happens to land exactly on 0.0.
+    bar_a = datetime(2026, 8, 19, 15, 0, tzinfo=KST)
+    snap_a = _macd_snap(bar_a, previous_diff=2.0, current_diff=-1.0)
+    direction_a = worker._advance_confirmed_primary(state, snap_a, now=bar_a + timedelta(minutes=3))
+    assert direction_a == Direction.DOWN_BLUE
+    assert state.last_detected_direction == Direction.DOWN_BLUE
+
+    bar_b = datetime(2026, 8, 19, 19, 57, tzinfo=KST)
+    snap_b = _macd_snap(bar_b, previous_diff=-1.0, current_diff=-4.0)
+    direction_b = worker._advance_confirmed_primary(state, snap_b, now=bar_b + timedelta(minutes=3))
+    assert direction_b == Direction.HOLD
+
+    worker._apply_day_rollover(state, datetime(2026, 8, 20, 8, 0, tzinfo=KST))
+    assert state.last_detected_direction == Direction.DOWN_BLUE  # NOT reset to None
+
+    # Day 2's first confirmed bar: previous_diff lands exactly at the zero
+    # boundary (>=0 is True) with current_diff negative -- this matches
+    # evaluate_macd_crossover's raw DOWN_BLUE trigger condition even though
+    # the state has already been BLUE since bar_a. Only the "suppress a
+    # repeat of last_detected_direction" check stops this from firing as a
+    # brand-new (duplicate) flag.
+    bar_c = datetime(2026, 8, 20, 8, 3, tzinfo=KST)
+    snap_c = _macd_snap(bar_c, previous_diff=0.0, current_diff=-2.0)
+    direction_c = worker._advance_confirmed_primary(state, snap_c, now=bar_c + timedelta(minutes=3))
+
+    assert direction_c == Direction.HOLD  # must NOT re-fire as a duplicate DOWN_BLUE
+    assert state.last_detected_direction == Direction.DOWN_BLUE
+
+
+def test_cold_start_replay_matches_a_continuously_running_instance(ready_market_data):
+    """조건 4 회귀 테스트: Worker가 처음부터 계속 켜져 있던 경우와, 같은
+    시장 데이터를 두고 그 시각에 막 재시작(state.json 유실 등 진짜 cold
+    start)한 경우가 last_detected_direction/primary_relation에서 정확히
+    같은 결과를 내야 한다 -- 재시작 전후 MACD/Signal/플래그가 완전히
+    동일해야 한다는 요구사항의 핵심."""
+    svc, now0 = ready_market_data
+    df_1m = svc.get_history_df()
+    later_now = now0 + timedelta(minutes=3 * 40)  # well past the sine wave's first reversal
+
+    # Ground truth: replay every completed 3m bar up to `later_now` directly
+    # via the same production primitives initialize_strategy_session's cold-
+    # start branch now uses internally.
+    bars_3m = resample_completed_3m(df_1m, now=later_now)
+    expected_direction = None
+    expected_flag_snap = None
+    for pos in range(len(bars_3m)):
+        snap = calculate_macd(bars_3m.iloc[: pos + 1])
+        if snap is None:
+            continue
+        direction = evaluate_macd_crossover(snap, expected_direction)
+        if direction != Direction.HOLD:
+            expected_direction = direction
+            expected_flag_snap = snap
+    assert expected_direction is not None, "fixture must contain at least one real crossover"
+
+    cold_state = _fresh_state()  # no last_confirmed_bar_ts -> true cold start
+    worker.initialize_strategy_session(cold_state, svc, now=later_now)
+
+    assert cold_state.last_detected_direction == expected_direction
+    assert cold_state.latest_primary_flag == expected_direction
+    assert cold_state.latest_primary_signal_id == make_signal_id(expected_flag_snap.bar_dt, expected_direction)
 
 
 def test_worker_tick_never_calls_market_data_network_fetchers():

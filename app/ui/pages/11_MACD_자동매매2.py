@@ -403,12 +403,27 @@ for col, symbol, label in (
     else:
         col.metric(label, f"{snap.price:,.0f}" if snap.price else "-", delta=f"age {snap.age_sec:.1f}s" if snap.age_sec is not None else None)
 
-s1, s2 = st.columns(2)
-s1.metric("마지막 확정 플래그", state.latest_primary_flag.value if state.latest_primary_flag else "-")
+s1, s2, s3 = st.columns(3)
+_flag_bar_time = "-"
+if state.latest_primary_signal_id:
+    _parts = state.latest_primary_signal_id.split("_")
+    if len(_parts) >= 2 and len(_parts[1]) == 6:
+        _flag_bar_time = f"{_parts[1][:2]}:{_parts[1][2:4]}:{_parts[1][4:]}"
+s1.metric(
+    "마지막 FLAG EVENT",
+    state.latest_primary_flag.value if state.latest_primary_flag else "-",
+    delta=_flag_bar_time if _flag_bar_time != "-" else None,
+)
+# 현재 MACD STATE(state.primary_relation)는 이벤트가 새로 발생했는지와 무관하게
+# 매 확정봉마다 갱신되는 "지금 MACD가 Signal 위/아래 어디에 있는가"이다 — 예를
+# 들어 08:45 BLUE 이벤트 이후 09:00에 새 이벤트가 없어도 이 값은 계속 BELOW로
+# 남아, 화면에서 "새 이벤트 없음 = 이전 상태 유지"임을 바로 구분할 수 있다.
+_state_label = {"BELOW": "BLUE 유지", "ABOVE": "RED 유지", "EQUAL": "-"}.get(state.primary_relation or "", "-")
+s2.metric("현재 MACD STATE", _state_label)
 if state.position:
-    s2.metric("보유 종목", f"{state.position.symbol} · {state.position.quantity}주 · 평단 {state.position.avg_price:,.0f}")
+    s3.metric("보유 종목", f"{state.position.symbol} · {state.position.quantity}주 · 평단 {state.position.avg_price:,.0f}")
 else:
-    s2.metric("보유 종목", "flat")
+    s3.metric("보유 종목", "flat")
 
 st.subheader("신호 원장 (오늘, 최근 100건)")
 trading_date = state.session_date or pd.Timestamp.now().strftime("%Y%m%d")

@@ -266,6 +266,17 @@ MAX_CONSECUTIVE_PAGE_ERROR_SKIPS = 2
 # 페이싱을 둔다.
 KIS_PAGE_FETCH_PACING_SEC = 0.4
 
+# ── NXT(넥스트레이드) 통합 체결가 연속 시계열 (2026-08-20) ──────────────────
+# KIS 실제 차트는 정규장(09:00-15:30, KRX 단독)만이 아니라 NXT 거래소를 포함한
+# 통합 체결가로 MACD를 계산한다(차트 좌측 시간축에 전일 저녁 데이터가 표시됨).
+# FID_COND_MRKT_DIV_CODE="NX"는 이 통합 체결가를 08:00(프리마켓)~20:00(시간외)
+# 범위로 반환하며, 정규장 구간도 KRX 단독(J)과 다른 실제 값을 낼 수 있음이
+# 실측으로 확인됐다(08/20 09:01 J=1,612,500 vs NX=1,612,000 등 31건 중 11건
+# 불일치) — 즉 NX는 J의 상위집합이 아니라 KIS 차트가 실제로 쓰는 별도의
+# 통합 소스이므로, 병합 우선순위 없이 NX 하나를 하이닉스(WATCH_SYMBOL) 1분봉의
+# 유일한 소스로 사용한다.
+NXT_MARKET_DIV_CODE = "NX"
+
 # ── Feature flags (strategy-fixed per docs; not user-configurable) ────────
 CONTINUATION_REENTRY_ENABLED = False
 OPENING_PROBE_ENABLED = False
