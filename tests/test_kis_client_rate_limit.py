@@ -298,3 +298,31 @@ def test_get_current_price_defaults_to_j_and_accepts_nx(monkeypatch):
 
     client.get_current_price("000660", market_div="NX")
     assert captured["params"]["FID_COND_MRKT_DIV_CODE"] == "NX"
+
+
+def test_get_current_price_retries_egw00201_until_success(monkeypatch):
+    """2026-08-20 fix (실측 재현: MACD2 quote-updater가 000660/ETF 3종목을 1초
+    간격으로 순차 조회하다 모의투자 레이트리밋(EGW00201)에 걸리면, 재시도가
+    없던 예전 코드는 그 즉시 current_price=0으로 실패 처리했다 — quote_status가
+    불필요하게 stale/DEAD로 떨어지는 원인 중 하나였다. get_minute_candles()와
+    동일하게 ``_get_with_rate_limit_retry``를 타야 한다."""
+    client = kc.KISClient(app_key="a", app_secret="a", account_no="1", mode="mock")
+    monkeypatch.setattr(client, "_auth_headers", lambda tr_id: {"tr_id": tr_id})
+    monkeypatch.setitem(kc._RATE_LIMIT_RETRY_DELAY_SECONDS, "mock", 0.01)
+    sleep_calls = []
+    monkeypatch.setattr(kc.time, "sleep", lambda s: sleep_calls.append(s))
+
+    class _FakeResponse:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            return {"rt_cd": "0", "output": {"stck_prpr": "1705000"}}
+
+    responses = [_rate_limited_response(), _rate_limited_response(), _FakeResponse()]
+    monkeypatch.setattr(client, "_get", lambda *a, **kw: responses.pop(0))
+
+    result = client.get_current_price("000660", market_div="NX")
+
+    assert result["current_price"] == 1705000.0
+    assert sleep_calls == [0.01, 0.01]

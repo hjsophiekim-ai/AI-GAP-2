@@ -529,16 +529,18 @@ class KISClient:
         return resp
 
     def _get_with_rate_limit_retry(self, url: str, **kwargs):
-        """분봉류 조회 전용: 헤더/TR_ID는 호출자가 이미 구성해 ``kwargs``로
+        """분봉/현재가 조회 공용: 헤더/TR_ID는 호출자가 이미 구성해 ``kwargs``로
         넘긴다(``_request_with_token_retry``와 달리 여기선 토큰 재발급을
-        하지 않음 — 분봉 조회는 토큰 만료 케이스가 드물고, 호출자가 이미
+        하지 않음 — 이 두 조회는 토큰 만료 케이스가 드물고, 호출자가 이미
         ``headers``를 직접 만들어 넘기는 기존 구조를 유지하기 위함).
 
-        NX(NXT 포함) 분봉 조회는 초당 요청 제한(msg_cd=EGW00201, "초당
-        거래건수를 초과하였습니다")에 특히 잘 걸린다 — 과거 이 재시도가
-        없어 페이징 도중 빈 응답을 "더 이상 과거 데이터 없음"으로 잘못
-        해석해 특정 시간대가 통째로 누락된 적이 있다. 반드시 재시도로
-        구분해야 한다.
+        NX(NXT 포함) 분봉/현재가 조회는 초당 요청 제한(msg_cd=EGW00201, "초당
+        거래건수를 초과하였습니다")에 특히 잘 걸린다 — 과거 분봉 조회에 이
+        재시도가 없어 페이징 도중 빈 응답을 "더 이상 과거 데이터 없음"으로
+        잘못 해석해 특정 시간대가 통째로 누락된 적이 있고, 현재가 조회도
+        동일 사유로 즉시 실패해 quote_status가 불필요하게 stale/DEAD로
+        떨어진 적이 있다(2026-08-20) — 두 조회 모두 반드시 재시도로 구분해야
+        한다.
         """
         resp = None
         for attempt in range(1, _RATE_LIMIT_RETRY_MAX_ATTEMPTS + 1):
@@ -550,7 +552,7 @@ class KISClient:
             if _is_rate_limited_response(data) and attempt < _RATE_LIMIT_RETRY_MAX_ATTEMPTS:
                 delay = _RATE_LIMIT_RETRY_DELAY_SECONDS.get(self.mode, _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS)
                 logger.warning(
-                    f"[KIS-{self.mode.upper()}] 분봉 조회 rate limited; retrying "
+                    f"[KIS-{self.mode.upper()}] 조회 rate limited; retrying "
                     f"attempt={attempt}/{_RATE_LIMIT_RETRY_MAX_ATTEMPTS} delay={delay:.1f}s "
                     f"url={url} msg_cd={data.get('msg_cd')!r} msg1={data.get('msg1')!r}"
                 )
@@ -590,6 +592,13 @@ class KISClient:
         실시간 체결가를 반환한다 — 정규장 마감(15:30) 이후에도 "J"는 마지막
         정규장 체결가에서 멈추는 반면 "NX"는 시간외/프리마켓 동안도 계속
         갱신됨을 실측 확인함(2026-08-20).
+
+        2026-08-20 fix (실측 재현: MACD2 quote-updater가 000660/ETF 3종목을
+        1초 간격으로 순차 조회하는데, 이 호출만 유일하게 재시도가 없어
+        모의투자 레이트리밋(msg_cd=EGW00201)에 걸리면 그 즉시 current_price=0
+        으로 실패 처리됨 — get_minute_candles()/get_minute_candles_for_date()
+        는 이미 ``_get_with_rate_limit_retry``로 이 문제를 해결했으므로
+        동일하게 적용한다).
         """
         symbol = str(symbol)
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
@@ -597,7 +606,7 @@ class KISClient:
         params = {"FID_COND_MRKT_DIV_CODE": market_div, "FID_INPUT_ISCD": symbol}
         t0 = time.monotonic()
         try:
-            resp = self._get(url, headers=headers, params=params, timeout=(3.0, 8.0))
+            resp = self._get_with_rate_limit_retry(url, headers=headers, params=params, timeout=(3.0, 8.0))
             http_status = resp.status_code
             elapsed = round(time.monotonic() - t0, 3)
             try:

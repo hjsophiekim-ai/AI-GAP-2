@@ -408,7 +408,18 @@ class MarketDataService:
         market_div = config.NXT_MARKET_DIV_CODE if symbol == config.WATCH_SYMBOL else "J"
         try:
             result = client.get_current_price(symbol, market_div=market_div)
-            return (float(result["current_price"]) if result else None), None
+            if not result:
+                return None, "kis_client_empty_response"
+            # 2026-08-20 fix: this used to hardcode error=None on every
+            # non-exception return, even when get_current_price() itself
+            # already reported a real failure (e.g. rate-limited/EGW00201,
+            # empty output) via result["error"] with current_price left at 0.
+            # refresh_quotes()'s price>0 check still correctly rejected that
+            # as a failed fetch, but silently discarded WHY it failed,
+            # reporting the generic "QUOTE_FETCH_FAILED" in QuoteSnapshot.error
+            # instead of the actual KIS reason — surfacing it here makes a
+            # future incident like this one directly diagnosable from state.
+            return float(result["current_price"]), result.get("error")
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return None, repr(exc)
 

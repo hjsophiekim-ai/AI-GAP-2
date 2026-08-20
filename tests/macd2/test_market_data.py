@@ -366,6 +366,27 @@ def test_live_quote_requests_nxt_for_watch_symbol_only(monkeypatch):
     assert seen_market_divs[config.INVERSE_SYMBOL] == "J"
 
 
+def test_default_fetch_quote_surfaces_real_kis_error_reason(monkeypatch):
+    """2026-08-20 fix: get_current_price()가 rate-limit(EGW00201) 등으로
+    current_price=0 + error 메시지를 반환해도, 이전 코드는 항상 error=None을
+    반환해 QuoteSnapshot.error에 진짜 원인이 아니라 일반적인
+    "QUOTE_FETCH_FAILED"만 남았다 -- 실제 원인(rate limit인지, 심볼 오류인지)을
+    진단할 수 없게 만든 원인 중 하나였다."""
+    class _FakeKisClient:
+        def get_current_price(self, symbol, market_div="J"):
+            return {"current_price": 0, "rt_cd": "1", "msg_cd": "EGW00201", "error": "초당 거래건수를 초과하였습니다."}
+
+    import app.trading.kis_client as kis_client_module
+
+    monkeypatch.setattr(kis_client_module, "create_kis_client", lambda mode: _FakeKisClient())
+
+    svc = MarketDataService(mode="mock")
+    svc.refresh_quotes(symbols=(config.WATCH_SYMBOL,))
+
+    snap = svc.get_quote(config.WATCH_SYMBOL)
+    assert snap.error == "초당 거래건수를 초과하였습니다."
+
+
 def test_bootstrap_fails_when_today_page_budget_exhausted_without_natural_stop(monkeypatch):
     """조건 6 회귀 테스트: 오늘 페이징 walk가 KIS_MAX_PAGES를 전부 소진할
     때까지 계속 새 데이터가 들어왔다면(PAGE_NO_GROWTH/CURSOR_NOT_MOVING 같은
