@@ -420,6 +420,33 @@ def _relation_from_diff(diff: Optional[float]) -> str:
     return "EQUAL"
 
 
+def _record_premarket_catchup_flag(state: RuntimeState, snap, direction: Direction, now: datetime) -> None:
+    """2026-08-20 fix (사용자 요청 — 신호 원장에 프리마켓 08:00~09:00 크로스오버도
+    표시): a confirmed flag that run_once()'s own live tick evaluates BEFORE
+    config.SESSION_OPEN is already recorded to the signal ledger via
+    _record_confirmed_blocked_signal (block_reason=BEFORE_SESSION_OPEN, no
+    order ever placed — entry_window_open stays False regardless). But a flag
+    that occurred on an EARLIER bar than the Worker's most recent (re)start —
+    which initialize_strategy_session's own catch-up walk below evaluates
+    purely for state bookkeeping (latest_primary_flag/last_detected_direction)
+    — never went through that live-tick path at all, so it silently never
+    appeared in the ledger even though the equivalent live flag would have.
+    Recorded here the same way (display-only, BLOCKED, no order attempted)
+    only for TODAY's premarket bars — ledger.append_signal's own signal_id
+    dedup makes replaying the same bar across multiple restarts a safe no-op.
+    """
+    bar_kst = snap.bar_dt.astimezone(KST)
+    if bar_kst.date() != now.astimezone(KST).date() or bar_kst.time() >= config.SESSION_OPEN:
+        return
+    signal_id = make_signal_id(snap.bar_dt, direction)
+    outcome = order_executor.ExecutionOutcome(
+        signal_id=signal_id, direction=direction,
+        target_symbol=order_executor.target_symbol_for_direction(direction),
+        final_state=SignalState.BLOCKED, block_reason="BEFORE_SESSION_OPEN",
+    )
+    _record_signal_ledger(state, snap, direction, "INITIAL", signal_id, now, outcome)
+
+
 def initialize_strategy_session(
     state: RuntimeState,
     market_data: MarketDataService,
@@ -537,6 +564,7 @@ def initialize_strategy_session(
                 last_flag_snap = snap
                 state.latest_primary_flag = direction
                 state.latest_primary_signal_id = make_signal_id(snap.bar_dt, direction)
+                _record_premarket_catchup_flag(state, snap, direction, now)
         state.last_detected_direction = last_direction
         if today_indices:
             macd_snap = calculate_macd(bars_3m.iloc[: today_indices[-1] + 1])
@@ -598,6 +626,7 @@ def initialize_strategy_session(
                 if direction != Direction.HOLD:
                     last_direction = direction
                     last_flag_snap = snap
+                    _record_premarket_catchup_flag(state, snap, direction, now)
             state.last_detected_direction = last_direction
             if last_flag_snap is not None:
                 state.latest_primary_flag = last_direction

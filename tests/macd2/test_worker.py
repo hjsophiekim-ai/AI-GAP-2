@@ -1162,6 +1162,53 @@ def test_restart_with_fully_lost_state_still_catches_up_when_today_already_has_b
     assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
 
 
+def test_initialize_strategy_session_records_premarket_catchup_flag_to_ledger():
+    """2026-08-20 fix (사용자 요청 — 신호 원장에 프리마켓 08:00~09:00 크로스오버도
+    표시): run_once()'s own live tick already records a confirmed flag
+    detected BEFORE config.SESSION_OPEN to the signal ledger (block_reason=
+    BEFORE_SESSION_OPEN, no order ever placed). But a premarket flag that
+    completed on an EARLIER bar than the Worker's most recent (re)start —
+    discovered only via initialize_strategy_session's catch-up walk — used to
+    update state.latest_primary_flag/last_detected_direction but never touch
+    the ledger at all, so it silently never appeared in "신호 원장" even
+    though an equivalent LIVE premarket flag would have. This must show up
+    the same way: BLOCKED, BEFORE_SESSION_OPEN, no order."""
+    start = datetime(2026, 7, 24, 4, 0, tzinfo=KST)
+    closes = [100.0] * 99 + [92.0, 96.0, 103.0, 104.0, 103.0, 98.0, 90.0, 85.0, 84.0]
+    df_1m_full = _1m_from_3m_closes(start, closes)
+    bar99_dt = start + timedelta(minutes=3 * 99)
+    assert bar99_dt.time() < config.SESSION_OPEN  # sanity: this bar really is premarket
+
+    state = _fresh_state()
+    # initialize_strategy_session's catch-up walk deliberately stops ONE bar
+    # short of the newest available bar (leaving it for the Worker's very
+    # first live run_once() tick) -- include a couple of bars AFTER bar99 so
+    # bar99 itself falls inside the walked range instead of being that
+    # left-over newest bar.
+    restart_now = start + timedelta(minutes=3 * 102, seconds=5)
+    df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < start + timedelta(minutes=3 * 102)]
+    svc = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}))
+    svc.bootstrap(now=restart_now)
+
+    worker.initialize_strategy_session(state, svc, now=restart_now)
+
+    rows = ledger.load_signal_ledger()
+    premarket_rows = [r for r in rows if r.get("completed_bar_at") == bar99_dt.strftime("%H%M%S")]
+    assert len(premarket_rows) == 1
+    assert premarket_rows[0]["direction"] == "DOWN_BLUE"
+    assert premarket_rows[0]["block_reason"] == "BEFORE_SESSION_OPEN"
+    assert premarket_rows[0]["order_result"] == "BLOCKED"
+
+    # A second (re)start replaying the SAME bar must not duplicate the row —
+    # ledger.append_signal's own signal_id dedup makes this a safe no-op.
+    state2 = _fresh_state()
+    svc2 = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}))
+    svc2.bootstrap(now=restart_now)
+    worker.initialize_strategy_session(state2, svc2, now=restart_now)
+    rows_after_second_restart = ledger.load_signal_ledger()
+    assert len([r for r in rows_after_second_restart if r.get("completed_bar_at") == bar99_dt.strftime("%H%M%S")]) == 1
+
+
 def test_second_restart_does_not_discard_a_still_pending_catchup_signal():
     """2026-08-06 fix: a THIRD restart back-to-back used to unconditionally
     wipe state.pending_signal to None every single call, regardless of
