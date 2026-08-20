@@ -176,6 +176,50 @@ def test_start_full_lifecycle_reaches_running(monkeypatch):
         svc.stop()
 
 
+def test_worker_loop_force_restarts_a_stuck_but_alive_quote_updater(monkeypatch):
+    """2026-08-20 fix (real incident: MACD2 held a losing position and
+    STOP_LOSS never fired -- the quote-updater thread was still
+    is_alive()=True but had permanently stopped producing fresh quotes;
+    quote_updater_alive() alone can never detect this). The Worker tick
+    loop must force a stop+restart once every tracked symbol's quote goes
+    stale beyond config.QUOTE_UPDATER_STALL_AGE_SEC, even while the thread
+    object itself still reports alive."""
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+
+    class _FakeMarketDataStaleButAlive(_FakeMarketDataServiceOK):
+        def __init__(self, mode="mock"):
+            super().__init__(mode)
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        def start_quote_updater(self, interval_sec=1.0):
+            self.start_calls += 1
+            self._quote_updater_alive = True
+
+        def stop_quote_updater(self, join_timeout=2.0):
+            self.stop_calls += 1
+            self._quote_updater_alive = True  # stays "alive" -- stuck, never actually dies
+
+        def get_quote(self, symbol):
+            return QuoteSnapshot(symbol=symbol, price=100.0, fetched_at=datetime.now(config.KST) - timedelta(seconds=999), age_sec=999.0, source="mock")
+
+    _patch_ok_construction(monkeypatch, market_data_cls=_FakeMarketDataStaleButAlive)
+
+    svc = service_module.Macd2Service()
+    try:
+        res = svc.start(mode="mock", budget=1_000_000.0)
+        assert res["ok"] is True
+        deadline = time_module.time() + 2.0
+        while svc.supervisor_status()["tick_n"] < 1 and time_module.time() < deadline:
+            time_module.sleep(0.05)
+
+        assert svc.supervisor_status()["tick_n"] >= 1
+        assert svc._market_data.stop_calls >= 1, "stale-but-alive quote updater must be force-restarted"
+        assert svc._market_data.start_calls >= 2, "must have been started again after the forced stop"
+    finally:
+        svc.stop()
+
+
 def test_start_bootstrap_failure_never_starts_worker(monkeypatch):
     monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
     _patch_ok_construction(monkeypatch, market_data_cls=_FakeMarketDataServiceBootstrapFails)

@@ -712,6 +712,42 @@ def _should_reconcile_position(state: RuntimeState, now: datetime, *, force: boo
     return (now - last).total_seconds() >= config.FLAT_POSITION_RECONCILE_INTERVAL_SEC
 
 
+def _record_reconcile_discovered_position(state: RuntimeState, pos: PositionSnapshot, now: datetime) -> None:
+    """2026-08-20 fix: a position the broker holds that runtime state never
+    recorded entering (RECOVERED_FROM_BROKER) used to leave zero trace in
+    the signal ledger. This never had access to a macd_snap (reconcile runs
+    before bars_3m/macd_snap are computed each tick), so it cannot reuse
+    _record_signal_ledger's schema -- writes a minimal, clearly-labeled row
+    directly instead. The real entry time/price are genuinely unknown (that
+    is the entire problem this discovers); this only records WHEN the gap
+    was noticed and what was found, never fabricates the missing history.
+    """
+    direction = _direction_for_symbol(pos.symbol)
+    signal_id = f"RECONCILE_DISCOVERED_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+    row = {
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "completed_bar_at": "",
+        "signal_id": signal_id,
+        "signal_type": "RECONCILE_DISCOVERED",
+        "direction": direction.value if direction else "",
+        "macd": "", "signal": "", "hist_last3": "",
+        "detected_at": now.isoformat(),
+        "order_requested_at": "",
+        "order_result": "RECONCILE_DISCOVERED_POSITION",
+        "block_reason": f"qty={pos.quantity}_avg_price={pos.avg_price}",
+        "signal_bar_at": "", "signal_confirmed_at": "",
+        "baseline_completed_bar_at": state.session_baseline_bar_ts or "",
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": config.SIGNAL_RULE,
+        "worker_code_sha": _git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        **_entry_gate_ledger_fields(state, None, "NONE"),
+    }
+    ledger.append_signal(row)
+
+
 def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, force: bool = False) -> str:
     if not _should_reconcile_position(state, now, force=force):
         return str((state.position_reconcile_diag or {}).get("comparison_result") or MATCH_FLAT)
@@ -800,6 +836,15 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         diag.update({"comparison_result": RECOVERED_FROM_BROKER, "mismatch_reason": "runtime_flat_broker_position"})
         state.position_reconcile_diag = diag
         state.last_position_reconcile_at = now.isoformat()
+        # 2026-08-20 fix (real incident: the runtime believed it was flat but
+        # the broker actually held a position -- this branch silently adopted
+        # it into state.position with no signal-ledger row at all, so there
+        # was NO record anywhere of when/how this position came to exist.
+        # Bypasses _record_signal_ledger entirely since it needs a macd_snap
+        # this reconcile step never has -- write a minimal, clearly-labeled
+        # discovery row directly instead, at minimum making it visible/
+        # auditable going forward.
+        _record_reconcile_discovered_position(state, state.position, now)
         return RECOVERED_FROM_BROKER
 
     diag.update({"comparison_result": POSITION_MISMATCH, "mismatch_reason": "runtime_broker_position_diff"})
@@ -3475,6 +3520,26 @@ class Macd2Worker:
                 # safe to check every tick.
                 if not self._market_data.quote_updater_alive():
                     self._market_data.start_quote_updater(interval_sec=1.0)
+                else:
+                    # 2026-08-20 fix (real incident: MACD2 held a position
+                    # with no fresh quotes and STOP_LOSS never fired -- the
+                    # quote-updater thread was still is_alive()=True but had
+                    # stopped actually producing fresh quotes, permanently.
+                    # quote_updater_alive() cannot see this; check staleness
+                    # directly on every traded/watched symbol and force a
+                    # stop+restart -- the OLD thread, if genuinely stuck
+                    # forever, is simply orphaned (daemon=True, harmless) and
+                    # a brand-new one takes over, exactly mirroring how
+                    # Macd2Service.start() already recovers a stuck Worker
+                    # thread.
+                    stalest_age = 0.0
+                    for _sym in (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL):
+                        _snap = self._market_data.get_quote(_sym)
+                        if _snap is not None and _snap.age_sec is not None:
+                            stalest_age = max(stalest_age, _snap.age_sec)
+                    if stalest_age > config.QUOTE_UPDATER_STALL_AGE_SEC:
+                        self._market_data.stop_quote_updater(join_timeout=0.5)
+                        self._market_data.start_quote_updater(interval_sec=1.0)
                 tick_result = run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
                 stage_timing.update(tick_result.timing)
                 t_stage = time.monotonic()

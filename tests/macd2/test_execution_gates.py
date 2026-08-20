@@ -781,6 +781,15 @@ def test_runtime_flat_broker_holding_recovers_runtime():
     assert result == worker.RECOVERED_FROM_BROKER
     assert state.position.symbol == config.LONG_SYMBOL
     assert state.position.quantity == 3
+    # 2026-08-20 fix (real incident: a position the broker held that runtime
+    # never recorded entering left ZERO trace in the signal ledger -- there
+    # was no way to tell when/how it appeared). Must now write a discovery
+    # row so it is at least visible/auditable going forward.
+    rows = ledger.load_signal_ledger()
+    discovered = [r for r in rows if r["signal_type"] == "RECONCILE_DISCOVERED"]
+    assert len(discovered) == 1
+    assert discovered[0]["order_result"] == "RECONCILE_DISCOVERED_POSITION"
+    assert config.LONG_SYMBOL in discovered[0]["signal_id"]
 
 
 def test_runtime_holding_broker_flat_recovers_to_flat():

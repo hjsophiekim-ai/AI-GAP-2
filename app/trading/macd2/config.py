@@ -182,6 +182,14 @@ WORKER_TICK_P95_MAX_SEC = 7.0
 WORKER_TICK_MAX_SEC = 10.0
 SIGNAL_TO_ORDER_REQUEST_MAX_SEC = 5.0
 WORKER_STALL_AGE_SEC = 15.0
+# 2026-08-20 fix: the quote-updater background thread (market_data.py) can
+# get stuck inside a single hanging refresh_quotes() call forever (e.g. a
+# KIS call that never raises, never returns) while still reporting
+# is_alive()=True -- the exact same "alive but not producing" failure mode
+# already fixed for the main Worker thread's start(), just for this OTHER
+# background thread. quote_updater_alive() alone cannot detect this; see
+# Macd2Worker._run_loop's staleness-based force-restart.
+QUOTE_UPDATER_STALL_AGE_SEC = 30.0
 
 # 2026-08-04 fix: a fresh process (Render free-tier idle-sleep, redeploy, or
 # crash — docs/deploy_render.md: ephemeral filesystem, in-process Worker
