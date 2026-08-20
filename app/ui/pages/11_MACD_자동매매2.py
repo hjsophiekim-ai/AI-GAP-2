@@ -364,6 +364,15 @@ w3.metric("웜업 완료", "YES" if state.warmup_ready else "NO")
 w4.metric("전략 상태", state.ui_mode.value)
 if state.order_block_reason:
     st.write(f"최근 block/skip 사유: `{state.order_block_reason}`")
+# 2026-08-21 fix: order_block_reason이 POSITION_DATA_ERROR/POSITION_MISMATCH일
+# 때 실제 원인(KIS 예외/응답 msg1 등)이 position_reconcile_diag에 이미 저장돼
+# 있는데도 화면 어디에도 노출되지 않아, "position data error"라는 코드값만
+# 보고는 진짜 원인(레이트리밋인지, 계좌 조회 실패인지)을 서버 로그 없이는 알
+# 방법이 없었다 — 진단이 가장 필요한 순간에 이미 있는 정보를 숨기고 있던 셈.
+_recon_diag = state.position_reconcile_diag or {}
+_recon_reason = _recon_diag.get("mismatch_reason") or _recon_diag.get("broker_response_error")
+if _recon_reason:
+    st.write(f"포지션 조회 실패 상세: `{_recon_reason}`")
 
 # 2026-08-20 추가: Worker._run_loop이 이미 내부적으로 추적하고 있던
 # last_exception/last_tick_age_sec/stalled가 지금까지 UI 어디에도 노출되지

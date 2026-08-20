@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from app.trading.macd2 import config, ledger, worker
+from app.trading.macd2 import config, ledger, state_store, worker
 
 _APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
 
@@ -170,6 +170,27 @@ def test_last_tick_and_quote_check_metrics_render_even_without_a_running_worker(
         assert expected in metric_labels, f"missing metric: {expected}"
     last_tick_metric = next(m for m in at.metric if m.label == "마지막 tick 시간")
     assert last_tick_metric.value == "-"
+
+
+def test_position_reconcile_failure_reason_is_shown_not_just_the_code():
+    """2026-08-21 fix: order_block_reason=POSITION_DATA_ERROR was rendered as
+    a bare code with no detail, even though the real KIS failure reason
+    (rate limit, exception repr, ...) was already sitting unused in
+    state.position_reconcile_diag['mismatch_reason'] -- a live incident where
+    this showed up gave no way to tell WHY without reading server logs."""
+    state = state_store.default_state()
+    state.order_block_reason = "POSITION_DATA_ERROR"
+    state.position_reconcile_diag = {
+        "comparison_result": "POSITION_DATA_ERROR",
+        "mismatch_reason": "RuntimeError('KIS 모의계좌 잔고 조회 실패: EGW00201 초당 거래건수를 초과하였습니다.')",
+    }
+    state_store.save_state(state)
+
+    at = _fresh_app()
+    at.run()
+    assert not at.exception
+    texts = [w.value for w in at.markdown] + [w.value for w in at.text]
+    assert any("EGW00201" in t for t in texts)
 
 
 def test_operational_diagnostics_panel_renders_before_start():
