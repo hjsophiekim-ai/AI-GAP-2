@@ -243,17 +243,28 @@ def test_retry_bootstrap_before_start_is_rejected():
     assert res == {"ok": False, "message": "NOT_STARTED"}
 
 
-def test_start_twice_does_not_spawn_second_worker(monkeypatch):
+def test_start_restarts_cleanly_when_already_alive(monkeypatch):
+    """2026-08-20 fix (real incident: after a Render idle-sleep/redeploy, a
+    still-alive-but-stuck Worker thread made start() refuse forever with
+    ALREADY_RUNNING and no way to force a clean restart from the UI -- the
+    same class of bug the 2026-08-14 MU_MACD fix already addresses there).
+    A re-click while already alive must tear down the old worker and spin
+    up a genuinely fresh one instead of refusing."""
     monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
     _patch_ok_construction(monkeypatch)
 
     svc = service_module.Macd2Service()
     try:
-        svc.start(mode="mock")
+        first = svc.start(mode="mock")
+        assert first["ok"] is True
         first_worker = svc._worker
-        res2 = svc.start(mode="mock")
-        assert res2 == {"ok": False, "message": "ALREADY_RUNNING"}
-        assert svc._worker is first_worker
+        assert first_worker.is_alive() is True
+
+        second = svc.start(mode="mock")
+        assert second["ok"] is True
+        assert svc._worker is not first_worker, "must be a genuinely NEW worker, not the old one"
+        assert svc._worker.is_alive() is True
+        assert first_worker.is_alive() is False, "the OLD worker must have been torn down"
     finally:
         svc.stop()
 

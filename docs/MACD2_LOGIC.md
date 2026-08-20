@@ -758,6 +758,23 @@ TW_WHIPSAW_REJECT_REASONS` 판정에 쓰이는 reject 문자열 자체가
 `time_window_filter.evaluate_time_window_entry`라는 같은 공용 함수에서
 나온다.
 
+**청산 로직 이분화(2026-08-20 사용자 결정)**: 이 휩쏘-내성 재확인은 **오직
+시간대별 최적거래 필터(`time_window_filter_enabled`)가 관리하는 포지션에만**
+적용된다. 다른 진입모드 — 특히 아래 "무필터 09:00-11:00" 즉시청산 진입모드 —
+로 진입한 포지션은 반대신호가 뜨면 **항상 즉시 매도**하며, 이 T+3 재확인/
+휩쏘 예외는 전혀 적용되지 않는다. 코드 구조상으로도 두 로직은 완전히 분리돼
+있다: MACD2는 `worker._judge_entry_gate`에서 TIME_WINDOW 필터일 때만
+`_resolve_time_window_candidate`(이 휩쏘 로직이 있는 유일한 경로)를 타고,
+다른 필터(무필터 09-11 포함)는 전부 `_execute_reversal_exit_only_for_
+filtered_entry`(무조건 즉시매도)를 탄다. MU_MACD는 `time_window_filter_
+enabled`가 꺼져 있을 때의 legacy 즉시진입/즉시청산 경로 자체가 원래도
+휩쏘 로직이 전혀 없었다 — 무필터 09-11은 그 legacy 경로에 09:00-11:00
+진입창 제한만 추가한 것이라, 마찬가지로 휩쏘 예외와 무관하다. 56거래일
+TRAIN/VAL/OOS corrected-clock 백테스트(`scripts/tw_gate_case_b_quality_
+recovery_compare.py`)에서 이 반대신호를 TW 필터처럼 유예하는 안(gap 확정
++quality 미달 케이스까지 보유)을 테스트했으나 TRAIN/VAL/OOS 전부에서 현재
+즉시매도보다 나빠 채택하지 않았다.
+
 ### 짧은 왕복 교차 제거 — `is_valid_reset()`
 
 직전 반대 방향 확정 플래그와의 간격이 `config.MIN_FLAG_INTERVAL_MINUTES`
@@ -1011,6 +1028,71 @@ data.py`, `broker_adapter.py`, `order_executor.py`의 기존 BUY/SELL 수량
 산식·`execute_exit`, STOP_LOSS(-1.5%)/PROFIT_LOCK/QUICK_PROFIT의 기존 동작
 (이 필터가 관리하지 않는 포지션에는 완전히 그대로 유지), 14:55/15:00
 청산, REAL gate, 다른 전략 모듈, 다른 4개 필터의 기존 동작.
+
+## "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20)
+
+56거래일 TRAIN(34)/VAL(11)/OOS(11) corrected-clock 백테스트(`scripts/
+tw_gate_corrected_4scenario_compare.py`)에서 "필터 없이 09:00-11:00에
+확정 flag마다 즉시 진입 + 반대신호 즉시청산"이 시간대별 최적거래 필터+
+휩쏘내성보다 56일 복리수익 우위(+104.8% vs +15.7%)를 보여 production
+진입모드로 추가했다. 유일한 조건은 **09:00-11:00 시간대 자체**이고,
+품질점수·gap확대 재확인·T+3 대기 중 어느 것도 없다 — 확정봉 그 자리에서
+바로 진입 승인/거절이 난다.
+
+### MACD2 — `worker._judge_no_filter_flag` (6번째 entry gate)
+
+`worker._judge_entry_gate`의 우선순위 체인(`TIME_WINDOW > NO_FILTER_0900_
+1100 > SIDEWAYS > MAJOR > TREND_PERSISTENCE > SINGLE_ENTRY`)에서 TIME_WINDOW
+바로 다음 자리에 추가된, MAJOR/SIDEWAYS/TREND_PERSISTENCE/SINGLE_ENTRY와
+동일한 형태의 단순 승인/거절 게이트다: `config.NO_FILTER_ENTRY_WINDOW_START
+<= now < config.NO_FILTER_ENTRY_WINDOW_END`(09:00-11:00)면 승인, 아니면
+`NO_FILTER_REJECT_OUTSIDE_WINDOW`로 거절. TIME_WINDOW 전용 pending/T+3/
+휩쏘 로직(`_resolve_time_window_candidate`)은 전혀 거치지 않으므로, 반대
+신호로 거절되면 다른 4개 필터와 동일하게 `_execute_reversal_exit_only_
+for_filtered_entry`(무조건 즉시매도)를 탄다 — 청산 이분화는 이 구조 자체로
+보장되며 별도의 예외 코드가 필요 없다. 이 필터로 연 포지션은 `time_window_
+position_active`를 전혀 set하지 않으므로, 포지션 관리는 TW 래더(TP1/TP2/
+trailing)가 아니라 다른 4개 필터와 동일한 일반 STOP_LOSS/FORCED_LIQUIDATION
+경로를 그대로 탄다.
+
+### MU_MACD — `worker._entry_gate_block_reason`에 한 줄 추가
+
+MU_MACD는 `time_window_filter_enabled`가 꺼져 있을 때 원래도 T+3 대기·
+quality gate가 전혀 없는 "legacy" 즉시진입/즉시청산 경로(`run_once`의
+`confirmed_direction` 처리 분기, 반대신호는 무조건 즉시매도)를 갖고 있었다
+— 무필터 09-11은 이 legacy 경로 자체에 09:00-11:00 진입창 제한 한 줄만
+추가한 것으로, `_entry_gate_block_reason`이 `no_filter_0900_1100_enabled`
+가 켜져 있고 지금이 그 시간대 밖이면 `NO_FILTER_REJECT_OUTSIDE_WINDOW`를
+반환한다. 반대신호 즉시매도/STOP_LOSS/QUICK_PROFIT/FORCED_LIQUIDATION 등
+legacy 경로 자체의 동작은 전혀 바뀌지 않았다.
+
+### 토글/우선순위
+
+`no_filter_0900_1100_enabled`(기본 OFF, `set_no_filter_0900_1100_filter_
+enabled()`로 UI에서 켜고 끔) — 시간대별 최적거래 필터와 동시에 켜지면
+TIME_WINDOW가 우선한다(두 모듈 다 기존 우선순위 그대로).
+
+### 검증
+
+`tests/macd2/test_no_filter_entry.py` / `tests/mu_macd/test_no_filter_
+entry.py` — 기본 OFF 하위호환, 09-11 밖/안 진입 승인·거절, **반대신호에
+대한 즉시매도가 TW의 휩쏘-내성과 무관하게 항상 일어남**(핵심 회귀 테스트),
+TW 래더 아닌 일반 SL 경로 확인, state round-trip. 2026-08-19 실제 1분봉
+재생으로 09:03 진입→09:39 즉시 스위치→11:12 sell-only(창 밖)→이후
+FILTERED_OUT 흐름도 확인했다.
+
+### 수정 범위 / 금지
+
+허용(최소 수정): `config.py`(`NO_FILTER_*` 상수), `models.py`(토글 4필드),
+`worker.py`(macd2: `_judge_no_filter_flag` 추가 + `_judge_entry_gate` 1줄;
+mu_macd: `_entry_gate_block_reason` 1줄), `state_store.py`, `service.py`
+(`set_no_filter_0900_1100_filter_enabled`), `ledger.py`(macd2만, 컬럼
+4개 추가), UI, 본 문서, `tests/macd2/test_no_filter_entry.py`,
+`tests/mu_macd/test_no_filter_entry.py`.
+
+수정 금지: TIME_WINDOW 필터 자체의 pending/T+3/휩쏘 로직, 다른 4개 필터의
+기존 동작, MU_MACD ledger 스키마(down_blue_exception과 동일하게 전용
+컬럼 없이 기존 `block_reason` 컬럼으로 충분).
 
 ## 금지 사항
 

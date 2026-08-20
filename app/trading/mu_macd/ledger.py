@@ -7,6 +7,7 @@ ledger) — same technique as app.trading.macd2.ledger.
 from __future__ import annotations
 
 import csv
+import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -41,6 +42,36 @@ EXECUTION_LEDGER_COLUMNS = [
 LOGS_DIR_PATH: Path = LOGS_DIR
 SIGNAL_LEDGER_PATH: Path = LOGS_DIR_PATH / config.SIGNAL_LEDGER_FILENAME
 EXECUTION_LEDGER_PATH: Path = LOGS_DIR_PATH / config.EXECUTION_LEDGER_FILENAME
+
+# Frozen at import time -- see app.trading.macd2.ledger's identical pattern
+# and its own docstring for the 2026-08-19 incident (an ad-hoc macd2 replay
+# script wrote synthetic rows into the real production ledger) this guards
+# against, ported here for the same risk in MU_MACD.
+_DEFAULT_SIGNAL_LEDGER_PATH: Path = SIGNAL_LEDGER_PATH
+_DEFAULT_EXECUTION_LEDGER_PATH: Path = EXECUTION_LEDGER_PATH
+LIVE_WORKER_MARKER_ENV = "MU_MACD_LIVE_WORKER_PID"
+
+
+def _assert_safe_to_write_ledger() -> None:
+    paths_untouched = (
+        SIGNAL_LEDGER_PATH == _DEFAULT_SIGNAL_LEDGER_PATH
+        and EXECUTION_LEDGER_PATH == _DEFAULT_EXECUTION_LEDGER_PATH
+    )
+    if not paths_untouched:
+        return  # already redirected elsewhere (pytest conftest, an isolated script) -- safe
+    if os.environ.get(LIVE_WORKER_MARKER_ENV) == str(os.getpid()):
+        return  # this process IS the genuine live MU_MACD service process -- safe
+    raise RuntimeError(
+        "REFUSING to write to the production MU_MACD ledger "
+        f"({_DEFAULT_SIGNAL_LEDGER_PATH} / {_DEFAULT_EXECUTION_LEDGER_PATH}). "
+        "This looks like an ad-hoc/replay script calling append_signal/append_execution "
+        "(directly or via worker.run_once()) without isolating the ledger path first. "
+        "Redirect ledger.SIGNAL_LEDGER_PATH and ledger.EXECUTION_LEDGER_PATH to a tmp "
+        "directory BEFORE calling run_once(). If this genuinely is the live service "
+        f"process, set os.environ['{LIVE_WORKER_MARKER_ENV}'] = str(os.getpid()) once at "
+        "startup instead (see app.trading.mu_macd.service.MUMacdService)."
+    )
+
 
 _SIGNAL_LOCK = threading.RLock()
 _EXECUTION_LOCK = threading.RLock()
@@ -111,6 +142,7 @@ def append_signal(row: dict[str, Any]) -> bool:
     signal_id = str(row.get("signal_id") or "")
     if not signal_id:
         raise ValueError("append_signal: row is missing signal_id")
+    _assert_safe_to_write_ledger()
     with _SIGNAL_LOCK:
         for existing in _load_rows(SIGNAL_LEDGER_PATH):
             if existing.get("signal_id") == signal_id:
@@ -123,6 +155,7 @@ def append_execution(row: dict[str, Any]) -> bool:
     order_id = str(row.get("order_id") or "")
     if not order_id:
         raise ValueError("append_execution: row is missing order_id")
+    _assert_safe_to_write_ledger()
     with _EXECUTION_LOCK:
         for existing in _load_rows(EXECUTION_LEDGER_PATH):
             if existing.get("order_id") == order_id:

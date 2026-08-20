@@ -299,3 +299,19 @@ TW_WHIPSAW_REJECT_REASONS = _macd2_config.TW_WHIPSAW_REJECT_REASONS
 # OFF가 기본값.
 TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT = _env_bool("MU_MACD_TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False)
 TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION = "TW_1_BLUE_V1_20260819"
+
+# ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
+# TW필터(time_window_filter_enabled)가 꺼져있을 때 이미 존재하던 "legacy"
+# 즉시진입/즉시청산 경로(worker.py의 confirmed_direction 처리, T+3 대기도
+# quality gate도 없이 확정 flag 즉시 진입 + 반대신호 무조건 즉시매도)에
+# 09:00-11:00 진입창 제한 한 줄만 추가한다(worker._entry_gate_block_reason).
+# 그 legacy 경로 자체(반대신호 즉시매도, STOP_LOSS_NET_PCT/QUICK_PROFIT/
+# FORCED_LIQUIDATION 리스크관리)는 전혀 안 건드림 -- TW필터의 휩쏘-내성
+# 코드와도 완전히 무관. NO_FILTER_ENTRY_WINDOW_START/END는 macd2.config에서
+# 직접 가져온 값 그 자체(별도 정의 아님, TW_WHIPSAW_REJECT_REASONS와 동일
+# 관례). OFF가 기본값.
+NO_FILTER_0900_1100_FILTER_DEFAULT = _env_bool("MU_MACD_NO_FILTER_0900_1100_FILTER_DEFAULT", False)
+NO_FILTER_0900_1100_FILTER_VERSION = "NO_FILTER_0900_1100_V1_20260820"
+NO_FILTER_ENTRY_WINDOW_START = _macd2_config.NO_FILTER_ENTRY_WINDOW_START
+NO_FILTER_ENTRY_WINDOW_END = _macd2_config.NO_FILTER_ENTRY_WINDOW_END
+NO_FILTER_REJECT_OUTSIDE_WINDOW = _macd2_config.NO_FILTER_REJECT_OUTSIDE_WINDOW

@@ -709,6 +709,29 @@ TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT = _env_bool("MACD2_TW_DOWN_BLUE_EXCEPTION_
 TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION = "TW_DOWN_BLUE_EXCEPTION_V1_20260818"
 TW_EXCEPTION_DOWN_BLUE_ENTRY = "TIME_WINDOW_EXCEPTION_DOWN_BLUE_ENTRY"
 
+# ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
+# 6th peer entry gate in worker._judge_entry_gate (right after TIME_WINDOW),
+# same shape as MAJOR/SIDEWAYS/TREND_PERSISTENCE/SINGLE_ENTRY: a single
+# approve/reject MajorFlagDecision, no quality score, no T+3 pending wait --
+# approved iff decision_at falls in [NO_FILTER_ENTRY_WINDOW_START,
+# NO_FILTER_ENTRY_WINDOW_END). Because it is judged through the SAME generic
+# path those four filters use (never through TIME_WINDOW's own
+# _resolve_time_window_candidate/whipsaw logic), a rejected reversal under
+# this gate ALWAYS sells immediately via worker._execute_reversal_exit_
+# only_for_filtered_entry -- there is no whipsaw-tolerant hold for this mode,
+# by construction, without any change to the TIME_WINDOW whipsaw code itself.
+# 56일 TRAIN(34)/VAL(11)/OOS(11) corrected-clock 백테스트(scripts/tw_gate_
+# corrected_4scenario_compare.py)에서 이 조합(무필터 09-11 + 즉시청산)이
+# TW필터+휩쏘내성보다 56일 복리수익 우위(+104.8% vs +15.7%)를 보여 채택.
+# OFF가 기본값 -- UI 체크박스 / service.set_no_filter_0900_1100_filter_enabled()
+# 로만 켠다. TIME_WINDOW_FILTER와 동시에 켜지면 TIME_WINDOW가 우선한다
+# (_judge_entry_gate의 기존 우선순위 그대로).
+NO_FILTER_0900_1100_FILTER_DEFAULT = _env_bool("MACD2_NO_FILTER_0900_1100_FILTER_DEFAULT", False)
+NO_FILTER_0900_1100_FILTER_VERSION = "NO_FILTER_0900_1100_V1_20260820"
+NO_FILTER_ENTRY_WINDOW_START = time(9, 0)
+NO_FILTER_ENTRY_WINDOW_END = time(11, 0)
+NO_FILTER_REJECT_OUTSIDE_WINDOW = "REJECT_OUTSIDE_ENTRY_WINDOW"
+
 # Exit-reason labels for the position-management ladder (§11-14).
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
 EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"

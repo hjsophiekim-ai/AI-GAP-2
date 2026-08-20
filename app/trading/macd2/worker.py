@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import threading
 import time
 import traceback
@@ -1941,6 +1942,37 @@ def _resolve_time_window_candidate(
     return outcome
 
 
+def _judge_no_filter_flag(*, state: RuntimeState, now: datetime, signal_id: str) -> MajorFlagDecision:
+    """"무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20) -- a single approve/
+    reject decision on the ALREADY-confirmed crossover bar itself, no T+3
+    pending wait, no quality score: approved iff ``now`` falls in
+    [config.NO_FILTER_ENTRY_WINDOW_START, config.NO_FILTER_ENTRY_WINDOW_END).
+    Never called when ``state.no_filter_0900_1100_enabled`` is False. Judged
+    through the exact same generic path as MAJOR/SIDEWAYS/TREND_PERSISTENCE/
+    SINGLE_ENTRY (never TIME_WINDOW's own pending/whipsaw machinery), so a
+    rejected reversal under this gate always sells immediately via
+    _execute_reversal_exit_only_for_filtered_entry -- no whipsaw-tolerant
+    hold for this mode, by construction."""
+    now_time = now.astimezone(KST).time()
+    approved = config.NO_FILTER_ENTRY_WINDOW_START <= now_time < config.NO_FILTER_ENTRY_WINDOW_END
+    decision = MajorFlagDecision(
+        approved=approved,
+        score=0.0,
+        required_score=0.0,
+        decision=("APPROVED" if approved else config.NO_FILTER_REJECT_OUTSIDE_WINDOW),
+        reasons=() if approved else (f"outside 09:00-11:00 entry window (now={now_time.isoformat()})",),
+        component_scores={},
+        metrics={},
+        is_reversal=False,
+        fast_reversal=False,
+        block_reason=None if approved else config.NO_FILTER_REJECT_OUTSIDE_WINDOW,
+    )
+    state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
+    state.last_no_filter_0900_1100_approved = approved
+    state.last_no_filter_0900_1100_block_reason = decision.block_reason
+    return decision
+
+
 def _judge_entry_gate(
     *,
     state: RuntimeState,
@@ -1955,17 +1987,23 @@ def _judge_entry_gate(
 
     ``time_window_filter_enabled`` takes TOP PRIORITY (2026-08-15 사용자
     요청: the newest, most complete redesign supersedes the simpler
-    entry-only gates when a user opts into it), then ``sideways_filter_enabled``,
+    entry-only gates when a user opts into it), then
+    ``no_filter_0900_1100_enabled`` (2026-08-20 사용자 요청: 6th peer gate,
+    same priority tier as the other simple filters -- see
+    ``_judge_no_filter_flag``), then ``sideways_filter_enabled``,
     then ``major_filter_enabled``, then ``trend_persistence_filter_enabled``,
-    then ``single_entry_filter_enabled`` — the five optional filters are
+    then ``single_entry_filter_enabled`` — the six optional filters are
     never more than one active for the same signal (2026-08-04 추세전환장
     toggle spec: "위 로직 우선으로 들어가는 거야", extended 2026-08-07 to Trend
-    Persistence, 2026-08-08 to Single-Entry, 2026-08-15 to Time-Window).
+    Persistence, 2026-08-08 to Single-Entry, 2026-08-15 to Time-Window,
+    2026-08-20 to No-Filter-0900-1100).
     Returns ``(None, "NONE")`` when no toggle is on — legacy behavior (every
     confirmed flag has order authority) is completely unchanged.
     """
     if state.time_window_filter_enabled:
         return _judge_time_window_flag(state=state, bars_3m=bars_3m, direction=direction, signal_id=signal_id), "TIME_WINDOW"
+    if state.no_filter_0900_1100_enabled:
+        return _judge_no_filter_flag(state=state, now=now, signal_id=signal_id), "NO_FILTER_0900_1100"
     if state.sideways_filter_enabled:
         return _judge_sideways_flag(state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, now=now, signal_id=signal_id), "SIDEWAYS"
     if state.major_filter_enabled:
@@ -2180,13 +2218,33 @@ def _time_window_ledger_fields(
     return row
 
 
+def _no_filter_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+    """no_filter_0900_1100_* ledger columns -- minimal (no score/component
+    breakdown, since this gate is a pure time-window check, not a scored
+    filter). Mirrors ``_sideways_ledger_fields``'s shape for the fields that
+    do apply."""
+    row: dict[str, Any] = {
+        "no_filter_0900_1100_enabled": bool(state.no_filter_0900_1100_enabled),
+        "no_filter_0900_1100_filter_version": state.no_filter_0900_1100_filter_version or config.NO_FILTER_0900_1100_FILTER_VERSION,
+        "no_filter_0900_1100_approved": "",
+        "no_filter_0900_1100_block_reason": "",
+    }
+    if decision is None:
+        return row
+    row.update({
+        "no_filter_0900_1100_approved": bool(decision.approved),
+        "no_filter_0900_1100_block_reason": decision.block_reason or "",
+    })
+    return row
+
+
 def _entry_gate_ledger_fields(
     state: RuntimeState, decision: Optional[MajorFlagDecision], mode: str, *, down_blue_exception_applied: bool = False,
 ) -> dict[str, Any]:
-    """Merge major_*, sideways_*, trend_persistence_*, single_entry_*, and
-    time_window_* ledger columns for one signal row.
+    """Merge major_*, sideways_*, trend_persistence_*, single_entry_*,
+    time_window_*, and no_filter_0900_1100_* ledger columns for one signal row.
 
-    All five column families are always present (never omitted), so every
+    All six column families are always present (never omitted), so every
     ledger row shows the current state of all toggles — but the shared
     generic metric columns (``_MAJOR_METRIC_LEDGER_KEYS``) are populated
     only by whichever of major/sideways actually judged this signal
@@ -2199,6 +2257,7 @@ def _entry_gate_ledger_fields(
     time_window_fields = _time_window_ledger_fields(
         state, decision if mode == "TIME_WINDOW" else None, down_blue_exception_applied=down_blue_exception_applied,
     )
+    no_filter_fields = _no_filter_ledger_fields(state, decision if mode == "NO_FILTER_0900_1100" else None)
     merged = dict(major_fields)
     for key, value in sideways_fields.items():
         if key in _MAJOR_METRIC_LEDGER_KEYS:
@@ -2209,6 +2268,7 @@ def _entry_gate_ledger_fields(
     merged.update(trend_persistence_fields)
     merged.update(single_entry_fields)
     merged.update(time_window_fields)
+    merged.update(no_filter_fields)
     return merged
 
 
@@ -3428,6 +3488,14 @@ class Macd2Worker:
     def start(self) -> None:
         if self.is_alive():
             return  # never spawn a second Worker thread
+        # 2026-08-19: marks THIS process as the genuine live Worker so
+        # ledger.append_signal/append_execution and state_store.save_state
+        # allow writes to the real production paths -- any OTHER caller
+        # (an ad-hoc/replay script invoking run_once() directly, never
+        # through this class) is refused unless it has redirected those
+        # paths itself first (see ledger.py's own docstring for the
+        # 2026-08-19 incident this guards against).
+        os.environ[ledger.LIVE_WORKER_MARKER_ENV] = str(os.getpid())
         self._stop_event.clear()
         self._started_at = datetime.now(KST)
         self._thread = threading.Thread(target=self._run_loop, name="macd2-worker", daemon=True)

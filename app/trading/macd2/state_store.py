@@ -24,6 +24,29 @@ SCHEMA_VERSION = 1
 STATE_DIR_PATH: Path = STATE_DIR
 STATE_PATH: Path = STATE_DIR_PATH / config.RUNTIME_STATE_FILENAME
 
+# Frozen at import time -- see app.trading.macd2.ledger's identical pattern
+# and its own docstring for the 2026-08-19 incident this guards against.
+_DEFAULT_STATE_PATH: Path = STATE_PATH
+LIVE_WORKER_MARKER_ENV = "MACD2_LIVE_WORKER_PID"
+
+
+def _assert_safe_to_write_state() -> None:
+    if STATE_PATH != _DEFAULT_STATE_PATH:
+        return  # already redirected elsewhere (pytest conftest, an isolated script) -- safe
+    if os.environ.get(LIVE_WORKER_MARKER_ENV) == str(os.getpid()):
+        return  # this process IS the genuine live Worker thread -- safe
+    raise RuntimeError(
+        f"REFUSING to write to the production MACD2 state file ({_DEFAULT_STATE_PATH}). "
+        "This looks like an ad-hoc/replay script calling save_state() (directly or via "
+        "worker.run_once()) without isolating the state path first. Redirect "
+        "state_store.STATE_DIR_PATH and state_store.STATE_PATH to a tmp directory BEFORE "
+        "calling run_once() -- mirror tests/macd2/conftest.py's _isolate_macd2_state "
+        "fixture exactly. If this genuinely is the live Worker process, set "
+        f"os.environ['{LIVE_WORKER_MARKER_ENV}'] = str(os.getpid()) once at startup instead "
+        "(see app.trading.macd2.worker.Macd2Worker.start())."
+    )
+
+
 _FILE_LOCK = threading.RLock()
 
 _UI_MODE_VALUES = {s.value for s in RuntimeStatus}
@@ -44,6 +67,8 @@ def default_state() -> RuntimeState:
     state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
     state.down_blue_exception_filter_enabled = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
+    state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
+    state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
     state.profit_lock_enabled = bool(getattr(config, "PROFIT_LOCK_DEFAULT_ENABLED", True))
     return state
@@ -306,6 +331,12 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "down_blue_exception_filter_version": state.down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION,
         "daily_down_blue_exception_used": bool(state.daily_down_blue_exception_used),
         "last_down_blue_exception_at": state.last_down_blue_exception_at,
+        "no_filter_0900_1100_enabled": bool(state.no_filter_0900_1100_enabled),
+        "no_filter_0900_1100_enabled_at": state.no_filter_0900_1100_enabled_at,
+        "no_filter_0900_1100_enabled_by": state.no_filter_0900_1100_enabled_by,
+        "no_filter_0900_1100_filter_version": state.no_filter_0900_1100_filter_version or config.NO_FILTER_0900_1100_FILTER_VERSION,
+        "last_no_filter_0900_1100_approved": state.last_no_filter_0900_1100_approved,
+        "last_no_filter_0900_1100_block_reason": state.last_no_filter_0900_1100_block_reason,
     }
 
 
@@ -356,6 +387,13 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_down_blue_exception_filter_version and stored_down_blue_exception_filter_version != config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION:
         down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
         down_blue_exception_filter_enabled = down_blue_exception_enabled_default
+    no_filter_0900_1100_enabled_default = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
+    stored_no_filter_0900_1100_filter_version = str(raw.get("no_filter_0900_1100_filter_version") or "")
+    no_filter_0900_1100_filter_version = stored_no_filter_0900_1100_filter_version or config.NO_FILTER_0900_1100_FILTER_VERSION
+    no_filter_0900_1100_enabled = bool(raw.get("no_filter_0900_1100_enabled", no_filter_0900_1100_enabled_default))
+    if stored_no_filter_0900_1100_filter_version and stored_no_filter_0900_1100_filter_version != config.NO_FILTER_0900_1100_FILTER_VERSION:
+        no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
+        no_filter_0900_1100_enabled = no_filter_0900_1100_enabled_default
     major_enabled_default = bool(getattr(config, "MAJOR_FILTER_DEFAULT", False))
     stored_major_filter_version = str(raw.get("major_filter_version") or "")
     major_filter_version = stored_major_filter_version or config.MAJOR_FILTER_VERSION
@@ -627,6 +665,12 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         down_blue_exception_filter_version=down_blue_exception_filter_version,
         daily_down_blue_exception_used=bool(raw.get("daily_down_blue_exception_used") or False),
         last_down_blue_exception_at=raw.get("last_down_blue_exception_at"),
+        no_filter_0900_1100_enabled=no_filter_0900_1100_enabled,
+        no_filter_0900_1100_enabled_at=raw.get("no_filter_0900_1100_enabled_at"),
+        no_filter_0900_1100_enabled_by=raw.get("no_filter_0900_1100_enabled_by"),
+        no_filter_0900_1100_filter_version=no_filter_0900_1100_filter_version,
+        last_no_filter_0900_1100_approved=raw.get("last_no_filter_0900_1100_approved"),
+        last_no_filter_0900_1100_block_reason=raw.get("last_no_filter_0900_1100_block_reason"),
     )
 
 
@@ -651,6 +695,7 @@ def load_state() -> RuntimeState:
 
 def save_state(state: RuntimeState) -> RuntimeState:
     """Atomic write: tmp file + os.replace, guarded by a thread lock."""
+    _assert_safe_to_write_state()
     with _FILE_LOCK:
         ensure_paths()
         state.updated_at = datetime.now(config.KST).isoformat()

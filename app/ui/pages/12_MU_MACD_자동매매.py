@@ -235,6 +235,31 @@ with _dbe_cols[1]:
             f"오늘 사용={'Y' if status['daily_down_blue_exception_used'] else '-'}"
         )
 
+_nf_cols = st.columns([1.4, 1.6])
+with _nf_cols[0]:
+    _nf_on = st.checkbox(
+        "무필터 09:00-11:00 즉시청산",
+        value=bool(status["no_filter_0900_1100_enabled"]),
+        key="mu_macd_no_filter_0900_1100_toggle",
+        help=(
+            "품질점수/T+3 대기 없이 09:00-11:00에 확정 플래그가 뜨면 즉시 진입하고, 반대신호가 뜨면 "
+            "항상 즉시 매도합니다(휩쏘-내성 유예 없음 — 시간대별 최적거래 필터 전용 로직). "
+            "56거래일 TRAIN/VAL/OOS corrected-clock 백테스트에서 TW필터+휩쏘내성보다 우위(56일 복리 "
+            "+104.8% vs +15.7%)로 확인되어 추가. 시간대별 최적거래 필터와 동시에 켜지면 그쪽이 우선합니다. 기본 OFF."
+        ),
+    )
+with _nf_cols[1]:
+    if bool(_nf_on) != bool(status["no_filter_0900_1100_enabled"]):
+        res = service.set_no_filter_0900_1100_filter_enabled(bool(_nf_on))
+        if res.get("ok"):
+            st.caption(f"무필터 09:00-11:00 즉시청산 → {'ON' if _nf_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"무필터 09:00-11:00 즉시청산={'ON' if status['no_filter_0900_1100_enabled'] else 'OFF'}"
+            + (" · 시간대별 최적거래 필터가 우선 적용됩니다" if status['no_filter_0900_1100_enabled'] and status['time_window_filter_enabled'] else "")
+        )
+
 st.subheader("WebSocket / Warm-up 상태")
 w1, w2, w3, w4 = st.columns(4)
 w1.metric("WS 연결", "OK" if status["ws_connected"] else "끊김")

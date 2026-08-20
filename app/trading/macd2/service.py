@@ -22,6 +22,7 @@ had (see docs §15 / the final report).
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Optional
 
@@ -135,6 +136,19 @@ class Macd2Service:
     """Owns the MarketDataService/broker/Worker for one MACD2 run."""
 
     def __init__(self) -> None:
+        # 2026-08-19: marks THIS process as the genuine live app/service
+        # process, allowing ledger.append_signal/append_execution and
+        # state_store.save_state to write to the real production paths --
+        # set here (not only inside Macd2Worker.start()) because several
+        # real, legitimate code paths above (e.g. config.AUTO_TRADE_HARD_
+        # DISABLED's early return, other_strategy_active's block) call
+        # state_store.save_state() and return BEFORE a Worker thread is ever
+        # started. An ad-hoc/replay script that never constructs this class
+        # at all (every scripts/_tmp_*.py replay so far) never sets this, so
+        # it still gets refused unless it redirects the ledger/state paths
+        # itself first -- see ledger.py's own docstring for the 2026-08-19
+        # incident this guards against.
+        os.environ[ledger.LIVE_WORKER_MARKER_ENV] = str(os.getpid())
         self._market_data: Optional[MarketDataService] = None
         self._broker = None
         self._worker: Optional[Macd2Worker] = None
@@ -195,7 +209,22 @@ class Macd2Service:
         real_kwargs: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         if self._worker is not None and self._worker.is_alive():
-            return {"ok": False, "message": "ALREADY_RUNNING"}
+            # 2026-08-20 fix (real incident: after a Render idle-sleep/
+            # redeploy, a still-alive-but-stuck Worker thread made start()
+            # refuse forever with ALREADY_RUNNING and no way to force a
+            # clean restart from the UI -- the exact same class of bug the
+            # 2026-08-14 MU_MACD fix already addresses there, see
+            # app.trading.mu_macd.service.MUMacdService.start()'s own
+            # _stop_worker_and_market_data_locked() call at this same
+            # relative position). Tear down the existing worker/market_data
+            # first, then fall through to start fresh exactly as if nothing
+            # had been running -- _attempt_bootstrap() below always builds
+            # a brand-new Macd2Worker + MarketDataService regardless, so no
+            # further special-casing is needed past this point.
+            self._worker.stop(join_timeout=5.0)
+            if self._market_data is not None:
+                self._market_data.stop_quote_updater(join_timeout=2.0)
+                self._market_data.stop_history_updater(join_timeout=2.0)
 
         if config.AUTO_TRADE_HARD_DISABLED:
             state = state_store.load_state()
@@ -556,6 +585,33 @@ class Macd2Service:
             "down_blue_exception_filter_enabled_at": state.down_blue_exception_filter_enabled_at,
             "down_blue_exception_filter_enabled_by": state.down_blue_exception_filter_enabled_by,
             "down_blue_exception_filter_version": state.down_blue_exception_filter_version,
+        }
+
+    def set_no_filter_0900_1100_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional "무필터 09:00-11:00" 즉시청산 진입모드
+        (2026-08-20) -- a 6th peer entry gate (see worker._judge_no_filter_flag):
+        approve any confirmed flag within 09:00-11:00, no quality score, and a
+        rejected reversal under this gate ALWAYS sells immediately (never the
+        TIME_WINDOW filter's whipsaw-tolerant hold). Only updates runtime state
+        -- never places orders. Mutually exclusive with time_window_filter_
+        enabled (that one wins if both are on, per worker._judge_entry_gate's
+        existing priority order).
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.no_filter_0900_1100_enabled)
+        state.no_filter_0900_1100_enabled = enabled_bool
+        state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
+        state.no_filter_0900_1100_enabled_at = datetime.now(KST).isoformat()
+        state.no_filter_0900_1100_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "no_filter_0900_1100_enabled": enabled_bool,
+            "previous": prev,
+            "no_filter_0900_1100_enabled_at": state.no_filter_0900_1100_enabled_at,
+            "no_filter_0900_1100_enabled_by": state.no_filter_0900_1100_enabled_by,
+            "no_filter_0900_1100_filter_version": state.no_filter_0900_1100_filter_version,
         }
 
     def set_quick_profit_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:

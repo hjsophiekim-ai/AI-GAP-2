@@ -278,6 +278,16 @@ def _entry_gate_block_reason(state: RuntimeState, now: datetime) -> Optional[str
     """NEW-ENTRY-ONLY gates (never applied to an exit)."""
     if state.entry_paused:
         return config.BLOCK_ENTRY_PAUSED_BY_USER
+    if state.no_filter_0900_1100_enabled:
+        # "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20) -- only takes
+        # effect while this toggle is on (no change to legacy all-day
+        # behavior otherwise); only ever consulted when time_window_filter_
+        # enabled is False (the TW branch in run_once() always returns
+        # first). Never gates an EXIT -- the existing reversal-sell /
+        # STOP_LOSS / FORCED_LIQUIDATION paths below already always fire
+        # regardless of this reason.
+        if not (config.NO_FILTER_ENTRY_WINDOW_START <= now.astimezone(KST).time() < config.NO_FILTER_ENTRY_WINDOW_END):
+            return config.NO_FILTER_REJECT_OUTSIDE_WINDOW
     if now.astimezone(KST).time() < config.SESSION_OPEN:
         return config.BLOCK_ENTRY_WINDOW_CLOSED
     if now.astimezone(KST).time() >= config.NEW_ENTRY_CUTOFF:

@@ -130,6 +130,17 @@ class RuntimeState:
     daily_down_blue_exception_used: bool = False
     last_down_blue_exception_at: Optional[str] = None
 
+    # Optional "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청)
+    # — restricts the pre-existing "legacy" (TW-off) immediate-entry/
+    # immediate-reversal-exit path to 09:00-11:00 new entries only (see
+    # worker._entry_gate_block_reason). Stateless aside from the toggle
+    # itself. Mutually exclusive with time_window_filter_enabled (TW wins if
+    # both are on, since the TW branch in run_once() always returns first).
+    no_filter_0900_1100_enabled: bool = False
+    no_filter_0900_1100_enabled_at: Optional[str] = None
+    no_filter_0900_1100_enabled_by: Optional[str] = None
+    no_filter_0900_1100_filter_version: str = ""
+
 
 @dataclass
 class TickResult:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +90,11 @@ SIGNAL_LEDGER_COLUMNS = [
     "time_window_flag_bar_at", "time_window_confirm_bar_at",
     "time_window_gap_flag", "time_window_gap_now", "time_window_quality_score",
     "time_window_morning_entry_count", "time_window_afternoon_entry_count",
+    # Optional "무필터 09:00-11:00" 즉시청산 진입모드 fields (appended
+    # 2026-08-20; never rename/delete older cols). No score/component
+    # breakdown -- pure time-window approve/reject, no quality gate.
+    "no_filter_0900_1100_enabled", "no_filter_0900_1100_filter_version",
+    "no_filter_0900_1100_approved", "no_filter_0900_1100_block_reason",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [
@@ -109,6 +115,55 @@ EXECUTION_LEDGER_COLUMNS = [
 LOGS_DIR_PATH: Path = LOGS_DIR
 SIGNAL_LEDGER_PATH: Path = LOGS_DIR_PATH / config.SIGNAL_LEDGER_FILENAME
 EXECUTION_LEDGER_PATH: Path = LOGS_DIR_PATH / config.EXECUTION_LEDGER_FILENAME
+
+# Frozen at import time, BEFORE any test/script monkeypatch can touch the
+# two module attributes above -- the guard below compares against these to
+# detect "still pointing at the real production path", never against the
+# (possibly already-redirected) live attributes.
+_DEFAULT_SIGNAL_LEDGER_PATH: Path = SIGNAL_LEDGER_PATH
+_DEFAULT_EXECUTION_LEDGER_PATH: Path = EXECUTION_LEDGER_PATH
+
+# 2026-08-19 real incident: an ad-hoc research/replay script called
+# app.trading.macd2.worker.run_once() directly (a FakeBroker + real 1-minute
+# market data, no orders ever reached KIS) without first redirecting these
+# two paths to an isolated tmp location the way tests/macd2/conftest.py's
+# autouse _isolate_macd2_state fixture always does for pytest -- silently
+# writing dozens of synthetic signal/execution rows straight into the REAL
+# data/logs/macd2_signal_ledger.csv / macd2_execution_ledger.csv (manually
+# found and removed afterward; see git history around 2026-08-19 for the
+# cleanup). Only the genuine live Worker thread (Macd2Worker.start(), see
+# worker.py) may write here with the paths still at their production
+# default -- it marks the CURRENT PROCESS by setting this env var to its own
+# pid the moment it actually starts. Any OTHER caller (a bare `python
+# scripts/foo.py` invocation, chiefly) that reaches append_signal/
+# append_execution with the paths still untouched and this marker absent is
+# refused outright, forcing the script to redirect SIGNAL_LEDGER_PATH/
+# EXECUTION_LEDGER_PATH first (same pattern as the pytest fixture) before it
+# can write anything at all.
+LIVE_WORKER_MARKER_ENV = "MACD2_LIVE_WORKER_PID"
+
+
+def _assert_safe_to_write_ledger() -> None:
+    paths_untouched = (
+        SIGNAL_LEDGER_PATH == _DEFAULT_SIGNAL_LEDGER_PATH
+        and EXECUTION_LEDGER_PATH == _DEFAULT_EXECUTION_LEDGER_PATH
+    )
+    if not paths_untouched:
+        return  # already redirected elsewhere (pytest conftest, an isolated script) -- safe
+    if os.environ.get(LIVE_WORKER_MARKER_ENV) == str(os.getpid()):
+        return  # this process IS the genuine live Worker thread -- safe
+    raise RuntimeError(
+        "REFUSING to write to the production MACD2 ledger "
+        f"({_DEFAULT_SIGNAL_LEDGER_PATH} / {_DEFAULT_EXECUTION_LEDGER_PATH}). "
+        "This looks like an ad-hoc/replay script calling append_signal/append_execution "
+        "(directly or via worker.run_once()) without isolating the ledger path first. "
+        "Redirect ledger.SIGNAL_LEDGER_PATH and ledger.EXECUTION_LEDGER_PATH to a tmp "
+        "directory BEFORE calling run_once() -- mirror tests/macd2/conftest.py's "
+        "_isolate_macd2_state fixture exactly. If this genuinely is the live Worker "
+        f"process, set os.environ['{LIVE_WORKER_MARKER_ENV}'] = str(os.getpid()) once at "
+        "startup instead (see app.trading.macd2.worker.Macd2Worker.start())."
+    )
+
 
 _SIGNAL_LOCK = threading.RLock()
 _EXECUTION_LOCK = threading.RLock()
@@ -195,6 +250,7 @@ def append_signal(row: dict[str, Any]) -> bool:
     signal_id = str(row.get("signal_id") or "")
     if not signal_id:
         raise ValueError("append_signal: row is missing signal_id")
+    _assert_safe_to_write_ledger()
     with _SIGNAL_LOCK:
         for existing in _load_rows(SIGNAL_LEDGER_PATH):
             if existing.get("signal_id") == signal_id:
@@ -212,6 +268,7 @@ def append_execution(row: dict[str, Any]) -> bool:
     order_id = str(row.get("order_id") or "")
     if not order_id:
         raise ValueError("append_execution: row is missing order_id")
+    _assert_safe_to_write_ledger()
     with _EXECUTION_LOCK:
         for existing in _load_rows(EXECUTION_LEDGER_PATH):
             if existing.get("order_id") == order_id:

@@ -6,6 +6,7 @@ runs one MU_MACD worker thread) — never macd2's or tsla_auto's lock/thread.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -67,6 +68,15 @@ def _record_manual_signal(
 
 class MUMacdService:
     def __init__(self) -> None:
+        # 2026-08-19: marks THIS process as the genuine live app/service
+        # process -- see app.trading.macd2.service.Macd2Service's identical
+        # marker and app.trading.macd2.ledger's docstring for the incident
+        # this guards against. An ad-hoc/replay script that never constructs
+        # this class (every scripts/_tmp_*.py replay so far) never sets
+        # this, so it is still refused by ledger.append_signal/
+        # append_execution and state_store.save_state unless it redirects
+        # those paths itself first.
+        os.environ[ledger.LIVE_WORKER_MARKER_ENV] = str(os.getpid())
         self._broker = None
         self._market_data: Optional[MUMarketDataService] = None
         self._worker_thread: Optional[threading.Thread] = None
@@ -255,6 +265,34 @@ class MUMacdService:
             "down_blue_exception_filter_enabled_at": state.down_blue_exception_filter_enabled_at,
             "down_blue_exception_filter_enabled_by": state.down_blue_exception_filter_enabled_by,
             "down_blue_exception_filter_version": state.down_blue_exception_filter_version,
+        }
+
+    def set_no_filter_0900_1100_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional "무필터 09:00-11:00" 즉시청산
+        진입모드 (2026-08-20) -- restricts the pre-existing legacy (TW-off)
+        immediate-entry/immediate-reversal-exit path to 09:00-11:00 new
+        entries only (see worker._entry_gate_block_reason); the legacy
+        path's own always-immediate reversal-sell/STOP_LOSS/QUICK_PROFIT/
+        FORCED_LIQUIDATION behavior is completely unchanged. Only updates
+        runtime state -- never places orders. Mutually exclusive with
+        time_window_filter_enabled (TW wins if both are on).
+        """
+        with _LOCK:
+            state = state_store.load_state()
+            enabled_bool = bool(enabled)
+            prev = bool(state.no_filter_0900_1100_enabled)
+            state.no_filter_0900_1100_enabled = enabled_bool
+            state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
+            state.no_filter_0900_1100_enabled_at = datetime.now(KST).isoformat()
+            state.no_filter_0900_1100_enabled_by = str(changed_by or "ui")
+            state_store.save_state(state)
+        return {
+            "ok": True,
+            "no_filter_0900_1100_enabled": enabled_bool,
+            "previous": prev,
+            "no_filter_0900_1100_enabled_at": state.no_filter_0900_1100_enabled_at,
+            "no_filter_0900_1100_enabled_by": state.no_filter_0900_1100_enabled_by,
+            "no_filter_0900_1100_filter_version": state.no_filter_0900_1100_filter_version,
         }
 
     def set_entry_paused(self, enabled: bool) -> dict[str, Any]:
@@ -592,6 +630,7 @@ class MUMacdService:
             "last_time_window_block_reason": state.last_time_window_block_reason,
             "down_blue_exception_filter_enabled": state.down_blue_exception_filter_enabled,
             "daily_down_blue_exception_used": state.daily_down_blue_exception_used,
+            "no_filter_0900_1100_enabled": state.no_filter_0900_1100_enabled,
         }
 
 

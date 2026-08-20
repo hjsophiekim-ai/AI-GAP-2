@@ -519,3 +519,18 @@ class RuntimeState:
     down_blue_exception_filter_version: str = ""
     daily_down_blue_exception_used: bool = False
     last_down_blue_exception_at: Optional[str] = None
+
+    # Optional "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청)
+    # — a 6th peer entry gate (see worker._judge_no_filter_flag /
+    # _judge_entry_gate), stateless aside from the toggle itself: no pending
+    # candidate, no score, no position-management ladder of its own (a
+    # position opened here is risk-managed by the plain STOP_LOSS/FORCED_
+    # LIQUIDATION path, same as MAJOR/SIDEWAYS/etc., never the TIME_WINDOW
+    # ladder). Mutually exclusive with TIME_WINDOW_FILTER (that one wins if
+    # both are enabled, per _judge_entry_gate's existing priority order).
+    no_filter_0900_1100_enabled: bool = False
+    no_filter_0900_1100_enabled_at: Optional[str] = None
+    no_filter_0900_1100_enabled_by: Optional[str] = None
+    no_filter_0900_1100_filter_version: str = ""
+    last_no_filter_0900_1100_approved: Optional[bool] = None
+    last_no_filter_0900_1100_block_reason: Optional[str] = None
