@@ -255,6 +255,61 @@ def test_tw_tp2_fires_full_exit_after_tp1_already_done():
     assert state.time_window_peak_net_return == 0.0
 
 
+def test_tw_take_profit_fires_on_the_live_tick_not_only_at_bar_close():
+    """2026-08-21 user request (real incident found in macd2, same shared
+    ladder module): take-profit must fire the instant a live tick crosses
+    TP1/TP2, not only once a 3-minute bar has fully closed. No completed
+    bar is seeded here at all (_seed_tw_held_since is never called) -- the
+    entry-bar self-seed makes _advance_time_window_stop_loss_bar return
+    None this tick, so under the OLD code nothing would fire yet."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    svc = MUMarketDataService(mode="mock")
+    now0 = datetime(2026, 8, 18, 9, 1, tzinfo=KST)
+
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_060.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
+
+    entered_at = now0
+    state = _fresh_state_with_tw_enabled()
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=entered_at)
+    state.time_window_position_active = True
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any("MU_MACD_TW_TP2_FULL" in a for a in result.actions), (
+        f"+6% live tick must trigger TP2 immediately -- got actions={result.actions!r}"
+    )
+    assert state.position is None
+
+
+def test_tw_untracked_held_position_is_adopted_and_still_gets_take_profit():
+    """2026-08-21 real incident: a position opened through a path that never
+    sets time_window_position_active (e.g. manual_entry) got zero take-
+    profit/stop-loss coverage for as long as it was held. With the TW
+    filter enabled, any held position for the traded symbol must be
+    adopted into management on the very next tick."""
+    from app.trading.mu_macd.models import PositionSnapshot
+
+    svc = MUMarketDataService(mode="mock")
+    now0 = datetime(2026, 8, 18, 9, 1, tzinfo=KST)
+
+    broker = FakeBroker(cash=config.DEFAULT_BUDGET, quotes={config.LONG_SYMBOL: 1_060.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
+
+    state = _fresh_state_with_tw_enabled()
+    state.position = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=10, avg_price=1_000.0, entry_at=now0)
+    assert state.time_window_position_active is False  # never tagged
+
+    result = worker.run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any("MU_MACD_TW_TP2_FULL" in a for a in result.actions), (
+        f"an untracked-but-held position must be adopted and take-profit immediately -- "
+        f"got actions={result.actions!r}"
+    )
+    assert state.position is None
+
+
 def test_tw_stop_loss_ignores_a_momentary_spike_that_recovers_within_the_same_bar():
     """2026-08-18 real incident: MU_MACD bought 0197X0 on a confirmed BLUE
     flag, then 하이닉스 briefly rebounded (a normal countermove) before

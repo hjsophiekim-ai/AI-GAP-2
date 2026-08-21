@@ -360,6 +360,100 @@ def test_stop_loss_still_fires_while_a_whipsaw_reversal_candidate_is_pending(mon
     assert config.INVERSE_SYMBOL not in broker._positions
 
 
+def test_take_profit_fires_on_the_live_tick_not_only_at_bar_close(monkeypatch):
+    """2026-08-21 real incident + user request: a position sat 3%+ (and had
+    briefly spiked past 7%) in profit for 20+ minutes without ever being
+    sold, because the old code only ever checked TP1/TP2 once a 3-minute
+    bar had FULLY completed (_advance_stop_loss_bar) -- a live tick that
+    crosses TP2 mid-bar must sell immediately, not wait for that bar's
+    close. Seeding NO prior stop_loss_bar_* state means _advance_stop_loss_
+    bar treats `now0` as the entry bar and returns None (no completed bar
+    yet) -- under the OLD code this tick would fire nothing at all."""
+    from app.trading.macd2.models import PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_600.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok, f"fixture bootstrap failed unexpectedly: {boot.reason}"
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_600.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.EXIT_TW_TP2_FULL) for a in result.actions), (
+        f"+6% live tick must trigger TP2 immediately, same tick -- got actions={result.actions!r}"
+    )
+    assert state.position is None
+    assert config.INVERSE_SYMBOL not in broker._positions
+
+
+def test_untracked_held_position_is_adopted_and_still_gets_take_profit(monkeypatch):
+    """2026-08-21 real incident: a position opened via the 09:03 scheduled-
+    entry button (or any other path that never sets time_window_position_
+    active) got ZERO take-profit/stop-loss management for as long as it was
+    held, because the whole risk-management block used to require that flag
+    already True. With the TW filter enabled, any held position for the
+    traded symbol must be adopted into management on the very next tick --
+    proven here by never setting time_window_position_active at all."""
+    from app.trading.macd2.models import PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_600.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok, f"fixture bootstrap failed unexpectedly: {boot.reason}"
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    assert state.time_window_position_active is False  # never tagged -- e.g. scheduled-entry path
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_600.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.EXIT_TW_TP2_FULL) for a in result.actions), (
+        f"an untracked-but-held position must be adopted into TW management and take-profit "
+        f"immediately -- got actions={result.actions!r}"
+    )
+    assert state.position is None
+
+
 def test_day_rollover_resets_time_window_session_counters():
     state = _fresh_state()
     state.session_date = "20260105"

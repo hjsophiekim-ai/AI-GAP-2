@@ -112,6 +112,41 @@ def evaluate_afternoon_position(
     return PositionManagementDecision(None, 0.0, False, peak, "HOLD")
 
 
+def evaluate_take_profit_immediate(
+    *, session: str, net_return_pct: float, tp1_done: bool,
+) -> PositionManagementDecision:
+    """Take-profit-only check meant to run on every live tick, NOT gated on
+    a completed 3-minute bar close (2026-08-21 user request: 익절판단은
+    틱뜨자마자 바로 -- a real position sat above MORNING_TP2 for 20+ minutes
+    without ever being sold because evaluate_morning_position() above is only
+    ever called once a bar has fully closed, and this specific position's
+    return had already retraced back below TP1 by every one of those bar
+    closes).
+
+    Deliberately NEVER returns a STOP_LOSS/AFTER_TP1_STOP/TRAILING_STOP/
+    BREAKEVEN_STOP/PROFIT_LOCK_STOP decision -- only TP1_PARTIAL/TP2_FULL/
+    AFTERNOON_TP. The downside ladder stays exactly as bar-close-gated as
+    before: mu_macd.models.RuntimeState's own 2026-08-18 incident note is
+    the reason why -- a single noisy tick spiking through a STOP_LOSS level
+    and never recovering is a real, bad outcome (locks in a loss the market
+    would have erased); a single tick spiking through a TAKE-PROFIT level
+    is the opposite risk shape (worst case: sells a genuine peak a little
+    early), which is exactly what "즉시 익절" was asked for. Both MACD2's
+    worker.py and MU_MACD's worker.py call this same shared function so
+    the two modules' take-profit timing behavior can never drift apart.
+    """
+    if session == "AFTERNOON":
+        if net_return_pct >= AFTERNOON_TP_PCT:
+            return PositionManagementDecision(config.EXIT_TW_AFTERNOON_TP, 1.0, tp1_done, net_return_pct, "AFTERNOON_TP_TICK")
+        return PositionManagementDecision(None, 0.0, tp1_done, net_return_pct, "HOLD_TICK")
+
+    if net_return_pct >= MORNING_TP2_PCT:
+        return PositionManagementDecision(config.EXIT_TW_TP2_FULL, 1.0, True, net_return_pct, "TP2_TICK")
+    if not tp1_done and net_return_pct >= MORNING_TP1_PCT:
+        return PositionManagementDecision(config.EXIT_TW_TP1_PARTIAL, MORNING_TP1_SELL_RATIO, True, net_return_pct, "TP1_TICK")
+    return PositionManagementDecision(None, 0.0, tp1_done, net_return_pct, "HOLD_TICK")
+
+
 def evaluate_position(
     *, session: str, net_return_pct: float, tp1_done: bool, peak_net_return: float = 0.0,
 ) -> PositionManagementDecision:

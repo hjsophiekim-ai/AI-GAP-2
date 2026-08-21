@@ -372,12 +372,65 @@ def _advance_time_window_position_management(
     completely unmonitored for up to ~90 minutes after every restart.
     Returns a short action label, or None if nothing happened this tick.
     """
-    if pos is None or pos.quantity <= 0 or not state.time_window_position_active:
+    if pos is None or pos.quantity <= 0 or not state.time_window_filter_enabled:
         return None
     current_price = broker.get_quote(pos.symbol) if hasattr(broker, "get_quote") else None
     if not current_price:
         return None
-    completed_close = _advance_time_window_stop_loss_bar(state, pos.symbol, float(current_price), now)
+    current_price = float(current_price)
+
+    if not state.time_window_position_active:
+        # 2026-08-21 fix (same-class incident found live in macd2.worker's
+        # own version of this same function): if TW is enabled but this
+        # held position was never tagged active (opened through a path that
+        # doesn't set it -- e.g. manual_entry), it silently got ZERO take-
+        # profit/stop-loss management forever, since this whole function
+        # used to return None immediately whenever not-yet-active. Adopt it
+        # here instead, seeding peak_net_return from THIS tick's return so
+        # an already-elevated position isn't treated as flat.
+        state.time_window_position_active = True
+        state.time_window_tp1_done = False
+        seed_return = (current_price - pos.avg_price) / pos.avg_price * 100.0
+        state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), seed_return)
+
+    # 2026-08-21 fix (사용자 요청 — MACD2/MU_MACD 익절기준 통일: 익절판단은
+    # 3분봉 완성 시점이 아니라 틱뜨자마자 즉시). Shares the exact same
+    # take-profit-only, tick-immediate check macd2.worker now calls --
+    # see time_window_position_manager.evaluate_take_profit_immediate's own
+    # docstring for why this is safe for take-profit specifically without
+    # reintroducing the 2026-08-18 STOP_LOSS-on-noise incident this file's
+    # RuntimeState.time_window_stop_loss_bar_* fields were added to fix.
+    # STOP_LOSS/trailing-stop below remain untouched, still bar-close-gated.
+    tick_net_return = (current_price - pos.avg_price) / pos.avg_price * 100.0
+    tp_decision = twpm.evaluate_take_profit_immediate(
+        session="MORNING", net_return_pct=tick_net_return, tp1_done=bool(state.time_window_tp1_done),
+    )
+    if tp_decision.exit_reason is not None:
+        state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), tp_decision.peak_net_return)
+        state.time_window_tp1_done = tp_decision.tp1_done
+        mu_tp_reason = _TW_EXIT_REASON_MAP.get(tp_decision.exit_reason, tp_decision.exit_reason)
+        if tp_decision.exit_reason == "TIME_WINDOW_TP1_PARTIAL" and pos.quantity > 1:
+            sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * tp_decision.sell_fraction)))
+            remaining = pos.quantity - sell_qty
+            outcome = order_executor.execute_partial_exit(
+                broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining,
+                exit_reason=mu_tp_reason, entry_price=pos.avg_price, ledger_module=ledger,
+            )
+            if outcome.final_state == SignalState.EXECUTED:
+                state.position = PositionSnapshot(
+                    symbol=pos.symbol, quantity=remaining, avg_price=pos.avg_price, entry_at=pos.entry_at,
+                )
+            return f"{mu_tp_reason}:{pos.symbol}"
+        outcome = order_executor.execute_exit(
+            broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+            exit_reason=mu_tp_reason, entry_price=pos.avg_price, ledger_module=ledger,
+        )
+        if outcome.final_state == SignalState.EXECUTED:
+            state.position = None
+            _reset_time_window_position_state(state)
+        return f"{mu_tp_reason}:{pos.symbol}"
+
+    completed_close = _advance_time_window_stop_loss_bar(state, pos.symbol, current_price, now)
     if completed_close is None:
         return None
     net_return = (float(completed_close) - pos.avg_price) / pos.avg_price * 100.0
@@ -670,7 +723,13 @@ def run_once(*, broker, market_data: MUMarketDataService, state: RuntimeState, n
         # -- this plain STOP_LOSS/QUICK_PROFIT check must not also act on the
         # SAME position. FORCED_LIQUIDATION right below stays universal
         # regardless (applies to every position).
-        tw_managed = state.time_window_filter_enabled and state.time_window_position_active
+        # 2026-08-21 fix: this used to also require time_window_position_
+        # active already True, which is exactly the one case a position
+        # adopted by _advance_time_window_position_management itself (see
+        # its own docstring) needs to reach that function AT ALL -- an
+        # untracked held position with the filter enabled must still be
+        # routed there, not fall through to the plain STOP_LOSS check below.
+        tw_managed = state.time_window_filter_enabled
         if tw_managed:
             tw_pm_action = _advance_time_window_position_management(broker=broker, state=state, pos=pos, now=now)
             if tw_pm_action is not None:

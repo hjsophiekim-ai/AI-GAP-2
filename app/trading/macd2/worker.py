@@ -1830,15 +1830,83 @@ def _advance_held_position_risk_management(
         return True
 
     if (
-        state.time_window_filter_enabled and state.time_window_position_active
+        state.time_window_filter_enabled
         and state.position is not None and state.position.symbol == pos.symbol
         and current_price is not None
     ):
-        # This position was opened by the time-window filter — its own
-        # position-management ladder (§11-14) fully replaces the legacy
-        # STOP_LOSS check below for as long as it is held (OPPOSITE_SIGNAL
-        # is instead handled by _resolve_time_window_candidate, further
-        # down in run_once() once macd_snap is ready).
+        if not state.time_window_position_active:
+            # 2026-08-21 fix (real incident: a position bought through the
+            # 09:03 예약매수 button sat 3%+ in profit for 20+ minutes with
+            # ZERO take-profit/stop-loss management, because
+            # _execute_scheduled_entry never tagged it as a time-window
+            # position -- this whole block's outer condition used to require
+            # time_window_position_active already True, so it was silently
+            # skipped entirely for that position on every single tick).
+            # Whenever the TW filter is enabled, ANY currently-held position
+            # for the traded symbol is adopted into its ladder right here,
+            # regardless of which entry path opened it -- the filter's own
+            # purpose (§11) is to fully own position management while ON,
+            # not just for positions it happens to have opened itself.
+            # peak_net_return seeds from THIS tick's return (not 0.0) so an
+            # already-elevated position isn't treated as if it just broke
+            # even -- see evaluate_morning_position's own peak-tracking use.
+            state.time_window_position_active = True
+            state.time_window_entry_session = state.time_window_entry_session or time_window_filter.session_for_window(
+                time_window_filter.classify_window(now.astimezone(KST).time())
+            )
+            state.time_window_tp1_done = False
+            seed_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
+            state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), seed_return)
+            state.time_window_initial_quantity = state.time_window_initial_quantity or pos.quantity
+
+        # 2026-08-21 fix (사용자 요청 — 익절판단은 3분봉 완성 시점이 아니라
+        # 틱뜨자마자 즉시): TP1/TP2/AFTERNOON_TP alone are checked here on
+        # EVERY tick against the live current_price, before the bar-close-
+        # gated ladder below ever runs -- see evaluate_take_profit_immediate's
+        # own docstring for why this is safe to do for take-profit but
+        # deliberately NOT extended to STOP_LOSS/trailing-stop (unchanged,
+        # still bar-close-gated below).
+        tick_net_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
+        tp_decision = time_window_position_manager.evaluate_take_profit_immediate(
+            session=state.time_window_entry_session or "MORNING",
+            net_return_pct=tick_net_return,
+            tp1_done=bool(state.time_window_tp1_done),
+        )
+        if tp_decision.exit_reason is not None:
+            state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), tp_decision.peak_net_return)
+            state.time_window_tp1_done = tp_decision.tp1_done
+            sell_fraction = max(0.0, min(1.0, tp_decision.sell_fraction))
+            if sell_fraction >= 1.0:
+                outcome = order_executor.execute_exit(
+                    broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                    exit_reason=tp_decision.exit_reason, entry_price=pos.avg_price,
+                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                )
+                _apply_exit_outcome(state, outcome)
+                if outcome.final_state == SignalState.EXECUTED:
+                    state.time_window_position_active = False
+                result.actions.append(f"{tp_decision.exit_reason}:{pos.symbol}")
+                return True
+            sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
+            remaining_qty = pos.quantity - sell_qty
+            outcome = order_executor.execute_partial_exit(
+                broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
+                exit_reason=tp_decision.exit_reason, entry_price=pos.avg_price,
+                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+            )
+            if outcome.final_state == SignalState.EXECUTED:
+                state.position = dataclasses.replace(state.position, quantity=remaining_qty)
+            result.actions.append(f"{tp_decision.exit_reason}:{pos.symbol}")
+            return True
+
+        # This position was opened by (or just adopted into) the time-window
+        # filter — its own position-management ladder (§11-14) fully
+        # replaces the legacy STOP_LOSS check below for as long as it is
+        # held (OPPOSITE_SIGNAL is instead handled by
+        # _resolve_time_window_candidate, further down in run_once() once
+        # macd_snap is ready). Take-profit was already handled immediately
+        # above; only STOP_LOSS/trailing-stop outcomes are still possible
+        # from here on, and those remain bar-close-gated on purpose.
         completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
         if completed_bar_close is not None:
             bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
