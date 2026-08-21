@@ -95,6 +95,11 @@ SIGNAL_LEDGER_COLUMNS = [
     # breakdown -- pure time-window approve/reject, no quality gate.
     "no_filter_0900_1100_enabled", "no_filter_0900_1100_filter_version",
     "no_filter_0900_1100_approved", "no_filter_0900_1100_block_reason",
+    # Optional TW2 fields (appended 2026-08-21; never rename/delete older
+    # cols). TW2 shares every other time_window_* column above (score,
+    # window, session, etc.) — these two just record which variant is on
+    # and which one actually opened the currently-held position.
+    "time_window_2_filter_enabled", "time_window_active_mode",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

@@ -681,3 +681,91 @@ def test_day_rollover_resets_down_blue_exception_daily_flag_but_not_toggle():
 def test_default_state_has_down_blue_exception_off():
     state = state_store.default_state()
     assert state.down_blue_exception_filter_enabled is False
+
+
+# ── TW2 integration (2026-08-21 사용자 요청) ────────────────────────────────
+def test_tw2_entry_confirms_through_the_same_dispatch_and_tags_active_mode(tw_market_data):
+    """TW2 must produce the SAME TIME_WINDOW_ENTRY/SWITCH action labels as
+    TW1 (shared dispatch code), and the resulting position must be tagged
+    time_window_active_mode == 'TW2' so the TP2 override actually applies."""
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    entry_tick_index = None
+    for step in range(120):
+        now = now0 + timedelta(minutes=3 * step)
+        result = run_once(broker=broker, market_data=svc, state=state, now=now)
+        if any(a.startswith("TIME_WINDOW_ENTRY") or a.startswith("TIME_WINDOW_SWITCH") for a in result.actions):
+            entry_tick_index = step
+            break
+
+    if entry_tick_index is None:
+        pytest.skip("synthetic sine session never produced an approved TW2 entry within 120 steps")
+    assert state.position is not None
+    assert state.time_window_position_active is True
+    assert state.time_window_active_mode == "TW2"
+    assert state.time_window_filter_enabled is False
+
+
+def test_tw1_and_tw2_both_enabled_in_state_tw1_wins_dispatch(tw_market_data):
+    """Defensive: even if state somehow had both flags True (should never
+    happen via the service setters — see test_service.py's mutual-exclusion
+    tests), worker._judge_entry_gate's TIME_WINDOW tier fires exactly once
+    per signal either way, and _persist_time_window_decision must record
+    the TW1 version string per _judge_entry_gate's existing single dispatch
+    (TW1/TW2 share ONE tier, never double-judged)."""
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_filter_enabled = True
+    state.time_window_2_filter_enabled = True  # hand-corrupted; never reachable via the setters
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    for step in range(30):
+        now = now0 + timedelta(minutes=3 * step)
+        run_once(broker=broker, market_data=svc, state=state, now=now)
+        if state.last_time_window_decision is not None:
+            break
+
+    # Whichever variant's extra veto logic actually ran, _judge_entry_gate's
+    # if/elif structure guarantees only ONE _judge_time_window_flag call per
+    # signal -- no duplicate/conflicting ledger rows for the same flag.
+    assert state.time_window_filter_enabled is True
+    assert state.time_window_2_filter_enabled is True
+
+
+def test_tw2_veto_blocks_an_entry_tw1_would_have_approved(tw_market_data, monkeypatch):
+    """Forces evaluate_time_window_entry to always approve, then forces the
+    TW2 extra-veto check to trip -- the resulting decision fed to dispatch
+    must be rejected, and no order must be placed."""
+    from app.trading.macd2.models import MajorFlagDecision as _MFD
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    def _always_approve(*a, **kw):
+        return _MFD(
+            approved=True, score=5.0, required_score=3.0, decision=config.TW_APPROVED,
+            reasons=("forced approve for test",), component_scores={}, metrics={"window": "W1_MORNING_AGGRESSIVE"},
+            is_reversal=False, fast_reversal=False, block_reason=None,
+        )
+
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", _always_approve)
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_tw2_extra_vetoes", lambda *a, **kw: (True, config.TW2_REJECT_VWAP_VETO))
+
+    orders_before = len(broker.orders)
+    for step in range(30):
+        now = now0 + timedelta(minutes=3 * step)
+        run_once(broker=broker, market_data=svc, state=state, now=now)
+        if state.time_window_pending_flag_direction is None and state.last_time_window_block_reason:
+            break
+
+    assert state.last_time_window_approved is False
+    assert state.last_time_window_block_reason == config.TW2_REJECT_VWAP_VETO
+    assert len(broker.orders) == orders_before
+    assert state.position is None

@@ -50,6 +50,7 @@ class PositionManagementDecision:
 
 def evaluate_morning_position(
     *, net_return_pct: float, tp1_done: bool, peak_net_return: float = 0.0,
+    tp2_pct_override: Optional[float] = None,
 ) -> PositionManagementDecision:
     """§11-12 morning ladder.
 
@@ -58,12 +59,16 @@ def evaluate_morning_position(
       quantity's stop rises to MORNING_AFTER_TP1_STOP (+0.3%).
     after TP1: once peak-since-entry reaches MORNING_TRAILING_TRIGGER
       (3.5%), remaining stop rises again to MORNING_TRAILING_STOP (+2.0%).
-    >= TP2 (5.0%): sell all remaining quantity.
+    >= TP2 (5.0%, or ``tp2_pct_override`` if given — 2026-08-21: TW2 raises
+      this to config.TW2_MORNING_TP2 for positions it opened; every other
+      caller, including MU_MACD, omits it and keeps the unchanged default):
+      sell all remaining quantity.
     """
+    tp2_pct = MORNING_TP2_PCT if tp2_pct_override is None else float(tp2_pct_override)
     peak = max(float(peak_net_return), float(net_return_pct))
 
     if not tp1_done:
-        if net_return_pct >= MORNING_TP2_PCT:
+        if net_return_pct >= tp2_pct:
             return PositionManagementDecision(config.EXIT_TW_TP2_FULL, 1.0, True, peak, "TP2_DIRECT")
         if net_return_pct >= MORNING_TP1_PCT:
             return PositionManagementDecision(config.EXIT_TW_TP1_PARTIAL, MORNING_TP1_SELL_RATIO, True, peak, "TP1")
@@ -71,7 +76,7 @@ def evaluate_morning_position(
             return PositionManagementDecision(config.EXIT_TW_STOP_LOSS, 1.0, False, peak, "STOP_LOSS")
         return PositionManagementDecision(None, 0.0, False, peak, "HOLD")
 
-    if net_return_pct >= MORNING_TP2_PCT:
+    if net_return_pct >= tp2_pct:
         return PositionManagementDecision(config.EXIT_TW_TP2_FULL, 1.0, True, peak, "TP2")
 
     active_stop = MORNING_TRAILING_STOP_PCT if peak >= MORNING_TRAILING_TRIGGER_PCT else MORNING_AFTER_TP1_STOP_PCT
@@ -114,6 +119,7 @@ def evaluate_afternoon_position(
 
 def evaluate_take_profit_immediate(
     *, session: str, net_return_pct: float, tp1_done: bool,
+    tp2_pct_override: Optional[float] = None,
 ) -> PositionManagementDecision:
     """Take-profit-only check meant to run on every live tick, NOT gated on
     a completed 3-minute bar close (2026-08-21 user request: 익절판단은
@@ -140,7 +146,8 @@ def evaluate_take_profit_immediate(
             return PositionManagementDecision(config.EXIT_TW_AFTERNOON_TP, 1.0, tp1_done, net_return_pct, "AFTERNOON_TP_TICK")
         return PositionManagementDecision(None, 0.0, tp1_done, net_return_pct, "HOLD_TICK")
 
-    if net_return_pct >= MORNING_TP2_PCT:
+    tp2_pct = MORNING_TP2_PCT if tp2_pct_override is None else float(tp2_pct_override)
+    if net_return_pct >= tp2_pct:
         return PositionManagementDecision(config.EXIT_TW_TP2_FULL, 1.0, True, net_return_pct, "TP2_TICK")
     if not tp1_done and net_return_pct >= MORNING_TP1_PCT:
         return PositionManagementDecision(config.EXIT_TW_TP1_PARTIAL, MORNING_TP1_SELL_RATIO, True, net_return_pct, "TP1_TICK")
@@ -149,9 +156,16 @@ def evaluate_take_profit_immediate(
 
 def evaluate_position(
     *, session: str, net_return_pct: float, tp1_done: bool, peak_net_return: float = 0.0,
+    tp2_pct_override: Optional[float] = None,
 ) -> PositionManagementDecision:
     """Session-dispatching convenience wrapper (``session`` == "MORNING" or
-    "AFTERNOON", as returned by time_window_filter.session_for_window)."""
+    "AFTERNOON", as returned by time_window_filter.session_for_window).
+    ``tp2_pct_override`` only ever affects the MORNING ladder (2026-08-21:
+    TW2's TP2 override) — AFTERNOON_TP is untouched, matching TW2's own
+    tested definition (only MORNING_TP2 was raised)."""
     if session == "AFTERNOON":
         return evaluate_afternoon_position(net_return_pct=net_return_pct, peak_net_return=peak_net_return)
-    return evaluate_morning_position(net_return_pct=net_return_pct, tp1_done=tp1_done, peak_net_return=peak_net_return)
+    return evaluate_morning_position(
+        net_return_pct=net_return_pct, tp1_done=tp1_done, peak_net_return=peak_net_return,
+        tp2_pct_override=tp2_pct_override,
+    )

@@ -273,52 +273,86 @@ with _qp_cols[1]:
 _tw_cols = st.columns([1.4, 1.6])
 with _tw_cols[0]:
     _tw_on = st.checkbox(
-        "시간대별 최적거래 필터",
+        "시간대별 최적거래 필터 (TW1)",
         value=bool(getattr(state, "time_window_filter_enabled", False)),
         key="macd2_time_window_filter_toggle",
         help=(
             "켜면 완성봉 플래그가 뜬 즉시 진입하지 않고 다음 완성 3분봉(T+3)에서 방향유지+gap확대를 재확인한 뒤에만 "
             f"진입하며, 09:00-13:00 구간 품질점수 게이트(오전만, 13:00 이후 신규진입 없음)와 손절 "
             f"{macd2_config.MORNING_STOP_LOSS*100:.1f}%/TP1 +{macd2_config.MORNING_TP1*100:.1f}%"
-            f"({macd2_config.MORNING_TP1_SELL_RATIO*100:.0f}%)/TP2 +{macd2_config.MORNING_TP2*100:.1f}% 래더로 관리합니다. 기본 OFF."
+            f"({macd2_config.MORNING_TP1_SELL_RATIO*100:.0f}%)/TP2 +{macd2_config.MORNING_TP2*100:.1f}% 래더로 관리합니다. "
+            "TW2와 동시에 켤 수 없습니다(TW2를 켜면 자동으로 꺼짐). 기본 OFF."
         ),
     )
 with _tw_cols[1]:
     if bool(_tw_on) != bool(getattr(state, "time_window_filter_enabled", False)):
         res = service.set_time_window_filter_enabled(bool(_tw_on), changed_by="ui")
         if res.get("ok"):
-            st.caption(f"시간대별 최적거래 필터 → {'ON' if _tw_on else 'OFF'}")
+            st.caption(f"시간대별 최적거래 필터 (TW1) → {'ON' if _tw_on else 'OFF'}")
             st.rerun()
     else:
         st.caption(
-            f"시간대별 최적거래 필터={'ON' if state.time_window_filter_enabled else 'OFF'} · "
+            f"TW1={'ON' if state.time_window_filter_enabled else 'OFF'} · "
             f"오전 진입 {int(getattr(state, 'time_window_morning_entry_count', 0) or 0)}/{macd2_config.MAX_MORNING_ENTRIES} · "
             f"오후 진입 {int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)}/{macd2_config.MAX_AFTERNOON_ENTRIES} · "
             f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+        )
+
+_tw2_cols = st.columns([1.4, 1.6])
+with _tw2_cols[0]:
+    _tw2_on = st.checkbox(
+        "시간대별 최적거래 필터 (TW2)",
+        value=bool(getattr(state, "time_window_2_filter_enabled", False)),
+        key="macd2_time_window_2_filter_toggle",
+        help=(
+            "TW1과 완전히 동일한 T+3 재확인/품질점수/시간대/최대진입횟수 게이트+포지션관리 래더를 그대로 쓰되, "
+            "진입 시점에 두 가지 veto를 추가로 검사합니다: ① 확정봉 종가가 진입방향 기준 세션 VWAP보다 "
+            f"{abs(macd2_config.TW2_VWAP_VETO_THRESHOLD_PCT):.1f}% 이상 불리한 쪽이면 스킵, ② 최근 "
+            f"{macd2_config.TW2_RECENT_CROSS_LOOKBACK_MINUTES}분 안에 확정 크로스오버가 "
+            f"{macd2_config.TW2_RECENT_CROSS_VETO_COUNT}회 이상이면(휩쏘 구간) 스킵. 통과한 진입은 TP2만 "
+            f"+{macd2_config.MORNING_TP2*100:.1f}%→+{macd2_config.TW2_MORNING_TP2*100:.1f}%로 올립니다. "
+            "2026-07-10~08-21 연속 29거래일, 앞 19일에서 찾은 임계값을 뒤 10일 OOS에서 재튜닝 없이 재검증 "
+            "(복리 TW1 +24.5%→TW2 +35.7%, MDD 6.8%→5.2%). TW1과 동시에 켤 수 없습니다(TW1을 켜면 자동으로 꺼짐). 기본 OFF."
+        ),
+    )
+with _tw2_cols[1]:
+    if bool(_tw2_on) != bool(getattr(state, "time_window_2_filter_enabled", False)):
+        res = service.set_time_window_2_filter_enabled(bool(_tw2_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(f"시간대별 최적거래 필터 (TW2) → {'ON' if _tw2_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"TW2={'ON' if state.time_window_2_filter_enabled else 'OFF'} · "
+            f"오전 진입 {int(getattr(state, 'time_window_morning_entry_count', 0) or 0)}/{macd2_config.MAX_MORNING_ENTRIES} · "
+            f"오후 진입 {int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)}/{macd2_config.MAX_AFTERNOON_ENTRIES} · "
+            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
         )
 
 _dbe_cols = st.columns([1.4, 1.6])
 with _dbe_cols[0]:
     _dbe_on = st.checkbox(
-        "└ TW 1 blue",
+        "└ +1 DOWN_BLUE (TW1/TW2 공용)",
         value=bool(getattr(state, "down_blue_exception_filter_enabled", False)),
         key="macd2_down_blue_exception_toggle",
-        disabled=not bool(state.time_window_filter_enabled),
+        disabled=not (bool(state.time_window_filter_enabled) or bool(state.time_window_2_filter_enabled)),
         help=(
-            "시간대별 최적거래 필터가 거절한 DOWN_BLUE 플래그 중, 다른 조건 없이 하루 최대 1회만 추가로 진입합니다. "
+            "TW1 또는 TW2가 거절한 DOWN_BLUE 플래그 중, 다른 조건 없이 하루 최대 1회만 추가로 진입합니다. "
             "56거래일 TRAIN/VAL/OOS 백테스트에서 조건 없이 그대로 허용하는 쪽이 세 구간 모두 일관되게 개선되어 채택됨"
-            "(연쇄복리 69.3%→105.3%). 시간대별 최적거래 필터가 꺼져있으면 효과 없음. 기본 OFF."
+            "(연쇄복리 69.3%→105.3%). TW1/TW2가 둘 다 꺼져있으면 효과 없음. 기본 OFF."
         ),
     )
 with _dbe_cols[1]:
     if bool(_dbe_on) != bool(getattr(state, "down_blue_exception_filter_enabled", False)):
         res = service.set_down_blue_exception_filter_enabled(bool(_dbe_on), changed_by="ui")
         if res.get("ok"):
-            st.caption(f"TW 1 blue → {'ON' if _dbe_on else 'OFF'}")
+            st.caption(f"+1 DOWN_BLUE → {'ON' if _dbe_on else 'OFF'}")
             st.rerun()
     else:
         st.caption(
-            f"TW 1 blue={'ON' if state.down_blue_exception_filter_enabled else 'OFF'} · "
+            f"+1 DOWN_BLUE={'ON' if state.down_blue_exception_filter_enabled else 'OFF'} · "
             f"오늘 사용={'Y' if getattr(state, 'daily_down_blue_exception_used', False) else '-'}"
         )
 
@@ -344,7 +378,11 @@ with _nf_cols[1]:
     else:
         st.caption(
             f"무필터 09:00-11:00 즉시청산={'ON' if state.no_filter_0900_1100_enabled else 'OFF'}"
-            + (" · 시간대별 최적거래 필터가 우선 적용됩니다" if state.no_filter_0900_1100_enabled and state.time_window_filter_enabled else "")
+            + (
+                " · TW1/TW2가 우선 적용됩니다"
+                if state.no_filter_0900_1100_enabled and (state.time_window_filter_enabled or state.time_window_2_filter_enabled)
+                else ""
+            )
         )
 
 # Re-read after potential command
@@ -488,8 +526,9 @@ with st.expander("전략 설명"):
 - **반대 플래그**: 보유 포지션 전량매도 후 반대 ETF 매수(entry_gate 통과 시에만 재매수, 매도는 항상 실행).
 - **리스크**: {macd2_config.FORCE_LIQUIDATE_AT} 강제청산 — 매 tick마다 플래그 발생 여부와 무관하게 확인.
 - **퀵 Profit 익절(옵션, 기본 OFF)**: ON이면 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절 — 확정 플래그와 무관하게 매 tick 확인.
-- **시간대별 최적거래 필터(옵션, 기본 OFF)**: ON이면 다른 진입 로직 대신 이 필터가 진입권한 + 포지션 관리(TP1/TP2/손절 래더)를 모두 담당 — 완성봉 플래그 확정 후 다음 완성 3분봉(T+3)에서 재확인해야만 진입.
-- **└ TW 1 blue(옵션, 기본 OFF, 시간대별 최적거래 필터 하위)**: ON이면 위 필터가 거절한 DOWN_BLUE 플래그 중 하루 최대 1회만 다른 조건 없이 추가로 진입.
+- **시간대별 최적거래 필터 TW1(옵션, 기본 OFF)**: ON이면 다른 진입 로직 대신 이 필터가 진입권한 + 포지션 관리(TP1/TP2/손절 래더)를 모두 담당 — 완성봉 플래그 확정 후 다음 완성 3분봉(T+3)에서 재확인해야만 진입.
+- **시간대별 최적거래 필터 TW2(옵션, 기본 OFF)**: TW1과 동일한 게이트+래더에 VWAP 역행 veto/최근30분 교차과다 veto를 추가하고 TP2를 5%→6%로 올린 버전 — TW1과 동시에 켤 수 없음(서로 자동으로 끔).
+- **└ +1 DOWN_BLUE(옵션, 기본 OFF, TW1/TW2 공용 하위)**: ON이면 TW1 또는 TW2가 거절한 DOWN_BLUE 플래그 중 하루 최대 1회만 다른 조건 없이 추가로 진입.
 - **09:03 예약 매수(옵션)**: 개장 직후 데이터 부족으로 이른 플래그를 놓치는 문제 대응 — 미리 예약해두면 09:03에 지정 방향 ETF를 자동으로 전량매수(하루 1회).
         """
     )

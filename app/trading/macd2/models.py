@@ -507,12 +507,33 @@ class RuntimeState:
     time_window_tp1_done: bool = False
     time_window_initial_quantity: int = 0
     time_window_peak_net_return: float = 0.0
+    # Which of "TW1"/"TW2" opened (or adopted) the CURRENTLY held time-window
+    # position — meaningful only while time_window_position_active is True.
+    # Selects TP2 threshold in time_window_position_manager calls (TW2 uses
+    # config.TW2_MORNING_TP2 instead of MORNING_TP2; every other threshold
+    # is identical between TW1/TW2).
+    time_window_active_mode: Optional[str] = None
+
+    # Optional TW2 ("시간대별 최적거래 필터 2", 2026-08-21 사용자 요청) — VWAP
+    # 역행 veto + 최근30분 교차과다 veto + TP2 5%->6% (config.py의
+    # TIME_WINDOW_2_FILTER_DEFAULT 문서 참고). TW1(time_window_filter_enabled)
+    # 과 정확히 같은 T+3/품질점수/시간대/최대진입횟수 게이트 + 포지션관리
+    # 상태(time_window_pending_flag_*/time_window_position_active/
+    # time_window_entry_session/time_window_tp1_done/time_window_peak_net_
+    # return 등)를 그대로 공유 — TW2만의 별도 진입/포지션 상태 필드는 없다.
+    # TW1과 동시에 켤 수 없다(service의 두 setter가 서로를 자동으로 끈다).
+    time_window_2_filter_enabled: bool = False
+    time_window_2_filter_enabled_at: Optional[str] = None
+    time_window_2_filter_enabled_by: Optional[str] = None
+    time_window_2_filter_version: str = ""
 
     # Optional "탈락 DOWN_BLUE 예외진입" (2026-08-18 사용자 요청) — a sub-toggle
-    # of the TW filter (meaningless when time_window_filter_enabled is False):
-    # a DOWN_BLUE candidate the TW gate itself REJECTS still gets one extra
-    # entry per day, no other condition. daily_down_blue_exception_used is
-    # session-scoped (reset on day rollover); the toggle itself survives.
+    # of the TW filter (meaningless unless TW1 time_window_filter_enabled OR
+    # TW2 time_window_2_filter_enabled is on — 2026-08-21: made to work under
+    # either, per user request): a DOWN_BLUE candidate the TW gate itself
+    # REJECTS still gets one extra entry per day, no other condition.
+    # daily_down_blue_exception_used is session-scoped (reset on day
+    # rollover); the toggle itself survives.
     down_blue_exception_filter_enabled: bool = False
     down_blue_exception_filter_enabled_at: Optional[str] = None
     down_blue_exception_filter_enabled_by: Optional[str] = None

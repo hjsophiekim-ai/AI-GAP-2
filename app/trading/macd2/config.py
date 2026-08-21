@@ -551,7 +551,7 @@ EXIT_QUICK_PROFIT_TAKE_PROFIT = "QUICK_PROFIT_TAKE_PROFIT"
 # service.set_time_window_filter_enabled(), same as MU_MACD's own toggle.
 TIME_WINDOW_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_FILTER_DEFAULT", False)
 TIME_WINDOW_FILTER_VERSION = "TIME_WINDOW_OPTIMAL_FILTER_V1_20260815"
-TIME_WINDOW_STRATEGY_NAME = "시간대별 최적거래 필터"
+TIME_WINDOW_STRATEGY_NAME = "시간대별 최적거래 필터 (TW1)"
 
 # Session time windows (KST) — 20260815 spec §4-9.
 TW_WINDOW1_START = time(9, 0)
@@ -727,6 +727,50 @@ TW_WHIPSAW_REJECT_REASONS = frozenset({TW_REJECT_NOT_CONFIRMED, TW_REJECT_MACD_G
 TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT = _env_bool("MACD2_TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False)
 TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION = "TW_DOWN_BLUE_EXCEPTION_V1_20260818"
 TW_EXCEPTION_DOWN_BLUE_ENTRY = "TIME_WINDOW_EXCEPTION_DOWN_BLUE_ENTRY"
+# NOTE: this "+1 DOWN_BLUE 예외진입" sub-filter has NO enabled-check of its
+# own on time_window_filter_enabled specifically -- worker.py only ever
+# reaches the down_blue_exception_applied branch from inside
+# _resolve_time_window_candidate, which now runs whenever EITHER TW1
+# (time_window_filter_enabled) OR TW2 (time_window_2_filter_enabled) is on
+# (2026-08-21 사용자 요청: "+1 down blue 필터는 둘다 가능하게 해줘") -- so this
+# toggle transparently works under both without any code change here.
+
+# ── Optional TW2 ("시간대별 최적거래 필터 2") — VWAP 역행 veto + 최근 30분
+# 교차과다 veto + TP2 상향 (2026-08-21 사용자 요청). TW1
+# (time_window_filter_enabled)과 완전히 동일한 T+3 재확인/품질점수/시간대/
+# 최대진입횟수 게이트 + 포지션관리 래더를 그대로 재사용하고, 딱 두 가지 진입
+# veto만 추가로 얹는다(worker._resolve_time_window_candidate가 TW1이 이미
+# 승인한 후보에 대해서만 time_window_filter.evaluate_tw2_extra_vetoes()를
+# 추가로 검사):
+#   1) VWAP 역행 veto: 확정bar 종가가 진입방향 기준 세션 VWAP보다
+#      TW2_VWAP_VETO_THRESHOLD_PCT(%) 이상 불리한 쪽에 있으면 스킵.
+#   2) 최근 교차과다 veto: 직전 TW2_RECENT_CROSS_LOOKBACK_MINUTES분 안에
+#      TW2_RECENT_CROSS_VETO_COUNT회 이상 확정 크로스오버가 있었으면(휩쏘
+#      구간) 스킵.
+# 통과한 진입은 TP1(3.0%)/손절(-1.7%)/트레일링 래더는 TW1과 완전히 동일하게
+# 유지하되 TP2만 5.0%→TW2_MORNING_TP2(6.0%)로 올린다
+# (time_window_position_manager의 tp2_pct_override 파라미터로 전달 -- MU_MACD
+# 등 다른 호출자는 파라미터를 안 넘기므로 전혀 영향 없음).
+#
+# 2026-07-10~08-21 연속 29거래일(8/10-8/20 KIS 재조회로 공백 없이 채움),
+# 앞 19일 TRAIN에서 찾은 위 임계값들을 뒤 10일 OOS에서 전혀 재튜닝하지 않고
+# 그대로 재검증 — 진짜 진입시점 로직으로 스킵된 후보가 이후 진입횟수/포지션
+# 상태까지 바꾸는 연쇄효과까지 전부 재현한 replay 결과:
+#   TRAIN(19일): TW1 복리 +20.33% -> TW2 +52.31%, MDD 13.48%->6.18%.
+#   OOS(10일, 재튜닝 없음): TW1 복리 +24.48% -> TW2 +35.70%, MDD 6.83%->5.18%.
+#   FULL(29일): TW1 복리 +49.79% -> TW2 +106.69%.
+# TW1과 TW2는 동시에 켤 수 없다 — service.set_time_window_filter_enabled()/
+# set_time_window_2_filter_enabled()가 서로를 자동으로 끈다. "+1 DOWN_BLUE
+# 예외진입"은 위 노트대로 둘 다에서 그대로 동작한다. OFF가 기본값.
+TIME_WINDOW_2_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_2_FILTER_DEFAULT", False)
+TIME_WINDOW_2_FILTER_VERSION = "TIME_WINDOW_2_V1_20260821"
+TIME_WINDOW_2_STRATEGY_NAME = "시간대별 최적거래 필터 (TW2)"
+TW2_VWAP_VETO_THRESHOLD_PCT = _env_float("MACD2_TW2_VWAP_VETO_THRESHOLD_PCT", -1.0)
+TW2_RECENT_CROSS_VETO_COUNT = _env_int("MACD2_TW2_RECENT_CROSS_VETO_COUNT", 4)
+TW2_RECENT_CROSS_LOOKBACK_MINUTES = _env_int("MACD2_TW2_RECENT_CROSS_LOOKBACK_MINUTES", 30)
+TW2_MORNING_TP2 = _env_float("MACD2_TW2_MORNING_TP2", 0.06)
+TW2_REJECT_VWAP_VETO = "TW2_REJECT_VWAP_VETO"
+TW2_REJECT_RECENT_CROSSES = "TW2_REJECT_RECENT_CROSSES"
 
 # ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
 # 6th peer entry gate in worker._judge_entry_gate (right after TIME_WINDOW),

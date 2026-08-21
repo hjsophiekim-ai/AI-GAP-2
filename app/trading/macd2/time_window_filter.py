@@ -40,6 +40,7 @@ from app.trading.macd2.major_flag_filter import (
     _as_direction,
     _direction_sign,
     _prepare_bars,
+    _session_vwap,
     compute_component_scores,
 )
 from app.trading.macd2.models import Direction, MajorFlagDecision
@@ -778,3 +779,81 @@ def evaluate_time_window_entry(
         component_scores={k: (1.0 if v else 0.0) for k, v in quality_detail.items() if isinstance(v, bool)},
         metrics=base_metrics, is_reversal=False, fast_reversal=False, block_reason=None,
     )
+
+
+# ── TW2 extra vetoes (2026-08-21 사용자 요청) ───────────────────────────────
+# Layered ON TOP of evaluate_time_window_entry()'s own T+3/quality/interval/
+# entry-cap gate — worker._resolve_time_window_candidate only calls this
+# when state.time_window_2_filter_enabled is True AND the base decision
+# already approved. Both checks use ONLY ``bars_3m`` truncated through the
+# confirmation bar (the same frame the caller already passed to
+# evaluate_time_window_entry) — no look-ahead, no live-quote injection.
+def _count_recent_confirmed_crossovers(
+    work: pd.DataFrame, decision_at: datetime, lookback_minutes: int, *, exclude_bar_dt: Optional[datetime] = None,
+) -> int:
+    """Confirmed MACD crossovers, reusing this module's own _gap_series() +
+    _confirmed_flag_indices() (already the canonical "reconstruct flag
+    history from a bars_3m frame" pair used by is_valid_reset() above — no
+    duplicated crossover math). Counts flags whose OWN confirmation time
+    (bar_dt + 3min) falls in [decision_at - lookback_minutes, decision_at),
+    EXCLUDING the flag bar at ``exclude_bar_dt`` itself (the candidate
+    currently being judged — its own bar_dt, not a time-window boundary,
+    since its confirmation time is 3 minutes BEFORE decision_at, well
+    inside the lookback window, and would otherwise double-count itself as
+    one of the "recent OTHER crossovers")."""
+    series = _gap_series(work)
+    if series is None:
+        return 0
+    window_start = decision_at - timedelta(minutes=lookback_minutes)
+    count = 0
+    for i, _direction in _confirmed_flag_indices(series):
+        bar_dt = pd.Timestamp(series["datetime"].iloc[i]).to_pydatetime()
+        if exclude_bar_dt is not None and bar_dt == exclude_bar_dt:
+            continue
+        confirmed_at = bar_dt + timedelta(minutes=3)
+        if window_start <= confirmed_at < decision_at:
+            count += 1
+    return count
+
+
+def evaluate_tw2_extra_vetoes(
+    bars_3m: Optional[pd.DataFrame], flag_direction: Union[Direction, str],
+    flag_bar_dt: datetime, decision_at: datetime,
+) -> tuple[bool, Optional[str]]:
+    """Returns ``(vetoed, block_reason)``. Two independent checks, either one
+    alone is enough to veto (2026-07-10..2026-08-21 29-trading-day replay,
+    TRAIN(19)/OOS(10) validated without retuning — see config.py's
+    TIME_WINDOW_2_FILTER_DEFAULT docstring):
+
+      1) VWAP veto: the confirmation bar's close, direction-adjusted vs the
+         session VWAP, is more than abs(config.TW2_VWAP_VETO_THRESHOLD_PCT)
+         percent on the UNFAVORABLE side (entering a would-be UP_RED buy
+         while price is still notably below session VWAP, or the DOWN_BLUE
+         mirror).
+      2) Recent-crosses veto: config.TW2_RECENT_CROSS_VETO_COUNT or more
+         OTHER confirmed crossovers already fired in the preceding
+         config.TW2_RECENT_CROSS_LOOKBACK_MINUTES minutes (whipsaw/chop).
+    """
+    direction = _as_direction(flag_direction)
+    if direction is None:
+        return False, None
+    work = _prepare_bars(bars_3m)
+    if work is None or len(work) < 2:
+        return False, None
+
+    close = float(work["close"].iloc[-1])
+    vwap_series = _session_vwap(work)
+    vwap = float(vwap_series.iloc[-1]) if len(vwap_series) else float("nan")
+    if pd.notna(vwap) and vwap > 0:
+        sign = _direction_sign(direction)
+        vwap_dev_dir = (close / vwap - 1.0) * 100.0 * sign
+        if vwap_dev_dir < config.TW2_VWAP_VETO_THRESHOLD_PCT:
+            return True, config.TW2_REJECT_VWAP_VETO
+
+    recent = _count_recent_confirmed_crossovers(
+        work, decision_at, config.TW2_RECENT_CROSS_LOOKBACK_MINUTES, exclude_bar_dt=flag_bar_dt,
+    )
+    if recent >= config.TW2_RECENT_CROSS_VETO_COUNT:
+        return True, config.TW2_REJECT_RECENT_CROSSES
+
+    return False, None

@@ -65,6 +65,8 @@ def default_state() -> RuntimeState:
     state.single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
     state.time_window_filter_enabled = bool(getattr(config, "TIME_WINDOW_FILTER_DEFAULT", False))
     state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
+    state.time_window_2_filter_enabled = bool(getattr(config, "TIME_WINDOW_2_FILTER_DEFAULT", False))
+    state.time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
     state.down_blue_exception_filter_enabled = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
@@ -303,6 +305,11 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "time_window_filter_enabled_at": state.time_window_filter_enabled_at,
         "time_window_filter_enabled_by": state.time_window_filter_enabled_by,
         "time_window_filter_version": state.time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION,
+        "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
+        "time_window_2_filter_enabled_at": state.time_window_2_filter_enabled_at,
+        "time_window_2_filter_enabled_by": state.time_window_2_filter_enabled_by,
+        "time_window_2_filter_version": state.time_window_2_filter_version or config.TIME_WINDOW_2_FILTER_VERSION,
+        "time_window_active_mode": state.time_window_active_mode,
         "time_window_morning_entry_count": int(state.time_window_morning_entry_count or 0),
         "time_window_afternoon_entry_count": int(state.time_window_afternoon_entry_count or 0),
         "last_time_window_entry_at": state.last_time_window_entry_at,
@@ -380,6 +387,20 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_time_window_filter_version and stored_time_window_filter_version != config.TIME_WINDOW_FILTER_VERSION:
         time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
         time_window_filter_enabled = time_window_enabled_default
+    time_window_2_enabled_default = bool(getattr(config, "TIME_WINDOW_2_FILTER_DEFAULT", False))
+    stored_time_window_2_filter_version = str(raw.get("time_window_2_filter_version") or "")
+    time_window_2_filter_version = stored_time_window_2_filter_version or config.TIME_WINDOW_2_FILTER_VERSION
+    time_window_2_filter_enabled = bool(raw.get("time_window_2_filter_enabled", time_window_2_enabled_default))
+    if stored_time_window_2_filter_version and stored_time_window_2_filter_version != config.TIME_WINDOW_2_FILTER_VERSION:
+        time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
+        time_window_2_filter_enabled = time_window_2_enabled_default
+    if time_window_filter_enabled and time_window_2_filter_enabled:
+        # Defensive: should never happen (the two setters keep this mutually
+        # exclusive), but a hand-edited/corrupted state.json must never load
+        # with both on — TW1 wins, matching worker._judge_entry_gate's
+        # existing "TW1/TW2 share one priority tier" dispatch if this were
+        # ever hit live.
+        time_window_2_filter_enabled = False
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
     down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
@@ -633,6 +654,11 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_filter_enabled_at=raw.get("time_window_filter_enabled_at"),
         time_window_filter_enabled_by=raw.get("time_window_filter_enabled_by"),
         time_window_filter_version=time_window_filter_version,
+        time_window_2_filter_enabled=time_window_2_filter_enabled,
+        time_window_2_filter_enabled_at=raw.get("time_window_2_filter_enabled_at"),
+        time_window_2_filter_enabled_by=raw.get("time_window_2_filter_enabled_by"),
+        time_window_2_filter_version=time_window_2_filter_version,
+        time_window_active_mode=raw.get("time_window_active_mode"),
         time_window_morning_entry_count=int(raw.get("time_window_morning_entry_count") or 0),
         time_window_afternoon_entry_count=int(raw.get("time_window_afternoon_entry_count") or 0),
         last_time_window_entry_at=raw.get("last_time_window_entry_at"),
