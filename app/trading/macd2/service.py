@@ -208,23 +208,40 @@ class Macd2Service:
         budget: float = config.DEFAULT_BUDGET,
         real_kwargs: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        # 2026-08-20 fix (real incident: after a Render idle-sleep/redeploy, a
+        # still-alive-but-stuck Worker thread made start() refuse forever
+        # with ALREADY_RUNNING and no way to force a clean restart from the
+        # UI -- the exact same class of bug the 2026-08-14 MU_MACD fix
+        # already addresses there, see
+        # app.trading.mu_macd.service.MUMacdService.start()'s own
+        # _stop_worker_and_market_data_locked() call at this same relative
+        # position). Tear down the existing worker/market_data first, then
+        # fall through to start fresh exactly as if nothing had been
+        # running -- _attempt_bootstrap() below always builds a brand-new
+        # Macd2Worker + MarketDataService regardless, so no further
+        # special-casing is needed past this point.
+        #
+        # 2026-08-21 fix (real incident: Render memory climbing again in a
+        # repeating recover/die cycle right after the quote-updater leak
+        # above was fixed): this teardown used to run ONLY when
+        # self._worker.is_alive() was True. But _auto_recover_worker() calls
+        # start() precisely WHEN the worker is dead (WORKER_THREAD_DEAD) --
+        # the one case this condition always skipped. self._market_data
+        # (and its still-running quote-updater/history-updater threads) was
+        # then silently replaced at "self._market_data = MarketDataService(
+        # ...)" below without ever being stopped, orphaning a full pair of
+        # live background threads every single ~30s auto-recover cooldown
+        # cycle for as long as the worker kept dying -- each one still
+        # polling KIS forever, compounding the very contention that was
+        # killing the worker in the first place. Tearing down market_data is
+        # unconditional now: whether or not the worker thread itself was
+        # still alive, any previous market_data must be stopped before a new
+        # one replaces it.
         if self._worker is not None and self._worker.is_alive():
-            # 2026-08-20 fix (real incident: after a Render idle-sleep/
-            # redeploy, a still-alive-but-stuck Worker thread made start()
-            # refuse forever with ALREADY_RUNNING and no way to force a
-            # clean restart from the UI -- the exact same class of bug the
-            # 2026-08-14 MU_MACD fix already addresses there, see
-            # app.trading.mu_macd.service.MUMacdService.start()'s own
-            # _stop_worker_and_market_data_locked() call at this same
-            # relative position). Tear down the existing worker/market_data
-            # first, then fall through to start fresh exactly as if nothing
-            # had been running -- _attempt_bootstrap() below always builds
-            # a brand-new Macd2Worker + MarketDataService regardless, so no
-            # further special-casing is needed past this point.
             self._worker.stop(join_timeout=5.0)
-            if self._market_data is not None:
-                self._market_data.stop_quote_updater(join_timeout=2.0)
-                self._market_data.stop_history_updater(join_timeout=2.0)
+        if self._market_data is not None:
+            self._market_data.stop_quote_updater(join_timeout=2.0)
+            self._market_data.stop_history_updater(join_timeout=2.0)
 
         if config.AUTO_TRADE_HARD_DISABLED:
             state = state_store.load_state()

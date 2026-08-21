@@ -112,8 +112,17 @@ class MUMacdService:
             # alive as "restart", not "refuse": tear down the existing
             # worker/market_data first, then fall through to start fresh
             # exactly as if nothing had been running.
-            if self.is_alive():
-                self._stop_worker_and_market_data_locked()
+            # 2026-08-21 fix (same-class bug found live in macd2.service.
+            # start(): this used to tear down market_data's background
+            # threads ONLY when the old worker thread was still alive --
+            # exactly the one case _auto_recover_worker() never hits, since
+            # it calls start() precisely when the worker is dead. That
+            # silently orphaned a live quote/history-updater thread pair on
+            # every auto-recover cooldown cycle for as long as the worker
+            # kept dying, compounding memory/KIS-request contention. Tear
+            # down unconditionally regardless of whether the worker itself
+            # was still alive.
+            self._stop_worker_and_market_data_locked()
 
             # 2026-08-14: release the broker-less flags-only shadow's WS
             # connection first -- about to open the real one below, and two
