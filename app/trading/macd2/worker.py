@@ -589,15 +589,36 @@ def initialize_strategy_session(
             held_symbol = state.position.symbol if state.position and state.position.quantity > 0 else None
             target_symbol = order_executor.target_symbol_for_direction(last_direction)
             if target_symbol != held_symbol:
-                _set_pending_signal(
-                    state,
-                    signal_id=make_signal_id(last_flag_snap.bar_dt, last_direction),
-                    direction=last_direction,
-                    signal_type="REVERSAL" if held_symbol is not None else "INITIAL",
-                    macd_snap=last_flag_snap,
-                    detected_at=now,
-                    reason="RESTART_CATCH_UP_MULTI_BAR_GAP",
-                )
+                if state.time_window_filter_enabled:
+                    # 2026-08-21 fix (real incident: a repeated restart/crash
+                    # loop this morning made this branch fire _set_pending_
+                    # signal for a stale multi-bar-gap mismatch while the TW
+                    # filter was ON -- _execute_or_wait's pending_signal path
+                    # NEVER consults _judge_entry_gate/time_window_filter at
+                    # all, so it force-entered unconditionally, completely
+                    # bypassing the T+3 re-confirm + quality gate the user
+                    # explicitly turned on. That position then also never got
+                    # a TP1/TP2 take-profit chance, because entries taken
+                    # this way don't set time_window_entry_session either).
+                    # Route through the SAME TW pending-candidate mechanism a
+                    # live-detected flag uses instead (_judge_time_window_flag)
+                    # -- evaluate_time_window_entry's own multi-bar-gap check
+                    # (see _resolve_time_window_candidate's docstring) then
+                    # correctly DROPS a stale candidate as expired rather
+                    # than blindly confirming off bars this old, exactly the
+                    # safety property a bare pending_signal has no concept of.
+                    state.time_window_pending_flag_direction = last_direction
+                    state.time_window_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
+                else:
+                    _set_pending_signal(
+                        state,
+                        signal_id=make_signal_id(last_flag_snap.bar_dt, last_direction),
+                        direction=last_direction,
+                        signal_type="REVERSAL" if held_symbol is not None else "INITIAL",
+                        macd_snap=last_flag_snap,
+                        detected_at=now,
+                        reason="RESTART_CATCH_UP_MULTI_BAR_GAP",
+                    )
     else:
         # 2026-08-20 NXT fix: a TRUE cold start (no same-day
         # last_confirmed_bar_ts at all — first-ever launch, or state.json

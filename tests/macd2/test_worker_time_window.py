@@ -16,6 +16,7 @@ from app.trading.macd2.models import Direction, MajorFlagDecision, RuntimeState
 from app.trading.macd2.signal_engine import forming_bar_window
 from app.trading.macd2.worker import run_once
 from tests.macd2.fake_broker import FakeBroker
+from tests.macd2.test_worker import _1m_from_3m_closes
 
 KST = config.KST
 
@@ -452,6 +453,75 @@ def test_untracked_held_position_is_adopted_and_still_gets_take_profit(monkeypat
         f"immediately -- got actions={result.actions!r}"
     )
     assert state.position is None
+
+
+def test_restart_catchup_multi_bar_gap_routes_through_tw_gate_not_a_raw_pending_signal():
+    """2026-08-21 real incident: worker.py's own version of the 2026-08-05
+    RESTART_CATCH_UP_MULTI_BAR_GAP fix (test_worker.py's own
+    test_restart_with_fully_lost_state_still_catches_up_when_today_already_
+    has_bars) queued a raw state.pending_signal for the mismatch it found --
+    but _execute_or_wait's pending_signal consumption NEVER calls
+    _judge_entry_gate/time_window_filter at all, so during today's repeated
+    restart/crash loop this force-entered a position completely bypassing
+    the T+3 re-confirm + quality gate the user had explicitly turned TW on
+    for (and that position then also never got a proper take-profit chance,
+    since it was never given a time_window_entry_session either). With TW
+    enabled, this mismatch must be registered as a TW pending candidate
+    instead -- proven here two ways: (1) no raw pending_signal is created,
+    and (2) the very next live tick, evaluate_time_window_entry's own
+    multi-bar-gap-expiry check safely drops it (no order at all) rather
+    than blindly confirming off bars this stale."""
+    from app.trading.macd2.models import PositionSnapshot
+
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    closes = [100.0] * 99 + [92.0, 96.0, 103.0, 104.0, 103.0, 98.0, 90.0, 85.0, 84.0]
+    df_1m_full = _1m_from_3m_closes(start, closes)
+
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0)
+    assert state.last_confirmed_bar_ts is None
+
+    bar103_end = start + timedelta(minutes=3 * 104)
+    df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < bar103_end]
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 9_700.0, config.WATCH_SYMBOL: 84.0}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(
+        mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}), fetch_quote=fake_quote,
+    )
+    restart_now = bar103_end + timedelta(seconds=5)
+    svc.bootstrap(now=restart_now)
+
+    worker.initialize_strategy_session(state, svc, now=restart_now)
+
+    assert state.last_detected_direction == Direction.UP_RED
+    assert state.pending_signal is None  # no raw bypass-the-gate entry queued
+    assert state.time_window_pending_flag_direction == Direction.UP_RED
+    assert state.time_window_pending_flag_bar_ts is not None
+
+    # The very next live tick must NOT force an unconditional entry into the
+    # flag's own direction -- the T+3 gate (approve, reject-and-hold, or
+    # reject-and-liquidate the mismatched position) decides instead, same as
+    # any live-detected flag. Whichever of those it picks is a pre-existing,
+    # separately-tested decision (test_rejected_reversal_still_liquidates_
+    # the_held_tw_position / the whipsaw-hold tests above) -- the one thing
+    # that must NEVER happen is a raw, gate-bypassing BUY into LONG_SYMBOL.
+    broker = FakeBroker(cash=10_000_000.0, quotes=quote_prices)
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    svc.refresh_quotes()
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=restart_now + timedelta(minutes=1))
+
+    assert not any(a.startswith("TIME_WINDOW_ENTRY") for a in result.actions), (
+        f"a stale multi-bar-gap TW candidate must be dropped, not force-entered -- got actions={result.actions!r}"
+    )
+    assert not any(o.symbol == config.LONG_SYMBOL and o.side == "BUY" for o in broker.orders), (
+        f"must never buy into the flag's own direction without going through the TW gate -- orders={broker.orders!r}"
+    )
 
 
 def test_day_rollover_resets_time_window_session_counters():
