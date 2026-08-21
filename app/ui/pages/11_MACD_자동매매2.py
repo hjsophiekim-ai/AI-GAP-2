@@ -443,7 +443,32 @@ st.subheader("신호 원장 (오늘, 최근 100건)")
 trading_date = state.session_date or pd.Timestamp.now().strftime("%Y%m%d")
 signal_rows = [r for r in ledger.load_signal_ledger(limit=2000) if r.get("trading_date") == trading_date][-100:]
 if signal_rows:
-    st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
+    # 2026-08-21 fix (사용자 피드백 — 신호 원장이 70개 넘는 원본 컬럼을 그대로
+    # 보여줘서 정작 가장 중요한 "몇시몇분에 떴는지"/"주문이 됐는지"가 화면
+    # 오른쪽으로 밀려 안 보임): 핵심 컬럼만 먼저 보기 쉽게 요약해서 보여주고,
+    # 전체 원본 표는 접어서 그 아래 그대로 남긴다(디버깅용, 삭제하지 않음).
+    def _hhmmss(raw: str) -> str:
+        raw = str(raw or "")
+        if len(raw) == 6 and raw.isdigit():
+            return f"{raw[0:2]}:{raw[2:4]}:{raw[4:6]}"
+        try:
+            return datetime.fromisoformat(raw).astimezone(macd2_config.KST).strftime("%H:%M:%S")
+        except ValueError:
+            return raw
+    summary_rows = [
+        {
+            "완료바시각": _hhmmss(r.get("completed_bar_at")),
+            "감지시각": _hhmmss(r.get("detected_at")),
+            "신호유형": r.get("signal_type", ""),
+            "방향": r.get("direction", ""),
+            "주문결과": r.get("order_result", ""),
+            "차단/실패사유": r.get("block_reason") or r.get("failure_stage") or "",
+        }
+        for r in signal_rows
+    ]
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+    with st.expander("신호 원장 전체 컬럼 보기 (진단용)"):
+        st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
 else:
     st.caption("오늘 기록된 신호가 없습니다.")
 

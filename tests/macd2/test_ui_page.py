@@ -193,6 +193,32 @@ def test_position_reconcile_failure_reason_is_shown_not_just_the_code():
     assert any("EGW00201" in t for t in texts)
 
 
+def test_signal_ledger_summary_shows_time_and_order_result():
+    """2026-08-21 fix (user feedback): the signal ledger used to dump all
+    70+ raw ledger columns via a single st.dataframe, pushing the columns a
+    user actually needs -- what time a flag fired, whether the order went
+    through -- off screen. A curated summary table with formatted HH:MM:SS
+    times must render alongside the raw table (kept, in an expander)."""
+    trading_date = pd.Timestamp.now().strftime("%Y%m%d")
+    date_prefix = f"{trading_date[0:4]}-{trading_date[4:6]}-{trading_date[6:8]}"
+    ledger.append_signal({
+        "trading_date": trading_date, "completed_bar_at": "090300", "signal_id": f"{trading_date}_sid-summary",
+        "signal_type": "INITIAL", "direction": "UP_RED", "macd": 1.0, "signal": 0.5,
+        "hist_last3": "(0.1,0.2,0.3)", "detected_at": f"{date_prefix}T09:03:05+09:00",
+        "order_requested_at": f"{date_prefix}T09:03:05+09:00", "order_result": "EXECUTED", "block_reason": "",
+    })
+
+    at = _fresh_app()
+    at.run()
+    assert not at.exception
+    dataframes = [d for d in at.dataframe]
+    assert len(dataframes) >= 1
+    summary_df = dataframes[0].value
+    assert list(summary_df["완료바시각"]) == ["09:03:00"]
+    assert list(summary_df["감지시각"]) == ["09:03:05"]
+    assert list(summary_df["주문결과"]) == ["EXECUTED"]
+
+
 def test_operational_diagnostics_panel_renders_before_start():
     """Worker/quote/bootstrap heartbeat diagnostics (docs §21 2026-07-24 UI
     addition) must render even with no Worker ever started — worker_status
