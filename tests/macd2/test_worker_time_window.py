@@ -769,3 +769,255 @@ def test_tw2_veto_blocks_an_entry_tw1_would_have_approved(tw_market_data, monkey
     assert state.last_time_window_block_reason == config.TW2_REJECT_VWAP_VETO
     assert len(broker.orders) == orders_before
     assert state.position is None
+
+
+# ── TW2 exit-behavior verification (2026-08-21 사용자 요청: "TW1, TW2 on하면
+# 손절,익절,플래그 변경시 전량 익절 이런거 모두 다 되는지 판단해줘") ───────────
+# Mirrors the TW1 tests above exactly (test_take_profit_fires_on_the_live_
+# tick_not_only_at_bar_close / test_stop_loss_still_fires_while_a_whipsaw_
+# reversal_candidate_is_pending / test_rejected_reversal_still_liquidates_
+# the_held_tw_position / test_untracked_held_position_is_adopted_and_still_
+# gets_take_profit) with TW2 enabled instead of TW1, since exit management
+# is fully shared code -- only the TP2 threshold and time_window_active_mode
+# differ. If TW1's already-passing tests above ever regress AND these
+# TW2 mirrors also fail, that confirms a shared-code break; if only the TW2
+# mirrors fail, that isolates a TW2-specific regression.
+def test_tw2_take_profit_fires_on_the_live_tick_at_its_own_6pct_threshold(monkeypatch):
+    """TW2 raises TP2 from 5.0% to config.TW2_MORNING_TP2 (6.0%) -- a live
+    tick past 6% must trigger TP2_FULL immediately, same tick, exactly like
+    TW1 does at its own 5% threshold."""
+    from app.trading.macd2.models import PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_800.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok, f"fixture bootstrap failed unexpectedly: {boot.reason}"
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.time_window_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_active_mode = "TW2"
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_800.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.EXIT_TW_TP2_FULL) for a in result.actions), (
+        f"+8% live tick must trigger TW2's 6% TP2 immediately, same tick -- got actions={result.actions!r}"
+    )
+    assert state.position is None
+    assert config.INVERSE_SYMBOL not in broker._positions
+
+
+def test_tw2_take_profit_does_not_fire_below_its_6pct_threshold_where_tw1_would_have(monkeypatch):
+    """Sanity check that the override is actually being applied (not just
+    silently falling back to TW1's 5%): a price giving ~5.5% must NOT
+    trigger TW2's TP2 (needs 6%), proving TW2 really uses its own threshold."""
+    from app.trading.macd2.models import PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_550.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.time_window_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_active_mode = "TW2"
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_550.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert not any(a.startswith(config.EXIT_TW_TP2_FULL) for a in result.actions), (
+        f"~5.5% must NOT trigger TW2's 6% TP2 (would have fired under TW1's 5%) -- got actions={result.actions!r}"
+    )
+    assert state.position is not None, "position must still be held -- only TP1 (3%) may have partially fired"
+
+
+def test_tw2_stop_loss_still_fires_while_a_whipsaw_reversal_candidate_is_pending(monkeypatch):
+    """TW2's stop-loss ladder (-1.7%, unchanged from TW1) must fire exactly
+    like TW1's -- mirrors test_stop_loss_still_fires_while_a_whipsaw_
+    reversal_candidate_is_pending with TW2 enabled instead."""
+    from app.trading.macd2.models import Direction as _Direction, PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 9_700.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.time_window_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_active_mode = "TW2"
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 9_700.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+
+    bar_start, _ = forming_bar_window(now0)
+    state.stop_loss_bar_symbol = config.INVERSE_SYMBOL
+    state.stop_loss_entry_bar_ts = (bar_start - timedelta(minutes=6)).isoformat()
+    state.stop_loss_bar_ts = (bar_start - timedelta(minutes=3)).isoformat()
+    state.stop_loss_bar_close = 9_700.0
+
+    flag_bar_dt = now0 - timedelta(minutes=6)
+    state.time_window_pending_flag_direction = _Direction.UP_RED
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    whipsaw_decision = MajorFlagDecision(
+        approved=False, score=1.0, required_score=4.0, decision=config.TW_REJECT_NOT_CONFIRMED,
+        reasons=(config.TW_REJECT_NOT_CONFIRMED,), component_scores={}, metrics={},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_REJECT_NOT_CONFIRMED,
+    )
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: whipsaw_decision)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.EXIT_TW_STOP_LOSS) for a in result.actions), (
+        f"TW2's -1.7% stop-loss must fire even with a pending whipsaw candidate this tick -- got actions={result.actions!r}"
+    )
+    assert not any("WHIPSAW_HOLD" in a for a in result.actions)
+    assert state.position is None
+    assert config.INVERSE_SYMBOL not in broker._positions
+
+
+def test_tw2_rejected_reversal_still_liquidates_the_held_position(tw_market_data, monkeypatch):
+    """A fresh opposite flag that TW2's own gate (base TW gate OR the two
+    extra vetoes) rejects for a non-whipsaw reason must still fully
+    liquidate the held TW2 position -- mirrors test_rejected_reversal_
+    still_liquidates_the_held_tw_position with TW2 enabled."""
+    from app.trading.macd2.models import Direction as _Direction, MajorFlagDecision, PositionSnapshot
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_active_mode = "TW2"
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+
+    flag_bar_dt = now0 - timedelta(minutes=6)
+    state.time_window_pending_flag_direction = _Direction.UP_RED
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+
+    rejected = MajorFlagDecision(
+        approved=False, score=1.0, required_score=4.0, decision=config.TW_REJECT_LOW_QUALITY_SCORE,
+        reasons=(config.TW_REJECT_LOW_QUALITY_SCORE,), component_scores={}, metrics={},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
+    )
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: rejected)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith("TIME_WINDOW_SELL_ONLY") for a in result.actions), (
+        f"a rejected TW2 reversal must still fully liquidate the held position -- got actions={result.actions!r}"
+    )
+    assert state.position is None
+    assert config.INVERSE_SYMBOL not in broker._positions
+    assert state.time_window_position_active is False
+
+
+def test_tw2_untracked_held_position_is_adopted_with_tw2_mode_and_gets_its_own_take_profit(monkeypatch):
+    """An untracked held position adopted while TW2 (not TW1) is the active
+    toggle must be tagged time_window_active_mode == 'TW2' and immediately
+    take-profit at TW2's OWN 6% threshold, not TW1's 5% -- mirrors
+    test_untracked_held_position_is_adopted_and_still_gets_take_profit."""
+    from app.trading.macd2.models import PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_800.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.time_window_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    assert state.time_window_position_active is False
+    assert state.time_window_active_mode is None
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_800.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.EXIT_TW_TP2_FULL) for a in result.actions), (
+        f"an untracked-but-held position under TW2 must be adopted and take-profit at TW2's 6% -- got actions={result.actions!r}"
+    )
+    assert state.position is None
