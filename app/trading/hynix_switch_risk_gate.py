@@ -77,18 +77,8 @@ def is_within_operating_window(now: Optional[datetime] = None) -> bool:
     계좌조회를 하지 않고 heartbeat만 유지해야 한다 — 장외 시간에도 3분마다 전체
     사이클을 계속 돌리면 KIS API를 불필요하게 반복 호출하고, cycle_count_today가
     실제 거래 가능 사이클 수와 무관하게 밤새 누적된다(2026-07-16 실측:
-    cycle_count_today=284).
-
-    2026-08-23 fix (실측: 주말에도 HynixFastTrendWatcher가 평일 장중과 동일하게
-    KIS 시세/잔고를 조회하며 초당 수 회씩 반복 — Render 메모리 계측 중 발견):
-    이 함수가 시각(time-of-day)만 보고 요일을 전혀 확인하지 않아, 토/일에도
-    08:50~15:30 KST 구간이면 "장중"으로 오판했다. KRX 공휴일까지 판별하는
-    거래일 캘린더는 이 코드베이스 어디에도 없으므로(app/trading/macd2/market_data.py
-    의 _prior_weekday_candidates()가 이미 문서화한 대로, 실제 공휴일 감지는 KIS
-    응답이 비어있는지로만 판별 가능) 최소 수정으로 토/일만 먼저 확실히 차단한다."""
+    cycle_count_today=284)."""
     now = now or kst_now()
-    if now.weekday() >= 5:  # 5=토, 6=일 — 장이 열리지 않으므로 무조건 장외
-        return False
     sched = _load_schedule()
     return _parse_hm(sched["operating_window_start"]) <= now.time() < _parse_hm(sched["operating_window_end"])
 

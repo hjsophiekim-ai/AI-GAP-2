@@ -315,16 +315,6 @@ class HynixFastTrendWatcherThread(threading.Thread):
         )
 
     def _next_interval_seconds(self) -> float:
-        # 2026-08-23 fix (주말 실측: 08:50~15:30 KST 시각대이면 요일과 무관하게
-        # force_fast_worker_tick/fast_cadence가 그대로 통과해 장외에도 5초 이내
-        # 주기로 돌았다). _run_if_enabled()가 이미 within_window로 KIS 조회 자체는
-        # 막고 있었지만, 이 sleep 계산은 그 창을 전혀 참조하지 않아 대기시간만
-        # 0~5초로 계속 짧게 유지됐다 — 장외에는 force flag/활성 cadence와 무관하게
-        # 항상 heartbeat 주기(기본 30초)만 쓰도록 먼저 확인한다.
-        from app.trading.hynix_switch_risk_gate import is_within_operating_window
-
-        if not is_within_operating_window(kst_now()):
-            return self.interval_seconds
         try:
             state = load_state()
         except Exception:
