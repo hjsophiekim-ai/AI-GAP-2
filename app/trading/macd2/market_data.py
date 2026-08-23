@@ -135,6 +135,32 @@ def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.Data
     }
 
 
+def _trim_to_recent_trading_days(df: pd.DataFrame, max_days: int = 2) -> pd.DataFrame:
+    """Bound retained 1m history to the most recent ``max_days`` distinct
+    calendar dates (KST) actually present in ``df``.
+
+    2026-08-24 fix (real incident: MACD2 left running overnight, Render
+    memory usage climbed 40%->80% with no restart). bootstrap() itself only
+    ever loads ONE prior trading day + today (_load_prior_trading_day), and
+    nothing else in this module ever reads further back than that — but
+    merge_incremental_1m() unconditionally concatenates each cycle's live
+    page onto the existing _df_1m with no retention cap, so a long-running
+    process accumulated one full day's worth of extra rows every single day
+    forever. NX market_div's continuous 08:00-20:00 session (2026-08-20 fix)
+    made each accumulated day ~85% larger than the old J-only 09:00-15:30
+    window, worsening this. Trimming to the 2 most recent trading dates after
+    every merge only ever discards days that were already unused by any
+    consumer (signal calc, UI, ledger) — never today's or yesterday's rows.
+    """
+    if df.empty:
+        return df
+    dates = df["datetime"].dt.strftime("%Y%m%d")
+    keep_dates = set(sorted(dates.unique())[-max_days:])
+    if len(keep_dates) >= dates.nunique():
+        return df
+    return df.loc[dates.isin(keep_dates)].reset_index(drop=True)
+
+
 def _candles_to_df(candles: list[dict]) -> pd.DataFrame:
     rows = []
     for c in candles or []:
@@ -782,6 +808,7 @@ class MarketDataService:
                 .sort_values("datetime")
                 .reset_index(drop=True)
             )
+            merged = _trim_to_recent_trading_days(merged)
             self._df_1m = merged
             return merged.copy()
 
