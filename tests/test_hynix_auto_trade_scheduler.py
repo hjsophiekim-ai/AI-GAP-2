@@ -115,3 +115,53 @@ def test_fast_watcher_uses_five_second_cadence_when_auto_trade_on_even_if_early_
         "early_trend_detector_enabled": True,
         "early_trend_detector_live": True,
     }) is False
+
+
+# 2026-08-23 회귀 테스트 — is_within_operating_window()의 요일 체크 누락으로
+# 주말에도 HynixFastTrendWatcher가 force_fast_worker_tick/fast_cadence를 그대로
+# 통과시켜 5초 이내(심하면 0초) 주기로 계속 돌던 버그. 평일 동작은 바뀌면 안 된다.
+
+_SATURDAY_NOON = datetime(2026, 8, 22, 13, 0)  # 토요일 13:00 KST
+_WEEKDAY_NOON = datetime(2026, 8, 24, 13, 0)  # 월요일 13:00 KST (운영창 내부)
+
+
+def test_next_interval_ignores_force_flag_on_weekend(monkeypatch):
+    watcher = scheduler.HynixFastTrendWatcherThread()
+    monkeypatch.setattr(scheduler, "kst_now", lambda: _SATURDAY_NOON)
+    monkeypatch.setattr(scheduler, "load_state", lambda: {
+        "force_fast_worker_tick": True, "auto_trade_on": True, "stopped": False,
+    })
+
+    assert watcher._next_interval_seconds() == watcher.interval_seconds
+
+
+def test_next_interval_ignores_active_cadence_on_weekend(monkeypatch):
+    watcher = scheduler.HynixFastTrendWatcherThread()
+    monkeypatch.setattr(scheduler, "kst_now", lambda: _SATURDAY_NOON)
+    monkeypatch.setattr(scheduler, "load_state", lambda: {
+        "force_fast_worker_tick": False, "auto_trade_on": True, "stopped": False,
+    })
+
+    assert watcher._next_interval_seconds() == watcher.interval_seconds
+
+
+def test_next_interval_still_honors_force_flag_on_weekday(monkeypatch):
+    """평일 회귀 확인 — 이번 수정으로 평일 동작이 바뀌면 안 된다."""
+    watcher = scheduler.HynixFastTrendWatcherThread()
+    monkeypatch.setattr(scheduler, "kst_now", lambda: _WEEKDAY_NOON)
+    monkeypatch.setattr(scheduler, "load_state", lambda: {
+        "force_fast_worker_tick": True, "auto_trade_on": True, "stopped": False,
+    })
+
+    assert watcher._next_interval_seconds() == 0.0
+
+
+def test_next_interval_still_honors_active_cadence_on_weekday(monkeypatch):
+    """평일 회귀 확인 — auto_trade_on 활성 시 여전히 5초 cadence를 써야 한다."""
+    watcher = scheduler.HynixFastTrendWatcherThread()
+    monkeypatch.setattr(scheduler, "kst_now", lambda: _WEEKDAY_NOON)
+    monkeypatch.setattr(scheduler, "load_state", lambda: {
+        "force_fast_worker_tick": False, "auto_trade_on": True, "stopped": False,
+    })
+
+    assert watcher._next_interval_seconds() == scheduler.EARLY_DETECTOR_FAST_INTERVAL_SECONDS
