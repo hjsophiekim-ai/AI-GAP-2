@@ -530,9 +530,7 @@ class KISClient:
 
     def _get_with_rate_limit_retry(self, url: str, **kwargs):
         """분봉/현재가 조회 공용: 헤더/TR_ID는 호출자가 이미 구성해 ``kwargs``로
-        넘긴다(``_request_with_token_retry``와 달리 여기선 토큰 재발급을
-        하지 않음 — 이 두 조회는 토큰 만료 케이스가 드물고, 호출자가 이미
-        ``headers``를 직접 만들어 넘기는 기존 구조를 유지하기 위함).
+        넘긴다.
 
         NX(NXT 포함) 분봉/현재가 조회는 초당 요청 제한(msg_cd=EGW00201, "초당
         거래건수를 초과하였습니다")에 특히 잘 걸린다 — 과거 분봉 조회에 이
@@ -541,8 +539,20 @@ class KISClient:
         동일 사유로 즉시 실패해 quote_status가 불필요하게 stale/DEAD로
         떨어진 적이 있다(2026-08-20) — 두 조회 모두 반드시 재시도로 구분해야
         한다.
+
+        2026-08-24 fix (real incident: NXT 프리마켓 quote_status=PARTIAL_ERROR
+        — 이 호출은 ``_request_with_token_retry``와 달리 서버측 토큰 무효화
+        (msg_cd=EGW00123, "다른 프로세스가 같은 appkey로 새 토큰을 발급해 이전
+        토큰이 선점 무효화됨" — 이 계좌를 HynixFastTrendWatcher/DynamicExit
+        Watcher/MU_MACD 등 별도 KISClient 인스턴스가 각자 폴링하므로 실제로
+        일어날 수 있음)를 전혀 감지하지 않았다. 레이트리밋(EGW00201)만 재시도
+        하고 토큰 만료는 그대로 즉시 실패 반환했으므로, 한 번 무효화되면
+        이 경로(quote/candle 조회)만 프로세스 재시작 전까지 영구 실패했다.
+        ``_request_with_token_retry``와 동일하게 감지 시 토큰 재발급 후 같은
+        요청을 1회 재시도한다.
         """
         resp = None
+        data: dict = {}
         for attempt in range(1, _RATE_LIMIT_RETRY_MAX_ATTEMPTS + 1):
             resp = self._get(url, **kwargs)
             try:
@@ -559,6 +569,16 @@ class KISClient:
                 time.sleep(delay)
                 continue
             break
+        if self._is_token_expired_response(data):
+            logger.warning(
+                f"[KIS-{self.mode.upper()}] 조회 중 토큰이 서버측에서 이미 만료/무효 처리됨"
+                f"(msg_cd={data.get('msg_cd')!r}) — 재발급 후 1회 재시도 url={url}"
+            )
+            self._invalidate_token()
+            headers = kwargs.get("headers")
+            if isinstance(headers, dict):
+                headers["authorization"] = f"Bearer {self.get_access_token()}"
+            resp = self._get(url, **kwargs)
         return resp
 
     # ── hashkey ────────────────────────────────────────────────────────────
