@@ -48,6 +48,15 @@ try:
 except Exception:
     pass
 
+# 2026-08-23 임시 진단: 주말 Render 메모리 증가 원인 계측(순수 read-only,
+# 5분마다 RSS/스레드/객체 수만 로그로 남김 — 거래/상태 로직 미변경). 원인
+# 확인되면 이 블록과 app/utils/mem_probe.py를 제거한다.
+try:
+    from app.utils.mem_probe import ensure_mem_probe_running
+    ensure_mem_probe_running()
+except Exception:
+    pass
+
 from app.ui.auth_gate import require_login
 require_login()
 
