@@ -203,6 +203,25 @@ WORKER_STALL_AGE_SEC = 15.0
 # Macd2Worker._run_loop's staleness-based force-restart.
 QUOTE_UPDATER_STALL_AGE_SEC = 30.0
 
+# 2026-08-24 fix (real incident: Render memory 20%->60% over ~2h under
+# sustained KIS mock-mode rate limiting): forcing a stop+restart every single
+# QUOTE_UPDATER_STALL_AGE_SEC (30s) without ever confirming the OLD thread
+# actually died orphaned a new thread on top of the old one every cycle for
+# as long as contention lasted -- a single KIS retry chain can legitimately
+# take up to ~120s under sustained rate limiting (see
+# kis_client._get_with_rate_limit_retry: 8 attempts x 5s mock delay per
+# symbol), well past both the 30s cooldown and the join_timeout used to stop
+# it. Below this age, the worker now only replaces the thread once
+# MarketDataService.stop_quote_updater() confirms it actually died --
+# otherwise it just waits for the next cycle. Only once staleness exceeds
+# THIS much longer bound (comfortably past any plausible legitimate retry
+# chain) does it force a replacement regardless of confirmed-stop, accepting
+# one orphan as the lesser evil -- preserving the 2026-08-20 fix's guarantee
+# that a genuinely permanently-hung thread (e.g. a KIS call that never
+# returns at all) is still eventually replaced instead of freezing quotes
+# forever.
+QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC = 300.0
+
 # 2026-08-04 fix: a fresh process (Render free-tier idle-sleep, redeploy, or
 # crash — docs/deploy_render.md: ephemeral filesystem, in-process Worker
 # singleton) previously left auto_trade_on=True permanently WORKER_STALLED

@@ -155,6 +155,15 @@ class Macd2Service:
         self._bootstrap_attempts: int = 0
         self._last_bootstrap_at: Optional[str] = None
         self._last_bootstrap_result: Optional[dict[str, Any]] = None
+        # 2026-08-24 fix: first time _auto_recover_worker() was blocked by an
+        # unconfirmed teardown (see start()'s _require_confirmed_teardown) --
+        # reset to None as soon as a recovery attempt is not blocked for this
+        # reason. Lets auto-recover force through anyway once blocked for too
+        # long (QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC), the same escape hatch
+        # worker.py's quote-updater self-heal uses, so a genuinely
+        # permanently-hung old instance (2026-08-20 incident) doesn't stall
+        # recovery forever.
+        self._teardown_stuck_since: Optional[datetime] = None
 
     def _auto_recover_worker(self, state) -> bool:
         """2026-08-04 fix: a fresh process (Render free-tier idle-sleep,
@@ -187,7 +196,16 @@ class Macd2Service:
             return False
         state.last_auto_recover_attempt_at = now.isoformat()
         state_store.save_state(state)
-        result = self.start(mode=state.mode, budget=state.budget)
+        force_through = (
+            self._teardown_stuck_since is not None
+            and (now - self._teardown_stuck_since).total_seconds() > config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC
+        )
+        result = self.start(mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through)
+        if result.get("message") == "PREVIOUS_INSTANCE_STILL_STOPPING":
+            if self._teardown_stuck_since is None:
+                self._teardown_stuck_since = now
+        else:
+            self._teardown_stuck_since = None
         return bool(result.get("ok")) and bool(self._worker and self._worker.is_alive())
 
     def _persist_worker_stall_if_needed(self, state):
@@ -207,6 +225,7 @@ class Macd2Service:
         mode: str = "mock",
         budget: float = config.DEFAULT_BUDGET,
         real_kwargs: Optional[dict[str, Any]] = None,
+        _require_confirmed_teardown: bool = False,
     ) -> dict[str, Any]:
         # 2026-08-20 fix (real incident: after a Render idle-sleep/redeploy, a
         # still-alive-but-stuck Worker thread made start() refuse forever
@@ -237,11 +256,32 @@ class Macd2Service:
         # unconditional now: whether or not the worker thread itself was
         # still alive, any previous market_data must be stopped before a new
         # one replaces it.
+        worker_confirmed_stopped = True
         if self._worker is not None and self._worker.is_alive():
-            self._worker.stop(join_timeout=5.0)
+            worker_confirmed_stopped = self._worker.stop(join_timeout=5.0)
+        market_data_confirmed_stopped = True
         if self._market_data is not None:
-            self._market_data.stop_quote_updater(join_timeout=2.0)
-            self._market_data.stop_history_updater(join_timeout=2.0)
+            q_stopped = self._market_data.stop_quote_updater(join_timeout=2.0)
+            h_stopped = self._market_data.stop_history_updater(join_timeout=2.0)
+            market_data_confirmed_stopped = q_stopped and h_stopped
+
+        # 2026-08-24 fix (real incident: Render memory 20%->60% over ~2h under
+        # sustained KIS rate limiting): _auto_recover_worker() calls start()
+        # every WORKER_AUTO_RECOVER_COOLDOWN_SEC (30s) whenever the worker is
+        # dead. The teardown above only BEST-EFFORT-asks the old worker/
+        # market_data threads to stop -- under sustained contention a stuck
+        # KIS retry chain routinely outlives these join timeouts, so the old
+        # threads (and the old MarketDataService's KIS client + history
+        # frame) were still alive and running every single time, and
+        # "self._market_data = MarketDataService(...)" below unconditionally
+        # replaced them with a brand-new instance anyway -- net-positive
+        # instance/thread accumulation for as long as the contention lasted.
+        # Only auto-recover (never an explicit manual/UI start -- that must
+        # always be able to force a fresh restart per the 2026-08-20 fix
+        # above) refuses to pile a new instance on top when teardown isn't
+        # confirmed; it simply retries on the next cooldown tick instead.
+        if _require_confirmed_teardown and not (worker_confirmed_stopped and market_data_confirmed_stopped):
+            return {"ok": False, "message": "PREVIOUS_INSTANCE_STILL_STOPPING"}
 
         if config.AUTO_TRADE_HARD_DISABLED:
             state = state_store.load_state()

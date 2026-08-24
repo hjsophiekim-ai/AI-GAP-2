@@ -45,6 +45,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from app.logger import logger
 from app.trading.macd2 import (
     config,
     ledger,
@@ -4001,9 +4002,34 @@ class Macd2Worker:
                     if stalest_age > config.QUOTE_UPDATER_STALL_AGE_SEC and (
                         _since_last_restart is None or _since_last_restart > config.QUOTE_UPDATER_STALL_AGE_SEC
                     ):
-                        self._market_data.stop_quote_updater(join_timeout=0.5)
-                        self._market_data.start_quote_updater(interval_sec=1.0)
+                        # 2026-08-24 fix (real incident: Render memory 20%->60%
+                        # over ~2h): the 30s cooldown above only throttles how
+                        # OFTEN this fires -- it never confirmed the OLD thread
+                        # actually died before starting a new one. A stuck KIS
+                        # retry chain can legitimately outlive both the 0.5s
+                        # join here AND the 30s cooldown under sustained
+                        # contention, so the old thread was still orphaned and
+                        # running every single time, and a fresh one piled on
+                        # top of it each cycle -- net-positive thread
+                        # accumulation for as long as the contention lasted.
+                        # Only start a replacement once stop_quote_updater()
+                        # confirms the old one is actually gone -- UNLESS
+                        # staleness has grown past QUOTE_UPDATER_FORCE_REPLACE_
+                        # AGE_SEC, comfortably beyond any plausible legitimate
+                        # retry chain, in which case this is very likely the
+                        # 2026-08-20 incident (a permanently hung call that
+                        # will never confirm-stop) and forcing a replacement
+                        # anyway is the lesser evil -- one orphan every 5min,
+                        # not one every 30s.
                         self._last_quote_updater_restart_at = datetime.now(KST)
+                        confirmed_stopped = self._market_data.stop_quote_updater(join_timeout=0.5)
+                        if confirmed_stopped or stalest_age > config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC:
+                            self._market_data.start_quote_updater(interval_sec=1.0)
+                        else:
+                            logger.warning(
+                                "[MACD2] quote-updater stale but old thread still alive after "
+                                "join -- skipping restart this cycle to avoid orphaning another thread"
+                            )
                 tick_result = run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
                 stage_timing.update(tick_result.timing)
                 t_stage = time.monotonic()
@@ -4040,9 +4066,19 @@ class Macd2Worker:
         self._thread = threading.Thread(target=self._run_loop, name="macd2-worker", daemon=True)
         self._thread.start()
 
-    def stop(self, join_timeout: float = 5.0) -> None:
+    def stop(self, join_timeout: float = 5.0) -> bool:
+        """Returns True only if the tick thread is confirmed dead after the
+        join -- same orphan-detection reasoning as MarketDataService.
+        stop_quote_updater() (2026-08-24 fix)."""
         self._stop_event.set()
         thread = self._thread
-        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=join_timeout)
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            self._thread = None  # can't join ourselves; preserves prior behavior
+            return True
+        thread.join(timeout=join_timeout)
+        if thread.is_alive():
+            return False
         self._thread = None  # never reused — start() always creates a fresh Thread object
+        return True

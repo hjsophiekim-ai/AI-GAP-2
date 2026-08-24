@@ -935,12 +935,35 @@ class MarketDataService:
         self._quote_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-quote-updater")
         self._quote_updater_thread.start()
 
-    def stop_quote_updater(self, join_timeout: float = 2.0) -> None:
+    def stop_quote_updater(self, join_timeout: float = 2.0) -> bool:
+        """Returns True only if the thread is confirmed dead after the join.
+
+        2026-08-24 fix (real incident: Render memory climbed 20%->60% over
+        ~2h under sustained KIS mock-mode rate limiting): this used to
+        unconditionally drop ``self._quote_updater_thread`` to None on
+        return, regardless of whether ``join()`` actually succeeded. A
+        caller stuck deep in a KIS retry chain (up to ~40s per symbol, worse
+        under sustained contention) routinely outlives this method's
+        short join_timeout, so the discarded reference was still a live,
+        running thread -- callers (worker.py's per-tick self-heal,
+        Macd2Service._auto_recover_worker) had no way to tell "stopped" from
+        "still running, orphaned" and unconditionally started a brand-new
+        updater/instance on top of it every restart cycle, the exact
+        mechanism the 2026-08-21 fix above only rate-limited (to once per
+        QUOTE_UPDATER_STALL_AGE_SEC) instead of eliminating -- under
+        contention lasting longer than that cooldown, orphans still
+        accumulated net-positive. Keeping the reference alive (and
+        quote_updater_alive() reporting True) when the thread hasn't
+        actually died lets callers refuse to pile another thread on top."""
         self._quote_updater_stop.set()
         thread = self._quote_updater_thread
-        if thread is not None:
-            thread.join(timeout=join_timeout)
+        if thread is None:
+            return True
+        thread.join(timeout=join_timeout)
+        if thread.is_alive():
+            return False
         self._quote_updater_thread = None
+        return True
 
     def quote_updater_alive(self) -> bool:
         return bool(self._quote_updater_thread and self._quote_updater_thread.is_alive())
@@ -970,12 +993,18 @@ class MarketDataService:
         self._history_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-history-updater")
         self._history_updater_thread.start()
 
-    def stop_history_updater(self, join_timeout: float = 2.0) -> None:
+    def stop_history_updater(self, join_timeout: float = 2.0) -> bool:
+        """Returns True only if the thread is confirmed dead after the join
+        -- same orphan-detection fix as stop_quote_updater() above."""
         self._history_updater_stop.set()
         thread = self._history_updater_thread
-        if thread is not None:
-            thread.join(timeout=join_timeout)
+        if thread is None:
+            return True
+        thread.join(timeout=join_timeout)
+        if thread.is_alive():
+            return False
         self._history_updater_thread = None
+        return True
 
     def history_updater_alive(self) -> bool:
         return bool(self._history_updater_thread and self._history_updater_thread.is_alive())
