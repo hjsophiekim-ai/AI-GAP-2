@@ -524,6 +524,56 @@ def test_restart_catchup_multi_bar_gap_routes_through_tw_gate_not_a_raw_pending_
     )
 
 
+def test_restart_catchup_never_clobbers_an_already_pending_tw_candidate():
+    """2026-08-24 real incident: a repeated restart/crash loop (triggered by
+    KIS mock-mode rate-limit contention -- see market_data.py's WATCH_SYMBOL
+    fix) kept re-running initialize_strategy_session mid-day while flat. Its
+    catch-up walk deliberately stops one bar short of today's newest bar (so
+    the Worker's own first live tick can evaluate that bar itself) -- which
+    means whatever it finds is, by construction, never newer than a genuine
+    live-detected candidate a tick had already set and persisted moments
+    before the restart. Two real flags (09:48 UP_RED, then 10:33 DOWN_BLUE)
+    each got overwritten by this necessarily-older catch-up find before ever
+    reaching their own T+3 resolution -- zero orders all day. A pending
+    candidate already on state when initialize_strategy_session runs must
+    survive it untouched."""
+    start = datetime(2026, 7, 24, 9, 0, tzinfo=KST)
+    closes = [100.0] * 99 + [92.0, 96.0, 103.0, 104.0, 103.0, 98.0, 90.0, 85.0, 84.0]
+    df_1m_full = _1m_from_3m_closes(start, closes)
+
+    state = _fresh_state()
+    state.position = None  # flat, same as the real incident
+    assert state.last_confirmed_bar_ts is None
+
+    # A live tick already found and persisted a genuine, more recent pending
+    # candidate just before the (simulated) restart -- this must win.
+    fresher_bar_ts = (start + timedelta(minutes=3 * 200)).isoformat()
+    state.time_window_pending_flag_direction = Direction.DOWN_BLUE
+    state.time_window_pending_flag_bar_ts = fresher_bar_ts
+
+    bar103_end = start + timedelta(minutes=3 * 104)
+    df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < bar103_end]
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 9_700.0, config.WATCH_SYMBOL: 84.0}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(
+        mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}), fetch_quote=fake_quote,
+    )
+    restart_now = bar103_end + timedelta(seconds=5)
+    svc.bootstrap(now=restart_now)
+
+    worker.initialize_strategy_session(state, svc, now=restart_now)
+
+    # The catch-up walk did detect its own (older) UP_RED, but must not have
+    # been allowed to overwrite the already-pending, fresher candidate.
+    assert state.last_detected_direction == Direction.UP_RED
+    assert state.time_window_pending_flag_direction == Direction.DOWN_BLUE
+    assert state.time_window_pending_flag_bar_ts == fresher_bar_ts
+
+
 def test_day_rollover_resets_time_window_session_counters():
     state = _fresh_state()
     state.session_date = "20260105"

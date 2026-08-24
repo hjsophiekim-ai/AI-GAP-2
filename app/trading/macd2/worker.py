@@ -607,8 +607,27 @@ def initialize_strategy_session(
                     # correctly DROPS a stale candidate as expired rather
                     # than blindly confirming off bars this old, exactly the
                     # safety property a bare pending_signal has no concept of.
-                    state.time_window_pending_flag_direction = last_direction
-                    state.time_window_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
+                    #
+                    # 2026-08-24 fix (real incident: repeated restarts during
+                    # today's KIS mock-mode rate-limit contention -- see
+                    # market_data.py's WATCH_SYMBOL fix -- kept clobbering a
+                    # GENUINE, more-recent pending TW candidate that a live
+                    # tick had already set and persisted just before each
+                    # restart, with this catch-up walk's own necessarily-OLDER
+                    # find (its loop deliberately stops one bar short of the
+                    # newest, so it can never see a flag on today's actual
+                    # newest bar). Net effect: two real flags (09:48 UP_RED,
+                    # 10:33 DOWN_BLUE) each got overwritten by a stale
+                    # 08:30-ish candidate before ever reaching their own T+3
+                    # resolution -- zero orders all day despite two genuine
+                    # confirmed flags. A pending candidate already on state
+                    # (reloaded from disk, so it survives the restart) is by
+                    # construction never older than what this abbreviated
+                    # replay can find, so it always wins -- only fill the slot
+                    # here if it's still genuinely empty.
+                    if state.time_window_pending_flag_direction is None:
+                        state.time_window_pending_flag_direction = last_direction
+                        state.time_window_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
                 else:
                     _set_pending_signal(
                         state,
