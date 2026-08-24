@@ -54,6 +54,12 @@ ORDERS_DIR = DATA_ROOT / "orders"
 EXECUTION_LEDGER_PATH = LOGS_DIR / "hynix_execution_ledger.csv"
 SCHEDULER_HEARTBEAT_PATH = STATE_DIR / "scheduler_heartbeat.json"
 
+# 2026-08-24 추가 — MACD2 일별 리서치 아카이브(전체 원본, 무제한 보관). 반드시
+# DATA_ROOT(Render Persistent Disk) 아래에만 존재해야 하며, git repo에는 절대
+# 커밋하지 않는다 -- app.services.github_analysis_sync가 이 중 최근 60영업일
+# 분석용 파생 데이터만 별도로 골라 리포지토리의 data/analysis_60d/로 동기화한다.
+MACD2_DAILY_ARCHIVE_DIR = DATA_ROOT / "macd2_daily_archive"
+
 # ── 그 외 이 프로젝트가 이미 쓰고 있던 data/ 하위 카테고리 — 전부 DATA_ROOT 기준으로
 # 통일해야 재배포/재시작에도 캐시·모델·과거데이터·리포트가 유지된다.
 RAW_DIR = DATA_ROOT / "raw"
@@ -76,6 +82,7 @@ _ALL_DIRS = (
     RAW_DIR, FEATURES_DIR, LABELS_DIR, CANDIDATES_DIR, SELECTED_DIR,
     HISTORICAL_DIR, HYNIX_DIR, MICRON_DIR, MODELS_DIR, MODEL_CALIBRATION_DIR,
     REPORTS_DIR, OUTPUT_DIR, VOLUME_SPIKE_DIR, ENHANCED_REPLAY_DIR,
+    MACD2_DAILY_ARCHIVE_DIR,
 )
 
 

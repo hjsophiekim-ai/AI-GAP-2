@@ -58,3 +58,11 @@ data/state/intraday_auto_trade_state_*.json
 data/state/master_pullback_top3_multi_entry_*.json
 data/state/scheduler_heartbeat.json
 data/state/market_ticks/
+
+# 2026-08-24 -- MACD2 일별 리서치 아카이브(전체 원본, 무제한). Render Persistent
+# Disk(AI_GAP_DATA_DIR) 전용이며 git repo에는 절대 커밋하지 않는다. (로컬에서
+# AI_GAP_DATA_DIR을 안 설정하면 이 경로가 이 repo 안쪽으로 떨어지므로, 이
+# 무시 규칙이 그 경우의 안전망이다.) 최근 60영업일 분석용 파생 데이터는
+# app.services.github_analysis_sync가 data/analysis_60d/로 별도 동기화하며,
+# 그 경로는 의도적으로 git에 커밋된다 -- 여기서 무시하지 않는다.
+data/macd2_daily_archive/

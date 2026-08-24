@@ -57,6 +57,18 @@ try:
 except Exception:
     pass
 
+# 2026-08-24 사용자 요청: MACD2/TW2 리서치용 일별 데이터 아카이브(Render
+# Persistent Disk, 무제한 보관) + 최근 60영업일 분석용 파생 데이터의 GitHub
+# 동기화 -- 완전히 독립된 read-only 부가기능. app.trading.*를 전혀 호출하지
+# 않으므로 실거래 Worker/시세조회/플래그생성/주문에는 어떤 영향도 없다. GitHub
+# 실제 push는 별도 환경변수(GITHUB_ANALYSIS_SYNC_ENABLE_PUSH)가 명시적으로
+# true가 되기 전까지 항상 dry-run으로만 동작한다.
+try:
+    from app.services.macd2_daily_archive_scheduler import ensure_macd2_daily_archive_thread_running
+    ensure_macd2_daily_archive_thread_running()
+except Exception:
+    pass
+
 from app.ui.auth_gate import require_login
 require_login()
 
