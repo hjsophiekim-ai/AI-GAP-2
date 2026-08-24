@@ -408,6 +408,10 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.scheduled_entry_executed_at = None
     state.scheduled_entry_last_result = None
     state.scheduled_entry_protected = False
+    state.premarket_carry_candidate_direction = None
+    state.premarket_carry_candidate_bar_ts = None
+    state.premarket_carry_executed_at = None
+    state.premarket_carry_last_result = None
 
 
 def _relation_from_diff(diff: Optional[float]) -> str:
@@ -559,6 +563,17 @@ def initialize_strategy_session(
                 continue
             direction = evaluate_macd_crossover(snap, last_direction)
             state.last_confirmed_bar_ts = snap.bar_dt.isoformat()
+            # 2026-08-24: a Worker restart landing inside 08:45-09:03 must not
+            # silently drop a premarket-carry candidate that this same catch-up
+            # walk otherwise fully reconstructs (last_flag_snap/last_direction
+            # below) -- this is the exact restart scenario today's own live
+            # incident (T+3 pending-candidate clobbering, fixed separately in
+            # this same file) showed can happen mid-morning. run_once() only
+            # ever advances premarket_carry_* off a LIVE tick's own confirmed
+            # bar (worker.py's _advance_premarket_carry_candidate call site);
+            # this replay is the only other place a flag becomes "confirmed",
+            # so it must feed the exact same bookkeeping function.
+            _advance_premarket_carry_candidate(state, snap, direction)
             if direction != Direction.HOLD:
                 last_direction = direction
                 last_flag_snap = snap
@@ -2809,6 +2824,180 @@ def _record_scheduled_entry_signal(state: RuntimeState, direction: Direction, si
     ledger.append_signal(row)
 
 
+def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed_direction: Direction) -> None:
+    """PRE15+TW 프리마켓 승계 후보 등록/취소 (2026-08-24, TW2 전용, 사용자
+    요청 -- 60영업일 백테스트 검증: scripts/premarket_carryover_backtest.py의
+    run_pre15_tw와 동일 규칙). 매 tick, held/flat 분기와 무관하게 무조건
+    호출된다(순수 북키핑, 주문 권한 없음) -- confirmed_direction은 이 tick의
+    completed bar에서 새로 확정된 크로스오버(HOLD면 아무것도 안 함).
+
+    - config.PREMARKET_CARRY_WINDOW_START(08:45:00) <= bar_time < SESSION_OPEN
+      (09:00:00): 이 bar를 오늘의 승계 후보로 등록(덮어쓰기 -- "마지막" 플래그
+      규칙은 재등록만으로 자연히 만족됨).
+    - 후보가 이미 있고 아직 발동 전(SCHEDULED_ENTRY_TIME=09:03 이전)인 상태에서
+      반대 방향 플래그가 확정되면 후보를 취소한다. 취소 판정 구간은 후보의 자기
+      bar 다음부터 09:00-09:03 bar까지(즉 bar_time < SCHEDULED_ENTRY_TIME)
+      전부 포함-- 09:00 bar에서의 반대 플래그도 여기서 취소된다.
+    - 같은 방향의 새 플래그(예: 09:00 bar에 동일 방향 재확정)는 취소하지 않고,
+      그대로 일반 TW2 경로(_judge_time_window_flag)로도 흘러가지만
+      order_executor.execute_signal의 BLOCK_ALREADY_HOLDING이 자연히
+      중복진입을 막는다(승계가 먼저 09:03에 체결되므로 나중에 도착하는 일반
+      T+3 재확인은 항상 이미 보유 중인 상태를 본다).
+    """
+    if confirmed_direction == Direction.HOLD:
+        return
+    if not state.time_window_2_filter_enabled:
+        return
+    if state.premarket_carry_executed_at:
+        return  # already resolved (entered or expired) today
+    bar_time = macd_snap.bar_dt.astimezone(KST).time()
+    if config.PREMARKET_CARRY_WINDOW_START <= bar_time < config.SESSION_OPEN:
+        state.premarket_carry_candidate_direction = confirmed_direction
+        state.premarket_carry_candidate_bar_ts = macd_snap.bar_dt.isoformat()
+        return
+    if state.premarket_carry_candidate_direction is None:
+        return
+    if bar_time >= config.SCHEDULED_ENTRY_TIME:
+        return  # past the 09:00-09:03 re-confirm window; entry logic owns this from here
+    if confirmed_direction != state.premarket_carry_candidate_direction:
+        state.premarket_carry_candidate_direction = None
+        state.premarket_carry_candidate_bar_ts = None
+
+
+def _premarket_carry_should_fire(state: RuntimeState, now: datetime) -> bool:
+    """Mirrors _scheduled_entry_should_fire's own once-per-day + fire-window
+    semantics exactly, on the separate premarket_carry_* fields."""
+    if not state.time_window_2_filter_enabled:
+        return False  # user turned TW2 off between registration and 09:03 -- do not fire
+    if state.premarket_carry_candidate_direction is None or state.premarket_carry_executed_at:
+        return False
+    if now.time() < config.SCHEDULED_ENTRY_TIME:
+        return False
+    fire_deadline = datetime.combine(now.date(), config.SCHEDULED_ENTRY_TIME, tzinfo=KST) + timedelta(
+        seconds=config.SCHEDULED_ENTRY_FIRE_WINDOW_SEC,
+    )
+    return now <= fire_deadline
+
+
+def _record_premarket_carry_signal(state: RuntimeState, direction: Direction, signal_id: str, now: datetime, outcome) -> None:
+    """Signal-ledger row for the PRE15+TW premarket-carry entry -- mirrors
+    _record_scheduled_entry_signal exactly, tagged signal_type=
+    PREMARKET_CARRY_TW so it is distinguishable in the audit trail from both
+    a normal TW2 entry and the unrelated manual 09:03 예약매수."""
+    block_reason = outcome.block_reason or ""
+    row = {
+        "trading_date": now.strftime("%Y%m%d"),
+        "completed_bar_at": now.strftime("%H%M%S"),
+        "signal_id": signal_id,
+        "signal_type": "PREMARKET_CARRY_TW",
+        "direction": direction.value,
+        "detected_at": now.isoformat(),
+        "order_requested_at": outcome.timestamps.get("buy_requested_at", ""),
+        "order_result": outcome.final_state.value,
+        "block_reason": block_reason,
+        "signal_bar_at": state.premarket_carry_candidate_bar_ts or now.isoformat(),
+        "signal_confirmed_at": now.isoformat(),
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": "PREMARKET_CARRY_TW_0845_0859_NO_VETO",
+        "worker_code_sha": git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        "confirmed_direction": direction.value,
+        "executor_called": True,
+        "broker_called": bool(outcome.broker_called),
+        "broker_order_id": outcome.buy_result.order_id if outcome.buy_result else "",
+        "order_price": outcome.order_price,
+        "order_type": outcome.order_type or "",
+        "requested_qty": outcome.final_qty,
+        "final_qty": outcome.quantity,
+        "filled_qty": outcome.filled_qty,
+        "fill_poll_result": outcome.fill_poll_result or "",
+        "balance_qty": outcome.balance_qty,
+        "failure_stage": outcome.order_failure_stage or "",
+        "final_result": f"{outcome.final_state.value}:{block_reason}" if block_reason else outcome.final_state.value,
+    }
+    ledger.append_signal(row)
+
+
+def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, state: RuntimeState, now: datetime, macd_snap):
+    """Fires the PRE15+TW premarket-carry entry at config.SCHEDULED_ENTRY_TIME
+    (09:03) -- deliberately bypasses time_window_filter.evaluate_time_window_
+    entry / evaluate_tw2_extra_vetoes entirely (no quality score, no VWAP
+    veto, no recent-cross veto), calling order_executor.execute_signal
+    directly, exactly reproducing scripts/premarket_carryover_backtest.py's
+    run_pre15_tw -- the validated 60-day backtest never applied those checks
+    to this entry either (사용자 명시 요청: 검증된 조건 그대로, 추가 quality
+    조건 없음). Only ever called from run_once's flat branch, so ``position``
+    is always None here by construction (mirrors _execute_scheduled_entry's
+    own convention of passing position=None explicitly rather than
+    state.position). Once filled, this position is managed by the exact same
+    TW2 ladder (STOP_LOSS/TP1/TP2/OPPOSITE_SIGNAL/daily entry count) as any
+    other TW2 entry, via the same time_window_position_active bookkeeping the
+    normal path sets in _dispatch_confirmed_signal's approved branch."""
+    direction = state.premarket_carry_candidate_direction
+    if direction is None:
+        return None
+    if state.position is not None and state.position.quantity > 0:
+        # Defense-in-depth: this function always dispatches with
+        # position=None (never state.position), which is only safe because
+        # run_once's flat branch guarantees no position is held when this is
+        # called. If ever invoked otherwise, refuse rather than silently
+        # buying on top of an existing holding order_executor never gets told
+        # about.
+        return None
+    if not _pending_direction_still_active(direction, macd_snap):
+        # spec: "09:03에도 동일 MACD STATE가 유지되면" -- it didn't, so this
+        # is a clean non-entry, not a retryable failure.
+        state.premarket_carry_candidate_direction = None
+        state.premarket_carry_candidate_bar_ts = None
+        state.premarket_carry_executed_at = now.isoformat()
+        state.premarket_carry_last_result = "MACD_STATE_NOT_HELD_AT_0903"
+        return None
+    target_symbol = order_executor.target_symbol_for_direction(direction)
+    quote_snap = market_data.get_quote(target_symbol)
+    if quote_snap is None or quote_snap.error or quote_snap.price <= 0:
+        state.premarket_carry_last_result = "QUOTE_UNAVAILABLE"
+        return None  # transient -- next tick retries within the fire window
+    signal_id = f"PREMARKET_CARRY_TW_{direction.value}_{now.strftime('%Y%m%d')}"
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=direction, signal_id=signal_id,
+        quotes={target_symbol: quote_snap.price}, position=None, budget=state.budget,
+        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+    )
+    _record_premarket_carry_signal(state, direction, signal_id, now, outcome)
+
+    if outcome.final_state == SignalState.EXECUTED:
+        _apply_switch_outcome(state, outcome, direction, now)
+        state.premarket_carry_executed_at = now.isoformat()
+        state.premarket_carry_last_result = "EXECUTED"
+        state.premarket_carry_candidate_direction = None
+        state.premarket_carry_candidate_bar_ts = None
+        # Counts toward the SAME daily morning entry cap as every other TW2
+        # entry (사용자 요청: "기존 일일 진입횟수 카운트에 정상 포함"), and the
+        # SAME session bookkeeping _dispatch_confirmed_signal's approved
+        # branch sets, so the held-position TW2 branch recognizes and manages
+        # this position identically to a normal TW2 entry from here on.
+        state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
+        state.time_window_entry_session_seq = state.time_window_morning_entry_count
+        state.time_window_position_active = True
+        state.time_window_active_mode = "TW2"
+        state.time_window_entry_session = "MORNING"
+        state.time_window_tp1_done = False
+        state.time_window_peak_net_return = 0.0
+        state.time_window_initial_quantity = outcome.quantity
+        state.last_time_window_entry_at = now.isoformat()
+        return outcome
+
+    state.order_block_reason = outcome.block_reason
+    state.premarket_carry_last_result = f"{outcome.final_state.value}:{outcome.block_reason or ''}"
+    if outcome.block_reason not in TEMPORARY_BLOCK_REASONS:
+        state.premarket_carry_executed_at = now.isoformat()
+        state.premarket_carry_candidate_direction = None
+        state.premarket_carry_candidate_bar_ts = None
+    return None
+
+
 def _scheduled_entry_should_fire(state: RuntimeState, now: datetime) -> bool:
     """09:03 예약 매수(2026-08-06) 발동 여부 — 오늘 이미 체결/포기됐으면
     (scheduled_entry_executed_at) 다시 발동하지 않고(하루 1회), 예약된 게
@@ -3047,6 +3236,7 @@ def run_once(
     # docstring (2026-08-18 fix) for why a genuine same-day first bar no
     # longer does.
     confirmed_direction = _advance_confirmed_primary(state, macd_snap, now)
+    _advance_premarket_carry_candidate(state, macd_snap, confirmed_direction)
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
 
@@ -3411,6 +3601,15 @@ def run_once(
         scheduled_outcome = _execute_scheduled_entry(broker=broker, market_data=market_data, state=state, now=now)
         if scheduled_outcome is not None:
             result.actions.append(f"SCHEDULED_ENTRY_0903:{scheduled_outcome.target_symbol}")
+            state.last_evaluated_bar_ts = bar_ts_str
+            return result
+
+    if _premarket_carry_should_fire(state, now):
+        carry_outcome = _execute_premarket_carry_entry(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        )
+        if carry_outcome is not None:
+            result.actions.append(f"PREMARKET_CARRY_TW:{carry_outcome.target_symbol}")
             state.last_evaluated_bar_ts = bar_ts_str
             return result
 

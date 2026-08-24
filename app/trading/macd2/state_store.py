@@ -301,6 +301,12 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "scheduled_entry_executed_at": state.scheduled_entry_executed_at,
         "scheduled_entry_last_result": state.scheduled_entry_last_result,
         "scheduled_entry_protected": bool(state.scheduled_entry_protected),
+        "premarket_carry_candidate_direction": (
+            state.premarket_carry_candidate_direction.value if state.premarket_carry_candidate_direction else None
+        ),
+        "premarket_carry_candidate_bar_ts": state.premarket_carry_candidate_bar_ts,
+        "premarket_carry_executed_at": state.premarket_carry_executed_at,
+        "premarket_carry_last_result": state.premarket_carry_last_result,
         "time_window_filter_enabled": bool(state.time_window_filter_enabled),
         "time_window_filter_enabled_at": state.time_window_filter_enabled_at,
         "time_window_filter_enabled_by": state.time_window_filter_enabled_by,
@@ -375,6 +381,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     scheduled_entry_raw = raw.get("scheduled_entry_armed_direction")
     scheduled_entry_armed_direction = (
         Direction(scheduled_entry_raw) if scheduled_entry_raw in _DIRECTION_VALUES else None
+    )
+    premarket_carry_raw = raw.get("premarket_carry_candidate_direction")
+    premarket_carry_candidate_direction = (
+        Direction(premarket_carry_raw) if premarket_carry_raw in _DIRECTION_VALUES else None
     )
     tw_pending_raw = raw.get("time_window_pending_flag_direction")
     time_window_pending_flag_direction = (
@@ -650,6 +660,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         scheduled_entry_executed_at=raw.get("scheduled_entry_executed_at"),
         scheduled_entry_last_result=raw.get("scheduled_entry_last_result"),
         scheduled_entry_protected=bool(raw.get("scheduled_entry_protected") or False),
+        premarket_carry_candidate_direction=premarket_carry_candidate_direction,
+        premarket_carry_candidate_bar_ts=raw.get("premarket_carry_candidate_bar_ts"),
+        premarket_carry_executed_at=raw.get("premarket_carry_executed_at"),
+        premarket_carry_last_result=raw.get("premarket_carry_last_result"),
         time_window_filter_enabled=time_window_filter_enabled,
         time_window_filter_enabled_at=raw.get("time_window_filter_enabled_at"),
         time_window_filter_enabled_by=raw.get("time_window_filter_enabled_by"),

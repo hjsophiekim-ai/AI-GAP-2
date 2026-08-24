@@ -471,6 +471,18 @@ class RuntimeState:
     # close/switch and on day rollover.
     scheduled_entry_protected: bool = False
 
+    # ── PRE15+TW 프리마켓 승계 (2026-08-24, TW2 전용) — 08:45:00-08:59:59에
+    # 확정된 마지막 플래그. 그 이후 09:03까지 반대 플래그가 확정되면 None으로
+    # 취소된다(worker._advance_premarket_carry_candidate). 취소되지 않으면
+    # config.SCHEDULED_ENTRY_TIME(09:03)에 TW2의 veto 없이 즉시 진입한다
+    # (worker._execute_premarket_carry_entry) -- scheduled_entry_* 필드(수동
+    # 09:03 예약매수)와는 완전히 별개이며 서로 간섭하지 않는다. 매일 자정 이후
+    # 첫 tick에서 _apply_day_rollover가 초기화.
+    premarket_carry_candidate_direction: Optional[Direction] = None
+    premarket_carry_candidate_bar_ts: Optional[str] = None
+    premarket_carry_executed_at: Optional[str] = None
+    premarket_carry_last_result: Optional[str] = None
+
     # ── Optional "시간대별 최적거래 필터" (Time-Window Optimal Trading Filter,
     # 2026-08-15) — entry gate AND its own position-management ladder (see
     # time_window_filter.py / time_window_position_manager.py). Mutually

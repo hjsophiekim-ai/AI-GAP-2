@@ -175,6 +175,18 @@ SCHEDULED_ENTRY_FIRE_WINDOW_SEC = 180.0
 SCHEDULED_ENTRY_PROTECTION_UNTIL = time(9, 10)
 SCHEDULED_ENTRY_PROTECTION_ACTIVE = "SCHEDULED_ENTRY_PROTECTION_ACTIVE"
 
+# ── PRE15+TW 프리마켓 승계 (2026-08-24, 사용자 요청 — 60영업일 백테스트로
+# 검증: scripts/premarket_carryover_backtest.py의 run_pre15_tw, 기존 TW2
+# baseline 대비 총수익 +12.7%p/복리 +26.5%p 개선, MDD 변화 없음). 08:45:00
+# -08:59:59에 확정된 마지막 RED/BLUE 플래그가 SCHEDULED_ENTRY_TIME(09:03)까지
+# 반대 플래그 없이 유지되면, TW2의 evaluate_time_window_entry/
+# evaluate_tw2_extra_vetoes(품질점수/VWAP/과다교차 veto)를 전혀 거치지 않고
+# 09:03에 즉시 진입한다 -- 검증된 백테스트 조건 그대로, 별도 quality 조건을
+# 추가하지 않는다(사용자 명시 요청). TW2 전용(time_window_2_filter_enabled),
+# TW1에는 적용하지 않는다. 09:00~09:03 사이의 취소 판정 및 발동 시각은 기존
+# SCHEDULED_ENTRY_TIME/FIRE_WINDOW_SEC을 그대로 재사용한다(별도 상수 불필요).
+PREMARKET_CARRY_WINDOW_START = time(8, 45)
+
 # ── Worker (strategy-fixed) ─────────────────────────────────────────────────
 WORKER_INTERVAL_SEC = 5.0
 WORKER_TICK_MEAN_MAX_SEC = 5.5
