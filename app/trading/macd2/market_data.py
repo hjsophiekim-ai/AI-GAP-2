@@ -253,7 +253,14 @@ class MarketDataService:
 
     def quote_status(
         self,
-        symbols: tuple[str, ...] = (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL),
+        # 2026-08-24 fix (real incident: UI quote_status badge flapped
+        # PARTIAL_STALE/READY all morning while orders were never actually at
+        # risk): default used to include WATCH_SYMBOL(000660), but that quote
+        # is signal-source-only -- worker.py's own order-dispatch gate
+        # (_required_quote_symbols) already excludes it for the exact same
+        # reason (2026-08-12 fix). Including it here just made the
+        # diagnostic badge flip on a symbol that never blocks an order.
+        symbols: tuple[str, ...] = (config.LONG_SYMBOL, config.INVERSE_SYMBOL),
     ) -> str:
         if not self.quote_updater_alive():
             return "DEAD"
@@ -900,12 +907,29 @@ class MarketDataService:
         stop_event = threading.Event()
         self._quote_updater_stop = stop_event
 
+        # 2026-08-24 fix (real incident: LONG/INVERSE ETF quote age sat at
+        # 16-19s all morning under KIS mock-mode rate-limit contention from
+        # other bots sharing this process's mock throttle -- see
+        # config.WATCH_SYMBOL_QUOTE_REFRESH_EVERY_N_CYCLES). WATCH_SYMBOL is
+        # diagnostic-display-only (never read by order dispatch), so it
+        # doesn't need every cycle -- only the two traded ETFs do.
+        traded_symbols = (config.LONG_SYMBOL, config.INVERSE_SYMBOL)
+        all_symbols = (config.WATCH_SYMBOL,) + traded_symbols
+        cycle_n = 0
+
         def _loop() -> None:
+            nonlocal cycle_n
             while not stop_event.is_set():
                 try:
-                    self.refresh_quotes()
+                    symbols = (
+                        all_symbols
+                        if cycle_n % config.WATCH_SYMBOL_QUOTE_REFRESH_EVERY_N_CYCLES == 0
+                        else traded_symbols
+                    )
+                    self.refresh_quotes(symbols=symbols)
                 except Exception:
                     pass
+                cycle_n += 1
                 stop_event.wait(interval_sec)
 
         self._quote_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-quote-updater")

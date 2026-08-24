@@ -66,7 +66,11 @@ def _worker_status(state, worker_stats: dict) -> str:
 
 
 def _quote_status(quotes: dict) -> str:
-    for symbol in (macd2_config.WATCH_SYMBOL, macd2_config.LONG_SYMBOL, macd2_config.INVERSE_SYMBOL):
+    # 2026-08-24: mirrors market_data.MarketDataService.quote_status()'s
+    # symbol set -- WATCH_SYMBOL(000660) is signal-source-only and never
+    # gates an order, so it's excluded here too (else this fallback path
+    # would disagree with the service's own badge value).
+    for symbol in (macd2_config.LONG_SYMBOL, macd2_config.INVERSE_SYMBOL):
         snap = quotes.get(symbol)
         if snap is None or snap.error or not snap.price:
             return "PARTIAL_ERROR"

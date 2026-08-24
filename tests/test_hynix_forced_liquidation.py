@@ -24,7 +24,10 @@ from app.trading.hynix_position_common import HynixPositionManager
 
 _UI_PAGE_PATH = (
     Path(__file__).resolve().parent.parent
-    / "app" / "ui" / "pages" / "9_SK하이닉스_자동매매.py"
+    # 2026-08-24: page hidden from Streamlit nav (unused module, user request)
+    # by moving it to pages_disabled/ -- source-pattern assertions below still
+    # apply to the same file, just relocated.
+    / "app" / "ui" / "pages_disabled" / "9_SK하이닉스_자동매매.py"
 )
 
 

@@ -204,6 +204,19 @@ WORKER_AUTO_RECOVER_COOLDOWN_SEC = 30.0
 
 # ── Market data validity (strategy-fixed) ──────────────────────────────────
 QUOTE_MAX_AGE_SEC = 10.0
+
+# 2026-08-24 fix (real incident: LONG/INVERSE ETF quotes -- the two symbols
+# order dispatch actually depends on -- sat 16-19s stale all morning, once
+# 81 minutes late). Root cause: KIS mock mode's single process-wide
+# ~1-req/1.1s throttle (kis_client._throttle) is shared by every mock-mode
+# bot in this process (MU_MACD auto_trade_on=True the same morning), not
+# just MACD2. WATCH_SYMBOL(000660) was consuming 1 of every 3 quote-updater
+# calls for a value that (a) order dispatch never reads (see worker.py
+# _required_quote_symbols) and (b) doesn't need sub-10s freshness -- it's a
+# diagnostic display price only. Fetching it far less often frees up that
+# share of the shared mock-mode budget for the two symbols that actually
+# gate orders.
+WATCH_SYMBOL_QUOTE_REFRESH_EVERY_N_CYCLES = 8
 PENDING_SIGNAL_RETRY_SEC = 30.0
 FLAT_POSITION_RECONCILE_INTERVAL_SEC = 30.0
 
