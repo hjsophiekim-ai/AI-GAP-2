@@ -1473,6 +1473,21 @@ def _execute_or_wait(
     state.last_order_fill_poll_result = outcome.fill_poll_result
     state.last_order_balance_qty = outcome.balance_qty
     _record_broker_order_result(state, outcome)
+    if outcome.final_state == SignalState.FAILED:
+        # 2026-08-25 fix (real incident: a BUY reported FAILED (buy_result.
+        # success=False) had actually filled at the broker under KIS
+        # mock-mode rate-limit/latency pressure -- state.position stayed
+        # None/flat here, so this position had ZERO risk management
+        # (no stop-loss/TW2 ladder) until the next PERIODIC
+        # reconcile_position_state() call (up to FLAT_POSITION_RECONCILE_
+        # INTERVAL_SEC=30s later) discovered the mismatch via
+        # RECOVERED_FROM_BROKER. A FAILED order result is exactly what
+        # reconcile_position_state exists to catch -- force it immediately
+        # instead of waiting for the periodic timer, so a real fill is
+        # adopted into state.position (and folded into TW2 management on
+        # the very next tick) within one cycle instead of up to 30s later.
+        post_failure_reconcile = reconcile_position_state(broker, state, now, force=True)
+        result.signal_dispatch_trace["post_failure_reconcile"] = post_failure_reconcile
     broker_result = outcome.buy_result or outcome.sell_result
     if broker_result is not None:
         result.signal_dispatch_trace["broker_called"] = True
