@@ -863,9 +863,19 @@ def _record_reconcile_discovered_position(state: RuntimeState, pos: PositionSnap
     directly instead. The real entry time/price are genuinely unknown (that
     is the entire problem this discovers); this only records WHEN the gap
     was noticed and what was found, never fabricates the missing history.
+
+    2026-08-25 fix: this signal-ledger row alone left the EXECUTION ledger
+    with zero trace of the BUY itself (order_executor._record_leg, entirely
+    untouched here, never ran for it) -- see ledger.append_reconcile_
+    backfill_buy's own docstring for what it backfills and why it is
+    idempotent/never double-counts PnL.
     """
     direction = _direction_for_symbol(pos.symbol)
     signal_id = f"RECONCILE_DISCOVERED_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+    ledger.append_reconcile_backfill_buy(
+        symbol=pos.symbol, quantity=pos.quantity, avg_price=pos.avg_price,
+        reconciled_at=now.isoformat(), mode=state.mode or "mock", signal_id=signal_id,
+    )
     row = {
         "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
         "completed_bar_at": "",
@@ -1929,13 +1939,41 @@ def _advance_held_position_risk_management(
             state.time_window_active_mode = state.time_window_active_mode or (
                 "TW2" if state.time_window_2_filter_enabled else "TW1"
             )
-            state.time_window_entry_session = state.time_window_entry_session or time_window_filter.session_for_window(
+            session = state.time_window_entry_session or time_window_filter.session_for_window(
                 time_window_filter.classify_window(now.astimezone(KST).time())
             )
+            state.time_window_entry_session = session
             state.time_window_tp1_done = False
             seed_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
             state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), seed_return)
             state.time_window_initial_quantity = state.time_window_initial_quantity or pos.quantity
+            # 2026-08-25 fix (real incident: a BUY that actually filled but
+            # was reported BUY_FAILED, later discovered via
+            # reconcile_position_state's RECOVERED_FROM_BROKER, reaches this
+            # adoption path instead of _resolve_time_window_candidate's own
+            # EXECUTED branch -- the ONLY place that normally increments
+            # time_window_morning_entry_count/time_window_afternoon_entry_
+            # count. _execute_scheduled_entry (09:03 button) has the exact
+            # same gap for the same reason: it also relies entirely on this
+            # shared adoption path and never increments the counter itself.
+            # Both left the session's entry cap (MAX_MORNING_ENTRIES/
+            # MAX_AFTERNOON_ENTRIES) silently under-counting a real entry.
+            # Safe to increment exactly once here: this whole branch is
+            # already gated on `not state.time_window_position_active`, and
+            # every path that DOES increment the counter itself
+            # (_resolve_time_window_candidate's/_execute_premarket_carry_
+            # entry's own EXECUTED branches) sets that same flag True the
+            # same tick it increments -- so a position counted there can
+            # never re-enter this branch and double-count, and repeated
+            # reconcile ticks for the SAME position only ever reach this
+            # branch once (the first tick after discovery, before this
+            # branch flips the flag to True).
+            if session == "MORNING":
+                state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
+                state.time_window_entry_session_seq = state.time_window_morning_entry_count
+            elif session == "AFTERNOON":
+                state.time_window_afternoon_entry_count = int(state.time_window_afternoon_entry_count or 0) + 1
+                state.time_window_entry_session_seq = state.time_window_afternoon_entry_count
 
         # 2026-08-21 fix (사용자 요청 — 익절판단은 3분봉 완성 시점이 아니라
         # 틱뜨자마자 즉시): TP1/TP2/AFTERNOON_TP alone are checked here on

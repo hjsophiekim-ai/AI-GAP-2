@@ -802,6 +802,138 @@ def test_runtime_holding_broker_flat_recovers_to_flat():
     assert state.position is None
 
 
+# ── 2026-08-25 real incident: reconcile-discovered positions never had a BUY
+# leg in the EXECUTION ledger at all (only the signal-ledger discovery row
+# above) -- four scenarios below prove the minimal backfill this adds
+# (ledger.append_reconcile_backfill_buy, called from
+# worker._record_reconcile_discovered_position) closes that gap without
+# touching order_executor._record_leg's own normal path at all. ──────────
+
+
+def test_scenario1_normal_executed_buy_has_no_backfill_marker():
+    """시나리오 1) 정상체결: order_executor.execute_signal의 EXECUTED 경로가
+    쓰는 BUY 레그는 이번 변경으로 전혀 건드리지 않았다 -- source가 항상
+    빈 문자열이어야 한다(RECONCILE_BACKFILL과 절대 혼동되지 않음)."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-normal-1",
+        quotes={config.LONG_SYMBOL: 15_000.0}, position=None, budget=10_000_000.0,
+    )
+    assert outcome.final_state == SignalState.EXECUTED
+
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["side"] == "BUY"
+    assert rows[0].get("source", "") == ""
+
+
+def test_scenario2_buy_reported_failed_but_broker_actually_filled_backfills_on_reconcile():
+    """시나리오 2) BUY 응답예외(성공했지만 실패로 보고됨) 후 reconcile: 브로커
+    호출이 success=False를 반환하면 execute_signal은 FAILED를 돌려주고
+    체결원장에는 아무 것도 남기지 않는다(그 자체가 오늘 실제로 겪은 갭).
+    이후 브로커가 실제로는 그 주문을 체결시켜 포지션을 들고 있는 상황(원인이
+    타임아웃이든 무엇이든, reconcile_position_state 관점에서는 '런타임은
+    flat인데 브로커는 포지션 보유'라는 사실만 확인 가능)에서 reconcile이
+    돌면, 그 즉시 알려진 값(종목/수량/평단가/발견시각)만으로 BUY 레그가
+    백필돼야 한다."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+    state = _state()
+
+    broker.fail_next_buy = True
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-failed-1",
+        quotes={config.LONG_SYMBOL: 15_000.0}, position=None, budget=10_000_000.0,
+    )
+    assert outcome.final_state == SignalState.FAILED
+    assert ledger.load_execution_ledger() == [], "confirms the real gap this backfill exists to close"
+
+    # the broker actually held the position all along -- the exact
+    # real-world discrepancy reconcile_position_state exists to catch:
+    broker.buy_market(config.LONG_SYMBOL, 876, "phantom-fill-seed")
+
+    discovered_at = datetime(2026, 8, 25, 12, 15, 38, tzinfo=KST)
+    result = worker.reconcile_position_state(broker, state, discovered_at, force=True)
+    assert result == worker.RECOVERED_FROM_BROKER
+
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    backfilled = rows[0]
+    assert backfilled["side"] == "BUY"
+    assert backfilled["source"] == "RECONCILE_BACKFILL"
+    assert int(float(backfilled["executed_qty"])) == 876
+    assert float(backfilled["executed_price"]) == 15_000.0
+    # never a fabricated fill time -- exactly the reconcile discovery moment:
+    assert backfilled["timestamp"] == discovered_at.isoformat()
+    # a genuinely unknown entry-side fee is never estimated -- all zero:
+    assert float(backfilled["gross_pnl"]) == 0.0
+    assert float(backfilled["fee"]) == 0.0
+    assert float(backfilled["slippage"]) == 0.0
+    assert float(backfilled["net_pnl"]) == 0.0
+
+
+def test_scenario3_duplicate_reconcile_never_duplicates_the_backfill_leg():
+    """시나리오 3) 중복 reconcile: 같은 브로커 포지션을 (재시작 등으로) 여러
+    번 재발견해도 BUY 백필 레그는 정확히 1건만 남아야 한다 -- order_id가
+    종목/수량/평단가에서만 파생되므로 append_execution의 order_id dedup이
+    그대로 이걸 보장한다."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 876, "seed")
+    now = datetime(2026, 8, 25, 12, 15, 38, tzinfo=KST)
+
+    result1 = worker.reconcile_position_state(broker, _state(), now, force=True)
+    assert result1 == worker.RECOVERED_FROM_BROKER
+    assert len(ledger.load_execution_ledger()) == 1
+
+    # a second, independent discovery of the exact SAME broker position
+    # (e.g. a fresh process re-discovering it after a restart):
+    later = now + timedelta(minutes=5)
+    result2 = worker.reconcile_position_state(broker, _state(), later, force=True)
+    assert result2 == worker.RECOVERED_FROM_BROKER
+
+    rows = ledger.load_execution_ledger()
+    buy_rows = [r for r in rows if r["side"] == "BUY"]
+    assert len(buy_rows) == 1, f"duplicate reconcile must not duplicate the backfill leg, got {len(buy_rows)}"
+
+
+def test_scenario4_backfilled_position_sells_normally_with_no_gap_or_double_count():
+    """시나리오 4) 이후 SELL 청산: 백필된 포지션이 나중에 정상 execute_exit로
+    청산되면 (1) 매도 레그는 손익/수수료/슬리피지를 정상적으로 전부 반영하고
+    (2) 체결원장이 매수(백필)->매도로 끊김 없이 이어지며 (3) 백필 레그의
+    모든 손익/비용 필드가 0이므로 오늘 총손익/총비용을 합산해도 매도 레그
+    단독 값과 정확히 같다(이중계산 없음)."""
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 8_984.925})
+    broker.buy_market(config.LONG_SYMBOL, 876, "seed")
+    state = _state()
+    now = datetime(2026, 8, 25, 12, 15, 38, tzinfo=KST)
+    result = worker.reconcile_position_state(broker, state, now, force=True)
+    assert result == worker.RECOVERED_FROM_BROKER
+    assert state.position.quantity == 876
+    assert state.position.avg_price == 8_984.925
+
+    broker.set_quote(config.LONG_SYMBOL, 8_845.0)
+    exit_outcome = order_executor.execute_exit(
+        broker=broker, symbol=config.LONG_SYMBOL, quantity=876,
+        exit_reason=config.EXIT_TW_STOP_LOSS, entry_price=state.position.avg_price,
+    )
+    assert exit_outcome.final_state == SignalState.EXECUTED
+
+    rows = ledger.load_execution_ledger()
+    assert [r["side"] for r in rows] == ["BUY", "SELL"], "ledger must show an unbroken BUY->SELL pair, no gap"
+    buy_row, sell_row = rows
+    assert buy_row["source"] == "RECONCILE_BACKFILL"
+    assert sell_row.get("source", "") == ""  # the normal _record_leg path, entirely untouched
+
+    total_gross = sum(float(r["gross_pnl"]) for r in rows)
+    total_net = sum(float(r["net_pnl"]) for r in rows)
+    total_fee = sum(float(r["fee"]) for r in rows)
+    # the backfill leg contributes exactly zero -- today's totals must equal
+    # the SELL leg's own values alone, proving no double-count:
+    assert total_gross == float(sell_row["gross_pnl"])
+    assert total_net == float(sell_row["net_pnl"])
+    assert total_fee == float(sell_row["fee"])
+    assert float(sell_row["net_pnl"]) < 0  # sanity: this really is today's loss scenario
+
+
 def test_broker_lookup_failure_is_position_data_error():
     class ErrorBroker(FakeBroker):
         def get_positions(self):

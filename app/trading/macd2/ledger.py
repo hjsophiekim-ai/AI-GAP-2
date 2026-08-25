@@ -115,6 +115,11 @@ EXECUTION_LEDGER_COLUMNS = [
     "profit_lock_enabled", "profit_lock_peak_return_pct", "profit_lock_max_support_gap",
     "profit_lock_current_support_gap", "profit_lock_gap_ratio", "profit_lock_contraction_count",
     "profit_lock_drawdown_pct",
+    # source — appended 2026-08-25. Empty for every row order_executor._record_leg
+    # writes (never touched there); "RECONCILE_BACKFILL" ONLY on a row written by
+    # append_reconcile_backfill_buy() below, so a backfilled leg is always
+    # distinguishable from a real _record_leg-recorded one.
+    "source",
 ]
 
 LOGS_DIR_PATH: Path = LOGS_DIR
@@ -280,6 +285,50 @@ def append_execution(row: dict[str, Any]) -> bool:
                 return False
         _append_row(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS, row)
         return True
+
+
+def append_reconcile_backfill_buy(
+    *, symbol: str, quantity: int, avg_price: float, reconciled_at: str, mode: str, signal_id: str = "",
+) -> bool:
+    """Backfills a MINIMAL BUY leg for a position discovered via
+    reconcile_position_state's RECOVERED_FROM_BROKER (2026-08-25 real
+    incident: a BUY that actually filled at the broker under KIS load never
+    reached order_executor._record_leg -- e.g. buy_result reported
+    success=False -- so the execution ledger had zero trace of it, only a
+    signal-ledger RECONCILE_DISCOVERED row). Never called from
+    order_executor.py and never touches its _record_leg path.
+
+    Uses ONLY values reconcile itself just confirmed against the broker
+    (symbol/quantity/avg_price) -- the true fill time/price are genuinely
+    unknown and never fabricated: ``timestamp`` is the reconcile discovery
+    moment (``reconciled_at``), not an estimated fill time, and every row
+    this writes carries ``source="RECONCILE_BACKFILL"`` so it is always
+    distinguishable from a real _record_leg row. gross_pnl/fee/slippage/
+    net_pnl are all 0.0 -- the entry-side fee is likewise unconfirmable from
+    reconcile data alone, so it is never estimated either; this row is
+    purely a visibility/audit record of the missing BUY, contributes
+    nothing to any PnL/cost total, and cannot double-count with the SELL
+    leg's own (already complete) PnL once this position is later closed via
+    the normal execute_exit -> _record_leg path (entirely unaffected by
+    this function).
+
+    Idempotent by construction: order_id is derived from symbol/quantity/
+    avg_price only, never from a timestamp -- so reconciling the exact same
+    underlying broker position again (same-tick retry, a later duplicate
+    reconcile, or even a fresh process after a restart) always resolves to
+    the SAME order_id, and append_execution's own order_id dedup guarantees
+    this never writes a second row for it.
+    """
+    order_id = f"RECONCILE_BACKFILL_{symbol}_{int(quantity)}_{round(float(avg_price), 4)}"
+    return append_execution({
+        "order_id": order_id, "signal_id": signal_id, "timestamp": reconciled_at,
+        "mode": mode, "symbol": symbol, "side": "BUY",
+        "requested_qty": quantity, "executed_qty": quantity,
+        "requested_price": avg_price, "executed_price": avg_price,
+        "position_before": 0, "position_after": quantity,
+        "gross_pnl": 0.0, "fee": 0.0, "slippage": 0.0, "net_pnl": 0.0,
+        "exit_reason": "", "broker_response": "", "source": "RECONCILE_BACKFILL",
+    })
 
 
 PROFIT_LOCK_LEDGER_COLUMNS = [

@@ -65,6 +65,46 @@ def test_page_renders_with_populated_ledger():
     assert metric_values  # at least some metrics rendered
 
 
+def test_daily_summary_reflects_reconcile_backfilled_buy_and_real_sell_with_no_double_count():
+    """2026-08-25 real incident regression: today's "오늘의 거래 요약" metrics
+    must count/sum a reconcile-backfilled BUY (source=RECONCILE_BACKFILL,
+    all pnl/fee/slippage fields 0.0 -- the true entry-side cost is genuinely
+    unknown) together with its later, normal SELL leg with no gap and no
+    double-count -- round-trip count comes from the SELL leg alone, and the
+    cost/pnl totals must equal the SELL leg's own values exactly, since the
+    backfill leg contributes zero to both."""
+    now = pd.Timestamp.now(tz="Asia/Seoul")
+    trading_date = now.strftime("%Y%m%d")
+    buy_ts = now.replace(hour=12, minute=15, second=38).isoformat()
+    sell_ts = now.replace(hour=12, minute=33, second=0).isoformat()
+    ledger.append_execution({
+        "order_id": "RECONCILE_BACKFILL_0193T0_876_8984.925", "signal_id": "", "timestamp": buy_ts,
+        "mode": "mock", "symbol": "0193T0", "side": "BUY", "requested_qty": 876, "executed_qty": 876,
+        "requested_price": 8984.925, "executed_price": 8984.925, "position_before": 0, "position_after": 876,
+        "gross_pnl": 0.0, "fee": 0.0, "slippage": 0.0, "net_pnl": 0.0, "exit_reason": "",
+        "broker_response": "", "source": "RECONCILE_BACKFILL",
+    })
+    ledger.append_execution({
+        "order_id": "ORD-SELL-1", "signal_id": "", "timestamp": sell_ts,
+        "mode": "mock", "symbol": "0193T0", "side": "SELL", "requested_qty": 876, "executed_qty": 876,
+        "requested_price": 8845.0, "executed_price": 8845.0, "position_before": 876, "position_after": 0,
+        "gross_pnl": -151810.0, "fee": 1184.79, "slippage": 4784.69, "net_pnl": -158987.04,
+        "exit_reason": "STOP_LOSS", "broker_response": "", "source": "",
+    })
+
+    at = _fresh_app()
+    at.run()
+    assert not at.exception
+
+    metrics_by_label = {m.label: m.value for m in at.metric}
+    assert metrics_by_label.get("오늘 왕복거래 횟수") == "1건"
+    # total_cost = gross - net over ALL rows; the backfill leg is 0/0, so
+    # this must equal the SELL leg's own gross-net exactly (no double-count):
+    expected_cost = -151810.0 - (-158987.04)
+    assert metrics_by_label.get("총 수수료+세금+슬리피지") == f"{expected_cost:,.0f}원"
+    assert metrics_by_label.get("총 순수익") == f"{-158987.04:,.0f}원"
+
+
 def test_daily_stats_show_flag_times_and_order_status():
     # The page defaults trading_date to pd.Timestamp.now().strftime("%Y%m%d")
     # whenever state.session_date is unset (true here — no Worker ever

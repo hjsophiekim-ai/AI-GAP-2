@@ -1071,3 +1071,76 @@ def test_tw2_untracked_held_position_is_adopted_with_tw2_mode_and_gets_its_own_t
         f"an untracked-but-held position under TW2 must be adopted and take-profit at TW2's 6% -- got actions={result.actions!r}"
     )
     assert state.position is None
+
+
+def test_untracked_held_position_adoption_increments_entry_count_exactly_once(monkeypatch):
+    """2026-08-25 real incident: a BUY that actually filled but was reported
+    BUY_FAILED, later discovered via reconcile_position_state's
+    RECOVERED_FROM_BROKER, reaches this SAME adoption path (never
+    _resolve_time_window_candidate's own EXECUTED branch, the only place
+    that normally increments time_window_morning_entry_count/
+    time_window_afternoon_entry_count) -- so the session's entry cap
+    (MAX_MORNING_ENTRIES/MAX_AFTERNOON_ENTRIES) silently under-counted a
+    real entry. The 09:03 scheduled-entry button
+    (test_untracked_held_position_is_adopted_and_still_gets_take_profit,
+    above) has the exact same gap for the exact same reason. Proven here
+    with a position that stays open (small unrealized return, no TP/SL
+    threshold crossed) across two ticks: the appropriate session counter
+    must read exactly 1 after both -- one real increment, and the second
+    (repeated-reconcile-like) tick must not double-count."""
+    from app.trading.macd2 import time_window_filter
+    from app.trading.macd2.models import PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_005.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok, f"fixture bootstrap failed unexpectedly: {boot.reason}"
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    expected_session = time_window_filter.session_for_window(
+        time_window_filter.classify_window(now0.astimezone(KST).time())
+    )
+    assert expected_session in ("MORNING", "AFTERNOON")
+
+    def _count(state, session):
+        return state.time_window_morning_entry_count if session == "MORNING" else state.time_window_afternoon_entry_count
+
+    state = _fresh_state()
+    state.time_window_2_filter_enabled = True
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    assert state.time_window_position_active is False  # never tagged -- e.g. reconcile-discovered or scheduled-entry
+    assert state.time_window_morning_entry_count == 0
+    assert state.time_window_afternoon_entry_count == 0
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_005.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert state.position is not None, "position must still be open (small return, no TP/SL threshold crossed)"
+    assert state.time_window_position_active is True
+    assert _count(state, expected_session) == 1, (
+        f"adoption must increment the {expected_session} entry count exactly once, got "
+        f"morning={state.time_window_morning_entry_count} afternoon={state.time_window_afternoon_entry_count}"
+    )
+    other_session = "AFTERNOON" if expected_session == "MORNING" else "MORNING"
+    assert _count(state, other_session) == 0
+
+    # a second tick (mirrors a duplicate/late reconcile discovering the SAME
+    # already-adopted position again) must NOT double-count.
+    run_once(broker=broker, market_data=svc, state=state, now=now0 + timedelta(minutes=3))
+    assert _count(state, expected_session) == 1, "repeated ticks over the same adopted position must not double-count"

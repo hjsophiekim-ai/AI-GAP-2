@@ -481,8 +481,39 @@ if state.position:
 else:
     s3.metric("보유 종목", "flat")
 
-st.subheader("신호 원장 (오늘, 최근 100건)")
 trading_date = state.session_date or pd.Timestamp.now().strftime("%Y%m%d")
+exec_rows_all = ledger.load_execution_ledger(limit=2000)
+exec_rows = ledger.filter_execution_rows_by_trading_date(exec_rows_all, trading_date)
+
+st.subheader("오늘의 거래 요약")
+
+
+def _num(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+sell_rows_today = [r for r in exec_rows if r.get("side") == "SELL"]
+round_trip_count = len(sell_rows_today)
+total_gross_pnl = sum(_num(r.get("gross_pnl")) for r in exec_rows)
+total_net_pnl = sum(_num(r.get("net_pnl")) for r in exec_rows)
+# 세금+수수료+슬리피지를 합친 총비용 = gross와 net의 차이. 각 SELL 레그 자체의
+# net_pnl은 이미 매수/매도 수수료+거래세+슬리피지를 전부 반영해 계산되므로
+# (app.trading.trading_cost_engine.TradeCostEngine.compute_net_pnl), 원장의
+# 개별 fee/slippage 컬럼(매도측 수수료·슬리피지만 따로 담음, 세금/청산비용은
+# 컬럼에 없음)을 각각 더하는 대신 이 차이값을 쓰면 항목이 어디에 저장됐는지와
+# 무관하게 항상 정확하다 -- reconcile로 발견된 진입처럼 매수 레그 자체가
+# 원장에 없는 경우에도 매도(청산) 레그의 net_pnl은 이미 완전한 값이라 영향 없음.
+total_cost = total_gross_pnl - total_net_pnl
+
+sum1, sum2, sum3 = st.columns(3)
+sum1.metric("오늘 왕복거래 횟수", f"{round_trip_count}건")
+sum2.metric("총 수수료+세금+슬리피지", f"{total_cost:,.0f}원")
+sum3.metric("총 순수익", f"{total_net_pnl:,.0f}원")
+
+st.subheader("신호 원장 (오늘, 최근 100건)")
 signal_rows = [r for r in ledger.load_signal_ledger(limit=2000) if r.get("trading_date") == trading_date][-100:]
 if signal_rows:
     # 2026-08-21 fix (사용자 피드백 — 신호 원장이 70개 넘는 원본 컬럼을 그대로
@@ -515,10 +546,8 @@ else:
     st.caption("오늘 기록된 신호가 없습니다.")
 
 st.subheader("체결 원장 (오늘, 최근 100건)")
-exec_rows_all = ledger.load_execution_ledger(limit=2000)
-exec_rows = ledger.filter_execution_rows_by_trading_date(exec_rows_all, trading_date)[-100:]
 if exec_rows:
-    st.dataframe(pd.DataFrame(exec_rows), use_container_width=True)
+    st.dataframe(pd.DataFrame(exec_rows[-100:]), use_container_width=True)
 else:
     st.caption("오늘 기록된 체결이 없습니다.")
 
