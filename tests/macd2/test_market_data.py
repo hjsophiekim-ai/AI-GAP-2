@@ -1,6 +1,7 @@
 """Unit tests for app.trading.macd2.market_data — fake fetchers only, never real KIS."""
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -178,6 +179,97 @@ def test_refresh_quotes_populates_all_three_symbols_with_age():
         assert snap.price > 0
         assert snap.age_sec is not None and snap.age_sec >= 0
         assert snap.error is None
+
+
+class TestQuoteHistoryLockIndependence:
+    """2026-08-25 fix (real incident: order_block_reason stuck at
+    HISTORY_GAP all morning; every TW/TW2 T+3 confirmation stuck at
+    PENDING_CONFIRMATION forever). A single self._io_lock used to wrap
+    BOTH refresh_quotes() and merge_incremental_1m() end-to-end, INCLUDING
+    kis_client's own rate-limit retry backoff sleeps (up to ~40s under
+    sustained KIS mock-mode rate limiting) -- a stuck quote fetch held
+    that same lock and blocked history's merge_incremental_1m() (and vice
+    versa) for the whole stuck duration. The two paths must now be able to
+    make progress independently."""
+
+    def test_slow_quote_fetch_does_not_block_history_merge(self):
+        release_quote = threading.Event()
+
+        def slow_quote(mode, symbol):
+            del mode, symbol
+            release_quote.wait(timeout=5.0)
+            return 10000.0, None
+
+        def fast_history(mode, symbol, count, hour1):
+            del mode, symbol, count, hour1
+            return _fake_bars_df(datetime(2026, 1, 6, 9, 0, tzinfo=KST), 1), {}
+
+        svc = MarketDataService(mode="mock", fetch_quote=slow_quote, fetch_minute_candles=fast_history)
+
+        quote_thread = threading.Thread(target=svc.refresh_quotes)
+        quote_thread.start()
+        try:
+            t0 = time.monotonic()
+            svc.merge_incremental_1m()
+            elapsed = time.monotonic() - t0
+            assert elapsed < 1.0, (
+                f"merge_incremental_1m() took {elapsed:.2f}s -- it must not wait on a stuck quote fetch"
+            )
+        finally:
+            release_quote.set()
+            quote_thread.join(timeout=5.0)
+        assert not quote_thread.is_alive()
+
+    def test_slow_history_fetch_does_not_block_quote_refresh(self):
+        release_history = threading.Event()
+
+        def slow_history(mode, symbol, count, hour1):
+            del mode, symbol, count, hour1
+            release_history.wait(timeout=5.0)
+            return _empty_1m_frame(), {}
+
+        def fast_quote(mode, symbol):
+            del mode
+            return {"000660": 150000.0, "0193T0": 15000.0, "0197X0": 10000.0}.get(symbol), None
+
+        svc = MarketDataService(mode="mock", fetch_minute_candles=slow_history, fetch_quote=fast_quote)
+
+        history_thread = threading.Thread(target=svc.merge_incremental_1m)
+        history_thread.start()
+        try:
+            t0 = time.monotonic()
+            svc.refresh_quotes()
+            elapsed = time.monotonic() - t0
+            assert elapsed < 1.0, (
+                f"refresh_quotes() took {elapsed:.2f}s -- it must not wait on a stuck history fetch"
+            )
+        finally:
+            release_history.set()
+            history_thread.join(timeout=5.0)
+        assert not history_thread.is_alive()
+
+    def test_quote_fetch_calls_still_serialize_within_refresh_quotes(self):
+        """The lock split must not let refresh_quotes() itself fire
+        concurrent/overlapping KIS calls for its own symbols -- only cross
+        -path (quote vs history) blocking is removed, never intra-path
+        serialization (still exactly one KIS call in flight per path at a
+        time, same as before this fix)."""
+        concurrent_count = {"active": 0, "max_seen": 0}
+        guard = threading.Lock()
+
+        def tracking_quote(mode, symbol):
+            del mode, symbol
+            with guard:
+                concurrent_count["active"] += 1
+                concurrent_count["max_seen"] = max(concurrent_count["max_seen"], concurrent_count["active"])
+            time.sleep(0.05)
+            with guard:
+                concurrent_count["active"] -= 1
+            return 10000.0, None
+
+        svc = MarketDataService(mode="mock", fetch_quote=tracking_quote)
+        svc.refresh_quotes()
+        assert concurrent_count["max_seen"] == 1
 
 
 def test_watch_quote_is_normalized_to_latest_1m_close_scale():

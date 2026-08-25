@@ -222,7 +222,33 @@ class MarketDataService:
             fetch_minute_candles_for_date or self._default_fetch_minute_candles_for_date
         )
         self._fetch_quote = fetch_quote or self._default_fetch_quote
-        self._io_lock = threading.RLock()  # single KIS I/O lock — no nested pools, no concurrent KIS calls
+        # 2026-08-25 fix (real incident: order_block_reason stuck at
+        # HISTORY_GAP all morning, every TW/TW2 T+3 confirmation stuck at
+        # PENDING_CONFIRMATION forever). A single self._io_lock used to wrap
+        # BOTH the quote path (refresh_quotes) AND the history path
+        # (merge_incremental_1m/bootstrap paging) end-to-end, INCLUDING
+        # kis_client._get_with_rate_limit_retry's internal rate-limit
+        # backoff sleeps (up to ~40s under sustained KIS mock-mode rate
+        # limiting: 8 attempts x 5s). One symbol's stuck retry therefore
+        # held the SAME lock the OTHER path needed, blocking history's
+        # merge_incremental_1m() (or quotes) for that entire ~40s window —
+        # under sustained contention this compounded into the history
+        # updater never completing a fresh merge for minutes at a time,
+        # which is exactly what leaves a completed 3m bar's minutes
+        # perpetually incomplete (filter_complete_3m_bars drops it ->
+        # HISTORY_GAP -> the T+3 bar this flag needs to confirm on never
+        # appears). Splitting into two independent locks means a stuck
+        # quote retry no longer blocks history's own progress and vice
+        # versa; each path's own KIS calls still only ever run on their own
+        # single dedicated updater thread (no new concurrency introduced,
+        # no possibility of two calls racing for the SAME lock), and actual
+        # request PACING/no-spam is still enforced exactly as before by
+        # kis_client.py's own process-wide _throttle() (a separate, already
+        # cross-thread-safe rate gate keyed by mode, unaffected by this
+        # split) -- this only removes MarketDataService's own additional,
+        # redundant serialization between its two independent fetch paths.
+        self._quote_fetch_lock = threading.RLock()
+        self._history_fetch_lock = threading.RLock()
         self._history_lock = threading.RLock()
         self._quote_lock = threading.RLock()
         self._df_1m: pd.DataFrame = _empty_1m_frame()
@@ -480,7 +506,7 @@ class MarketDataService:
             part = _empty_1m_frame()
             _diag: dict[str, Any] = {}
             for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
-                with self._io_lock:
+                with self._history_fetch_lock:
                     part, _diag = self._fetch_minute_candles_for_date(
                         self.mode, config.WATCH_SYMBOL, date_ymd, KIS_PAGE_SIZE, hour1,
                     )
@@ -630,7 +656,7 @@ class MarketDataService:
             part = _empty_1m_frame()
             _diag: dict[str, Any] = {}
             for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
-                with self._io_lock:
+                with self._history_fetch_lock:
                     part, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, KIS_PAGE_SIZE, hour1)
                 if not part.empty or not _diag.get("error"):
                     break
@@ -799,7 +825,7 @@ class MarketDataService:
         live_df = _empty_1m_frame()
         _diag: dict[str, Any] = {}
         for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
-            with self._io_lock:
+            with self._history_fetch_lock:
                 live_df, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, 10, "")
             if not live_df.empty or not _diag.get("error"):
                 break
@@ -835,7 +861,7 @@ class MarketDataService:
     ) -> dict[str, QuoteSnapshot]:
         updated: dict[str, QuoteSnapshot] = {}
         for symbol in symbols:
-            with self._io_lock:
+            with self._quote_fetch_lock:
                 price, error = self._fetch_quote(self.mode, symbol)
             success = error is None and price is not None and float(price) > 0
             fetched_at = datetime.now(KST)

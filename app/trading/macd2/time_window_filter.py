@@ -800,7 +800,19 @@ def _count_recent_confirmed_crossovers(
     currently being judged — its own bar_dt, not a time-window boundary,
     since its confirmation time is 3 minutes BEFORE decision_at, well
     inside the lookback window, and would otherwise double-count itself as
-    one of the "recent OTHER crossovers")."""
+    one of the "recent OTHER crossovers").
+
+    Premarket bars (before config.SESSION_OPEN) never count here (2026-08-25
+    fix — real incident: ``work``/``bars_3m`` is built from the continuous
+    NXT 1m history, which includes 08:00-09:00 premarket bars since the
+    2026-08-20 continuous-data fix, and thin premarket volume routinely
+    manufactures >= TW2_RECENT_CROSS_VETO_COUNT whipsaw crossovers before
+    09:00. Without this exclusion, the very first flag of the regular
+    session — confirmed at 09:03, decision_at - 30min = 08:33, deep inside
+    premarket — was vetoed by premarket noise it was never meant to see,
+    exactly mirroring _session_vwap()'s own premarket exclusion for the
+    OTHER TW2 veto (major_flag_filter._session_vwap only sums volume from
+    config.SESSION_OPEN onward)."""
     series = _gap_series(work)
     if series is None:
         return 0
@@ -808,6 +820,8 @@ def _count_recent_confirmed_crossovers(
     count = 0
     for i, _direction in _confirmed_flag_indices(series):
         bar_dt = pd.Timestamp(series["datetime"].iloc[i]).to_pydatetime()
+        if bar_dt.astimezone(config.KST).time() < config.SESSION_OPEN:
+            continue
         if exclude_bar_dt is not None and bar_dt == exclude_bar_dt:
             continue
         confirmed_at = bar_dt + timedelta(minutes=3)

@@ -6,7 +6,7 @@ service-layer tests only — no broker, no network (blocked by conftest.py
 anyway)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 
 import pandas as pd
 import pytest
@@ -190,6 +190,50 @@ class TestTW2ExtraVetoes:
             "fixture's only crossover must be the candidate's own flag bar"
         )
         assert recent_excluding_self == 0
+
+    def test_recent_cross_veto_ignores_premarket_whipsaw_for_first_session_flag(self):
+        """2026-08-25 fix (real incident: the 09:03 confirmation of the
+        day's first regular-session flag was rejected with
+        TW2_REJECT_RECENT_CROSSES). Same oscillation shape as
+        test_recent_cross_veto_rejects_during_whipsaw above, just shifted
+        earlier so all of the whipsaw bars fall before 09:00 (premarket,
+        now part of the same continuous NXT 1m history per the 2026-08-20
+        fix) and the clean flag lands exactly at market open (09:00,
+        confirmed 09:03). decision_at - 30min = 08:33 still overlaps the
+        premarket oscillation in raw bar-time terms, so before the fix
+        this still vetoed the day's first real flag on pure premarket
+        noise -- exactly mirroring _session_vwap()'s own premarket
+        exclusion for the OTHER TW2 veto."""
+        n_flat = 26
+        n_pairs = 20
+        total_bars = n_flat + 2 * n_pairs + 2
+        start = datetime(2026, 8, 10, 9, 0, tzinfo=KST) - timedelta(minutes=3 * (total_bars - 2))
+        prices = [100.0] * n_flat
+        price = 100.0
+        for _ in range(n_pairs):
+            price += 1.2
+            prices.append(price)
+            price -= 1.1
+            prices.append(price)
+        price += 3.0
+        prices.append(price)  # flag bar -- lands exactly at 09:00
+        price += 0.3
+        prices.append(price)  # confirmation bar -- lands at 09:03
+        bars = _bars(prices, start=start)
+        flag_idx, direction = _last_confirmed_flag(bars)
+        assert direction == Direction.UP_RED
+        flag_bar_dt = pd.Timestamp(bars["datetime"].iloc[flag_idx]).to_pydatetime()
+        assert flag_bar_dt.astimezone(KST).time() == dtime(9, 0)
+        bars, flag_bar_dt, decision_at = _truncate_to_confirmation_bar(bars, flag_idx)
+        assert decision_at.astimezone(KST).time() == dtime(9, 6)
+        recent = twf._count_recent_confirmed_crossovers(
+            twf._prepare_bars(bars), decision_at, config.TW2_RECENT_CROSS_LOOKBACK_MINUTES,
+            exclude_bar_dt=flag_bar_dt,
+        )
+        assert recent == 0, "premarket crossovers must never count toward the intraday whipsaw veto"
+        vetoed, reason = twf.evaluate_tw2_extra_vetoes(bars, Direction.UP_RED, flag_bar_dt, decision_at)
+        assert vetoed is False
+        assert reason is None
 
     def test_unknown_direction_never_vetoes(self):
         start = datetime(2026, 8, 10, 9, 0, tzinfo=KST)
