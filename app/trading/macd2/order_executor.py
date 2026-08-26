@@ -357,6 +357,18 @@ def execute_signal(
     """
     timestamps: dict[str, str] = {"evaluated_at": _now_iso()}
     target_symbol = target_symbol_for_direction(direction)
+    lm = ledger_module if ledger_module is not None else ledger
+    # Persistent-disk idempotency, in addition to the in-memory
+    # processed_signal_ids check right below (docs 2026-08-26 incident: two
+    # independent processes/RuntimeStates each had their OWN in-memory
+    # processed_signal_ids, so that in-memory check alone never caught a
+    # second one dispatching the same signal_id). getattr(...) so a
+    # ledger_module without these functions (e.g. mu_macd's own ledger,
+    # which reuses this executor but has no such incident to guard against
+    # yet) is a byte-for-byte no-op, never an AttributeError.
+    signal_leg_check = getattr(lm, "signal_id_has_leg", None)
+    claim_dispatch = getattr(lm, "try_claim_signal_dispatch", None)
+    release_claim = getattr(lm, "release_signal_dispatch_claim", None)
 
     if signal_id in processed_signal_ids:
         return ExecutionOutcome(
@@ -426,12 +438,22 @@ def execute_signal(
     outcome.order_price = order_price
 
     if held_symbol is not None:
+        if signal_leg_check is not None and signal_leg_check(signal_id, "SELL"):
+            outcome.final_state = SignalState.BLOCKED
+            outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
+            return outcome
+        if claim_dispatch is not None and not claim_dispatch(signal_id, "SELL"):
+            outcome.final_state = SignalState.BLOCKED
+            outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
+            return outcome
         timestamps["sell_requested_at"] = _now_iso()
         sell_result = broker.sell_market(held_symbol, held_qty, f"{signal_id}:SELL:{held_symbol}")
         outcome.sell_result = sell_result
         if not sell_result.success:
             outcome.final_state = SignalState.FAILED
             outcome.block_reason = FAIL_SELL
+            if release_claim is not None:
+                release_claim(signal_id, "SELL")
             return outcome
         timestamps["sell_confirmed_at"] = _now_iso()
 
@@ -458,6 +480,8 @@ def execute_signal(
         if qty_after != 0:
             outcome.final_state = SignalState.FAILED
             outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
+            if release_claim is not None:
+                release_claim(signal_id, "SELL")
             return outcome
 
         _record_leg(
@@ -524,12 +548,24 @@ def execute_signal(
         outcome.order_failure_stage = BLOCK_INSUFFICIENT_QTY
         return outcome
 
+    if signal_leg_check is not None and signal_leg_check(signal_id, "BUY"):
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
+        outcome.order_failure_stage = BLOCK_DUPLICATE_SIGNAL
+        return outcome
+    if claim_dispatch is not None and not claim_dispatch(signal_id, "BUY"):
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
+        outcome.order_failure_stage = BLOCK_DUPLICATE_SIGNAL
+        return outcome
     timestamps["buy_requested_at"] = _now_iso()
     buy_limit = getattr(broker, "buy_limit", None)
     if buy_limit is None:
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_ORDER_DATA_INVALID
         outcome.order_failure_stage = BLOCK_ORDER_DATA_INVALID
+        if release_claim is not None:
+            release_claim(signal_id, "BUY")
         return outcome
     buy_result = buy_limit(target_symbol, requested_qty, order_price, f"{signal_id}:BUY:{target_symbol}")
     outcome.broker_called = True
@@ -541,6 +577,8 @@ def execute_signal(
         outcome.filled_qty = 0
         outcome.unfilled_qty = requested_qty
         outcome.fill_poll_result = "NOT_POLLED_ORDER_REJECTED"
+        if release_claim is not None:
+            release_claim(signal_id, "BUY")
         outcome.balance_qty = None
         return outcome
     if not buy_result.order_id:
@@ -597,6 +635,8 @@ def execute_signal(
             outcome.order_failure_stage = (
                 CANCEL_FAILED if outcome.cancel_result == CANCEL_FAILED else FILL_TIMEOUT_CANCELLED
             )
+            if release_claim is not None:
+                release_claim(signal_id, "BUY")
             return outcome
         # Fell through: the order filled (fully or partially) despite the
         # cancel attempt -- record the TRUE quantity below instead of the

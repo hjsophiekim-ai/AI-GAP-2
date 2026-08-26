@@ -9,6 +9,7 @@ the UI must keep rendering (docs §17).
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import threading
@@ -285,6 +286,94 @@ def append_execution(row: dict[str, Any]) -> bool:
                 return False
         _append_row(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS, row)
         return True
+
+
+def signal_id_has_leg(signal_id: str, side: str) -> bool:
+    """True if the execution ledger already has a SIDE-specific leg for this
+    signal_id -- a persistent-disk idempotency check, independent of any
+    single process's in-memory ``processed_signal_ids`` (docs 2026-08-26
+    incident: two live processes, each with its own in-memory guard, both
+    dispatched the same signal_id's BUY leg because neither's in-memory
+    state knew about the other's already-placed order).
+
+    Deliberately keyed by side, not just signal_id -- a reversal's own
+    SELL-then-BUY sequence legitimately writes two DIFFERENT-side rows for
+    the SAME signal_id in one normal call, and a legitimate retry that only
+    needs to (re)send the BUY leg after an already-confirmed SELL must not
+    be blocked just because that SELL row exists.
+    """
+    if not signal_id:
+        return False
+    side_norm = str(side or "").upper()
+    for row in _load_rows(EXECUTION_LEDGER_PATH, limit=0):
+        if str(row.get("signal_id") or "") == signal_id and str(row.get("side") or "").upper() == side_norm:
+            return True
+    return False
+
+
+def _dispatch_claim_path(signal_id: str, side: str) -> Path:
+    digest = hashlib.sha256(f"{signal_id}:{side}".encode("utf-8")).hexdigest()[:24]
+    return LOGS_DIR_PATH / f"macd2_dispatch_claim_{digest}.json"
+
+
+def try_claim_signal_dispatch(signal_id: str, side: str) -> bool:
+    """Atomic 'only one caller may proceed to actually call the broker for
+    this exact signal_id+side' claim -- closes the narrow race
+    signal_id_has_leg() alone cannot: two independent processes can both
+    pass that check (neither has recorded a real leg YET) within the same
+    instant, before either's broker call completes. Uses
+    O_CREAT|O_EXCL -- true single-writer-wins exclusivity is required here
+    (unlike a renewed lease, a one-shot claim has no self-correcting next
+    round to fall back on) -- deliberately narrow and rare (once per real
+    signal dispatch, not a standing per-tick lock), so the 2026-08-26
+    concern about a HELD lock file under sustained polling doesn't apply.
+
+    Never released on a genuine success (the claim then correctly stays in
+    place forever, same guarantee as signal_id_has_leg's own "already
+    really happened"). MUST be released via release_signal_dispatch_claim()
+    when the attempt this claim was guarding did NOT end up recording a
+    real leg (e.g. the broker explicitly rejected the order) -- otherwise a
+    legitimate later retry for this exact signal_id+side stays permanently
+    blocked. Left claimed (not released) for a genuinely AMBIGUOUS outcome
+    (order accepted but fill/rejection could not be confirmed) -- safer to
+    block one possibly-legitimate retry than risk a second real order for
+    an attempt that may actually have filled; reconcile is the source of
+    truth for what really happened at the broker either way.
+    """
+    if not signal_id:
+        return True
+    ensure_paths()
+    path = _dispatch_claim_path(signal_id, side)
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        return False  # already claimed, or a genuine I/O error -- fail closed either way
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "signal_id": signal_id, "side": str(side or "").upper(), "pid": os.getpid(),
+                "claimed_at": datetime.now(config.KST).isoformat(),
+            }, ensure_ascii=False))
+        return True
+    except OSError:
+        # Created the file but couldn't write to it -- leave it in place
+        # (fail-closed: better to block a legitimate later retry than risk
+        # a second real order slipping through) and report failure.
+        return False
+
+
+def release_signal_dispatch_claim(signal_id: str, side: str) -> None:
+    """Call ONLY when the attempt try_claim_signal_dispatch() guarded did
+    NOT end up recording a real execution-ledger leg. Never called after a
+    real leg WAS recorded -- see try_claim_signal_dispatch's own docstring.
+    Best-effort / never raises -- a missing claim file here is always a
+    safe no-op."""
+    if not signal_id:
+        return
+    try:
+        _dispatch_claim_path(signal_id, side).unlink()
+    except OSError:
+        pass
 
 
 def append_reconcile_backfill_buy(
