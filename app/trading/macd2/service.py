@@ -342,6 +342,32 @@ class Macd2Service:
             return {"ok": True, "message": "ALREADY_RUNNING"}
         return self._attempt_bootstrap()
 
+    def force_clear_worker_lock(self) -> dict[str, Any]:
+        """MANUAL operator override (docs worker_lock.force_clear's own
+        docstring for the full risk explanation) -- a button of last resort
+        for the one case the heartbeat timeout cannot self-heal from
+        quickly: a container that never actually died on redeploy and keeps
+        renewing its own lease forever, so a freshly-deployed process can
+        never win a legitimate staleness-based takeover.
+
+        Never called automatically -- only ever a deliberate human action
+        after confirming (e.g. via the Render dashboard's instance list)
+        that the reported lock holder is genuinely not a still-running,
+        still-healthy process. Clearing this while a second process is
+        actually still alive and working recreates the exact duplicate-
+        order condition this whole mechanism exists to prevent.
+        """
+        cleared = worker_lock.force_clear()
+        if cleared is None:
+            return {"ok": True, "message": "NOTHING_TO_CLEAR", "cleared": None}
+        return {
+            "ok": True, "message": "LOCK_CLEARED",
+            "cleared": {
+                "instance_id": cleared.instance_id, "pid": cleared.pid, "hostname": cleared.hostname,
+                "started_at": cleared.started_at, "last_heartbeat_at": cleared.last_heartbeat_at,
+            },
+        }
+
     def _attempt_bootstrap(self) -> dict[str, Any]:
         self._bootstrap_attempts += 1
         now = datetime.now(KST)
@@ -404,6 +430,24 @@ class Macd2Service:
             # authority -- the Worker thread's own loop (started right
             # below) retries every tick regardless, exactly like the
             # existing best-effort exception handling below already assumes.
+            # 2026-08-26 follow-up fix (real incident: a manual "자동매매
+            # 시작"/auto-recover restart within the SAME process, when the
+            # PREVIOUS self._worker's thread did not confirm stopped within
+            # stop()'s join_timeout -- see this method's own teardown
+            # comments above for why a manual start must proceed regardless
+            # -- left that old thread orphaned but still alive, still
+            # renewing ITS OWN instance_id's lease every tick. This brand
+            # new self._worker could then never win a legitimate staleness-
+            # based takeover from an orphan that keeps responding, so it sat
+            # in permanent standby -- while the orphan itself, holding the
+            # lease, was ticking against a MarketDataService already stopped
+            # by THIS SAME start() call's teardown above, so it could never
+            # detect a new flag either. _attempt_bootstrap() constructing a
+            # fresh self._worker IS this process declaring that worker the
+            # sole intended one going forward; force the lease to it here so
+            # this new worker never has to out-wait an orphan of its own
+            # process's earlier attempt.
+            worker_lock.force_clear()
             lock_result = worker_lock.try_acquire_or_renew(self._worker.instance_id, now=datetime.now(KST))
             if lock_result.owned:
                 guarded_broker = worker_lock.LockGuardedBroker(self._broker, self._worker.instance_id)

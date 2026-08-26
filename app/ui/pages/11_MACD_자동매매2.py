@@ -462,6 +462,28 @@ l1.metric(
 )
 l2.metric("lock 상태", lock_status)
 l3.metric("현재 lock 보유 instance_id", lock_holder)
+lock_holder_started = worker_stats.get("order_lock_holder_started_at")
+lock_holder_heartbeat = worker_stats.get("order_lock_holder_last_heartbeat_at")
+if lock_owned is False and (lock_holder_started or lock_holder_heartbeat):
+    st.caption(f"현재 lock 보유자 시작 시각: `{lock_holder_started or '-'}` · 마지막 heartbeat: `{lock_holder_heartbeat or '-'}`")
+
+if lock_owned is False:
+    with st.expander("⚠️ lock 강제 해제 (긴급 — 재배포 후 이전 컨테이너가 안 죽고 계속 lock을 쥐고 있을 때만 사용)"):
+        st.warning(
+            "이 프로세스가 현재 주문 권한(lock)을 갖고 있지 않은 상태입니다. "
+            "위 '현재 lock 보유자'가 실제로는 이미 죽었는데(재배포 때 정상 종료 안 됨 등) "
+            "heartbeat 타임아웃(최대 3분)을 기다리지 않고 즉시 정리하고 싶을 때만 누르세요. "
+            "만약 그 보유자가 실제로 아직 살아서 정상 동작 중이라면, 이 버튼을 누르면 "
+            "두 프로세스가 동시에 주문 권한을 얻으려 경쟁하는 상황(중복주문 위험)이 재현될 수 있습니다 — "
+            "Render 대시보드에서 실행 중인 인스턴스가 실제로 몇 개인지 먼저 확인하는 걸 권장합니다."
+        )
+        if st.button("lock 강제 해제 실행", type="secondary", use_container_width=True):
+            res = service.force_clear_worker_lock()
+            if res.get("message") == "NOTHING_TO_CLEAR":
+                st.info("이미 lock 파일이 없습니다 (그 사이 정리됐거나 처음부터 없었음).")
+            else:
+                st.success(f"lock 강제 해제됨: {res.get('cleared')}")
+            st.rerun()
 
 st.subheader("현재 신호 / 포지션")
 q1, q2, q3 = st.columns(3)

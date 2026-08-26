@@ -258,6 +258,41 @@ def release(instance_id: str) -> bool:
         return False
 
 
+def force_clear() -> Optional[LockInfo]:
+    """MANUAL operator override ONLY -- never called by the automated tick
+    loop (Macd2Worker._run_loop / Macd2Service._attempt_bootstrap), which
+    always go through try_acquire_or_renew's own staleness judgment instead.
+    Unconditionally deletes the lock file regardless of who currently holds
+    it, for the one real-world case the heartbeat-timeout design cannot
+    self-heal from quickly: an old container that never actually died on
+    redeploy (a stuck health check, a hung shutdown hook) keeps renewing its
+    own lease forever, so the freshly-deployed process can never win a
+    legitimate staleness-based takeover -- WORKER_LOCK_STALE_AFTER_SEC
+    exists to recover from a process that stops responding, not one that
+    keeps responding but never gets torn down. An operator invoking this
+    (e.g. a UI button, used only after confirming via the Render dashboard
+    that the reported holder is not the instance actually intended to run)
+    accepts the SAME risk profile the original pre-fix code always ran with
+    for the instant between this call and the next legitimate process
+    acquiring -- clearing this while a second, still-healthy old process is
+    genuinely also still running restores exactly the duplicate-order
+    condition this whole module exists to prevent, so this must only ever
+    be triggered by a human who has confirmed the reported holder is truly
+    gone, never automatically.
+
+    Returns the LockInfo that was cleared (for the caller to log/display),
+    or None if there was nothing to clear.
+    """
+    current = read_lock()
+    try:
+        LOCK_PATH.unlink()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return current
+    return current
+
+
 class LockGuardedBroker:
     """Transparent broker proxy used ONLY for the automated Macd2Worker tick
     loop / Macd2Service's one-shot restart catch-up tick ("주문 직전

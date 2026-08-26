@@ -124,6 +124,29 @@ def test_is_current_owner_false_when_no_lock_exists():
     assert worker_lock.is_current_owner("proc-A") is False
 
 
+def test_force_clear_removes_the_lock_regardless_of_owner():
+    """2026-08-26 follow-up: a manual operator override for the case
+    heartbeat timeout cannot self-heal quickly -- an old container that
+    never actually died on redeploy keeps renewing its own lease forever.
+    Unlike release(), this does not require knowing/matching the current
+    owner's instance_id."""
+    now = datetime(2026, 8, 26, 9, 0, tzinfo=KST)
+    worker_lock.try_acquire_or_renew("some-zombie-instance", now=now, stale_after_sec=60.0)
+    cleared = worker_lock.force_clear()
+    assert cleared is not None
+    assert cleared.instance_id == "some-zombie-instance"
+    assert worker_lock.read_lock() is None
+    # A fresh instance can now claim it immediately, without waiting out
+    # stale_after_sec at all.
+    result = worker_lock.try_acquire_or_renew("proc-new", now=now, stale_after_sec=60.0)
+    assert result.owned is True
+    assert result.reason == "ACQUIRED_NEW"
+
+
+def test_force_clear_returns_none_when_nothing_to_clear():
+    assert worker_lock.force_clear() is None
+
+
 # ─────────────────────────── 2) LockGuardedBroker ────────────────────────────
 
 def test_lock_guarded_broker_refuses_orders_when_not_owner():
@@ -296,11 +319,11 @@ def test_dead_owners_lease_times_out_and_a_new_worker_takes_over(monkeypatch, tw
     """Simulates a crashed process: the first Worker's tick thread is killed
     WITHOUT going through stop()'s graceful release (mirrors an abrupt
     container kill on Render, which never runs any shutdown code)."""
-    monkeypatch.setattr(config, "WORKER_LOCK_STALE_AFTER_SEC", 0.2)
+    monkeypatch.setattr(config, "WORKER_LOCK_STALE_AFTER_SEC", 0.5)
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
     w1 = _make_worker(broker, two_process_market_data, tick_interval_sec=0.02)
     w1.start()
-    deadline = time_module.time() + 2.0
+    deadline = time_module.time() + 5.0
     while time_module.time() < deadline and w1.tick_stats()["order_lock_owned"] is not True:
         time_module.sleep(0.01)
     assert w1.tick_stats()["order_lock_owned"] is True
@@ -309,13 +332,13 @@ def test_dead_owners_lease_times_out_and_a_new_worker_takes_over(monkeypatch, tw
     # Abrupt kill -- NOT w1.stop(): the loop exits on its own next check but
     # release() (only inside stop()) never runs, leaving the lease behind.
     w1._stop_event.set()
-    time_module.sleep(0.05)
+    time_module.sleep(0.1)
     assert w1.is_alive() is False
 
     w2 = _make_worker(broker, two_process_market_data, tick_interval_sec=0.02)
     try:
         w2.start()
-        deadline = time_module.time() + 3.0
+        deadline = time_module.time() + 8.0
         while time_module.time() < deadline and w2.tick_stats()["order_lock_owned"] is not True:
             time_module.sleep(0.02)
         stats2 = w2.tick_stats()

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from app.trading.macd2 import config, order_executor, service as service_module, state_store
+from app.trading.macd2 import config, order_executor, service as service_module, state_store, worker_lock
 from app.trading.macd2.models import Direction, PositionSnapshot, QuoteSnapshot, RuntimeStatus
 from app.trading.macd2.worker import ORDER_FILL_RECONCILE_DELAY_SEC, ORDER_FILL_RECONCILE_RETRIES
 from tests.macd2.fake_broker import FakeBroker
@@ -172,6 +172,41 @@ def test_start_full_lifecycle_reaches_running(monkeypatch):
         assert state.worker_instance_id == status["instance_id"]
         assert state.session_started_at
         assert state.ui_mode == RuntimeStatus.RUNNING
+    finally:
+        svc.stop()
+
+
+def test_start_takes_the_lock_even_when_an_orphaned_same_process_lease_exists(monkeypatch):
+    """2026-08-26 follow-up real incident: a manual restart within the SAME
+    process, where the PREVIOUS Worker thread's stop() didn't confirm
+    within its join_timeout, could leave that old thread orphaned but still
+    alive and still renewing ITS OWN instance_id's lease -- the brand new
+    self._worker created here could then never win a legitimate staleness-
+    based takeover from an orphan that keeps responding every tick, so it
+    sat in permanent standby (never evaluating a signal, never placing an
+    order) even though it was the only worker anyone intended to be
+    running. Simulates that exact orphaned-lease state directly (no real
+    stuck thread needed) and asserts start() still ends up as the owner."""
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    _patch_ok_construction(monkeypatch)
+
+    # Simulate an orphaned prior attempt's lease, still "fresh" from this
+    # process's own perspective (well within WORKER_LOCK_STALE_AFTER_SEC).
+    worker_lock.try_acquire_or_renew("orphaned-prior-attempt", now=datetime.now(KST), stale_after_sec=180.0)
+
+    svc = service_module.Macd2Service()
+    try:
+        res = svc.start(mode="mock", budget=2_000_000.0)
+        assert res["ok"] is True
+
+        deadline = time_module.time() + 2.0
+        while svc.supervisor_status().get("order_lock_owned") is not True and time_module.time() < deadline:
+            time_module.sleep(0.05)
+
+        status = svc.supervisor_status()
+        assert status["order_lock_owned"] is True
+        assert status["order_lock_holder_instance_id"] == status["instance_id"]
+        assert worker_lock.is_current_owner("orphaned-prior-attempt") is False
     finally:
         svc.stop()
 

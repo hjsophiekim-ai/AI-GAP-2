@@ -3970,6 +3970,8 @@ class Macd2Worker:
         self._order_lock_owned = False
         self._order_lock_status = "INIT"
         self._order_lock_holder_instance_id: Optional[str] = None
+        self._order_lock_holder_started_at: Optional[str] = None
+        self._order_lock_holder_last_heartbeat_at: Optional[str] = None
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -4002,6 +4004,8 @@ class Macd2Worker:
                 "order_lock_owned": self._order_lock_owned,
                 "order_lock_status": self._order_lock_status,
                 "order_lock_holder_instance_id": self._order_lock_holder_instance_id,
+                "order_lock_holder_started_at": self._order_lock_holder_started_at,
+                "order_lock_holder_last_heartbeat_at": self._order_lock_holder_last_heartbeat_at,
             }
 
     def _run_loop(self) -> None:
@@ -4017,6 +4021,12 @@ class Macd2Worker:
                     self._order_lock_status = lock_result.reason
                     self._order_lock_holder_instance_id = (
                         lock_result.current.instance_id if lock_result.current else None
+                    )
+                    self._order_lock_holder_started_at = (
+                        lock_result.current.started_at if lock_result.current else None
+                    )
+                    self._order_lock_holder_last_heartbeat_at = (
+                        lock_result.current.last_heartbeat_at if lock_result.current else None
                     )
                 # Unlike this tick loop, the quote-updater background thread
                 # (market_data.py) has no supervisor of its own — if it ever
