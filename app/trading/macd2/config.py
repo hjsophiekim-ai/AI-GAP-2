@@ -233,6 +233,28 @@ QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC = 300.0
 # hammer KIS on every UI auto-refresh tick.
 WORKER_AUTO_RECOVER_COOLDOWN_SEC = 30.0
 
+# 2026-08-26 fix (real incident: a Render redeploy/restart left TWO live
+# Macd2Worker-owning processes running concurrently for several minutes
+# against the same mock KIS account -- each only ever knew about its own
+# in-memory state, so both independently dispatched the same 09:09 UP_RED
+# TW confirmation and both kept "discovering" the other's fills via
+# reconcile, snowballing into a 994+542-share position instead of one
+# budget-sized order; the eventual TIME_WINDOW_AFTER_TP1_STOP exit was
+# itself correct, it just closed out a position ~40x too large). See
+# app.trading.macd2.worker_lock: a heartbeat-lease lock file on the
+# Persistent Disk state dir now proves single order authority across
+# processes, renewed once per Worker tick. Staleness is judged purely by
+# wall-clock heartbeat age -- deliberately set well above the documented
+# worst-case single-tick duration under sustained KIS rate limiting (see
+# QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC's own docstring: up to ~120s) so a
+# merely-slow-but-alive owner is never mistaken for dead and pre-empted by
+# another instance mid-tick. The immediate-pre-order re-check
+# (worker_lock.LockGuardedBroker) is the real correctness backstop for that
+# edge case regardless of this exact value -- this constant only trades off
+# how long a GENUINELY dead process leaves risk management paused before a
+# healthy instance takes over.
+WORKER_LOCK_STALE_AFTER_SEC = 180.0
+
 # ── Market data validity (strategy-fixed) ──────────────────────────────────
 QUOTE_MAX_AGE_SEC = 10.0
 

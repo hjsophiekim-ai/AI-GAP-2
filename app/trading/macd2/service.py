@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from app.trading import strategy_ownership
-from app.trading.macd2 import config, ledger, order_executor, state_store
+from app.trading.macd2 import config, ledger, order_executor, state_store, worker_lock
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, RuntimeStatus, SignalState
@@ -391,7 +391,23 @@ class Macd2Service:
         # the Worker thread's own first loop iteration moments later) a
         # safe no-op — never duplicated.
         try:
-            run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
+            # 2026-08-26 fix: this one-shot synchronous tick is a real
+            # order-dispatch path (the exact same catch-up it exists for can
+            # place a real order) and ran completely outside the Worker
+            # thread's own per-tick lock gate -- during a Render redeploy
+            # overlap, a freshly-booted NEW process reaching here while an
+            # OLD process's Worker thread was still alive/ticking was
+            # exactly how the 2026-08-26 incident's first duplicate BUY
+            # happened. Same lease check + guarded broker the Worker thread
+            # itself uses (docs worker_lock.py); skip this catch-up tick
+            # entirely if some other instance currently holds order
+            # authority -- the Worker thread's own loop (started right
+            # below) retries every tick regardless, exactly like the
+            # existing best-effort exception handling below already assumes.
+            lock_result = worker_lock.try_acquire_or_renew(self._worker.instance_id, now=datetime.now(KST))
+            if lock_result.owned:
+                guarded_broker = worker_lock.LockGuardedBroker(self._broker, self._worker.instance_id)
+                run_once(broker=guarded_broker, market_data=self._market_data, state=state, now=datetime.now(KST))
         except Exception:
             pass  # best-effort catch-up tick; the Worker's own loop retries every tick regardless
         state_store.save_state(state)
