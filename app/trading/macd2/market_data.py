@@ -269,6 +269,13 @@ class MarketDataService:
         self._last_quote_success_at: dict[str, datetime] = {}
         self._last_history_success_at: Optional[datetime] = None
         self._last_logged_quote_status: Optional[str] = None
+        # 2026-08-26 follow-up: whether the PREVIOUS attempt failed, per
+        # quote symbol / history -- success is logged only on the first-ever
+        # attempt or a recovery from a prior failure, never on every routine
+        # cycle (quote: ~8s; history: WORKER_INTERVAL_SEC=5s -- effectively
+        # "every tick" if logged unconditionally).
+        self._quote_last_attempt_failed: dict[str, bool] = {}
+        self._history_last_attempt_failed: Optional[bool] = None
 
     def quote_statuses(
         self,
@@ -851,6 +858,7 @@ class MarketDataService:
                 now.isoformat(), config.PRIOR_DAY_FETCH_RETRIES, _diag.get("error"),
                 self._last_history_success_at.isoformat() if self._last_history_success_at else "never",
             )
+            self._history_last_attempt_failed = True
         with self._history_lock:
             base = self._df_1m
             if live_df.empty:
@@ -864,11 +872,19 @@ class MarketDataService:
             merged = _trim_to_recent_trading_days(merged)
             self._df_1m = merged
             self._last_history_success_at = now
-            newest_bar = merged["datetime"].iloc[-1] if not merged.empty else None
-            logger.info(
-                "[MACD2][history] merge_incremental_1m ok at %s: %d bars fetched, newest bar=%s",
-                now.isoformat(), len(live_df), newest_bar.isoformat() if newest_bar is not None else "-",
-            )
+            # 2026-08-26 follow-up: only log on the FIRST-EVER success or a
+            # recovery from a prior failure -- not every cycle a new bar
+            # happens to merge in (this call runs every WORKER_INTERVAL_SEC,
+            # i.e. effectively every tick; unconditional success logging
+            # here was exactly the "매 tick마다 과도한 로그" the diagnostic
+            # logging was supposed to avoid).
+            if self._history_last_attempt_failed is not False:
+                newest_bar = merged["datetime"].iloc[-1] if not merged.empty else None
+                logger.info(
+                    "[MACD2][history] merge_incremental_1m ok at %s: %d bars fetched, newest bar=%s",
+                    now.isoformat(), len(live_df), newest_bar.isoformat() if newest_bar is not None else "-",
+                )
+            self._history_last_attempt_failed = False
             return merged.copy()
 
     def get_history_df(self) -> pd.DataFrame:
@@ -898,13 +914,14 @@ class MarketDataService:
                 )
                 self._last_quote_success_at[symbol] = fetched_at
                 # 2026-08-26 diagnostic log (docs: today's flag-detection
-                # incident) -- WATCH_SYMBOL(000660) only, since it's the one
-                # explicitly asked for and it refreshes far less often than
-                # the traded ETFs (WATCH_SYMBOL_QUOTE_REFRESH_EVERY_N_CYCLES)
-                # -- logging every traded-ETF success too would be ~1/sec
-                # each, far too noisy for a full trading day.
-                if symbol == config.WATCH_SYMBOL:
+                # incident) -- WATCH_SYMBOL(000660) only (the one explicitly
+                # asked for; the traded ETFs refresh ~1/sec each, far too
+                # noisy to log every success), and only on the first-ever
+                # success or a recovery from a prior failure -- not every
+                # routine cycle.
+                if symbol == config.WATCH_SYMBOL and self._quote_last_attempt_failed.get(symbol, True):
                     logger.info("[MACD2][quote] %s ok at %s: price=%s", symbol, fetched_at.isoformat(), price)
+                self._quote_last_attempt_failed[symbol] = False
                 continue
             with self._quote_lock:
                 previous = self._quotes.get(symbol)
@@ -928,6 +945,7 @@ class MarketDataService:
                 symbol, fetched_at.isoformat(), error or "QUOTE_FETCH_FAILED",
                 last_success.isoformat() if last_success else "never",
             )
+            self._quote_last_attempt_failed[symbol] = True
         with self._quote_lock:
             self._quotes.update(updated)
         return updated
@@ -1115,6 +1133,18 @@ class MarketDataService:
         return bool(self._history_updater_thread and self._history_updater_thread.is_alive())
 
 
+# 2026-08-26 diagnostic-logging-only addition (docs: today's flag-detection
+# incident) -- module-level (filter_complete_3m_bars is a free function, not
+# a MarketDataService method, so it has no instance to hold this on) set of
+# bar_start values already logged as a HISTORY_GAP. run_once() calls this
+# function every WORKER_INTERVAL_SEC with the FULL day's bars_3m, so a
+# persistently-incomplete bar would otherwise be re-logged every single tick
+# for as long as it stays incomplete -- this caps each bar_start to exactly
+# one log line ever. Never read by any decision path (filter_complete_3m_bars'
+# own return values are completely unaffected by this set's contents).
+_HISTORY_GAP_LOGGED: set[Any] = set()
+
+
 def filter_complete_3m_bars(
     bars_3m: pd.DataFrame, one_minute_bars: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[Any]]:
@@ -1159,13 +1189,20 @@ def filter_complete_3m_bars(
         keep_mask.append(complete)
         if not complete:
             dropped.append(bar_start)
-            missing = [m for m in needed if m not in have]
             # 2026-08-26 diagnostic log (docs: today's flag-detection
             # incident) -- pure logging; which specific 1-minute bar(s) are
             # missing for this dropped 3-minute bin, never fabricated/filled.
-            logger.warning(
-                "[MACD2][HISTORY_GAP] 3m bar %s dropped -- missing 1m bar(s): %s",
-                bar_start, [m.isoformat() for m in missing],
-            )
+            # Logged at most once ever per bar_start (see _HISTORY_GAP_LOGGED
+            # above) -- this function is called every tick with the full
+            # day's bars_3m, so without this a persistent gap would
+            # otherwise re-log identically every ~5s for as long as it
+            # stays incomplete.
+            if bar_start not in _HISTORY_GAP_LOGGED:
+                _HISTORY_GAP_LOGGED.add(bar_start)
+                missing = [m for m in needed if m not in have]
+                logger.warning(
+                    "[MACD2][HISTORY_GAP] 3m bar %s dropped -- missing 1m bar(s): %s",
+                    bar_start, [m.isoformat() for m in missing],
+                )
     filtered = bars_3m.loc[keep_mask].reset_index(drop=True)
     return filtered, dropped
