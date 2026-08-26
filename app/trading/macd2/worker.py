@@ -4129,8 +4129,33 @@ class Macd2Worker:
                     t_stage = time.monotonic()
                     self._save_state(state)
                     stage_timing["state_save"] = time.monotonic() - t_stage
-                with self._lock:
-                    self._last_exception = None
+                    with self._lock:
+                        self._last_exception = None
+                else:
+                    # 2026-08-26 fix (real incident: a PERSISTENT lock-acquire
+                    # failure -- e.g. the Persistent Disk refusing to create
+                    # the lock file -- fails closed exactly as designed
+                    # (never loads state, never places an order), but
+                    # self._last_exception was being unconditionally reset to
+                    # None every single tick even while genuinely stuck in
+                    # standby forever, so the existing "Worker 마지막 예외"
+                    # dashboard panel showed nothing -- "zero orders even with
+                    # every filter off" looked identical to a healthy, quiet
+                    # standby. A normal HELD_BY_OTHER (a genuine second live
+                    # instance currently owns the lease -- expected during a
+                    # brief rolling-deploy overlap) or a one-off *_RACE_LOST
+                    # (ordinary contention resolution, see worker_lock.py's
+                    # _claim -- not itself a persistent problem) is NOT
+                    # surfaced here, only an actual internal error is, so this
+                    # never cries wolf during ordinary operation.
+                    with self._lock:
+                        if lock_result.reason.startswith("ERROR:"):
+                            self._last_exception = (
+                                f"MACD2 order-authority lock not owned this tick "
+                                f"(reason={lock_result.reason}) -- no signal evaluation, no order."
+                            )
+                        else:
+                            self._last_exception = None
             except Exception as exc:
                 with self._lock:
                     self._last_exception = f"{exc}\n{traceback.format_exc()}"

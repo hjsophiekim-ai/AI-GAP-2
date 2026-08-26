@@ -446,6 +446,23 @@ d3.metric("누적 tick 수", worker_stats.get("tick_n", "-"))
 if last_exc:
     st.error(f"Worker 마지막 예외 (다음 성공 tick까지 유지됨):\n```\n{last_exc}\n```")
 
+# 2026-08-26 추가: 크로스프로세스 주문 권한 lock(app.trading.macd2.worker_lock)
+# 상태 노출 — tick_n/last_tick_at은 lock을 못 얻어 대기(standby)만 하고 있어도
+# 정상적으로 계속 증가하기 때문에, lock 정보 없이는 "Worker가 살아있고 계속
+# 틱을 도는데 신호평가/주문이 전혀 안 일어나는" 상황을 대시보드에서 구분할
+# 방법이 없었다(그날 실제 원인 규명 지연의 직접적 계기).
+lock_owned = worker_stats.get("order_lock_owned")
+lock_status = worker_stats.get("order_lock_status") or "-"
+lock_holder = worker_stats.get("order_lock_holder_instance_id") or "-"
+l1, l2, l3 = st.columns(3)
+l1.metric(
+    "주문 권한(lock)", "보유" if lock_owned else ("미보유" if lock_owned is not None else "-"),
+    delta=None if lock_owned or lock_owned is None else "이 프로세스는 이번 tick에 신호평가/주문을 건너뜀",
+    delta_color="inverse" if lock_owned is False else "normal",
+)
+l2.metric("lock 상태", lock_status)
+l3.metric("현재 lock 보유 instance_id", lock_holder)
+
 st.subheader("현재 신호 / 포지션")
 q1, q2, q3 = st.columns(3)
 for col, symbol, label in (

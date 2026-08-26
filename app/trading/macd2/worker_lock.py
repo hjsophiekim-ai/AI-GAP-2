@@ -38,6 +38,27 @@ the SAME id already used as RuntimeState.worker_instance_id elsewhere in
 this codebase) is the only thing that identifies WHO currently holds the
 lease -- pid/hostname/started_at are recorded purely for human debugging
 and are never consulted in any ownership/staleness decision.
+
+Claiming a lock (fresh or a stale takeover) writes via ``os.replace`` --
+the SAME tmp-file + atomic-rename pattern ``state_store.py`` already uses
+for every state save, proven reliable on this exact production Persistent
+Disk. Deliberately NEVER ``O_CREAT | O_EXCL`` (an earlier version of this
+module used it as the claim primitive): O_EXCL's exclusivity guarantee is
+well documented as unreliable on some network-backed filesystems (the
+classic NFS pitfall), and Render Persistent Disks are plausibly one --
+2026-08-26 follow-up incident: MACD2 stopped placing ANY order at all,
+under every filter configuration including none, with no exception visible
+anywhere, a signature consistent with O_CREAT|O_EXCL simply never
+succeeding on that mount and every acquire attempt permanently fail-closed
+as designed. Correctness without O_EXCL: after writing, this immediately
+re-reads the file and reports ownership based on what actually LANDED, not
+on the write call's own return value -- a genuine simultaneous double-claim
+(only possible in the single narrow instant a lock has never existed
+before, or right after two instances both decide the same lease is stale)
+resolves to whichever os.replace() call physically landed last, and the
+loser's own re-read correctly reports owned=False either way. This never
+needed a separate claim-marker mutex file the way an O_EXCL-based version
+would.
 """
 from __future__ import annotations
 
@@ -46,7 +67,7 @@ import os
 import socket
 import uuid
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -54,17 +75,9 @@ from app.trading.macd2 import config
 from app.utils.data_paths import STATE_DIR
 
 LOCK_FILENAME = "macd2_worker_lock.json"
-CLAIM_MARKER_SUFFIX = ".claim"
 
 STATE_DIR_PATH: Path = STATE_DIR
 LOCK_PATH: Path = STATE_DIR_PATH / LOCK_FILENAME
-
-# A claim marker abandoned mid-takeover (the claiming process died between
-# creating it and either writing the new lock or removing the marker again)
-# must never permanently wedge every future takeover attempt. That window
-# is only ever a handful of fast local file operations, so anything older
-# than this is unambiguously abandoned, never a genuine in-flight claim.
-CLAIM_MARKER_ABANDONED_AFTER_SEC = 10.0
 
 
 @dataclass(frozen=True)
@@ -81,10 +94,6 @@ class LockResult:
     owned: bool
     reason: str
     current: Optional[LockInfo]
-
-
-def _claim_marker_path() -> Path:
-    return LOCK_PATH.with_name(LOCK_PATH.name + CLAIM_MARKER_SUFFIX)
 
 
 def _hostname() -> str:
@@ -135,25 +144,6 @@ def _write_lock_atomic(info: LockInfo) -> None:
     os.replace(tmp, LOCK_PATH)
 
 
-def _create_exclusive(info: LockInfo) -> bool:
-    """Atomic 'claim only if truly absent' -- O_EXCL is the actual mutual
-    exclusion primitive here (two processes racing to create a brand-new
-    lock can never both succeed), unlike the plain tmp+os.replace pattern
-    _write_lock_atomic uses for a RENEW/TAKEOVER, which only guarantees the
-    final file is never a torn/mixed write, not that only one writer wins."""
-    ensure_paths()
-    try:
-        fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(asdict(info), ensure_ascii=False, indent=2))
-        return True
-    except OSError:
-        return False
-
-
 def _age_sec(iso_ts: str, now: datetime) -> Optional[float]:
     if not iso_ts:
         return None
@@ -166,56 +156,25 @@ def _age_sec(iso_ts: str, now: datetime) -> Optional[float]:
     return (now - ts).total_seconds()
 
 
-def _claim_marker_age_sec(now: datetime) -> Optional[float]:
-    try:
-        mtime = _claim_marker_path().stat().st_mtime
-    except OSError:
-        return None
-    marker_time = datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(config.KST)
-    return (now - marker_time).total_seconds()
-
-
-def _attempt_takeover(instance_id: str, stale_current: LockInfo, *, now: datetime, stale_after_sec: float) -> bool:
-    """Only reached once the caller has already decided ``stale_current``
-    looks stale. Uses a SEPARATE claim-marker file (created via the same
-    O_EXCL exclusivity _create_exclusive relies on) purely as a mutex around
-    the takeover itself -- two processes racing to take over the SAME stale
-    lock must not both believe they won."""
-    ensure_paths()
-    claim_path = _claim_marker_path()
-    marker_age = _claim_marker_age_sec(now)
-    if marker_age is not None and marker_age > CLAIM_MARKER_ABANDONED_AFTER_SEC:
-        try:
-            claim_path.unlink()
-        except OSError:
-            pass
-    try:
-        fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.close(fd)
-    except FileExistsError:
-        return False  # another process is mid-takeover right now -- back off, retry next tick
-    try:
-        # Double-check under the claim mutex: the "original" owner may have
-        # renewed (still alive, just slow) or someone else may have already
-        # completed a takeover between our staleness read and now.
-        latest = read_lock()
-        if latest is not None and latest.instance_id != stale_current.instance_id:
-            return False
-        if latest is not None:
-            age = _age_sec(latest.last_heartbeat_at, now)
-            if age is not None and age < stale_after_sec:
-                return False
-        info = LockInfo(
-            instance_id=instance_id, pid=os.getpid(), hostname=_hostname(),
-            started_at=now.isoformat(), last_heartbeat_at=now.isoformat(),
-        )
-        _write_lock_atomic(info)
-        return True
-    finally:
-        try:
-            claim_path.unlink()
-        except OSError:
-            pass
+def _claim(instance_id: str, *, now: datetime, reason: str) -> LockResult:
+    """Writes a fresh claim (a brand-new lock, or a takeover of one already
+    decided to be stale) via _write_lock_atomic's tmp+os.replace, THEN
+    re-reads to see what actually landed -- see module docstring for why
+    this never uses O_CREAT|O_EXCL. A genuine simultaneous double-claim
+    (only possible in the single instant a lock has never existed before,
+    or right after two instances both judge the same lease stale) resolves
+    to whichever os.replace() call physically landed last; the loser's own
+    re-read here correctly reports owned=False either way -- never a false
+    "I own it" for both sides."""
+    info = LockInfo(
+        instance_id=instance_id, pid=os.getpid(), hostname=_hostname(),
+        started_at=now.isoformat(), last_heartbeat_at=now.isoformat(),
+    )
+    _write_lock_atomic(info)
+    landed = read_lock()
+    if landed is not None and landed.instance_id == instance_id:
+        return LockResult(True, reason, landed)
+    return LockResult(False, f"{reason}_RACE_LOST", landed)
 
 
 def try_acquire_or_renew(
@@ -263,28 +222,13 @@ def _try_acquire_or_renew_inner(
         _write_lock_atomic(renewed)
         return LockResult(True, "RENEWED", renewed)
 
-    if current is None:
-        info = LockInfo(
-            instance_id=instance_id, pid=os.getpid(), hostname=_hostname(),
-            started_at=now.isoformat(), last_heartbeat_at=now.isoformat(),
-        )
-        if _create_exclusive(info):
-            return LockResult(True, "ACQUIRED_NEW", info)
-        # Lost a race to create the file first -- re-read and fall through
-        # to the normal contention/staleness check below.
-        current = read_lock()
-        if current is not None and current.instance_id == instance_id:
-            return LockResult(True, "ACQUIRED_NEW", current)
-        if current is None:
-            return LockResult(False, "ACQUIRE_RACE_UNREADABLE", None)
+    if current is not None:
+        age = _age_sec(current.last_heartbeat_at, now)
+        if age is None or age < stale_after_sec:
+            return LockResult(False, "HELD_BY_OTHER", current)
+        return _claim(instance_id, now=now, reason="TAKEOVER")
 
-    age = _age_sec(current.last_heartbeat_at, now)
-    if age is None or age < stale_after_sec:
-        return LockResult(False, "HELD_BY_OTHER", current)
-
-    if _attempt_takeover(instance_id, current, now=now, stale_after_sec=stale_after_sec):
-        return LockResult(True, "TAKEOVER", read_lock())
-    return LockResult(False, "TAKEOVER_RACE_LOST", read_lock())
+    return _claim(instance_id, now=now, reason="ACQUIRED_NEW")
 
 
 def is_current_owner(instance_id: str) -> bool:

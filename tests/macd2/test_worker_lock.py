@@ -362,6 +362,61 @@ def test_rolling_deploy_overlap_never_produces_two_simultaneously_active_owners(
         w_old.stop(join_timeout=2.0)
 
 
+def test_normal_held_by_other_standby_never_reports_an_exception(monkeypatch, two_process_market_data):
+    """A healthy standby instance (another live process genuinely owns the
+    lease) must NEVER surface anything in last_exception -- tick_n/
+    last_tick_at already look identical whether owned or not, so this is the
+    one remaining signal that must stay quiet during ordinary operation."""
+    monkeypatch.setattr(config, "WORKER_LOCK_STALE_AFTER_SEC", 60.0)
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    worker_lock.try_acquire_or_renew("someone-else", now=datetime.now(KST), stale_after_sec=60.0)
+
+    w = _make_worker(broker, two_process_market_data, tick_interval_sec=0.02)
+    w.start()
+    try:
+        deadline = time_module.time() + 1.0
+        while time_module.time() < deadline and w.tick_stats()["tick_n"] < 3:
+            time_module.sleep(0.01)
+        stats = w.tick_stats()
+        assert stats["order_lock_owned"] is False
+        assert stats["order_lock_status"] == "HELD_BY_OTHER"
+        assert stats["last_exception"] is None
+        assert stats["tick_n"] >= 3  # the loop keeps ticking normally, just standing by
+    finally:
+        w.stop(join_timeout=2.0)
+
+
+def test_persistent_lock_error_is_surfaced_as_an_exception_not_silently_swallowed(monkeypatch, two_process_market_data):
+    """The 2026-08-26 observability gap this fix closes: a lock ERROR/
+    undetermined-state result must show up in last_exception (the existing
+    'Worker 마지막 예외' dashboard panel) so 'zero orders even with every
+    filter off' is diagnosable without a code change -- previously
+    last_exception was unconditionally reset to None every tick regardless
+    of lock state, so a persistently fail-closed worker looked identical to
+    a perfectly healthy one on the dashboard."""
+    monkeypatch.setattr(config, "WORKER_LOCK_STALE_AFTER_SEC", 60.0)
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    def _always_erroring_acquire(*_a, **_k):
+        return worker_lock.LockResult(False, "ERROR:OSError('simulated Persistent Disk failure')", None)
+
+    monkeypatch.setattr(worker_lock, "try_acquire_or_renew", _always_erroring_acquire)
+
+    w = _make_worker(broker, two_process_market_data, tick_interval_sec=0.02)
+    w.start()
+    try:
+        deadline = time_module.time() + 1.0
+        while time_module.time() < deadline and w.tick_stats()["tick_n"] < 2:
+            time_module.sleep(0.01)
+        stats = w.tick_stats()
+        assert stats["order_lock_owned"] is False
+        assert stats["last_exception"] is not None
+        assert "lock" in stats["last_exception"].lower()
+        assert broker.orders == [], "a fail-closed worker must never place any order regardless of filter config"
+    finally:
+        w.stop(join_timeout=2.0)
+
+
 # ─────────────── 5) full 09:09 UP_RED / TW2 incident reproduction ───────────
 
 def _tw2_rally_1m(start: datetime) -> pd.DataFrame:
@@ -535,7 +590,6 @@ def test_acquire_never_raises_and_fails_closed_on_a_write_error(monkeypatch):
         raise OSError("simulated Persistent Disk write failure")
 
     monkeypatch.setattr(worker_lock, "_write_lock_atomic", _boom)
-    monkeypatch.setattr(worker_lock, "_create_exclusive", _boom)
     result = worker_lock.try_acquire_or_renew("proc-A", now=datetime.now(KST), stale_after_sec=60.0)
     assert result.owned is False
     assert result.reason.startswith("ERROR:")
