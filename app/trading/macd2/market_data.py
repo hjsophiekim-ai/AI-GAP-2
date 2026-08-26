@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
+from app.logger import logger
 from app.trading.macd2 import config
 from app.trading.macd2.models import QuoteSnapshot
 from app.trading.macd2.signal_engine import resample_completed_3m
@@ -259,6 +260,15 @@ class MarketDataService:
         self._history_updater_stop = threading.Event()
         self._last_bootstrap_diag: dict[str, Any] = {}
         self._quote_normalization_diag: dict[str, Any] = {}
+        # 2026-08-26 diagnostic-logging-only addition (docs: today's flag-
+        # detection incident) -- pure observability, never read by any
+        # decision path. last-success timestamps per quote symbol / history,
+        # and the last quote_status() value actually logged, so a
+        # READY/PARTIAL_STALE/DEAD transition is logged only on CHANGE
+        # (never every ~1s cycle) to keep log volume sane over a full day.
+        self._last_quote_success_at: dict[str, datetime] = {}
+        self._last_history_success_at: Optional[datetime] = None
+        self._last_logged_quote_status: Optional[str] = None
 
     def quote_statuses(
         self,
@@ -831,6 +841,16 @@ class MarketDataService:
                 break
             if retry_i < config.PRIOR_DAY_FETCH_RETRIES - 1:
                 time.sleep(config.PRIOR_DAY_FETCH_RETRY_DELAY_SEC)
+        if live_df.empty and _diag.get("error"):
+            # 2026-08-26 diagnostic log (docs: today's flag-detection
+            # incident) -- pure logging, no behavior change: every retry
+            # already happened above exactly as before this line existed.
+            logger.warning(
+                "[MACD2][history] merge_incremental_1m failed at %s after %d retries: %s "
+                "(last success: %s)",
+                now.isoformat(), config.PRIOR_DAY_FETCH_RETRIES, _diag.get("error"),
+                self._last_history_success_at.isoformat() if self._last_history_success_at else "never",
+            )
         with self._history_lock:
             base = self._df_1m
             if live_df.empty:
@@ -843,6 +863,12 @@ class MarketDataService:
             )
             merged = _trim_to_recent_trading_days(merged)
             self._df_1m = merged
+            self._last_history_success_at = now
+            newest_bar = merged["datetime"].iloc[-1] if not merged.empty else None
+            logger.info(
+                "[MACD2][history] merge_incremental_1m ok at %s: %d bars fetched, newest bar=%s",
+                now.isoformat(), len(live_df), newest_bar.isoformat() if newest_bar is not None else "-",
+            )
             return merged.copy()
 
     def get_history_df(self) -> pd.DataFrame:
@@ -870,6 +896,15 @@ class MarketDataService:
                 updated[symbol] = QuoteSnapshot(
                     symbol=symbol, price=float(price), fetched_at=fetched_at, age_sec=0.0, source="kis", error=None,
                 )
+                self._last_quote_success_at[symbol] = fetched_at
+                # 2026-08-26 diagnostic log (docs: today's flag-detection
+                # incident) -- WATCH_SYMBOL(000660) only, since it's the one
+                # explicitly asked for and it refreshes far less often than
+                # the traded ETFs (WATCH_SYMBOL_QUOTE_REFRESH_EVERY_N_CYCLES)
+                # -- logging every traded-ETF success too would be ~1/sec
+                # each, far too noisy for a full trading day.
+                if symbol == config.WATCH_SYMBOL:
+                    logger.info("[MACD2][quote] %s ok at %s: price=%s", symbol, fetched_at.isoformat(), price)
                 continue
             with self._quote_lock:
                 previous = self._quotes.get(symbol)
@@ -884,6 +919,15 @@ class MarketDataService:
                     symbol=symbol, price=0.0, fetched_at=fetched_at, age_sec=0.0, source="kis",
                     error=error or "QUOTE_FETCH_FAILED",
                 )
+            # 2026-08-26 diagnostic log -- every failure, every symbol
+            # (failures are the rare/interesting case; volume is bounded by
+            # how often KIS actually fails, never by the 1s poll interval).
+            last_success = self._last_quote_success_at.get(symbol)
+            logger.warning(
+                "[MACD2][quote] %s FAILED at %s: %s (last success: %s)",
+                symbol, fetched_at.isoformat(), error or "QUOTE_FETCH_FAILED",
+                last_success.isoformat() if last_success else "never",
+            )
         with self._quote_lock:
             self._quotes.update(updated)
         return updated
@@ -953,11 +997,31 @@ class MarketDataService:
                         else traded_symbols
                     )
                     self.refresh_quotes(symbols=symbols)
+                except Exception as exc:
+                    # 2026-08-26 diagnostic log (docs: today's flag-detection
+                    # incident) -- pure logging; the loop still swallows and
+                    # continues exactly as it always did (no control-flow
+                    # change, no re-raise).
+                    logger.warning(
+                        "[MACD2][quote-updater loop] %s: %s", type(exc).__name__, exc,
+                    )
+                # 2026-08-26 diagnostic log -- log a READY/PARTIAL_STALE/
+                # PARTIAL_ERROR/DEAD transition only on CHANGE (quote_status()
+                # itself is unchanged/pure; this just observes its result).
+                try:
+                    current_status = self.quote_status()
+                    if current_status != self._last_logged_quote_status:
+                        logger.info(
+                            "[MACD2][quote_status] %s -> %s at %s",
+                            self._last_logged_quote_status, current_status, datetime.now(KST).isoformat(),
+                        )
+                        self._last_logged_quote_status = current_status
                 except Exception:
                     pass
                 cycle_n += 1
                 stop_event.wait(interval_sec)
 
+        logger.info("[MACD2][quote-updater] starting new thread, interval_sec=%s", interval_sec)
         self._quote_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-quote-updater")
         self._quote_updater_thread.start()
 
@@ -987,8 +1051,13 @@ class MarketDataService:
             return True
         thread.join(timeout=join_timeout)
         if thread.is_alive():
+            logger.warning(
+                "[MACD2][quote-updater] stop NOT confirmed after join_timeout=%ss -- thread still alive (orphaned)",
+                join_timeout,
+            )
             return False
         self._quote_updater_thread = None
+        logger.info("[MACD2][quote-updater] stopped and confirmed dead")
         return True
 
     def quote_updater_alive(self) -> bool:
@@ -1012,10 +1081,15 @@ class MarketDataService:
             while not stop_event.is_set():
                 try:
                     self.merge_incremental_1m()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # 2026-08-26 diagnostic log -- pure logging; the loop
+                    # still swallows and continues exactly as before.
+                    logger.warning(
+                        "[MACD2][history-updater loop] %s: %s", type(exc).__name__, exc,
+                    )
                 stop_event.wait(interval_sec)
 
+        logger.info("[MACD2][history-updater] starting new thread, interval_sec=%s", interval_sec)
         self._history_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-history-updater")
         self._history_updater_thread.start()
 
@@ -1028,8 +1102,13 @@ class MarketDataService:
             return True
         thread.join(timeout=join_timeout)
         if thread.is_alive():
+            logger.warning(
+                "[MACD2][history-updater] stop NOT confirmed after join_timeout=%ss -- thread still alive (orphaned)",
+                join_timeout,
+            )
             return False
         self._history_updater_thread = None
+        logger.info("[MACD2][history-updater] stopped and confirmed dead")
         return True
 
     def history_updater_alive(self) -> bool:
@@ -1080,5 +1159,13 @@ def filter_complete_3m_bars(
         keep_mask.append(complete)
         if not complete:
             dropped.append(bar_start)
+            missing = [m for m in needed if m not in have]
+            # 2026-08-26 diagnostic log (docs: today's flag-detection
+            # incident) -- pure logging; which specific 1-minute bar(s) are
+            # missing for this dropped 3-minute bin, never fabricated/filled.
+            logger.warning(
+                "[MACD2][HISTORY_GAP] 3m bar %s dropped -- missing 1m bar(s): %s",
+                bar_start, [m.isoformat() for m in missing],
+            )
     filtered = bars_3m.loc[keep_mask].reset_index(drop=True)
     return filtered, dropped

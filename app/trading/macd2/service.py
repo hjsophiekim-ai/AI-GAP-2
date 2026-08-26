@@ -26,6 +26,7 @@ import os
 from datetime import datetime
 from typing import Any, Optional
 
+from app.logger import logger
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store, worker_lock
 from app.trading.macd2.broker_adapter import create_macd2_broker
@@ -200,7 +201,10 @@ class Macd2Service:
             self._teardown_stuck_since is not None
             and (now - self._teardown_stuck_since).total_seconds() > config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC
         )
-        result = self.start(mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through)
+        result = self.start(
+            mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through,
+            _call_reason="auto_recover",
+        )
         if result.get("message") == "PREVIOUS_INSTANCE_STILL_STOPPING":
             if self._teardown_stuck_since is None:
                 self._teardown_stuck_since = now
@@ -226,7 +230,17 @@ class Macd2Service:
         budget: float = config.DEFAULT_BUDGET,
         real_kwargs: Optional[dict[str, Any]] = None,
         _require_confirmed_teardown: bool = False,
+        _call_reason: str = "manual_ui",
     ) -> dict[str, Any]:
+        # 2026-08-26 diagnostic log (docs: today's flag-detection incident) --
+        # pure logging; _call_reason distinguishes a manual "자동매매 시작"
+        # click from an automatic _auto_recover_worker() retry, so a
+        # repeated-restart pattern (a suspected contributor to quote/history
+        # updater flapping) is visible in Render logs without guesswork.
+        logger.info(
+            "[MACD2][service] start() called reason=%s mode=%s budget=%s existing_worker_alive=%s",
+            _call_reason, mode, budget, bool(self._worker and self._worker.is_alive()),
+        )
         # 2026-08-20 fix (real incident: after a Render idle-sleep/redeploy, a
         # still-alive-but-stuck Worker thread made start() refuse forever
         # with ALREADY_RUNNING and no way to force a clean restart from the
@@ -336,6 +350,11 @@ class Macd2Service:
         """Manual bootstrap retry (docs §21: 재시도 버튼) — reuses the
         existing broker/MarketDataService/quote updater; never spawns a new
         thread. No-op if the Worker is already running."""
+        # 2026-08-26 diagnostic log (docs: today's flag-detection incident).
+        logger.info(
+            "[MACD2][service] retry_bootstrap() called existing_worker_alive=%s",
+            bool(self._worker and self._worker.is_alive()),
+        )
         if self._market_data is None or self._broker is None:
             return {"ok": False, "message": "NOT_STARTED"}
         if self._worker is not None and self._worker.is_alive():
@@ -396,6 +415,8 @@ class Macd2Service:
             broker=self._broker, market_data=self._market_data,
             get_state=state_store.load_state, save_state=state_store.save_state,
         )
+        # 2026-08-26 diagnostic log (docs: today's flag-detection incident).
+        logger.info("[MACD2][service] _attempt_bootstrap built new worker instance_id=%s", self._worker.instance_id)
         state = initialize_strategy_session(
             state, self._market_data, now=datetime.now(KST), worker_instance_id=self._worker.instance_id,
         )
