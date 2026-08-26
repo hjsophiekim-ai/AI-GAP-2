@@ -809,19 +809,10 @@ def test_filter_off_still_orders_on_a_confirmed_flag():
     assert state.daily_major_entry_count == 0
 
 
-def test_filter_on_approved_behaves_identically_to_filter_off(tmp_path, monkeypatch):
-    # Both scenarios below share the exact same bar timeline/``now`` on
-    # purpose (to compare filter-on vs filter-off behavior on an identical
-    # signal) and therefore produce the SAME signal_id -- give the "on" run
-    # its own execution ledger file so the persistent-disk signal_id/side
-    # dedup check (order_executor.execute_signal, 2026-08-26 cross-process
-    # duplicate-order fix) never sees the "off" run's already-recorded BUY
-    # leg for that same signal_id and mistakes it for a real re-dispatch.
+def test_filter_on_approved_behaves_identically_to_filter_off():
     off_svc, off_state, off_broker, off_now = _confirmed_up_scenario(filter_on=False)
     off_result = run_once(broker=off_broker, market_data=off_svc, state=off_state, now=off_now)
 
-    monkeypatch.setattr(ledger, "EXECUTION_LEDGER_PATH", tmp_path / "on_scenario_execution_ledger.csv")
-    monkeypatch.setattr(ledger, "SIGNAL_LEDGER_PATH", tmp_path / "on_scenario_signal_ledger.csv")
     on_svc, on_state, on_broker, on_now = _confirmed_up_scenario(filter_on=True)
     on_result = run_once(broker=on_broker, market_data=on_svc, state=on_state, now=on_now)
 

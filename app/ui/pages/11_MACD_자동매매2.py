@@ -446,45 +446,6 @@ d3.metric("누적 tick 수", worker_stats.get("tick_n", "-"))
 if last_exc:
     st.error(f"Worker 마지막 예외 (다음 성공 tick까지 유지됨):\n```\n{last_exc}\n```")
 
-# 2026-08-26 추가: 크로스프로세스 주문 권한 lock(app.trading.macd2.worker_lock)
-# 상태 노출 — tick_n/last_tick_at은 lock을 못 얻어 대기(standby)만 하고 있어도
-# 정상적으로 계속 증가하기 때문에, lock 정보 없이는 "Worker가 살아있고 계속
-# 틱을 도는데 신호평가/주문이 전혀 안 일어나는" 상황을 대시보드에서 구분할
-# 방법이 없었다(그날 실제 원인 규명 지연의 직접적 계기).
-lock_owned = worker_stats.get("order_lock_owned")
-lock_status = worker_stats.get("order_lock_status") or "-"
-lock_holder = worker_stats.get("order_lock_holder_instance_id") or "-"
-l1, l2, l3 = st.columns(3)
-l1.metric(
-    "주문 권한(lock)", "보유" if lock_owned else ("미보유" if lock_owned is not None else "-"),
-    delta=None if lock_owned or lock_owned is None else "이 프로세스는 이번 tick에 신호평가/주문을 건너뜀",
-    delta_color="inverse" if lock_owned is False else "normal",
-)
-l2.metric("lock 상태", lock_status)
-l3.metric("현재 lock 보유 instance_id", lock_holder)
-lock_holder_started = worker_stats.get("order_lock_holder_started_at")
-lock_holder_heartbeat = worker_stats.get("order_lock_holder_last_heartbeat_at")
-if lock_owned is False and (lock_holder_started or lock_holder_heartbeat):
-    st.caption(f"현재 lock 보유자 시작 시각: `{lock_holder_started or '-'}` · 마지막 heartbeat: `{lock_holder_heartbeat or '-'}`")
-
-if lock_owned is False:
-    with st.expander("⚠️ lock 강제 해제 (긴급 — 재배포 후 이전 컨테이너가 안 죽고 계속 lock을 쥐고 있을 때만 사용)"):
-        st.warning(
-            "이 프로세스가 현재 주문 권한(lock)을 갖고 있지 않은 상태입니다. "
-            "위 '현재 lock 보유자'가 실제로는 이미 죽었는데(재배포 때 정상 종료 안 됨 등) "
-            "heartbeat 타임아웃(최대 3분)을 기다리지 않고 즉시 정리하고 싶을 때만 누르세요. "
-            "만약 그 보유자가 실제로 아직 살아서 정상 동작 중이라면, 이 버튼을 누르면 "
-            "두 프로세스가 동시에 주문 권한을 얻으려 경쟁하는 상황(중복주문 위험)이 재현될 수 있습니다 — "
-            "Render 대시보드에서 실행 중인 인스턴스가 실제로 몇 개인지 먼저 확인하는 걸 권장합니다."
-        )
-        if st.button("lock 강제 해제 실행", type="secondary", use_container_width=True):
-            res = service.force_clear_worker_lock()
-            if res.get("message") == "NOTHING_TO_CLEAR":
-                st.info("이미 lock 파일이 없습니다 (그 사이 정리됐거나 처음부터 없었음).")
-            else:
-                st.success(f"lock 강제 해제됨: {res.get('cleared')}")
-            st.rerun()
-
 st.subheader("현재 신호 / 포지션")
 q1, q2, q3 = st.columns(3)
 for col, symbol, label in (

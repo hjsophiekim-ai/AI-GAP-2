@@ -287,29 +287,6 @@ def append_execution(row: dict[str, Any]) -> bool:
         return True
 
 
-def signal_id_has_leg(signal_id: str, side: str) -> bool:
-    """True if the execution ledger already has a SIDE-specific leg for this
-    signal_id -- a persistent-disk idempotency check, independent of any
-    single process's in-memory ``processed_signal_ids`` (docs 2026-08-26
-    incident: two live Worker processes, each with its own in-memory guard,
-    both dispatched the same signal_id's BUY leg because neither's
-    in-memory state knew about the other's already-placed order).
-
-    Deliberately keyed by side, not just signal_id -- a reversal's own
-    SELL-then-BUY sequence legitimately writes two DIFFERENT-side rows for
-    the SAME signal_id in one normal call, and a legitimate retry that only
-    needs to (re)send the BUY leg after an already-confirmed SELL must not
-    be blocked just because that SELL row exists.
-    """
-    if not signal_id:
-        return False
-    side_norm = str(side or "").upper()
-    for row in _load_rows(EXECUTION_LEDGER_PATH, limit=0):
-        if str(row.get("signal_id") or "") == signal_id and str(row.get("side") or "").upper() == side_norm:
-            return True
-    return False
-
-
 def append_reconcile_backfill_buy(
     *, symbol: str, quantity: int, avg_price: float, reconciled_at: str, mode: str, signal_id: str = "",
 ) -> bool:

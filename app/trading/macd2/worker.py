@@ -57,7 +57,6 @@ from app.trading.macd2 import (
     time_window_filter,
     time_window_position_manager,
     trend_persistence_filter,
-    worker_lock,
 )
 from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
 from app.trading.macd2.models import (
@@ -3962,16 +3961,6 @@ class Macd2Worker:
         self._instance_id = uuid.uuid4().hex[:12]
         self._started_at: Optional[datetime] = None
         self._last_quote_updater_restart_at: Optional[datetime] = None
-        # 2026-08-26 fix: cross-process order-authority lease (see
-        # app.trading.macd2.worker_lock) -- renewed once per tick below.
-        # ``_order_lock_owned`` gates whether run_once() is even called this
-        # tick; separate from ``_lock`` (the plain in-process stats RLock
-        # above) on purpose, never conflate the two.
-        self._order_lock_owned = False
-        self._order_lock_status = "INIT"
-        self._order_lock_holder_instance_id: Optional[str] = None
-        self._order_lock_holder_started_at: Optional[str] = None
-        self._order_lock_holder_last_heartbeat_at: Optional[str] = None
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -4001,11 +3990,6 @@ class Macd2Worker:
                 "next_tick_at": next_tick_at,
                 "recent_tick_sample_count": len(self._tick_intervals),
                 "stage_timing_sec": dict(self._last_stage_timing),
-                "order_lock_owned": self._order_lock_owned,
-                "order_lock_status": self._order_lock_status,
-                "order_lock_holder_instance_id": self._order_lock_holder_instance_id,
-                "order_lock_holder_started_at": self._order_lock_holder_started_at,
-                "order_lock_holder_last_heartbeat_at": self._order_lock_holder_last_heartbeat_at,
             }
 
     def _run_loop(self) -> None:
@@ -4014,20 +3998,9 @@ class Macd2Worker:
             stage_timing: dict[str, float] = {}
             try:
                 t_stage = time.monotonic()
-                lock_result = worker_lock.try_acquire_or_renew(self._instance_id, now=datetime.now(KST))
-                stage_timing["order_lock"] = time.monotonic() - t_stage
-                with self._lock:
-                    self._order_lock_owned = lock_result.owned
-                    self._order_lock_status = lock_result.reason
-                    self._order_lock_holder_instance_id = (
-                        lock_result.current.instance_id if lock_result.current else None
-                    )
-                    self._order_lock_holder_started_at = (
-                        lock_result.current.started_at if lock_result.current else None
-                    )
-                    self._order_lock_holder_last_heartbeat_at = (
-                        lock_result.current.last_heartbeat_at if lock_result.current else None
-                    )
+                state = self._get_state()
+                state.worker_instance_id = self._instance_id
+                stage_timing["state_load"] = time.monotonic() - t_stage
                 # Unlike this tick loop, the quote-updater background thread
                 # (market_data.py) has no supervisor of its own — if it ever
                 # dies, quotes freeze permanently and every confirmed signal
@@ -4110,62 +4083,13 @@ class Macd2Worker:
                                 "[MACD2] quote-updater stale but old thread still alive after "
                                 "join -- skipping restart this cycle to avoid orphaning another thread"
                             )
-                if lock_result.owned:
-                    # 2026-08-26 fix (real incident: two live Worker
-                    # processes ran concurrently for several minutes after a
-                    # redeploy and both dispatched the same signal_id --
-                    # see worker_lock.py's own docstring): only the
-                    # confirmed sole lock owner may load state / evaluate
-                    # signals / place an order this tick. A standby instance
-                    # (lock currently held by someone else) still keeps
-                    # quotes warm above but otherwise sits this tick out
-                    # completely -- no state load, no signal evaluation, no
-                    # order, exactly as if it were not running at all.
-                    t_stage = time.monotonic()
-                    state = self._get_state()
-                    state.worker_instance_id = self._instance_id
-                    stage_timing["state_load"] = time.monotonic() - t_stage
-                    # LockGuardedBroker re-checks lock ownership immediately
-                    # before every actual order-placing broker call ("주문
-                    # 직전 재확인") -- a second, narrower safety net in case
-                    # this tick's own KIS retry/poll loop runs long enough
-                    # for another instance to legitimately take over the
-                    # lease while this call is still in flight.
-                    guarded_broker = worker_lock.LockGuardedBroker(self._broker, self._instance_id)
-                    tick_result = run_once(
-                        broker=guarded_broker, market_data=self._market_data, state=state, now=datetime.now(KST),
-                    )
-                    stage_timing.update(tick_result.timing)
-                    t_stage = time.monotonic()
-                    self._save_state(state)
-                    stage_timing["state_save"] = time.monotonic() - t_stage
-                    with self._lock:
-                        self._last_exception = None
-                else:
-                    # 2026-08-26 fix (real incident: a PERSISTENT lock-acquire
-                    # failure -- e.g. the Persistent Disk refusing to create
-                    # the lock file -- fails closed exactly as designed
-                    # (never loads state, never places an order), but
-                    # self._last_exception was being unconditionally reset to
-                    # None every single tick even while genuinely stuck in
-                    # standby forever, so the existing "Worker 마지막 예외"
-                    # dashboard panel showed nothing -- "zero orders even with
-                    # every filter off" looked identical to a healthy, quiet
-                    # standby. A normal HELD_BY_OTHER (a genuine second live
-                    # instance currently owns the lease -- expected during a
-                    # brief rolling-deploy overlap) or a one-off *_RACE_LOST
-                    # (ordinary contention resolution, see worker_lock.py's
-                    # _claim -- not itself a persistent problem) is NOT
-                    # surfaced here, only an actual internal error is, so this
-                    # never cries wolf during ordinary operation.
-                    with self._lock:
-                        if lock_result.reason.startswith("ERROR:"):
-                            self._last_exception = (
-                                f"MACD2 order-authority lock not owned this tick "
-                                f"(reason={lock_result.reason}) -- no signal evaluation, no order."
-                            )
-                        else:
-                            self._last_exception = None
+                tick_result = run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
+                stage_timing.update(tick_result.timing)
+                t_stage = time.monotonic()
+                self._save_state(state)
+                stage_timing["state_save"] = time.monotonic() - t_stage
+                with self._lock:
+                    self._last_exception = None
             except Exception as exc:
                 with self._lock:
                     self._last_exception = f"{exc}\n{traceback.format_exc()}"
@@ -4198,21 +4122,10 @@ class Macd2Worker:
     def stop(self, join_timeout: float = 5.0) -> bool:
         """Returns True only if the tick thread is confirmed dead after the
         join -- same orphan-detection reasoning as MarketDataService.
-        stop_quote_updater() (2026-08-24 fix).
-
-        Releases the cross-process order-authority lease (docs
-        worker_lock.py) on a CONFIRMED-dead thread only -- lets a
-        subsequent process take over immediately instead of waiting out
-        WORKER_LOCK_STALE_AFTER_SEC. Never released while the thread might
-        still be mid-tick (unconfirmed join, or stop() called from within
-        the loop itself) -- the heartbeat timeout is the correct backstop
-        for those cases, and releasing early there could hand off order
-        authority while this instance may still place one more order.
-        """
+        stop_quote_updater() (2026-08-24 fix)."""
         self._stop_event.set()
         thread = self._thread
         if thread is None:
-            worker_lock.release(self._instance_id)
             return True
         if thread is threading.current_thread():
             self._thread = None  # can't join ourselves; preserves prior behavior
@@ -4221,5 +4134,4 @@ class Macd2Worker:
         if thread.is_alive():
             return False
         self._thread = None  # never reused — start() always creates a fresh Thread object
-        worker_lock.release(self._instance_id)
         return True

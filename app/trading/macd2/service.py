@@ -26,9 +26,8 @@ import os
 from datetime import datetime
 from typing import Any, Optional
 
-from app.logger import logger
 from app.trading import strategy_ownership
-from app.trading.macd2 import config, ledger, order_executor, state_store, worker_lock
+from app.trading.macd2 import config, ledger, order_executor, state_store
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, RuntimeStatus, SignalState
@@ -201,10 +200,7 @@ class Macd2Service:
             self._teardown_stuck_since is not None
             and (now - self._teardown_stuck_since).total_seconds() > config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC
         )
-        result = self.start(
-            mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through,
-            _call_reason="auto_recover",
-        )
+        result = self.start(mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through)
         if result.get("message") == "PREVIOUS_INSTANCE_STILL_STOPPING":
             if self._teardown_stuck_since is None:
                 self._teardown_stuck_since = now
@@ -230,17 +226,7 @@ class Macd2Service:
         budget: float = config.DEFAULT_BUDGET,
         real_kwargs: Optional[dict[str, Any]] = None,
         _require_confirmed_teardown: bool = False,
-        _call_reason: str = "manual_ui",
     ) -> dict[str, Any]:
-        # 2026-08-26 diagnostic log (docs: today's flag-detection incident) --
-        # pure logging; _call_reason distinguishes a manual "자동매매 시작"
-        # click from an automatic _auto_recover_worker() retry, so a
-        # repeated-restart pattern (a suspected contributor to quote/history
-        # updater flapping) is visible in Render logs without guesswork.
-        logger.info(
-            "[MACD2][service] start() called reason=%s mode=%s budget=%s existing_worker_alive=%s",
-            _call_reason, mode, budget, bool(self._worker and self._worker.is_alive()),
-        )
         # 2026-08-20 fix (real incident: after a Render idle-sleep/redeploy, a
         # still-alive-but-stuck Worker thread made start() refuse forever
         # with ALREADY_RUNNING and no way to force a clean restart from the
@@ -350,42 +336,11 @@ class Macd2Service:
         """Manual bootstrap retry (docs §21: 재시도 버튼) — reuses the
         existing broker/MarketDataService/quote updater; never spawns a new
         thread. No-op if the Worker is already running."""
-        # 2026-08-26 diagnostic log (docs: today's flag-detection incident).
-        logger.info(
-            "[MACD2][service] retry_bootstrap() called existing_worker_alive=%s",
-            bool(self._worker and self._worker.is_alive()),
-        )
         if self._market_data is None or self._broker is None:
             return {"ok": False, "message": "NOT_STARTED"}
         if self._worker is not None and self._worker.is_alive():
             return {"ok": True, "message": "ALREADY_RUNNING"}
         return self._attempt_bootstrap()
-
-    def force_clear_worker_lock(self) -> dict[str, Any]:
-        """MANUAL operator override (docs worker_lock.force_clear's own
-        docstring for the full risk explanation) -- a button of last resort
-        for the one case the heartbeat timeout cannot self-heal from
-        quickly: a container that never actually died on redeploy and keeps
-        renewing its own lease forever, so a freshly-deployed process can
-        never win a legitimate staleness-based takeover.
-
-        Never called automatically -- only ever a deliberate human action
-        after confirming (e.g. via the Render dashboard's instance list)
-        that the reported lock holder is genuinely not a still-running,
-        still-healthy process. Clearing this while a second process is
-        actually still alive and working recreates the exact duplicate-
-        order condition this whole mechanism exists to prevent.
-        """
-        cleared = worker_lock.force_clear()
-        if cleared is None:
-            return {"ok": True, "message": "NOTHING_TO_CLEAR", "cleared": None}
-        return {
-            "ok": True, "message": "LOCK_CLEARED",
-            "cleared": {
-                "instance_id": cleared.instance_id, "pid": cleared.pid, "hostname": cleared.hostname,
-                "started_at": cleared.started_at, "last_heartbeat_at": cleared.last_heartbeat_at,
-            },
-        }
 
     def _attempt_bootstrap(self) -> dict[str, Any]:
         self._bootstrap_attempts += 1
@@ -415,8 +370,6 @@ class Macd2Service:
             broker=self._broker, market_data=self._market_data,
             get_state=state_store.load_state, save_state=state_store.save_state,
         )
-        # 2026-08-26 diagnostic log (docs: today's flag-detection incident).
-        logger.info("[MACD2][service] _attempt_bootstrap built new worker instance_id=%s", self._worker.instance_id)
         state = initialize_strategy_session(
             state, self._market_data, now=datetime.now(KST), worker_instance_id=self._worker.instance_id,
         )
@@ -438,41 +391,7 @@ class Macd2Service:
         # the Worker thread's own first loop iteration moments later) a
         # safe no-op — never duplicated.
         try:
-            # 2026-08-26 fix: this one-shot synchronous tick is a real
-            # order-dispatch path (the exact same catch-up it exists for can
-            # place a real order) and ran completely outside the Worker
-            # thread's own per-tick lock gate -- during a Render redeploy
-            # overlap, a freshly-booted NEW process reaching here while an
-            # OLD process's Worker thread was still alive/ticking was
-            # exactly how the 2026-08-26 incident's first duplicate BUY
-            # happened. Same lease check + guarded broker the Worker thread
-            # itself uses (docs worker_lock.py); skip this catch-up tick
-            # entirely if some other instance currently holds order
-            # authority -- the Worker thread's own loop (started right
-            # below) retries every tick regardless, exactly like the
-            # existing best-effort exception handling below already assumes.
-            # 2026-08-26 follow-up fix (real incident: a manual "자동매매
-            # 시작"/auto-recover restart within the SAME process, when the
-            # PREVIOUS self._worker's thread did not confirm stopped within
-            # stop()'s join_timeout -- see this method's own teardown
-            # comments above for why a manual start must proceed regardless
-            # -- left that old thread orphaned but still alive, still
-            # renewing ITS OWN instance_id's lease every tick. This brand
-            # new self._worker could then never win a legitimate staleness-
-            # based takeover from an orphan that keeps responding, so it sat
-            # in permanent standby -- while the orphan itself, holding the
-            # lease, was ticking against a MarketDataService already stopped
-            # by THIS SAME start() call's teardown above, so it could never
-            # detect a new flag either. _attempt_bootstrap() constructing a
-            # fresh self._worker IS this process declaring that worker the
-            # sole intended one going forward; force the lease to it here so
-            # this new worker never has to out-wait an orphan of its own
-            # process's earlier attempt.
-            worker_lock.force_clear()
-            lock_result = worker_lock.try_acquire_or_renew(self._worker.instance_id, now=datetime.now(KST))
-            if lock_result.owned:
-                guarded_broker = worker_lock.LockGuardedBroker(self._broker, self._worker.instance_id)
-                run_once(broker=guarded_broker, market_data=self._market_data, state=state, now=datetime.now(KST))
+            run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
         except Exception:
             pass  # best-effort catch-up tick; the Worker's own loop retries every tick regardless
         state_store.save_state(state)

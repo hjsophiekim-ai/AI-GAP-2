@@ -357,16 +357,6 @@ def execute_signal(
     """
     timestamps: dict[str, str] = {"evaluated_at": _now_iso()}
     target_symbol = target_symbol_for_direction(direction)
-    lm = ledger_module if ledger_module is not None else ledger
-    # Persistent-disk idempotency, in addition to the in-memory
-    # processed_signal_ids check right below (docs 2026-08-26 incident: two
-    # live Worker processes each had their OWN in-memory
-    # processed_signal_ids, so this in-memory check alone never caught a
-    # second process dispatching the same signal_id). getattr(...) so a
-    # ledger_module without this function (e.g. mu_macd's own ledger, which
-    # reuses this executor but has no such incident to guard against yet)
-    # is a byte-for-byte no-op, never an AttributeError.
-    signal_leg_check = getattr(lm, "signal_id_has_leg", None)
 
     if signal_id in processed_signal_ids:
         return ExecutionOutcome(
@@ -436,10 +426,6 @@ def execute_signal(
     outcome.order_price = order_price
 
     if held_symbol is not None:
-        if signal_leg_check is not None and signal_leg_check(signal_id, "SELL"):
-            outcome.final_state = SignalState.BLOCKED
-            outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
-            return outcome
         timestamps["sell_requested_at"] = _now_iso()
         sell_result = broker.sell_market(held_symbol, held_qty, f"{signal_id}:SELL:{held_symbol}")
         outcome.sell_result = sell_result
@@ -538,11 +524,6 @@ def execute_signal(
         outcome.order_failure_stage = BLOCK_INSUFFICIENT_QTY
         return outcome
 
-    if signal_leg_check is not None and signal_leg_check(signal_id, "BUY"):
-        outcome.final_state = SignalState.BLOCKED
-        outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
-        outcome.order_failure_stage = BLOCK_DUPLICATE_SIGNAL
-        return outcome
     timestamps["buy_requested_at"] = _now_iso()
     buy_limit = getattr(broker, "buy_limit", None)
     if buy_limit is None:
