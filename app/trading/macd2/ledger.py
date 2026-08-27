@@ -101,6 +101,13 @@ SIGNAL_LEDGER_COLUMNS = [
     # window, session, etc.) — these two just record which variant is on
     # and which one actually opened the currently-held position.
     "time_window_2_filter_enabled", "time_window_active_mode",
+    # TEG filter field (appended 2026-08-27; never rename/delete older
+    # cols). TW1 was retired the same day -- "time_window_filter_enabled"
+    # above is kept for historical rows but always False from here on; the
+    # TEG filter (config.TIME_WINDOW_TEG_FILTER_DEFAULT) that replaces TW1's
+    # former slot shares every other time_window_* column with TW2 (score,
+    # window, session, active_mode, etc.) — this is its own enabled flag.
+    "time_window_teg_filter_enabled",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

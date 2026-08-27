@@ -1,0 +1,155 @@
+{
+  "all_dates_range": [
+    "20260601",
+    "20260826"
+  ],
+  "train_dates_range": [
+    "20260601",
+    "20260728"
+  ],
+  "oos_dates_range": [
+    "20260729",
+    "20260826"
+  ],
+  "train_hist_delta_floor": 162.9282562405128,
+  "train_spread_delta_floor": 242.7604148619809,
+  "train_results": {
+    "A": {
+      "trading_days": 40,
+      "entries": 89,
+      "wins": 42,
+      "win_rate_pct": 47.2,
+      "total_pct": 61.264,
+      "compound_pct": 77.648,
+      "avg_pct_per_trade": 0.688,
+      "mdd_pct": 11.487
+    },
+    "C": {
+      "trading_days": 40,
+      "entries": 98,
+      "wins": 48,
+      "win_rate_pct": 49.0,
+      "total_pct": 69.293,
+      "compound_pct": 92.25,
+      "avg_pct_per_trade": 0.707,
+      "mdd_pct": 11.289
+    }
+  },
+  "oos_results": {
+    "A": {
+      "trading_days": 20,
+      "entries": 52,
+      "wins": 25,
+      "win_rate_pct": 48.1,
+      "total_pct": 20.865,
+      "compound_pct": 20.015,
+      "avg_pct_per_trade": 0.401,
+      "mdd_pct": 13.012
+    },
+    "C": {
+      "trading_days": 20,
+      "entries": 58,
+      "wins": 28,
+      "win_rate_pct": 48.3,
+      "total_pct": 25.493,
+      "compound_pct": 25.501,
+      "avg_pct_per_trade": 0.44,
+      "mdd_pct": 13.012
+    }
+  },
+  "oos_verdict": {
+    "entries_C_gt_A": true,
+    "total_pct_C_gt_A": true,
+    "compound_pct_C_gt_A": true,
+    "mdd_pct_C_lt_or_eq_A": true
+  },
+  "target_flag_checks": [
+    {
+      "label": "8/25 12:09 UP_RED",
+      "date": "20260825",
+      "flag": "2026-08-25T12:09:00+09:00",
+      "direction": "UP_RED",
+      "approved": true,
+      "conditions": {
+        "tw2_confirmed": true,
+        "recent_cross_le_1": true,
+        "macd_gap_signed_net_expanding": true,
+        "ema_spread_signed_net_expanding": true,
+        "price_ema_stack_aligned": true,
+        "vwap_favorable_side": true,
+        "min_9min_since_opposite_flag": true
+      },
+      "metrics": {
+        "gap_flag": 154.93381221169963,
+        "gap_now": 375.9699283044516,
+        "recent_30min_cross_count": 0,
+        "macd_gap_signed_net": {
+          "value_now": 375.9699283044516,
+          "value_2bar_back": -207.35590193296804,
+          "primary_net_2bar": 583.3258302374197,
+          "value_3bar_back": -255.05441210636667,
+          "secondary_net_3bar": 631.0243404108182
+        },
+        "ema_spread_signed_net": {
+          "value_now": 334.1993436794728,
+          "value_2bar_back": -451.9903712400701,
+          "primary_net_2bar": 786.1897149195429,
+          "value_3bar_back": -466.89914910285734,
+          "secondary_net_3bar": 801.0984927823301
+        },
+        "close": 1596000.0,
+        "ema10": 1592839.8762310282,
+        "ema20": 1592505.6768873488,
+        "vwap": 1585392.3125799638,
+        "minutes_since_prior_opposite_flag": 33.0
+      },
+      "reject_reasons": []
+    },
+    {
+      "label": "8/26 11:06 UP_RED",
+      "date": "20260826",
+      "flag": "2026-08-26T11:06:00+09:00",
+      "direction": "UP_RED",
+      "approved": false,
+      "conditions": {
+        "tw2_confirmed": true,
+        "recent_cross_le_1": false,
+        "macd_gap_signed_net_expanding": true,
+        "ema_spread_signed_net_expanding": true,
+        "price_ema_stack_aligned": false,
+        "vwap_favorable_side": false,
+        "min_9min_since_opposite_flag": false
+      },
+      "metrics": {
+        "gap_flag": 228.13080585841044,
+        "gap_now": 871.101379900053,
+        "recent_30min_cross_count": 2,
+        "macd_gap_signed_net": {
+          "value_now": 871.101379900053,
+          "value_2bar_back": -67.79807933839083,
+          "primary_net_2bar": 938.8994592384438,
+          "value_3bar_back": -89.91228764143398,
+          "secondary_net_3bar": 961.0136675414869
+        },
+        "ema_spread_signed_net": {
+          "value_now": -731.0681260281708,
+          "value_2bar_back": -2070.6473081470467,
+          "primary_net_2bar": 1339.579182118876,
+          "value_3bar_back": -2101.378979805624,
+          "secondary_net_3bar": 1370.3108537774533
+        },
+        "close": 1689000.0,
+        "ema10": 1681666.6691698895,
+        "ema20": 1682397.7372959177,
+        "vwap": 1690362.1387733903,
+        "minutes_since_prior_opposite_flag": 6.0
+      },
+      "reject_reasons": [
+        "recent_cross_le_1",
+        "price_ema_stack_aligned",
+        "vwap_favorable_side",
+        "min_9min_since_opposite_flag"
+      ]
+    }
+  ]
+}

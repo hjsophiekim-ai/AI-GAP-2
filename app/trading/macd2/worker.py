@@ -54,6 +54,7 @@ from app.trading.macd2 import (
     risk_exit,
     sideways_filter,
     single_entry_filter,
+    teg_gate,
     time_window_filter,
     time_window_position_manager,
     trend_persistence_filter,
@@ -371,17 +372,20 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.daily_confirmed_flag_count = 0
     # Time-window filter's morning/afternoon entry counts and any pending
     # (unresolved) T+3 candidate are session-scoped; its toggle
-    # (time_window_filter_enabled) and an ALREADY-open position's own
-    # management state (time_window_position_active/tp1_done/etc.) survive
-    # the rollover unchanged -- a position can still be open across
-    # midnight only in the sense that FORCED_LIQUIDATION already empties it
-    # by 15:00 every day, so this never actually matters in practice, but is
-    # not reset here regardless (mirrors how state.position itself is never
-    # reset on rollover).
+    # (time_window_teg_filter_enabled / time_window_2_filter_enabled) and an
+    # ALREADY-open position's own management state (time_window_position_
+    # active/tp1_done/etc.) survive the rollover unchanged -- a position can
+    # still be open across midnight only in the sense that FORCED_LIQUIDATION
+    # already empties it by 15:00 every day, so this never actually matters
+    # in practice, but is not reset here regardless (mirrors how
+    # state.position itself is never reset on rollover).
     state.time_window_morning_entry_count = 0
     state.time_window_afternoon_entry_count = 0
     state.time_window_pending_flag_direction = None
     state.time_window_pending_flag_bar_ts = None
+    # TEG count-cap bypass(2026-08-27)의 "하루 1회" 소진 플래그도 마찬가지로
+    # session-scoped; 토글(time_window_teg_filter_enabled)은 그대로 유지.
+    state.time_window_teg_count_cap_bypass_used = False
     # 탈락 DOWN_BLUE 예외진입(2026-08-18)의 "하루 1회" 소진 플래그도 마찬가지로
     # session-scoped; 토글(down_blue_exception_filter_enabled)은 그대로 유지.
     state.daily_down_blue_exception_used = False
@@ -605,7 +609,7 @@ def initialize_strategy_session(
             held_symbol = state.position.symbol if state.position and state.position.quantity > 0 else None
             target_symbol = order_executor.target_symbol_for_direction(last_direction)
             if target_symbol != held_symbol:
-                if state.time_window_filter_enabled or state.time_window_2_filter_enabled:
+                if state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled:
                     # 2026-08-21 fix (real incident: a repeated restart/crash
                     # loop this morning made this branch fire _set_pending_
                     # signal for a stale multi-bar-gap mismatch while the TW
@@ -1810,7 +1814,7 @@ def _judge_single_entry_flag(
 
 def _persist_time_window_decision(state: RuntimeState, decision: MajorFlagDecision, signal_id: str) -> None:
     state.time_window_filter_version = (
-        config.TIME_WINDOW_2_FILTER_VERSION if state.time_window_2_filter_enabled else config.TIME_WINDOW_FILTER_VERSION
+        config.TIME_WINDOW_TEG_FILTER_VERSION if state.time_window_teg_filter_enabled else config.TIME_WINDOW_2_FILTER_VERSION
     )
     state.last_time_window_score = float(decision.score)
     state.last_time_window_required_score = float(decision.required_score)
@@ -1830,11 +1834,12 @@ def _judge_time_window_flag(
     authority on its own bar). The REAL time_window_filter.
     evaluate_time_window_entry() check happens one bar later, in
     _resolve_time_window_candidate() below, off bars_3m truncated through
-    that later bar (TW2 layers two more veto checks on top there — see
-    time_window_filter.evaluate_tw2_extra_vetoes). Never called unless TW1
-    (state.time_window_filter_enabled) or TW2 (state.time_window_2_filter_
-    enabled) is on; never creates or suppresses the confirmed flag itself,
-    and never touches STOP_LOSS/OPPOSITE_SIGNAL/FORCED_LIQUIDATION.
+    that later bar (TW2 and the TEG filter both layer two more veto checks
+    on top there — see time_window_filter.evaluate_tw2_extra_vetoes). Never
+    called unless the TEG filter (state.time_window_teg_filter_enabled) or
+    TW2 (state.time_window_2_filter_enabled) is on; never creates or
+    suppresses the confirmed flag itself, and never touches STOP_LOSS/
+    OPPOSITE_SIGNAL/FORCED_LIQUIDATION.
 
     IMPORTANT: a rejection here must NEVER trigger
     _execute_reversal_exit_only_for_filtered_entry's sell-only liquidation
@@ -1923,7 +1928,7 @@ def _advance_held_position_risk_management(
         return True
 
     if (
-        (state.time_window_filter_enabled or state.time_window_2_filter_enabled)
+        (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled)
         and state.position is not None and state.position.symbol == pos.symbol
         and current_price is not None
     ):
@@ -1944,9 +1949,7 @@ def _advance_held_position_risk_management(
             # already-elevated position isn't treated as if it just broke
             # even -- see evaluate_morning_position's own peak-tracking use.
             state.time_window_position_active = True
-            state.time_window_active_mode = state.time_window_active_mode or (
-                "TW2" if state.time_window_2_filter_enabled else "TW1"
-            )
+            state.time_window_active_mode = state.time_window_active_mode or ("TEGv2" if state.time_window_teg_filter_enabled else "TW2")
             session = state.time_window_entry_session or time_window_filter.session_for_window(
                 time_window_filter.classify_window(now.astimezone(KST).time())
             )
@@ -1995,7 +1998,7 @@ def _advance_held_position_risk_management(
             session=state.time_window_entry_session or "MORNING",
             net_return_pct=tick_net_return,
             tp1_done=bool(state.time_window_tp1_done),
-            tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode == "TW2" else None,
+            tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") else None,
         )
         if tp_decision.exit_reason is not None:
             # 2026-08-27 fix (real incident: a premarket-carry position's
@@ -2003,15 +2006,16 @@ def _advance_held_position_risk_management(
             # already been committed True just above -- the position was
             # then governed by the tightened post-TP1 ladder
             # (MORNING_AFTER_TP1_STOP=+0.3%) instead of the correct pre-TP1
-            # -1.7% stop-loss/3% TP1 threshold, so a nearly-flat tick minutes
-            # later was enough to trigger a full exit. peak_net_return is
-            # harmless either way (it only ever tracks the best return SEEN,
-            # not anything about whether an order actually filled), so it
-            # still commits unconditionally -- but tp1_done must only ever
-            # flip once the corresponding order is CONFIRMED EXECUTED; on a
-            # failed/blocked attempt the position must stay governed by
-            # whatever ladder stage it was ACTUALLY in before this tick, so a
-            # retry next tick is judged against the correct threshold again.
+            # -1.7% stop-loss/3% TP1 threshold, so a nearly-flat +0.157%
+            # tick was enough to trigger a full exit minutes later). peak_
+            # net_return tracking is harmless/independent of whether an
+            # order actually filled (it only ever tracks the best return
+            # SEEN, not anything about position state), so it still commits
+            # unconditionally -- but tp1_done must only ever flip once the
+            # corresponding order is CONFIRMED EXECUTED; on a failed/blocked
+            # attempt the position must stay governed by whatever ladder
+            # stage it was actually in before this tick, so a retry next
+            # tick is judged against the correct threshold again.
             state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), tp_decision.peak_net_return)
             sell_fraction = max(0.0, min(1.0, tp_decision.sell_fraction))
             if sell_fraction >= 1.0:
@@ -2055,7 +2059,7 @@ def _advance_held_position_risk_management(
                 net_return_pct=bar_net_return,
                 tp1_done=bool(state.time_window_tp1_done),
                 peak_net_return=float(state.time_window_peak_net_return or 0.0),
-                tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode == "TW2" else None,
+                tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") else None,
             )
             # 2026-08-27 fix -- same reasoning as the immediate-tick TP path
             # just above: peak_net_return still commits unconditionally
@@ -2133,10 +2137,10 @@ def _resolve_time_window_candidate(
     (no duplicated entry-condition logic vs the backtest driver). Returns
     the dispatch outcome if an entry/switch was actually placed this tick,
     else ``None`` (still waiting, expired, or rejected — all safe no-ops).
-    Never called unless TW1 (``state.time_window_filter_enabled``) or TW2
-    (``state.time_window_2_filter_enabled``) is on.
+    Never called unless TW2 is on. TEGv2 is an optional TW2 sub-filter; it
+    only evaluates count-cap rejected TW2 candidates.
     """
-    if not (state.time_window_filter_enabled or state.time_window_2_filter_enabled) or not state.time_window_pending_flag_direction:
+    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled) or not state.time_window_pending_flag_direction:
         return None
     flag_bar_dt = _parse_iso_dt(state.time_window_pending_flag_bar_ts)
     if flag_bar_dt is None:
@@ -2163,15 +2167,49 @@ def _resolve_time_window_candidate(
         morning_entry_count=int(state.time_window_morning_entry_count or 0),
         afternoon_entry_count=int(state.time_window_afternoon_entry_count or 0),
     )
-    if decision.approved and state.time_window_2_filter_enabled:
+    if decision.approved and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
         # TW2 (2026-08-21 사용자 요청): two extra vetoes layered on top of the
         # SAME base TW gate above -- see config.py's TIME_WINDOW_2_FILTER_
         # DEFAULT docstring for the 29-day TRAIN/OOS validation. Only ever
         # tightens an approval into a rejection; never overrides a genuine
-        # TW1-style rejection into an approval.
+        # base-gate rejection into an approval. The TEG filter (2026-08-27)
+        # reuses these SAME two vetoes -- its entry gating is byte-identical
+        # to TW2's in every respect except the count-cap bypass below.
         vetoed, veto_reason = time_window_filter.evaluate_tw2_extra_vetoes(bars_3m, direction, flag_bar_dt, now)
         if vetoed:
             decision = dataclasses.replace(decision, approved=False, decision=veto_reason, block_reason=veto_reason)
+
+    # TEG count-cap bypass (2026-08-27 사용자 요청, validated via TRAIN/OOS
+    # backtest -- see config.py's TIME_WINDOW_TEG_FILTER_DEFAULT docstring).
+    # Only ever considered when: the TEG filter (not TW2) is the active
+    # toggle, the base decision was rejected SOLELY for the daily entry-
+    # count cap (block_reason == TW_REJECT_MAX_ENTRY_COUNT -- which, by
+    # evaluate_time_window_entry's own check ordering, is only ever reached
+    # after interval/window/quality-score/reset already passed), the extra
+    # vetoes above (already checked against this same decision when it was
+    # briefly approved) don't veto it, and today's ONE bypass hasn't already
+    # been used (matches the actual backtested "variant C" behavior --
+    # capped at exactly 1/day, never unlimited).
+    if (
+        not decision.approved
+        and state.time_window_teg_filter_enabled
+        and decision.block_reason == config.TW_REJECT_MAX_ENTRY_COUNT
+        and not state.time_window_teg_count_cap_bypass_used
+    ):
+        vetoed, _veto_reason = time_window_filter.evaluate_tw2_extra_vetoes(bars_3m, direction, flag_bar_dt, now)
+        if not vetoed:
+            teg_decision = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
+            state.last_time_window_teg_candidate_at = datetime.now(KST).isoformat()
+            state.last_time_window_teg_approved = bool(teg_decision.approved)
+            state.last_time_window_teg_reject_reasons = list(teg_decision.reject_reasons or [])
+            state.last_time_window_teg_metrics = dict(teg_decision.metrics or {})
+            state.last_time_window_teg_conditions = dict(teg_decision.conditions or {})
+            if teg_decision.approved:
+                decision = dataclasses.replace(
+                    decision, approved=True, decision=config.TW_TEG_COUNT_CAP_BYPASS, block_reason=None,
+                )
+                state.time_window_teg_count_cap_bypass_used = True
+                state.last_time_window_teg_bypass_at = datetime.now(KST).isoformat()
     _persist_time_window_decision(state, decision, signal_id)
 
     # Optional "탈락 DOWN_BLUE 예외진입" (2026-08-18) -- see config.py's
@@ -2297,7 +2335,7 @@ def _resolve_time_window_candidate(
             window = time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
         session = time_window_filter.session_for_window(window)
         state.time_window_position_active = True
-        state.time_window_active_mode = "TW2" if state.time_window_2_filter_enabled else "TW1"
+        state.time_window_active_mode = "TEGv2" if decision.decision == config.TW_TEG_COUNT_CAP_BYPASS else "TW2"
         state.time_window_entry_session = session
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
@@ -2355,29 +2393,33 @@ def _judge_entry_gate(
 ) -> tuple[Optional[MajorFlagDecision], str]:
     """Single order-authority gate dispatcher for a confirmed crossover.
 
-    TW1 (``time_window_filter_enabled``) / TW2 (``time_window_2_filter_
-    enabled``) take TOP PRIORITY, sharing one tier — the two are mutually
-    exclusive by construction (service.set_time_window_filter_enabled/
-    set_time_window_2_filter_enabled each force the other off, 2026-08-21
-    사용자 요청), so at most one of them is ever True; both route through the
-    SAME ``_judge_time_window_flag``/``_resolve_time_window_candidate`` pair,
-    which internally branches on ``time_window_2_filter_enabled`` for TW2's
-    two extra vetoes + raised TP2. Then (2026-08-15 사용자 요청: the newest,
-    most complete redesign supersedes the simpler entry-only gates when a
-    user opts into it) ``no_filter_0900_1100_enabled`` (2026-08-20 사용자
-    요청: 6th peer gate, same priority tier as the other simple filters --
-    see ``_judge_no_filter_flag``), then ``sideways_filter_enabled``,
-    then ``major_filter_enabled``, then ``trend_persistence_filter_enabled``,
-    then ``single_entry_filter_enabled`` — never more than one of these
-    (TW1-or-TW2 counting as a single tier) active for the same signal
-    (2026-08-04 추세전환장 toggle spec: "위 로직 우선으로 들어가는 거야",
+    TW2 (``time_window_2_filter_enabled``) / the TEG filter (``time_window_
+    teg_filter_enabled``) take TOP PRIORITY, sharing one tier — the two are
+    mutually exclusive by construction (service.set_time_window_2_filter_
+    enabled/set_time_window_teg_filter_enabled each force the other off,
+    2026-08-21 사용자 요청, same pattern the retired TW1/TW2 pair used), so at
+    most one of them is ever True; both route through the SAME
+    ``_judge_time_window_flag``/``_resolve_time_window_candidate`` pair,
+    which internally branches on ``time_window_2_filter_enabled`` OR
+    ``time_window_teg_filter_enabled`` for the shared extra vetoes + raised
+    TP2, and additionally on ``time_window_teg_filter_enabled`` alone for
+    the TEG count-cap bypass (2026-08-27). Then (2026-08-15 사용자 요청: the
+    newest, most complete redesign supersedes the simpler entry-only gates
+    when a user opts into it) ``no_filter_0900_1100_enabled`` (2026-08-20
+    사용자 요청: 6th peer gate, same priority tier as the other simple
+    filters -- see ``_judge_no_filter_flag``), then ``sideways_filter_
+    enabled``, then ``major_filter_enabled``, then ``trend_persistence_
+    filter_enabled``, then ``single_entry_filter_enabled`` — never more than
+    one of these (TW2-or-TEG counting as a single tier) active for the same
+    signal (2026-08-04 추세전환장 toggle spec: "위 로직 우선으로 들어가는 거야",
     extended 2026-08-07 to Trend Persistence, 2026-08-08 to Single-Entry,
     2026-08-15 to Time-Window, 2026-08-20 to No-Filter-0900-1100, 2026-08-21
-    to TW2).
+    to TW2, 2026-08-27 TW1 retired and replaced by the TEG filter in this
+    tier).
     Returns ``(None, "NONE")`` when no toggle is on — legacy behavior (every
     confirmed flag has order authority) is completely unchanged.
     """
-    if state.time_window_filter_enabled or state.time_window_2_filter_enabled:
+    if state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled:
         return _judge_time_window_flag(state=state, bars_3m=bars_3m, direction=direction, signal_id=signal_id), "TIME_WINDOW"
     if state.no_filter_0900_1100_enabled:
         return _judge_no_filter_flag(state=state, now=now, signal_id=signal_id), "NO_FILTER_0900_1100"
@@ -2556,9 +2598,14 @@ def _time_window_ledger_fields(
     (or the bar-T "pending confirmation" placeholder from
     _judge_time_window_flag)."""
     row: dict[str, Any] = {
-        "time_window_filter_enabled": bool(state.time_window_filter_enabled),
-        "time_window_filter_version": state.time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION,
+        # time_window_filter_enabled: TW1 was retired 2026-08-27 -- this
+        # column is kept (never renamed/deleted, per ledger.py's own
+        # backward-compat policy for historical rows) but always False from
+        # here on, since the field it used to mirror no longer exists.
+        "time_window_filter_enabled": False,
+        "time_window_filter_version": state.time_window_filter_version or "",
         "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
+        "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
         "time_window_active_mode": state.time_window_active_mode or "",
         "time_window_down_blue_exception_enabled": bool(state.down_blue_exception_filter_enabled),
         "time_window_down_blue_exception_applied": bool(down_blue_exception_applied),
@@ -2929,7 +2976,7 @@ def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed
     """
     if confirmed_direction == Direction.HOLD:
         return
-    if not state.time_window_2_filter_enabled:
+    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
         return
     if state.premarket_carry_executed_at:
         return  # already resolved (entered or expired) today
@@ -2950,7 +2997,7 @@ def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed
 def _premarket_carry_should_fire(state: RuntimeState, now: datetime) -> bool:
     """Mirrors _scheduled_entry_should_fire's own once-per-day + fire-window
     semantics exactly, on the separate premarket_carry_* fields."""
-    if not state.time_window_2_filter_enabled:
+    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
         return False  # user turned TW2 off between registration and 09:03 -- do not fire
     if state.premarket_carry_candidate_direction is None or state.premarket_carry_executed_at:
         return False
@@ -3357,7 +3404,7 @@ def run_once(
         # Time-window filter: resolve any pending T+3 candidate (may switch
         # this held position — sell current, buy the new direction — or
         # simply clear a rejected/expired candidate). Only ever acts when
-        # state.time_window_filter_enabled is True; a no-op otherwise.
+        # state.time_window_2_filter_enabled is True; a no-op otherwise.
         tw_resolve_outcome = _resolve_time_window_candidate(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
             bars_3m=bars_3m, df_1m=df_1m, position=pos, result=result,
@@ -3375,7 +3422,7 @@ def run_once(
                 result.actions.append(f"TIME_WINDOW_SELL_ONLY:{tw_resolve_outcome.target_symbol}")
             return result
 
-        if (state.time_window_filter_enabled or state.time_window_2_filter_enabled) and state.time_window_position_active:
+        if (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled) and state.time_window_position_active:
             # This position is (still) managed by the time-window filter's
             # own ladder, fully replacing PROFIT_LOCK/QUICK_PROFIT below for
             # as long as it is held — its STOP_LOSS/TP1/TP2 checks already
@@ -3574,7 +3621,7 @@ def run_once(
             elif (
                 state.major_filter_enabled or state.sideways_filter_enabled
                 or state.trend_persistence_filter_enabled or state.single_entry_filter_enabled
-                or state.time_window_filter_enabled or state.time_window_2_filter_enabled
+                or state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled
             ):
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,

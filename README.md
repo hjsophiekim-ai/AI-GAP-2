@@ -372,7 +372,9 @@ LIVE
 
 ## Render 배포
 
-서비스 URL: **https://ai-gap.onrender.com**
+서비스 URL: **https://ai-gap-2.onrender.com**
+
+신호원장(signal ledger)/거래 실행 정보는 Render Persistent Disk에 저장됩니다(재배포해도 유실되지 않음).
 
 자세한 설정은 [docs/deploy_render.md](docs/deploy_render.md)를 참조하세요.
 

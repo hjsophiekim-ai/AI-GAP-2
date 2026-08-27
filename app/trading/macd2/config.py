@@ -590,12 +590,18 @@ EXIT_QUICK_PROFIT_TAKE_PROFIT = "QUICK_PROFIT_TAKE_PROFIT"
 # Mutually exclusive with the other four entry filters — takes TOP priority
 # in worker._judge_entry_gate when enabled (2026-08-15 사용자 요청: this is
 # the newest, most complete redesign, meant to supersede the simpler
-# entry-only gates when a user opts into it). OFF by default — toggled at
-# runtime via the UI checkbox (app/ui/pages/11_MACD_자동매매2.py) /
-# service.set_time_window_filter_enabled(), same as MU_MACD's own toggle.
-TIME_WINDOW_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_FILTER_DEFAULT", False)
-TIME_WINDOW_FILTER_VERSION = "TIME_WINDOW_OPTIMAL_FILTER_V1_20260815"
-TIME_WINDOW_STRATEGY_NAME = "시간대별 최적거래 필터 (TW1)"
+# entry-only gates when a user opts into it).
+#
+# 2026-08-27: this original variant ("TW1") was RETIRED and completely
+# removed (code + toggle + UI) per 사용자 요청, after a validated TRAIN/OOS
+# backtest (scripts/teg_c_train_oos_validation.py) showed TW2 + a Trend
+# Establishment Gate (TEG) count-cap bypass beats plain TW2 on every OOS
+# metric (entries/total%/compound%/MDD). See TIME_WINDOW_TEG_FILTER_DEFAULT
+# below, which now occupies this toggle's former slot/priority tier. The
+# §3-14 constants in this section (windows, MIN_FLAG_INTERVAL_MINUTES,
+# QUALITY_SCORE_THRESHOLD, MAX_*_ENTRIES, MORNING_*/AFTERNOON_* ladder) are
+# SHARED infrastructure time_window_filter.py/time_window_position_manager.py
+# still expose to TW2 and the new TEG filter — untouched by TW1's removal.
 
 # Session time windows (KST) — 20260815 spec §4-9.
 TW_WINDOW1_START = time(9, 0)
@@ -766,25 +772,26 @@ TW_WHIPSAW_REJECT_REASONS = frozenset({TW_REJECT_NOT_CONFIRMED, TW_REJECT_MACD_G
 #     69.34%->105.33%, PF 1.38->1.40, MDD 거의 불변 21.25%->21.11%).
 #   - "+직전 반대플래그 지속>=45분" 조건을 추가한 버전은 오히려 VAL이
 #     역전(-1.1%p)되어 재현성이 떨어져 기각 — 조건 없이 채택.
-# TW 필터 자체(time_window_filter_enabled)가 꺼져 있으면 이 토글은 아무
-# 효과가 없다(진입 후보 자체가 생기지 않음). OFF가 기본값.
+# TW 필터 자체(time_window_2_filter_enabled/time_window_teg_filter_enabled)가
+# 둘 다 꺼져 있으면 이 토글은 아무 효과가 없다(진입 후보 자체가 생기지 않음).
+# OFF가 기본값.
 TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT = _env_bool("MACD2_TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False)
 TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION = "TW_DOWN_BLUE_EXCEPTION_V1_20260818"
 TW_EXCEPTION_DOWN_BLUE_ENTRY = "TIME_WINDOW_EXCEPTION_DOWN_BLUE_ENTRY"
 # NOTE: this "+1 DOWN_BLUE 예외진입" sub-filter has NO enabled-check of its
-# own on time_window_filter_enabled specifically -- worker.py only ever
-# reaches the down_blue_exception_applied branch from inside
-# _resolve_time_window_candidate, which now runs whenever EITHER TW1
-# (time_window_filter_enabled) OR TW2 (time_window_2_filter_enabled) is on
-# (2026-08-21 사용자 요청: "+1 down blue 필터는 둘다 가능하게 해줘") -- so this
-# toggle transparently works under both without any code change here.
+# own -- worker.py only ever reaches the down_blue_exception_applied branch
+# from inside _resolve_time_window_candidate, which runs whenever EITHER TW2
+# (time_window_2_filter_enabled) OR the TEG filter (time_window_teg_filter_
+# enabled) is on (2026-08-21 사용자 요청: "+1 down blue 필터는 둘다 가능하게
+# 해줘"; 2026-08-27: TW1 retired, TEG filter takes its former slot in this
+# OR) -- so this toggle transparently works under both without any code
+# change here.
 
 # ── Optional TW2 ("시간대별 최적거래 필터 2") — VWAP 역행 veto + 최근 30분
-# 교차과다 veto + TP2 상향 (2026-08-21 사용자 요청). TW1
-# (time_window_filter_enabled)과 완전히 동일한 T+3 재확인/품질점수/시간대/
-# 최대진입횟수 게이트 + 포지션관리 래더를 그대로 재사용하고, 딱 두 가지 진입
-# veto만 추가로 얹는다(worker._resolve_time_window_candidate가 TW1이 이미
-# 승인한 후보에 대해서만 time_window_filter.evaluate_tw2_extra_vetoes()를
+# 교차과다 veto + TP2 상향 (2026-08-21 사용자 요청). 기본 T+3 재확인/품질점수/
+# 시간대/최대진입횟수 게이트 + 포지션관리 래더를 그대로 재사용하고, 딱 두 가지
+# 진입 veto만 추가로 얹는다(worker._resolve_time_window_candidate가 기본 게이트가
+# 이미 승인한 후보에 대해서만 time_window_filter.evaluate_tw2_extra_vetoes()를
 # 추가로 검사):
 #   1) VWAP 역행 veto: 확정bar 종가가 진입방향 기준 세션 VWAP보다
 #      TW2_VWAP_VETO_THRESHOLD_PCT(%) 이상 불리한 쪽에 있으면 스킵.
@@ -803,10 +810,11 @@ TW_EXCEPTION_DOWN_BLUE_ENTRY = "TIME_WINDOW_EXCEPTION_DOWN_BLUE_ENTRY"
 #   TRAIN(19일): TW1 복리 +20.33% -> TW2 +52.31%, MDD 13.48%->6.18%.
 #   OOS(10일, 재튜닝 없음): TW1 복리 +24.48% -> TW2 +35.70%, MDD 6.83%->5.18%.
 #   FULL(29일): TW1 복리 +49.79% -> TW2 +106.69%.
-# TW1과 TW2는 동시에 켤 수 없다 — service.set_time_window_filter_enabled()/
-# set_time_window_2_filter_enabled()가 서로를 자동으로 끈다. "+1 DOWN_BLUE
-# 예외진입"은 위 노트대로 둘 다에서 그대로 동작한다. OFF가 기본값.
-TIME_WINDOW_2_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_2_FILTER_DEFAULT", False)
+# TW2는 (2026-08-27 TW1 제거 이후) 새 TEG 필터와 동시에 켤 수 없다 —
+# service.set_time_window_2_filter_enabled()/set_time_window_teg_filter_
+# enabled()가 서로를 자동으로 끈다. "+1 DOWN_BLUE 예외진입"은 위 노트대로
+# 둘 다에서 그대로 동작한다. OFF가 기본값.
+TIME_WINDOW_2_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_2_FILTER_DEFAULT", True)
 TIME_WINDOW_2_FILTER_VERSION = "TIME_WINDOW_2_V1_20260821"
 TIME_WINDOW_2_STRATEGY_NAME = "시간대별 최적거래 필터 (TW2)"
 TW2_VWAP_VETO_THRESHOLD_PCT = _env_float("MACD2_TW2_VWAP_VETO_THRESHOLD_PCT", -1.0)
@@ -815,6 +823,34 @@ TW2_RECENT_CROSS_LOOKBACK_MINUTES = _env_int("MACD2_TW2_RECENT_CROSS_LOOKBACK_MI
 TW2_MORNING_TP2 = _env_float("MACD2_TW2_MORNING_TP2", 0.06)
 TW2_REJECT_VWAP_VETO = "TW2_REJECT_VWAP_VETO"
 TW2_REJECT_RECENT_CROSSES = "TW2_REJECT_RECENT_CROSSES"
+
+# ── TW2 + TEG count-cap bypass ("TEG 필터", 2026-08-27 사용자 요청) ─────────
+# Replaces TW1's former toggle slot/priority tier entirely. Entry gating is
+# BYTE-IDENTICAL to TW2 (same evaluate_time_window_entry + evaluate_tw2_
+# extra_vetoes, same TW2_MORNING_TP2 exit ladder) with exactly one addition:
+# a candidate TW2 would reject SOLELY for exceeding the daily entry-count cap
+# (block_reason == TW_REJECT_MAX_ENTRY_COUNT -- which, by evaluate_time_
+# window_entry's own check ordering, is only ever reached after interval/
+# window/quality-score/reset/extra-vetoes already passed) gets ONE extra
+# chance per day: if app.trading.macd2.teg_gate.evaluate_teg() also approves
+# it, it enters anyway. Capped at exactly 1 bypass/trading day (state.
+# time_window_teg_count_cap_bypass_used, reset on day rollover like the
+# down-blue-exception flag) -- matches the actual backtested "variant C"
+# behavior (scripts/teg_backtest_60day_v2.py), NOT an uncapped bypass.
+#
+# Validated 2026-06-01~08-26 (60 business days), TRAIN=2026-06-01~07-28 (40
+# days, threshold calibration only) / OOS=2026-07-29~08-26 (20 days, held
+# out): OOS variant C (TW2+bypass) beat variant A (plain TW2) on ALL FOUR
+# decision metrics -- entries 52->58, total% 20.865->25.493, compound%
+# 20.015->25.501, MDD% 13.012->13.012 (tied). See
+# data/validation/teg_c_train_oos/summary.json for full results and
+# app/trading/macd2/teg_gate.py for the frozen TEG condition thresholds'
+# own derivation. Mutually exclusive with TW2 (the two setters force each
+# other off, same pattern as TW1/TW2 before). OFF by default.
+TIME_WINDOW_TEG_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_TEG_FILTER_DEFAULT", False)
+TIME_WINDOW_TEG_FILTER_VERSION = "TIME_WINDOW_TEG_V2_20260827"
+TIME_WINDOW_TEG_STRATEGY_NAME = "TW2 + TEGv2 추가진입"
+TW_TEG_COUNT_CAP_BYPASS = "TW_TEG_COUNT_CAP_BYPASS"
 
 # ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
 # 6th peer entry gate in worker._judge_entry_gate (right after TIME_WINDOW),

@@ -63,10 +63,10 @@ def default_state() -> RuntimeState:
     state.trend_persistence_filter_version = config.TREND_PERSISTENCE_FILTER_VERSION
     state.single_entry_filter_enabled = bool(getattr(config, "SINGLE_ENTRY_FILTER_DEFAULT", False))
     state.single_entry_filter_version = config.SINGLE_ENTRY_FILTER_VERSION
-    state.time_window_filter_enabled = bool(getattr(config, "TIME_WINDOW_FILTER_DEFAULT", False))
-    state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
     state.time_window_2_filter_enabled = bool(getattr(config, "TIME_WINDOW_2_FILTER_DEFAULT", False))
     state.time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
+    state.time_window_teg_filter_enabled = bool(getattr(config, "TIME_WINDOW_TEG_FILTER_DEFAULT", False))
+    state.time_window_teg_filter_version = config.TIME_WINDOW_TEG_FILTER_VERSION
     state.down_blue_exception_filter_enabled = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
@@ -307,14 +307,22 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "premarket_carry_candidate_bar_ts": state.premarket_carry_candidate_bar_ts,
         "premarket_carry_executed_at": state.premarket_carry_executed_at,
         "premarket_carry_last_result": state.premarket_carry_last_result,
-        "time_window_filter_enabled": bool(state.time_window_filter_enabled),
-        "time_window_filter_enabled_at": state.time_window_filter_enabled_at,
-        "time_window_filter_enabled_by": state.time_window_filter_enabled_by,
-        "time_window_filter_version": state.time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION,
+        "time_window_filter_version": state.time_window_filter_version or "",
         "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
         "time_window_2_filter_enabled_at": state.time_window_2_filter_enabled_at,
         "time_window_2_filter_enabled_by": state.time_window_2_filter_enabled_by,
         "time_window_2_filter_version": state.time_window_2_filter_version or config.TIME_WINDOW_2_FILTER_VERSION,
+        "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+        "time_window_teg_filter_enabled_at": state.time_window_teg_filter_enabled_at,
+        "time_window_teg_filter_enabled_by": state.time_window_teg_filter_enabled_by,
+        "time_window_teg_filter_version": state.time_window_teg_filter_version or config.TIME_WINDOW_TEG_FILTER_VERSION,
+        "time_window_teg_count_cap_bypass_used": bool(state.time_window_teg_count_cap_bypass_used),
+        "last_time_window_teg_bypass_at": state.last_time_window_teg_bypass_at,
+        "last_time_window_teg_candidate_at": state.last_time_window_teg_candidate_at,
+        "last_time_window_teg_approved": state.last_time_window_teg_approved,
+        "last_time_window_teg_reject_reasons": list(state.last_time_window_teg_reject_reasons or []),
+        "last_time_window_teg_metrics": dict(state.last_time_window_teg_metrics or {}) if state.last_time_window_teg_metrics else None,
+        "last_time_window_teg_conditions": dict(state.last_time_window_teg_conditions or {}) if state.last_time_window_teg_conditions else None,
         "time_window_active_mode": state.time_window_active_mode,
         "time_window_morning_entry_count": int(state.time_window_morning_entry_count or 0),
         "time_window_afternoon_entry_count": int(state.time_window_afternoon_entry_count or 0),
@@ -390,13 +398,13 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     time_window_pending_flag_direction = (
         Direction(tw_pending_raw) if tw_pending_raw in _DIRECTION_VALUES else None
     )
-    time_window_enabled_default = bool(getattr(config, "TIME_WINDOW_FILTER_DEFAULT", False))
+    # NOTE: TW1 (time_window_filter_enabled) was retired 2026-08-27 -- any
+    # stale value for it in an old state.json is silently discarded here
+    # (deserialize() only ever reads known-schema fields, per its own
+    # docstring). time_window_filter_version is still read back below since
+    # it remains a SHARED last-active-variant diagnostic field.
     stored_time_window_filter_version = str(raw.get("time_window_filter_version") or "")
-    time_window_filter_version = stored_time_window_filter_version or config.TIME_WINDOW_FILTER_VERSION
-    time_window_filter_enabled = bool(raw.get("time_window_filter_enabled", time_window_enabled_default))
-    if stored_time_window_filter_version and stored_time_window_filter_version != config.TIME_WINDOW_FILTER_VERSION:
-        time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
-        time_window_filter_enabled = time_window_enabled_default
+    time_window_filter_version = stored_time_window_filter_version
     time_window_2_enabled_default = bool(getattr(config, "TIME_WINDOW_2_FILTER_DEFAULT", False))
     stored_time_window_2_filter_version = str(raw.get("time_window_2_filter_version") or "")
     time_window_2_filter_version = stored_time_window_2_filter_version or config.TIME_WINDOW_2_FILTER_VERSION
@@ -404,13 +412,16 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_time_window_2_filter_version and stored_time_window_2_filter_version != config.TIME_WINDOW_2_FILTER_VERSION:
         time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
         time_window_2_filter_enabled = time_window_2_enabled_default
-    if time_window_filter_enabled and time_window_2_filter_enabled:
-        # Defensive: should never happen (the two setters keep this mutually
-        # exclusive), but a hand-edited/corrupted state.json must never load
-        # with both on — TW1 wins, matching worker._judge_entry_gate's
-        # existing "TW1/TW2 share one priority tier" dispatch if this were
-        # ever hit live.
-        time_window_2_filter_enabled = False
+    time_window_teg_enabled_default = bool(getattr(config, "TIME_WINDOW_TEG_FILTER_DEFAULT", False))
+    stored_time_window_teg_filter_version = str(raw.get("time_window_teg_filter_version") or "")
+    time_window_teg_filter_version = stored_time_window_teg_filter_version or config.TIME_WINDOW_TEG_FILTER_VERSION
+    time_window_teg_filter_enabled = bool(raw.get("time_window_teg_filter_enabled", time_window_teg_enabled_default))
+    if stored_time_window_teg_filter_version and stored_time_window_teg_filter_version != config.TIME_WINDOW_TEG_FILTER_VERSION:
+        time_window_teg_filter_version = config.TIME_WINDOW_TEG_FILTER_VERSION
+        time_window_teg_filter_enabled = time_window_teg_enabled_default
+    if time_window_teg_filter_enabled and not time_window_2_filter_enabled:
+        time_window_2_filter_enabled = True
+        time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
     down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
@@ -664,14 +675,28 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         premarket_carry_candidate_bar_ts=raw.get("premarket_carry_candidate_bar_ts"),
         premarket_carry_executed_at=raw.get("premarket_carry_executed_at"),
         premarket_carry_last_result=raw.get("premarket_carry_last_result"),
-        time_window_filter_enabled=time_window_filter_enabled,
-        time_window_filter_enabled_at=raw.get("time_window_filter_enabled_at"),
-        time_window_filter_enabled_by=raw.get("time_window_filter_enabled_by"),
         time_window_filter_version=time_window_filter_version,
         time_window_2_filter_enabled=time_window_2_filter_enabled,
         time_window_2_filter_enabled_at=raw.get("time_window_2_filter_enabled_at"),
         time_window_2_filter_enabled_by=raw.get("time_window_2_filter_enabled_by"),
         time_window_2_filter_version=time_window_2_filter_version,
+        time_window_teg_filter_enabled=time_window_teg_filter_enabled,
+        time_window_teg_filter_enabled_at=raw.get("time_window_teg_filter_enabled_at"),
+        time_window_teg_filter_enabled_by=raw.get("time_window_teg_filter_enabled_by"),
+        time_window_teg_filter_version=time_window_teg_filter_version,
+        time_window_teg_count_cap_bypass_used=bool(raw.get("time_window_teg_count_cap_bypass_used") or False),
+        last_time_window_teg_bypass_at=raw.get("last_time_window_teg_bypass_at"),
+        last_time_window_teg_candidate_at=raw.get("last_time_window_teg_candidate_at"),
+        last_time_window_teg_approved=raw.get("last_time_window_teg_approved"),
+        last_time_window_teg_reject_reasons=list(raw.get("last_time_window_teg_reject_reasons") or []),
+        last_time_window_teg_metrics=(
+            dict(raw.get("last_time_window_teg_metrics"))
+            if isinstance(raw.get("last_time_window_teg_metrics"), dict) else None
+        ),
+        last_time_window_teg_conditions=(
+            dict(raw.get("last_time_window_teg_conditions"))
+            if isinstance(raw.get("last_time_window_teg_conditions"), dict) else None
+        ),
         time_window_active_mode=raw.get("time_window_active_mode"),
         time_window_morning_entry_count=int(raw.get("time_window_morning_entry_count") or 0),
         time_window_afternoon_entry_count=int(raw.get("time_window_afternoon_entry_count") or 0),

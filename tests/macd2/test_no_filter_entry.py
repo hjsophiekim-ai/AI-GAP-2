@@ -49,6 +49,8 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     state = state_store.default_state()
     state.auto_trade_on = True
     state.budget = budget
+    state.time_window_2_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.no_filter_0900_1100_enabled = True
     return state
 
@@ -82,6 +84,8 @@ def test_default_off_leaves_judge_entry_gate_at_none():
     change legacy (no-filter-at-all) behavior when the new toggle itself is
     untouched."""
     state = state_store.default_state()
+    state.time_window_2_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     assert state.no_filter_0900_1100_enabled is False
     decision, mode = worker._judge_entry_gate(
         state=state, bars_3m=None, direction=Direction.UP_RED, position=None,
@@ -122,7 +126,7 @@ def test_no_filter_takes_priority_over_sideways_major_etc_but_not_time_window():
     )
     assert mode == "NO_FILTER_0900_1100"
 
-    state.time_window_filter_enabled = True
+    state.time_window_teg_filter_enabled = True
     minimal_bars_3m = pd.DataFrame({"datetime": [pd.Timestamp(_INSIDE_WINDOW)]})
     _decision2, mode2 = worker._judge_entry_gate(
         state=state, bars_3m=minimal_bars_3m, df_1m=None, direction=Direction.UP_RED, position=None,

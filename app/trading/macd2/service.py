@@ -591,54 +591,40 @@ class Macd2Service:
             "single_entry_filter_version": state.single_entry_filter_version,
         }
 
-    def set_time_window_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
-        """UI command: toggle the optional "시간대별 최적거래 필터" — TW1 (the
-        original T+3/quality-score gate + its position-management ladder).
-        Only updates runtime state — never places orders or liquidates.
-        Takes effect from the next confirmed flag; an already-open position
-        keeps whichever exit rules it was opened under. When ON, this gate
-        takes TOP priority over sideways/major/trend_persistence/single_entry
-        — never more than one active for the same signal
-        (worker._judge_entry_gate). Turning TW1 ON always forces TW2
-        (time_window_2_filter_enabled) OFF — the two are mutually exclusive
-        by construction (2026-08-21 사용자 요청: "두 필터는 동시에 못키도록
-        해줘").
+    def set_time_window_teg_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the optional TEGv2 count-cap bypass on top of
+        TW2. Enabling TEG also enables TW2, because TEG only evaluates TW2
+        candidates rejected solely by the daily entry-count cap. Disabling
+        TEG leaves TW2 unchanged.
         """
         state = state_store.load_state()
         enabled_bool = bool(enabled)
-        prev = bool(state.time_window_filter_enabled)
-        state.time_window_filter_enabled = enabled_bool
-        state.time_window_filter_version = config.TIME_WINDOW_FILTER_VERSION
-        state.time_window_filter_enabled_at = datetime.now(KST).isoformat()
-        state.time_window_filter_enabled_by = str(changed_by or "ui")
-        if enabled_bool and state.time_window_2_filter_enabled:
-            state.time_window_2_filter_enabled = False
+        prev = bool(state.time_window_teg_filter_enabled)
+        state.time_window_teg_filter_enabled = enabled_bool
+        state.time_window_teg_filter_version = config.TIME_WINDOW_TEG_FILTER_VERSION
+        state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
+        state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and not state.time_window_2_filter_enabled:
+            state.time_window_2_filter_enabled = True
+            state.time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
             state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
             state.time_window_2_filter_enabled_by = str(changed_by or "ui")
         state_store.save_state(state)
         return {
             "ok": True,
-            "time_window_filter_enabled": enabled_bool,
+            "time_window_teg_filter_enabled": enabled_bool,
             "previous": prev,
-            "time_window_filter_enabled_at": state.time_window_filter_enabled_at,
-            "time_window_filter_enabled_by": state.time_window_filter_enabled_by,
-            "time_window_filter_version": state.time_window_filter_version,
+            "time_window_teg_filter_enabled_at": state.time_window_teg_filter_enabled_at,
+            "time_window_teg_filter_enabled_by": state.time_window_teg_filter_enabled_by,
+            "time_window_teg_filter_version": state.time_window_teg_filter_version,
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
         }
 
     def set_time_window_2_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
-        """UI command: toggle TW2 — the same T+3/quality-score/entry-cap gate
-        and position-management ladder as TW1, PLUS two extra entry vetoes
-        (VWAP-deviation, recent-crosses-in-30min) and TP2 raised 5%->6% (see
-        config.py's TIME_WINDOW_2_FILTER_DEFAULT docstring for the 29-day
-        TRAIN/OOS validation). Only updates runtime state — never places
-        orders or liquidates. Takes effect from the next confirmed flag; an
-        already-open position keeps whichever exit rules it was opened
-        under. Turning TW2 ON always forces TW1 (time_window_filter_enabled)
-        OFF — the two are mutually exclusive by construction (2026-08-21
-        사용자 요청). The optional "+1 DOWN_BLUE 예외진입" sub-filter
-        (down_blue_exception_filter_enabled) works identically under either
-        TW1 or TW2 — no separate toggle needed for it.
+        """UI command: toggle TW2. TEGv2 is an optional TW2 sub-filter, so
+        turning TW2 off also turns TEG off; turning TW2 on leaves TEG at its
+        current value. The optional "+1 DOWN_BLUE 예외진입" sub-filter uses
+        the same TW2 candidate path.
         """
         state = state_store.load_state()
         enabled_bool = bool(enabled)
@@ -647,10 +633,10 @@ class Macd2Service:
         state.time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
         state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
         state.time_window_2_filter_enabled_by = str(changed_by or "ui")
-        if enabled_bool and state.time_window_filter_enabled:
-            state.time_window_filter_enabled = False
-            state.time_window_filter_enabled_at = datetime.now(KST).isoformat()
-            state.time_window_filter_enabled_by = str(changed_by or "ui")
+        if not enabled_bool and state.time_window_teg_filter_enabled:
+            state.time_window_teg_filter_enabled = False
+            state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
         state_store.save_state(state)
         return {
             "ok": True,
@@ -659,7 +645,7 @@ class Macd2Service:
             "time_window_2_filter_enabled_at": state.time_window_2_filter_enabled_at,
             "time_window_2_filter_enabled_by": state.time_window_2_filter_enabled_by,
             "time_window_2_filter_version": state.time_window_2_filter_version,
-            "time_window_filter_enabled": bool(state.time_window_filter_enabled),
+            "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
         }
 
     def set_down_blue_exception_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
@@ -668,8 +654,9 @@ class Macd2Service:
         extra entry per trading day, no other condition (2026-08-18, backtest
         rationale in config.py's TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT
         docstring). Only updates runtime state -- never places orders. Works
-        identically under either TW1 (time_window_filter_enabled) or TW2
-        (time_window_2_filter_enabled) — 2026-08-21 사용자 요청; has no effect
+        identically under either TW2 (time_window_2_filter_enabled) or the
+        TEG filter (time_window_teg_filter_enabled) — 2026-08-21 사용자 요청,
+        TEG filter replaced TW1 in this "either" 2026-08-27; has no effect
         while BOTH are off (no TW candidates ever exist to reject).
         """
         state = state_store.load_state()
@@ -695,10 +682,10 @@ class Macd2Service:
         approve any confirmed flag within 09:00-11:00, no quality score, and a
         rejected reversal under this gate ALWAYS sells immediately (never the
         TIME_WINDOW filter's whipsaw-tolerant hold). Only updates runtime state
-        -- never places orders. Mutually exclusive with TW1/TW2 as a tier
-        (time_window_filter_enabled or time_window_2_filter_enabled — whichever
-        one is on wins over this gate, per worker._judge_entry_gate's existing
-        priority order).
+        -- never places orders. Mutually exclusive with TW2/TEG as a tier
+        (time_window_teg_filter_enabled or time_window_2_filter_enabled —
+        whichever one is on wins over this gate, per worker._judge_entry_gate's
+        existing priority order).
         """
         state = state_store.load_state()
         enabled_bool = bool(enabled)

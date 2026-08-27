@@ -2,7 +2,7 @@
 
 ## 서비스 URL
 
-https://ai-gap.onrender.com
+https://ai-gap-2.onrender.com
 
 ---
 
@@ -106,10 +106,14 @@ Render 무료 플랜은 ephemeral 파일 시스템입니다.
 직접 하드코딩하는 새 코드를 추가하지 마십시오** — 반드시 `app.utils.data_paths`의
 `CACHE_DIR`/`STATE_DIR`/`LOGS_DIR` 등을 import해서 씁니다.
 
-**확인 필요**: Render 대시보드 > 해당 Web Service > Disks 탭에 Persistent Disk가
-연결돼 있고, Environment 탭의 `AI_GAP_DATA_DIR` 값이 그 디스크의 마운트 경로와
-정확히 일치하는지 확인하세요. 연결돼 있지 않으면 거래원장/포지션 상태/아래 1분봉
-아카이브가 전부 재배포 때마다 유실됩니다.
+**확정 사항 (2026-08-27)**: `ai-gap-2.onrender.com` 서비스는 Persistent Disk가
+연결되어 있고 `AI_GAP_DATA_DIR`이 그 마운트 경로를 가리키도록 설정되어 있습니다.
+MACD2 신호원장(signal ledger)/거래 실행원장(execution ledger)/`macd2_runtime.json`
+등 `data/state`·`data/logs` 하위 파일은 이 Persistent Disk에 저장되며 재배포해도
+유실되지 않습니다. (따라서 로컬 저장소의 `data/state/macd2_runtime.json`,
+`data/logs/macd2_execution_ledger.csv`는 이 운영 인스턴스와 무관한 로컬
+개발/백테스트용 파일이며, 운영 상태 확인은 반드시 Render 인스턴스 쪽에서
+해야 합니다.)
 
 ---
 

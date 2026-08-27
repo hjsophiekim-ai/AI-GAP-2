@@ -43,7 +43,7 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     state = state_store.default_state()
     state.auto_trade_on = True
     state.budget = budget
-    state.time_window_filter_enabled = True
+    state.time_window_teg_filter_enabled = True
     return state
 
 
@@ -541,7 +541,13 @@ def test_untracked_held_position_is_adopted_and_still_gets_take_profit(monkeypat
 
     closes = _sine_1m_closes(300)
     df_1m = _1m_frame(_PRIOR_DAY, closes)
-    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_600.0, config.WATCH_SYMBOL: 100.0}
+    # 2026-08-27: quote raised 10_600->10_800 (+6.0%->+8.0% raw) -- the TEG
+    # filter's exit ladder uses TW2's 6.0% TP2 threshold (config.
+    # TW2_MORNING_TP2), not the retired TW1's 5.0% default; +6.0% raw nets
+    # to just under 6.0% after fees/slippage (_net_return_pct), which used
+    # to clear TW1's 5% but no longer clears the new 6% bar -- +8.0% raw
+    # leaves clear margin above it either way.
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_800.0, config.WATCH_SYMBOL: 100.0}
 
     def fake_fetch(mode, symbol, count, hour1):
         del mode, symbol, count, hour1
@@ -560,7 +566,7 @@ def test_untracked_held_position_is_adopted_and_still_gets_take_profit(monkeypat
     state = _fresh_state()
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
     assert state.time_window_position_active is False  # never tagged -- e.g. scheduled-entry path
-    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_600.0})
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_800.0})
     broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
     broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
     monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
@@ -709,15 +715,15 @@ def test_day_rollover_resets_time_window_session_counters():
     assert state.time_window_pending_flag_direction is None
     assert state.time_window_pending_flag_bar_ts is None
     # the toggle itself survives rollover
-    assert state.time_window_filter_enabled is True
+    assert state.time_window_teg_filter_enabled is True
 
 
 def test_day_rollover_does_not_touch_time_window_toggle_when_off():
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.session_date = "20260105"
     worker._apply_day_rollover(state, datetime(2026, 1, 6, 9, 0, tzinfo=KST))
-    assert state.time_window_filter_enabled is False
+    assert state.time_window_teg_filter_enabled is False
 
 
 def test_no_lookahead_run_once_only_uses_bars_up_to_now(tw_market_data):
@@ -860,7 +866,7 @@ def test_tw2_entry_confirms_through_the_same_dispatch_and_tags_active_mode(tw_ma
     time_window_active_mode == 'TW2' so the TP2 override actually applies."""
     svc, now0 = tw_market_data
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.time_window_2_filter_enabled = True
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
 
@@ -877,19 +883,19 @@ def test_tw2_entry_confirms_through_the_same_dispatch_and_tags_active_mode(tw_ma
     assert state.position is not None
     assert state.time_window_position_active is True
     assert state.time_window_active_mode == "TW2"
-    assert state.time_window_filter_enabled is False
+    assert state.time_window_teg_filter_enabled is False
 
 
-def test_tw1_and_tw2_both_enabled_in_state_tw1_wins_dispatch(tw_market_data):
+def test_teg_and_tw2_both_enabled_in_state_dispatches_exactly_once(tw_market_data):
     """Defensive: even if state somehow had both flags True (should never
-    happen via the service setters — see test_service.py's mutual-exclusion
-    tests), worker._judge_entry_gate's TIME_WINDOW tier fires exactly once
-    per signal either way, and _persist_time_window_decision must record
-    the TW1 version string per _judge_entry_gate's existing single dispatch
-    (TW1/TW2 share ONE tier, never double-judged)."""
+    happen via the service setters — see test_time_window_2.py's
+    TestServiceMutualExclusion), worker._judge_entry_gate's TIME_WINDOW tier
+    fires exactly once per signal either way, and _persist_time_window_
+    decision must record a single, consistent decision (TW2/TEG share ONE
+    tier, never double-judged)."""
     svc, now0 = tw_market_data
     state = _fresh_state()
-    state.time_window_filter_enabled = True
+    state.time_window_teg_filter_enabled = True
     state.time_window_2_filter_enabled = True  # hand-corrupted; never reachable via the setters
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
 
@@ -902,11 +908,11 @@ def test_tw1_and_tw2_both_enabled_in_state_tw1_wins_dispatch(tw_market_data):
     # Whichever variant's extra veto logic actually ran, _judge_entry_gate's
     # if/elif structure guarantees only ONE _judge_time_window_flag call per
     # signal -- no duplicate/conflicting ledger rows for the same flag.
-    assert state.time_window_filter_enabled is True
+    assert state.time_window_teg_filter_enabled is True
     assert state.time_window_2_filter_enabled is True
 
 
-def test_tw2_veto_blocks_an_entry_tw1_would_have_approved(tw_market_data, monkeypatch):
+def test_tw2_veto_blocks_an_entry_the_base_gate_would_have_approved(tw_market_data, monkeypatch):
     """Forces evaluate_time_window_entry to always approve, then forces the
     TW2 extra-veto check to trip -- the resulting decision fed to dispatch
     must be rejected, and no order must be placed."""
@@ -914,7 +920,7 @@ def test_tw2_veto_blocks_an_entry_tw1_would_have_approved(tw_market_data, monkey
 
     svc, now0 = tw_market_data
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.time_window_2_filter_enabled = True
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
 
@@ -977,7 +983,7 @@ def test_tw2_take_profit_fires_on_the_live_tick_at_its_own_6pct_threshold(monkey
     now0 = _SESSION_START_NOW
 
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.time_window_2_filter_enabled = True
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
     state.time_window_position_active = True
@@ -1023,7 +1029,7 @@ def test_tw2_take_profit_does_not_fire_below_its_6pct_threshold_where_tw1_would_
     now0 = _SESSION_START_NOW
 
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.time_window_2_filter_enabled = True
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
     state.time_window_position_active = True
@@ -1068,7 +1074,7 @@ def test_tw2_stop_loss_still_fires_while_a_whipsaw_reversal_candidate_is_pending
     now0 = _SESSION_START_NOW
 
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.time_window_2_filter_enabled = True
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
     state.time_window_position_active = True
@@ -1115,7 +1121,7 @@ def test_tw2_rejected_reversal_still_liquidates_the_held_position(tw_market_data
 
     svc, now0 = tw_market_data
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.time_window_2_filter_enabled = True
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
     state.time_window_position_active = True
@@ -1174,7 +1180,7 @@ def test_tw2_untracked_held_position_is_adopted_with_tw2_mode_and_gets_its_own_t
     now0 = _SESSION_START_NOW
 
     state = _fresh_state()
-    state.time_window_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
     state.time_window_2_filter_enabled = True
     state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
     assert state.time_window_position_active is False

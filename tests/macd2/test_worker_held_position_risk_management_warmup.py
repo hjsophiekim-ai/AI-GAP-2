@@ -116,7 +116,7 @@ def test_tw_ladder_stop_loss_fires_even_when_macd_snap_not_ready():
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")  # so reconcile_position_state doesn't reset state.position
 
     state = _fresh_state()
-    state.time_window_filter_enabled = True
+    state.time_window_teg_filter_enabled = True
     state.time_window_position_active = True
     entered_at = datetime(2026, 1, 7, 9, 0, 0, tzinfo=KST)
     now0 = entered_at + timedelta(minutes=9)
@@ -139,7 +139,7 @@ def test_tw_ladder_tp1_partial_fires_even_when_macd_snap_not_ready():
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")  # so sell_market/partial exit has a real position to reduce
 
     state = _fresh_state()
-    state.time_window_filter_enabled = True
+    state.time_window_teg_filter_enabled = True
     state.time_window_position_active = True
     entered_at = datetime(2026, 1, 7, 9, 0, 0, tzinfo=KST)
     now0 = entered_at + timedelta(minutes=9)

@@ -1,5 +1,6 @@
-"""Unit tests for TW2 (2026-08-21 사용자 요청): mutual exclusion with TW1 at
-the service-setter level, the two extra entry vetoes
+"""Unit tests for TW2 (2026-08-21 사용자 요청): mutual exclusion with the TEG
+filter at the service-setter level (2026-08-27: TW1 retired, TEG filter
+took its former slot), the two extra entry vetoes
 (time_window_filter.evaluate_tw2_extra_vetoes), and the TP2 threshold
 override plumbed through time_window_position_manager. Pure-function /
 service-layer tests only — no broker, no network (blocked by conftest.py
@@ -42,53 +43,55 @@ def _warmup_then_rally(n_flat: int, n_up: int, *, start: datetime, start_price: 
     return _bars(prices, start=start)
 
 
-class TestServiceMutualExclusion:
-    def test_enabling_tw2_forces_tw1_off(self):
+class TestServiceTegDependency:
+    def test_enabling_teg_also_enables_tw2(self):
         svc = service_module.Macd2Service()
-        assert svc.set_time_window_filter_enabled(True, changed_by="test")["time_window_filter_enabled"] is True
-        state = state_store.load_state()
-        assert state.time_window_filter_enabled is True
-        assert state.time_window_2_filter_enabled is False
+        svc.set_time_window_2_filter_enabled(False, changed_by="test")
 
-        res = svc.set_time_window_2_filter_enabled(True, changed_by="test")
+        res = svc.set_time_window_teg_filter_enabled(True, changed_by="test")
+
         assert res["ok"] is True
+        assert res["time_window_teg_filter_enabled"] is True
         assert res["time_window_2_filter_enabled"] is True
-        assert res["time_window_filter_enabled"] is False
         state = state_store.load_state()
+        assert state.time_window_teg_filter_enabled is True
         assert state.time_window_2_filter_enabled is True
-        assert state.time_window_filter_enabled is False
 
-    def test_enabling_tw1_forces_tw2_off(self):
+    def test_turning_tw2_off_forces_teg_off(self):
         svc = service_module.Macd2Service()
         svc.set_time_window_2_filter_enabled(True, changed_by="test")
+        svc.set_time_window_teg_filter_enabled(True, changed_by="test")
+
+        res = svc.set_time_window_2_filter_enabled(False, changed_by="test")
+
+        assert res["time_window_2_filter_enabled"] is False
+        assert res["time_window_teg_filter_enabled"] is False
         state = state_store.load_state()
+        assert state.time_window_2_filter_enabled is False
+        assert state.time_window_teg_filter_enabled is False
+
+    def test_turning_teg_off_keeps_tw2_on(self):
+        svc = service_module.Macd2Service()
+        svc.set_time_window_teg_filter_enabled(True, changed_by="test")
+
+        svc.set_time_window_teg_filter_enabled(False, changed_by="test")
+
+        state = state_store.load_state()
+        assert state.time_window_teg_filter_enabled is False
         assert state.time_window_2_filter_enabled is True
 
-        res = svc.set_time_window_filter_enabled(True, changed_by="test")
-        assert res["time_window_filter_enabled"] is True
-        assert res["time_window_2_filter_enabled"] is False
-        state = state_store.load_state()
-        assert state.time_window_filter_enabled is True
-        assert state.time_window_2_filter_enabled is False
-
-    def test_turning_either_off_does_not_affect_the_other(self):
-        svc = service_module.Macd2Service()
-        svc.set_time_window_filter_enabled(True, changed_by="test")
-        svc.set_time_window_filter_enabled(False, changed_by="test")
-        state = state_store.load_state()
-        assert state.time_window_filter_enabled is False
-        assert state.time_window_2_filter_enabled is False
-
-    def test_state_never_persists_with_both_enabled_even_if_hand_edited(self, tmp_path, monkeypatch):
-        """Defensive migration check: a corrupted/hand-edited state.json
-        with both flags True must load with TW1 winning, never both on."""
+    def test_state_with_teg_enabled_auto_enables_tw2_if_hand_edited(self, tmp_path, monkeypatch):
+        """Defensive migration check: TEG true but TW2 false loads with TW2
+        enabled so the TEG sub-filter is not a dead toggle."""
         state = state_store.default_state()
-        state.time_window_filter_enabled = True
-        state.time_window_2_filter_enabled = True
+        state.time_window_teg_filter_enabled = True
+        state.time_window_2_filter_enabled = False
         state_store.save_state(state)
+
         reloaded = state_store.load_state()
-        assert reloaded.time_window_filter_enabled is True
-        assert reloaded.time_window_2_filter_enabled is False
+
+        assert reloaded.time_window_2_filter_enabled is True
+        assert reloaded.time_window_teg_filter_enabled is True
 
 
 def _last_confirmed_flag(bars: pd.DataFrame) -> tuple[int, Direction]:
