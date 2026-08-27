@@ -1628,6 +1628,9 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) ->
     bar_kst = macd_snap.bar_dt.astimezone(KST)
     if bar_kst.date() != now_kst.date() or bar_kst + timedelta(minutes=3) > now_kst:
         return Direction.HOLD
+    # Order-authoritative FLAG source is fixed to zero-cross onset. KIS
+    # color/onset may be displayed as reference only and must not replace
+    # this calculation without a fresh production-change decision.
     direction = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
     if direction != Direction.HOLD:
         state.last_detected_direction = direction
@@ -2138,7 +2141,9 @@ def _resolve_time_window_candidate(
     the dispatch outcome if an entry/switch was actually placed this tick,
     else ``None`` (still waiting, expired, or rejected — all safe no-ops).
     Never called unless TW2 is on. TEGv2 is an optional TW2 sub-filter; it
-    only evaluates count-cap rejected TW2 candidates.
+    evaluates TW2 candidates rejected solely for the daily entry-count cap
+    or (2026-08-27) solely for the TW_MORNING_ONLY afternoon time-window
+    block -- see the bypass block below for the exact scope.
     """
     if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled) or not state.time_window_pending_flag_direction:
         return None
@@ -2179,21 +2184,30 @@ def _resolve_time_window_candidate(
         if vetoed:
             decision = dataclasses.replace(decision, approved=False, decision=veto_reason, block_reason=veto_reason)
 
-    # TEG count-cap bypass (2026-08-27 사용자 요청, validated via TRAIN/OOS
-    # backtest -- see config.py's TIME_WINDOW_TEG_FILTER_DEFAULT docstring).
-    # Only ever considered when: the TEG filter (not TW2) is the active
-    # toggle, the base decision was rejected SOLELY for the daily entry-
-    # count cap (block_reason == TW_REJECT_MAX_ENTRY_COUNT -- which, by
-    # evaluate_time_window_entry's own check ordering, is only ever reached
-    # after interval/window/quality-score/reset already passed), the extra
-    # vetoes above (already checked against this same decision when it was
-    # briefly approved) don't veto it, and today's ONE bypass hasn't already
-    # been used (matches the actual backtested "variant C" behavior --
-    # capped at exactly 1/day, never unlimited).
+    # TEG bypass (2026-08-27 사용자 요청; 일일 진입횟수 초과 케이스는 TRAIN/OOS
+    # backtest로 validated -- see config.py's TIME_WINDOW_TEG_FILTER_DEFAULT
+    # docstring). 2026-08-27 추가 확장(사용자 요청, 별도 backtest 검증 없음):
+    # TW_MORNING_ONLY(config.py)로 오후(13:00-15:00) 신규진입이 시간대 자체에서
+    # 막힌 경우도 동일하게 하루 1회 우회 대상에 포함한다 -- decision.metrics
+    # ["window"]가 실제 오후 window(W5/W6)로 분류됐고(즉 window=None이나
+    # 10:50-13:00 W4처럼 애초에 거래일/윈도우 자체가 무효였던 경우는 제외) 아직
+    # TW_AFTERNOON_ENTRY_HARD_CUTOFF(14:57) 전이라 T+3 confirmation을 15:00
+    # 전에 마칠 여지가 있는 경우만 해당. 다른 REJECT 사유(DUPLICATE_POSITION/
+    # SHORT_FLAG_INTERVAL/NO_RESET/LOW_QUALITY_SCORE/extra veto 등)는 이 우회
+    # 대상이 아니다 -- 그대로 유지.
+    # 공통 조건: TEG 필터(TW2 아님)가 켜져 있고, extra veto가 이 후보를 걸지
+    # 않으며, 오늘 ONE 우회를 아직 안 썼을 것(capped at exactly 1/day).
+    window_blocked_by_morning_only = (
+        decision.block_reason == config.TW_REJECT_TIME_WINDOW
+        and decision.metrics.get("window") in (
+            time_window_filter.WINDOW_AFTERNOON_1, time_window_filter.WINDOW_AFTERNOON_2,
+        )
+        and now.astimezone(config.KST).time() < config.TW_AFTERNOON_ENTRY_HARD_CUTOFF
+    )
     if (
         not decision.approved
         and state.time_window_teg_filter_enabled
-        and decision.block_reason == config.TW_REJECT_MAX_ENTRY_COUNT
+        and (decision.block_reason == config.TW_REJECT_MAX_ENTRY_COUNT or window_blocked_by_morning_only)
         and not state.time_window_teg_count_cap_bypass_used
     ):
         vetoed, _veto_reason = time_window_filter.evaluate_tw2_extra_vetoes(bars_3m, direction, flag_bar_dt, now)

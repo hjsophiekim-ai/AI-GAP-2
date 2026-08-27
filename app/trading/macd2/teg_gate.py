@@ -5,11 +5,12 @@ FROZEN. This is the exact condition logic validated in scripts/teg_gate_v2.py
 scripts/teg_c_train_oos_validation.py — conditions 1, 2, 5, 6, 7 and the
 signed-net-change shape of 3/4 must never be modified without a fresh
 backtest validation. Only ever called from worker._resolve_time_window_
-candidate, and ONLY as a count-cap bypass check for a candidate that has
-already cleared TW2's own T+3/quality-score/window/extra-veto gate in every
-respect except the daily entry-count cap (see config.py's
-TIME_WINDOW_TEG_FILTER_DEFAULT docstring and worker.py's own bypass block)
-— never a standalone/alternate entry gate.
+candidate, and ONLY as a bypass check for a candidate that has already
+cleared TW2's own T+3/quality-score/extra-veto gate in every respect except
+either the daily entry-count cap OR (2026-08-27 사용자 요청, NOT covered by
+the TRAIN/OOS validation below — see worker.py's bypass block for the exact
+scope) the TW_MORNING_ONLY afternoon time-window block — never a
+standalone/alternate entry gate.
 
 Conditions (ALL must hold for approval):
   1. TW2's own T+3 confirmation, re-derived directly from the gap series

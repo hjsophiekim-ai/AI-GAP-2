@@ -43,6 +43,14 @@ def _other_rejection(reason: str = config.TW_REJECT_LOW_QUALITY_SCORE) -> MajorF
     )
 
 
+def _afternoon_time_window_rejection(window: str = "W5_EARLY_AFTERNOON_A_GRADE") -> MajorFlagDecision:
+    return MajorFlagDecision(
+        approved=False, score=0.0, required_score=0.0, decision=config.TW_REJECT_TIME_WINDOW,
+        reasons=(config.TW_REJECT_TIME_WINDOW,), component_scores={}, metrics={"window": window},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_REJECT_TIME_WINDOW,
+    )
+
+
 def _approved_teg_decision() -> teg_gate.TEGDecision:
     return teg_gate.TEGDecision(approved=True, conditions={c: True for c in teg_gate.ALL_CONDITIONS}, metrics={}, reject_reasons=())
 
@@ -117,8 +125,8 @@ def test_count_cap_rejection_with_teg_rejection_stays_blocked(tw_market_data, mo
 
 def test_rejection_for_other_reason_is_never_rescued_by_teg(tw_market_data, monkeypatch):
     """A candidate rejected for VWAP veto / quality score / anything other
-    than the count cap must stay rejected even if TEG would have approved
-    it -- the bypass ONLY ever considers TW_REJECT_MAX_ENTRY_COUNT."""
+    than the count cap or a genuine TW_MORNING_ONLY afternoon-window block
+    must stay rejected even if TEG would have approved it."""
     svc, now0 = tw_market_data
     state = _fresh_state()
     state.time_window_teg_filter_enabled = True
@@ -139,6 +147,57 @@ def test_rejection_for_other_reason_is_never_rescued_by_teg(tw_market_data, monk
     assert not any(a.startswith("TIME_WINDOW_ENTRY") or a.startswith("TIME_WINDOW_SWITCH") for a in result.actions)
     assert broker.orders == []
     assert teg_called["count"] == 0, "TEG must never even be consulted for a non-count-cap rejection"
+    assert state.time_window_teg_count_cap_bypass_used is False
+
+
+def test_afternoon_time_window_rejection_with_teg_approval_bypasses_exactly_once(tw_market_data, monkeypatch):
+    """2026-08-27 확장: TW_MORNING_ONLY로 시간대 자체에서 막힌 오후(W5/W6)
+    후보도 count-cap 케이스와 동일하게 TEG 승인 시 하루 1회 우회된다."""
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_teg_filter_enabled = True
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: _afternoon_time_window_rejection())
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_tw2_extra_vetoes", lambda *a, **kw: (False, None))
+    monkeypatch.setattr(worker.teg_gate, "evaluate_teg", lambda *a, **kw: _approved_teg_decision())
+    _prime_pending(state, Direction.UP_RED, before=_PRIOR_DAY)
+
+    assert now0.astimezone(KST).time() < config.TW_AFTERNOON_ENTRY_HARD_CUTOFF
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith("TIME_WINDOW_ENTRY") or a.startswith("TIME_WINDOW_SWITCH") for a in result.actions), (
+        f"a TW_MORNING_ONLY afternoon-window rejection with TEG approval must bypass and enter -- got actions={result.actions!r}"
+    )
+    assert state.time_window_teg_count_cap_bypass_used is True
+    assert state.last_time_window_decision == config.TW_TEG_COUNT_CAP_BYPASS
+    assert [(o.side, o.symbol) for o in broker.orders] == [("BUY", config.LONG_SYMBOL)]
+
+
+def test_time_window_rejection_outside_a_real_window_is_never_rescued(tw_market_data, monkeypatch):
+    """window=None (before 09:00 / at-or-after 15:00, or the 10:50-13:00
+    W4 no-new-entry gap) must never be rescued -- only a genuine W5/W6
+    TW_MORNING_ONLY block qualifies."""
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_teg_filter_enabled = True
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: _afternoon_time_window_rejection(window=None))
+    teg_called = {"count": 0}
+
+    def _spy_evaluate_teg(*a, **kw):
+        teg_called["count"] += 1
+        return _approved_teg_decision()
+
+    monkeypatch.setattr(worker.teg_gate, "evaluate_teg", _spy_evaluate_teg)
+    _prime_pending(state, Direction.UP_RED, before=_PRIOR_DAY)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert not any(a.startswith("TIME_WINDOW_ENTRY") or a.startswith("TIME_WINDOW_SWITCH") for a in result.actions)
+    assert broker.orders == []
+    assert teg_called["count"] == 0, "TEG must never be consulted when the base rejection wasn't a real W5/W6 window block"
     assert state.time_window_teg_count_cap_bypass_used is False
 
 

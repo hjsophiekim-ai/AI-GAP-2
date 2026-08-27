@@ -847,6 +847,15 @@ TW2_REJECT_RECENT_CROSSES = "TW2_REJECT_RECENT_CROSSES"
 # app/trading/macd2/teg_gate.py for the frozen TEG condition thresholds'
 # own derivation. Mutually exclusive with TW2 (the two setters force each
 # other off, same pattern as TW1/TW2 before). OFF by default.
+#
+# 2026-08-27 확장 (사용자 요청, 위 TRAIN/OOS 백테스트는 이 케이스를 검증하지
+# 않음): 같은 하루 1회 우회가 count-cap 초과뿐 아니라 TW_MORNING_ONLY로
+# 시간대 자체에서 막힌 오후(13:00-14:57) 후보에도 적용된다 (worker.py의
+# _resolve_time_window_candidate 참고). TW_MORNING_ONLY=True 기본값은 20
+# 거래일 백테스트에서 오후 진입 포함 시 승률/수익이 뚜렷이 나빴다는 근거로
+# 도입됐다(위 TW_MORNING_ONLY 주석 참고) -- TEG의 개별 조건(VWAP/EMA/gap
+# 가속도 등)이 그 나쁜 오후 진입들을 충분히 걸러낼지는 아직 별도로 backtest
+# 검증되지 않았다.
 TIME_WINDOW_TEG_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_TEG_FILTER_DEFAULT", False)
 TIME_WINDOW_TEG_FILTER_VERSION = "TIME_WINDOW_TEG_V2_20260827"
 TIME_WINDOW_TEG_STRATEGY_NAME = "TW2 + TEGv2 추가진입"
