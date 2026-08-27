@@ -108,13 +108,11 @@ def test_merge_incremental_does_not_refetch_full_history():
     assert merged["datetime"].duplicated().sum() == 0
 
 
-def test_merge_incremental_1m_retries_a_transient_fetch_error():
-    """2026-08-11 fix (real incident: a confirmed flag's 3m bin never
-    became actionable -- no exit of an already-held position, no new
-    entry -- because this call had zero retry on a transient KIS error).
-    A single failed attempt (empty + error) must not be treated the same
-    as a genuine no-data-yet response; it must retry and pick up the real
-    new bar once the fetch succeeds."""
+def test_merge_incremental_1m_fetch_error_is_retried_by_next_worker_cycle():
+    """Real-time incremental refresh must not wrap the KIS client's own retry
+    loop with another multi-attempt sleep loop. A transient error leaves the
+    current cycle's history unchanged; the next worker cycle makes the next
+    small-page attempt and can pick up the new bars."""
     prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
     today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
     bootstrap_frame = pd.concat([_fake_bars_df(prior_day, 200), _fake_bars_df(today, 150)], ignore_index=True)
@@ -136,8 +134,39 @@ def test_merge_incremental_1m_retries_a_transient_fetch_error():
 
     merged = svc.merge_incremental_1m(now=today + timedelta(minutes=153, seconds=5))
 
-    assert attempt_count["n"] == 2  # first attempt errored, retried once, second succeeded
-    assert len(merged) == len(before) + 3  # the real new bars were NOT lost
+    assert attempt_count["n"] == 1
+    assert len(merged) == len(before)
+
+    merged = svc.merge_incremental_1m(now=today + timedelta(minutes=153, seconds=8))
+
+    assert attempt_count["n"] == 2
+    assert len(merged) == len(before) + 3  # next worker cycle recovered the real new bars
+
+
+def test_merge_incremental_1m_rate_limit_error_does_not_sleep_through_retry_loop(monkeypatch):
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    today = datetime(2026, 1, 6, 9, 0, tzinfo=KST)
+    bootstrap_frame = pd.concat([_fake_bars_df(prior_day, 200), _fake_bars_df(today, 150)], ignore_index=True)
+    attempt_count = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, hour1
+        if count > 10:
+            return bootstrap_frame, {}
+        attempt_count["n"] += 1
+        return _empty_1m_frame(), {"error": "KIS_RATE_LIMIT"}
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch)
+    svc.bootstrap(now=today + timedelta(minutes=150, seconds=5))
+    before = svc.get_history_df()
+    monkeypatch.setattr(market_data_module.time, "sleep", lambda sec: sleeps.append(sec))
+
+    merged = svc.merge_incremental_1m(now=today + timedelta(minutes=153, seconds=5))
+
+    assert attempt_count["n"] == 1
+    assert sleeps == []
+    assert len(merged) == len(before)
 
 
 def test_merge_incremental_1m_no_error_empty_response_returns_immediately():

@@ -792,6 +792,25 @@ def test_runtime_flat_broker_holding_recovers_runtime():
     assert config.LONG_SYMBOL in discovered[0]["signal_id"]
 
 
+def test_reconcile_discovered_position_clears_stale_time_window_tp1_state():
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 3, "seed")
+    state = _state()
+    state.time_window_position_active = True
+    state.time_window_tp1_done = True
+    state.time_window_peak_net_return = 4.0
+    state.time_window_initial_quantity = 10
+
+    result = worker.reconcile_position_state(broker, state, datetime(2026, 7, 24, 9, 0, tzinfo=KST), force=True)
+
+    assert result == worker.RECOVERED_FROM_BROKER
+    assert state.position is not None
+    assert state.time_window_position_active is False
+    assert state.time_window_tp1_done is False
+    assert state.time_window_peak_net_return == 0.0
+    assert state.time_window_initial_quantity == 0
+
+
 def test_runtime_holding_broker_flat_recovers_to_flat():
     state = _state()
     state.position = PositionSnapshot(config.LONG_SYMBOL, 3, 15_000.0)

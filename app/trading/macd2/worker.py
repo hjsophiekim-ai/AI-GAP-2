@@ -985,6 +985,14 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
             symbol=recovered["symbol"], quantity=int(recovered["qty"]),
             avg_price=float(recovered["avg_price"] or 0.0), entry_at=now,
         )
+        # A broker-discovered position has no verified TP1 sell leg in this
+        # process. Never carry a stale ladder stage into the adopted position;
+        # the normal TW adoption path will tag it active and seed peak return
+        # on the next risk-management pass.
+        state.time_window_position_active = False
+        state.time_window_tp1_done = False
+        state.time_window_peak_net_return = 0.0
+        state.time_window_initial_quantity = 0
         diag.update({"comparison_result": RECOVERED_FROM_BROKER, "mismatch_reason": "runtime_flat_broker_position"})
         state.position_reconcile_diag = diag
         state.last_position_reconcile_at = now.isoformat()

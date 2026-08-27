@@ -809,6 +809,8 @@ class MarketDataService:
         return BootstrapResult(True, None, int(len(df)), prior_n, today_n, completed_3m_count, round(elapsed, 3))
 
     def merge_incremental_1m(self, now: Optional[datetime] = None) -> pd.DataFrame:
+        # Keep the live worker path bounded: one small-page fetch per cycle.
+        # Bootstrap/full-history paging still owns the heavier retry policy.
         """Latest-page-only merge — never re-walks the full bootstrap history (docs §4).
 
         2026-08-11 fix (real incident: a confirmed flag's 3m bin silently
@@ -822,15 +824,8 @@ class MarketDataService:
         (legitimately nothing new yet) still returns immediately, unretried.
         """
         now = now or datetime.now(KST)
-        live_df = _empty_1m_frame()
-        _diag: dict[str, Any] = {}
-        for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
-            with self._history_fetch_lock:
-                live_df, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, 10, "")
-            if not live_df.empty or not _diag.get("error"):
-                break
-            if retry_i < config.PRIOR_DAY_FETCH_RETRIES - 1:
-                time.sleep(config.PRIOR_DAY_FETCH_RETRY_DELAY_SEC)
+        with self._history_fetch_lock:
+            live_df, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, 10, "")
         with self._history_lock:
             base = self._df_1m
             if live_df.empty:
