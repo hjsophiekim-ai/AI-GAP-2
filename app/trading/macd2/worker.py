@@ -1990,8 +1990,21 @@ def _advance_held_position_risk_management(
             tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode == "TW2" else None,
         )
         if tp_decision.exit_reason is not None:
+            # 2026-08-27 fix (real incident: a premarket-carry position's
+            # partial-exit order FAILED at the broker, but tp1_done had
+            # already been committed True just above -- the position was
+            # then governed by the tightened post-TP1 ladder
+            # (MORNING_AFTER_TP1_STOP=+0.3%) instead of the correct pre-TP1
+            # -1.7% stop-loss/3% TP1 threshold, so a nearly-flat tick minutes
+            # later was enough to trigger a full exit. peak_net_return is
+            # harmless either way (it only ever tracks the best return SEEN,
+            # not anything about whether an order actually filled), so it
+            # still commits unconditionally -- but tp1_done must only ever
+            # flip once the corresponding order is CONFIRMED EXECUTED; on a
+            # failed/blocked attempt the position must stay governed by
+            # whatever ladder stage it was ACTUALLY in before this tick, so a
+            # retry next tick is judged against the correct threshold again.
             state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), tp_decision.peak_net_return)
-            state.time_window_tp1_done = tp_decision.tp1_done
             sell_fraction = max(0.0, min(1.0, tp_decision.sell_fraction))
             if sell_fraction >= 1.0:
                 outcome = order_executor.execute_exit(
@@ -2002,6 +2015,7 @@ def _advance_held_position_risk_management(
                 _apply_exit_outcome(state, outcome)
                 if outcome.final_state == SignalState.EXECUTED:
                     state.time_window_position_active = False
+                    state.time_window_tp1_done = tp_decision.tp1_done
                 result.actions.append(f"{tp_decision.exit_reason}:{pos.symbol}")
                 return True
             sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
@@ -2013,6 +2027,7 @@ def _advance_held_position_risk_management(
             )
             if outcome.final_state == SignalState.EXECUTED:
                 state.position = dataclasses.replace(state.position, quantity=remaining_qty)
+                state.time_window_tp1_done = tp_decision.tp1_done
             result.actions.append(f"{tp_decision.exit_reason}:{pos.symbol}")
             return True
 
@@ -2034,8 +2049,12 @@ def _advance_held_position_risk_management(
                 peak_net_return=float(state.time_window_peak_net_return or 0.0),
                 tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode == "TW2" else None,
             )
+            # 2026-08-27 fix -- same reasoning as the immediate-tick TP path
+            # just above: peak_net_return still commits unconditionally
+            # (harmless), but tp1_done must only flip once the corresponding
+            # order is CONFIRMED EXECUTED, never just because the DECISION
+            # said a threshold was crossed.
             state.time_window_peak_net_return = pm_decision.peak_net_return
-            state.time_window_tp1_done = pm_decision.tp1_done
             if pm_decision.exit_reason is not None:
                 sell_fraction = max(0.0, min(1.0, pm_decision.sell_fraction))
                 full_exit = sell_fraction >= 1.0
@@ -2048,6 +2067,7 @@ def _advance_held_position_risk_management(
                     _apply_exit_outcome(state, outcome)
                     if outcome.final_state == SignalState.EXECUTED:
                         state.time_window_position_active = False
+                        state.time_window_tp1_done = pm_decision.tp1_done
                     result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
                     return True
                 sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
@@ -2059,6 +2079,7 @@ def _advance_held_position_risk_management(
                 )
                 if outcome.final_state == SignalState.EXECUTED:
                     state.position = dataclasses.replace(state.position, quantity=remaining_qty)
+                    state.time_window_tp1_done = pm_decision.tp1_done
                 result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
                 return True
         return False

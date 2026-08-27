@@ -409,6 +409,126 @@ def test_take_profit_fires_on_the_live_tick_not_only_at_bar_close(monkeypatch):
     assert config.INVERSE_SYMBOL not in broker._positions
 
 
+def test_failed_immediate_tick_partial_exit_does_not_commit_tp1_done(monkeypatch):
+    """2026-08-27 real incident: a premarket-carry DOWN_BLUE position's TP1
+    partial-exit order FAILED at the broker, but state.time_window_tp1_done
+    had already been committed True regardless -- the position was then
+    governed by the tightened post-TP1 ladder (MORNING_AFTER_TP1_STOP=+0.3%)
+    instead of the correct pre-TP1 -1.7% stop-loss/3% TP1 threshold, so a
+    nearly-flat tick minutes later was enough to trigger a full exit. A
+    failed partial-exit order must leave tp1_done exactly as it was before
+    the attempt, so a retry next tick is judged against the correct
+    threshold again."""
+    from app.trading.macd2.models import PositionSnapshot
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    # +4.5% raw nets to inside TP1(3%)..TP2(6%) -- triggers TP1_PARTIAL, not
+    # a full exit, so execute_partial_exit (not execute_exit) is the call
+    # whose failure this test forces.
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_450.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok, f"fixture bootstrap failed unexpectedly: {boot.reason}"
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_entry_session = "MORNING"
+    assert state.time_window_tp1_done is False
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_450.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    broker.fail_next_sell = True  # the partial-exit order FAILS at the broker
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.EXIT_TW_TP1_PARTIAL) for a in result.actions), (
+        f"expected a TP1_PARTIAL attempt this tick -- got actions={result.actions!r}"
+    )
+    assert state.time_window_tp1_done is False, (
+        "a FAILED partial-exit order must never commit tp1_done -- the position must stay "
+        "governed by the correct pre-TP1 ladder for a retry next tick"
+    )
+    assert state.position is not None and state.position.quantity == 10, "quantity must be unchanged on a failed partial exit"
+
+
+def test_failed_bar_close_gated_partial_exit_does_not_commit_tp1_done(monkeypatch):
+    """Same regression as test_failed_immediate_tick_partial_exit_does_not_
+    commit_tp1_done, but for the bar-close-gated position-management path
+    (time_window_position_manager.evaluate_position) -- isolates that path
+    specifically by forcing the immediate-tick take-profit check to HOLD
+    (as if the live tick's own price is not currently in TP range) and
+    _advance_stop_loss_bar to report a completed bar close that IS in TP1
+    range (the real-world case this path exists for: a bar that closed in
+    TP1 range a few minutes ago, even though the live quote has since moved
+    back out of range)."""
+    from app.trading.macd2.models import PositionSnapshot
+    from app.trading.macd2.time_window_position_manager import PositionManagementDecision
+
+    closes = _sine_1m_closes(300)
+    df_1m = _1m_frame(_PRIOR_DAY, closes)
+    quote_prices = {config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_050.0, config.WATCH_SYMBOL: 100.0}
+
+    def fake_fetch(mode, symbol, count, hour1):
+        del mode, symbol, count, hour1
+        return df_1m, {}
+
+    def fake_quote(mode, symbol):
+        del mode
+        return quote_prices.get(symbol), None
+
+    svc = MarketDataService(mode="mock", fetch_minute_candles=fake_fetch, fetch_quote=fake_quote)
+    boot = svc.bootstrap(now=_BOOTSTRAP_NOW)
+    assert boot.ok, f"fixture bootstrap failed unexpectedly: {boot.reason}"
+    svc.refresh_quotes()
+    now0 = _SESSION_START_NOW
+
+    state = _fresh_state()
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_entry_session = "MORNING"
+    assert state.time_window_tp1_done is False
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_050.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    broker.fail_next_sell = True
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    # Isolate the bar-close-gated path: live-tick check HOLDs (as if the
+    # current quote isn't in TP range), while the completed-bar close (a
+    # few minutes ago) IS in TP1 range.
+    monkeypatch.setattr(
+        worker.time_window_position_manager, "evaluate_take_profit_immediate",
+        lambda **kw: PositionManagementDecision(None, 0.0, kw["tp1_done"], kw["net_return_pct"], "HOLD_TICK"),
+    )
+    monkeypatch.setattr(worker, "_advance_stop_loss_bar", lambda state, symbol, price, now: 10_450.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.EXIT_TW_TP1_PARTIAL) for a in result.actions), (
+        f"expected a TP1_PARTIAL attempt this tick via the bar-close-gated path -- got actions={result.actions!r}"
+    )
+    assert state.time_window_tp1_done is False, (
+        "a FAILED partial-exit order (bar-close-gated path) must never commit tp1_done"
+    )
+    assert state.position is not None and state.position.quantity == 10
+
+
 def test_untracked_held_position_is_adopted_and_still_gets_take_profit(monkeypatch):
     """2026-08-21 real incident: a position opened via the 09:03 scheduled-
     entry button (or any other path that never sets time_window_position_
