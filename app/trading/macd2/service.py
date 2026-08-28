@@ -39,6 +39,7 @@ from app.trading.macd2.worker import (
     _apply_exit_outcome,
     _apply_switch_outcome,
     _parse_iso_dt,
+    abandon_pending_time_window_candidate_if_any,
     compute_today_signal_overview,
     git_sha,
     initialize_strategy_session,
@@ -637,6 +638,18 @@ class Macd2Service:
             state.time_window_teg_filter_enabled = False
             state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
             state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+        if not enabled_bool:
+            # 2026-08-28 real incident fix: turning TW2 off (which also forces
+            # TEG off, above) used to leave an already-pending T+3 candidate
+            # (state.time_window_pending_flag_direction) silently orphaned
+            # forever -- _resolve_time_window_candidate no-ops the instant
+            # both filters are off and never revisits it, even if the filter
+            # is re-enabled later. Explicitly abandon it here (logged, never
+            # silently dropped) instead. Pure state/ledger cleanup -- does not
+            # touch MACD calculation, TW2/TEGv2 scoring, or order dispatch.
+            abandon_pending_time_window_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_DISABLED_BY_USER",
+            )
         state_store.save_state(state)
         return {
             "ok": True,

@@ -904,6 +904,59 @@ def _record_reconcile_discovered_position(state: RuntimeState, pos: PositionSnap
     ledger.append_signal(row)
 
 
+def abandon_pending_time_window_candidate_if_any(state: RuntimeState, now: datetime, *, reason: str) -> bool:
+    """2026-08-28 real incident fix: turning TW2/TEGv2 OFF via the UI toggle
+    (service.set_time_window_2_filter_enabled) never touched an already-
+    pending T+3 candidate (state.time_window_pending_flag_direction/
+    bar_ts) -- it just left it sitting in state. _resolve_time_window_
+    candidate's own gate (``if not (time_window_2_filter_enabled or
+    time_window_teg_filter_enabled): return None``) then makes it a
+    permanent no-op the instant both toggles are off, so the candidate is
+    silently orphaned forever: never approved, never rejected, never
+    logged, and re-enabling the toggle later does not help either (by then
+    bars_3m has moved many bars past flag_bar_dt, breaking evaluate_time_
+    window_entry's one-bar-after contract). Real incident: a 10:09 DOWN_
+    BLUE flag confirmed, was correctly recorded as INITIAL/PENDING, and
+    then simply vanished -- no approval, no rejection, no order, ever.
+
+    Call this from the TW2 toggle-off path so the candidate is explicitly
+    cleared and auditable instead of silently lost. A pure state/ledger
+    cleanup -- never touches MACD calculation, the TW2/TEGv2 gate scoring,
+    or order dispatch. Returns True if a pending candidate was actually
+    abandoned (for the caller's own logging), False if there was none.
+    """
+    direction = state.time_window_pending_flag_direction
+    flag_bar_ts = state.time_window_pending_flag_bar_ts
+    if direction is None:
+        return False
+    state.time_window_pending_flag_direction = None
+    state.time_window_pending_flag_bar_ts = None
+    signal_id = f"TW_PENDING_ABANDONED_{direction.value}_{now.strftime('%Y%m%d%H%M%S')}"
+    row = {
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "completed_bar_at": "",
+        "signal_id": signal_id,
+        "signal_type": "TIME_WINDOW_CONFIRM",
+        "direction": direction.value,
+        "macd": "", "signal": "", "hist_last3": "",
+        "detected_at": now.isoformat(),
+        "order_requested_at": "",
+        "order_result": "ABANDONED",
+        "block_reason": f"{reason}_flag_bar_at={flag_bar_ts or ''}",
+        "signal_bar_at": flag_bar_ts or "", "signal_confirmed_at": "",
+        "baseline_completed_bar_at": state.session_baseline_bar_ts or "",
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": config.SIGNAL_RULE,
+        "worker_code_sha": _git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        **_entry_gate_ledger_fields(state, None, "NONE"),
+    }
+    ledger.append_signal(row)
+    return True
+
+
 def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, force: bool = False) -> str:
     if not _should_reconcile_position(state, now, force=force):
         return str((state.position_reconcile_diag or {}).get("comparison_result") or MATCH_FLAT)
