@@ -391,6 +391,7 @@ def evaluate_time_window_entry_immediate(
     position_direction: Optional[Direction] = None,
     morning_entry_count: int = 0,
     afternoon_entry_count: int = 0,
+    daily_entry_count: Optional[int] = None,
 ) -> MajorFlagDecision:
     """evaluate_time_window_entry()의 즉시진입 버전 — flag가 확정된 bar T
     자신에서 바로 order 권한을 판단한다(T+3 재확인 대기 없음). ``bars_3m``는
@@ -548,10 +549,13 @@ def evaluate_time_window_entry_immediate(
             reasons=[f"afternoon entry count {afternoon_entry_count} >= {config.MAX_AFTERNOON_ENTRIES}"],
             score=quality_score, metrics=base_metrics,
         )
-    if (morning_entry_count + afternoon_entry_count) >= config.MAX_DAILY_ENTRIES:
+    effective_daily_count = (
+        int(daily_entry_count) if daily_entry_count is not None else (morning_entry_count + afternoon_entry_count)
+    )
+    if effective_daily_count >= config.MAX_DAILY_ENTRIES:
         return _reject(
             decision=config.TW_REJECT_MAX_ENTRY_COUNT, block_reason=config.TW_REJECT_MAX_ENTRY_COUNT,
-            reasons=["daily entry count >= MAX_DAILY_ENTRIES"],
+            reasons=[f"daily entry count {effective_daily_count} >= {config.MAX_DAILY_ENTRIES}"],
             score=quality_score, metrics=base_metrics,
         )
 
@@ -581,6 +585,7 @@ def evaluate_time_window_entry(
     position_direction: Optional[Direction] = None,
     morning_entry_count: int = 0,
     afternoon_entry_count: int = 0,
+    daily_entry_count: Optional[int] = None,
 ) -> MajorFlagDecision:
     """Single order-authority decision for the "시간대별 최적거래 필터"
     (§1-10, §15). ``bars_3m`` must be truncated at/through the T+3
@@ -588,6 +593,19 @@ def evaluate_time_window_entry(
     it. Pure — same inputs always produce the same output; never mutates
     ``bars_3m``. Both worker.py's live candidate tracker and the backtest
     driver call this exact function (no duplicated entry-condition logic).
+
+    ``daily_entry_count`` (2026-08-28 real incident fix, optional/additive):
+    when given, this is what the MAX_DAILY_ENTRIES check below compares
+    against instead of ``morning_entry_count + afternoon_entry_count``. That
+    sum only ever reflects entries THIS gate itself approved -- an entry
+    made while TW2/TEGv2 was toggled OFF (e.g. under "무필터" mode instead)
+    never touched it, so toggling the filter back ON let the daily cap
+    under-count the day's TRUE total and allow more real entries than
+    intended. worker.py now passes its own filter-agnostic
+    ``state.daily_total_entry_count`` here; omitting it (``None``, the
+    default) keeps the exact original sum-based behavior byte-for-byte --
+    every other caller (the backtest driver, mu_macd's own reuse of this
+    function) is completely unaffected.
     """
     direction = _as_direction(flag_direction)
     if direction is None:
@@ -758,10 +776,13 @@ def evaluate_time_window_entry(
             reasons=[f"afternoon entry count {afternoon_entry_count} >= {config.MAX_AFTERNOON_ENTRIES}"],
             score=quality_score, metrics=base_metrics,
         )
-    if (morning_entry_count + afternoon_entry_count) >= config.MAX_DAILY_ENTRIES:
+    effective_daily_count = (
+        int(daily_entry_count) if daily_entry_count is not None else (morning_entry_count + afternoon_entry_count)
+    )
+    if effective_daily_count >= config.MAX_DAILY_ENTRIES:
         return _reject(
             decision=config.TW_REJECT_MAX_ENTRY_COUNT, block_reason=config.TW_REJECT_MAX_ENTRY_COUNT,
-            reasons=["daily entry count >= MAX_DAILY_ENTRIES"],
+            reasons=[f"daily entry count {effective_daily_count} >= {config.MAX_DAILY_ENTRIES}"],
             score=quality_score, metrics=base_metrics,
         )
 

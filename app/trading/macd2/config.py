@@ -879,7 +879,13 @@ TW_TEG_COUNT_CAP_BYPASS = "TW_TEG_COUNT_CAP_BYPASS"
 # 로만 켠다. TIME_WINDOW_FILTER와 동시에 켜지면 TIME_WINDOW가 우선한다
 # (_judge_entry_gate의 기존 우선순위 그대로).
 NO_FILTER_0900_1100_FILTER_DEFAULT = _env_bool("MACD2_NO_FILTER_0900_1100_FILTER_DEFAULT", False)
-NO_FILTER_0900_1100_FILTER_VERSION = "NO_FILTER_0900_1100_V1_20260820"
+# V2 (2026-08-28, real incident): this mode now also rejects once the true
+# filter-agnostic daily entry count (state.daily_total_entry_count) reaches
+# config.MAX_DAILY_ENTRIES -- previously unlimited, letting a TW2/TEG<->
+# no-filter toggle bypass the daily cap from this side. The 09:00-11:00
+# window condition and 56-day TRAIN/VAL/OOS-validated immediate-liquidation
+# behavior above are unchanged -- see worker._judge_no_filter_flag.
+NO_FILTER_0900_1100_FILTER_VERSION = "NO_FILTER_0900_1100_V2_20260828"
 NO_FILTER_ENTRY_WINDOW_START = time(9, 0)
 NO_FILTER_ENTRY_WINDOW_END = time(11, 0)
 NO_FILTER_REJECT_OUTSIDE_WINDOW = "REJECT_OUTSIDE_ENTRY_WINDOW"

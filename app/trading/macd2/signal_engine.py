@@ -289,7 +289,15 @@ def evaluate_macd_crossover(
     macd_snapshot: MacdSnapshot,
     previous_direction: Optional[Direction],
 ) -> Direction:
-    """Primary MACD2 crossover onset from previous diff to current diff."""
+    """Primary MACD2 order-authoritative FLAG source.
+
+    Keep this zero-cross onset formula fixed for live order decisions. The
+    2026-06-01..2026-08-26 60-business-day comparison showed this source
+    outperformed KIS color/onset on total return, compound return, and MDD.
+    ``evaluate_confirmed_macd_flag`` below is reference/UI-only and must not
+    replace this function in worker order routing without a fresh explicit
+    production-change decision.
+    """
     previous_diff = macd_snapshot.previous_diff
     current_diff = macd_snapshot.current_diff
     if previous_diff is None:
@@ -313,13 +321,16 @@ def evaluate_confirmed_macd_flag(
     macd_snapshot: MacdSnapshot,
     previous_direction: Optional[Direction],
 ) -> Direction:
-    """KIS-style confirmed MACD color flag for the latest completed 3m bar.
+    """KIS-style confirmed MACD color/onset for reference display only.
 
     KIS colors the completed MACD histogram red when the histogram is rising
     for two consecutive completed bars, and blue when it is falling for two
     consecutive completed bars. The sign of the histogram is not part of this
     color rule, so a less-negative histogram can be UP_RED and a less-positive
     histogram can be DOWN_BLUE.
+
+    This is deliberately not the live order FLAG source. Keep it available
+    for parity tests, diagnostics, and optional UI reference information.
     """
     h2, h1, h0 = macd_snapshot.hist_last3
     if h0 > h1 and h1 > h2:

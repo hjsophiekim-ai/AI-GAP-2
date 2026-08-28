@@ -503,6 +503,21 @@ class RuntimeState:
     time_window_filter_version: str = ""
     time_window_morning_entry_count: int = 0
     time_window_afternoon_entry_count: int = 0
+    # 2026-08-28 real incident fix: the TRUE, filter-mode-agnostic count of
+    # every new position opened today (TW2/TEGv2, "무필터" 09:00-11:00
+    # entries, PRE15 premarket-carry, the 09:03 scheduled entry, AND a
+    # reconcile-discovered position) -- counted exactly once per real fill
+    # at the single shared choke point (worker._apply_switch_outcome's
+    # EXECUTED branch / reconcile_position_state's RECOVERED_FROM_BROKER
+    # branch), unlike time_window_morning_entry_count/afternoon_entry_count
+    # above which only ever see TW2/TEG-gated entries. Real incident:
+    # toggling TW2/TEGv2 OFF (switching to no-filter mode, whose entries were
+    # invisible to the two counters above) then back ON let TW2's own daily
+    # cap under-count the day's TRUE entries, allowing a 5th entry the real
+    # daily total should have blocked. Session-scoped (reset on day
+    # rollover, worker._apply_day_rollover) -- NEVER reset by any filter
+    # toggle on/off, so switching modes mid-day cannot reset or bypass it.
+    daily_total_entry_count: int = 0
     last_time_window_entry_at: Optional[str] = None
     last_time_window_score: Optional[float] = None
     last_time_window_required_score: Optional[float] = None

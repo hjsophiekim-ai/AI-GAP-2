@@ -381,6 +381,12 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # state.position itself is never reset on rollover).
     state.time_window_morning_entry_count = 0
     state.time_window_afternoon_entry_count = 0
+    # 2026-08-28 fix: the filter-mode-agnostic daily total (see its own
+    # field docstring in models.py) is likewise session-scoped -- reset here
+    # exactly once per day, same as the two counts above, and NEVER by any
+    # filter toggle (see service.set_time_window_2_filter_enabled/set_time_
+    # window_teg_filter_enabled, neither of which touches it).
+    state.daily_total_entry_count = 0
     state.time_window_pending_flag_direction = None
     state.time_window_pending_flag_bar_ts = None
     # TEG count-cap bypass(2026-08-27)의 "하루 1회" 소진 플래그도 마찬가지로
@@ -1143,6 +1149,14 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
         state.time_window_initial_quantity = 0
+        # 2026-08-28 fix: a reconcile-discovered position is a genuinely new
+        # real entry this process never counted anywhere else -- the OTHER
+        # contributor to daily_total_entry_count (worker._apply_switch_
+        # outcome's EXECUTED branch) cannot double-count it, because that
+        # branch only ever runs for an entry THIS process itself dispatched,
+        # and this branch is reached only when state.position was already
+        # None (i.e. nothing else already counted it this session).
+        state.daily_total_entry_count = int(state.daily_total_entry_count or 0) + 1
         diag.update({"comparison_result": RECOVERED_FROM_BROKER, "mismatch_reason": "runtime_flat_broker_position"})
         state.position_reconcile_diag = diag
         state.last_position_reconcile_at = now.isoformat()
@@ -2317,6 +2331,11 @@ def _resolve_time_window_candidate(
         position_direction=_position_direction(position),
         morning_entry_count=int(state.time_window_morning_entry_count or 0),
         afternoon_entry_count=int(state.time_window_afternoon_entry_count or 0),
+        # 2026-08-28 fix: the daily-cap check must see every real entry
+        # today, not just TW2/TEG-gated ones (see evaluate_time_window_
+        # entry's own daily_entry_count docstring and RuntimeState.
+        # daily_total_entry_count's docstring for the real incident).
+        daily_entry_count=int(state.daily_total_entry_count or 0),
     )
     if decision.approved and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
         # TW2 (2026-08-21 사용자 요청): two extra vetoes layered on top of the
@@ -2520,20 +2539,43 @@ def _judge_no_filter_flag(*, state: RuntimeState, now: datetime, signal_id: str)
     SINGLE_ENTRY (never TIME_WINDOW's own pending/whipsaw machinery), so a
     rejected reversal under this gate always sells immediately via
     _execute_reversal_exit_only_for_filtered_entry -- no whipsaw-tolerant
-    hold for this mode, by construction."""
+    hold for this mode, by construction.
+
+    2026-08-28 fix (real incident): this mode used to have NO entry-count
+    cap of its own at all -- unlimited entries inside the 09:00-11:00
+    window, none of them visible to TW2/TEG's own daily-cap counters
+    either (see RuntimeState.daily_total_entry_count's docstring). Toggling
+    between this mode and TW2/TEG could bypass config.MAX_DAILY_ENTRIES from
+    BOTH directions. Now also rejects once the TRUE daily total (shared with
+    every other entry path) reaches the same config.MAX_DAILY_ENTRIES cap
+    TW2/TEG itself respects -- the 09:00-11:00 window restriction and
+    immediate-liquidation-on-reject behavior above are completely
+    unchanged."""
     now_time = now.astimezone(KST).time()
-    approved = config.NO_FILTER_ENTRY_WINDOW_START <= now_time < config.NO_FILTER_ENTRY_WINDOW_END
+    in_window = config.NO_FILTER_ENTRY_WINDOW_START <= now_time < config.NO_FILTER_ENTRY_WINDOW_END
+    daily_count = int(state.daily_total_entry_count or 0)
+    at_daily_cap = daily_count >= config.MAX_DAILY_ENTRIES
+    approved = in_window and not at_daily_cap
+    if not in_window:
+        block_reason = config.NO_FILTER_REJECT_OUTSIDE_WINDOW
+        reasons = (f"outside 09:00-11:00 entry window (now={now_time.isoformat()})",)
+    elif at_daily_cap:
+        block_reason = config.TW_REJECT_MAX_ENTRY_COUNT
+        reasons = (f"daily entry count {daily_count} >= {config.MAX_DAILY_ENTRIES}",)
+    else:
+        block_reason = None
+        reasons = ()
     decision = MajorFlagDecision(
         approved=approved,
         score=0.0,
         required_score=0.0,
-        decision=("APPROVED" if approved else config.NO_FILTER_REJECT_OUTSIDE_WINDOW),
-        reasons=() if approved else (f"outside 09:00-11:00 entry window (now={now_time.isoformat()})",),
+        decision=("APPROVED" if approved else block_reason),
+        reasons=reasons,
         component_scores={},
         metrics={},
         is_reversal=False,
         fast_reversal=False,
-        block_reason=None if approved else config.NO_FILTER_REJECT_OUTSIDE_WINDOW,
+        block_reason=block_reason,
     )
     state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
     state.last_no_filter_0900_1100_approved = approved
@@ -4102,6 +4144,18 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now:
         filled_qty = int(outcome.quantity or 0) or int(
             (outcome.buy_result.executed_qty if outcome.buy_result else 0) or 0
         )
+        # 2026-08-28 fix: the filter-agnostic daily total (models.py's own
+        # docstring on the field) increments here UNCONDITIONALLY of which
+        # filter (if any) judged this signal -- unlike the elif chain below,
+        # which is mutually exclusive per filter type. This is the single
+        # choke point every entry/switch path (TW2/TEGv2, no-filter, PRE15
+        # premarket-carry, the 09:03 scheduled entry, sideways/major/trend-
+        # persistence/single-entry, and the legacy no-toggle path) already
+        # converges on for position adoption -- see reconcile_position_
+        # state's RECOVERED_FROM_BROKER branch for the other (reconcile-
+        # discovered) contributor to this same counter.
+        if filled_qty > 0:
+            state.daily_total_entry_count = int(state.daily_total_entry_count or 0) + 1
         if filled_qty > 0 and state.sideways_filter_enabled:
             state.daily_sideways_entry_count = int(state.daily_sideways_entry_count or 0) + 1
             state.last_sideways_entry_at = datetime.now(KST).isoformat()
