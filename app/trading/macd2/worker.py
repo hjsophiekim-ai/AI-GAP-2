@@ -904,6 +904,72 @@ def _record_reconcile_discovered_position(state: RuntimeState, pos: PositionSnap
     ledger.append_signal(row)
 
 
+def _record_reconcile_discovered_sell(
+    broker, state: RuntimeState, *, symbol: str, sold_qty: int, entry_price: float,
+    position_before: int, position_after: int, now: datetime, exit_reason: str,
+) -> None:
+    """2026-08-28 real incident fix: the qty-DECREASE mirror of
+    _record_reconcile_discovered_position (which fixed the qty-INCREASE
+    case, RECOVERED_FROM_BROKER, on 2026-08-25). reconcile_position_state's
+    RECOVERED_TO_FLAT and the decrease sub-case of RECOVERED_QTY_MISMATCH
+    used to silently adopt a lower broker-reported quantity with ZERO trace
+    in either ledger of whatever SELL happened to get there -- a held
+    position could shrink or vanish at the broker with no execution-ledger
+    row anywhere recording it, breaking summarize_daily_trading's round-trip
+    accounting for that position.
+
+    Writes a minimal signal-ledger row (same reasoning as
+    _record_reconcile_discovered_position: no macd_snap is available this
+    early in a tick) plus a real execution-ledger row via ledger.
+    append_reconcile_backfill_sell -- which, unlike the BUY-side backfill,
+    DOES compute a real gross/net PnL, because ``entry_price`` here is the
+    position's own tracked avg_price (known to this reconcile step, unlike
+    the generic broker-layer BROKER_DIRECT hook in ledger.py that has no
+    position context at all).
+    """
+    exit_price = entry_price
+    getter = getattr(broker, "get_quote", None) or getattr(broker, "get_current_price", None)
+    if getter is not None:
+        try:
+            quote = getter(symbol)
+        except Exception:
+            quote = None
+        if quote and quote > 0:
+            exit_price = float(quote)
+
+    reconciled_at = now.isoformat()
+    signal_id = f"RECONCILE_DISCOVERED_SELL_{symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+    ledger.append_reconcile_backfill_sell(
+        symbol=symbol, quantity=sold_qty, exit_price=exit_price, entry_price=entry_price,
+        position_before=position_before, position_after=position_after,
+        reconciled_at=reconciled_at, mode=state.mode or "mock", exit_reason=exit_reason,
+        signal_id=signal_id,
+    )
+    direction = _direction_for_symbol(symbol)
+    row = {
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "completed_bar_at": "",
+        "signal_id": signal_id,
+        "signal_type": "RECONCILE_DISCOVERED_SELL",
+        "direction": direction.value if direction else "",
+        "macd": "", "signal": "", "hist_last3": "",
+        "detected_at": now.isoformat(),
+        "order_requested_at": "",
+        "order_result": exit_reason,
+        "block_reason": f"qty_sold={sold_qty}_exit_price={exit_price}",
+        "signal_bar_at": "", "signal_confirmed_at": "",
+        "baseline_completed_bar_at": state.session_baseline_bar_ts or "",
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": config.SIGNAL_RULE,
+        "worker_code_sha": _git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        **_entry_gate_ledger_fields(state, None, "NONE"),
+    }
+    ledger.append_signal(row)
+
+
 def abandon_pending_time_window_candidate_if_any(state: RuntimeState, now: datetime, *, reason: str) -> bool:
     """2026-08-28 real incident fix: turning TW2/TEGv2 OFF via the UI toggle
     (service.set_time_window_2_filter_enabled) never touched an already-
@@ -1014,6 +1080,19 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
             # call) already sees the corrected, sellable quantity.
             old_qty = int(runtime["qty"])
             new_qty = int(broker_row["qty"])
+            if new_qty < old_qty:
+                # 2026-08-28 fix: this branch is also reached when the
+                # broker's real holding QUIETLY SHRANK (not just settled to
+                # a different qty on a slow fill) -- e.g. a partial exit
+                # whose order confirmation this process missed. Record the
+                # implied sell before adopting the broker's new qty below,
+                # same principle as RECOVERED_TO_FLAT just below.
+                _record_reconcile_discovered_sell(
+                    broker, state, symbol=runtime["symbol"], sold_qty=old_qty - new_qty,
+                    entry_price=float(runtime["avg_price"] or 0.0),
+                    position_before=old_qty, position_after=new_qty,
+                    now=now, exit_reason=RECOVERED_QTY_MISMATCH,
+                )
             prior_entry_at = state.position.entry_at if state.position else now
             state.position = PositionSnapshot(
                 symbol=runtime["symbol"], quantity=new_qty,
@@ -1028,6 +1107,20 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
             state.last_position_reconcile_at = now.isoformat()
             return RECOVERED_QTY_MISMATCH
         if not broker_owned:
+            # 2026-08-28 real incident fix: this branch used to adopt "flat"
+            # with zero execution-ledger trace of the SELL that must have
+            # happened to empty a real held position -- see
+            # _record_reconcile_discovered_sell's own docstring for the full
+            # incident (a MACD2 TP1 partial exit's real leg landed as an
+            # unpriced BROKER_DIRECT stub, and the remaining shares'
+            # eventual full exit left NO row at all, silently swallowed
+            # right here).
+            _record_reconcile_discovered_sell(
+                broker, state, symbol=runtime["symbol"], sold_qty=int(runtime["qty"]),
+                entry_price=float(runtime["avg_price"] or 0.0),
+                position_before=int(runtime["qty"]), position_after=0,
+                now=now, exit_reason=RECOVERED_TO_FLAT,
+            )
             state.position = None
             state.peak_net_return = 0.0
             state.profit_lock_active = False

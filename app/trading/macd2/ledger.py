@@ -282,17 +282,59 @@ def append_execution(row: dict[str, Any]) -> bool:
     already recorded — order_id dedup. Callers must only invoke this after KIS
     execution confirmation + position reconciliation succeeded (docs §17) —
     this function itself does not gate on that, it only prevents duplicates.
+
+    2026-08-28 real incident: a KisMockBroker/KisRealBroker direct call (any
+    unsuppressed .buy()/.sell(), see append_broker_direct_execution) can
+    write a placeholder "BROKER_DIRECT" row for an order_id BEFORE
+    order_executor._record_leg gets a chance to write the real, fully-priced
+    row for the SAME order_id (the direct-ledger write happens synchronously
+    inside the broker call itself, which always returns before _record_leg's
+    own post-fill reconciliation runs) -- the strict dedup above then
+    silently discarded the real row forever, leaving the placeholder's
+    price=0/net_pnl=0 stub as the ONLY record of a real, correctly-priced
+    trade. A placeholder is never the final word on an order_id: when the
+    real leg arrives, it must overwrite the placeholder in place rather than
+    losing to first-write-wins dedup. This is one-directional only --
+    append_broker_direct_execution's own upsert already refuses the reverse
+    (a placeholder arriving AFTER a real row never overwrites it).
     """
     order_id = str(row.get("order_id") or "")
     if not order_id:
         raise ValueError("append_execution: row is missing order_id")
     _assert_safe_to_write_ledger()
+    new_signal_id = str(row.get("signal_id") or "")
     with _EXECUTION_LOCK:
-        for existing in _load_rows(EXECUTION_LEDGER_PATH):
-            if existing.get("order_id") == order_id:
-                return False
+        rows = _load_rows(EXECUTION_LEDGER_PATH, limit=0)
+        for existing in rows:
+            if existing.get("order_id") != order_id:
+                continue
+            if str(existing.get("signal_id") or "") == "BROKER_DIRECT" and new_signal_id != "BROKER_DIRECT":
+                _overwrite_execution_row(order_id, row)
+                return True
+            return False
         _append_row(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS, row)
         return True
+
+
+def _overwrite_execution_row(order_id: str, row: dict[str, Any]) -> None:
+    """Rewrite the on-disk row for ``order_id`` in place with ``row``'s
+    values, keyed by whatever header is ALREADY on disk (same column-order
+    safety as _append_row/_ensure_columns -- never assumes the canonical
+    column order matches the file's)."""
+    _ensure_columns(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS)
+    fieldnames = _read_header(EXECUTION_LEDGER_PATH) or EXECUTION_LEDGER_COLUMNS
+    with open(EXECUTION_LEDGER_PATH, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    for item in rows:
+        if item.get("order_id") == order_id:
+            item.clear()
+            item.update({col: row.get(col, "") for col in fieldnames})
+            break
+    with open(EXECUTION_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in rows:
+            writer.writerow({col: item.get(col, "") for col in fieldnames})
 
 
 def signal_id_has_leg(signal_id: str, side: str) -> bool:
@@ -427,6 +469,55 @@ def append_reconcile_backfill_buy(
     })
 
 
+def append_reconcile_backfill_sell(
+    *, symbol: str, quantity: int, exit_price: float, entry_price: float,
+    position_before: int, position_after: int, reconciled_at: str, mode: str,
+    exit_reason: str, signal_id: str = "",
+) -> bool:
+    """Mirrors append_reconcile_backfill_buy for the opposite gap (2026-08-28
+    real incident: reconcile_position_state's RECOVERED_TO_FLAT and the
+    qty-DECREASE case of RECOVERED_QTY_MISMATCH -- the broker reporting
+    FEWER shares than runtime state expected -- silently adopted the lower
+    quantity with zero execution-ledger trace of whatever SELL must have
+    happened to get there, while the mirror-image qty-INCREASE case
+    (RECOVERED_FROM_BROKER) already got this exact fix on 2026-08-25 via
+    append_reconcile_backfill_buy).
+
+    Unlike that BUY backfill, ``entry_price`` IS known here (the runtime
+    state's own tracked avg_price for the position that just shrank/vanished
+    at the moment the gap was noticed), so this computes a real gross/net
+    PnL via TradeCostEngine -- the SAME cost math order_executor._record_
+    leg's own SELL branch uses -- instead of leaving it at a misleading 0.0.
+
+    ``exit_price`` is the best-available reference price for the missing
+    fill (caller should pass a fresh quote fetched at discovery time when
+    available, falling back to ``entry_price`` itself as the least-wrong
+    number otherwise) -- the true fill price is genuinely unknown; this
+    never fabricates a better one than what was actually available at
+    discovery time. Every row carries ``source="RECONCILE_BACKFILL"`` so it
+    is always distinguishable from a real _record_leg row.
+
+    Idempotent the same way as append_reconcile_backfill_buy: order_id is
+    derived from symbol/quantity/exit_price only, never a timestamp.
+    """
+    from app.trading.trading_cost_engine import TradeCostEngine
+
+    cost = TradeCostEngine().compute_net_pnl(
+        symbol, entry_price, exit_price, quantity, buy_order_type="market", sell_order_type="market",
+    )
+    order_id = f"RECONCILE_BACKFILL_SELL_{symbol}_{int(quantity)}_{round(float(exit_price), 4)}"
+    return append_execution({
+        "order_id": order_id, "signal_id": signal_id, "timestamp": reconciled_at,
+        "mode": mode, "symbol": symbol, "side": "SELL",
+        "requested_qty": quantity, "executed_qty": quantity,
+        "requested_price": exit_price, "executed_price": exit_price,
+        "position_before": position_before, "position_after": position_after,
+        "gross_pnl": cost["gross_pnl"], "fee": cost["sell_fee"], "slippage": cost["slippage"],
+        "net_pnl": cost["net_pnl"],
+        "exit_reason": exit_reason, "broker_response": "", "source": "RECONCILE_BACKFILL",
+    })
+
+
 PROFIT_LOCK_LEDGER_COLUMNS = [
     "profit_lock_enabled", "profit_lock_peak_return_pct", "profit_lock_max_support_gap",
     "profit_lock_current_support_gap", "profit_lock_gap_ratio", "profit_lock_contraction_count",
@@ -499,13 +590,77 @@ def _upsert_broker_direct_execution(row: dict[str, Any]) -> str:
         return "inserted"
 
 
-def append_broker_direct_execution(order_result: Any) -> bool:
+def _kst_timestamp_from_ord_tmd(raw: dict[str, Any], *, now: Optional[datetime] = None) -> Optional[str]:
+    """Build an authoritative KST ISO timestamp from the broker's own
+    ORD_TMD (HHMMSS) -- KIS's order-cash response field, always genuine KST
+    wall-clock time -- paired with today's KST date. Returns None if
+    ORD_TMD is missing/malformed so the caller can fall back to another
+    timestamp source.
+
+    2026-08-28 real incident: OrderResult.timestamp's dataclass default
+    (app/models/__init__.py) is ``datetime.now().strftime(...)`` -- naive
+    SERVER-LOCAL clock time, which is UTC on Render -- but
+    _normalize_execution_timestamp (below) treated any naive value as
+    ALREADY being KST wall-clock time (a bare ``.replace(tzinfo=KST)``,
+    never an actual UTC->KST conversion). A 12:46:33 KST order
+    (ORD_TMD="124633") was therefore recorded as
+    "2026-08-28T03:46:33+09:00" -- the UTC clock reading relabeled with a
+    KST offset instead of converted, silently wrong by exactly 9 hours.
+    ORD_TMD sidesteps the ambiguous-naive-datetime guess entirely instead of
+    trying to fix it: it is the broker's own confirmation of the real order
+    time and needs no timezone inference at all.
+    """
+    ord_tmd = str(raw.get("ORD_TMD") or "").strip()
+    if len(ord_tmd) != 6 or not ord_tmd.isdigit():
+        return None
+    today = (now or datetime.now(config.KST)).astimezone(config.KST).strftime("%Y%m%d")
+    try:
+        return datetime.strptime(today + ord_tmd, "%Y%m%d%H%M%S").replace(tzinfo=config.KST).isoformat()
+    except ValueError:
+        return None
+
+
+def _broker_direct_fill_price(broker: Any, symbol: str, requested_price: float) -> float:
+    """Best-available REAL price for a direct broker order that was placed
+    with no price (a market order always sends requested_price=0 -- see
+    order_executor._fallback_sell_price's identical reasoning for the normal
+    executor path). Falls back to a fresh quote from the broker that placed
+    the order; never raises -- a quote failure must not turn an already-
+    successful order into a recording error, it just leaves the (honestly
+    unknown) requested_price in place."""
+    if requested_price > 0 or broker is None:
+        return requested_price
+    getter = getattr(broker, "get_current_price", None)
+    if getter is None:
+        return requested_price
+    try:
+        quote = getter(symbol)
+    except Exception:
+        return requested_price
+    return float(quote) if quote and quote > 0 else requested_price
+
+
+def append_broker_direct_execution(order_result: Any, broker: Any = None) -> bool:
     """Record a successful direct KIS broker order in the MACD2 execution ledger.
 
     MACD2's normal order executor writes richer rows after fill/balance
     reconciliation. This helper is only for broker calls made outside that
     executor path, such as manual verification orders, so they still appear in
     the UI trade ledger.
+
+    ``broker`` (2026-08-28) -- the broker instance that actually placed this
+    order, passed by KisMockBroker/KisRealBroker._record_direct_execution_if_
+    needed so a market order's real fill price can be looked up (see
+    _broker_direct_fill_price) instead of echoing the always-0 requested
+    price. Optional and best-effort: omitting it just leaves price at
+    whatever order_result.price already was, same as before this fix.
+
+    gross_pnl/net_pnl are deliberately left blank (never 0.0, never
+    fabricated) -- this generic broker-layer hook has no entry-price/
+    position context to compute a real PnL from (unlike
+    append_reconcile_backfill_sell, which runs inside worker.py's own
+    reconcile step and DOES have the position's tracked avg_price). fee is
+    real and computed via TradeCostEngine since it only needs price+qty.
     """
     if not bool(getattr(order_result, "success", False)):
         return False
@@ -516,14 +671,23 @@ def append_broker_direct_execution(order_result: Any) -> bool:
 
     side = str(getattr(order_result, "side", "") or "").upper()
     qty = _int(getattr(order_result, "quantity", 0), 0)
-    price = _float(getattr(order_result, "price", 0.0), 0.0)
+    requested_price = _float(getattr(order_result, "price", 0.0), 0.0)
+    price = _broker_direct_fill_price(broker, symbol, requested_price)
     raw = getattr(order_result, "raw", {}) or {}
     try:
         broker_response = json.dumps(raw, ensure_ascii=False, sort_keys=True)
     except TypeError:
         broker_response = str(raw)
 
-    timestamp = _normalize_execution_timestamp(getattr(order_result, "timestamp", "") or "")
+    timestamp = _kst_timestamp_from_ord_tmd(raw) or _normalize_execution_timestamp(
+        getattr(order_result, "timestamp", "") or ""
+    )
+
+    fee = ""
+    if price > 0 and qty > 0 and side in ("BUY", "SELL"):
+        from app.trading.trading_cost_engine import TradeCostEngine
+
+        fee = round(TradeCostEngine().compute_trade_cost(symbol, side, price, qty, order_type="market")["fee"], 2)
 
     status = _upsert_broker_direct_execution({
         "order_id": order_id,
@@ -534,14 +698,14 @@ def append_broker_direct_execution(order_result: Any) -> bool:
         "side": side,
         "requested_qty": qty,
         "executed_qty": qty,
-        "requested_price": price,
+        "requested_price": requested_price,
         "executed_price": price,
         "position_before": "",
         "position_after": "",
-        "gross_pnl": 0.0,
-        "fee": 0.0,
+        "gross_pnl": "",
+        "fee": fee,
         "slippage": 0.0,
-        "net_pnl": 0.0,
+        "net_pnl": "",
         "exit_reason": "BROKER_DIRECT",
         "broker_response": broker_response,
     })
@@ -609,10 +773,18 @@ def append_broker_direct_fill(fill: dict[str, Any], *, mode: str) -> bool:
         broker_response = json.dumps(fill, ensure_ascii=False, sort_keys=True)
     except TypeError:
         broker_response = str(fill)
+    timestamp = _kst_timestamp_from_ord_tmd(fill) or _normalize_execution_timestamp(
+        fill.get("timestamp") or fill.get("ordered_at") or ""
+    )
+    fee = ""
+    if price > 0 and qty > 0 and side in ("BUY", "SELL"):
+        from app.trading.trading_cost_engine import TradeCostEngine
+
+        fee = round(TradeCostEngine().compute_trade_cost(symbol, side, price, qty, order_type="market")["fee"], 2)
     status = _upsert_broker_direct_execution({
         "order_id": order_id,
         "signal_id": "BROKER_DIRECT",
-        "timestamp": _normalize_execution_timestamp(fill.get("timestamp") or fill.get("ordered_at") or ""),
+        "timestamp": timestamp,
         "mode": mode,
         "symbol": symbol,
         "side": side,
@@ -622,10 +794,10 @@ def append_broker_direct_fill(fill: dict[str, Any], *, mode: str) -> bool:
         "executed_price": price,
         "position_before": "",
         "position_after": "",
-        "gross_pnl": 0.0,
-        "fee": 0.0,
+        "gross_pnl": "",
+        "fee": fee,
         "slippage": 0.0,
-        "net_pnl": 0.0,
+        "net_pnl": "",
         "exit_reason": "BROKER_DIRECT_FILL_BACKFILL",
         "broker_response": broker_response,
     })

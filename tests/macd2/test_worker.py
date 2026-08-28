@@ -710,6 +710,25 @@ def test_position_mismatch_blocks_all_orders(ready_market_data):
     assert broker.orders == []
     assert state.position is None
 
+    # 2026-08-28 fix: the broker-side qty loss (10 -> 0) that reconcile just
+    # silently adopted above must now leave a real trace in BOTH ledgers —
+    # not just the runtime-state skip. FakeBroker's quote for LONG_SYMBOL
+    # equals the position's own entry_price (15_000.0), so net_pnl should be
+    # a small negative (fee/tax only), never the misleading 0.0 a plain
+    # BROKER_DIRECT stub would have recorded.
+    exec_rows = ledger.load_execution_ledger()
+    sell_rows = [r for r in exec_rows if r["side"] == "SELL"]
+    assert len(sell_rows) == 1
+    sell_row = sell_rows[0]
+    assert sell_row["symbol"] == config.LONG_SYMBOL
+    assert sell_row["executed_qty"] == "10"
+    assert sell_row["source"] == "RECONCILE_BACKFILL"
+    assert sell_row["exit_reason"] == worker.RECOVERED_TO_FLAT
+    assert float(sell_row["net_pnl"]) < 0.0
+
+    signal_rows = ledger.load_signal_ledger()
+    assert any(r["signal_type"] == "RECONCILE_DISCOVERED_SELL" for r in signal_rows)
+
 
 def test_day_rollover_resets_session_fields_but_allows_same_direction_signal():
     prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)

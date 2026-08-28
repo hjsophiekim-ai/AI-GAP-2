@@ -116,7 +116,7 @@ class KisMockBroker(BrokerBase):
         try:
             from app.trading.macd2 import ledger as macd2_ledger
 
-            macd2_ledger.append_broker_direct_execution(order_result)
+            macd2_ledger.append_broker_direct_execution(order_result, broker=self)
         except Exception as e:
             logger.warning("MOCK direct execution ledger append failed %s: %s", order_result.order_id, e)
 

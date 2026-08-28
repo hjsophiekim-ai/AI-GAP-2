@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 
 import pytest
 
@@ -436,3 +437,274 @@ def test_backfill_broker_direct_fills_inserts_and_updates_by_order_id():
     assert len(rows) == 1
     assert rows[0]["timestamp"] == "2026-07-27T13:22:00+09:00"
     assert rows[0]["executed_price"] == "15100.0"
+
+
+class _FakeOrderResult:
+    """Minimal stand-in for app.models.OrderResult -- only the attributes
+    append_broker_direct_execution actually reads."""
+
+    def __init__(self, *, order_id, symbol, side, quantity, price, raw, timestamp="", mode="mock"):
+        self.success = True
+        self.order_id = order_id
+        self.symbol = symbol
+        self.side = side
+        self.quantity = quantity
+        self.price = price
+        self.raw = raw
+        self.timestamp = timestamp
+        self.mode = mode
+
+
+class _FakeQuoteBroker:
+    def __init__(self, price):
+        self._price = price
+
+    def get_current_price(self, symbol):
+        del symbol
+        return self._price
+
+
+def test_broker_direct_execution_prefers_ord_tmd_over_naive_local_clock_timestamp():
+    """2026-08-28 real incident: OrderResult.timestamp's default is naive
+    SERVER-LOCAL clock time (UTC on Render), which _normalize_execution_
+    timestamp used to mislabel as already-KST (a 12:46:33 KST order recorded
+    as 03:46:33+09:00 -- the raw UTC clock reading with a KST offset stapled
+    on, never actually converted). ORD_TMD (KIS's own order-time field, from
+    the same order response) is always genuine KST and must win."""
+    order_result = _FakeOrderResult(
+        order_id="direct-tmd-1", symbol=config.INVERSE_SYMBOL, side="SELL",
+        quantity=557, price=0.0, raw={"ODNO": "direct-tmd-1", "ORD_TMD": "124633"},
+        timestamp="2026-08-28 03:46:33",  # naive server-local (UTC) clock value
+    )
+
+    assert ledger.append_broker_direct_execution(order_result) is True
+
+    rows = ledger.load_execution_ledger()
+    assert rows[0]["timestamp"].startswith(datetime.now(config.KST).strftime("%Y-%m-%d"))
+    assert rows[0]["timestamp"].endswith("T12:46:33+09:00")
+
+
+def test_broker_direct_execution_fills_real_price_and_fee_for_market_order():
+    """A market SELL always requests price=0 (see order_executor._fallback_
+    sell_price's identical reasoning) -- the BROKER_DIRECT stub used to
+    blindly echo that 0 as executed_price and leave fee/gross_pnl/net_pnl at
+    a misleading 0.0. It must now look up a real quote for executed_price
+    and compute a real fee, while leaving gross_pnl/net_pnl genuinely blank
+    (no entry-price context exists at this generic broker-layer hook)."""
+    order_result = _FakeOrderResult(
+        order_id="direct-price-1", symbol=config.INVERSE_SYMBOL, side="SELL",
+        quantity=557, price=0.0, raw={"ODNO": "direct-price-1", "ORD_TMD": "124633"},
+    )
+    broker = _FakeQuoteBroker(6950.0)
+
+    assert ledger.append_broker_direct_execution(order_result, broker=broker) is True
+
+    row = ledger.load_execution_ledger()[0]
+    assert row["requested_price"] == "0.0"
+    assert row["executed_price"] == "6950.0"
+    assert float(row["fee"]) > 0.0
+    assert row["gross_pnl"] == ""
+    assert row["net_pnl"] == ""
+
+
+def test_append_execution_upgrades_broker_direct_placeholder_with_real_leg():
+    """2026-08-28 real incident: a BROKER_DIRECT placeholder (written
+    synchronously inside the broker call, price=0/pnl=0) and order_executor.
+    _record_leg's real, fully-priced row for the SAME order_id both target
+    the same order_id -- the real row must win, not lose to first-write-wins
+    dedup (which used to silently drop it, leaving the placeholder as the
+    ONLY record of a real trade)."""
+    placeholder = _execution_row("shared-1", side="SELL", net_pnl=0.0, gross_pnl=0.0, fee=0.0)
+    placeholder["signal_id"] = "BROKER_DIRECT"
+    placeholder["executed_price"] = 0.0
+    assert ledger.append_execution(placeholder) is True
+
+    real_leg = _execution_row("shared-1", side="SELL", net_pnl=-1234.5, gross_pnl=-1000.0, fee=234.5)
+    real_leg["signal_id"] = ""
+    real_leg["executed_price"] = 6950.0
+    assert ledger.append_execution(real_leg) is True
+
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["signal_id"] == ""
+    assert rows[0]["executed_price"] == "6950.0"
+    assert rows[0]["net_pnl"] == "-1234.5"
+
+    # A LATER placeholder must never clobber an already-real row (the reverse
+    # direction was already guarded by _upsert_broker_direct_execution).
+    late_placeholder = _execution_row("shared-1", side="SELL", net_pnl=0.0, gross_pnl=0.0, fee=0.0)
+    late_placeholder["signal_id"] = "BROKER_DIRECT"
+    assert ledger.append_execution(late_placeholder) is False
+    assert ledger.load_execution_ledger()[0]["net_pnl"] == "-1234.5"
+
+
+def test_reconcile_backfill_sell_computes_real_pnl_and_is_idempotent():
+    order_id = ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=557, exit_price=6950.0, entry_price=6940.0,
+        position_before=557, position_after=0, reconciled_at="2026-08-28T13:00:00+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    )
+    assert order_id is True
+    row = ledger.load_execution_ledger()[0]
+    assert row["source"] == "RECONCILE_BACKFILL"
+    assert row["side"] == "SELL"
+    assert row["exit_reason"] == "RECOVERED_TO_FLAT"
+    assert float(row["net_pnl"]) > 0.0  # exit (6950) > entry (6940), fees are small vs the move
+    assert row["position_before"] == "557"
+    assert row["position_after"] == "0"
+
+    # Idempotent: re-detecting the exact same gap must never double-write.
+    again = ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=557, exit_price=6950.0, entry_price=6940.0,
+        position_before=557, position_after=0, reconciled_at="2026-08-28T13:00:05+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    )
+    assert again is False
+    assert len(ledger.load_execution_ledger()) == 1
+
+
+def test_partial_exit_then_final_exit_round_trip_sums_correctly():
+    """docs 시나리오: TP1 50% 부분익절 후, 남은 수량이 반대신호로 전량 청산되면
+    하나의 왕복거래(단일 BUY qty에 대한 두 건의 SELL)로 gross/net PnL이 올바르게
+    합산되어야 한다 -- 부분매도 한 건이 원장에서 빠지면 summarize_daily_trading의
+    round_trip_count/net_pnl이 조용히 틀어진다."""
+    ledger.append_execution(_execution_row("buy-1", side="BUY", net_pnl=0.0, gross_pnl=0.0, fee=100.0))
+    ledger.append_execution(_execution_row("tp1-sell", side="SELL", net_pnl=2000.0, gross_pnl=2200.0, fee=200.0))
+    ledger.append_reconcile_backfill_sell(
+        symbol="0193T0", quantity=557, exit_price=15200.0, entry_price=15000.0,
+        position_before=557, position_after=0, reconciled_at="2026-01-06T09:30:00+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    )
+
+    summary = ledger.summarize_daily_trading("20260106", budget=10_000_000)
+    assert summary["has_data"] is True
+    assert summary["sell_count"] == 2
+    assert summary["round_trip_count"] == 2
+    backfill_row = [r for r in ledger.load_execution_ledger() if r["source"] == "RECONCILE_BACKFILL"][0]
+    assert summary["net_pnl"] == pytest.approx(2000.0 + float(backfill_row["net_pnl"]))
+
+
+def test_2026_08_28_incident_full_replay_both_sell_legs_recorded_correctly():
+    """End-to-end replay of the real 2026-08-28 0197X0 incident using the
+    ACTUAL code paths (not hand-built rows), to verify all three fixed
+    mechanisms integrate correctly for the exact real sequence:
+
+      1. BUY 1114 @ 6940 (order-executor _record_leg-equivalent write).
+      2. TP1 50% partial exit (557 = round(1114*0.5)) -- the broker call
+         first writes an unpriced BROKER_DIRECT stub (append_broker_direct_
+         execution, exactly what KisMockBroker.sell() does), THEN order_
+         executor._record_leg writes the real, fully-priced row for the
+         SAME order_id/order (append_execution's upgrade path).
+      3. The remaining 557 later closes with no order-executor leg recorded
+         at all (the real incident's missing-final-sell gap) -- reconcile's
+         RECOVERED_TO_FLAT backfill (append_reconcile_backfill_sell) is the
+         only thing that records it.
+
+    Asserts exactly 2 SELL rows (the stub must NOT survive as a 3rd row),
+    each with real order_id, real fill time (from ORD_TMD, not the naive-
+    clock bug), real executed_price, real fee, and a real (non-blank,
+    non-zero) net_pnl -- and that the full round trip (1 BUY + 2 SELL legs
+    covering all 1114 shares) aggregates correctly.
+    """
+    from app.trading.trading_cost_engine import TradeCostEngine
+
+    entry_price = 6940.0
+    entry_qty = 1114
+    tp1_qty = 557  # round(1114 * 0.5) == config.MORNING_TP1_SELL_RATIO
+    remaining_qty = entry_qty - tp1_qty
+    tp1_fill_price = 6950.0
+    final_fill_price = 6900.0
+
+    # 1) BUY leg (mirrors order_executor._record_leg's BUY branch).
+    buy_cost = TradeCostEngine().compute_trade_cost(
+        config.INVERSE_SYMBOL, "BUY", entry_price, entry_qty, order_type="market",
+    )
+    ledger.append_execution({
+        "order_id": "0000023671", "signal_id": "20260828_112400_DOWN_BLUE:TW_CONFIRM",
+        "timestamp": "2026-08-28T11:30:30+09:00", "mode": "mock", "symbol": config.INVERSE_SYMBOL,
+        "side": "BUY", "requested_qty": entry_qty, "executed_qty": entry_qty,
+        "requested_price": entry_price, "executed_price": entry_price,
+        "position_before": 0, "position_after": entry_qty,
+        "gross_pnl": 0.0, "fee": buy_cost["fee"], "slippage": 0.0, "net_pnl": 0.0,
+        "exit_reason": "", "broker_response": "{}",
+    })
+
+    # 2a) TP1's broker call writes the unpriced BROKER_DIRECT stub FIRST --
+    # exactly what KisMockBroker.sell()/_record_direct_execution_if_needed
+    # does whenever suppression doesn't apply.
+    tp1_order_result = _FakeOrderResult(
+        order_id="0000028615", symbol=config.INVERSE_SYMBOL, side="SELL",
+        quantity=tp1_qty, price=0.0,
+        raw={"ODNO": "0000028615", "ORD_TMD": "124633"},
+    )
+    quote_broker = _FakeQuoteBroker(tp1_fill_price)
+    assert ledger.append_broker_direct_execution(tp1_order_result, broker=quote_broker) is True
+
+    stub_row = [r for r in ledger.load_execution_ledger() if r["order_id"] == "0000028615"][0]
+    assert stub_row["signal_id"] == "BROKER_DIRECT"
+    assert stub_row["executed_price"] == str(tp1_fill_price)
+    assert stub_row["timestamp"].endswith("T12:46:33+09:00")  # ORD_TMD, not the naive-clock bug
+
+    # 2b) order_executor._record_leg's real SELL write for the SAME order_id
+    # (mirrors _record_leg's own SELL branch exactly: TradeCostEngine.
+    # compute_net_pnl(entry_price, fill_price, qty), fee=sell_fee).
+    tp1_cost = TradeCostEngine().compute_net_pnl(
+        config.INVERSE_SYMBOL, entry_price, tp1_fill_price, tp1_qty,
+        buy_order_type="market", sell_order_type="market",
+    )
+    assert ledger.append_execution({
+        "order_id": "0000028615", "signal_id": "20260828_113000_TW2_TP1", "timestamp": "2026-08-28T12:46:33+09:00",
+        "mode": "mock", "symbol": config.INVERSE_SYMBOL, "side": "SELL",
+        "requested_qty": tp1_qty, "executed_qty": tp1_qty,
+        "requested_price": tp1_fill_price, "executed_price": tp1_fill_price,
+        "position_before": entry_qty, "position_after": remaining_qty,
+        "gross_pnl": tp1_cost["gross_pnl"], "fee": tp1_cost["sell_fee"], "slippage": tp1_cost["slippage"],
+        "net_pnl": tp1_cost["net_pnl"], "exit_reason": "TIME_WINDOW_TP1_PARTIAL", "broker_response": "{}",
+    }) is True
+
+    # 3) The remaining 557 vanish at the broker with no order-executor leg
+    # ever recorded -- reconcile's RECOVERED_TO_FLAT backfill is the only
+    # thing that records this SELL.
+    assert ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=remaining_qty, exit_price=final_fill_price,
+        entry_price=entry_price, position_before=remaining_qty, position_after=0,
+        reconciled_at="2026-08-28T13:35:00+09:00", mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    ) is True
+
+    rows = ledger.load_execution_ledger()
+    sell_rows = sorted([r for r in rows if r["side"] == "SELL"], key=lambda r: r["timestamp"])
+    assert len(sell_rows) == 2  # the stub was upgraded in place, never survives as a 3rd row
+    assert [r["order_id"] for r in rows if r["side"] == "BUY"] == ["0000023671"]
+
+    tp1_row, final_row = sell_rows
+    assert tp1_row["order_id"] == "0000028615"
+    assert tp1_row["signal_id"] != "BROKER_DIRECT"
+    assert tp1_row["executed_qty"] == str(tp1_qty)
+    assert tp1_row["executed_price"] == str(tp1_fill_price)
+    assert float(tp1_row["fee"]) > 0.0
+    assert float(tp1_row["net_pnl"]) != 0.0
+    assert tp1_row["timestamp"].endswith("T12:46:33+09:00")
+
+    assert final_row["executed_qty"] == str(remaining_qty)
+    assert final_row["executed_price"] == str(final_fill_price)
+    assert final_row["source"] == "RECONCILE_BACKFILL"
+    assert float(final_row["fee"]) > 0.0
+    assert float(final_row["net_pnl"]) != 0.0
+
+    # Full round trip: BUY 1114 + SELL 557 + SELL 557 covers every share,
+    # and the daily summary sees exactly one BUY / two SELL legs.
+    assert int(tp1_row["executed_qty"]) + int(final_row["executed_qty"]) == entry_qty
+    summary = ledger.summarize_daily_trading("20260828", budget=10_000_000)
+    assert summary["buy_count"] == 1
+    assert summary["sell_count"] == 2
+    assert summary["net_pnl"] == pytest.approx(float(tp1_row["net_pnl"]) + float(final_row["net_pnl"]))
+
+    # Idempotency: re-running the reconcile backfill for the exact same gap
+    # (e.g. the next tick re-observing the same already-flat broker state
+    # before state.position is durably persisted) must never double-write.
+    assert ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=remaining_qty, exit_price=final_fill_price,
+        entry_price=entry_price, position_before=remaining_qty, position_after=0,
+        reconciled_at="2026-08-28T13:35:05+09:00", mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    ) is False
+    assert len(ledger.load_execution_ledger()) == 3
