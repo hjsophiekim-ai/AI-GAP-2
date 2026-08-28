@@ -3631,10 +3631,11 @@ def run_once(
         elif entry_window_open and confirmed_direction != Direction.HOLD:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
             if target != pos.symbol:
+                reversal_signal_id = make_signal_id(macd_snap.bar_dt, confirmed_direction)
                 reversal_decision, reversal_gate_mode = _judge_entry_gate(
                     state=state, bars_3m=bars_3m, df_1m=df_1m, direction=confirmed_direction,
                     position=pos, now=now,
-                    signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
+                    signal_id=reversal_signal_id,
                 )
                 if reversal_decision is not None and not reversal_decision.approved:
                     if reversal_gate_mode == "TIME_WINDOW":
@@ -3642,11 +3643,29 @@ def run_once(
                         # a not-yet-confirmed TW candidate must NEVER trigger
                         # the sell-only liquidation below — the held position
                         # stays untouched until _resolve_time_window_candidate
-                        # (checked at T+3) decides to switch or hold. The
-                        # candidate itself is already recorded by
-                        # _judge_time_window_flag above; nothing else happens
-                        # on this bar.
-                        pass
+                        # (checked at T+3) decides to switch or hold.
+                        #
+                        # 2026-08-28 real incident fix: the candidate is NOT
+                        # "already recorded by _judge_time_window_flag above"
+                        # as this comment used to claim -- that function only
+                        # sets in-memory pending state
+                        # (state.time_window_pending_flag_direction/bar_ts),
+                        # never the signal ledger (same gap as the sibling
+                        # time_window_position_active branch above, fixed the
+                        # same way there). A confirmed REVERSAL flag arriving
+                        # while a held position had NOT yet been tagged
+                        # time_window_position_active (e.g. right after a
+                        # reconcile-discovered position, before the adoption
+                        # pass in _advance_held_position_risk_management runs)
+                        # took this branch instead of that one and got zero
+                        # ledger row at its own detection bar. Recording it
+                        # here only adds an audit-trail row; it does not
+                        # change what gets approved, dispatched, or ordered.
+                        _record_major_filtered_signal(
+                            state=state, macd_snap=macd_snap, direction=confirmed_direction,
+                            signal_type="REVERSAL", signal_id=reversal_signal_id, decision=reversal_decision,
+                            detected_at=datetime.now(KST), result=result, gate_mode="TIME_WINDOW",
+                        )
                     else:
                         outcome = _execute_reversal_exit_only_for_filtered_entry(
                             broker=broker, state=state, macd_snap=macd_snap,
