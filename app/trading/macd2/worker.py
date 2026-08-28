@@ -3470,10 +3470,35 @@ def run_once(
             # tick's _resolve_time_window_candidate pick it up and run the
             # real evaluate_time_window_entry decision at T+3, exactly like
             # a fresh flag while flat already works.
+            #
+            # 2026-08-28 real incident fix: this branch called _judge_time_
+            # window_flag directly and returned, same as the flat path's
+            # _dispatch_confirmed_signal does when TIME_WINDOW isn't approved
+            # yet -- EXCEPT the flat path always follows a not-approved
+            # decision with _record_major_filtered_signal (a signal-ledger
+            # row, order_result=FILTERED_OUT/PENDING), while this branch never
+            # did. _judge_time_window_flag itself only sets in-memory pending
+            # state (state.time_window_pending_flag_direction/bar_ts) and
+            # _persist_time_window_decision's own state.last_time_window_*
+            # fields -- neither touches the signal-ledger CSV. Net effect: a
+            # confirmed flag detected while a TW2/TEGv2 position was already
+            # held got ZERO signal-ledger row at its own detection bar (only
+            # the later T+3 confirmation, one bar after, ever appeared) --
+            # invisible in the UI's 신호원장 at the flag's own timestamp even
+            # though the flag genuinely fired and was being tracked. Recording
+            # it here now (same _record_major_filtered_signal call the flat
+            # path already makes) only adds an audit-trail row; it does not
+            # change what gets approved, dispatched, or ordered.
             if confirmed_direction != Direction.HOLD:
-                _judge_time_window_flag(
+                signal_id = make_signal_id(macd_snap.bar_dt, confirmed_direction)
+                decision = _judge_time_window_flag(
                     state=state, bars_3m=bars_3m, direction=confirmed_direction,
-                    signal_id=make_signal_id(macd_snap.bar_dt, confirmed_direction),
+                    signal_id=signal_id,
+                )
+                _record_major_filtered_signal(
+                    state=state, macd_snap=macd_snap, direction=confirmed_direction,
+                    signal_type="REVERSAL", signal_id=signal_id, decision=decision,
+                    detected_at=datetime.now(KST), result=result, gate_mode="TIME_WINDOW",
                 )
             return result
 
