@@ -96,6 +96,7 @@ MATCH_POSITION = "MATCH_POSITION"
 RECOVERED_FROM_BROKER = "RECOVERED_FROM_BROKER"
 RECOVERED_TO_FLAT = "RECOVERED_TO_FLAT"
 RECOVERED_QTY_MISMATCH = "RECOVERED_QTY_MISMATCH"
+RECOVERED_QTY_INCREASE = "RECOVERED_QTY_INCREASE_UNTRACKED_FILL"
 SIGNAL_NOT_DISPATCHED = "SIGNAL_NOT_DISPATCHED"
 # Marker key inside ExecutionOutcome.timestamps for a signal the optional
 # Hybrid MAJOR_FLAG gate rejected — no broker/order_executor call ever
@@ -910,6 +911,54 @@ def _record_reconcile_discovered_position(state: RuntimeState, pos: PositionSnap
     ledger.append_signal(row)
 
 
+def _record_reconcile_discovered_buy_delta(
+    state: RuntimeState,
+    *,
+    symbol: str,
+    bought_qty: int,
+    avg_price: float,
+    position_before: int,
+    position_after: int,
+    now: datetime,
+) -> None:
+    if bought_qty <= 0:
+        return
+    signal_id = f"RECONCILE_DISCOVERED_BUY_DELTA_{symbol}_{now.strftime('%Y%m%d%H%M%S')}"
+    ledger.append_reconcile_backfill_buy(
+        symbol=symbol,
+        quantity=bought_qty,
+        avg_price=avg_price,
+        reconciled_at=now.isoformat(),
+        mode=state.mode or "mock",
+        signal_id=signal_id,
+        position_before=position_before,
+        position_after=position_after,
+    )
+    direction = _direction_for_symbol(symbol)
+    row = {
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "completed_bar_at": "",
+        "signal_id": signal_id,
+        "signal_type": "RECONCILE_DISCOVERED_BUY_DELTA",
+        "direction": direction.value if direction else "",
+        "macd": "", "signal": "", "hist_last3": "",
+        "detected_at": now.isoformat(),
+        "order_requested_at": "",
+        "order_result": RECOVERED_QTY_INCREASE,
+        "block_reason": f"qty_bought={bought_qty}_avg_price={avg_price}",
+        "signal_bar_at": "", "signal_confirmed_at": "",
+        "baseline_completed_bar_at": state.session_baseline_bar_ts or "",
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": config.SIGNAL_RULE,
+        "worker_code_sha": _git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        **_entry_gate_ledger_fields(state, None, "NONE"),
+    }
+    ledger.append_signal(row)
+
+
 def _record_reconcile_discovered_sell(
     broker, state: RuntimeState, *, symbol: str, sold_qty: int, entry_price: float,
     position_before: int, position_after: int, now: datetime, exit_reason: str,
@@ -1098,6 +1147,16 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
                     entry_price=float(runtime["avg_price"] or 0.0),
                     position_before=old_qty, position_after=new_qty,
                     now=now, exit_reason=RECOVERED_QTY_MISMATCH,
+                )
+            elif new_qty > old_qty:
+                _record_reconcile_discovered_buy_delta(
+                    state,
+                    symbol=runtime["symbol"],
+                    bought_qty=new_qty - old_qty,
+                    avg_price=float(broker_row.get("avg_price") or runtime["avg_price"] or 0.0),
+                    position_before=old_qty,
+                    position_after=new_qty,
+                    now=now,
                 )
             prior_entry_at = state.position.entry_at if state.position else now
             state.position = PositionSnapshot(
@@ -2497,6 +2556,9 @@ def _resolve_time_window_candidate(
     result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(
         state, decision, "TIME_WINDOW", down_blue_exception_applied=down_blue_exception_applied,
     )
+    if outcome is None and result.skipped == config.MISSED_SIGNAL_QUOTE_STALE:
+        state.time_window_pending_flag_direction = direction
+        state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
 
     if outcome is not None and outcome.final_state == SignalState.EXECUTED:

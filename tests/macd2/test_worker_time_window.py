@@ -12,7 +12,7 @@ import pytest
 
 from app.trading.macd2 import config, ledger, state_store, worker
 from app.trading.macd2.market_data import MarketDataService
-from app.trading.macd2.models import Direction, MajorFlagDecision, RuntimeState
+from app.trading.macd2.models import Direction, MacdSnapshot, MajorFlagDecision, QuoteSnapshot, RuntimeState
 from app.trading.macd2.signal_engine import forming_bar_window
 from app.trading.macd2.worker import run_once
 from tests.macd2.fake_broker import FakeBroker
@@ -1002,6 +1002,68 @@ def test_tw2_take_profit_fires_on_the_live_tick_at_its_own_6pct_threshold(monkey
     )
     assert state.position is None
     assert config.INVERSE_SYMBOL not in broker._positions
+
+
+def test_tw2_quote_stale_keeps_t3_candidate_for_next_tick_retry(monkeypatch):
+    flag_bar_dt = datetime(2026, 8, 31, 9, 57, tzinfo=KST)
+    confirm_bar_dt = flag_bar_dt + timedelta(minutes=3)
+    now = confirm_bar_dt + timedelta(minutes=3)
+    state = _fresh_state()
+    state.time_window_teg_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.time_window_pending_flag_direction = Direction.UP_RED
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    snap = MacdSnapshot(
+        bar_dt=confirm_bar_dt,
+        macd=1.0,
+        signal=0.0,
+        hist=1.0,
+        hist_last3=(-1.0, 0.2, 1.0),
+        completed_3m_count=100,
+        previous_diff=-1.0,
+        current_diff=1.0,
+        relation="ABOVE",
+    )
+    decision = MajorFlagDecision(
+        approved=True, score=5.0, required_score=4.0, decision="APPROVED",
+        reasons=(), component_scores={}, metrics={"window": "W1"},
+        is_reversal=False, fast_reversal=False, block_reason=None,
+    )
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: decision)
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_tw2_extra_vetoes", lambda *a, **kw: (False, ""))
+    monkeypatch.setattr(config, "QUOTE_STALE_RETRY_MAX_ATTEMPTS", 0)
+    old = datetime.now(KST) - timedelta(seconds=999)
+    svc = MarketDataService(
+        mode="mock",
+        fetch_minute_candles=lambda *a: (pd.DataFrame({"datetime": []}), {}),
+        fetch_quote=lambda mode, symbol: (None, "STALE") if symbol == config.LONG_SYMBOL else (100.0, None),
+    )
+    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 11_410.0, old, 999.0, "test")
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 11_410.0})
+    result = worker.TickResult()
+
+    first = worker._resolve_time_window_candidate(
+        broker=broker, market_data=svc, state=state, now=now, macd_snap=snap,
+        bars_3m=pd.DataFrame(), df_1m=pd.DataFrame(), position=None, result=result,
+    )
+
+    assert first is None
+    assert result.skipped == config.MISSED_SIGNAL_QUOTE_STALE
+    assert state.time_window_pending_flag_direction == Direction.UP_RED
+    assert state.time_window_pending_flag_bar_ts == flag_bar_dt.isoformat()
+    assert broker.orders == []
+
+    svc._quotes[config.LONG_SYMBOL] = QuoteSnapshot(config.LONG_SYMBOL, 11_410.0, datetime.now(KST), 0.0, "test")
+    result2 = worker.TickResult()
+    second = worker._resolve_time_window_candidate(
+        broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=5), macd_snap=snap,
+        bars_3m=pd.DataFrame(), df_1m=pd.DataFrame(), position=None, result=result2,
+    )
+
+    assert second is not None
+    assert second.final_state == worker.SignalState.EXECUTED
+    assert broker.orders[-1].side == "BUY"
+    assert broker.orders[-1].symbol == config.LONG_SYMBOL
 
 
 def test_tw2_take_profit_does_not_fire_below_its_6pct_threshold_where_tw1_would_have(monkeypatch):

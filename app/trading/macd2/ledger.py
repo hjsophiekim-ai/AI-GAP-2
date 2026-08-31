@@ -22,6 +22,7 @@ from app.trading.macd2.models import Direction
 from app.utils.data_paths import LOGS_DIR
 
 _VALID_DIRECTION_VALUES = {d.value for d in Direction}
+_RECONCILE_SELL_DUP_WINDOW_SEC = 120.0
 
 SIGNAL_LEDGER_COLUMNS = [
     "trading_date", "completed_bar_at", "signal_id", "signal_type", "direction",
@@ -425,8 +426,50 @@ def release_signal_dispatch_claim(signal_id: str, side: str) -> None:
         pass
 
 
+def _has_existing_sell_leg_for_backfill_gap(
+    *,
+    trading_date: str,
+    symbol: str,
+    quantity: int,
+    position_before: int,
+    position_after: int,
+    reconciled_at: str,
+) -> bool:
+    expected_date = "".join(ch for ch in str(trading_date or "") if ch.isdigit())[:8]
+    expected_qty = int(quantity)
+    reconcile_dt = _parse_execution_datetime(reconciled_at)
+    for row in _load_rows(EXECUTION_LEDGER_PATH, limit=0):
+        if str(row.get("side") or "").upper() != "SELL":
+            continue
+        if str(row.get("symbol") or "") != str(symbol):
+            continue
+        if execution_row_trading_date(row) != expected_date:
+            continue
+        if _int(row.get("executed_qty"), 0) != expected_qty:
+            continue
+        if not _execution_times_near(row, reconcile_dt):
+            continue
+        before_raw = str(row.get("position_before") or "").strip()
+        after_raw = str(row.get("position_after") or "").strip()
+        if before_raw or after_raw:
+            if _int(before_raw, -1) == int(position_before) and _int(after_raw, -1) == int(position_after):
+                return True
+            continue
+        else:
+            return True
+    return False
+
+
 def append_reconcile_backfill_buy(
-    *, symbol: str, quantity: int, avg_price: float, reconciled_at: str, mode: str, signal_id: str = "",
+    *,
+    symbol: str,
+    quantity: int,
+    avg_price: float,
+    reconciled_at: str,
+    mode: str,
+    signal_id: str = "",
+    position_before: int = 0,
+    position_after: Optional[int] = None,
 ) -> bool:
     """Backfills a MINIMAL BUY leg for a position discovered via
     reconcile_position_state's RECOVERED_FROM_BROKER (2026-08-25 real
@@ -455,15 +498,24 @@ def append_reconcile_backfill_buy(
     underlying broker position again (same-tick retry, a later duplicate
     reconcile, or even a fresh process after a restart) always resolves to
     the SAME order_id, and append_execution's own order_id dedup guarantees
-    this never writes a second row for it.
+    this never writes a second row for it. When reconcile is backfilling only
+    a later delta after an already-recorded partial fill, the before/after
+    transition becomes part of that stable identity.
     """
-    order_id = f"RECONCILE_BACKFILL_{symbol}_{int(quantity)}_{round(float(avg_price), 4)}"
+    after_qty = int(position_after) if position_after is not None else int(position_before) + int(quantity)
+    if int(position_before or 0) > 0 or position_after is not None:
+        order_id = (
+            f"RECONCILE_BACKFILL_BUY_{symbol}_{int(quantity)}_"
+            f"{round(float(avg_price), 4)}_{int(position_before)}_{after_qty}"
+        )
+    else:
+        order_id = f"RECONCILE_BACKFILL_{symbol}_{int(quantity)}_{round(float(avg_price), 4)}"
     return append_execution({
         "order_id": order_id, "signal_id": signal_id, "timestamp": reconciled_at,
         "mode": mode, "symbol": symbol, "side": "BUY",
         "requested_qty": quantity, "executed_qty": quantity,
         "requested_price": avg_price, "executed_price": avg_price,
-        "position_before": 0, "position_after": quantity,
+        "position_before": int(position_before), "position_after": after_qty,
         "gross_pnl": 0.0, "fee": 0.0, "slippage": 0.0, "net_pnl": 0.0,
         "exit_reason": "", "broker_response": "", "source": "RECONCILE_BACKFILL",
     })
@@ -497,15 +549,33 @@ def append_reconcile_backfill_sell(
     discovery time. Every row carries ``source="RECONCILE_BACKFILL"`` so it
     is always distinguishable from a real _record_leg row.
 
-    Idempotent the same way as append_reconcile_backfill_buy: order_id is
-    derived from symbol/quantity/exit_price only, never a timestamp.
+    Idempotent the same way as append_reconcile_backfill_buy, but the
+    identity must NOT include ``exit_price``. The exit price is only the
+    best quote observed at reconcile time; if the same already-missing SELL
+    gap is re-detected on the next tick with a moved quote, using that quote
+    in the order_id would manufacture a second backfill row for one real
+    disappearance. Also, if a real non-backfill SELL leg for the same
+    date/symbol/quantity already exists, reconcile must not add an estimated
+    duplicate. The stable gap identity is the trading date plus the
+    before/after position transition.
     """
     from app.trading.trading_cost_engine import TradeCostEngine
+
+    date_key = "".join(ch for ch in str(reconciled_at or "") if ch.isdigit())[:8]
+    if _has_existing_sell_leg_for_backfill_gap(
+        trading_date=date_key, symbol=symbol, quantity=quantity,
+        position_before=position_before, position_after=position_after,
+        reconciled_at=reconciled_at,
+    ):
+        return False
 
     cost = TradeCostEngine().compute_net_pnl(
         symbol, entry_price, exit_price, quantity, buy_order_type="market", sell_order_type="market",
     )
-    order_id = f"RECONCILE_BACKFILL_SELL_{symbol}_{int(quantity)}_{round(float(exit_price), 4)}"
+    order_id = (
+        f"RECONCILE_BACKFILL_SELL_{date_key}_{symbol}_{int(quantity)}_"
+        f"{round(float(entry_price), 4)}_{int(position_before)}_{int(position_after)}_{exit_reason}"
+    )
     return append_execution({
         "order_id": order_id, "signal_id": signal_id, "timestamp": reconciled_at,
         "mode": mode, "symbol": symbol, "side": "SELL",
@@ -754,11 +824,95 @@ def execution_row_trading_date(row: dict[str, Any]) -> str:
     return parsed.astimezone(config.KST).strftime("%Y%m%d")
 
 
+def _parse_execution_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if len(text) == 14 and text.isdigit():
+            parsed = datetime.strptime(text, "%Y%m%d%H%M%S")
+        elif len(text) == 8 and text.isdigit():
+            parsed = datetime.strptime(text, "%Y%m%d")
+        else:
+            parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        parsed = parsed.replace(tzinfo=config.KST)
+    return parsed.astimezone(config.KST)
+
+
+def _execution_times_near(row: dict[str, Any], other: Optional[datetime]) -> bool:
+    if other is None:
+        return False
+    row_dt = _parse_execution_datetime(row.get("timestamp"))
+    if row_dt is None:
+        return False
+    return abs((row_dt - other).total_seconds()) <= _RECONCILE_SELL_DUP_WINDOW_SEC
+
+
+def _sell_gap_key(row: dict[str, Any]) -> Optional[tuple[str, str, int, int, int]]:
+    if str(row.get("side") or "").upper() != "SELL":
+        return None
+    symbol = str(row.get("symbol") or "")
+    if not symbol:
+        return None
+    qty = _int(row.get("executed_qty") or row.get("requested_qty"), 0)
+    if qty <= 0:
+        return None
+    before_raw = str(row.get("position_before") or "").strip()
+    after_raw = str(row.get("position_after") or "").strip()
+    if not before_raw and not after_raw:
+        return (execution_row_trading_date(row), symbol, qty, -1, -1)
+    return (execution_row_trading_date(row), symbol, qty, _int(before_raw, -1), _int(after_raw, -1))
+
+
+def _same_sell_gap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_key = _sell_gap_key(left)
+    right_key = _sell_gap_key(right)
+    if left_key is None or right_key is None:
+        return False
+    if left_key[:3] != right_key[:3]:
+        return False
+    left_transition = left_key[3:]
+    right_transition = right_key[3:]
+    if left_transition != (-1, -1) and right_transition != (-1, -1) and left_transition != right_transition:
+        return False
+    return _execution_times_near(left, _parse_execution_datetime(right.get("timestamp")))
+
+
+def _filter_countable_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return rows safe for UI/stats counting without mutating the ledger.
+
+    RECONCILE_BACKFILL SELL rows are estimates. If the real non-backfill SELL
+    for the same disappearance is already present, or if the same backfill gap
+    was written repeatedly by older code, only the countable execution remains.
+    """
+    real_sell_rows = [
+        row for row in rows
+        if str(row.get("source") or "") != "RECONCILE_BACKFILL" and _sell_gap_key(row) is not None
+    ]
+    seen_backfill_rows: list[dict[str, Any]] = []
+    countable: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("source") or "") == "RECONCILE_BACKFILL" and str(row.get("side") or "").upper() == "SELL":
+            if any(_same_sell_gap(row, real) for real in real_sell_rows):
+                continue
+            if any(_same_sell_gap(row, seen) for seen in seen_backfill_rows):
+                continue
+            seen_backfill_rows.append(row)
+        countable.append(row)
+    return countable
+
+
 def filter_execution_rows_by_trading_date(rows: list[dict[str, Any]], trading_date: str) -> list[dict[str, Any]]:
     expected = "".join(ch for ch in str(trading_date or "") if ch.isdigit())[:8]
     if len(expected) != 8:
         return []
-    return [r for r in rows if execution_row_trading_date(r) == expected]
+    return _filter_countable_execution_rows([r for r in rows if execution_row_trading_date(r) == expected])
 
 
 def append_broker_direct_fill(fill: dict[str, Any], *, mode: str) -> bool:

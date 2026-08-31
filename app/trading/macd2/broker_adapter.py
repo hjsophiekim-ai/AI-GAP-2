@@ -165,6 +165,19 @@ class _BrokerAdapterBase:
                 return pos
         return None
 
+    def get_today_fills(self, symbol: str = "") -> dict[str, Any]:
+        getter = getattr(self._broker, "get_today_fills", None) or getattr(
+            getattr(self._broker, "kis", None), "get_today_fills", None
+        )
+        if getter is None:
+            return {"ok": False, "fills": [], "error": "get_today_fills unavailable"}
+        try:
+            return dict(getter(symbol=symbol) or {})
+        except TypeError:
+            return dict(getter(symbol) or {})
+        except Exception as exc:
+            return {"ok": False, "fills": [], "error": str(exc)}
+
     def _call_broker_without_direct_ledger(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         old_value = getattr(self._broker, "_suppress_direct_execution_ledger", False)
         setattr(self._broker, "_suppress_direct_execution_ledger", True)

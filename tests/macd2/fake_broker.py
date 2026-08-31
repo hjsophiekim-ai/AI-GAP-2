@@ -46,6 +46,7 @@ class FakeBroker:
         # order" (the default, existing behavior).
         self.fill_on_next_cancel_qty: Optional[int] = None
         self.fill_on_next_cancel_price: Optional[float] = None
+        self.today_fills: list[dict] = []
 
     def set_quote(self, symbol: str, price: float) -> None:
         self._quotes[symbol] = price
@@ -108,6 +109,16 @@ class FakeBroker:
 
     def get_position(self, symbol: str) -> Optional[Position]:
         return self._positions.get(symbol)
+
+    def get_today_fills(self, symbol: str = "") -> dict:
+        return {
+            "ok": True,
+            "fills": [
+                fill for fill in self.today_fills
+                if not symbol or str(fill.get("symbol") or "") == str(symbol)
+            ],
+            "error": None,
+        }
 
     def _next_order_id(self) -> str:
         self._order_seq += 1

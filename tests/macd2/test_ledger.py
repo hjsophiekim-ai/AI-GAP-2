@@ -563,6 +563,262 @@ def test_reconcile_backfill_sell_computes_real_pnl_and_is_idempotent():
     assert len(ledger.load_execution_ledger()) == 1
 
 
+def test_reconcile_backfill_sell_dedup_does_not_depend_on_moved_quote():
+    first = ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=557, exit_price=6950.0, entry_price=6940.0,
+        position_before=557, position_after=0, reconciled_at="2026-08-31T10:00:00+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    )
+    assert first is True
+
+    # The missing SELL is the same reconcile gap. A later quote is only a
+    # discovery-time estimate, not a distinct execution identity.
+    again = ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=557, exit_price=6975.0, entry_price=6940.0,
+        position_before=557, position_after=0, reconciled_at="2026-08-31T10:00:05+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    )
+    assert again is False
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["executed_price"] == "6950.0"
+
+
+def test_reconcile_backfill_sell_skips_when_real_sell_leg_already_exists():
+    real_sell = _execution_row(
+        "000831091831", side="SELL", net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    real_sell.update({
+        "timestamp": "2026-08-31T09:18:31+09:00",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": 1019,
+        "position_after": 0,
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "source": "",
+    })
+    assert ledger.append_execution(real_sell) is True
+
+    backfill = ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=1019, exit_price=7775.0, entry_price=7900.0,
+        position_before=1019, position_after=0, reconciled_at="2026-08-31T09:18:35+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    )
+
+    assert backfill is False
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["order_id"] == "000831091831"
+    assert rows[0]["net_pnl"] == "-136407.99"
+
+
+def test_reconcile_backfill_sell_allows_same_qty_later_independent_gap():
+    real_sell = _execution_row(
+        "000831091831", side="SELL", net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    real_sell.update({
+        "timestamp": "2026-08-31T09:18:31+09:00",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": 1019,
+        "position_after": 0,
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "source": "",
+    })
+    assert ledger.append_execution(real_sell) is True
+
+    later_backfill = ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=1019, exit_price=7800.0, entry_price=7900.0,
+        position_before=1019, position_after=0, reconciled_at="2026-08-31T09:25:00+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    )
+
+    assert later_backfill is True
+    assert len(ledger.load_execution_ledger()) == 2
+
+
+def test_reconcile_backfill_sell_skips_when_same_backfill_event_already_exists_with_old_order_id():
+    old_backfill = _execution_row(
+        "OLD_RECONCILE_BACKFILL_SELL_0197X0_1019_7775", side="SELL",
+        net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    old_backfill.update({
+        "timestamp": "2026-08-31T09:18:35+09:00",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": 1019,
+        "position_after": 0,
+        "exit_reason": "RECOVERED_TO_FLAT",
+        "source": "RECONCILE_BACKFILL",
+    })
+    assert ledger.append_execution(old_backfill) is True
+
+    assert ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=1019, exit_price=7780.0, entry_price=7900.0,
+        position_before=1019, position_after=0, reconciled_at="2026-08-31T09:18:38+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    ) is False
+    assert len(ledger.load_execution_ledger()) == 1
+
+
+def test_reconcile_backfill_sell_skips_when_broker_sell_order_without_position_fields_exists():
+    broker_sell = _execution_row(
+        "000831091831", side="SELL", net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    broker_sell.update({
+        "timestamp": "2026-08-31T09:18:31+09:00",
+        "signal_id": "BROKER_DIRECT",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": "",
+        "position_after": "",
+        "exit_reason": "BROKER_DIRECT",
+        "source": "",
+    })
+    assert ledger.append_execution(broker_sell) is True
+
+    assert ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=1019, exit_price=7775.0, entry_price=7900.0,
+        position_before=1019, position_after=0, reconciled_at="2026-08-31T09:18:35+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    ) is False
+
+
+def test_daily_summary_ignores_existing_duplicate_reconcile_sell_backfills_when_real_sell_exists():
+    real_sell = _execution_row(
+        "000831091831", side="SELL", net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    real_sell.update({
+        "timestamp": "2026-08-31T09:18:31+09:00",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": 1019,
+        "position_after": 0,
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "source": "",
+    })
+    assert ledger.append_execution(real_sell) is True
+
+    for second in (35, 38, 43, 47):
+        # Simulate bad rows already written by the previous reconcile bug.
+        row = _execution_row(
+            f"RECONCILE_BACKFILL_SELL_20260831_0197X0_1019_{second}",
+            side="SELL", net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+        )
+        row.update({
+            "timestamp": f"2026-08-31T09:18:{second:02d}+09:00",
+            "symbol": config.INVERSE_SYMBOL,
+            "requested_qty": 1019,
+            "executed_qty": 1019,
+            "requested_price": 7775.0,
+            "executed_price": 7775.0,
+            "position_before": 1019,
+            "position_after": 0,
+            "exit_reason": "RECOVERED_TO_FLAT",
+            "source": "RECONCILE_BACKFILL",
+        })
+        assert ledger.append_execution(row) is True
+
+    raw_rows = ledger.load_execution_ledger()
+    assert len(raw_rows) == 5
+
+    countable_rows = ledger.filter_execution_rows_by_trading_date(raw_rows, "20260831")
+    assert len(countable_rows) == 1
+    assert countable_rows[0]["order_id"] == "000831091831"
+
+    summary = ledger.summarize_daily_trading("20260831", budget=10_000_000)
+    assert summary["sell_count"] == 1
+    assert summary["round_trip_count"] == 1
+    assert summary["net_pnl"] == pytest.approx(-136407.99)
+
+
+def test_daily_summary_counts_same_qty_later_independent_reconcile_sell():
+    real_sell = _execution_row(
+        "000831091831", side="SELL", net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    real_sell.update({
+        "timestamp": "2026-08-31T09:18:31+09:00",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": 1019,
+        "position_after": 0,
+        "exit_reason": "TIME_WINDOW_STOP_LOSS",
+        "source": "",
+    })
+    assert ledger.append_execution(real_sell) is True
+
+    assert ledger.append_reconcile_backfill_sell(
+        symbol=config.INVERSE_SYMBOL, quantity=1019, exit_price=7800.0, entry_price=7900.0,
+        position_before=1019, position_after=0, reconciled_at="2026-08-31T09:25:00+09:00",
+        mode="mock", exit_reason="RECOVERED_TO_FLAT",
+    ) is True
+
+    summary = ledger.summarize_daily_trading("20260831", budget=10_000_000)
+    assert summary["sell_count"] == 2
+    assert summary["round_trip_count"] == 2
+
+
+def test_daily_summary_ignores_reconcile_backfill_when_broker_sell_order_exists_without_position_fields():
+    broker_sell = _execution_row(
+        "000831091831", side="SELL", net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    broker_sell.update({
+        "timestamp": "2026-08-31T09:18:31+09:00",
+        "signal_id": "BROKER_DIRECT",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": "",
+        "position_after": "",
+        "exit_reason": "BROKER_DIRECT",
+        "source": "",
+    })
+    assert ledger.append_execution(broker_sell) is True
+
+    duplicate_backfill = _execution_row(
+        "RECONCILE_BACKFILL_SELL_20260831_0197X0_1019", side="SELL",
+        net_pnl=-136407.99, gross_pnl=-130000.0, fee=6407.99,
+    )
+    duplicate_backfill.update({
+        "timestamp": "2026-08-31T09:18:35+09:00",
+        "symbol": config.INVERSE_SYMBOL,
+        "requested_qty": 1019,
+        "executed_qty": 1019,
+        "requested_price": 7775.0,
+        "executed_price": 7775.0,
+        "position_before": 1019,
+        "position_after": 0,
+        "exit_reason": "RECOVERED_TO_FLAT",
+        "source": "RECONCILE_BACKFILL",
+    })
+    assert ledger.append_execution(duplicate_backfill) is True
+
+    summary = ledger.summarize_daily_trading("20260831", budget=10_000_000)
+    assert summary["sell_count"] == 1
+    assert summary["round_trip_count"] == 1
+    assert summary["net_pnl"] == pytest.approx(-136407.99)
+
+
 def test_partial_exit_then_final_exit_round_trip_sums_correctly():
     """docs 시나리오: TP1 50% 부분익절 후, 남은 수량이 반대신호로 전량 청산되면
     하나의 왕복거래(단일 BUY qty에 대한 두 건의 SELL)로 gross/net PnL이 올바르게

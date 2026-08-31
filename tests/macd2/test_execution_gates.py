@@ -483,7 +483,37 @@ def test_production_path_down_crossover_buys_inverse_once():
     assert state.latest_primary_signal_id == "20260724_135700_DOWN_BLUE"
 
 
-def test_production_path_uses_latest_confirmed_color_when_cache_jumps_ahead():
+def test_order_authoritative_flag_source_ignores_kis_color_onset(monkeypatch):
+    """Live order FLAG source is fixed to zero-cross onset. KIS color/onset
+    helpers may exist for parity diagnostics/UI reference, but must not be
+    consulted by _advance_confirmed_primary or order routing."""
+    bar_dt = datetime(2026, 7, 24, 10, 0, tzinfo=KST)
+    state = _primed_state(baseline_bar_dt=bar_dt - timedelta(minutes=3))
+    snap = MacdSnapshot(
+        bar_dt=bar_dt,
+        macd=-1.0,
+        signal=0.0,
+        hist=-1.0,
+        hist_last3=(3.0, 2.0, -1.0),
+        completed_3m_count=30,
+        previous_diff=2.0,
+        current_diff=-1.0,
+    )
+
+    def _color_onset_must_not_be_called(*args, **kwargs):
+        raise AssertionError("KIS color/onset must remain reference-only for live orders")
+
+    monkeypatch.setattr("app.trading.macd2.signal_engine.evaluate_confirmed_macd_flag", _color_onset_must_not_be_called)
+    monkeypatch.setattr("app.trading.macd2.signal_engine.confirmed_macd_flag_condition", _color_onset_must_not_be_called)
+
+    direction = worker._advance_confirmed_primary(state, snap, bar_dt + timedelta(minutes=3))
+
+    assert direction == Direction.DOWN_BLUE
+    assert state.latest_primary_flag == Direction.DOWN_BLUE
+    assert state.latest_primary_signal_id == "20260724_100000_DOWN_BLUE"
+
+
+def test_production_path_uses_latest_completed_zero_cross_when_cache_jumps_ahead():
     """_advance_confirmed_primary (6a2fd07 known-good rule) evaluates ONLY the
     single latest completed bar each tick — it never re-scans intermediate
     bars the cache jumped past. Baseline is primed to an early, already-flat
@@ -819,6 +849,28 @@ def test_runtime_holding_broker_flat_recovers_to_flat():
 
     assert result == worker.RECOVERED_TO_FLAT
     assert state.position is None
+
+
+def test_reconcile_same_symbol_qty_increase_backfills_missing_buy_delta_once():
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 11_420.0})
+    broker.buy_limit(config.LONG_SYMBOL, 1019, 11_420.0, "seed")
+    state = _state()
+    state.position = PositionSnapshot(config.LONG_SYMBOL, 900, 11_420.0)
+    now = datetime(2026, 8, 31, 9, 18, 35, tzinfo=KST)
+
+    result = worker.reconcile_position_state(broker, state, now, force=True)
+    result2 = worker.reconcile_position_state(broker, state, now + timedelta(seconds=5), force=True)
+
+    assert result == worker.RECOVERED_QTY_MISMATCH
+    assert result2 == worker.MATCH_POSITION
+    assert state.position is not None
+    assert state.position.quantity == 1019
+    rows = ledger.load_execution_ledger()
+    backfills = [r for r in rows if r["side"] == "BUY" and r.get("source") == "RECONCILE_BACKFILL"]
+    assert len(backfills) == 1
+    assert int(backfills[0]["executed_qty"]) == 119
+    assert int(backfills[0]["position_before"]) == 900
+    assert int(backfills[0]["position_after"]) == 1019
 
 
 # ── 2026-08-25 real incident: reconcile-discovered positions never had a BUY

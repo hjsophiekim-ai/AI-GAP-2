@@ -43,6 +43,7 @@ FILL_TIMEOUT = "FILL_TIMEOUT_CANCELLED"
 FILL_TIMEOUT_CANCELLED = FILL_TIMEOUT
 CANCEL_FAILED = "CANCEL_FAILED"
 BALANCE_MISMATCH = "BALANCE_MISMATCH"
+BUY_CANCEL_NOT_CONFIRMED = "BUY_CANCEL_NOT_CONFIRMED"
 BUY_FILL_POLL_MAX_SEC = 10.0
 BUY_FILL_POLL_INTERVAL_SEC = 1.0
 # 2026-08-11 fix (real incident: a BUY filled ~10s after the fill-poll
@@ -333,6 +334,32 @@ def _reconcile_buy_fill(broker, symbol: str, *, retries: int, delay_sec: float) 
         if attempt < retries - 1:
             time.sleep(delay_sec)
     return 0, 0.0, "TIMEOUT", last_qty
+
+
+def _reconcile_buy_fill_from_today_fills(broker, symbol: str, order_id: str) -> tuple[int, float, str]:
+    fills_getter = getattr(broker, "get_today_fills", None)
+    if fills_getter is None or not order_id:
+        return 0, 0.0, "TODAY_FILLS_UNAVAILABLE"
+    try:
+        raw = fills_getter(symbol)
+    except TypeError:
+        raw = fills_getter()
+    except Exception as exc:
+        return 0, 0.0, f"TODAY_FILLS_ERROR:{exc}"
+    if not isinstance(raw, dict) or not raw.get("ok"):
+        return 0, 0.0, f"TODAY_FILLS_ERROR:{raw.get('error') if isinstance(raw, dict) else 'invalid_response'}"
+    matching = [
+        fill for fill in (raw.get("fills") or [])
+        if str(fill.get("order_id") or "") == str(order_id)
+        and str(fill.get("symbol") or "") == str(symbol)
+        and str(fill.get("side") or "").upper() == "BUY"
+    ]
+    qty = sum(int(fill.get("quantity") or 0) for fill in matching)
+    if qty <= 0:
+        return 0, 0.0, "TODAY_FILLS_NO_MATCH"
+    amount = sum(float(fill.get("price") or 0.0) * int(fill.get("quantity") or 0) for fill in matching)
+    avg_price = amount / qty if qty > 0 else 0.0
+    return qty, avg_price, "FILLED_FROM_TODAY_FILLS"
 
 
 def execute_signal(
@@ -630,12 +657,21 @@ def execute_signal(
             outcome.balance_qty = recheck_balance
             outcome.unfilled_qty = max(requested_qty - filled_qty, 0)
         if filled_qty <= 0:
-            outcome.final_state = SignalState.FAILED
-            outcome.block_reason = FAIL_BUY_NOT_CONFIRMED
-            outcome.order_failure_stage = (
-                CANCEL_FAILED if outcome.cancel_result == CANCEL_FAILED else FILL_TIMEOUT_CANCELLED
+            fill_qty_from_orders, fill_avg_from_orders, fill_status_from_orders = _reconcile_buy_fill_from_today_fills(
+                broker, target_symbol, buy_result.order_id,
             )
-            if release_claim is not None:
+            if fill_qty_from_orders > 0:
+                filled_qty, filled_avg_price = fill_qty_from_orders, fill_avg_from_orders
+                outcome.filled_qty = filled_qty
+                outcome.fill_poll_result = fill_status_from_orders
+                outcome.balance_qty = filled_qty
+                outcome.unfilled_qty = max(requested_qty - filled_qty, 0)
+        if filled_qty <= 0:
+            cancel_confirmed = outcome.cancel_result == "OK"
+            outcome.final_state = SignalState.FAILED if cancel_confirmed else SignalState.BLOCKED
+            outcome.block_reason = FAIL_BUY_NOT_CONFIRMED if cancel_confirmed else BUY_CANCEL_NOT_CONFIRMED
+            outcome.order_failure_stage = FILL_TIMEOUT_CANCELLED if cancel_confirmed else BUY_CANCEL_NOT_CONFIRMED
+            if cancel_confirmed and release_claim is not None:
                 release_claim(signal_id, "BUY")
             return outcome
         # Fell through: the order filled (fully or partially) despite the

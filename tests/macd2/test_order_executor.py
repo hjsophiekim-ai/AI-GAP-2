@@ -524,6 +524,54 @@ def test_buy_still_genuinely_unfilled_after_cancel_recheck_stays_failed():
     assert ledger.load_execution_ledger() == []
 
 
+def test_buy_zero_fill_with_cancel_failure_is_not_closed_as_failed():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 0
+    broker.fail_next_cancel = True
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-cancel-uncertain",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.BLOCKED
+    assert outcome.block_reason == order_executor.BUY_CANCEL_NOT_CONFIRMED
+    assert outcome.order_failure_stage == order_executor.BUY_CANCEL_NOT_CONFIRMED
+    assert outcome.cancel_called is True
+    assert ledger.load_execution_ledger() == []
+
+
+def test_buy_zero_balance_poll_but_today_fills_match_order_records_fill():
+    broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
+    broker.next_buy_fill_qty = 0
+    broker.next_buy_order_id = "0193T0-LATE-FILL"
+    broker.today_fills.append({
+        "symbol": "0193T0",
+        "side": "BUY",
+        "order_id": "0193T0-LATE-FILL",
+        "quantity": 891,
+        "price": 11220.0,
+        "timestamp": "20260831095900",
+    })
+
+    outcome = order_executor.execute_signal(
+        broker=broker, direction=Direction.UP_RED, signal_id="sig-today-fill",
+        quotes={"0193T0": 15_000.0}, position=None, budget=10_000_000.0,
+        reconcile_retries=2, reconcile_delay_sec=0.0,
+    )
+
+    assert outcome.final_state == SignalState.EXECUTED
+    assert outcome.filled_qty == 891
+    assert outcome.fill_poll_result == "FILLED_FROM_TODAY_FILLS"
+    rows = ledger.load_execution_ledger()
+    assert len(rows) == 1
+    assert rows[0]["order_id"] == "0193T0-LATE-FILL"
+    assert rows[0]["side"] == "BUY"
+    assert int(rows[0]["executed_qty"]) == 891
+    assert int(rows[0]["requested_qty"]) == outcome.final_qty
+
+
 def test_buy_rejected_is_classified_order_rejected_with_kis_fields():
     broker = FakeBroker(cash=10_000_000.0, quotes={"0193T0": 15_000.0})
     broker.fail_next_buy = True
