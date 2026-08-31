@@ -217,6 +217,120 @@ def _signal_timeline_rows(rows: list[dict]) -> list[dict]:
     return timeline
 
 
+# 2026-08-31 사용자 요청: 신호 원장/체결 원장이 각각 컬럼이 너무 많고 시각도
+# 원인도 한눈에 안 들어와 — 매수/매도 각 체결(레그) 하나당 딱 한 행으로,
+# "언제/무슨 종목/몇 주/얼마/왜(레드-블루 또는 손절-익절 등)/순이익/수수료"만
+# 보여주는 표를 별도로 추가한다. 기존 신호 원장/체결 원장(원본 컬럼 포함)은
+# 진단용으로 그대로 남긴다 — 삭제하지 않는다.
+_SYMBOL_DISPLAY_LABELS = {
+    macd2_config.LONG_SYMBOL: f"레버리지({macd2_config.LONG_SYMBOL})",
+    macd2_config.INVERSE_SYMBOL: f"인버스({macd2_config.INVERSE_SYMBOL})",
+}
+
+_DIRECTION_DISPLAY_LABELS = {
+    "UP_RED": "레드",
+    "DOWN_BLUE": "블루",
+}
+
+_EXIT_REASON_DISPLAY_LABELS = {
+    macd2_config.EXIT_STOP_LOSS: "손절",
+    macd2_config.EXIT_PROFIT_LOCK: "프로핏락",
+    macd2_config.EXIT_OPPOSITE_SIGNAL: "반대신호",
+    macd2_config.EXIT_FORCED_LIQUIDATION: "강제청산(15시)",
+    macd2_config.EXIT_USER_LIQUIDATION: "수동 일괄매도",
+    macd2_config.EXIT_MANUAL_LIQUIDATION: "수동 청산",
+    macd2_config.EXIT_PROFIT_LOCK_MACD_CONVERGENCE: "프로핏락(MACD수렴)",
+    macd2_config.EXIT_QUICK_PROFIT_TAKE_PROFIT: "퀵 익절",
+    macd2_config.EXIT_TW_STOP_LOSS: "손절",
+    macd2_config.EXIT_TW_TP1_PARTIAL: "1차 익절(부분)",
+    macd2_config.EXIT_TW_TP2_FULL: "2차 익절(전량)",
+    macd2_config.EXIT_TW_AFTER_TP1_STOP: "1차익절 후 손절",
+    macd2_config.EXIT_TW_TRAILING_STOP: "트레일링 손절",
+    macd2_config.EXIT_TW_AFTERNOON_TP: "오후 익절",
+    macd2_config.EXIT_TW_BREAKEVEN_STOP: "본전 손절",
+    macd2_config.EXIT_TW_PROFIT_LOCK_STOP: "프로핏락 손절",
+    "RECOVERED_TO_FLAT": "청산 확인(정합화)",
+    "END_OF_DATA": "데이터 종료",
+}
+
+
+def _symbol_display(symbol: str) -> str:
+    return _SYMBOL_DISPLAY_LABELS.get(str(symbol or ""), str(symbol or "-"))
+
+
+def _direction_display(direction: str) -> str:
+    return _DIRECTION_DISPLAY_LABELS.get(str(direction or ""), str(direction or "-"))
+
+
+def _exit_reason_display(reason: str) -> str:
+    return _EXIT_REASON_DISPLAY_LABELS.get(str(reason or ""), str(reason or "-"))
+
+
+def _datetime_display(raw: str) -> str:
+    """날짜+시각을 한 셀에 -- YYYY-MM-DD HH:MM:SS."""
+    raw = str(raw or "")
+    if not raw:
+        return "-"
+    try:
+        return datetime.fromisoformat(raw).astimezone(macd2_config.KST).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return raw
+
+
+def _qty_display(raw) -> str:
+    try:
+        return f"{int(float(raw)):,}주"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _price_display(raw) -> str:
+    try:
+        return f"{float(raw):,.0f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _money_display(raw) -> str:
+    try:
+        return f"{float(raw):,.0f}원"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _trade_history_rows(exec_rows: list[dict], signal_rows: list[dict]) -> list[dict]:
+    """체결(execution) 원장 한 레그당 한 행 -- 매수행은 종목/수량/가격/진입사유
+    (레드/블루), 매도행은 종목/수량/가격/청산사유/순이익/수수료. signal_id로
+    신호 원장과 매칭해 진입 방향(레드/블루)을 가져온다."""
+    direction_by_signal_id = {
+        r.get("signal_id"): r.get("direction") for r in signal_rows if r.get("signal_id")
+    }
+    rows: list[dict] = []
+    for r in exec_rows:
+        side = str(r.get("side") or "")
+        symbol = _symbol_display(r.get("symbol"))
+        qty = _qty_display(r.get("executed_qty") or r.get("requested_qty"))
+        price = _price_display(r.get("executed_price") or r.get("requested_price"))
+        when = _datetime_display(r.get("timestamp"))
+        if side == "BUY":
+            direction = direction_by_signal_id.get(r.get("signal_id"))
+            rows.append({
+                "일시": when, "종목": symbol, "매수/매도": "매수",
+                "수량": qty, "가격": price,
+                "사유": _direction_display(direction),
+                "순이익": "-", "수수료": _money_display(r.get("fee")) if r.get("fee") else "-",
+            })
+        elif side == "SELL":
+            rows.append({
+                "일시": when, "종목": symbol, "매수/매도": "매도",
+                "수량": qty, "가격": price,
+                "사유": _exit_reason_display(r.get("exit_reason")),
+                "순이익": _money_display(r.get("net_pnl")),
+                "수수료": _money_display(r.get("fee")),
+            })
+    return rows
+
+
 try:
     from streamlit_autorefresh import st_autorefresh
 
@@ -670,6 +784,13 @@ sum1, sum2, sum3 = st.columns(3)
 sum1.metric("오늘 왕복거래 횟수", f"{round_trip_count}건")
 sum2.metric("총 수수료+세금+슬리피지", f"{total_cost:,.0f}원")
 sum3.metric("총 순수익", f"{total_net_pnl:,.0f}원")
+
+st.subheader("매매 내역 (한눈에 보기)")
+_trade_history = _trade_history_rows(exec_rows, signal_rows)
+if _trade_history:
+    st.dataframe(pd.DataFrame(_trade_history), use_container_width=True, hide_index=True)
+else:
+    st.caption("오늘 기록된 매수/매도가 없습니다.")
 
 st.subheader("신호 원장 (오늘, 최근 100건)")
 if signal_rows:
