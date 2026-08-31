@@ -26,6 +26,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from datetime import datetime, time as dtime
+from html import escape
 
 import pandas as pd
 import streamlit as st
@@ -90,6 +91,41 @@ def _bootstrap_status(state, bootstrap_last_result: dict | None) -> str:
         if now_t >= _MARKET_CLOSE_HINT:
             return "MARKET_CLOSED_WAIT"
     return "FAILED" if bootstrap_last_result is not None or state.order_block_reason else "PENDING"
+
+
+def _parse_flag_event_time(row: dict) -> datetime | None:
+    completed_bar_at = str(row.get("completed_bar_at") or "")
+    trading_date = str(row.get("trading_date") or "")
+    if len(completed_bar_at) == 6 and completed_bar_at.isdigit() and len(trading_date) == 8 and trading_date.isdigit():
+        try:
+            return datetime.strptime(f"{trading_date}{completed_bar_at}", "%Y%m%d%H%M%S").replace(tzinfo=macd2_config.KST)
+        except ValueError:
+            pass
+    for key in ("bar_start_at", "bar_end_at"):
+        raw = row.get(key)
+        if not raw:
+            continue
+        try:
+            return datetime.fromisoformat(str(raw)).astimezone(macd2_config.KST)
+        except ValueError:
+            pass
+    signal_id = str(row.get("signal_id") or "")
+    parts = signal_id.split("_")
+    if len(parts) >= 2 and len(parts[1]) == 6 and parts[1].isdigit():
+        if len(trading_date) == 8 and trading_date.isdigit():
+            try:
+                return datetime.strptime(f"{trading_date}{parts[1]}", "%Y%m%d%H%M%S").replace(tzinfo=macd2_config.KST)
+            except ValueError:
+                return None
+    return None
+
+
+def _latest_flag_event(rows: list[dict]) -> dict | None:
+    timed_rows = [(_parse_flag_event_time(row), row) for row in rows]
+    timed_rows = [(ts, row) for ts, row in timed_rows if ts is not None]
+    if not timed_rows:
+        return rows[-1] if rows else None
+    return max(timed_rows, key=lambda item: item[0])[1]
 
 
 try:
@@ -404,6 +440,9 @@ state = snapshot["state"]
 worker_stats = snapshot["worker"] or {}
 quotes = snapshot["quotes"] or {}
 bootstrap_last_result = snapshot.get("bootstrap_last_result")
+today_signal_overview = snapshot.get("today_signal_overview") or []
+trading_date = state.session_date or pd.Timestamp.now().strftime("%Y%m%d")
+signal_rows = [r for r in ledger.load_signal_ledger(limit=2000) if r.get("trading_date") == trading_date][-100:]
 
 st.subheader("시세 / Bootstrap 상태")
 quote_status = snapshot.get("quote_status") or _quote_status(quotes)
@@ -470,13 +509,23 @@ for col, symbol, label in (
 
 s1, s2, s3 = st.columns(3)
 _flag_bar_time = "-"
-if state.latest_primary_signal_id:
-    _parts = state.latest_primary_signal_id.split("_")
+_latest_flag_direction = state.latest_primary_flag.value if state.latest_primary_flag else "-"
+_latest_flag_signal_id = state.latest_primary_signal_id
+_latest_event_rows = list(today_signal_overview) + list(signal_rows)
+if _latest_event_rows:
+    _latest_overview_flag = _latest_flag_event(_latest_event_rows)
+    if _latest_overview_flag is not None:
+        _latest_flag_direction = _latest_overview_flag.get("direction") or _latest_flag_direction
+        _latest_flag_signal_id = _latest_overview_flag.get("signal_id") or _latest_flag_signal_id
+        _flag_dt = _parse_flag_event_time(_latest_overview_flag)
+        _flag_bar_time = _flag_dt.strftime("%H:%M:%S") if _flag_dt is not None else "-"
+if _flag_bar_time == "-" and _latest_flag_signal_id:
+    _parts = _latest_flag_signal_id.split("_")
     if len(_parts) >= 2 and len(_parts[1]) == 6:
         _flag_bar_time = f"{_parts[1][:2]}:{_parts[1][2:4]}:{_parts[1][4:]}"
 s1.metric(
     "마지막 FLAG EVENT",
-    state.latest_primary_flag.value if state.latest_primary_flag else "-",
+    _latest_flag_direction,
     delta=_flag_bar_time if _flag_bar_time != "-" else None,
 )
 # 현재 MACD STATE(state.primary_relation)는 이벤트가 새로 발생했는지와 무관하게
@@ -486,11 +535,22 @@ s1.metric(
 _state_label = {"BELOW": "BLUE 유지", "ABOVE": "RED 유지", "EQUAL": "-"}.get(state.primary_relation or "", "-")
 s2.metric("현재 MACD STATE", _state_label)
 if state.position:
-    s3.metric("보유 종목", f"{state.position.symbol} · {state.position.quantity}주 · 평단 {state.position.avg_price:,.0f}")
+    s3.markdown(
+        f"""
+        <div data-testid="metric-container" style="width:100%;">
+          <label style="font-size:14px;color:rgba(49,51,63,.6);">보유 종목</label>
+          <div style="font-size:20px;line-height:1.25;font-weight:600;white-space:normal;word-break:keep-all;">
+            {escape(str(state.position.symbol))}<br>
+            <span style="font-size:70%;">평단 {float(state.position.avg_price or 0):,.0f}</span><br>
+            <span style="font-size:70%;">{int(state.position.quantity or 0):,}주 보유</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 else:
     s3.metric("보유 종목", "flat")
 
-trading_date = state.session_date or pd.Timestamp.now().strftime("%Y%m%d")
 exec_rows_all = ledger.load_execution_ledger(limit=2000)
 exec_rows = ledger.filter_execution_rows_by_trading_date(exec_rows_all, trading_date)
 
@@ -523,7 +583,6 @@ sum2.metric("총 수수료+세금+슬리피지", f"{total_cost:,.0f}원")
 sum3.metric("총 순수익", f"{total_net_pnl:,.0f}원")
 
 st.subheader("신호 원장 (오늘, 최근 100건)")
-signal_rows = [r for r in ledger.load_signal_ledger(limit=2000) if r.get("trading_date") == trading_date][-100:]
 if signal_rows:
     # 2026-08-21 fix (사용자 피드백 — 신호 원장이 70개 넘는 원본 컬럼을 그대로
     # 보여줘서 정작 가장 중요한 "몇시몇분에 떴는지"/"주문이 됐는지"가 화면
