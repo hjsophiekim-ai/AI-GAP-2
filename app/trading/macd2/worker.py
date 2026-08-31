@@ -3511,6 +3511,31 @@ def run_once(
         # already adopted a sellable broker position into state.position, so
         # they must continue through this same tick; a TW2 T+3 reversal
         # candidate can otherwise be missed exactly on the recovery tick.
+        #
+        # 2026-08-31 real incident fix: this early return sits BEFORE
+        # _advance_confirmed_primary (the MACD crossover detector) runs, so
+        # a reconcile block used to also skip crossover DETECTION itself for
+        # this tick's completed bar -- not just order execution. A crossover
+        # is a one-shot bar-to-bar zero-cross event that can never be
+        # re-derived from a later bar once price has moved past it, so any
+        # flag landing on a reconcile-blocked tick was lost forever; worse,
+        # state.last_detected_direction was left stale, which then made
+        # evaluate_macd_crossover's own repeat-dedup silently swallow the
+        # NEXT same-direction flag too (confirmed against real 2026-08-31
+        # KIS data: a reconcile block spanning the 12:33 DOWN_BLUE crossover
+        # left last_detected_direction stuck at 11:57's UP_RED, which then
+        # suppressed the genuine 13:36 UP_RED as a false "repeat"). Detection
+        # must never depend on reconcile health -- only order execution
+        # (everything below this block) does -- so it is run here too,
+        # before returning; the normal unblocked path below still computes
+        # and re-advances it exactly as before (a no-op once this bar's
+        # bar_key has already been stamped).
+        _skip_df_1m = market_data.get_history_df()
+        _skip_bars_3m = resample_completed_3m(_skip_df_1m, now=now)
+        _skip_bars_3m, _ = filter_complete_3m_bars(_skip_bars_3m, _skip_df_1m)
+        _skip_macd_snap = calculate_macd(_skip_bars_3m)
+        if _skip_macd_snap is not None:
+            _advance_confirmed_primary(state, _skip_macd_snap, now)
         state.order_block_reason = reconcile
         result.skipped = reconcile
         result.timing["total"] = time.monotonic() - tick_started
