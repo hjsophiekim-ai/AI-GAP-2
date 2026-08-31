@@ -1216,6 +1216,46 @@ def test_tw2_rejected_reversal_still_liquidates_the_held_position(tw_market_data
     assert state.time_window_position_active is False
 
 
+def test_tw2_recovered_broker_position_still_resolves_pending_reversal_same_tick(tw_market_data, monkeypatch):
+    """A reconcile-discovered held position must not skip the very tick that
+    can resolve an already-pending TW2 opposite candidate."""
+    from app.trading.macd2.models import Direction as _Direction, MajorFlagDecision
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_teg_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.position = None
+    state.time_window_pending_flag_direction = _Direction.DOWN_BLUE
+    state.time_window_pending_flag_bar_ts = (now0 - timedelta(minutes=6)).isoformat()
+
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.LONG_SYMBOL, 10, "seed-long")
+    broker._positions[config.LONG_SYMBOL].avg_price = 15_000.0
+
+    approved = MajorFlagDecision(
+        approved=True, score=4.0, required_score=4.0, decision=config.TW_APPROVED,
+        reasons=(config.TW_APPROVED,), component_scores={},
+        metrics={"window": worker.time_window_filter.WINDOW_MORNING_2, "session": "MORNING"},
+        is_reversal=False, fast_reversal=False, block_reason=None,
+    )
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: approved)
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_tw2_extra_vetoes", lambda *a, **kw: (False, None))
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert result.skipped != worker.RECOVERED_FROM_BROKER
+    assert any(a.startswith("TIME_WINDOW_SWITCH") for a in result.actions), (
+        f"pending TW2 reversal must resolve on the recovery tick -- got actions={result.actions!r}"
+    )
+    assert state.position is not None
+    assert state.position.symbol == config.INVERSE_SYMBOL
+    assert config.LONG_SYMBOL not in broker._positions
+    assert config.INVERSE_SYMBOL in broker._positions
+
+
 def test_tw2_untracked_held_position_is_adopted_with_tw2_mode_and_gets_its_own_take_profit(monkeypatch):
     """An untracked held position adopted while TW2 (not TW1) is the active
     toggle must be tagged time_window_active_mode == 'TW2' and immediately

@@ -3497,10 +3497,7 @@ def run_once(
     t0 = time.monotonic()
     reconcile = reconcile_position_state(broker, state, now)
     result.timing["position_reconcile"] = time.monotonic() - t0
-    if reconcile in (
-        POSITION_DATA_ERROR, POSITION_MISMATCH, RECOVERED_FROM_BROKER, RECOVERED_TO_FLAT,
-        RECOVERED_QTY_MISMATCH,
-    ):
+    if reconcile in (POSITION_DATA_ERROR, POSITION_MISMATCH, RECOVERED_TO_FLAT):
         # 2026-08-07 real incident: a same-symbol qty mismatch (e.g. a
         # partial-fill entry whose broker-side qty later settled to a
         # different number than what was recorded at fill time) used to
@@ -3509,12 +3506,11 @@ def run_once(
         # skipping STOP_LOSS/OPPOSITE_SIGNAL/PROFIT_LOCK for the held
         # position indefinitely (no forced liquidation, no dispatch, nothing
         # -- the position just sat unmonitored until a human manually sold
-        # it). RECOVERED_QTY_MISMATCH (see reconcile_position_state) already
-        # adopted the broker's true qty into state.position this call, so
-        # skipping only THIS tick (same as RECOVERED_FROM_BROKER/
-        # RECOVERED_TO_FLAT already do) is safe -- the very next tick sees
-        # MATCH_POSITION and resumes full evaluation with the corrected,
-        # sellable quantity.
+        # it). RECOVERED_TO_FLAT has no position left to evaluate. In
+        # contrast, RECOVERED_FROM_BROKER / RECOVERED_QTY_MISMATCH have
+        # already adopted a sellable broker position into state.position, so
+        # they must continue through this same tick; a TW2 T+3 reversal
+        # candidate can otherwise be missed exactly on the recovery tick.
         state.order_block_reason = reconcile
         result.skipped = reconcile
         result.timing["total"] = time.monotonic() - tick_started
