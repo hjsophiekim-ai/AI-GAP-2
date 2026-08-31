@@ -298,35 +298,201 @@ def _money_display(raw) -> str:
         return "-"
 
 
+_RECONCILE_CONTINUATION_EXIT_REASONS = {"BROKER_DIRECT", "RECOVERED_TO_FLAT", "RECOVERED_QTY_MISMATCH"}
+
+
+def _is_reconcile_continuation_row(row: dict) -> bool:
+    """True for a raw execution-ledger row that is NOT its own economic
+    decision -- a reconcile-backfilled leg (source == RECONCILE_BACKFILL, see
+    ledger.append_reconcile_backfill_buy) or a BROKER_DIRECT stub confirmation
+    (signal_id/exit_reason == "BROKER_DIRECT"). These always merge into
+    whichever real order/TP-stage group they are adjacent to -- see
+    _aggregate_trade_legs. The RAW ledger itself is never touched; this only
+    affects how the display groups rows together."""
+    if str(row.get("source") or "") == "RECONCILE_BACKFILL":
+        return True
+    if str(row.get("signal_id") or "") == "BROKER_DIRECT":
+        return True
+    if str(row.get("exit_reason") or "") in _RECONCILE_CONTINUATION_EXIT_REASONS:
+        return True
+    return False
+
+
+def _economic_bucket(row: dict) -> str:
+    """Grouping key for "the same real decision": every BUY leg of one entry
+    shares a single bucket; a SELL leg's bucket is its OWN exit_reason, so
+    TP1_PARTIAL vs a later full exit (different exit_reason values) never
+    collapse into the same group even if they land inside the merge window."""
+    if str(row.get("side") or "") == "BUY":
+        return "BUY"
+    return str(row.get("exit_reason") or "") or "SELL"
+
+
+def _parse_exec_timestamp(raw) -> Optional[datetime]:
+    raw = str(raw or "")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=macd2_config.KST)
+
+
+def _dedupe_exec_rows(exec_rows: list[dict]) -> list[dict]:
+    """Drops an exec row that is a byte-for-byte re-confirmation of a fill
+    already kept (same order_id/signal_id/symbol/side/qty/price/timestamp) --
+    a real retry-recheck of an order in flight can log the same fill more
+    than once (see worker.ORDER_FILL_RECONCILE_RETRIES). Never drops two rows
+    that merely SHARE an order_id but differ in qty/price/time (a genuine
+    incremental partial-fill update under the same order) -- only an exact
+    duplicate. Display-only: the raw ledger itself is untouched."""
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for row in exec_rows:
+        key = (
+            row.get("order_id"), row.get("signal_id"), row.get("symbol"), row.get("side"),
+            row.get("executed_qty"), row.get("executed_price"), row.get("timestamp"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _aggregate_trade_legs(exec_rows: list[dict], *, gap_minutes: float = 2.0) -> list[dict]:
+    """READ-ONLY display aggregation over the raw execution ledger -- never
+    mutates/drops/merges anything in the ledger file itself (audit/recovery
+    trail stays byte-for-byte intact); only groups rows for the UI summary
+    table. Merges consecutive rows for the SAME symbol + SAME side into one
+    group when either (a) the newer row is a reconcile/BROKER_DIRECT
+    continuation row (_is_reconcile_continuation_row), which always glues
+    onto whatever group it lands next to, or (b) the group's own economic
+    bucket is still a placeholder (started from a continuation row with no
+    real decision label yet) and this is the first real row to arrive, or
+    (c) both rows share the exact same real economic bucket (_economic_
+    bucket) -- AND no more than `gap_minutes` has passed since the group's
+    last row. A genuinely separate decision (different exit_reason, e.g.
+    TP1_PARTIAL followed by the final exit) always starts a fresh group even
+    when it happens within the same `gap_minutes` window; a genuinely new,
+    unrelated entry/exit almost always falls well outside the window anyway
+    (flags are 3-minute-bar-confirmed at the closest).
+    """
+    def _sort_key(row: dict):
+        ts = _parse_exec_timestamp(row.get("timestamp"))
+        return ts or datetime.min.replace(tzinfo=macd2_config.KST)
+
+    ordered = sorted(_dedupe_exec_rows(exec_rows), key=_sort_key)
+    groups: list[dict] = []
+    current: Optional[dict] = None
+    for row in ordered:
+        ts = _parse_exec_timestamp(row.get("timestamp"))
+        symbol = str(row.get("symbol") or "")
+        side = str(row.get("side") or "")
+        bucket = _economic_bucket(row)
+        continuation = _is_reconcile_continuation_row(row)
+
+        same_group = False
+        if current is not None and current["symbol"] == symbol and current["side"] == side:
+            within_window = (
+                ts is not None and current["last_ts"] is not None
+                and (ts - current["last_ts"]).total_seconds() <= gap_minutes * 60
+            )
+            if within_window:
+                if continuation or current["placeholder"]:
+                    same_group = True
+                else:
+                    same_group = bucket == current["bucket"]
+
+        if same_group:
+            current["rows"].append(row)
+            current["last_ts"] = ts or current["last_ts"]
+            if not continuation:
+                current["bucket"] = bucket
+                current["placeholder"] = False
+        else:
+            if current is not None:
+                groups.append(current)
+            current = {
+                "symbol": symbol, "side": side, "bucket": bucket,
+                "placeholder": continuation, "rows": [row], "last_ts": ts,
+            }
+    if current is not None:
+        groups.append(current)
+    return groups
+
+
 def _trade_history_rows(exec_rows: list[dict], signal_rows: list[dict]) -> list[dict]:
-    """체결(execution) 원장 한 레그당 한 행 -- 매수행은 종목/수량/가격/진입사유
-    (레드/블루), 매도행은 종목/수량/가격/청산사유/순이익/수수료. signal_id로
-    신호 원장과 매칭해 진입 방향(레드/블루)을 가져온다."""
+    """하나의 "실제 주문/TP 단계"(같은 symbol/side/경제적 이벤트, 2분 이내
+    체결)를 한 행으로 합쳐 총 체결수량/수량가중평균가/총 수수료/총 net_pnl/
+    최초~최종 체결시각을 보여준다 -- 원본 execution 원장은 절대 건드리지
+    않고(_aggregate_trade_legs는 읽기 전용 그룹핑), 화면 표시만 집계한다.
+    TP1 partial과 최종청산처럼 실제로 서로 다른 매도 의사결정이면 언제나
+    별도 그룹(별도 행)으로 남는다 (_economic_bucket 참고). signal_id로 신호
+    원장과 매칭해 진입 방향(레드/블루)을 가져온다.
+
+    2026-08-31 사용자 요청: RECOVERED_QTY_MISMATCH/RECONCILE_BACKFILL/
+    BROKER_DIRECT 등 정합화 전용 행이 실제 주문과 2분 이내로 붙지 못해
+    "고아" 그룹(group["placeholder"] == True -- 진짜 경제적 결정 행이 단
+    하나도 합류하지 못한 그룹)이 되는 경우, 메인 표에는 아예 노출하지
+    않는다 -- 여전히 진단용 "체결 원장 전체 컬럼 보기" expander에는 원본
+    그대로 남아 있으므로 정보 자체가 사라지는 것은 아니다."""
     direction_by_signal_id = {
         r.get("signal_id"): r.get("direction") for r in signal_rows if r.get("signal_id")
     }
     rows: list[dict] = []
-    for r in exec_rows:
-        side = str(r.get("side") or "")
-        symbol = _symbol_display(r.get("symbol"))
-        qty = _qty_display(r.get("executed_qty") or r.get("requested_qty"))
-        price = _price_display(r.get("executed_price") or r.get("requested_price"))
-        when = _datetime_display(r.get("timestamp"))
+    for group in _aggregate_trade_legs(exec_rows):
+        if group["placeholder"]:
+            continue  # pure reconcile/BROKER_DIRECT group, never a real decision -- hide from the main table
+        legs = group["rows"]
+        side = group["side"]
+        symbol = _symbol_display(group["symbol"])
+
+        def _leg_qty(r: dict) -> float:
+            try:
+                return float(r.get("executed_qty") or r.get("requested_qty") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _leg_price(r: dict) -> float:
+            try:
+                return float(r.get("executed_price") or r.get("requested_price") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        total_qty = sum(_leg_qty(r) for r in legs)
+        weighted_price = (sum(_leg_qty(r) * _leg_price(r) for r in legs) / total_qty) if total_qty else 0.0
+        total_fee = sum(float(r.get("fee") or 0.0) for r in legs)
+        total_net_pnl = sum(float(r.get("net_pnl") or 0.0) for r in legs)
+
+        first_ts = min((t for t in (_parse_exec_timestamp(r.get("timestamp")) for r in legs) if t is not None), default=None)
+        last_ts = max((t for t in (_parse_exec_timestamp(r.get("timestamp")) for r in legs) if t is not None), default=None)
+        if first_ts is not None and last_ts is not None and first_ts != last_ts:
+            when = f"{first_ts.strftime('%Y-%m-%d %H:%M:%S')} ~ {last_ts.strftime('%H:%M:%S')}"
+        else:
+            when = _datetime_display(legs[0].get("timestamp"))
+
         if side == "BUY":
-            direction = direction_by_signal_id.get(r.get("signal_id"))
+            direction = next(
+                (direction_by_signal_id.get(r.get("signal_id")) for r in legs if direction_by_signal_id.get(r.get("signal_id"))),
+                None,
+            )
             rows.append({
                 "일시": when, "종목": symbol, "매수/매도": "매수",
-                "수량": qty, "가격": price,
+                "총 체결수량": _qty_display(total_qty), "체결가(수량가중평균)": _price_display(weighted_price),
                 "사유": _direction_display(direction),
-                "순이익": "-", "수수료": _money_display(r.get("fee")) if r.get("fee") else "-",
+                "총 순이익": "-" if not any(r.get("net_pnl") for r in legs) else _money_display(total_net_pnl),
+                "총 수수료": _money_display(total_fee) if total_fee else "-",
             })
         elif side == "SELL":
+            reason_label = _exit_reason_display(group["bucket"]) if not group["placeholder"] else "정합화"
             rows.append({
                 "일시": when, "종목": symbol, "매수/매도": "매도",
-                "수량": qty, "가격": price,
-                "사유": _exit_reason_display(r.get("exit_reason")),
-                "순이익": _money_display(r.get("net_pnl")),
-                "수수료": _money_display(r.get("fee")),
+                "총 체결수량": _qty_display(total_qty), "체결가(수량가중평균)": _price_display(weighted_price),
+                "사유": reason_label,
+                "총 순이익": _money_display(total_net_pnl),
+                "총 수수료": _money_display(total_fee),
             })
     return rows
 
