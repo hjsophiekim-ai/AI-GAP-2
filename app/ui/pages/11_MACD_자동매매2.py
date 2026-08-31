@@ -128,6 +128,95 @@ def _latest_flag_event(rows: list[dict]) -> dict | None:
     return max(timed_rows, key=lambda item: item[0])[1]
 
 
+def _hhmmss(raw: str) -> str:
+    raw = str(raw or "")
+    if len(raw) == 6 and raw.isdigit():
+        return f"{raw[0:2]}:{raw[2:4]}:{raw[4:6]}"
+    try:
+        return datetime.fromisoformat(raw).astimezone(macd2_config.KST).strftime("%H:%M:%S")
+    except ValueError:
+        return raw
+
+
+def _signal_flag_time(row: dict) -> str:
+    if row.get("signal_bar_at"):
+        return _hhmmss(row.get("signal_bar_at"))
+    return _hhmmss(row.get("completed_bar_at"))
+
+
+def _signal_confirm_time(row: dict) -> str:
+    return _hhmmss(row.get("signal_confirmed_at") or row.get("detected_at"))
+
+
+def _is_display_signal(row: dict) -> bool:
+    signal_id = str(row.get("signal_id") or "")
+    if signal_id.startswith("RECONCILE_DISCOVERED"):
+        return False
+    signal_type = str(row.get("signal_type") or "")
+    return signal_type in {
+        "INITIAL",
+        "REVERSAL",
+        "PREMARKET_CARRY_TW",
+        "SCHEDULED_ENTRY_0903",
+        "MANUAL_ENTRY",
+        "MANUAL_LIQUIDATION",
+    }
+
+
+def _signal_label(row: dict) -> str:
+    signal_type = str(row.get("signal_type") or "")
+    if signal_type == "PREMARKET_CARRY_TW":
+        return "프리마켓 승계"
+    if signal_type == "SCHEDULED_ENTRY_0903":
+        return "09:03 예약"
+    if signal_type == "MANUAL_ENTRY":
+        return "수동 진입"
+    if signal_type == "MANUAL_LIQUIDATION":
+        return "수동 청산"
+    return "반대 플래그" if signal_type == "REVERSAL" else "플래그"
+
+
+def _order_summary(row: dict) -> str:
+    result = str(row.get("order_result") or row.get("final_result") or "NO_ORDER")
+    reason = str(row.get("block_reason") or row.get("failure_stage") or "")
+    broker_order_id = str(row.get("broker_order_id") or "")
+    order_type = str(row.get("order_type") or "")
+    price = row.get("order_price") or ""
+    qty = row.get("filled_qty") or row.get("final_qty") or row.get("requested_qty") or ""
+    pieces = [result]
+    if broker_order_id:
+        pieces.append(f"주문번호 {broker_order_id}")
+    if qty:
+        pieces.append(f"{qty}주")
+    if price:
+        pieces.append(f"@ {price}")
+    if order_type:
+        pieces.append(order_type)
+    if reason:
+        pieces.append(reason)
+    return " / ".join(str(p) for p in pieces if str(p))
+
+
+def _signal_timeline_rows(rows: list[dict]) -> list[dict]:
+    timeline: list[dict] = []
+    for row in rows:
+        if not _is_display_signal(row):
+            continue
+        direction = str(row.get("direction") or row.get("confirmed_direction") or "")
+        label = _signal_label(row)
+        timeline.append({
+            "구분": "플래그/확정",
+            "시각": f"{_signal_flag_time(row)} -> {_signal_confirm_time(row)}",
+            "내용": f"{label} {direction}".strip(),
+        })
+        timeline.append({
+            "구분": "주문",
+            "시각": _hhmmss(row.get("order_requested_at")) or "-",
+            "내용": _order_summary(row),
+        })
+    return timeline
+
+
 try:
     from streamlit_autorefresh import st_autorefresh
 
@@ -511,7 +600,7 @@ s1, s2, s3 = st.columns(3)
 _flag_bar_time = "-"
 _latest_flag_direction = state.latest_primary_flag.value if state.latest_primary_flag else "-"
 _latest_flag_signal_id = state.latest_primary_signal_id
-_latest_event_rows = list(today_signal_overview) + list(signal_rows)
+_latest_event_rows = list(today_signal_overview) + [row for row in signal_rows if _is_display_signal(row)]
 if _latest_event_rows:
     _latest_overview_flag = _latest_flag_event(_latest_event_rows)
     if _latest_overview_flag is not None:
@@ -584,40 +673,21 @@ sum3.metric("총 순수익", f"{total_net_pnl:,.0f}원")
 
 st.subheader("신호 원장 (오늘, 최근 100건)")
 if signal_rows:
-    # 2026-08-21 fix (사용자 피드백 — 신호 원장이 70개 넘는 원본 컬럼을 그대로
-    # 보여줘서 정작 가장 중요한 "몇시몇분에 떴는지"/"주문이 됐는지"가 화면
-    # 오른쪽으로 밀려 안 보임): 핵심 컬럼만 먼저 보기 쉽게 요약해서 보여주고,
-    # 전체 원본 표는 접어서 그 아래 그대로 남긴다(디버깅용, 삭제하지 않음).
-    def _hhmmss(raw: str) -> str:
-        raw = str(raw or "")
-        if len(raw) == 6 and raw.isdigit():
-            return f"{raw[0:2]}:{raw[2:4]}:{raw[4:6]}"
-        try:
-            return datetime.fromisoformat(raw).astimezone(macd2_config.KST).strftime("%H:%M:%S")
-        except ValueError:
-            return raw
-    summary_rows = [
-        {
-            "완료바시각": _hhmmss(r.get("completed_bar_at")),
-            "감지시각": _hhmmss(r.get("detected_at")),
-            "신호유형": r.get("signal_type", ""),
-            "방향": r.get("direction", ""),
-            "주문결과": r.get("order_result", ""),
-            "차단/실패사유": r.get("block_reason") or r.get("failure_stage") or "",
-        }
-        for r in signal_rows
-    ]
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+    timeline_rows = _signal_timeline_rows(signal_rows)
+    if timeline_rows:
+        st.dataframe(pd.DataFrame(timeline_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("오늘 표시할 플래그/주문 신호가 없습니다.")
     with st.expander("신호 원장 전체 컬럼 보기 (진단용)"):
         st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
 else:
     st.caption("오늘 기록된 신호가 없습니다.")
 
-st.subheader("체결 원장 (오늘, 최근 100건)")
-if exec_rows:
-    st.dataframe(pd.DataFrame(exec_rows[-100:]), use_container_width=True)
-else:
-    st.caption("오늘 기록된 체결이 없습니다.")
+with st.expander("체결 원장 전체 컬럼 보기 (진단용, 오늘 최근 100건)"):
+    if exec_rows:
+        st.dataframe(pd.DataFrame(exec_rows[-100:]), use_container_width=True)
+    else:
+        st.caption("오늘 기록된 체결이 없습니다.")
 
 with st.expander("전략 설명"):
     st.markdown(

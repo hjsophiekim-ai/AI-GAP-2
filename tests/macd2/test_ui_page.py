@@ -234,11 +234,9 @@ def test_position_reconcile_failure_reason_is_shown_not_just_the_code():
 
 
 def test_signal_ledger_summary_shows_time_and_order_result():
-    """2026-08-21 fix (user feedback): the signal ledger used to dump all
-    70+ raw ledger columns via a single st.dataframe, pushing the columns a
-    user actually needs -- what time a flag fired, whether the order went
-    through -- off screen. A curated summary table with formatted HH:MM:SS
-    times must render alongside the raw table (kept, in an expander)."""
+    """The visible signal ledger should collapse each signal into two rows:
+    one flag/confirmation row and one order-result row. Full raw columns stay
+    available only inside the diagnostic expander."""
     trading_date = pd.Timestamp.now().strftime("%Y%m%d")
     date_prefix = f"{trading_date[0:4]}-{trading_date[4:6]}-{trading_date[6:8]}"
     ledger.append_signal({
@@ -254,9 +252,11 @@ def test_signal_ledger_summary_shows_time_and_order_result():
     dataframes = [d for d in at.dataframe]
     assert len(dataframes) >= 1
     summary_df = dataframes[0].value
-    assert list(summary_df["완료바시각"]) == ["09:03:00"]
-    assert list(summary_df["감지시각"]) == ["09:03:05"]
-    assert list(summary_df["주문결과"]) == ["EXECUTED"]
+    assert list(summary_df.columns) == ["구분", "시각", "내용"]
+    assert list(summary_df["구분"]) == ["플래그/확정", "주문"]
+    assert list(summary_df["시각"]) == ["09:03:00 -> 09:03:05", "09:03:05"]
+    assert "UP_RED" in summary_df["내용"].iloc[0]
+    assert "EXECUTED" in summary_df["내용"].iloc[1]
 
 
 def test_operational_diagnostics_panel_renders_before_start():
