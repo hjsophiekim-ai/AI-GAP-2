@@ -113,6 +113,10 @@ class ExecutionOutcome:
     cancel_called: bool = False
     cancel_result: Optional[str] = None
     unfilled_qty: Optional[int] = None
+    # 2026-09-01: set to the swept quantity when execute_exit/execute_
+    # partial_exit's own reconcile left a small residual that
+    # _attempt_residual_cleanup then cleared in one extra market sell.
+    residual_cleanup_qty: int = 0
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -226,6 +230,7 @@ def _record_leg(
     price: float, position_before: int, position_after: int, exit_reason: str,
     order_result: BrokerOrderResult, entry_price: float, confirmed_at: str,
     requested_qty: Optional[int] = None, ledger_module: Any = None,
+    source: Optional[str] = None,
 ) -> None:
     """``qty`` is the REAL (reconciled) quantity that changed hands — used for
     fee/PnL math and the ledger's own ``executed_qty`` column (never the
@@ -262,6 +267,7 @@ def _record_leg(
         "position_before": position_before, "position_after": position_after,
         "gross_pnl": gross_pnl, "fee": fee, "slippage": slippage, "net_pnl": net_pnl,
         "exit_reason": exit_reason, "broker_response": str(order_result.raw),
+        "source": source or "",
     })
 
 
@@ -294,6 +300,51 @@ def _reconcile_to_zero(broker, symbol: str, *, retries: int, delay_sec: float) -
         if attempt < retries - 1:
             time.sleep(delay_sec)
     return qty_after
+
+
+def _attempt_residual_cleanup(
+    *, broker, symbol: str, residual_qty: int, target_qty: int, entry_price: float,
+) -> Optional[dict]:
+    """One-shot cleanup for a small leftover after an exit's own reconcile
+    (2026-09-01 real incident: a 809-share leverage TP exit left 1 share
+    held). Only ever called when ``0 < residual_qty <= config.
+    RESIDUAL_CLEANUP_MAX_QTY`` — a larger leftover is still a genuine
+    failure, unchanged. Immediately market-sells exactly ``residual_qty``
+    and re-reconciles to ``target_qty`` (0 for a full exit, the partial
+    exit's own remaining_qty otherwise). Never retried beyond this single
+    attempt: if the sell itself fails, or the post-sell reconcile still
+    doesn't land on ``target_qty``, this returns None and the caller's
+    existing FAIL_SELL_NOT_CONFIRMED handling applies exactly as before —
+    this function never turns a failure into a silently-accepted success.
+
+    Does NOT record anything to the ledger itself (unlike a normal exit leg)
+    — the caller records the MAIN leg first, then this residual leg second
+    via its own separate ``_record_leg`` call (source=config.
+    RESIDUAL_CLEANUP_SOURCE, exit_reason suffixed), so the raw ledger's row
+    order matches the true real-world chronology (main sell, then the
+    follow-up sweep moments later) — the raw ledger is append-only and never
+    retroactively edited. The UI trade-history aggregation (app/ui/pages/
+    11_MACD_자동매매2.py) merges this row into the same display group as the
+    exit leg it follows, exactly like a RECONCILE_BACKFILL/BROKER_DIRECT
+    continuation row, so it is never shown or counted as its own separate
+    round-trip trade."""
+    client_order_id = f"RESIDUAL_CLEANUP:{symbol}:{_now_iso()}"
+    sell_result = broker.sell_market(symbol, residual_qty, client_order_id)
+    if not sell_result.success:
+        return None
+    confirmed_at = _now_iso()
+    qty_after = _reconcile_to_target(
+        broker, symbol, target_qty,
+        retries=config.RESIDUAL_CLEANUP_RECONCILE_RETRIES,
+        delay_sec=config.RESIDUAL_CLEANUP_RECONCILE_DELAY_SEC,
+    )
+    if qty_after != target_qty:
+        return None
+    price = sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price
+    return {
+        "qty": residual_qty, "price": price, "qty_after": qty_after,
+        "sell_result": sell_result, "confirmed_at": confirmed_at,
+    }
 
 
 def _cancel_unfilled(broker, outcome: ExecutionOutcome, order_id: str, symbol: str) -> None:
@@ -740,6 +791,20 @@ def execute_exit(
         qty_after = _reconcile_to_zero(broker, symbol, retries=POST_CANCEL_RECHECK_RETRIES, delay_sec=POST_CANCEL_RECHECK_DELAY_SEC)
         outcome.sell_qty_after = qty_after
     timestamps["sell_reconciled_at"] = _now_iso()
+
+    residual = None
+    if 0 < qty_after <= config.RESIDUAL_CLEANUP_MAX_QTY:
+        # 2026-09-01 real incident: a full exit's own sell can leave a tiny
+        # broker-side residual (e.g. 1 of 809 shares) instead of reconciling
+        # cleanly to 0. Never changes WHEN/WHY this exit fired -- only clears
+        # a small leftover AFTER the decision's own sell already happened.
+        residual = _attempt_residual_cleanup(
+            broker=broker, symbol=symbol, residual_qty=qty_after, target_qty=0, entry_price=entry_price,
+        )
+        if residual is not None:
+            qty_after = residual["qty_after"]
+            outcome.sell_qty_after = qty_after
+
     if qty_after != 0:
         outcome.final_state = SignalState.FAILED
         outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
@@ -748,10 +813,20 @@ def execute_exit(
     _record_leg(
         broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=quantity,
         price=sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price,
-        position_before=quantity, position_after=0,
+        position_before=quantity + (residual["qty"] if residual else 0),
+        position_after=(residual["qty"] if residual else 0),
         exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
         confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
     )
+    if residual is not None:
+        _record_leg(
+            broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=residual["qty"],
+            price=residual["price"], position_before=residual["qty"], position_after=0,
+            exit_reason=f"{exit_reason}_RESIDUAL_CLEANUP", order_result=residual["sell_result"],
+            entry_price=entry_price, confirmed_at=residual["confirmed_at"], ledger_module=ledger_module,
+            source=config.RESIDUAL_CLEANUP_SOURCE,
+        )
+        outcome.residual_cleanup_qty = residual["qty"]
     outcome.final_state = SignalState.EXECUTED
     outcome.block_reason = exit_reason
     return outcome
@@ -811,6 +886,21 @@ def execute_partial_exit(
     )
     outcome.sell_qty_after = qty_after
     timestamps["sell_reconciled_at"] = _now_iso()
+
+    residual = None
+    excess = qty_after - remaining_qty
+    if 0 < excess <= config.RESIDUAL_CLEANUP_MAX_QTY:
+        # Same 2026-09-01 fix as execute_exit, for a partial exit's own
+        # target (remaining_qty, not necessarily 0): the broker held
+        # `excess` MORE than the intended remaining_qty after this sell --
+        # clear exactly that tiny overshoot in one extra market sell.
+        residual = _attempt_residual_cleanup(
+            broker=broker, symbol=symbol, residual_qty=excess, target_qty=remaining_qty, entry_price=entry_price,
+        )
+        if residual is not None:
+            qty_after = residual["qty_after"]
+            outcome.sell_qty_after = qty_after
+
     if qty_after != remaining_qty:
         outcome.final_state = SignalState.FAILED
         outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
@@ -819,10 +909,20 @@ def execute_partial_exit(
     _record_leg(
         broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=sell_qty,
         price=sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price,
-        position_before=sell_qty + remaining_qty, position_after=remaining_qty,
+        position_before=sell_qty + remaining_qty + (residual["qty"] if residual else 0),
+        position_after=remaining_qty + (residual["qty"] if residual else 0),
         exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
         confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
     )
+    if residual is not None:
+        _record_leg(
+            broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=residual["qty"],
+            price=residual["price"], position_before=residual["qty"] + remaining_qty, position_after=remaining_qty,
+            exit_reason=f"{exit_reason}_RESIDUAL_CLEANUP", order_result=residual["sell_result"],
+            entry_price=entry_price, confirmed_at=residual["confirmed_at"], ledger_module=ledger_module,
+            source=config.RESIDUAL_CLEANUP_SOURCE,
+        )
+        outcome.residual_cleanup_qty = residual["qty"]
     outcome.final_state = SignalState.EXECUTED
     outcome.block_reason = exit_reason
     outcome.quantity = sell_qty

@@ -967,3 +967,27 @@ EXIT_TW_PROFIT_LOCK_STOP = "TIME_WINDOW_PROFIT_LOCK_STOP"
 RUNTIME_STATE_FILENAME = "macd2_runtime.json"
 SIGNAL_LEDGER_FILENAME = "macd2_signal_ledger.csv"
 EXECUTION_LEDGER_FILENAME = "macd2_execution_ledger.csv"
+
+# ── Residual position cleanup (2026-09-01 real incident) ───────────────────
+# A 09:32:48 809-share leverage (0193T0) take-profit exit sold most of the
+# position but reconciled with 1 share still held at the broker afterward --
+# order_executor.execute_exit/execute_partial_exit already re-query the real
+# broker balance after every sell (via _reconcile_to_zero/_reconcile_to_
+# target), but previously treated ANY nonzero leftover as an outright
+# failure (FAIL_SELL_NOT_CONFIRMED), with no attempt to clear a tiny,
+# harmless remainder. This does not change WHEN an exit fires (TW2/TEG/
+# TW2 3-SLOT/legacy TP/SL decision logic is untouched) -- only what happens
+# AFTER a decision's own sell leaves a small residual. If the leftover is
+# <= this threshold, ONE additional immediate market sell clears it (never
+# retried beyond that single attempt); a residual larger than this is still
+# treated as a genuine failure, unchanged. The residual leg is recorded as
+# its own raw execution-ledger row (source=RESIDUAL_CLEANUP, exit_reason
+# suffixed) -- the raw ledger is never rewritten/merged -- and the UI
+# trade-history aggregation (app/ui/pages/11_MACD_자동매매2.py) merges it
+# into the same display group as the exit leg it follows (same treatment as
+# RECONCILE_BACKFILL/BROKER_DIRECT continuation rows), so it is never shown
+# or counted as a separate round-trip trade.
+RESIDUAL_CLEANUP_MAX_QTY = _env_int("MACD2_RESIDUAL_CLEANUP_MAX_QTY", 5)
+RESIDUAL_CLEANUP_SOURCE = "RESIDUAL_CLEANUP"
+RESIDUAL_CLEANUP_RECONCILE_RETRIES = 3
+RESIDUAL_CLEANUP_RECONCILE_DELAY_SEC = 0.5

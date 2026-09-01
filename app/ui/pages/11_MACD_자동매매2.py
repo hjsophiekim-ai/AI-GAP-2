@@ -304,12 +304,15 @@ _RECONCILE_CONTINUATION_EXIT_REASONS = {"BROKER_DIRECT", "RECOVERED_TO_FLAT", "R
 def _is_reconcile_continuation_row(row: dict) -> bool:
     """True for a raw execution-ledger row that is NOT its own economic
     decision -- a reconcile-backfilled leg (source == RECONCILE_BACKFILL, see
-    ledger.append_reconcile_backfill_buy) or a BROKER_DIRECT stub confirmation
-    (signal_id/exit_reason == "BROKER_DIRECT"). These always merge into
-    whichever real order/TP-stage group they are adjacent to -- see
+    ledger.append_reconcile_backfill_buy), a BROKER_DIRECT stub confirmation
+    (signal_id/exit_reason == "BROKER_DIRECT"), or a residual-cleanup sweep
+    (source == RESIDUAL_CLEANUP, 2026-09-01 -- order_executor._attempt_
+    residual_cleanup's own follow-up sell after an exit's reconcile left a
+    tiny leftover, e.g. 1 of 809 shares). These always merge into whichever
+    real order/TP-stage group they are adjacent to -- see
     _aggregate_trade_legs. The RAW ledger itself is never touched; this only
     affects how the display groups rows together."""
-    if str(row.get("source") or "") == "RECONCILE_BACKFILL":
+    if str(row.get("source") or "") in ("RECONCILE_BACKFILL", "RESIDUAL_CLEANUP"):
         return True
     if str(row.get("signal_id") or "") == "BROKER_DIRECT":
         return True

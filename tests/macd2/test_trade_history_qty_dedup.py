@@ -95,3 +95,32 @@ def test_orphan_backfill_alone_is_still_hidden_as_before(ui_page):
     )
     rows = ui_page._trade_history_rows([backfill_row], [])
     assert rows == []
+
+
+def test_residual_cleanup_merges_into_the_main_exit_leg_2026_09_01(ui_page):
+    """2026-09-01 real incident: a 809-share leverage TP exit's own sell left
+    1 share held; order_executor._attempt_residual_cleanup sweeps it via a
+    SEPARATE raw ledger row (source=RESIDUAL_CLEANUP, side=SELL). The UI must
+    merge it into the SAME displayed round-trip as the main exit leg, showing
+    the TRUE total quantity (810), not just the main leg's 809 or the
+    residual's stray 1 -- and never as a second separate trade row."""
+    main_leg = _base_row(
+        order_id="REAL-ORD-EXIT-1", signal_id="", side="SELL", symbol="0193T0",
+        exit_reason="TIME_WINDOW_TP2_FULL",
+        executed_qty=809, executed_price=15_200.0, timestamp="2026-09-01T09:32:48+09:00",
+        position_before=810, position_after=1, fee=1500.0, net_pnl=900_000.0, source="",
+    )
+    residual_leg = _base_row(
+        order_id="RESIDUAL_CLEANUP:0193T0:2026-09-01T09:32:50+09:00", signal_id="", side="SELL", symbol="0193T0",
+        exit_reason="TIME_WINDOW_TP2_FULL_RESIDUAL_CLEANUP",
+        executed_qty=1, executed_price=15_180.0, timestamp="2026-09-01T09:32:50+09:00",
+        position_before=1, position_after=0, fee=2.0, net_pnl=1_100.0, source="RESIDUAL_CLEANUP",
+    )
+    rows = ui_page._trade_history_rows([main_leg, residual_leg], [])
+    assert len(rows) == 1, "must never show as two separate round-trip trades"
+    row = rows[0]
+    assert row["총 체결수량"] == "810주"
+    expected_avg_price = (809 * 15_200.0 + 1 * 15_180.0) / 810
+    assert float(row["체결가(수량가중평균)"].replace(",", "")) == pytest.approx(expected_avg_price, abs=0.5)
+    assert row["총 순이익"] == "901,100원"
+    assert row["총 수수료"] == "1,502원"
