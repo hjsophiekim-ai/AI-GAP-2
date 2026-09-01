@@ -44,6 +44,10 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     state.auto_trade_on = True
     state.budget = budget
     state.time_window_teg_filter_enabled = True
+    # 2026-09-01: TW2 3-SLOT is now the config default (was False) -- force
+    # it off here so this file's TW2/TEG-specific tests keep exercising the
+    # TW2 path they were written for, unaffected by the new default.
+    state.time_window_3slot_filter_enabled = False
     return state
 
 

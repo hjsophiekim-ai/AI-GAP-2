@@ -51,6 +51,11 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     state.budget = budget
     state.time_window_2_filter_enabled = False
     state.time_window_teg_filter_enabled = False
+    # 2026-09-01: TW2 3-SLOT is now the config default (was False) -- this
+    # fixture must keep the whole TIME_WINDOW family off explicitly so
+    # NO_FILTER_0900_1100 (a lower-priority gate) is actually reached by
+    # these tests, exactly as it always required for TW2/TEG above.
+    state.time_window_3slot_filter_enabled = False
     state.no_filter_0900_1100_enabled = True
     return state
 
@@ -86,6 +91,7 @@ def test_default_off_leaves_judge_entry_gate_at_none():
     state = state_store.default_state()
     state.time_window_2_filter_enabled = False
     state.time_window_teg_filter_enabled = False
+    state.time_window_3slot_filter_enabled = False  # 2026-09-01: now the config default, must force off for this test's own premise
     assert state.no_filter_0900_1100_enabled is False
     decision, mode = worker._judge_entry_gate(
         state=state, bars_3m=None, direction=Direction.UP_RED, position=None,

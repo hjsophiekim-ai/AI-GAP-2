@@ -1100,9 +1100,13 @@ TW2/TEG와 같은 우선순위 자리를 두고 경쟁하는 **세 번째** 선�
 모드다(`time_window_3slot_filter_enabled`). TW2/TEGv2와 **동시에 켤 수
 없다** — `service.py`의 세 setter(`set_time_window_2_filter_enabled`/
 `set_time_window_teg_filter_enabled`/`set_time_window_3slot_filter_enabled`)가
-서로를 자동으로 끈다(어느 것을 켜도 나머지 둘은 꺼짐). 기본값 **OFF**
-(`config.TW2_3SLOT_FILTER_DEFAULT`) — TW2가 여전히 실거래 기본값이며,
-사용자가 실거래 검증 후 직접 전환한다.
+서로를 자동으로 끈다(어느 것을 켜도 나머지 둘은 꺼짐). **2026-09-01 (사용자
+요청) 기본값을 TW2 3-SLOT ON / TW2 OFF로 전환**(`config.TW2_3SLOT_FILTER_
+DEFAULT=True`, `config.TIME_WINDOW_2_FILTER_DEFAULT=False`) — 게이트/래더
+로직 자체는 이 변경으로 전혀 바뀌지 않았다. 이 기본값은 새 state.json(최초
+기동 또는 상태유실 후 재기동)에만 적용되며, 이미 실행 중인 배포는 저장된
+state.json 값을 그대로 사용하므로 UI 토글 또는 상태 리셋으로 직접
+전환해야 한다(자동 마이그레이션은 의도적으로 추가하지 않음).
 
 버전: `config.TW2_3SLOT_FILTER_VERSION = "TW2_3SLOT_V1_20260901"`. 구현:
 `app/trading/macd2/time_window_3slot.py`(신규, 순수함수 — Trend Quality
@@ -1234,7 +1238,10 @@ manager.py`의 기존 함수(모두 그대로 재사용, 내부 로직 변경 �
 항상 이전과 동일해야 함 — 회귀 테스트로 확인됨), 다른 4개 필터의 기존
 동작, `signal_engine.py`의 MACD·confirmed crossover, `order_executor.py`의
 BUY/SELL 수량 산식·체결·잔고 동기화, STOP_LOSS/PROFIT_LOCK/강제청산,
-REAL gate, MU_MACD, 기본값(TW2가 여전히 default).
+REAL gate, MU_MACD. (2026-08-27~09-01 당시 "TW2가 여전히 default"는 이 기능
+추가 커밋 자체의 범위였을 뿐 영구 규칙은 아니었음 — 2026-09-01 별도 커밋에서
+사용자 요청으로 기본값을 TW2 3-SLOT ON/TW2 OFF로 전환했다. 위 "PRE15
+프리마켓 승계" 절 참고.)
 
 ## 금지 사항
 

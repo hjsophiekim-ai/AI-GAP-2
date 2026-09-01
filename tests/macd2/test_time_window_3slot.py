@@ -101,10 +101,16 @@ class TestServiceMutualExclusion:
         state = state_store.load_state()
         assert state.time_window_3slot_filter_enabled is False
 
-    def test_default_state_has_3slot_off_and_tw2_on(self):
+    def test_default_state_matches_config_defaults(self):
+        """2026-09-01: default flipped to TW2 3-SLOT on / TW2 off (user
+        request) -- assert dynamically off config, not a hardcoded literal,
+        so this test documents whichever default is currently configured
+        instead of re-encoding the specific value as an assumption."""
         state = state_store.default_state()
-        assert state.time_window_3slot_filter_enabled is False
+        assert state.time_window_3slot_filter_enabled is bool(config.TW2_3SLOT_FILTER_DEFAULT)
         assert state.time_window_2_filter_enabled is bool(config.TIME_WINDOW_2_FILTER_DEFAULT)
+        # the two must never both be True (3-way mutual exclusion invariant)
+        assert not (state.time_window_3slot_filter_enabled and state.time_window_2_filter_enabled)
 
     def test_judge_entry_gate_routes_to_tw2_3slot_only_when_enabled(self):
         state = state_store.default_state()

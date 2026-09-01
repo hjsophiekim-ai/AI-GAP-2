@@ -814,7 +814,16 @@ TW_EXCEPTION_DOWN_BLUE_ENTRY = "TIME_WINDOW_EXCEPTION_DOWN_BLUE_ENTRY"
 # service.set_time_window_2_filter_enabled()/set_time_window_teg_filter_
 # enabled()가 서로를 자동으로 끈다. "+1 DOWN_BLUE 예외진입"은 위 노트대로
 # 둘 다에서 그대로 동작한다. OFF가 기본값.
-TIME_WINDOW_2_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_2_FILTER_DEFAULT", True)
+# 2026-09-01 (사용자 요청): 기본 필터를 TW2에서 TW2 3-SLOT(아래
+# TW2_3SLOT_FILTER_DEFAULT)으로 교체 -- 이 상수는 False로 바뀐다. TW2 자체의
+# 게이트/래더 로직은 전혀 변경 없음(이 파일의 다른 곳 수정 없음); 셋 중
+# 하나만 True일 수 있다는 3-way 상호배제 불변조건(service.py) 유지를 위해
+# TW2_3SLOT_FILTER_DEFAULT를 True로 바꾸는 것과 반드시 짝을 이룬다. 새
+# state.json(최초 기동/상태유실)부터 이 기본값이 적용되며, 이미 켜져 있는
+# 라이브 배포는 state.json에 이미 저장된 값을 그대로 쓰므로(기존
+# deserialize 우선순위) UI에서 직접 토글하거나 상태를 리셋해야 반영된다 --
+# 이 부분은 의도적으로 건드리지 않았다(다른 로직 변경 금지 요청).
+TIME_WINDOW_2_FILTER_DEFAULT = _env_bool("MACD2_TIME_WINDOW_2_FILTER_DEFAULT", False)
 TIME_WINDOW_2_FILTER_VERSION = "TIME_WINDOW_2_V1_20260821"
 TIME_WINDOW_2_STRATEGY_NAME = "시간대별 최적거래 필터 (TW2)"
 TW2_VWAP_VETO_THRESHOLD_PCT = _env_float("MACD2_TW2_VWAP_VETO_THRESHOLD_PCT", -1.0)
@@ -903,11 +912,20 @@ TW_TEG_COUNT_CAP_BYPASS = "TW_TEG_COUNT_CAP_BYPASS"
 # requires the prior afternoon position to be fully closed AND the new
 # candidate to be the OPPOSITE direction from it -- a same-direction
 # re-entry is rejected outright.
-# PREMARKET_CARRY (08:45-08:59:59 flag surviving unopposed to 09:03) is
-# reused verbatim for this mode too (worker.py's existing premarket-carry
-# functions gain an additive OR-condition, exactly as TEG's addition to TW2
-# did before) -- if it fires, it consumes 1 of the day's 3 slots.
-TW2_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_TW2_3SLOT_FILTER_DEFAULT", False)
+# PREMARKET_CARRY (08:45-08:59:59 flag surviving unopposed to 09:03): this
+# mode never participates (2026-09-01 user request, commit 81214cd) -- a
+# premarket flag is still recorded in the signal ledger like any other
+# confirmed flag, but no 09:03 carry-in entry fires and no slot is consumed
+# by it; the day's 3-slot budget starts fresh at the first genuinely new
+# confirmed flag at/after 09:00. TW2/TEGv2's own PRE15 carry is unaffected.
+#
+# 2026-09-01 (사용자 요청): 기본 필터를 TW2에서 이 모드로 교체 -- True로
+# 바뀐다(반드시 위 TIME_WINDOW_2_FILTER_DEFAULT=False와 짝을 이룸, 3-way
+# 상호배제 불변조건 유지). 게이트/래더 로직 자체는 이 커밋에서 전혀 변경
+# 없음. 이미 실행 중인 배포는 저장된 state.json 값을 그대로 쓰므로, 반영
+# 되려면 UI에서 직접 토글하거나 상태를 리셋해야 한다(의도적으로 자동
+# 마이그레이션을 추가하지 않았음 -- 다른 로직 변경 금지 요청).
+TW2_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_TW2_3SLOT_FILTER_DEFAULT", True)
 TW2_3SLOT_FILTER_VERSION = "TW2_3SLOT_V1_20260901"
 TW2_3SLOT_STRATEGY_NAME = "TW2 3-SLOT"
 TW2_3SLOT_DAILY_CAP = _env_int("MACD2_TW2_3SLOT_DAILY_CAP", 3)
