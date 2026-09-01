@@ -3582,11 +3582,21 @@ def _record_scheduled_entry_signal(state: RuntimeState, direction: Direction, si
 
 
 def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed_direction: Direction) -> None:
-    """PRE15+TW 프리마켓 승계 후보 등록/취소 (2026-08-24, TW2 전용, 사용자
-    요청 -- 60영업일 백테스트 검증: scripts/premarket_carryover_backtest.py의
-    run_pre15_tw와 동일 규칙). 매 tick, held/flat 분기와 무관하게 무조건
-    호출된다(순수 북키핑, 주문 권한 없음) -- confirmed_direction은 이 tick의
-    completed bar에서 새로 확정된 크로스오버(HOLD면 아무것도 안 함).
+    """PRE15+TW 프리마켓 승계 후보 등록/취소 (2026-08-24, TW2/TEGv2 전용,
+    사용자 요청 -- 60영업일 백테스트 검증: scripts/premarket_carryover_
+    backtest.py의 run_pre15_tw와 동일 규칙). 매 tick, held/flat 분기와
+    무관하게 무조건 호출된다(순수 북키핑, 주문 권한 없음) --
+    confirmed_direction은 이 tick의 completed bar에서 새로 확정된
+    크로스오버(HOLD면 아무것도 안 함).
+
+    2026-09-01 (사용자 요청): TW2 3-SLOT(``time_window_3slot_filter_
+    enabled``)은 이 승계 후보 등록에 절대 참여하지 않는다 -- 08:45-08:59
+    확정 플래그는 (필터와 무관하게 항상 기록되는 일반 confirmed-flag 신호
+    원장 경로를 통해) 그대로 기록되지만, 09:00 이전에 별도 진입 없이
+    소비되지 않고 지나간다. 3-SLOT의 하루 3슬롯은 09:00 이후 새로 확정되는
+    첫 플래그부터 정상적으로 카운트를 시작한다(``tw2_3slot_slots_used_
+    today``는 승계로 인해 미리 소진되지 않음). TW2/TEGv2의 승계 동작은 이
+    변경으로 전혀 바뀌지 않는다.
 
     - config.PREMARKET_CARRY_WINDOW_START(08:45:00) <= bar_time < SESSION_OPEN
       (09:00:00): 이 bar를 오늘의 승계 후보로 등록(덮어쓰기 -- "마지막" 플래그
@@ -3603,7 +3613,7 @@ def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed
     """
     if confirmed_direction == Direction.HOLD:
         return
-    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled):
+    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
         return
     if state.premarket_carry_executed_at:
         return  # already resolved (entered or expired) today
@@ -3623,9 +3633,12 @@ def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed
 
 def _premarket_carry_should_fire(state: RuntimeState, now: datetime) -> bool:
     """Mirrors _scheduled_entry_should_fire's own once-per-day + fire-window
-    semantics exactly, on the separate premarket_carry_* fields."""
-    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled):
-        return False  # user turned TW2/TEG/TW2_3SLOT off between registration and 09:03 -- do not fire
+    semantics exactly, on the separate premarket_carry_* fields. 2026-09-01:
+    TW2_3SLOT excluded (see _advance_premarket_carry_candidate) -- a
+    candidate can never exist while only 3SLOT is enabled, but this check
+    stays defensive/explicit rather than relying solely on that."""
+    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
+        return False  # user turned TW2/TEG off (or only TW2_3SLOT is on) between registration and 09:03 -- do not fire
     if state.premarket_carry_candidate_direction is None or state.premarket_carry_executed_at:
         return False
     if now.time() < config.SCHEDULED_ENTRY_TIME:
@@ -3735,19 +3748,14 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
         # SAME session bookkeeping _dispatch_confirmed_signal's approved
         # branch sets, so the held-position TW2 branch recognizes and manages
         # this position identically to a normal TW2 entry from here on.
-        # TW2 3-SLOT (2026-09-01): reuses this same premarket-carry firing
-        # logic verbatim, but the fill consumes 1 of ITS OWN 3 daily slots
-        # (config.py's TW2_3SLOT_* docstring) rather than TW2's morning
-        # entry count -- never both, mutual exclusion guarantees only one
-        # branch below ever runs.
-        if state.time_window_3slot_filter_enabled:
-            state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
-            state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
-        else:
-            state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
-            state.time_window_entry_session_seq = state.time_window_morning_entry_count
+        # 2026-09-01: TW2 3-SLOT never reaches this function at all (see
+        # _advance_premarket_carry_candidate/_premarket_carry_should_fire) --
+        # this path is TW2/TEGv2-only, so it always increments TW2's own
+        # morning entry count, never the 3-SLOT counters.
+        state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
+        state.time_window_entry_session_seq = state.time_window_morning_entry_count
         state.time_window_position_active = True
-        state.time_window_active_mode = "TW2_3SLOT" if state.time_window_3slot_filter_enabled else "TW2"
+        state.time_window_active_mode = "TW2"
         state.time_window_entry_session = "MORNING"
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0

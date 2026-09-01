@@ -1139,10 +1139,18 @@ TW2/TEG와 같은 우선순위 자리를 두고 경쟁하는 **세 번째** 선�
   (`config.TW_WHIPSAW_REJECT_REASONS`) — 이 모드가 연 포지션도 TW2/TEG와
   완전히 같은 `time_window_position_active`/`time_window_entry_session`/
   `time_window_tp1_done`/`time_window_peak_net_return` 상태를 그대로
-  사용하며(`time_window_active_mode="TW2_3SLOT"`로 태깅), PRE15 프리마켓
-  승계(`_advance_premarket_carry_candidate`/`_execute_premarket_carry_entry`)도
-  동일 조건 그대로 재사용한다(단, 체결 시 TW2의 오전 카운터가 아니라 이
-  모드 자신의 슬롯 카운터를 1 소진).
+  사용하며(`time_window_active_mode="TW2_3SLOT"`로 태깅).
+
+**PRE15 프리마켓 승계는 이 모드에 적용되지 않는다(2026-09-01, 사용자 요청)**:
+`_advance_premarket_carry_candidate`/`_premarket_carry_should_fire`가 이제
+TW2/TEGv2 켜짐만 확인하고(`time_window_3slot_filter_enabled`는 이 두 함수의
+조건문에서 제거됨), 3-SLOT만 켜져 있을 때는 08:45-08:59 승계 후보 자체를
+등록하지 않는다. 그 시간대 확정 플래그는 필터와 무관하게 항상 기록되는
+일반 confirmed-flag 신호 원장 경로로 그대로 기록되지만(원본 플래그 수·시각·
+방향 불변), 09:03 승계 진입은 발생하지 않는다. 3-SLOT의 하루 3슬롯은
+09:00 이후 새로 확정되는 첫 플래그부터 정상적으로 카운트를 시작한다
+(`tw2_3slot_slots_used_today`가 승계로 미리 소진되지 않음). TW2/TEGv2의 PRE15
+승계 동작(발동 조건, 카운트 반영 방식)은 이 변경으로 전혀 바뀌지 않았다.
 
 **신규 로직(이 모드에만 존재)**:
 

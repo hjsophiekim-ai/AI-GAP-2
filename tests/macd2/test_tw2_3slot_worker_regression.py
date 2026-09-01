@@ -575,3 +575,80 @@ def test_take_profit_fires_at_tw2s_own_6pct_threshold_not_5pct(monkeypatch):
     assert config.INVERSE_SYMBOL not in broker._positions
     # the slot itself is NOT freed by an exit -- it was already spent on entry.
     assert state.tw2_3slot_slots_used_today == 1
+
+
+# ── 8. TW2 3-SLOT never participates in PRE15 premarket carry (2026-09-01) ──
+# A 08:45-08:59 confirmed flag must not be registered as a carry candidate
+# (and therefore never fires at 09:03) when only TW2_3SLOT is enabled; the
+# same flag under plain TW2/TEGv2 is completely unaffected (regression); the
+# 3-SLOT daily budget starts fresh at 09:00 either way.
+
+from app.trading.macd2.models import MacdSnapshot  # noqa: E402
+
+
+def _premarket_snap(bar_time_str: str) -> MacdSnapshot:
+    hh, mm = (int(x) for x in bar_time_str.split(":"))
+    bar_dt = _PRIOR_DAY.replace(hour=hh, minute=mm)
+    return MacdSnapshot(
+        bar_dt=bar_dt, macd=1.0, signal=0.5, hist=0.5, hist_last3=(0.1, 0.3, 0.5), completed_3m_count=50,
+    )
+
+
+def test_3slot_only_does_not_register_a_premarket_carry_candidate():
+    state = _fresh_3slot_state()  # 3SLOT on, TW2/TEG off
+    snap = _premarket_snap("08:48")
+    worker._advance_premarket_carry_candidate(state, snap, Direction.UP_RED)
+    assert state.premarket_carry_candidate_direction is None
+    assert state.premarket_carry_candidate_bar_ts is None
+
+
+def test_tw2_alone_still_registers_a_premarket_carry_candidate_unchanged():
+    """Regression: TW2's own PRE15 behavior must be byte-identical to before."""
+    state = _fresh_3slot_state()
+    state.time_window_3slot_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    snap = _premarket_snap("08:48")
+    worker._advance_premarket_carry_candidate(state, snap, Direction.UP_RED)
+    assert state.premarket_carry_candidate_direction == Direction.UP_RED
+    assert state.premarket_carry_candidate_bar_ts == snap.bar_dt.isoformat()
+
+
+def test_teg_alone_still_registers_a_premarket_carry_candidate_unchanged():
+    """Regression: TEGv2's own PRE15 behavior must be byte-identical to before."""
+    state = _fresh_3slot_state()
+    state.time_window_3slot_filter_enabled = False
+    state.time_window_teg_filter_enabled = True
+    snap = _premarket_snap("08:48")
+    worker._advance_premarket_carry_candidate(state, snap, Direction.UP_RED)
+    assert state.premarket_carry_candidate_direction == Direction.UP_RED
+
+
+def test_premarket_carry_should_fire_is_false_when_only_3slot_enabled_even_if_candidate_somehow_set():
+    """Defense-in-depth: even a corrupted/leftover candidate must never fire
+    for 3-SLOT -- _premarket_carry_should_fire's own gate is the second line
+    of defense behind _advance_premarket_carry_candidate never registering one."""
+    state = _fresh_3slot_state()
+    state.premarket_carry_candidate_direction = Direction.UP_RED
+    state.premarket_carry_candidate_bar_ts = _premarket_snap("08:48").bar_dt.isoformat()
+    now = _PRIOR_DAY.replace(hour=9, minute=3)
+    assert worker._premarket_carry_should_fire(state, now) is False
+
+
+def test_full_tick_no_carry_order_dispatched_for_3slot_at_0903(tw2_3slot_market_data):
+    """End-to-end via the real run_once() dispatch: even with a (defensively
+    impossible in practice, but simulated here) leftover premarket candidate
+    present in state, TW2_3SLOT-only never places the 09:03 carry order --
+    proves the real call site (_premarket_carry_should_fire inside run_once)
+    respects the same gate, not just the standalone function check above."""
+    svc, now0 = tw2_3slot_market_data
+    state = _fresh_3slot_state()
+    state.premarket_carry_candidate_direction = Direction.UP_RED
+    state.premarket_carry_candidate_bar_ts = _premarket_snap("08:48").bar_dt.isoformat()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    now_0903 = now0.replace(hour=9, minute=3)
+
+    run_once(broker=broker, market_data=svc, state=state, now=now_0903)
+
+    assert state.position is None
+    assert int(state.tw2_3slot_slots_used_today or 0) == 0
+    assert ledger.load_execution_ledger() == []
