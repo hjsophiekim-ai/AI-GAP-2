@@ -361,6 +361,57 @@ def _dedupe_exec_rows(exec_rows: list[dict]) -> list[dict]:
     return out
 
 
+def _dedupe_reconcile_restatements(exec_rows: list[dict]) -> list[dict]:
+    """Drops a reconcile/BROKER_DIRECT continuation row (_is_reconcile_
+    continuation_row) whose own (symbol, side, position_before, position_
+    after) balance transition is IDENTICAL to a transition another row (real
+    or not) already describes. Real bug fixed 2026-09-01: a real
+    order_executor._record_leg row and a LATER ledger.append_reconcile_
+    backfill_buy row can both get written for the SAME underlying fill (they
+    carry different order_ids by construction -- the backfill's is synthetic
+    from symbol/qty/avg_price/position transition, never the real KIS order
+    number -- so append_execution's own order_id dedup never catches this
+    pair) when reconcile notices the broker-side position increase slightly
+    before the real order's own fill-confirmation polling finishes. Both rows
+    then land in the same _aggregate_trade_legs group (same symbol/side,
+    within gap_minutes) and get summed, silently doubling the displayed
+    filled quantity (e.g. a real 1,110-share BUY showing as 2,220). A genuine
+    incremental partial fill (e.g. 0->555 then 555->1110) has a DIFFERENT
+    position_before/position_after pair per leg, so it is never affected by
+    this filter and still sums correctly. Real (non-continuation) rows are
+    always preferred and never dropped by this function; only a continuation
+    row whose transition duplicates one already present is removed. Display-
+    only, like _dedupe_exec_rows -- the raw ledger itself is never touched."""
+    def _pos_pair(row: dict) -> Optional[tuple[int, int]]:
+        pb, pa = row.get("position_before"), row.get("position_after")
+        if pb in (None, "") or pa in (None, ""):
+            return None
+        try:
+            return (int(float(pb)), int(float(pa)))
+        except (TypeError, ValueError):
+            return None
+
+    covered: set[tuple] = set()
+    for row in exec_rows:
+        if _is_reconcile_continuation_row(row):
+            continue
+        pair = _pos_pair(row)
+        if pair is not None:
+            covered.add((str(row.get("symbol") or ""), str(row.get("side") or ""), pair))
+
+    out: list[dict] = []
+    for row in exec_rows:
+        if _is_reconcile_continuation_row(row):
+            pair = _pos_pair(row)
+            if pair is not None:
+                key = (str(row.get("symbol") or ""), str(row.get("side") or ""), pair)
+                if key in covered:
+                    continue  # another row (real, or an earlier continuation) already accounts for this exact transition
+                covered.add(key)
+        out.append(row)
+    return out
+
+
 def _aggregate_trade_legs(exec_rows: list[dict], *, gap_minutes: float = 2.0) -> list[dict]:
     """READ-ONLY display aggregation over the raw execution ledger -- never
     mutates/drops/merges anything in the ledger file itself (audit/recovery
@@ -383,7 +434,7 @@ def _aggregate_trade_legs(exec_rows: list[dict], *, gap_minutes: float = 2.0) ->
         ts = _parse_exec_timestamp(row.get("timestamp"))
         return ts or datetime.min.replace(tzinfo=macd2_config.KST)
 
-    ordered = sorted(_dedupe_exec_rows(exec_rows), key=_sort_key)
+    ordered = sorted(_dedupe_reconcile_restatements(_dedupe_exec_rows(exec_rows)), key=_sort_key)
     groups: list[dict] = []
     current: Optional[dict] = None
     for row in ordered:
