@@ -861,6 +861,67 @@ TIME_WINDOW_TEG_FILTER_VERSION = "TIME_WINDOW_TEG_V2_20260827"
 TIME_WINDOW_TEG_STRATEGY_NAME = "TW2 + TEGv2 추가진입"
 TW_TEG_COUNT_CAP_BYPASS = "TW_TEG_COUNT_CAP_BYPASS"
 
+# ── TW2 3-SLOT ("3슬롯 유연배분", 2026-09-01 사용자 요청) ────────────────────
+# A THIRD, separately selectable time-window mode alongside TW2 and TEG —
+# mutually exclusive with BOTH (service.py's three setters each force the
+# other two off; app/trading/macd2/time_window_3slot.py's own module
+# docstring explains why: TEG's gate check already fires on the SAME
+# ``time_window_2_filter_enabled or time_window_teg_filter_enabled``
+# condition this mode would otherwise overlap with). Reuses TW2's own
+# evaluate_time_window_entry/evaluate_tw2_extra_vetoes/teg_gate.evaluate_teg/
+# time_window_position_manager ladder/whipsaw-tolerant reversal exit
+# COMPLETELY UNCHANGED -- see app/trading/macd2/time_window_3slot.py's
+# module docstring for exactly what is reused vs. new. Backtested as
+# "Strategy C" (scripts/tw2_3slot_flex_backtest.py) and cross-validated via a
+# second, independently-coded simulation loop
+# (scripts/tw2_3slot_flex_cross_check.py) over 60 trading days
+# (TRAIN 2026-06-05~07-31 / OOS 2026-08-03~08-31, data/validation/
+# tw2_3slot_flex/): beats plain TW2 on OOS compound return, PF, MDD, and
+# top10-excluded return (the metric weighted most -- C is materially less
+# reliant on a handful of big wins than TW2). OFF by default -- TW2 stays
+# the live default; the user will flip to this mode manually after live
+# verification, at their own pace.
+#
+# Daily hard cap: TW2_3SLOT_DAILY_CAP (3) new entries total, enforced
+# entirely in time_window_3slot.resolve_slot -- worker.py always calls
+# evaluate_time_window_entry with morning_entry_count=0/afternoon_entry_
+# count=0/daily_entry_count=0 for this mode so ITS OWN 3/2/5 caps never
+# fire; this mode's own tw2_3slot_slots_used_today/tw2_3slot_morning_count/
+# tw2_3slot_afternoon_count state fields (separate from TW2's own
+# time_window_morning_entry_count/afternoon_entry_count -- never shared or
+# corrupted) are the only cap enforced.
+# 09:00-11:00 morning: 1st/2nd candidate = plain TW2 approval (T+3 + extra
+# vetoes, no extra gate). 3rd candidate (2 slots already used, still
+# morning) additionally requires >= TW2_3SLOT_MORNING_3RD_QUALITY_MIN (3) of
+# the 5 "Trend Quality" conditions (time_window_3slot.evaluate_trend_
+# quality) -- if it fails, the 3rd slot is preserved for the afternoon
+# rather than spent.
+# 11:00-14:50 afternoon: only if a slot remains. Requires TW2 approval AND
+# teg_gate.evaluate_teg() approval (both mandatory -- NOT production's
+# once-daily count-cap-bypass mechanism, a deliberately different use of the
+# same unmodified TEG function). A 2nd afternoon entry (when 2 slots remain)
+# requires the prior afternoon position to be fully closed AND the new
+# candidate to be the OPPOSITE direction from it -- a same-direction
+# re-entry is rejected outright.
+# PREMARKET_CARRY (08:45-08:59:59 flag surviving unopposed to 09:03) is
+# reused verbatim for this mode too (worker.py's existing premarket-carry
+# functions gain an additive OR-condition, exactly as TEG's addition to TW2
+# did before) -- if it fires, it consumes 1 of the day's 3 slots.
+TW2_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_TW2_3SLOT_FILTER_DEFAULT", False)
+TW2_3SLOT_FILTER_VERSION = "TW2_3SLOT_V1_20260901"
+TW2_3SLOT_STRATEGY_NAME = "TW2 3-SLOT"
+TW2_3SLOT_DAILY_CAP = _env_int("MACD2_TW2_3SLOT_DAILY_CAP", 3)
+TW2_3SLOT_MORNING_WINDOW_END = time(11, 0)
+TW2_3SLOT_AFTERNOON_WINDOW_END = time(14, 50)
+TW2_3SLOT_MORNING_3RD_QUALITY_MIN = _env_int("MACD2_TW2_3SLOT_MORNING_3RD_QUALITY_MIN", 3)  # out of 5, TRAIN-selected
+TW2_3SLOT_QUALITY_NET_CHANGE_BARS = 2
+TW2_3SLOT_EMA20_SLOPE_BARS = 2
+TW2_3SLOT_REJECT_OUTSIDE_WINDOW = "TW2_3SLOT_REJECT_OUTSIDE_WINDOW"
+TW2_3SLOT_REJECT_SLOT_CAP = "TW2_3SLOT_REJECT_DAILY_SLOT_CAP"
+TW2_3SLOT_REJECT_QUALITY = "TW2_3SLOT_REJECT_TREND_QUALITY"
+TW2_3SLOT_REJECT_TEG = "TW2_3SLOT_REJECT_TEG"
+TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND = "TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND"
+
 # ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
 # 6th peer entry gate in worker._judge_entry_gate (right after TIME_WINDOW),
 # same shape as MAJOR/SIDEWAYS/TREND_PERSISTENCE/SINGLE_ENTRY: a single

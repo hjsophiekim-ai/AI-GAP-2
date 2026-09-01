@@ -800,6 +800,45 @@ with _tw2_cols[1]:
             + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
         )
 
+_3slot_cols = st.columns([1.4, 1.6])
+with _3slot_cols[0]:
+    _3slot_on = st.checkbox(
+        "TW2 3-SLOT",
+        value=bool(getattr(state, "time_window_3slot_filter_enabled", False)),
+        key="macd2_time_window_3slot_filter_toggle",
+        help=(
+            "TW2/TEGv2와 완전히 동일한 T+3 재확인/VWAP·최근크로스 veto/TP1·TP2·trailing·손절/휩쏘-내성 반대신호청산을 "
+            "그대로 쓰되, 하루 신규진입을 정확히 3회로 제한하고 슬롯 배분만 새로 짭니다: 09:00-11:00 1·2번째는 TW2 승인만, "
+            "3번째는 Trend Quality 5개 조건(가격/EMA10 방향·EMA10-20 signed 스프레드 확대·MACD갭 확대·EMA20 기울기·VWAP 방향) "
+            f"중 {macd2_config.TW2_3SLOT_MORNING_3RD_QUALITY_MIN}개 이상 통과해야 사용, 실패하면 그 슬롯은 오후로 이월됩니다. "
+            "11:00-14:50은 남은 슬롯이 있을 때만 TW2 승인 AND TEGv2 승인을 모두 요구하고, 2번째 오후 진입은 직전 오후 포지션이 "
+            "종료된 뒤 반대 방향일 때만 허용합니다. 60거래일 TRAIN(40)/OOS(20) 백테스트+2차 독립 시뮬레이션 교차검증에서 현행 "
+            "TW2 대비 OOS 복리·PF·MDD·Top10제외수익 전부 개선 확인(data/validation/tw2_3slot_flex/). TW2/+TEGv2와 동시에 켤 수 "
+            "없습니다(셋 중 하나만). 기본 OFF — 실거래 검증 후 기본값 변경 여부를 결정합니다."
+        ),
+    )
+with _3slot_cols[1]:
+    if bool(_3slot_on) != bool(getattr(state, "time_window_3slot_filter_enabled", False)):
+        res = service.set_time_window_3slot_filter_enabled(bool(_3slot_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(f"TW2 3-SLOT → {'ON' if _3slot_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"TW2 3-SLOT={'ON' if state.time_window_3slot_filter_enabled else 'OFF'} · "
+            f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
+            f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
+            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+        )
+        if getattr(state, "last_tw2_3slot_signal_id", None):
+            st.caption(
+                "최근 TW2 3-SLOT 후보: "
+                f"{'승인' if getattr(state, 'last_tw2_3slot_approved', False) else '거절'} · "
+                f"슬롯={getattr(state, 'last_tw2_3slot_slot_number', '-') or '-'} · "
+                f"사유={getattr(state, 'last_tw2_3slot_block_reason', None) or '-'}"
+            )
+
 _dbe_cols = st.columns([1.4, 1.6])
 with _dbe_cols[0]:
     _dbe_on = st.checkbox(

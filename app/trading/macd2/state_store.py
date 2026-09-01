@@ -69,6 +69,8 @@ def default_state() -> RuntimeState:
     state.time_window_teg_filter_version = config.TIME_WINDOW_TEG_FILTER_VERSION
     state.down_blue_exception_filter_enabled = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
+    state.time_window_3slot_filter_enabled = bool(getattr(config, "TW2_3SLOT_FILTER_DEFAULT", False))
+    state.time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
     state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
@@ -359,6 +361,28 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "no_filter_0900_1100_filter_version": state.no_filter_0900_1100_filter_version or config.NO_FILTER_0900_1100_FILTER_VERSION,
         "last_no_filter_0900_1100_approved": state.last_no_filter_0900_1100_approved,
         "last_no_filter_0900_1100_block_reason": state.last_no_filter_0900_1100_block_reason,
+        "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+        "time_window_3slot_filter_enabled_at": state.time_window_3slot_filter_enabled_at,
+        "time_window_3slot_filter_enabled_by": state.time_window_3slot_filter_enabled_by,
+        "time_window_3slot_filter_version": state.time_window_3slot_filter_version or config.TW2_3SLOT_FILTER_VERSION,
+        "tw2_3slot_pending_flag_direction": (
+            state.tw2_3slot_pending_flag_direction.value if state.tw2_3slot_pending_flag_direction else None
+        ),
+        "tw2_3slot_pending_flag_bar_ts": state.tw2_3slot_pending_flag_bar_ts,
+        "tw2_3slot_slots_used_today": int(state.tw2_3slot_slots_used_today or 0),
+        "tw2_3slot_morning_count": int(state.tw2_3slot_morning_count or 0),
+        "tw2_3slot_afternoon_count": int(state.tw2_3slot_afternoon_count or 0),
+        "tw2_3slot_last_afternoon_direction": state.tw2_3slot_last_afternoon_direction,
+        "last_tw2_3slot_signal_id": state.last_tw2_3slot_signal_id,
+        "last_tw2_3slot_approved": state.last_tw2_3slot_approved,
+        "last_tw2_3slot_decision": state.last_tw2_3slot_decision,
+        "last_tw2_3slot_block_reason": state.last_tw2_3slot_block_reason,
+        "last_tw2_3slot_slot_number": state.last_tw2_3slot_slot_number,
+        "last_tw2_3slot_session": state.last_tw2_3slot_session,
+        "last_tw2_3slot_quality_passed": state.last_tw2_3slot_quality_passed,
+        "last_tw2_3slot_quality_conditions": dict(state.last_tw2_3slot_quality_conditions or {}) if state.last_tw2_3slot_quality_conditions else None,
+        "last_tw2_3slot_teg_approved": state.last_tw2_3slot_teg_approved,
+        "last_tw2_3slot_teg_reject_reasons": list(state.last_tw2_3slot_teg_reject_reasons or []),
     }
 
 
@@ -399,6 +423,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     time_window_pending_flag_direction = (
         Direction(tw_pending_raw) if tw_pending_raw in _DIRECTION_VALUES else None
     )
+    tw2_3slot_pending_raw = raw.get("tw2_3slot_pending_flag_direction")
+    tw2_3slot_pending_flag_direction = (
+        Direction(tw2_3slot_pending_raw) if tw2_3slot_pending_raw in _DIRECTION_VALUES else None
+    )
     # NOTE: TW1 (time_window_filter_enabled) was retired 2026-08-27 -- any
     # stale value for it in an old state.json is silently discarded here
     # (deserialize() only ever reads known-schema fields, per its own
@@ -423,6 +451,19 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if time_window_teg_filter_enabled and not time_window_2_filter_enabled:
         time_window_2_filter_enabled = True
         time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
+    tw2_3slot_enabled_default = bool(getattr(config, "TW2_3SLOT_FILTER_DEFAULT", False))
+    stored_tw2_3slot_filter_version = str(raw.get("time_window_3slot_filter_version") or "")
+    time_window_3slot_filter_version = stored_tw2_3slot_filter_version or config.TW2_3SLOT_FILTER_VERSION
+    time_window_3slot_filter_enabled = bool(raw.get("time_window_3slot_filter_enabled", tw2_3slot_enabled_default))
+    if stored_tw2_3slot_filter_version and stored_tw2_3slot_filter_version != config.TW2_3SLOT_FILTER_VERSION:
+        time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
+        time_window_3slot_filter_enabled = tw2_3slot_enabled_default
+    if time_window_3slot_filter_enabled and (time_window_2_filter_enabled or time_window_teg_filter_enabled):
+        # Defensive-only (mutual exclusion is already enforced at the
+        # service.py command layer): a hand-edited or corrupted state.json
+        # claiming both an established mode and the new one are on must never
+        # let the new, still-unverified mode silently win over TW2/TEG.
+        time_window_3slot_filter_enabled = False
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
     down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
@@ -738,6 +779,29 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         no_filter_0900_1100_filter_version=no_filter_0900_1100_filter_version,
         last_no_filter_0900_1100_approved=raw.get("last_no_filter_0900_1100_approved"),
         last_no_filter_0900_1100_block_reason=raw.get("last_no_filter_0900_1100_block_reason"),
+        time_window_3slot_filter_enabled=time_window_3slot_filter_enabled,
+        time_window_3slot_filter_enabled_at=raw.get("time_window_3slot_filter_enabled_at"),
+        time_window_3slot_filter_enabled_by=raw.get("time_window_3slot_filter_enabled_by"),
+        time_window_3slot_filter_version=time_window_3slot_filter_version,
+        tw2_3slot_pending_flag_direction=tw2_3slot_pending_flag_direction,
+        tw2_3slot_pending_flag_bar_ts=raw.get("tw2_3slot_pending_flag_bar_ts"),
+        tw2_3slot_slots_used_today=int(raw.get("tw2_3slot_slots_used_today") or 0),
+        tw2_3slot_morning_count=int(raw.get("tw2_3slot_morning_count") or 0),
+        tw2_3slot_afternoon_count=int(raw.get("tw2_3slot_afternoon_count") or 0),
+        tw2_3slot_last_afternoon_direction=raw.get("tw2_3slot_last_afternoon_direction"),
+        last_tw2_3slot_signal_id=raw.get("last_tw2_3slot_signal_id"),
+        last_tw2_3slot_approved=raw.get("last_tw2_3slot_approved"),
+        last_tw2_3slot_decision=raw.get("last_tw2_3slot_decision"),
+        last_tw2_3slot_block_reason=raw.get("last_tw2_3slot_block_reason"),
+        last_tw2_3slot_slot_number=raw.get("last_tw2_3slot_slot_number"),
+        last_tw2_3slot_session=raw.get("last_tw2_3slot_session"),
+        last_tw2_3slot_quality_passed=raw.get("last_tw2_3slot_quality_passed"),
+        last_tw2_3slot_quality_conditions=(
+            dict(raw.get("last_tw2_3slot_quality_conditions"))
+            if isinstance(raw.get("last_tw2_3slot_quality_conditions"), dict) else None
+        ),
+        last_tw2_3slot_teg_approved=raw.get("last_tw2_3slot_teg_approved"),
+        last_tw2_3slot_teg_reject_reasons=list(raw.get("last_tw2_3slot_teg_reject_reasons") or []),
     )
 
 

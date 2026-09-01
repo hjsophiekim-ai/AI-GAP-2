@@ -602,6 +602,52 @@ class RuntimeState:
     daily_down_blue_exception_used: bool = False
     last_down_blue_exception_at: Optional[str] = None
 
+    # TW2 3-SLOT ("3슬롯 유연배분", 2026-09-01 사용자 요청) — a THIRD,
+    # separately selectable time-window mode, mutually exclusive with BOTH
+    # TW2 and TEG (service's three setters each force the other two off).
+    # See app/trading/macd2/time_window_3slot.py's module docstring for
+    # what is reused (TW2's T+3/quality-score/extra-veto gate, TEGv2, the
+    # position-management ladder, whipsaw-tolerant reversal exit — all
+    # completely unmodified) vs. new (the slot orchestration below).
+    #
+    # This mode's own pending-candidate and slot-budget bookkeeping is
+    # DELIBERATELY SEPARATE from TW2/TEG's time_window_pending_flag_*/
+    # time_window_morning_entry_count/time_window_afternoon_entry_count
+    # fields — never shared, never corrupted by either mode, even though
+    # mutual exclusion guarantees at most one is ever live. A position this
+    # mode opens IS adopted into the SAME shared time_window_position_active/
+    # time_window_entry_session/time_window_tp1_done/time_window_peak_net_
+    # return/time_window_initial_quantity ladder state TW2/TEG already use
+    # (tagged via time_window_active_mode="TW2_3SLOT") — that part IS
+    # intentionally shared, exactly as TW2 and TEG already share it, so the
+    # TP1/TP2/trailing/stop-loss ladder code needs zero duplication.
+    time_window_3slot_filter_enabled: bool = False
+    time_window_3slot_filter_enabled_at: Optional[str] = None
+    time_window_3slot_filter_enabled_by: Optional[str] = None
+    time_window_3slot_filter_version: str = ""
+    # Two-bar (T -> T+3) candidate awaiting re-confirmation, mirrors
+    # time_window_pending_flag_direction/_bar_ts but kept fully separate.
+    tw2_3slot_pending_flag_direction: Optional[Direction] = None
+    tw2_3slot_pending_flag_bar_ts: Optional[str] = None
+    # Slot budget bookkeeping — session-scoped (reset on day rollover); the
+    # toggle itself survives.
+    tw2_3slot_slots_used_today: int = 0
+    tw2_3slot_morning_count: int = 0
+    tw2_3slot_afternoon_count: int = 0
+    tw2_3slot_last_afternoon_direction: Optional[str] = None
+    # Latest-decision diagnostics for the UI (mirrors last_time_window_*/
+    # last_time_window_teg_* below).
+    last_tw2_3slot_signal_id: Optional[str] = None
+    last_tw2_3slot_approved: Optional[bool] = None
+    last_tw2_3slot_decision: Optional[str] = None
+    last_tw2_3slot_block_reason: Optional[str] = None
+    last_tw2_3slot_slot_number: Optional[int] = None
+    last_tw2_3slot_session: Optional[str] = None
+    last_tw2_3slot_quality_passed: Optional[int] = None
+    last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None
+    last_tw2_3slot_teg_approved: Optional[bool] = None
+    last_tw2_3slot_teg_reject_reasons: Optional[list[str]] = None
+
     # Optional "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청)
     # — a 6th peer entry gate (see worker._judge_no_filter_flag /
     # _judge_entry_gate), stateless aside from the toggle itself: no pending

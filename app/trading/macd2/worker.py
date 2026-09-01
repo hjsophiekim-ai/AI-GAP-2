@@ -55,6 +55,7 @@ from app.trading.macd2 import (
     sideways_filter,
     single_entry_filter,
     teg_gate,
+    time_window_3slot,
     time_window_filter,
     time_window_position_manager,
     trend_persistence_filter,
@@ -396,6 +397,14 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # 탈락 DOWN_BLUE 예외진입(2026-08-18)의 "하루 1회" 소진 플래그도 마찬가지로
     # session-scoped; 토글(down_blue_exception_filter_enabled)은 그대로 유지.
     state.daily_down_blue_exception_used = False
+    # TW2 3-SLOT (2026-09-01)의 슬롯 예산/pending 후보도 마찬가지로
+    # session-scoped; 토글(time_window_3slot_filter_enabled)은 그대로 유지.
+    state.tw2_3slot_pending_flag_direction = None
+    state.tw2_3slot_pending_flag_bar_ts = None
+    state.tw2_3slot_slots_used_today = 0
+    state.tw2_3slot_morning_count = 0
+    state.tw2_3slot_afternoon_count = 0
+    state.tw2_3slot_last_afternoon_direction = None
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -1058,6 +1067,46 @@ def abandon_pending_time_window_candidate_if_any(state: RuntimeState, now: datet
         "completed_bar_at": "",
         "signal_id": signal_id,
         "signal_type": "TIME_WINDOW_CONFIRM",
+        "direction": direction.value,
+        "macd": "", "signal": "", "hist_last3": "",
+        "detected_at": now.isoformat(),
+        "order_requested_at": "",
+        "order_result": "ABANDONED",
+        "block_reason": f"{reason}_flag_bar_at={flag_bar_ts or ''}",
+        "signal_bar_at": flag_bar_ts or "", "signal_confirmed_at": "",
+        "baseline_completed_bar_at": state.session_baseline_bar_ts or "",
+        "strategy_name": config.STRATEGY_NAME,
+        "strategy_version": config.STRATEGY_VERSION,
+        "signal_rule": config.SIGNAL_RULE,
+        "worker_code_sha": _git_sha(),
+        "worker_instance_id": state.worker_instance_id or "",
+        "session_started_at": state.session_started_at or "",
+        **_entry_gate_ledger_fields(state, None, "NONE"),
+    }
+    ledger.append_signal(row)
+    return True
+
+
+def abandon_pending_tw2_3slot_candidate_if_any(state: RuntimeState, now: datetime, *, reason: str) -> bool:
+    """TW2 3-SLOT's own mirror of abandon_pending_time_window_candidate_if_any
+    above, on the fully separate tw2_3slot_pending_flag_* fields — same
+    2026-08-28 orphaned-candidate incident, closed the same way for this
+    mode too. Call from set_time_window_3slot_filter_enabled's toggle-off
+    path (and from TW2/TEG's setters when they force this mode off, and
+    vice versa) so a pending candidate is explicitly cleared and auditable
+    instead of silently lost. Pure state/ledger cleanup only."""
+    direction = state.tw2_3slot_pending_flag_direction
+    flag_bar_ts = state.tw2_3slot_pending_flag_bar_ts
+    if direction is None:
+        return False
+    state.tw2_3slot_pending_flag_direction = None
+    state.tw2_3slot_pending_flag_bar_ts = None
+    signal_id = f"TW2_3SLOT_PENDING_ABANDONED_{direction.value}_{now.strftime('%Y%m%d%H%M%S')}"
+    row = {
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "completed_bar_at": "",
+        "signal_id": signal_id,
+        "signal_type": "TW2_3SLOT_CONFIRM",
         "direction": direction.value,
         "macd": "", "signal": "", "hist_last3": "",
         "detected_at": now.isoformat(),
@@ -2150,7 +2199,7 @@ def _advance_held_position_risk_management(
         return True
 
     if (
-        (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled)
+        (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled)
         and state.position is not None and state.position.symbol == pos.symbol
         and current_price is not None
     ):
@@ -2171,7 +2220,10 @@ def _advance_held_position_risk_management(
             # already-elevated position isn't treated as if it just broke
             # even -- see evaluate_morning_position's own peak-tracking use.
             state.time_window_position_active = True
-            state.time_window_active_mode = state.time_window_active_mode or ("TEGv2" if state.time_window_teg_filter_enabled else "TW2")
+            state.time_window_active_mode = state.time_window_active_mode or (
+                "TW2_3SLOT" if state.time_window_3slot_filter_enabled
+                else ("TEGv2" if state.time_window_teg_filter_enabled else "TW2")
+            )
             session = state.time_window_entry_session or time_window_filter.session_for_window(
                 time_window_filter.classify_window(now.astimezone(KST).time())
             )
@@ -2201,7 +2253,19 @@ def _advance_held_position_risk_management(
             # reconcile ticks for the SAME position only ever reach this
             # branch once (the first tick after discovery, before this
             # branch flips the flag to True).
-            if session == "MORNING":
+            if state.time_window_active_mode == "TW2_3SLOT":
+                # TW2 3-SLOT keeps its own separate slot/session counters
+                # (never TW2/TEG's time_window_morning_entry_count/
+                # afternoon_entry_count) -- same adoption-path gap this
+                # whole branch exists to close, just for this mode's own
+                # bookkeeping.
+                state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
+                if session == "MORNING":
+                    state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
+                elif session == "AFTERNOON":
+                    state.tw2_3slot_afternoon_count = int(state.tw2_3slot_afternoon_count or 0) + 1
+                    state.tw2_3slot_last_afternoon_direction = _position_direction(pos).value if _position_direction(pos) else None
+            elif session == "MORNING":
                 state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
                 state.time_window_entry_session_seq = state.time_window_morning_entry_count
             elif session == "AFTERNOON":
@@ -2220,7 +2284,7 @@ def _advance_held_position_risk_management(
             session=state.time_window_entry_session or "MORNING",
             net_return_pct=tick_net_return,
             tp1_done=bool(state.time_window_tp1_done),
-            tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") else None,
+            tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2", "TW2_3SLOT") else None,
         )
         if tp_decision.exit_reason is not None:
             # 2026-08-27 fix (real incident: a premarket-carry position's
@@ -2281,7 +2345,7 @@ def _advance_held_position_risk_management(
                 net_return_pct=bar_net_return,
                 tp1_done=bool(state.time_window_tp1_done),
                 peak_net_return=float(state.time_window_peak_net_return or 0.0),
-                tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") else None,
+                tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2", "TW2_3SLOT") else None,
             )
             # 2026-08-27 fix -- same reasoning as the immediate-tick TP path
             # just above: peak_net_return still commits unconditionally
@@ -2591,6 +2655,264 @@ def _resolve_time_window_candidate(
     return outcome
 
 
+def _persist_tw2_3slot_decision(state: RuntimeState, decision: MajorFlagDecision, signal_id: str) -> None:
+    state.time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
+    metrics = dict(decision.metrics or {})
+    state.last_tw2_3slot_approved = bool(decision.approved)
+    state.last_tw2_3slot_decision = decision.decision
+    state.last_tw2_3slot_block_reason = decision.block_reason
+    state.last_tw2_3slot_slot_number = metrics.get("slot_number")
+    state.last_tw2_3slot_session = metrics.get("session")
+    state.last_tw2_3slot_quality_passed = metrics.get("quality_passed")
+    state.last_tw2_3slot_quality_conditions = dict(metrics.get("quality_conditions") or {}) or None
+    state.last_tw2_3slot_teg_approved = metrics.get("teg_approved")
+    state.last_tw2_3slot_teg_reject_reasons = list(metrics.get("teg_reject_reasons") or [])
+    state.last_tw2_3slot_signal_id = signal_id
+
+
+def _judge_tw2_3slot_flag(
+    *, state: RuntimeState, bars_3m, direction: Direction, signal_id: str,
+) -> MajorFlagDecision:
+    """TW2 3-SLOT's own T -> T+3 pending registration — exactly mirrors
+    _judge_time_window_flag's shape (a flag never has order authority on its
+    own bar; the real decision happens one bar later in
+    _resolve_tw2_3slot_candidate), but writes to FULLY SEPARATE
+    tw2_3slot_pending_flag_* state, never TW2/TEG's own time_window_pending_
+    flag_* fields. Never called unless state.time_window_3slot_filter_
+    enabled is True; never creates or suppresses the confirmed flag itself.
+
+    IMPORTANT (mirrors _judge_time_window_flag's own docstring): a rejection
+    here must NEVER trigger _execute_reversal_exit_only_for_filtered_entry's
+    sell-only liquidation — the held position (if any) stays untouched until
+    _resolve_tw2_3slot_candidate resolves the candidate at T+3. Callers gate
+    that explicitly on gate_mode == "TW2_3SLOT".
+    """
+    flag_bar_dt = pd.Timestamp(bars_3m["datetime"].iloc[-1]).to_pydatetime()
+    state.tw2_3slot_pending_flag_direction = direction
+    state.tw2_3slot_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    decision = MajorFlagDecision(
+        approved=False, score=0.0, required_score=0.0,
+        decision=config.TW_PENDING_CONFIRMATION,
+        reasons=("awaiting T+3 bar re-confirmation (TW2 3-SLOT)",),
+        component_scores={}, metrics={"flag_bar_at": flag_bar_dt.isoformat()},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_PENDING_CONFIRMATION,
+    )
+    _persist_tw2_3slot_decision(state, decision, signal_id)
+    return decision
+
+
+def _resolve_tw2_3slot_candidate(
+    *,
+    broker,
+    market_data: MarketDataService,
+    state: RuntimeState,
+    now: datetime,
+    macd_snap,
+    bars_3m,
+    df_1m,
+    position: Optional[PositionSnapshot],
+    result: TickResult,
+):
+    """Resolves a pending TW2 3-SLOT candidate (T -> T+3 wait), via the SAME
+    shared time_window_filter.evaluate_time_window_entry()/evaluate_tw2_
+    extra_vetoes() decision functions TW2 itself uses (no duplicated
+    entry-condition logic) — entry-count params are always passed as
+    0/0/0 so evaluate_time_window_entry's OWN 3/2/5 caps never fire; this
+    function's own tw2_3slot_slots_used_today/morning_count/afternoon_count
+    bookkeeping is the only cap enforced for this mode. On top of that base
+    TW2 clearance, time_window_3slot.resolve_slot decides which extra gate
+    (if any) this candidate's slot requires — morning 3rd slot:
+    time_window_3slot.evaluate_trend_quality (>= config.TW2_3SLOT_MORNING_
+    3RD_QUALITY_MIN of 5); afternoon slot: teg_gate.evaluate_teg (mandatory
+    AND-gate, NOT production's once-daily count-cap-bypass mechanism).
+
+    Whipsaw-tolerant T+3 OPPOSITE_SIGNAL reversal-exit classification
+    (config.TW_WHIPSAW_REJECT_REASONS) and dispatch (_execute_or_wait /
+    _execute_reversal_exit_only_for_filtered_entry) are reused byte-
+    identical to TW2's own handling in _resolve_time_window_candidate.
+    Never called unless state.time_window_3slot_filter_enabled is True.
+    """
+    if not state.time_window_3slot_filter_enabled or not state.tw2_3slot_pending_flag_direction:
+        return None
+    flag_bar_dt = _parse_iso_dt(state.tw2_3slot_pending_flag_bar_ts)
+    if flag_bar_dt is None:
+        state.tw2_3slot_pending_flag_direction = None
+        state.tw2_3slot_pending_flag_bar_ts = None
+        return None
+    if macd_snap.bar_dt == flag_bar_dt:
+        return None  # still sitting on the flag's own bar T -- wait for T+3
+
+    direction = state.tw2_3slot_pending_flag_direction
+    signal_id = f"{make_signal_id(flag_bar_dt, direction)}:TW2_3SLOT_CONFIRM"
+    state.tw2_3slot_pending_flag_direction = None
+    state.tw2_3slot_pending_flag_bar_ts = None
+    if signal_id in state.processed_signal_ids:
+        return None
+
+    base_decision = time_window_filter.evaluate_time_window_entry(
+        bars_3m, direction, flag_bar_dt, now,
+        position_direction=_position_direction(position),
+        morning_entry_count=0, afternoon_entry_count=0, daily_entry_count=0,
+    )
+    # TW2 3-SLOT never inherits TW_MORNING_ONLY's blanket afternoon block --
+    # an afternoon candidate rejected SOLELY by that toggle is still
+    # eligible for this mode's own mandatory TW2+TEGv2 dual-gate (mirrors,
+    # byte-for-byte, the window_blocked_by_morning_only condition worker.py
+    # already computes for the identical purpose inside
+    # _resolve_time_window_candidate's TEG count-cap-bypass block).
+    window_blocked_by_morning_only = (
+        base_decision.block_reason == config.TW_REJECT_TIME_WINDOW
+        and base_decision.metrics.get("window") in (
+            time_window_filter.WINDOW_AFTERNOON_1, time_window_filter.WINDOW_AFTERNOON_2,
+        )
+        and now.astimezone(KST).time() < config.TW_AFTERNOON_ENTRY_HARD_CUTOFF
+    )
+    tw2_cleared = bool(base_decision.approved or window_blocked_by_morning_only)
+    if tw2_cleared:
+        vetoed, veto_reason = time_window_filter.evaluate_tw2_extra_vetoes(bars_3m, direction, flag_bar_dt, now)
+        if vetoed:
+            tw2_cleared = False
+            base_decision = dataclasses.replace(base_decision, approved=False, decision=veto_reason, block_reason=veto_reason)
+
+    slot_metrics: dict[str, Any] = {}
+    final_approved = False
+    final_block_reason = base_decision.block_reason
+    final_decision_label = base_decision.decision
+
+    if tw2_cleared:
+        slot_decision = time_window_3slot.resolve_slot(
+            now=now,
+            slots_used_today=int(state.tw2_3slot_slots_used_today or 0),
+            morning_count=int(state.tw2_3slot_morning_count or 0),
+            afternoon_count=int(state.tw2_3slot_afternoon_count or 0),
+            direction=direction,
+            is_flat=(position is None),
+            last_afternoon_direction=state.tw2_3slot_last_afternoon_direction,
+        )
+        slot_metrics["slot_number"] = slot_decision.slot_number
+        slot_metrics["session"] = slot_decision.session
+        if not slot_decision.slot_allowed:
+            final_block_reason = slot_decision.reject_reason
+            final_decision_label = slot_decision.reject_reason
+        elif slot_decision.requires_quality_gate:
+            quality = time_window_3slot.evaluate_trend_quality(bars_3m, direction)
+            slot_metrics["quality_passed"] = quality.passed_count
+            slot_metrics["quality_conditions"] = dict(quality.conditions)
+            if quality.approved:
+                final_approved = True
+                final_decision_label = config.TW_APPROVED
+                final_block_reason = None
+            else:
+                final_block_reason = config.TW2_3SLOT_REJECT_QUALITY
+                final_decision_label = config.TW2_3SLOT_REJECT_QUALITY
+        elif slot_decision.requires_teg_gate:
+            teg_decision = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
+            slot_metrics["teg_approved"] = bool(teg_decision.approved)
+            slot_metrics["teg_reject_reasons"] = list(teg_decision.reject_reasons or [])
+            if teg_decision.approved:
+                final_approved = True
+                final_decision_label = config.TW_APPROVED
+                final_block_reason = None
+            else:
+                final_block_reason = config.TW2_3SLOT_REJECT_TEG
+                final_decision_label = config.TW2_3SLOT_REJECT_TEG
+        else:
+            final_approved = True
+            final_decision_label = config.TW_APPROVED
+            final_block_reason = None
+
+    decision = dataclasses.replace(
+        base_decision, approved=final_approved, decision=final_decision_label, block_reason=final_block_reason,
+        metrics={**(base_decision.metrics or {}), **slot_metrics},
+    )
+    _persist_tw2_3slot_decision(state, decision, signal_id)
+
+    if not decision.approved:
+        target_symbol = order_executor.target_symbol_for_direction(direction)
+        if position is not None and position.symbol != target_symbol:
+            if decision.block_reason in config.TW_WHIPSAW_REJECT_REASONS:
+                state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+                whipsaw_trace = {
+                    "signal_id": signal_id, "direction": direction.value, "signal_type": "TW2_3SLOT_CONFIRM",
+                    "completed_bar_at": macd_snap.bar_dt.isoformat(),
+                    "order_executor_called": False, "broker_called": False,
+                    "final_block_reason": decision.block_reason or decision.decision or "",
+                    "order_result_override": "TIME_WINDOW_WHIPSAW_HOLD",
+                    "major_fields": _entry_gate_ledger_fields(state, decision, "TW2_3SLOT"),
+                }
+                whipsaw_outcome = order_executor.ExecutionOutcome(
+                    signal_id=signal_id, direction=direction, target_symbol=target_symbol,
+                    final_state=SignalState.BLOCKED, block_reason=decision.block_reason or decision.decision,
+                )
+                _record_signal_ledger(
+                    state, macd_snap, direction, "TW2_3SLOT_CONFIRM", signal_id, datetime.now(KST),
+                    whipsaw_outcome, whipsaw_trace,
+                )
+                result.actions.append(f"TW2_3SLOT_WHIPSAW_HOLD:{direction.value}")
+                return None
+            outcome = _execute_reversal_exit_only_for_filtered_entry(
+                broker=broker, state=state, macd_snap=macd_snap, direction=direction,
+                position=position, decision=decision, result=result, gate_mode="TW2_3SLOT",
+                signal_id_override=signal_id,
+            )
+            if outcome is not None:
+                _apply_exit_outcome(state, outcome)
+            return outcome
+        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+        dispatch_trace = {
+            "signal_id": signal_id, "direction": direction.value, "signal_type": "TW2_3SLOT_CONFIRM",
+            "completed_bar_at": macd_snap.bar_dt.isoformat(),
+            "order_executor_called": False, "broker_called": False,
+            "final_block_reason": decision.block_reason or decision.decision or "",
+            "order_result_override": config.FILTERED_OUT,
+            "major_fields": _entry_gate_ledger_fields(state, decision, "TW2_3SLOT"),
+        }
+        outcome = order_executor.ExecutionOutcome(
+            signal_id=signal_id, direction=direction,
+            target_symbol=target_symbol,
+            final_state=SignalState.BLOCKED, block_reason=decision.block_reason or decision.decision,
+        )
+        _record_signal_ledger(
+            state, macd_snap, direction, "TW2_3SLOT_CONFIRM", signal_id, datetime.now(KST), outcome, dispatch_trace,
+        )
+        result.actions.append(f"{config.FILTERED_OUT}:{direction.value}")
+        return None
+
+    signal_detected_at = datetime.now(KST)
+    result.signal_detected_at = signal_detected_at.isoformat()
+    signal_type = "REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL"
+    outcome = _execute_or_wait(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
+        signal_detected_at=signal_detected_at,
+    )
+    result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, "TW2_3SLOT")
+    if outcome is None and result.skipped == config.MISSED_SIGNAL_QUOTE_STALE:
+        state.tw2_3slot_pending_flag_direction = direction
+        state.tw2_3slot_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
+
+    if outcome is not None and outcome.final_state == SignalState.EXECUTED:
+        _apply_switch_outcome(state, outcome, direction, now)
+        session = slot_metrics.get("session") or time_window_filter.session_for_window(
+            time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
+        )
+        state.time_window_position_active = True
+        state.time_window_active_mode = "TW2_3SLOT"
+        state.time_window_entry_session = session
+        state.time_window_tp1_done = False
+        state.time_window_peak_net_return = 0.0
+        state.time_window_initial_quantity = outcome.quantity
+        state.last_time_window_entry_at = signal_detected_at.isoformat()
+        state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
+        if session == time_window_3slot.SESSION_MORNING:
+            state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
+        else:
+            state.tw2_3slot_afternoon_count = int(state.tw2_3slot_afternoon_count or 0) + 1
+            state.tw2_3slot_last_afternoon_direction = direction.value
+    return outcome
+
+
 def _judge_no_filter_flag(*, state: RuntimeState, now: datetime, signal_id: str) -> MajorFlagDecision:
     """"무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20) -- a single approve/
     reject decision on the ALREADY-confirmed crossover bar itself, no T+3
@@ -2685,6 +3007,8 @@ def _judge_entry_gate(
     """
     if state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled:
         return _judge_time_window_flag(state=state, bars_3m=bars_3m, direction=direction, signal_id=signal_id), "TIME_WINDOW"
+    if state.time_window_3slot_filter_enabled:
+        return _judge_tw2_3slot_flag(state=state, bars_3m=bars_3m, direction=direction, signal_id=signal_id), "TW2_3SLOT"
     if state.no_filter_0900_1100_enabled:
         return _judge_no_filter_flag(state=state, now=now, signal_id=signal_id), "NO_FILTER_0900_1100"
     if state.sideways_filter_enabled:
@@ -2908,6 +3232,43 @@ def _time_window_ledger_fields(
     return row
 
 
+def _tw2_3slot_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
+    """tw2_3slot_* ledger columns — mirrors _time_window_ledger_fields'
+    shape for TW2 3-SLOT's own slot/quality/TEG diagnostics. Additive-only:
+    a new column family, never touching the existing time_window_* ones."""
+    row: dict[str, Any] = {
+        "tw2_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+        "tw2_3slot_filter_version": state.time_window_3slot_filter_version or config.TW2_3SLOT_FILTER_VERSION,
+        "tw2_3slot_slots_used_today": int(state.tw2_3slot_slots_used_today or 0),
+        "tw2_3slot_morning_count": int(state.tw2_3slot_morning_count or 0),
+        "tw2_3slot_afternoon_count": int(state.tw2_3slot_afternoon_count or 0),
+        "tw2_3slot_approved": "",
+        "tw2_3slot_decision": "",
+        "tw2_3slot_block_reason": "",
+        "tw2_3slot_slot_number": "",
+        "tw2_3slot_session": "",
+        "tw2_3slot_quality_passed": "",
+        "tw2_3slot_quality_conditions": "",
+        "tw2_3slot_teg_approved": "",
+        "tw2_3slot_teg_reject_reasons": "",
+    }
+    if decision is None:
+        return row
+    metrics = dict(decision.metrics or {})
+    row.update({
+        "tw2_3slot_approved": bool(decision.approved),
+        "tw2_3slot_decision": decision.decision or "",
+        "tw2_3slot_block_reason": decision.block_reason or "",
+        "tw2_3slot_slot_number": metrics.get("slot_number") if metrics.get("slot_number") is not None else "",
+        "tw2_3slot_session": metrics.get("session") or "",
+        "tw2_3slot_quality_passed": metrics.get("quality_passed") if metrics.get("quality_passed") is not None else "",
+        "tw2_3slot_quality_conditions": str(metrics.get("quality_conditions")) if metrics.get("quality_conditions") is not None else "",
+        "tw2_3slot_teg_approved": metrics.get("teg_approved") if metrics.get("teg_approved") is not None else "",
+        "tw2_3slot_teg_reject_reasons": str(metrics.get("teg_reject_reasons")) if metrics.get("teg_reject_reasons") is not None else "",
+    })
+    return row
+
+
 def _no_filter_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDecision] = None) -> dict[str, Any]:
     """no_filter_0900_1100_* ledger columns -- minimal (no score/component
     breakdown, since this gate is a pure time-window check, not a scored
@@ -2948,6 +3309,7 @@ def _entry_gate_ledger_fields(
         state, decision if mode == "TIME_WINDOW" else None, down_blue_exception_applied=down_blue_exception_applied,
     )
     no_filter_fields = _no_filter_ledger_fields(state, decision if mode == "NO_FILTER_0900_1100" else None)
+    tw2_3slot_fields = _tw2_3slot_ledger_fields(state, decision if mode == "TW2_3SLOT" else None)
     merged = dict(major_fields)
     for key, value in sideways_fields.items():
         if key in _MAJOR_METRIC_LEDGER_KEYS:
@@ -2959,6 +3321,7 @@ def _entry_gate_ledger_fields(
     merged.update(single_entry_fields)
     merged.update(time_window_fields)
     merged.update(no_filter_fields)
+    merged.update(tw2_3slot_fields)
     return merged
 
 
@@ -3240,7 +3603,7 @@ def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed
     """
     if confirmed_direction == Direction.HOLD:
         return
-    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
+    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled):
         return
     if state.premarket_carry_executed_at:
         return  # already resolved (entered or expired) today
@@ -3261,8 +3624,8 @@ def _advance_premarket_carry_candidate(state: RuntimeState, macd_snap, confirmed
 def _premarket_carry_should_fire(state: RuntimeState, now: datetime) -> bool:
     """Mirrors _scheduled_entry_should_fire's own once-per-day + fire-window
     semantics exactly, on the separate premarket_carry_* fields."""
-    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
-        return False  # user turned TW2 off between registration and 09:03 -- do not fire
+    if not (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled):
+        return False  # user turned TW2/TEG/TW2_3SLOT off between registration and 09:03 -- do not fire
     if state.premarket_carry_candidate_direction is None or state.premarket_carry_executed_at:
         return False
     if now.time() < config.SCHEDULED_ENTRY_TIME:
@@ -3372,10 +3735,19 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
         # SAME session bookkeeping _dispatch_confirmed_signal's approved
         # branch sets, so the held-position TW2 branch recognizes and manages
         # this position identically to a normal TW2 entry from here on.
-        state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
-        state.time_window_entry_session_seq = state.time_window_morning_entry_count
+        # TW2 3-SLOT (2026-09-01): reuses this same premarket-carry firing
+        # logic verbatim, but the fill consumes 1 of ITS OWN 3 daily slots
+        # (config.py's TW2_3SLOT_* docstring) rather than TW2's morning
+        # entry count -- never both, mutual exclusion guarantees only one
+        # branch below ever runs.
+        if state.time_window_3slot_filter_enabled:
+            state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
+            state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
+        else:
+            state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
+            state.time_window_entry_session_seq = state.time_window_morning_entry_count
         state.time_window_position_active = True
-        state.time_window_active_mode = "TW2"
+        state.time_window_active_mode = "TW2_3SLOT" if state.time_window_3slot_filter_enabled else "TW2"
         state.time_window_entry_session = "MORNING"
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
@@ -3707,7 +4079,26 @@ def run_once(
                 result.actions.append(f"TIME_WINDOW_SELL_ONLY:{tw_resolve_outcome.target_symbol}")
             return result
 
-        if (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled) and state.time_window_position_active:
+        # TW2 3-SLOT (2026-09-01): resolves its own pending T+3 candidate,
+        # exactly mirroring the TW2 call just above but via fully separate
+        # tw2_3slot_pending_flag_*/tw2_3slot_* bookkeeping. A no-op unless
+        # state.time_window_3slot_filter_enabled is True (mutually exclusive
+        # with TW2/TEG, so at most one of these two calls ever does anything
+        # on a given tick).
+        tw2_3slot_resolve_outcome = _resolve_tw2_3slot_candidate(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+            bars_3m=bars_3m, df_1m=df_1m, position=pos, result=result,
+        )
+        if tw2_3slot_resolve_outcome is not None and tw2_3slot_resolve_outcome.final_state == SignalState.EXECUTED:
+            if state.position is not None:
+                result.actions.append(f"TW2_3SLOT_SWITCH:{tw2_3slot_resolve_outcome.target_symbol}")
+            else:
+                result.actions.append(f"TW2_3SLOT_SELL_ONLY:{tw2_3slot_resolve_outcome.target_symbol}")
+            return result
+
+        if (
+            state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled
+        ) and state.time_window_position_active:
             # This position is (still) managed by the time-window filter's
             # own ladder, fully replacing PROFIT_LOCK/QUICK_PROFIT below for
             # as long as it is held — its STOP_LOSS/TP1/TP2 checks already
@@ -3762,14 +4153,26 @@ def run_once(
             # change what gets approved, dispatched, or ordered.
             if confirmed_direction != Direction.HOLD:
                 signal_id = make_signal_id(macd_snap.bar_dt, confirmed_direction)
-                decision = _judge_time_window_flag(
-                    state=state, bars_3m=bars_3m, direction=confirmed_direction,
-                    signal_id=signal_id,
-                )
+                # TW2 3-SLOT (2026-09-01): same gap/fix as the comment above,
+                # just registered against this mode's own separate pending
+                # state when it -- not TW2/TEG -- is the one actually
+                # managing this held position.
+                if state.time_window_active_mode == "TW2_3SLOT":
+                    decision = _judge_tw2_3slot_flag(
+                        state=state, bars_3m=bars_3m, direction=confirmed_direction,
+                        signal_id=signal_id,
+                    )
+                    held_gate_mode = "TW2_3SLOT"
+                else:
+                    decision = _judge_time_window_flag(
+                        state=state, bars_3m=bars_3m, direction=confirmed_direction,
+                        signal_id=signal_id,
+                    )
+                    held_gate_mode = "TIME_WINDOW"
                 _record_major_filtered_signal(
                     state=state, macd_snap=macd_snap, direction=confirmed_direction,
                     signal_type="REVERSAL", signal_id=signal_id, decision=decision,
-                    detected_at=datetime.now(KST), result=result, gate_mode="TIME_WINDOW",
+                    detected_at=datetime.now(KST), result=result, gate_mode=held_gate_mode,
                 )
             return result
 
@@ -3856,12 +4259,14 @@ def run_once(
                     signal_id=reversal_signal_id,
                 )
                 if reversal_decision is not None and not reversal_decision.approved:
-                    if reversal_gate_mode == "TIME_WINDOW":
-                        # Two-bar (T -> T+3) confirmation model (spec §1/§12):
-                        # a not-yet-confirmed TW candidate must NEVER trigger
-                        # the sell-only liquidation below — the held position
+                    if reversal_gate_mode in ("TIME_WINDOW", "TW2_3SLOT"):
+                        # Two-bar (T -> T+3) confirmation model (spec §1/§12,
+                        # and identically for TW2_3SLOT's own T+3 wait): a
+                        # not-yet-confirmed candidate must NEVER trigger the
+                        # sell-only liquidation below — the held position
                         # stays untouched until _resolve_time_window_candidate
-                        # (checked at T+3) decides to switch or hold.
+                        # / _resolve_tw2_3slot_candidate (checked at T+3)
+                        # decides to switch or hold.
                         #
                         # 2026-08-28 real incident fix: the candidate is NOT
                         # "already recorded by _judge_time_window_flag above"
@@ -3882,7 +4287,7 @@ def run_once(
                         _record_major_filtered_signal(
                             state=state, macd_snap=macd_snap, direction=confirmed_direction,
                             signal_type="REVERSAL", signal_id=reversal_signal_id, decision=reversal_decision,
-                            detected_at=datetime.now(KST), result=result, gate_mode="TIME_WINDOW",
+                            detected_at=datetime.now(KST), result=result, gate_mode=reversal_gate_mode,
                         )
                     else:
                         outcome = _execute_reversal_exit_only_for_filtered_entry(
@@ -3951,6 +4356,7 @@ def run_once(
                 state.major_filter_enabled or state.sideways_filter_enabled
                 or state.trend_persistence_filter_enabled or state.single_entry_filter_enabled
                 or state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled
+                or state.time_window_3slot_filter_enabled
             ):
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
@@ -4054,6 +4460,14 @@ def run_once(
     )
     if tw_resolve_outcome is not None and tw_resolve_outcome.final_state == SignalState.EXECUTED:
         result.actions.append(f"TIME_WINDOW_ENTRY:{tw_resolve_outcome.target_symbol}")
+        return result
+
+    tw2_3slot_resolve_outcome = _resolve_tw2_3slot_candidate(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        bars_3m=bars_3m, df_1m=df_1m, position=None, result=result,
+    )
+    if tw2_3slot_resolve_outcome is not None and tw2_3slot_resolve_outcome.final_state == SignalState.EXECUTED:
+        result.actions.append(f"TW2_3SLOT_ENTRY:{tw2_3slot_resolve_outcome.target_symbol}")
         return result
 
     if _scheduled_entry_should_fire(state, now):

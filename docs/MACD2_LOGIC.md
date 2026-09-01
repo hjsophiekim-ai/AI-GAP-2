@@ -1094,6 +1094,140 @@ mu_macd: `_entry_gate_block_reason` 1줄), `state_store.py`, `service.py`
 기존 동작, MU_MACD ledger 스키마(down_blue_exception과 동일하게 전용
 컬럼 없이 기존 `block_reason` 컬럼으로 충분).
 
+## "TW2 3-SLOT" (3슬롯 유연배분, 2026-09-01)
+
+TW2/TEG와 같은 우선순위 자리를 두고 경쟁하는 **세 번째** 선택형 시간대 필터
+모드다(`time_window_3slot_filter_enabled`). TW2/TEGv2와 **동시에 켤 수
+없다** — `service.py`의 세 setter(`set_time_window_2_filter_enabled`/
+`set_time_window_teg_filter_enabled`/`set_time_window_3slot_filter_enabled`)가
+서로를 자동으로 끈다(어느 것을 켜도 나머지 둘은 꺼짐). 기본값 **OFF**
+(`config.TW2_3SLOT_FILTER_DEFAULT`) — TW2가 여전히 실거래 기본값이며,
+사용자가 실거래 검증 후 직접 전환한다.
+
+버전: `config.TW2_3SLOT_FILTER_VERSION = "TW2_3SLOT_V1_20260901"`. 구현:
+`app/trading/macd2/time_window_3slot.py`(신규, 순수함수 — Trend Quality
+평가 + 슬롯 배분 결정), `worker.py`의 `_judge_tw2_3slot_flag`/
+`_resolve_tw2_3slot_candidate`(신규 함수, TW2의 `_judge_time_window_flag`/
+`_resolve_time_window_candidate`와 나란히 존재하되 완전히 분리된 pending
+상태(`tw2_3slot_pending_flag_*`)와 슬롯 카운터(`tw2_3slot_slots_used_today`/
+`tw2_3slot_morning_count`/`tw2_3slot_afternoon_count`)를 사용 — TW2의
+`time_window_pending_flag_*`/`time_window_morning_entry_count`/
+`time_window_afternoon_entry_count`는 절대 공유·오염하지 않는다).
+
+60거래일(TRAIN 2026-06-05~07-31/OOS 2026-08-03~08-31) 백테스트
+(`scripts/tw2_3slot_flex_backtest.py`, "Strategy C")와 완전히 별도로 새로
+짠 2차 시뮬레이션 루프(`scripts/tw2_3slot_flex_cross_check.py`)로 교차검증한
+결과, 현행 TW2 대비 OOS 복리수익·PF·MDD·Top10 제외수익(소수 대박거래
+의존도) 전부 개선(`data/validation/tw2_3slot_flex/`).
+
+### 재사용 vs 신규 — 정확히 무엇이 바뀌었나
+
+**완전히 재사용(TW2/TEGv2와 100% 동일 함수, 수정 없음)**:
+
+- `time_window_filter.evaluate_time_window_entry()` — T+3 재확인/품질점수/
+  시간대/reset 게이트. 단, 진입횟수 파라미터(`morning_entry_count`/
+  `afternoon_entry_count`/`daily_entry_count`)는 이 모드용 호출 시 항상
+  `0`으로 넘겨 그 함수 자체의 3/2/5 cap이 절대 발동하지 않게 한다 — 이
+  모드의 진짜 cap은 아래 §슬롯 배분에서 별도로 강제한다.
+- `time_window_filter.evaluate_tw2_extra_vetoes()` — VWAP 역행 veto + 최근
+  교차과다 veto.
+- `app.trading.macd2.teg_gate.evaluate_teg()`("TEGv2") — 단, 기존
+  production의 "1일1회 cap-bypass" 용도가 아니라, 오후 후보마다 매번
+  호출하는 **필수 AND 게이트**로 새롭게 사용한다(§오후 슬롯 참고).
+- `time_window_position_manager`의 TP1/TP2(`config.TW2_MORNING_TP2`
+  override)/trailing/손절 래더, 휩쏘-내성 T+3 반대신호청산 분류
+  (`config.TW_WHIPSAW_REJECT_REASONS`) — 이 모드가 연 포지션도 TW2/TEG와
+  완전히 같은 `time_window_position_active`/`time_window_entry_session`/
+  `time_window_tp1_done`/`time_window_peak_net_return` 상태를 그대로
+  사용하며(`time_window_active_mode="TW2_3SLOT"`로 태깅), PRE15 프리마켓
+  승계(`_advance_premarket_carry_candidate`/`_execute_premarket_carry_entry`)도
+  동일 조건 그대로 재사용한다(단, 체결 시 TW2의 오전 카운터가 아니라 이
+  모드 자신의 슬롯 카운터를 1 소진).
+
+**신규 로직(이 모드에만 존재)**:
+
+1. **하루 3슬롯 하드캡** (`config.TW2_3SLOT_DAILY_CAP`, 기본 3) — 4번째
+   신규진입은 어떤 경우에도 없다.
+2. **09:00-11:00(`config.TW2_3SLOT_MORNING_WINDOW_END`) 오전**: 1·2번째
+   후보는 위 TW2 게이트 통과만으로 승인. 3번째 후보(이미 2슬롯 소진 +
+   여전히 오전)는 추가로 Trend Quality 5개 조건 중
+   `config.TW2_3SLOT_MORNING_3RD_QUALITY_MIN`(기본 3)개 이상을 요구한다:
+   - 가격/EMA10 방향 일치(UP_RED: `close>EMA10`, DOWN_BLUE: 반대)
+   - EMA10-EMA20 **signed** 스프레드가 신호 방향으로 2봉 순증가(단순
+     EMA10>EMA20 완전정렬이 아님 — 급반전 초기 신호를 늦게 잡는 문제를
+     피하기 위함)
+   - MACD-Signal gap이 신호 방향으로 2봉 순증가
+   - EMA20 기울기가 신호 방향(최근 2개 완성봉 기준)
+   - 세션 VWAP 방향 일치
+   실패하면 그 3번째 슬롯은 소진하지 않고 오후로 이월한다.
+3. **11:00-14:50(`config.TW2_3SLOT_AFTERNOON_WINDOW_END`) 오후**: 슬롯이
+   남아있을 때만, TW2 승인 **AND** TEGv2 승인을 모두 요구한다(TW2가
+   `TW_MORNING_ONLY`로 이 시간대 자체를 막는 경우도, 그 사유가 오직
+   시간대 하나뿐이면 — worker.py의 기존 TEG cap-bypass가 쓰는
+   `window_blocked_by_morning_only` 조건과 동일한 정의 — 이 모드의 다음
+   단계 게이트로 그대로 넘어간다). 2번째 오후 진입(슬롯 2개 남았을 때)은
+   직전 오후 포지션이 완전히 종료된 뒤(`is_flat`) + 그 종료된 포지션과
+   **반대 방향**일 때만 허용 — 동일 방향 재진입은 무조건 거절
+   (`config.TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND`). 이미 보유 중인
+   오후 포지션의 반대신호 스위치(매도 자체가 "직전 거래 종료"를 만족시킴)는
+   이 direction 체크 대상이 아니다.
+
+### 모델·state
+
+`RuntimeState`에 최소 다음을 추가한다: `time_window_3slot_filter_enabled`/
+`_enabled_at`/`_enabled_by`/`_version`, `tw2_3slot_pending_flag_direction`/
+`_bar_ts`, `tw2_3slot_slots_used_today`/`_morning_count`/`_afternoon_count`/
+`_last_afternoon_direction`, `last_tw2_3slot_*` 진단 필드 8개. 슬롯
+카운터/pending은 거래일 롤오버 시 초기화되고, 토글 자체는 유지된다(TW2와
+동일 패턴). `state_store.py`가 이 필드들을 직렬화/역직렬화하며, 손상된
+state.json이 3SLOT과 TW2/TEG를 동시에 True로 기록한 경우 방어적으로
+3SLOT을 False로 되돌린다(신규·미검증 모드가 기존 모드를 조용히 이기지
+않도록).
+
+### 원장
+
+신호 원장에 `tw2_3slot_filter_enabled`/`_version`/`_slots_used_today`/
+`_morning_count`/`_afternoon_count`/`_approved`/`_decision`/`_block_reason`/
+`_slot_number`/`_session`/`_quality_passed`/`_quality_conditions`/
+`_teg_approved`/`_teg_reject_reasons` 컬럼을 뒤에 추가한다(기존 컬럼
+삭제·이름변경 없음). TW2/TEG의 `time_window_*` 컬럼과는 별개 — 이 모드는
+그 컬럼들을 채우지 않는다(단, `time_window_active_mode="TW2_3SLOT"`는
+포지션을 연 뒤 공유 필드로 계속 기록된다).
+
+### 검증
+
+`tests/macd2/test_time_window_3slot.py`: 3-way 상호배제(서비스 레벨),
+`_judge_entry_gate` 라우팅, Trend Quality 5개 조건 개별 pass/fail 및
+임계값별 승인/거절, 슬롯 배분 순수함수(오전 1·2·3번째, 일일 cap, 오후
+TEGv2 필수, 오후 2번째 동일방향 거절/반대방향 허용, 거래시간 외 거절),
+그리고 fake broker 기반 worker 통합 테스트(하루 슬롯 cap을 절대 넘지
+않음, TW2 자신의 카운터는 절대 건드리지 않음). 기존 `tests/macd2/` 전체
+스위트는 이 기능 추가 전후로 pass/fail 집합이 완전히 동일함을
+확인했다(회귀 없음).
+
+### 수정 범위 / 금지
+
+허용(최소 수정, 전부 추가 위주): `app/trading/macd2/time_window_3slot.py`(신규),
+`config.py`(`TW2_3SLOT_*` 상수), `models.py`(토글+슬롯+진단 필드),
+`worker.py`(`_judge_tw2_3slot_flag`/`_resolve_tw2_3slot_candidate`/
+`_tw2_3slot_ledger_fields`/`abandon_pending_tw2_3slot_candidate_if_any`
+신규 함수 추가 + 기존 TW2/TEG 공유 조건문에 `or state.time_window_3slot_
+filter_enabled` 형태로 3-way 확장(TEG가 TW2에 얹힐 때 쓴 것과 동일한
+패턴) + `_judge_entry_gate`/PREMARKET_CARRY/held-position 래더/reversal
+분기에 신규 gate_mode="TW2_3SLOT" 분기 추가), `state_store.py`,
+`service.py`(`set_time_window_3slot_filter_enabled` 신규 +
+기존 두 setter에 3-way 상호배제 라인 추가), `ledger.py`(`tw2_3slot_*`
+컬럼 14개 추가), UI, 본 문서, `tests/macd2/test_time_window_3slot.py`.
+
+수정 금지: `time_window_filter.py`/`teg_gate.py`/`time_window_position_
+manager.py`의 기존 함수(모두 그대로 재사용, 내부 로직 변경 없음), TW2/TEG
+자신의 pending/T+3/휩쏘/카운터 로직과 상태 필드(공유 조건문 확장은
+허용되지만 TW2/TEG가 켜져 있을 때의 실제 동작·값은 mutual exclusion으로
+항상 이전과 동일해야 함 — 회귀 테스트로 확인됨), 다른 4개 필터의 기존
+동작, `signal_engine.py`의 MACD·confirmed crossover, `order_executor.py`의
+BUY/SELL 수량 산식·체결·잔고 동기화, STOP_LOSS/PROFIT_LOCK/강제청산,
+REAL gate, MU_MACD, 기본값(TW2가 여전히 default).
+
 ## 금지 사항
 
 - MACD 12/26/9 파라미터 변경 금지

@@ -40,6 +40,7 @@ from app.trading.macd2.worker import (
     _apply_switch_outcome,
     _parse_iso_dt,
     abandon_pending_time_window_candidate_if_any,
+    abandon_pending_tw2_3slot_candidate_if_any,
     compute_today_signal_overview,
     git_sha,
     initialize_strategy_session,
@@ -610,6 +611,15 @@ class Macd2Service:
             state.time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
             state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
             state.time_window_2_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and state.time_window_3slot_filter_enabled:
+            # TW2 3-SLOT (2026-09-01) shares this same priority tier — 3-way
+            # mutual exclusion, same pattern as TW1/TW2 before it.
+            state.time_window_3slot_filter_enabled = False
+            state.time_window_3slot_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_3slot_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_3SLOT_DISABLED_BY_TEG_ENABLE",
+            )
         state_store.save_state(state)
         return {
             "ok": True,
@@ -619,6 +629,7 @@ class Macd2Service:
             "time_window_teg_filter_enabled_by": state.time_window_teg_filter_enabled_by,
             "time_window_teg_filter_version": state.time_window_teg_filter_version,
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
+            "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
         }
 
     def set_time_window_2_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
@@ -638,6 +649,15 @@ class Macd2Service:
             state.time_window_teg_filter_enabled = False
             state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
             state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and state.time_window_3slot_filter_enabled:
+            # TW2 3-SLOT (2026-09-01) shares this same priority tier — 3-way
+            # mutual exclusion, same pattern as TW1/TW2 before it.
+            state.time_window_3slot_filter_enabled = False
+            state.time_window_3slot_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_3slot_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_3SLOT_DISABLED_BY_TW2_ENABLE",
+            )
         if not enabled_bool:
             # 2026-08-28 real incident fix: turning TW2 off (which also forces
             # TEG off, above) used to leave an already-pending T+3 candidate
@@ -658,6 +678,55 @@ class Macd2Service:
             "time_window_2_filter_enabled_at": state.time_window_2_filter_enabled_at,
             "time_window_2_filter_enabled_by": state.time_window_2_filter_enabled_by,
             "time_window_2_filter_version": state.time_window_2_filter_version,
+            "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+            "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+        }
+
+    def set_time_window_3slot_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle TW2 3-SLOT — a THIRD, separately selectable
+        time-window mode (2026-09-01 사용자 요청), mutually exclusive with
+        BOTH TW2 and TEG (enabling this forces both of those off; enabling
+        either of those forces this off, in their own setters above). See
+        app/trading/macd2/time_window_3slot.py's module docstring for what
+        this mode reuses (TW2's own T+3/quality-score/extra-veto gate,
+        TEGv2, the position-management ladder, whipsaw-tolerant reversal
+        exit — all completely unmodified) vs. new (its own 3-slot entry
+        orchestration). Default OFF (config.TW2_3SLOT_FILTER_DEFAULT) — TW2
+        remains the live default; only updates runtime state, never places
+        orders directly.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.time_window_3slot_filter_enabled)
+        state.time_window_3slot_filter_enabled = enabled_bool
+        state.time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
+        state.time_window_3slot_filter_enabled_at = datetime.now(KST).isoformat()
+        state.time_window_3slot_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
+            state.time_window_2_filter_enabled = False
+            state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_2_filter_enabled_by = str(changed_by or "ui")
+            state.time_window_teg_filter_enabled = False
+            state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_time_window_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_DISABLED_BY_TW2_3SLOT_ENABLE",
+            )
+        if not enabled_bool:
+            # Same 2026-08-28-class orphaned-candidate fix as TW2's own
+            # toggle-off path, for this mode's own separate pending state.
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_3SLOT_DISABLED_BY_USER",
+            )
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "time_window_3slot_filter_enabled": enabled_bool,
+            "previous": prev,
+            "time_window_3slot_filter_enabled_at": state.time_window_3slot_filter_enabled_at,
+            "time_window_3slot_filter_enabled_by": state.time_window_3slot_filter_enabled_by,
+            "time_window_3slot_filter_version": state.time_window_3slot_filter_version,
+            "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
         }
 

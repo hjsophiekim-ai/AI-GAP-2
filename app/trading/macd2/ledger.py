@@ -109,6 +109,18 @@ SIGNAL_LEDGER_COLUMNS = [
     # former slot shares every other time_window_* column with TW2 (score,
     # window, session, active_mode, etc.) — this is its own enabled flag.
     "time_window_teg_filter_enabled",
+    # TW2 3-SLOT fields (appended 2026-09-01; never rename/delete older
+    # cols). A THIRD, separately selectable mode — its own dedicated
+    # columns since its slot/quality/TEG diagnostics don't map onto any
+    # existing time_window_* field (it does NOT share time_window_score/
+    # window/session with TW2/TEG; time_window_active_mode="TW2_3SLOT"
+    # still records which mode opened the currently-held position, same
+    # shared column as TW2/TEG use).
+    "tw2_3slot_filter_enabled", "tw2_3slot_filter_version",
+    "tw2_3slot_slots_used_today", "tw2_3slot_morning_count", "tw2_3slot_afternoon_count",
+    "tw2_3slot_approved", "tw2_3slot_decision", "tw2_3slot_block_reason",
+    "tw2_3slot_slot_number", "tw2_3slot_session", "tw2_3slot_quality_passed",
+    "tw2_3slot_quality_conditions", "tw2_3slot_teg_approved", "tw2_3slot_teg_reject_reasons",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [
