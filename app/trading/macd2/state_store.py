@@ -383,6 +383,17 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_tw2_3slot_quality_conditions": dict(state.last_tw2_3slot_quality_conditions or {}) if state.last_tw2_3slot_quality_conditions else None,
         "last_tw2_3slot_teg_approved": state.last_tw2_3slot_teg_approved,
         "last_tw2_3slot_teg_reject_reasons": list(state.last_tw2_3slot_teg_reject_reasons or []),
+        "whipsaw_watch_active": bool(state.whipsaw_watch_active),
+        "whipsaw_watch_direction": (
+            state.whipsaw_watch_direction.value if state.whipsaw_watch_direction else None
+        ),
+        "whipsaw_watch_mode": state.whipsaw_watch_mode,
+        "whipsaw_watch_origin_flag_bar_ts": state.whipsaw_watch_origin_flag_bar_ts,
+        "whipsaw_watch_started_at": state.whipsaw_watch_started_at,
+        "whipsaw_watch_last_gap": state.whipsaw_watch_last_gap,
+        "whipsaw_watch_last_ema_spread": state.whipsaw_watch_last_ema_spread,
+        "whipsaw_watch_last_checked_bar_ts": state.whipsaw_watch_last_checked_bar_ts,
+        "whipsaw_watch_bars_checked": int(state.whipsaw_watch_bars_checked or 0),
     }
 
 
@@ -426,6 +437,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     tw2_3slot_pending_raw = raw.get("tw2_3slot_pending_flag_direction")
     tw2_3slot_pending_flag_direction = (
         Direction(tw2_3slot_pending_raw) if tw2_3slot_pending_raw in _DIRECTION_VALUES else None
+    )
+    whipsaw_watch_direction_raw = raw.get("whipsaw_watch_direction")
+    whipsaw_watch_direction = (
+        Direction(whipsaw_watch_direction_raw) if whipsaw_watch_direction_raw in _DIRECTION_VALUES else None
     )
     # NOTE: TW1 (time_window_filter_enabled) was retired 2026-08-27 -- any
     # stale value for it in an old state.json is silently discarded here
@@ -802,6 +817,15 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         ),
         last_tw2_3slot_teg_approved=raw.get("last_tw2_3slot_teg_approved"),
         last_tw2_3slot_teg_reject_reasons=list(raw.get("last_tw2_3slot_teg_reject_reasons") or []),
+        whipsaw_watch_active=bool(raw.get("whipsaw_watch_active", False)),
+        whipsaw_watch_direction=whipsaw_watch_direction,
+        whipsaw_watch_mode=raw.get("whipsaw_watch_mode"),
+        whipsaw_watch_origin_flag_bar_ts=raw.get("whipsaw_watch_origin_flag_bar_ts"),
+        whipsaw_watch_started_at=raw.get("whipsaw_watch_started_at"),
+        whipsaw_watch_last_gap=raw.get("whipsaw_watch_last_gap"),
+        whipsaw_watch_last_ema_spread=raw.get("whipsaw_watch_last_ema_spread"),
+        whipsaw_watch_last_checked_bar_ts=raw.get("whipsaw_watch_last_checked_bar_ts"),
+        whipsaw_watch_bars_checked=int(raw.get("whipsaw_watch_bars_checked") or 0),
     )
 
 

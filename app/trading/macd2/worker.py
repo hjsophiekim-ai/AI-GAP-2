@@ -2575,6 +2575,7 @@ def _resolve_time_window_candidate(
                     whipsaw_outcome, whipsaw_trace,
                 )
                 result.actions.append(f"TIME_WINDOW_WHIPSAW_HOLD:{direction.value}")
+                _start_whipsaw_watch(state, mode="TW2", direction=direction, bars_3m=bars_3m, flag_bar_dt=macd_snap.bar_dt, now=now)
                 return None
             outcome = _execute_reversal_exit_only_for_filtered_entry(
                 broker=broker, state=state, macd_snap=macd_snap, direction=direction,
@@ -2849,6 +2850,7 @@ def _resolve_tw2_3slot_candidate(
                     whipsaw_outcome, whipsaw_trace,
                 )
                 result.actions.append(f"TW2_3SLOT_WHIPSAW_HOLD:{direction.value}")
+                _start_whipsaw_watch(state, mode="TW2_3SLOT", direction=direction, bars_3m=bars_3m, flag_bar_dt=macd_snap.bar_dt, now=now)
                 return None
             outcome = _execute_reversal_exit_only_for_filtered_entry(
                 broker=broker, state=state, macd_snap=macd_snap, direction=direction,
@@ -2910,6 +2912,120 @@ def _resolve_tw2_3slot_candidate(
         else:
             state.tw2_3slot_afternoon_count = int(state.tw2_3slot_afternoon_count or 0) + 1
             state.tw2_3slot_last_afternoon_direction = direction.value
+    return outcome
+
+
+def _start_whipsaw_watch(
+    state: RuntimeState, *, mode: str, direction: Direction, bars_3m, flag_bar_dt: datetime, now: datetime,
+) -> None:
+    """Seeds the shared TW2/TW2_3SLOT whipsaw-watch follow-up (2026-09-02)
+    the instant either mode's own T+3 reversal candidate is whipsaw-held
+    (config.TW_WHIPSAW_REJECT_REASONS) -- called immediately after that
+    existing hold branch's own ledger row/action, which this never alters.
+    Pure state seeding: no order, no ledger row of its own. ``direction``
+    is the WATCHED (opposite-to-held) direction, same one the whipsaw-hold
+    itself was just evaluated against."""
+    seed = time_window_filter.evaluate_whipsaw_watch(bars_3m, direction, float("-inf"), float("-inf"))
+    state.whipsaw_watch_active = True
+    state.whipsaw_watch_direction = direction
+    state.whipsaw_watch_mode = mode
+    state.whipsaw_watch_origin_flag_bar_ts = flag_bar_dt.isoformat()
+    state.whipsaw_watch_started_at = now.isoformat()
+    state.whipsaw_watch_last_gap = seed.current_gap if not seed.insufficient_data else 0.0
+    state.whipsaw_watch_last_ema_spread = seed.current_ema_spread if not seed.insufficient_data else 0.0
+    state.whipsaw_watch_last_checked_bar_ts = flag_bar_dt.isoformat()
+    state.whipsaw_watch_bars_checked = 0
+
+
+def _clear_whipsaw_watch(state: RuntimeState) -> None:
+    """Ends an active watch with no order -- used for release-on-recovery,
+    a fresh opposite flag superseding it, and (via _apply_exit_outcome) the
+    held position closing for any other reason. Idempotent no-op if no
+    watch is active."""
+    state.whipsaw_watch_active = False
+    state.whipsaw_watch_direction = None
+    state.whipsaw_watch_mode = None
+    state.whipsaw_watch_origin_flag_bar_ts = None
+    state.whipsaw_watch_started_at = None
+    state.whipsaw_watch_last_gap = None
+    state.whipsaw_watch_last_ema_spread = None
+    state.whipsaw_watch_last_checked_bar_ts = None
+    state.whipsaw_watch_bars_checked = 0
+
+
+def _advance_whipsaw_watch(
+    *, broker, state: RuntimeState, now: datetime, macd_snap, bars_3m,
+    position: Optional[PositionSnapshot], result: TickResult,
+):
+    """Advances the shared whipsaw-watch follow-up (2026-09-02 real
+    incident) on each NEWLY completed bar while state.whipsaw_watch_active
+    is True -- called from the SAME held-position section of run_once()
+    that resolves TW2's/TW2 3-SLOT's own pending candidates, so it works
+    identically regardless of which mode opened/manages the position.
+    Idempotent on whipsaw_watch_last_checked_bar_ts (never re-evaluates a
+    bar already checked). Exit-only -- never places a new entry; this is
+    called AFTER _advance_held_position_risk_management's own TP/SL/
+    trailing check already ran and returned this tick if it fired, so that
+    ladder always keeps its existing priority unchanged."""
+    if not state.whipsaw_watch_active or position is None:
+        return None
+    checked_bar_ts = _parse_iso_dt(state.whipsaw_watch_last_checked_bar_ts)
+    if checked_bar_ts is not None and macd_snap.bar_dt <= checked_bar_ts:
+        return None  # already evaluated this bar (or older) -- wait for the next one
+    direction = state.whipsaw_watch_direction
+    if direction is None:
+        _clear_whipsaw_watch(state)
+        return None
+
+    decision = time_window_filter.evaluate_whipsaw_watch(
+        bars_3m, direction,
+        last_gap=float(state.whipsaw_watch_last_gap or 0.0),
+        last_ema_spread=float(state.whipsaw_watch_last_ema_spread or 0.0),
+    )
+    if decision.insufficient_data:
+        return None  # keep waiting -- do not advance the checked-bar marker
+
+    state.whipsaw_watch_last_checked_bar_ts = macd_snap.bar_dt.isoformat()
+    state.whipsaw_watch_bars_checked = int(state.whipsaw_watch_bars_checked or 0) + 1
+
+    if decision.should_release:
+        _clear_whipsaw_watch(state)
+        result.actions.append(f"{config.WHIPSAW_WATCH_RELEASED}:{direction.value}")
+        return None
+
+    if not decision.should_sell:
+        state.whipsaw_watch_last_gap = decision.current_gap
+        state.whipsaw_watch_last_ema_spread = decision.current_ema_spread
+        return None
+
+    # Deterioration confirmed on both signals -- full liquidation, exit-only.
+    # gate_mode must match _entry_gate_ledger_fields' own mode strings
+    # ("TIME_WINDOW"/"TW2_3SLOT", not the diagnostic whipsaw_watch_mode
+    # values "TW2"/"TW2_3SLOT") so the right ledger column family populates.
+    gate_mode = "TW2_3SLOT" if state.whipsaw_watch_mode == "TW2_3SLOT" else "TIME_WINDOW"
+    signal_id = f"{make_signal_id(macd_snap.bar_dt, direction)}:WHIPSAW_WATCH_EXIT"
+    fake_decision = MajorFlagDecision(
+        approved=False, score=0.0, required_score=0.0,
+        decision=config.WHIPSAW_WATCH_DETERIORATION_EXIT,
+        reasons=("whipsaw watch: opposite gap/EMA spread re-expanded",),
+        component_scores={},
+        metrics={
+            "whipsaw_watch_gap": decision.current_gap,
+            "whipsaw_watch_ema_spread": decision.current_ema_spread,
+            "whipsaw_watch_bars_checked": state.whipsaw_watch_bars_checked,
+        },
+        is_reversal=True, fast_reversal=False, block_reason=config.WHIPSAW_WATCH_DETERIORATION_EXIT,
+    )
+    outcome = _execute_reversal_exit_only_for_filtered_entry(
+        broker=broker, state=state, macd_snap=macd_snap, direction=direction,
+        position=position, decision=fake_decision, result=result,
+        gate_mode=gate_mode, signal_id_override=signal_id,
+    )
+    _clear_whipsaw_watch(state)
+    if outcome is not None:
+        _apply_exit_outcome(state, outcome)
+        if outcome.final_state == SignalState.EXECUTED:
+            result.actions.append(f"{config.WHIPSAW_WATCH_DETERIORATION_EXIT}:{outcome.target_symbol}")
     return outcome
 
 
@@ -4104,6 +4220,22 @@ def run_once(
                 result.actions.append(f"TW2_3SLOT_SELL_ONLY:{tw2_3slot_resolve_outcome.target_symbol}")
             return result
 
+        # Whipsaw-watch follow-up (2026-09-02, real incident): shared by TW2
+        # and TW2 3-SLOT, a no-op unless a watch is currently active
+        # (state.whipsaw_watch_active, only ever set by either mode's own
+        # whipsaw-hold branch above). Runs AFTER both resolve calls just
+        # above (never delays or overrides a genuine switch/sell-only they
+        # already produced this tick) and after _advance_held_position_risk_
+        # management's own TP/SL/trailing check earlier this tick (which
+        # already returned this tick if it fired) -- so this can only ever
+        # act when nothing else already has.
+        whipsaw_watch_outcome = _advance_whipsaw_watch(
+            broker=broker, state=state, now=now, macd_snap=macd_snap,
+            bars_3m=bars_3m, position=pos, result=result,
+        )
+        if whipsaw_watch_outcome is not None and whipsaw_watch_outcome.final_state == SignalState.EXECUTED:
+            return result
+
         if (
             state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled
         ) and state.time_window_position_active:
@@ -4160,6 +4292,13 @@ def run_once(
             # path already makes) only adds an audit-trail row; it does not
             # change what gets approved, dispatched, or ordered.
             if confirmed_direction != Direction.HOLD:
+                # Whipsaw-watch hand-off (2026-09-02, real incident): a
+                # genuinely NEW confirmed opposite flag supersedes any stale
+                # watch left over from an EARLIER whipsaw-hold -- the new
+                # flag's own T+3 cycle takes over entirely rather than
+                # running both mechanisms at once.
+                if state.whipsaw_watch_active:
+                    _clear_whipsaw_watch(state)
                 signal_id = make_signal_id(macd_snap.bar_dt, confirmed_direction)
                 # TW2 3-SLOT (2026-09-01): same gap/fix as the comment above,
                 # just registered against this mode's own separate pending
@@ -4597,6 +4736,14 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
         state.time_window_tp1_done = False
         state.time_window_initial_quantity = 0
         state.time_window_peak_net_return = 0.0
+        # Safety net (2026-09-02, real incident): a held position can close
+        # for ANY reason (stop-loss/profit-lock/forced-liquidation/etc.)
+        # while a whipsaw-watch is tracking it -- e.g. today's real incident,
+        # where the position exited via an unrelated breakeven-stop while a
+        # reversal candidate may have been left dangling. A stale
+        # whipsaw_watch_active=True must never survive past the position it
+        # described, same rationale as the time_window_* resets just above.
+        _clear_whipsaw_watch(state)
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 

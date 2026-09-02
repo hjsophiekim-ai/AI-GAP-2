@@ -97,6 +97,75 @@ def test_orphan_backfill_alone_is_still_hidden_as_before(ui_page):
     assert rows == []
 
 
+def test_signal_ledger_whipsaw_hold_shows_korean_label_2026_09_02(ui_page):
+    """2026-09-02 user request: a reversal candidate that whipsaw-HOLDs
+    (opposite flag confirmed, but T+3 re-confirmation rejects for a whipsaw
+    reason so the held position is NOT liquidated) must show as "휩쏘보류" in
+    the 신호 원장 UI instead of the raw internal literal
+    "TIME_WINDOW_WHIPSAW_HOLD" -- worker.py writes that exact same literal
+    for both TW2 and TW2 3-SLOT whipsaw-hold cases, so one mapping covers
+    both modes. The underlying block_reason is still shown alongside it."""
+    row = {"order_result": "TIME_WINDOW_WHIPSAW_HOLD", "block_reason": "TW_REJECT_MACD_GAP_NOT_EXPANDING"}
+    summary = ui_page._order_summary(row)
+    assert summary == "휩쏘보류 / TW_REJECT_MACD_GAP_NOT_EXPANDING"
+    assert "TIME_WINDOW_WHIPSAW_HOLD" not in summary
+
+
+def _signal_row(**overrides) -> dict:
+    row = {
+        "signal_id": "20260902_135700_UP_RED:TW2_3SLOT_CONFIRM", "signal_type": "TW2_3SLOT_CONFIRM",
+        "direction": "UP_RED", "completed_bar_at": "20260902090300", "signal_bar_at": "",
+        "detected_at": "2026-09-02T09:03:12+09:00", "signal_confirmed_at": "",
+        "order_requested_at": "", "order_result": "", "final_result": "",
+        "block_reason": "", "failure_stage": "",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_t3_resolution_row_was_previously_hidden_now_shows_with_reason_2026_09_02(ui_page):
+    """2026-09-02 user request: the actual T+3 re-confirmation OUTCOME for a
+    flat/new-entry candidate (worker.py's signal_type="TW2_3SLOT_CONFIRM"/
+    "TIME_WINDOW_CONFIRM") was entirely excluded from _is_display_signal's
+    allowed set -- the user could only ever see the earlier T-registration
+    row ("FILTERED_OUT / TIME_WINDOW_PENDING_CONFIRMATION", which just means
+    "not decided yet", not a real rejection reason). The real reason
+    (already present in block_reason all along) was invisible. Confirm the
+    resolution row is now included and its reason renders."""
+    rejected = _signal_row(order_result="FILTERED_OUT", block_reason="TW2_3SLOT_REJECT_QUALITY")
+    assert ui_page._is_display_signal(rejected) is True
+    timeline = ui_page._signal_timeline_rows([rejected])
+    assert len(timeline) == 2  # 플래그/확정 + 주문
+    order_row = timeline[1]
+    assert order_row["구분"] == "주문"
+    assert "TW2_3SLOT_REJECT_QUALITY" in order_row["내용"]
+
+
+def test_whipsaw_hold_row_now_actually_reaches_the_timeline_end_to_end_2026_09_02(ui_page):
+    """The 휩쏘보류 label fix (test above) only matters if the row carrying it
+    is actually shown -- verify the full pipeline (_is_display_signal ->
+    _signal_timeline_rows -> _order_summary), not just _order_summary in
+    isolation, since a whipsaw-hold row also uses signal_type=
+    "TW2_3SLOT_CONFIRM"/"TIME_WINDOW_CONFIRM" and was equally hidden before
+    this fix."""
+    whipsaw = _signal_row(order_result="TIME_WINDOW_WHIPSAW_HOLD", block_reason="TW_REJECT_MACD_GAP_NOT_EXPANDING")
+    assert ui_page._is_display_signal(whipsaw) is True
+    timeline = ui_page._signal_timeline_rows([whipsaw])
+    assert timeline[0]["내용"] == "재확인(T+3) UP_RED"
+    assert timeline[1]["내용"] == "휩쏘보류 / TW_REJECT_MACD_GAP_NOT_EXPANDING"
+
+
+def test_pre_existing_pending_registration_row_still_shows_unaffected(ui_page):
+    """Regression: the T-registration row (signal_type="INITIAL", order_
+    result=FILTERED_OUT/TIME_WINDOW_PENDING_CONFIRMATION) was already
+    visible before this fix and must remain exactly so -- this fix only
+    ADDS the previously-hidden resolution row type, never changes this one."""
+    pending = _signal_row(signal_type="INITIAL", order_result="FILTERED_OUT", block_reason="TIME_WINDOW_PENDING_CONFIRMATION")
+    assert ui_page._is_display_signal(pending) is True
+    timeline = ui_page._signal_timeline_rows([pending])
+    assert timeline[1]["내용"] == "FILTERED_OUT / TIME_WINDOW_PENDING_CONFIRMATION"
+
+
 def test_residual_cleanup_merges_into_the_main_exit_leg_2026_09_01(ui_page):
     """2026-09-01 real incident: a 809-share leverage TP exit's own sell left
     1 share held; order_executor._attempt_residual_cleanup sweeps it via a

@@ -43,7 +43,7 @@ from app.trading.macd2.major_flag_filter import (
     _session_vwap,
     compute_component_scores,
 )
-from app.trading.macd2.models import Direction, MajorFlagDecision
+from app.trading.macd2.models import Direction, MajorFlagDecision, WhipsawWatchDecision
 
 # ── window classification ──────────────────────────────────────────────────
 WINDOW_MORNING_1 = "W1_MORNING_AGGRESSIVE"
@@ -111,6 +111,77 @@ def _gap_series(work: pd.DataFrame) -> Optional[pd.DataFrame]:
     series = series.copy()
     series["gap"] = series["macd"] - series["signal"]
     return series
+
+
+def evaluate_whipsaw_watch(
+    bars_3m: Optional[pd.DataFrame],
+    direction: Union[Direction, str],
+    last_gap: float,
+    last_ema_spread: float,
+) -> WhipsawWatchDecision:
+    """Shared TW2/TW2_3SLOT follow-up check (2026-09-02, real incident) run
+    on each completed bar while a position is held through a whipsaw-
+    tolerant T+3 hold (config.TW_WHIPSAW_REJECT_REASONS) -- worker.py's
+    ``_advance_whipsaw_watch`` calls this identically for both modes.
+
+    Real incident this fixes: a whipsaw-held position saw the opposite
+    direction's signed MACD gap keep expanding for 6+ further completed
+    bars (177 -> 302 -> 393 -> 905 -> 1140 -> 1442 -> 1640) with zero
+    tracking after the hold -- it only exited 24+ minutes later via an
+    unrelated breakeven-stop. This gives the watched (opposite-to-held)
+    ``direction`` a rolling bar-over-bar check: if BOTH the signed MACD gap
+    (``time_window_filter._gap_series``, same computation ``evaluate_
+    time_window_entry``/``evaluate_tw2_extra_vetoes`` already use) AND the
+    signed EMA10-EMA20 spread (same span/formula as ``teg_gate.py``'s own
+    condition 4 and ``time_window_3slot.py``'s Trend Quality condition 2 --
+    no new indicator math) have both expanded versus ``last_gap``/
+    ``last_ema_spread`` (the values recorded at the LAST check, not the
+    original T+3 hold bar forever), ``should_sell=True`` -- worker.py fully
+    liquidates the held position (exit-only, never a new entry). If the
+    signed gap has flipped back to favor the originally held direction
+    (<=0), ``should_release=True`` -- worker.py ends the watch with no
+    order. Otherwise both are False and the caller keeps watching, updating
+    its own last-checked values to this call's ``current_gap``/
+    ``current_ema_spread`` for the next bar's comparison.
+
+    Pure function: no state/broker access, no order dispatch, never touches
+    entry-gate/TEG/slot-allocation logic. ``insufficient_data=True`` (both
+    should_* False, current_* echo the inputs unchanged) if ``bars_3m``
+    doesn't yet have enough history for the EMA20 span -- worker.py simply
+    keeps waiting for the next bar in that case, exactly like every other
+    data-insufficiency case elsewhere in this module.
+    """
+    work = _prepare_bars(bars_3m)
+    if work is None or len(work) < config.MAJOR_EMA_SLOW + 1:
+        return WhipsawWatchDecision(
+            should_sell=False, should_release=False,
+            current_gap=last_gap, current_ema_spread=last_ema_spread, insufficient_data=True,
+        )
+    series = _gap_series(work)
+    if series is None or len(series) < 1:
+        return WhipsawWatchDecision(
+            should_sell=False, should_release=False,
+            current_gap=last_gap, current_ema_spread=last_ema_spread, insufficient_data=True,
+        )
+    sign = _direction_sign(direction)
+    current_gap = float(series["gap"].iloc[-1]) * sign
+
+    close = work["close"].astype(float).reset_index(drop=True)
+    ema_fast = close.ewm(span=config.MAJOR_EMA_FAST, adjust=False).mean()
+    ema_slow = close.ewm(span=config.MAJOR_EMA_SLOW, adjust=False).mean()
+    current_ema_spread = float((ema_fast - ema_slow).iloc[-1]) * sign
+
+    if current_gap <= 0:
+        return WhipsawWatchDecision(
+            should_sell=False, should_release=True,
+            current_gap=current_gap, current_ema_spread=current_ema_spread,
+        )
+
+    deteriorated = (current_gap > last_gap) and (current_ema_spread > last_ema_spread)
+    return WhipsawWatchDecision(
+        should_sell=deteriorated, should_release=False,
+        current_gap=current_gap, current_ema_spread=current_ema_spread,
+    )
 
 
 def _confirmed_flag_indices(series: pd.DataFrame) -> list[tuple[int, Direction]]:

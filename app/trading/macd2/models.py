@@ -197,6 +197,20 @@ class MajorFlagDecision:
     block_reason: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class WhipsawWatchDecision:
+    """Result of time_window_filter.evaluate_whipsaw_watch — the shared
+    TW2/TW2_3SLOT follow-up check run on each completed bar while a position
+    is held through a whipsaw-tolerant T+3 hold (2026-09-02, real incident).
+    Pure function output only; never touches state/broker itself."""
+
+    should_sell: bool
+    should_release: bool
+    current_gap: float
+    current_ema_spread: float
+    insufficient_data: bool = False
+
+
 @dataclass
 class RuntimeState:
     """MACD2's own runtime snapshot — never shares fields/paths with MACD v1."""
@@ -647,6 +661,24 @@ class RuntimeState:
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None
     last_tw2_3slot_teg_approved: Optional[bool] = None
     last_tw2_3slot_teg_reject_reasons: Optional[list[str]] = None
+
+    # Whipsaw-watch follow-up (2026-09-02, real incident) — shared between
+    # TW2 (time_window_*) and TW2 3-SLOT (tw2_3slot_*): started the moment
+    # EITHER mode's own T+3 reversal candidate is whipsaw-held
+    # (config.TW_WHIPSAW_REJECT_REASONS), cleared on release/deterioration-
+    # exit/a fresh opposite flag superseding it/the held position closing
+    # for ANY other reason. whipsaw_watch_mode is diagnostic only ("TW2" or
+    # "TW2_3SLOT") — does not gate which functions run, since the same
+    # shared function/state serves both.
+    whipsaw_watch_active: bool = False
+    whipsaw_watch_direction: Optional[Direction] = None
+    whipsaw_watch_mode: Optional[str] = None
+    whipsaw_watch_origin_flag_bar_ts: Optional[str] = None
+    whipsaw_watch_started_at: Optional[str] = None
+    whipsaw_watch_last_gap: Optional[float] = None
+    whipsaw_watch_last_ema_spread: Optional[float] = None
+    whipsaw_watch_last_checked_bar_ts: Optional[str] = None
+    whipsaw_watch_bars_checked: int = 0
 
     # Optional "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청)
     # — a 6th peer entry gate (see worker._judge_no_filter_flag /

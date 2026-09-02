@@ -160,6 +160,21 @@ def _is_display_signal(row: dict) -> bool:
         "SCHEDULED_ENTRY_0903",
         "MANUAL_ENTRY",
         "MANUAL_LIQUIDATION",
+        # 2026-09-02 사용자 요청: T+3 재확인 결과가 "신규 진입"(보유 포지션이
+        # 없거나 같은 방향이라 반대매매가 아닌 경우)으로 거절된 행은
+        # worker.py가 signal_type="TIME_WINDOW_CONFIRM"(TW2)/
+        # "TW2_3SLOT_CONFIRM"(TW2 3-SLOT)으로 기록하는데, 이 목록에 없어서
+        # 화면에서 통째로 숨겨져 있었다 -- 그 결과 사용자는 최초 등록 행
+        # ("FILTERED_OUT / TIME_WINDOW_PENDING_CONFIRMATION", 아직 판정 전
+        # 이라는 뜻일 뿐 거절 사유가 아님)만 보고, 실제 거절 사유(품질점수
+        # 부족/TEG 거절/최대진입횟수 초과 등, block_reason 컬럼에는 이미
+        # 기록되어 있었음)는 볼 방법이 없었다. 반대매매(REVERSAL) 거절은
+        # 이미 정상적으로 이 목록에 있는 "REVERSAL" 경로로 보이고 있었으므로
+        # (_execute_reversal_exit_only_for_filtered_entry), 이번 추가로
+        # 신규진입 거절도 동일하게 사유가 보이게 된다. 휩쏘 HOLD 행도 이
+        # 두 signal_type으로 기록되므로 함께 노출된다.
+        "TIME_WINDOW_CONFIRM",
+        "TW2_3SLOT_CONFIRM",
     }
 
 
@@ -173,11 +188,27 @@ def _signal_label(row: dict) -> str:
         return "수동 진입"
     if signal_type == "MANUAL_LIQUIDATION":
         return "수동 청산"
+    if signal_type in ("TIME_WINDOW_CONFIRM", "TW2_3SLOT_CONFIRM"):
+        # T+3 재확인 결과 행 -- 최초 등록("플래그"/"반대 플래그") 행과 구분되게
+        # 표시해 "같은 걸 두 번 보여주나" 하는 혼동을 줄인다.
+        return "재확인(T+3)"
     return "반대 플래그" if signal_type == "REVERSAL" else "플래그"
+
+
+_ORDER_RESULT_DISPLAY_LABELS = {
+    # 2026-09-02 사용자 요청: 반대 플래그가 확정됐지만(T+3 재확인 결과 휩쏘로
+    # 판정되어) 기존 포지션을 청산하지 않고 그대로 보유를 유지한 경우 -- TW2/
+    # TW2 3-SLOT 둘 다 worker.py가 동일한 리터럴 "TIME_WINDOW_WHIPSAW_HOLD"를
+    # order_result에 기록한다(worker.py의 order_result_override 처리, TW2/
+    # TW2_3SLOT 분기 공통) -- 신호 원장에서 원문 그대로 보여주는 대신 한글로
+    # 표시한다. 원장 저장값 자체는 변경하지 않음(표시만 매핑).
+    "TIME_WINDOW_WHIPSAW_HOLD": "휩쏘보류",
+}
 
 
 def _order_summary(row: dict) -> str:
     result = str(row.get("order_result") or row.get("final_result") or "NO_ORDER")
+    result = _ORDER_RESULT_DISPLAY_LABELS.get(result, result)
     reason = str(row.get("block_reason") or row.get("failure_stage") or "")
     broker_order_id = str(row.get("broker_order_id") or "")
     order_type = str(row.get("order_type") or "")

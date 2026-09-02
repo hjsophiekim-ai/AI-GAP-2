@@ -763,6 +763,23 @@ TW_REJECT_DUPLICATE_POSITION = "REJECT_DUPLICATE_POSITION"
 # 완전히 무관하게 매 tick 즉시 평가되므로 영향받지 않는다.
 TW_WHIPSAW_REJECT_REASONS = frozenset({TW_REJECT_NOT_CONFIRMED, TW_REJECT_MACD_GAP_NOT_EXPANDING})
 
+# ── Whipsaw-watch follow-up exit (2026-09-02, real incident) — shared by
+# TW2 and TW2 3-SLOT. A position held through the whipsaw-tolerant T+3 hold
+# above is NOT tracked further today: a real 2026-09-02 incident saw the
+# opposite direction's signed MACD gap keep expanding for 6+ more completed
+# bars (177->302->393->905->1140->1442->1640) with zero follow-up, only
+# exiting 24+ minutes later via an unrelated breakeven-stop.
+# worker._start_whipsaw_watch/_advance_whipsaw_watch + time_window_filter.
+# evaluate_whipsaw_watch add a rolling bar-over-bar re-check: if BOTH the
+# signed MACD gap AND signed EMA10-EMA20 spread expand again versus the
+# LAST check (not the original hold bar forever), the held position is
+# fully liquidated (exit-only, never a new entry) with this label. Does not
+# change the whipsaw-hold decision itself, TEG, slot allocation, or
+# TP/SL/trailing (which keep evaluating independently and take priority on
+# the same tick if they also fire).
+WHIPSAW_WATCH_DETERIORATION_EXIT = "WHIPSAW_WATCH_DETERIORATION_EXIT"
+WHIPSAW_WATCH_RELEASED = "WHIPSAW_WATCH_RELEASED"
+
 # ── Optional "탈락 DOWN_BLUE 예외진입" (하루 최대 1회) — 2026-08-18 사용자
 # 요청. TW 필터(time_window_filter.evaluate_time_window_entry)가 REJECT한
 # DOWN_BLUE 플래그만, 다른 조건 없이 하루 최대 1회 추가로 진입을 허용한다.
