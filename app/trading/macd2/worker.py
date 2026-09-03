@@ -2422,6 +2422,32 @@ def _advance_held_position_risk_management(
                 if early_tp.armed and not state.last_early_tp_armed_at:
                     state.last_early_tp_armed_at = now.isoformat()
                 if early_tp.exit_reason is not None:
+                    # Snapshot BEFORE the exit dispatch — _apply_exit_outcome
+                    # below resets time_window_entry_chop/early_tp_peak_net_
+                    # return for the next holding period, so the values that
+                    # actually caused this exit would otherwise be gone by the
+                    # time the ledger row exists. Captured here (not inside
+                    # _apply_exit_outcome) for exactly the same reason and in
+                    # exactly the same place the PROFIT_LOCK_MACD_CONVERGENCE
+                    # exit already snapshots its own diagnostics: nothing
+                    # mutates these fields between here and the reset, and
+                    # _apply_exit_outcome is shared by every exit path so it
+                    # must stay agnostic to any single filter.
+                    early_tp_ledger_fields = {
+                        "early_tp_entry_chop_score": (
+                            "" if state.last_entry_chop_score is None
+                            else int(state.last_entry_chop_score)
+                        ),
+                        "early_tp_entry_chop_conditions": json.dumps(
+                            state.last_entry_chop_conditions or {}, ensure_ascii=False, sort_keys=True,
+                        ),
+                        "early_tp_armed_at": state.last_early_tp_armed_at or "",
+                        "early_tp_peak_net_return_pct": round(
+                            float(state.early_tp_peak_net_return or 0.0), 6,
+                        ),
+                        "early_tp_trigger_pct": float(config.EARLY_TP_TRIGGER_PCT),
+                        "early_tp_floor_pct": float(config.EARLY_TP_FLOOR_PCT),
+                    }
                     outcome = order_executor.execute_exit(
                         broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                         exit_reason=early_tp.exit_reason, entry_price=pos.avg_price,
@@ -2431,6 +2457,17 @@ def _advance_held_position_risk_management(
                     if outcome.final_state == SignalState.EXECUTED:
                         state.time_window_position_active = False
                         state.last_early_tp_fired_at = now.isoformat()
+                        # Patch the row execute_exit just wrote via
+                        # order_executor's own (unmodified) _record_leg.
+                        # Purely additive columns; record_early_tp_fields
+                        # itself re-checks that the row's exit_reason really
+                        # is EARLY_TAKE_PROFIT and is a no-op if already
+                        # recorded, so a retry/duplicate tick cannot corrupt
+                        # or duplicate anything.
+                        if outcome.sell_result is not None:
+                            ledger.record_early_tp_fields(
+                                str(outcome.sell_result.order_id or ""), early_tp_ledger_fields,
+                            )
                     result.actions.append(f"{early_tp.exit_reason}:{pos.symbol}")
                     return True
         return False
