@@ -672,6 +672,34 @@ class RuntimeState:
     last_tw2_3slot_block_reason: Optional[str] = None
     last_tw2_3slot_slot_number: Optional[int] = None
     last_tw2_3slot_session: Optional[str] = None
+
+    # 조기익절 필터 (2026-09-03 사용자 요청) — TW2 3-SLOT 전용으로 따로 켜고 끄는
+    # risk-management 단계 서브필터. 진입/슬롯/T+3/TW2/TEGv2 로직과는 무관하며
+    # (app/trading/macd2/early_take_profit.py 참고), MACD2의 기존 무관한
+    # PROFIT_LOCK 기능(profit_lock_* 필드들)과도 필드를 하나도 공유하지 않는다.
+    # 토글은 세션을 넘어 유지되고, TW2 3-SLOT을 끄면 service 쪽에서 강제로 함께
+    # 꺼진다(early_take_profit.is_enabled도 두 토글을 AND로 요구).
+    early_tp_filter_enabled: bool = False
+    early_tp_filter_enabled_at: Optional[str] = None
+    early_tp_filter_enabled_by: Optional[str] = None
+    early_tp_filter_version: str = ""
+    # ── 아래 두 개는 "현재 보유 포지션"에 종속된 값이다 —
+    # time_window_position_active/time_window_peak_net_return 등과 완전히 같은
+    # 수명을 가지며, 모든 진입/청산/reconcile 리셋 지점에서 함께 초기화된다.
+    # time_window_entry_chop: 진입 확정봉이 CHOP이었는지(진입 시점에 한 번
+    #   계산해 고정. 필터가 OFF면 계산조차 하지 않으므로 항상 False).
+    # early_tp_peak_net_return: 이 필터 전용 MFE(틱 관측 최고 순수익률, %).
+    #   production의 time_window_peak_net_return과 별도로 둔 이유 — 그 필드는
+    #   완성봉 종가 기준으로만 커밋되는데(worker의 tick TP 경로는 청산이 실제로
+    #   발동할 때만 커밋한다), 60일 검증에서 armed 판정에 쓴 MFE는 틱 관측값이다.
+    #   production 필드를 건드리면 필터 OFF 동작이 바뀌므로 절대 공유하지 않는다.
+    time_window_entry_chop: bool = False
+    early_tp_peak_net_return: float = 0.0
+    # UI/진단용 (포지션 수명과 무관하게 마지막 발생 시각만 남긴다).
+    last_entry_chop_score: Optional[int] = None
+    last_entry_chop_conditions: Optional[dict[str, bool]] = None
+    last_early_tp_armed_at: Optional[str] = None
+    last_early_tp_fired_at: Optional[str] = None
     last_tw2_3slot_quality_passed: Optional[int] = None
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None
     last_tw2_3slot_teg_approved: Optional[bool] = None

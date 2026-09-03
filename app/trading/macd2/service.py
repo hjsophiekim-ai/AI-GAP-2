@@ -719,6 +719,15 @@ class Macd2Service:
             abandon_pending_tw2_3slot_candidate_if_any(
                 state, datetime.now(KST), reason="TW2_3SLOT_DISABLED_BY_USER",
             )
+            # 조기익절 필터는 TW2 3-SLOT 전용 서브필터라서 이 모드가 꺼지면
+            # 존재 의미가 없다 -- 사용자 요청대로 함께 강제로 끈다. (실행
+            # 경로에서도 early_take_profit.is_enabled/is_active가 두 토글을
+            # AND로 요구하므로 상태가 어긋나도 발동 자체가 불가능하지만, UI에
+            # "켜져 있는데 절대 안 걸리는 필터"가 남아 보이는 것을 막는다.)
+            if state.early_tp_filter_enabled:
+                state.early_tp_filter_enabled = False
+                state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
+                state.early_tp_filter_enabled_by = "AUTO_TW2_3SLOT_DISABLED"
         state_store.save_state(state)
         return {
             "ok": True,
@@ -729,6 +738,60 @@ class Macd2Service:
             "time_window_3slot_filter_version": state.time_window_3slot_filter_version,
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+            "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
+        }
+
+    def set_early_tp_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle the "조기익절 필터" — a separately selectable,
+        risk-management-ONLY sub-filter of TW2 3-SLOT (2026-09-03 사용자 요청).
+
+        Not a new strategy and not an entry filter: TW2 3-SLOT's MACD
+        zero-cross / T+3 re-confirmation / TW2 vetoes / slot allocation /
+        Trend Quality / TEGv2 are completely unmodified and this toggle
+        cannot affect any of them. It only adds one extra downside rung for a
+        position that ALREADY exists, and only for positions whose entry
+        confirmation bar was classified CHOP — see
+        app/trading/macd2/early_take_profit.py and config.py's EARLY_TP_*
+        block (60-business-day TRAIN40/OOS20 validation numbers included).
+
+        Requires TW2 3-SLOT to be ON: enabling this while 3-SLOT is off is
+        rejected (ok=False) rather than silently stored, and turning 3-SLOT
+        off later force-disables this toggle in
+        set_time_window_3slot_filter_enabled above. Default OFF
+        (config.EARLY_TP_FILTER_DEFAULT). Only updates runtime state, never
+        places orders directly.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.early_tp_filter_enabled)
+        if enabled_bool and not state.time_window_3slot_filter_enabled:
+            return {
+                "ok": False,
+                "reason": "TW2_3SLOT_REQUIRED",
+                "early_tp_filter_enabled": prev,
+                "time_window_3slot_filter_enabled": False,
+            }
+        state.early_tp_filter_enabled = enabled_bool
+        state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
+        state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
+        state.early_tp_filter_enabled_by = str(changed_by or "ui")
+        if not enabled_bool:
+            # 포지션 종속 상태는 남겨두면 다음에 다시 켤 때 오래된 진입시점
+            # 판정이 살아 있는 것처럼 보인다. 토글을 끄는 순간 무효화한다
+            # (청산 경로는 is_active로 이미 막혀 있으므로 안전한 정리 작업).
+            state.time_window_entry_chop = False
+            state.early_tp_peak_net_return = 0.0
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "early_tp_filter_enabled": enabled_bool,
+            "previous": prev,
+            "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
+            "early_tp_filter_enabled_by": state.early_tp_filter_enabled_by,
+            "early_tp_filter_version": state.early_tp_filter_version,
+            "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "early_tp_trigger_pct": float(config.EARLY_TP_TRIGGER_PCT),
+            "early_tp_floor_pct": float(config.EARLY_TP_FLOOR_PCT),
         }
 
     def set_down_blue_exception_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:

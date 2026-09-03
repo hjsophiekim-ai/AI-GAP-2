@@ -48,6 +48,7 @@ import pandas as pd
 from app.logger import logger
 from app.trading.macd2 import (
     config,
+    early_take_profit,
     ledger,
     major_flag_filter,
     order_executor,
@@ -1258,6 +1259,10 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
         state.time_window_initial_quantity = 0
+        # 조기익절 필터의 포지션 종속 상태도 같은 수명으로 초기화한다
+        # (early_take_profit.py / models.py의 필드 주석 참고).
+        state.time_window_entry_chop = False
+        state.early_tp_peak_net_return = 0.0
         # 2026-08-28 fix: a reconcile-discovered position is a genuinely new
         # real entry this process never counted anywhere else -- the OTHER
         # contributor to daily_total_entry_count (worker._apply_switch_
@@ -2233,6 +2238,14 @@ def _advance_held_position_risk_management(
             seed_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
             state.time_window_peak_net_return = max(float(state.time_window_peak_net_return or 0.0), seed_return)
             state.time_window_initial_quantity = state.time_window_initial_quantity or pos.quantity
+            # 조기익절 필터는 "진입 확정봉이 CHOP이었는가"가 필요한데, 이
+            # 입양 경로는 정의상 TW2 3-SLOT의 T+3 확정 진입이 아니다(예약매수
+            # 버튼/브로커 발견/BUY_FAILED 오보고 복구). 진입 시점 판정을 소급
+            # 계산할 방법이 없으므로 CHOP 아님(=필터 미적용)으로 고정한다.
+            state.time_window_entry_chop = False
+            state.early_tp_peak_net_return = max(
+                float(state.early_tp_peak_net_return or 0.0), seed_return,
+            )
             # 2026-08-25 fix (real incident: a BUY that actually filled but
             # was reported BUY_FAILED, later discovered via
             # reconcile_position_state's RECOVERED_FROM_BROKER, reaches this
@@ -2281,6 +2294,15 @@ def _advance_held_position_risk_management(
         # deliberately NOT extended to STOP_LOSS/trailing-stop (unchanged,
         # still bar-close-gated below).
         tick_net_return = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
+        # 조기익절 필터 전용 MFE(틱 관측). production의 time_window_peak_net_
+        # return은 손대지 않는다 -- 그 필드는 완성봉 종가 기준으로만 커밋되고
+        # (바로 아래 tick TP 경로는 청산이 실제 발동할 때만 커밋한다), 그
+        # 커밋 시점을 바꾸면 필터 OFF 동작이 달라진다. armed 판정에 쓰는 MFE는
+        # 60일 검증에서 틱 관측값이었으므로 별도 필드로 같은 방식으로 쌓는다.
+        if early_take_profit.is_active(state):
+            state.early_tp_peak_net_return = max(
+                float(state.early_tp_peak_net_return or 0.0), tick_net_return,
+            )
         tp_decision = time_window_position_manager.evaluate_take_profit_immediate(
             session=state.time_window_entry_session or "MORNING",
             net_return_pct=tick_net_return,
@@ -2381,6 +2403,36 @@ def _advance_held_position_risk_management(
                     state.time_window_tp1_done = pm_decision.tp1_done
                 result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
                 return True
+
+            # ── 조기익절 필터 (기본 OFF, TW2 3-SLOT 전용) ──────────────────
+            # 여기까지 왔다는 것은 production 래더(TP1/TP2/오후TP는 위 틱
+            # 경로에서, 손절/after-TP1-stop/trailing은 바로 위 완성봉 경로에서)가
+            # 아무 청산도 내지 않았다는 뜻이다 -- 즉 기존 청산이 항상 우선하고,
+            # 이 필터는 production이 HOLD라고 답한 뒤에만 발언한다. 그래서
+            # 실효 스탑이 max(production 활성 스탑, EARLY_TP_FLOOR_PCT)가 되고
+            # TP1/TP2/trailing은 그대로 살아 있다.
+            # 다른 모든 하방 rung과 마찬가지로 완성봉 종가(bar_net_return)
+            # 기준이다 -- 노이즈 틱 하나로 스탑을 때리지 않는 기존 설계 유지.
+            if early_take_profit.is_active(state):
+                early_tp = early_take_profit.evaluate(
+                    entry_chop=bool(state.time_window_entry_chop),
+                    peak_net_return_pct=float(state.early_tp_peak_net_return or 0.0),
+                    net_return_pct=bar_net_return,
+                )
+                if early_tp.armed and not state.last_early_tp_armed_at:
+                    state.last_early_tp_armed_at = now.isoformat()
+                if early_tp.exit_reason is not None:
+                    outcome = order_executor.execute_exit(
+                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                        exit_reason=early_tp.exit_reason, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    _apply_exit_outcome(state, outcome)
+                    if outcome.final_state == SignalState.EXECUTED:
+                        state.time_window_position_active = False
+                        state.last_early_tp_fired_at = now.isoformat()
+                    result.actions.append(f"{early_tp.exit_reason}:{pos.symbol}")
+                    return True
         return False
 
     if current_price is not None:
@@ -2758,6 +2810,10 @@ def _resolve_time_window_candidate_body(
         state.time_window_entry_session = session
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
+        # 조기익절 필터의 포지션 종속 상태도 같은 수명으로 초기화한다
+        # (early_take_profit.py / models.py의 필드 주석 참고).
+        state.time_window_entry_chop = False
+        state.early_tp_peak_net_return = 0.0
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = signal_detected_at.isoformat()
         if session == "MORNING":
@@ -3065,6 +3121,20 @@ def _resolve_tw2_3slot_candidate_body(
         state.time_window_peak_net_return = 0.0
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = signal_detected_at.isoformat()
+        # ── 조기익절 필터: 진입 확정봉의 CHOP 판정을 이 포지션에 고정 저장 ──
+        # 필터가 켜져 있을 때만 계산한다. OFF일 때 아예 호출하지 않는 것이
+        # "OFF면 기존 TW2 3-SLOT과 동작 동일"을 보장하는 방식이다(계산 자체도,
+        # 상태 쓰기도 없음 -- tests/macd2/test_early_take_profit_worker.py의
+        # 회귀테스트가 필터 OFF에서 이 모듈 함수가 단 한 번도 호출되지 않는지
+        # 실제로 검증한다). 진입/슬롯/게이트 판단은 이 위에서 이미 전부 끝났고,
+        # 여기서 무엇을 계산하든 그 결과를 바꿀 수 없다.
+        state.time_window_entry_chop = False
+        state.early_tp_peak_net_return = 0.0
+        if early_take_profit.is_enabled(state):
+            chop = early_take_profit.evaluate_entry_chop(bars_3m, direction, now)
+            state.time_window_entry_chop = bool(chop.is_chop)
+            state.last_entry_chop_score = int(chop.score)
+            state.last_entry_chop_conditions = dict(chop.conditions)
         state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
         if session == time_window_3slot.SESSION_MORNING:
             state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
@@ -4034,6 +4104,10 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
         state.time_window_entry_session = "MORNING"
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
+        # 조기익절 필터의 포지션 종속 상태도 같은 수명으로 초기화한다
+        # (early_take_profit.py / models.py의 필드 주석 참고).
+        state.time_window_entry_chop = False
+        state.early_tp_peak_net_return = 0.0
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = now.isoformat()
         return outcome
@@ -4895,6 +4969,10 @@ def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
         state.time_window_tp1_done = False
         state.time_window_initial_quantity = 0
         state.time_window_peak_net_return = 0.0
+        # 조기익절 필터의 포지션 종속 상태도 같은 수명으로 초기화한다
+        # (early_take_profit.py / models.py의 필드 주석 참고).
+        state.time_window_entry_chop = False
+        state.early_tp_peak_net_return = 0.0
         # Safety net (2026-09-02, real incident): a held position can close
         # for ANY reason (stop-loss/profit-lock/forced-liquidation/etc.)
         # while a whipsaw-watch is tracking it -- e.g. today's real incident,

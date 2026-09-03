@@ -1001,6 +1001,73 @@ EXIT_TW_AFTERNOON_TP = "TIME_WINDOW_AFTERNOON_TP"
 EXIT_TW_BREAKEVEN_STOP = "TIME_WINDOW_BREAKEVEN_STOP"
 EXIT_TW_PROFIT_LOCK_STOP = "TIME_WINDOW_PROFIT_LOCK_STOP"
 
+# ── 조기익절 필터 (Early Take-Profit filter, 2026-09-03 사용자 요청) ───────
+# TW2 3-SLOT 전용으로 **따로 켜고 끄는** risk-management 단계 서브필터.
+#
+# 이름에 대하여: MACD2에는 이미 완전히 무관한 옛 기능 "PROFIT_LOCK"이 있다
+# (config.PROFIT_LOCK_* / worker._advance_profit_lock / EXIT_PROFIT_LOCK /
+# state.profit_lock_*). 그래서 이 필터는 사용자 요청대로 "조기익절 필터"로
+# 명명하고 코드 전체에서 EARLY_TP_* 접두사를 쓴다 -- 옛 PROFIT_LOCK 기능과
+# 상수/상태필드/코드경로를 하나도 공유하지 않는다.
+#
+# 진입측은 전혀 건드리지 않는다. TW2 3-SLOT의 MACD zero-cross / T+3 재확인 /
+# TW2 veto / 슬롯배정 / Trend Quality / TEGv2 게이트는 완전 무수정이며, 이
+# 필터는 포지션이 이미 생성된 뒤 worker._advance_held_position_risk_management
+# 안에서만 동작하고 매도만 할 수 있다. 기존 래더보다 먼저 끼어들지도 않는다:
+# TP1/TP2/trailing/after-TP1-stop/손절이 먼저 평가되고, 그중 하나라도 발동하면
+# 그 청산이 우선하며 이 필터는 아예 호출되지 않는다.
+#
+# 동작 (2026-06-05~08-31 60영업일, TRAIN 40 / OOS 20 read-only 검증 --
+# data/validation/tw2_3slot_AC_60day/):
+#   1. TW2 3-SLOT 진입이 실제로 체결된 시점의 확정봉을 CHOP / TREND로 분류
+#      (evaluate_entry_chop). 그 판정을 해당 포지션에 고정 저장하고
+#      (state.time_window_entry_chop) 이후 절대 재평가하지 않는다 --
+#      "진입시 CHOP"이라는 말 그대로다. 보유 중에 나중에 흔들리기 시작한
+#      포지션은 의도적으로 대상이 아니다(보유 중 재판정 방식은 먼저 검증했고
+#      기각했다: +6% TP2 러너를 잘라 OOS에서 -4.7%p).
+#   2. 진입시 CHOP 포지션만 대상. 그 포지션의 MFE(진입 후 최고 순수익률, 틱
+#      관측)가 EARLY_TP_TRIGGER_PCT에 도달하면 "armed" 상태가 된다.
+#   3. armed 이후 완성봉 종가가 EARLY_TP_FLOOR_PCT 이하로 내려오면 잔량 전량
+#      청산. 다른 모든 하방 rung과 동일하게 완성봉 종가 기준이다(왜 익절만
+#      틱 기준인지는 time_window_position_manager.evaluate_take_profit_
+#      immediate의 docstring 참고). floor는 트리거 레벨이며 체결 보장선이
+#      아니다 -- 실제 청산가는 그 봉의 종가이므로 더 낮을 수 있다.
+#   결과적으로 실효 스탑은 max(production 활성 스탑, 이 floor)다: 이 필터는
+#   production 래더가 HOLD를 반환했을 때만 호출되고, HOLD라는 것은 수익률이
+#   production 자신의 스탑보다 위에 있다는 뜻이기 때문이다. 이것이
+#   TP1/TP2/trailing을 "그대로 살려둔 채" 바닥만 얹는 방식이다.
+#
+# 60일 결과 (A = TW2 3-SLOT 단독, C = A + 이 필터. 이 필터는 진입에 영향을
+# 줄 수 없으므로 진입 집합이 바이트 단위로 동일):
+#   OOS 20일  복리 34.181->39.678, PF 1.869->2.067, MDD 7.948->6.466(개선)
+#   FULL 60일 복리 167.077->184.798, PF 2.262->2.427, MDD 7.948->7.487
+#   발동 5건/116거래(4.3%), 손실->플러스 전환 2건, +3~6% 러너 훼손 0건.
+# 한계를 의도적으로 남겨둔다: 60영업일에 발동 5건(OOS 2건)뿐이다. 방향은
+# 일관되고 메커니즘상 러너를 훼손할 수 없지만(러너는 floor까지 되돌아오지
+# 않는다) 통계적으로 확정된 개선은 아니다 -- 저빈도/저하방 가드다. 기본 OFF.
+#
+# 자동 비활성화: TW2 3-SLOT이 live 모드가 아니면 의미가 없으므로
+# early_take_profit.is_active()가 자기 토글 외에 state.time_window_3slot_
+# filter_enabled AND state.time_window_active_mode == "TW2_3SLOT"까지 요구하고,
+# service.set_time_window_3slot_filter_enabled(False)는 이 토글 자체를 강제로
+# 끈다(발동할 수 없는 필터가 UI에 켜진 것처럼 보이지 않게).
+EARLY_TP_FILTER_DEFAULT = _env_bool("MACD2_EARLY_TP_FILTER_DEFAULT", False)
+EARLY_TP_FILTER_VERSION = "EARLY_TP_V1_20260903"
+EARLY_TP_STRATEGY_NAME = "조기익절 필터 (TW2 3-SLOT 전용)"
+# MFE 트리거 / 보호 floor, 단위는 퍼센트(분수 아님) -- worker._net_return_pct
+# 출력과 직접 비교하며, time_window_position_manager의 *_PCT 모듈 상수와
+# 동일한 관례다.
+EARLY_TP_TRIGGER_PCT = _env_float("MACD2_EARLY_TP_TRIGGER_PCT", 1.5)
+EARLY_TP_FLOOR_PCT = _env_float("MACD2_EARLY_TP_FLOOR_PCT", 0.8)
+# CHOP 판정식 (2026-09-03 TRAIN 확정 -- 새 TRAIN/OOS 검증 없이 재튜닝 금지.
+# 그리드와 선택규칙은 data/validation/chop_adaptive_exit/report_summary.json).
+EARLY_TP_LOOKBACK_MINUTES = _env_int("MACD2_EARLY_TP_LOOKBACK_MINUTES", 30)
+EARLY_TP_MIN_BARS = _env_int("MACD2_EARLY_TP_MIN_BARS", 4)
+EARLY_TP_SCORE_MIN = _env_int("MACD2_EARLY_TP_SCORE_MIN", 3)
+EARLY_TP_RECENT_CROSS_MIN = _env_int("MACD2_EARLY_TP_RECENT_CROSS_MIN", 1)
+EARLY_TP_VWAP_FLIP_MIN = _env_int("MACD2_EARLY_TP_VWAP_FLIP_MIN", 3)
+EXIT_EARLY_TAKE_PROFIT = "EARLY_TAKE_PROFIT"
+
 # ── Isolated MACD2 runtime/ledger paths (never shared with MACD v1) ───────
 # Resolved lazily via app.utils.data_paths inside state_store.py/ledger.py so
 # tests can monkeypatch those modules' own path constants, not these names.

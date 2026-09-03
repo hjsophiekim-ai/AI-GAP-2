@@ -71,6 +71,8 @@ def default_state() -> RuntimeState:
     state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
     state.time_window_3slot_filter_enabled = bool(getattr(config, "TW2_3SLOT_FILTER_DEFAULT", False))
     state.time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
+    state.early_tp_filter_enabled = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
+    state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
     state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
@@ -367,6 +369,17 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "time_window_3slot_filter_enabled_at": state.time_window_3slot_filter_enabled_at,
         "time_window_3slot_filter_enabled_by": state.time_window_3slot_filter_enabled_by,
         "time_window_3slot_filter_version": state.time_window_3slot_filter_version or config.TW2_3SLOT_FILTER_VERSION,
+        # 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03)
+        "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
+        "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
+        "early_tp_filter_enabled_by": state.early_tp_filter_enabled_by,
+        "early_tp_filter_version": state.early_tp_filter_version or config.EARLY_TP_FILTER_VERSION,
+        "time_window_entry_chop": bool(state.time_window_entry_chop),
+        "early_tp_peak_net_return": float(state.early_tp_peak_net_return or 0.0),
+        "last_entry_chop_score": state.last_entry_chop_score,
+        "last_entry_chop_conditions": state.last_entry_chop_conditions,
+        "last_early_tp_armed_at": state.last_early_tp_armed_at,
+        "last_early_tp_fired_at": state.last_early_tp_fired_at,
         "tw2_3slot_pending_flag_direction": (
             state.tw2_3slot_pending_flag_direction.value if state.tw2_3slot_pending_flag_direction else None
         ),
@@ -481,6 +494,18 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         # claiming both an established mode and the new one are on must never
         # let the new, still-unverified mode silently win over TW2/TEG.
         time_window_3slot_filter_enabled = False
+    # 조기익절 필터 — 같은 version-gating 관례(버전이 바뀌면 저장값을 버리고
+    # 기본값으로 되돌린다)를 그대로 따르고, 추가로 TW2 3-SLOT이 꺼져 있으면
+    # 무조건 함께 꺼진 상태로 복원한다(사용자 요청: 3-SLOT OFF면 자동 비활성).
+    early_tp_enabled_default = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
+    stored_early_tp_filter_version = str(raw.get("early_tp_filter_version") or "")
+    early_tp_filter_version = stored_early_tp_filter_version or config.EARLY_TP_FILTER_VERSION
+    early_tp_filter_enabled = bool(raw.get("early_tp_filter_enabled", early_tp_enabled_default))
+    if stored_early_tp_filter_version and stored_early_tp_filter_version != config.EARLY_TP_FILTER_VERSION:
+        early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
+        early_tp_filter_enabled = early_tp_enabled_default
+    if not time_window_3slot_filter_enabled:
+        early_tp_filter_enabled = False
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
     down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
@@ -802,6 +827,16 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_3slot_filter_enabled_at=raw.get("time_window_3slot_filter_enabled_at"),
         time_window_3slot_filter_enabled_by=raw.get("time_window_3slot_filter_enabled_by"),
         time_window_3slot_filter_version=time_window_3slot_filter_version,
+        early_tp_filter_enabled=early_tp_filter_enabled,
+        early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),
+        early_tp_filter_enabled_by=raw.get("early_tp_filter_enabled_by"),
+        early_tp_filter_version=early_tp_filter_version,
+        time_window_entry_chop=bool(raw.get("time_window_entry_chop") or False),
+        early_tp_peak_net_return=float(raw.get("early_tp_peak_net_return") or 0.0),
+        last_entry_chop_score=raw.get("last_entry_chop_score"),
+        last_entry_chop_conditions=raw.get("last_entry_chop_conditions"),
+        last_early_tp_armed_at=raw.get("last_early_tp_armed_at"),
+        last_early_tp_fired_at=raw.get("last_early_tp_fired_at"),
         tw2_3slot_pending_flag_direction=tw2_3slot_pending_flag_direction,
         tw2_3slot_pending_flag_bar_ts=raw.get("tw2_3slot_pending_flag_bar_ts"),
         tw2_3slot_slots_used_today=int(raw.get("tw2_3slot_slots_used_today") or 0),
