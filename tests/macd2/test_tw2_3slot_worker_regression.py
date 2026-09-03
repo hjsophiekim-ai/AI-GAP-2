@@ -634,6 +634,57 @@ def test_premarket_carry_should_fire_is_false_when_only_3slot_enabled_even_if_ca
     assert worker._premarket_carry_should_fire(state, now) is False
 
 
+# ── 9. order_block_reason must reflect the REAL T+3 outcome (2026-09-03) ────
+# Real incident: a RED flag confirmed at 10:06, was correctly registered as
+# a pending T+3 candidate (order_block_reason -> TW_PENDING_CONFIRMATION, the
+# UI's "최근 block/skip 사유" line showing "time window pending"), but the
+# T+3 resolution 3 minutes later never updated that field -- so even after a
+# real rejection (quality score/veto/etc.) was computed and correctly written
+# to the signal-ledger CSV's block_reason column, the UI's single-line status
+# stayed frozen on "time window pending" forever, with no visible outcome.
+
+def test_flat_rejection_at_t3_updates_order_block_reason_away_from_pending(tw2_3slot_market_data, monkeypatch):
+    svc, now0 = tw2_3slot_market_data
+    state = _fresh_3slot_state()
+    state.order_block_reason = config.TW_PENDING_CONFIRMATION  # simulates the flag-bar tick's own write
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    _patch_common(monkeypatch, entry_decision=_rejected(config.TW_REJECT_LOW_QUALITY_SCORE))
+
+    _prime_3slot_pending(state, Direction.UP_RED, before=_PRIOR_DAY)
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.FILTERED_OUT) for a in result.actions), result.actions
+    assert state.order_block_reason == config.TW_REJECT_LOW_QUALITY_SCORE, (
+        "order_block_reason must show the REAL T+3 rejection reason, not stay stuck on "
+        f"TW_PENDING_CONFIRMATION -- got {state.order_block_reason!r}"
+    )
+
+
+def test_whipsaw_hold_at_t3_updates_order_block_reason_away_from_pending(tw2_3slot_market_data, monkeypatch):
+    svc, now0 = tw2_3slot_market_data
+    state = _fresh_3slot_state()
+    state.order_block_reason = config.TW_PENDING_CONFIRMATION
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_active_mode = "TW2_3SLOT"
+    state.time_window_entry_session = "MORNING"
+    state.tw2_3slot_slots_used_today = 1
+    state.tw2_3slot_morning_count = 1
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+    _patch_common(monkeypatch, entry_decision=_rejected(config.TW_REJECT_NOT_CONFIRMED))
+
+    _prime_3slot_pending(state, Direction.UP_RED, before=_PRIOR_DAY)
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith("TW2_3SLOT_WHIPSAW_HOLD") for a in result.actions), result.actions
+    assert state.order_block_reason == config.TW_REJECT_NOT_CONFIRMED, (
+        "a whipsaw-hold reject must also update order_block_reason to the real reason -- "
+        f"got {state.order_block_reason!r}"
+    )
+
+
 def test_full_tick_no_carry_order_dispatched_for_3slot_at_0903(tw2_3slot_market_data):
     """End-to-end via the real run_once() dispatch: even with a (defensively
     impossible in practice, but simulated here) leftover premarket candidate

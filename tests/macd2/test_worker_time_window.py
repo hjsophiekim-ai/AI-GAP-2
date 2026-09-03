@@ -1220,6 +1220,83 @@ def test_tw2_rejected_reversal_still_liquidates_the_held_position(tw_market_data
     assert state.time_window_position_active is False
 
 
+# ── order_block_reason must reflect the REAL T+3 outcome (2026-09-03) ──────
+# Real incident: a flag confirmed, was correctly registered as a pending T+3
+# candidate (order_block_reason -> TW_PENDING_CONFIRMATION, the UI's "최근
+# block/skip 사유" line showing "time window pending"), but the T+3
+# resolution 3 minutes later never updated that field -- so even after a real
+# rejection was computed and correctly written to the signal-ledger CSV's
+# block_reason column, the UI's single-line status stayed frozen on "time
+# window pending" forever, with no visible outcome.
+
+def test_flat_rejection_at_t3_updates_order_block_reason_away_from_pending(tw_market_data, monkeypatch):
+    from app.trading.macd2.models import Direction as _Direction, MajorFlagDecision
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_teg_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.order_block_reason = config.TW_PENDING_CONFIRMATION  # simulates the flag-bar tick's own write
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    flag_bar_dt = now0 - timedelta(minutes=6)
+    state.time_window_pending_flag_direction = _Direction.UP_RED
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    rejected = MajorFlagDecision(
+        approved=False, score=1.0, required_score=4.0, decision=config.TW_REJECT_LOW_QUALITY_SCORE,
+        reasons=(config.TW_REJECT_LOW_QUALITY_SCORE,), component_scores={}, metrics={},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
+    )
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: rejected)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith(config.FILTERED_OUT) for a in result.actions), result.actions
+    assert state.order_block_reason == config.TW_REJECT_LOW_QUALITY_SCORE, (
+        "order_block_reason must show the REAL T+3 rejection reason, not stay stuck on "
+        f"TW_PENDING_CONFIRMATION -- got {state.order_block_reason!r}"
+    )
+
+
+def test_whipsaw_hold_at_t3_updates_order_block_reason_away_from_pending(tw_market_data, monkeypatch):
+    from app.trading.macd2.models import Direction as _Direction, MajorFlagDecision, PositionSnapshot
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_teg_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    state.order_block_reason = config.TW_PENDING_CONFIRMATION
+    state.position = PositionSnapshot(symbol=config.INVERSE_SYMBOL, quantity=10, avg_price=10_000.0, entry_at=now0)
+    state.time_window_position_active = True
+    state.time_window_active_mode = "TW2"
+    state.time_window_entry_session = "MORNING"
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
+    broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
+
+    flag_bar_dt = now0 - timedelta(minutes=6)
+    state.time_window_pending_flag_direction = _Direction.UP_RED
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    whipsaw_decision = MajorFlagDecision(
+        approved=False, score=1.0, required_score=4.0, decision=config.TW_REJECT_NOT_CONFIRMED,
+        reasons=(config.TW_REJECT_NOT_CONFIRMED,), component_scores={}, metrics={},
+        is_reversal=False, fast_reversal=False, block_reason=config.TW_REJECT_NOT_CONFIRMED,
+    )
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", lambda *a, **kw: whipsaw_decision)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    assert any(a.startswith("TIME_WINDOW_WHIPSAW_HOLD") for a in result.actions), result.actions
+    assert state.order_block_reason == config.TW_REJECT_NOT_CONFIRMED, (
+        "a whipsaw-hold reject must also update order_block_reason to the real reason -- "
+        f"got {state.order_block_reason!r}"
+    )
+
+
 def test_tw2_recovered_broker_position_still_resolves_pending_reversal_same_tick(tw_market_data, monkeypatch):
     """A reconcile-discovered held position must not skip the very tick that
     can resolve an already-pending TW2 opposite candidate."""

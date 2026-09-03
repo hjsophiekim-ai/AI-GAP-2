@@ -2575,6 +2575,18 @@ def _resolve_time_window_candidate(
                     whipsaw_outcome, whipsaw_trace,
                 )
                 result.actions.append(f"TIME_WINDOW_WHIPSAW_HOLD:{direction.value}")
+                # 2026-09-03 real incident fix: this T+3 rejection branch never
+                # updated state.order_block_reason, so the UI's "최근 block/skip
+                # 사유" quick-look line stayed frozen on whatever the FLAG bar's
+                # own _record_major_filtered_signal call set it to (always
+                # TW_PENDING_CONFIRMATION) -- the real T+3 outcome was only ever
+                # visible in the full signal-ledger CSV's block_reason column,
+                # never in this single-line summary. Every other reject/exit
+                # path in this file (_record_major_filtered_signal,
+                # _execute_or_wait, _apply_exit_outcome, etc.) already updates
+                # this field on its own outcome; this call brings the T+3
+                # whipsaw-hold branch in line with that existing convention.
+                state.order_block_reason = decision.block_reason or decision.decision
                 _start_whipsaw_watch(state, mode="TW2", direction=direction, bars_3m=bars_3m, flag_bar_dt=macd_snap.bar_dt, now=now)
                 return None
             outcome = _execute_reversal_exit_only_for_filtered_entry(
@@ -2603,6 +2615,12 @@ def _resolve_time_window_candidate(
             state, macd_snap, direction, "TIME_WINDOW_CONFIRM", signal_id, datetime.now(KST), outcome, dispatch_trace,
         )
         result.actions.append(f"{config.FILTERED_OUT}:{direction.value}")
+        # 2026-09-03 real incident fix: see the whipsaw-hold branch above for
+        # why this must be set here too -- without it, a T+3 candidate that
+        # gets rejected (quality score/veto/max-entry-count/etc.) with no
+        # position to liquidate leaves the UI's "최근 block/skip 사유" line
+        # stuck on the flag bar's own TW_PENDING_CONFIRMATION forever.
+        state.order_block_reason = decision.block_reason or decision.decision
         return None
 
     if down_blue_exception_applied:
@@ -2850,6 +2868,14 @@ def _resolve_tw2_3slot_candidate(
                     whipsaw_outcome, whipsaw_trace,
                 )
                 result.actions.append(f"TW2_3SLOT_WHIPSAW_HOLD:{direction.value}")
+                # 2026-09-03 real incident fix -- see _resolve_time_window_
+                # candidate's own identical fix for the full rationale: this
+                # T+3 rejection branch never updated state.order_block_reason,
+                # so the UI's "최근 block/skip 사유" line stayed frozen on the
+                # flag bar's own TW_PENDING_CONFIRMATION forever, even though
+                # the real reason was correctly written to the signal-ledger
+                # CSV's block_reason column all along.
+                state.order_block_reason = decision.block_reason or decision.decision
                 _start_whipsaw_watch(state, mode="TW2_3SLOT", direction=direction, bars_3m=bars_3m, flag_bar_dt=macd_snap.bar_dt, now=now)
                 return None
             outcome = _execute_reversal_exit_only_for_filtered_entry(
@@ -2878,6 +2904,9 @@ def _resolve_tw2_3slot_candidate(
             state, macd_snap, direction, "TW2_3SLOT_CONFIRM", signal_id, datetime.now(KST), outcome, dispatch_trace,
         )
         result.actions.append(f"{config.FILTERED_OUT}:{direction.value}")
+        # 2026-09-03 real incident fix: see _resolve_time_window_candidate's
+        # own identical fix above for the full rationale.
+        state.order_block_reason = decision.block_reason or decision.decision
         return None
 
     signal_detected_at = datetime.now(KST)
