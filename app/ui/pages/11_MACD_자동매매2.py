@@ -180,6 +180,7 @@ def _is_display_signal(row: dict) -> bool:
 
 def _signal_label(row: dict) -> str:
     signal_type = str(row.get("signal_type") or "")
+    signal_id = str(row.get("signal_id") or "")
     if signal_type == "PREMARKET_CARRY_TW":
         return "프리마켓 승계"
     if signal_type == "SCHEDULED_ENTRY_0903":
@@ -192,6 +193,19 @@ def _signal_label(row: dict) -> str:
         # T+3 재확인 결과 행 -- 최초 등록("플래그"/"반대 플래그") 행과 구분되게
         # 표시해 "같은 걸 두 번 보여주나" 하는 혼동을 줄인다.
         return "재확인(T+3)"
+    # 2026-09-03 real incident: worker.py는 T+3 재확인이 "승인"된 경우
+    # signal_type을 (거절된 경우와 달리) "TW2_3SLOT_CONFIRM"/
+    # "TIME_WINDOW_CONFIRM"으로 남기지 않고 다른 진입/전환 경로와 동일하게
+    # "INITIAL"/"REVERSAL"로 남긴다(_resolve_tw2_3slot_candidate_body의
+    # signal_type = "REVERSAL" if position else "INITIAL") -- signal_id
+    # 자체는 항상 ":TW2_3SLOT_CONFIRM"/":TW_CONFIRM" 접미사를 유지하므로,
+    # 승인 여부와 무관하게 이 접미사만으로 "이건 새 플래그가 아니라 앞선
+    # pending 후보의 T+3 확정 체결/전환 행"임을 판별한다. 이게 없으면
+    # 승인된 진입이 마치 근거 없이 갑자기 나타난 새 플래그처럼 보인다(실제
+    # 사용자 혼동 사례: 13:09 플래그의 정상 T+3 승인·체결이 화면엔 그냥
+    # "13:12 플래그 UP_RED"로 보여 "오류인가?" 오인).
+    if signal_id.endswith(":TW2_3SLOT_CONFIRM") or signal_id.endswith(":TW_CONFIRM"):
+        return "재확인(T+3) 승인"
     return "반대 플래그" if signal_type == "REVERSAL" else "플래그"
 
 
