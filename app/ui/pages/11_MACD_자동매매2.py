@@ -37,6 +37,7 @@ require_login()
 
 from app.config import get_config, get_kis_account_config, mask_account  # noqa: E402
 from app.trading.macd2 import config as macd2_config  # noqa: E402
+from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
 from app.trading.macd2.service import get_service  # noqa: E402
 
@@ -294,6 +295,7 @@ _EXIT_REASON_DISPLAY_LABELS = {
     macd2_config.EXIT_TW_AFTERNOON_TP: "오후 익절",
     macd2_config.EXIT_TW_BREAKEVEN_STOP: "본전 손절",
     macd2_config.EXIT_TW_PROFIT_LOCK_STOP: "프로핏락 손절",
+    macd2_config.EXIT_EARLY_TAKE_PROFIT: "조기익절",
     "RECOVERED_TO_FLAT": "청산 확인(정합화)",
     "END_OF_DATA": "데이터 종료",
 }
@@ -885,6 +887,84 @@ with _3slot_cols[1]:
                 f"{'승인' if getattr(state, 'last_tw2_3slot_approved', False) else '거절'} · "
                 f"슬롯={getattr(state, 'last_tw2_3slot_slot_number', '-') or '-'} · "
                 f"사유={getattr(state, 'last_tw2_3slot_block_reason', None) or '-'}"
+            )
+
+# ── 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03) ────────────────────
+# TW2 3-SLOT이 꺼지면 service.set_time_window_3slot_filter_enabled가 이 토글을
+# 강제로 끈다. 위젯 key가 session_state에 남아 있으면 다음 rerun에서 체크박스가
+# 여전히 True로 읽혀 켜려는 요청이 한 번 더 나가므로(그러면 서비스가
+# TW2_3SLOT_REQUIRED로 거절하고 경고만 뜬다), 의존필터가 꺼진 상태에서는 위젯
+# 상태도 함께 내려 UI와 실제 상태가 어긋나지 않게 한다.
+_3slot_live = bool(getattr(state, "time_window_3slot_filter_enabled", False))
+if not _3slot_live and st.session_state.get("macd2_early_tp_toggle"):
+    st.session_state["macd2_early_tp_toggle"] = False
+
+_early_tp_cols = st.columns([1.4, 1.6])
+with _early_tp_cols[0]:
+    _early_tp_on = st.checkbox(
+        "└ 조기익절 필터",
+        value=bool(getattr(state, "early_tp_filter_enabled", False)),
+        key="macd2_early_tp_toggle",
+        disabled=not _3slot_live,
+        help=(
+            "TW2 3-SLOT 전용 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
+            "전혀 건드리지 않고, 이미 보유 중인 포지션에만 하방 보호선을 하나 더 얹습니다(매도만 가능). "
+            "① 진입이 체결된 확정봉을 CHOP/TREND로 분류해 그 포지션에 고정 저장합니다(최근30분 확정 "
+            "zero-cross 횟수 / EMA10-20 스프레드 확대 실패 / EMA20 기울기 진입방향 아님 / 종가-세션VWAP "
+            f"부호 교차 반복, 4개 중 {macd2_config.EARLY_TP_SCORE_MIN}개 이상이면 CHOP). 보유 중에 나중에 "
+            "흔들리기 시작한 포지션은 대상이 아닙니다(그 방식은 먼저 검증했고 +6% TP2 러너를 잘라 OOS에서 "
+            "악화되어 기각). ② 진입시 CHOP인 포지션만, MFE(진입 후 최고 순수익)가 "
+            f"+{macd2_config.EARLY_TP_TRIGGER_PCT:.1f}%에 도달하면 armed 되고, 그 뒤 완성 3분봉 종가가 "
+            f"+{macd2_config.EARLY_TP_FLOOR_PCT:.1f}% 이하로 내려오면 잔량을 전량 청산합니다. "
+            "③ 기존 청산이 항상 우선합니다 — TP1/TP2/오후TP(틱 즉시)와 손절/after-TP1-stop/trailing(완성봉)을 "
+            "먼저 전부 평가하고, 그중 아무것도 발동하지 않았을 때만 이 필터가 판단합니다. 그래서 실효 스탑이 "
+            "max(기존 활성 스탑, floor)가 되고 TP1/TP2/trailing은 그대로 살아 있습니다. "
+            "2026-06-05~08-31 60거래일 TRAIN(40)/OOS(20), 임계값은 TRAIN에서 확정하고 OOS 재조정 없음: "
+            "OOS 복리 34.18%→39.68%, PF 1.87→2.07, MDD 7.95%→6.47%(개선). 다만 60거래일 116거래 중 실제 "
+            "발동은 5건(OOS 2건)뿐입니다 — 손실→플러스 전환 2건, +3~6% 러너 훼손 0건으로 방향은 일관되고 "
+            "러너를 훼손할 수 없는 구조지만, 통계적으로 확정된 개선은 아닌 저빈도·저하방 가드로 보셔야 합니다. "
+            "참고로 30분 창이 필요해 09:15 이전 진입은 구조적으로 CHOP 판정이 불가능해 TREND(=미적용)로 "
+            "떨어집니다. TW2 3-SLOT이 꺼지면 자동으로 함께 비활성화됩니다. 기본 OFF. "
+            "(MACD2의 기존 PROFIT_LOCK 기능과는 완전히 무관한 별개 필터입니다.)"
+        ),
+    )
+with _early_tp_cols[1]:
+    if not _3slot_live:
+        st.caption("조기익절 필터=OFF · TW2 3-SLOT을 켜야 사용할 수 있습니다(자동 비활성화)")
+    elif bool(_early_tp_on) != bool(getattr(state, "early_tp_filter_enabled", False)):
+        res = service.set_early_tp_filter_enabled(bool(_early_tp_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(f"조기익절 필터 → {'ON' if _early_tp_on else 'OFF'}")
+            st.rerun()
+        else:
+            st.warning(
+                "조기익절 필터를 켤 수 없습니다: "
+                + ("TW2 3-SLOT이 켜져 있어야 합니다."
+                   if res.get("reason") == "TW2_3SLOT_REQUIRED" else str(res.get("reason") or "알 수 없는 사유"))
+            )
+    else:
+        st.caption(
+            f"조기익절 필터={'ON' if state.early_tp_filter_enabled else 'OFF'} · "
+            f"트리거 MFE +{macd2_config.EARLY_TP_TRIGGER_PCT:.1f}% → 보호선 +{macd2_config.EARLY_TP_FLOOR_PCT:.1f}% · "
+            f"현재 포지션 진입시 판정={'CHOP(대상)' if getattr(state, 'time_window_entry_chop', False) else 'TREND(미적용)'}"
+            + (
+                f" · MFE {float(getattr(state, 'early_tp_peak_net_return', 0.0) or 0.0):+.2f}%"
+                if getattr(state, "time_window_position_active", False) else ""
+            )
+        )
+        if state.early_tp_filter_enabled and getattr(state, "last_entry_chop_score", None) is not None:
+            _chop_conds = getattr(state, "last_entry_chop_conditions", None) or {}
+            _hit = [k for k, v in _chop_conds.items() if v]
+            st.caption(
+                "최근 진입 CHOP 판정: "
+                f"{int(state.last_entry_chop_score)}/{len(early_take_profit.ALL_CHOP_CONDITIONS)}"
+                f" (기준 {macd2_config.EARLY_TP_SCORE_MIN} 이상) · "
+                f"충족={', '.join(_hit) if _hit else '-'}"
+            )
+        if getattr(state, "last_early_tp_armed_at", None) or getattr(state, "last_early_tp_fired_at", None):
+            st.caption(
+                f"최근 armed={_hhmmss(getattr(state, 'last_early_tp_armed_at', None)) or '-'} · "
+                f"최근 발동={_hhmmss(getattr(state, 'last_early_tp_fired_at', None)) or '-'}"
             )
 
 _dbe_cols = st.columns([1.4, 1.6])
