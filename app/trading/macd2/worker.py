@@ -54,6 +54,7 @@ from app.trading.macd2 import (
     risk_exit,
     sideways_filter,
     single_entry_filter,
+    state_store,
     teg_gate,
     time_window_3slot,
     time_window_filter,
@@ -5082,6 +5083,50 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
     state.last_duplicate_signal_id = None if written else signal_id
 
 
+WORKER_LEASE_FILENAME = "macd2_worker_lease.json"
+
+
+def _worker_lease_path():
+    return state_store.STATE_DIR_PATH / WORKER_LEASE_FILENAME
+
+
+def _claim_worker_lease(instance_id: str) -> None:
+    """Unconditionally overwrites the shared lease file on the persistent
+    disk with THIS instance's id -- the newest start() call always wins the
+    claim. See Macd2Worker.start()'s own docstring/comment for the real
+    2026-09-03 incident (two concurrently-ticking Worker loops silently
+    corrupting shared state/ledger writes) this closes."""
+    try:
+        path = _worker_lease_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"instance_id": instance_id, "pid": os.getpid(), "claimed_at": datetime.now(KST).isoformat()}),
+            encoding="utf-8",
+        )
+    except Exception:
+        # Best-effort only -- a lease-file write failure (disk full, perms)
+        # must never prevent the Worker from starting; _holds_worker_lease's
+        # own fail-open default (True on any read error) means a persistent
+        # write failure here simply falls back to no cross-process
+        # protection, not a crash or a false "superseded" self-shutdown.
+        logger.warning("[MACD2] failed to write worker lease file", exc_info=True)
+
+
+def _holds_worker_lease(instance_id: str) -> bool:
+    """True unless the lease file exists, is readable, AND names a
+    DIFFERENT instance_id -- fail-open on any missing/corrupt/unreadable
+    lease (never let a diagnostic file's own absence stop real trading)."""
+    try:
+        path = _worker_lease_path()
+        if not path.exists():
+            return True
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        claimed_by = raw.get("instance_id")
+        return claimed_by is None or claimed_by == instance_id
+    except Exception:
+        return True
+
+
 class Macd2Worker:
     """Owns exactly one background tick thread (docs §13 single-Worker principle)."""
 
@@ -5138,6 +5183,24 @@ class Macd2Worker:
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
+            # 2026-09-03 real incident fix: re-checked every tick, BEFORE any
+            # state load/mutation this iteration -- if some OTHER Worker
+            # instance (a newer start() call, whether in this same process
+            # or, since the lease lives on the shared persistent disk, a
+            # different process) has since claimed the lease, THIS instance
+            # is stale and must stop ticking permanently rather than keep
+            # independently load-mutate-saving the shared state/ledger files
+            # with no coordination -- see _claim_worker_lease's docstring
+            # for the real incident (two concurrently-ticking loops, one on
+            # 24-minutes-stale data, corrupting/losing several T+3
+            # candidates' resolutions with zero ledger trace) this closes.
+            if not _holds_worker_lease(self._instance_id):
+                logger.error(
+                    f"[MACD2] Worker instance {self._instance_id} superseded by a newer lease holder -- stopping this loop permanently"
+                )
+                with self._lock:
+                    self._last_exception = f"SUPERSEDED_BY_NEWER_WORKER_INSTANCE at {datetime.now(KST).isoformat()}"
+                return
             t0 = time.monotonic()
             stage_timing: dict[str, float] = {}
             try:
@@ -5248,20 +5311,53 @@ class Macd2Worker:
             self._stop_event.wait(max(0.0, self._tick_interval_sec - elapsed))
 
     def start(self) -> None:
-        if self.is_alive():
-            return  # never spawn a second Worker thread
-        # 2026-08-19: marks THIS process as the genuine live Worker so
-        # ledger.append_signal/append_execution and state_store.save_state
-        # allow writes to the real production paths -- any OTHER caller
-        # (an ad-hoc/replay script invoking run_once() directly, never
-        # through this class) is refused unless it has redirected those
-        # paths itself first (see ledger.py's own docstring for the
-        # 2026-08-19 incident this guards against).
-        os.environ[ledger.LIVE_WORKER_MARKER_ENV] = str(os.getpid())
-        self._stop_event.clear()
-        self._started_at = datetime.now(KST)
-        self._thread = threading.Thread(target=self._run_loop, name="macd2-worker", daemon=True)
-        self._thread.start()
+        # 2026-09-03 real incident fix: this check-then-launch was
+        # completely unguarded -- if two threads called start() at nearly
+        # the same moment (e.g. Macd2Service._auto_recover_worker firing
+        # from one Streamlit session's stall-check while another session's
+        # request/rerun thread does the same, both seeing is_alive()==False
+        # in the brief window right after a restart), BOTH could pass the
+        # is_alive() check and each spawn their OWN daemon Thread, with
+        # self._thread ending up pointing at only ONE of them -- the OTHER
+        # becomes a permanently orphaned, un-stoppable second ticking loop.
+        # Real evidence this actually happened: the 2026-09-03 signal ledger
+        # shows two rows written ~7 seconds apart with DIFFERENT worker_
+        # instance_id but the SAME session_started_at, one of them using
+        # completely stale macd_snap data (a bar 24 minutes behind the
+        # other) -- consistent with two concurrently-running Worker loops
+        # each independently load-mutate-saving the shared state/ledger
+        # files with no coordination, silently corrupting/losing several
+        # T+3 candidates' resolutions that day. Acquiring self._lock around
+        # the whole check-and-launch makes this atomic -- the loser of the
+        # race now correctly observes is_alive()==True and returns.
+        with self._lock:
+            if self.is_alive():
+                return  # never spawn a second Worker thread
+            # 2026-08-19: marks THIS process as the genuine live Worker so
+            # ledger.append_signal/append_execution and state_store.save_state
+            # allow writes to the real production paths -- any OTHER caller
+            # (an ad-hoc/replay script invoking run_once() directly, never
+            # through this class) is refused unless it has redirected those
+            # paths itself first (see ledger.py's own docstring for the
+            # 2026-08-19 incident this guards against).
+            os.environ[ledger.LIVE_WORKER_MARKER_ENV] = str(os.getpid())
+            self._stop_event.clear()
+            self._started_at = datetime.now(KST)
+            # 2026-09-03 real incident fix: claims exclusive "the live
+            # writer" status on the SHARED persistent disk (survives across
+            # process boundaries, unlike the in-process self._lock above) --
+            # unconditionally overwrites any prior claim, since we always
+            # want the NEWEST start() call to win. _run_loop re-checks this
+            # every tick; a stale/superseded instance (e.g. an old process
+            # that Render's restart didn't fully kill yet, or the losing
+            # side of the exact in-process race the lock above now prevents
+            # for NEW races, but doesn't retroactively fix if one is somehow
+            # already running) detects the claim no longer matches its own
+            # instance_id and stops ticking permanently rather than
+            # continuing to silently corrupt shared state/ledger writes.
+            _claim_worker_lease(self._instance_id)
+            self._thread = threading.Thread(target=self._run_loop, name="macd2-worker", daemon=True)
+            self._thread.start()
 
     def stop(self, join_timeout: float = 5.0) -> bool:
         """Returns True only if the tick thread is confirmed dead after the

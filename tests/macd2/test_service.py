@@ -492,6 +492,41 @@ def test_get_service_returns_process_singleton(monkeypatch):
     assert a is b
 
 
+def test_get_service_concurrent_first_calls_construct_exactly_one_instance(monkeypatch):
+    """2026-09-03 real incident: get_service()'s lazy-singleton check-then-set
+    was unguarded -- two Streamlit sessions' threads both hitting this page
+    for the first time at nearly the same moment (e.g. right after a cold
+    start/redeploy) could each observe `_service_instance is None` and each
+    construct their OWN Macd2Service/Worker, with the LOSING instance's
+    Worker thread (daemon=True, nothing left to stop it) ticking forever,
+    invisibly racing the winning instance's load-mutate-save cycle against
+    the SAME shared state.json/signal-ledger CSV. Real evidence: two ledger
+    rows ~7 seconds apart with different worker_instance_id, one using
+    macd_snap data 24 minutes stale relative to the other. Forces the race
+    window via a thread pool and asserts every thread gets the identical
+    instance."""
+    import threading as _threading
+
+    monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
+    monkeypatch.setattr(service_module, "_service_instance", None)
+
+    results: list = []
+    barrier = _threading.Barrier(20)
+
+    def _get():
+        barrier.wait(timeout=5.0)
+        results.append(service_module.get_service())
+
+    threads = [_threading.Thread(target=_get) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    assert len(results) == 20
+    assert len({id(r) for r in results}) == 1, "every concurrent caller must observe the SAME Macd2Service instance"
+
+
 def test_profit_lock_enabled_defaults_off_and_toggles_on():
     """2026-08-05 (사용자 요청 — 모든 필터 기본값 OFF): 기본값 OFF, ON으로 토글 가능."""
     svc = service_module.Macd2Service()

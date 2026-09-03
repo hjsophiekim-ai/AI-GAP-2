@@ -1050,6 +1050,78 @@ def test_worker_lifecycle_single_thread_and_stats():
     assert w._thread is None
 
 
+def test_concurrent_start_calls_never_spawn_two_ticking_threads():
+    """2026-09-03 real incident: Macd2Worker.start()'s check-then-launch was
+    unguarded -- two threads calling start() at nearly the same moment
+    could both pass the is_alive() check and each spawn their OWN daemon
+    thread, with self._thread pointing at only one of them (the other
+    becomes a permanently orphaned second ticking loop, silently
+    corrupting shared state/ledger writes with no coordination -- real
+    evidence: two ledger rows ~7 seconds apart with different worker_
+    instance_id, one on 24-minutes-stale bar data). Fires many concurrent
+    start() calls via a thread pool to reliably reproduce the race window
+    and asserts only ONE thread object/lease survives."""
+    import threading as _threading
+
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    df_1m = _1m_frame(prior_day, _sine_1m_closes(300))
+    svc = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m, {}))
+    svc.bootstrap(now=prior_day + timedelta(minutes=300, seconds=5))
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    holder = {"state": _fresh_state()}
+    w = Macd2Worker(
+        broker=broker, market_data=svc,
+        get_state=lambda: holder["state"], save_state=lambda s: holder.__setitem__("state", s),
+    )
+
+    threads = [_threading.Thread(target=w.start) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    try:
+        time_module.sleep(0.2)
+        assert w.is_alive() is True
+        started_thread = w._thread
+        # A second, later call must still be a no-op against the survivor.
+        w.start()
+        assert w._thread is started_thread
+    finally:
+        w.stop(join_timeout=5.0)
+
+
+def test_superseded_worker_stops_ticking_on_next_loop_iteration():
+    """2026-09-03 real incident fix: once a NEWER instance claims the shared
+    worker lease file, an OLDER still-running instance must detect this on
+    its very next loop iteration and stop permanently -- never continue
+    load-mutate-saving the shared state/ledger files."""
+    prior_day = datetime(2026, 1, 5, 9, 0, tzinfo=KST)
+    df_1m = _1m_frame(prior_day, _sine_1m_closes(300))
+    svc = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m, {}))
+    svc.bootstrap(now=prior_day + timedelta(minutes=300, seconds=5))
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    holder = {"state": _fresh_state()}
+    w = Macd2Worker(
+        broker=broker, market_data=svc,
+        get_state=lambda: holder["state"], save_state=lambda s: holder.__setitem__("state", s),
+        tick_interval_sec=0.05,
+    )
+
+    w.start()
+    try:
+        time_module.sleep(0.2)
+        assert w.is_alive() is True
+        # A "newer" instance claims the lease out from under this one.
+        worker._claim_worker_lease("some-other-newer-instance-id")
+        time_module.sleep(0.3)
+        assert w.is_alive() is False, "the superseded instance must stop ticking, not keep running"
+        stats = w.tick_stats()
+        assert "SUPERSEDED_BY_NEWER_WORKER_INSTANCE" in str(stats.get("last_exception"))
+    finally:
+        w.stop(join_timeout=5.0)
+
+
 def test_restart_catchup_recovers_a_reversal_missed_inside_a_multi_bar_gap():
     """2026-08-04 fix: a restart that occurs after MULTIPLE bars have already
     formed since the last live tick (not just one) used to lose a reversal

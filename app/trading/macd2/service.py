@@ -23,6 +23,7 @@ had (see docs §15 / the final report).
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime
 from typing import Any, Optional
 
@@ -1066,12 +1067,39 @@ class Macd2Service:
 
 
 _service_instance: Optional[Macd2Service] = None
+_service_instance_lock = threading.Lock()
 
 
 def get_service() -> Macd2Service:
     """Process-level singleton — the UI must call this, never construct its
-    own Macd2Service/Worker/MarketDataService (docs §14/§16)."""
+    own Macd2Service/Worker/MarketDataService (docs §14/§16).
+
+    2026-09-03 real incident fix: the check-then-set on ``_service_instance``
+    below was completely unguarded. Streamlit runs each browser session's
+    script execution on its own thread within the SAME process, so two
+    sessions requesting this page for the first time at nearly the same
+    moment (e.g. right after a cold start/redeploy) could both observe
+    ``_service_instance is None`` and each construct their OWN Macd2Service
+    -- each with its own Worker, MarketDataService, and (once .start() is
+    called on it, e.g. via auto-recover) its own independently-ticking
+    thread. Whichever object wins the final module-level assignment becomes
+    "the" service everything AFTER that moment talks to, but the LOSING
+    Macd2Service's Worker thread (daemon=True, nothing left holding a
+    reference to stop it) keeps running forever, invisibly, doing its own
+    load-state/tick/save-state cycle against the SAME shared state.json/
+    signal-ledger CSV with zero coordination with the winning instance.
+    Real evidence this happened: 2026-09-03's signal ledger shows two rows
+    written ~7 seconds apart with different worker_instance_id but the same
+    session_started_at, one using macd_snap data a full 24 minutes stale
+    relative to the other -- several T+3 candidates that day resolved with
+    no ledger trace at all, consistent with this exact kind of uncoordinated
+    concurrent read-modify-write corrupting/losing state between the two
+    loops. Double-checked locking with a plain threading.Lock closes the
+    race -- the second thread now blocks on the lock and returns the SAME
+    already-constructed instance instead of building its own."""
     global _service_instance
     if _service_instance is None:
-        _service_instance = Macd2Service()
+        with _service_instance_lock:
+            if _service_instance is None:
+                _service_instance = Macd2Service()
     return _service_instance
