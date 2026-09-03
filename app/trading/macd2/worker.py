@@ -2405,6 +2405,65 @@ def _advance_held_position_risk_management(
     return False
 
 
+def _handle_resolve_exception(
+    *,
+    state: RuntimeState,
+    macd_snap,
+    direction: Direction,
+    signal_id: str,
+    signal_type: str,
+    gate_mode: str,
+    exc: Exception,
+) -> None:
+    """2026-09-03 real incident: a T+3 candidate whose resolution
+    (_resolve_time_window_candidate_body / _resolve_tw2_3slot_candidate_
+    body) raised partway through used to vanish with ZERO trace -- by the
+    point either function reaches its own decision-computing body, the
+    pending-candidate fields are already cleared in memory (so the next
+    tick never retries it), nothing had been written to the signal ledger
+    yet (that only happens once a decision object exists), and the only
+    place the exception itself landed -- Worker._last_exception -- gets
+    silently wiped clean by the very next successful tick. Four real flags
+    (10:06/10:51/11:18/11:21) each showed only their own initial "pending"
+    ledger row and nothing after, with "최근 block/skip 사유" stuck on
+    TIME_WINDOW_PENDING_CONFIRMATION for hours -- exactly what this
+    produces if left uncaught.
+
+    This is the caller's except-clause handler: writes an explicit
+    RESOLVE_ERROR row to the signal ledger (so the failure is visible in
+    신호원장 itself, not just an ops-only log line), and sets state.
+    last_resolve_error/last_resolve_error_at -- persisted to disk like every
+    other state field and NEVER auto-cleared by a later successful tick
+    (unlike Worker._last_exception) -- so it survives long enough to
+    diagnose. The candidate itself is treated as consumed (its signal_id is
+    marked processed) rather than retried indefinitely, since if the
+    underlying cause is a persistent data condition (e.g. a bar-history
+    gap), an unbounded retry would just raise again every single tick
+    forever."""
+    tb = traceback.format_exc()
+    logger.error(f"[MACD2] {gate_mode} T+3 resolve raised for signal_id={signal_id}: {tb}")
+    error_text = f"{type(exc).__name__}: {exc}"[:500]
+    now_iso = datetime.now(KST).isoformat()
+    state.last_resolve_error = f"{gate_mode}:{signal_id}: {error_text}"
+    state.last_resolve_error_at = now_iso
+    state.order_block_reason = config.TW_RESOLVE_ERROR
+    if signal_id not in state.processed_signal_ids:
+        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+    dispatch_trace = {
+        "signal_id": signal_id, "direction": direction.value, "signal_type": signal_type,
+        "completed_bar_at": macd_snap.bar_dt.isoformat(),
+        "order_executor_called": False, "broker_called": False,
+        "final_block_reason": error_text,
+        "order_result_override": config.TW_RESOLVE_ERROR,
+    }
+    outcome = order_executor.ExecutionOutcome(
+        signal_id=signal_id, direction=direction,
+        target_symbol=order_executor.target_symbol_for_direction(direction),
+        final_state=SignalState.BLOCKED, block_reason=error_text,
+    )
+    _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, datetime.now(KST), outcome, dispatch_trace)
+
+
 def _resolve_time_window_candidate(
     *,
     broker,
@@ -2445,6 +2504,41 @@ def _resolve_time_window_candidate(
     if signal_id in state.processed_signal_ids:
         return None
 
+    try:
+        return _resolve_time_window_candidate_body(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+            bars_3m=bars_3m, df_1m=df_1m, position=position, result=result,
+            direction=direction, signal_id=signal_id, flag_bar_dt=flag_bar_dt,
+        )
+    except Exception as exc:
+        _handle_resolve_exception(
+            state=state, macd_snap=macd_snap, direction=direction, signal_id=signal_id,
+            signal_type="TIME_WINDOW_CONFIRM", gate_mode="TIME_WINDOW", exc=exc,
+        )
+        return None
+
+
+def _resolve_time_window_candidate_body(
+    *,
+    broker,
+    market_data: MarketDataService,
+    state: RuntimeState,
+    now: datetime,
+    macd_snap,
+    bars_3m,
+    df_1m,
+    position: Optional[PositionSnapshot],
+    result: TickResult,
+    direction: Direction,
+    signal_id: str,
+    flag_bar_dt: datetime,
+):
+    """Extracted from _resolve_time_window_candidate (2026-09-03 real
+    incident fix) so the caller can wrap this decision-computing portion in
+    a try/except -- see _handle_resolve_exception's docstring for the
+    incident this fixes (a T+3 candidate silently vanishing with zero
+    signal-ledger trace if anything in here ever raised). Pure continuation
+    of the parent function; never meant to be called from anywhere else."""
     # bars_3m must end EXACTLY one completed bar after flag_bar_dt for
     # evaluate_time_window_entry to accept it (its own T+3 confirmation
     # contract) -- a multi-bar gap (e.g. the Worker was down) means this
@@ -2768,6 +2862,41 @@ def _resolve_tw2_3slot_candidate(
     if signal_id in state.processed_signal_ids:
         return None
 
+    try:
+        return _resolve_tw2_3slot_candidate_body(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+            bars_3m=bars_3m, df_1m=df_1m, position=position, result=result,
+            direction=direction, signal_id=signal_id, flag_bar_dt=flag_bar_dt,
+        )
+    except Exception as exc:
+        _handle_resolve_exception(
+            state=state, macd_snap=macd_snap, direction=direction, signal_id=signal_id,
+            signal_type="TW2_3SLOT_CONFIRM", gate_mode="TW2_3SLOT", exc=exc,
+        )
+        return None
+
+
+def _resolve_tw2_3slot_candidate_body(
+    *,
+    broker,
+    market_data: MarketDataService,
+    state: RuntimeState,
+    now: datetime,
+    macd_snap,
+    bars_3m,
+    df_1m,
+    position: Optional[PositionSnapshot],
+    result: TickResult,
+    direction: Direction,
+    signal_id: str,
+    flag_bar_dt: datetime,
+):
+    """Extracted from _resolve_tw2_3slot_candidate (2026-09-03 real incident
+    fix) -- see _resolve_time_window_candidate_body's identical rationale
+    (and _handle_resolve_exception's docstring) for why this decision-
+    computing portion is split out so its caller can wrap it in a
+    try/except. Pure continuation of the parent function; never meant to be
+    called from anywhere else."""
     base_decision = time_window_filter.evaluate_time_window_entry(
         bars_3m, direction, flag_bar_dt, now,
         position_direction=_position_direction(position),

@@ -236,6 +236,21 @@ class RuntimeState:
     peak_net_return: float = 0.0
     profit_lock_active: bool = False
     order_block_reason: Optional[str] = None
+    # 2026-09-03 real incident fix: a T+3 candidate resolution
+    # (_resolve_time_window_candidate/_resolve_tw2_3slot_candidate) that
+    # raises partway through used to vanish with ZERO trace -- the pending
+    # candidate fields were already cleared in memory before the exception,
+    # nothing was ever written to the signal ledger, and Worker._last_
+    # exception (the only place the traceback landed) gets wiped clean by
+    # the very next successful tick, so by the time anyone checked the
+    # dashboard there was no evidence anything had gone wrong at all. These
+    # two fields are set by worker.py's _handle_resolve_exception, persisted
+    # to disk like every other state field (so they survive a Render
+    # restart, unlike Worker._last_exception), and NEVER auto-cleared by a
+    # later successful tick -- only a manual review/day-rollover resets
+    # them -- so a transient failure stays visible long enough to diagnose.
+    last_resolve_error: Optional[str] = None
+    last_resolve_error_at: Optional[str] = None
     position_reconcile_diag: dict[str, Any] = field(default_factory=dict)
     last_position_reconcile_at: Optional[str] = None
     strategy_name: str = "MACD2"

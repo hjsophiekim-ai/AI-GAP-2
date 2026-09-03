@@ -987,6 +987,21 @@ d3.metric("누적 tick 수", worker_stats.get("tick_n", "-"))
 if last_exc:
     st.error(f"Worker 마지막 예외 (다음 성공 tick까지 유지됨):\n```\n{last_exc}\n```")
 
+# 2026-09-03 real incident fix: state.order_block_reason이 "HISTORY_GAP" 등
+# 사유 하나만 보여줘서, T+3 재확인 도중 예외가 나서 후보가 통째로 사라진
+# 경우(신호원장에 아무 흔적도 안 남음)를 구분할 방법이 없었다 -- 위 "Worker
+# 마지막 예외"는 다음 정상 tick이 오면 사라지는 필드라, 타이밍을 놓치면 이미
+# 지나간 실패는 확인할 방법이 아예 없었다. last_resolve_error는 state에
+# 영구 저장되고(재배포/재시작에도 유지) 이후 성공한 tick이 와도 자동으로
+# 지워지지 않으므로, 발생 시각과 함께 항상 노출한다.
+if state.last_resolve_error:
+    _resolve_err_at = state.last_resolve_error_at or ""
+    try:
+        _resolve_err_at = datetime.fromisoformat(_resolve_err_at).astimezone(macd2_config.KST).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    st.error(f"T+3 재확인 처리 중 예외 발생 ({_resolve_err_at}, 자동으로 사라지지 않음):\n```\n{state.last_resolve_error}\n```")
+
 st.subheader("현재 신호 / 포지션")
 q1, q2, q3 = st.columns(3)
 for col, symbol, label in (

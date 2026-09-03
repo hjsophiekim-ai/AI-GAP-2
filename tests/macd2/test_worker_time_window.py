@@ -1297,6 +1297,43 @@ def test_whipsaw_hold_at_t3_updates_order_block_reason_away_from_pending(tw_mark
     )
 
 
+# ── A T+3 resolve exception must never vanish silently (2026-09-03) ────────
+# See test_tw2_3slot_worker_regression.py's identical test for the real
+# incident this fixes -- same mechanism applies to plain TW2/TEG.
+
+def test_tw2_resolve_exception_writes_a_visible_ledger_row_and_persistent_diagnostic(tw_market_data, monkeypatch):
+    from app.trading.macd2 import ledger
+    from app.trading.macd2.models import Direction as _Direction
+
+    svc, now0 = tw_market_data
+    state = _fresh_state()
+    state.time_window_teg_filter_enabled = False
+    state.time_window_2_filter_enabled = True
+    assert state.last_resolve_error is None
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("synthetic T+3 resolve failure")
+
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", _boom)
+
+    flag_bar_dt = now0 - timedelta(minutes=6)
+    state.time_window_pending_flag_direction = _Direction.UP_RED
+    state.time_window_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+
+    run_once(broker=broker, market_data=svc, state=state, now=now0)  # must not raise
+
+    assert state.time_window_pending_flag_direction is None, "a failed candidate must not be left dangling forever"
+    assert state.last_resolve_error is not None and "synthetic T+3 resolve failure" in state.last_resolve_error
+    assert state.last_resolve_error_at is not None
+    assert state.order_block_reason == config.TW_RESOLVE_ERROR
+
+    rows = ledger.load_signal_ledger(limit=1000)
+    error_rows = [r for r in rows if r.get("order_result") == config.TW_RESOLVE_ERROR]
+    assert len(error_rows) == 1, f"exactly one RESOLVE_ERROR row must be written -- got {error_rows}"
+    assert "synthetic T+3 resolve failure" in str(error_rows[0].get("block_reason", ""))
+
+
 def test_tw2_recovered_broker_position_still_resolves_pending_reversal_same_tick(tw_market_data, monkeypatch):
     """A reconcile-discovered held position must not skip the very tick that
     can resolve an already-pending TW2 opposite candidate."""

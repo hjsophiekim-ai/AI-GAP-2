@@ -685,6 +685,42 @@ def test_whipsaw_hold_at_t3_updates_order_block_reason_away_from_pending(tw2_3sl
     )
 
 
+# ── 10. A T+3 resolve exception must never vanish silently (2026-09-03) ─────
+# Real incident: four real flags (10:06/10:51/11:18/11:21) each produced only
+# their own initial "pending" ledger row and NOTHING after, with "최근
+# block/skip 사유" stuck on TIME_WINDOW_PENDING_CONFIRMATION for hours --
+# consistent with an uncaught exception inside the T+3 decision-computing
+# body silently discarding the candidate (its pending-flag fields are
+# cleared in memory before the risky computation runs, and nothing gets
+# written to the ledger until a decision object exists). Simulates that
+# exact failure by making the (real) evaluate_time_window_entry call raise.
+
+def test_resolve_exception_writes_a_visible_ledger_row_and_persistent_diagnostic(tw2_3slot_market_data, monkeypatch):
+    svc, now0 = tw2_3slot_market_data
+    state = _fresh_3slot_state()
+    assert state.last_resolve_error is None
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("synthetic T+3 resolve failure")
+
+    monkeypatch.setattr(worker.time_window_filter, "evaluate_time_window_entry", _boom)
+
+    _prime_3slot_pending(state, Direction.UP_RED, before=_PRIOR_DAY)
+    broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
+    result = run_once(broker=broker, market_data=svc, state=state, now=now0)  # must not raise
+
+    assert state.tw2_3slot_pending_flag_direction is None, "a failed candidate must not be left dangling forever"
+    assert state.last_resolve_error is not None and "synthetic T+3 resolve failure" in state.last_resolve_error
+    assert state.last_resolve_error_at is not None
+    assert state.order_block_reason == config.TW_RESOLVE_ERROR
+
+    rows = ledger.load_signal_ledger(limit=1000)
+    error_rows = [r for r in rows if r.get("order_result") == config.TW_RESOLVE_ERROR]
+    assert len(error_rows) == 1, f"exactly one RESOLVE_ERROR row must be written -- got {error_rows}"
+    assert "synthetic T+3 resolve failure" in str(error_rows[0].get("block_reason", ""))
+    del result  # only asserting run_once didn't raise
+
+
 def test_full_tick_no_carry_order_dispatched_for_3slot_at_0903(tw2_3slot_market_data):
     """End-to-end via the real run_once() dispatch: even with a (defensively
     impossible in practice, but simulated here) leftover premarket candidate

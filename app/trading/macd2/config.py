@@ -381,6 +381,11 @@ MAJOR_DAILY_ENTRY_LIMIT = "MAJOR_DAILY_ENTRY_LIMIT"
 MAJOR_SAME_DIRECTION_COOLDOWN = "MAJOR_SAME_DIRECTION_COOLDOWN"
 MAJOR_MIN_HOLD_BLOCK = "MAJOR_MIN_HOLD_BLOCK"
 FILTERED_OUT = "FILTERED_OUT"
+# 2026-09-03 real incident fix: T+3 candidate resolution
+# (_resolve_time_window_candidate/_resolve_tw2_3slot_candidate) raising an
+# exception partway through used to vanish with zero trace in the signal
+# ledger -- see worker._handle_resolve_exception's own docstring.
+TW_RESOLVE_ERROR = "RESOLVE_ERROR"
 
 # ── Optional 추세전환장(sideways/whipsaw) entry filter — order gate only ────
 # 2026-08-04 v2 (tight): re-derived from the last 20 real trading days.
