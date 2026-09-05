@@ -1,0 +1,41 @@
+====================================================================================================
+[I] +3% 러너 12건 — 실제 체인에서 어느 단계에서 막히는가
+====================================================================================================
+  20260730 11:09 DOWN_BLUE  +3.963%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_LOW_QUALITY_SCORE]
+  20260707 14:27 UP_RED     +3.842%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_MACD_GAP_NOT_EXPANDING]
+  20260612 14:06 DOWN_BLUE  +3.657%  통과필터=(없음)     -> 1_TW2_기본_탈락  [REJECT_TIME_WINDOW]
+  20260629 14:15 UP_RED     +3.461%  통과필터=(없음)     -> 1_TW2_기본_탈락  [REJECT_TIME_WINDOW]
+  20260707 13:03 UP_RED     +3.356%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_MACD_GAP_NOT_EXPANDING]
+  20260624 14:48 DOWN_BLUE  +3.299%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_TIME_WINDOW]
+  20260611 14:00 DOWN_BLUE  +3.203%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_MACD_GAP_NOT_EXPANDING]
+  20260706 14:21 DOWN_BLUE  +3.162%  통과필터=(없음)     -> 1_TW2_기본_탈락  [REJECT_TIME_WINDOW]
+  20260729 13:51 UP_RED     +3.070%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_TIME_WINDOW]
+  20260706 11:57 UP_RED     +3.057%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_LOW_QUALITY_SCORE]
+  20260624 13:39 UP_RED     +3.049%  통과필터=A,B      -> 1_TW2_기본_탈락  [REJECT_TIME_WINDOW]
+  20260804 14:24 UP_RED     +3.036%  통과필터=A,B,C    -> 1_TW2_기본_탈락  [REJECT_TIME_WINDOW]
+
+  단계별 집계: 1_TW2_기본_탈락=12
+
+====================================================================================================
+[J] RUNNER FILTER A 통과 후보 전체(93건) — 단계별 탈락 분포
+====================================================================================================
+-- 필터 A: 통과후보 93건
+     1_TW2_기본_탈락                      89건
+     2_TW2_추가veto_탈락                   2건
+     3_슬롯_미소진(정규진입_경로)                 2건
+     탈락사유 상세: REJECT_TIME_WINDOW=39, REJECT_LOW_QUALITY_SCORE=32, REJECT_MACD_GAP_NOT_EXPANDING=10, REJECT_NOT_CONFIRMED=5, REJECT_SHORT_FLAG_INTERVAL=3, TW2_REJECT_VWAP_VETO=2
+
+-- 필터 B: 통과후보 82건
+     1_TW2_기본_탈락                      81건
+     2_TW2_추가veto_탈락                   1건
+     탈락사유 상세: REJECT_TIME_WINDOW=37, REJECT_LOW_QUALITY_SCORE=27, REJECT_MACD_GAP_NOT_EXPANDING=10, REJECT_NOT_CONFIRMED=5, REJECT_SHORT_FLAG_INTERVAL=2, TW2_REJECT_VWAP_VETO=1
+
+-- 필터 C: 통과후보 64건
+     1_TW2_기본_탈락                      63건
+     2_TW2_추가veto_탈락                   1건
+     탈락사유 상세: REJECT_LOW_QUALITY_SCORE=24, REJECT_TIME_WINDOW=22, REJECT_MACD_GAP_NOT_EXPANDING=10, REJECT_NOT_CONFIRMED=5, REJECT_SHORT_FLAG_INTERVAL=2, TW2_REJECT_VWAP_VETO=1
+
+-- 필터 S: 통과후보 102건
+     1_TW2_기본_탈락                      53건
+     3_슬롯_미소진(정규진입_경로)                49건
+     탈락사유 상세: REJECT_TIME_WINDOW=53

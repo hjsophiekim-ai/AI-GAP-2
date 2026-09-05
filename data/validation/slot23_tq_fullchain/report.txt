@@ -1,0 +1,578 @@
+기간: 20260722 ~ 20260904  (30영업일)
+B == D 완전동일: True
+
+====================================================================================================
+[0] 종합 지표 (최근 30영업일)
+====================================================================================================
+지표                                       A                 B                 C                 D
+----------------------------------------------------------------------------------------------------
+거래수                                     70                65                65                65
+일평균 거래수                              2.333             2.167             2.167             2.167
+승/패/보합                             40/30/0           36/29/0           36/29/0           36/29/0
+승률(%)                                57.14             55.38             55.38             55.38
+단순합계 수익(%)                         +49.475           +42.029           +42.029           +42.029
+복리 수익(%)                           +59.375           +48.230           +48.230           +48.230
+평균수익/거래(%)                         +0.7068           +0.6466           +0.6466           +0.6466
+Profit Factor                       2.0242            1.9131            1.9131            1.9131
+MDD(%)                             -10.281           -10.281           -10.281           -10.281
+Top10 제외 단순(%)                      -5.583           -11.060           -11.060           -11.060
+Top10 제외 복리(%)                      -6.359           -11.241           -11.241           -11.241
+수익일                                     18                18                18                18
+손실일                                     11                11                11                11
+무거래/보합일                                  0                 0                 0                 0
+최대연속손실(건)                                4                 4                 4                 4
+최대연속손실 누적(%)                        -2.997            -2.997            -2.997            -2.997
+
+  A = A 현행 (TW2 3-SLOT + 조기익절)
+  B = B Slot2/3 TQ>=3/5
+  C = C Slot2 TQ>=3/5 + Slot3 TQ>=4/5
+  D = D B + 슬롯 보존
+
+====================================================================================================
+[1] Slot2 에서 차단된 후보 전부 + A 기준 사후손익
+====================================================================================================
+-- B (B Slot2/3 TQ>=3/5) : 6건
+   20260724 09:54 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:54->10:54 Slot2 실현 +1.729% (MFE +3.195%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260731 09:21 DOWN_BLUE  세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:21->09:27 Slot2 실현 -0.042% (MFE +3.239%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260803 09:48 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:48->10:09 Slot2 실현 +2.340% (MFE +4.142%, TIME_WINDOW_TRAILING_STOP)
+   20260819 09:30 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:30->10:20 Slot2 실현 +4.935% (MFE +6.001%, TIME_WINDOW_TP2_FULL)
+   20260821 10:12 DOWN_BLUE  세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 10:12->10:18 Slot2 실현 -2.645% (MFE +0.000%, TIME_WINDOW_STOP_LOSS)
+   20260903 09:45 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:45->10:48 Slot2 실현 +0.720% (MFE +2.071%, EARLY_TAKE_PROFIT)
+   A기준 차단분 합계 +7.037%  (승 4 / 패 2)
+
+-- C (C Slot2 TQ>=3/5 + Slot3 TQ>=4/5) : 6건
+   20260724 09:54 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:54->10:54 Slot2 실현 +1.729% (MFE +3.195%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260731 09:21 DOWN_BLUE  세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:21->09:27 Slot2 실현 -0.042% (MFE +3.239%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260803 09:48 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:48->10:09 Slot2 실현 +2.340% (MFE +4.142%, TIME_WINDOW_TRAILING_STOP)
+   20260819 09:30 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:30->10:20 Slot2 실현 +4.935% (MFE +6.001%, TIME_WINDOW_TP2_FULL)
+   20260821 10:12 DOWN_BLUE  세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 10:12->10:18 Slot2 실현 -2.645% (MFE +0.000%, TIME_WINDOW_STOP_LOSS)
+   20260903 09:45 UP_RED     세션=MORNING   그날 2번째 후보  TQ 2/5 (요구 3)
+      -> A에서는 진입: 09:45->10:48 Slot2 실현 +0.720% (MFE +2.071%, EARLY_TAKE_PROFIT)
+   A기준 차단분 합계 +7.037%  (승 4 / 패 2)
+
+====================================================================================================
+[2] Slot3 에서 차단된 후보 전부 + A 기준 사후손익
+====================================================================================================
+-- B (B Slot2/3 TQ>=3/5) : 0건
+   (없음)
+
+-- C (C Slot2 TQ>=3/5 + Slot3 TQ>=4/5) : 0건
+   (없음)
+
+====================================================================================================
+[3] 차단 덕분에 남은 슬롯으로 새로 진입한 거래 (A에는 없던 거래)
+====================================================================================================
+-- B (B Slot2/3 TQ>=3/5) : 1건
+   20260821 11:39->12:09 Slot3 그날 5번째 후보 UP_RED     실현 -0.410% (MFE +0.595%, OPPOSITE_SIGNAL)
+   신규진입 합계 -0.410%  (승 0 / 패 1)
+   그중 그날 4번째 이상 플래그였던 것: 1건, 합계 -0.410%
+
+-- C (C Slot2 TQ>=3/5 + Slot3 TQ>=4/5) : 1건
+   20260821 11:39->12:09 Slot3 그날 5번째 후보 UP_RED     실현 -0.410% (MFE +0.595%, OPPOSITE_SIGNAL)
+   신규진입 합계 -0.410%  (승 0 / 패 1)
+   그중 그날 4번째 이상 플래그였던 것: 1건, 합계 -0.410%
+
+-- D (D B + 슬롯 보존) : 1건
+   20260821 11:39->12:09 Slot3 그날 5번째 후보 UP_RED     실현 -0.410% (MFE +0.595%, OPPOSITE_SIGNAL)
+   신규진입 합계 -0.410%  (승 0 / 패 1)
+   그중 그날 4번째 이상 플래그였던 것: 1건, 합계 -0.410%
+
+-- 참고: A에는 있었으나 각 안에서 사라진 거래
+   B: 6건, A기준 합계 +7.037%
+   C: 6건, A기준 합계 +7.037%
+   D: 6건, A기준 합계 +7.037%
+
+====================================================================================================
+[4] 날짜별 손익 변화 (각 안 - A)
+====================================================================================================
+date                 A           B           C           D       B-A       C-A       D-A
+------------------------------------------------------------------------------
+20260722        -0.584      -0.584      -0.584      -0.584    +0.000    +0.000    +0.000
+20260723        +0.000      +0.000      +0.000      +0.000    +0.000    +0.000    +0.000
+20260724        +8.297      +6.568      +6.568      +6.568    -1.729    -1.729    -1.729
+20260727        -1.119      -1.119      -1.119      -1.119    +0.000    +0.000    +0.000
+20260728        -2.952      -2.952      -2.952      -2.952    +0.000    +0.000    +0.000
+20260729        -2.115      -2.115      -2.115      -2.115    +0.000    +0.000    +0.000
+20260730        -2.722      -2.722      -2.722      -2.722    +0.000    +0.000    +0.000
+20260731       +14.644     +14.687     +14.687     +14.687    +0.042    +0.042    +0.042
+20260803        +3.785      +1.446      +1.446      +1.446    -2.340    -2.340    -2.340
+20260804        +2.676      +2.676      +2.676      +2.676    +0.000    +0.000    +0.000
+20260805        +0.699      +0.699      +0.699      +0.699    +0.000    +0.000    +0.000
+20260806        +0.675      +0.675      +0.675      +0.675    +0.000    +0.000    +0.000
+20260807        +3.219      +3.219      +3.219      +3.219    +0.000    +0.000    +0.000
+20260810        -1.472      -1.472      -1.472      -1.472    +0.000    +0.000    +0.000
+20260811        +2.123      +2.123      +2.123      +2.123    +0.000    +0.000    +0.000
+20260812        +5.270      +5.270      +5.270      +5.270    +0.000    +0.000    +0.000
+20260813        -2.896      -2.896      -2.896      -2.896    +0.000    +0.000    +0.000
+20260814        +4.859      +4.859      +4.859      +4.859    +0.000    +0.000    +0.000
+20260818        +7.474      +7.474      +7.474      +7.474    +0.000    +0.000    +0.000
+20260819        +6.052      +1.117      +1.117      +1.117    -4.935    -4.935    -4.935
+20260820        +5.990      +5.990      +5.990      +5.990    +0.000    +0.000    +0.000
+20260821        +0.052      +2.288      +2.288      +2.288    +2.236    +2.236    +2.236
+20260824        +1.001      +1.001      +1.001      +1.001    +0.000    +0.000    +0.000
+20260825        +2.836      +2.836      +2.836      +2.836    +0.000    +0.000    +0.000
+20260826        -2.905      -2.905      -2.905      -2.905    +0.000    +0.000    +0.000
+20260827        +2.624      +2.624      +2.624      +2.624    +0.000    +0.000    +0.000
+20260828        -3.986      -3.986      -3.986      -3.986    +0.000    +0.000    +0.000
+20260831        +0.183      +0.183      +0.183      +0.183    +0.000    +0.000    +0.000
+20260903        -0.187      -0.908      -0.908      -0.908    -0.720    -0.720    -0.720
+20260904        -2.047      -2.047      -2.047      -2.047    +0.000    +0.000    +0.000
+
+-- B: 좋아진 날 2일 (합 +2.278%) / 나빠진 날 4일 (합 -9.724%) / 동일 24일
+      좋아짐 20260821 +2.236%
+      좋아짐 20260731 +0.042%
+      나빠짐 20260819 -4.935%
+      나빠짐 20260803 -2.340%
+      나빠짐 20260724 -1.729%
+      나빠짐 20260903 -0.720%
+
+-- C: 좋아진 날 2일 (합 +2.278%) / 나빠진 날 4일 (합 -9.724%) / 동일 24일
+      좋아짐 20260821 +2.236%
+      좋아짐 20260731 +0.042%
+      나빠짐 20260819 -4.935%
+      나빠짐 20260803 -2.340%
+      나빠짐 20260724 -1.729%
+      나빠짐 20260903 -0.720%
+
+-- D: 좋아진 날 2일 (합 +2.278%) / 나빠진 날 4일 (합 -9.724%) / 동일 24일
+      좋아짐 20260821 +2.236%
+      좋아짐 20260731 +0.042%
+      나빠짐 20260819 -4.935%
+      나빠짐 20260803 -2.340%
+      나빠짐 20260724 -1.729%
+      나빠짐 20260903 -0.720%
+
+====================================================================================================
+[5] 차단 때문에 놓친 +3% 이상 러너 (A 기준 MFE 또는 실현이 +3% 이상)
+====================================================================================================
+-- B: 4건
+   20260724 09:54 Slot2 UP_RED     TQ 2/5 -> A실현 +1.729% (MFE +3.195%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260731 09:21 Slot2 DOWN_BLUE  TQ 2/5 -> A실현 -0.042% (MFE +3.239%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260803 09:48 Slot2 UP_RED     TQ 2/5 -> A실현 +2.340% (MFE +4.142%, TIME_WINDOW_TRAILING_STOP)
+   20260819 09:30 Slot2 UP_RED     TQ 2/5 -> A실현 +4.935% (MFE +6.001%, TIME_WINDOW_TP2_FULL)
+
+-- C: 4건
+   20260724 09:54 Slot2 UP_RED     TQ 2/5 -> A실현 +1.729% (MFE +3.195%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260731 09:21 Slot2 DOWN_BLUE  TQ 2/5 -> A실현 -0.042% (MFE +3.239%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260803 09:48 Slot2 UP_RED     TQ 2/5 -> A실현 +2.340% (MFE +4.142%, TIME_WINDOW_TRAILING_STOP)
+   20260819 09:30 Slot2 UP_RED     TQ 2/5 -> A실현 +4.935% (MFE +6.001%, TIME_WINDOW_TP2_FULL)
+
+-- D: 4건
+   20260724 09:54 Slot2 UP_RED     TQ 2/5 -> A실현 +1.729% (MFE +3.195%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260731 09:21 Slot2 DOWN_BLUE  TQ 2/5 -> A실현 -0.042% (MFE +3.239%, TIME_WINDOW_AFTER_TP1_STOP)
+   20260803 09:48 Slot2 UP_RED     TQ 2/5 -> A실현 +2.340% (MFE +4.142%, TIME_WINDOW_TRAILING_STOP)
+   20260819 09:30 Slot2 UP_RED     TQ 2/5 -> A실현 +4.935% (MFE +6.001%, TIME_WINDOW_TP2_FULL)
+
+-- 참고: 차단 외 체인효과로 사라진 것까지 포함한 +3% 러너 상실
+   B: 4건 20260724 09:54 +1.73%(MFE +3.19%), 20260731 09:21 -0.04%(MFE +3.24%), 20260803 09:48 +2.34%(MFE +4.14%), 20260819 09:30 +4.94%(MFE +6.00%)
+   C: 4건 20260724 09:54 +1.73%(MFE +3.19%), 20260731 09:21 -0.04%(MFE +3.24%), 20260803 09:48 +2.34%(MFE +4.14%), 20260819 09:30 +4.94%(MFE +6.00%)
+   D: 4건 20260724 09:54 +1.73%(MFE +3.19%), 20260731 09:21 -0.04%(MFE +3.24%), 20260803 09:48 +2.34%(MFE +4.14%), 20260819 09:30 +4.94%(MFE +6.00%)
+
+====================================================================================================
+[6] 최근 5영업일 날짜별 거래 타임라인
+====================================================================================================
+### 20260827
+  A: 2건 합계 +2.624%
+      09:36->10:24 S1 #1 DOWN +2.34% (TIME_WINDOW_TRAILING_STOP)
+      10:54->11:33 S2 #4 UP_R +0.28% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  B: 2건 합계 +2.624%
+      09:36->10:24 S1 #1 DOWN +2.34% (TIME_WINDOW_TRAILING_STOP)
+      10:54->11:33 S2 #4 UP_R +0.28% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  C: 2건 합계 +2.624%
+      09:36->10:24 S1 #1 DOWN +2.34% (TIME_WINDOW_TRAILING_STOP)
+      10:54->11:33 S2 #4 UP_R +0.28% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  D: 2건 합계 +2.624%
+      09:36->10:24 S1 #1 DOWN +2.34% (TIME_WINDOW_TRAILING_STOP)
+      10:54->11:33 S2 #4 UP_R +0.28% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+
+### 20260828
+  A: 3건 합계 -3.986%
+      09:09->09:27 S1 #1 DOWN -2.29% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:15 S2 #2 UP_R -1.39% (OPPOSITE_SIGNAL)
+      10:15->11:06 S3 #3 DOWN -0.31% (OPPOSITE_SIGNAL)
+  B: 3건 합계 -3.986%
+      09:09->09:27 S1 #1 DOWN -2.29% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:15 S2 #2 UP_R -1.39% (OPPOSITE_SIGNAL)
+      10:15->11:06 S3 #3 DOWN -0.31% (OPPOSITE_SIGNAL)
+  C: 3건 합계 -3.986%
+      09:09->09:27 S1 #1 DOWN -2.29% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:15 S2 #2 UP_R -1.39% (OPPOSITE_SIGNAL)
+      10:15->11:06 S3 #3 DOWN -0.31% (OPPOSITE_SIGNAL)
+  D: 3건 합계 -3.986%
+      09:09->09:27 S1 #1 DOWN -2.29% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:15 S2 #2 UP_R -1.39% (OPPOSITE_SIGNAL)
+      10:15->11:06 S3 #3 DOWN -0.31% (OPPOSITE_SIGNAL)
+
+### 20260831
+  A: 3건 합계 +0.183%
+      09:18->09:57 S1 #1 UP_R +1.51% (TIME_WINDOW_AFTER_TP1_STOP)
+      10:06->10:33 S2 #2 DOWN -1.61% (OPPOSITE_SIGNAL)
+      12:03->12:39 S3 #5 UP_R +0.29% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  B: 3건 합계 +0.183%
+      09:18->09:57 S1 #1 UP_R +1.51% (TIME_WINDOW_AFTER_TP1_STOP)
+      10:06->10:33 S2 #2 DOWN -1.61% (OPPOSITE_SIGNAL)
+      12:03->12:39 S3 #5 UP_R +0.29% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  C: 3건 합계 +0.183%
+      09:18->09:57 S1 #1 UP_R +1.51% (TIME_WINDOW_AFTER_TP1_STOP)
+      10:06->10:33 S2 #2 DOWN -1.61% (OPPOSITE_SIGNAL)
+      12:03->12:39 S3 #5 UP_R +0.29% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  D: 3건 합계 +0.183%
+      09:18->09:57 S1 #1 UP_R +1.51% (TIME_WINDOW_AFTER_TP1_STOP)
+      10:06->10:33 S2 #2 DOWN -1.61% (OPPOSITE_SIGNAL)
+      12:03->12:39 S3 #5 UP_R +0.29% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+
+### 20260903
+  A: 3건 합계 -0.187%
+      09:18->09:45 S1 #1 DOWN +0.04% (OPPOSITE_SIGNAL)
+      09:45->10:48 S2 #2 UP_R +0.72% (EARLY_TAKE_PROFIT)
+      11:00->11:18 S3 #3 DOWN -0.95% (OPPOSITE_SIGNAL)
+  B: 2건 합계 -0.908%
+      09:18->09:45 S1 #1 DOWN +0.04% (OPPOSITE_SIGNAL)
+      11:00->11:18 S2 #3 DOWN -0.95% (OPPOSITE_SIGNAL)
+      [차단] 09:45 Slot2 #2 UP_R TQ 2/5<3
+  C: 2건 합계 -0.908%
+      09:18->09:45 S1 #1 DOWN +0.04% (OPPOSITE_SIGNAL)
+      11:00->11:18 S2 #3 DOWN -0.95% (OPPOSITE_SIGNAL)
+      [차단] 09:45 Slot2 #2 UP_R TQ 2/5<3
+  D: 2건 합계 -0.908%
+      09:18->09:45 S1 #1 DOWN +0.04% (OPPOSITE_SIGNAL)
+      11:00->11:18 S2 #3 DOWN -0.95% (OPPOSITE_SIGNAL)
+      [차단] 09:45 Slot2 #2 UP_R TQ 2/5<3
+
+### 20260904
+  A: 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+  B: 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+  C: 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+  D: 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+
+====================================================================================================
+[7] 2026-09-04 신호 로직 트레이스
+====================================================================================================
+당일 확정 MACD zero-cross 플래그 (봉 시각 / T+3 확정판정 시각):
+   flag_bar 08:00  ->  T+3 판정 08:03  DOWN_BLUE
+   flag_bar 08:39  ->  T+3 판정 08:42  UP_RED
+   flag_bar 09:57  ->  T+3 판정 10:00  DOWN_BLUE
+   flag_bar 11:12  ->  T+3 판정 11:15  UP_RED
+   flag_bar 11:36  ->  T+3 판정 11:39  DOWN_BLUE
+   flag_bar 11:51  ->  T+3 판정 11:54  UP_RED
+   flag_bar 12:33  ->  T+3 판정 12:36  DOWN_BLUE
+   flag_bar 12:39  ->  T+3 판정 12:42  UP_RED
+   flag_bar 12:42  ->  T+3 판정 12:45  DOWN_BLUE
+   flag_bar 12:45  ->  T+3 판정 12:48  UP_RED
+   flag_bar 13:48  ->  T+3 판정 13:51  DOWN_BLUE
+   flag_bar 13:57  ->  T+3 판정 14:00  UP_RED
+   flag_bar 14:00  ->  T+3 판정 14:03  DOWN_BLUE
+   flag_bar 14:06  ->  T+3 판정 14:09  UP_RED
+   flag_bar 14:30  ->  T+3 판정 14:33  DOWN_BLUE
+   flag_bar 16:06  ->  T+3 판정 16:09  UP_RED
+   flag_bar 17:45  ->  T+3 판정 17:48  DOWN_BLUE
+   flag_bar 18:06  ->  T+3 판정 18:09  UP_RED
+   flag_bar 18:09  ->  T+3 판정 18:12  DOWN_BLUE
+   flag_bar 18:39  ->  T+3 판정 18:42  UP_RED
+
+--- A (A 현행 (TW2 3-SLOT + 조기익절)) ---
+  후보#1  flag 09:57 / 판정 10:03  DOWN_BLUE
+      진입전 상태: slots_used=0 morning=0 afternoon=0 보유=없음
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=1 session=MORNING quality_gate=False teg_gate=False reject=None
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#2  flag 11:12 / 판정 11:18  UP_RED
+      진입전 상태: slots_used=1 morning=1 afternoon=0 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=2 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#3  flag 11:36 / 판정 11:42  DOWN_BLUE
+      진입전 상태: slots_used=2 morning=1 afternoon=1 보유=0193T0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=3 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#4  flag 11:51 / 판정 11:57  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=False slot_number=None session=AFTERNOON quality_gate=False teg_gate=False reject=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+      => 최종 approved=False reason=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+  후보#5  flag 12:33 / 판정 12:39  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#6  flag 12:39 / 판정 12:45  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#7  flag 12:42 / 판정 12:48  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#8  flag 12:45 / 판정 12:51  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+      => 최종 approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+  후보#9  flag 13:48 / 판정 13:54  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#10  flag 13:57 / 판정 14:03  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#11  flag 14:00 / 판정 14:06  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#12  flag 14:06 / 판정 14:12  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#13  flag 14:30 / 판정 14:36  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+    당일 실제 진입 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+
+--- B (B Slot2/3 TQ>=3/5) ---
+  후보#1  flag 09:57 / 판정 10:03  DOWN_BLUE
+      진입전 상태: slots_used=0 morning=0 afternoon=0 보유=없음
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=1 session=MORNING quality_gate=False teg_gate=False reject=None
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#2  flag 11:12 / 판정 11:18  UP_RED
+      진입전 상태: slots_used=1 morning=1 afternoon=0 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=2 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      추가 TQ 게이트(Slot2, 요구 3/5): 5/5 approved=True
+        조건: price_ema10_direction=O, ema10_ema20_signed_spread_expanding=O, macd_gap_signed_expanding=O, ema20_slope_direction=O, vwap_direction=O
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#3  flag 11:36 / 판정 11:42  DOWN_BLUE
+      진입전 상태: slots_used=2 morning=1 afternoon=1 보유=0193T0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=3 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      추가 TQ 게이트(Slot3, 요구 3/5): 5/5 approved=True
+        조건: price_ema10_direction=O, ema10_ema20_signed_spread_expanding=O, macd_gap_signed_expanding=O, ema20_slope_direction=O, vwap_direction=O
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#4  flag 11:51 / 판정 11:57  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=False slot_number=None session=AFTERNOON quality_gate=False teg_gate=False reject=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+      => 최종 approved=False reason=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+  후보#5  flag 12:33 / 판정 12:39  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#6  flag 12:39 / 판정 12:45  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#7  flag 12:42 / 판정 12:48  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#8  flag 12:45 / 판정 12:51  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+      => 최종 approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+  후보#9  flag 13:48 / 판정 13:54  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#10  flag 13:57 / 판정 14:03  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#11  flag 14:00 / 판정 14:06  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#12  flag 14:06 / 판정 14:12  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#13  flag 14:30 / 판정 14:36  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+    당일 실제 진입 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+
+--- C (C Slot2 TQ>=3/5 + Slot3 TQ>=4/5) ---
+  후보#1  flag 09:57 / 판정 10:03  DOWN_BLUE
+      진입전 상태: slots_used=0 morning=0 afternoon=0 보유=없음
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=1 session=MORNING quality_gate=False teg_gate=False reject=None
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#2  flag 11:12 / 판정 11:18  UP_RED
+      진입전 상태: slots_used=1 morning=1 afternoon=0 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=2 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      추가 TQ 게이트(Slot2, 요구 3/5): 5/5 approved=True
+        조건: price_ema10_direction=O, ema10_ema20_signed_spread_expanding=O, macd_gap_signed_expanding=O, ema20_slope_direction=O, vwap_direction=O
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#3  flag 11:36 / 판정 11:42  DOWN_BLUE
+      진입전 상태: slots_used=2 morning=1 afternoon=1 보유=0193T0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=3 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      추가 TQ 게이트(Slot3, 요구 4/5): 5/5 approved=True
+        조건: price_ema10_direction=O, ema10_ema20_signed_spread_expanding=O, macd_gap_signed_expanding=O, ema20_slope_direction=O, vwap_direction=O
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#4  flag 11:51 / 판정 11:57  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=False slot_number=None session=AFTERNOON quality_gate=False teg_gate=False reject=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+      => 최종 approved=False reason=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+  후보#5  flag 12:33 / 판정 12:39  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#6  flag 12:39 / 판정 12:45  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#7  flag 12:42 / 판정 12:48  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#8  flag 12:45 / 판정 12:51  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+      => 최종 approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+  후보#9  flag 13:48 / 판정 13:54  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#10  flag 13:57 / 판정 14:03  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#11  flag 14:00 / 판정 14:06  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#12  flag 14:06 / 판정 14:12  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#13  flag 14:30 / 판정 14:36  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+    당일 실제 진입 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+
+--- D (D B + 슬롯 보존) ---
+  후보#1  flag 09:57 / 판정 10:03  DOWN_BLUE
+      진입전 상태: slots_used=0 morning=0 afternoon=0 보유=없음
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=1 session=MORNING quality_gate=False teg_gate=False reject=None
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#2  flag 11:12 / 판정 11:18  UP_RED
+      진입전 상태: slots_used=1 morning=1 afternoon=0 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=2 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      추가 TQ 게이트(Slot2, 요구 3/5): 5/5 approved=True
+        조건: price_ema10_direction=O, ema10_ema20_signed_spread_expanding=O, macd_gap_signed_expanding=O, ema20_slope_direction=O, vwap_direction=O
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#3  flag 11:36 / 판정 11:42  DOWN_BLUE
+      진입전 상태: slots_used=2 morning=1 afternoon=1 보유=0193T0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=True slot_number=3 session=AFTERNOON quality_gate=False teg_gate=True reject=None
+      TEGv2: approved=True 
+      추가 TQ 게이트(Slot3, 요구 3/5): 5/5 approved=True
+        조건: price_ema10_direction=O, ema10_ema20_signed_spread_expanding=O, macd_gap_signed_expanding=O, ema20_slope_direction=O, vwap_direction=O
+      => 최종 approved=True reason=TIME_WINDOW_APPROVED
+  후보#4  flag 11:51 / 판정 11:57  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=0197X0
+      TW2 기본: approved=True reason=None
+      TW2 추가veto: False 
+      slot: allowed=False slot_number=None session=AFTERNOON quality_gate=False teg_gate=False reject=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+      => 최종 approved=False reason=TW2_3SLOT_REJECT_DAILY_SLOT_CAP
+  후보#5  flag 12:33 / 판정 12:39  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#6  flag 12:39 / 판정 12:45  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#7  flag 12:42 / 판정 12:48  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#8  flag 12:45 / 판정 12:51  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+      => 최종 approved=False reason=REJECT_SHORT_FLAG_INTERVAL
+  후보#9  flag 13:48 / 판정 13:54  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#10  flag 13:57 / 판정 14:03  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_NOT_CONFIRMED
+      => 최종 approved=False reason=REJECT_NOT_CONFIRMED
+  후보#11  flag 14:00 / 판정 14:06  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+      => 최종 approved=False reason=REJECT_MACD_GAP_NOT_EXPANDING
+  후보#12  flag 14:06 / 판정 14:12  UP_RED
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+  후보#13  flag 14:30 / 판정 14:36  DOWN_BLUE
+      진입전 상태: slots_used=3 morning=1 afternoon=2 보유=없음
+      TW2 기본: approved=False reason=REJECT_TIME_WINDOW
+      => 최종 approved=False reason=REJECT_TIME_WINDOW
+    당일 실제 진입 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)

@@ -1,0 +1,799 @@
+{
+  "period": {
+    "start": "20260721",
+    "end": "20260903",
+    "n_days": 30
+  },
+  "metrics": {
+    "A": {
+      "trades": 69,
+      "avg_trades_per_day": 2.3,
+      "wins": 39,
+      "losses": 30,
+      "breakeven": 0,
+      "win_rate_pct": 56.52,
+      "simple_cum_return_pct": 49.5715,
+      "compound_cum_return_pct": 59.3742,
+      "avg_return_per_trade_pct": 0.7184,
+      "profit_factor": 1.9664,
+      "mdd_pct": -10.2813,
+      "profit_days": 19,
+      "loss_days": 10,
+      "flat_days": 0,
+      "max_consecutive_losses_trades": 3,
+      "max_consecutive_losses_cum_pct": -7.6754,
+      "top10_excluded_simple_cum_pct": -5.4875,
+      "top10_excluded_compound_cum_pct": -6.3592
+    },
+    "B": {
+      "trades": 69,
+      "avg_trades_per_day": 2.3,
+      "wins": 42,
+      "losses": 27,
+      "breakeven": 0,
+      "win_rate_pct": 60.87,
+      "simple_cum_return_pct": 54.829,
+      "compound_cum_return_pct": 68.0876,
+      "avg_return_per_trade_pct": 0.7946,
+      "profit_factor": 2.1852,
+      "mdd_pct": -10.2813,
+      "profit_days": 19,
+      "loss_days": 10,
+      "flat_days": 0,
+      "max_consecutive_losses_trades": 3,
+      "max_consecutive_losses_cum_pct": -7.6754,
+      "top10_excluded_simple_cum_pct": -0.23,
+      "top10_excluded_compound_cum_pct": -1.2396
+    },
+    "C": {
+      "trades": 67,
+      "avg_trades_per_day": 2.233,
+      "wins": 41,
+      "losses": 26,
+      "breakeven": 0,
+      "win_rate_pct": 61.19,
+      "simple_cum_return_pct": 55.1047,
+      "compound_cum_return_pct": 68.6311,
+      "avg_return_per_trade_pct": 0.8225,
+      "profit_factor": 2.2536,
+      "mdd_pct": -8.1678,
+      "profit_days": 18,
+      "loss_days": 11,
+      "flat_days": 0,
+      "max_consecutive_losses_trades": 3,
+      "max_consecutive_losses_cum_pct": -7.6754,
+      "top10_excluded_simple_cum_pct": 0.0457,
+      "top10_excluded_compound_cum_pct": -0.9202
+    }
+  },
+  "B_early_tp_fired_vs_A": [
+    {
+      "date": "20260721",
+      "entry_time": "2026-07-21T09:21:00+09:00",
+      "direction": "UP_RED",
+      "slot_number": 1,
+      "B_exit_time": "2026-07-21T09:30:00+09:00",
+      "B_exit_reason": "EARLY_TAKE_PROFIT",
+      "B_net_pct": 0.549849,
+      "A_exit_time": "2026-07-21T10:00:00+09:00",
+      "A_exit_reason": "TIME_WINDOW_TRAILING_STOP",
+      "A_net_pct": 2.487914,
+      "diff_net_pct": -1.9381
+    },
+    {
+      "date": "20260722",
+      "entry_time": "2026-07-22T09:45:00+09:00",
+      "direction": "DOWN_BLUE",
+      "slot_number": 2,
+      "B_exit_time": "2026-07-22T10:00:00+09:00",
+      "B_exit_reason": "EARLY_TAKE_PROFIT",
+      "B_net_pct": 0.281423,
+      "A_exit_time": "2026-07-22T10:18:00+09:00",
+      "A_exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "A_net_pct": -2.105945,
+      "diff_net_pct": 2.3874
+    },
+    {
+      "date": "20260810",
+      "entry_time": "2026-08-10T09:42:00+09:00",
+      "direction": "DOWN_BLUE",
+      "slot_number": 1,
+      "B_exit_time": "2026-08-10T09:48:00+09:00",
+      "B_exit_reason": "EARLY_TAKE_PROFIT",
+      "B_net_pct": -0.090038,
+      "A_exit_time": "2026-08-10T10:54:00+09:00",
+      "A_exit_reason": "OPPOSITE_SIGNAL",
+      "A_net_pct": -0.982519,
+      "diff_net_pct": 0.8925
+    },
+    {
+      "date": "20260810",
+      "entry_time": "2026-08-10T11:09:00+09:00",
+      "direction": "DOWN_BLUE",
+      "slot_number": 3,
+      "B_exit_time": "2026-08-10T11:39:00+09:00",
+      "B_exit_reason": "EARLY_TAKE_PROFIT",
+      "B_net_pct": 0.655266,
+      "A_exit_time": "2026-08-10T11:45:00+09:00",
+      "A_exit_reason": "TIME_WINDOW_BREAKEVEN_STOP",
+      "A_net_pct": 0.189469,
+      "diff_net_pct": 0.4658
+    },
+    {
+      "date": "20260825",
+      "entry_time": "2026-08-25T09:33:00+09:00",
+      "direction": "UP_RED",
+      "slot_number": 2,
+      "B_exit_time": "2026-08-25T10:03:00+09:00",
+      "B_exit_reason": "EARLY_TAKE_PROFIT",
+      "B_net_pct": -0.146682,
+      "A_exit_time": "2026-08-25T10:27:00+09:00",
+      "A_exit_reason": "TIME_WINDOW_STOP_LOSS",
+      "A_net_pct": -1.790811,
+      "diff_net_pct": 1.6441
+    },
+    {
+      "date": "20260826",
+      "entry_time": "2026-08-26T09:30:00+09:00",
+      "direction": "DOWN_BLUE",
+      "slot_number": 2,
+      "B_exit_time": "2026-08-26T10:03:00+09:00",
+      "B_exit_reason": "EARLY_TAKE_PROFIT",
+      "B_net_pct": 0.692176,
+      "A_exit_time": "2026-08-26T10:21:00+09:00",
+      "A_exit_reason": "OPPOSITE_SIGNAL",
+      "A_net_pct": -0.303129,
+      "diff_net_pct": 0.9953
+    },
+    {
+      "date": "20260903",
+      "entry_time": "2026-09-03T09:45:00+09:00",
+      "direction": "UP_RED",
+      "slot_number": 2,
+      "B_exit_time": "2026-09-03T10:48:00+09:00",
+      "B_exit_reason": "EARLY_TAKE_PROFIT",
+      "B_net_pct": 0.720432,
+      "A_exit_time": "2026-09-03T11:00:00+09:00",
+      "A_exit_reason": "OPPOSITE_SIGNAL",
+      "A_net_pct": -0.090054,
+      "diff_net_pct": 0.8105
+    }
+  ],
+  "B_early_tp_fired_count": 7,
+  "B_early_tp_fired_diff_sum_pct": 5.2575,
+  "C_slot1_tq_blocked": [
+    {
+      "date": "20260728",
+      "decision_at": "2026-07-28T09:12:00+09:00",
+      "direction": "UP_RED",
+      "tq_passed": 2,
+      "A_approved": true,
+      "A_outcome_net_pct": -2.301416,
+      "A_outcome_exit_reason": "OPPOSITE_SIGNAL",
+      "A_outcome_peak_pct": 0.0,
+      "B_approved": true,
+      "B_outcome_net_pct": -2.301416,
+      "B_outcome_exit_reason": "OPPOSITE_SIGNAL",
+      "B_outcome_peak_pct": 0.0
+    },
+    {
+      "date": "20260805",
+      "decision_at": "2026-08-05T09:45:00+09:00",
+      "direction": "DOWN_BLUE",
+      "tq_passed": 2,
+      "A_approved": true,
+      "A_outcome_net_pct": 2.025706,
+      "A_outcome_exit_reason": "TIME_WINDOW_TRAILING_STOP",
+      "A_outcome_peak_pct": 4.570552147239264,
+      "B_approved": true,
+      "B_outcome_net_pct": 2.025706,
+      "B_outcome_exit_reason": "TIME_WINDOW_TRAILING_STOP",
+      "B_outcome_peak_pct": 4.570552147239264
+    }
+  ],
+  "C_missed_good_runners": [
+    {
+      "date": "20260805",
+      "decision_at": "2026-08-05T09:45:00+09:00",
+      "direction": "DOWN_BLUE",
+      "tq_passed": 2,
+      "A_approved": true,
+      "A_outcome_net_pct": 2.025706,
+      "A_outcome_exit_reason": "TIME_WINDOW_TRAILING_STOP",
+      "A_outcome_peak_pct": 4.570552147239264,
+      "B_approved": true,
+      "B_outcome_net_pct": 2.025706,
+      "B_outcome_exit_reason": "TIME_WINDOW_TRAILING_STOP",
+      "B_outcome_peak_pct": 4.570552147239264
+    }
+  ],
+  "C_missed_good_runners_threshold_pct": 2.0,
+  "last5_days": {
+    "20260826": {
+      "A": [
+        {
+          "slot": 1,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-26T09:24:00+09:00",
+          "entry_price": 10315.0,
+          "exit_time": "2026-08-26T09:27:00+09:00",
+          "exit_price": 10125.0,
+          "exit_reason": "TIME_WINDOW_STOP_LOSS",
+          "net_pct": -1.931168,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-26T09:30:00+09:00",
+          "entry_price": 7030.0,
+          "exit_time": "2026-08-26T10:21:00+09:00",
+          "exit_price": 7015.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.303129,
+          "entry_chop": true,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-26T10:21:00+09:00",
+          "entry_price": 10145.0,
+          "exit_time": "2026-08-26T10:30:00+09:00",
+          "exit_price": 9985.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.666437,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "B": [
+        {
+          "slot": 1,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-26T09:24:00+09:00",
+          "entry_price": 10315.0,
+          "exit_time": "2026-08-26T09:27:00+09:00",
+          "exit_price": 10125.0,
+          "exit_reason": "TIME_WINDOW_STOP_LOSS",
+          "net_pct": -1.931168,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-26T09:30:00+09:00",
+          "entry_price": 7030.0,
+          "exit_time": "2026-08-26T10:03:00+09:00",
+          "exit_price": 7085.0,
+          "exit_reason": "EARLY_TAKE_PROFIT",
+          "net_pct": 0.692176,
+          "entry_chop": true,
+          "lock_fired": true,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-26T10:21:00+09:00",
+          "entry_price": 10145.0,
+          "exit_time": "2026-08-26T10:30:00+09:00",
+          "exit_price": 9985.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.666437,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "C": [
+        {
+          "slot": 1,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-26T09:24:00+09:00",
+          "entry_price": 10315.0,
+          "exit_time": "2026-08-26T09:27:00+09:00",
+          "exit_price": 10125.0,
+          "exit_reason": "TIME_WINDOW_STOP_LOSS",
+          "net_pct": -1.931168,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": 5
+        },
+        {
+          "slot": 2,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-26T09:30:00+09:00",
+          "entry_price": 7030.0,
+          "exit_time": "2026-08-26T10:03:00+09:00",
+          "exit_price": 7085.0,
+          "exit_reason": "EARLY_TAKE_PROFIT",
+          "net_pct": 0.692176,
+          "entry_chop": true,
+          "lock_fired": true,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-26T10:21:00+09:00",
+          "entry_price": 10145.0,
+          "exit_time": "2026-08-26T10:30:00+09:00",
+          "exit_price": 9985.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.666437,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ]
+    },
+    "20260827": {
+      "A": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-27T09:36:00+09:00",
+          "entry_price": 6580.0,
+          "exit_time": "2026-08-27T10:24:00+09:00",
+          "exit_price": 6670.0,
+          "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+          "net_pct": 2.340502,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-27T10:54:00+09:00",
+          "entry_price": 10700.0,
+          "exit_time": "2026-08-27T11:33:00+09:00",
+          "exit_price": 10740.0,
+          "exit_reason": "WHIPSAW_WATCH_DETERIORATION_EXIT",
+          "net_pct": 0.283738,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "B": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-27T09:36:00+09:00",
+          "entry_price": 6580.0,
+          "exit_time": "2026-08-27T10:24:00+09:00",
+          "exit_price": 6670.0,
+          "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+          "net_pct": 2.340502,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-27T10:54:00+09:00",
+          "entry_price": 10700.0,
+          "exit_time": "2026-08-27T11:33:00+09:00",
+          "exit_price": 10740.0,
+          "exit_reason": "WHIPSAW_WATCH_DETERIORATION_EXIT",
+          "net_pct": 0.283738,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "C": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-27T09:36:00+09:00",
+          "entry_price": 6580.0,
+          "exit_time": "2026-08-27T10:24:00+09:00",
+          "exit_price": 6670.0,
+          "exit_reason": "TIME_WINDOW_TRAILING_STOP",
+          "net_pct": 2.340502,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": 4
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-27T10:54:00+09:00",
+          "entry_price": 10700.0,
+          "exit_time": "2026-08-27T11:33:00+09:00",
+          "exit_price": 10740.0,
+          "exit_reason": "WHIPSAW_WATCH_DETERIORATION_EXIT",
+          "net_pct": 0.283738,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ]
+    },
+    "20260828": {
+      "A": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-28T09:09:00+09:00",
+          "entry_price": 7040.0,
+          "exit_time": "2026-08-28T09:27:00+09:00",
+          "exit_price": 6885.0,
+          "exit_reason": "TIME_WINDOW_STOP_LOSS",
+          "net_pct": -2.290767,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-28T09:30:00+09:00",
+          "entry_price": 10390.0,
+          "exit_time": "2026-08-28T10:15:00+09:00",
+          "exit_price": 10255.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.388739,
+          "entry_chop": true,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-28T10:15:00+09:00",
+          "entry_price": 6930.0,
+          "exit_time": "2026-08-28T11:06:00+09:00",
+          "exit_price": 6915.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.306349,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "B": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-28T09:09:00+09:00",
+          "entry_price": 7040.0,
+          "exit_time": "2026-08-28T09:27:00+09:00",
+          "exit_price": 6885.0,
+          "exit_reason": "TIME_WINDOW_STOP_LOSS",
+          "net_pct": -2.290767,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-28T09:30:00+09:00",
+          "entry_price": 10390.0,
+          "exit_time": "2026-08-28T10:15:00+09:00",
+          "exit_price": 10255.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.388739,
+          "entry_chop": true,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-28T10:15:00+09:00",
+          "entry_price": 6930.0,
+          "exit_time": "2026-08-28T11:06:00+09:00",
+          "exit_price": 6915.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.306349,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "C": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-28T09:09:00+09:00",
+          "entry_price": 7040.0,
+          "exit_time": "2026-08-28T09:27:00+09:00",
+          "exit_price": 6885.0,
+          "exit_reason": "TIME_WINDOW_STOP_LOSS",
+          "net_pct": -2.290767,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": 5
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-28T09:30:00+09:00",
+          "entry_price": 10390.0,
+          "exit_time": "2026-08-28T10:15:00+09:00",
+          "exit_price": 10255.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.388739,
+          "entry_chop": true,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-28T10:15:00+09:00",
+          "entry_price": 6930.0,
+          "exit_time": "2026-08-28T11:06:00+09:00",
+          "exit_price": 6915.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.306349,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ]
+    },
+    "20260831": {
+      "A": [
+        {
+          "slot": 1,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-31T09:18:00+09:00",
+          "entry_price": 9055.0,
+          "exit_time": "2026-08-31T09:57:00+09:00",
+          "exit_price": 9055.0,
+          "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+          "net_pct": 1.510602,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-31T10:06:00+09:00",
+          "entry_price": 7870.0,
+          "exit_time": "2026-08-31T10:33:00+09:00",
+          "exit_price": 7750.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.614104,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-31T12:03:00+09:00",
+          "entry_price": 9280.0,
+          "exit_time": "2026-08-31T12:39:00+09:00",
+          "exit_price": 9315.0,
+          "exit_reason": "WHIPSAW_WATCH_DETERIORATION_EXIT",
+          "net_pct": 0.286961,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "B": [
+        {
+          "slot": 1,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-31T09:18:00+09:00",
+          "entry_price": 9055.0,
+          "exit_time": "2026-08-31T09:57:00+09:00",
+          "exit_price": 9055.0,
+          "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+          "net_pct": 1.510602,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-31T10:06:00+09:00",
+          "entry_price": 7870.0,
+          "exit_time": "2026-08-31T10:33:00+09:00",
+          "exit_price": 7750.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.614104,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-31T12:03:00+09:00",
+          "entry_price": 9280.0,
+          "exit_time": "2026-08-31T12:39:00+09:00",
+          "exit_price": 9315.0,
+          "exit_reason": "WHIPSAW_WATCH_DETERIORATION_EXIT",
+          "net_pct": 0.286961,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "C": [
+        {
+          "slot": 1,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-31T09:18:00+09:00",
+          "entry_price": 9055.0,
+          "exit_time": "2026-08-31T09:57:00+09:00",
+          "exit_price": 9055.0,
+          "exit_reason": "TIME_WINDOW_AFTER_TP1_STOP",
+          "net_pct": 1.510602,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": 4
+        },
+        {
+          "slot": 2,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-08-31T10:06:00+09:00",
+          "entry_price": 7870.0,
+          "exit_time": "2026-08-31T10:33:00+09:00",
+          "exit_price": 7750.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -1.614104,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "UP_RED",
+          "entry_time": "2026-08-31T12:03:00+09:00",
+          "entry_price": 9280.0,
+          "exit_time": "2026-08-31T12:39:00+09:00",
+          "exit_price": 9315.0,
+          "exit_reason": "WHIPSAW_WATCH_DETERIORATION_EXIT",
+          "net_pct": 0.286961,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ]
+    },
+    "20260903": {
+      "A": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-09-03T09:18:00+09:00",
+          "entry_price": 7525.0,
+          "exit_time": "2026-09-03T09:45:00+09:00",
+          "exit_price": 7535.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": 0.042791,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-09-03T09:45:00+09:00",
+          "entry_price": 9250.0,
+          "exit_time": "2026-09-03T11:00:00+09:00",
+          "exit_price": 9250.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.090054,
+          "entry_chop": true,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-09-03T11:00:00+09:00",
+          "entry_price": 7550.0,
+          "exit_time": "2026-09-03T11:18:00+09:00",
+          "exit_price": 7485.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.950464,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "B": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-09-03T09:18:00+09:00",
+          "entry_price": 7525.0,
+          "exit_time": "2026-09-03T09:45:00+09:00",
+          "exit_price": 7535.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": 0.042791,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-09-03T09:45:00+09:00",
+          "entry_price": 9250.0,
+          "exit_time": "2026-09-03T10:48:00+09:00",
+          "exit_price": 9325.0,
+          "exit_reason": "EARLY_TAKE_PROFIT",
+          "net_pct": 0.720432,
+          "entry_chop": true,
+          "lock_fired": true,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-09-03T11:00:00+09:00",
+          "entry_price": 7550.0,
+          "exit_time": "2026-09-03T11:18:00+09:00",
+          "exit_price": 7485.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.950464,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ],
+      "C": [
+        {
+          "slot": 1,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-09-03T09:18:00+09:00",
+          "entry_price": 7525.0,
+          "exit_time": "2026-09-03T09:45:00+09:00",
+          "exit_price": 7535.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": 0.042791,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": 5
+        },
+        {
+          "slot": 2,
+          "direction": "UP_RED",
+          "entry_time": "2026-09-03T09:45:00+09:00",
+          "entry_price": 9250.0,
+          "exit_time": "2026-09-03T10:48:00+09:00",
+          "exit_price": 9325.0,
+          "exit_reason": "EARLY_TAKE_PROFIT",
+          "net_pct": 0.720432,
+          "entry_chop": true,
+          "lock_fired": true,
+          "slot1_tq_passed": null
+        },
+        {
+          "slot": 3,
+          "direction": "DOWN_BLUE",
+          "entry_time": "2026-09-03T11:00:00+09:00",
+          "entry_price": 7550.0,
+          "exit_time": "2026-09-03T11:18:00+09:00",
+          "exit_price": 7485.0,
+          "exit_reason": "OPPOSITE_SIGNAL",
+          "net_pct": -0.950464,
+          "entry_chop": false,
+          "lock_fired": false,
+          "slot1_tq_passed": null
+        }
+      ]
+    }
+  }
+}
