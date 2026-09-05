@@ -306,3 +306,64 @@ def resolve_slot(
         slot_allowed=True, slot_number=slot_number, session=session,
         requires_quality_gate=False, requires_teg_gate=True,
     )
+
+
+# ── Slot1 CHOP veto (2026-09-04) ────────────────────────────────────────────
+SLOT1_CHOP_VETO_SLOT_NUMBER = 1
+
+
+@dataclass(frozen=True)
+class Slot1ChopVetoDecision:
+    """``vetoed=True`` 이면 **그 신규진입만** 막는다. 슬롯 소비/청산/보유
+    포지션에 대한 의미는 전혀 없다(호출자가 approved=False 로만 쓴다)."""
+    vetoed: bool
+    applicable: bool
+    is_chop: bool
+    score: int
+    conditions: dict[str, bool] = field(default_factory=dict)
+    reason: Optional[str] = None
+
+
+def evaluate_slot1_chop_veto(
+    bars_3m: Optional[pd.DataFrame],
+    flag_direction: Union[Direction, str],
+    decision_at: datetime,
+    *,
+    slot_number: Optional[int],
+    enabled: Optional[bool] = None,
+) -> Slot1ChopVetoDecision:
+    """그날 첫 신규진입(Slot1) 후보가 진입시점 CHOP 이면 그 진입만 거절.
+
+    새 점수식/임계값을 만들지 않는다 — 판정은 전적으로 production
+    ``early_take_profit.evaluate_entry_chop`` 의 반환값(``is_chop``)이다.
+    (그 함수는 이미 조기익절 필터가 매 체결마다 호출하는 것과 동일하며,
+    ``bars_3m`` 은 T+3 확정봉까지 truncate 된 프레임, 즉 호출자가 이미
+    ``evaluate_time_window_entry`` / ``resolve_slot`` 에 넘긴 그 프레임이다.)
+
+    Slot2/Slot3 에는 절대 적용되지 않고(``applicable=False``),
+    데이터 부족이면 veto 하지 않는다(기존 동작 유지 = 안전한 기본값).
+    순수 함수: 상태 변경/IO 없음, 주어진 데이터 이후를 보지 않음.
+    """
+    # 지연 import: early_take_profit 은 이 모듈을 import 하지 않으므로 순환은
+    # 없지만, 슬롯 오케스트레이션이 청산 모듈에 module-load 시점 의존성을
+    # 갖지 않도록 호출 시점에만 가져온다.
+    from app.trading.macd2 import early_take_profit
+
+    active = config.TW2_3SLOT_SLOT1_CHOP_VETO if enabled is None else bool(enabled)
+    if not active:
+        return Slot1ChopVetoDecision(
+            vetoed=False, applicable=False, is_chop=False, score=0, reason="disabled")
+    if slot_number != SLOT1_CHOP_VETO_SLOT_NUMBER:
+        return Slot1ChopVetoDecision(
+            vetoed=False, applicable=False, is_chop=False, score=0, reason="not_slot1")
+
+    chop = early_take_profit.evaluate_entry_chop(bars_3m, flag_direction, decision_at)
+    if chop.insufficient_data:
+        return Slot1ChopVetoDecision(
+            vetoed=False, applicable=True, is_chop=False, score=int(chop.score),
+            conditions=dict(chop.conditions), reason="insufficient_data")
+    return Slot1ChopVetoDecision(
+        vetoed=bool(chop.is_chop), applicable=True, is_chop=bool(chop.is_chop),
+        score=int(chop.score), conditions=dict(chop.conditions),
+        reason=(config.TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP if chop.is_chop else None),
+    )

@@ -321,6 +321,13 @@ def test_entry_stores_the_chop_verdict_when_the_filter_is_on(monkeypatch):
     svc, now0 = _market()
     state = _fresh_3slot_state()
     state.early_tp_filter_enabled = True
+    # 2026-09-04 Slot1 CHOP veto 도입 이후: 이 픽스처의 합성봉은 CHOP으로
+    # 판정되므로 Slot1 후보였다면 진입 자체가 거절된다(veto의 의도된 동작,
+    # test_tw2_3slot_slot1_chop_veto.py 가 별도로 검증). 이 테스트의 목적은
+    # "필터 ON이면 진입시점 CHOP 판정이 계산·저장되는가" 라는 청산측 기록
+    # 계약이므로, veto 대상이 아닌 Slot2 후보로 seed 해 원래 목적을 유지한다.
+    state.tw2_3slot_slots_used_today = 1
+    state.tw2_3slot_morning_count = 1
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
     _patch_common(monkeypatch, entry_decision=_approved(), quality_decision=_quality(True), teg_decision=_teg(True))
     captured = {}
@@ -337,7 +344,7 @@ def test_entry_stores_the_chop_verdict_when_the_filter_is_on(monkeypatch):
 
     run_once(broker=broker, market_data=svc, state=state, now=now0)
 
-    assert state.tw2_3slot_slots_used_today == 1
+    assert state.tw2_3slot_slots_used_today == 2, "Slot2 진입이 성사돼 슬롯이 1->2"
     assert captured.get("called") is True, "필터 ON인데 진입 시점 CHOP 판정이 계산되지 않았다"
     assert state.time_window_entry_chop == bool(captured["decision"].is_chop)
     assert state.last_entry_chop_score == captured["decision"].score

@@ -962,6 +962,37 @@ TW2_3SLOT_REJECT_QUALITY = "TW2_3SLOT_REJECT_TREND_QUALITY"
 TW2_3SLOT_REJECT_TEG = "TW2_3SLOT_REJECT_TEG"
 TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND = "TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND"
 
+# ── Slot1 CHOP veto (2026-09-04 사용자 요청, 60영업일 full-chain 검증) ──────
+# 그날 첫 신규진입(Slot1) 후보가 조기익절 필터의 진입시점 CHOP 판정에서
+# CHOP이면 그 진입만 차단한다. 새 점수식/임계값은 하나도 만들지 않았고
+# early_take_profit.evaluate_entry_chop 의 반환값을 그대로 쓴다.
+#
+# 왜 Slot1만인가 (60영업일 실거래 137건 분석, data/validation/lossveto*):
+#   Slot1 & entry_chop  : 8거래 승률 12.5% 평균 -1.69% 합계 -13.52%
+#                         (BIG_LOSS 6건, BIG_WIN 0건)
+#   Slot1 & not chop    : 49거래 승률 55.1% 평균 +0.58% 합계 +28.40%
+#   Slot2 CHOP(+13.66%) / Slot3 CHOP(+5.18%) 은 정상 -- 문제는 Slot1 교집합뿐.
+#   그날 첫 진입은 아직 방향성이 확립되지 않은 시점이라 난타전 신호가 겹치면
+#   기대값이 음수가 된다.
+#
+# 슬롯 미소비: 차단은 decision.approved=False 로 끝나고, slots_used_today/
+# morning_count/afternoon_count 증가는 worker.py 에서 outcome.final_state ==
+# EXECUTED 인 경로에만 있으므로 구조적으로 소비되지 않는다(추가 코드 불필요).
+# 따라서 다음 플래그도 다시 Slot1 후보로 평가된다.
+#
+# 60영업일 검증 (A=현행 / C=이 veto, full-chain 재생):
+#   TRAIN 40일  복리 +73.73% -> +105.90%  PF 1.7899 -> 2.2087  MDD -11.32 -> -8.38
+#   OOS   20일  복리 +32.66% -> +34.87%   PF 1.9367 -> 2.0427  MDD -7.31 동일
+#   전체  60일  복리 +130.46% -> +177.69% PF 1.8334 -> 2.1553  MDD -11.32 -> -8.38
+#   BIG_WIN(+3%) 보존율 100% (19건 전부 유지), BIG_LOSS 6건 차단.
+# 조기익절 필터가 OFF면 이 veto 도 동작하지 않는다(worker.py 가 두 조건을 AND 로
+# 넘긴다) -- 판정을 그 필터의 CHOP 평가기에 위임하기 때문이고, 위 검증도
+# "TW2 3-SLOT + 조기익절" 조합에서만 측정됐기 때문이다.
+# 끄려면 MACD2_TW2_3SLOT_SLOT1_CHOP_VETO=0.
+TW2_3SLOT_SLOT1_CHOP_VETO = _env_bool("MACD2_TW2_3SLOT_SLOT1_CHOP_VETO", True)
+TW2_3SLOT_SLOT1_CHOP_VETO_VERSION = "TW2_3SLOT_SLOT1_CHOP_VETO_V1_20260904"
+TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP = "TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP"
+
 # ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
 # 6th peer entry gate in worker._judge_entry_gate (right after TIME_WINDOW),
 # same shape as MAJOR/SIDEWAYS/TREND_PERSISTENCE/SINGLE_ENTRY: a single

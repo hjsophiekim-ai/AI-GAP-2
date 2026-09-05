@@ -1,0 +1,247 @@
+기간 60영업일 20260609~20260904  |  TRAIN 40일 20260609~20260804  |  OOS 20일 20260805~20260904
+A 현행 / B Loss-Veto+슬롯소비 / C Loss-Veto+슬롯미소비
+veto 조건: 승인된 Slot1 후보의 entry_chop=True (production evaluate_entry_chop)
+
+========================================================================================================
+[1] 성과 지표
+========================================================================================================
+-- TRAIN 40일
+   안       거래     일평균     승률%       단순%       복리%      평균%       PF     MDD%     T10제외단순%     T10제외복리%  BW  BL
+   A       86   2.150   52.33   +59.258   +73.728  +0.6890   1.7899  -11.321       -1.537       -3.372  13  30
+   B       80   2.000   55.00   +70.725   +95.172  +0.8841   2.1226   -8.377       +9.930       +8.555  13  25
+   C       82   2.050   56.10   +76.148  +105.899  +0.9286   2.2087   -8.377      +15.353      +14.522  13  25
+
+-- OOS 20일
+   안       거래     일평균     승률%       단순%       복리%      평균%       PF     MDD%     T10제외단순%     T10제외복리%  BW  BL
+   A       51   2.550   56.86   +29.566   +32.655  +0.5797   1.9367   -7.310      -10.787      -10.650   6  14
+   B       49   2.450   59.18   +31.619   +35.433  +0.6453   2.0714   -7.310       -8.735       -8.780   6  13
+   C       49   2.450   59.18   +31.204   +34.866  +0.6368   2.0427   -7.310       -9.149       -9.161   6  14
+
+-- 전체 60일
+   안       거래     일평균     승률%       단순%       복리%      평균%       PF     MDD%     T10제외단순%     T10제외복리%  BW  BL
+   A      137   2.283   54.01   +88.824  +130.459  +0.6484   1.8334  -11.321      +27.503      +27.541  19  44
+   B      129   2.150   56.59  +102.344  +164.326  +0.7934   2.1063   -8.377      +41.024      +46.283  19  38
+   C      131   2.183   57.25  +107.353  +177.687  +0.8195   2.1553   -8.377      +46.032      +53.678  19  39
+
+========================================================================================================
+[2] 차단된 Slot1 CHOP 후보 전부 + A 기준 원래 손익
+========================================================================================================
+-- B: 8건
+   split 날짜        판정     방향         세션          # CHOP     A손익%   A MFE%  A청산
+   TRAIN 20260617  09:42  DOWN_BLUE  MORNING     1    3   -1.194     1.01  OPPOSITE_SIGNAL
+   TRAIN 20260626  09:51  UP_RED     MORNING     1    3   -1.800     0.78  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260707  09:24  UP_RED     MORNING     3    3   -3.811     0.44  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260713  09:30  UP_RED     MORNING     1    3   -3.098     0.00  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260721  09:21  UP_RED     MORNING     1    3    0.550     1.57  EARLY_TAKE_PROFIT
+   TRAIN 20260729  09:33  DOWN_BLUE  MORNING     1    3   -2.115     1.16  TIME_WINDOW_STOP_LOSS
+   OOS   20260810  09:42  DOWN_BLUE  MORNING     1    3   -0.090     1.65  EARLY_TAKE_PROFIT
+   OOS   20260813  09:45  DOWN_BLUE  MORNING     1    3   -1.963     0.00  TIME_WINDOW_STOP_LOSS
+   A기준 차단분 합계 -13.520%
+     TRAIN: 6건, A기준 합계 -11.467%
+     OOS: 2건, A기준 합계 -2.053%
+
+-- C: 9건
+   split 날짜        판정     방향         세션          # CHOP     A손익%   A MFE%  A청산
+   TRAIN 20260617  09:42  DOWN_BLUE  MORNING     1    3   -1.194     1.01  OPPOSITE_SIGNAL
+   TRAIN 20260626  09:51  UP_RED     MORNING     1    3   -1.800     0.78  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260707  09:24  UP_RED     MORNING     3    3   -3.811     0.44  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260713  09:30  UP_RED     MORNING     1    3   -3.098     0.00  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260721  09:21  UP_RED     MORNING     1    3    0.550     1.57  EARLY_TAKE_PROFIT
+   TRAIN 20260729  09:33  DOWN_BLUE  MORNING     1    3   -2.115     1.16  TIME_WINDOW_STOP_LOSS
+   OOS   20260810  09:42  DOWN_BLUE  MORNING     1    3   -0.090     1.65  EARLY_TAKE_PROFIT
+   OOS   20260813  09:45  DOWN_BLUE  MORNING     1    3   -1.963     0.00  TIME_WINDOW_STOP_LOSS
+   OOS   20260813  12:00  UP_RED     AFTERNOON   2    3   -0.933     0.07  OPPOSITE_SIGNAL
+   A기준 차단분 합계 -14.454%
+     TRAIN: 6건, A기준 합계 -11.467%
+     OOS: 3건, A기준 합계 -2.986%
+
+========================================================================================================
+[3] 차단 후 새로 생긴 후속 거래 (A 에 없던 진입)
+========================================================================================================
+-- B: 0건
+
+-- C: 3건, 합계 +4.075%
+   [TRAIN] 20260617 12:51->13:21 Slot3 #6 UP_RED     +2.592% (MFE +2.59%, TIME_WINDOW_AFTERNOON_TP)
+   [TRAIN] 20260707 11:21->11:48 Slot3 #6 DOWN_BLUE  +2.831% (MFE +2.83%, TIME_WINDOW_AFTERNOON_TP)
+   [OOS] 20260813 12:54->13:24 Slot1 #4 UP_RED     -1.348% (MFE +1.12%, OPPOSITE_SIGNAL)
+     TRAIN: 2건 합계 +5.423%
+     OOS: 1건 합계 -1.348%
+     슬롯 분포: {1: 1, 3: 2}
+
+========================================================================================================
+[4] BIG_WIN(+3%) 보존 / BIG_LOSS(-1%) 차단
+========================================================================================================
+   안   구간             A의BW    놓친BW     보존율%   A의BL    막은BL     차단율%
+   B   TRAIN 40일        13       0    100.0     30       5     16.7
+   B   OOS 20일           6       0    100.0     14       1      7.1
+   B   전체 60일           19       0    100.0     44       6     13.6
+
+   C   TRAIN 40일        13       0    100.0     30       5     16.7
+   C   OOS 20일           6       0    100.0     14       1      7.1
+   C   전체 60일           19       0    100.0     44       6     13.6
+
+========================================================================================================
+[5] 최근 10영업일 날짜별 A/B/C 타임라인
+========================================================================================================
+### 20260820
+  A: 3건 합계 +5.990%
+      09:06->09:15 S1 #1 DOWN +1.06% (TIME_WINDOW_AFTER_TP1_STOP)
+      09:24->10:02 S2 #2 UP_R +4.67% (TIME_WINDOW_TP2_FULL)
+      10:42->11:15 S3 #4 UP_R +0.26% (OPPOSITE_SIGNAL)
+  B: 3건 합계 +5.990%
+      09:06->09:15 S1 #1 DOWN +1.06% (TIME_WINDOW_AFTER_TP1_STOP)
+      09:24->10:02 S2 #2 UP_R +4.67% (TIME_WINDOW_TP2_FULL)
+      10:42->11:15 S3 #4 UP_R +0.26% (OPPOSITE_SIGNAL)
+  C: 3건 합계 +5.990%
+      09:06->09:15 S1 #1 DOWN +1.06% (TIME_WINDOW_AFTER_TP1_STOP)
+      09:24->10:02 S2 #2 UP_R +4.67% (TIME_WINDOW_TP2_FULL)
+      10:42->11:15 S3 #4 UP_R +0.26% (OPPOSITE_SIGNAL)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260821
+  A: 3건 합계 +0.052%
+      09:09->09:47 S1 #1 UP_R +4.87% (TIME_WINDOW_TP2_FULL)
+      10:12->10:18 S2 #2 DOWN -2.65% (TIME_WINDOW_STOP_LOSS)
+      10:21->10:33 S3 #3 UP_R -2.18% (OPPOSITE_SIGNAL)
+  B: 3건 합계 +0.052%
+      09:09->09:47 S1 #1 UP_R +4.87% (TIME_WINDOW_TP2_FULL)
+      10:12->10:18 S2 #2 DOWN -2.65% (TIME_WINDOW_STOP_LOSS)
+      10:21->10:33 S3 #3 UP_R -2.18% (OPPOSITE_SIGNAL)
+  C: 3건 합계 +0.052%
+      09:09->09:47 S1 #1 UP_R +4.87% (TIME_WINDOW_TP2_FULL)
+      10:12->10:18 S2 #2 DOWN -2.65% (TIME_WINDOW_STOP_LOSS)
+      10:21->10:33 S3 #3 UP_R -2.18% (OPPOSITE_SIGNAL)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260824
+  A: 2건 합계 +1.001%
+      09:57->10:39 S1 #1 UP_R -1.79% (OPPOSITE_SIGNAL)
+      10:39->11:33 S2 #2 DOWN +2.79% (OPPOSITE_SIGNAL)
+  B: 2건 합계 +1.001%
+      09:57->10:39 S1 #1 UP_R -1.79% (OPPOSITE_SIGNAL)
+      10:39->11:33 S2 #2 DOWN +2.79% (OPPOSITE_SIGNAL)
+  C: 2건 합계 +1.001%
+      09:57->10:39 S1 #1 UP_R -1.79% (OPPOSITE_SIGNAL)
+      10:39->11:33 S2 #2 DOWN +2.79% (OPPOSITE_SIGNAL)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260825
+  A: 3건 합계 +2.836%
+      09:06->09:33 S1 #1 DOWN +0.29% (OPPOSITE_SIGNAL)
+      09:33->10:03 S2 #2 UP_R -0.15% (EARLY_TAKE_PROFIT)
+      12:15->12:31 S3 #8 UP_R +2.70% (TIME_WINDOW_AFTERNOON_TP)
+  B: 3건 합계 +2.836%
+      09:06->09:33 S1 #1 DOWN +0.29% (OPPOSITE_SIGNAL)
+      09:33->10:03 S2 #2 UP_R -0.15% (EARLY_TAKE_PROFIT)
+      12:15->12:31 S3 #8 UP_R +2.70% (TIME_WINDOW_AFTERNOON_TP)
+  C: 3건 합계 +2.836%
+      09:06->09:33 S1 #1 DOWN +0.29% (OPPOSITE_SIGNAL)
+      09:33->10:03 S2 #2 UP_R -0.15% (EARLY_TAKE_PROFIT)
+      12:15->12:31 S3 #8 UP_R +2.70% (TIME_WINDOW_AFTERNOON_TP)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260826
+  A: 3건 합계 -2.905%
+      09:24->09:27 S1 #1 UP_R -1.93% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:03 S2 #2 DOWN +0.69% (EARLY_TAKE_PROFIT)
+      10:21->10:30 S3 #3 UP_R -1.67% (OPPOSITE_SIGNAL)
+  B: 3건 합계 -2.905%
+      09:24->09:27 S1 #1 UP_R -1.93% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:03 S2 #2 DOWN +0.69% (EARLY_TAKE_PROFIT)
+      10:21->10:30 S3 #3 UP_R -1.67% (OPPOSITE_SIGNAL)
+  C: 3건 합계 -2.905%
+      09:24->09:27 S1 #1 UP_R -1.93% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:03 S2 #2 DOWN +0.69% (EARLY_TAKE_PROFIT)
+      10:21->10:30 S3 #3 UP_R -1.67% (OPPOSITE_SIGNAL)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260827
+  A: 2건 합계 +2.624%
+      09:36->10:24 S1 #1 DOWN +2.34% (TIME_WINDOW_TRAILING_STOP)
+      10:54->11:33 S2 #4 UP_R +0.28% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  B: 2건 합계 +2.624%
+      09:36->10:24 S1 #1 DOWN +2.34% (TIME_WINDOW_TRAILING_STOP)
+      10:54->11:33 S2 #4 UP_R +0.28% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  C: 2건 합계 +2.624%
+      09:36->10:24 S1 #1 DOWN +2.34% (TIME_WINDOW_TRAILING_STOP)
+      10:54->11:33 S2 #4 UP_R +0.28% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260828
+  A: 3건 합계 -3.986%
+      09:09->09:27 S1 #1 DOWN -2.29% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:15 S2 #2 UP_R -1.39% (OPPOSITE_SIGNAL)
+      10:15->11:06 S3 #3 DOWN -0.31% (OPPOSITE_SIGNAL)
+  B: 3건 합계 -3.986%
+      09:09->09:27 S1 #1 DOWN -2.29% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:15 S2 #2 UP_R -1.39% (OPPOSITE_SIGNAL)
+      10:15->11:06 S3 #3 DOWN -0.31% (OPPOSITE_SIGNAL)
+  C: 3건 합계 -3.986%
+      09:09->09:27 S1 #1 DOWN -2.29% (TIME_WINDOW_STOP_LOSS)
+      09:30->10:15 S2 #2 UP_R -1.39% (OPPOSITE_SIGNAL)
+      10:15->11:06 S3 #3 DOWN -0.31% (OPPOSITE_SIGNAL)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260831
+  A: 3건 합계 +0.183%
+      09:18->09:57 S1 #1 UP_R +1.51% (TIME_WINDOW_AFTER_TP1_STOP)
+      10:06->10:33 S2 #2 DOWN -1.61% (OPPOSITE_SIGNAL)
+      12:03->12:39 S3 #5 UP_R +0.29% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  B: 3건 합계 +0.183%
+      09:18->09:57 S1 #1 UP_R +1.51% (TIME_WINDOW_AFTER_TP1_STOP)
+      10:06->10:33 S2 #2 DOWN -1.61% (OPPOSITE_SIGNAL)
+      12:03->12:39 S3 #5 UP_R +0.29% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  C: 3건 합계 +0.183%
+      09:18->09:57 S1 #1 UP_R +1.51% (TIME_WINDOW_AFTER_TP1_STOP)
+      10:06->10:33 S2 #2 DOWN -1.61% (OPPOSITE_SIGNAL)
+      12:03->12:39 S3 #5 UP_R +0.29% (WHIPSAW_WATCH_DETERIORATION_EXIT)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260903
+  A: 3건 합계 -0.187%
+      09:18->09:45 S1 #1 DOWN +0.04% (OPPOSITE_SIGNAL)
+      09:45->10:48 S2 #2 UP_R +0.72% (EARLY_TAKE_PROFIT)
+      11:00->11:18 S3 #3 DOWN -0.95% (OPPOSITE_SIGNAL)
+  B: 3건 합계 -0.187%
+      09:18->09:45 S1 #1 DOWN +0.04% (OPPOSITE_SIGNAL)
+      09:45->10:48 S2 #2 UP_R +0.72% (EARLY_TAKE_PROFIT)
+      11:00->11:18 S3 #3 DOWN -0.95% (OPPOSITE_SIGNAL)
+  C: 3건 합계 -0.187%
+      09:18->09:45 S1 #1 DOWN +0.04% (OPPOSITE_SIGNAL)
+      09:45->10:48 S2 #2 UP_R +0.72% (EARLY_TAKE_PROFIT)
+      11:00->11:18 S3 #3 DOWN -0.95% (OPPOSITE_SIGNAL)
+  => B-A +0.000%  /  C-A +0.000%
+
+### 20260904
+  A: 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+  B: 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+  C: 3건 합계 -2.047%
+      10:03->11:18 S1 #1 DOWN -0.36% (OPPOSITE_SIGNAL)
+      11:18->11:42 S2 #2 UP_R -0.99% (OPPOSITE_SIGNAL)
+      11:42->11:57 S3 #3 DOWN -0.69% (OPPOSITE_SIGNAL)
+  => B-A +0.000%  /  C-A +0.000%
+
+========================================================================================================
+[6] OOS 채택 판정 (복리↑ + PF↑ + MDD 비악화 + BIG_WIN 보존율 100%)
+========================================================================================================
+-- B
+   복리   +32.655% -> +35.433%  (PASS)
+   PF     1.9367 -> 2.0714  (PASS)
+   MDD    -7.310% -> -7.310%  (PASS)
+   BIG_WIN 보존율 100.0%  (PASS)
+   => 채택 후보
+
+-- C
+   복리   +32.655% -> +34.866%  (PASS)
+   PF     1.9367 -> 2.0427  (PASS)
+   MDD    -7.310% -> -7.310%  (PASS)
+   BIG_WIN 보존율 100.0%  (PASS)
+   => 채택 후보
+
+최종: B, C

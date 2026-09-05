@@ -1,0 +1,136 @@
+Loss-Veto 후보 검증 — 현행 A(TW2 3-SLOT + 조기익절) 60영업일 실거래 137건 기준
+적용 방식: 승인된 거래를 '차단만' (진입 추가 없음, 정적 제거)
+TRAIN 동결 임계값: ema_spread_exp3 q60=4749.8705 / q75=7031.7074
+
+  Loss-Veto A: Slot1 AND entry_chop
+  Loss-Veto B: Slot1 AND ema_spread_exp3 >= 7031.7
+  Loss-Veto C: Slot1 AND zero_dist_signed <= 0 AND ema_spread_exp3 >= 4749.9
+
+====================================================================================================
+[0] 현행 A 라벨 분포 (BIG_LOSS 는 LOSS 의 부분집합)
+====================================================================================================
+  TRAIN  n=86   BIG_WIN=13  WIN=32  LOSS=41 (BIG_LOSS=30 ) 단순=+59.26%
+  OOS    n=51   BIG_WIN=6   WIN=23  LOSS=22 (BIG_LOSS=14 ) 단순=+29.57%
+  ALL    n=137  BIG_WIN=19  WIN=55  LOSS=63 (BIG_LOSS=44 ) 단순=+88.82%
+
+====================================================================================================
+[1] 차단된 거래 전부와 원래 손익
+====================================================================================================
+-- Loss-Veto A: Slot1 AND entry_chop  — 총 8건, 합계 -13.520%
+   split 날짜        진입     방향            슬롯      손익%    MFE%         라벨  청산사유
+   TRAIN 20260617  09:42  DOWN_BLUE      1   -1.194   +1.01   BIG_LOSS  OPPOSITE_SIGNAL
+   TRAIN 20260626  09:51  UP_RED         1   -1.800   +0.78   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260707  09:24  UP_RED         1   -3.811   +0.44   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260713  09:30  UP_RED         1   -3.098   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260721  09:21  UP_RED         1   +0.550   +1.57        WIN  EARLY_TAKE_PROFIT
+   TRAIN 20260729  09:33  DOWN_BLUE      1   -2.115   +1.16   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   OOS   20260810  09:42  DOWN_BLUE      1   -0.090   +1.65 SMALL_LOSS  EARLY_TAKE_PROFIT
+   OOS   20260813  09:45  DOWN_BLUE      1   -1.963   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+     TRAIN: 6건 합계 -11.467% (BIG_LOSS 5 / BIG_WIN 0)
+     OOS: 2건 합계 -2.053% (BIG_LOSS 1 / BIG_WIN 0)
+
+-- Loss-Veto B: Slot1 AND ema_spread_exp3 >= 7031.7  — 총 16건, 합계 -1.235%
+   split 날짜        진입     방향            슬롯      손익%    MFE%         라벨  청산사유
+   TRAIN 20260611  09:09  DOWN_BLUE      1   -4.592   +0.94   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260612  09:48  DOWN_BLUE      1   +2.547   +3.54        WIN  TIME_WINDOW_TRAILING_STOP
+   TRAIN 20260615  09:06  UP_RED         1   +1.980   +2.72        WIN  OPPOSITE_SIGNAL
+   TRAIN 20260618  09:06  UP_RED         1   +1.850   +2.87        WIN  OPPOSITE_SIGNAL
+   TRAIN 20260619  09:06  UP_RED         1   -2.003   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260625  10:39  UP_RED         1   +2.310   +2.68        WIN  OPPOSITE_SIGNAL
+   TRAIN 20260626  09:51  UP_RED         1   -1.800   +0.78   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260629  09:06  DOWN_BLUE      1   +2.563   +4.42        WIN  TIME_WINDOW_TRAILING_STOP
+   TRAIN 20260709  09:06  UP_RED         1   +0.883   +3.23        WIN  TIME_WINDOW_AFTER_TP1_STOP
+   TRAIN 20260710  09:24  DOWN_BLUE      1   -2.538   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260715  09:48  DOWN_BLUE      1   -1.770   +0.03   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260720  09:18  UP_RED         1   -1.929   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260722  09:06  UP_RED         1   -0.865   +0.75 SMALL_LOSS  OPPOSITE_SIGNAL
+   TRAIN 20260729  09:33  DOWN_BLUE      1   -2.115   +1.16   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260803  09:06  DOWN_BLUE      1   +1.446   +3.20        WIN  TIME_WINDOW_AFTER_TP1_STOP
+   OOS   20260818  09:06  UP_RED         1   +2.799   +4.55        WIN  OPPOSITE_SIGNAL
+     TRAIN: 15건 합계 -4.034% (BIG_LOSS 7 / BIG_WIN 0)
+     OOS: 1건 합계 +2.799% (BIG_LOSS 0 / BIG_WIN 0)
+
+-- Loss-Veto C: Slot1 AND zero_dist_signed <= 0 AND ema_spread_exp3 >= 4749.9  — 총 13건, 합계 +0.247%
+   split 날짜        진입     방향            슬롯      손익%    MFE%         라벨  청산사유
+   TRAIN 20260609  09:39  DOWN_BLUE      1   -2.062   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260612  09:48  DOWN_BLUE      1   +2.547   +3.54        WIN  TIME_WINDOW_TRAILING_STOP
+   TRAIN 20260615  09:06  UP_RED         1   +1.980   +2.72        WIN  OPPOSITE_SIGNAL
+   TRAIN 20260624  10:00  DOWN_BLUE      1   +5.102   +6.66    BIG_WIN  TIME_WINDOW_TP2_FULL
+   TRAIN 20260625  10:39  UP_RED         1   +2.310   +2.68        WIN  OPPOSITE_SIGNAL
+   TRAIN 20260626  09:51  UP_RED         1   -1.800   +0.78   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260707  09:24  UP_RED         1   -3.811   +0.44   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260710  09:24  DOWN_BLUE      1   -2.538   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260715  09:48  DOWN_BLUE      1   -1.770   +0.03   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   TRAIN 20260729  09:33  DOWN_BLUE      1   -2.115   +1.16   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   OOS   20260805  09:45  DOWN_BLUE      1   +2.026   +4.57        WIN  TIME_WINDOW_TRAILING_STOP
+   OOS   20260813  09:45  DOWN_BLUE      1   -1.963   +0.00   BIG_LOSS  TIME_WINDOW_STOP_LOSS
+   OOS   20260827  09:36  DOWN_BLUE      1   +2.341   +4.47        WIN  TIME_WINDOW_TRAILING_STOP
+     TRAIN: 10건 합계 -2.157% (BIG_LOSS 6 / BIG_WIN 1)
+     OOS: 3건 합계 +2.403% (BIG_LOSS 1 / BIG_WIN 0)
+
+====================================================================================================
+[2] 막은 BIG_LOSS / 놓친 BIG_WIN / +3% 러너 보존율
+====================================================================================================
+후보    구간        차단     차단합계%    막은BL    /전체    놓친BW    /전체     러너보존%
+----------------------------------------------------------------------------------------------------
+A     TRAIN      6   -11.467       5     30       0     13     100.0
+A     OOS        2    -2.053       1     14       0      6     100.0
+A     ALL        8   -13.520       6     44       0     19     100.0
+
+B     TRAIN     15    -4.034       7     30       0     13     100.0
+B     OOS        1    +2.799       0     14       0      6     100.0
+B     ALL       16    -1.235       7     44       0     19     100.0
+
+C     TRAIN     10    -2.157       6     30       1     13      92.3
+C     OOS        3    +2.403       1     14       0      6     100.0
+C     ALL       13    +0.247       7     44       1     19      94.7
+
+====================================================================================================
+[3] 성과 지표 (현행 vs 각 Loss-Veto 적용 후)
+====================================================================================================
+-- TRAIN
+   안                             거래     승률%       단순%       복리%      평균%       PF     MDD%  BW  BL
+   현행 A                          86   52.33   +59.258   +73.728  +0.6890   1.7899  -11.321  13  30
+   + Loss-Veto A                 80   55.00   +70.725   +95.172  +0.8841   2.1226   -8.377  13  25
+   + Loss-Veto B                 71   53.52   +63.292   +81.569  +0.8914   2.1026  -11.321  13  23
+   + Loss-Veto C                 76   53.95   +61.415   +78.205  +0.8081   2.0081   -8.377  12  24
+
+-- OOS
+   안                             거래     승률%       단순%       복리%      평균%       PF     MDD%  BW  BL
+   현행 A                          51   56.86   +29.566   +32.655  +0.5797   1.9367   -7.310   6  14
+   + Loss-Veto A                 49   59.18   +31.619   +35.433  +0.6453   2.0714   -7.310   6  13
+   + Loss-Veto B                 50   56.00   +26.767   +29.043  +0.5353   1.8480   -7.310   6  14
+   + Loss-Veto C                 48   56.25   +27.163   +29.591  +0.5659   1.9176   -9.430   6  13
+
+-- ALL
+   안                             거래     승률%       단순%       복리%      평균%       PF     MDD%  BW  BL
+   현행 A                         137   54.01   +88.824  +130.459  +0.6484   1.8334  -11.321  19  44
+   + Loss-Veto A                129   56.59  +102.344  +164.326  +0.7934   2.1063   -8.377  19  38
+   + Loss-Veto B                121   54.55   +90.059  +134.302  +0.7443   2.0123  -11.321  19  37
+   + Loss-Veto C                124   54.84   +88.578  +130.937  +0.7143   1.9785   -9.430  18  37
+
+====================================================================================================
+[4] OOS 채택 판정  (복리↑ + PF↑ + MDD 개선/동일  AND  러너 보존율 >= 80%)
+====================================================================================================
+-- Loss-Veto A
+   복리   +32.655% -> +35.433%  (PASS)
+   PF     1.9367 -> 2.0714  (PASS)
+   MDD    -7.310% -> -7.310%  (PASS)
+   러너보존 100.0%  (PASS)
+   => 채택 후보
+
+-- Loss-Veto B
+   복리   +32.655% -> +29.043%  (FAIL)
+   PF     1.9367 -> 1.8480  (FAIL)
+   MDD    -7.310% -> -7.310%  (PASS)
+   러너보존 100.0%  (PASS)
+   => 탈락
+
+-- Loss-Veto C
+   복리   +32.655% -> +29.591%  (FAIL)
+   PF     1.9367 -> 1.9176  (FAIL)
+   MDD    -7.310% -> -9.430%  (FAIL)
+   러너보존 100.0%  (PASS)
+   => 탈락
+
+최종: Loss-Veto A

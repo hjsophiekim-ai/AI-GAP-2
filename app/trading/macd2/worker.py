@@ -3063,6 +3063,37 @@ def _resolve_tw2_3slot_candidate_body(
             final_decision_label = config.TW_APPROVED
             final_block_reason = None
 
+        # ── Slot1 CHOP veto (2026-09-04 사용자 요청) ─────────────────────
+        # 위 게이트 체인이 전부 끝난 뒤, 승인된 **Slot1 신규진입만** 추가로
+        # 거절한다. Slot2/Slot3 과 청산/휩쏘/조기익절 경로는 한 줄도 건드리지
+        # 않는다. 판정은 early_take_profit.evaluate_entry_chop 재사용(새 점수식
+        # 없음). 슬롯 카운트(tw2_3slot_slots_used_today/morning_count/
+        # afternoon_count)는 아래 outcome.final_state == EXECUTED 분기에서만
+        # 증가하므로 차단해도 소비되지 않고, 다음 플래그가 다시 Slot1 후보로
+        # 평가된다.
+        #
+        # 조기익절 필터가 OFF면 이 veto도 동작하지 않는다. 두 가지 이유:
+        #   (1) 판정을 그 필터의 CHOP 평가기에 전적으로 위임하므로 필터가 꺼진
+        #       상태에서 그 모듈을 호출하는 것 자체가 기존 계약 위반이다
+        #       ("OFF면 early_take_profit 함수가 단 한 번도 호출되지 않는다" --
+        #       tests/macd2/test_early_take_profit_worker.py 가 강제).
+        #   (2) 이 veto의 60영업일 검증은 "TW2 3-SLOT + 조기익절" 위에서만
+        #       측정됐다(data/validation/lossveto_fullchain). 조기익절이 꺼진
+        #       조합은 검증된 적이 없으므로 켜지 않는 것이 맞다.
+        if final_approved:
+            slot1_veto = time_window_3slot.evaluate_slot1_chop_veto(
+                bars_3m, direction, now, slot_number=slot_decision.slot_number,
+                enabled=(config.TW2_3SLOT_SLOT1_CHOP_VETO
+                         and early_take_profit.is_enabled(state)),
+            )
+            if slot1_veto.applicable:
+                slot_metrics["slot1_chop_veto_score"] = slot1_veto.score
+                slot_metrics["slot1_chop_veto_conditions"] = dict(slot1_veto.conditions)
+            if slot1_veto.vetoed:
+                final_approved = False
+                final_block_reason = config.TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP
+                final_decision_label = config.TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP
+
     decision = dataclasses.replace(
         base_decision, approved=final_approved, decision=final_decision_label, block_reason=final_block_reason,
         metrics={**(base_decision.metrics or {}), **slot_metrics},
