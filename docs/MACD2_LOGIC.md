@@ -1243,6 +1243,48 @@ REAL gate, MU_MACD. (2026-08-27~09-01 당시 "TW2가 여전히 default"는 이 �
 사용자 요청으로 기본값을 TW2 3-SLOT ON/TW2 OFF로 전환했다. 위 "PRE15
 프리마켓 승계" 절 참고.)
 
+### Slot1 CHOP veto — 2026-09-07 비활성(폐기)
+
+**현재 상태: production 에서 동작하지 않는다.**
+`config.TW2_3SLOT_SLOT1_CHOP_VETO` 기본값이 `False` 이므로, TW2 3-SLOT 의
+Slot1 진입은 veto 도입 이전과 동일하게 (오전 1·2번째 슬롯에 추가 게이트
+없음, Trend Quality 는 오전 3번째 슬롯 전용) 동작한다.
+
+**무엇이었나** (2026-09-05 커밋 `f8d2e6a`, 코드는 그대로 보존):
+그날 첫 신규진입(Slot1) 후보가 조기익절 필터의 진입시점 CHOP 판정에서
+CHOP 이면 그 진입만 거절한다. 새 점수식/임계값 없이
+`early_take_profit.evaluate_entry_chop(...).is_chop` 을 그대로 재사용하고,
+`slot_number != 1` 이면 그 평가기를 호출조차 하지 않는다. 차단은
+`approved=False` 로 끝나므로 슬롯을 소비하지 않고 다음 플래그가 다시 Slot1
+후보가 된다. 조기익절 필터가 OFF 면 이 veto 도 동작하지 않는다(worker.py 가
+두 조건을 AND 로 넘긴다). 구현: `time_window_3slot.evaluate_slot1_chop_veto`
+(순수함수), `worker._resolve_tw2_3slot_candidate_body` 의 분기 하나,
+`config.TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP` 거절사유.
+
+**왜 껐나**: 2026-09-07 사용자 결정이다. 코드/테스트/검증기록은 지우지 않고
+토글만 내렸다("코드는 유지, 토글만 OFF").
+
+**주의 — 이 비활성은 반대 근거로 뒷받침된 것이 아니다.** `f8d2e6a` 자신의
+60영업일 full-chain 검증은 오히려 개선을 보고한다(TRAIN 40일 복리 +73.73%
+→ +105.90%, OOS 20일 +32.66% → +34.87%, 전체 60일 +130.46% → +177.69%,
+PF 1.8334 → 2.1553, MDD -11.32 → -8.38, BIG_WIN 19건 100% 보존, BIG_LOSS
+6건 차단). 비활성 시점에 그 결과를 뒤집는 재검증은 **수행하지 않았다**.
+따라서 이 절은 "이 필터가 나쁘다"는 기록이 아니라 "사용자 결정으로 껐고,
+다시 켜려면 재검증이 필요하다"는 기록이다.
+
+**다시 켜려면**: 환경변수 `MACD2_TW2_3SLOT_SLOT1_CHOP_VETO=1` 로 배포별로
+켤 수 있고, 영구히 되돌리려면 `config.py` 의 기본값을 `True` 로 바꾼다.
+어느 쪽이든 재검증을 먼저 하고, 이 절과 `config.py` 주석을 함께 갱신할 것.
+기본값이 `False` 라는 사실 자체는
+`tests/macd2/test_tw2_3slot_slot1_chop_veto.py::test_default_toggle_is_off_after_2026_09_07_rejection`
+이 고정한다. 같은 파일의 나머지 테스트는 토글을 명시적으로 켜서 "켜져 있을
+때의 메커니즘"을 계속 검증한다.
+
+**참고 — 혼동하기 쉬운 별개 검토안**: 2026-09-04 검토 스크립트
+`scripts/_tmp_20260904_abc_{30,60}day_compare.py` 의 "C안"은 이것과 다르다.
+그쪽은 Slot1 에 **Trend Quality 4/5** 를 요구하는 안이고(CHOP 판정과 무관),
+production 에 반영된 적이 없다. 실제 배포된 것은 위 CHOP veto 쪽이다.
+
 ## 금지 사항
 
 - MACD 12/26/9 파라미터 변경 금지
@@ -1255,5 +1297,8 @@ REAL gate, MU_MACD. (2026-08-27~09-01 당시 "TW2가 여전히 default"는 이 �
 - `main` 브랜치 푸시 금지. `main-MACD2`에만 커밋·푸시한다.
 - MAJOR 필터용 날짜·시각·방향 하드코딩 금지
 - 필터 ON이 confirmed 플래그 생성 수·시각·방향을 바꾸게 하는 변경 금지
+- `TW2_3SLOT_SLOT1_CHOP_VETO` 를 재검증 없이 다시 기본 ON으로 되돌리는
+  변경 금지 (2026-09-07 사용자 결정으로 비활성 — 위 "Slot1 CHOP veto" 절 참조).
+  Trend Quality 게이트는 기존대로 오전 3번째 슬롯 전용으로 유지한다.
 - 필터를 주문·체결 함수 내부에 넣는 변경 금지
 - Stop Loss / Profit Lock / 강제청산을 필터에 종속시키는 변경 금지

@@ -55,7 +55,8 @@ def spy(monkeypatch):
 # ── 1) entry_chop=False -> 기존과 동일 ──────────────────────────────────────
 def test_no_veto_when_not_chop(spy):
     calls = spy(is_chop=False)
-    d = tw3.evaluate_slot1_chop_veto(None, Direction.UP_RED, _now(9, 6), slot_number=1)
+    d = tw3.evaluate_slot1_chop_veto(
+        None, Direction.UP_RED, _now(9, 6), slot_number=1, enabled=True)
     assert d.vetoed is False
     assert d.applicable is True
     assert d.is_chop is False
@@ -75,7 +76,8 @@ def test_toggle_off_never_calls_chop_evaluator(spy):
 
 def test_insufficient_data_does_not_veto(spy):
     spy(is_chop=True, insufficient=True)
-    d = tw3.evaluate_slot1_chop_veto(None, Direction.UP_RED, _now(9, 6), slot_number=1)
+    d = tw3.evaluate_slot1_chop_veto(
+        None, Direction.UP_RED, _now(9, 6), slot_number=1, enabled=True)
     assert d.vetoed is False
     assert d.reason == "insufficient_data"
 
@@ -86,7 +88,7 @@ def test_insufficient_data_does_not_veto(spy):
 def test_veto_only_applies_to_slot1(spy, slot_number, expect_veto):
     calls = spy(is_chop=True)
     d = tw3.evaluate_slot1_chop_veto(
-        None, Direction.DOWN_BLUE, _now(9, 30), slot_number=slot_number)
+        None, Direction.DOWN_BLUE, _now(9, 30), slot_number=slot_number, enabled=True)
     assert d.vetoed is expect_veto
     if expect_veto:
         assert d.reason == config.TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP
@@ -218,6 +220,11 @@ def _run_slot1(monkeypatch, *, early_tp_on: bool):
 
 
 def test_worker_blocks_slot1_chop_entry_and_does_not_consume_the_slot(monkeypatch):
+    # 2026-09-07 부터 config.TW2_3SLOT_SLOT1_CHOP_VETO 기본값이 False(폐기/
+    # 비활성)이므로, "켜져 있을 때의 메커니즘"을 검증하는 이 테스트는 토글을
+    # 명시적으로 True 로 세운다. 기본값 자체는 아래 test_default_toggle_is_off
+    # 가 따로 고정한다.
+    monkeypatch.setattr(config, "TW2_3SLOT_SLOT1_CHOP_VETO", True)
     state = _run_slot1(monkeypatch, early_tp_on=True)
     assert state.position is None, "Slot1 + CHOP 진입은 체결되면 안 된다"
     assert state.tw2_3slot_slots_used_today == 0, "차단 시 슬롯을 소비하면 안 된다"
@@ -239,3 +246,10 @@ def test_worker_slot1_entry_unchanged_when_veto_toggle_is_off(monkeypatch):
     state = _run_slot1(monkeypatch, early_tp_on=True)
     assert state.tw2_3slot_slots_used_today == 1
     assert state.position is not None
+
+
+def test_default_toggle_is_off_after_2026_09_07_rejection():
+    """2026-09-07 사용자 결정: 이 veto 는 production 에서 비활성이다.
+    코드는 보존하되 기본값은 False 여야 한다(docs/MACD2_LOGIC.md
+    "Slot1 CHOP veto -- 2026-09-07 비활성(폐기)")."""
+    assert config.TW2_3SLOT_SLOT1_CHOP_VETO is False

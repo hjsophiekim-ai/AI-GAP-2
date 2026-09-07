@@ -989,7 +989,18 @@ TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND = "TW2_3SLOT_REJECT_SAME_DIRECTION
 # 넘긴다) -- 판정을 그 필터의 CHOP 평가기에 위임하기 때문이고, 위 검증도
 # "TW2 3-SLOT + 조기익절" 조합에서만 측정됐기 때문이다.
 # 끄려면 MACD2_TW2_3SLOT_SLOT1_CHOP_VETO=0.
-TW2_3SLOT_SLOT1_CHOP_VETO = _env_bool("MACD2_TW2_3SLOT_SLOT1_CHOP_VETO", True)
+#
+# 2026-09-07 (사용자 결정 — 폐기/비활성): 이 veto 는 기본값을 True 에서
+# False 로 내려 production 에서 동작하지 않는다. 코드/테스트/위 검증기록은
+# 그대로 보존하되(사용자 지시: "코드는 유지, 토글만 OFF"), 켜려면 명시적으로
+# MACD2_TW2_3SLOT_SLOT1_CHOP_VETO=1 을 주거나 이 기본값을 되돌려야 한다.
+# 이 결정은 위 60영업일 검증을 반박해서 내린 것이 아니다 — 그 결과는 여전히
+# 개선(복리 +130.46% -> +177.69%)을 가리키며, 비활성 시점에 그것을 뒤집는
+# 재검증은 수행하지 않았다. TW2 3-SLOT 의 Slot1 진입은 이 상수가 False 인 한
+# veto 도입 이전과 동일하게 (오전 1·2번째 슬롯 추가 게이트 없음) 동작한다.
+# 다시 기본 ON 으로 되돌리려면 재검증을 먼저 할 것 — docs/MACD2_LOGIC.md
+# "Slot1 CHOP veto — 2026-09-07 비활성(폐기)" 및 금지 사항 참조.
+TW2_3SLOT_SLOT1_CHOP_VETO = _env_bool("MACD2_TW2_3SLOT_SLOT1_CHOP_VETO", False)
 TW2_3SLOT_SLOT1_CHOP_VETO_VERSION = "TW2_3SLOT_SLOT1_CHOP_VETO_V1_20260904"
 TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP = "TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP"
 
