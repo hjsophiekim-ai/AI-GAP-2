@@ -1,0 +1,156 @@
+{
+ "windows": {
+  "최근30일": [
+   "20260722",
+   "20260904",
+   30
+  ],
+  "60일FULL": [
+   "20260609",
+   "20260904",
+   60
+  ],
+  "TRAIN40": [
+   "20260609",
+   "20260804",
+   40
+  ],
+  "OOS20": [
+   "20260805",
+   "20260904",
+   20
+  ]
+ },
+ "dropped_bars": {
+  "hynix": 158,
+  "0193T0": 216,
+  "0197X0": 228,
+  "hynix_total_bars": 9457
+ },
+ "results": {
+  "최근30일": {
+   "A": {
+    "trades": 65,
+    "avg_per_day": 2.167,
+    "win_rate_pct": 50.77,
+    "simple_pct": 20.164,
+    "compound_pct": 19.8165,
+    "avg_pct": 0.3102,
+    "pf": 1.3682,
+    "mdd_pct": -9.8086,
+    "runners_3pct": 8,
+    "top10_excl_simple_pct": -23.0347,
+    "top10_excl_compound_pct": -21.4808
+   },
+   "B": {
+    "trades": 65,
+    "avg_per_day": 2.167,
+    "win_rate_pct": 50.77,
+    "simple_pct": 24.3611,
+    "compound_pct": 24.9322,
+    "avg_pct": 0.3748,
+    "pf": 1.4614,
+    "mdd_pct": -8.8416,
+    "runners_3pct": 10,
+    "top10_excl_simple_pct": -19.5257,
+    "top10_excl_compound_pct": -18.6724
+   },
+   "runner_preserve_pct": 100.0
+  },
+  "60일FULL": {
+   "A": {
+    "trades": 131,
+    "avg_per_day": 2.183,
+    "win_rate_pct": 51.15,
+    "simple_pct": 62.7424,
+    "compound_pct": 79.1047,
+    "avg_pct": 0.4789,
+    "pf": 1.5722,
+    "mdd_pct": -10.2359,
+    "runners_3pct": 20,
+    "top10_excl_simple_pct": 11.6869,
+    "top10_excl_compound_pct": 8.8609
+   },
+   "B": {
+    "trades": 131,
+    "avg_per_day": 2.183,
+    "win_rate_pct": 50.38,
+    "simple_pct": 62.1498,
+    "compound_pct": 78.3417,
+    "avg_pct": 0.4744,
+    "pf": 1.5813,
+    "mdd_pct": -10.2359,
+    "runners_3pct": 24,
+    "top10_excl_simple_pct": 11.5453,
+    "top10_excl_compound_pct": 8.8641
+   },
+   "runner_preserve_pct": 90.0
+  },
+  "TRAIN40": {
+   "A": {
+    "trades": 81,
+    "avg_per_day": 2.025,
+    "win_rate_pct": 49.38,
+    "simple_pct": 38.9166,
+    "compound_pct": 42.8197,
+    "avg_pct": 0.4805,
+    "pf": 1.4975,
+    "mdd_pct": -10.2359,
+    "runners_3pct": 15,
+    "top10_excl_simple_pct": -12.0771,
+    "top10_excl_compound_pct": -13.1421
+   },
+   "B": {
+    "trades": 81,
+    "avg_per_day": 2.025,
+    "win_rate_pct": 48.15,
+    "simple_pct": 36.8904,
+    "compound_pct": 40.2278,
+    "avg_pct": 0.4554,
+    "pf": 1.4869,
+    "mdd_pct": -10.2359,
+    "runners_3pct": 17,
+    "top10_excl_simple_pct": -11.5366,
+    "top10_excl_compound_pct": -12.5935
+   },
+   "runner_preserve_pct": 86.67
+  },
+  "OOS20": {
+   "A": {
+    "trades": 50,
+    "avg_per_day": 2.5,
+    "win_rate_pct": 54.0,
+    "simple_pct": 23.8258,
+    "compound_pct": 25.4061,
+    "avg_pct": 0.4765,
+    "pf": 1.7581,
+    "mdd_pct": -6.7296,
+    "runners_3pct": 5,
+    "top10_excl_simple_pct": -13.5701,
+    "top10_excl_compound_pct": -13.0945
+   },
+   "B": {
+    "trades": 50,
+    "avg_per_day": 2.5,
+    "win_rate_pct": 54.0,
+    "simple_pct": 25.2594,
+    "compound_pct": 27.18,
+    "avg_pct": 0.5052,
+    "pf": 1.8109,
+    "mdd_pct": -6.7296,
+    "runners_3pct": 7,
+    "top10_excl_simple_pct": -13.1968,
+    "top10_excl_compound_pct": -12.7672
+   },
+   "runner_preserve_pct": 100.0
+  }
+ },
+ "entry_set_identical": true,
+ "verdict": {
+  "compound": true,
+  "pf": true,
+  "mdd": true,
+  "runner_preserve": true,
+  "adopt": true
+ }
+}

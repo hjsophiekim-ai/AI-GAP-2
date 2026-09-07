@@ -1,0 +1,423 @@
+{
+ "windows": {
+  "30d": [
+   "20260722",
+   "20260904",
+   30
+  ],
+  "60d": [
+   "20260609",
+   "20260904",
+   60
+  ],
+  "TRAIN40": [
+   "20260609",
+   "20260804",
+   40
+  ],
+  "OOS20": [
+   "20260805",
+   "20260904",
+   20
+  ]
+ },
+ "params": {
+  "A": {
+   "name": "A",
+   "tp1_pct": 3.0,
+   "tp1_sell_ratio": 0.5,
+   "tp2_pct": 6.0,
+   "stop_loss_pct": -1.7000000000000002,
+   "after_tp1_stop_pct": 0.3,
+   "trail_trigger_pct": 3.5000000000000004,
+   "trail_stop_pct": 2.0,
+   "aft_tp_pct": 2.5,
+   "aft_stop_pct": -1.2,
+   "aft_be_trigger_pct": 1.5,
+   "aft_be_stop_pct": 0.2,
+   "aft_lock_trigger_pct": 2.0,
+   "aft_lock_stop_pct": 1.0,
+   "etp_scope": "chop",
+   "etp_trigger_pct": 1.5,
+   "etp_floor_pct": 0.8
+  },
+  "E": {
+   "name": "A",
+   "tp1_pct": 3.0,
+   "tp1_sell_ratio": 0.5,
+   "tp2_pct": 6.0,
+   "stop_loss_pct": -1.2,
+   "after_tp1_stop_pct": 2.0,
+   "trail_trigger_pct": 3.5000000000000004,
+   "trail_stop_pct": 2.0,
+   "aft_tp_pct": 3.0,
+   "aft_stop_pct": -1.2,
+   "aft_be_trigger_pct": 1.5,
+   "aft_be_stop_pct": 0.2,
+   "aft_lock_trigger_pct": 2.0,
+   "aft_lock_stop_pct": 1.0,
+   "etp_scope": "chop",
+   "etp_trigger_pct": 1.5,
+   "etp_floor_pct": 0.8
+  },
+  "E14": {
+   "name": "A",
+   "tp1_pct": 3.0,
+   "tp1_sell_ratio": 0.5,
+   "tp2_pct": 6.0,
+   "stop_loss_pct": -1.4,
+   "after_tp1_stop_pct": 2.0,
+   "trail_trigger_pct": 3.5000000000000004,
+   "trail_stop_pct": 2.0,
+   "aft_tp_pct": 3.0,
+   "aft_stop_pct": -1.2,
+   "aft_be_trigger_pct": 1.5,
+   "aft_be_stop_pct": 0.2,
+   "aft_lock_trigger_pct": 2.0,
+   "aft_lock_stop_pct": 1.0,
+   "etp_scope": "chop",
+   "etp_trigger_pct": 1.5,
+   "etp_floor_pct": 0.8
+  }
+ },
+ "results": {
+  "A": {
+   "30d": {
+    "trades": 70,
+    "avg_per_day": 2.333,
+    "win_rate_pct": 57.14,
+    "simple_pct": 49.4755,
+    "compound_pct": 59.3748,
+    "avg_pct": 0.7068,
+    "pf": 2.0242,
+    "mdd_pct": -10.2813,
+    "top10_excl_compound_pct": -6.3588,
+    "big_wins": 9,
+    "big_losses": 20,
+    "profit_days": 18,
+    "loss_days": 11
+   },
+   "60d": {
+    "trades": 137,
+    "avg_per_day": 2.283,
+    "win_rate_pct": 54.01,
+    "simple_pct": 88.8243,
+    "compound_pct": 130.4589,
+    "avg_pct": 0.6484,
+    "pf": 1.8334,
+    "mdd_pct": -11.3209,
+    "top10_excl_compound_pct": 27.5405,
+    "big_wins": 19,
+    "big_losses": 44,
+    "profit_days": 37,
+    "loss_days": 20
+   },
+   "TRAIN40": {
+    "trades": 86,
+    "avg_per_day": 2.15,
+    "win_rate_pct": 52.33,
+    "simple_pct": 59.258,
+    "compound_pct": 73.7282,
+    "avg_pct": 0.689,
+    "pf": 1.7899,
+    "mdd_pct": -11.3209,
+    "top10_excl_compound_pct": -3.3716,
+    "big_wins": 13,
+    "big_losses": 30,
+    "profit_days": 23,
+    "loss_days": 14
+   },
+   "OOS20": {
+    "trades": 51,
+    "avg_per_day": 2.55,
+    "win_rate_pct": 56.86,
+    "simple_pct": 29.5663,
+    "compound_pct": 32.6549,
+    "avg_pct": 0.5797,
+    "pf": 1.9367,
+    "mdd_pct": -7.3102,
+    "top10_excl_compound_pct": -10.6505,
+    "big_wins": 6,
+    "big_losses": 14,
+    "profit_days": 14,
+    "loss_days": 6
+   },
+   "daily_entry_hist_30d": {
+    "0": 1,
+    "1": 3,
+    "2": 11,
+    "3": 15
+   }
+  },
+  "E": {
+   "30d": {
+    "trades": 70,
+    "avg_per_day": 2.333,
+    "win_rate_pct": 58.57,
+    "simple_pct": 60.4409,
+    "compound_pct": 77.8518,
+    "avg_pct": 0.8634,
+    "pf": 2.4051,
+    "mdd_pct": -9.4688,
+    "top10_excl_compound_pct": 3.9821,
+    "big_wins": 11,
+    "big_losses": 20,
+    "profit_days": 18,
+    "loss_days": 11
+   },
+   "60d": {
+    "trades": 137,
+    "avg_per_day": 2.283,
+    "win_rate_pct": 54.74,
+    "simple_pct": 116.7857,
+    "compound_pct": 205.184,
+    "avg_pct": 0.8525,
+    "pf": 2.3066,
+    "mdd_pct": -9.4688,
+    "top10_excl_compound_pct": 68.8949,
+    "big_wins": 28,
+    "big_losses": 44,
+    "profit_days": 38,
+    "loss_days": 19
+   },
+   "TRAIN40": {
+    "trades": 86,
+    "avg_per_day": 2.15,
+    "win_rate_pct": 53.49,
+    "simple_pct": 81.0402,
+    "compound_pct": 116.2552,
+    "avg_pct": 0.9423,
+    "pf": 2.3221,
+    "mdd_pct": -9.4688,
+    "top10_excl_compound_pct": 20.2821,
+    "big_wins": 20,
+    "big_losses": 30,
+    "profit_days": 24,
+    "loss_days": 13
+   },
+   "OOS20": {
+    "trades": 51,
+    "avg_per_day": 2.55,
+    "win_rate_pct": 56.86,
+    "simple_pct": 35.7455,
+    "compound_pct": 41.1222,
+    "avg_pct": 0.7009,
+    "pf": 2.2729,
+    "mdd_pct": -5.1459,
+    "top10_excl_compound_pct": -5.7301,
+    "big_wins": 8,
+    "big_losses": 14,
+    "profit_days": 14,
+    "loss_days": 6
+   },
+   "daily_entry_hist_30d": {
+    "0": 1,
+    "1": 3,
+    "2": 11,
+    "3": 15
+   }
+  },
+  "E14": {
+   "30d": {
+    "trades": 70,
+    "avg_per_day": 2.333,
+    "win_rate_pct": 58.57,
+    "simple_pct": 58.303,
+    "compound_pct": 74.0245,
+    "avg_pct": 0.8329,
+    "pf": 2.2912,
+    "mdd_pct": -9.4688,
+    "top10_excl_compound_pct": 1.7445,
+    "big_wins": 11,
+    "big_losses": 20,
+    "profit_days": 18,
+    "loss_days": 11
+   },
+   "60d": {
+    "trades": 137,
+    "avg_per_day": 2.283,
+    "win_rate_pct": 54.74,
+    "simple_pct": 106.5024,
+    "compound_pct": 174.7943,
+    "avg_pct": 0.7774,
+    "pf": 2.0686,
+    "mdd_pct": -9.77,
+    "top10_excl_compound_pct": 52.0766,
+    "big_wins": 28,
+    "big_losses": 44,
+    "profit_days": 37,
+    "loss_days": 20
+   },
+   "TRAIN40": {
+    "trades": 86,
+    "avg_per_day": 2.15,
+    "win_rate_pct": 53.49,
+    "simple_pct": 72.0139,
+    "compound_pct": 97.2257,
+    "avg_pct": 0.8374,
+    "pf": 2.024,
+    "mdd_pct": -9.77,
+    "top10_excl_compound_pct": 9.6978,
+    "big_wins": 20,
+    "big_losses": 30,
+    "profit_days": 23,
+    "loss_days": 14
+   },
+   "OOS20": {
+    "trades": 51,
+    "avg_per_day": 2.55,
+    "win_rate_pct": 56.86,
+    "simple_pct": 34.4885,
+    "compound_pct": 39.3299,
+    "avg_pct": 0.6762,
+    "pf": 2.1755,
+    "mdd_pct": -5.1459,
+    "top10_excl_compound_pct": -6.9273,
+    "big_wins": 8,
+    "big_losses": 14,
+    "profit_days": 14,
+    "loss_days": 6
+   },
+   "daily_entry_hist_30d": {
+    "0": 1,
+    "1": 3,
+    "2": 11,
+    "3": 15
+   }
+  },
+  "F2": {
+   "30d": {
+    "trades": 82,
+    "avg_per_day": 2.733,
+    "win_rate_pct": 58.54,
+    "simple_pct": 70.0315,
+    "compound_pct": 95.2915,
+    "avg_pct": 0.854,
+    "pf": 2.4622,
+    "mdd_pct": -7.7136,
+    "top10_excl_compound_pct": 14.1784,
+    "big_wins": 13,
+    "big_losses": 22,
+    "profit_days": 21,
+    "loss_days": 9
+   },
+   "60d": {
+    "trades": 154,
+    "avg_per_day": 2.567,
+    "win_rate_pct": 53.9,
+    "simple_pct": 124.1974,
+    "compound_pct": 227.6433,
+    "avg_pct": 0.8065,
+    "pf": 2.2534,
+    "mdd_pct": -7.7136,
+    "top10_excl_compound_pct": 81.3243,
+    "big_wins": 30,
+    "big_losses": 49,
+    "profit_days": 42,
+    "loss_days": 17
+   },
+   "TRAIN40": {
+    "trades": 100,
+    "avg_per_day": 2.5,
+    "win_rate_pct": 52.0,
+    "simple_pct": 85.5924,
+    "compound_pct": 125.8284,
+    "avg_pct": 0.8559,
+    "pf": 2.2445,
+    "mdd_pct": -7.7136,
+    "top10_excl_compound_pct": 25.6068,
+    "big_wins": 22,
+    "big_losses": 34,
+    "profit_days": 27,
+    "loss_days": 12
+   },
+   "OOS20": {
+    "trades": 54,
+    "avg_per_day": 2.7,
+    "win_rate_pct": 57.41,
+    "simple_pct": 38.605,
+    "compound_pct": 45.0851,
+    "avg_pct": 0.7149,
+    "pf": 2.2735,
+    "mdd_pct": -5.1459,
+    "top10_excl_compound_pct": -3.1538,
+    "big_wins": 8,
+    "big_losses": 15,
+    "profit_days": 15,
+    "loss_days": 5
+   },
+   "daily_entry_hist_30d": {
+    "1": 1,
+    "2": 6,
+    "3": 23
+   }
+  },
+  "F2_aftSL14": {
+   "30d": {
+    "trades": 82,
+    "avg_per_day": 2.733,
+    "win_rate_pct": 58.54,
+    "simple_pct": 70.0315,
+    "compound_pct": 95.2915,
+    "avg_pct": 0.854,
+    "pf": 2.4622,
+    "mdd_pct": -7.7136,
+    "top10_excl_compound_pct": 14.1784,
+    "big_wins": 13,
+    "big_losses": 22,
+    "profit_days": 21,
+    "loss_days": 9
+   },
+   "60d": {
+    "trades": 154,
+    "avg_per_day": 2.567,
+    "win_rate_pct": 54.55,
+    "simple_pct": 126.7253,
+    "compound_pct": 236.032,
+    "avg_pct": 0.8229,
+    "pf": 2.2954,
+    "mdd_pct": -7.7136,
+    "top10_excl_compound_pct": 85.9668,
+    "big_wins": 30,
+    "big_losses": 48,
+    "profit_days": 43,
+    "loss_days": 16
+   },
+   "TRAIN40": {
+    "trades": 100,
+    "avg_per_day": 2.5,
+    "win_rate_pct": 53.0,
+    "simple_pct": 88.1203,
+    "compound_pct": 131.6103,
+    "avg_pct": 0.8812,
+    "pf": 2.3053,
+    "mdd_pct": -7.7136,
+    "top10_excl_compound_pct": 28.8227,
+    "big_wins": 22,
+    "big_losses": 33,
+    "profit_days": 28,
+    "loss_days": 11
+   },
+   "OOS20": {
+    "trades": 54,
+    "avg_per_day": 2.7,
+    "win_rate_pct": 57.41,
+    "simple_pct": 38.605,
+    "compound_pct": 45.0851,
+    "avg_pct": 0.7149,
+    "pf": 2.2735,
+    "mdd_pct": -5.1459,
+    "top10_excl_compound_pct": -3.1538,
+    "big_wins": 8,
+    "big_losses": 15,
+    "profit_days": 15,
+    "loss_days": 5
+   },
+   "daily_entry_hist_30d": {
+    "1": 1,
+    "2": 6,
+    "3": 23
+   }
+  }
+ }
+}

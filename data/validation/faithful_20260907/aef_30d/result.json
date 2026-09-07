@@ -1,0 +1,235 @@
+{
+ "windows": {
+  "TRAIN20": [
+   "20260722",
+   "20260819",
+   20
+  ],
+  "OOS10": [
+   "20260820",
+   "20260904",
+   10
+  ],
+  "FULL30": [
+   "20260722",
+   "20260904",
+   30
+  ]
+ },
+ "results": {
+  "TRAIN20": {
+   "A": {
+    "trades": 37,
+    "per_day": 1.85,
+    "win_rate_pct": 54.05,
+    "simple_pct": 15.7359,
+    "compound_pct": 15.2168,
+    "avg_pct": 0.4253,
+    "pf": 1.4265,
+    "mdd_pct": -9.8086,
+    "top10_excl_simple_pct": -23.2359,
+    "top10_excl_compound_pct": -21.3519,
+    "runners_3pct": 6,
+    "profit_days": 11,
+    "loss_days": 8
+   },
+   "E": {
+    "trades": 37,
+    "per_day": 1.85,
+    "win_rate_pct": 54.05,
+    "simple_pct": 19.3211,
+    "compound_pct": 19.4235,
+    "avg_pct": 0.5222,
+    "pf": 1.553,
+    "mdd_pct": -8.8416,
+    "top10_excl_simple_pct": -20.1938,
+    "top10_excl_compound_pct": -18.9082,
+    "runners_3pct": 7,
+    "profit_days": 11,
+    "loss_days": 8
+   },
+   "F": {
+    "trades": 49,
+    "per_day": 2.45,
+    "win_rate_pct": 53.06,
+    "simple_pct": 28.0931,
+    "compound_pct": 29.9771,
+    "avg_pct": 0.5733,
+    "pf": 1.6638,
+    "mdd_pct": -7.8392,
+    "top10_excl_simple_pct": -13.6836,
+    "top10_excl_compound_pct": -13.6569,
+    "runners_3pct": 11,
+    "profit_days": 13,
+    "loss_days": 7
+   },
+   "runner_preserve": {
+    "E": 100.0,
+    "F": 100.0
+   }
+  },
+  "OOS10": {
+   "A": {
+    "trades": 28,
+    "per_day": 2.8,
+    "win_rate_pct": 46.43,
+    "simple_pct": 4.4282,
+    "compound_pct": 3.9923,
+    "avg_pct": 0.1581,
+    "pf": 1.2479,
+    "mdd_pct": -6.7296,
+    "top10_excl_simple_pct": -17.2325,
+    "top10_excl_compound_pct": -15.9673,
+    "runners_3pct": 2,
+    "profit_days": 5,
+    "loss_days": 5
+   },
+   "E": {
+    "trades": 28,
+    "per_day": 2.8,
+    "win_rate_pct": 46.43,
+    "simple_pct": 5.04,
+    "compound_pct": 4.6128,
+    "avg_pct": 0.18,
+    "pf": 1.2821,
+    "mdd_pct": -6.7296,
+    "top10_excl_simple_pct": -17.2325,
+    "top10_excl_compound_pct": -15.9673,
+    "runners_3pct": 3,
+    "profit_days": 5,
+    "loss_days": 5
+   },
+   "F": {
+    "trades": 29,
+    "per_day": 2.9,
+    "win_rate_pct": 48.28,
+    "simple_pct": 7.4171,
+    "compound_pct": 7.0996,
+    "avg_pct": 0.2558,
+    "pf": 1.4152,
+    "mdd_pct": -6.7296,
+    "top10_excl_simple_pct": -16.8902,
+    "top10_excl_compound_pct": -15.6797,
+    "runners_3pct": 3,
+    "profit_days": 5,
+    "loss_days": 5
+   },
+   "runner_preserve": {
+    "E": 100.0,
+    "F": 100.0
+   }
+  },
+  "FULL30": {
+   "A": {
+    "trades": 65,
+    "per_day": 2.167,
+    "win_rate_pct": 50.77,
+    "simple_pct": 20.164,
+    "compound_pct": 19.8165,
+    "avg_pct": 0.3102,
+    "pf": 1.3682,
+    "mdd_pct": -9.8086,
+    "top10_excl_simple_pct": -23.0347,
+    "top10_excl_compound_pct": -21.4808,
+    "runners_3pct": 8,
+    "profit_days": 16,
+    "loss_days": 13
+   },
+   "E": {
+    "trades": 65,
+    "per_day": 2.167,
+    "win_rate_pct": 50.77,
+    "simple_pct": 24.3611,
+    "compound_pct": 24.9322,
+    "avg_pct": 0.3748,
+    "pf": 1.4614,
+    "mdd_pct": -8.8416,
+    "top10_excl_simple_pct": -19.5257,
+    "top10_excl_compound_pct": -18.6724,
+    "runners_3pct": 10,
+    "profit_days": 16,
+    "loss_days": 13
+   },
+   "F": {
+    "trades": 78,
+    "per_day": 2.6,
+    "win_rate_pct": 51.28,
+    "simple_pct": 35.5101,
+    "compound_pct": 39.2049,
+    "avg_pct": 0.4553,
+    "pf": 1.59,
+    "mdd_pct": -7.8392,
+    "top10_excl_simple_pct": -8.9405,
+    "top10_excl_compound_pct": -9.874,
+    "runners_3pct": 14,
+    "profit_days": 18,
+    "loss_days": 12
+   },
+   "runner_preserve": {
+    "E": 100.0,
+    "F": 100.0
+   }
+  }
+ },
+ "reference_60d": {
+  "A": {
+   "trades": 131,
+   "per_day": 2.183,
+   "win_rate_pct": 51.15,
+   "simple_pct": 62.7424,
+   "compound_pct": 79.1047,
+   "avg_pct": 0.4789,
+   "pf": 1.5722,
+   "mdd_pct": -10.2359,
+   "top10_excl_simple_pct": 11.6869,
+   "top10_excl_compound_pct": 8.8609,
+   "runners_3pct": 20,
+   "profit_days": 33,
+   "loss_days": 25
+  },
+  "E": {
+   "trades": 131,
+   "per_day": 2.183,
+   "win_rate_pct": 50.38,
+   "simple_pct": 62.1498,
+   "compound_pct": 78.3417,
+   "avg_pct": 0.4744,
+   "pf": 1.5813,
+   "mdd_pct": -10.2359,
+   "top10_excl_simple_pct": 11.5453,
+   "top10_excl_compound_pct": 8.8641,
+   "runners_3pct": 24,
+   "profit_days": 34,
+   "loss_days": 24
+  },
+  "F": {
+   "trades": 151,
+   "per_day": 2.517,
+   "win_rate_pct": 50.33,
+   "simple_pct": 75.801,
+   "compound_pct": 103.5125,
+   "avg_pct": 0.502,
+   "pf": 1.6394,
+   "mdd_pct": -10.2359,
+   "top10_excl_simple_pct": 25.1965,
+   "top10_excl_compound_pct": 24.229,
+   "runners_3pct": 29,
+   "profit_days": 37,
+   "loss_days": 23
+  }
+ },
+ "verdicts": {
+  "E": {
+   "oos10": true,
+   "full30": true,
+   "adopt": true
+  },
+  "F": {
+   "oos10": true,
+   "full30": true,
+   "adopt": true
+  }
+ },
+ "f_gate_fired": 0,
+ "entry_set_identical_A_E": true
+}
