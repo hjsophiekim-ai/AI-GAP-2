@@ -673,6 +673,16 @@ class RuntimeState:
     last_tw2_3slot_slot_number: Optional[int] = None
     last_tw2_3slot_session: Optional[str] = None
 
+    # TWF 3-SLOT (2026-09-07) — TW2 3-SLOT 과 진입 로직이 완전히 동일한
+    # 자매 전략. 위 tw2_3slot_* 슬롯/후보/진단 필드를 **그대로 공유**하며
+    # (두 토글은 상호배타라 동시에 살아 있을 수 없다) 갈라지는 것은
+    # time_window_3slot.exit_overrides 가 주는 청산 임계값 3개뿐이다.
+    # 그래서 새 슬롯 카운터/후보 필드를 하나도 추가하지 않는다.
+    time_window_twf_filter_enabled: bool = False
+    time_window_twf_filter_enabled_at: Optional[str] = None
+    time_window_twf_filter_enabled_by: Optional[str] = None
+    time_window_twf_filter_version: str = ""
+
     # 조기익절 필터 (2026-09-03 사용자 요청) — TW2 3-SLOT 전용으로 따로 켜고 끄는
     # risk-management 단계 서브필터. 진입/슬롯/T+3/TW2/TEGv2 로직과는 무관하며
     # (app/trading/macd2/early_take_profit.py 참고), MACD2의 기존 무관한

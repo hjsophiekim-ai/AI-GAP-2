@@ -780,75 +780,114 @@ with _qp_cols[1]:
     else:
         st.caption(f"퀵 Profit 익절={'ON' if state.quick_profit_enabled else 'OFF'} · 문턱=+{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%")
 
-_teg_cols = st.columns([1.4, 1.6])
-with _teg_cols[0]:
-    _teg_on = st.checkbox(
-        "+TEGv2",
-        value=bool(getattr(state, "time_window_teg_filter_enabled", False)),
-        key="macd2_time_window_teg_filter_toggle",
-        disabled=not bool(getattr(state, "time_window_2_filter_enabled", False)),
-        help=(
-            "TW2와 완전히 동일한 T+3 재확인/품질점수/시간대/VWAP veto/최근크로스 veto 게이트+포지션관리 래더를 그대로 "
-            "쓰되, 기존 TW2 하루 3회 진입한도 때문에만 거절된 후보에 한해 하루 1회 Trend Establishment Gate v2(TEGv2) 검증을 "
-            "추가로 통과하면 한도를 넘어서도 진입합니다(무제한 아님, 하루 정확히 1회). TEGv2는 최근30분크로스<=1/MACD갭·"
-            "EMA10-20스프레드 signed 순증가/가격-EMA스택 정렬/세션VWAP 유리한 쪽/직전반대플래그 9분 이상 경과를 모두 "
-            "요구합니다. 2026-06-01~08-26 60거래일 TRAIN(40일, 임계값 보정용)/OOS(20일, 미사용) 분할검증에서 OOS 4개 "
-            "지표(거래수/총수익/복리/MDD) 전부 개선 확인. TW2의 선택형 보조필터이며 +1 DOWN_BLUE와 독립적으로 켤 수 있습니다. 기본 OFF."
-        ),
-    )
-with _teg_cols[1]:
-    if bool(_teg_on) != bool(getattr(state, "time_window_teg_filter_enabled", False)):
-        res = service.set_time_window_teg_filter_enabled(bool(_teg_on), changed_by="ui")
-        if res.get("ok"):
-            st.caption(f"+TEGv2 → {'ON' if _teg_on else 'OFF'}")
-            st.rerun()
-    else:
-        st.caption(
-            f"+TEGv2={'ON' if state.time_window_teg_filter_enabled else 'OFF'} · "
-            f"오전 진입 {int(getattr(state, 'time_window_morning_entry_count', 0) or 0)}/{macd2_config.MAX_MORNING_ENTRIES} · "
-            f"오후 진입 {int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)}/{macd2_config.MAX_AFTERNOON_ENTRIES} · "
-            f"오늘 추가진입 사용={'Y' if getattr(state, 'time_window_teg_count_cap_bypass_used', False) else '-'} · "
-            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
-            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+# ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
+# 사용자 노출 전략을 TW2 3-SLOT / TWF 3-SLOT 두 개로 정리하면서 감췄다.
+# 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_TW2_TOGGLES=1 이면
+# 아래 블록이 예전과 똑같이 다시 렌더된다(service/worker 경로는 무관하게 상시 유지).
+if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
+    _teg_cols = st.columns([1.4, 1.6])
+    with _teg_cols[0]:
+        _teg_on = st.checkbox(
+            "+TEGv2",
+            value=bool(getattr(state, "time_window_teg_filter_enabled", False)),
+            key="macd2_time_window_teg_filter_toggle",
+            disabled=not bool(getattr(state, "time_window_2_filter_enabled", False)),
+            help=(
+                "TW2와 완전히 동일한 T+3 재확인/품질점수/시간대/VWAP veto/최근크로스 veto 게이트+포지션관리 래더를 그대로 "
+                "쓰되, 기존 TW2 하루 3회 진입한도 때문에만 거절된 후보에 한해 하루 1회 Trend Establishment Gate v2(TEGv2) 검증을 "
+                "추가로 통과하면 한도를 넘어서도 진입합니다(무제한 아님, 하루 정확히 1회). TEGv2는 최근30분크로스<=1/MACD갭·"
+                "EMA10-20스프레드 signed 순증가/가격-EMA스택 정렬/세션VWAP 유리한 쪽/직전반대플래그 9분 이상 경과를 모두 "
+                "요구합니다. 2026-06-01~08-26 60거래일 TRAIN(40일, 임계값 보정용)/OOS(20일, 미사용) 분할검증에서 OOS 4개 "
+                "지표(거래수/총수익/복리/MDD) 전부 개선 확인. TW2의 선택형 보조필터이며 +1 DOWN_BLUE와 독립적으로 켤 수 있습니다. 기본 OFF."
+            ),
         )
-        if getattr(state, "last_time_window_teg_candidate_at", None):
+    with _teg_cols[1]:
+        if bool(_teg_on) != bool(getattr(state, "time_window_teg_filter_enabled", False)):
+            res = service.set_time_window_teg_filter_enabled(bool(_teg_on), changed_by="ui")
+            if res.get("ok"):
+                _sync_tier_toggle_widgets(res, skip="macd2_time_window_teg_filter_toggle")
+                st.caption(f"+TEGv2 → {'ON' if _teg_on else 'OFF'}")
+                st.rerun()
+        else:
             st.caption(
-                "최근 TEGv2 후보: "
-                f"{'승인' if getattr(state, 'last_time_window_teg_approved', False) else '거절'} · "
-                f"사유={', '.join(getattr(state, 'last_time_window_teg_reject_reasons', []) or ['-'])}"
+                f"+TEGv2={'ON' if state.time_window_teg_filter_enabled else 'OFF'} · "
+                f"오전 진입 {int(getattr(state, 'time_window_morning_entry_count', 0) or 0)}/{macd2_config.MAX_MORNING_ENTRIES} · "
+                f"오후 진입 {int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)}/{macd2_config.MAX_AFTERNOON_ENTRIES} · "
+                f"오늘 추가진입 사용={'Y' if getattr(state, 'time_window_teg_count_cap_bypass_used', False) else '-'} · "
+                f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+                + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
             )
+            if getattr(state, "last_time_window_teg_candidate_at", None):
+                st.caption(
+                    "최근 TEGv2 후보: "
+                    f"{'승인' if getattr(state, 'last_time_window_teg_approved', False) else '거절'} · "
+                    f"사유={', '.join(getattr(state, 'last_time_window_teg_reject_reasons', []) or ['-'])}"
+                )
 
-_tw2_cols = st.columns([1.4, 1.6])
-with _tw2_cols[0]:
-    _tw2_on = st.checkbox(
-        "시간대별 최적거래 필터 (TW2)",
-        value=bool(getattr(state, "time_window_2_filter_enabled", False)),
-        key="macd2_time_window_2_filter_toggle",
-        help=(
-            "TW1과 완전히 동일한 T+3 재확인/품질점수/시간대/최대진입횟수 게이트+포지션관리 래더를 그대로 쓰되, "
-            "진입 시점에 두 가지 veto를 추가로 검사합니다: ① 확정봉 종가가 진입방향 기준 세션 VWAP보다 "
-            f"{abs(macd2_config.TW2_VWAP_VETO_THRESHOLD_PCT):.1f}% 이상 불리한 쪽이면 스킵, ② 최근 "
-            f"{macd2_config.TW2_RECENT_CROSS_LOOKBACK_MINUTES}분 안에 확정 크로스오버가 "
-            f"{macd2_config.TW2_RECENT_CROSS_VETO_COUNT}회 이상이면(휩쏘 구간) 스킵. 통과한 진입은 TP2만 "
-            f"+{macd2_config.MORNING_TP2*100:.1f}%→+{macd2_config.TW2_MORNING_TP2*100:.1f}%로 올립니다. "
-            "2026-07-10~08-21 연속 29거래일, 앞 19일에서 찾은 임계값을 뒤 10일 OOS에서 재튜닝 없이 재검증 "
-            "(복리 +24.5%→+35.7%, MDD 6.8%→5.2%). 기본 ON. +TEGv2와 +1 DOWN_BLUE는 독립 선택형 보조필터입니다."
-        ),
-    )
-with _tw2_cols[1]:
-    if bool(_tw2_on) != bool(getattr(state, "time_window_2_filter_enabled", False)):
-        res = service.set_time_window_2_filter_enabled(bool(_tw2_on), changed_by="ui")
-        if res.get("ok"):
-            st.caption(f"시간대별 최적거래 필터 (TW2) → {'ON' if _tw2_on else 'OFF'}")
-            st.rerun()
-    else:
-        st.caption(
-            f"TW2={'ON' if state.time_window_2_filter_enabled else 'OFF'} · "
-            f"오전 진입 {int(getattr(state, 'time_window_morning_entry_count', 0) or 0)}/{macd2_config.MAX_MORNING_ENTRIES} · "
-            f"오후 진입 {int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)}/{macd2_config.MAX_AFTERNOON_ENTRIES} · "
-            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
-            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+# ── 상호배타 tier 토글 위젯 동기화 (2026-09-07) ─────────────────────────────
+# TW2 / +TEGv2 / TW2 3-SLOT / TWF 3-SLOT 은 서로를 끈다. 하나를 켜면 서버쪽
+# 상태에서 나머지가 꺼지는데, 체크박스 **위젯** 상태는 그대로 True 로 남는다.
+# 그러면 st.rerun() 직후 그 토글이 "위젯 True vs 상태 False" 를 자기 변경으로
+# 착각해 스스로를 다시 켜고, 방금 켠 토글을 도로 끈다(ping-pong). 그래서 setter
+# 가 성공하면 **방금 만진 것 말고 나머지** 위젯 상태를 서버가 돌려준 실제 값으로
+# 맞춘 뒤 rerun 한다. 판단 로직이 아니라 위젯 상태 정리다.
+_TIER_TOGGLE_WIDGETS = {
+    "macd2_time_window_2_filter_toggle": "time_window_2_filter_enabled",
+    "macd2_time_window_teg_filter_toggle": "time_window_teg_filter_enabled",
+    "macd2_time_window_3slot_filter_toggle": "time_window_3slot_filter_enabled",
+    "macd2_time_window_twf_filter_toggle": "time_window_twf_filter_enabled",
+}
+
+
+def _sync_tier_toggle_widgets(res: dict, *, skip: str) -> None:
+    # 이미 렌더된 위젯의 session_state 에 **대입**하면 Streamlit 이
+    # "cannot be modified after the widget is instantiated" 로 막는다.
+    # 대신 키를 지운다 -- 다음 rerun 에서 체크박스가 value=(실제 상태) 로
+    # 다시 초기화되므로 stale 위젯이 스스로를 되켜는 일이 없어진다.
+    for _wkey, _field in _TIER_TOGGLE_WIDGETS.items():
+        if _wkey == skip or _field not in res:
+            continue
+        if bool(st.session_state.get(_wkey, False)) != bool(res[_field]):
+            st.session_state.pop(_wkey, None)
+
+
+# ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
+# 사용자 노출 전략을 TW2 3-SLOT / TWF 3-SLOT 두 개로 정리하면서 감췄다.
+# 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_TW2_TOGGLES=1 이면
+# 아래 블록이 예전과 똑같이 다시 렌더된다(service/worker 경로는 무관하게 상시 유지).
+if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
+    _tw2_cols = st.columns([1.4, 1.6])
+    with _tw2_cols[0]:
+        _tw2_on = st.checkbox(
+            "시간대별 최적거래 필터 (TW2)",
+            value=bool(getattr(state, "time_window_2_filter_enabled", False)),
+            key="macd2_time_window_2_filter_toggle",
+            help=(
+                "TW1과 완전히 동일한 T+3 재확인/품질점수/시간대/최대진입횟수 게이트+포지션관리 래더를 그대로 쓰되, "
+                "진입 시점에 두 가지 veto를 추가로 검사합니다: ① 확정봉 종가가 진입방향 기준 세션 VWAP보다 "
+                f"{abs(macd2_config.TW2_VWAP_VETO_THRESHOLD_PCT):.1f}% 이상 불리한 쪽이면 스킵, ② 최근 "
+                f"{macd2_config.TW2_RECENT_CROSS_LOOKBACK_MINUTES}분 안에 확정 크로스오버가 "
+                f"{macd2_config.TW2_RECENT_CROSS_VETO_COUNT}회 이상이면(휩쏘 구간) 스킵. 통과한 진입은 TP2만 "
+                f"+{macd2_config.MORNING_TP2*100:.1f}%→+{macd2_config.TW2_MORNING_TP2*100:.1f}%로 올립니다. "
+                "2026-07-10~08-21 연속 29거래일, 앞 19일에서 찾은 임계값을 뒤 10일 OOS에서 재튜닝 없이 재검증 "
+                "(복리 +24.5%→+35.7%, MDD 6.8%→5.2%). 기본 ON. +TEGv2와 +1 DOWN_BLUE는 독립 선택형 보조필터입니다."
+            ),
         )
+    with _tw2_cols[1]:
+        if bool(_tw2_on) != bool(getattr(state, "time_window_2_filter_enabled", False)):
+            res = service.set_time_window_2_filter_enabled(bool(_tw2_on), changed_by="ui")
+            if res.get("ok"):
+                _sync_tier_toggle_widgets(res, skip="macd2_time_window_2_filter_toggle")
+                st.caption(f"시간대별 최적거래 필터 (TW2) → {'ON' if _tw2_on else 'OFF'}")
+                st.rerun()
+        else:
+            st.caption(
+                f"TW2={'ON' if state.time_window_2_filter_enabled else 'OFF'} · "
+                f"오전 진입 {int(getattr(state, 'time_window_morning_entry_count', 0) or 0)}/{macd2_config.MAX_MORNING_ENTRIES} · "
+                f"오후 진입 {int(getattr(state, 'time_window_afternoon_entry_count', 0) or 0)}/{macd2_config.MAX_AFTERNOON_ENTRIES} · "
+                f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+                + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+            )
 
 _3slot_cols = st.columns([1.4, 1.6])
 with _3slot_cols[0]:
@@ -871,6 +910,7 @@ with _3slot_cols[1]:
     if bool(_3slot_on) != bool(getattr(state, "time_window_3slot_filter_enabled", False)):
         res = service.set_time_window_3slot_filter_enabled(bool(_3slot_on), changed_by="ui")
         if res.get("ok"):
+            _sync_tier_toggle_widgets(res, skip="macd2_time_window_3slot_filter_toggle")
             st.caption(f"TW2 3-SLOT → {'ON' if _3slot_on else 'OFF'}")
             st.rerun()
     else:
@@ -889,13 +929,60 @@ with _3slot_cols[1]:
                 f"사유={getattr(state, 'last_tw2_3slot_block_reason', None) or '-'}"
             )
 
-# ── 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03) ────────────────────
+# ── TWF 3-SLOT (2026-09-07) ────────────────────────────────────────────────
+# TW2 3-SLOT 과 **진입 로직이 완전히 동일한** 자매 전략(같은 판정 경로/같은
+# 슬롯 카운터를 그대로 쓴다). 다른 것은 청산 임계값 3개뿐이다.
+_twf_cols = st.columns([1.4, 1.6])
+with _twf_cols[0]:
+    _twf_on = st.checkbox(
+        "TWF 3-SLOT",
+        value=bool(getattr(state, "time_window_twf_filter_enabled", False)),
+        key="macd2_time_window_twf_filter_toggle",
+        help=(
+            "TW2 3-SLOT 과 진입이 100% 같은 자매 전략입니다 — MACD zero-cross/T+3 재확인/TW2 veto/슬롯 배분/"
+            "Trend Quality/TEGv2/휩쏘-내성 반대신호청산이 전부 동일하고, 하루 신규진입 3회 상한과 '오전에 남은 "
+            "슬롯만 13:00~14:50 에 사용, 오전 3회 소진 시 오후 진입 없음' 규칙도 그대로입니다(그 규칙은 원래 "
+            "TW2 3-SLOT 이 이미 하던 동작입니다). "
+            "**다른 것은 청산 임계값 3개뿐입니다**: 오전 손절 "
+            f"-1.7% → -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}%, TP1 이후 잔량 스탑 +0.3% → "
+            f"+{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}%, 오후 TP +2.5% → "
+            f"+{macd2_config.TWF_AFTERNOON_TP * 100:.1f}%. TP1/분할비율/TP2/trailing/조기익절은 TW2 3-SLOT 과 동일합니다. "
+            "검증(faithful-fill 체결모델, 최근 30영업일 20260722~20260904, 진입 78건이 TW2 3-SLOT 과 전부 동일): "
+            "복리 +31.22%→+39.21%, PF 1.4752→1.5900, MDD -8.65%→-7.84%, 승률 51.28% 동일, +3% 러너 보존 100%. "
+            "단 60영업일 참고구간에서는 오전 손절 -1.4% 가 20260625 한 거래(TP2 +5.15% 였던 것)를 끊어 총수익이 "
+            "소폭 열위였습니다 — 그 리스크를 알고 켜세요. "
+            "TW2/+TEGv2/TW2 3-SLOT 과 동시에 켤 수 없습니다(넷 중 하나만). 기본 OFF."
+        ),
+    )
+with _twf_cols[1]:
+    if bool(_twf_on) != bool(getattr(state, "time_window_twf_filter_enabled", False)):
+        res = service.set_time_window_twf_filter_enabled(bool(_twf_on), changed_by="ui")
+        if res.get("ok"):
+            _sync_tier_toggle_widgets(res, skip="macd2_time_window_twf_filter_toggle")
+            st.caption(f"TWF 3-SLOT → {'ON' if _twf_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"TWF 3-SLOT={'ON' if state.time_window_twf_filter_enabled else 'OFF'} · "
+            f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
+            f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
+            f"청산 SL -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}% / TP1후 +{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}% / 오후TP +{macd2_config.TWF_AFTERNOON_TP * 100:.1f}% · "
+            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+        )
+
+# ── 조기익절 필터 (TW2 3-SLOT / TWF 3-SLOT 공통 서브필터, 2026-09-03) ───────
 # TW2 3-SLOT이 꺼지면 service.set_time_window_3slot_filter_enabled가 이 토글을
 # 강제로 끈다. 위젯 key가 session_state에 남아 있으면 다음 rerun에서 체크박스가
 # 여전히 True로 읽혀 켜려는 요청이 한 번 더 나가므로(그러면 서비스가
 # TW2_3SLOT_REQUIRED로 거절하고 경고만 뜬다), 의존필터가 꺼진 상태에서는 위젯
 # 상태도 함께 내려 UI와 실제 상태가 어긋나지 않게 한다.
-_3slot_live = bool(getattr(state, "time_window_3slot_filter_enabled", False))
+# 2026-09-07: 조기익절은 TW2 3-SLOT / TWF 3-SLOT 공통 서브필터다 — 둘 중
+# 하나라도 켜져 있으면 사용할 수 있고, 각 전략에서 독립적으로 ON/OFF 된다.
+_3slot_live = bool(
+    getattr(state, "time_window_3slot_filter_enabled", False)
+    or getattr(state, "time_window_twf_filter_enabled", False)
+)
 if not _3slot_live and st.session_state.get("macd2_early_tp_toggle"):
     st.session_state["macd2_early_tp_toggle"] = False
 
@@ -907,7 +994,7 @@ with _early_tp_cols[0]:
         key="macd2_early_tp_toggle",
         disabled=not _3slot_live,
         help=(
-            "TW2 3-SLOT 전용 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
+            "TW2 3-SLOT / TWF 3-SLOT 공통 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
             "전혀 건드리지 않고, 이미 보유 중인 포지션에만 하방 보호선을 하나 더 얹습니다(매도만 가능). "
             "① 진입이 체결된 확정봉을 CHOP/TREND로 분류해 그 포지션에 고정 저장합니다(최근30분 확정 "
             "zero-cross 횟수 / EMA10-20 스프레드 확대 실패 / EMA20 기울기 진입방향 아님 / 종가-세션VWAP "
@@ -924,13 +1011,13 @@ with _early_tp_cols[0]:
             "발동은 5건(OOS 2건)뿐입니다 — 손실→플러스 전환 2건, +3~6% 러너 훼손 0건으로 방향은 일관되고 "
             "러너를 훼손할 수 없는 구조지만, 통계적으로 확정된 개선은 아닌 저빈도·저하방 가드로 보셔야 합니다. "
             "참고로 30분 창이 필요해 09:15 이전 진입은 구조적으로 CHOP 판정이 불가능해 TREND(=미적용)로 "
-            "떨어집니다. TW2 3-SLOT이 꺼지면 자동으로 함께 비활성화됩니다. 기본 OFF. "
+            "떨어집니다. TW2 3-SLOT과 TWF 3-SLOT이 둘 다 꺼지면 자동으로 함께 비활성화됩니다. 기본 OFF. "
             "(MACD2의 기존 PROFIT_LOCK 기능과는 완전히 무관한 별개 필터입니다.)"
         ),
     )
 with _early_tp_cols[1]:
     if not _3slot_live:
-        st.caption("조기익절 필터=OFF · TW2 3-SLOT을 켜야 사용할 수 있습니다(자동 비활성화)")
+        st.caption("조기익절 필터=OFF · TW2 3-SLOT 또는 TWF 3-SLOT을 켜야 사용할 수 있습니다(자동 비활성화)")
     elif bool(_early_tp_on) != bool(getattr(state, "early_tp_filter_enabled", False)):
         res = service.set_early_tp_filter_enabled(bool(_early_tp_on), changed_by="ui")
         if res.get("ok"):
@@ -939,7 +1026,7 @@ with _early_tp_cols[1]:
         else:
             st.warning(
                 "조기익절 필터를 켤 수 없습니다: "
-                + ("TW2 3-SLOT이 켜져 있어야 합니다."
+                + ("TW2 3-SLOT 또는 TWF 3-SLOT이 켜져 있어야 합니다."
                    if res.get("reason") == "TW2_3SLOT_REQUIRED" else str(res.get("reason") or "알 수 없는 사유"))
             )
     else:
@@ -967,30 +1054,35 @@ with _early_tp_cols[1]:
                 f"최근 발동={_hhmmss(getattr(state, 'last_early_tp_fired_at', None)) or '-'}"
             )
 
-_dbe_cols = st.columns([1.4, 1.6])
-with _dbe_cols[0]:
-    _dbe_on = st.checkbox(
-        "+1 DOWN_BLUE",
-        value=bool(getattr(state, "down_blue_exception_filter_enabled", False)),
-        key="macd2_down_blue_exception_toggle",
-        disabled=not bool(state.time_window_2_filter_enabled),
-        help=(
-            "TW2가 거절한 DOWN_BLUE 플래그 중, 다른 조건 없이 하루 최대 1회만 추가로 "
-            "진입합니다. 56거래일 TRAIN/VAL/OOS 백테스트에서 조건 없이 그대로 허용하는 쪽이 세 구간 모두 일관되게 "
-            "개선되어 채택됨(연쇄복리 69.3%→105.3%). 둘 다 꺼져있으면 효과 없음. 기본 OFF."
-        ),
-    )
-with _dbe_cols[1]:
-    if bool(_dbe_on) != bool(getattr(state, "down_blue_exception_filter_enabled", False)):
-        res = service.set_down_blue_exception_filter_enabled(bool(_dbe_on), changed_by="ui")
-        if res.get("ok"):
-            st.caption(f"+1 DOWN_BLUE → {'ON' if _dbe_on else 'OFF'}")
-            st.rerun()
-    else:
-        st.caption(
-            f"+1 DOWN_BLUE={'ON' if state.down_blue_exception_filter_enabled else 'OFF'} · "
-            f"오늘 사용={'Y' if getattr(state, 'daily_down_blue_exception_used', False) else '-'}"
+# ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
+# 사용자 노출 전략을 TW2 3-SLOT / TWF 3-SLOT 두 개로 정리하면서 감췄다.
+# 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_TW2_TOGGLES=1 이면
+# 아래 블록이 예전과 똑같이 다시 렌더된다(service/worker 경로는 무관하게 상시 유지).
+if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
+    _dbe_cols = st.columns([1.4, 1.6])
+    with _dbe_cols[0]:
+        _dbe_on = st.checkbox(
+            "+1 DOWN_BLUE",
+            value=bool(getattr(state, "down_blue_exception_filter_enabled", False)),
+            key="macd2_down_blue_exception_toggle",
+            disabled=not bool(state.time_window_2_filter_enabled),
+            help=(
+                "TW2가 거절한 DOWN_BLUE 플래그 중, 다른 조건 없이 하루 최대 1회만 추가로 "
+                "진입합니다. 56거래일 TRAIN/VAL/OOS 백테스트에서 조건 없이 그대로 허용하는 쪽이 세 구간 모두 일관되게 "
+                "개선되어 채택됨(연쇄복리 69.3%→105.3%). 둘 다 꺼져있으면 효과 없음. 기본 OFF."
+            ),
         )
+    with _dbe_cols[1]:
+        if bool(_dbe_on) != bool(getattr(state, "down_blue_exception_filter_enabled", False)):
+            res = service.set_down_blue_exception_filter_enabled(bool(_dbe_on), changed_by="ui")
+            if res.get("ok"):
+                st.caption(f"+1 DOWN_BLUE → {'ON' if _dbe_on else 'OFF'}")
+                st.rerun()
+        else:
+            st.caption(
+                f"+1 DOWN_BLUE={'ON' if state.down_blue_exception_filter_enabled else 'OFF'} · "
+                f"오늘 사용={'Y' if getattr(state, 'daily_down_blue_exception_used', False) else '-'}"
+            )
 
 _nf_cols = st.columns([1.4, 1.6])
 with _nf_cols[0]:

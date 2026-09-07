@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
+from app.trading.macd2 import time_window_3slot
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, RuntimeStatus, SignalState
@@ -621,6 +622,14 @@ class Macd2Service:
             abandon_pending_tw2_3slot_candidate_if_any(
                 state, datetime.now(KST), reason="TW2_3SLOT_DISABLED_BY_TEG_ENABLE",
             )
+        if enabled_bool and state.time_window_twf_filter_enabled:
+            # TWF 3-SLOT (2026-09-07) 도 같은 우선순위 tier -- 4-way 상호배제.
+            state.time_window_twf_filter_enabled = False
+            state.time_window_twf_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_twf_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="TWF_3SLOT_DISABLED_BY_OTHER_MODE_ENABLE",
+            )
         state_store.save_state(state)
         return {
             "ok": True,
@@ -631,6 +640,7 @@ class Macd2Service:
             "time_window_teg_filter_version": state.time_window_teg_filter_version,
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
         }
 
     def set_time_window_2_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
@@ -659,6 +669,14 @@ class Macd2Service:
             abandon_pending_tw2_3slot_candidate_if_any(
                 state, datetime.now(KST), reason="TW2_3SLOT_DISABLED_BY_TW2_ENABLE",
             )
+        if enabled_bool and state.time_window_twf_filter_enabled:
+            # TWF 3-SLOT (2026-09-07) 도 같은 우선순위 tier -- 4-way 상호배제.
+            state.time_window_twf_filter_enabled = False
+            state.time_window_twf_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_twf_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="TWF_3SLOT_DISABLED_BY_OTHER_MODE_ENABLE",
+            )
         if not enabled_bool:
             # 2026-08-28 real incident fix: turning TW2 off (which also forces
             # TEG off, above) used to leave an already-pending T+3 candidate
@@ -681,6 +699,7 @@ class Macd2Service:
             "time_window_2_filter_version": state.time_window_2_filter_version,
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
         }
 
     def set_time_window_3slot_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
@@ -703,6 +722,11 @@ class Macd2Service:
         state.time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
         state.time_window_3slot_filter_enabled_at = datetime.now(KST).isoformat()
         state.time_window_3slot_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and state.time_window_twf_filter_enabled:
+            # TWF 3-SLOT 과도 상호배타 (같은 tier).
+            state.time_window_twf_filter_enabled = False
+            state.time_window_twf_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_twf_filter_enabled_by = str(changed_by or "ui")
         if enabled_bool and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
             state.time_window_2_filter_enabled = False
             state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
@@ -724,7 +748,9 @@ class Macd2Service:
             # 경로에서도 early_take_profit.is_enabled/is_active가 두 토글을
             # AND로 요구하므로 상태가 어긋나도 발동 자체가 불가능하지만, UI에
             # "켜져 있는데 절대 안 걸리는 필터"가 남아 보이는 것을 막는다.)
-            if state.early_tp_filter_enabled:
+            # 2026-09-07: 조기익절은 TW2 3-SLOT / TWF 3-SLOT 공통 서브필터가
+            # 됐으므로, 이쪽을 끄더라도 TWF 가 켜져 있으면 그대로 살려 둔다.
+            if state.early_tp_filter_enabled and not state.time_window_twf_filter_enabled:
                 state.early_tp_filter_enabled = False
                 state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
                 state.early_tp_filter_enabled_by = "AUTO_TW2_3SLOT_DISABLED"
@@ -738,6 +764,72 @@ class Macd2Service:
             "time_window_3slot_filter_version": state.time_window_3slot_filter_version,
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+            "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
+        }
+
+    def set_time_window_twf_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle TWF 3-SLOT (2026-09-07 사용자 요청) -- a FOURTH,
+        separately selectable time-window mode in the same priority tier as
+        TW2 / TEGv2 / TW2 3-SLOT (enabling this forces those three off; each of
+        those forces this off in its own setter).
+
+        **진입 로직은 TW2 3-SLOT 과 완전히 동일하다** -- worker 의 같은
+        _judge_tw2_3slot_flag / _resolve_tw2_3slot_candidate 경로를 그대로 타고,
+        같은 tw2_3slot_* 슬롯 카운터/후보 필드를 쓰며, 하루 3회 cap 과
+        "오전에 남은 슬롯만 13:00~14:50 에 사용" 규칙도 TW2 3-SLOT 이 이미
+        하던 그대로다(worker._resolve_tw2_3slot_candidate_body 의
+        window_blocked_by_morning_only 분기). 다른 것은 청산 임계값 3개뿐이며
+        (time_window_3slot.exit_overrides: 오전손절 -1.4% / TP1이후 잔량 stop
+        +2.0% / 오후 TP +3.0%) 그것도 time_window_position_manager 에 override
+        인자로만 전달되므로 TW2 3-SLOT 과 MU_MACD 의 동작은 조금도 바뀌지 않는다.
+
+        조기익절 필터는 이 전략에 하드코딩돼 있지 않다 -- TW2 3-SLOT 과 공유하는
+        별도 토글이고 여기서도 독립적으로 ON/OFF 된다. 기본 OFF
+        (config.TWF_3SLOT_FILTER_DEFAULT). 상태만 갱신하고 주문을 내지 않는다.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.time_window_twf_filter_enabled)
+        state.time_window_twf_filter_enabled = enabled_bool
+        state.time_window_twf_filter_version = config.TWF_3SLOT_FILTER_VERSION
+        state.time_window_twf_filter_enabled_at = datetime.now(KST).isoformat()
+        state.time_window_twf_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
+            state.time_window_2_filter_enabled = False
+            state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_2_filter_enabled_by = str(changed_by or "ui")
+            state.time_window_teg_filter_enabled = False
+            state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_time_window_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_DISABLED_BY_TWF_3SLOT_ENABLE",
+            )
+        if enabled_bool and state.time_window_3slot_filter_enabled:
+            state.time_window_3slot_filter_enabled = False
+            state.time_window_3slot_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_3slot_filter_enabled_by = str(changed_by or "ui")
+        if not enabled_bool:
+            # 두 3-SLOT 모드가 같은 pending 필드를 공유하므로, 끌 때도 TW2
+            # 3-SLOT 과 완전히 같은 고아 후보 정리를 한다.
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="TWF_3SLOT_DISABLED_BY_USER",
+            )
+            if state.early_tp_filter_enabled and not state.time_window_3slot_filter_enabled:
+                state.early_tp_filter_enabled = False
+                state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
+                state.early_tp_filter_enabled_by = "AUTO_TWF_3SLOT_DISABLED"
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "time_window_twf_filter_enabled": enabled_bool,
+            "previous": prev,
+            "time_window_twf_filter_enabled_at": state.time_window_twf_filter_enabled_at,
+            "time_window_twf_filter_enabled_by": state.time_window_twf_filter_enabled_by,
+            "time_window_twf_filter_version": state.time_window_twf_filter_version,
+            "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
+            "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+            "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
             "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         }
 
@@ -764,12 +856,14 @@ class Macd2Service:
         state = state_store.load_state()
         enabled_bool = bool(enabled)
         prev = bool(state.early_tp_filter_enabled)
-        if enabled_bool and not state.time_window_3slot_filter_enabled:
+        if enabled_bool and not time_window_3slot.is_3slot_enabled(state):
+            # 2026-09-07: TW2 3-SLOT 또는 TWF 3-SLOT 중 하나면 된다.
             return {
                 "ok": False,
                 "reason": "TW2_3SLOT_REQUIRED",
                 "early_tp_filter_enabled": prev,
                 "time_window_3slot_filter_enabled": False,
+                "time_window_twf_filter_enabled": False,
             }
         state.early_tp_filter_enabled = enabled_bool
         state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
@@ -790,6 +884,7 @@ class Macd2Service:
             "early_tp_filter_enabled_by": state.early_tp_filter_enabled_by,
             "early_tp_filter_version": state.early_tp_filter_version,
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
             "early_tp_trigger_pct": float(config.EARLY_TP_TRIGGER_PCT),
             "early_tp_floor_pct": float(config.EARLY_TP_FLOOR_PCT),
         }

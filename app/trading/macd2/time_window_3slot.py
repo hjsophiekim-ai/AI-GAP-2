@@ -308,6 +308,56 @@ def resolve_slot(
     )
 
 
+# ── TWF 3-SLOT — 진입은 TW2 3-SLOT 과 동일, 청산 3개만 다름 (2026-09-07) ────
+MODE_TW2_3SLOT = "TW2_3SLOT"
+MODE_TWF_3SLOT = "TWF_3SLOT"
+#: ``state.time_window_active_mode`` 가 이 둘 중 하나면 "3-SLOT 계열"이다.
+#: 진입 경로(worker._judge_tw2_3slot_flag / _resolve_tw2_3slot_candidate),
+#: 슬롯 카운터(state.tw2_3slot_*), 원장 컬럼, signal_type 은 두 모드가 전부
+#: 공유한다 — 갈라지는 것은 ``exit_overrides`` 세 값뿐이다.
+MODES_3SLOT = (MODE_TW2_3SLOT, MODE_TWF_3SLOT)
+
+#: 두 토글이 동시에 켜지는 일은 service 의 상호배제가 막지만, 만에 하나
+#: 그런 상태가 들어와도 결정론적으로 TW2 3-SLOT 이 이긴다(기존 동작 보존).
+_MODE_BY_FLAG = (
+    ("time_window_3slot_filter_enabled", MODE_TW2_3SLOT),
+    ("time_window_twf_filter_enabled", MODE_TWF_3SLOT),
+)
+
+
+def active_3slot_mode(state) -> Optional[str]:
+    """켜져 있는 3-SLOT 계열 모드 이름, 없으면 None."""
+    for flag, mode in _MODE_BY_FLAG:
+        if bool(getattr(state, flag, False)):
+            return mode
+    return None
+
+
+def is_3slot_enabled(state) -> bool:
+    """TW2 3-SLOT 또는 TWF 3-SLOT 중 하나라도 켜져 있는가."""
+    return active_3slot_mode(state) is not None
+
+
+def exit_overrides(mode: Optional[str]) -> dict:
+    """``time_window_position_manager`` 에 넘길 override 3종.
+
+    TWF 3-SLOT 이 아니면 전부 ``None`` 이라 기존 모듈 상수가 그대로 쓰인다 —
+    TW2 3-SLOT / TW2 / TEGv2 / MU_MACD 동작은 이 함수 도입으로 조금도 바뀌지
+    않는다. 모듈 상수를 직접 갈아끼우지 않는 이유는 그 상수를 MU_MACD 가
+    같은 모듈에서 import 해 쓰기 때문이다(config.py MORNING_STOP_LOSS 주석)."""
+    if mode != MODE_TWF_3SLOT:
+        return {
+            "stop_loss_pct_override": None,
+            "after_tp1_stop_pct_override": None,
+            "afternoon_tp_pct_override": None,
+        }
+    return {
+        "stop_loss_pct_override": float(config.TWF_MORNING_STOP_LOSS) * 100.0,
+        "after_tp1_stop_pct_override": float(config.TWF_MORNING_AFTER_TP1_STOP) * 100.0,
+        "afternoon_tp_pct_override": float(config.TWF_AFTERNOON_TP) * 100.0,
+    }
+
+
 # ── Slot1 CHOP veto (2026-09-04) ────────────────────────────────────────────
 SLOT1_CHOP_VETO_SLOT_NUMBER = 1
 

@@ -77,26 +77,32 @@ def _set_3slot(enabled: bool) -> None:
     state_store.save_state(state)
 
 
-def test_toggle_renders_directly_below_the_tw2_3slot_toggle():
+def test_toggle_renders_directly_below_the_3slot_toggles():
+    """2026-09-07: TWF 3-SLOT 이 뒤에 추가되면서 조기익절은 두 3-SLOT 전략의
+    공통 서브필터가 됐다 -- 둘 바로 아래에 붙는다."""
     _set_3slot(True)
     at = _run(_fresh_app())
 
     labels = _labels(at)
     assert "TW2 3-SLOT" in labels, f"TW2 3-SLOT 토글을 찾지 못했다: {labels!r}"
+    assert "TWF 3-SLOT" in labels, f"TWF 3-SLOT 토글을 찾지 못했다: {labels!r}"
+    assert labels.index("TWF 3-SLOT") == labels.index("TW2 3-SLOT") + 1
     assert _LABEL in labels
-    assert labels.index(_LABEL) == labels.index("TW2 3-SLOT") + 1, (
-        f"조기익절 필터가 TW2 3-SLOT 바로 아래에 있지 않다: {labels!r}"
+    assert labels.index(_LABEL) == labels.index("TWF 3-SLOT") + 1, (
+        f"조기익절 필터가 3-SLOT 토글들 바로 아래에 있지 않다: {labels!r}"
     )
 
 
-def test_toggle_is_disabled_while_tw2_3slot_is_off():
+def test_toggle_is_disabled_while_both_3slot_modes_are_off():
+    """2026-09-07: 비활성 조건이 "TW2 3-SLOT OFF" 에서
+    "TW2 3-SLOT 과 TWF 3-SLOT 이 둘 다 OFF" 로 넓어졌다."""
     _set_3slot(False)
     at = _run(_fresh_app())
 
     cb = _toggle(at)
-    assert cb.disabled is True, "TW2 3-SLOT이 꺼져 있으면 토글이 비활성이어야 한다"
+    assert cb.disabled is True, "3-SLOT 전략이 둘 다 꺼져 있으면 토글이 비활성이어야 한다"
     assert cb.value is False
-    assert any("TW2 3-SLOT을 켜야" in c.value for c in at.caption), (
+    assert any("TWF 3-SLOT을 켜야" in c.value for c in at.caption), (
         f"자동 비활성 안내 캡션이 없다: {[c.value for c in at.caption]!r}"
     )
 

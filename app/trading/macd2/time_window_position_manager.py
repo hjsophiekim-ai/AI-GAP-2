@@ -51,6 +51,8 @@ class PositionManagementDecision:
 def evaluate_morning_position(
     *, net_return_pct: float, tp1_done: bool, peak_net_return: float = 0.0,
     tp2_pct_override: Optional[float] = None,
+    stop_loss_pct_override: Optional[float] = None,
+    after_tp1_stop_pct_override: Optional[float] = None,
 ) -> PositionManagementDecision:
     """§11-12 morning ladder.
 
@@ -65,6 +67,10 @@ def evaluate_morning_position(
       sell all remaining quantity.
     """
     tp2_pct = MORNING_TP2_PCT if tp2_pct_override is None else float(tp2_pct_override)
+    stop_loss_pct = (MORNING_STOP_LOSS_PCT if stop_loss_pct_override is None
+                     else float(stop_loss_pct_override))
+    after_tp1_stop_pct = (MORNING_AFTER_TP1_STOP_PCT if after_tp1_stop_pct_override is None
+                          else float(after_tp1_stop_pct_override))
     peak = max(float(peak_net_return), float(net_return_pct))
 
     if not tp1_done:
@@ -72,23 +78,30 @@ def evaluate_morning_position(
             return PositionManagementDecision(config.EXIT_TW_TP2_FULL, 1.0, True, peak, "TP2_DIRECT")
         if net_return_pct >= MORNING_TP1_PCT:
             return PositionManagementDecision(config.EXIT_TW_TP1_PARTIAL, MORNING_TP1_SELL_RATIO, True, peak, "TP1")
-        if net_return_pct <= MORNING_STOP_LOSS_PCT:
+        if net_return_pct <= stop_loss_pct:
             return PositionManagementDecision(config.EXIT_TW_STOP_LOSS, 1.0, False, peak, "STOP_LOSS")
         return PositionManagementDecision(None, 0.0, False, peak, "HOLD")
 
     if net_return_pct >= tp2_pct:
         return PositionManagementDecision(config.EXIT_TW_TP2_FULL, 1.0, True, peak, "TP2")
 
-    active_stop = MORNING_TRAILING_STOP_PCT if peak >= MORNING_TRAILING_TRIGGER_PCT else MORNING_AFTER_TP1_STOP_PCT
+    # 2026-09-07: 라벨/사유를 "값이 트레일링 스탑과 같은가"가 아니라 **어느
+    # 가지로 들어왔는가**로 고른다. 기존 기본값(after-TP1 +0.3 vs trailing
+    # +2.0)에서는 두 방식의 결과가 완전히 같아 동작 변화가 없고, TWF 3-SLOT
+    # 처럼 after-TP1 스탑을 트레일링 스탑과 같은 값(+2.0)으로 올리는
+    # override 에서만 라벨이 갈린다.
+    trailing_active = peak >= MORNING_TRAILING_TRIGGER_PCT
+    active_stop = MORNING_TRAILING_STOP_PCT if trailing_active else after_tp1_stop_pct
     if net_return_pct <= active_stop:
-        label = "TRAILING_STOP" if active_stop == MORNING_TRAILING_STOP_PCT else "AFTER_TP1_STOP"
-        reason = config.EXIT_TW_TRAILING_STOP if active_stop == MORNING_TRAILING_STOP_PCT else config.EXIT_TW_AFTER_TP1_STOP
+        label = "TRAILING_STOP" if trailing_active else "AFTER_TP1_STOP"
+        reason = config.EXIT_TW_TRAILING_STOP if trailing_active else config.EXIT_TW_AFTER_TP1_STOP
         return PositionManagementDecision(reason, 1.0, True, peak, label)
     return PositionManagementDecision(None, 0.0, True, peak, "HOLD_AFTER_TP1")
 
 
 def evaluate_afternoon_position(
     *, net_return_pct: float, peak_net_return: float = 0.0,
+    afternoon_tp_pct_override: Optional[float] = None,
 ) -> PositionManagementDecision:
     """§13-14 afternoon ladder — full-quantity TP, no partial (spec default).
 
@@ -97,8 +110,10 @@ def evaluate_afternoon_position(
     +2.5%: full exit. Base stop before 1.5% is AFTERNOON_STOP_LOSS (-1.2%).
     """
     peak = max(float(peak_net_return), float(net_return_pct))
+    afternoon_tp_pct = (AFTERNOON_TP_PCT if afternoon_tp_pct_override is None
+                        else float(afternoon_tp_pct_override))
 
-    if net_return_pct >= AFTERNOON_TP_PCT:
+    if net_return_pct >= afternoon_tp_pct:
         return PositionManagementDecision(config.EXIT_TW_AFTERNOON_TP, 1.0, False, peak, "AFTERNOON_TP")
 
     if peak >= AFTERNOON_PROFIT_LOCK_TRIGGER_PCT:
@@ -120,6 +135,7 @@ def evaluate_afternoon_position(
 def evaluate_take_profit_immediate(
     *, session: str, net_return_pct: float, tp1_done: bool,
     tp2_pct_override: Optional[float] = None,
+    afternoon_tp_pct_override: Optional[float] = None,
 ) -> PositionManagementDecision:
     """Take-profit-only check meant to run on every live tick, NOT gated on
     a completed 3-minute bar close (2026-08-21 user request: 익절판단은
@@ -142,7 +158,9 @@ def evaluate_take_profit_immediate(
     the two modules' take-profit timing behavior can never drift apart.
     """
     if session == "AFTERNOON":
-        if net_return_pct >= AFTERNOON_TP_PCT:
+        afternoon_tp_pct = (AFTERNOON_TP_PCT if afternoon_tp_pct_override is None
+                            else float(afternoon_tp_pct_override))
+        if net_return_pct >= afternoon_tp_pct:
             return PositionManagementDecision(config.EXIT_TW_AFTERNOON_TP, 1.0, tp1_done, net_return_pct, "AFTERNOON_TP_TICK")
         return PositionManagementDecision(None, 0.0, tp1_done, net_return_pct, "HOLD_TICK")
 
@@ -157,6 +175,9 @@ def evaluate_take_profit_immediate(
 def evaluate_position(
     *, session: str, net_return_pct: float, tp1_done: bool, peak_net_return: float = 0.0,
     tp2_pct_override: Optional[float] = None,
+    stop_loss_pct_override: Optional[float] = None,
+    after_tp1_stop_pct_override: Optional[float] = None,
+    afternoon_tp_pct_override: Optional[float] = None,
 ) -> PositionManagementDecision:
     """Session-dispatching convenience wrapper (``session`` == "MORNING" or
     "AFTERNOON", as returned by time_window_filter.session_for_window).
@@ -164,8 +185,13 @@ def evaluate_position(
     TW2's TP2 override) — AFTERNOON_TP is untouched, matching TW2's own
     tested definition (only MORNING_TP2 was raised)."""
     if session == "AFTERNOON":
-        return evaluate_afternoon_position(net_return_pct=net_return_pct, peak_net_return=peak_net_return)
+        return evaluate_afternoon_position(
+            net_return_pct=net_return_pct, peak_net_return=peak_net_return,
+            afternoon_tp_pct_override=afternoon_tp_pct_override,
+        )
     return evaluate_morning_position(
         net_return_pct=net_return_pct, tp1_done=tp1_done, peak_net_return=peak_net_return,
         tp2_pct_override=tp2_pct_override,
+        stop_loss_pct_override=stop_loss_pct_override,
+        after_tp1_stop_pct_override=after_tp1_stop_pct_override,
     )

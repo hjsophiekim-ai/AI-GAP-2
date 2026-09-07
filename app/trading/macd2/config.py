@@ -1004,6 +1004,56 @@ TW2_3SLOT_SLOT1_CHOP_VETO = _env_bool("MACD2_TW2_3SLOT_SLOT1_CHOP_VETO", False)
 TW2_3SLOT_SLOT1_CHOP_VETO_VERSION = "TW2_3SLOT_SLOT1_CHOP_VETO_V1_20260904"
 TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP = "TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP"
 
+# ── TWF 3-SLOT (2026-09-07 사용자 요청) ─────────────────────────────────────
+# TW2 3-SLOT 과 **진입 로직이 완전히 동일한** 자매 전략이다. 진입/슬롯/T+3/
+# TW2 veto/Trend Quality/TEGv2/whipsaw/반대신호는 한 줄도 다르지 않고
+# worker 의 같은 _judge_tw2_3slot_flag / _resolve_tw2_3slot_candidate 경로를
+# 그대로 탄다 (time_window_3slot.MODES_3SLOT 참조). 다른 것은 **청산 임계값
+# 세 개**뿐이며, 그것도 time_window_position_manager 의 기존 함수에 override
+# 인자로만 전달된다 — 모듈 상수는 건드리지 않으므로 TW2 3-SLOT 과 MU_MACD 의
+# 동작은 완전히 불변이다.
+#
+# 왜 별도 전략인가: 2026-09-07 검증에서 "오전에 남은 슬롯을 13:00~14:50 에
+# 쓴다"는 규칙은 **이미 TW2 3-SLOT 이 하고 있는 동작**임이 확인됐다
+# (worker._resolve_tw2_3slot_candidate_body 의 window_blocked_by_morning_only
+# 분기). 따라서 TWF 는 그 진입을 그대로 두고 청산만 바꾼 A/B 비교용 전략이다.
+#
+# 검증 (data/validation/faithful_20260907/, faithful-fill 체결모델,
+# 최근 30영업일 20260722~20260904, 진입 집합은 TW2 3-SLOT 과 78건 전부 동일):
+#   TW2 3-SLOT  복리 +31.22% / PF 1.4752 / MDD -8.65% / 승률 51.28%
+#   TWF 3-SLOT  복리 +39.21% / PF 1.5900 / MDD -7.84% / 승률 51.28%
+#   TRAIN20 +29.98 -> ... / OOS10 은 aef_30d/README.md 표 참조.
+# 60영업일 참고값에서는 오전손절 -1.4% 가 20260625 한 거래(TP2 +5.15% 였던
+# 것)를 끊어 총수익이 소폭 열위였다 — 그 리스크를 알고 켤 것.
+TWF_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_TWF_3SLOT_FILTER_DEFAULT", False)
+TWF_3SLOT_FILTER_VERSION = "TWF_3SLOT_V1_20260907"
+TWF_3SLOT_STRATEGY_NAME = "TWF 3-SLOT"
+
+# 청산 override 3개 (분수 저장, spec §17 관례 — 사용처에서 *100 해서 % 로 넘긴다).
+# 이 세 값 말고는 TP1/TP1비율/TP2/trailing/조기익절/오후 breakeven·profit-lock 이
+# 전부 TW2 3-SLOT 과 동일하다.
+TWF_MORNING_STOP_LOSS = _env_float("MACD2_TWF_MORNING_STOP_LOSS", -0.014)      # TW2: -0.017
+TWF_MORNING_AFTER_TP1_STOP = _env_float("MACD2_TWF_MORNING_AFTER_TP1_STOP", 0.020)  # TW2: 0.003
+TWF_AFTERNOON_TP = _env_float("MACD2_TWF_AFTERNOON_TP", 0.030)                 # TW2: 0.025
+
+# ── 레거시 진입전략 토글 숨김 (2026-09-07 사용자 요청) ──────────────────────
+# 사용자에게 노출하는 전략을 "TW2 3-SLOT + 조기익절" / "TWF 3-SLOT + 조기익절"
+# 두 개로 정리한다. TW2 / +TEGv2 / +1 DOWN_BLUE 는 **코드를 하나도 지우지 않고**
+# UI 렌더만 감추고 상태를 강제로 꺼 둔다.
+#
+# 복구 방법: MACD2_SHOW_LEGACY_TW2_TOGGLES=1 (또는 이 기본값을 True 로).
+# 그러면 세 토글의 체크박스가 다시 렌더되고 state_store 의 강제해제도 풀린다 --
+# service.set_time_window_2_filter_enabled / set_time_window_teg_filter_enabled /
+# set_down_blue_exception_filter_enabled 와 worker 의 TW2/TEG 판정 경로는
+# 이 플래그와 무관하게 전부 그대로 살아 있다.
+#
+# 주의 -- TEGv2 "게이트" 자체는 이 토글과 무관하다. TW2 3-SLOT / TWF 3-SLOT 의
+# 오후 슬롯은 worker._resolve_tw2_3slot_candidate_body 에서
+# slot_decision.requires_teg_gate 를 보고 teg_gate.evaluate_teg 를 **직접**
+# 호출하며, state.time_window_teg_filter_enabled 를 참조하지 않는다. 즉 이
+# 토글을 숨겨도 두 전략의 오후 진입 TEGv2 검증은 그대로 작동한다.
+SHOW_LEGACY_TW2_TOGGLES = _env_bool("MACD2_SHOW_LEGACY_TW2_TOGGLES", False)
+
 # ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
 # 6th peer entry gate in worker._judge_entry_gate (right after TIME_WINDOW),
 # same shape as MAJOR/SIDEWAYS/TREND_PERSISTENCE/SINGLE_ENTRY: a single

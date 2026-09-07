@@ -2205,7 +2205,8 @@ def _advance_held_position_risk_management(
         return True
 
     if (
-        (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled)
+        (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled
+         or time_window_3slot.is_3slot_enabled(state))
         and state.position is not None and state.position.symbol == pos.symbol
         and current_price is not None
     ):
@@ -2227,8 +2228,8 @@ def _advance_held_position_risk_management(
             # even -- see evaluate_morning_position's own peak-tracking use.
             state.time_window_position_active = True
             state.time_window_active_mode = state.time_window_active_mode or (
-                "TW2_3SLOT" if state.time_window_3slot_filter_enabled
-                else ("TEGv2" if state.time_window_teg_filter_enabled else "TW2")
+                time_window_3slot.active_3slot_mode(state)
+                or ("TEGv2" if state.time_window_teg_filter_enabled else "TW2")
             )
             session = state.time_window_entry_session or time_window_filter.session_for_window(
                 time_window_filter.classify_window(now.astimezone(KST).time())
@@ -2267,8 +2268,8 @@ def _advance_held_position_risk_management(
             # reconcile ticks for the SAME position only ever reach this
             # branch once (the first tick after discovery, before this
             # branch flips the flag to True).
-            if state.time_window_active_mode == "TW2_3SLOT":
-                # TW2 3-SLOT keeps its own separate slot/session counters
+            if state.time_window_active_mode in time_window_3slot.MODES_3SLOT:
+                # TW2 3-SLOT / TWF 3-SLOT keep their own separate slot/session counters
                 # (never TW2/TEG's time_window_morning_entry_count/
                 # afternoon_entry_count) -- same adoption-path gap this
                 # whole branch exists to close, just for this mode's own
@@ -2303,11 +2304,15 @@ def _advance_held_position_risk_management(
             state.early_tp_peak_net_return = max(
                 float(state.early_tp_peak_net_return or 0.0), tick_net_return,
             )
+        # 2026-09-07: TWF 3-SLOT 은 오후 TP 만 override 한다(오전 TP2 는 동일).
+        # exit_overrides 는 TWF 가 아니면 전부 None 이라 기존 동작 불변.
+        _tw_exit_overrides = time_window_3slot.exit_overrides(state.time_window_active_mode)
         tp_decision = time_window_position_manager.evaluate_take_profit_immediate(
             session=state.time_window_entry_session or "MORNING",
             net_return_pct=tick_net_return,
             tp1_done=bool(state.time_window_tp1_done),
-            tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2", "TW2_3SLOT") else None,
+            tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") + time_window_3slot.MODES_3SLOT else None,
+            afternoon_tp_pct_override=_tw_exit_overrides["afternoon_tp_pct_override"],
         )
         if tp_decision.exit_reason is not None:
             # 2026-08-27 fix (real incident: a premarket-carry position's
@@ -2368,7 +2373,8 @@ def _advance_held_position_risk_management(
                 net_return_pct=bar_net_return,
                 tp1_done=bool(state.time_window_tp1_done),
                 peak_net_return=float(state.time_window_peak_net_return or 0.0),
-                tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2", "TW2_3SLOT") else None,
+                tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") + time_window_3slot.MODES_3SLOT else None,
+                **_tw_exit_overrides,
             )
             # 2026-08-27 fix -- same reasoning as the immediate-tick TP path
             # just above: peak_net_return still commits unconditionally
@@ -2937,9 +2943,9 @@ def _resolve_tw2_3slot_candidate(
     (config.TW_WHIPSAW_REJECT_REASONS) and dispatch (_execute_or_wait /
     _execute_reversal_exit_only_for_filtered_entry) are reused byte-
     identical to TW2's own handling in _resolve_time_window_candidate.
-    Never called unless state.time_window_3slot_filter_enabled is True.
+    Never called unless a 3-SLOT mode (TW2 3-SLOT or TWF 3-SLOT) is enabled.
     """
-    if not state.time_window_3slot_filter_enabled or not state.tw2_3slot_pending_flag_direction:
+    if not time_window_3slot.is_3slot_enabled(state) or not state.tw2_3slot_pending_flag_direction:
         return None
     flag_bar_dt = _parse_iso_dt(state.tw2_3slot_pending_flag_bar_ts)
     if flag_bar_dt is None:
@@ -3183,7 +3189,11 @@ def _resolve_tw2_3slot_candidate_body(
             time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
         )
         state.time_window_position_active = True
-        state.time_window_active_mode = "TW2_3SLOT"
+        # 2026-09-07: 어느 3-SLOT 모드가 이 진입을 열었는지 기록한다 --
+        # 청산 override 선택이 전적으로 이 값에 달려 있다.
+        state.time_window_active_mode = (
+            time_window_3slot.active_3slot_mode(state) or time_window_3slot.MODE_TW2_3SLOT
+        )
         state.time_window_entry_session = session
         state.time_window_tp1_done = False
         state.time_window_peak_net_return = 0.0
@@ -3420,7 +3430,10 @@ def _judge_entry_gate(
     """
     if state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled:
         return _judge_time_window_flag(state=state, bars_3m=bars_3m, direction=direction, signal_id=signal_id), "TIME_WINDOW"
-    if state.time_window_3slot_filter_enabled:
+    if time_window_3slot.is_3slot_enabled(state):
+        # TWF 3-SLOT (2026-09-07) 은 같은 판정 함수를 그대로 쓴다 -- 진입
+        # 로직이 TW2 3-SLOT 과 완전히 동일하기 때문. gate_mode 문자열도
+        # 공유해 원장 컬럼/신호 타입이 갈라지지 않게 한다.
         return _judge_tw2_3slot_flag(state=state, bars_3m=bars_3m, direction=direction, signal_id=signal_id), "TW2_3SLOT"
     if state.no_filter_0900_1100_enabled:
         return _judge_no_filter_flag(state=state, now=now, signal_id=signal_id), "NO_FILTER_0900_1100"
@@ -3652,6 +3665,9 @@ def _tw2_3slot_ledger_fields(state: RuntimeState, decision: Optional[MajorFlagDe
     row: dict[str, Any] = {
         "tw2_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
         "tw2_3slot_filter_version": state.time_window_3slot_filter_version or config.TW2_3SLOT_FILTER_VERSION,
+        "twf_3slot_filter_enabled": bool(state.time_window_twf_filter_enabled),
+        "twf_3slot_filter_version": state.time_window_twf_filter_version or config.TWF_3SLOT_FILTER_VERSION,
+        "tw2_3slot_active_mode": time_window_3slot.active_3slot_mode(state) or "",
         "tw2_3slot_slots_used_today": int(state.tw2_3slot_slots_used_today or 0),
         "tw2_3slot_morning_count": int(state.tw2_3slot_morning_count or 0),
         "tw2_3slot_afternoon_count": int(state.tw2_3slot_afternoon_count or 0),
@@ -4538,7 +4554,8 @@ def run_once(
             return result
 
         if (
-            state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled or state.time_window_3slot_filter_enabled
+            state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled
+            or time_window_3slot.is_3slot_enabled(state)
         ) and state.time_window_position_active:
             # This position is (still) managed by the time-window filter's
             # own ladder, fully replacing PROFIT_LOCK/QUICK_PROFIT below for
@@ -4605,7 +4622,7 @@ def run_once(
                 # just registered against this mode's own separate pending
                 # state when it -- not TW2/TEG -- is the one actually
                 # managing this held position.
-                if state.time_window_active_mode == "TW2_3SLOT":
+                if state.time_window_active_mode in time_window_3slot.MODES_3SLOT:
                     decision = _judge_tw2_3slot_flag(
                         state=state, bars_3m=bars_3m, direction=confirmed_direction,
                         signal_id=signal_id,
@@ -4804,7 +4821,7 @@ def run_once(
                 state.major_filter_enabled or state.sideways_filter_enabled
                 or state.trend_persistence_filter_enabled or state.single_entry_filter_enabled
                 or state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled
-                or state.time_window_3slot_filter_enabled
+                or time_window_3slot.is_3slot_enabled(state)
             ):
                 _dispatch_confirmed_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,

@@ -71,6 +71,8 @@ def default_state() -> RuntimeState:
     state.down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
     state.time_window_3slot_filter_enabled = bool(getattr(config, "TW2_3SLOT_FILTER_DEFAULT", False))
     state.time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
+    state.time_window_twf_filter_enabled = bool(getattr(config, "TWF_3SLOT_FILTER_DEFAULT", False))
+    state.time_window_twf_filter_version = config.TWF_3SLOT_FILTER_VERSION
     state.early_tp_filter_enabled = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
     state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
@@ -369,6 +371,10 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "time_window_3slot_filter_enabled_at": state.time_window_3slot_filter_enabled_at,
         "time_window_3slot_filter_enabled_by": state.time_window_3slot_filter_enabled_by,
         "time_window_3slot_filter_version": state.time_window_3slot_filter_version or config.TW2_3SLOT_FILTER_VERSION,
+        "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+        "time_window_twf_filter_enabled_at": state.time_window_twf_filter_enabled_at,
+        "time_window_twf_filter_enabled_by": state.time_window_twf_filter_enabled_by,
+        "time_window_twf_filter_version": state.time_window_twf_filter_version or config.TWF_3SLOT_FILTER_VERSION,
         # 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03)
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
@@ -481,6 +487,14 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if time_window_teg_filter_enabled and not time_window_2_filter_enabled:
         time_window_2_filter_enabled = True
         time_window_2_filter_version = config.TIME_WINDOW_2_FILTER_VERSION
+    if not bool(getattr(config, "SHOW_LEGACY_TW2_TOGGLES", False)):
+        # 2026-09-07: UI 에서 감춘 토글이 저장값 때문에 보이지 않는 채로 켜져
+        # 있으면 사용자가 끌 수단이 없다. 숨김 상태에서는 복원 시점에 강제로
+        # 끈다. 반드시 아래 3-SLOT/TWF 방어 검사보다 **먼저** 해야
+        # "TW2 가 켜져 있으니 3-SLOT 을 떨어뜨린다" 로 두 전략이 같이 죽지 않는다.
+        # 플래그를 되돌리면 이 강제해제도 함께 사라진다(저장값 그대로 복원).
+        time_window_2_filter_enabled = False
+        time_window_teg_filter_enabled = False
     tw2_3slot_enabled_default = bool(getattr(config, "TW2_3SLOT_FILTER_DEFAULT", False))
     stored_tw2_3slot_filter_version = str(raw.get("time_window_3slot_filter_version") or "")
     time_window_3slot_filter_version = stored_tw2_3slot_filter_version or config.TW2_3SLOT_FILTER_VERSION
@@ -494,6 +508,22 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         # claiming both an established mode and the new one are on must never
         # let the new, still-unverified mode silently win over TW2/TEG.
         time_window_3slot_filter_enabled = False
+    # TWF 3-SLOT (2026-09-07) — TW2 3-SLOT 과 같은 version-gating 관례를
+    # 그대로 쓰고, 같은 우선순위 tier 라 TW2/TEG/TW2 3-SLOT 중 무엇이라도
+    # 켜져 있으면 방어적으로 꺼진 상태로 복원한다(상호배제는 service.py 가
+    # 강제하지만, 손상된 state.json 이 두 모드를 동시에 켜는 일은 없어야 한다).
+    twf_enabled_default = bool(getattr(config, "TWF_3SLOT_FILTER_DEFAULT", False))
+    stored_twf_filter_version = str(raw.get("time_window_twf_filter_version") or "")
+    time_window_twf_filter_version = stored_twf_filter_version or config.TWF_3SLOT_FILTER_VERSION
+    time_window_twf_filter_enabled = bool(raw.get("time_window_twf_filter_enabled", twf_enabled_default))
+    if stored_twf_filter_version and stored_twf_filter_version != config.TWF_3SLOT_FILTER_VERSION:
+        time_window_twf_filter_version = config.TWF_3SLOT_FILTER_VERSION
+        time_window_twf_filter_enabled = twf_enabled_default
+    if time_window_twf_filter_enabled and (
+        time_window_2_filter_enabled or time_window_teg_filter_enabled
+        or time_window_3slot_filter_enabled
+    ):
+        time_window_twf_filter_enabled = False
     # 조기익절 필터 — 같은 version-gating 관례(버전이 바뀌면 저장값을 버리고
     # 기본값으로 되돌린다)를 그대로 따르고, 추가로 TW2 3-SLOT이 꺼져 있으면
     # 무조건 함께 꺼진 상태로 복원한다(사용자 요청: 3-SLOT OFF면 자동 비활성).
@@ -504,7 +534,9 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_early_tp_filter_version and stored_early_tp_filter_version != config.EARLY_TP_FILTER_VERSION:
         early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
         early_tp_filter_enabled = early_tp_enabled_default
-    if not time_window_3slot_filter_enabled:
+    if not (time_window_3slot_filter_enabled or time_window_twf_filter_enabled):
+        # 2026-09-07: 의존 대상이 TW2 3-SLOT 단독에서 "3-SLOT 계열 둘 중
+        # 하나"로 넓어졌다(조기익절은 두 전략 공통 서브필터).
         early_tp_filter_enabled = False
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
@@ -513,6 +545,9 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if stored_down_blue_exception_filter_version and stored_down_blue_exception_filter_version != config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION:
         down_blue_exception_filter_version = config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
         down_blue_exception_filter_enabled = down_blue_exception_enabled_default
+    if not bool(getattr(config, "SHOW_LEGACY_TW2_TOGGLES", False)):
+        # 2026-09-07: 위와 같은 이유로 숨김 상태에서는 강제로 끈다.
+        down_blue_exception_filter_enabled = False
     no_filter_0900_1100_enabled_default = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
     stored_no_filter_0900_1100_filter_version = str(raw.get("no_filter_0900_1100_filter_version") or "")
     no_filter_0900_1100_filter_version = stored_no_filter_0900_1100_filter_version or config.NO_FILTER_0900_1100_FILTER_VERSION
@@ -826,6 +861,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_3slot_filter_enabled=time_window_3slot_filter_enabled,
         time_window_3slot_filter_enabled_at=raw.get("time_window_3slot_filter_enabled_at"),
         time_window_3slot_filter_enabled_by=raw.get("time_window_3slot_filter_enabled_by"),
+        time_window_twf_filter_enabled=time_window_twf_filter_enabled,
+        time_window_twf_filter_enabled_at=raw.get("time_window_twf_filter_enabled_at"),
+        time_window_twf_filter_enabled_by=raw.get("time_window_twf_filter_enabled_by"),
+        time_window_twf_filter_version=time_window_twf_filter_version,
         time_window_3slot_filter_version=time_window_3slot_filter_version,
         early_tp_filter_enabled=early_tp_filter_enabled,
         early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),

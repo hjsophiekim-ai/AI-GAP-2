@@ -38,6 +38,7 @@ from typing import Any, Optional, Union
 import pandas as pd
 
 from app.trading.macd2 import config
+from app.trading.macd2 import time_window_3slot
 from app.trading.macd2 import time_window_filter as twf
 from app.trading.macd2.major_flag_filter import _as_direction, _prepare_bars, _session_vwap
 from app.trading.macd2.models import Direction
@@ -218,13 +219,17 @@ def evaluate_entry_chop(
 
 
 def is_enabled(state) -> bool:
-    """토글 자체 + TW2 3-SLOT 동시활성 여부. TW2 3-SLOT이 OFF면 이 필터는
-    자동으로 비활성이다(사용자 요청). 진입 시점의 CHOP 판정을 저장할지 말지를
-    결정하는 데도 이 함수를 쓴다 — 필터가 OFF일 때는 판정 자체를 계산하지
-    않아야 동작이 완전히 불변이기 때문이다."""
+    """토글 자체 + 3-SLOT 계열 전략(TW2 3-SLOT **또는** TWF 3-SLOT) 동시활성
+    여부. 둘 다 OFF면 이 필터는 자동으로 비활성이다(사용자 요청). 진입 시점의
+    CHOP 판정을 저장할지 말지를 결정하는 데도 이 함수를 쓴다 — 필터가 OFF일
+    때는 판정 자체를 계산하지 않아야 동작이 완전히 불변이기 때문이다.
+
+    2026-09-07: TWF 3-SLOT 추가로 의존 대상이 "TW2 3-SLOT 단독"에서 "3-SLOT
+    계열 둘 중 하나"로 넓어졌다. 조기익절은 전략에 하드코딩된 것이 아니라
+    두 전략이 공유하는 별도 토글이며, 각 전략에서 독립적으로 ON/OFF 된다."""
     return bool(
         getattr(state, "early_tp_filter_enabled", False)
-        and getattr(state, "time_window_3slot_filter_enabled", False)
+        and time_window_3slot.is_3slot_enabled(state)
     )
 
 
@@ -235,7 +240,7 @@ def is_active(state) -> bool:
     return bool(
         is_enabled(state)
         and getattr(state, "time_window_position_active", False)
-        and getattr(state, "time_window_active_mode", None) == "TW2_3SLOT"
+        and getattr(state, "time_window_active_mode", None) in time_window_3slot.MODES_3SLOT
     )
 
 
