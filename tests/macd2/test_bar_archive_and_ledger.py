@@ -370,11 +370,23 @@ def test_bar_ledger_write_failure_never_raises(monkeypatch):
 
 
 def test_bar_ledger_refuses_production_path_outside_live_worker(monkeypatch):
+    # 다른 테스트가 남긴 live-worker 마커에 영향받지 않도록 명시적으로 지운다
+    # (그 마커가 이 프로세스 pid 면 가드가 정상적으로 통과시켜 버린다).
+    monkeypatch.delenv(bar_ledger.LIVE_WORKER_MARKER_ENV, raising=False)
     monkeypatch.setattr(bar_ledger, "BAR_LEDGER_PATH",
                         bar_ledger._DEFAULT_BAR_LEDGER_PATH)
     bar_ledger._reset_for_tests()
     with pytest.raises(RuntimeError, match="REFUSING"):
         bar_ledger._assert_safe_to_write()
+
+
+def test_bar_ledger_allows_production_path_for_the_live_worker(monkeypatch):
+    import os as _os
+
+    monkeypatch.setenv(bar_ledger.LIVE_WORKER_MARKER_ENV, str(_os.getpid()))
+    monkeypatch.setattr(bar_ledger, "BAR_LEDGER_PATH",
+                        bar_ledger._DEFAULT_BAR_LEDGER_PATH)
+    bar_ledger._assert_safe_to_write()      # raise 하지 않아야 한다
 
 
 def test_worker_keeps_trading_when_ledger_write_fails(monkeypatch):

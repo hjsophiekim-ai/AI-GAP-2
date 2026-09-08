@@ -234,8 +234,13 @@ class TestToggleWiring:
         assert s.time_window_twf_filter_version == ""
 
     def test_config_defaults_off(self):
+        # 2026-09-08: 이 슬롯이 "TW TEG 3-SLOT" 으로 정리되면서 진입 규칙이
+        # 하나 추가됐다(CHOP 후보 TEGv2 요구) -> 버전 문자열/표시 이름이 바뀐다.
+        # 토글 기본값(OFF)과 내부 식별자는 그대로다.
         assert config.TWF_3SLOT_FILTER_DEFAULT is False
-        assert config.TWF_3SLOT_FILTER_VERSION == "TWF_3SLOT_V1_20260907"
+        assert config.TWF_3SLOT_FILTER_VERSION == "TW_TEG_3SLOT_V1_20260908"
+        assert config.TWF_3SLOT_FILTER_VERSION == config.TW_TEG_3SLOT_FILTER_VERSION
+        assert config.TWF_3SLOT_STRATEGY_NAME == "TW TEG 3-SLOT"
 
     def test_state_store_roundtrip(self, tmp_path, monkeypatch):
         from app.trading.macd2 import state_store

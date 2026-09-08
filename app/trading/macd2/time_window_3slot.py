@@ -317,6 +317,20 @@ MODE_TWF_3SLOT = "TWF_3SLOT"
 #: 공유한다 — 갈라지는 것은 ``exit_overrides`` 세 값뿐이다.
 MODES_3SLOT = (MODE_TW2_3SLOT, MODE_TWF_3SLOT)
 
+#: 2026-09-08 이 모드는 "TW TEG 3-SLOT" 으로 정리됐다. 디스크에 이미 저장된
+#: 상태/원장 값과의 호환을 위해 wire value 는 "TWF_3SLOT" 그대로 두고 이름만
+#: 별칭으로 붙인다(config.TW_TEG_3SLOT_STRATEGY_NAME 주석 참고).
+MODE_TW_TEG_3SLOT = MODE_TWF_3SLOT
+
+
+def requires_chop_teg_gate(mode: Optional[str]) -> bool:
+    """CHOP 진입후보에 TEGv2 를 추가로 요구하는 모드인가.
+
+    TW TEG 3-SLOT 에서만 True. TW2 3-SLOT / TW2 / TEGv2 / MU_MACD 는 전부
+    False 라 이 함수 도입으로 기존 동작이 조금도 바뀌지 않는다.
+    """
+    return mode == MODE_TW_TEG_3SLOT
+
 #: 두 토글이 동시에 켜지는 일은 service 의 상호배제가 막지만, 만에 하나
 #: 그런 상태가 들어와도 결정론적으로 TW2 3-SLOT 이 이긴다(기존 동작 보존).
 _MODE_BY_FLAG = (

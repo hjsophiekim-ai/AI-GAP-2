@@ -1026,8 +1026,52 @@ TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP = "TW2_3SLOT_REJECT_SLOT1_ENTRY_CHOP"
 # 60영업일 참고값에서는 오전손절 -1.4% 가 20260625 한 거래(TP2 +5.15% 였던
 # 것)를 끊어 총수익이 소폭 열위였다 — 그 리스크를 알고 켤 것.
 TWF_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_TWF_3SLOT_FILTER_DEFAULT", False)
-TWF_3SLOT_FILTER_VERSION = "TWF_3SLOT_V1_20260907"
-TWF_3SLOT_STRATEGY_NAME = "TWF 3-SLOT"
+
+# ── 2026-09-08: TWF 3-SLOT -> "TW TEG 3-SLOT" 으로 정리 ─────────────────────
+# 사용자 결정: 이 슬롯(TW2 3-SLOT 의 자매 전략 자리)을 2026-09-08 최종검증에서
+# 추천된 B 로직으로 교체한다. 청산 3종(TWF_* 아래)은 그대로 두고 **진입에 규칙
+# 하나만 추가**한다:
+#
+#   entry_chop=False 후보 -> 기존과 완전히 동일하게 즉시 진입
+#   entry_chop=True  후보 -> TEGv2 를 추가로 통과해야 진입
+#                            통과 -> 즉시 진입 (대기/유예 없음)
+#                            실패 -> 진입 취소, **슬롯 미소비**
+#
+# T+3 / 슬롯 / 하루 3회 cap / TW2 veto / whipsaw / whipsaw-watch / TP1 / TP2 /
+# trailing / 반대신호 청산은 한 줄도 바뀌지 않는다. TEGv2 는 기존
+# ``teg_gate.evaluate_teg`` 를 그대로 재사용하며 새 점수식/임계값을 만들지
+# 않는다. CHOP 판정도 기존 ``early_take_profit.evaluate_entry_chop`` 그대로다.
+#
+# ⚠ PROVISIONAL — 아래 수치는 **확정 성과가 아니다**. 전부 KIS 사후조회
+# 프리마켓 봉으로 만든 MACD 플래그 위에서 나왔고, 그 입력의 production 신호
+# 재현율은 2026-09-08 실측 **42.9%** 다
+# (data/validation/signal_repro_20260908/README.md). 프리마켓 1분봉 재현성이
+# 확보(bar_archive/bar_ledger 수집)된 뒤 재검증하기 전까지는 방향성 참고값으로만
+# 쓸 것. 절대값을 근거로 추가 최적화를 하지 말 것.
+#
+# 검증 (provisional, data/validation/final_abc_20260908/, faithful-fill,
+# 68영업일 20260528~20260907, 하루 3회 cap 위반 0일):
+#   A 현행(진입 추가규칙 없음)  복리 +101.32% / PF 1.566 / MDD -10.24% / 러너 30
+#   B 이 전략                   복리 +132.00% / PF 1.834 / MDD  -8.50% / 러너 29
+#   차단 21건 전부 오전 CHOP 후보이고 전부 TEGv2 탈락(막은 손실 -31.03% /
+#   놓친 수익 +16.44%), 공통 147거래의 손익 변동 0건(순수 진입필터).
+#   놓친 +3% 러너 2건(20260804 09:27 / 20260820 09:24) — 러너보존 93.3%.
+#   ⚠ 오후 슬롯은 production 이 이미 TEGv2 를 요구하므로 실효는 "오전 CHOP
+#   후보에도 TEGv2 요구"다. TEGv2 임계값은 원래 오후용으로 확정된 값이고
+#   오전 적용은 이 검증이 첫 데이터다.
+#
+# 내부 식별자(state.time_window_twf_filter_enabled / MODE_TWF_3SLOT /
+# MACD2_TWF_* env)는 **일부러 그대로 둔다** — 이미 디스크에 저장된 상태와
+# 기존 원장 행의 호환을 깨지 않기 위해서다. 바뀌는 것은 표시 이름과
+# 진입 규칙뿐이다.
+TW_TEG_3SLOT_STRATEGY_NAME = "TW TEG 3-SLOT"
+TW_TEG_3SLOT_FILTER_VERSION = "TW_TEG_3SLOT_V1_20260908"
+#: CHOP 후보가 추가 TEGv2 를 통과하지 못해 거절된 경우. 슬롯은 소비되지 않는다.
+TW_TEG_3SLOT_REJECT_CHOP_TEG = "TW_TEG_3SLOT_REJECT_CHOP_TEG"
+
+# 구명칭 별칭 — 코드/원장 하위호환용. 새 코드는 위 상수를 쓴다.
+TWF_3SLOT_FILTER_VERSION = TW_TEG_3SLOT_FILTER_VERSION
+TWF_3SLOT_STRATEGY_NAME = TW_TEG_3SLOT_STRATEGY_NAME
 
 # 청산 override 3개 (분수 저장, spec §17 관례 — 사용처에서 *100 해서 % 로 넘긴다).
 # 이 세 값 말고는 TP1/TP1비율/TP2/trailing/조기익절/오후 breakeven·profit-lock 이

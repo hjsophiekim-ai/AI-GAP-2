@@ -781,7 +781,7 @@ with _qp_cols[1]:
         st.caption(f"퀵 Profit 익절={'ON' if state.quick_profit_enabled else 'OFF'} · 문턱=+{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%")
 
 # ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
-# 사용자 노출 전략을 TW2 3-SLOT / TWF 3-SLOT 두 개로 정리하면서 감췄다.
+# 사용자 노출 전략을 TW2 3-SLOT / TW TEG 3-SLOT 두 개로 정리하면서 감췄다.
 # 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_TW2_TOGGLES=1 이면
 # 아래 블록이 예전과 똑같이 다시 렌더된다(service/worker 경로는 무관하게 상시 유지).
 if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
@@ -825,7 +825,7 @@ if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
                 )
 
 # ── 상호배타 tier 토글 위젯 동기화 (2026-09-07) ─────────────────────────────
-# TW2 / +TEGv2 / TW2 3-SLOT / TWF 3-SLOT 은 서로를 끈다. 하나를 켜면 서버쪽
+# TW2 / +TEGv2 / TW2 3-SLOT / TW TEG 3-SLOT 은 서로를 끈다. 하나를 켜면 서버쪽
 # 상태에서 나머지가 꺼지는데, 체크박스 **위젯** 상태는 그대로 True 로 남는다.
 # 그러면 st.rerun() 직후 그 토글이 "위젯 True vs 상태 False" 를 자기 변경으로
 # 착각해 스스로를 다시 켜고, 방금 켠 토글을 도로 끈다(ping-pong). 그래서 setter
@@ -852,7 +852,7 @@ def _sync_tier_toggle_widgets(res: dict, *, skip: str) -> None:
 
 
 # ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
-# 사용자 노출 전략을 TW2 3-SLOT / TWF 3-SLOT 두 개로 정리하면서 감췄다.
+# 사용자 노출 전략을 TW2 3-SLOT / TW TEG 3-SLOT 두 개로 정리하면서 감췄다.
 # 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_TW2_TOGGLES=1 이면
 # 아래 블록이 예전과 똑같이 다시 렌더된다(service/worker 경로는 무관하게 상시 유지).
 if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
@@ -929,29 +929,39 @@ with _3slot_cols[1]:
                 f"사유={getattr(state, 'last_tw2_3slot_block_reason', None) or '-'}"
             )
 
-# ── TWF 3-SLOT (2026-09-07) ────────────────────────────────────────────────
-# TW2 3-SLOT 과 **진입 로직이 완전히 동일한** 자매 전략(같은 판정 경로/같은
-# 슬롯 카운터를 그대로 쓴다). 다른 것은 청산 임계값 3개뿐이다.
+# ── TW TEG 3-SLOT (2026-09-08, 구 "TWF 3-SLOT") ────────────────────────────
+# TW2 3-SLOT 의 자매 전략. 진입 판정 경로/슬롯 카운터를 그대로 공유하고,
+# 다른 것은 (1) 청산 임계값 3개 (2) CHOP 후보에 TEGv2 추가 요구, 둘뿐이다.
+# 내부 식별자(state.time_window_twf_filter_enabled / MODE_TWF_3SLOT)는 저장된
+# 상태·원장 호환 때문에 그대로 두고 표시 이름만 바꿨다.
 _twf_cols = st.columns([1.4, 1.6])
 with _twf_cols[0]:
     _twf_on = st.checkbox(
-        "TWF 3-SLOT",
+        macd2_config.TW_TEG_3SLOT_STRATEGY_NAME,
         value=bool(getattr(state, "time_window_twf_filter_enabled", False)),
         key="macd2_time_window_twf_filter_toggle",
         help=(
-            "TW2 3-SLOT 과 진입이 100% 같은 자매 전략입니다 — MACD zero-cross/T+3 재확인/TW2 veto/슬롯 배분/"
-            "Trend Quality/TEGv2/휩쏘-내성 반대신호청산이 전부 동일하고, 하루 신규진입 3회 상한과 '오전에 남은 "
-            "슬롯만 13:00~14:50 에 사용, 오전 3회 소진 시 오후 진입 없음' 규칙도 그대로입니다(그 규칙은 원래 "
-            "TW2 3-SLOT 이 이미 하던 동작입니다). "
-            "**다른 것은 청산 임계값 3개뿐입니다**: 오전 손절 "
+            "TW2 3-SLOT 과 MACD zero-cross/T+3 재확인/TW2 veto/슬롯 배분/Trend Quality/TEGv2/"
+            "휩쏘-내성 반대신호청산이 전부 동일하고, 하루 신규진입 3회 상한과 '오전에 남은 슬롯만 "
+            "13:00~14:50 에 사용' 규칙도 그대로입니다. "
+            "**진입에서 다른 것은 하나뿐입니다**: 진입 확정봉이 CHOP(횡보/휩쏘)으로 분류된 후보만 "
+            "TEGv2 를 추가로 통과해야 진입합니다. 통과하면 대기 없이 즉시 진입하고, 실패하면 그 후보만 "
+            "취소되며 **슬롯은 소비되지 않습니다**(다음 플래그가 같은 슬롯으로 다시 평가됩니다). "
+            "CHOP 이 아닌 후보는 기존과 100% 동일하게 즉시 진입합니다. 오후 슬롯은 원래 TEGv2 를 "
+            "요구하므로 실효는 '오전 CHOP 후보에도 TEGv2 요구'입니다. "
+            "⚠ 아래 수치는 **잠정(provisional)** 입니다 — 사후조회 프리마켓 봉 기반이고 그 입력의 "
+            "production 신호 재현율이 42.9% 로 측정됐습니다. 프리마켓 재현성 확보 후 재검증 전까지 "
+            "확정 성과로 보지 마세요. "
+            "잠정검증(faithful-fill, 68영업일 20260528~20260907): 복리 +101.32%→+132.00%, PF 1.566→1.834, "
+            "MDD -10.24%→-8.50%, 하루 3회 cap 위반 0일. 차단 21건 전부 오전 CHOP 후보이고 전부 TEGv2 "
+            "탈락(막은 손실 -31.03% / 놓친 수익 +16.44%), 공통 147거래 손익 변동 0건. "
+            "단 +3% 러너 2건을 놓쳤고(러너보존 93.3%) TEGv2 임계값은 원래 오후용이라 오전 적용은 "
+            "이번이 첫 데이터입니다 — 그 리스크를 알고 켜세요. "
+            "**청산 임계값 3개**도 TW2 3-SLOT 과 다릅니다: 오전 손절 "
             f"-1.7% → -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}%, TP1 이후 잔량 스탑 +0.3% → "
             f"+{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}%, 오후 TP +2.5% → "
             f"+{macd2_config.TWF_AFTERNOON_TP * 100:.1f}%. TP1/분할비율/TP2/trailing/조기익절은 TW2 3-SLOT 과 동일합니다. "
-            "검증(faithful-fill 체결모델, 최근 30영업일 20260722~20260904, 진입 78건이 TW2 3-SLOT 과 전부 동일): "
-            "복리 +31.22%→+39.21%, PF 1.4752→1.5900, MDD -8.65%→-7.84%, 승률 51.28% 동일, +3% 러너 보존 100%. "
-            "단 60영업일 참고구간에서는 오전 손절 -1.4% 가 20260625 한 거래(TP2 +5.15% 였던 것)를 끊어 총수익이 "
-            "소폭 열위였습니다 — 그 리스크를 알고 켜세요. "
-            "TW2/+TEGv2/TW2 3-SLOT 과 동시에 켤 수 없습니다(넷 중 하나만). 기본 OFF."
+            "TW2 3-SLOT 과 동시에 켤 수 없습니다(둘 중 하나만). 기본 OFF."
         ),
     )
 with _twf_cols[1]:
@@ -959,11 +969,11 @@ with _twf_cols[1]:
         res = service.set_time_window_twf_filter_enabled(bool(_twf_on), changed_by="ui")
         if res.get("ok"):
             _sync_tier_toggle_widgets(res, skip="macd2_time_window_twf_filter_toggle")
-            st.caption(f"TWF 3-SLOT → {'ON' if _twf_on else 'OFF'}")
+            st.caption(f"{macd2_config.TW_TEG_3SLOT_STRATEGY_NAME} → {'ON' if _twf_on else 'OFF'}")
             st.rerun()
     else:
         st.caption(
-            f"TWF 3-SLOT={'ON' if state.time_window_twf_filter_enabled else 'OFF'} · "
+            f"{macd2_config.TW_TEG_3SLOT_STRATEGY_NAME}={'ON' if state.time_window_twf_filter_enabled else 'OFF'} · "
             f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
             f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
             f"청산 SL -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}% / TP1후 +{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}% / 오후TP +{macd2_config.TWF_AFTERNOON_TP * 100:.1f}% · "
@@ -971,13 +981,13 @@ with _twf_cols[1]:
             + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
         )
 
-# ── 조기익절 필터 (TW2 3-SLOT / TWF 3-SLOT 공통 서브필터, 2026-09-03) ───────
+# ── 조기익절 필터 (TW2 3-SLOT / TW TEG 3-SLOT 공통 서브필터, 2026-09-03) ───────
 # TW2 3-SLOT이 꺼지면 service.set_time_window_3slot_filter_enabled가 이 토글을
 # 강제로 끈다. 위젯 key가 session_state에 남아 있으면 다음 rerun에서 체크박스가
 # 여전히 True로 읽혀 켜려는 요청이 한 번 더 나가므로(그러면 서비스가
 # TW2_3SLOT_REQUIRED로 거절하고 경고만 뜬다), 의존필터가 꺼진 상태에서는 위젯
 # 상태도 함께 내려 UI와 실제 상태가 어긋나지 않게 한다.
-# 2026-09-07: 조기익절은 TW2 3-SLOT / TWF 3-SLOT 공통 서브필터다 — 둘 중
+# 2026-09-07: 조기익절은 TW2 3-SLOT / TW TEG 3-SLOT 공통 서브필터다 — 둘 중
 # 하나라도 켜져 있으면 사용할 수 있고, 각 전략에서 독립적으로 ON/OFF 된다.
 _3slot_live = bool(
     getattr(state, "time_window_3slot_filter_enabled", False)
@@ -994,7 +1004,7 @@ with _early_tp_cols[0]:
         key="macd2_early_tp_toggle",
         disabled=not _3slot_live,
         help=(
-            "TW2 3-SLOT / TWF 3-SLOT 공통 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
+            "TW2 3-SLOT / TW TEG 3-SLOT 공통 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
             "전혀 건드리지 않고, 이미 보유 중인 포지션에만 하방 보호선을 하나 더 얹습니다(매도만 가능). "
             "① 진입이 체결된 확정봉을 CHOP/TREND로 분류해 그 포지션에 고정 저장합니다(최근30분 확정 "
             "zero-cross 횟수 / EMA10-20 스프레드 확대 실패 / EMA20 기울기 진입방향 아님 / 종가-세션VWAP "
@@ -1011,13 +1021,13 @@ with _early_tp_cols[0]:
             "발동은 5건(OOS 2건)뿐입니다 — 손실→플러스 전환 2건, +3~6% 러너 훼손 0건으로 방향은 일관되고 "
             "러너를 훼손할 수 없는 구조지만, 통계적으로 확정된 개선은 아닌 저빈도·저하방 가드로 보셔야 합니다. "
             "참고로 30분 창이 필요해 09:15 이전 진입은 구조적으로 CHOP 판정이 불가능해 TREND(=미적용)로 "
-            "떨어집니다. TW2 3-SLOT과 TWF 3-SLOT이 둘 다 꺼지면 자동으로 함께 비활성화됩니다. 기본 OFF. "
+            "떨어집니다. TW2 3-SLOT과 TW TEG 3-SLOT이 둘 다 꺼지면 자동으로 함께 비활성화됩니다. 기본 OFF. "
             "(MACD2의 기존 PROFIT_LOCK 기능과는 완전히 무관한 별개 필터입니다.)"
         ),
     )
 with _early_tp_cols[1]:
     if not _3slot_live:
-        st.caption("조기익절 필터=OFF · TW2 3-SLOT 또는 TWF 3-SLOT을 켜야 사용할 수 있습니다(자동 비활성화)")
+        st.caption("조기익절 필터=OFF · TW2 3-SLOT 또는 TW TEG 3-SLOT을 켜야 사용할 수 있습니다(자동 비활성화)")
     elif bool(_early_tp_on) != bool(getattr(state, "early_tp_filter_enabled", False)):
         res = service.set_early_tp_filter_enabled(bool(_early_tp_on), changed_by="ui")
         if res.get("ok"):
@@ -1026,7 +1036,7 @@ with _early_tp_cols[1]:
         else:
             st.warning(
                 "조기익절 필터를 켤 수 없습니다: "
-                + ("TW2 3-SLOT 또는 TWF 3-SLOT이 켜져 있어야 합니다."
+                + ("TW2 3-SLOT 또는 TW TEG 3-SLOT이 켜져 있어야 합니다."
                    if res.get("reason") == "TW2_3SLOT_REQUIRED" else str(res.get("reason") or "알 수 없는 사유"))
             )
     else:
@@ -1055,7 +1065,7 @@ with _early_tp_cols[1]:
             )
 
 # ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
-# 사용자 노출 전략을 TW2 3-SLOT / TWF 3-SLOT 두 개로 정리하면서 감췄다.
+# 사용자 노출 전략을 TW2 3-SLOT / TW TEG 3-SLOT 두 개로 정리하면서 감췄다.
 # 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_TW2_TOGGLES=1 이면
 # 아래 블록이 예전과 똑같이 다시 렌더된다(service/worker 경로는 무관하게 상시 유지).
 if macd2_config.SHOW_LEGACY_TW2_TOGGLES:

@@ -3120,6 +3120,49 @@ def _resolve_tw2_3slot_candidate_body(
             final_decision_label = config.TW_APPROVED
             final_block_reason = None
 
+        # ── TW TEG 3-SLOT 전용: CHOP 후보 TEGv2 추가 요구 (2026-09-08) ────
+        # 위 게이트 체인이 전부 끝난 뒤, **TW TEG 3-SLOT 이 선택됐을 때만**
+        # 추가로 판정한다. TW2 3-SLOT 을 포함한 다른 모든 모드에서는
+        # requires_chop_teg_gate() 가 False 라 이 블록 자체가 실행되지 않는다
+        # (MU_MACD 는 이 함수를 아예 타지 않는다).
+        #
+        #   entry_chop=False -> 아무것도 하지 않는다(기존과 완전히 동일)
+        #   entry_chop=True  -> TEGv2 통과해야 진입. 실패하면 거절.
+        #
+        # 새 점수식/임계값을 만들지 않는다 — CHOP 판정은
+        # early_take_profit.evaluate_entry_chop, 게이트는 teg_gate.evaluate_teg
+        # 를 그대로 재사용한다. 슬롯 카운트(tw2_3slot_slots_used_today/
+        # morning_count/afternoon_count)는 아래 outcome.final_state == EXECUTED
+        # 분기에서만 증가하므로 여기서 거절해도 **슬롯은 소비되지 않고**
+        # 다음 플래그가 같은 슬롯 후보로 다시 평가된다.
+        #
+        # 슬롯이 이미 TEGv2 게이트를 요구했다면(오후 슬롯) 그 후보는 방금 위에서
+        # TEGv2 를 통과해 final_approved 가 된 것이므로 다시 부르지 않는다 —
+        # 같은 프레임/같은 인자라 결과가 동일하고, 중복 호출만 늘 뿐이다.
+        # ``state.time_window_active_mode`` 는 **진입 체결 시점**에야 세팅되므로
+        # (아래 EXECUTED 분기) 후보 판정 시점에는 비어 있거나 직전 값이 남아
+        # 있을 수 있다. 지금 어떤 전략이 켜져 있는지는 토글에서 직접 읽는다 —
+        # EXECUTED 분기가 active_3slot_mode(state) 를 쓰는 것과 같은 출처다.
+        if final_approved and time_window_3slot.requires_chop_teg_gate(
+            time_window_3slot.active_3slot_mode(state)
+        ):
+            chop_decision = early_take_profit.evaluate_entry_chop(bars_3m, direction, now)
+            is_chop = bool(chop_decision.is_chop) and not chop_decision.insufficient_data
+            slot_metrics["tw_teg_entry_chop"] = is_chop
+            slot_metrics["tw_teg_entry_chop_score"] = (
+                0 if chop_decision.insufficient_data else int(chop_decision.score)
+            )
+            if is_chop and not slot_decision.requires_teg_gate:
+                chop_teg = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
+                slot_metrics["tw_teg_chop_teg_approved"] = bool(chop_teg.approved)
+                slot_metrics["tw_teg_chop_teg_reject_reasons"] = list(
+                    chop_teg.reject_reasons or []
+                )
+                if not chop_teg.approved:
+                    final_approved = False
+                    final_block_reason = config.TW_TEG_3SLOT_REJECT_CHOP_TEG
+                    final_decision_label = config.TW_TEG_3SLOT_REJECT_CHOP_TEG
+
         # ── Slot1 CHOP veto (2026-09-04 사용자 요청) ─────────────────────
         # 위 게이트 체인이 전부 끝난 뒤, 승인된 **Slot1 신규진입만** 추가로
         # 거절한다. Slot2/Slot3 과 청산/휩쏘/조기익절 경로는 한 줄도 건드리지
