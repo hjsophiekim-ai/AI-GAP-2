@@ -29,7 +29,7 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
-from app.trading.macd2 import config
+from app.trading.macd2 import bar_archive, config
 from app.trading.macd2.models import QuoteSnapshot
 from app.trading.macd2.signal_engine import resample_completed_3m
 from app.utils.data_paths import CACHE_DIR
@@ -252,6 +252,13 @@ class MarketDataService:
         self._history_lock = threading.RLock()
         self._quote_lock = threading.RLock()
         self._df_1m: pd.DataFrame = _empty_1m_frame()
+        # 관측 전용 진단 (2026-09-08 bar_archive). 거래 로직은 읽지 않는다.
+        # observed_worker_instance_id 는 worker.initialize_strategy_session 이
+        # 심어준다 — 모듈 전역이 아니라 **인스턴스 속성**이어야 동시 Worker
+        # 환경에서 서로의 값을 덮어쓰지 않는다(commit 790cea6 실사고 참고).
+        self.observed_worker_instance_id: str = ""
+        self._archive_stats: dict[str, int] = {}
+        self._archive_error_count: int = 0
         self._quotes: dict[str, QuoteSnapshot] = {}
         self._quote_updater_thread: Optional[threading.Thread] = None
         self._quote_updater_stop = threading.Event()
@@ -756,6 +763,16 @@ class MarketDataService:
 
         with self._history_lock:
             self._df_1m = df
+        # ── 관측 전용 (2026-09-08). bootstrap 은 당일 전체를 페이지워크하므로
+        # 그 이전 봉들의 first_seen_at 이 전부 이 시각으로 찍힌다 — worker 가
+        # 실제로 그 시각에야 그 봉들을 처음 봤다는 사실 그대로다.
+        try:
+            self._archive_stats = bar_archive.record_frame(
+                df, now=now, source="bootstrap",
+                worker_instance_id=self.observed_worker_instance_id,
+            )
+        except Exception:
+            self._archive_error_count += 1
 
         if today_n > 0 and now.time() > config.SESSION_OPEN:
             today_start = df[dates == today_ymd]["datetime"].iloc[0].astimezone(KST)
@@ -838,6 +855,18 @@ class MarketDataService:
             )
             merged = _trim_to_recent_trading_days(merged)
             self._df_1m = merged
+            # ── 관측 전용 (2026-09-08): worker 가 실제로 보게 될 바로 이 프레임을
+            # 아카이브한다. 이 프레임은 메모리에만 존재해 재시작과 함께 사라지고
+            # KIS 사후조회로 복원되지 않음이 실측됐다(bar_archive 모듈 docstring).
+            # 값을 하나도 만들지 않고 하나도 바꾸지 않으며, 실패해도 거래 경로에
+            # 영향이 없도록 전부 삼킨다.
+            try:
+                self._archive_stats = bar_archive.record_frame(
+                    merged, now=now, source="incremental",
+                    worker_instance_id=self.observed_worker_instance_id,
+                )
+            except Exception:
+                self._archive_error_count += 1
             return merged.copy()
 
     def get_history_df(self) -> pd.DataFrame:

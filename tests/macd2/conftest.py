@@ -11,7 +11,15 @@ import socket
 
 import pytest
 
-from app.trading.macd2 import config, ledger, market_data, service, state_store
+from app.trading.macd2 import (
+    bar_archive,
+    bar_ledger,
+    config,
+    ledger,
+    market_data,
+    service,
+    state_store,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +61,15 @@ def _isolate_macd2_state(tmp_path, monkeypatch):
     # CACHE_DIR/naver_multi_1m/{symbol}_1m.csv directly — must never resolve
     # to the real data/cache/ tree in a test.
     monkeypatch.setattr(market_data, "CACHE_DIR", tmp_path / "cache")
+    # 2026-09-08 신호 재현 아카이브/원장도 같은 규칙으로 격리한다 — 실제
+    # data/bar_archive/ 나 data/logs/macd2_bar_ledger.csv 에 절대 쓰지 않는다.
+    monkeypatch.setattr(bar_archive, "ARCHIVE_DIR", tmp_path / "bar_archive")
+    monkeypatch.setattr(bar_ledger, "BAR_LEDGER_PATH", tmp_path / "macd2_bar_ledger.csv")
+    bar_archive._reset_for_tests()
+    bar_ledger._reset_for_tests()
     yield
+    bar_archive._reset_for_tests()
+    bar_ledger._reset_for_tests()
 
 
 @pytest.fixture(autouse=True)

@@ -47,6 +47,8 @@ import pandas as pd
 
 from app.logger import logger
 from app.trading.macd2 import (
+    bar_archive,
+    bar_ledger,
     config,
     early_take_profit,
     ledger,
@@ -488,6 +490,14 @@ def initialize_strategy_session(
     state.signal_rule = config.SIGNAL_RULE
     state.session_started_at = now.isoformat()
     state.worker_instance_id = worker_instance_id
+    # 관측 전용 (2026-09-08): market_data 는 worker 를 import 하지 않으므로
+    # 아카이브가 쓸 instance_id 를 이 MarketDataService **인스턴스**에 심는다.
+    # 모듈 전역이 아니라 인스턴스 속성이어야 동시 Worker 환경에서 서로의
+    # 값을 덮어쓰지 않는다(2026-09-03 dual-Worker 사고, commit 790cea6).
+    try:
+        market_data.observed_worker_instance_id = str(worker_instance_id or "")
+    except Exception:
+        pass
     state.last_executed_direction = None
     state.current_episode_direction = None
     state.processed_signal_ids = []
@@ -1829,6 +1839,28 @@ def _execute_or_wait(
     return outcome
 
 
+#: 관측 전용 (2026-09-08). run_once 가 이번 tick 의 프레임 진단값(bars_3m /
+#: 불완전봉 드롭 목록)을 여기에 둔다. bar_ledger 기록에만 쓰이고 거래 판정은
+#: 절대 읽지 않는다. ``_advance_confirmed_primary`` 의 시그니처를 바꾸지 않으려고
+#: 이 경로를 쓴다 — 기존 테스트들이 그 함수를 3-인자 stub 으로 monkeypatch 한다.
+#:
+#: **thread-local 이어야 하는 이유**: 프로세스당 MACD2 Worker 가 1개라는 보장이
+#: 없다. 2026-09-03 실사고(commit 790cea6)에서 두 Worker 루프가 같은 프로세스
+#: 안에서 동시에 틱을 돌았고, 방어책인 lease 는 (a) 매 틱 *시작 시점*에만
+#: 검사하며 (b) 읽기 실패 시 fail-open(``_holds_worker_lease``) 이라 겹치는
+#: 구간이 남는다. 모듈 전역이면 Worker B 가 덮어쓴 프레임을 Worker A 가 읽어
+#: **진단 컬럼만 조용히 뒤섞인다** — 재현성 추적에 쓰려는 바로 그 값이다.
+#: run_once -> _advance_confirmed_primary 는 같은 스레드 안의 동기 호출이고
+#: Worker 마다 스레드가 분리되므로 thread-local 이 정확한 격리 단위다.
+_OBSERVED_FRAME = threading.local()
+
+
+def _set_observed_frame(bars_3m=None, dropped_bar_starts=None) -> None:
+    """관측 전용. 실패해도 무해하도록 호출부에서 try/except 로 감싼다."""
+    _OBSERVED_FRAME.bars_3m = bars_3m
+    _OBSERVED_FRAME.dropped_bar_starts = dropped_bar_starts
+
+
 def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) -> Direction:
     """Primary (order-authoritative) crossover — completed 3m bars ONLY
     (docs 2026-07-27 KIS-parity fix; restored 2026-08-03 to the known-good
@@ -1905,11 +1937,30 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) ->
     # Order-authoritative FLAG source is fixed to zero-cross onset. KIS
     # color/onset may be displayed as reference only and must not replace
     # this calculation without a fresh production-change decision.
+    # 관측 전용 (2026-09-08): 크로스 판정이 실제로 읽는 직전 상태값. 아래
+    # evaluate_macd_crossover 호출에 넘기는 것과 같은 값이며, 이 대입은
+    # 판정에 아무 영향도 주지 않는다.
+    _observed_prev_direction = state.last_detected_direction
     direction = evaluate_macd_crossover(macd_snap, state.last_detected_direction)
     if direction != Direction.HOLD:
         state.last_detected_direction = direction
         state.latest_primary_flag = direction
         state.latest_primary_signal_id = make_signal_id(macd_snap.bar_dt, direction)
+    # ── 3분 확정봉 MACD 원장 (2026-09-08, 관측 전용) ──────────────────────
+    # 위에서 이미 계산이 끝난 값만 그대로 넘긴다 — 재계산 없음, MACD 호출 없음.
+    # 쓰기 실패는 절대 판정/주문/청산에 영향을 주지 않는다.
+    try:
+        bar_ledger.record_bar(
+            macd_snap=macd_snap,
+            direction=direction,
+            prev_direction_state=_observed_prev_direction,
+            bars_3m=getattr(_OBSERVED_FRAME, "bars_3m", None),
+            dropped_bar_starts=getattr(_OBSERVED_FRAME, "dropped_bar_starts", None),
+            signal_id=(state.latest_primary_signal_id if direction != Direction.HOLD else ""),
+            worker_instance_id=state.worker_instance_id,
+        )
+    except Exception:
+        pass
     return direction
 
 
@@ -4348,6 +4399,10 @@ def run_once(
         _skip_bars_3m, _ = filter_complete_3m_bars(_skip_bars_3m, _skip_df_1m)
         _skip_macd_snap = calculate_macd(_skip_bars_3m)
         if _skip_macd_snap is not None:
+            try:    # 관측 전용
+                _set_observed_frame(_skip_bars_3m, None)
+            except Exception:
+                pass
             _advance_confirmed_primary(state, _skip_macd_snap, now)
         state.order_block_reason = reconcile
         result.skipped = reconcile
@@ -4463,6 +4518,10 @@ def run_once(
     # closed sets baseline only — see _advance_confirmed_primary's own
     # docstring (2026-08-18 fix) for why a genuine same-day first bar no
     # longer does.
+    try:    # 관측 전용 — bar_ledger 진단 컬럼용, 판정에는 쓰이지 않는다
+        _set_observed_frame(bars_3m, _history_gap_bar_starts)
+    except Exception:
+        pass
     confirmed_direction = _advance_confirmed_primary(state, macd_snap, now)
     _advance_premarket_carry_candidate(state, macd_snap, confirmed_direction)
 
