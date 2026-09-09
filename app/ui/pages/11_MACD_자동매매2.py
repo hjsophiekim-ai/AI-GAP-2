@@ -31,6 +31,7 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
+from app.ui import macd2_summary
 from app.ui.auth_gate import require_login
 
 require_login()
@@ -1269,7 +1270,19 @@ def _num(value) -> float:
 
 
 sell_rows_today = [r for r in exec_rows if r.get("side") == "SELL"]
-round_trip_count = len(sell_rows_today)
+# 2026-09-09 사용자 요청 (표시 전용): "왕복거래"를 매도 레그 수가 아니라 **포지션
+# 단위**로 센다. TP1 50% 부분익절이 있으면 한 번의 신규진입이 SELL 레그 2개
+# (TIME_WINDOW_TP1_PARTIAL + 잔량청산)를 남기므로 예전 len(sell_rows_today)는
+# 진입 1회를 "2건"으로 표시했다. 집계 규칙과 그 근거는 app.ui.macd2_summary
+# 모듈 docstring 에 있다 -- 원장/판정/슬롯 카운터는 읽기만 하고, 손익 지표와
+# 하루 3-slot 제한에는 영향이 없다.
+_has_open_position = bool(state.position)
+round_trip_in_progress = macd2_summary.has_in_progress_round_trip(
+    sell_rows_today, has_open_position=_has_open_position
+)
+round_trip_count = macd2_summary.count_round_trips(
+    sell_rows_today, has_open_position=_has_open_position
+)
 total_gross_pnl = sum(_num(r.get("gross_pnl")) for r in exec_rows)
 total_net_pnl = sum(_num(r.get("net_pnl")) for r in exec_rows)
 # 세금+수수료+슬리피지를 합친 총비용 = gross와 net의 차이. 각 SELL 레그 자체의
@@ -1281,10 +1294,23 @@ total_net_pnl = sum(_num(r.get("net_pnl")) for r in exec_rows)
 # 원장에 없는 경우에도 매도(청산) 레그의 net_pnl은 이미 완전한 값이라 영향 없음.
 total_cost = total_gross_pnl - total_net_pnl
 
-sum1, sum2, sum3 = st.columns(3)
-sum1.metric("오늘 왕복거래 횟수", f"{round_trip_count}건")
-sum2.metric("총 수수료+세금+슬리피지", f"{total_cost:,.0f}원")
-sum3.metric("총 순수익", f"{total_net_pnl:,.0f}원")
+sum1, sum2, sum3, sum4 = st.columns(4)
+sum1.metric(
+    "오늘 왕복거래 횟수",
+    macd2_summary.format_round_trips(round_trip_count, in_progress=round_trip_in_progress),
+)
+# 왕복거래와 혼동되지 않도록 진입 슬롯을 같은 요약행에 나란히 둔다. 값은
+# state.tw2_3slot_slots_used_today 를 **읽기만** 한다 -- 이 표시는 캡 판정에
+# 관여하지 않으며(캡은 time_window_3slot.resolve_slot 이 같은 state 값으로
+# 독립 판정), TP1 부분익절/잔량청산은 이 카운터를 증가시키지 않는다
+# (worker.py 의 증가 지점은 진입 경로 2곳뿐).
+sum2.metric(
+    "진입 슬롯",
+    f"{int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}"
+    f"/{macd2_config.TW2_3SLOT_DAILY_CAP}",
+)
+sum3.metric("총 수수료+세금+슬리피지", f"{total_cost:,.0f}원")
+sum4.metric("총 순수익", f"{total_net_pnl:,.0f}원")
 
 st.subheader("매매 내역 (한눈에 보기)")
 _trade_history = _trade_history_rows(exec_rows, signal_rows)

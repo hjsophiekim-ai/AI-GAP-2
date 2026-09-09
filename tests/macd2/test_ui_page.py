@@ -70,9 +70,9 @@ def test_daily_summary_reflects_reconcile_backfilled_buy_and_real_sell_with_no_d
     must count/sum a reconcile-backfilled BUY (source=RECONCILE_BACKFILL,
     all pnl/fee/slippage fields 0.0 -- the true entry-side cost is genuinely
     unknown) together with its later, normal SELL leg with no gap and no
-    double-count -- round-trip count comes from the SELL leg alone, and the
-    cost/pnl totals must equal the SELL leg's own values exactly, since the
-    backfill leg contributes zero to both."""
+    double-count -- the round trip is counted once from the position-closing
+    SELL leg (position_after=0), and the cost/pnl totals must equal the SELL
+    leg's own values exactly, since the backfill leg contributes zero to both."""
     now = pd.Timestamp.now(tz="Asia/Seoul")
     trading_date = now.strftime("%Y%m%d")
     buy_ts = now.replace(hour=12, minute=15, second=38).isoformat()
@@ -97,7 +97,11 @@ def test_daily_summary_reflects_reconcile_backfilled_buy_and_real_sell_with_no_d
     assert not at.exception
 
     metrics_by_label = {m.label: m.value for m in at.metric}
-    assert metrics_by_label.get("오늘 왕복거래 횟수") == "1건"
+    # 2026-09-09: 왕복거래는 매도 레그 수가 아니라 포지션 단위 -- 이 케이스는
+    # 완전청산(position_after=0) 1건이므로 1.0회, 진행중 표기 없음.
+    assert metrics_by_label.get("오늘 왕복거래 횟수") == "1.0회"
+    # 진입 슬롯은 같은 요약행에 별도로 표시된다 (여긴 Worker 미기동 = 0/3).
+    assert metrics_by_label.get("진입 슬롯") == f"0/{config.TW2_3SLOT_DAILY_CAP}"
     # total_cost = gross - net over ALL rows; the backfill leg is 0/0, so
     # this must equal the SELL leg's own gross-net exactly (no double-count):
     expected_cost = -151810.0 - (-158987.04)
