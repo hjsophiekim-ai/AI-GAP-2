@@ -103,6 +103,18 @@ RECOVERED_TO_FLAT = "RECOVERED_TO_FLAT"
 RECOVERED_QTY_MISMATCH = "RECOVERED_QTY_MISMATCH"
 RECOVERED_QTY_INCREASE = "RECOVERED_QTY_INCREASE_UNTRACKED_FILL"
 SIGNAL_NOT_DISPATCHED = "SIGNAL_NOT_DISPATCHED"
+# 2026-09-11 실사고 (플래그 전파 누락) — 아래 두 값은 block_reason 표시용
+# 라벨이며 판정에 쓰이는 파라미터가 아니다.
+#   RESTART_CATCH_UP_REPLAY: 재시작 catch-up replay 가 재구성한 장중 플래그.
+#     그 시각에 live tick 이 없었으므로 주문은 애초에 불가능했지만, 플래그
+#     자체는 원장에 남아야 한다(09:00 이전 프리마켓 플래그가 이미
+#     BEFORE_SESSION_OPEN 으로 남는 것과 같은 취급).
+#   RECONCILE_DEFERRED_SUFFIX: reconcile 차단 tick 에서 "주문만" 미룬 플래그의
+#     감사용 행에 붙이는 signal_id 접미사. 실제 주문 행은 접미사 없는 원래
+#     signal_id 로 남아야 하므로(append_signal 의 signal_id dedup 이 나중 행을
+#     조용히 버린다) 반드시 분리한다.
+RESTART_CATCH_UP_REPLAY = "RESTART_CATCH_UP_REPLAY"
+RECONCILE_DEFERRED_SUFFIX = ":RECONCILE_DEFERRED"
 # Marker key inside ExecutionOutcome.timestamps for a signal the optional
 # Hybrid MAJOR_FLAG gate rejected — no broker/order_executor call ever
 # happened, so run_once must not treat it as an entry/switch attempt.
@@ -449,7 +461,7 @@ def _relation_from_diff(diff: Optional[float]) -> str:
     return "EQUAL"
 
 
-def _record_premarket_catchup_flag(state: RuntimeState, snap, direction: Direction, now: datetime) -> None:
+def _record_catchup_flag(state: RuntimeState, snap, direction: Direction, now: datetime) -> None:
     """2026-08-20 fix (사용자 요청 — 신호 원장에 프리마켓 08:00~09:00 크로스오버도
     표시): a confirmed flag that run_once()'s own live tick evaluates BEFORE
     config.SESSION_OPEN is already recorded to the signal ledger via
@@ -461,17 +473,35 @@ def _record_premarket_catchup_flag(state: RuntimeState, snap, direction: Directi
     — never went through that live-tick path at all, so it silently never
     appeared in the ledger even though the equivalent live flag would have.
     Recorded here the same way (display-only, BLOCKED, no order attempted)
-    only for TODAY's premarket bars — ledger.append_signal's own signal_id
+    only for TODAY's bars — ledger.append_signal's own signal_id
     dedup makes replaying the same bar across multiple restarts a safe no-op.
+
+    2026-09-11 fix (실사고): this used to return early for any bar at/after
+    SESSION_OPEN, so the catch-up walk recorded ONLY premarket flags. An
+    INTRADAY flag reconstructed by the same walk therefore updated
+    last_detected_direction/latest_primary_flag while leaving zero trace in
+    the signal ledger — the UI's own 신호 통계 panel
+    (compute_today_signal_overview, a pure recompute) still showed it, so the
+    two disagreed and a genuinely detected flag looked like it had never
+    happened (2026-09-10: UI last FLAG EVENT 18:54 UP_RED vs signal ledger
+    last row 17:21 UP_RED). A detected direction change must always be
+    persisted regardless of whether an order was possible, so an intraday
+    catch-up bar is now recorded too, tagged RESTART_CATCH_UP_REPLAY to keep
+    it distinguishable from a live-tick flag: there was no live tick at that
+    moment, so no order was ever possible for it either way. Nothing about
+    which flags are DETECTED, or which orders are placed, changes here.
     """
     bar_kst = snap.bar_dt.astimezone(KST)
-    if bar_kst.date() != now.astimezone(KST).date() or bar_kst.time() >= config.SESSION_OPEN:
+    if bar_kst.date() != now.astimezone(KST).date():
         return
+    block_reason = (
+        "BEFORE_SESSION_OPEN" if bar_kst.time() < config.SESSION_OPEN else RESTART_CATCH_UP_REPLAY
+    )
     signal_id = make_signal_id(snap.bar_dt, direction)
     outcome = order_executor.ExecutionOutcome(
         signal_id=signal_id, direction=direction,
         target_symbol=order_executor.target_symbol_for_direction(direction),
-        final_state=SignalState.BLOCKED, block_reason="BEFORE_SESSION_OPEN",
+        final_state=SignalState.BLOCKED, block_reason=block_reason,
     )
     _record_signal_ledger(state, snap, direction, "INITIAL", signal_id, now, outcome)
 
@@ -612,7 +642,7 @@ def initialize_strategy_session(
                 last_flag_snap = snap
                 state.latest_primary_flag = direction
                 state.latest_primary_signal_id = make_signal_id(snap.bar_dt, direction)
-                _record_premarket_catchup_flag(state, snap, direction, now)
+                _record_catchup_flag(state, snap, direction, now)
         state.last_detected_direction = last_direction
         if today_indices:
             macd_snap = calculate_macd(bars_3m.iloc[: today_indices[-1] + 1])
@@ -676,6 +706,19 @@ def initialize_strategy_session(
                     if state.time_window_pending_flag_direction is None:
                         state.time_window_pending_flag_direction = last_direction
                         state.time_window_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
+                # NOTE (2026-09-11 조사): the 3-SLOT modes (TW2 3-SLOT / TWF
+                # 3-SLOT — live since 2026-09-01) are deliberately NOT added
+                # to the branch above, even though the 2026-08-21 rationale
+                # for TW2/TEG applies to them word for word: a restart
+                # catch-up under 3-SLOT still falls through to the bare
+                # pending_signal below and can therefore enter with no T+3
+                # recheck, no quality score and no TEG gate. Routing it to
+                # tw2_3slot_pending_flag_* instead would CHANGE order timing
+                # and results on the restart path (it makes that entry
+                # T+3-gated), which is outside "flag propagation only" and is
+                # exactly what test_worker.py::test_second_restart_does_not_
+                # discard_a_still_pending_catchup_signal currently pins. Left
+                # unchanged on purpose — decide it separately.
                 else:
                     _set_pending_signal(
                         state,
@@ -714,7 +757,7 @@ def initialize_strategy_session(
                 if direction != Direction.HOLD:
                     last_direction = direction
                     last_flag_snap = snap
-                    _record_premarket_catchup_flag(state, snap, direction, now)
+                    _record_catchup_flag(state, snap, direction, now)
             state.last_detected_direction = last_direction
             if last_flag_snap is not None:
                 state.latest_primary_flag = last_direction
@@ -4053,6 +4096,101 @@ def _record_confirmed_blocked_signal(
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
 
 
+def _propagate_confirmed_flag_without_orders(
+    *,
+    state: RuntimeState,
+    macd_snap,
+    bars_3m,
+    df_1m,
+    direction: Direction,
+    now: datetime,
+    result: TickResult,
+    defer_reason: str,
+) -> None:
+    """A confirmed crossover detected on a tick that must not place orders:
+    persist it and register its candidate, never call order_executor/broker.
+
+    2026-09-11 real incident. ``reconcile_position_state`` returning
+    POSITION_DATA_ERROR/POSITION_MISMATCH/RECOVERED_TO_FLAT makes run_once
+    return early, and that early return already (2026-08-31 fix) runs
+    ``_advance_confirmed_primary`` so DETECTION never depends on reconcile
+    health. But it then returned immediately, so everything DOWNSTREAM of
+    detection was skipped: no signal-ledger row, no TW/3-SLOT pending
+    candidate, no opposite-signal exit candidate. A crossover is a bar-local
+    zero-cross event that can never be re-derived from a later bar, and
+    ``evaluate_macd_crossover``'s own repeat-dedup then treats the NEXT
+    same-direction flag as a stale repeat — so the flag was lost outright
+    while ``last_detected_direction`` silently moved on. Observed 2026-09-11:
+    a DOWN_BLUE entry at 10:30:26 was followed by a genuine UP_RED crossover
+    that produced ZERO ledger rows and ZERO T+3 candidate, so the reversal
+    exit never ran and the inverse position was held to a 11:15 stop-loss;
+    the 11:33 DOWN_BLUE that fired afterwards proves the UP_RED had in fact
+    been detected (it could not have fired otherwise — its own prev-direction
+    dedup would have suppressed it).
+
+    Registering the candidate here is pure bookkeeping — the same
+    ``_judge_entry_gate`` call the flat/held paths already make, which for
+    TW2/TEG and the 3-SLOT modes only records ``*_pending_flag_*`` state and
+    returns TW_PENDING_CONFIRMATION. The real decision still happens one bar
+    later in ``_resolve_time_window_candidate``/``_resolve_tw2_3slot_
+    candidate`` on a healthy tick, through the completely unmodified
+    T+3/quality/TEG path. For a mode with no T+3 concept (or one that would
+    have approved an order outright) the flag is instead handed to the
+    EXISTING ``state.pending_signal`` retry queue that both the flat and held
+    branches already consult every tick, so the order happens as soon as
+    reconcile is healthy again — with ``_pending_direction_still_active``'s
+    own staleness guard unchanged.
+
+    Ledger rows never collide: a candidate registration reuses the plain
+    ``signal_id`` exactly like the live flat/held paths do (its T+3
+    resolution row carries the ``:TW2_3SLOT_CONFIRM``/``:TW_CONFIRM``
+    suffix), while a deferred-order audit row is written under
+    ``signal_id + RECONCILE_DEFERRED_SUFFIX`` so the real order row can
+    still be appended under the original signal_id later
+    (``ledger.append_signal`` dedups by signal_id and would otherwise drop
+    it silently).
+    """
+    signal_id = make_signal_id(macd_snap.bar_dt, direction)
+    if signal_id in state.processed_signal_ids:
+        return
+    position = state.position
+    decision, gate_mode = _judge_entry_gate(
+        state=state, bars_3m=bars_3m, df_1m=df_1m, direction=direction, position=position,
+        now=now, signal_id=signal_id,
+    )
+    if decision is not None and not decision.approved:
+        # Candidate registered (or genuinely rejected) by the gate itself —
+        # identical row shape to the live flat/held flag-bar row.
+        _record_major_filtered_signal(
+            state=state, macd_snap=macd_snap, direction=direction,
+            signal_type="REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL",
+            signal_id=signal_id, decision=decision, detected_at=datetime.now(KST),
+            result=result, gate_mode=gate_mode,
+        )
+        return
+    # No T+3 gate to hold this flag (legacy/no-filter modes, or a gate that
+    # approved it): the order itself is what must wait for reconcile, so keep
+    # the event on the existing pending-signal queue and leave an audit row.
+    _set_pending_signal(
+        state, signal_id=signal_id, direction=direction,
+        signal_type="REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL",
+        macd_snap=macd_snap, detected_at=now, reason=defer_reason,
+    )
+    audit_signal_id = f"{signal_id}{RECONCILE_DEFERRED_SUFFIX}"
+    if audit_signal_id in state.processed_signal_ids:
+        return
+    outcome = order_executor.ExecutionOutcome(
+        signal_id=audit_signal_id, direction=direction,
+        target_symbol=order_executor.target_symbol_for_direction(direction),
+        final_state=SignalState.BLOCKED, block_reason=defer_reason,
+    )
+    _record_signal_ledger(
+        state, macd_snap, direction,
+        "REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL",
+        audit_signal_id, datetime.now(KST), outcome,
+    )
+
+
 def _confirmed_signal_order_gate_block_reason(state: RuntimeState, now: datetime) -> str:
     if now.time() < config.SESSION_OPEN:
         return "BEFORE_SESSION_OPEN"
@@ -4446,7 +4584,25 @@ def run_once(
                 _set_observed_frame(_skip_bars_3m, None)
             except Exception:
                 pass
-            _advance_confirmed_primary(state, _skip_macd_snap, now)
+            _skip_direction = _advance_confirmed_primary(state, _skip_macd_snap, now)
+            if _skip_direction != Direction.HOLD:
+                # 2026-09-11 real incident fix: detection alone is not enough
+                # — everything downstream of it (signal-ledger row, TW/3-SLOT
+                # pending candidate, opposite-signal exit candidate) used to
+                # be skipped by this early return, losing the flag outright.
+                # See _propagate_confirmed_flag_without_orders' docstring.
+                # Never places an order on this tick.
+                try:
+                    _propagate_confirmed_flag_without_orders(
+                        state=state, macd_snap=_skip_macd_snap, bars_3m=_skip_bars_3m,
+                        df_1m=_skip_df_1m, direction=_skip_direction, now=now,
+                        result=result, defer_reason=reconcile,
+                    )
+                except Exception:
+                    # This early return exists to keep a reconcile-blocked
+                    # tick harmless; an audit-trail failure must never turn it
+                    # into a raising tick.
+                    logger.exception("[MACD2] confirmed-flag propagation failed during reconcile block")
         state.order_block_reason = reconcile
         result.skipped = reconcile
         result.timing["total"] = time.monotonic() - tick_started
