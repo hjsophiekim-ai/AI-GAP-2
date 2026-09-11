@@ -1323,6 +1323,17 @@ def test_second_restart_does_not_discard_a_still_pending_catchup_signal():
     df_1m_full = _1m_from_3m_closes(start, closes)
 
     state = _fresh_state()  # flat -- no position
+    # 2026-09-11: this test predates the 3-SLOT modes (2026-09-01) and is about
+    # the LEGACY bare-pending_signal path only -- state.pending_signal being
+    # preserved across back-to-back restarts. default_state() turns TW2 3-SLOT
+    # on (config.TW2_3SLOT_FILTER_DEFAULT), and a restart catch-up under any
+    # 3-SLOT mode now correctly routes to that mode's OWN pending-candidate
+    # slot instead (so it still goes through T+3/quality/TEG/slot exactly like
+    # a live flag -- see test_flag_propagation.py's own 3-SLOT catch-up tests).
+    # Pin the legacy path explicitly so this test keeps asserting what it was
+    # written to assert.
+    state.time_window_3slot_filter_enabled = False
+    state.time_window_twf_filter_enabled = False
     bar103_end = start + timedelta(minutes=3 * 104)
     df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < bar103_end]
     svc1 = MarketDataService(mode="mock", fetch_minute_candles=lambda *a: (df_1m_at_restart, {}))

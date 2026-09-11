@@ -490,3 +490,179 @@ def test_every_live_confirmed_ui_flag_has_a_signal_ledger_row(market_data, monke
                   for r in ledger.load_signal_ledger(limit=2000)}
     missing = [r["signal_id"] for r in live if r["signal_id"] not in ledger_ids]
     assert not missing, f"direction changed but ledger missing: {missing}"
+
+
+# ── 7. restart catch-up under 3-SLOT must go through T+3, never bypass it ──
+
+def _restart_catchup_state(*, threeslot: bool) -> RuntimeState:
+    state = _fresh_3slot_state()
+    state.time_window_3slot_filter_enabled = threeslot
+    state.time_window_twf_filter_enabled = False
+    state.time_window_2_filter_enabled = False
+    state.time_window_teg_filter_enabled = False
+    # mid-session restart: a same-day last_confirmed_bar_ts already exists, so
+    # initialize_strategy_session replays today's remaining bars.
+    state.last_confirmed_bar_ts = (_DAY + timedelta(minutes=30)).isoformat()
+    return state
+
+
+def test_restart_catchup_under_3slot_registers_t3_candidate_not_bare_pending(market_data):
+    """2026-09-11 fix: the catch-up walk used to hand its find to the bare
+    state.pending_signal, whose _execute_or_wait path never consults
+    _judge_entry_gate -- entering with no T+3 recheck, no quality score, no
+    TEG gate and no slot accounting. It must use the 3-SLOT pending slot."""
+    svc, _df = market_data
+    state = _restart_catchup_state(threeslot=True)
+
+    worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=240))
+
+    assert state.tw2_3slot_pending_flag_direction is not None, (
+        "a 3-SLOT restart catch-up flag must land on the 3-SLOT pending slot"
+    )
+    assert state.tw2_3slot_pending_flag_bar_ts is not None
+    assert state.pending_signal is None, (
+        "it must NOT go to the bare pending_signal queue (that path bypasses T+3/quality/TEG)"
+    )
+
+
+def test_restart_catchup_legacy_path_still_uses_pending_signal(market_data):
+    """Guard the other side: with every 3-SLOT/TW filter off, the legacy
+    bare-pending_signal handoff is unchanged (test_worker.py's own
+    test_second_restart_does_not_discard_a_still_pending_catchup_signal pins
+    the same behaviour)."""
+    svc, _df = market_data
+    state = _restart_catchup_state(threeslot=False)
+
+    worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=240))
+
+    assert state.tw2_3slot_pending_flag_direction is None
+    assert state.pending_signal is not None
+    assert state.pending_signal["reason"] == "RESTART_CATCH_UP_MULTI_BAR_GAP"
+
+
+def test_restart_catchup_3slot_places_no_order_when_quality_teg_rejects(market_data, monkeypatch):
+    """필수 테스트: quality/TEG 실패 시 재시작 후에도 주문이 나가지 않는다."""
+    svc, _df = market_data
+    state = _restart_catchup_state(threeslot=True)
+    broker = _broker()
+    _Knobs(monkeypatch, entry_decision=_rejected(config.TW_REJECT_LOW_QUALITY_SCORE),
+           teg_approved=False, patch_cross=False)
+
+    worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=240))
+    assert state.tw2_3slot_pending_flag_direction is not None
+
+    # the next live ticks must resolve it through the REAL gate, not order
+    for i in range(3):
+        run_once(broker=broker, market_data=svc, state=state,
+                 now=_DAY + timedelta(minutes=240 + 3 * i))
+
+    assert len(broker.orders) == 0, "a quality/TEG-rejected catch-up flag must never order"
+    assert state.position is None
+    assert state.tw2_3slot_slots_used_today == 0, "a rejected candidate must not consume a slot"
+    reasons = [str(r.get("block_reason") or "") for r in ledger.load_signal_ledger(limit=1000)]
+    assert config.TW_REJECT_LOW_QUALITY_SCORE in reasons, (
+        f"the T+3 rejection must be recorded with its real reason: {reasons}"
+    )
+
+
+def test_restart_twice_does_not_duplicate_3slot_candidate_or_order(market_data, monkeypatch):
+    """필수 테스트: 재시작 전후 동일 플래그 중복주문 금지."""
+    svc, _df = market_data
+    state = _restart_catchup_state(threeslot=True)
+    broker = _broker()
+    _Knobs(monkeypatch, entry_decision=_rejected(config.TW_REJECT_LOW_QUALITY_SCORE),
+           patch_cross=False)
+
+    worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=240))
+    first_dir = state.tw2_3slot_pending_flag_direction
+    first_bar = state.tw2_3slot_pending_flag_bar_ts
+    assert first_dir is not None, "the catch-up replay must actually find a flag for this to mean anything"
+    # second back-to-back restart, no new market data
+    worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=241))
+
+    assert state.tw2_3slot_pending_flag_direction == first_dir, "the candidate must survive a 2nd restart"
+    assert state.tw2_3slot_pending_flag_bar_ts == first_bar, "and must not be clobbered by the replay"
+    assert len(broker.orders) == 0
+
+
+# ── 8. a flag on a tick that already executed must not be dropped ──────────
+
+def test_flag_on_executed_tick_is_recorded_and_kept_as_candidate(market_data, monkeypatch):
+    """필수 테스트: 체결 tick과 같은 봉에서 반대플래그 발생 시 ledger/pending 누락 0건.
+
+    T+3 해소가 체결되는 tick에 같은 봉의 새 크로스오버가 겹치는 상황 -- flat
+    경로의 early return 5곳이 전부 플래그 기록보다 앞서 return 한다."""
+    svc, _df = market_data
+    state = _fresh_3slot_state()
+    broker = _broker()
+    knobs = _Knobs(monkeypatch, entry_decision=_approved())
+    # a pending candidate from the PREVIOUS bar resolves (and enters) this tick
+    state.tw2_3slot_pending_flag_direction = Direction.UP_RED
+    # an OLD flag bar so _resolve_tw2_3slot_candidate is past the flag's own
+    # bar T and actually resolves this tick (same recipe as
+    # test_tw2_3slot_worker_regression.py::_prime_3slot_pending)
+    state.tw2_3slot_pending_flag_bar_ts = _DAY.isoformat()
+    # ...while THIS bar produces a brand-new opposite crossover
+    knobs.cross = Direction.DOWN_BLUE
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=_NOW0)
+
+    assert any(a.startswith("TW2_3SLOT_ENTRY") for a in result.actions), result.actions
+    assert len(broker.orders) == 1, "exactly the one entry this tick -- no extra order for the new flag"
+    assert _flag_rows(Direction.DOWN_BLUE), "the new DOWN_BLUE flag must be in the signal ledger"
+    assert state.tw2_3slot_pending_flag_direction == Direction.DOWN_BLUE, (
+        "the new flag must be registered as this mode's own T+3 candidate"
+    )
+    assert state.tw2_3slot_pending_flag_bar_ts is not None
+
+
+def test_flag_on_executed_tick_is_not_double_recorded(market_data, monkeypatch):
+    """필수 테스트: 중복 ledger/order 0건 -- 같은 봉을 여러 tick 관측해도 1건."""
+    svc, _df = market_data
+    state = _fresh_3slot_state()
+    broker = _broker()
+    knobs = _Knobs(monkeypatch, entry_decision=_approved())
+    state.tw2_3slot_pending_flag_direction = Direction.UP_RED
+    # an OLD flag bar so _resolve_tw2_3slot_candidate is past the flag's own
+    # bar T and actually resolves this tick (same recipe as
+    # test_tw2_3slot_worker_regression.py::_prime_3slot_pending)
+    state.tw2_3slot_pending_flag_bar_ts = _DAY.isoformat()
+    knobs.cross = Direction.DOWN_BLUE
+
+    run_once(broker=broker, market_data=svc, state=state, now=_NOW0)
+    rows_after_first = len(_flag_rows(Direction.DOWN_BLUE))
+    orders_after_first = len(broker.orders)
+    # same bar observed again on later ticks
+    run_once(broker=broker, market_data=svc, state=state, now=_NOW0 + timedelta(seconds=5))
+    run_once(broker=broker, market_data=svc, state=state, now=_NOW0 + timedelta(seconds=10))
+
+    assert rows_after_first == 1
+    assert len(_flag_rows(Direction.DOWN_BLUE)) == 1, "no duplicate ledger row for the same flag"
+    assert len(broker.orders) == orders_after_first, "no duplicate order"
+
+
+def test_executed_tick_without_new_flag_is_completely_unchanged(market_data, monkeypatch):
+    """필수 테스트: 기존 정상 거래 결과/슬롯/청산 결과 변화 0건.
+
+    같은 tick에 새 크로스오버가 없으면(HOLD) 이 수정은 아무 것도 하지 않는다."""
+    svc, _df = market_data
+    state = _fresh_3slot_state()
+    broker = _broker()
+    knobs = _Knobs(monkeypatch, entry_decision=_approved())
+    state.tw2_3slot_pending_flag_direction = Direction.UP_RED
+    # an OLD flag bar so _resolve_tw2_3slot_candidate is past the flag's own
+    # bar T and actually resolves this tick (same recipe as
+    # test_tw2_3slot_worker_regression.py::_prime_3slot_pending)
+    state.tw2_3slot_pending_flag_bar_ts = _DAY.isoformat()
+    knobs.cross = Direction.HOLD  # no new flag this tick
+
+    result = run_once(broker=broker, market_data=svc, state=state, now=_NOW0)
+
+    assert any(a.startswith("TW2_3SLOT_ENTRY") for a in result.actions), result.actions
+    assert len(broker.orders) == 1
+    assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
+    assert state.tw2_3slot_slots_used_today == 1, "slot accounting unchanged"
+    assert state.tw2_3slot_pending_flag_direction is None, "no phantom candidate is created"
+    rows = ledger.load_signal_ledger(limit=1000)
+    assert len(rows) == 1, f"exactly the entry's own row, nothing extra: {rows}"
+    assert "EXECUTED" in str(rows[0].get("order_result") or "")

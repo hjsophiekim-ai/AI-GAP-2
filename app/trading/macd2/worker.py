@@ -115,6 +115,9 @@ SIGNAL_NOT_DISPATCHED = "SIGNAL_NOT_DISPATCHED"
 #     조용히 버린다) 반드시 분리한다.
 RESTART_CATCH_UP_REPLAY = "RESTART_CATCH_UP_REPLAY"
 RECONCILE_DEFERRED_SUFFIX = ":RECONCILE_DEFERRED"
+#   TICK_ALREADY_EXECUTED: 이 tick 이 이미 주문을 냈기 때문에 "주문만" 다음
+#     tick 으로 미룬 플래그. 플래그 자체는 원장/후보에 정상 기록된다.
+TICK_ALREADY_EXECUTED = "TICK_ALREADY_EXECUTED"
 # Marker key inside ExecutionOutcome.timestamps for a signal the optional
 # Hybrid MAJOR_FLAG gate rejected — no broker/order_executor call ever
 # happened, so run_once must not treat it as an entry/switch attempt.
@@ -706,19 +709,33 @@ def initialize_strategy_session(
                     if state.time_window_pending_flag_direction is None:
                         state.time_window_pending_flag_direction = last_direction
                         state.time_window_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
-                # NOTE (2026-09-11 조사): the 3-SLOT modes (TW2 3-SLOT / TWF
-                # 3-SLOT — live since 2026-09-01) are deliberately NOT added
-                # to the branch above, even though the 2026-08-21 rationale
-                # for TW2/TEG applies to them word for word: a restart
-                # catch-up under 3-SLOT still falls through to the bare
-                # pending_signal below and can therefore enter with no T+3
-                # recheck, no quality score and no TEG gate. Routing it to
-                # tw2_3slot_pending_flag_* instead would CHANGE order timing
-                # and results on the restart path (it makes that entry
-                # T+3-gated), which is outside "flag propagation only" and is
-                # exactly what test_worker.py::test_second_restart_does_not_
-                # discard_a_still_pending_catchup_signal currently pins. Left
-                # unchanged on purpose — decide it separately.
+                elif time_window_3slot.is_3slot_enabled(state):
+                    # 2026-09-11 fix (사용자 요청): the 2026-08-21 rationale in
+                    # the TW2/TEG branch above applies to the 3-SLOT modes
+                    # (TW2 3-SLOT / TWF 3-SLOT — the ones actually live since
+                    # 2026-09-01) word for word, but they were never added to
+                    # it. A restart catch-up under 3-SLOT therefore fell
+                    # through to the bare ``pending_signal`` below, and
+                    # ``_execute_or_wait``'s pending path never consults
+                    # ``_judge_entry_gate`` at all — so that entry went in with
+                    # NO T+3 re-confirmation, NO quality score, NO TEG gate and
+                    # NO slot accounting, completely bypassing the filter the
+                    # user has turned on. Route it through this mode's OWN
+                    # pending-candidate slot instead: pure bookkeeping, no
+                    # order, and ``_resolve_tw2_3slot_candidate`` then runs the
+                    # real T+3 -> quality/TEG -> slot decision on a later tick,
+                    # byte-identical to a live-detected flag.
+                    #
+                    # Same "a candidate already on state always wins" rule as
+                    # the TW2/TEG branch (and the same reason — 2026-08-24
+                    # incident): the slot is reloaded from disk so it survives
+                    # the restart and is by construction never older than what
+                    # this abbreviated replay can find, which is also what
+                    # keeps a second back-to-back restart from discarding a
+                    # still-pending candidate.
+                    if state.tw2_3slot_pending_flag_direction is None:
+                        state.tw2_3slot_pending_flag_direction = last_direction
+                        state.tw2_3slot_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
                 else:
                     _set_pending_signal(
                         state,
@@ -4726,6 +4743,42 @@ def run_once(
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
 
+    def _preserve_confirmed_flag(reason: str) -> None:
+        """2026-09-11 fix (사용자 요청): an EXECUTION on this tick must not
+        swallow this tick's OWN newly confirmed flag.
+
+        Everything below that actually places an order returns early
+        (a T+3 switch/sell-only, a whipsaw-watch exit, a pending-signal fill,
+        the 09:03 scheduled entry, a premarket-carry entry, PROFIT_LOCK/
+        QUICK_PROFIT) — and every one of those early returns sits BEFORE the
+        code that records a confirmed flag and registers its candidate. When a
+        genuinely new crossover landed on that same bar it was therefore
+        dropped outright: no signal-ledger row, no pending/T+3 candidate. A
+        crossover is a bar-local zero-cross event that can never be re-derived
+        from a later bar, and ``evaluate_macd_crossover``'s repeat-dedup then
+        swallows the NEXT same-direction flag too (the 2026-08-31 incident
+        shape). Reachable on consecutive-bar flags, which is exactly when a
+        T+3 resolution and a fresh flag share one bar.
+
+        Persists state -> ledger -> candidate, and NEVER places an order on
+        this tick; the next healthy tick resolves it through the completely
+        unmodified T+3/quality/TEG/slot path. Same helper, same dedup
+        (``processed_signal_ids`` + ``append_signal``'s signal_id dedup) the
+        reconcile-blocked path already uses, so the order that just executed
+        here is never duplicated.
+        """
+        if confirmed_direction == Direction.HOLD:
+            return
+        try:
+            _propagate_confirmed_flag_without_orders(
+                state=state, macd_snap=macd_snap, bars_3m=bars_3m, df_1m=df_1m,
+                direction=confirmed_direction, now=now, result=result, defer_reason=reason,
+            )
+        except Exception:
+            # An audit-trail failure must never turn an already-executed tick
+            # into a raising tick.
+            logger.exception("[MACD2] confirmed-flag preservation failed on early-return tick")
+
     before_open = now.time() < config.SESSION_OPEN
     entry_cutoff_passed = now.time() >= config.NEW_ENTRY_CUTOFF
     entry_window_open = (not before_open) and (not entry_cutoff_passed) and not state.quote_history_mismatch_reason
@@ -4776,6 +4829,7 @@ def run_once(
                 result.actions.append(f"TIME_WINDOW_SWITCH:{tw_resolve_outcome.target_symbol}")
             else:
                 result.actions.append(f"TIME_WINDOW_SELL_ONLY:{tw_resolve_outcome.target_symbol}")
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
         # TW2 3-SLOT (2026-09-01): resolves its own pending T+3 candidate,
@@ -4793,6 +4847,7 @@ def run_once(
                 result.actions.append(f"TW2_3SLOT_SWITCH:{tw2_3slot_resolve_outcome.target_symbol}")
             else:
                 result.actions.append(f"TW2_3SLOT_SELL_ONLY:{tw2_3slot_resolve_outcome.target_symbol}")
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
         # Whipsaw-watch follow-up (2026-09-02, real incident): shared by TW2
@@ -4809,6 +4864,7 @@ def run_once(
             bars_3m=bars_3m, position=pos, result=result,
         )
         if whipsaw_watch_outcome is not None and whipsaw_watch_outcome.final_state == SignalState.EXECUTED:
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
         if (
@@ -4915,6 +4971,7 @@ def run_once(
                     _apply_switch_outcome(state, outcome, pending_dir, now)
                     result.actions.append(f"OPPOSITE_SIGNAL:{pending_dir.value}")
                     state.last_evaluated_bar_ts = bar_ts_str
+                    _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
                     return result
 
         # NOTE: the forming-bar candidate (candidate_snap/candidate_condition)
@@ -5140,6 +5197,7 @@ def run_once(
                             str(outcome.sell_result.order_id or ""), profit_lock_ledger_fields,
                         )
                     result.actions.append(f"PROFIT_LOCK_MACD_CONVERGENCE:{pos.symbol}")
+                    _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
                     return result
 
         # Quick-Profit take-profit filter (2026-08-04 user spec, priority 5 —
@@ -5171,6 +5229,7 @@ def run_once(
                 )
                 _apply_exit_outcome(state, outcome)
                 result.actions.append(f"QUICK_PROFIT_TAKE_PROFIT:{pos.symbol}")
+                _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
                 return result
 
         state.last_evaluated_bar_ts = bar_ts_str
@@ -5183,6 +5242,7 @@ def run_once(
     )
     if tw_resolve_outcome is not None and tw_resolve_outcome.final_state == SignalState.EXECUTED:
         result.actions.append(f"TIME_WINDOW_ENTRY:{tw_resolve_outcome.target_symbol}")
+        _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
         return result
 
     tw2_3slot_resolve_outcome = _resolve_tw2_3slot_candidate(
@@ -5191,6 +5251,7 @@ def run_once(
     )
     if tw2_3slot_resolve_outcome is not None and tw2_3slot_resolve_outcome.final_state == SignalState.EXECUTED:
         result.actions.append(f"TW2_3SLOT_ENTRY:{tw2_3slot_resolve_outcome.target_symbol}")
+        _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
         return result
 
     if _scheduled_entry_should_fire(state, now):
@@ -5198,6 +5259,7 @@ def run_once(
         if scheduled_outcome is not None:
             result.actions.append(f"SCHEDULED_ENTRY_0903:{scheduled_outcome.target_symbol}")
             state.last_evaluated_bar_ts = bar_ts_str
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
     if _premarket_carry_should_fire(state, now):
@@ -5207,6 +5269,7 @@ def run_once(
         if carry_outcome is not None:
             result.actions.append(f"PREMARKET_CARRY_TW:{carry_outcome.target_symbol}")
             state.last_evaluated_bar_ts = bar_ts_str
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
     if state.pending_signal and not state.pending_signal.get("order_requested"):
@@ -5222,6 +5285,7 @@ def run_once(
                 _apply_switch_outcome(state, outcome, pending_dir, now)
                 result.actions.append(f"ENTRY:{pending_dir.value}")
                 state.last_evaluated_bar_ts = bar_ts_str
+                _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
                 return result
 
     # NOTE: see the held-position branch above — the forming-bar candidate
