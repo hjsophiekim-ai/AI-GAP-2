@@ -989,7 +989,7 @@ with _twf_cols[1]:
 _x2lite_cols = st.columns([1.4, 1.6])
 with _x2lite_cols[0]:
     _x2lite_on = st.checkbox(
-        macd2_config.X2LITE_3SLOT_STRATEGY_NAME,
+        f"{macd2_config.X2LITE_3SLOT_STRATEGY_NAME} + {macd2_config.X2LITE_SIZING_NAME} sizing",
         value=bool(getattr(state, "time_window_x2lite_filter_enabled", False)),
         key="macd2_time_window_x2lite_filter_toggle",
         help=(
@@ -1007,6 +1007,11 @@ with _x2lite_cols[0]:
             f"floor +{macd2_config.X2LITE_EARLY_TP_FLOOR_PCT:.1f}%) — 아래 '조기익절 필터' 토글은 이 모드에서 "
             "참조되지 않으므로 중복 적용되지 않습니다. 휩쏘/반대신호/강제청산/profit-lock 등 나머지 청산 "
             "로직은 전부 기존 그대로입니다. "
+            f"**주문수량에 {macd2_config.X2LITE_SIZING_NAME} sizing 이 자동 적용**됩니다 — 진입/청산 판정은 "
+            "한 줄도 바뀌지 않고 수량만 조절합니다: 진입 확정봉이 CHOP 이면 80%, 그날 첫 거래가 "
+            "STOP_LOSS 로 끝난 뒤의 진입은 120%, 둘 다면 96%. 단일 거래 25~150%, 하루 누적 "
+            "exposure 300% 상한(초과분은 마지막 슬롯 수량이 줄어듭니다). 별도 sizing 토글은 없으므로 "
+            "중복 적용되지 않습니다. "
             "⚠ 잠정(provisional) — 사후조회 프리마켓 봉 기반이고 production 신호 재현율이 42.9% 로 "
             "측정됐습니다. 확정 성과로 보지 마세요. "
             "검증(faithful-fill, 70영업일 20260527~20260908, 진입 172건 전부 F 와 동일, "
@@ -1042,6 +1047,16 @@ if bool(getattr(state, "time_window_x2lite_filter_enabled", False)):
         f"오전 SL -{abs(macd2_config.X2LITE_MORNING_STOP_LOSS) * 100:.1f}% · "
         f"ETP trigger {macd2_config.X2LITE_EARLY_TP_TRIGGER_PCT:.1f}% / floor {macd2_config.X2LITE_EARLY_TP_FLOOR_PCT:.1f}% "
         "(**ETP 포함** — 자동 ON)"
+    )
+    st.caption(
+        f"└ 수량: **{macd2_config.X2LITE_SIZING_NAME} sizing 자동 적용** — "
+        f"CHOP {macd2_config.X2LITE_SIZING_CHOP_MULT * 100:.0f}% / "
+        f"그날 첫 거래 손절 이후 {macd2_config.X2LITE_SIZING_POST_STOP_MULT * 100:.0f}% "
+        f"(둘 다 {macd2_config.X2LITE_SIZING_CHOP_MULT * macd2_config.X2LITE_SIZING_POST_STOP_MULT * 100:.0f}%) · "
+        f"단일 {macd2_config.X2LITE_SIZING_MIN_MULT * 100:.0f}~{macd2_config.X2LITE_SIZING_MAX_MULT * 100:.0f}% · "
+        f"일일 exposure 상한 {macd2_config.X2LITE_SIZING_DAILY_EXPOSURE_CAP * 100:.0f}% · "
+        f"오늘 사용 {float(getattr(state, 'x2lite_exposure_used_today', 0.0) or 0.0) * 100:.0f}%"
+        + (" · 첫 거래 손절 확정" if getattr(state, 'x2lite_first_trade_stop_loss', False) else "")
     )
 
 # ── 조기익절 필터 (TW2 3-SLOT / TW TEG 3-SLOT 공통 서브필터, 2026-09-03) ───────

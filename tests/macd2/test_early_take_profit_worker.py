@@ -126,8 +126,15 @@ def _forbid_early_tp(monkeypatch) -> None:
 
 # ── A. 필터 OFF 회귀 ──────────────────────────────────────────────────────
 def test_off_by_default_in_a_fresh_state():
+    """수동 토글은 여전히 기본 OFF. 다만 2026-09-12 부터 fresh state 의 기본
+    전략이 X2-lite 이고 X2-lite 는 조기익절을 **내장**하므로(is_enabled 가
+    토글과 무관하게 True) 그 경우를 분리해서 확인한다."""
     state = state_store.default_state()
-    assert state.early_tp_filter_enabled is False
+    assert state.early_tp_filter_enabled is False, "수동 토글은 기본 OFF"
+    assert etp.is_enabled(state) is True, "X2-lite 내장 ETP 는 자동 ON"
+    # X2-lite 가 아닌 3-SLOT 계열에서는 예전 그대로 토글에 따라 OFF 다.
+    state.time_window_x2lite_filter_enabled = False
+    state.time_window_3slot_filter_enabled = True
     assert etp.is_enabled(state) is False
 
 
@@ -225,6 +232,9 @@ def test_cannot_enable_the_filter_while_tw2_3slot_is_off():
     svc = service_module.Macd2Service()
     state = state_store.load_state()
     state.time_window_3slot_filter_enabled = False
+    # 2026-09-12: X2-lite 가 기본값 -- "3-SLOT 계열이 하나도 안 켜진" 전제를
+    # 만들려면 X2-lite 도 함께 꺼야 한다.
+    state.time_window_x2lite_filter_enabled = False
     state.early_tp_filter_enabled = False
     state_store.save_state(state)
 

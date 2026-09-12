@@ -54,6 +54,7 @@ from app.trading.macd2 import (
     ledger,
     major_flag_filter,
     order_executor,
+    position_sizing,
     risk_exit,
     sideways_filter,
     single_entry_filter,
@@ -424,6 +425,9 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.tw2_3slot_morning_count = 0
     state.tw2_3slot_afternoon_count = 0
     state.tw2_3slot_last_afternoon_direction = None
+    # W1a 사이징(2026-09-12)의 누적 exposure / 진입순번 / 첫거래 손절
+    # 플래그도 session-scoped -- 토글은 그대로 두고 값만 리셋한다.
+    position_sizing.reset_daily(state)
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -1699,6 +1703,7 @@ def _execute_or_wait(
     position: Optional[PositionSnapshot],
     result: TickResult,
     signal_detected_at: Optional[datetime] = None,
+    budget_multiplier: float = 1.0,
 ):
     order_started = time.monotonic()
     result.signal_dispatch_trace = {
@@ -1794,9 +1799,15 @@ def _execute_or_wait(
 
     result.signal_dispatch_trace["order_executor_called"] = True
     result.signal_dispatch_trace["executor_called_at"] = datetime.now(KST).isoformat()
+    # W1a 사이징(2026-09-12): **budget 에만** 배수를 곱한다. 기본값 1.0 이라
+    # X2-lite 외 모든 호출부는 바이트 단위로 동일하다. 수량 산출은
+    # order_executor.compute_limit_buy_quantity 가 그대로 하므로
+    # min(budget, orderable_cash) / limit_buyable_qty 상한이 자동으로 걸려
+    # 주문가능금액을 넘는 주문이 구조적으로 나갈 수 없다.
+    _sized_budget = float(state.budget or 0.0) * float(budget_multiplier or 1.0)
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=signal_id, quotes=quotes,
-        position=position, budget=state.budget,
+        position=position, budget=_sized_budget,
         processed_signal_ids=frozenset(state.processed_signal_ids),
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
     )
@@ -2503,7 +2514,7 @@ def _advance_held_position_risk_management(
                         exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
                         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
                     )
-                    _apply_exit_outcome(state, outcome)
+                    _apply_exit_outcome(state, outcome, exit_reason=pm_decision.exit_reason)
                     if outcome.final_state == SignalState.EXECUTED:
                         state.time_window_position_active = False
                         state.time_window_tp1_done = pm_decision.tp1_done
@@ -3333,10 +3344,27 @@ def _resolve_tw2_3slot_candidate_body(
     signal_detected_at = datetime.now(KST)
     result.signal_detected_at = signal_detected_at.isoformat()
     signal_type = "REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL"
+    # ── W1a 포지션 사이징 (X2-lite 전용, 2026-09-12) ────────────────────
+    # 진입 승인 여부는 위에서 이미 끝났다. 여기서는 **주문수량 배수만**
+    # 정한다. CHOP 판정이 주문 전에 필요하므로 X2-lite 일 때만 여기서 미리
+    # 계산하고, 아래 진입 성공 블록이 같은 값을 재사용한다(같은 순수함수에
+    # 같은 입력이라 값이 달라질 수 없다). X2-lite 가 아니면 이 블록 전체가
+    # no-op 이고 배수는 1.0 이라 기존 동작이 조금도 바뀌지 않는다.
+    _presized_chop = None
+    _sizing = position_sizing.NEUTRAL
+    if position_sizing.is_active(state):
+        _presized_chop = early_take_profit.evaluate_entry_chop(bars_3m, direction, now)
+        _sizing = position_sizing.evaluate(state, entry_chop=bool(_presized_chop.is_chop))
+        result.signal_dispatch_trace["x2lite_sizing"] = {
+            "raw": _sizing.raw, "clipped": _sizing.clipped,
+            "applied": _sizing.applied, "capped": _sizing.capped,
+            "exposure_before": _sizing.exposure_before, "reason": _sizing.reason,
+        }
     outcome = _execute_or_wait(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
         signal_detected_at=signal_detected_at,
+        budget_multiplier=_sizing.applied,
     )
     result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, "TW2_3SLOT")
     if outcome is None and result.skipped == config.MISSED_SIGNAL_QUOTE_STALE:
@@ -3370,10 +3398,15 @@ def _resolve_tw2_3slot_candidate_body(
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
         if early_take_profit.is_enabled(state):
-            chop = early_take_profit.evaluate_entry_chop(bars_3m, direction, now)
+            # 2026-09-12: W1a 가 주문 전에 계산해 둔 값이 있으면 그대로 쓴다 --
+            # 사이징에 쓴 CHOP 과 포지션에 저장되는 CHOP 이 어긋날 수 없다.
+            chop = (_presized_chop if _presized_chop is not None
+                    else early_take_profit.evaluate_entry_chop(bars_3m, direction, now))
             state.time_window_entry_chop = bool(chop.is_chop)
             state.last_entry_chop_score = int(chop.score)
             state.last_entry_chop_conditions = dict(chop.conditions)
+        # W1a: 체결된 뒤에만 누적 exposure/진입순번을 올린다(진입시점 누적).
+        position_sizing.note_entry(state, _sizing)
         state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
         if session == time_window_3slot.SESSION_MORNING:
             state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
@@ -5347,9 +5380,17 @@ def _record_major_exit(state: RuntimeState, symbol: Optional[str]) -> None:
     state.last_major_exit_direction = direction
 
 
-def _apply_exit_outcome(state: RuntimeState, outcome) -> None:
+def _apply_exit_outcome(state: RuntimeState, outcome,
+                        exit_reason: Optional[str] = None) -> None:
     _record_broker_order_result(state, outcome)
     if outcome.final_state == SignalState.EXECUTED:
+        # W1a 사이징(2026-09-12): 그날 **첫 거래**가 정확히
+        # config.EXIT_TW_STOP_LOSS 로 전량청산됐는지만 기록한다. TP1 이후
+        # 잔량 stop / trailing / 반대신호 / whipsaw / 강제청산 / 조기익절은
+        # 전부 해당하지 않는다. ExecutionOutcome 에는 exit_reason 필드가
+        # 없으므로 호출부가 명시적으로 넘긴다 -- 안 넘기면 None 이라 no-op.
+        # 아래에서 time_window_* 상태가 초기화되기 전에 호출해야 한다.
+        position_sizing.note_full_exit(state, exit_reason)
         exited_symbol = outcome.target_symbol or (outcome.sell_result.symbol if outcome.sell_result else None)
         state.position = None
         state.peak_net_return = 0.0

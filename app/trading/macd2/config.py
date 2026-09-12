@@ -947,7 +947,10 @@ TW_TEG_COUNT_CAP_BYPASS = "TW_TEG_COUNT_CAP_BYPASS"
 # 없음. 이미 실행 중인 배포는 저장된 state.json 값을 그대로 쓰므로, 반영
 # 되려면 UI에서 직접 토글하거나 상태를 리셋해야 한다(의도적으로 자동
 # 마이그레이션을 추가하지 않았음 -- 다른 로직 변경 금지 요청).
-TW2_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_TW2_3SLOT_FILTER_DEFAULT", True)
+# 2026-09-12: X2-lite 승격으로 기본값을 False 로 내린다(같은 tier 에서 둘 다
+# True 면 _MODE_BY_FLAG 순서상 TW2 3-SLOT 이 이겨 X2-lite 가 절대 안 켜진다).
+# 저장된 state 가 명시적으로 켜 둔 경우는 그대로 존중된다.
+TW2_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_TW2_3SLOT_FILTER_DEFAULT", False)
 TW2_3SLOT_FILTER_VERSION = "TW2_3SLOT_V1_20260901"
 TW2_3SLOT_STRATEGY_NAME = "TW2 3-SLOT"
 TW2_3SLOT_DAILY_CAP = _env_int("MACD2_TW2_3SLOT_DAILY_CAP", 3)
@@ -1123,7 +1126,15 @@ TWF_AFTERNOON_TP = _env_float("MACD2_TWF_AFTERNOON_TP", 0.030)                 #
 #   ETP trigger 를 1.2 로 더 낮춘 X2 는 채택하지 않았다 — 우위가 172건 중
 #   6건(최근30일 4건)에만 걸려 있고 그중 20260810 한 거래가 순효과의 대부분을
 #   만든다(최근30일 bootstrap 우위확률 80%, 95% 미달).
-X2LITE_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_X2LITE_3SLOT_FILTER_DEFAULT", False)
+# 2026-09-12 사용자 결정: X2-lite 를 **기본 전략**으로 승격한다. 같은 tier 의
+# TW2 3-SLOT 기본값을 False 로 내려 fresh state 에서 X2-lite 만 켜지게 하고,
+# 이미 저장된 state.json 은 state_store 의 일회성 마이그레이션이 넘겨받는다
+# (X2LITE_ADOPT_ON_MIGRATION 주석 참조).
+X2LITE_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_X2LITE_3SLOT_FILTER_DEFAULT", True)
+#: 기존 state.json 에 X2-lite 키가 아예 없을 때(= 이 기능 이전에 저장된 상태)
+#: 한 번만 X2-lite 로 갈아타고 같은 tier 의 다른 전략을 끈다. False 로 두면
+#: 마이그레이션 없이 저장된 전략이 그대로 유지된다.
+X2LITE_ADOPT_ON_MIGRATION = _env_bool("MACD2_X2LITE_ADOPT_ON_MIGRATION", True)
 X2LITE_3SLOT_STRATEGY_NAME = "X2-lite"
 X2LITE_3SLOT_FILTER_VERSION = "X2LITE_3SLOT_V1_20260912"
 
@@ -1137,6 +1148,47 @@ X2LITE_MORNING_TP2 = _env_float("MACD2_X2LITE_MORNING_TP2", 0.05)
 # 조기익절 — 퍼센트 단위(EARLY_TP_*_PCT 와 같은 관례).
 X2LITE_EARLY_TP_TRIGGER_PCT = _env_float("MACD2_X2LITE_EARLY_TP_TRIGGER_PCT", 1.5)
 X2LITE_EARLY_TP_FLOOR_PCT = _env_float("MACD2_X2LITE_EARLY_TP_FLOOR_PCT", 1.0)
+
+# ── W1a 포지션 사이징 (2026-09-12 사용자 요청) ─────────────────────────────
+# X2-lite 선택 시 **자동 적용**되는 주문수량 조절 규칙. 진입/청산 판정을 한 줄도
+# 건드리지 않는다 — 승인된 진입의 **주문수량(budget 배수)만** 바꾼다.
+#
+#   기본                                    100%
+#   진입 확정봉이 CHOP                        x0.80
+#   그날 첫 거래가 STOP_LOSS 로 종료된 뒤        x1.20
+#   둘 다                                   0.80 x 1.20 = 96%
+#   단일거래 clip                            25% ~ 150%
+#   일일 누적 exposure 상한                   300% (greedy — 남은 한도만 배정)
+#
+# "그날 첫 거래" 판정은 **정확히 config.EXIT_TW_STOP_LOSS 로 전량청산된 경우만**
+# 이다. TP1 이후 잔량 stop(EXIT_TW_AFTER_TP1_STOP) / trailing / 반대신호 /
+# whipsaw / 강제청산 / 조기익절은 전부 제외한다 — 연구 하네스가 쓴 정의와 같다
+# (data/validation/exit_uplift_20260911/sizing_lab_20260912/).
+#
+# exposure 는 **진입 시점 누적**이다. 부분익절/청산은 누적을 되돌리지 않는다
+# (연구 사양 그대로). 날짜가 바뀌면 0 으로 리셋한다.
+#
+# ⚠ PROVISIONAL — X2-lite 와 같은 한계가 그대로 적용된다(신호 재현율 42.9%,
+# 청산시각 파리티 xfail, 슬리피지·부분체결 미반영). 과최적화 검증은
+# .../sizing_lab_20260912/overfit_check/README.md 에서 ROBUST 판정을 받았으나
+# 두 유보조건이 있다: (1) 최근20일 창에서는 통계적 우위가 확인되지 않았다
+# (bootstrap 74.8%), (2) CHOP 축의 '선택성' 은 라벨 셔플 테스트에서 검증되지
+# 않았다(86.70 percentile) — 그래서 CHOP 배수를 0.75 가 아닌 **0.80** 으로
+# 보수적으로 둔 W1a 를 채택했다.
+#
+# 검증 (faithful-fill, 70영업일 20260527~20260908, 거래 172건 X2-lite 와 동일):
+#   X2-lite      70일 복리 +146.30% / PF 1.729 / MDD  -9.85% / 일승률 62.9%
+#   +W1a sizing  70일 복리 +170.01% / PF 1.834 / MDD  -9.87% / 일승률 67.1%
+#   최근30일     +59.05% -> +67.51% / PF 1.865 -> 2.023 / MDD -8.02% -> -6.40%
+#   손실일 26->23 · -2% 이하 손실일 9->7 · 최대 연속손실 4->3 · 평균 수량 98.5%
+X2LITE_SIZING_ENABLED = _env_bool("MACD2_X2LITE_SIZING_ENABLED", True)
+X2LITE_SIZING_VERSION = "W1A_V1_20260912"
+X2LITE_SIZING_NAME = "W1a"
+X2LITE_SIZING_CHOP_MULT = _env_float("MACD2_X2LITE_SIZING_CHOP_MULT", 0.80)
+X2LITE_SIZING_POST_STOP_MULT = _env_float("MACD2_X2LITE_SIZING_POST_STOP_MULT", 1.20)
+X2LITE_SIZING_MIN_MULT = _env_float("MACD2_X2LITE_SIZING_MIN_MULT", 0.25)
+X2LITE_SIZING_MAX_MULT = _env_float("MACD2_X2LITE_SIZING_MAX_MULT", 1.50)
+X2LITE_SIZING_DAILY_EXPOSURE_CAP = _env_float("MACD2_X2LITE_SIZING_DAILY_CAP", 3.00)
 
 # ── 레거시 진입전략 토글 숨김 (2026-09-07 사용자 요청) ──────────────────────
 # 사용자에게 노출하는 전략을 "TW2 3-SLOT + 조기익절" / "TWF 3-SLOT + 조기익절"

@@ -134,6 +134,8 @@ def test_etp_thresholds_unchanged_for_every_non_x2lite_mode():
         setattr(s, flag, True)
         assert etp.thresholds(s) == (config.EARLY_TP_TRIGGER_PCT, config.EARLY_TP_FLOOR_PCT)
     s = state_store.default_state()
+    s.time_window_x2lite_filter_enabled = False   # 2026-09-12: 이제 이것이 기본값
+    s.time_window_3slot_filter_enabled = True
     assert etp.thresholds(s) == (config.EARLY_TP_TRIGGER_PCT, config.EARLY_TP_FLOOR_PCT)
     # evaluate() 도 인자를 안 주면 기존 config 값을 쓴다.
     assert etp.evaluate(entry_chop=True, peak_net_return_pct=1.5, net_return_pct=0.8).exit_reason == config.EXIT_EARLY_TAKE_PROFIT
@@ -313,7 +315,7 @@ def test_service_mutual_exclusion_and_builtin_etp_forces_manual_toggle_off():
 
 def test_state_roundtrip_persists_x2lite_toggle():
     s = state_store.default_state()
-    assert s.time_window_x2lite_filter_enabled is False       # 기본 OFF
+    assert s.time_window_x2lite_filter_enabled is True        # 2026-09-12: 기본 ON
     _x2lite_flags(s)
     s.time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
     state_store.save_state(s)

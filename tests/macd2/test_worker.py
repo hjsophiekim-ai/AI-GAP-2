@@ -1333,6 +1333,8 @@ def test_second_restart_does_not_discard_a_still_pending_catchup_signal():
     # Pin the legacy path explicitly so this test keeps asserting what it was
     # written to assert.
     state.time_window_3slot_filter_enabled = False
+    # 2026-09-12: X2-lite 가 config 기본값 -- 이 테스트의 전제를 위해 함께 끈다
+    state.time_window_x2lite_filter_enabled = False
     state.time_window_twf_filter_enabled = False
     bar103_end = start + timedelta(minutes=3 * 104)
     df_1m_at_restart = df_1m_full[df_1m_full["datetime"] < bar103_end]

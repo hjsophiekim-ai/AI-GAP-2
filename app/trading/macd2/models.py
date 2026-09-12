@@ -693,6 +693,19 @@ class RuntimeState:
     time_window_x2lite_filter_enabled_by: Optional[str] = None
     time_window_x2lite_filter_version: str = ""
 
+    # W1a 포지션 사이징 (2026-09-12) — X2-lite 선택 시 자동 적용. 진입/청산
+    # 판정과 무관하며 **주문수량 배수**만 결정한다(position_sizing.py).
+    # 전부 session-scoped: 날짜가 바뀌면 0/False 로 리셋된다.
+    #   x2lite_exposure_used_today : 그날 **진입시점 누적** exposure(1.0 = 100%).
+    #                                부분익절/청산이 되돌리지 않는다(연구 사양).
+    #   x2lite_entry_seq_today     : 그날 체결된 X2-lite 진입 순번(1 = 첫 거래).
+    #   x2lite_first_trade_stop_loss: 그날 첫 거래가 EXIT_TW_STOP_LOSS 로
+    #                                전량청산됐는가. 이후 진입이 x1.20 을 받는다.
+    x2lite_exposure_used_today: float = 0.0
+    x2lite_entry_seq_today: int = 0
+    x2lite_first_trade_stop_loss: bool = False
+    x2lite_last_applied_sizing: Optional[float] = None
+
     # 조기익절 필터 (2026-09-03 사용자 요청) — TW2 3-SLOT 전용으로 따로 켜고 끄는
     # risk-management 단계 서브필터. 진입/슬롯/T+3/TW2/TEGv2 로직과는 무관하며
     # (app/trading/macd2/early_take_profit.py 참고), MACD2의 기존 무관한

@@ -48,6 +48,8 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     # it off here so this file's TW2/TEG-specific tests keep exercising the
     # TW2 path they were written for, unaffected by the new default.
     state.time_window_3slot_filter_enabled = False
+    # 2026-09-12: X2-lite 가 config 기본값 -- 이 테스트의 전제를 위해 함께 끈다
+    state.time_window_x2lite_filter_enabled = False
     return state
 
 

@@ -56,6 +56,8 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     # NO_FILTER_0900_1100 (a lower-priority gate) is actually reached by
     # these tests, exactly as it always required for TW2/TEG above.
     state.time_window_3slot_filter_enabled = False
+    # 2026-09-12: X2-lite 가 config 기본값 -- 이 테스트의 전제를 위해 함께 끈다
+    state.time_window_x2lite_filter_enabled = False
     state.no_filter_0900_1100_enabled = True
     return state
 
@@ -92,6 +94,8 @@ def test_default_off_leaves_judge_entry_gate_at_none():
     state.time_window_2_filter_enabled = False
     state.time_window_teg_filter_enabled = False
     state.time_window_3slot_filter_enabled = False  # 2026-09-01: now the config default, must force off for this test's own premise
+    # 2026-09-12: X2-lite 가 config 기본값 -- 이 테스트의 전제를 위해 함께 끈다
+    state.time_window_x2lite_filter_enabled = False
     assert state.no_filter_0900_1100_enabled is False
     decision, mode = worker._judge_entry_gate(
         state=state, bars_3m=None, direction=Direction.UP_RED, position=None,

@@ -75,6 +75,10 @@ def default_state() -> RuntimeState:
     state.time_window_twf_filter_version = config.TWF_3SLOT_FILTER_VERSION
     state.time_window_x2lite_filter_enabled = bool(getattr(config, "X2LITE_3SLOT_FILTER_DEFAULT", False))
     state.time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
+    state.x2lite_exposure_used_today = 0.0
+    state.x2lite_entry_seq_today = 0
+    state.x2lite_first_trade_stop_loss = False
+    state.x2lite_last_applied_sizing = None
     state.early_tp_filter_enabled = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
     state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
@@ -381,6 +385,10 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "time_window_x2lite_filter_enabled_at": state.time_window_x2lite_filter_enabled_at,
         "time_window_x2lite_filter_enabled_by": state.time_window_x2lite_filter_enabled_by,
         "time_window_x2lite_filter_version": state.time_window_x2lite_filter_version or config.X2LITE_3SLOT_FILTER_VERSION,
+        "x2lite_exposure_used_today": float(state.x2lite_exposure_used_today or 0.0),
+        "x2lite_entry_seq_today": int(state.x2lite_entry_seq_today or 0),
+        "x2lite_first_trade_stop_loss": bool(state.x2lite_first_trade_stop_loss),
+        "x2lite_last_applied_sizing": state.x2lite_last_applied_sizing,
         # 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03)
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
@@ -532,6 +540,21 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_twf_filter_enabled = False
     # X2-lite (2026-09-12) — 같은 tier, 같은 version-gating 관례. 우선순위가
     # 가장 낮아 위 네 모드 중 무엇이라도 켜져 있으면 방어적으로 꺼진다.
+    # ── X2-lite 일회성 채택 마이그레이션 (2026-09-12) ──────────────────
+    # 저장된 state 에 X2-lite 키가 **아예 없다** = 이 기능 이전에 쓰인 상태다.
+    # 그때만 한 번 X2-lite 로 갈아타고 같은 tier 의 다른 전략을 끈다. 저장
+    # 직후부터는 키가 존재하므로 두 번 실행되지 않고, 사용자가 UI 에서 다른
+    # 전략을 고르면 그 선택이 그대로 유지된다(마이그레이션이 되살리지 않는다).
+    # 보유 포지션의 청산은 영향받지 않는다 -- time_window_active_mode 가
+    # 포지션마다 기록돼 있어 그 포지션은 계속 원래 모드 파라미터로 청산된다.
+    _x2lite_key_absent = "time_window_x2lite_filter_enabled" not in raw
+    if (_x2lite_key_absent
+            and bool(getattr(config, "X2LITE_ADOPT_ON_MIGRATION", False))
+            and bool(getattr(config, "X2LITE_3SLOT_FILTER_DEFAULT", False))):
+        time_window_2_filter_enabled = False
+        time_window_teg_filter_enabled = False
+        time_window_3slot_filter_enabled = False
+        time_window_twf_filter_enabled = False
     x2lite_enabled_default = bool(getattr(config, "X2LITE_3SLOT_FILTER_DEFAULT", False))
     stored_x2lite_filter_version = str(raw.get("time_window_x2lite_filter_version") or "")
     time_window_x2lite_filter_version = stored_x2lite_filter_version or config.X2LITE_3SLOT_FILTER_VERSION
@@ -889,6 +912,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_x2lite_filter_enabled_at=raw.get("time_window_x2lite_filter_enabled_at"),
         time_window_x2lite_filter_enabled_by=raw.get("time_window_x2lite_filter_enabled_by"),
         time_window_x2lite_filter_version=time_window_x2lite_filter_version,
+        x2lite_exposure_used_today=float(raw.get("x2lite_exposure_used_today", 0.0) or 0.0),
+        x2lite_entry_seq_today=int(raw.get("x2lite_entry_seq_today", 0) or 0),
+        x2lite_first_trade_stop_loss=bool(raw.get("x2lite_first_trade_stop_loss", False)),
+        x2lite_last_applied_sizing=raw.get("x2lite_last_applied_sizing"),
         time_window_3slot_filter_version=time_window_3slot_filter_version,
         early_tp_filter_enabled=early_tp_filter_enabled,
         early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),

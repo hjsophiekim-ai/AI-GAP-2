@@ -136,6 +136,8 @@ class TestEarlyTakeProfitIndependence:
         svc = _svc()
         svc.set_time_window_3slot_filter_enabled(False, changed_by="t")
         svc.set_time_window_twf_filter_enabled(False, changed_by="t")
+        # 2026-09-12: X2-lite 가 기본값이라 이것까지 꺼야 "3-SLOT 계열 없음" 이다.
+        svc.set_time_window_x2lite_filter_enabled(False, changed_by="t")
         res = svc.set_early_tp_filter_enabled(True, changed_by="t")
         assert res["ok"] is False
         assert res["reason"] == "TW2_3SLOT_REQUIRED"
