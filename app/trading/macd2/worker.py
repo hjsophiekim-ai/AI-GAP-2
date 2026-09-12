@@ -2422,8 +2422,9 @@ def _advance_held_position_risk_management(
             session=state.time_window_entry_session or "MORNING",
             net_return_pct=tick_net_return,
             tp1_done=bool(state.time_window_tp1_done),
-            tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") + time_window_3slot.MODES_3SLOT else None,
+            tp2_pct_override=time_window_3slot.morning_tp2_pct_override(state.time_window_active_mode),
             afternoon_tp_pct_override=_tw_exit_overrides["afternoon_tp_pct_override"],
+            tp1_sell_ratio_override=_tw_exit_overrides["tp1_sell_ratio_override"],
         )
         if tp_decision.exit_reason is not None:
             # 2026-08-27 fix (real incident: a premarket-carry position's
@@ -2484,7 +2485,7 @@ def _advance_held_position_risk_management(
                 net_return_pct=bar_net_return,
                 tp1_done=bool(state.time_window_tp1_done),
                 peak_net_return=float(state.time_window_peak_net_return or 0.0),
-                tp2_pct_override=(config.TW2_MORNING_TP2 * 100.0) if state.time_window_active_mode in ("TW2", "TEG", "TEGv2") + time_window_3slot.MODES_3SLOT else None,
+                tp2_pct_override=time_window_3slot.morning_tp2_pct_override(state.time_window_active_mode),
                 **_tw_exit_overrides,
             )
             # 2026-08-27 fix -- same reasoning as the immediate-tick TP path
@@ -2531,10 +2532,13 @@ def _advance_held_position_risk_management(
             # 다른 모든 하방 rung과 마찬가지로 완성봉 종가(bar_net_return)
             # 기준이다 -- 노이즈 틱 하나로 스탑을 때리지 않는 기존 설계 유지.
             if early_take_profit.is_active(state):
+                _etp_trigger, _etp_floor = early_take_profit.thresholds(state)
                 early_tp = early_take_profit.evaluate(
                     entry_chop=bool(state.time_window_entry_chop),
                     peak_net_return_pct=float(state.early_tp_peak_net_return or 0.0),
                     net_return_pct=bar_net_return,
+                    trigger_pct=_etp_trigger,
+                    floor_pct=_etp_floor,
                 )
                 if early_tp.armed and not state.last_early_tp_armed_at:
                     state.last_early_tp_armed_at = now.isoformat()
@@ -2562,8 +2566,11 @@ def _advance_held_position_risk_management(
                         "early_tp_peak_net_return_pct": round(
                             float(state.early_tp_peak_net_return or 0.0), 6,
                         ),
-                        "early_tp_trigger_pct": float(config.EARLY_TP_TRIGGER_PCT),
-                        "early_tp_floor_pct": float(config.EARLY_TP_FLOOR_PCT),
+                        # 2026-09-12: 모드별 임계값을 그대로 기록한다 —
+                        # X2-lite 는 내장 ETP(1.5/1.0) 라 config 의 F 값을
+                        # 적으면 원장 진단이 실제 판정과 어긋난다.
+                        "early_tp_trigger_pct": float(_etp_trigger),
+                        "early_tp_floor_pct": float(_etp_floor),
                     }
                     outcome = order_executor.execute_exit(
                         broker=broker, symbol=pos.symbol, quantity=pos.quantity,

@@ -226,11 +226,30 @@ def is_enabled(state) -> bool:
 
     2026-09-07: TWF 3-SLOT 추가로 의존 대상이 "TW2 3-SLOT 단독"에서 "3-SLOT
     계열 둘 중 하나"로 넓어졌다. 조기익절은 전략에 하드코딩된 것이 아니라
-    두 전략이 공유하는 별도 토글이며, 각 전략에서 독립적으로 ON/OFF 된다."""
+    두 전략이 공유하는 별도 토글이며, 각 전략에서 독립적으로 ON/OFF 된다.
+
+    2026-09-12 (X2-lite): X2-lite 는 조기익절을 **전략 사양의 일부**로 내장한다
+    (config.X2LITE_EARLY_TP_*). 그래서 이 모드에서는 ``early_tp_filter_enabled``
+    토글을 아예 참조하지 않고 항상 활성이다. 중복 적용은 구조적으로 불가능하다 —
+    worker 의 조기익절 평가 지점은 하나뿐이고, 이 함수가 True 를 한 번만
+    돌려주며, 임계값은 ``thresholds()`` 가 모드에 따라 한 쌍만 고른다."""
+    if time_window_3slot.active_3slot_mode(state) == time_window_3slot.MODE_X2LITE_3SLOT:
+        return True
     return bool(
         getattr(state, "early_tp_filter_enabled", False)
         and time_window_3slot.is_3slot_enabled(state)
     )
+
+
+def thresholds(state) -> tuple[float, float]:
+    """현재 활성 모드에 맞는 ``(trigger_pct, floor_pct)``.
+
+    X2-lite 만 자기 값(1.5 / 1.0)을 쓰고, 나머지 전부는 기존 config.EARLY_TP_*
+    (1.5 / 0.8) 그대로다 — 기존 동작 불변."""
+    if time_window_3slot.active_3slot_mode(state) == time_window_3slot.MODE_X2LITE_3SLOT:
+        return (float(config.X2LITE_EARLY_TP_TRIGGER_PCT),
+                float(config.X2LITE_EARLY_TP_FLOOR_PCT))
+    return (float(config.EARLY_TP_TRIGGER_PCT), float(config.EARLY_TP_FLOOR_PCT))
 
 
 def is_active(state) -> bool:
@@ -249,6 +268,8 @@ def evaluate(
     entry_chop: bool,
     peak_net_return_pct: float,
     net_return_pct: float,
+    trigger_pct: Optional[float] = None,
+    floor_pct: Optional[float] = None,
 ) -> EarlyTakeProfitDecision:
     """``peak_net_return_pct`` = 진입 후 MFE(틱 관측 최고 순수익률, %),
     ``net_return_pct`` = 판정 대상 **완성봉 종가** 기준 순수익률(%).
@@ -256,11 +277,13 @@ def evaluate(
     호출자는 production 래더가 아무 청산도 내지 않았을 때만 이 함수를 부른다 —
     즉 여기서 나오는 exit_reason 은 절대 TP1/TP2/trailing/손절을 앞지르지
     않는다."""
+    trig = float(config.EARLY_TP_TRIGGER_PCT) if trigger_pct is None else float(trigger_pct)
+    flr = float(config.EARLY_TP_FLOOR_PCT) if floor_pct is None else float(floor_pct)
     if not entry_chop:
         return EarlyTakeProfitDecision(False, None, 0.0, LABEL_NOT_ENTRY_CHOP)
-    armed = float(peak_net_return_pct) >= float(config.EARLY_TP_TRIGGER_PCT)
+    armed = float(peak_net_return_pct) >= trig
     if not armed:
         return EarlyTakeProfitDecision(False, None, 0.0, LABEL_NOT_ARMED)
-    if float(net_return_pct) <= float(config.EARLY_TP_FLOOR_PCT):
+    if float(net_return_pct) <= flr:
         return EarlyTakeProfitDecision(True, config.EXIT_EARLY_TAKE_PROFIT, 1.0, LABEL_FIRED)
     return EarlyTakeProfitDecision(True, None, 0.0, LABEL_ARMED_HOLD)

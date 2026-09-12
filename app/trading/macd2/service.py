@@ -630,6 +630,11 @@ class Macd2Service:
             abandon_pending_tw2_3slot_candidate_if_any(
                 state, datetime.now(KST), reason="TWF_3SLOT_DISABLED_BY_OTHER_MODE_ENABLE",
             )
+        if enabled_bool and state.time_window_x2lite_filter_enabled:
+            # X2-lite 도 같은 tier — 상호배타 (2026-09-12).
+            state.time_window_x2lite_filter_enabled = False
+            state.time_window_x2lite_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_x2lite_filter_enabled_by = str(changed_by or "ui")
         state_store.save_state(state)
         return {
             "ok": True,
@@ -641,6 +646,7 @@ class Macd2Service:
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
             "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
         }
 
     def set_time_window_2_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
@@ -689,6 +695,11 @@ class Macd2Service:
             abandon_pending_time_window_candidate_if_any(
                 state, datetime.now(KST), reason="TW2_DISABLED_BY_USER",
             )
+        if enabled_bool and state.time_window_x2lite_filter_enabled:
+            # X2-lite 도 같은 tier — 상호배타 (2026-09-12).
+            state.time_window_x2lite_filter_enabled = False
+            state.time_window_x2lite_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_x2lite_filter_enabled_by = str(changed_by or "ui")
         state_store.save_state(state)
         return {
             "ok": True,
@@ -700,6 +711,7 @@ class Macd2Service:
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
             "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
         }
 
     def set_time_window_3slot_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
@@ -754,6 +766,11 @@ class Macd2Service:
                 state.early_tp_filter_enabled = False
                 state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
                 state.early_tp_filter_enabled_by = "AUTO_TW2_3SLOT_DISABLED"
+        if enabled_bool and state.time_window_x2lite_filter_enabled:
+            # X2-lite 도 같은 tier — 상호배타 (2026-09-12).
+            state.time_window_x2lite_filter_enabled = False
+            state.time_window_x2lite_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_x2lite_filter_enabled_by = str(changed_by or "ui")
         state_store.save_state(state)
         return {
             "ok": True,
@@ -765,6 +782,7 @@ class Macd2Service:
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
             "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
             "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         }
 
@@ -819,6 +837,11 @@ class Macd2Service:
                 state.early_tp_filter_enabled = False
                 state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
                 state.early_tp_filter_enabled_by = "AUTO_TWF_3SLOT_DISABLED"
+        if enabled_bool and state.time_window_x2lite_filter_enabled:
+            # X2-lite 도 같은 tier — 상호배타 (2026-09-12).
+            state.time_window_x2lite_filter_enabled = False
+            state.time_window_x2lite_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_x2lite_filter_enabled_by = str(changed_by or "ui")
         state_store.save_state(state)
         return {
             "ok": True,
@@ -830,6 +853,86 @@ class Macd2Service:
             "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
+            "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
+        }
+
+    def set_time_window_x2lite_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle X2-lite (2026-09-12 사용자 요청) — a FIFTH,
+        separately selectable time-window mode in the same priority tier as
+        TW2 / TEGv2 / TW2 3-SLOT / TW TEG 3-SLOT (enabling this forces those
+        four off; each of those forces this off in its own setter).
+
+        **진입 로직은 TW TEG 3-SLOT 과 100% 동일하다** — worker 의 같은
+        _judge_tw2_3slot_flag / _resolve_tw2_3slot_candidate 경로를 그대로 타고,
+        같은 tw2_3slot_* 슬롯 카운터/후보 필드를 쓰며, MACD 플래그 탐지 / T+3 /
+        TEGv2 / Trend Quality / 슬롯 배분 / 하루 3회 cap / 신규진입 cutoff /
+        same-direction·opposite-direction 규칙 / 신호원장 propagation 이 한 줄도
+        다르지 않다. CHOP 후보에 TEGv2 를 추가로 요구하는 TW TEG 3-SLOT 의 진입
+        규칙까지 공유한다(time_window_3slot.requires_chop_teg_gate).
+
+        다른 것은 **청산 파라미터뿐**이다 (time_window_3slot.exit_overrides /
+        morning_tp2_pct_override: TP1 분할 20% / trailing 2.8% / TP2 5.0% /
+        오전손절 -1.3% / TP1이후 잔량 stop +2.0% / 오후 TP +3.0%). 전부
+        time_window_position_manager 에 override 인자로만 전달되므로 TW2 3-SLOT /
+        TW TEG 3-SLOT / MU_MACD 의 동작은 조금도 바뀌지 않는다.
+
+        조기익절(ETP)은 이 전략에 **내장**돼 자동 ON 이며 trigger +1.5% /
+        floor +1.0% 로 고정된다 — 별도 "조기익절 필터" 토글은 이 모드에서 아예
+        참조되지 않으므로 중복 적용이 구조적으로 불가능하다
+        (early_take_profit.is_enabled / thresholds). 그 토글이 켜져 있었다면
+        혼동을 막기 위해 함께 꺼 준다.
+
+        기본 OFF (config.X2LITE_3SLOT_FILTER_DEFAULT). 상태만 갱신하고 주문을
+        내지 않는다.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.time_window_x2lite_filter_enabled)
+        state.time_window_x2lite_filter_enabled = enabled_bool
+        state.time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
+        state.time_window_x2lite_filter_enabled_at = datetime.now(KST).isoformat()
+        state.time_window_x2lite_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
+            state.time_window_2_filter_enabled = False
+            state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_2_filter_enabled_by = str(changed_by or "ui")
+            state.time_window_teg_filter_enabled = False
+            state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_time_window_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_DISABLED_BY_X2LITE_ENABLE",
+            )
+        for _flag in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled"):
+            if enabled_bool and getattr(state, _flag, False):
+                setattr(state, _flag, False)
+                setattr(state, f"{_flag}_at", datetime.now(KST).isoformat())
+                setattr(state, f"{_flag}_by", str(changed_by or "ui"))
+        if enabled_bool and state.early_tp_filter_enabled:
+            # X2-lite 는 조기익절을 내장한다 — 별도 토글이 켜진 채 남아 있으면
+            # "두 번 적용되는 것처럼" 보이므로 꺼 둔다(실행경로상 이 모드에서는
+            # 그 토글을 읽지도 않는다).
+            state.early_tp_filter_enabled = False
+            state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
+            state.early_tp_filter_enabled_by = "AUTO_X2LITE_BUILTIN_ETP"
+        if not enabled_bool:
+            # 세 3-SLOT 모드가 같은 pending 필드를 공유하므로, 끌 때도 TW2
+            # 3-SLOT / TW TEG 3-SLOT 과 완전히 같은 고아 후보 정리를 한다.
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="X2LITE_DISABLED_BY_USER",
+            )
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "time_window_x2lite_filter_enabled": enabled_bool,
+            "previous": prev,
+            "time_window_x2lite_filter_enabled_at": state.time_window_x2lite_filter_enabled_at,
+            "time_window_x2lite_filter_enabled_by": state.time_window_x2lite_filter_enabled_by,
+            "time_window_x2lite_filter_version": state.time_window_x2lite_filter_version,
+            "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
+            "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+            "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
             "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         }
 
@@ -885,6 +988,7 @@ class Macd2Service:
             "early_tp_filter_version": state.early_tp_filter_version,
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
             "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
             "early_tp_trigger_pct": float(config.EARLY_TP_TRIGGER_PCT),
             "early_tp_floor_pct": float(config.EARLY_TP_FLOOR_PCT),
         }

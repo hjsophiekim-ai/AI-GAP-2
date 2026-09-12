@@ -837,6 +837,7 @@ _TIER_TOGGLE_WIDGETS = {
     "macd2_time_window_teg_filter_toggle": "time_window_teg_filter_enabled",
     "macd2_time_window_3slot_filter_toggle": "time_window_3slot_filter_enabled",
     "macd2_time_window_twf_filter_toggle": "time_window_twf_filter_enabled",
+    "macd2_time_window_x2lite_filter_toggle": "time_window_x2lite_filter_enabled",
 }
 
 
@@ -982,6 +983,67 @@ with _twf_cols[1]:
             + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
         )
 
+# ── X2-lite (2026-09-12) ───────────────────────────────────────────────────
+# TW TEG 3-SLOT 과 **진입이 100% 동일한** 자매 전략. 다른 것은 청산 파라미터와
+# 내장 조기익절뿐이다(config.py X2LITE_* 블록 / time_window_3slot.exit_overrides).
+_x2lite_cols = st.columns([1.4, 1.6])
+with _x2lite_cols[0]:
+    _x2lite_on = st.checkbox(
+        macd2_config.X2LITE_3SLOT_STRATEGY_NAME,
+        value=bool(getattr(state, "time_window_x2lite_filter_enabled", False)),
+        key="macd2_time_window_x2lite_filter_toggle",
+        help=(
+            f"진입은 {macd2_config.TW_TEG_3SLOT_STRATEGY_NAME} 과 **100% 동일**합니다 — MACD 플래그 탐지/"
+            "T+3 재확인/TEGv2/Trend Quality/슬롯 배분/하루 3회 cap/신규진입 cutoff/"
+            "same-direction·opposite-direction 규칙/신호원장 propagation 이 한 줄도 다르지 않고, "
+            "CHOP 후보에 TEGv2 를 추가로 요구하는 규칙까지 그대로입니다. "
+            "**다른 것은 청산 파라미터뿐입니다**: TP1 분할 50%→20%, trailing 2.0%→2.8%, "
+            f"TP2 6.0%→{macd2_config.X2LITE_MORNING_TP2 * 100:.1f}%, 오전 손절 -1.4%→"
+            f"-{abs(macd2_config.X2LITE_MORNING_STOP_LOSS) * 100:.1f}%. "
+            f"TP1 트리거 {macd2_config.MORNING_TP1 * 100:.1f}% / TP1이후 잔량 stop "
+            f"+{macd2_config.X2LITE_MORNING_AFTER_TP1_STOP * 100:.1f}% / 오후 TP "
+            f"+{macd2_config.X2LITE_AFTERNOON_TP * 100:.1f}% 는 동일합니다. "
+            f"**조기익절(ETP)이 내장돼 자동 ON** 입니다 (trigger +{macd2_config.X2LITE_EARLY_TP_TRIGGER_PCT:.1f}% / "
+            f"floor +{macd2_config.X2LITE_EARLY_TP_FLOOR_PCT:.1f}%) — 아래 '조기익절 필터' 토글은 이 모드에서 "
+            "참조되지 않으므로 중복 적용되지 않습니다. 휩쏘/반대신호/강제청산/profit-lock 등 나머지 청산 "
+            "로직은 전부 기존 그대로입니다. "
+            "⚠ 잠정(provisional) — 사후조회 프리마켓 봉 기반이고 production 신호 재현율이 42.9% 로 "
+            "측정됐습니다. 확정 성과로 보지 마세요. "
+            "검증(faithful-fill, 70영업일 20260527~20260908, 진입 172건 전부 F 와 동일, "
+            "data/validation/exit_uplift_20260911/x2lite_final/): "
+            "70일 복리 +116.08%→+146.30%, PF 1.614→1.729, MDD -10.24%→-9.85%. "
+            "최근30일 +43.71%→+59.05%, PF 1.663→1.865, MDD -8.02%. "
+            "10개 창 전부 X1 초과, walk-forward 6fold 중 5fold X1 초과, "
+            "paired bootstrap 10,000회 X1 대비 우위확률 99.52~99.90%. "
+            "다른 전략과 동시에 켤 수 없습니다. 기본 OFF."
+        ),
+    )
+with _x2lite_cols[1]:
+    if bool(_x2lite_on) != bool(getattr(state, "time_window_x2lite_filter_enabled", False)):
+        res = service.set_time_window_x2lite_filter_enabled(bool(_x2lite_on), changed_by="ui")
+        if res.get("ok"):
+            _sync_tier_toggle_widgets(res, skip="macd2_time_window_x2lite_filter_toggle")
+            st.caption(f"{macd2_config.X2LITE_3SLOT_STRATEGY_NAME} → {'ON' if _x2lite_on else 'OFF'}")
+            st.rerun()
+    else:
+        st.caption(
+            f"{macd2_config.X2LITE_3SLOT_STRATEGY_NAME}={'ON' if state.time_window_x2lite_filter_enabled else 'OFF'} · "
+            f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
+            f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
+            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+        )
+if bool(getattr(state, "time_window_x2lite_filter_enabled", False)):
+    st.caption(
+        f"└ 진입: {macd2_config.TW_TEG_3SLOT_STRATEGY_NAME} 동일 · "
+        f"TP1 {macd2_config.MORNING_TP1 * 100:.1f}% / {macd2_config.X2LITE_MORNING_TP1_SELL_RATIO * 100:.0f}% · "
+        f"Trail {macd2_config.X2LITE_MORNING_TRAILING_STOP * 100:.1f}% · "
+        f"TP2 {macd2_config.X2LITE_MORNING_TP2 * 100:.1f}% · "
+        f"오전 SL -{abs(macd2_config.X2LITE_MORNING_STOP_LOSS) * 100:.1f}% · "
+        f"ETP trigger {macd2_config.X2LITE_EARLY_TP_TRIGGER_PCT:.1f}% / floor {macd2_config.X2LITE_EARLY_TP_FLOOR_PCT:.1f}% "
+        "(**ETP 포함** — 자동 ON)"
+    )
+
 # ── 조기익절 필터 (TW2 3-SLOT / TW TEG 3-SLOT 공통 서브필터, 2026-09-03) ───────
 # TW2 3-SLOT이 꺼지면 service.set_time_window_3slot_filter_enabled가 이 토글을
 # 강제로 끈다. 위젯 key가 session_state에 남아 있으면 다음 rerun에서 체크박스가
@@ -990,11 +1052,15 @@ with _twf_cols[1]:
 # 상태도 함께 내려 UI와 실제 상태가 어긋나지 않게 한다.
 # 2026-09-07: 조기익절은 TW2 3-SLOT / TW TEG 3-SLOT 공통 서브필터다 — 둘 중
 # 하나라도 켜져 있으면 사용할 수 있고, 각 전략에서 독립적으로 ON/OFF 된다.
+# 2026-09-12: X2-lite 는 조기익절을 **내장**한다(자동 ON, trigger 1.5 / floor 1.0).
+# 그 모드에서는 이 토글을 실행경로가 아예 읽지 않으므로, 켜고 끌 수 있는 것처럼
+# 보이지 않게 비활성으로 렌더한다 — 중복 적용은 구조적으로 불가능하다.
+_x2lite_live = bool(getattr(state, "time_window_x2lite_filter_enabled", False))
 _3slot_live = bool(
     getattr(state, "time_window_3slot_filter_enabled", False)
     or getattr(state, "time_window_twf_filter_enabled", False)
 )
-if not _3slot_live and st.session_state.get("macd2_early_tp_toggle"):
+if (not _3slot_live or _x2lite_live) and st.session_state.get("macd2_early_tp_toggle"):
     st.session_state["macd2_early_tp_toggle"] = False
 
 _early_tp_cols = st.columns([1.4, 1.6])
@@ -1003,7 +1069,7 @@ with _early_tp_cols[0]:
         "└ 조기익절 필터",
         value=bool(getattr(state, "early_tp_filter_enabled", False)),
         key="macd2_early_tp_toggle",
-        disabled=not _3slot_live,
+        disabled=(not _3slot_live) or _x2lite_live,
         help=(
             "TW2 3-SLOT / TW TEG 3-SLOT 공통 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
             "전혀 건드리지 않고, 이미 보유 중인 포지션에만 하방 보호선을 하나 더 얹습니다(매도만 가능). "

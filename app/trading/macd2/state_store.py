@@ -73,6 +73,8 @@ def default_state() -> RuntimeState:
     state.time_window_3slot_filter_version = config.TW2_3SLOT_FILTER_VERSION
     state.time_window_twf_filter_enabled = bool(getattr(config, "TWF_3SLOT_FILTER_DEFAULT", False))
     state.time_window_twf_filter_version = config.TWF_3SLOT_FILTER_VERSION
+    state.time_window_x2lite_filter_enabled = bool(getattr(config, "X2LITE_3SLOT_FILTER_DEFAULT", False))
+    state.time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
     state.early_tp_filter_enabled = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
     state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
@@ -375,6 +377,10 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "time_window_twf_filter_enabled_at": state.time_window_twf_filter_enabled_at,
         "time_window_twf_filter_enabled_by": state.time_window_twf_filter_enabled_by,
         "time_window_twf_filter_version": state.time_window_twf_filter_version or config.TWF_3SLOT_FILTER_VERSION,
+        "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
+        "time_window_x2lite_filter_enabled_at": state.time_window_x2lite_filter_enabled_at,
+        "time_window_x2lite_filter_enabled_by": state.time_window_x2lite_filter_enabled_by,
+        "time_window_x2lite_filter_version": state.time_window_x2lite_filter_version or config.X2LITE_3SLOT_FILTER_VERSION,
         # 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03)
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
@@ -524,6 +530,20 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         or time_window_3slot_filter_enabled
     ):
         time_window_twf_filter_enabled = False
+    # X2-lite (2026-09-12) — 같은 tier, 같은 version-gating 관례. 우선순위가
+    # 가장 낮아 위 네 모드 중 무엇이라도 켜져 있으면 방어적으로 꺼진다.
+    x2lite_enabled_default = bool(getattr(config, "X2LITE_3SLOT_FILTER_DEFAULT", False))
+    stored_x2lite_filter_version = str(raw.get("time_window_x2lite_filter_version") or "")
+    time_window_x2lite_filter_version = stored_x2lite_filter_version or config.X2LITE_3SLOT_FILTER_VERSION
+    time_window_x2lite_filter_enabled = bool(raw.get("time_window_x2lite_filter_enabled", x2lite_enabled_default))
+    if stored_x2lite_filter_version and stored_x2lite_filter_version != config.X2LITE_3SLOT_FILTER_VERSION:
+        time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
+        time_window_x2lite_filter_enabled = x2lite_enabled_default
+    if time_window_x2lite_filter_enabled and (
+        time_window_2_filter_enabled or time_window_teg_filter_enabled
+        or time_window_3slot_filter_enabled or time_window_twf_filter_enabled
+    ):
+        time_window_x2lite_filter_enabled = False
     # 조기익절 필터 — 같은 version-gating 관례(버전이 바뀌면 저장값을 버리고
     # 기본값으로 되돌린다)를 그대로 따르고, 추가로 TW2 3-SLOT이 꺼져 있으면
     # 무조건 함께 꺼진 상태로 복원한다(사용자 요청: 3-SLOT OFF면 자동 비활성).
@@ -865,6 +885,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_twf_filter_enabled_at=raw.get("time_window_twf_filter_enabled_at"),
         time_window_twf_filter_enabled_by=raw.get("time_window_twf_filter_enabled_by"),
         time_window_twf_filter_version=time_window_twf_filter_version,
+        time_window_x2lite_filter_enabled=time_window_x2lite_filter_enabled,
+        time_window_x2lite_filter_enabled_at=raw.get("time_window_x2lite_filter_enabled_at"),
+        time_window_x2lite_filter_enabled_by=raw.get("time_window_x2lite_filter_enabled_by"),
+        time_window_x2lite_filter_version=time_window_x2lite_filter_version,
         time_window_3slot_filter_version=time_window_3slot_filter_version,
         early_tp_filter_enabled=early_tp_filter_enabled,
         early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),

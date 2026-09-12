@@ -1080,6 +1080,64 @@ TWF_MORNING_STOP_LOSS = _env_float("MACD2_TWF_MORNING_STOP_LOSS", -0.014)      #
 TWF_MORNING_AFTER_TP1_STOP = _env_float("MACD2_TWF_MORNING_AFTER_TP1_STOP", 0.020)  # TW2: 0.003
 TWF_AFTERNOON_TP = _env_float("MACD2_TWF_AFTERNOON_TP", 0.030)                 # TW2: 0.025
 
+# ── X2-lite (2026-09-12 사용자 요청) ────────────────────────────────────────
+# TW TEG 3-SLOT(위 TWF_* 블록)과 **진입이 100% 동일한** 자매 전략. MACD 플래그
+# 탐지 / T+3 재확인 / TEGv2 / Trend Quality / 슬롯 배분 / 하루 3회 cap /
+# 신규진입 cutoff / same-direction·opposite-direction 규칙 / 신호원장
+# propagation 이 한 줄도 다르지 않고, worker 의 같은 _judge_tw2_3slot_flag /
+# _resolve_tw2_3slot_candidate 경로와 같은 tw2_3slot_* 슬롯 카운터를 그대로
+# 탄다. CHOP 후보에 TEGv2 를 추가로 요구하는 규칙(TW TEG 3-SLOT 의 진입 차이)
+# 까지 동일하다 — time_window_3slot.requires_chop_teg_gate 참조.
+#
+# 다른 것은 **청산 파라미터뿐**이고, 전부 time_window_position_manager 의
+# override 인자로만 전달된다. 모듈 상수를 갈아끼우지 않으므로 TW2 3-SLOT /
+# TW TEG 3-SLOT / MU_MACD 의 동작은 완전히 불변이다.
+#
+#   TP1 트리거    3.0%  (F 와 동일 — override 없음, MORNING_TP1 그대로)
+#   TP1 분할비율  20%   (F: 50%)
+#   trailing stop 2.8%  (F: 2.0%)
+#   trailing 트리거 3.5% (F 와 동일 — override 없음)
+#   TP2           5.0%  (F: TW2_MORNING_TP2 6.0%)
+#   오전 손절     -1.30% (F: TWF_MORNING_STOP_LOSS -1.4%)
+#   TP1후 잔량스탑 +2.0% (F 와 동일)
+#   오후 TP       +3.0% (F 와 동일)
+#   조기익절(ETP) trigger +1.5% / floor +1.0%  — **이 전략 선택 시 자동 ON**
+#     (F 의 조기익절은 별도 토글 + floor 0.8%. X2-lite 에서는 그 토글을
+#      참조하지 않고 이 값으로 고정한다 — early_take_profit.thresholds 참조.
+#      호출 지점은 worker 에 하나뿐이라 중복 적용은 구조적으로 불가능하다.)
+#
+# ⚠ PROVISIONAL — TW TEG 3-SLOT 과 동일한 한계가 그대로 적용된다. 아래 수치는
+# 전부 KIS 사후조회 프리마켓 봉 기반이고 그 입력의 production 신호 재현율은
+# 42.9% 다(data/validation/signal_repro_20260908/README.md). 청산시각 파리티
+# (tests/macd2/test_backtest_worker_clock_parity.py)는 여전히 xfail 이고
+# 슬리피지·부분체결은 미반영이다. 절대값을 근거로 추가 최적화를 하지 말 것.
+#
+# 검증 (data/validation/exit_uplift_20260911/x2lite_final/, faithful-fill,
+# 70영업일 20260527~20260908, 진입집합 172건이 F 와 전부 동일):
+#   F (TW TEG 3-SLOT)  70일 복리 +116.08% / PF 1.614 / MDD -10.24%
+#   X1 (청산 3종)       70일 복리 +133.34% / PF 1.673 / MDD -10.24%
+#   X2-lite            70일 복리 +146.30% / PF 1.729 / MDD  -9.85%
+#   최근30일: F +43.71% -> X2-lite +59.05% (PF 1.663 -> 1.865, MDD -8.02%)
+#   10개 창 전부 X1 초과 / walk-forward 6fold 중 5fold X1 초과 /
+#   paired bootstrap 10,000회 X1 대비 우위확률 99.52~99.90%.
+#   ETP trigger 를 1.2 로 더 낮춘 X2 는 채택하지 않았다 — 우위가 172건 중
+#   6건(최근30일 4건)에만 걸려 있고 그중 20260810 한 거래가 순효과의 대부분을
+#   만든다(최근30일 bootstrap 우위확률 80%, 95% 미달).
+X2LITE_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_X2LITE_3SLOT_FILTER_DEFAULT", False)
+X2LITE_3SLOT_STRATEGY_NAME = "X2-lite"
+X2LITE_3SLOT_FILTER_VERSION = "X2LITE_3SLOT_V1_20260912"
+
+# 청산 override (분수 저장, spec §17 관례 — 사용처에서 *100 해서 % 로 넘긴다).
+X2LITE_MORNING_STOP_LOSS = _env_float("MACD2_X2LITE_MORNING_STOP_LOSS", -0.013)
+X2LITE_MORNING_AFTER_TP1_STOP = _env_float("MACD2_X2LITE_MORNING_AFTER_TP1_STOP", 0.020)
+X2LITE_AFTERNOON_TP = _env_float("MACD2_X2LITE_AFTERNOON_TP", 0.030)
+X2LITE_MORNING_TP1_SELL_RATIO = _env_float("MACD2_X2LITE_MORNING_TP1_SELL_RATIO", 0.20)
+X2LITE_MORNING_TRAILING_STOP = _env_float("MACD2_X2LITE_MORNING_TRAILING_STOP", 0.028)
+X2LITE_MORNING_TP2 = _env_float("MACD2_X2LITE_MORNING_TP2", 0.05)
+# 조기익절 — 퍼센트 단위(EARLY_TP_*_PCT 와 같은 관례).
+X2LITE_EARLY_TP_TRIGGER_PCT = _env_float("MACD2_X2LITE_EARLY_TP_TRIGGER_PCT", 1.5)
+X2LITE_EARLY_TP_FLOOR_PCT = _env_float("MACD2_X2LITE_EARLY_TP_FLOOR_PCT", 1.0)
+
 # ── 레거시 진입전략 토글 숨김 (2026-09-07 사용자 요청) ──────────────────────
 # 사용자에게 노출하는 전략을 "TW2 3-SLOT + 조기익절" / "TWF 3-SLOT + 조기익절"
 # 두 개로 정리한다. TW2 / +TEGv2 / +1 DOWN_BLUE 는 **코드를 하나도 지우지 않고**

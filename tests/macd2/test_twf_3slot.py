@@ -81,11 +81,15 @@ class TestTwfOverrides:
 
     @pytest.mark.parametrize("mode", [t3.MODE_TW2_3SLOT, "TW2", "TEGv2", None, ""])
     def test_non_twf_modes_get_no_override(self, mode):
-        assert t3.exit_overrides(mode) == {
-            "stop_loss_pct_override": None,
-            "after_tp1_stop_pct_override": None,
-            "afternoon_tp_pct_override": None,
+        # 2026-09-12: X2-lite 추가로 키가 5개로 늘었지만, TWF 가 아닌 모드는
+        # 여전히 **모든 값이 None** 이어야 한다(기존 보장 그대로).
+        ov = t3.exit_overrides(mode)
+        assert set(ov) >= {
+            "stop_loss_pct_override",
+            "after_tp1_stop_pct_override",
+            "afternoon_tp_pct_override",
         }
+        assert set(ov.values()) == {None}, ov
 
     def test_twf_stop_loss_fires_earlier(self):
         ov = t3.exit_overrides(t3.MODE_TWF_3SLOT)
@@ -134,7 +138,10 @@ class TestTwfOverrides:
 # ── 3. 모드 헬퍼 ───────────────────────────────────────────────────────────
 class TestModeHelpers:
     def test_modes_tuple(self):
-        assert t3.MODES_3SLOT == ("TW2_3SLOT", "TWF_3SLOT")
+        # 2026-09-12: X2-lite 가 세 번째 3-SLOT 계열 모드로 추가됐다. 기존 두
+        # 모드의 값과 **순서**는 그대로여야 한다(우선순위 보존).
+        assert t3.MODES_3SLOT[:2] == ("TW2_3SLOT", "TWF_3SLOT")
+        assert t3.MODES_3SLOT == ("TW2_3SLOT", "TWF_3SLOT", "X2LITE_3SLOT")
 
     def test_active_mode(self):
         s = RuntimeState()

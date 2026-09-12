@@ -311,11 +311,15 @@ def resolve_slot(
 # ── TWF 3-SLOT — 진입은 TW2 3-SLOT 과 동일, 청산 3개만 다름 (2026-09-07) ────
 MODE_TW2_3SLOT = "TW2_3SLOT"
 MODE_TWF_3SLOT = "TWF_3SLOT"
-#: ``state.time_window_active_mode`` 가 이 둘 중 하나면 "3-SLOT 계열"이다.
+#: X2-lite (2026-09-12) — 진입은 TW TEG 3-SLOT(MODE_TWF_3SLOT) 과 100% 동일하고
+#: 청산 파라미터만 다르다. config.py 의 X2LITE_* 블록 참조.
+MODE_X2LITE_3SLOT = "X2LITE_3SLOT"
+#: ``state.time_window_active_mode`` 가 이 셋 중 하나면 "3-SLOT 계열"이다.
 #: 진입 경로(worker._judge_tw2_3slot_flag / _resolve_tw2_3slot_candidate),
-#: 슬롯 카운터(state.tw2_3slot_*), 원장 컬럼, signal_type 은 두 모드가 전부
-#: 공유한다 — 갈라지는 것은 ``exit_overrides`` 세 값뿐이다.
-MODES_3SLOT = (MODE_TW2_3SLOT, MODE_TWF_3SLOT)
+#: 슬롯 카운터(state.tw2_3slot_*), 원장 컬럼, signal_type 은 세 모드가 전부
+#: 공유한다 — 갈라지는 것은 ``exit_overrides`` / ``morning_tp2_pct_override``
+#: 가 돌려주는 청산 임계값뿐이다.
+MODES_3SLOT = (MODE_TW2_3SLOT, MODE_TWF_3SLOT, MODE_X2LITE_3SLOT)
 
 #: 2026-09-08 이 모드는 "TW TEG 3-SLOT" 으로 정리됐다. 디스크에 이미 저장된
 #: 상태/원장 값과의 호환을 위해 wire value 는 "TWF_3SLOT" 그대로 두고 이름만
@@ -326,16 +330,19 @@ MODE_TW_TEG_3SLOT = MODE_TWF_3SLOT
 def requires_chop_teg_gate(mode: Optional[str]) -> bool:
     """CHOP 진입후보에 TEGv2 를 추가로 요구하는 모드인가.
 
-    TW TEG 3-SLOT 에서만 True. TW2 3-SLOT / TW2 / TEGv2 / MU_MACD 는 전부
-    False 라 이 함수 도입으로 기존 동작이 조금도 바뀌지 않는다.
+    TW TEG 3-SLOT 과 X2-lite 에서 True — X2-lite 의 진입은 TW TEG 3-SLOT 과
+    100% 동일해야 하므로 이 규칙도 그대로 공유한다(2026-09-12). TW2 3-SLOT /
+    TW2 / TEGv2 / MU_MACD 는 전부 False 라 기존 동작은 조금도 바뀌지 않는다.
     """
-    return mode == MODE_TW_TEG_3SLOT
+    return mode in (MODE_TW_TEG_3SLOT, MODE_X2LITE_3SLOT)
 
-#: 두 토글이 동시에 켜지는 일은 service 의 상호배제가 막지만, 만에 하나
+#: 토글이 동시에 켜지는 일은 service 의 상호배제가 막지만, 만에 하나
 #: 그런 상태가 들어와도 결정론적으로 TW2 3-SLOT 이 이긴다(기존 동작 보존).
+#: X2-lite 는 가장 마지막 — 기존 두 모드의 우선순위를 바꾸지 않는다.
 _MODE_BY_FLAG = (
     ("time_window_3slot_filter_enabled", MODE_TW2_3SLOT),
     ("time_window_twf_filter_enabled", MODE_TWF_3SLOT),
+    ("time_window_x2lite_filter_enabled", MODE_X2LITE_3SLOT),
 )
 
 
@@ -353,23 +360,61 @@ def is_3slot_enabled(state) -> bool:
 
 
 def exit_overrides(mode: Optional[str]) -> dict:
-    """``time_window_position_manager`` 에 넘길 override 3종.
+    """``time_window_position_manager`` 에 넘길 override 묶음.
 
-    TWF 3-SLOT 이 아니면 전부 ``None`` 이라 기존 모듈 상수가 그대로 쓰인다 —
-    TW2 3-SLOT / TW2 / TEGv2 / MU_MACD 동작은 이 함수 도입으로 조금도 바뀌지
+    TWF 3-SLOT / X2-lite 가 아니면 전부 ``None`` 이라 기존 모듈 상수가 그대로
+    쓰인다 — TW2 3-SLOT / TW2 / TEGv2 / MU_MACD 동작은 이 함수로 조금도 바뀌지
     않는다. 모듈 상수를 직접 갈아끼우지 않는 이유는 그 상수를 MU_MACD 가
-    같은 모듈에서 import 해 쓰기 때문이다(config.py MORNING_STOP_LOSS 주석)."""
-    if mode != MODE_TWF_3SLOT:
+    같은 모듈에서 import 해 쓰기 때문이다(config.py MORNING_STOP_LOSS 주석).
+
+    2026-09-12: X2-lite 추가로 ``tp1_sell_ratio_override`` /
+    ``trailing_stop_pct_override`` 두 키가 늘었다. TWF 3-SLOT 을 포함한 기존
+    모드에서는 두 키가 항상 ``None`` 이므로 기존 동작은 불변이다."""
+    if mode == MODE_TWF_3SLOT:
         return {
-            "stop_loss_pct_override": None,
-            "after_tp1_stop_pct_override": None,
-            "afternoon_tp_pct_override": None,
+            "stop_loss_pct_override": float(config.TWF_MORNING_STOP_LOSS) * 100.0,
+            "after_tp1_stop_pct_override": float(config.TWF_MORNING_AFTER_TP1_STOP) * 100.0,
+            "afternoon_tp_pct_override": float(config.TWF_AFTERNOON_TP) * 100.0,
+            "tp1_sell_ratio_override": None,
+            "trailing_stop_pct_override": None,
+        }
+    if mode == MODE_X2LITE_3SLOT:
+        return {
+            "stop_loss_pct_override": float(config.X2LITE_MORNING_STOP_LOSS) * 100.0,
+            "after_tp1_stop_pct_override": float(config.X2LITE_MORNING_AFTER_TP1_STOP) * 100.0,
+            "afternoon_tp_pct_override": float(config.X2LITE_AFTERNOON_TP) * 100.0,
+            "tp1_sell_ratio_override": float(config.X2LITE_MORNING_TP1_SELL_RATIO),
+            "trailing_stop_pct_override": float(config.X2LITE_MORNING_TRAILING_STOP) * 100.0,
         }
     return {
-        "stop_loss_pct_override": float(config.TWF_MORNING_STOP_LOSS) * 100.0,
-        "after_tp1_stop_pct_override": float(config.TWF_MORNING_AFTER_TP1_STOP) * 100.0,
-        "afternoon_tp_pct_override": float(config.TWF_AFTERNOON_TP) * 100.0,
+        "stop_loss_pct_override": None,
+        "after_tp1_stop_pct_override": None,
+        "afternoon_tp_pct_override": None,
+        "tp1_sell_ratio_override": None,
+        "trailing_stop_pct_override": None,
     }
+
+
+#: TP2 override 를 쓰는 모드 집합. 2026-08-21 부터 worker 가
+#: ``("TW2", "TEG", "TEGv2") + MODES_3SLOT`` 조건으로 TW2_MORNING_TP2(6.0%) 를
+#: 넘겨 왔는데, X2-lite 는 같은 3-SLOT 계열이면서 TP2 가 5.0% 라서 그 조건식을
+#: 그대로 둘 수 없다. 아래 헬퍼로 분기를 옮기되 **기존 5개 모드의 반환값은
+#: 한 값도 바뀌지 않는다**(회귀 테스트로 잠금).
+_TP2_TW2_MODES = ("TW2", "TEG", "TEGv2", MODE_TW2_3SLOT, MODE_TWF_3SLOT)
+
+
+def morning_tp2_pct_override(mode: Optional[str]) -> Optional[float]:
+    """오전 TP2 override(%), 해당 없으면 ``None``.
+
+    TW2/TEG/TEGv2/TW2 3-SLOT/TW TEG 3-SLOT -> ``config.TW2_MORNING_TP2 * 100``
+    (2026-08-21 이후 기존 동작 그대로), X2-lite -> ``X2LITE_MORNING_TP2 * 100``
+    (5.0%), 그 외(MU_MACD/무필터/입양 포지션) -> ``None`` 이라 모듈 기본
+    MORNING_TP2 가 쓰인다."""
+    if mode == MODE_X2LITE_3SLOT:
+        return float(config.X2LITE_MORNING_TP2) * 100.0
+    if mode in _TP2_TW2_MODES:
+        return float(config.TW2_MORNING_TP2) * 100.0
+    return None
 
 
 # ── Slot1 CHOP veto (2026-09-04) ────────────────────────────────────────────
