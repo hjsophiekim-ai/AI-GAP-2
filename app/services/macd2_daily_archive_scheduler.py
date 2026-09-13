@@ -94,11 +94,27 @@ class Macd2DailyArchiveThread(threading.Thread):
             sync_result = github_analysis_sync.run_sync(dry_run=False)
         except Exception as exc:
             sync_result = {"error": repr(exc)}
+
+        # ── Premarket Carry Shadow 동기화 (2026-09-13) ───────────────────────
+        # 60일 아카이브 sync 와 **완전히 독립**. 위 sync 가 실패해도 이건 돌고,
+        # 이게 실패해도 위 sync/아카이브에 영향이 없다. run_premarket_carry_sync
+        # 자체가 예외를 밖으로 던지지 않지만 여기서 한 번 더 감싼다.
+        try:
+            premarket_sync_result = github_analysis_sync.run_premarket_carry_sync(dry_run=False)
+        except Exception as exc:
+            premarket_sync_result = {"error": repr(exc)}
+
         logger.info(
-            "[Macd2DailyArchive] 실행 완료: archive=%s sync_dry_run=%s sync_error=%s",
+            "[Macd2DailyArchive] 실행 완료: archive=%s sync_dry_run=%s sync_error=%s "
+            "premarket_committed=%s premarket_skip=%s premarket_error=%s",
             list(archive_result.keys()), sync_result.get("effective_dry_run"), sync_result.get("error"),
+            premarket_sync_result.get("committed"), premarket_sync_result.get("skipped_reason"),
+            premarket_sync_result.get("error"),
         )
-        self.last_result = {"archive": archive_result, "sync": sync_result}
+        self.last_result = {
+            "archive": archive_result, "sync": sync_result,
+            "premarket_sync": premarket_sync_result,
+        }
 
 
 def ensure_macd2_daily_archive_thread_running(interval_seconds: float = CHECK_INTERVAL_SECONDS) -> Macd2DailyArchiveThread:

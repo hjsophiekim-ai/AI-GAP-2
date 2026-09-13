@@ -60,6 +60,16 @@ SCHEDULER_HEARTBEAT_PATH = STATE_DIR / "scheduler_heartbeat.json"
 # 분석용 파생 데이터만 별도로 골라 리포지토리의 data/analysis_60d/로 동기화한다.
 MACD2_DAILY_ARCHIVE_DIR = DATA_ROOT / "macd2_daily_archive"
 
+# 2026-09-13 추가 — 프리마켓 carry **shadow(관측 전용)** 라이브 표본.
+# 08:45~09:03 구간의 실제 라이브 신호를 미래 검증용으로 보존한다. 주문/청산/
+# 슬롯/상태를 전혀 건드리지 않는 순수 기록이며, 반드시 DATA_ROOT(Render
+# Persistent Disk) 아래에 있어야 재배포/재시작에도 남는다. 이 원본은 감사용이라
+# 삭제/덮어쓰기하지 않고 append-safe 로만 쓴다 -- github_analysis_sync 가 이 중
+# 민감정보 없는 컬럼만 골라 리포지토리의 data/analysis_live/premarket_carry/ 로
+# 동기화한다.
+LIVE_VALIDATION_DIR = DATA_ROOT / "live_validation"
+PREMARKET_CARRY_DIR = LIVE_VALIDATION_DIR / "premarket_carry"
+
 # ── 그 외 이 프로젝트가 이미 쓰고 있던 data/ 하위 카테고리 — 전부 DATA_ROOT 기준으로
 # 통일해야 재배포/재시작에도 캐시·모델·과거데이터·리포트가 유지된다.
 RAW_DIR = DATA_ROOT / "raw"
@@ -83,6 +93,7 @@ _ALL_DIRS = (
     HISTORICAL_DIR, HYNIX_DIR, MICRON_DIR, MODELS_DIR, MODEL_CALIBRATION_DIR,
     REPORTS_DIR, OUTPUT_DIR, VOLUME_SPIKE_DIR, ENHANCED_REPLAY_DIR,
     MACD2_DAILY_ARCHIVE_DIR,
+    LIVE_VALIDATION_DIR, PREMARKET_CARRY_DIR,
 )
 
 

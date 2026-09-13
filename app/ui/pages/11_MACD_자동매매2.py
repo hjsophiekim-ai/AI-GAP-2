@@ -1418,6 +1418,61 @@ with st.expander("체결 원장 전체 컬럼 보기 (진단용, 오늘 최근 1
     else:
         st.caption("오늘 기록된 체결이 없습니다.")
 
+# ── 프리마켓 Carry SHADOW (관측 전용) ─────────────────────────────────────
+# 2026-09-13. **읽기만** 하는 패널이다. 여기서 주문/상태를 바꾸는 버튼은 없고,
+# shadow 모듈도 주문 경로와 완전히 분리돼 있다. 백테스트 70일 재검증에서
+# 08:45~08:59 봉 커버리지가 8.0%(28/350)에 불과해 표본이 3건뿐이었으므로,
+# 실제 라이브 표본이 쌓이는 것을 지켜보기 위한 패널이다.
+with st.expander("프리마켓 Carry SHADOW (관측 전용 · 실주문 없음)"):
+    try:
+        from app.trading.macd2 import premarket_shadow as _pms
+
+        _v = _pms.today_view()
+        st.caption(
+            "08:45~08:59 프리마켓 MACD 플래그를 09:03에 재확인해 "
+            "**가상으로만** 진입/청산했을 때의 결과를 기록합니다. "
+            "실제 주문·슬롯·잔고에는 전혀 영향이 없습니다."
+        )
+        _c = st.columns(4)
+        _c[0].metric("누적 표본", f"{_v.get('total_samples', 0)}건")
+        _wr = _v.get("recent20_win_rate")
+        _c[1].metric("최근20 승률", "-" if _wr is None else f"{_wr:.1f}%")
+        _an = _v.get("recent20_avg_net")
+        _c[2].metric("최근20 평균손익", "-" if _an is None else f"{_an:+.3f}%")
+        _c[3].metric("오늘 carry", "성립" if _v.get("carry_confirmed") else "미성립")
+
+        _rows = [
+            ("오늘 날짜", _v.get("date") or "-"),
+            ("마지막 프리마켓 플래그", _v.get("last_flag_time") or "-"),
+            ("플래그 방향", _v.get("last_flag_direction") or "-"),
+            ("09:00 상태", _v.get("state_0900") or "-"),
+            ("09:03 재확인", _v.get("state_0903") or "-"),
+            ("취소 사유", _v.get("cancel_reason") or "-"),
+            ("가상 진입가", _v.get("shadow_entry_price") if _v.get("shadow_entry_price") else "-"),
+            ("가상 사이징", _v.get("shadow_sizing") if _v.get("shadow_sizing") else "-"),
+            ("가상 손익", ("-" if _v.get("shadow_net_pct") is None
+                        else f"{float(_v['shadow_net_pct']):+.3f}%")),
+            ("가상 청산 사유", _v.get("shadow_exit_reason") or "-"),
+        ]
+        st.dataframe(pd.DataFrame(_rows, columns=["항목", "값"]),
+                     use_container_width=True, hide_index=True)
+
+        _summary = _pms.read_summary(limit=60)
+        if _summary:
+            st.caption("일별 요약 (최근 60일)")
+            st.dataframe(pd.DataFrame(_summary), use_container_width=True,
+                         hide_index=True)
+        else:
+            st.caption("아직 기록된 프리마켓 표본이 없습니다.")
+
+        if _v.get("total_samples", 0) < 5:
+            st.info(
+                f"표본 {_v.get('total_samples', 0)}건 — 70일 백테스트에서도 3건뿐이라 "
+                "판정 불가였습니다. **5건 이상 쌓이기 전에는 실매매 전환 금지.**"
+            )
+    except Exception as _exc:   # UI 실패가 페이지 전체를 죽이지 않게
+        st.caption(f"프리마켓 SHADOW 패널을 표시할 수 없습니다: {_exc}")
+
 with st.expander("전략 설명"):
     st.markdown(
         f"""

@@ -55,6 +55,7 @@ from app.trading.macd2 import (
     major_flag_filter,
     order_executor,
     position_sizing,
+    premarket_shadow,
     risk_exit,
     sideways_filter,
     single_entry_filter,
@@ -4641,6 +4642,15 @@ def run_once(
                 _set_observed_frame(_skip_bars_3m, None)
             except Exception:
                 pass
+            # reconcile 블록으로 조기 return 하는 tick 에서도 프리마켓 표본은
+            # 남긴다 -- 프리마켓 플래그는 그 봉이 지나가면 다시 만들 수 없고,
+            # 이 경로가 하루 중 08:45~09:00 구간을 통째로 삼키면 관측 자체가
+            # 사라진다. 여기서도 주문/상태는 건드리지 않는다(기록 전용).
+            try:
+                premarket_shadow.observe(state=state, macd_snap=_skip_macd_snap,
+                                         bars_3m=_skip_bars_3m, now=now, quotes=None)
+            except Exception:  # pragma: no cover - 방어적 이중 차단
+                pass
             _skip_direction = _advance_confirmed_primary(state, _skip_macd_snap, now)
             if _skip_direction != Direction.HOLD:
                 # 2026-09-11 real incident fix: detection alone is not enough
@@ -4725,6 +4735,17 @@ def run_once(
     state.primary_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
     state.signed_b_shadow_direction = signed_b_condition(macd_snap)
     state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
+
+    # ── 프리마켓 carry SHADOW 관측 (2026-09-13) — **기록 전용** ──────────
+    # 주문/슬롯/상태를 전혀 건드리지 않는다. premarket_shadow 는 order_executor
+    # 를 import 조차 하지 않고 자체 JSON/CSV 에만 쓴다. 이 호출이 어떤 이유로
+    # 실패해도 트레이딩 틱이 멈추면 안 되므로 모듈 내부에서 이미 예외를 삼키고,
+    # 여기서 한 번 더 감싼다(이중 fail-open).
+    try:
+        premarket_shadow.observe(state=state, macd_snap=macd_snap,
+                                 bars_3m=bars_3m, now=now, quotes=quotes)
+    except Exception:  # pragma: no cover - 방어적 이중 차단
+        pass
 
     # ── Shadow/candidate only: forming-bar provisional + Signed-B NEVER carry
     # order/stat/last_direction authority (docs 2026-07-27 KIS-parity fix) ──
