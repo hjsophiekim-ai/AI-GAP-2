@@ -53,11 +53,17 @@ def _state(*, h50=True):
 
 
 # ── 1. 모드 배선 / OFF 시 no-op ────────────────────────────────────────────
-def test_h50_default_off_and_x2lite_untouched():
+def test_h50_is_the_default_strategy_and_the_tier_is_otherwise_off():
+    """2026-09-16 사용자 결정으로 기본값이 OFF -> ON 으로 바뀌었다.
+    같은 tier 의 다른 전략은 전부 꺼진 상태여야 한다(상호배제)."""
     st = state_store.default_state()
-    assert st.time_window_h50_filter_enabled is False
-    assert tw3.active_3slot_mode(st) != tw3.MODE_X2LITE_H50_3SLOT
-    assert swh.is_active(st) is False
+    assert st.time_window_h50_filter_enabled is True
+    assert tw3.active_3slot_mode(st) == tw3.MODE_X2LITE_H50_3SLOT
+    assert swh.is_active(st) is True
+    for f in ("time_window_x2lite_filter_enabled", "time_window_3slot_filter_enabled",
+              "time_window_twf_filter_enabled", "time_window_2_filter_enabled",
+              "time_window_teg_filter_enabled"):
+        assert getattr(st, f) is False, f"{f} 가 H50 과 함께 켜져 있다"
 
 
 def test_h50_mode_resolves_and_shares_x2lite_parameters():
@@ -83,7 +89,11 @@ def test_w1a_and_etp_active_in_h50_mode():
 
 
 def test_module_is_noop_when_mode_off():
-    st = state_store.default_state()          # X2-lite ON, H50 OFF (기본)
+    """H50 이 기본 ON 이 됐으므로 OFF 상태를 명시적으로 만들어서 확인한다 --
+    다른 전략을 고른 사용자에게 이 모듈이 절대 끼어들지 않아야 한다."""
+    st = _state(h50=False)                    # X2-lite 선택 상태
+    st.time_window_x2lite_filter_enabled = True
+    assert tw3.active_3slot_mode(st) == tw3.MODE_X2LITE_3SLOT
     assert swh.is_active(st) is False
     assert swh.is_holding(st) is False
 
@@ -207,14 +217,32 @@ def test_hold_state_survives_serialize_roundtrip():
     assert back.h50_trend_break_count == 1
 
 
-def test_h50_on_forces_x2lite_off_on_restore():
-    """3-SLOT 계열 상호배제 — 두 토글이 동시에 켜진 상태로 저장돼도 복원 시 정리."""
+def test_conflicting_toggles_resolve_with_the_default_yielding():
+    """3-SLOT 계열 상호배제 — 두 토글이 동시에 켜진 채 저장돼도 복원 시 정리된다.
+
+    2026-09-16 에 H50 이 기본 전략이 되면서 **승자가 바뀌었다**: 기본 전략은
+    명시적으로 선택된 전략에 **양보**한다(X2-lite 가 기본이던 시절부터 있던
+    관례 그대로). 기본값이 명시적 선택을 이기면 "UI 에서 골랐는데 재기동하면
+    되돌아온다"가 되기 때문이다 -- 그 폴라리티로 만들었더니 실제로 사용자가
+    전략을 바꿀 수 없게 되는 것을 회귀 39건이 잡아냈다.
+
+    UI/service 경로로는 이 상태 자체가 만들어지지 않는다(setter 가 상호배제를
+    강제한다). 손으로 편집된 state 에 대한 방어적 해소를 고정하는 것이다."""
     st = _state(h50=True)
     st.time_window_x2lite_filter_enabled = True
     raw = state_store.serialize(st)
     back = state_store.deserialize(raw)
+    assert back.time_window_x2lite_filter_enabled is True
+    assert back.time_window_h50_filter_enabled is False
+    assert tw3.active_3slot_mode(back) == tw3.MODE_X2LITE_3SLOT
+
+
+def test_an_explicit_h50_choice_survives_a_restart():
+    """양보 규칙이 '정상적으로 H50 을 고른 사용자'를 해치지 않아야 한다."""
+    st = _state(h50=True)                      # x2lite/3slot/twf 전부 False
+    st.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
+    back = state_store.deserialize(state_store.serialize(st))
     assert back.time_window_h50_filter_enabled is True
-    assert back.time_window_x2lite_filter_enabled is False
     assert tw3.active_3slot_mode(back) == tw3.MODE_X2LITE_H50_3SLOT
 
 
@@ -237,4 +265,6 @@ def test_config_values_locked_to_research():
     assert config.H50_TREND_EMA_SLOW == 50
     assert config.H50_TREND_BREAK_BARS == 2
     assert config.H50_MAX_HOLD_MIN == 60
-    assert config.H50_3SLOT_FILTER_DEFAULT is False      # 기본 OFF
+    # 2026-09-16 사용자 결정: H50 이 기본 전략이 됐다(이전 기본값 False).
+    assert config.H50_3SLOT_FILTER_DEFAULT is True       # 기본 ON
+    assert config.X2LITE_3SLOT_FILTER_DEFAULT is False   # 같은 tier 는 OFF

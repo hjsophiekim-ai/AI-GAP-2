@@ -314,8 +314,12 @@ def test_service_mutual_exclusion_and_builtin_etp_forces_manual_toggle_off():
 
 
 def test_state_roundtrip_persists_x2lite_toggle():
+    # 2026-09-16: 기본 전략이 H50 으로 바뀌었다(이전엔 X2-lite 가 기본 ON).
+    # 이 테스트의 의도는 "X2-lite 선택이 왕복에서 살아남는가" 이므로 기본값에
+    # 기대지 말고 명시적으로 켜서 확인한다 -- 기본값이 또 바뀌어도 안 깨진다.
     s = state_store.default_state()
-    assert s.time_window_x2lite_filter_enabled is True        # 2026-09-12: 기본 ON
+    s.time_window_h50_filter_enabled = False
+    s.time_window_x2lite_filter_enabled = True
     _x2lite_flags(s)
     s.time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
     state_store.save_state(s)

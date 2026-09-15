@@ -1130,7 +1130,13 @@ TWF_AFTERNOON_TP = _env_float("MACD2_TWF_AFTERNOON_TP", 0.030)                 #
 # TW2 3-SLOT 기본값을 False 로 내려 fresh state 에서 X2-lite 만 켜지게 하고,
 # 이미 저장된 state.json 은 state_store 의 일회성 마이그레이션이 넘겨받는다
 # (X2LITE_ADOPT_ON_MIGRATION 주석 참조).
-X2LITE_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_X2LITE_3SLOT_FILTER_DEFAULT", True)
+#
+# 2026-09-16 사용자 결정: 기본 전략을 **H50 으로 교체**한다. X2-lite 는 코드/
+# UI/테스트 모두 그대로 남고 기본값만 False 로 내려간다 — UI 에서 다시 고르면
+# 예전과 100% 동일하게 동작한다. H50 은 X2-lite 와 진입이 같고 청산 보류
+# 하나만 다르므로, 이 교체로 진입 집합은 바뀌지 않는다
+# (tests/macd2/test_h50_deploy_smoke.py::test_6c 가 그것을 고정한다).
+X2LITE_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_X2LITE_3SLOT_FILTER_DEFAULT", False)
 #: 기존 state.json 에 X2-lite 키가 아예 없을 때(= 이 기능 이전에 저장된 상태)
 #: 한 번만 X2-lite 로 갈아타고 같은 tier 의 다른 전략을 끈다. False 로 두면
 #: 마이그레이션 없이 저장된 전략이 그대로 유지된다.
@@ -1207,10 +1213,26 @@ X2LITE_SIZING_DAILY_EXPOSURE_CAP = _env_float("MACD2_X2LITE_SIZING_DAILY_CAP", 3
 #   최근70일 +151.22% -> +184.76% / PF 1.782 -> 1.854 / MDD -9.87% 동일
 #   2D grid 35칸 전부 A 초과(plateau) · WF 5/6 · 슬리피지 +0.30%p 까지 우위 유지
 #   다만 bootstrap 94.9%(95% 미달) 이라 등급은 ADOPT 가 아니라 BORDERLINE 이다.
-#   -> **기본값 OFF**. 사용자가 UI 에서 켜야 동작한다.
-H50_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_H50_3SLOT_FILTER_DEFAULT", False)
+#   -> 최초 배포 시에는 **기본값 OFF** 였다.
+#
+# 2026-09-16 사용자 결정: H50 을 **기본 전략**으로 올리고 같은 tier 의 나머지
+# 전략(X2-lite / TW2 3-SLOT / TW TEG 3-SLOT / TW2 / TEGv2)은 전부 끈다.
+# 등급이 BORDERLINE(bootstrap 94.9%) 인 것은 위에 적힌 그대로이고, 그 위험을
+# 아는 상태에서 내린 운영 결정이다. 되돌리려면 이 기본값을 False 로 내리거나
+# MACD2_H50_3SLOT_FILTER_DEFAULT=0 을 주면 된다.
+#
+# 버전을 함께 올리는 이유: 이미 배포된 인스턴스의 state.json 에는
+# time_window_h50_filter_enabled=false 가 이미 저장돼 있을 수 있다. 기존
+# version-gating 규약(저장 버전 != config 버전 -> 기본값으로 되돌림)에 태워야
+# 저장값과 무관하게 **확정적으로** 새 기본값이 적용된다. "키가 없을 때만"
+# 도는 X2-lite 식 마이그레이션은 이 상황을 못 잡는다.
+H50_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_H50_3SLOT_FILTER_DEFAULT", True)
 H50_3SLOT_STRATEGY_NAME = "X2-lite + W1a + H50"
-H50_3SLOT_FILTER_VERSION = "H50_3SLOT_V1_20260915"
+H50_3SLOT_FILTER_VERSION = "H50_3SLOT_V2_20260916_DEFAULT_ON"
+#: 이미 저장된 state.json 을 H50 으로 **한 번만** 넘겨받는다(키가 없거나 필터
+#: 버전이 낡았을 때). False 로 두면 인수인계 없이 저장된 전략이 그대로 유지된다.
+#: 인수인계 이후에는 H50 도 X2-lite 와 같이 "명시적 선택에 양보"한다.
+H50_ADOPT_ON_MIGRATION = _env_bool("MACD2_H50_ADOPT_ON_MIGRATION", True)
 #: 모듈 자체 kill-switch. False 면 모드가 켜져 있어도 HOLD 판정을 하지 않는다.
 H50_ENABLED = _env_bool("MACD2_H50_ENABLED", True)
 #: (b) 최근 60분 high-low range 임계(%). 2.35 = 연구 확정값.

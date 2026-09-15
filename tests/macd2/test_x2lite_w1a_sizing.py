@@ -64,13 +64,15 @@ def test_sizing_is_inactive_for_every_other_mode():
         s = state_store.default_state()
         for f in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
                   "time_window_x2lite_filter_enabled", "time_window_2_filter_enabled",
-                  "time_window_teg_filter_enabled"):
+                  "time_window_teg_filter_enabled",
+                  "time_window_h50_filter_enabled"):   # 2026-09-16: 새 기본 전략
             setattr(s, f, False)
         setattr(s, flag, True)
         assert PS.is_active(s) is False, flag
     s = state_store.default_state()   # 전부 끄면 3-SLOT 계열 모드가 없다
     for f in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
-              "time_window_x2lite_filter_enabled"):
+              "time_window_x2lite_filter_enabled",
+              "time_window_h50_filter_enabled"):        # 2026-09-16: 새 기본 전략
         setattr(s, f, False)
     assert tw3.active_3slot_mode(s) is None
     assert PS.is_active(s) is False
@@ -604,7 +606,7 @@ def test_switch_entry_recomputes_sizing_and_consumes_a_slot(monkeypatch):
 # ════════════════════════════════════════════════════════════════════════════
 # D. 배포 준비 — 기존 state.json 에서 UI 토글 1회로 활성화되는가
 # ════════════════════════════════════════════════════════════════════════════
-def test_legacy_state_is_adopted_into_x2lite_without_any_manual_action():
+def test_legacy_state_is_adopted_into_x2lite_without_any_manual_action(_x2lite_default_world):
     """Render 에 이미 있는 state.json(신규 키 없음, TW2 3-SLOT ON) 을 읽으면
     **사람이 아무것도 하지 않아도** X2-lite + W1a 가 켜진 상태로 복원된다."""
     import json, io as _io
@@ -613,6 +615,7 @@ def test_legacy_state_is_adopted_into_x2lite_without_any_manual_action():
     legacy.time_window_3slot_filter_enabled = True
     legacy.time_window_twf_filter_enabled = False
     legacy.time_window_x2lite_filter_enabled = False
+    legacy.time_window_h50_filter_enabled = False   # 2026-09-16: H50 이 새 기본 전략
     state_store.save_state(legacy)
     raw = json.loads(_io.open(state_store.STATE_PATH, encoding="utf-8").read())
     for k in ("time_window_x2lite_filter_enabled", "time_window_x2lite_filter_version",
@@ -692,15 +695,40 @@ def _write_raw(patch: dict) -> None:
         json.dumps(raw, ensure_ascii=False))
 
 
-def test_fresh_state_defaults_to_x2lite():
+def test_fresh_state_defaults_to_h50_and_x2lite_stays_selectable():
+    """2026-09-16: 기본 전략이 X2-lite -> H50 으로 바뀌었다.
+
+    H50 은 X2-lite 계열이라 W1a 사이징은 기본으로 계속 켜져 있고, X2-lite 를
+    직접 고르면 예전과 100% 동일하게 동작한다."""
     s = state_store.default_state()
-    assert s.time_window_x2lite_filter_enabled is True
+    assert s.time_window_h50_filter_enabled is True
+    assert s.time_window_x2lite_filter_enabled is False
     assert s.time_window_3slot_filter_enabled is False
+    assert tw3.active_3slot_mode(s) == tw3.MODE_X2LITE_H50_3SLOT
+    assert PS.is_active(s) is True, "H50 에서도 W1a 사이징은 그대로 활성"
+
+    s.time_window_h50_filter_enabled = False
+    s.time_window_x2lite_filter_enabled = True
     assert tw3.active_3slot_mode(s) == MODE
     assert PS.is_active(s) is True
 
 
-def test_migration_adopts_x2lite_from_a_legacy_tw2_3slot_state():
+@pytest.fixture
+def _x2lite_default_world(monkeypatch):
+    """X2-lite 채택 마이그레이션(2026-09-12)은 X2-lite 가 기본값일 때만 돈다.
+
+    2026-09-16 에 기본 전략이 H50 으로 바뀌면서 이 경로는 production 에서
+    잠들었지만 **코드는 그대로 살아 있다**(기본값을 되돌리면 다시 동작한다).
+    아래 테스트들은 그 메커니즘 자체를 지키는 것이 목적이므로, 그 시절의
+    기본값 조합을 명시적으로 만들어 놓고 검증한다. H50 쪽 인수인계는
+    tests/macd2/test_h50_deploy_smoke.py 가 따로 고정한다.
+    """
+    monkeypatch.setattr(config, "X2LITE_3SLOT_FILTER_DEFAULT", True)
+    monkeypatch.setattr(config, "H50_3SLOT_FILTER_DEFAULT", False)
+    monkeypatch.setattr(config, "H50_ADOPT_ON_MIGRATION", False)
+
+
+def test_migration_adopts_x2lite_from_a_legacy_tw2_3slot_state(_x2lite_default_world):
     """실제 Render state 형태: 3slot=True, x2lite 키 없음 -> 한 번에 X2-lite 로."""
     _write_raw({"time_window_3slot_filter_enabled": True,
                 "time_window_twf_filter_enabled": False})
@@ -713,7 +741,7 @@ def test_migration_adopts_x2lite_from_a_legacy_tw2_3slot_state():
     assert s.x2lite_first_trade_stop_loss is False
 
 
-def test_migration_adopts_x2lite_from_a_legacy_tw_teg_3slot_state():
+def test_migration_adopts_x2lite_from_a_legacy_tw_teg_3slot_state(_x2lite_default_world):
     _write_raw({"time_window_3slot_filter_enabled": False,
                 "time_window_twf_filter_enabled": True})
     s = state_store.load_state()
@@ -722,7 +750,7 @@ def test_migration_adopts_x2lite_from_a_legacy_tw_teg_3slot_state():
     assert tw3.active_3slot_mode(s) == MODE
 
 
-def test_migration_runs_only_once_and_respects_a_later_user_choice():
+def test_migration_runs_only_once_and_respects_a_later_user_choice(_x2lite_default_world):
     """마이그레이션 뒤 사용자가 F 를 고르면 그 선택이 유지돼야 한다."""
     from app.trading.macd2.service import Macd2Service
     _write_raw({"time_window_3slot_filter_enabled": True})
@@ -742,7 +770,7 @@ def test_migration_runs_only_once_and_respects_a_later_user_choice():
     assert again.time_window_x2lite_filter_enabled is False
 
 
-def test_migration_can_be_disabled_by_env(monkeypatch):
+def test_migration_can_be_disabled_by_env(monkeypatch, _x2lite_default_world):
     monkeypatch.setattr(config, "X2LITE_ADOPT_ON_MIGRATION", False)
     _write_raw({"time_window_3slot_filter_enabled": True})
     s = state_store.load_state()
@@ -750,7 +778,7 @@ def test_migration_can_be_disabled_by_env(monkeypatch):
     assert s.time_window_x2lite_filter_enabled is False
 
 
-def test_held_position_keeps_its_own_exit_mode_across_migration():
+def test_held_position_keeps_its_own_exit_mode_across_migration(_x2lite_default_world):
     """마이그레이션 시점에 보유 중이던 포지션은 원래 모드로 청산된다."""
     _write_raw({"time_window_3slot_filter_enabled": True,
                 "time_window_position_active": True,

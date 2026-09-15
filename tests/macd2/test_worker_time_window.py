@@ -50,6 +50,7 @@ def _fresh_state(*, budget: float = 10_000_000.0) -> RuntimeState:
     state.time_window_3slot_filter_enabled = False
     # 2026-09-12: X2-lite 가 config 기본값 -- 이 테스트의 전제를 위해 함께 끈다
     state.time_window_x2lite_filter_enabled = False
+    state.time_window_h50_filter_enabled = False   # 2026-09-16: H50 이 새 기본 전략
     return state
 
 

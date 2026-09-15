@@ -586,9 +586,26 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if _stored_h50_ver and _stored_h50_ver != config.H50_3SLOT_FILTER_VERSION:
         time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
         time_window_h50_filter_enabled = h50_enabled_default
-    # 3-SLOT 계열은 상호배제다 — H50 이 켜져 있으면 X2-lite 토글은 강제로 끈다.
-    if time_window_h50_filter_enabled:
+    # ── H50 일회성 채택 인수인계 (2026-09-16) ─────────────────────────
+    # H50 을 기본 전략으로 올리면서, 이미 돌고 있는 인스턴스의 state.json 을
+    # **한 번만** 넘겨받는다. X2-lite 식 "키가 없을 때만" 조건에 더해 "저장된
+    # 필터 버전이 낡았을 때"도 포함한다 — 이미 H50=false 가 저장돼 있을 수
+    # 있어서 키 부재 조건만으로는 잡히지 않기 때문이다.
+    #
+    # 한 번만 도는 이유: 인수인계 직후 저장되면 키가 생기고 버전도 최신이 되어
+    # 두 조건 모두 거짓이 된다. 그 뒤로는 아래 "양보" 규칙만 남으므로, 사용자가
+    # UI 에서 다른 전략을 고르면 그 선택이 그대로 유지된다.
+    _h50_key_absent = "time_window_h50_filter_enabled" not in raw
+    _h50_ver_stale = bool(_stored_h50_ver) and _stored_h50_ver != config.H50_3SLOT_FILTER_VERSION
+    if ((_h50_key_absent or _h50_ver_stale)
+            and bool(getattr(config, "H50_ADOPT_ON_MIGRATION", False))
+            and bool(getattr(config, "H50_3SLOT_FILTER_DEFAULT", False))):
+        time_window_h50_filter_enabled = True
         time_window_x2lite_filter_enabled = False
+        time_window_3slot_filter_enabled = False
+        time_window_twf_filter_enabled = False
+        time_window_2_filter_enabled = False
+        time_window_teg_filter_enabled = False
     if stored_x2lite_filter_version and stored_x2lite_filter_version != config.X2LITE_3SLOT_FILTER_VERSION:
         time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
         time_window_x2lite_filter_enabled = x2lite_enabled_default
@@ -597,6 +614,16 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         or time_window_3slot_filter_enabled or time_window_twf_filter_enabled
     ):
         time_window_x2lite_filter_enabled = False
+    # H50 은 X2-lite 와 **같은 관례로 양보한다** — 사용자가 명시적으로 고른
+    # 다른 전략이 저장돼 있으면 기본 전략(H50)이 물러난다. 기본값이 명시적
+    # 선택을 덮어쓰면 "UI 에서 골랐는데 재기동하면 되돌아온다"가 되어버린다.
+    # 위 일회성 인수인계만 이 규칙의 예외이고, 그것도 딱 한 번만 돈다.
+    if time_window_h50_filter_enabled and (
+        time_window_2_filter_enabled or time_window_teg_filter_enabled
+        or time_window_3slot_filter_enabled or time_window_twf_filter_enabled
+        or time_window_x2lite_filter_enabled
+    ):
+        time_window_h50_filter_enabled = False
     # 조기익절 필터 — 같은 version-gating 관례(버전이 바뀌면 저장값을 버리고
     # 기본값으로 되돌린다)를 그대로 따르고, 추가로 TW2 3-SLOT이 꺼져 있으면
     # 무조건 함께 꺼진 상태로 복원한다(사용자 요청: 3-SLOT OFF면 자동 비활성).

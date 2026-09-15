@@ -214,13 +214,18 @@ def test_4_h50_selection_survives_a_restart():
     assert back.time_window_x2lite_filter_enabled is False
 
 
-def test_4b_version_bump_resets_the_toggle():
-    """필터 버전이 바뀌면 저장된 ON 을 그대로 신뢰하지 않는다."""
-    s = state_store.default_state()
-    s.time_window_h50_filter_enabled = True
-    s.time_window_h50_filter_version = "STALE_VERSION"
-    state_store.save_state(s)
-    assert state_store.load_state().time_window_h50_filter_enabled is False
+def test_4b_version_bump_resets_the_toggle_to_the_current_default():
+    """필터 버전이 바뀌면 저장값을 버리고 **현재 기본값**으로 되돌린다.
+    2026-09-16 에 기본값이 ON 이 됐으므로 저장된 OFF 가 ON 으로 돌아온다 --
+    이미 배포된 인스턴스를 확정적으로 넘겨받는 경로가 바로 이것이다."""
+    for stored in (True, False):
+        s = state_store.default_state()
+        s.time_window_h50_filter_enabled = stored
+        s.time_window_h50_filter_version = "STALE_VERSION"
+        state_store.save_state(s)
+        back = state_store.load_state()
+        assert back.time_window_h50_filter_enabled is config.H50_3SLOT_FILTER_DEFAULT,             f"저장값 {stored} 에서 기본값으로 복귀하지 않았다"
+        assert back.time_window_h50_filter_version == config.H50_3SLOT_FILTER_VERSION
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -449,3 +454,205 @@ def test_6c_h50_entry_set_is_identical_to_x2lite(tmp_path, monkeypatch):
         "H50 이 진입 집합을 바꿨다 -- H50 은 청산 보류만 하는 필터여야 한다\n"
         f"x2lite={out['x2lite']}\nh50   ={out['h50']}"
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. H50 를 기본 전략으로 (2026-09-16 사용자 결정)
+# ════════════════════════════════════════════════════════════════════════════
+class TestH50IsTheDefaultStrategy:
+    def test_fresh_state_selects_h50_and_nothing_else(self):
+        s = state_store.default_state()
+        assert s.time_window_h50_filter_enabled is True, "fresh state 에서 H50 이 꺼져 있다"
+        assert tw3.active_3slot_mode(s) == H50_MODE
+        for f in ("time_window_x2lite_filter_enabled", "time_window_3slot_filter_enabled",
+                  "time_window_twf_filter_enabled", "time_window_2_filter_enabled",
+                  "time_window_teg_filter_enabled"):
+            assert getattr(s, f) is False, f"{f} 가 H50 과 함께 켜져 있다"
+
+    def test_other_subfilters_stay_off_by_default(self):
+        s = state_store.default_state()
+        for f in ("early_tp_filter_enabled", "quick_profit_enabled",
+                  "no_filter_0900_1100_enabled",
+                  "down_blue_exception_filter_enabled", "major_filter_enabled",
+                  "sideways_filter_enabled", "single_entry_filter_enabled"):
+            assert getattr(s, f, False) is False, f"{f} 가 기본 ON 이다"
+
+    def test_a_stored_state_that_had_h50_off_is_migrated_on(self):
+        """이미 배포된 인스턴스의 state.json 은 H50=false 를 들고 있을 수 있다.
+        버전 게이팅으로 확정적으로 새 기본값(ON)이 적용돼야 한다."""
+        s = state_store.default_state()
+        s.time_window_h50_filter_enabled = False
+        s.time_window_h50_filter_version = "H50_3SLOT_V1_20260915"   # 구버전
+        s.time_window_x2lite_filter_enabled = True
+        state_store.save_state(s)
+
+        back = state_store.load_state()
+        assert back.time_window_h50_filter_enabled is True, "구버전 state 가 H50 으로 안 넘어왔다"
+        assert back.time_window_x2lite_filter_enabled is False
+        assert tw3.active_3slot_mode(back) == H50_MODE
+
+    def test_an_explicit_legacy_choice_beats_the_new_default(self):
+        """인수인계가 끝난 뒤에는 기본 전략(H50)이 명시적 선택에 양보한다.
+
+        기본값이 사용자의 선택을 이기면 "UI 에서 골랐는데 재기동하면 H50 으로
+        돌아온다"가 된다. 그래서 여기서는 TW2 3-SLOT 이 이겨야 한다."""
+        s = state_store.default_state()
+        s.time_window_h50_filter_enabled = True
+        s.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
+        s.time_window_3slot_filter_enabled = True
+        state_store.save_state(s)
+
+        back = state_store.load_state()
+        assert back.time_window_3slot_filter_enabled is True
+        assert back.time_window_h50_filter_enabled is False
+        assert tw3.active_3slot_mode(back) == tw3.MODE_TW2_3SLOT
+
+    def test_the_handover_runs_only_once(self):
+        """인수인계는 딱 한 번. 그 뒤 사용자가 X2-lite 로 바꾸면 유지돼야 한다."""
+        svc = Macd2Service()
+        state_store.load_state()                       # 1회 인수인계 발생
+        res = svc.set_time_window_x2lite_filter_enabled(True, changed_by="user")
+        assert res.get("ok"), res
+        for _ in range(3):                             # 재기동 3번 흉내
+            back = state_store.load_state()
+        assert back.time_window_x2lite_filter_enabled is True,             "인수인계가 다시 돌아 사용자의 선택을 덮어썼다"
+        assert back.time_window_h50_filter_enabled is False
+
+    def test_user_can_still_switch_back_to_x2lite(self):
+        """기본값 교체가 사용자 선택을 덮어쓰지 않아야 한다."""
+        svc = Macd2Service()
+        res = svc.set_time_window_x2lite_filter_enabled(True, changed_by="smoke")
+        assert res.get("ok"), res
+        back = state_store.load_state()
+        assert back.time_window_x2lite_filter_enabled is True
+        assert back.time_window_h50_filter_enabled is False
+        assert tw3.active_3slot_mode(back) == X2_MODE
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 9. H50 <-> X2-lite 즉시 전환 (2026-09-16 사용자 요청)
+#    "끄고 켜면 재기동 없이 바로바로, 서로 독립적으로 적용되는가"
+# ════════════════════════════════════════════════════════════════════════════
+class TestImmediateSwitching:
+    def test_service_switch_applies_without_a_reload(self):
+        """setter 가 돌아온 직후의 in-memory state 가 이미 새 모드여야 한다."""
+        svc = Macd2Service()
+        svc.set_time_window_h50_filter_enabled(True, changed_by="user")
+        s = state_store.load_state()
+        assert tw3.active_3slot_mode(s) == H50_MODE
+        assert small_whipsaw_hold.is_active(s) is True
+
+        svc.set_time_window_x2lite_filter_enabled(True, changed_by="user")
+        s = state_store.load_state()
+        assert tw3.active_3slot_mode(s) == X2_MODE, "X2-lite 로 즉시 바뀌지 않았다"
+        assert s.time_window_h50_filter_enabled is False, "H50 이 같이 꺼지지 않았다"
+        assert small_whipsaw_hold.is_active(s) is False, "H50 로직이 아직 살아 있다"
+
+        svc.set_time_window_h50_filter_enabled(True, changed_by="user")
+        s = state_store.load_state()
+        assert tw3.active_3slot_mode(s) == H50_MODE, "H50 으로 즉시 되돌아오지 않았다"
+        assert s.time_window_x2lite_filter_enabled is False
+
+    def test_switch_survives_repeated_restarts_in_both_directions(self):
+        svc = Macd2Service()
+        for setter, mode, flag in (
+            ("set_time_window_x2lite_filter_enabled", X2_MODE, "time_window_x2lite_filter_enabled"),
+            ("set_time_window_h50_filter_enabled", H50_MODE, "time_window_h50_filter_enabled"),
+            ("set_time_window_x2lite_filter_enabled", X2_MODE, "time_window_x2lite_filter_enabled"),
+        ):
+            assert getattr(svc, setter)(True, changed_by="user").get("ok")
+            for _ in range(3):                       # 재기동 3회 모사
+                s = state_store.load_state()
+            assert getattr(s, flag) is True, f"{setter} 선택이 재기동에서 사라졌다"
+            assert tw3.active_3slot_mode(s) == mode
+
+    def test_switching_does_not_touch_counters_position_or_other_filters(self, monkeypatch):
+        """'독립적으로' — 전략 전환이 슬롯/일일카운터/보유포지션/다른 필터를
+        건드리면 안 된다. 전환 한 번으로 그날 진입예산이 리셋되면 하루 3회
+        cap 이 무력화된다."""
+        svc, now0 = _market()
+        state = _fresh_h50_state()
+        entries, broker, state = _run_sequence(
+            state, monkeypatch, svc, now0, [Direction.UP_RED, Direction.DOWN_BLUE])
+        assert entries and state.position is not None
+        state.quick_profit_enabled = True
+        state.no_filter_0900_1100_enabled = True
+        state_store.save_state(state)
+
+        before = (state.tw2_3slot_slots_used_today, state.tw2_3slot_morning_count,
+                  state.tw2_3slot_afternoon_count, state.daily_total_entry_count,
+                  state.position.symbol, state.position.quantity,
+                  state.time_window_active_mode)
+
+        res = Macd2Service().set_time_window_x2lite_filter_enabled(True, changed_by="user")
+        assert res.get("ok"), res
+        after_state = state_store.load_state()
+        after = (after_state.tw2_3slot_slots_used_today, after_state.tw2_3slot_morning_count,
+                 after_state.tw2_3slot_afternoon_count, after_state.daily_total_entry_count,
+                 after_state.position.symbol, after_state.position.quantity,
+                 after_state.time_window_active_mode)
+        assert after == before, f"전환이 카운터/포지션을 건드렸다\n전={before}\n후={after}"
+        assert after_state.quick_profit_enabled is True, "무관한 필터가 꺼졌다"
+        assert after_state.no_filter_0900_1100_enabled is True, "무관한 필터가 꺼졌다"
+        assert tw3.active_3slot_mode(after_state) == X2_MODE
+
+    def test_turning_h50_off_mid_hold_stops_suppressing_the_exit(self):
+        """HOLD 중에 H50 을 끄면 그 보류가 즉시 풀려야 한다 --
+        꺼진 전략이 청산을 계속 막고 있으면 실거래에서 치명적이다."""
+        s = _fresh_h50_state()
+        s.h50_hold_active = True
+        s.h50_original_direction = Direction.UP_RED.value
+        s.h50_trend_break_count = 1
+        state_store.save_state(s)
+        assert small_whipsaw_hold.is_holding(state_store.load_state()) is True
+
+        assert Macd2Service().set_time_window_x2lite_filter_enabled(
+            True, changed_by="user").get("ok")
+        back = state_store.load_state()
+        assert small_whipsaw_hold.is_active(back) is False, \
+            "H50 이 꺼졌는데 모듈이 아직 활성이다 -- 청산을 계속 보류한다"
+
+    def test_ui_switch_round_trips_in_both_directions(self):
+        from streamlit.testing.v1 import AppTest
+
+        app_path = str(Path(__file__).parent.parent.parent
+                       / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
+
+        def _render():
+            at = AppTest.from_file(app_path, default_timeout=30)
+            at.session_state["app_auth_authenticated"] = True
+            at.run()
+            for exc in at.exception:
+                if "can't be used in an `st.form()`" in str(getattr(exc, "value", "") or ""):
+                    pytest.skip("기존 페이지 결함(st.button inside st.form) -- H50 과 무관")
+            assert not at.exception
+            return at
+
+        def _box(at, key):
+            for cb in at.checkbox:
+                if cb.key == key:
+                    return cb
+            raise AssertionError(f"{key} 체크박스가 없다: {[c.key for c in at.checkbox]!r}")
+
+        H50_KEY = "macd2_time_window_h50_filter_toggle"
+        X2_KEY = "macd2_time_window_x2lite_filter_toggle"
+
+        at = _render()
+        assert _box(at, H50_KEY).value is True, "기본 렌더에서 H50 이 체크돼 있지 않다"
+
+        _box(at, X2_KEY).check().run()               # UI 에서 X2-lite 로 전환
+        for exc in at.exception:
+            if "can't be used in an `st.form()`" in str(getattr(exc, "value", "") or ""):
+                pytest.skip("기존 페이지 결함 -- H50 과 무관")
+        assert not at.exception
+        s = state_store.load_state()
+        assert s.time_window_x2lite_filter_enabled is True
+        assert s.time_window_h50_filter_enabled is False
+        assert _box(at, H50_KEY).value is False, "UI 체크가 즉시 반영되지 않았다"
+
+        _box(at, H50_KEY).check().run()              # 다시 H50 으로
+        assert not at.exception
+        s = state_store.load_state()
+        assert s.time_window_h50_filter_enabled is True
+        assert s.time_window_x2lite_filter_enabled is False
+        assert _box(at, X2_KEY).value is False

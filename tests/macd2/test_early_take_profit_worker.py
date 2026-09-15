@@ -134,6 +134,7 @@ def test_off_by_default_in_a_fresh_state():
     assert etp.is_enabled(state) is True, "X2-lite 내장 ETP 는 자동 ON"
     # X2-lite 가 아닌 3-SLOT 계열에서는 예전 그대로 토글에 따라 OFF 다.
     state.time_window_x2lite_filter_enabled = False
+    state.time_window_h50_filter_enabled = False   # 2026-09-16: H50 이 새 기본 전략
     state.time_window_3slot_filter_enabled = True
     assert etp.is_enabled(state) is False
 
@@ -235,6 +236,7 @@ def test_cannot_enable_the_filter_while_tw2_3slot_is_off():
     # 2026-09-12: X2-lite 가 기본값 -- "3-SLOT 계열이 하나도 안 켜진" 전제를
     # 만들려면 X2-lite 도 함께 꺼야 한다.
     state.time_window_x2lite_filter_enabled = False
+    state.time_window_h50_filter_enabled = False   # 2026-09-16: H50 이 새 기본 전략
     state.early_tp_filter_enabled = False
     state_store.save_state(state)
 

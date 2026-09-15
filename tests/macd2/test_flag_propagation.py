@@ -272,6 +272,7 @@ def test_reconcile_blocked_tick_places_no_order_even_when_gate_would_approve(mar
     state.time_window_3slot_filter_enabled = False
     # 2026-09-12: X2-lite 가 config 기본값 -- 이 테스트의 전제를 위해 함께 끈다
     state.time_window_x2lite_filter_enabled = False
+    state.time_window_h50_filter_enabled = False   # 2026-09-16: H50 이 새 기본 전략
     broker = _broker()
     _patch_common(monkeypatch)
     _force_crossover(monkeypatch, Direction.UP_RED)
@@ -503,6 +504,7 @@ def _restart_catchup_state(*, threeslot: bool) -> RuntimeState:
     # 2026-09-12: X2-lite 가 config 기본값이 됐다. threeslot=False 는 "3-SLOT 계열
     # 전부 OFF" 라는 뜻이므로 X2-lite 도 함께 꺼야 이 헬퍼의 전제가 유지된다.
     state.time_window_x2lite_filter_enabled = False
+    state.time_window_h50_filter_enabled = False   # 2026-09-16: H50 이 새 기본 전략
     state.time_window_2_filter_enabled = False
     state.time_window_teg_filter_enabled = False
     # mid-session restart: a same-day last_confirmed_bar_ts already exists, so

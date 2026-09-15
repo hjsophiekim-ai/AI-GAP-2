@@ -138,6 +138,8 @@ class TestEarlyTakeProfitIndependence:
         svc.set_time_window_twf_filter_enabled(False, changed_by="t")
         # 2026-09-12: X2-lite 가 기본값이라 이것까지 꺼야 "3-SLOT 계열 없음" 이다.
         svc.set_time_window_x2lite_filter_enabled(False, changed_by="t")
+        # 2026-09-16: 기본 전략이 H50 으로 바뀌었다 -- 같은 이유로 이것도 끈다.
+        svc.set_time_window_h50_filter_enabled(False, changed_by="t")
         res = svc.set_early_tp_filter_enabled(True, changed_by="t")
         assert res["ok"] is False
         assert res["reason"] == "TW2_3SLOT_REQUIRED"
