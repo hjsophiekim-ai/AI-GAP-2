@@ -59,6 +59,7 @@ from app.trading.macd2 import (
     risk_exit,
     sideways_filter,
     single_entry_filter,
+    small_whipsaw_hold,
     state_store,
     teg_gate,
     time_window_3slot,
@@ -429,6 +430,9 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # W1a 사이징(2026-09-12)의 누적 exposure / 진입순번 / 첫거래 손절
     # 플래그도 session-scoped -- 토글은 그대로 두고 값만 리셋한다.
     position_sizing.reset_daily(state)
+    # H50(2026-09-15) HOLD 상태도 session-scoped -- 토글은 그대로 두고
+    # 보류 상태만 리셋한다. 날짜가 바뀌면 전날 HOLD 를 이어받지 않는다.
+    small_whipsaw_hold.clear(state)
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -3279,6 +3283,52 @@ def _resolve_tw2_3slot_candidate_body(
     )
     _persist_tw2_3slot_decision(state, decision, signal_id)
 
+    # ── H50: 작은 휩쏘 HOLD (2026-09-15, X2-lite H50 모드 전용) ──────────
+    # 보유 중 반대 플래그가 **정상 확정**됐을 때, 보유방향이 구조적 상위추세와
+    # 같고(EMA20/EMA50) 최근 60분 range 가 좁으면 그 반대신호 청산을 보류한다.
+    # 승인/거절 분기보다 **앞**에 두는 이유: 승인이면 switch(청산+진입), 거절이면
+    # exit-only 인데 H50 은 두 경우 모두 "청산하지 않는다"가 되어야 하므로
+    # 분기 하나로 처리하는 것이 유일하게 안전하다.
+    #
+    # 진입에는 일절 관여하지 않는다 -- 여기서 return 하는 경로는 포지션을
+    # 그대로 두는 것뿐이고, 슬롯 카운터(tw2_3slot_slots_used_today 등)는
+    # 아래 EXECUTED 분기에서만 증가하므로 소비되지 않는다. 하드스톱/TP/
+    # 트레일링/ETP/강제청산은 이 tick 의 앞 단계에서 이미 평가됐고 이 블록이
+    # 그것을 막을 수 없다(우선순위 불변).
+    if small_whipsaw_hold.is_active(state) and position is not None:
+        _h50_target = order_executor.target_symbol_for_direction(direction)
+        if position.symbol != _h50_target:
+            _held_dir = _direction_for_symbol(position.symbol)
+            _h50 = small_whipsaw_hold.evaluate_hold(bars_3m, _held_dir, now)
+            if _h50.should_hold:
+                state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+                h50_trace = {
+                    "signal_id": signal_id, "direction": direction.value,
+                    "signal_type": "TW2_3SLOT_CONFIRM",
+                    "completed_bar_at": macd_snap.bar_dt.isoformat(),
+                    "order_executor_called": False, "broker_called": False,
+                    "final_block_reason": config.H50_HOLD_BLOCK_REASON,
+                    "order_result_override": config.H50_HOLD_BLOCK_REASON,
+                    "h50_trend": _h50.trend, "h50_range_pct": _h50.range_pct,
+                    "major_fields": _entry_gate_ledger_fields(state, decision, "TW2_3SLOT"),
+                }
+                h50_outcome = order_executor.ExecutionOutcome(
+                    signal_id=signal_id, direction=direction,
+                    target_symbol=_h50_target,
+                    final_state=SignalState.BLOCKED,
+                    block_reason=config.H50_HOLD_BLOCK_REASON,
+                )
+                _record_signal_ledger(
+                    state, macd_snap, direction, "TW2_3SLOT_CONFIRM", signal_id,
+                    datetime.now(KST), h50_outcome, h50_trace,
+                )
+                result.actions.append(f"{config.H50_HOLD_BLOCK_REASON}:{direction.value}")
+                state.order_block_reason = config.H50_HOLD_BLOCK_REASON
+                if not small_whipsaw_hold.is_holding(state):
+                    small_whipsaw_hold.note_hold_start(
+                        state, held_direction=_held_dir, now=now, decision=_h50)
+                return None
+
     if not decision.approved:
         target_symbol = order_executor.target_symbol_for_direction(direction)
         if position is not None and position.symbol != target_symbol:
@@ -3528,6 +3578,74 @@ def _advance_whipsaw_watch(
         _apply_exit_outcome(state, outcome)
         if outcome.final_state == SignalState.EXECUTED:
             result.actions.append(f"{config.WHIPSAW_WATCH_DETERIORATION_EXIT}:{outcome.target_symbol}")
+    return outcome
+
+
+def _advance_h50_hold(
+    *, broker, state: RuntimeState, now: datetime, macd_snap, bars_3m,
+    position: Optional[PositionSnapshot], result: TickResult,
+):
+    """H50 HOLD 를 완성봉마다 갱신한다 (2026-09-15).
+
+    해제 조건 (둘 중 하나):
+      1) 구조적 상위추세가 보유 반대방향으로 ``H50_TREND_BREAK_BARS`` 봉 연속
+      2) HOLD 시작 후 ``H50_MAX_HOLD_MIN`` 분 경과
+
+    ``h50_last_checked_bar_ts`` 로 멱등 -- 같은 완성봉을 두 번 세지 않는다.
+    청산 전용이며 신규 진입은 절대 하지 않는다. H50 모드가 아니거나 HOLD 가
+    없으면 완전한 no-op 이다(모듈 함수 호출조차 하지 않는다)."""
+    if not small_whipsaw_hold.is_active(state):
+        return None
+    if not small_whipsaw_hold.is_holding(state):
+        return None
+    if position is None or position.quantity <= 0:
+        small_whipsaw_hold.clear(state)
+        return None
+    held_dir = small_whipsaw_hold.held_direction(state)
+    if held_dir is None:
+        small_whipsaw_hold.clear(state)
+        return None
+    checked = _parse_iso_dt(state.h50_last_checked_bar_ts)
+    if checked is not None and macd_snap.bar_dt <= checked:
+        return None
+    small_whipsaw_hold.note_checked_bar(state, macd_snap.bar_dt)
+    started_at = _parse_iso_dt(state.h50_hold_started_at)
+    decision = small_whipsaw_hold.evaluate_release(
+        bars_3m, held_dir, started_at, now,
+        trend_break_count=int(state.h50_trend_break_count or 0),
+    )
+    small_whipsaw_hold.note_trend_break_count(state, decision.trend_break_count)
+    if not decision.should_release:
+        return None
+
+    exit_direction = (Direction.DOWN_BLUE if held_dir == Direction.UP_RED
+                      else Direction.UP_RED)
+    signal_id = f"{make_signal_id(macd_snap.bar_dt, exit_direction)}:H50_HOLD_EXIT"
+    fake_decision = MajorFlagDecision(
+        approved=False, score=0.0, required_score=0.0,
+        decision=small_whipsaw_hold.EXIT_SMALL_WHIPSAW_HOLD,
+        reasons=(f"H50 hold released: {decision.reason}",),
+        component_scores={},
+        metrics={
+            "h50_release_reason": decision.reason,
+            "h50_trend": decision.trend,
+            "h50_trend_break_count": decision.trend_break_count,
+            "h50_elapsed_min": decision.elapsed_min,
+        },
+        is_reversal=True, fast_reversal=False,
+        block_reason=small_whipsaw_hold.EXIT_SMALL_WHIPSAW_HOLD,
+    )
+    outcome = _execute_reversal_exit_only_for_filtered_entry(
+        broker=broker, state=state, macd_snap=macd_snap, direction=exit_direction,
+        position=position, decision=fake_decision, result=result,
+        gate_mode="TW2_3SLOT", signal_id_override=signal_id,
+    )
+    small_whipsaw_hold.clear(state)
+    if outcome is not None:
+        _apply_exit_outcome(state, outcome)
+        if outcome.final_state == SignalState.EXECUTED:
+            result.actions.append(
+                f"{small_whipsaw_hold.EXIT_SMALL_WHIPSAW_HOLD}:{outcome.target_symbol}")
     return outcome
 
 
@@ -4925,6 +5043,18 @@ def run_once(
             bars_3m=bars_3m, position=pos, result=result,
         )
         if whipsaw_watch_outcome is not None and whipsaw_watch_outcome.final_state == SignalState.EXECUTED:
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
+            return result
+
+        # H50 HOLD 해제 (2026-09-15): whipsaw-watch 와 같은 자리 -- 하드스톱/
+        # TP/트레일링/ETP 가 이미 이 tick 앞에서 평가돼 발동했으면 여기까지
+        # 오지 않으므로 기존 래더 우선순위가 그대로 유지된다. 청산 전용이며
+        # 신규 진입은 절대 하지 않는다.
+        h50_outcome = _advance_h50_hold(
+            broker=broker, state=state, now=now, macd_snap=macd_snap,
+            bars_3m=bars_3m, position=pos, result=result,
+        )
+        if h50_outcome is not None and h50_outcome.final_state == SignalState.EXECUTED:
             _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 

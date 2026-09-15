@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
+from app.trading.macd2 import small_whipsaw_hold
 from app.trading.macd2 import time_window_3slot
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
@@ -903,7 +904,8 @@ class Macd2Service:
             abandon_pending_time_window_candidate_if_any(
                 state, datetime.now(KST), reason="TW2_DISABLED_BY_X2LITE_ENABLE",
             )
-        for _flag in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled"):
+        for _flag in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
+                      "time_window_h50_filter_enabled"):
             if enabled_bool and getattr(state, _flag, False):
                 setattr(state, _flag, False)
                 setattr(state, f"{_flag}_at", datetime.now(KST).isoformat())
@@ -933,7 +935,87 @@ class Macd2Service:
             "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
             "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
             "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "time_window_h50_filter_enabled": bool(state.time_window_h50_filter_enabled),
             "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
+        }
+
+    def set_time_window_h50_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle **H50 = X2-lite + W1a + 작은휩쏘 HOLD** (2026-09-15).
+
+        X2-lite 와 같은 우선순위 tier 의 여섯 번째 모드다(켜면 TW2 / TEGv2 /
+        TW2 3-SLOT / TW TEG 3-SLOT / X2-lite 가 전부 꺼지고, 그쪽 세터들도
+        이쪽을 끈다).
+
+        **진입 로직 · 청산 파라미터 · W1a 사이징이 X2-lite 와 100% 동일하다** —
+        time_window_3slot.MODES_X2LITE_FAMILY 로 묶여 exit_overrides /
+        morning_tp2_pct_override / requires_chop_teg_gate /
+        early_take_profit.is_enabled·thresholds / position_sizing.is_active 가
+        전부 X2-lite 와 같은 값을 돌려준다. H50 때문에 진입이 추가되거나
+        삭제되지 않는다.
+
+        다른 것은 **반대신호 청산 하나뿐**이다(app/trading/macd2/small_whipsaw_hold.py):
+        보유 중 반대 플래그가 정상 확정됐을 때 (a) 보유방향 == 구조적 상위추세
+        (LONG: EMA20>EMA50 / SHORT: EMA20<EMA50) 이고 (b) 최근 60분 high-low
+        range <= 2.35% 이면 그 청산을 보류(HOLD)한다. HOLD 중에도 하드스톱
+        -1.30% / TP1 / TP2 / 트레일링 / ETP / 강제청산은 전부 그대로 살아 있고,
+        반대방향 신규진입은 하지 않는다. 해제는 추세가 반대로 2봉 연속
+        전환되거나 HOLD 시작 후 60분이 지나면 일어난다.
+
+        검증: data/validation/macd2/small_whipsaw_hold_20260915 (발견),
+        data/validation/macd2/h50_stress_20260915 (압박테스트 — 등급
+        **BORDERLINE**, bootstrap 94.9% 로 95% 미달). 그래서 기본 OFF 다
+        (config.H50_3SLOT_FILTER_DEFAULT). 상태만 갱신하고 주문을 내지 않는다.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.time_window_h50_filter_enabled)
+        state.time_window_h50_filter_enabled = enabled_bool
+        state.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
+        state.time_window_h50_filter_enabled_at = datetime.now(KST).isoformat()
+        state.time_window_h50_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
+            state.time_window_2_filter_enabled = False
+            state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_2_filter_enabled_by = str(changed_by or "ui")
+            state.time_window_teg_filter_enabled = False
+            state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_time_window_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_DISABLED_BY_H50_ENABLE",
+            )
+        for _flag in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
+                      "time_window_x2lite_filter_enabled"):
+            if enabled_bool and getattr(state, _flag, False):
+                setattr(state, _flag, False)
+                setattr(state, f"{_flag}_at", datetime.now(KST).isoformat())
+                setattr(state, f"{_flag}_by", str(changed_by or "ui"))
+        if enabled_bool and state.early_tp_filter_enabled:
+            # X2-lite 와 같이 조기익절을 내장한다 — 중복처럼 보이지 않게 꺼 둔다.
+            state.early_tp_filter_enabled = False
+            state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
+            state.early_tp_filter_enabled_by = "AUTO_H50_BUILTIN_ETP"
+        if not enabled_bool:
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="H50_DISABLED_BY_USER",
+            )
+            # 모드를 끄면 남아 있던 HOLD 상태도 정리한다(포지션은 건드리지 않는다 --
+            # 다음 tick 부터 기존 X2-lite/3-SLOT 반대신호 청산 규칙이 그대로 적용).
+            small_whipsaw_hold.clear(state)
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "time_window_h50_filter_enabled": enabled_bool,
+            "previous": prev,
+            "time_window_h50_filter_enabled_at": state.time_window_h50_filter_enabled_at,
+            "time_window_h50_filter_enabled_by": state.time_window_h50_filter_enabled_by,
+            "time_window_h50_filter_version": state.time_window_h50_filter_version,
+            "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
+            "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+            "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
+            "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
+            "h50_hold_active": bool(state.h50_hold_active),
         }
 
     def set_early_tp_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:

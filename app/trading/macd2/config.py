@@ -1190,6 +1190,43 @@ X2LITE_SIZING_MIN_MULT = _env_float("MACD2_X2LITE_SIZING_MIN_MULT", 0.25)
 X2LITE_SIZING_MAX_MULT = _env_float("MACD2_X2LITE_SIZING_MAX_MULT", 1.50)
 X2LITE_SIZING_DAILY_EXPOSURE_CAP = _env_float("MACD2_X2LITE_SIZING_DAILY_CAP", 3.00)
 
+# ── H50 : 작은 휩쏘 HOLD (X2-lite 전용 독립 필터, 2026-09-15) ────────────────
+# X2-lite + W1a 위에 **청산 보류 하나만** 얹은 별도 전략 모드다. 진입 로직은
+# X2-lite 와 100% 동일하고(H50 때문에 진입이 추가/삭제되지 않는다), 손절 -1.30%
+# /TP1/TP2/트레일링/ETP/강제청산도 전부 그대로 살아 있다.
+#
+# 규칙: 보유 중 반대 플래그가 정상 확정됐을 때
+#         (a) 보유방향 == 구조적 상위추세 (LONG: EMA20>EMA50 / SHORT: EMA20<EMA50)
+#         (b) 최근 60분 high-low range <= 2.35%
+#       이면 그 반대신호 청산을 보류한다. 반대방향 신규진입은 하지 않는다.
+#       해제: 추세가 반대로 2봉 연속 전환 | HOLD 시작 후 60분 경과 | 기존 래더 발동
+#
+# 연구 근거: data/validation/macd2/small_whipsaw_hold_20260915/ (발견),
+#            data/validation/macd2/h50_stress_20260915/ (압박테스트, BORDERLINE).
+#   최근30일 +58.66% -> +66.53% / PF 2.012 -> 2.090 / MDD -6.40% -> -6.27%
+#   최근70일 +151.22% -> +184.76% / PF 1.782 -> 1.854 / MDD -9.87% 동일
+#   2D grid 35칸 전부 A 초과(plateau) · WF 5/6 · 슬리피지 +0.30%p 까지 우위 유지
+#   다만 bootstrap 94.9%(95% 미달) 이라 등급은 ADOPT 가 아니라 BORDERLINE 이다.
+#   -> **기본값 OFF**. 사용자가 UI 에서 켜야 동작한다.
+H50_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_H50_3SLOT_FILTER_DEFAULT", False)
+H50_3SLOT_STRATEGY_NAME = "X2-lite + W1a + H50"
+H50_3SLOT_FILTER_VERSION = "H50_3SLOT_V1_20260915"
+#: 모듈 자체 kill-switch. False 면 모드가 켜져 있어도 HOLD 판정을 하지 않는다.
+H50_ENABLED = _env_bool("MACD2_H50_ENABLED", True)
+#: (b) 최근 60분 high-low range 임계(%). 2.35 = 연구 확정값.
+H50_RANGE_MAX_PCT = _env_float("MACD2_H50_RANGE_MAX_PCT", 2.35)
+#: range 계산에 쓰는 완성 3분봉 수 (20봉 = 60분).
+H50_RANGE_BARS = _env_int("MACD2_H50_RANGE_BARS", 20)
+#: 구조적 추세 판정 EMA (20 vs 50).
+H50_TREND_EMA_FAST = _env_int("MACD2_H50_TREND_EMA_FAST", 20)
+H50_TREND_EMA_SLOW = _env_int("MACD2_H50_TREND_EMA_SLOW", 50)
+#: 추세가 반대로 몇 개 완성봉 연속이면 해제하는가.
+H50_TREND_BREAK_BARS = _env_int("MACD2_H50_TREND_BREAK_BARS", 2)
+#: HOLD 최대 유지 시간(분).
+H50_MAX_HOLD_MIN = _env_int("MACD2_H50_MAX_HOLD_MIN", 60)
+#: HOLD 로 반대신호 청산을 보류했을 때 원장/UI 에 남기는 사유.
+H50_HOLD_BLOCK_REASON = "H50_SMALL_WHIPSAW_HOLD"
+
 # ── 레거시 진입전략 토글 숨김 (2026-09-07 사용자 요청) ──────────────────────
 # 사용자에게 노출하는 전략을 "TW2 3-SLOT + 조기익절" / "TWF 3-SLOT + 조기익절"
 # 두 개로 정리한다. TW2 / +TEGv2 / +1 DOWN_BLUE 는 **코드를 하나도 지우지 않고**
@@ -1207,6 +1244,16 @@ X2LITE_SIZING_DAILY_EXPOSURE_CAP = _env_float("MACD2_X2LITE_SIZING_DAILY_CAP", 3
 # 호출하며, state.time_window_teg_filter_enabled 를 참조하지 않는다. 즉 이
 # 토글을 숨겨도 두 전략의 오후 진입 TEGv2 검증은 그대로 작동한다.
 SHOW_LEGACY_TW2_TOGGLES = _env_bool("MACD2_SHOW_LEGACY_TW2_TOGGLES", False)
+
+# ── TW2 3-SLOT / TW TEG 3-SLOT 토글 숨김 (2026-09-15 사용자 요청) ───────────
+# 사용자에게 노출하는 3-SLOT 계열 전략을 "X2-lite + W1a" / "X2-lite + W1a + H50"
+# 두 개로 정리한다. TW2 3-SLOT / TW TEG 3-SLOT 은 **코드를 하나도 지우지 않고**
+# UI 렌더만 감춘다 — service.set_time_window_3slot_filter_enabled /
+# set_time_window_twf_filter_enabled / worker 의 판정 경로는 전부 그대로 살아
+# 있고, 저장된 상태도 강제로 바꾸지 않는다(둘 다 기본 OFF 라 정리할 것이 없다).
+#
+# 복구 방법: MACD2_SHOW_LEGACY_3SLOT_TOGGLES=1 (또는 이 기본값을 True 로).
+SHOW_LEGACY_3SLOT_TOGGLES = _env_bool("MACD2_SHOW_LEGACY_3SLOT_TOGGLES", False)
 
 # ── "무필터 09:00-11:00" 즉시청산 진입모드 (2026-08-20 사용자 요청) ─────────
 # 6th peer entry gate in worker._judge_entry_gate (right after TIME_WINDOW),

@@ -838,6 +838,7 @@ _TIER_TOGGLE_WIDGETS = {
     "macd2_time_window_3slot_filter_toggle": "time_window_3slot_filter_enabled",
     "macd2_time_window_twf_filter_toggle": "time_window_twf_filter_enabled",
     "macd2_time_window_x2lite_filter_toggle": "time_window_x2lite_filter_enabled",
+    "macd2_time_window_h50_filter_toggle": "time_window_h50_filter_enabled",
 }
 
 
@@ -891,97 +892,115 @@ if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
                 + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
             )
 
-_3slot_cols = st.columns([1.4, 1.6])
-with _3slot_cols[0]:
-    _3slot_on = st.checkbox(
-        "TW2 3-SLOT",
-        value=bool(getattr(state, "time_window_3slot_filter_enabled", False)),
-        key="macd2_time_window_3slot_filter_toggle",
-        help=(
-            "TW2/TEGv2와 완전히 동일한 T+3 재확인/VWAP·최근크로스 veto/TP1·TP2·trailing·손절/휩쏘-내성 반대신호청산을 "
-            "그대로 쓰되, 하루 신규진입을 정확히 3회로 제한하고 슬롯 배분만 새로 짭니다: 09:00-11:00 1·2번째는 TW2 승인만, "
-            "3번째는 Trend Quality 5개 조건(가격/EMA10 방향·EMA10-20 signed 스프레드 확대·MACD갭 확대·EMA20 기울기·VWAP 방향) "
-            f"중 {macd2_config.TW2_3SLOT_MORNING_3RD_QUALITY_MIN}개 이상 통과해야 사용, 실패하면 그 슬롯은 오후로 이월됩니다. "
-            "11:00-14:50은 남은 슬롯이 있을 때만 TW2 승인 AND TEGv2 승인을 모두 요구하고, 2번째 오후 진입은 직전 오후 포지션이 "
-            "종료된 뒤 반대 방향일 때만 허용합니다. 60거래일 TRAIN(40)/OOS(20) 백테스트+2차 독립 시뮬레이션 교차검증에서 현행 "
-            "TW2 대비 OOS 복리·PF·MDD·Top10제외수익 전부 개선 확인(data/validation/tw2_3slot_flex/). TW2/+TEGv2와 동시에 켤 수 "
-            "없습니다(셋 중 하나만). 기본 OFF — 실거래 검증 후 기본값 변경 여부를 결정합니다."
-        ),
-    )
-with _3slot_cols[1]:
-    if bool(_3slot_on) != bool(getattr(state, "time_window_3slot_filter_enabled", False)):
-        res = service.set_time_window_3slot_filter_enabled(bool(_3slot_on), changed_by="ui")
-        if res.get("ok"):
-            _sync_tier_toggle_widgets(res, skip="macd2_time_window_3slot_filter_toggle")
-            st.caption(f"TW2 3-SLOT → {'ON' if _3slot_on else 'OFF'}")
-            st.rerun()
-    else:
-        st.caption(
-            f"TW2 3-SLOT={'ON' if state.time_window_3slot_filter_enabled else 'OFF'} · "
-            f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
-            f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
-            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
-            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+# ── TW2 3-SLOT / TW TEG 3-SLOT 토글 숨김 (2026-09-15 사용자 요청) ─────────
+# 노출 전략을 'X2-lite + W1a' / 'X2-lite + W1a + H50' 로 정리하면서 감췄다.
+# 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_3SLOT_TOGGLES=1 이면
+# 아래 두 블록이 예전과 똑같이 다시 렌더된다(service/worker 경로는 상시 유지).
+# 숨긴 상태에서 켜져 있으면 아래 경고가 뜬다(활성 전략이 안 보이는 일 방지).
+if not macd2_config.SHOW_LEGACY_3SLOT_TOGGLES:
+    _hidden_on = [
+        _n for _n, _f in (("TW2 3-SLOT", "time_window_3slot_filter_enabled"),
+                          (macd2_config.TW_TEG_3SLOT_STRATEGY_NAME, "time_window_twf_filter_enabled"))
+        if bool(getattr(state, _f, False))
+    ]
+    if _hidden_on:
+        st.warning(
+            "⚠ 숨긴 전략이 켜져 있습니다: " + " · ".join(_hidden_on)
+            + " — 끄려면 MACD2_SHOW_LEGACY_3SLOT_TOGGLES=1 로 토글을 다시 노출하세요."
         )
-        if getattr(state, "last_tw2_3slot_signal_id", None):
+if macd2_config.SHOW_LEGACY_3SLOT_TOGGLES:
+    _3slot_cols = st.columns([1.4, 1.6])
+    with _3slot_cols[0]:
+        _3slot_on = st.checkbox(
+            "TW2 3-SLOT",
+            value=bool(getattr(state, "time_window_3slot_filter_enabled", False)),
+            key="macd2_time_window_3slot_filter_toggle",
+            help=(
+                "TW2/TEGv2와 완전히 동일한 T+3 재확인/VWAP·최근크로스 veto/TP1·TP2·trailing·손절/휩쏘-내성 반대신호청산을 "
+                "그대로 쓰되, 하루 신규진입을 정확히 3회로 제한하고 슬롯 배분만 새로 짭니다: 09:00-11:00 1·2번째는 TW2 승인만, "
+                "3번째는 Trend Quality 5개 조건(가격/EMA10 방향·EMA10-20 signed 스프레드 확대·MACD갭 확대·EMA20 기울기·VWAP 방향) "
+                f"중 {macd2_config.TW2_3SLOT_MORNING_3RD_QUALITY_MIN}개 이상 통과해야 사용, 실패하면 그 슬롯은 오후로 이월됩니다. "
+                "11:00-14:50은 남은 슬롯이 있을 때만 TW2 승인 AND TEGv2 승인을 모두 요구하고, 2번째 오후 진입은 직전 오후 포지션이 "
+                "종료된 뒤 반대 방향일 때만 허용합니다. 60거래일 TRAIN(40)/OOS(20) 백테스트+2차 독립 시뮬레이션 교차검증에서 현행 "
+                "TW2 대비 OOS 복리·PF·MDD·Top10제외수익 전부 개선 확인(data/validation/tw2_3slot_flex/). TW2/+TEGv2와 동시에 켤 수 "
+                "없습니다(셋 중 하나만). 기본 OFF — 실거래 검증 후 기본값 변경 여부를 결정합니다."
+            ),
+        )
+    with _3slot_cols[1]:
+        if bool(_3slot_on) != bool(getattr(state, "time_window_3slot_filter_enabled", False)):
+            res = service.set_time_window_3slot_filter_enabled(bool(_3slot_on), changed_by="ui")
+            if res.get("ok"):
+                _sync_tier_toggle_widgets(res, skip="macd2_time_window_3slot_filter_toggle")
+                st.caption(f"TW2 3-SLOT → {'ON' if _3slot_on else 'OFF'}")
+                st.rerun()
+        else:
             st.caption(
-                "최근 TW2 3-SLOT 후보: "
-                f"{'승인' if getattr(state, 'last_tw2_3slot_approved', False) else '거절'} · "
-                f"슬롯={getattr(state, 'last_tw2_3slot_slot_number', '-') or '-'} · "
-                f"사유={getattr(state, 'last_tw2_3slot_block_reason', None) or '-'}"
+                f"TW2 3-SLOT={'ON' if state.time_window_3slot_filter_enabled else 'OFF'} · "
+                f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
+                f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
+                f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+                + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
             )
+            if getattr(state, "last_tw2_3slot_signal_id", None):
+                st.caption(
+                    "최근 TW2 3-SLOT 후보: "
+                    f"{'승인' if getattr(state, 'last_tw2_3slot_approved', False) else '거절'} · "
+                    f"슬롯={getattr(state, 'last_tw2_3slot_slot_number', '-') or '-'} · "
+                    f"사유={getattr(state, 'last_tw2_3slot_block_reason', None) or '-'}"
+                )
 
 # ── TW TEG 3-SLOT (2026-09-08, 구 "TWF 3-SLOT") ────────────────────────────
 # TW2 3-SLOT 의 자매 전략. 진입 판정 경로/슬롯 카운터를 그대로 공유하고,
 # 다른 것은 (1) 청산 임계값 3개 (2) CHOP 후보에 TEGv2 추가 요구, 둘뿐이다.
 # 내부 식별자(state.time_window_twf_filter_enabled / MODE_TWF_3SLOT)는 저장된
 # 상태·원장 호환 때문에 그대로 두고 표시 이름만 바꿨다.
-_twf_cols = st.columns([1.4, 1.6])
-with _twf_cols[0]:
-    _twf_on = st.checkbox(
-        macd2_config.TW_TEG_3SLOT_STRATEGY_NAME,
-        value=bool(getattr(state, "time_window_twf_filter_enabled", False)),
-        key="macd2_time_window_twf_filter_toggle",
-        help=(
-            "TW2 3-SLOT 과 MACD zero-cross/T+3 재확인/TW2 veto/슬롯 배분/Trend Quality/TEGv2/"
-            "휩쏘-내성 반대신호청산이 전부 동일하고, 하루 신규진입 3회 상한과 '오전에 남은 슬롯만 "
-            "13:00~14:50 에 사용' 규칙도 그대로입니다. "
-            "**진입에서 다른 것은 하나뿐입니다**: 진입 확정봉이 CHOP(횡보/휩쏘)으로 분류된 후보만 "
-            "TEGv2 를 추가로 통과해야 진입합니다. 통과하면 대기 없이 즉시 진입하고, 실패하면 그 후보만 "
-            "취소되며 **슬롯은 소비되지 않습니다**(다음 플래그가 같은 슬롯으로 다시 평가됩니다). "
-            "CHOP 이 아닌 후보는 기존과 100% 동일하게 즉시 진입합니다. 오후 슬롯은 원래 TEGv2 를 "
-            "요구하므로 실효는 '오전 CHOP 후보에도 TEGv2 요구'입니다. "
-            "⚠ 아래 수치는 **잠정(provisional)** 입니다 — 사후조회 프리마켓 봉 기반이고 그 입력의 "
-            "production 신호 재현율이 42.9% 로 측정됐습니다. 프리마켓 재현성 확보 후 재검증 전까지 "
-            "확정 성과로 보지 마세요. "
-            "잠정검증(faithful-fill, 68영업일 20260528~20260907): 복리 +101.32%→+132.00%, PF 1.566→1.834, "
-            "MDD -10.24%→-8.50%, 하루 3회 cap 위반 0일. 차단 21건 전부 오전 CHOP 후보이고 전부 TEGv2 "
-            "탈락(막은 손실 -31.03% / 놓친 수익 +16.44%), 공통 147거래 손익 변동 0건. "
-            "단 +3% 러너 2건을 놓쳤고(러너보존 93.3%) TEGv2 임계값은 원래 오후용이라 오전 적용은 "
-            "이번이 첫 데이터입니다 — 그 리스크를 알고 켜세요. "
-            "**청산 임계값 3개**도 TW2 3-SLOT 과 다릅니다: 오전 손절 "
-            f"-1.7% → -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}%, TP1 이후 잔량 스탑 +0.3% → "
-            f"+{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}%, 오후 TP +2.5% → "
-            f"+{macd2_config.TWF_AFTERNOON_TP * 100:.1f}%. TP1/분할비율/TP2/trailing/조기익절은 TW2 3-SLOT 과 동일합니다. "
-            "TW2 3-SLOT 과 동시에 켤 수 없습니다(둘 중 하나만). 기본 OFF."
-        ),
-    )
-with _twf_cols[1]:
-    if bool(_twf_on) != bool(getattr(state, "time_window_twf_filter_enabled", False)):
-        res = service.set_time_window_twf_filter_enabled(bool(_twf_on), changed_by="ui")
-        if res.get("ok"):
-            _sync_tier_toggle_widgets(res, skip="macd2_time_window_twf_filter_toggle")
-            st.caption(f"{macd2_config.TW_TEG_3SLOT_STRATEGY_NAME} → {'ON' if _twf_on else 'OFF'}")
-            st.rerun()
-    else:
-        st.caption(
-            f"{macd2_config.TW_TEG_3SLOT_STRATEGY_NAME}={'ON' if state.time_window_twf_filter_enabled else 'OFF'} · "
-            f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
-            f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
-            f"청산 SL -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}% / TP1후 +{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}% / 오후TP +{macd2_config.TWF_AFTERNOON_TP * 100:.1f}% · "
-            f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
-            + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+if macd2_config.SHOW_LEGACY_3SLOT_TOGGLES:
+    _twf_cols = st.columns([1.4, 1.6])
+    with _twf_cols[0]:
+        _twf_on = st.checkbox(
+            macd2_config.TW_TEG_3SLOT_STRATEGY_NAME,
+            value=bool(getattr(state, "time_window_twf_filter_enabled", False)),
+            key="macd2_time_window_twf_filter_toggle",
+            help=(
+                "TW2 3-SLOT 과 MACD zero-cross/T+3 재확인/TW2 veto/슬롯 배분/Trend Quality/TEGv2/"
+                "휩쏘-내성 반대신호청산이 전부 동일하고, 하루 신규진입 3회 상한과 '오전에 남은 슬롯만 "
+                "13:00~14:50 에 사용' 규칙도 그대로입니다. "
+                "**진입에서 다른 것은 하나뿐입니다**: 진입 확정봉이 CHOP(횡보/휩쏘)으로 분류된 후보만 "
+                "TEGv2 를 추가로 통과해야 진입합니다. 통과하면 대기 없이 즉시 진입하고, 실패하면 그 후보만 "
+                "취소되며 **슬롯은 소비되지 않습니다**(다음 플래그가 같은 슬롯으로 다시 평가됩니다). "
+                "CHOP 이 아닌 후보는 기존과 100% 동일하게 즉시 진입합니다. 오후 슬롯은 원래 TEGv2 를 "
+                "요구하므로 실효는 '오전 CHOP 후보에도 TEGv2 요구'입니다. "
+                "⚠ 아래 수치는 **잠정(provisional)** 입니다 — 사후조회 프리마켓 봉 기반이고 그 입력의 "
+                "production 신호 재현율이 42.9% 로 측정됐습니다. 프리마켓 재현성 확보 후 재검증 전까지 "
+                "확정 성과로 보지 마세요. "
+                "잠정검증(faithful-fill, 68영업일 20260528~20260907): 복리 +101.32%→+132.00%, PF 1.566→1.834, "
+                "MDD -10.24%→-8.50%, 하루 3회 cap 위반 0일. 차단 21건 전부 오전 CHOP 후보이고 전부 TEGv2 "
+                "탈락(막은 손실 -31.03% / 놓친 수익 +16.44%), 공통 147거래 손익 변동 0건. "
+                "단 +3% 러너 2건을 놓쳤고(러너보존 93.3%) TEGv2 임계값은 원래 오후용이라 오전 적용은 "
+                "이번이 첫 데이터입니다 — 그 리스크를 알고 켜세요. "
+                "**청산 임계값 3개**도 TW2 3-SLOT 과 다릅니다: 오전 손절 "
+                f"-1.7% → -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}%, TP1 이후 잔량 스탑 +0.3% → "
+                f"+{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}%, 오후 TP +2.5% → "
+                f"+{macd2_config.TWF_AFTERNOON_TP * 100:.1f}%. TP1/분할비율/TP2/trailing/조기익절은 TW2 3-SLOT 과 동일합니다. "
+                "TW2 3-SLOT 과 동시에 켤 수 없습니다(둘 중 하나만). 기본 OFF."
+            ),
         )
+    with _twf_cols[1]:
+        if bool(_twf_on) != bool(getattr(state, "time_window_twf_filter_enabled", False)):
+            res = service.set_time_window_twf_filter_enabled(bool(_twf_on), changed_by="ui")
+            if res.get("ok"):
+                _sync_tier_toggle_widgets(res, skip="macd2_time_window_twf_filter_toggle")
+                st.caption(f"{macd2_config.TW_TEG_3SLOT_STRATEGY_NAME} → {'ON' if _twf_on else 'OFF'}")
+                st.rerun()
+        else:
+            st.caption(
+                f"{macd2_config.TW_TEG_3SLOT_STRATEGY_NAME}={'ON' if state.time_window_twf_filter_enabled else 'OFF'} · "
+                f"오늘 슬롯 {int(getattr(state, 'tw2_3slot_slots_used_today', 0) or 0)}/{macd2_config.TW2_3SLOT_DAILY_CAP} "
+                f"(오전 {int(getattr(state, 'tw2_3slot_morning_count', 0) or 0)} · 오후 {int(getattr(state, 'tw2_3slot_afternoon_count', 0) or 0)}) · "
+                f"청산 SL -{abs(macd2_config.TWF_MORNING_STOP_LOSS) * 100:.1f}% / TP1후 +{macd2_config.TWF_MORNING_AFTER_TP1_STOP * 100:.1f}% / 오후TP +{macd2_config.TWF_AFTERNOON_TP * 100:.1f}% · "
+                f"포지션관리 활성={'Y' if getattr(state, 'time_window_position_active', False) else '-'}"
+                + (f" ({getattr(state, 'time_window_active_mode', '') or ''})" if getattr(state, 'time_window_position_active', False) else "")
+            )
 
 # ── X2-lite (2026-09-12) ───────────────────────────────────────────────────
 # TW TEG 3-SLOT 과 **진입이 100% 동일한** 자매 전략. 다른 것은 청산 파라미터와
@@ -1059,6 +1078,76 @@ if bool(getattr(state, "time_window_x2lite_filter_enabled", False)):
         + (" · 첫 거래 손절 확정" if getattr(state, 'x2lite_first_trade_stop_loss', False) else "")
     )
 
+# ── H50 : X2-lite + W1a + 작은휩쏘 HOLD (2026-09-15) ────────────────────────
+# X2-lite 와 **진입·청산 파라미터·사이징이 100% 동일**하고, 반대신호 청산을
+# 조건부로 보류하는 것 하나만 다르다(app/trading/macd2/small_whipsaw_hold.py).
+_h50_cols = st.columns([1.4, 1.6])
+with _h50_cols[0]:
+    _h50_on = st.checkbox(
+        macd2_config.H50_3SLOT_STRATEGY_NAME,
+        value=bool(getattr(state, "time_window_h50_filter_enabled", False)),
+        key="macd2_time_window_h50_filter_toggle",
+        help=(
+            f"진입은 {macd2_config.X2LITE_3SLOT_STRATEGY_NAME} 과 **100% 동일**합니다 — MACD 플래그 탐지/"
+            "T+3 재확인/TEGv2/Trend Quality/슬롯 배분/하루 3회 cap/신규진입 cutoff/CHOP TEGv2 재게이트/"
+            f"{macd2_config.X2LITE_SIZING_NAME} sizing 이 한 줄도 다르지 않습니다. "
+            "청산 파라미터(TP1 20% / trailing 2.8% / TP2 5.0% / 오전손절 -1.3% / ETP 내장)도 동일합니다. "
+            "**H50 때문에 신규 진입이 추가되거나 삭제되지 않습니다.** "
+            "\n\n**다른 것은 반대신호 청산 하나뿐입니다**: 보유 중 반대 플래그가 정상 확정됐을 때 "
+            f"(a) 보유방향이 구조적 상위추세와 같고 (LONG: EMA{macd2_config.H50_TREND_EMA_FAST}>"
+            f"EMA{macd2_config.H50_TREND_EMA_SLOW} / SHORT: 반대) "
+            f"(b) 최근 {macd2_config.H50_RANGE_BARS * 3}분 high-low range ≤ {macd2_config.H50_RANGE_MAX_PCT:.2f}% "
+            "이면 그 청산을 **보류(HOLD)** 합니다. "
+            f"\n\nHOLD 중에도 하드스톱 -{abs(macd2_config.X2LITE_MORNING_STOP_LOSS) * 100:.1f}% / TP1 / TP2 / "
+            "트레일링 / ETP / 강제청산은 **전부 그대로** 작동하고, 반대방향 신규진입은 하지 않습니다. "
+            f"해제는 추세가 반대로 {macd2_config.H50_TREND_BREAK_BARS}개 완성 3분봉 연속 전환되거나 "
+            f"HOLD 시작 후 {macd2_config.H50_MAX_HOLD_MIN}분이 지나면 일어나고, 그 뒤엔 기존 "
+            f"{macd2_config.X2LITE_3SLOT_STRATEGY_NAME} 로직으로 그대로 복귀합니다. "
+            "\n\n⚠ 잠정(provisional) — 사후조회 프리마켓 봉 기반이고 production 신호 재현율이 42.9% 로 "
+            "측정됐습니다. 확정 성과로 보지 마세요. "
+            "검증(faithful-fill, data/validation/macd2/small_whipsaw_hold_20260915 · h50_stress_20260915): "
+            "최근30일 +58.66%→+66.53%, PF 2.012→2.090, MDD -6.40%→-6.27%. "
+            "최근70일 +151.22%→+184.76%, PF 1.782→1.854, MDD -9.87% 동일. "
+            "2D 파라미터 grid 35칸 전부 기준 초과(plateau), walk-forward 5/6, "
+            "슬리피지 +0.30%p 에서도 우위 유지. "
+            "**다만 bootstrap 94.9% 로 95% 기준에 미달해 등급은 ADOPT 가 아니라 BORDERLINE 입니다.** "
+            "소액/섀도우로 먼저 검증하시길 권합니다. "
+            "다른 전략과 동시에 켤 수 없습니다. 기본 OFF."
+        ),
+    )
+with _h50_cols[1]:
+    if bool(_h50_on) != bool(getattr(state, "time_window_h50_filter_enabled", False)):
+        res = service.set_time_window_h50_filter_enabled(bool(_h50_on), changed_by="ui")
+        if res.get("ok"):
+            _sync_tier_toggle_widgets(res, skip="macd2_time_window_h50_filter_toggle")
+            st.caption(f"{macd2_config.H50_3SLOT_STRATEGY_NAME} → {'ON' if _h50_on else 'OFF'}")
+            st.rerun()
+    else:
+        _holding = bool(getattr(state, "h50_hold_active", False))
+        st.caption(
+            f"H50={'ON' if state.time_window_h50_filter_enabled else 'OFF'} · "
+            f"HOLD={'진행중' if _holding else '-'}"
+            + (f" ({getattr(state, 'h50_original_direction', '') or ''})" if _holding else "")
+        )
+if bool(getattr(state, "time_window_h50_filter_enabled", False)):
+    st.caption(
+        f"└ 진입/청산/사이징: {macd2_config.X2LITE_3SLOT_STRATEGY_NAME} + "
+        f"{macd2_config.X2LITE_SIZING_NAME} 과 **완전 동일** · "
+        f"HOLD 조건: EMA{macd2_config.H50_TREND_EMA_FAST}/EMA{macd2_config.H50_TREND_EMA_SLOW} 순방향 "
+        f"AND 최근 {macd2_config.H50_RANGE_BARS * 3}분 range ≤ {macd2_config.H50_RANGE_MAX_PCT:.2f}% · "
+        f"해제: 추세 {macd2_config.H50_TREND_BREAK_BARS}봉 연속 반전 또는 {macd2_config.H50_MAX_HOLD_MIN}분 경과"
+    )
+    if bool(getattr(state, "h50_hold_active", False)):
+        _rng = getattr(state, "h50_last_hold_range_pct", None)
+        st.warning(
+            f"🔒 H50 HOLD 진행중 — 보유 {getattr(state, 'h50_original_direction', '') or '?'} · "
+            f"시작 {(getattr(state, 'h50_hold_started_at', '') or '')[11:19]} · "
+            f"추세반전 {int(getattr(state, 'h50_trend_break_count', 0) or 0)}/"
+            f"{macd2_config.H50_TREND_BREAK_BARS}봉"
+            + (f" · 진입시 range {float(_rng):.2f}%" if _rng is not None else "")
+            + f" · 하드스톱/TP/트레일링/ETP/강제청산은 정상 작동"
+        )
+
 # ── 조기익절 필터 (TW2 3-SLOT / TW TEG 3-SLOT 공통 서브필터, 2026-09-03) ───────
 # TW2 3-SLOT이 꺼지면 service.set_time_window_3slot_filter_enabled가 이 토글을
 # 강제로 끈다. 위젯 key가 session_state에 남아 있으면 다음 rerun에서 체크박스가
@@ -1070,7 +1159,8 @@ if bool(getattr(state, "time_window_x2lite_filter_enabled", False)):
 # 2026-09-12: X2-lite 는 조기익절을 **내장**한다(자동 ON, trigger 1.5 / floor 1.0).
 # 그 모드에서는 이 토글을 실행경로가 아예 읽지 않으므로, 켜고 끌 수 있는 것처럼
 # 보이지 않게 비활성으로 렌더한다 — 중복 적용은 구조적으로 불가능하다.
-_x2lite_live = bool(getattr(state, "time_window_x2lite_filter_enabled", False))
+_x2lite_live = bool(getattr(state, "time_window_x2lite_filter_enabled", False)) or \
+               bool(getattr(state, "time_window_h50_filter_enabled", False))
 _3slot_live = bool(
     getattr(state, "time_window_3slot_filter_enabled", False)
     or getattr(state, "time_window_twf_filter_enabled", False)

@@ -142,9 +142,14 @@ def test_unchecking_the_toggle_turns_the_filter_off_and_persists():
     assert state_store.load_state().early_tp_filter_enabled is False
 
 
-def test_turning_tw2_3slot_off_from_the_ui_also_clears_the_early_tp_toggle():
+def test_turning_tw2_3slot_off_from_the_ui_also_clears_the_early_tp_toggle(monkeypatch):
     """service 쪽 강제해제가 UI에서도 반영되는지 — 위젯 session_state가 남아
-    다음 rerun에서 다시 켜려 하지 않아야 한다."""
+    다음 rerun에서 다시 켜려 하지 않아야 한다.
+
+    2026-09-15: TW2 3-SLOT 토글을 UI 에서 숨겼다(코드는 보존). 이 테스트는
+    그 토글을 **실제로 눌러서** 연쇄 해제를 확인하는 것이 목적이므로
+    복구 플래그를 켜고 돈다 -- 숨김은 별도 파일이 고정한다."""
+    monkeypatch.setattr(config, "SHOW_LEGACY_3SLOT_TOGGLES", True)
     _set_3slot(True)
     at = _run(_fresh_app())
     _toggle(at).check().run()

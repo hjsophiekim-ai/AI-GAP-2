@@ -75,7 +75,7 @@ def is_active(state) -> bool:
     if not bool(getattr(config, "X2LITE_SIZING_ENABLED", True)):
         return False
     return (time_window_3slot.active_3slot_mode(state)
-            == time_window_3slot.MODE_X2LITE_3SLOT)
+            in time_window_3slot.MODES_X2LITE_FAMILY)
 
 
 def first_trade_stop_loss_active(state) -> bool:

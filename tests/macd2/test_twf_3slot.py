@@ -138,10 +138,13 @@ class TestTwfOverrides:
 # ── 3. 모드 헬퍼 ───────────────────────────────────────────────────────────
 class TestModeHelpers:
     def test_modes_tuple(self):
-        # 2026-09-12: X2-lite 가 세 번째 3-SLOT 계열 모드로 추가됐다. 기존 두
-        # 모드의 값과 **순서**는 그대로여야 한다(우선순위 보존).
+        # 2026-09-12: X2-lite 가 세 번째 3-SLOT 계열 모드로 추가됐다.
+        # 2026-09-15: H50 이 네 번째로 추가됐다. 기존 세 모드의 값과 **순서**는
+        # 그대로여야 한다(우선순위 보존) — 새 모드는 항상 뒤에만 붙는다.
         assert t3.MODES_3SLOT[:2] == ("TW2_3SLOT", "TWF_3SLOT")
-        assert t3.MODES_3SLOT == ("TW2_3SLOT", "TWF_3SLOT", "X2LITE_3SLOT")
+        assert t3.MODES_3SLOT[:3] == ("TW2_3SLOT", "TWF_3SLOT", "X2LITE_3SLOT")
+        assert t3.MODES_3SLOT == ("TW2_3SLOT", "TWF_3SLOT", "X2LITE_3SLOT",
+                                  "X2LITE_H50_3SLOT")
 
     def test_active_mode(self):
         s = RuntimeState()

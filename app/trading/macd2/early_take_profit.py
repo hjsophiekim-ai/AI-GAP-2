@@ -233,7 +233,7 @@ def is_enabled(state) -> bool:
     토글을 아예 참조하지 않고 항상 활성이다. 중복 적용은 구조적으로 불가능하다 —
     worker 의 조기익절 평가 지점은 하나뿐이고, 이 함수가 True 를 한 번만
     돌려주며, 임계값은 ``thresholds()`` 가 모드에 따라 한 쌍만 고른다."""
-    if time_window_3slot.active_3slot_mode(state) == time_window_3slot.MODE_X2LITE_3SLOT:
+    if time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_X2LITE_FAMILY:
         return True
     return bool(
         getattr(state, "early_tp_filter_enabled", False)
@@ -246,7 +246,7 @@ def thresholds(state) -> tuple[float, float]:
 
     X2-lite 만 자기 값(1.5 / 1.0)을 쓰고, 나머지 전부는 기존 config.EARLY_TP_*
     (1.5 / 0.8) 그대로다 — 기존 동작 불변."""
-    if time_window_3slot.active_3slot_mode(state) == time_window_3slot.MODE_X2LITE_3SLOT:
+    if time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_X2LITE_FAMILY:
         return (float(config.X2LITE_EARLY_TP_TRIGGER_PCT),
                 float(config.X2LITE_EARLY_TP_FLOOR_PCT))
     return (float(config.EARLY_TP_TRIGGER_PCT), float(config.EARLY_TP_FLOOR_PCT))

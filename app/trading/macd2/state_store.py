@@ -79,6 +79,14 @@ def default_state() -> RuntimeState:
     state.x2lite_entry_seq_today = 0
     state.x2lite_first_trade_stop_loss = False
     state.x2lite_last_applied_sizing = None
+    state.time_window_h50_filter_enabled = bool(getattr(config, "H50_3SLOT_FILTER_DEFAULT", False))
+    state.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
+    state.h50_hold_active = False
+    state.h50_hold_started_at = None
+    state.h50_original_direction = None
+    state.h50_trend_break_count = 0
+    state.h50_last_checked_bar_ts = None
+    state.h50_last_hold_range_pct = None
     state.early_tp_filter_enabled = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
     state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
@@ -389,6 +397,16 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "x2lite_entry_seq_today": int(state.x2lite_entry_seq_today or 0),
         "x2lite_first_trade_stop_loss": bool(state.x2lite_first_trade_stop_loss),
         "x2lite_last_applied_sizing": state.x2lite_last_applied_sizing,
+        "time_window_h50_filter_enabled": bool(state.time_window_h50_filter_enabled),
+        "time_window_h50_filter_enabled_at": state.time_window_h50_filter_enabled_at,
+        "time_window_h50_filter_enabled_by": state.time_window_h50_filter_enabled_by,
+        "time_window_h50_filter_version": state.time_window_h50_filter_version or config.H50_3SLOT_FILTER_VERSION,
+        "h50_hold_active": bool(state.h50_hold_active),
+        "h50_hold_started_at": state.h50_hold_started_at,
+        "h50_original_direction": state.h50_original_direction,
+        "h50_trend_break_count": int(state.h50_trend_break_count or 0),
+        "h50_last_checked_bar_ts": state.h50_last_checked_bar_ts,
+        "h50_last_hold_range_pct": state.h50_last_hold_range_pct,
         # 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03)
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
@@ -559,6 +577,18 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     stored_x2lite_filter_version = str(raw.get("time_window_x2lite_filter_version") or "")
     time_window_x2lite_filter_version = stored_x2lite_filter_version or config.X2LITE_3SLOT_FILTER_VERSION
     time_window_x2lite_filter_enabled = bool(raw.get("time_window_x2lite_filter_enabled", x2lite_enabled_default))
+    # ── H50 (2026-09-15) — 저장된 값이 없으면 config 기본값(OFF).
+    # 버전이 바뀌면 기본값으로 되돌린다(기존 필터들과 동일한 규약).
+    h50_enabled_default = bool(getattr(config, "H50_3SLOT_FILTER_DEFAULT", False))
+    _stored_h50_ver = str(raw.get("time_window_h50_filter_version") or "")
+    time_window_h50_filter_version = _stored_h50_ver or config.H50_3SLOT_FILTER_VERSION
+    time_window_h50_filter_enabled = bool(raw.get("time_window_h50_filter_enabled", h50_enabled_default))
+    if _stored_h50_ver and _stored_h50_ver != config.H50_3SLOT_FILTER_VERSION:
+        time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
+        time_window_h50_filter_enabled = h50_enabled_default
+    # 3-SLOT 계열은 상호배제다 — H50 이 켜져 있으면 X2-lite 토글은 강제로 끈다.
+    if time_window_h50_filter_enabled:
+        time_window_x2lite_filter_enabled = False
     if stored_x2lite_filter_version and stored_x2lite_filter_version != config.X2LITE_3SLOT_FILTER_VERSION:
         time_window_x2lite_filter_version = config.X2LITE_3SLOT_FILTER_VERSION
         time_window_x2lite_filter_enabled = x2lite_enabled_default
@@ -909,6 +939,16 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         time_window_twf_filter_enabled_by=raw.get("time_window_twf_filter_enabled_by"),
         time_window_twf_filter_version=time_window_twf_filter_version,
         time_window_x2lite_filter_enabled=time_window_x2lite_filter_enabled,
+        time_window_h50_filter_enabled=time_window_h50_filter_enabled,
+        time_window_h50_filter_enabled_at=raw.get("time_window_h50_filter_enabled_at"),
+        time_window_h50_filter_enabled_by=raw.get("time_window_h50_filter_enabled_by"),
+        time_window_h50_filter_version=time_window_h50_filter_version,
+        h50_hold_active=bool(raw.get("h50_hold_active", False)),
+        h50_hold_started_at=raw.get("h50_hold_started_at"),
+        h50_original_direction=raw.get("h50_original_direction"),
+        h50_trend_break_count=int(raw.get("h50_trend_break_count", 0) or 0),
+        h50_last_checked_bar_ts=raw.get("h50_last_checked_bar_ts"),
+        h50_last_hold_range_pct=raw.get("h50_last_hold_range_pct"),
         time_window_x2lite_filter_enabled_at=raw.get("time_window_x2lite_filter_enabled_at"),
         time_window_x2lite_filter_enabled_by=raw.get("time_window_x2lite_filter_enabled_by"),
         time_window_x2lite_filter_version=time_window_x2lite_filter_version,

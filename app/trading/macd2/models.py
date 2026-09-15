@@ -706,6 +706,26 @@ class RuntimeState:
     x2lite_first_trade_stop_loss: bool = False
     x2lite_last_applied_sizing: Optional[float] = None
 
+    # ── H50 (작은 휩쏘 HOLD, 2026-09-15) ───────────────────────────────
+    # X2-lite + W1a 위에 얹는 별도 모드. 진입/청산 파라미터는 X2-lite 와
+    # 100% 동일하고, 반대신호 청산을 조건부로 보류하는 상태만 여기 둔다.
+    #   h50_hold_active        : 지금 반대신호 청산을 보류 중인가
+    #   h50_hold_started_at    : HOLD 시작 시각(ISO). 60분 타이머 기준
+    #   h50_original_direction : HOLD 를 시작할 때 보유하고 있던 방향
+    #   h50_trend_break_count  : 구조적 추세가 반대로 연속 몇 봉인가
+    #   h50_last_checked_bar_ts: 같은 완성봉을 두 번 평가하지 않기 위한 멱등키
+    #   h50_last_hold_range_pct: 진단용 — HOLD 시작 시점 60분 range(%)
+    time_window_h50_filter_enabled: bool = False
+    time_window_h50_filter_enabled_at: Optional[str] = None
+    time_window_h50_filter_enabled_by: Optional[str] = None
+    time_window_h50_filter_version: str = ""
+    h50_hold_active: bool = False
+    h50_hold_started_at: Optional[str] = None
+    h50_original_direction: Optional[str] = None
+    h50_trend_break_count: int = 0
+    h50_last_checked_bar_ts: Optional[str] = None
+    h50_last_hold_range_pct: Optional[float] = None
+
     # 조기익절 필터 (2026-09-03 사용자 요청) — TW2 3-SLOT 전용으로 따로 켜고 끄는
     # risk-management 단계 서브필터. 진입/슬롯/T+3/TW2/TEGv2 로직과는 무관하며
     # (app/trading/macd2/early_take_profit.py 참고), MACD2의 기존 무관한

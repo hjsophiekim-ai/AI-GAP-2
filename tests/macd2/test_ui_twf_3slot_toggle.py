@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from app.trading.macd2 import state_store
+from app.trading.macd2 import config, state_store
 
 _APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
 _TWF_KEY = "macd2_time_window_twf_filter_toggle"
@@ -20,6 +20,16 @@ _LABEL = "TWF 3-SLOT"
 
 # test_ui_early_take_profit_toggle.py 와 같은 기존 페이지 결함 가드.
 _PREEXISTING_FORM_BUG = "can't be used in an `st.form()`"
+
+
+# 2026-09-15: TW2 3-SLOT / TW TEG 3-SLOT 토글은 UI 에서 숨겼다(사용자 요청,
+# 노출 전략을 X2-lite 계열 둘로 정리). **코드는 그대로 살아 있고**
+# config.SHOW_LEGACY_3SLOT_TOGGLES 로 되살릴 수 있다 -- 이 파일은 그 살아 있는
+# 토글의 동작을 계속 고정하는 것이 목적이므로 복구 플래그를 켠 채로 돈다.
+# 숨김 자체는 tests/macd2/test_ui_3slot_legacy_toggles_hidden.py 가 고정한다.
+@pytest.fixture(autouse=True)
+def _show_legacy_3slot_toggles(monkeypatch):
+    monkeypatch.setattr(config, "SHOW_LEGACY_3SLOT_TOGGLES", True)
 
 
 def _fresh_app() -> AppTest:

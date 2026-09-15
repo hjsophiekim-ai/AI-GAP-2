@@ -19,7 +19,15 @@ _APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "
 _PREEXISTING_FORM_BUG = "can't be used in an `st.form()`"
 
 HIDDEN_LABELS = ("시간대별 최적거래 필터 (TW2)", "+TEGv2", "+1 DOWN_BLUE")
-VISIBLE_LABELS = ("TW2 3-SLOT", "TWF 3-SLOT", "└ 조기익절 필터")
+# 2026-09-15: 노출 전략이 TW2 3-SLOT / TW TEG 3-SLOT -> X2-lite 계열 둘로
+# 바뀌었다(사용자 요청). 이 파일은 "2026-09-07 숨김"을 고정하는 파일이고,
+# 남아야 하는 tier 구성만 현행에 맞춘다. 3-SLOT 숨김 자체는
+# tests/macd2/test_ui_3slot_legacy_toggles_hidden.py 가 고정한다.
+VISIBLE_LABELS = (
+    f"{config.X2LITE_3SLOT_STRATEGY_NAME} + {config.X2LITE_SIZING_NAME} sizing",
+    config.H50_3SLOT_STRATEGY_NAME,
+    "└ 조기익절 필터",
+)
 HIDDEN_KEYS = (
     "macd2_time_window_2_filter_toggle",
     "macd2_time_window_teg_filter_toggle",
@@ -59,8 +67,9 @@ class TestHidden:
         labels = [c.label for c in at.checkbox]
         for lab in VISIBLE_LABELS:
             assert lab in labels, f"{lab} 이 보여야 한다: {labels!r}"
-        assert labels.index("TWF 3-SLOT") == labels.index("TW2 3-SLOT") + 1
-        assert labels.index("└ 조기익절 필터") == labels.index("TWF 3-SLOT") + 1
+        _x2, _h50 = VISIBLE_LABELS[0], VISIBLE_LABELS[1]
+        assert labels.index(_h50) == labels.index(_x2) + 1
+        assert labels.index("└ 조기익절 필터") == labels.index(_h50) + 1
 
     def test_untouched_toggles_still_visible(self):
         """사용자 지시: 퀵 Profit 익절 / 무필터 09:00-11:00 은 그대로 둔다."""
