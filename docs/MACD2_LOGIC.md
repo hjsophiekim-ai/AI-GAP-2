@@ -1295,6 +1295,7 @@ production 에 반영된 적이 없다. 실제 배포된 것은 위 CHOP veto �
 - 실제 KIS 주문 테스트 금지
 - 새 프레임워크 도입 또는 대규모 리팩토링 금지
 - `main` 브랜치 푸시 금지. `main-MACD2`에만 커밋·푸시한다.
+- 검증이 끝나지 않은 신규 필터를 `main-MACD2`에 커밋/머지 금지. `feature/<filter-name>` 브랜치에서만 개발한다 (`docs/requirements.md` §2026-09-17 거버넌스).
 - MAJOR 필터용 날짜·시각·방향 하드코딩 금지
 - 필터 ON이 confirmed 플래그 생성 수·시각·방향을 바꾸게 하는 변경 금지
 - `TW2_3SLOT_SLOT1_CHOP_VETO` 를 재검증 없이 다시 기본 ON으로 되돌리는
@@ -1302,3 +1303,21 @@ production 에 반영된 적이 없다. 실제 배포된 것은 위 CHOP veto �
   Trend Quality 게이트는 기존대로 오전 3번째 슬롯 전용으로 유지한다.
 - 필터를 주문·체결 함수 내부에 넣는 변경 금지
 - Stop Loss / Profit Lock / 강제청산을 필터에 종속시키는 변경 금지
+
+## 신규 필터 개발 절차 (2026-09-17) — `docs/requirements.md` §2026-09-17 참조
+
+새 필터/새 전략 모드를 추가할 때의 **프로세스 요구사항**은
+`docs/requirements.md` 의 「2026-09-17 MACD2 신규 필터 개발·머지 거버넌스」
+절이 정본이다. 요약만 옮기면:
+
+- `main-MACD2` 는 실거래 안정판 전용. 개발 중인 필터는 올리지 않는다.
+- 필터 하나당 `feature/<filter-name>` 브랜치 하나.
+- MarketData / signal_engine(3분봉·MACD·crossover) / 완성봉 replay /
+  state_store 기존 필드 / ledger / order_executor 는 필터 브랜치에서 수정
+  금지. 불가피하면 **필터 변경과 분리된 별도 커밋**으로 만든다.
+- merge 조건: **필터 OFF 에서 직전 안정판과 플래그·진입·청산·사유·sizing·
+  슬롯·주문수량·원장 전부 diff 0**.
+- 검증은 30/70일 백테스트만으로 부족하다 — live replay, 장중 restart,
+  HISTORY_GAP / late completed bar, 부분체결, 원장 복원까지 포함한다.
+- merge 제안 시 「변경 파일 목록 + 안정판 대비 diff + 신규 failure 0」 3종을
+  반드시 함께 보고한다.

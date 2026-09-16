@@ -10,6 +10,7 @@
 
 | 버전 | 날짜 | 내용 |
 |------|------|------|
+| 2.7 | 2026-09-17 | MACD2 신규 필터 개발·머지 거버넌스 추가: 운영 브랜치(main-MACD2)는 실거래 안정판만, 새 필터는 `feature/<name>` 브랜치, 공통부(MarketData/signal_engine/replay/state_store/ledger/order_executor) 수정 금지·불가피하면 별도 커밋, 필터 OFF parity diff 0 을 merge 조건으로 고정, 백테스트 외 live replay/restart/HISTORY_GAP/부분체결/원장복원까지 검증, merge 전 「변경 파일 목록+diff+신규 failure 0」 보고 의무 (§2026-09-17) |
 | 2.6 | 2026-07-23 | MACD 하이닉스 자동매매 청산: 고정 +3% TP 제거, C PROFIT_LOCK 채택(락 +1.5% net / giveback 0.8pp). MOCK·REAL 동일. CONTINUATION_REENTRY·OPENING_PROBE 기본 OFF 유지 |
 | 2.5 | 2026-07-22 | 하이닉스 전략 구조 단순화: A(weighted RANGE)=유일 LIVE 주문, C(MACD+Williams 3분)=episode 확인기(단독 주문 금지), D(가격행동 조기진입)=SHADOW 격리, E=C확인+A주문은 20일 walk-forward에서 A를 이길 때만 LIVE 승격. 하루 데이터 임계값 최적화 금지 |
 | 2.4 | 2026-07-21 | 장초반 09:15~09:30 신규진입 금지 블랙아웃 폐지 — 09:00~14:50 전체를 신규진입 허용 구간으로 단순화(중간 금지 구간 없음). 기존 포지션 손절·익절·반전청산·15:15 강제청산은 이전과 동일하게 시간창과 무관하게 항상 실행 |
@@ -1827,3 +1828,96 @@ This section supersedes older MACD2 V4/V5 strong-flag wording in this requiremen
   on 10,000,000 KRW per trade, +175.6007% return, 2.23 trades/day.
 - V6 approved profiles are documented in `docs/MACD2_LOGIC.md` under
   `2026-08-02 MAJOR_FLAG V6 Gate`.
+
+---
+
+## 2026-09-17 MACD2 신규 필터 개발·머지 거버넌스 (브랜치 분리 원칙)
+
+이 절은 MACD2 계열(그리고 같은 워커를 공유하는 MU_MACD)에 **새 필터/새 전략
+모드를 추가할 때의 개발 절차 요구사항**이다. 전략 파라미터가 아니라 *프로세스*
+에 대한 요구사항이며, 이후 모든 MACD2 필터 작업에 적용된다.
+
+### G-1. 운영 브랜치는 실거래 안정판만 담는다
+
+- `main-MACD2` = **실거래 안정판 전용**. 현재 Render(`ai-gap-2.onrender.com`)가
+  이 브랜치를 배포한다.
+- 새 필터를 개발 중인 코드는 검증이 끝나기 전에는 `main-MACD2` 에 올리지
+  않는다. "토글 기본 OFF 니까 안전하다"는 근거로 미검증 코드를 운영 브랜치에
+  먼저 넣지 않는다.
+- `main` 브랜치 푸시 금지 원칙(`docs/MACD2_LOGIC.md` 「금지 사항」)은 그대로
+  유효하다.
+
+### G-2. 필터 하나당 브랜치 하나
+
+- 새 필터는 `feature/<filter-name>` 브랜치에서 개발한다
+  (예: `feature/h50`, `feature/x2lite`).
+- 한 브랜치에서 서로 다른 두 필터를 같이 개발하지 않는다. 채택/기각이 필터별로
+  독립적으로 이루어져야 하기 때문이다.
+
+### G-3. 공통부는 건드리지 않는다
+
+다음은 **필터 개발 브랜치에서 수정 금지**인 공통부다.
+
+| 공통부 | 대표 파일 |
+|---|---|
+| MarketData / 1분봉 수집 | `app/trading/macd2/market_data.py` |
+| 3분봉 resample · MACD 계산 · crossover 탐지 | `app/trading/macd2/signal_engine.py` |
+| 완성봉 replay | `worker.replay_unevaluated_completed_bars` 및 그 호출부 |
+| worker 틱 루프 골격 | `worker.run_once` 의 기존 우선순위 체인 |
+| state 저장/복원 | `app/trading/macd2/state_store.py` 의 기존 필드 |
+| 신호/거래 원장 | `app/trading/macd2/ledger.py`, `bar_ledger.py` |
+| 주문 실행 | `app/trading/macd2/order_executor.py`, `broker_adapter.py` |
+
+- 필터는 **자기 모듈 + `config.py` 상수 + `worker.py` 의 분기 하나 + `models.py`/
+  `state_store.py` 의 신규 필드 + 테스트 + 문서**로 끝나야 한다.
+- 불가피하게 공통부를 고쳐야 하면, **필터 변경과 분리된 별도 커밋**으로 만든다.
+  그 커밋은 필터 토글과 무관하게 정당해야 하고(즉 필터를 전부 OFF 해도 옳은
+  수정이어야 하고), 필터 채택이 기각돼도 그대로 남을 수 있어야 한다.
+- 커밋 순서도 분리한다: `1) 공통부 수정` → `2) 필터 추가` → `3) 문서/테스트`.
+
+### G-4. merge 조건 — OFF parity diff 0
+
+새 필터를 `main-MACD2` 에 merge 하려면 **필터 OFF 상태에서 직전 안정판과
+아래가 전부 diff 0** 이어야 한다.
+
+- confirmed 플래그 집합 (시각 · 방향 · 개수)
+- T+3 후보 생성/해소 결과
+- 진입 시각 · 진입 심볼 · 진입 수량 · 슬롯 번호 · sizing (W1a / CHOP / first-loss)
+- 청산 시각 · 청산 사유 · 청산 수량
+- 신호 원장(`signal ledger`) 행과 거래 원장 행
+
+기준 안정판은 그 시점의 배포 전략 조합을 명시한다(2026-09-17 현재:
+**X2-lite + W1a**, 필요 시 `+ H50`). "거의 같다"는 merge 근거가 될 수 없다.
+
+### G-5. 검증 범위 — 백테스트만으로는 부족하다
+
+merge 전에 아래를 **전부** 확인한다.
+
+1. **백테스트**: 최근 30영업일 / 70영업일 full-chain. 거래수·거래승률·일승률·
+   단순수익·복리수익·PF·MDD·손실일·최대연속손실일·Top5 제외·Top10 제외.
+2. **구간 분할**: 앞40일 / 최근30일, 5분할, walk-forward.
+3. **live replay**: 당일(또는 사건 발생일) 실데이터 replay 로 실제 주문 시각·
+   가격·손익을 재현.
+4. **restart**: 장중 재시작 — 특히 persisted state 손실 시나리오
+   (`docs/MACD2_LOGIC.md` 「2026-08-05 Same-day restart with lost persisted state」).
+5. **HISTORY_GAP / late completed bar**: 분봉 구멍, 늦게 완성된 봉 replay.
+6. **부분체결**: 부분체결 후 잔량 처리, TP1 부분익절과의 상호작용.
+7. **원장 복원**: 재시작 후 원장/포지션 복원이 필터 상태와 어긋나지 않는지.
+8. **신규 failure 0**: `pytest tests/macd2 tests/mu_macd` 기준 신규 실패 0건.
+
+### G-6. 과최적화 방지
+
+- 단일 사건(오늘 손실 1건 등)에 맞춘 새 임계값을 만들지 않는다. 이미 검증된
+  기존 로직을 재사용해 **연결**하는 구조적 수정을 우선한다.
+- uplift 가 특정 1~3거래 제거로 사라지면 채택하지 않는다.
+- 하루 데이터로 임계값을 최적화하지 않는다(요구사항 2.5 와 동일 원칙).
+
+### G-7. merge 직전 체크리스트 (보고 필수 항목)
+
+production merge 를 제안할 때는 아래 3가지를 반드시 함께 보고한다.
+
+1. **변경 파일 목록** (`git diff --stat <stable>..<feature>`)
+2. **기존 안정판 대비 diff** — 코드 diff + G-4 의 OFF parity diff 0 증거
+3. **신규 failure 0** — 테스트 실행 결과 요약
+
+이 3가지가 없으면 merge 하지 않는다.
