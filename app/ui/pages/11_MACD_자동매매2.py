@@ -37,7 +37,8 @@ from app.ui.auth_gate import require_login
 require_login()
 
 from app.config import get_config, get_kis_account_config, mask_account  # noqa: E402
-from app.trading.macd2 import config as macd2_config  # noqa: E402
+from app.trading.macd2 import config as macd2_config
+from app.trading.macd2 import time_window_3slot as macd2_time_window_3slot  # noqa: E402
 from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
 from app.trading.macd2.service import get_service  # noqa: E402
@@ -122,7 +123,30 @@ def _parse_flag_event_time(row: dict) -> datetime | None:
     return None
 
 
+#: "마지막 FLAG EVENT" 에 절대 들어가면 안 되는 signal_type — 이들은 MACD 가
+#: 탐지한 플래그가 아니라 **주문 의도** 행이고, direction 도 탐지된 방향이
+#: 아니라 예약/사용자가 지정한 방향이다. 2026-09-16 실거래 사고에서 09:03
+#: 예약매수(DOWN_BLUE) 행이 마지막 FLAG EVENT 로 표시되어, 같은 시각에 실제로
+#: 확정된 RED 플래그를 가려버렸다.
+_NON_FLAG_SIGNAL_TYPES = {
+    "SCHEDULED_ENTRY_0903",
+    "PREMARKET_CARRY_TW",
+    "MANUAL_ENTRY",
+    "MANUAL_LIQUIDATION",
+}
+
+
+def _is_flag_event_row(row: dict) -> bool:
+    return str(row.get("signal_type") or "") not in _NON_FLAG_SIGNAL_TYPES
+
+
 def _latest_flag_event(rows: list[dict]) -> dict | None:
+    # 주문 의도 행은 제외한다. 전부 제외돼 남는 게 없으면 None 을 돌려주고,
+    # 호출부는 state.latest_primary_flag(= 마지막으로 실제 탐지된 플래그)로
+    # 자연히 되돌아간다.
+    rows = [row for row in rows if _is_flag_event_row(row)]
+    if not rows:
+        return None
     timed_rows = [(_parse_flag_event_time(row), row) for row in rows]
     timed_rows = [(ts, row) for ts, row in timed_rows if ts is not None]
     if not timed_rows:
@@ -711,44 +735,56 @@ with m2:
             st.error(f"인버스 매수 실패: {res.get('message') or res.get('block_reason')}")
         st.rerun()
 
-_sched_dir = getattr(state, "scheduled_entry_armed_direction", None)
-_sched_done = getattr(state, "scheduled_entry_executed_at", None)
-if _sched_done:
-    _protect_note = (
-        f" · 반대 플래그 보호 중(~{macd2_config.SCHEDULED_ENTRY_PROTECTION_UNTIL.strftime('%H:%M')}까지 반대신호청산 무시)"
-        if getattr(state, "scheduled_entry_protected", False) else ""
+# ── 09:03 예약매수: 3-SLOT 계열에서는 노출하지 않는다 (2026-09-16 사고) ──
+# H50/X2-lite/TW2 3-SLOT/TW TEG 3-SLOT 운영 중에는 이 기능을 쓰지 않는다.
+# 버튼이 보이면 눌릴 수 있고, 눌리면 arm 이 생긴다 -- 그래서 렌더 자체를 막는다
+# (service.arm_scheduled_entry 도 같은 조건으로 거부하므로 2중이다).
+# TW/TW2/TEGv2/무필터 등 다른 전략에서는 예전과 똑같이 그대로 보인다.
+_sched_supported = macd2_time_window_3slot.scheduled_entry_supported(state)
+if not _sched_supported:
+    st.caption(
+        "09:03 예약 매수 — 현재 전략(" + str(macd2_time_window_3slot.active_3slot_mode(state) or "-")
+        + ")에서는 사용하지 않습니다. 진입은 MACD 플래그 + T+3 재확인 경로로만 이뤄집니다."
     )
-    st.caption(f"09:03 예약 매수 — 오늘 처리 완료: `{state.scheduled_entry_last_result or '-'}`{_protect_note}")
-else:
-    _sched_label = "레버리지(레드)" if (_sched_dir and _sched_dir.value == "UP_RED") else (
-        "인버스(블루)" if (_sched_dir and _sched_dir.value == "DOWN_BLUE") else "없음"
-    )
-    st.caption(f"09:03 예약 매수 (개장 직후 이른 플래그 대응, 하루 1회) — 현재 예약: {_sched_label}")
-sch1, sch2 = st.columns(2)
-with sch1:
-    _armed_up = bool(_sched_dir and _sched_dir.value == "UP_RED")
-    if st.button(
-        ("[예약중] " if _armed_up else "") + "09시03분 레버리지(레드) 전량매수 예약",
-        use_container_width=True, disabled=bool(_sched_done),
-    ):
-        res = service.arm_scheduled_entry("UP_RED")
-        if res.get("ok"):
-            st.success("09:03 레버리지 전량매수 예약됨" if res.get("armed") else "예약 해제됨")
-        else:
-            st.error(res.get("message") or "예약 실패")
-        st.rerun()
-with sch2:
-    _armed_down = bool(_sched_dir and _sched_dir.value == "DOWN_BLUE")
-    if st.button(
-        ("[예약중] " if _armed_down else "") + "09시03분 인버스(블루) 전량매수 예약",
-        use_container_width=True, disabled=bool(_sched_done),
-    ):
-        res = service.arm_scheduled_entry("DOWN_BLUE")
-        if res.get("ok"):
-            st.success("09:03 인버스 전량매수 예약됨" if res.get("armed") else "예약 해제됨")
-        else:
-            st.error(res.get("message") or "예약 실패")
-        st.rerun()
+if _sched_supported:
+    _sched_dir = getattr(state, "scheduled_entry_armed_direction", None)
+    _sched_done = getattr(state, "scheduled_entry_executed_at", None)
+    if _sched_done:
+        _protect_note = (
+            f" · 반대 플래그 보호 중(~{macd2_config.SCHEDULED_ENTRY_PROTECTION_UNTIL.strftime('%H:%M')}까지 반대신호청산 무시)"
+            if getattr(state, "scheduled_entry_protected", False) else ""
+        )
+        st.caption(f"09:03 예약 매수 — 오늘 처리 완료: `{state.scheduled_entry_last_result or '-'}`{_protect_note}")
+    else:
+        _sched_label = "레버리지(레드)" if (_sched_dir and _sched_dir.value == "UP_RED") else (
+            "인버스(블루)" if (_sched_dir and _sched_dir.value == "DOWN_BLUE") else "없음"
+        )
+        st.caption(f"09:03 예약 매수 (개장 직후 이른 플래그 대응, 하루 1회) — 현재 예약: {_sched_label}")
+    sch1, sch2 = st.columns(2)
+    with sch1:
+        _armed_up = bool(_sched_dir and _sched_dir.value == "UP_RED")
+        if st.button(
+            ("[예약중] " if _armed_up else "") + "09시03분 레버리지(레드) 전량매수 예약",
+            use_container_width=True, disabled=bool(_sched_done),
+        ):
+            res = service.arm_scheduled_entry("UP_RED")
+            if res.get("ok"):
+                st.success("09:03 레버리지 전량매수 예약됨" if res.get("armed") else "예약 해제됨")
+            else:
+                st.error(res.get("message") or "예약 실패")
+            st.rerun()
+    with sch2:
+        _armed_down = bool(_sched_dir and _sched_dir.value == "DOWN_BLUE")
+        if st.button(
+            ("[예약중] " if _armed_down else "") + "09시03분 인버스(블루) 전량매수 예약",
+            use_container_width=True, disabled=bool(_sched_done),
+        ):
+            res = service.arm_scheduled_entry("DOWN_BLUE")
+            if res.get("ok"):
+                st.success("09:03 인버스 전량매수 예약됨" if res.get("armed") else "예약 해제됨")
+            else:
+                st.error(res.get("message") or "예약 실패")
+            st.rerun()
 
 st.caption("수동 전량매도 (자동매매는 계속 유지, 현재 보유 포지션만 지금 즉시 매도)")
 if st.button("현재 보유 포지션 수동 전량매도", use_container_width=True):

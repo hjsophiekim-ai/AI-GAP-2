@@ -624,6 +624,32 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         or time_window_x2lite_filter_enabled
     ):
         time_window_h50_filter_enabled = False
+
+    # ── 09:03 예약매수: 3-SLOT 계열이면 복원된 예약을 즉시 무효화 ────────
+    # 2026-09-16 실거래 사고(3차 방어): 저장된 state 에 예약이 남아 있어도
+    # 현재 모드가 비대상이면 되살리지 않는다. 위 상호배제/기본값 결정이 전부
+    # 끝난 뒤에 판정해야 "어떤 모드로 복원됐는가"가 확정된 상태에서 걸린다.
+    # time_window_3slot 을 import 하지 않고 지역 플래그로 직접 판정한다
+    # (state_store -> time_window_3slot -> ... 순환 import 회피).
+    _in_3slot = (time_window_3slot_filter_enabled or time_window_twf_filter_enabled
+                 or time_window_x2lite_filter_enabled or time_window_h50_filter_enabled)
+    _allow_in_3slot = bool(getattr(config, "SCHEDULED_ENTRY_ALLOW_IN_3SLOT", False))
+    # (a) 모드 게이트 — 이 모드에서 예약매수를 쓰지 않기로 했으면 되살리지 않는다.
+    #     MACD2_SCHEDULED_ENTRY_ALLOW_IN_3SLOT=1 이면 이 조건은 걸리지 않는다.
+    # (b) **stale 무효화는 스위치와 무관하게 항상** — 예약은 그것을 건 날에만
+    #     유효하다. 상태 파일이 복구/이관되거나 스키마가 낡아 session_date 가
+    #     비어 rollover 가 조기반환해도, 여기서 한 번 더 막는다.
+    _armed_at_raw = raw.get("scheduled_entry_armed_at")
+    _armed_today = False
+    if _armed_at_raw:
+        try:
+            _a = datetime.fromisoformat(str(_armed_at_raw))
+            _armed_today = (_a.astimezone(config.KST).strftime("%Y%m%d")
+                            == datetime.now(config.KST).strftime("%Y%m%d"))
+        except ValueError:
+            _armed_today = False
+    if (_in_3slot and not _allow_in_3slot) or not _armed_today:
+        scheduled_entry_armed_direction = None
     # 조기익절 필터 — 같은 version-gating 관례(버전이 바뀌면 저장값을 버리고
     # 기본값으로 되돌린다)를 그대로 따르고, 추가로 TW2 3-SLOT이 꺼져 있으면
     # 무조건 함께 꺼진 상태로 복원한다(사용자 요청: 3-SLOT OFF면 자동 비활성).

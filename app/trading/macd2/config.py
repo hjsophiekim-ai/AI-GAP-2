@@ -173,6 +173,32 @@ SCHEDULED_ENTRY_FIRE_WINDOW_SEC = 180.0
 # 정상 적용한다. STOP_LOSS/PROFIT_LOCK/QUICK_PROFIT/15:00 강제청산은 이 보호와
 # 무관하게 항상 그대로 작동한다(오직 확정 반대 플래그로 인한 청산/스위치만 보호).
 SCHEDULED_ENTRY_PROTECTION_UNTIL = time(9, 10)
+#: 09:03 예약매수가 **발동 직전 MACD 상태 재확인**에 실패했을 때의 사유
+#: (2026-09-16 실거래 사고: 08:00 BLUE 를 보고 예약했는데 09:00 bar 에서 RED 로
+#: 뒤집혔음에도 예약이 그대로 인버스를 매수했다). 자매 기능인 프리마켓 승계는
+#: 처음부터 같은 재확인을 했고(MACD_STATE_NOT_HELD_AT_0903), 수동 예약만
+#: 빠져 있었다.
+SCHEDULED_ENTRY_MACD_STATE_FLIPPED = "SCHEDULED_ENTRY_MACD_STATE_FLIPPED"
+#: 3-SLOT 계열(TW2 3-SLOT / TW TEG 3-SLOT / X2-lite / H50)에서는 09:03 예약매수를
+#: 아예 쓰지 않는다 — 2026-09-16 실거래 사고에서 H50 운영 중에 예약매수가 살아
+#: 있다가 08:00 BLUE 기준으로 09:03에 인버스를 매수했다. 프리마켓 승계는 이미
+#: TW2/TEG 가 아니면 발동하지 않도록 게이트가 있었는데(2026-09-01 TW2_3SLOT 제외),
+#: 예약매수에는 그 게이트가 통째로 없었다. TW/TW2/TEGv2 등 다른 전략에서는
+#: 예약매수가 예전과 똑같이 동작한다.
+SCHEDULED_ENTRY_NOT_SUPPORTED_IN_MODE = "SCHEDULED_ENTRY_NOT_SUPPORTED_IN_3SLOT_MODE"
+#: 3-SLOT 계열(TW2 3-SLOT / TW TEG 3-SLOT / X2-lite / H50)에서 09:03 예약매수를
+#: 허용할지. **기본 False** — 사용자가 MACD2_SCHEDULED_ENTRY_ALLOW_IN_3SLOT=1 로
+#: 명시적으로 켠 경우에만 arm 이 가능하다(2026-09-16 사용자 결정).
+#:
+#: 이 스위치는 **1차 방어(arm 금지)만** 제어한다. 나머지 방어선은 값과 무관하게
+#: 항상 동작한다:
+#:   2차  주문 직전 MACD 상태 재확인 (_execute_scheduled_entry)
+#:   3차  저장된 arm 복원 무효화 (state_store.deserialize)
+#:   4차  타일(他日) arm 만료 / 체결 시 arm 소진 (_apply_day_rollover 최상단,
+#:        _execute_scheduled_entry 체결 분기)
+#: TW/TW2/TEGv2/무필터 등 3-SLOT 이 아닌 전략에서는 이 스위치와 무관하게
+#: 예약매수가 예전과 똑같이 동작한다.
+SCHEDULED_ENTRY_ALLOW_IN_3SLOT = _env_bool("MACD2_SCHEDULED_ENTRY_ALLOW_IN_3SLOT", False)
 SCHEDULED_ENTRY_PROTECTION_ACTIVE = "SCHEDULED_ENTRY_PROTECTION_ACTIVE"
 
 # ── PRE15+TW 프리마켓 승계 (2026-08-24, 사용자 요청 — 60영업일 백테스트로

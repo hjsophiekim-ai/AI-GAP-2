@@ -340,6 +340,21 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     CSV, deduped by signal_id) is untouched here — ``processed_signal_ids``
     is only the in-state, same-day dedup list, safe to clear on rollover."""
     today_str = now.strftime("%Y%m%d")
+
+    # ── 09:03 예약매수 arm 유효기간 (2026-09-16 실거래 사고) ──────────────
+    # "예약은 그것을 건 날에만 유효하다" 는 불변식은 아래 rollover 분기와
+    # **무관하게** 성립해야 한다. 원래는 날짜가 바뀌는 분기 안에만 있어서
+    # 두 조기반환(session_date is None / == today) 경로에서는 과거 arm 이
+    # 영원히 지워지지 않았다 -- 상태 파일이 복구/이관되거나 스키마가 낡아
+    # session_date 가 비어 있으면 몇 달 전 예약도 09:03 에 그대로 발동한다.
+    _armed_at = _parse_iso_dt(state.scheduled_entry_armed_at)
+    _armed_today = (_armed_at is not None
+                    and _armed_at.astimezone(KST).strftime("%Y%m%d") == today_str)
+    if state.scheduled_entry_armed_direction is not None and not _armed_today:
+        state.scheduled_entry_armed_direction = None
+        state.scheduled_entry_armed_at = None
+        state.scheduled_entry_armed_by = None
+
     if state.session_date is None:
         # First tick ever for this state (e.g. brand-new RuntimeState) — there
         # is nothing to roll over yet, so just record today without wiping
@@ -448,12 +463,7 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # (armed_at from a PRIOR calendar day, i.e. left over because it never
     # fired and the user never re-armed) should be cleared; an arm already
     # made for today must survive this same-day-rollover race.
-    armed_at = _parse_iso_dt(state.scheduled_entry_armed_at)
-    armed_today = armed_at is not None and armed_at.astimezone(KST).strftime("%Y%m%d") == today_str
-    if not armed_today:
-        state.scheduled_entry_armed_direction = None
-        state.scheduled_entry_armed_at = None
-        state.scheduled_entry_armed_by = None
+    # (arm 유효기간 검사는 이 함수 맨 위에서 분기와 무관하게 이미 끝났다)
     state.scheduled_entry_executed_at = None
     state.scheduled_entry_last_result = None
     state.scheduled_entry_protected = False
@@ -546,6 +556,22 @@ def initialize_strategy_session(
 
     df_1m = market_data.get_history_df()
     bars_3m = resample_completed_3m(df_1m, now=now)
+    # 2026-09-16 수정: restart catch-up 도 live 와 **같은 완성봉 프레임**을 써야
+    # 한다. 여기만 filter_complete_3m_bars 가 빠져 있어서(같은 파일의 다른 호출부
+    # 는 전부 적용한다) catch-up 은 구성 1분봉이 모자란 불완전 봉까지 EMA 에
+    # 넣고 계산했다. EMA 는 누적이라 그 한 봉이 **이후 모든 봉의 macd/signal/gap
+    # 을 바꾼다** -- 2026-09-16 실데이터에서 같은 09:00 봉의 prev_gap 이
+    # live -475.894 vs catch-up -185.374 로 갈렸다.
+    #
+    # 이게 위험한 이유: 아래 walk 는 봉마다 state.last_confirmed_bar_ts 에
+    # 도장을 찍고 state.last_detected_direction 을 덮어쓴다. 잘못된 프레임으로
+    # 낸 판정이 그대로 live 상태가 되고, 도장 때문에 live 경로는 그 봉을
+    # **다시 평가할 수 없다**(_advance_confirmed_primary 의 bar_key 중복방지).
+    # 부호를 걸치는 날이면 두 경로가 방향 자체를 다르게 판정한다.
+    #
+    # MACD 계산식도 resample 규칙도 바꾸지 않는다 -- live 가 이미 쓰고 있는
+    # 같은 입력을 catch-up 에도 똑같이 주는 것뿐이다.
+    bars_3m, _catchup_dropped = filter_complete_3m_bars(bars_3m, df_1m)
     today_str = now.astimezone(KST).strftime("%Y%m%d")
     today_indices = (
         list(bars_3m.index[bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str])
@@ -4619,6 +4645,12 @@ def _scheduled_entry_should_fire(state: RuntimeState, now: datetime) -> bool:
     없어도 당연히 발동하지 않는다. 발동 시각 이후 SCHEDULED_ENTRY_FIRE_
     WINDOW_SEC 안에서만 유효 -- 그 창을 넘기면 오늘은 놓친 것으로 조용히
     끝난다(사용자가 다음날 다시 눌러야 함)."""
+    # 2026-09-16 사고 수정 (1차 방어): 3-SLOT 계열에서는 발동하지 않는다.
+    # 프리마켓 승계(_premarket_carry_should_fire)가 이미 같은 형태의 모드
+    # 게이트를 갖고 있었는데 예약매수에만 없었다 -- 그 비대칭이 사고의 구조적
+    # 원인이다. 손으로 편집된 state 나 과거 잔존 arm 에 대한 방어이기도 하다.
+    if not time_window_3slot.scheduled_entry_supported(state):
+        return False
     if state.scheduled_entry_armed_direction is None or state.scheduled_entry_executed_at:
         return False
     if now.time() < config.SCHEDULED_ENTRY_TIME:
@@ -4640,7 +4672,7 @@ def _scheduled_entry_protection_active(state: RuntimeState, now: datetime) -> bo
     return now.astimezone(KST).time() < config.SCHEDULED_ENTRY_PROTECTION_UNTIL
 
 
-def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: RuntimeState, now: datetime):
+def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: RuntimeState, now: datetime, macd_snap):
     """Fires the armed 09:03 예약 매수 -- reuses order_executor.execute_signal
     exactly like service.py's manual_entry (no separate buy logic), then
     records it in both the execution ledger (already inside execute_signal)
@@ -4659,6 +4691,44 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
     which instead retries on the next tick still inside the same fire window.
     """
     direction = state.scheduled_entry_armed_direction
+    if direction is None:
+        # 정상 경로에서는 _scheduled_entry_should_fire 가 먼저 막는다. 방어적
+        # 조기 반환 -- 예약이 없는데 여기까지 오면 아무 것도 하지 않는다.
+        return None
+
+    # ── 발동 직전 MACD 상태 재확인 (2026-09-16 실거래 사고 수정) ──────────
+    # 사고: 08:00 에 BLUE 가 떠서 09:03 예약(BLUE)을 걸어뒀는데, 09:00 bar 에서
+    # RED 로 뒤집혔다. 그런데도 예약은 예약된 방향 그대로 인버스를 매수했다 --
+    # 사야 할 것은 레버리지였다. 09:00 플래그의 T+3 확인은 09:06 이라 09:03
+    # 시점에는 아직 "확정 플래그"가 없지만, 09:00-09:03 **완성봉의 MACD 상태**는
+    # 이미 뒤집혀 있으므로 그것으로 막을 수 있다.
+    #
+    # 자매 기능인 프리마켓 승계(_execute_premarket_carry_entry)는 처음부터 바로
+    # 이 검사를 하고 있었다("09:03에도 동일 MACD STATE가 유지되면"). 수동 예약만
+    # 빠져 있어서 생긴 비대칭이고, 여기서 같은 헬퍼로 맞춘다.
+    if macd_snap is None:
+        # 완성봉이 아직 없어 검증 자체가 불가능하다 -- 검증 없이 쏘지 않는다.
+        # 일시적 상황이므로 발동창(FIRE_WINDOW) 안에서 다음 tick 에 재시도한다.
+        state.order_block_reason = "SCHEDULED_ENTRY_MACD_SNAP_UNAVAILABLE"
+        return None
+    if not _pending_direction_still_active(direction, macd_snap):
+        flipped_outcome = order_executor.ExecutionOutcome(
+            signal_id=f"SCHEDULED_0903_{direction.value}_{now.strftime('%Y%m%d')}",
+            direction=direction,
+            target_symbol=order_executor.target_symbol_for_direction(direction),
+            final_state=SignalState.BLOCKED,
+            block_reason=config.SCHEDULED_ENTRY_MACD_STATE_FLIPPED,
+        )
+        _record_scheduled_entry_signal(
+            state, direction, flipped_outcome.signal_id, now, flipped_outcome)
+        state.scheduled_entry_armed_direction = None
+        state.scheduled_entry_armed_at = None
+        state.scheduled_entry_armed_by = None
+        state.scheduled_entry_executed_at = now.isoformat()   # 하루 1회 소진
+        state.scheduled_entry_last_result = config.SCHEDULED_ENTRY_MACD_STATE_FLIPPED
+        state.order_block_reason = config.SCHEDULED_ENTRY_MACD_STATE_FLIPPED
+        return None
+
     target_symbol = order_executor.target_symbol_for_direction(direction)
     quote_snap = market_data.get_quote(target_symbol)
     if quote_snap is None or quote_snap.error or quote_snap.price <= 0:
@@ -4678,6 +4748,15 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
         state.scheduled_entry_executed_at = now.isoformat()
         state.scheduled_entry_last_result = "EXECUTED"
         state.scheduled_entry_protected = True
+        # 2026-09-16: 체결됐으면 예약을 **소진**한다. 이전에는 armed_direction 이
+        # 그대로 남아 UI 가 체결 이후에도 "[예약중] 09시03분 인버스(블루)
+        # 전량매수 예약" 을 계속 보여줬다 -- 사용자가 "예약을 건 적이 없는데
+        # 예약중으로 떠 있다" 고 본 화면이 바로 이것이다. 이미 소비된 예약이
+        # state 에 남아 있을 이유가 없고, 남아 있으면 executed_at 이 어떤
+        # 이유로든 지워질 때 재발동 소지가 된다.
+        state.scheduled_entry_armed_direction = None
+        state.scheduled_entry_armed_at = None
+        state.scheduled_entry_armed_by = None
         return outcome
 
     state.order_block_reason = outcome.block_reason
@@ -5179,9 +5258,20 @@ def run_once(
             # 방향 확정 플래그는 캐치/기록만 하고 청산/스위치는 하지 않는다.
             # STOP_LOSS/PROFIT_LOCK/QUICK_PROFIT/강제청산은 이 위 코드에서 이미
             # 먼저 평가되므로 이 보호와 무관하게 그대로 작동한다.
-            _record_confirmed_blocked_signal(
-                state=state, macd_snap=macd_snap, direction=confirmed_direction,
-                signal_type="REVERSAL", reason=config.SCHEDULED_ENTRY_PROTECTION_ACTIVE, result=result,
+            #
+            # 2026-09-16 수정: 보호는 **주문만** 막아야 하고 플래그 자체를
+            # 삼키면 안 된다. 이전에는 _record_confirmed_blocked_signal 로
+            # 원장 행 하나만 남겨서, T+3 후보가 등록되지 않았다 -- 보호가
+            # 풀리는 09:10 시점에 해소할 후보가 아예 없어 그 플래그는 그대로
+            # 소멸했고, evaluate_macd_crossover 의 같은-방향 억제가 다음
+            # 같은 방향 플래그까지 연쇄로 삼켰다(2026-08-31 사고와 동형).
+            # reconcile 블록 경로가 쓰는 것과 **같은 헬퍼**로 바꿔 상태/원장/
+            # T+3 후보를 전부 남긴다. 이 헬퍼는 주문을 절대 내지 않고,
+            # 보호구간 동안 pending 반대신호는 바로 아래 분기가 계속 보류한다.
+            _propagate_confirmed_flag_without_orders(
+                state=state, macd_snap=macd_snap, bars_3m=bars_3m, df_1m=df_1m,
+                direction=confirmed_direction, now=now, result=result,
+                defer_reason=config.SCHEDULED_ENTRY_PROTECTION_ACTIVE,
             )
         elif confirmed_direction != Direction.HOLD and not entry_window_open:
             target = order_executor.target_symbol_for_direction(confirmed_direction)
@@ -5446,7 +5536,8 @@ def run_once(
         return result
 
     if _scheduled_entry_should_fire(state, now):
-        scheduled_outcome = _execute_scheduled_entry(broker=broker, market_data=market_data, state=state, now=now)
+        scheduled_outcome = _execute_scheduled_entry(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap)
         if scheduled_outcome is not None:
             result.actions.append(f"SCHEDULED_ENTRY_0903:{scheduled_outcome.target_symbol}")
             state.last_evaluated_bar_ts = bar_ts_str

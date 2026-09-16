@@ -1214,6 +1214,12 @@ class Macd2Service:
         if direction not in (Direction.UP_RED.value, Direction.DOWN_BLUE.value):
             return {"ok": False, "message": "INVALID_DIRECTION"}
         state = state_store.load_state()
+        # 2026-09-16 사고 수정 (1차 방어): 3-SLOT 계열에서는 예약 자체를 만들지
+        # 않는다. 여기서 막아야 state 에 armed_direction 이 아예 생기지 않는다.
+        if not time_window_3slot.scheduled_entry_supported(state):
+            return {"ok": False,
+                    "message": config.SCHEDULED_ENTRY_NOT_SUPPORTED_IN_MODE,
+                    "mode": time_window_3slot.active_3slot_mode(state)}
         if state.scheduled_entry_executed_at:
             return {"ok": False, "message": "ALREADY_DECIDED_TODAY", "last_result": state.scheduled_entry_last_result}
 

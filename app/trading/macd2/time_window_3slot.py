@@ -367,6 +367,29 @@ def is_3slot_enabled(state) -> bool:
     return active_3slot_mode(state) is not None
 
 
+def scheduled_entry_supported(state) -> bool:
+    """09:03 예약매수(2026-08-06)를 이 모드에서 쓸 수 있는가.
+
+    3-SLOT 계열(TW2 3-SLOT / TW TEG 3-SLOT / X2-lite / H50)에서는 **쓰지 않는다**.
+    이 계열은 하루 슬롯 예산과 T+3 재확인으로 진입을 통제하는데, 예약매수는 그
+    통제를 통째로 우회해 09:03에 방향만 보고 전량매수한다. 2026-09-16 실거래
+    사고(H50 운영 중 08:00 BLUE 기준 09:03 인버스 매수)가 정확히 그 경로였다.
+
+    자매 기능인 프리마켓 승계는 처음부터 TW2/TEGv2 가 아니면 발동하지 않았고
+    (2026-09-01 에 TW2_3SLOT 도 명시적으로 제외), 예약매수에만 그 게이트가
+    없었다. 여기서 대칭을 맞춘다 -- TW/TW2/TEGv2/무필터 등 다른 전략의 예약매수
+    동작은 이 함수로 조금도 바뀌지 않는다.
+    """
+    if bool(getattr(config, "SCHEDULED_ENTRY_ALLOW_IN_3SLOT", False)):
+        # 2026-09-16 사용자 결정: 하드 차단이 아니라 환경변수 스위치로 둔다.
+        # MACD2_SCHEDULED_ENTRY_ALLOW_IN_3SLOT=1 이면 3-SLOT 계열에서도 예전처럼
+        # 쓸 수 있다(기본 0=차단). 이 함수가 제어하는 것은 **1차 방어(arm 금지)
+        # 뿐**이고, 주문 직전 MACD 재확인 / 복원 무효화 / arm 만료·소진은
+        # 이 값과 무관하게 항상 동작한다.
+        return True
+    return not is_3slot_enabled(state)
+
+
 def exit_overrides(mode: Optional[str]) -> dict:
     """``time_window_position_manager`` 에 넘길 override 묶음.
 

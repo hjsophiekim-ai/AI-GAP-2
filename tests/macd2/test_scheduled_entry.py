@@ -66,7 +66,18 @@ def _svc_with_quote(df_1m: pd.DataFrame, bootstrap_now: datetime, quote_prices: 
 
 
 def _fresh_state() -> RuntimeState:
+    """예약매수를 실제로 쓰는 전략(TW2) 기준.
+
+    2026-09-16 실거래 사고 이후 3-SLOT 계열(TW2 3-SLOT / TW TEG 3-SLOT /
+    X2-lite / H50)에서는 예약매수가 구조적으로 차단된다. 기본 전략이 H50 이라
+    default_state() 를 그대로 쓰면 이 파일 전체가 "차단됨"만 검증하게 되므로,
+    기능이 살아 있는 모드를 명시적으로 만든다
+    (차단 자체는 tests/macd2/test_scheduled_entry_disabled_in_3slot.py 가 고정)."""
     state = state_store.default_state()
+    for f in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
+              "time_window_x2lite_filter_enabled", "time_window_h50_filter_enabled"):
+        setattr(state, f, False)
+    state.time_window_2_filter_enabled = True
     state.auto_trade_on = True
     state.budget = 10_000_000.0
     state.strategy_name = config.STRATEGY_NAME
@@ -152,7 +163,12 @@ def test_scheduled_entry_fires_even_when_armed_before_days_first_tick():
     # fail for every bin (same pitfall test_sideways_filter.py's
     # _confirmed_flag_scenario docstring warns about).
     warmup_start = now.replace(second=0, microsecond=0) - timedelta(minutes=300)
-    df_1m = _1m_from_3m_closes(warmup_start, [100.0] * 100)
+    # 2026-09-16: 발동 직전 MACD 재확인이 추가되면서, 예약 방향과 **같은** MACD
+    # 상태가 유지돼야 체결된다. 기존의 완전 평탄한 종가(100.0 x 100)는 diff==0
+    # 이라 어느 방향도 "유지 중"이 아니어서 이 테스트의 본래 의도(= 하루 첫
+    # tick 전에 건 예약이 rollover 에 지워지지 않고 발동하는가)와 무관한 이유로
+    # 막힌다. 예약 방향(DOWN_BLUE)과 일치하는 하락 추세로 바꾼다.
+    df_1m = _1m_from_3m_closes(warmup_start, [100.0 - i * 0.12 for i in range(100)])
     svc = _svc_with_quote(df_1m, now, _WORKER_QUOTES)
     broker = FakeBroker(cash=10_000_000.0, quotes=dict(_WORKER_QUOTES))
 
