@@ -3507,6 +3507,22 @@ def _resolve_tw2_3slot_candidate_body(
                 if not small_whipsaw_hold.is_holding(state):
                     small_whipsaw_hold.note_hold_start(
                         state, held_direction=_held_dir, now=now, decision=_h50)
+                # 2026-09-16 실거래 사고 수정: H50 은 반대신호 청산을 보류만 할
+                # 뿐 "보류가 틀렸는지" 재확인하는 장치가 없었다(해제조건은
+                # EMA20/50 2봉 이탈 + 60분 경과뿐). TW2/TW2 3-SLOT 의 whipsaw-
+                # hold 분기가 2026-09-02 사고 이후 쓰고 있는 것과 **완전히 같은**
+                # 재확인기를 여기에도 붙인다 -- 새 임계값 없이
+                # `_start_whipsaw_watch` 한 줄만 부르고, 이후 완성봉마다
+                # `_advance_whipsaw_watch` 가 signed MACD gap 과 signed
+                # EMA10-EMA20 spread 가 둘 다 재확대되는지 본다. H50 의 HOLD
+                # 판정 자체(추세/rng60/60분)는 한 값도 바뀌지 않는다.
+                #
+                # 아래 TW whipsaw-hold 분기와 같은 자리에서 같은 인자로 부른다
+                # (매 반대 플래그마다 re-seed -- 그 분기의 기존 동작과 동일).
+                if config.H50_WHIPSAW_WATCH_ENABLED:
+                    _start_whipsaw_watch(
+                        state, mode="TW2_3SLOT", direction=direction,
+                        bars_3m=bars_3m, flag_bar_dt=macd_snap.bar_dt, now=now)
                 return None
 
     if not decision.approved:
@@ -5875,6 +5891,15 @@ def _apply_exit_outcome(state: RuntimeState, outcome,
         # whipsaw_watch_active=True must never survive past the position it
         # described, same rationale as the time_window_* resets just above.
         _clear_whipsaw_watch(state)
+        # 같은 이유로 H50 HOLD 상태도 포지션 수명과 함께 끝낸다 (2026-09-17).
+        # `_advance_h50_hold` 는 `run_once` 의 **보유 중** 블록에서만 호출되므로
+        # 포지션이 다른 사유(하드스톱/TP/트레일링/ETP/강제청산/whipsaw-watch)로
+        # 닫히면 그 안의 정리 경로에 영영 도달하지 못했다. 그러면 그날 다음
+        # H50 HOLD 가 `is_holding(state)` 를 이미 True 로 보아 `note_hold_start`
+        # 를 건너뛰고, 낡은 `h50_hold_started_at` 때문에 다음 완성봉에서 곧바로
+        # MAX_HOLD 로 해제돼 버린다(= HOLD 가 사실상 무효). 일자 rollover
+        # (`initialize_strategy_session`) 전에는 아무도 지우지 않았다.
+        small_whipsaw_hold.clear(state)
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 

@@ -1275,6 +1275,26 @@ H50_MAX_HOLD_MIN = _env_int("MACD2_H50_MAX_HOLD_MIN", 60)
 #: HOLD 로 반대신호 청산을 보류했을 때 원장/UI 에 남기는 사유.
 H50_HOLD_BLOCK_REASON = "H50_SMALL_WHIPSAW_HOLD"
 
+# ── H50 HOLD 에 기존 whipsaw-watch 재확인을 연결 (2026-09-17) ────────────────
+# 2026-09-16 실거래에서 드러난 H50 의 구조적 한계: 12:48 RED 진입 후 13:30 BLUE
+# 반대 플래그를 13:33 에 H50 이 HOLD 했는데, 그 뒤 BLUE 방향 MACD gap 이
+# -58 -> -495 -> -855 -> -1018 -> -1106 으로 계속 확대됐는데도 계속 HOLD 했다.
+# H50 의 해제조건은 "EMA20/50 구조추세 2봉 이탈" 과 "60분 경과" 뿐이라, EMA 가
+# 늦게 돌아서는 동안 진짜 반전을 확인할 장치가 하나도 없다.
+#
+# TW2 / TW2 3-SLOT 의 whipsaw-hold 분기는 2026-09-02 사고 이후 정확히 그
+# 장치를 갖고 있다(WHIPSAW_WATCH_DETERIORATION_EXIT, 위쪽 주석 참조). H50
+# 분기만 `_start_whipsaw_watch` 를 부르지 않아 `whipsaw_watch_active` 가 영영
+# False 였고, 그래서 `_advance_whipsaw_watch` 가 영구 no-op 이었다.
+#
+# 이 토글은 **새 임계값을 만들지 않는다.** H50 의 EMA20/50 조건 · rng60 조건 ·
+# 최대 HOLD 60분은 한 값도 바뀌지 않고, 이미 production 에서 쓰이는
+# deterioration 조건(`time_window_filter.evaluate_whipsaw_watch`: signed MACD
+# gap 과 signed EMA10-EMA20 spread 가 직전 확인값 대비 둘 다 재확대)을 그대로
+# 재사용해 H50 HOLD 에도 붙일 뿐이다. 진입 판정 · 플래그 탐지 · 슬롯 · sizing
+# 에는 관여하지 않는다(청산 전용).
+H50_WHIPSAW_WATCH_ENABLED = _env_bool("MACD2_H50_WHIPSAW_WATCH_ENABLED", True)
+
 # ── 레거시 진입전략 토글 숨김 (2026-09-07 사용자 요청) ──────────────────────
 # 사용자에게 노출하는 전략을 "TW2 3-SLOT + 조기익절" / "TWF 3-SLOT + 조기익절"
 # 두 개로 정리한다. TW2 / +TEGv2 / +1 DOWN_BLUE 는 **코드를 하나도 지우지 않고**
