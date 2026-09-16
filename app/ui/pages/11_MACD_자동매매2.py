@@ -372,6 +372,11 @@ def _money_display(raw) -> str:
 
 _RECONCILE_CONTINUATION_EXIT_REASONS = {"BROKER_DIRECT", "RECOVERED_TO_FLAT", "RECOVERED_QTY_MISMATCH"}
 
+#: 정합화 전용 행만으로 이루어진 그룹(진짜 주문 행이 하나도 합류하지 못한
+#: "고아" 그룹)의 사유 표시. 체결가/손익은 reconcile 이 발견 시점 호가로 계산한
+#: 추정치라 그 사실이 표에 그대로 드러나야 한다.
+RECONCILE_ONLY_REASON_LABEL = "정합화(추정)"
+
 
 def _is_reconcile_continuation_row(row: dict) -> bool:
     """True for a raw execution-ledger row that is NOT its own economic
@@ -558,19 +563,27 @@ def _trade_history_rows(exec_rows: list[dict], signal_rows: list[dict]) -> list[
     별도 그룹(별도 행)으로 남는다 (_economic_bucket 참고). signal_id로 신호
     원장과 매칭해 진입 방향(레드/블루)을 가져온다.
 
-    2026-08-31 사용자 요청: RECOVERED_QTY_MISMATCH/RECONCILE_BACKFILL/
-    BROKER_DIRECT 등 정합화 전용 행이 실제 주문과 2분 이내로 붙지 못해
-    "고아" 그룹(group["placeholder"] == True -- 진짜 경제적 결정 행이 단
-    하나도 합류하지 못한 그룹)이 되는 경우, 메인 표에는 아예 노출하지
-    않는다 -- 여전히 진단용 "체결 원장 전체 컬럼 보기" expander에는 원본
-    그대로 남아 있으므로 정보 자체가 사라지는 것은 아니다."""
+    2026-08-31 사용자 요청으로 RECOVERED_QTY_MISMATCH/RECONCILE_BACKFILL/
+    BROKER_DIRECT 등 정합화 전용 행이 실제 주문과 2분 이내로 붙지 못해 "고아"
+    그룹(group["placeholder"] == True -- 진짜 경제적 결정 행이 단 하나도
+    합류하지 못한 그룹)이 되면 메인 표에서 통째로 감췄었다.
+
+    2026-09-16 실사고로 철회한다: 그날 12:51 진입분 785주의 청산이 워커 밖에서
+    나가는 바람에 SELL 레그가 정합화 backfill 3행(RECOVERED_QTY_MISMATCH x2 +
+    RECOVERED_TO_FLAT)으로만 남았는데, 그 셋이 통째로 "고아" 그룹이 되어
+    **실제 청산 한 건이 거래원장에서 완전히 사라졌다**(매수만 있고 매도가 없는
+    표). summarize_daily_trading 은 같은 행을 거르지 않으므로 일일 통계 손익에는
+    반영돼 있어서 표와 통계가 서로 어긋나기까지 했다.
+
+    이제 감추지 않고 사유를 RECONCILE_ONLY_REASON_LABEL("정합화(추정)")로 표시
+    한다 -- 체결가/손익이 reconcile 발견 시점 호가 기반 추정치라는 사실이 표에
+    드러나야 하기 때문이다. 원장 자체와 손익 계산은 한 줄도 바뀌지 않는다
+    (_aggregate_trade_legs 는 여전히 읽기 전용 그룹핑이다)."""
     direction_by_signal_id = {
         r.get("signal_id"): r.get("direction") for r in signal_rows if r.get("signal_id")
     }
     rows: list[dict] = []
     for group in _aggregate_trade_legs(exec_rows):
-        if group["placeholder"]:
-            continue  # pure reconcile/BROKER_DIRECT group, never a real decision -- hide from the main table
         legs = group["rows"]
         side = group["side"]
         symbol = _symbol_display(group["symbol"])
@@ -607,12 +620,15 @@ def _trade_history_rows(exec_rows: list[dict], signal_rows: list[dict]) -> list[
             rows.append({
                 "일시": when, "종목": symbol, "매수/매도": "매수",
                 "총 체결수량": _qty_display(total_qty), "체결가(수량가중평균)": _price_display(weighted_price),
-                "사유": _direction_display(direction),
+                "사유": RECONCILE_ONLY_REASON_LABEL if group["placeholder"] else _direction_display(direction),
                 "총 순이익": "-" if not any(r.get("net_pnl") for r in legs) else _money_display(total_net_pnl),
                 "총 수수료": _money_display(total_fee) if total_fee else "-",
             })
         elif side == "SELL":
-            reason_label = _exit_reason_display(group["bucket"]) if not group["placeholder"] else "정합화"
+            reason_label = (
+                RECONCILE_ONLY_REASON_LABEL if group["placeholder"]
+                else _exit_reason_display(group["bucket"])
+            )
             rows.append({
                 "일시": when, "종목": symbol, "매수/매도": "매도",
                 "총 체결수량": _qty_display(total_qty), "체결가(수량가중평균)": _price_display(weighted_price),

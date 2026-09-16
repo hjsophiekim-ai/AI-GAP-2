@@ -387,6 +387,8 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.current_episode_direction = None
     state.last_evaluated_bar_ts = None
     state.last_confirmed_bar_ts = None
+    # 오늘 평가한 봉 집합도 session-scoped (models.RuntimeState 주석 참고).
+    state.evaluated_bar_ts_today = []
     state.processed_signal_ids = []
     state.pending_signal = None
     state.peak_net_return = 0.0
@@ -1970,7 +1972,8 @@ def _set_observed_frame(bars_3m=None, dropped_bar_starts=None) -> None:
 def _replay_unevaluated_completed_bars(
     *, state: RuntimeState, bars_3m, now: datetime, result: TickResult,
 ) -> list[tuple[str, str]]:
-    """``last_confirmed_bar_ts`` 이후의 **미평가 완성봉**을 시간순으로 따라잡는다.
+    """프레임에 있는데 ``evaluated_bar_ts_today`` 에 없는 **미평가 완성봉**을
+    시간순으로 따라잡는다.
 
     왜 필요한가 (2026-09-16 실사고)
     --------------------------------
@@ -1996,8 +1999,14 @@ def _replay_unevaluated_completed_bars(
       * **마지막 봉은 건드리지 않는다.** 그 봉은 호출부의 기존 live 경로가
         평가하며, 주문 권한도 거기에만 있다. 따라서 "지금도 정상적으로 T+3
         절차를 밟을 수 있는" 신호만 기존 로직으로 흘러간다.
-      * 중복은 ``last_confirmed_bar_ts`` + ``processed_signal_ids`` +
+      * 중복은 ``evaluated_bar_ts_today`` + ``processed_signal_ids`` +
         ``ledger.append_signal`` 의 signal_id 평생 dedup, 3중으로 막힌다.
+      * **하한(high-water mark) 을 쓰지 않는다** (2026-09-16 2차 실사고).
+        ``last_confirmed_bar_ts`` 하나를 하한으로 삼으면, 구멍 난 봉보다 뒤 봉이
+        먼저 평가되는 순간 그 하한이 구멍 너머로 전진해 뒤늦게 채워진 봉을
+        영구히 제외해 버린다(2026-09-16 14:33/14:36/14:39 UP_RED/DOWN_BLUE/
+        UP_RED 3건 연속 소실). 실제 평가한 봉 **집합**을 기준으로 삼으면 구멍이
+        어디서 메워지든 정확히 그 봉만 골라낼 수 있다.
       * 오늘 봉만 대상으로 한다(``_record_catchup_flag`` 자체도 오늘이 아니면
         기록하지 않는다).
 
@@ -2006,21 +2015,52 @@ def _replay_unevaluated_completed_bars(
     recovered: list[tuple[str, str]] = []
     if bars_3m is None or len(bars_3m) < 2:
         return recovered
-    prior = _parse_iso_dt(state.last_confirmed_bar_ts)
-    if prior is None:
-        # 평가 이력이 없다 -- 재시작 catch-up walk 의 영역이고, 여기서 하루치를
-        # 통째로 되감지 않는다(그 경로가 이미 같은 일을 한다).
+    evaluated = set(state.evaluated_bar_ts_today or [])
+    if not evaluated:
+        # 집합이 아직 비어 있는 두 경우를 여기서 흡수한다:
+        #   (a) 이 수정 이전에 저장된 state 를 그대로 물려받은 첫 tick
+        #   (b) 오늘 아직 아무 봉도 평가하지 않은 기동 직후
+        # (a) 는 ``last_confirmed_bar_ts`` 가 유일한 평가 증거이므로 그것으로
+        # 집합을 시딩한다 -- 이러면 이 함수의 동작이 수정 전과 **정확히 같아진다**
+        # (아래 floor 주석 참고). (b) 는 재시작 catch-up walk 의 영역이라
+        # 여기서 하루치를 통째로 되감지 않는다(그 경로가 이미 같은 일을 한다).
+        seed = _parse_iso_dt(state.last_confirmed_bar_ts)
+        if seed is None or seed.astimezone(KST).date() != now.astimezone(KST).date():
+            return recovered
+        _note_evaluated_bar(state, seed, now)
+        evaluated = set(state.evaluated_bar_ts_today or [])
+        if not evaluated:
+            return recovered
+    # high-water mark 는 이제 "하한"이 아니라 **앞/뒤 판정용**으로만 쓴다.
+    # 이보다 뒤 봉 = 아직 아무도 지나가지 않은 정상 따라잡기(상태 전진 허용),
+    # 이보다 앞 봉 = 구멍이 뒤늦게 메워진 것(원장 복구만, 상태 전진 금지).
+    # 문자열이 아니라 **시각**으로 비교한다 -- 저장된 ISO 문자열의 표기가
+    # (구분자/오프셋 표기/마이크로초) 조금이라도 다르면 문자열 비교는 조용히
+    # 전부 "미평가"로 오판해 하루치를 통째로 되감아 버린다.
+    evaluated_ts = set()
+    for raw in evaluated:
+        parsed = _parse_iso_dt(raw)
+        if parsed is not None:
+            evaluated_ts.add(pd.Timestamp(parsed))
+    if not evaluated_ts:
         return recovered
+    hwm = max(evaluated_ts)
+    # floor = 우리가 "평가했는지 여부"를 아는 가장 오래된 봉. 그보다 앞 봉은
+    # 이 프로세스가 추적을 시작하기 전이라 평가 여부를 알 수 없으므로 절대
+    # 건드리지 않는다 -- 안 그러면 기동 전에 이미 원장에 남은 플래그를 다시
+    # 써서 중복 행이 생긴다. 집합에 원소가 하나뿐일 때(위 시딩 경로)는
+    # floor == hwm == 예전 ``prior`` 라서 수정 전 동작과 완전히 동일해진다.
+    floor = min(evaluated_ts)
     today = now.astimezone(KST).strftime("%Y%m%d")
     dt_index = list(bars_3m["datetime"])
-    # 마지막 봉은 제외 -- live 경로가 평가한다.
+    # 마지막 봉은 제외 -- live 경로가 평가하고 주문 권한도 거기에만 있다.
     pending: list[int] = []
     for idx in range(len(dt_index) - 1):
         bar_dt = pd.Timestamp(dt_index[idx])
         bar_kst = bar_dt.astimezone(KST)
         if bar_kst.strftime("%Y%m%d") != today:
             continue
-        if bar_dt <= pd.Timestamp(prior):
+        if bar_dt in evaluated_ts or bar_dt < floor:
             continue
         pending.append(idx)
     if not pending:
@@ -2029,7 +2069,19 @@ def _replay_unevaluated_completed_bars(
         snap = calculate_macd(bars_3m.iloc[: idx + 1])
         if snap is None:
             continue
-        direction = _advance_confirmed_primary(state, snap, now)
+        if pd.Timestamp(snap.bar_dt) > hwm:
+            # 정상 따라잡기 -- 기존과 완전히 동일한 경로.
+            direction = _advance_confirmed_primary(state, snap, now)
+        else:
+            # 2026-09-16: hwm 보다 **앞선** 봉이 뒤늦게 완성됐다. 여기서
+            # last_detected_direction 을 되돌리면 이미 지나간 더 뒤 봉의 방향
+            # 상태를 과거 값으로 덮어써 다음 live 플래그가 통째로 억제된다.
+            # 그래서 상태는 한 글자도 건드리지 않고 **원장 복구만** 한다:
+            # 크로스 판정은 순수 zero-cross onset(dedup 입력 None)으로 보고,
+            # 이 봉을 평가 완료로만 표시한다. 주문은 어느 쪽 경로든 나가지
+            # 않는다(_record_catchup_flag 는 BLOCKED 행만 쓴다).
+            direction = evaluate_macd_crossover(snap, None)
+            _note_evaluated_bar(state, snap.bar_dt, now)
         if direction == Direction.HOLD:
             continue
         _record_catchup_flag(state, snap, direction, now,
@@ -2039,6 +2091,23 @@ def _replay_unevaluated_completed_bars(
         result.actions.append(
             f"{LATE_COMPLETED_BAR_REPLAY}:{len(recovered)}")
     return recovered
+
+
+def _note_evaluated_bar(state: RuntimeState, bar_dt: datetime, now: datetime) -> None:
+    """이 완성봉을 "오늘 평가했다"고 기록한다 (2026-09-16 실사고).
+
+    ``last_confirmed_bar_ts`` 는 그대로 두고(다른 경로들이 이미 그 의미로 쓰고
+    있다) **추가로만** 적재한다 — 이 집합은 ``_replay_unevaluated_completed_bars``
+    가 "프레임에 있는데 아직 평가 안 한 봉"을 정확히 고르는 데만 쓰인다.
+    오늘 날짜 봉만 담고, 중복은 담지 않는다."""
+    bar_kst = bar_dt.astimezone(KST)
+    if bar_kst.date() != now.astimezone(KST).date():
+        return
+    key = bar_dt.isoformat()
+    current = state.evaluated_bar_ts_today or []
+    if key in current:
+        return
+    state.evaluated_bar_ts_today = list(current) + [key]
 
 
 def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) -> Direction:
@@ -2120,6 +2189,7 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) ->
         # 추적조차 불가능하다). 평가한 봉에만 도장을 찍는다.
         return Direction.HOLD
     state.last_confirmed_bar_ts = bar_key
+    _note_evaluated_bar(state, macd_snap.bar_dt, now)
     # Order-authoritative FLAG source is fixed to zero-cross onset. KIS
     # color/onset may be displayed as reference only and must not replace
     # this calculation without a fresh production-change decision.

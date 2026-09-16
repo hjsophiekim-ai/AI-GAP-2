@@ -46,6 +46,15 @@ def test_advance_confirmed_primary_decision_logic_unchanged():
     재평가되지 않았다**(그 봉의 크로스오버는 플래그·원장·T+3 후보·주문까지
     통째로 사라진다). 판정식 자체는 그대로이고 순서만 바로잡은 것이라,
     기대 시퀀스에서 Assign 하나가 뒤로 한 칸 이동한다.
+
+    2026-09-16 (2차): 도장 **바로 뒤**에 ``_note_evaluated_bar(state, ...)``
+    한 줄이 늘었다(Expr). 판정식에는 손대지 않는다 -- 아래
+    ``evaluate_macd_crossover(macd_snap, state.last_detected_direction)``
+    검사가 그대로 통과하는 것이 그 보증이다. 이 한 줄은 "오늘 실제로 평가한
+    봉"을 집합으로 남기기 위한 것으로, ``last_confirmed_bar_ts`` 하나를 하한
+    으로 쓰던 ``_replay_unevaluated_completed_bars`` 가 구멍 너머로 전진한
+    하한 때문에 뒤늦게 완성된 봉을 영구 제외하던 문제(2026-09-16 14:33/14:36/
+    14:39 3건 연속 소실)를 막는다.
     """
     src = textwrap.dedent(inspect.getsource(worker._advance_confirmed_primary))
     fn = ast.parse(src).body[0]
@@ -67,9 +76,9 @@ def test_advance_confirmed_primary_decision_logic_unchanged():
 
     kinds = [type(n).__name__ for n in stripped]
     # bar_key / dedup-If / now_kst / bar_kst / validity-If / 도장 /
-    # direction=evaluate(...) / flag-If / Return
+    # _note_evaluated_bar(...) / direction=evaluate(...) / flag-If / Return
     assert kinds == ["Assign", "If", "Assign", "Assign", "If", "Assign",
-                     "Assign", "If", "Return"], kinds
+                     "Expr", "Assign", "If", "Return"], kinds
 
     # 판정 자체는 여전히 evaluate_macd_crossover(macd_snap, state.last_detected_direction)
     call = None

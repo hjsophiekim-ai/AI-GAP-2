@@ -86,15 +86,22 @@ def test_two_independent_backfills_for_different_transitions_both_kept(ui_page):
     assert len(kept) == 2
 
 
-def test_orphan_backfill_alone_is_still_hidden_as_before(ui_page):
-    """Pre-existing 2026-08-31 behavior (unrelated to this fix): a backfill
-    row with no adjacent real decision is hidden from the main table."""
+def test_orphan_backfill_alone_is_shown_as_reconcile_estimate(ui_page):
+    """2026-09-16 실사고로 2026-08-31 의 "고아 정합화 행 숨김"을 철회한다.
+
+    그날 12:51 진입분 785주의 청산이 워커 밖에서 나가는 바람에 SELL 레그가
+    정합화 backfill 행으로만 남았는데, 인접한 진짜 주문 행이 없어 그룹 전체가
+    숨겨졌다 -- 매수만 있고 **매도가 통째로 사라진** 거래원장이 됐다.
+    summarize_daily_trading 은 같은 행을 거르지 않아 일일 통계에는 반영돼 있어서
+    표와 통계가 서로 어긋나기까지 했다. 이제 숨기지 않고 사유를 "정합화(추정)"
+    로 표시한다 -- 체결가/손익이 발견 시점 호가 기반 추정치임을 드러내야 한다."""
     backfill_row = _base_row(
         order_id="RECONCILE_BACKFILL_BUY_0197X0_1110_5000.0_0_1110",
         source="RECONCILE_BACKFILL", fee=0.0,
     )
     rows = ui_page._trade_history_rows([backfill_row], [])
-    assert rows == []
+    assert len(rows) == 1
+    assert rows[0]["사유"] == ui_page.RECONCILE_ONLY_REASON_LABEL == "정합화(추정)"
 
 
 def test_signal_ledger_whipsaw_hold_shows_korean_label_2026_09_02(ui_page):

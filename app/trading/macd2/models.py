@@ -341,6 +341,16 @@ class RuntimeState:
     # ── Confirmed (completed-bar) Primary crossover — order authority
     # (2026-07-27 KIS-parity fix: moved off the forming/provisional bar) ────
     last_confirmed_bar_ts: Optional[str] = None  # completed 3m bar_dt last evaluated (exactly once each)
+    # 2026-09-16 실사고: ``last_confirmed_bar_ts`` 는 "가장 최근에 평가한 봉"
+    # 하나라서 high-water mark 로만 쓸 수 있다. KIS 1분봉이 늦게 도착해 어떤
+    # 3분봉이 ``filter_complete_3m_bars`` 에서 탈락한 사이 **그 다음 봉**이
+    # 먼저 평가되면 이 값이 구멍 너머로 전진해 버리고, 뒤늦게 분봉이 채워져도
+    # ``_replay_unevaluated_completed_bars`` 의 ``bar_dt <= prior`` 하한에 걸려
+    # 그 봉은 영원히 재평가되지 않는다(플래그/원장행/T+3 후보 전부 소실).
+    # 그래서 "오늘 실제로 평가한 봉 전체"를 따로 남긴다 — 하한 하나가 아니라
+    # 집합이라 구멍이 어디서 메워지든 정확히 그 봉만 골라낼 수 있다.
+    # 하루치(장중 ~240개 + 프리마켓)라 크기는 유계이고, 날짜가 바뀌면 비운다.
+    evaluated_bar_ts_today: list[str] = field(default_factory=list)
 
     # ── 1m/3m history freshness display (docs 2026-07-27 §1) ───────────────
     today_1m_bar_count: Optional[int] = None
