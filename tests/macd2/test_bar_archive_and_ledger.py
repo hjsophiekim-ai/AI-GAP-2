@@ -38,6 +38,14 @@ def test_advance_confirmed_primary_decision_logic_unchanged():
     관측으로 추가된 것은 (1) 직전 상태를 읽는 대입 1개 (2) try/except 로 감싼
     bar_ledger 호출 1개뿐이다. 그 둘을 걷어내면 판정 흐름은 이전과 동일한
     문장 시퀀스여야 한다.
+
+    2026-09-16: 문장 **순서 하나**가 의도적으로 바뀌었다 --
+    ``state.last_confirmed_bar_ts = bar_key`` 도장을 "봉이 실제로 닫혔는가"
+    검사 **뒤로** 옮겼다. 예전에는 도장을 먼저 찍고 그 검사에서 return 해서,
+    평가하지 않은 봉이 "평가 완료"로 남아 위 중복방지에 막혀 **영구히
+    재평가되지 않았다**(그 봉의 크로스오버는 플래그·원장·T+3 후보·주문까지
+    통째로 사라진다). 판정식 자체는 그대로이고 순서만 바로잡은 것이라,
+    기대 시퀀스에서 Assign 하나가 뒤로 한 칸 이동한다.
     """
     src = textwrap.dedent(inspect.getsource(worker._advance_confirmed_primary))
     fn = ast.parse(src).body[0]
@@ -58,7 +66,9 @@ def test_advance_confirmed_primary_decision_logic_unchanged():
         stripped.append(node)
 
     kinds = [type(n).__name__ for n in stripped]
-    assert kinds == ["Assign", "If", "Assign", "Assign", "Assign", "If",
+    # bar_key / dedup-If / now_kst / bar_kst / validity-If / 도장 /
+    # direction=evaluate(...) / flag-If / Return
+    assert kinds == ["Assign", "If", "Assign", "Assign", "If", "Assign",
                      "Assign", "If", "Return"], kinds
 
     # 판정 자체는 여전히 evaluate_macd_crossover(macd_snap, state.last_detected_direction)

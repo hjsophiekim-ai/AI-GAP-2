@@ -117,6 +117,9 @@ SIGNAL_NOT_DISPATCHED = "SIGNAL_NOT_DISPATCHED"
 #     signal_id 로 남아야 하므로(append_signal 의 signal_id dedup 이 나중 행을
 #     조용히 버린다) 반드시 분리한다.
 RESTART_CATCH_UP_REPLAY = "RESTART_CATCH_UP_REPLAY"
+#: 늦게 완성된 완성봉을 live tick 이 뒤늦게 따라잡아 평가한 경우 (2026-09-16).
+#: FLAG 복원 전용 -- 이 경로는 절대 주문을 내지 않는다.
+LATE_COMPLETED_BAR_REPLAY = "LATE_COMPLETED_BAR_REPLAY"
 RECONCILE_DEFERRED_SUFFIX = ":RECONCILE_DEFERRED"
 #   TICK_ALREADY_EXECUTED: 이 tick 이 이미 주문을 냈기 때문에 "주문만" 다음
 #     tick 으로 미룬 플래그. 플래그 자체는 원장/후보에 정상 기록된다.
@@ -483,7 +486,8 @@ def _relation_from_diff(diff: Optional[float]) -> str:
     return "EQUAL"
 
 
-def _record_catchup_flag(state: RuntimeState, snap, direction: Direction, now: datetime) -> None:
+def _record_catchup_flag(state: RuntimeState, snap, direction: Direction, now: datetime,
+                        *, reason: Optional[str] = None) -> None:
     """2026-08-20 fix (사용자 요청 — 신호 원장에 프리마켓 08:00~09:00 크로스오버도
     표시): a confirmed flag that run_once()'s own live tick evaluates BEFORE
     config.SESSION_OPEN is already recorded to the signal ledger via
@@ -516,7 +520,7 @@ def _record_catchup_flag(state: RuntimeState, snap, direction: Direction, now: d
     bar_kst = snap.bar_dt.astimezone(KST)
     if bar_kst.date() != now.astimezone(KST).date():
         return
-    block_reason = (
+    block_reason = reason or (
         "BEFORE_SESSION_OPEN" if bar_kst.time() < config.SESSION_OPEN else RESTART_CATCH_UP_REPLAY
     )
     signal_id = make_signal_id(snap.bar_dt, direction)
@@ -1963,6 +1967,80 @@ def _set_observed_frame(bars_3m=None, dropped_bar_starts=None) -> None:
     _OBSERVED_FRAME.dropped_bar_starts = dropped_bar_starts
 
 
+def _replay_unevaluated_completed_bars(
+    *, state: RuntimeState, bars_3m, now: datetime, result: TickResult,
+) -> list[tuple[str, str]]:
+    """``last_confirmed_bar_ts`` 이후의 **미평가 완성봉**을 시간순으로 따라잡는다.
+
+    왜 필요한가 (2026-09-16 실사고)
+    --------------------------------
+    ``_advance_confirmed_primary`` 는 언제나 프레임의 **마지막 봉 하나**만
+    평가한다. 그런데 KIS 1분봉이 늦게 도착하면 그 순간 해당 3분봉은
+    ``filter_complete_3m_bars`` 에서 불완전으로 탈락하고(HISTORY_GAP),
+    뒤늦게 분봉이 채워져 완성될 때쯤이면 프레임의 마지막 봉은 이미 **그 다음
+    봉**이다. 그래서 그 봉은 두 번 다시 "마지막 봉" 이 되지 못하고 **영구히
+    평가되지 않는다** -- 플래그도, 신호원장 행도, T+3 후보도 사라진다.
+    2026-09-16 에 KIS 실제 플래그 8건 중 4건이 이렇게 없어졌고, 기록된 4건은
+    전부 재시작 catch-up walk 가 복원한 것이었다.
+
+    계약
+    ----
+      * **실제 완성봉만** 평가한다 -- 호출부가 이미 resample +
+        filter_complete_3m_bars 를 거친 프레임을 넘긴다. MACD 계산식 / resample /
+        완성봉 필터 규칙은 하나도 바꾸지 않는다.
+      * **FLAG RECOVERY 전용.** 여기서 복원되는 과거 봉은 원장 행과 방향 상태만
+        되살리고 **주문을 내지 않는다**(``_record_catchup_flag`` 는 BLOCKED 행만
+        쓴다). 이미 진입 시각/T+3 유효시간이 지난 플래그로 뒤늦게 주문이 나가는
+        일은 구조적으로 불가능하다 -- 이 함수는 order_executor 를 import 조차
+        하지 않는 경로만 탄다.
+      * **마지막 봉은 건드리지 않는다.** 그 봉은 호출부의 기존 live 경로가
+        평가하며, 주문 권한도 거기에만 있다. 따라서 "지금도 정상적으로 T+3
+        절차를 밟을 수 있는" 신호만 기존 로직으로 흘러간다.
+      * 중복은 ``last_confirmed_bar_ts`` + ``processed_signal_ids`` +
+        ``ledger.append_signal`` 의 signal_id 평생 dedup, 3중으로 막힌다.
+      * 오늘 봉만 대상으로 한다(``_record_catchup_flag`` 자체도 오늘이 아니면
+        기록하지 않는다).
+
+    돌려주는 값은 관측/테스트용 ``[(bar_hhmm, direction)]`` 목록이다.
+    """
+    recovered: list[tuple[str, str]] = []
+    if bars_3m is None or len(bars_3m) < 2:
+        return recovered
+    prior = _parse_iso_dt(state.last_confirmed_bar_ts)
+    if prior is None:
+        # 평가 이력이 없다 -- 재시작 catch-up walk 의 영역이고, 여기서 하루치를
+        # 통째로 되감지 않는다(그 경로가 이미 같은 일을 한다).
+        return recovered
+    today = now.astimezone(KST).strftime("%Y%m%d")
+    dt_index = list(bars_3m["datetime"])
+    # 마지막 봉은 제외 -- live 경로가 평가한다.
+    pending: list[int] = []
+    for idx in range(len(dt_index) - 1):
+        bar_dt = pd.Timestamp(dt_index[idx])
+        bar_kst = bar_dt.astimezone(KST)
+        if bar_kst.strftime("%Y%m%d") != today:
+            continue
+        if bar_dt <= pd.Timestamp(prior):
+            continue
+        pending.append(idx)
+    if not pending:
+        return recovered
+    for idx in pending:                      # 시간순 -- bars_3m 는 정렬돼 있다
+        snap = calculate_macd(bars_3m.iloc[: idx + 1])
+        if snap is None:
+            continue
+        direction = _advance_confirmed_primary(state, snap, now)
+        if direction == Direction.HOLD:
+            continue
+        _record_catchup_flag(state, snap, direction, now,
+                             reason=LATE_COMPLETED_BAR_REPLAY)
+        recovered.append((snap.bar_dt.astimezone(KST).strftime("%H:%M"), direction.value))
+    if recovered:
+        result.actions.append(
+            f"{LATE_COMPLETED_BAR_REPLAY}:{len(recovered)}")
+    return recovered
+
+
 def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) -> Direction:
     """Primary (order-authoritative) crossover — completed 3m bars ONLY
     (docs 2026-07-27 KIS-parity fix; restored 2026-08-03 to the known-good
@@ -2031,11 +2109,17 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) ->
     bar_key = macd_snap.bar_dt.isoformat()
     if state.last_confirmed_bar_ts == bar_key:
         return Direction.HOLD
-    state.last_confirmed_bar_ts = bar_key
     now_kst = now.astimezone(KST)
     bar_kst = macd_snap.bar_dt.astimezone(KST)
     if bar_kst.date() != now_kst.date() or bar_kst + timedelta(minutes=3) > now_kst:
+        # 2026-09-16 수정: 이 검사에 걸린 봉은 **평가하지 않은** 봉이다.
+        # 예전에는 도장(last_confirmed_bar_ts)을 이 검사보다 **먼저** 찍어서,
+        # 한 번 걸린 봉은 위 중복방지에 막혀 **영구히 재평가되지 않았다** --
+        # 그 봉에 제로크로스가 있었다면 플래그도, 신호원장 행도, T+3 후보도,
+        # 따라서 주문까지 통째로 사라진다(봉 원장에도 행이 남지 않아 사후
+        # 추적조차 불가능하다). 평가한 봉에만 도장을 찍는다.
         return Direction.HOLD
+    state.last_confirmed_bar_ts = bar_key
     # Order-authoritative FLAG source is fixed to zero-cross onset. KIS
     # color/onset may be displayed as reference only and must not replace
     # this calculation without a fresh production-change decision.
@@ -4889,6 +4973,44 @@ def run_once(
             broker=broker, state=state, market_data=market_data, now=now,
             quotes=quotes, pos=_held_pos, result=result,
         ):
+            # 2026-09-16 수정: 청산이 실행된 tick 이라도 **이 tick 의 완성봉
+            # 크로스오버 탐지/원장 기록은 반드시 수행한다.**
+            #
+            # 이 조기 return 은 탐지(_advance_confirmed_primary)보다 앞에 있어서,
+            # 청산이 발동한 tick 에 마침 새 크로스오버가 확정되면 그 플래그가
+            # 통째로 사라졌다 -- 크로스오버는 봉 단위 일회성 사건이라 나중에
+            # 다시 만들 수 없고, evaluate_macd_crossover 의 같은-방향 억제가
+            # 다음 같은 방향 플래그까지 연쇄로 삼킨다. reconcile 블록 경로는
+            # 2026-08-31 에 정확히 같은 이유로 이미 보강됐는데(탐지는 주문
+            # 건강도에 의존하면 안 된다) 이 분기만 빠져 있었다.
+            #
+            # 청산 자체(가격/사유/수량/슬롯)는 위에서 이미 끝났고 여기서는
+            # 건드리지 않는다. 기록 전용이며 주문을 내지 않는다 --
+            # _propagate_confirmed_flag_without_orders 는 broker 인자조차 받지
+            # 않는다. 실패해도 이미 체결된 청산 tick 을 예외로 만들지 않는다.
+            try:
+                _exit_df_1m = market_data.get_history_df()
+                _exit_bars_3m = resample_completed_3m(_exit_df_1m, now=now)
+                _exit_bars_3m, _exit_dropped = filter_complete_3m_bars(
+                    _exit_bars_3m, _exit_df_1m)
+                _exit_snap = calculate_macd(_exit_bars_3m)
+                if _exit_snap is not None:
+                    try:    # 관측 전용
+                        _set_observed_frame(_exit_bars_3m, _exit_dropped)
+                    except Exception:
+                        pass
+                    _replay_unevaluated_completed_bars(
+                        state=state, bars_3m=_exit_bars_3m, now=now, result=result)
+                    _exit_direction = _advance_confirmed_primary(state, _exit_snap, now)
+                    if _exit_direction != Direction.HOLD:
+                        _propagate_confirmed_flag_without_orders(
+                            state=state, macd_snap=_exit_snap, bars_3m=_exit_bars_3m,
+                            df_1m=_exit_df_1m, direction=_exit_direction, now=now,
+                            result=result, defer_reason=TICK_ALREADY_EXECUTED,
+                        )
+            except Exception:
+                logger.exception(
+                    "[MACD2] confirmed-flag preservation failed on an exit tick")
             result.timing["total"] = time.monotonic() - tick_started
             return result
 
@@ -4996,6 +5118,11 @@ def run_once(
         _set_observed_frame(bars_3m, _history_gap_bar_starts)
     except Exception:
         pass
+    # 2026-09-16: 늦게 완성된 미평가 봉을 시간순으로 먼저 따라잡는다.
+    # FLAG 복원 전용이며 주문은 내지 않는다 -- 마지막 봉만 아래 live
+    # 경로가 평가하고 주문 권한을 갖는다.
+    _replay_unevaluated_completed_bars(
+        state=state, bars_3m=bars_3m, now=now, result=result)
     confirmed_direction = _advance_confirmed_primary(state, macd_snap, now)
     _advance_premarket_carry_candidate(state, macd_snap, confirmed_direction)
 
