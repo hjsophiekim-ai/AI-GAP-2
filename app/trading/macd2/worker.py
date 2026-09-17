@@ -3507,22 +3507,24 @@ def _resolve_tw2_3slot_candidate_body(
                 if not small_whipsaw_hold.is_holding(state):
                     small_whipsaw_hold.note_hold_start(
                         state, held_direction=_held_dir, now=now, decision=_h50)
-                # 2026-09-16 실거래 사고 수정: H50 은 반대신호 청산을 보류만 할
-                # 뿐 "보류가 틀렸는지" 재확인하는 장치가 없었다(해제조건은
-                # EMA20/50 2봉 이탈 + 60분 경과뿐). TW2/TW2 3-SLOT 의 whipsaw-
-                # hold 분기가 2026-09-02 사고 이후 쓰고 있는 것과 **완전히 같은**
-                # 재확인기를 여기에도 붙인다 -- 새 임계값 없이
-                # `_start_whipsaw_watch` 한 줄만 부르고, 이후 완성봉마다
-                # `_advance_whipsaw_watch` 가 signed MACD gap 과 signed
-                # EMA10-EMA20 spread 가 둘 다 재확대되는지 본다. H50 의 HOLD
-                # 판정 자체(추세/rng60/60분)는 한 값도 바뀌지 않는다.
-                #
-                # 아래 TW whipsaw-hold 분기와 같은 자리에서 같은 인자로 부른다
-                # (매 반대 플래그마다 re-seed -- 그 분기의 기존 동작과 동일).
-                if config.H50_WHIPSAW_WATCH_ENABLED:
-                    _start_whipsaw_watch(
-                        state, mode="TW2_3SLOT", direction=direction,
-                        bars_3m=bars_3m, flag_bar_dt=macd_snap.bar_dt, now=now)
+                    # 2026-09-16 실거래 사고 대응: H50 은 반대신호 청산을 보류만
+                    # 할 뿐 "보류가 틀렸는지" 재확인하는 장치가 없었다(해제조건은
+                    # EMA20/50 2봉 이탈 + 60분 경과뿐). TW2/TW2 3-SLOT 의
+                    # whipsaw-hold 분기가 2026-09-02 사고 이후 쓰고 있는 것과
+                    # **완전히 같은** 재확인기를 여기에도 붙인다 -- 새 임계값
+                    # 없이 `_start_whipsaw_watch` 한 줄만 부르고, 이후 완성봉마다
+                    # `_advance_whipsaw_watch` 가 signed MACD gap 과 signed
+                    # EMA10-EMA20 spread 가 둘 다 재확대되는지 본다. H50 의 HOLD
+                    # 판정 자체(추세/rng60/60분)는 한 값도 바뀌지 않는다.
+                    #
+                    # 아래 TW whipsaw-hold 분기는 반대 플래그마다 re-seed 하지만
+                    # 여기는 **HOLD 가 처음 시작될 때 한 번만** arm 한다. 70영업일
+                    # 재검증에서 매번 re-seed 하는 쪽이 복리 +189.59% 로 한 번만
+                    # arm 하는 쪽(+193.51%)보다 열위였다(config 주석 표 참조).
+                    if config.H50_WHIPSAW_WATCH_ENABLED:
+                        _start_whipsaw_watch(
+                            state, mode="TW2_3SLOT", direction=direction,
+                            bars_3m=bars_3m, flag_bar_dt=macd_snap.bar_dt, now=now)
                 return None
 
     if not decision.approved:

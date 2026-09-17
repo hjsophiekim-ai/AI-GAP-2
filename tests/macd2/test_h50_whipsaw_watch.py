@@ -55,6 +55,27 @@ from app.trading.macd2.market_data import MarketDataService
 
 KST = config.KST
 
+#: import 시점(어떤 fixture 도 돌기 전)의 기본값을 붙잡아 둔다 — 아래 autouse
+#: fixture 가 켜 버리므로 테스트 안에서 `config` 를 읽으면 기본값이 아니다.
+_DEFAULT_WATCH_LINK = config.H50_WHIPSAW_WATCH_ENABLED
+
+
+# ── 기본값 / 켠 상태 ───────────────────────────────────────────────────────
+
+def test_watch_link_default_is_off_after_the_2026_09_17_validation():
+    """2026-09-17 재검증에서 채택기준 미달(기존 H50 대비 30일·70일 복리 둘 다
+    열위)이라 **기본 OFF** 로 내렸다. 근거표는 `config.py` 의
+    `H50_WHIPSAW_WATCH_ENABLED` 주석에 있다. 재검증 없이 이 기본값을 True 로
+    되돌리지 말 것."""
+    assert _DEFAULT_WATCH_LINK is False
+
+
+@pytest.fixture(autouse=True)
+def _watch_link_on(monkeypatch):
+    """아래 테스트들은 "켜져 있을 때의 메커니즘"을 검증하므로 명시적으로 켠다.
+    (기본 OFF 라는 사실 자체는 바로 위 테스트가 따로 고정한다.)"""
+    monkeypatch.setattr(config, "H50_WHIPSAW_WATCH_ENABLED", True)
+
 
 # ── helpers ───────────────────────────────────────────────────────────────
 

@@ -1301,6 +1301,8 @@ production 에 반영된 적이 없다. 실제 배포된 것은 위 CHOP veto �
 - `TW2_3SLOT_SLOT1_CHOP_VETO` 를 재검증 없이 다시 기본 ON으로 되돌리는
   변경 금지 (2026-09-07 사용자 결정으로 비활성 — 위 "Slot1 CHOP veto" 절 참조).
   Trend Quality 게이트는 기존대로 오전 3번째 슬롯 전용으로 유지한다.
+- `H50_WHIPSAW_WATCH_ENABLED` 를 재검증 없이 기본 ON 으로 되돌리는 변경 금지
+  (2026-09-17 채택기준 미달로 OFF — 위 「H50 ↔ whipsaw-watch 연결」 절 참조).
 - 필터를 주문·체결 함수 내부에 넣는 변경 금지
 - Stop Loss / Profit Lock / 강제청산을 필터에 종속시키는 변경 금지
 
@@ -1321,3 +1323,63 @@ production 에 반영된 적이 없다. 실제 배포된 것은 위 CHOP veto �
   HISTORY_GAP / late completed bar, 부분체결, 원장 복원까지 포함한다.
 - merge 제안 시 「변경 파일 목록 + 안정판 대비 diff + 신규 failure 0」 3종을
   반드시 함께 보고한다.
+
+## H50 ↔ whipsaw-watch 연결 (2026-09-17) — 기본 OFF, 채택기준 미달
+
+**현재 상태: production 에서 동작하지 않는다.**
+`config.H50_WHIPSAW_WATCH_ENABLED` 기본값이 `False` 이므로 H50 은 2026-09-15
+사양 그대로(해제조건 = EMA20/50 구조추세 2봉 이탈 | 60분 경과) 동작한다.
+
+**무엇인가.** H50 HOLD 가 **처음 시작될 때** TW2/TW2 3-SLOT 이 2026-09-02
+사고 이후 쓰고 있는 `_start_whipsaw_watch` 를 함께 arm 한다. 이후 완성봉마다
+`_advance_whipsaw_watch` → `time_window_filter.evaluate_whipsaw_watch` 가
+signed MACD gap 과 signed EMA10-EMA20 spread 가 **둘 다** 직전 확인값 대비
+재확대됐는지 보고, 그렇다면 `WHIPSAW_WATCH_DETERIORATION_EXIT` 로 전량청산한다.
+**새 임계값은 0개**이고 H50 자신의 조건(추세 정렬 / rng60 ≤ 2.35% / 최대 60분)은
+한 값도 바뀌지 않는다. 진입 판정 · 플래그 탐지 · 슬롯 · W1a sizing 과는 무관하다.
+
+**왜 만들었나 (2026-09-16 실거래).** 12:48 RED 진입 후 13:30 BLUE 반대 플래그를
+13:33 에 H50 이 HOLD 했는데, 그 뒤 BLUE 방향 gap 이 +58 → +495 → +855 → +1018
+→ +1106 으로 계속 확대되는데도 계속 HOLD 했다. H50 에는 "보류가 틀렸는지"
+확인하는 장치가 아예 없었고, H50 분기만 `_start_whipsaw_watch` 를 부르지 않아
+`whipsaw_watch_active` 가 영영 False → `_advance_whipsaw_watch` 영구 no-op 이었다.
+
+**왜 껐나.** 76영업일 faithful-fill 재검증에서 **기존 H50 보다 열위**다:
+
+| | 70일 복리 | PF | MDD | Top10제외 | 30일 복리 | MDD |
+|---|--:|--:|--:|--:|--:|--:|
+| A X2-lite+W1a | +176.32 | 2.1548 | −9.68 | +62.59 | +58.51 | −5.94 |
+| B 기존 H50 | **+204.18** | 2.2165 | **−7.32** | **+78.98** | **+64.60** | −7.20 |
+| C H50+watch | +193.51 | **2.2633** | −8.06 | +72.71 | +61.13 | **−5.94** |
+
+구조적 이유: `evaluate_whipsaw_watch` 는 **"gap 이 확대되지 않아서"** 보류한 TW
+분기의 후속 확인기라 평평한 gap 에서 출발하는 것을 전제한다. H50 은 gap 과
+무관하게(추세+좁은 range) 보류하므로 이미 확대 중인 gap 위에 같은 규칙을 걸면
+대부분 다음 한 봉에서 바로 발화한다 — 70일 watch 청산 B 1건 → C 23건, 반대로
+H50 고유 해제는 8건 → 2건. **연결이 H50 을 보조하지 않고 대체해 버린다.**
+청산사유가 바뀐 20건은 개선 10 / 악화 10 이고 합이 음수다.
+
+**다만 위험지표는 좋아진다** — PF 2.2165 → 2.2633, 30일 MDD −7.20 → −5.94,
+하드스톱 70일 48 → 40건, 그리고 2026-09-16 사건 자체는 13:54 BREAKEVEN_STOP
+(+0.199%) → 13:36 watch 청산(+0.537%)으로 18분 단축된다. "수익을 조금 내주고
+손실 꼬리를 줄이는 교환"이므로 채택 여부는 사용자 판단으로 남긴다.
+
+**arm 시점**: TW 분기는 반대 플래그마다 re-seed 하지만 여기는 **최초 HOLD 때
+한 번만** arm 한다. 매번 re-seed 하면 70일 +189.59% 로 더 나빴다.
+
+**같이 들어간 별개 수정 (토글과 무관, 항상 켜져 있다)**: `_advance_h50_hold` 는
+`run_once` 의 보유 중 블록에서만 호출되므로, 포지션이 다른 사유(하드스톱/TP/
+트레일링/ETP/강제청산/whipsaw-watch)로 닫히면 `h50_hold_active` 가 지워지지
+않고 남았다. 그러면 그날 다음 H50 HOLD 가 `is_holding()` 을 이미 True 로 보아
+`note_hold_start` 를 건너뛰고, 낡은 `h50_hold_started_at` 때문에 다음 완성봉에서
+곧바로 MAX_HOLD 로 풀려 **HOLD 가 사실상 무효**가 된다. 일자 rollover 전에는
+아무도 지우지 않았다. `_apply_exit_outcome` 에서 `_clear_whipsaw_watch` 옆에
+`small_whipsaw_hold.clear(state)` 를 추가해 포지션 수명과 함께 끝내도록 했다.
+
+**다시 켜려면**: 환경변수 `MACD2_H50_WHIPSAW_WATCH_ENABLED=1`, 영구 채택하려면
+`config.py` 기본값을 `True` 로 바꾸고 위 표를 갱신한다. 기본값이 `False` 라는
+사실은 `tests/macd2/test_h50_whipsaw_watch.py::test_watch_link_default_is_off_
+after_the_2026_09_17_validation` 이 고정한다. 같은 파일의 나머지 10개 테스트는
+토글을 명시적으로 켜서 "켜져 있을 때의 메커니즘"을 계속 검증한다.
+
+검증 전량: `data/validation/macd2/h50_whipsaw_watch_20260917/README.md`.
