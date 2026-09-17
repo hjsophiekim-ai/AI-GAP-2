@@ -1535,6 +1535,119 @@ sum2.metric(
 sum3.metric("총 수수료+세금+슬리피지", f"{total_cost:,.0f}원")
 sum4.metric("총 순수익", f"{total_net_pnl:,.0f}원")
 
+# ── KIS 계좌 실현손익 (truth source, 2026-09-17) ────────────────────────────
+# 위 "총 순수익"은 **원장 추정치**다. 2026-09-17 실거래에서 이 값이 1,756원인데
+# KIS 계좌는 1,717원이었다 — 추정 수수료율(0.015%, 실제의 약 4.1배)과 체결 후
+# 손익에서 또 뺀 예상 슬리피지, 그리고 평균단가 x 수량으로 계산한 체결금액
+# (부분체결이 섞이면 실제와 어긋난다) 때문이었다.
+#
+# 아래 패널은 추정하지 않는다. KIS `inquire-daily-ccld` 의 체결금액
+# (tot_ccld_amt)과 실제 제비용(prsm_tlex_smtl)을 그대로 쓴다. 이것이 계좌
+# 손익의 truth 이고, 위 원장 값과 어긋나면 여기서 바로 보인다.
+#
+# 버튼을 눌러야 조회한다 — UI 새로고침마다 KIS 를 때리지 않기 위해서다.
+st.subheader("KIS 계좌 실현손익 (실측 대조)")
+st.caption(
+    "계좌 화면과 **같은 API**(기간별매매손익 TTTC8715R)를 읽습니다. 추정하지 않습니다. "
+    "REAL 계좌에서만 조회되며, 실패하면 당일체결(inquire-daily-ccld)로 재구성합니다."
+)
+_kis_cols = st.columns([1, 3])
+if _kis_cols[0].button("KIS에서 조회", key="kis_realized_refresh"):
+    try:
+        from app.trading.kis_client import create_kis_client
+        from app.trading.kis_realized import (
+            account_realized_from_kis, reconcile_with_kis, verify_kis_internal_consistency,
+        )
+
+        _cli = create_kis_client(state.mode)
+        if _cli is None:
+            st.session_state["kis_realized"] = {"error": f"{state.mode} KIS 클라이언트를 만들 수 없습니다."}
+        else:
+            _today = pd.Timestamp.now(tz=macd2_config.KST).strftime("%Y%m%d")
+            _pt = _cli.get_period_trade_profit(_today)
+            if _pt.get("ok") and _pt.get("totals"):
+                _acc = account_realized_from_kis(_pt["totals"])
+                _acc["check"] = verify_kis_internal_consistency(_pt["totals"])
+                st.session_state["kis_realized"] = _acc
+            else:
+                # fallback — 체결내역에서 재구성 (모의투자 등)
+                _res = _cli.get_today_fills("")
+                if not _res.get("ok"):
+                    st.session_state["kis_realized"] = {
+                        "error": f"{_pt.get('error') or ''} / {_res.get('error') or '조회 실패'}"}
+                else:
+                    _rc = reconcile_with_kis(_res.get("fills") or [], _res.get("totals") or {})
+                    _s = _rc.get("summary") or {}
+                    st.session_state["kis_realized"] = {
+                        "source": "FALLBACK_FILLS", "buy_qty": _s.get("buy_qty"),
+                        "sell_qty": _s.get("sell_qty"),
+                        "buy_trade_amount": _s.get("buy_amount"),
+                        "sell_trade_amount": _s.get("sell_amount"),
+                        "buy_settlement_amount": None, "sell_settlement_amount": None,
+                        "buy_fee": None, "sell_fee": None,
+                        "fee": _s.get("fee"), "tax": _s.get("tax"),
+                        "realized_pnl": _rc.get("realized_pnl"), "return_pct": None,
+                        "avg_buy_price": _s.get("avg_buy_price"),
+                        "avg_sell_price": _s.get("avg_sell_price"),
+                        "reconcile": _rc,
+                    }
+    except Exception as exc:  # pragma: no cover - UI 방어
+        st.session_state["kis_realized"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+_kis = st.session_state.get("kis_realized")
+
+
+def _won(v):
+    return "-" if v is None else f"{float(v):,.0f}원"
+
+
+if not _kis:
+    _kis_cols[1].caption("버튼을 누르면 KIS 계좌의 당일 실현손익을 가져와 원장과 대조합니다.")
+elif _kis.get("error"):
+    st.error(f"KIS 조회 실패: {_kis['error']}")
+else:
+    k1, k2, k3, k4 = st.columns(4)
+    # 계좌 화면의 "매수금액"은 **정산금액**이다(체결금액 + 매수수수료).
+    # 2026-09-17: 체결 104,375 / 정산 104,379 — 이 4원 차이가 대조 때 문제가 됐다.
+    k1.metric("매수금액 (정산)", _won(_kis.get("buy_settlement_amount") or _kis.get("buy_trade_amount")),
+              delta=f"체결 {_won(_kis.get('buy_trade_amount'))} · {_kis.get('buy_qty') or 0}주",
+              delta_color="off")
+    k2.metric("매도금액 (정산)", _won(_kis.get("sell_settlement_amount") or _kis.get("sell_trade_amount")),
+              delta=f"체결 {_won(_kis.get('sell_trade_amount'))} · {_kis.get('sell_qty') or 0}주",
+              delta_color="off")
+    k3.metric("매매비용", _won(_kis.get("fee")),
+              delta=(f"매수 {_won(_kis.get('buy_fee'))} / 매도 {_won(_kis.get('sell_fee'))}"
+                     if _kis.get("buy_fee") is not None else "매수·매도 합계"),
+              delta_color="off")
+    k4.metric("실현손익", _won(_kis.get("realized_pnl")),
+              delta=(f"{_kis['return_pct']:.4f}%" if _kis.get("return_pct") is not None else None))
+    _ap, _sp = _kis.get("avg_buy_price"), _kis.get("avg_sell_price")
+    st.caption(
+        f"제세금 {_won(_kis.get('tax'))} · 평균 매수가 {(f'{_ap:,.2f}원' if _ap else '-')}"
+        f" / 평균 매도가 {(f'{_sp:,.2f}원' if _sp else '-')} · 출처 `{_kis.get('source')}`"
+    )
+    st.caption(
+        "**매수금액 = 체결금액 + 매수수수료**, **매도금액 = 체결금액 − 매도수수료** 입니다. "
+        "실현손익은 두 방식이 같은 값입니다 — (매도체결 − 매수체결 − 총비용) = (매도정산 − 매수정산)."
+    )
+    _chk = _kis.get("check")
+    if _chk and not _chk.get("ok"):
+        st.warning(f"KIS 내부 숫자끼리 검산이 맞지 않습니다: {_chk}")
+    _rc = _kis.get("reconcile")
+    if _rc and not _rc.get("ok"):
+        st.warning(
+            "KIS 집계와 재구성 값이 어긋납니다 — 체결 누락이나 수수료 체계 변경을 의심하세요. "
+            f"(체결금액 차이 {_rc.get('amount_diff')}원 / 제비용 차이 {_rc.get('fee_diff')}원)"
+        )
+    _diff = float(_kis.get("realized_pnl") or 0.0) - float(total_net_pnl or 0.0)
+    if abs(_diff) >= 1:
+        st.info(
+            f"원장 추정 순수익 {total_net_pnl:,.0f}원 vs **KIS 실현손익 "
+            f"{_kis.get('realized_pnl', 0):,.0f}원** — 차이 {_diff:+,.0f}원. "
+            "KIS 값이 실제입니다. 원장 추정치는 전략 판정용 비용모델(수수료율 0.015% · "
+            "예상 슬리피지)을 쓰고, 이 계좌에 외부(MTS 등) 주문이 섞여 있으면 그만큼도 차이로 나타납니다."
+        )
+
 st.subheader("매매 내역 (한눈에 보기)")
 _trade_history = _trade_history_rows(exec_rows, signal_rows)
 if _trade_history:

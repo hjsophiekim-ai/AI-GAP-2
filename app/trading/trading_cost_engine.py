@@ -19,11 +19,31 @@ from typing import Optional
 # 연동 전까지의 근사).
 ETF_ETN_SYMBOLS = frozenset({"0193T0", "0197X0"})
 
+# ── 두 가지 요율이 **일부러** 따로 있다 (2026-09-17) ────────────────────────
+#
+#   전략 판정용 (아래 *_fee_rate)      : 0.00015  — 기존값 유지
+#   실현손익용 (realized_fee_rate)      : 0.000036396 — KIS 실측값
+#
+# 왜 하나로 합치지 않았나: 전략 요율은 `worker._net_return_pct` 를 거쳐 손절/
+# 익절 판정선과 모든 백테스트에 들어가 있다. 이 값을 바꾸면 실거래 동작이
+# 즉시 달라지므로, 재백테스트 없이 건드릴 수 없다(2026-09-17 사용자 결정으로
+# **2단계 별도 브랜치**에서 검증 후 적용하기로 했다).
+#
+# 반면 **이미 체결된 거래의 실현손익**은 추정이 아니라 사실이므로 지금 바로
+# KIS 와 맞춰야 한다. 그 경로만 realized_fee_rate 를 쓴다.
+#
+# realized_fee_rate 근거 (KIS inquire-daily-ccld, 2026-09-17 실계좌):
+#   총 체결금액 tot_ccld_amt = 210,475원 / 총 제비용 prsm_tlex_smtl = 8원
+#   -> 0.0036396% (KIS 온라인 수수료, 유관기관 제비용 포함)
+#   레그별 검산: 6,220→0 / 6,100→0 / 98,155→4 / 100,000→4  합 8원 ✅
+_KIS_REALIZED_FEE_RATE = 0.000036396
+
 _DEFAULT_COST_CONFIG = {
     "domestic_buy_fee_rate": 0.00015,
     "domestic_sell_fee_rate": 0.00015,
     "etf_buy_fee_rate": 0.00015,
     "etf_sell_fee_rate": 0.00015,
+    "realized_fee_rate": _KIS_REALIZED_FEE_RATE,
     "transaction_tax_rate": 0.0018,
     "etf_transaction_tax_rate": 0.0,
     "clearing_fee_rate": 0.0,
@@ -136,6 +156,54 @@ class TradeCostEngine:
             "clearing_fee": round(total_clearing, 2), "slippage": round(slippage_cost, 2),
             "total_cost": round(buy_cost["fee"] + sell_cost["fee"] + total_tax + total_clearing + slippage_cost, 2),
             "net_pnl": round(net_pnl, 2),
+        }
+
+    def realized_fee_rate(self) -> float:
+        """실현손익 전용 수수료율 — 전략 판정용 요율과 **의도적으로 분리**돼 있다
+        (모듈 상단 주석 참조). 전략 요율을 바꾸면 손절선이 움직이지만 이 값은
+        이미 끝난 거래의 기록에만 쓰이므로 안전하다."""
+        return float(self._cfg.get("realized_fee_rate", _KIS_REALIZED_FEE_RATE))
+
+    def compute_realized_pnl(
+        self, symbol: str, buy_amount: float, sell_amount: float,
+        fee_override: float | None = None,
+    ) -> dict:
+        """**실제 체결된** 매수/매도 금액으로 실현손익을 계산한다 (KIS 계좌 기준).
+
+        `compute_net_pnl` 과 두 가지가 다르고, 그 두 가지가 정확히 2026-09-17
+        실거래 불일치의 원인이었다.
+
+        1) **슬리피지를 빼지 않는다.** 슬리피지는 "주문가 대비 체결가가 얼마나
+           밀릴까"를 *예측*하는 값이다. 이미 체결된 가격으로 계산하는 실현손익에
+           다시 빼면 이중 차감이다. (그날 59.45원이 이렇게 사라졌다.)
+        2) **단가 x 수량이 아니라 체결금액을 받는다.** KIS 의 체결금액
+           (`tot_ccld_amt`)은 부분체결이 섞이면 단가 x 수량과 다르다 — 그날
+           16주 매수가 98,155원이었는데 평균단가 6,134 x 16 = 98,144 로 11원
+           어긋났다.
+
+        수수료는 레그별로 원 단위 반올림한다(KIS 표기와 같은 방식).
+        ETF 증권거래세는 0 이다(면제) — 그날 KIS 제세금도 0원이었다.
+        """
+        buy_amount = float(buy_amount)
+        sell_amount = float(sell_amount)
+        rate = self.realized_fee_rate()
+        # KIS 가 실제 제비용을 알려주면 그 값이 truth 다(추정보다 항상 우선).
+        if fee_override is not None:
+            buy_fee = 0.0
+            sell_fee = float(fee_override)
+        else:
+            buy_fee = round(buy_amount * rate)
+            sell_fee = round(sell_amount * rate)
+        tax = round(sell_amount * self._tax_rate(symbol, "SELL"))
+        clearing = round((buy_amount + sell_amount) * self._cfg.get("clearing_fee_rate", 0.0))
+        gross = sell_amount - buy_amount
+        total_cost = buy_fee + sell_fee + tax + clearing
+        return {
+            "buy_amount": round(buy_amount, 2), "sell_amount": round(sell_amount, 2),
+            "gross_pnl": round(gross, 2), "buy_fee": float(buy_fee), "sell_fee": float(sell_fee),
+            "transaction_tax": float(tax), "clearing_fee": float(clearing),
+            "slippage": 0.0, "total_cost": float(total_cost),
+            "net_pnl": round(gross - total_cost, 2),
         }
 
     def compute_unrealized_net_pnl(self, symbol: str, entry_price: float, current_price: float, quantity: int, order_type: str = "limit") -> dict:
