@@ -935,11 +935,19 @@ def test_scenario2_buy_reported_failed_but_broker_actually_filled_backfills_on_r
     assert float(backfilled["executed_price"]) == 15_000.0
     # never a fabricated fill time -- exactly the reconcile discovery moment:
     assert backfilled["timestamp"] == discovered_at.isoformat()
-    # a genuinely unknown entry-side fee is never estimated -- all zero:
+    # PnL stays zero -- it realizes on the SELL leg, never here:
     assert float(backfilled["gross_pnl"]) == 0.0
-    assert float(backfilled["fee"]) == 0.0
     assert float(backfilled["slippage"]) == 0.0
     assert float(backfilled["net_pnl"]) == 0.0
+    # 2026-09-18: the entry-side fee IS known -- quantity and avg_price are
+    # exactly what reconcile just read back from the broker, so the leg
+    # amount is real and KIS charged a real fee on it. Recording 0.0 here
+    # made summarize_daily_trading's total_cost understate the account.
+    # It uses the realized (KIS-measured) cost, never the strategy rate.
+    from app.trading.trading_cost_engine import TradeCostEngine
+
+    assert float(backfilled["fee"]) == TradeCostEngine().realized_leg_fee(876 * 15_000.0)
+    assert float(backfilled["fee"]) > 0.0
 
 
 def test_scenario3_duplicate_reconcile_never_duplicates_the_backfill_leg():
@@ -997,11 +1005,17 @@ def test_scenario4_backfilled_position_sells_normally_with_no_gap_or_double_coun
     total_gross = sum(float(r["gross_pnl"]) for r in rows)
     total_net = sum(float(r["net_pnl"]) for r in rows)
     total_fee = sum(float(r["fee"]) for r in rows)
-    # the backfill leg contributes exactly zero -- today's totals must equal
-    # the SELL leg's own values alone, proving no double-count:
+    # the backfill leg contributes exactly zero PnL -- today's gross/net must
+    # equal the SELL leg's own values alone, proving no double-count:
     assert total_gross == float(sell_row["gross_pnl"])
     assert total_net == float(sell_row["net_pnl"])
-    assert total_fee == float(sell_row["fee"])
+    # 2026-09-18: fee is the one column the backfill leg now does contribute
+    # to, so that the daily cost total matches what KIS actually charged
+    # (the entry fee is real; only the fill time/price were unknowable).
+    # net_pnl above already accounts for both sides' cost, so this is a
+    # separate total, not a double-count.
+    assert total_fee == float(buy_row["fee"]) + float(sell_row["fee"])
+    assert float(buy_row["fee"]) > 0.0
     assert float(sell_row["net_pnl"]) < 0  # sanity: this really is today's loss scenario
 
 

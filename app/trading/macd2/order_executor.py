@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from app.trading.kis_realized import kis_reported_leg_cost
 from app.trading.macd2 import config, ledger
 from app.trading.macd2.broker_adapter import BrokerOrderResult, BuySizingQuote
 from app.trading.macd2.models import Direction, PositionSnapshot, SignalState
@@ -134,7 +135,12 @@ def compute_order_safety_margin_pct(price: float, symbol: str) -> float:
     Two components, both already-real inputs used elsewhere in this codebase
     (nothing new invented here):
       - buy fee rate for this symbol from config.yaml trading_cost (via
-        TradeCostEngine, the same engine used for net-PnL/ledger recording).
+        TradeCostEngine). This is the STRATEGY rate, deliberately -- sizing
+        is a pre-trade decision, not a record of a finished trade, and the
+        strategy rate is the conservative (larger) one, so it over-reserves
+        cash rather than letting an order bounce. The ledger's realized cost
+        uses TradeCostEngine.realized_leg_fee instead; the two are separate
+        on purpose (see trading_cost_engine.py's module header).
       - one KRX tick (app.utils.stock_utils.get_tick_size) expressed as a
         percent of price, covering the case where the ask ticks up by one
         increment between the quote used to size the order and the market
@@ -249,6 +255,13 @@ def _record_leg(
     silently writing into macd2's."""
     lm = ledger_module if ledger_module is not None else ledger
     cost_engine = TradeCostEngine()
+    # 매수/매도 모두 같은 우선순위로 실현비용을 구한다: KIS 가 그 레그의 실제
+    # 제비용을 알려주면 그 값, 아니면 realized_fee_rate (TradeCostEngine.
+    # realized_leg_fee). 전략 판정용 요율(compute_trade_cost)은 원장 비용에
+    # 쓰지 않는다 — 2026-09-18 수정 전까지 매수 레그만 그 요율에 남아 있었고,
+    # 그래서 매도를 고친 뒤에도 원장 수수료가 계속 15원으로 찍혔다
+    # (98,155 x 0.00015 = 14.72 -> 15원, KIS 실제 4원).
+    kis_leg_cost = kis_reported_leg_cost(getattr(order_result, "raw", None))
     if side == "SELL":
         # 2026-09-17: 실제 체결가로 계산하는 실현손익에는 슬리피지를 빼지 않는다.
         # 슬리피지는 "주문가 대비 체결가가 얼마나 밀릴까"를 예측하는 값이라
@@ -257,11 +270,12 @@ def _record_leg(
         # 둘이 합쳐 원장 1,756원 vs KIS 1,717원 괴리를 만들었다.
         cost = cost_engine.compute_realized_pnl(
             symbol, buy_amount=float(entry_price) * qty, sell_amount=float(price) * qty,
+            sell_fee_override=kis_leg_cost,
         )
         gross_pnl, fee, slippage, net_pnl = cost["gross_pnl"], cost["sell_fee"], 0.0, cost["net_pnl"]
     else:
-        cost = cost_engine.compute_trade_cost(symbol, "BUY", price, qty, order_type="market")
-        gross_pnl, fee, slippage, net_pnl = 0.0, round(cost["fee"]), 0.0, 0.0
+        fee = cost_engine.realized_leg_fee(float(price) * qty, fee_override=kis_leg_cost)
+        gross_pnl, slippage, net_pnl = 0.0, 0.0, 0.0
 
     lm.append_execution({
         "order_id": order_result.order_id, "signal_id": signal_id, "timestamp": confirmed_at,

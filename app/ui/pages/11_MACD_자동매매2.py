@@ -554,6 +554,39 @@ def _aggregate_trade_legs(exec_rows: list[dict], *, gap_minutes: float = 2.0) ->
     return groups
 
 
+#: 2026-09-18 이전 행의 수수료는 옛 추정요율(0.015%) 기준이라 KIS 실측과 다르다.
+#: 원장을 사후에 고쳐 쓰지 않기로 했으므로(감사 추적 보존, macd2_config.
+#: REALIZED_FEE_LEDGER_CUTOFF_DATE 주석 참조) 표에서 구분만 한다.
+LEGACY_FEE_MARK = "*"
+LEGACY_FEE_NOTE = (
+    f"{LEGACY_FEE_MARK} 표시된 수수료는 {macd2_config.REALIZED_FEE_LEDGER_CUTOFF_DATE[:4]}-"
+    f"{macd2_config.REALIZED_FEE_LEDGER_CUTOFF_DATE[4:6]}-"
+    f"{macd2_config.REALIZED_FEE_LEDGER_CUTOFF_DATE[6:]} 이전에 기록된 행으로, "
+    "당시의 **추정 요율(0.015%)** 로 계산된 값입니다 — KIS 실제 수수료의 약 4.1배입니다. "
+    "이후 기록은 KIS 실측 기준입니다. 지난 기록은 사실 보존을 위해 다시 쓰지 않습니다."
+)
+
+
+def _uses_legacy_fee_rate(legs: list[dict]) -> bool:
+    """이 표시 그룹의 레그가 옛 추정요율 시절에 기록됐는가."""
+    cutoff = str(macd2_config.REALIZED_FEE_LEDGER_CUTOFF_DATE)
+    for leg in legs:
+        date_key = ledger.execution_row_trading_date(leg)
+        if date_key and date_key < cutoff:
+            return True
+    return False
+
+
+def _fee_display(total_fee: float, legs: list[dict]) -> str:
+    """수수료 0원과 "기록 없음"은 다르다 — KIS 도 소액 레그에 0원을 찍는다
+    (2026-09-17 의 1주 6,220원 매수가 실제로 0원이었다). 어느 레그에도 fee 가
+    기록되지 않은 경우(BROKER_DIRECT 스텁 등)에만 "-" 로 비운다."""
+    if not any(str(leg.get("fee") or "").strip() for leg in legs):
+        return "-"
+    text = _money_display(total_fee)
+    return f"{text}{LEGACY_FEE_MARK}" if _uses_legacy_fee_rate(legs) else text
+
+
 def _trade_history_rows(exec_rows: list[dict], signal_rows: list[dict]) -> list[dict]:
     """하나의 "실제 주문/TP 단계"(같은 symbol/side/경제적 이벤트, 2분 이내
     체결)를 한 행으로 합쳐 총 체결수량/수량가중평균가/총 수수료/총 net_pnl/
@@ -622,7 +655,7 @@ def _trade_history_rows(exec_rows: list[dict], signal_rows: list[dict]) -> list[
                 "총 체결수량": _qty_display(total_qty), "체결가(수량가중평균)": _price_display(weighted_price),
                 "사유": RECONCILE_ONLY_REASON_LABEL if group["placeholder"] else _direction_display(direction),
                 "총 순이익": "-" if not any(r.get("net_pnl") for r in legs) else _money_display(total_net_pnl),
-                "총 수수료": _money_display(total_fee) if total_fee else "-",
+                "총 수수료": _fee_display(total_fee, legs),
             })
         elif side == "SELL":
             reason_label = (
@@ -634,7 +667,7 @@ def _trade_history_rows(exec_rows: list[dict], signal_rows: list[dict]) -> list[
                 "총 체결수량": _qty_display(total_qty), "체결가(수량가중평균)": _price_display(weighted_price),
                 "사유": reason_label,
                 "총 순이익": _money_display(total_net_pnl),
-                "총 수수료": _money_display(total_fee),
+                "총 수수료": _fee_display(total_fee, legs),
             })
     return rows
 
@@ -1713,6 +1746,8 @@ st.subheader("매매 내역 (한눈에 보기)")
 _trade_history = _trade_history_rows(exec_rows, signal_rows)
 if _trade_history:
     st.dataframe(pd.DataFrame(_trade_history), use_container_width=True, hide_index=True)
+    if any(LEGACY_FEE_MARK in str(r.get("총 수수료") or "") for r in _trade_history):
+        st.caption(LEGACY_FEE_NOTE)
 else:
     st.caption("오늘 기록된 매수/매도가 없습니다.")
 

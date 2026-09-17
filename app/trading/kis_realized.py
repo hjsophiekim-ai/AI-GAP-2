@@ -100,6 +100,50 @@ def _fill_sort_key(fill: dict):
     return (str(fill.get("timestamp") or ""), str(fill.get("order_id") or ""))
 
 
+#: KIS 가 **레그 1건**의 제비용을 실어 보낼 때 쓰는 필드명들.
+#:
+#: `prsm_tlex`(추정제비용)가 KIS 주문/체결 응답에서 확인된 이름이고, 나머지는
+#: 같은 뜻의 변형 표기다.
+#:
+#: **주의 1 — 계좌 합계 필드는 여기에 넣지 않는다.** `prsm_tlex_smtl`(당일 총
+#: 제비용)이나 `tot_fee` 는 그날 계좌 전체의 합이라 레그 1건에 붙이면 비용이
+#: 부풀려진다. 합계는 `reconcile_with_kis`/`account_realized_from_kis` 가 따로
+#: 다룬다.
+#:
+#: **주의 2 — 우리 쪽 `fee` 컬럼은 일부러 뺐다.** 거래원장 행에도 `fee` 가
+#: 있는데 그 값은 우리가 계산한 것이지 KIS 가 준 것이 아니다. 여기에 넣으면
+#: 2026-09-17 이전에 저장된 15원짜리 추정치가 "KIS 실측"으로 둔갑한다. 호출자가
+#: 실제 비용을 알고 있으면 `realized_leg_fee(fee_override=...)` 로 명시해 넘긴다.
+_KIS_LEG_COST_FIELDS = ("prsm_tlex", "tlex", "prsm_tlex_amt")
+
+
+def kis_reported_leg_cost(payload: Any) -> Optional[float]:
+    """체결 응답/체결내역 1건에서 **KIS 가 직접 알려준** 매매비용을 꺼낸다.
+
+    찾지 못하면 None 을 돌려주고, 호출자는 `TradeCostEngine.realized_leg_fee`
+    의 요율 fallback 으로 넘어간다 — 그 우선순위가 매수/매도에 똑같이 적용된다.
+
+    2026-09-18 기준 `inquire-daily-ccld` output1 과 주문 응답(order-cash)에는
+    레그별 제비용이 실려 오지 않으므로 실제로는 거의 항상 None 이다. 그럼에도
+    이 통로를 열어두는 이유는, KIS 가 값을 주기 시작하는 순간 코드 변경 없이
+    추정보다 우선하게 하기 위해서다(2026-09-17 사고의 교훈: 브로커가 이미 아는
+    숫자를 추측하지 않는다).
+    """
+    if not isinstance(payload, dict):
+        return None
+    for key in _KIS_LEG_COST_FIELDS:
+        if key not in payload:
+            continue
+        raw = payload[key]
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            continue
+        value = _num(raw, default=float("nan"))
+        if value != value or value < 0:   # NaN(파싱 실패) 또는 음수는 신뢰하지 않는다
+            continue
+        return value
+    return None
+
+
 def realized_summary_from_fills(
     fills: Iterable[dict],
     *,
@@ -120,7 +164,6 @@ def realized_summary_from_fills(
     lots: deque = deque()          # 미청산 매수 [qty, 단가, order_id]
     fee_sum = 0.0
     tax_sum = 0.0
-    rate = engine.realized_fee_rate()
 
     for f in rows:
         qty = int(f.get("quantity") or 0)
@@ -129,8 +172,8 @@ def realized_summary_from_fills(
         amount = _leg_amount(f)
         side = str(f.get("side") or "").upper()
         sym = str(f.get("symbol") or symbol or "")
-        # 레그별 원 단위 반올림 — KIS 표기 방식과 같다.
-        fee_sum += round(amount * rate)
+        # 매수/매도 동일 우선순위: KIS 가 준 레그 제비용 > realized_fee_rate.
+        fee_sum += engine.realized_leg_fee(amount, fee_override=kis_reported_leg_cost(f))
         if side == "SELL":
             tax_sum += round(amount * engine._tax_rate(sym, "SELL"))
 

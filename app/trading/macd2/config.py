@@ -1473,6 +1473,17 @@ RUNTIME_STATE_FILENAME = "macd2_runtime.json"
 SIGNAL_LEDGER_FILENAME = "macd2_signal_ledger.csv"
 EXECUTION_LEDGER_FILENAME = "macd2_execution_ledger.csv"
 
+# ── 원장 수수료 요율이 바뀐 경계일 (2026-09-18) ────────────────────────────
+#
+# 이 날짜 **이전**에 기록된 행의 `fee` 컬럼은 전략 판정용 추정요율(0.015%,
+# KIS 실측의 약 4.1배)로 계산된 값이다. 이후 행은 KIS 실측 기준
+# (realized_fee_rate / KIS 가 알려준 실제 제비용)이다.
+#
+# 이미 저장된 행은 **절대 재작성하지 않는다** -- 원장은 그 시점에 기록된 사실
+# 그대로 남아야 하고(감사 추적), 사후에 숫자를 고쳐 쓰면 어느 값이 언제의
+# 진실이었는지 알 수 없게 된다. 대신 UI 가 이 경계로 옛 행을 구분해 표시한다.
+REALIZED_FEE_LEDGER_CUTOFF_DATE = "20260918"
+
 # ── Residual position cleanup (2026-09-01 real incident) ───────────────────
 # A 09:32:48 809-share leverage (0193T0) take-profit exit sold most of the
 # position but reconciled with 1 share still held at the broker afterward --

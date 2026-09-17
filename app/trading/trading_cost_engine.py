@@ -164,9 +164,27 @@ class TradeCostEngine:
         이미 끝난 거래의 기록에만 쓰이므로 안전하다."""
         return float(self._cfg.get("realized_fee_rate", _KIS_REALIZED_FEE_RATE))
 
+    def realized_leg_fee(self, amount: float, *, fee_override: float | None = None) -> float:
+        """체결이 끝난 **레그 1건**의 매매비용 — 거래원장 `fee` 컬럼의 단일 출처.
+
+        우선순위는 매수/매도가 완전히 같다(2026-09-18):
+
+            1. KIS 가 그 레그의 실제 제비용을 알려주면 **그 값**   (fee_override)
+            2. 없으면 realized_fee_rate 로 환산 + 원 단위 반올림
+
+        전략 판정용 요율(`_fee_rate` / `compute_trade_cost`)은 **여기에 절대
+        들어오지 않는다**. 2026-09-17 원장이 매수 수수료를 15원으로 적은 것이
+        정확히 그 경로였다 — 98,155 x 0.00015 = 14.72 -> 15원, KIS 실제는 4원.
+        요율을 쓰더라도 KIS 와 같은 방식으로 레그별 원 단위 반올림한다.
+        """
+        if fee_override is not None:
+            return float(round(float(fee_override)))
+        return float(round(float(amount) * self.realized_fee_rate()))
+
     def compute_realized_pnl(
         self, symbol: str, buy_amount: float, sell_amount: float,
-        fee_override: float | None = None,
+        buy_fee_override: float | None = None,
+        sell_fee_override: float | None = None,
     ) -> dict:
         """**실제 체결된** 매수/매도 금액으로 실현손익을 계산한다 (KIS 계좌 기준).
 
@@ -181,19 +199,17 @@ class TradeCostEngine:
            16주 매수가 98,155원이었는데 평균단가 6,134 x 16 = 98,144 로 11원
            어긋났다.
 
-        수수료는 레그별로 원 단위 반올림한다(KIS 표기와 같은 방식).
+        수수료는 레그별로 `realized_leg_fee` 를 거친다 — KIS 가 실제 제비용을
+        알려주면 그 값이, 아니면 realized_fee_rate 환산값이 쓰인다(원 단위
+        반올림, KIS 표기와 같은 방식). 매수/매도 override 를 따로 받는 이유는
+        한쪽만 KIS 값이 있는 경우가 있기 때문이다(예: 매도 레그를 기록하는
+        시점에 매수 레그의 제비용은 이미 원장에 남아 있다).
         ETF 증권거래세는 0 이다(면제) — 그날 KIS 제세금도 0원이었다.
         """
         buy_amount = float(buy_amount)
         sell_amount = float(sell_amount)
-        rate = self.realized_fee_rate()
-        # KIS 가 실제 제비용을 알려주면 그 값이 truth 다(추정보다 항상 우선).
-        if fee_override is not None:
-            buy_fee = 0.0
-            sell_fee = float(fee_override)
-        else:
-            buy_fee = round(buy_amount * rate)
-            sell_fee = round(sell_amount * rate)
+        buy_fee = self.realized_leg_fee(buy_amount, fee_override=buy_fee_override)
+        sell_fee = self.realized_leg_fee(sell_amount, fee_override=sell_fee_override)
         tax = round(sell_amount * self._tax_rate(symbol, "SELL"))
         clearing = round((buy_amount + sell_amount) * self._cfg.get("clearing_fee_rate", 0.0))
         gross = sell_amount - buy_amount
