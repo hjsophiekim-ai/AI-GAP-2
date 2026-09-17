@@ -590,8 +590,10 @@ def append_reconcile_backfill_sell(
     ):
         return False
 
-    cost = TradeCostEngine().compute_net_pnl(
-        symbol, entry_price, exit_price, quantity, buy_order_type="market", sell_order_type="market",
+    # 2026-09-17: 실체결 기반이므로 슬리피지를 빼지 않는다(위 order_executor 의
+    # 같은 수정과 동일한 이유). KIS 계좌의 실현손익과 자릿수까지 맞추기 위한 경로다.
+    cost = TradeCostEngine().compute_realized_pnl(
+        symbol, buy_amount=float(entry_price) * quantity, sell_amount=float(exit_price) * quantity,
     )
     order_id = (
         f"RECONCILE_BACKFILL_SELL_{date_key}_{symbol}_{int(quantity)}_"

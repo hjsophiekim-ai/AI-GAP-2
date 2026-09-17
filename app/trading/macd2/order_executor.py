@@ -250,13 +250,18 @@ def _record_leg(
     lm = ledger_module if ledger_module is not None else ledger
     cost_engine = TradeCostEngine()
     if side == "SELL":
-        cost = cost_engine.compute_net_pnl(
-            symbol, entry_price, price, qty, buy_order_type="market", sell_order_type="market",
+        # 2026-09-17: 실제 체결가로 계산하는 실현손익에는 슬리피지를 빼지 않는다.
+        # 슬리피지는 "주문가 대비 체결가가 얼마나 밀릴까"를 예측하는 값이라
+        # 이미 체결된 가격에 다시 적용하면 이중 차감이다. 그날 인버스 17주
+        # 실거래에서 이 이중 차감이 59.45원, 4배 과다 수수료가 23.9원이었고
+        # 둘이 합쳐 원장 1,756원 vs KIS 1,717원 괴리를 만들었다.
+        cost = cost_engine.compute_realized_pnl(
+            symbol, buy_amount=float(entry_price) * qty, sell_amount=float(price) * qty,
         )
-        gross_pnl, fee, slippage, net_pnl = cost["gross_pnl"], cost["sell_fee"], cost["slippage"], cost["net_pnl"]
+        gross_pnl, fee, slippage, net_pnl = cost["gross_pnl"], cost["sell_fee"], 0.0, cost["net_pnl"]
     else:
         cost = cost_engine.compute_trade_cost(symbol, "BUY", price, qty, order_type="market")
-        gross_pnl, fee, slippage, net_pnl = 0.0, cost["fee"], 0.0, 0.0
+        gross_pnl, fee, slippage, net_pnl = 0.0, round(cost["fee"]), 0.0, 0.0
 
     lm.append_execution({
         "order_id": order_result.order_id, "signal_id": signal_id, "timestamp": confirmed_at,

@@ -100,6 +100,9 @@ TR_SELL_REAL = "TTTC0801U"
 TR_SELL_MOCK = "VTTC0801U"
 
 TR_ORDER_HISTORY_REAL = "TTTC8001R"
+#: 기간별매매손익현황 — KIS 계좌 화면의 매수/매도금액·수수료·세금·실현손익이
+#: 그대로 나오는 TR. 모의투자에는 없다.
+TR_PERIOD_TRADE_PROFIT_REAL = "TTTC8715R"
 TR_ORDER_HISTORY_MOCK = "VTTC8001R"
 
 TR_DAILY_PRICE = "FHKST01010400"
@@ -875,10 +878,10 @@ class KISClient:
             if not resp.ok:
                 rt_cd = data.get("rt_cd", "")
                 msg1 = data.get("msg1", "")
-                return {"ok": False, "fills": [], "error": f"HTTP {resp.status_code}: rt_cd={rt_cd} msg1={msg1}"}
+                return {"ok": False, "fills": [], "totals": {}, "error": f"HTTP {resp.status_code}: rt_cd={rt_cd} msg1={msg1}"}
             rt_cd = data.get("rt_cd", "")
             if rt_cd != "0":
-                return {"ok": False, "fills": [], "error": f"rt_cd={rt_cd}: {data.get('msg1', '')}"}
+                return {"ok": False, "fills": [], "totals": {}, "error": f"rt_cd={rt_cd}: {data.get('msg1', '')}"}
 
             output = data.get("output1") or []
             if isinstance(output, dict):
@@ -893,18 +896,83 @@ class KISClient:
                 side_code = _first_present(item, "sll_buy_dvsn_cd", default="")
                 side = "SELL" if str(side_code) == "01" else "BUY"
                 order_time = _first_present(item, "ord_tmd", "ccld_tmd", default="")
+                # 2026-09-17: 체결"금액"을 그대로 들고 온다. 부분체결이 섞이면
+                # 평균단가 x 수량이 실제 체결금액과 어긋난다 — 그날 16주 매수가
+                # 98,155원인데 6,134 x 16 = 98,144 로 11원 차이가 났다.
+                # 실현손익을 1원 단위로 맞추려면 금액이 truth 여야 한다.
                 fills.append({
                     "symbol": _first_present(item, "pdno", "symbol", default=""),
                     "side": side,
                     "order_id": _first_present(item, "odno", "order_id", default=""),
+                    "amount": _to_float(_first_present(item, "tot_ccld_amt"), 0.0),
+                    "avg_price": _to_float(_first_present(item, "avg_prvs"), 0.0),
                     "quantity": ccld_qty,
                     "price": _to_float(_first_present(item, "avg_prvs", "ccld_unpr", "avg_price"), 0.0) or 0.0,
                     "timestamp": f"{today}{order_time}" if order_time else today,
                 })
-            return {"ok": True, "fills": fills, "error": None}
+            # output2 집계(총 체결금액/총 제비용)는 실현손익 대조의 truth 다
+            # (2026-09-17: prsm_tlex_smtl 이 KIS 가 실제로 뗀 매매비용이다).
+            totals = data.get("output2") or {}
+            if isinstance(totals, list):
+                totals = totals[0] if totals else {}
+            return {"ok": True, "fills": fills, "totals": totals, "error": None}
         except Exception as e:
             logger.error(f"[KIS-{self.mode.upper()}] 당일체결 조회 예외: {e}")
-            return {"ok": False, "fills": [], "error": str(e)}
+            return {"ok": False, "fills": [], "totals": {}, "error": str(e)}
+
+    def get_period_trade_profit(self, start_date: str, end_date: str = "", symbol: str = "") -> dict:
+        """기간별 매매손익 현황(TR TTTC8715R) — **KIS 계좌 화면이 보여주는 바로 그 숫자**.
+
+        2026-09-17 실거래 대조에서 확인된 필드 의미(중요 — 두 가지 "금액"이 있다):
+
+            buy_tr_amt_smtl    매수 체결금액        104,375
+            buy_fee_smtl       매수 수수료                4
+            buy_excc_amt_smtl  매수 **정산금액**    104,379  = 체결금액 + 수수료
+            sll_tr_amt_smtl    매도 체결금액        106,100
+            sll_fee_smtl       매도 수수료                4
+            sll_tltx_smtl      제세금                     0
+            sll_excc_amt_smtl  매도 **정산금액**    106,096  = 체결금액 - 수수료
+            tot_fee            총 매매비용                8
+            tot_rlzt_pfls      실현손익               1,717
+
+        계좌 화면의 "매수금액"은 **정산금액**(104,379)이고 체결금액(104,375)이
+        아니다. 이 4원 차이가 2026-09-17 대조에서 문제가 됐다.
+
+        실현손익은 두 방식 모두 같은 값이 된다:
+            106,100 - 104,375 - 8 = 1,717   (체결금액 기준)
+            106,096 - 104,379     = 1,717   (정산금액 기준)
+
+        REAL 전용이다 — 모의투자에는 이 TR 이 없으므로 ok=False 로 돌려준다.
+        """
+        if self.mode != "real":
+            return {"ok": False, "error": "TTTC8715R is REAL-only", "rows": [], "totals": {}}
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-period-trade-profit"
+        params = {
+            "CANO": self.account_no, "ACNT_PRDT_CD": self.product_code,
+            "SORT_DVSN": "00", "PDNO": symbol or "",
+            "INQR_STRT_DT": start_date, "INQR_END_DT": end_date or start_date,
+            "CBLC_DVSN": "00", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+        }
+        try:
+            resp = self._request_with_token_retry(
+                "GET", url, TR_PERIOD_TRADE_PROFIT_REAL, params=params, timeout=(3, 15))
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            if not resp.ok or str(data.get("rt_cd", "")) != "0":
+                return {"ok": False, "rows": [], "totals": {},
+                        "error": f"HTTP {resp.status_code} rt_cd={data.get('rt_cd')} {data.get('msg1', '')}"}
+            rows = data.get("output1") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            totals = data.get("output2") or {}
+            if isinstance(totals, list):
+                totals = totals[0] if totals else {}
+            return {"ok": True, "rows": rows, "totals": totals, "error": None}
+        except Exception as e:
+            logger.error(f"[KIS-{self.mode.upper()}] 기간별매매손익 조회 예외: {e}")
+            return {"ok": False, "rows": [], "totals": {}, "error": str(e)}
 
     def get_account_cash_breakdown(self) -> dict:
         """계좌 현금 상세 분리 조회.
