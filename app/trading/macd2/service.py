@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from app.trading import strategy_ownership
@@ -137,6 +137,18 @@ def _record_manual_liquidation_signal(
     ledger.append_signal(row)
 
 
+def _history_diag_of(market_data) -> dict[str, Any]:
+    """``history_diag()`` 를 가진 MarketData 에서만 진단 dict 를 꺼낸다.
+    없으면 빈 dict — UI/스냅샷 계약을 깨지 않는다."""
+    fn = getattr(market_data, "history_diag", None)
+    if fn is None:
+        return {}
+    try:
+        return dict(fn())
+    except Exception:  # pragma: no cover - 진단이 대시보드를 죽이면 안 된다
+        return {}
+
+
 class Macd2Service:
     """Owns the MarketDataService/broker/Worker for one MACD2 run."""
 
@@ -169,6 +181,90 @@ class Macd2Service:
         # permanently-hung old instance (2026-08-20 incident) doesn't stall
         # recovery forever.
         self._teardown_stuck_since: Optional[datetime] = None
+        # ── history updater watchdog (2026-09-17) ─────────────────────────
+        # worker 루프와 **완전히 독립**이다. 2026-09-16 사고 때 시세까지 멈춘
+        # 것은 worker._run_loop 자체가 돌지 않았다는 뜻이라, 자가복구를 그 루프
+        # 안에 두면 같은 실패를 또 놓친다. 그래서 UI 스냅샷 경로
+        # (get_snapshot/supervisor_status)에서 돈다 -- worker 가
+        # alive-but-stuck 이어도 이건 계속 동작한다.
+        self._history_recover_attempt_at: Optional[datetime] = None
+        self._history_recover_streak: int = 0
+        self._history_watchdog_last: dict[str, Any] = {}
+
+    def _within_history_watch_window(self, now: datetime) -> bool:
+        """정규 거래시간에만 감시한다. 장 마감/프리마켓/주말에는 새 봉이 안 오는
+        것이 정상이므로 STALE 복구를 반복하면 안 된다(2026-09-17 사용자 조건).
+        장 시작 직후 grace 는 worker._within_open_grace_window 와 같은 60초."""
+        local = now.astimezone(KST)
+        if local.weekday() >= 5:
+            return False
+        if not (config.SESSION_OPEN <= local.time() < config.FORCE_LIQUIDATE_AT):
+            return False
+        open_dt = local.replace(
+            hour=config.SESSION_OPEN.hour, minute=config.SESSION_OPEN.minute,
+            second=0, microsecond=0,
+        )
+        return local >= open_dt + timedelta(seconds=config.HISTORY_WATCHDOG_OPEN_GRACE_SEC)
+
+    def _history_watchdog(self, state, now: Optional[datetime] = None) -> dict[str, Any]:
+        """history updater 의 죽음/정체를 감지하고 **그 스레드만** 되살린다.
+
+        하는 일:  1분봉 수집 스레드 stop/join -> start (정확히 1개)
+        하지 않는 일: 자동매매 worker 재시작, 주문 실행/복원, 전략 state 변경.
+        데이터 수집 복구와 REAL 자동매매 재개는 분리한다(2026-09-17 사용자 결정)
+        -- 그래서 MOCK 전용인 ``_auto_recover_worker`` 와 달리 REAL 에서도 돈다.
+
+        신규진입 차단은 이 함수가 새로 만들지 않는다. 데이터가 낡으면
+        ``worker.py`` 의 기존 HISTORY_STALE 게이트(quote_history_mismatch_reason
+        -> entry_window_open)가 이미 막고 있고, 복구가 막힌 동안에도 그 차단은
+        그대로 유지된다."""
+        now = now or datetime.now(KST)
+        md = self._market_data
+        verdict: Optional[str] = None
+        action: Optional[str] = None
+        if (md is None
+                or not hasattr(md, "history_stale_age_sec")
+                or not hasattr(md, "recover_history_updater")
+                or not bool(getattr(state, "auto_trade_on", False))):
+            # 의도적으로 내려둔 상태 -- 되살리지 않는다.
+            self._history_watchdog_last = {"verdict": None, "action": None,
+                                           "checked_at": now.isoformat()}
+            return self._history_watchdog_last
+        if not self._within_history_watch_window(now):
+            self._history_watchdog_last = {"verdict": None, "action": "OUT_OF_SESSION",
+                                           "checked_at": now.isoformat()}
+            return self._history_watchdog_last
+
+        alive = md.history_updater_alive()
+        stale_age = md.history_stale_age_sec(now)
+        if not alive:
+            verdict = config.HISTORY_UPDATER_DEAD
+        elif stale_age is not None and stale_age > config.HISTORY_STALE_MAX_SEC:
+            verdict = config.HISTORY_UPDATER_ALIVE_BUT_STALE
+
+        if verdict is None:
+            # 정상 갱신 중 -- 아무 동작도 하지 않는다.
+            self._history_recover_streak = 0
+            self._history_watchdog_last = {"verdict": None, "action": None,
+                                           "checked_at": now.isoformat(),
+                                           "stale_age_sec": stale_age}
+            return self._history_watchdog_last
+
+        cooldown = (config.WORKER_AUTO_RECOVER_COOLDOWN_SEC
+                    if self._history_recover_streak < config.HISTORY_WATCHDOG_FAST_RETRY_LIMIT
+                    else config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC)
+        last = self._history_recover_attempt_at
+        if last is not None and (now - last).total_seconds() < cooldown:
+            action = "COOLDOWN"
+        else:
+            self._history_recover_attempt_at = now
+            self._history_recover_streak += 1
+            action = md.recover_history_updater(now=now)
+        self._history_watchdog_last = {
+            "verdict": verdict, "action": action, "checked_at": now.isoformat(),
+            "stale_age_sec": stale_age, "streak": self._history_recover_streak,
+        }
+        return self._history_watchdog_last
 
     def _auto_recover_worker(self, state) -> bool:
         """2026-08-04 fix: a fresh process (Render free-tier idle-sleep,
@@ -1352,6 +1448,14 @@ class Macd2Service:
     def get_snapshot(self) -> dict[str, Any]:
         state = state_store.load_state()
         state = self._persist_worker_stall_if_needed(state)
+        # history updater watchdog -- worker 루프 밖에서 도는 유일한 지점이다
+        # (2026-09-17). 정상일 때는 완전한 no-op 이고, 어떤 경우에도 예외를
+        # 위로 던지지 않는다: 진단 패널 한 칸 때문에 대시보드 전체가 죽으면
+        # 안 된다.
+        try:
+            history_watchdog = self._history_watchdog(state)
+        except Exception as exc:  # pragma: no cover - 방어용
+            history_watchdog = {"verdict": None, "action": f"WATCHDOG_ERROR: {exc}"[:200]}
         quotes: dict[str, Any] = {}
         if self._market_data is not None:
             for symbol in (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL):
@@ -1397,10 +1501,22 @@ class Macd2Service:
             "bootstrap_attempts": self._bootstrap_attempts,
             "bootstrap_last_attempt_at": self._last_bootstrap_at,
             "bootstrap_last_result": self._last_bootstrap_result,
+            # ── 데이터 수집 스레드 진단 (2026-09-17) ──────────────────────
+            # thread alive 와 data fresh 는 서로 다른 문제라 따로 노출한다 --
+            # 2026-09-16 은 정확히 "앞은 참인데 뒤가 거짓"인 경우였다.
+            "history_watchdog": history_watchdog,
+            # 진단 키는 있으면 붙이고 없으면 조용히 건너뛴다 -- quote_statuses/
+            # quote_status 가 이미 쓰는 것과 같은 방어 규약(테스트/구버전
+            # MarketData 더블이 이 메서드를 갖고 있지 않을 수 있다).
+            **_history_diag_of(self._market_data),
         }
 
     def supervisor_status(self) -> dict[str, Any]:
         state = self._persist_worker_stall_if_needed(state_store.load_state())
+        try:
+            self._history_watchdog(state)
+        except Exception:  # pragma: no cover - 방어용
+            pass
         stats = self._worker.tick_stats() if self._worker is not None else {}
         worker_alive = bool(self._worker and self._worker.is_alive())
         return {
@@ -1410,6 +1526,11 @@ class Macd2Service:
             "active_worker_count": 1 if worker_alive else 0,
             "quote_updater_alive": bool(self._market_data and self._market_data.quote_updater_alive()),
             "history_updater_alive": bool(self._market_data and self._market_data.history_updater_alive()),
+            # 진단 키는 있으면 붙이고 없으면 조용히 건너뛴다 -- quote_statuses/
+            # quote_status 가 이미 쓰는 것과 같은 방어 규약(테스트/구버전
+            # MarketData 더블이 이 메서드를 갖고 있지 않을 수 있다).
+            **_history_diag_of(self._market_data),
+            "history_watchdog": dict(self._history_watchdog_last),
             "bootstrap_attempts": self._bootstrap_attempts,
             "bootstrap_last_attempt_at": self._last_bootstrap_at,
             **stats,

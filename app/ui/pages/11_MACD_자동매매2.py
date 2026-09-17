@@ -1367,6 +1367,67 @@ w3.metric("웜업 완료", "YES" if state.warmup_ready else "NO")
 w4.metric("전략 상태", state.ui_mode.value)
 if state.order_block_reason:
     st.write(f"최근 block/skip 사유: `{state.order_block_reason}`")
+
+# ── 데이터 수집 스레드 진단 (2026-09-17, 2026-09-16 14:04 정지 사고) ──────────
+# 그날 UI 에는 "스레드가 살아 있다"는 것밖에 없었고, 정작 **1분봉이 더 이상
+# 들어오지 않는다**는 사실은 어디에도 표시되지 않았다. 둘은 서로 다른 문제라
+# 반드시 따로 보여준다: 왼쪽 = thread alive, 오른쪽 = data fresh.
+_h_alive = bool(snapshot.get("history_updater_alive"))
+_h_stale_age = snapshot.get("history_stale_age_sec")
+_h_success_at = snapshot.get("history_last_success_at")
+_h_err = snapshot.get("history_last_error")
+_h_fail_n = int(snapshot.get("history_consecutive_failures") or 0)
+_h_recov_n = int(snapshot.get("history_recovery_count") or 0)
+_h_wd = snapshot.get("history_watchdog") or {}
+try:
+    _h_success_display = (
+        datetime.fromisoformat(_h_success_at).astimezone(macd2_config.KST).strftime("%H:%M:%S")
+        if _h_success_at else "-"
+    )
+except ValueError:
+    _h_success_display = "-"
+_h_stale_display = f"{_h_stale_age:.0f}s" if isinstance(_h_stale_age, (int, float)) else "-"
+_h_data_stale = (
+    isinstance(_h_stale_age, (int, float))
+    and _h_stale_age > macd2_config.HISTORY_STALE_MAX_SEC
+)
+
+st.markdown("**데이터 수집 스레드 (thread alive ≠ data fresh)**")
+h1, h2, h3, h4 = st.columns(4)
+h1.metric(
+    "history thread", "ALIVE" if _h_alive else "DEAD",
+    delta=None if _h_alive else "DEAD", delta_color="inverse" if not _h_alive else "normal",
+)
+h2.metric(
+    "1분봉 최신 수신", _h_success_display,
+    delta="STALE" if _h_data_stale else None, delta_color="inverse" if _h_data_stale else "normal",
+)
+h3.metric("stale age", _h_stale_display)
+h4.metric("자동복구 횟수", _h_recov_n)
+h5, h6, h7 = st.columns(3)
+h5.metric("quote thread", "ALIVE" if snapshot.get("quote_updater_alive", quote_status != "DEAD") else "DEAD")
+h6.metric("연속 fetch 실패", _h_fail_n)
+h7.metric("watchdog 판정", str(_h_wd.get("verdict") or "-"))
+if _h_err:
+    st.warning(f"history updater 마지막 오류: `{_h_err}`")
+if _h_wd.get("action") == macd2_config.HISTORY_UPDATER_RECOVERY_BLOCKED:
+    st.error(
+        "**history updater 복구가 막혔습니다** "
+        f"(`{macd2_config.HISTORY_UPDATER_RECOVERY_BLOCKED}`) — 기존 수집 스레드의 "
+        "종료가 확인되지 않아 새 스레드를 올리지 않았습니다(중복 방지). "
+        "1분봉이 낡은 동안 **신규 진입은 계속 차단**되며, 기존 포지션의 손절/"
+        "강제청산 경로는 그대로 동작합니다. 복구되지 않으면 프로세스를 재시작하세요."
+    )
+elif _h_wd.get("action") == macd2_config.HISTORY_UPDATER_START_FAILED:
+    st.error(
+        "**history updater 재기동에 실패했습니다** "
+        f"(`{macd2_config.HISTORY_UPDATER_START_FAILED}`) — 신규 진입은 계속 차단됩니다."
+    )
+elif _h_data_stale or not _h_alive:
+    st.warning(
+        f"1분봉 수집이 정체/중단 상태입니다 (watchdog: `{_h_wd.get('verdict') or '-'}` / "
+        f"`{_h_wd.get('action') or '-'}`). 신규 진입은 차단되고 기존 포지션 안전로직은 유지됩니다."
+    )
 # 2026-08-21 fix: order_block_reason이 POSITION_DATA_ERROR/POSITION_MISMATCH일
 # 때 실제 원인(KIS 예외/응답 msg1 등)이 position_reconcile_diag에 이미 저장돼
 # 있는데도 화면 어디에도 노출되지 않아, "position data error"라는 코드값만

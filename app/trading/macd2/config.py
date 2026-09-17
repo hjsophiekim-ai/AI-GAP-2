@@ -309,6 +309,38 @@ QUOTE_HISTORY_PRICE_RATIO_MAX = 2.0
 # 않는 상태) 시각 불일치로 간주한다.
 HISTORY_STALE_MAX_SEC = 180.0
 
+# ── history updater watchdog (2026-09-17, 2026-09-16 실사고) ─────────────────
+# 14:04 이후 1분봉이 더 이상 갱신되지 않았는데 죽음/정체를 감지하는 장치가 하나도
+# 없어 프로세스 재시작 전까지 복구되지 않았다. `service._history_watchdog` 가
+# **worker 루프 밖**(UI 스냅샷 경로)에서 돌며 두 가지를 본다:
+#   DEAD            : history updater thread 가 죽어 있다
+#   ALIVE_BUT_STALE : thread 는 살아 있는데 새 봉이 HISTORY_STALE_MAX_SEC(180초)
+#                     이상 들어오지 않았다
+# 판정 임계값은 **새로 만들지 않고 위 HISTORY_STALE_MAX_SEC 를 그대로 재사용**
+# 한다 -- 이미 그 값으로 신규진입을 차단하고 있으므로(worker.py 의
+# quote_history_mismatch_reason) 두 곳의 정의가 어긋나지 않는다.
+#
+# 복구 범위는 **1분봉 수집 스레드의 stop/start 뿐**이다. 자동매매 worker 재시작,
+# 주문 실행/복원, 전략 state 변경은 하지 않는다 -- 데이터 수집 복구와 REAL
+# 자동매매 재개는 분리한다(2026-09-17 사용자 결정). 그래서 MOCK 전용인
+# `_auto_recover_worker` 와 달리 REAL 에서도 동작한다.
+#
+# 재시도 쿨다운은 새 상수를 만들지 않고 기존 WORKER_AUTO_RECOVER_COOLDOWN_SEC
+# (30초)를 재사용한다.
+HISTORY_UPDATER_RECOVERED = "HISTORY_UPDATER_RECOVERED"
+HISTORY_UPDATER_RECOVERY_BLOCKED = "HISTORY_UPDATER_RECOVERY_BLOCKED"
+HISTORY_UPDATER_START_FAILED = "HISTORY_UPDATER_START_FAILED"
+HISTORY_UPDATER_DEAD = "HISTORY_UPDATER_DEAD"
+HISTORY_UPDATER_ALIVE_BUT_STALE = "HISTORY_UPDATER_ALIVE_BUT_STALE"
+#: 장 시작 직후 updater 가 아직 첫 봉을 받지 못한 구간에서의 오탐 방지 --
+#: worker._within_open_grace_window 와 같은 60초를 쓴다.
+HISTORY_WATCHDOG_OPEN_GRACE_SEC = 60.0
+#: 연속 복구 폭주 방지 -- 이 횟수까지는 WORKER_AUTO_RECOVER_COOLDOWN_SEC(30초)
+#: 간격으로 빠르게 재시도하고, 그 뒤로는 QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC
+#: (300초) 간격으로 늦춘다. 포기하지는 않는다(장시간 외부장애 뒤 스스로 돌아올
+#: 수 있어야 하므로). 재시도 "간격"을 정하는 값이지 stale 판정과는 무관하다.
+HISTORY_WATCHDOG_FAST_RETRY_LIMIT = 3
+
 # 전일 warm-up 조회(주식일별분봉조회) 중 KIS 서버 일시 오류(500 등)를 "해당
 # 날짜에 데이터 없음(휴장일)"으로 오인해 더 이전 날짜로 잘못 넘어가면 EMA
 # seed가 실제 KIS 차트와 달라진다 (2026-07-27 3플래그 재현 검증에서 발견 —

@@ -264,6 +264,22 @@ class MarketDataService:
         self._quote_updater_stop = threading.Event()
         self._history_updater_thread: Optional[threading.Thread] = None
         self._history_updater_stop = threading.Event()
+        # ── history updater 진단 (2026-09-17 watchdog) ────────────────────
+        # 지금까지 이 스레드는 `except Exception: pass` 로 전부 삼켜서
+        # "살아서 성공 중"과 "살아서 계속 실패 중"을 구분할 방법이 아예
+        # 없었다(2026-09-16 14:04 정지 사고). 거래 경로에는 여전히 예외를
+        # 던지지 않되, 진단은 반드시 남긴다. 전부 관측 전용 -- 어떤 값도
+        # 주문/플래그/전략 판정에 쓰이지 않는다.
+        self._history_diag_lock = threading.Lock()
+        self._history_last_attempt_at: Optional[datetime] = None
+        self._history_last_success_at: Optional[datetime] = None
+        self._history_newest_bar_at: Optional[datetime] = None
+        self._history_last_error: Optional[str] = None
+        self._history_consecutive_failures: int = 0
+        self._history_recovery_count: int = 0
+        self._history_last_recovered_at: Optional[datetime] = None
+        self._history_last_recovery_result: Optional[str] = None
+        self._history_recovery_lock = threading.Lock()
         self._last_bootstrap_diag: dict[str, Any] = {}
         self._quote_normalization_diag: dict[str, Any] = {}
 
@@ -843,6 +859,7 @@ class MarketDataService:
         now = now or datetime.now(KST)
         with self._history_fetch_lock:
             live_df, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, 10, "")
+        self._note_history_cycle(live_df, _diag, now)
         with self._history_lock:
             base = self._df_1m
             if live_df.empty:
@@ -1036,8 +1053,10 @@ class MarketDataService:
             while not stop_event.is_set():
                 try:
                     self.merge_incremental_1m()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # 거래 경로로는 여전히 아무것도 던지지 않는다. 다만 예전처럼
+                    # 통째로 삼키지 않고 진단만 남긴다(2026-09-17).
+                    self._note_history_exception(exc)
                 stop_event.wait(interval_sec)
 
         self._history_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-history-updater")
@@ -1058,6 +1077,135 @@ class MarketDataService:
 
     def history_updater_alive(self) -> bool:
         return bool(self._history_updater_thread and self._history_updater_thread.is_alive())
+
+    # ── history updater 진단 / 자동복구 (2026-09-17) ───────────────────────
+    #
+    # 2026-09-16 실사고: 14:04 이후 1분봉이 더 이상 갱신되지 않았는데 죽음/
+    # 정체를 감지하는 장치가 하나도 없어 프로세스를 재시작하기 전까지 복구되지
+    # 않았다. 아래는 전부 **관측 + 스레드 수명 관리**만 한다 -- 주문도, 전략
+    # state 도, 플래그 판정도 건드리지 않는다.
+    #
+    # "살아있음(thread alive)"과 "데이터가 최신임(data fresh)"은 서로 다른
+    # 문제라 반드시 따로 기록한다. 예전에는 앞의 것만 있었고, 2026-09-16 은
+    # 정확히 "앞은 참인데 뒤가 거짓"인 경우였다.
+
+    def _note_history_cycle(self, live_df, diag: dict, now: datetime) -> None:
+        """``merge_incremental_1m`` 의 매 fetch 결과를 기록한다(관측 전용).
+
+        ``history_last_success_at`` 은 "호출이 예외 없이 끝난 시각"이 아니라
+        **새 봉이 실제로 들어온 시각**이다. KIS 가 오류 없이 빈 페이지를
+        돌려주는 경우가 곧 alive-but-stale 이므로, 그걸 성공으로 세면 감시가
+        무의미해진다."""
+        newest = None
+        try:
+            if live_df is not None and not live_df.empty and "datetime" in live_df.columns:
+                newest = pd.Timestamp(live_df["datetime"].max()).to_pydatetime()
+        except Exception:
+            newest = None
+        error = (diag or {}).get("error")
+        with self._history_diag_lock:
+            self._history_last_attempt_at = now
+            if error:
+                self._history_last_error = str(error)[:300]
+                self._history_consecutive_failures += 1
+            else:
+                self._history_last_error = None
+                self._history_consecutive_failures = 0
+            if newest is not None and (
+                self._history_newest_bar_at is None or newest > self._history_newest_bar_at
+            ):
+                self._history_newest_bar_at = newest
+                self._history_last_success_at = now
+
+    def _note_history_exception(self, exc: BaseException) -> None:
+        with self._history_diag_lock:
+            self._history_last_error = f"{type(exc).__name__}: {exc}"[:300]
+            self._history_consecutive_failures += 1
+
+    def history_last_success_at(self) -> Optional[datetime]:
+        with self._history_diag_lock:
+            return self._history_last_success_at
+
+    def history_stale_age_sec(self, now: Optional[datetime] = None) -> Optional[float]:
+        """마지막으로 **새 봉이 들어온 뒤** 흐른 초. 한 번도 성공한 적이 없으면
+        복구 시각(있으면)을, 그것도 없으면 ``None`` 을 기준으로 한다 --
+        갓 시작한 updater 를 곧바로 STALE 로 몰지 않기 위해서다."""
+        now = now or datetime.now(KST)
+        with self._history_diag_lock:
+            base = self._history_last_success_at
+            recovered = self._history_last_recovered_at
+        if recovered is not None and (base is None or recovered > base):
+            base = recovered
+        if base is None:
+            return None
+        return (now - base).total_seconds()
+
+    def history_diag(self, now: Optional[datetime] = None) -> dict[str, Any]:
+        """UI 운영진단 / watchdog 공용 스냅샷. 순수 읽기."""
+        now = now or datetime.now(KST)
+        with self._history_diag_lock:
+            payload = {
+                "history_updater_alive": bool(
+                    self._history_updater_thread and self._history_updater_thread.is_alive()),
+                "history_last_attempt_at": (
+                    self._history_last_attempt_at.isoformat() if self._history_last_attempt_at else None),
+                "history_last_success_at": (
+                    self._history_last_success_at.isoformat() if self._history_last_success_at else None),
+                "history_newest_bar_at": (
+                    self._history_newest_bar_at.isoformat() if self._history_newest_bar_at else None),
+                "history_last_error": self._history_last_error,
+                "history_consecutive_failures": int(self._history_consecutive_failures),
+                "history_recovery_count": int(self._history_recovery_count),
+                "history_last_recovered_at": (
+                    self._history_last_recovered_at.isoformat() if self._history_last_recovered_at else None),
+                "history_last_recovery_result": self._history_last_recovery_result,
+            }
+        payload["history_stale_age_sec"] = self.history_stale_age_sec(now)
+        return payload
+
+    def recover_history_updater(
+        self, *, interval_sec: float = config.WORKER_INTERVAL_SEC,
+        join_timeout: float = 2.0, now: Optional[datetime] = None,
+    ) -> str:
+        """기존 updater 를 안전하게 내리고 **정확히 하나만** 다시 올린다.
+
+        반환값:
+          ``HISTORY_UPDATER_RECOVERED``      정상 재기동
+          ``HISTORY_UPDATER_RECOVERY_BLOCKED`` 기존 스레드 종료 미확인 --
+              새 스레드를 억지로 추가하지 않는다(중복 updater 절대 금지)
+          ``HISTORY_UPDATER_START_FAILED``   내리는 데는 성공했으나 기동 실패
+
+        주문/워커/전략 state 는 일절 건드리지 않는다. 이 함수가 하는 일은
+        1분봉 수집 스레드의 수명 관리뿐이다."""
+        now = now or datetime.now(KST)
+        with self._history_recovery_lock:
+            stopped = self.stop_history_updater(join_timeout=join_timeout)
+            if not stopped:
+                # 기존 스레드가 아직 살아 있다 -- start_history_updater 는 이
+                # 경우 no-op 이지만, 그 사실에 기대지 않고 여기서 명시적으로
+                # 멈춘다. 신규진입 차단은 기존 HISTORY_STALE 게이트가 계속
+                # 유지하므로 데이터가 낡은 채로 주문이 나갈 일은 없다.
+                with self._history_diag_lock:
+                    self._history_last_recovery_result = config.HISTORY_UPDATER_RECOVERY_BLOCKED
+                return config.HISTORY_UPDATER_RECOVERY_BLOCKED
+            self.start_history_updater(interval_sec=interval_sec)
+            alive = self.history_updater_alive()
+            result = (config.HISTORY_UPDATER_RECOVERED if alive
+                      else config.HISTORY_UPDATER_START_FAILED)
+            with self._history_diag_lock:
+                self._history_last_recovery_result = result
+                if alive:
+                    self._history_recovery_count += 1
+                    self._history_last_recovered_at = now
+            return result
+
+    def live_history_updater_count(self) -> int:
+        """진단/테스트용 -- 실제로 살아 있는 history updater 스레드 수.
+        1 을 넘으면 중복이다(절대 일어나선 안 된다)."""
+        return sum(
+            1 for t in threading.enumerate()
+            if t.name == "macd2-history-updater" and t.is_alive()
+        )
 
 
 def filter_complete_3m_bars(
