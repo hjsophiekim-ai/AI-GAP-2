@@ -478,3 +478,32 @@ def test_hold_never_opens_the_opposite_position(tw2_3slot_market_data, monkeypat
     assert int(state.tw2_3slot_slots_used_today or 0) == slots_before, (
         "HOLD 는 슬롯을 소비하지 않는다"
     )
+
+
+# ── 재시작: H50 HOLD + arm 된 watch 가 함께 복원된다 ───────────────────────
+
+def test_hold_and_armed_watch_survive_a_state_roundtrip(tw2_3slot_market_data, monkeypatch):
+    """장중 재시작 시나리오: HOLD 와 watch 는 **서로 다른 state 필드 묶음**이라
+    한쪽만 살아남으면 재시작 후 HOLD 는 계속되는데 재확인기는 사라진다(= 사고
+    당시 상태로 되돌아간다). 두 묶음이 같이 직렬화/복원되는지 고정한다."""
+    svc, now0 = tw2_3slot_market_data
+    state = _h50_state()
+    broker = _broker()
+    _seed_inverse_position(state, broker, now0, mode=tw3.MODE_X2LITE_H50_3SLOT)
+    _patch_common_3slot(monkeypatch, entry_decision=_approved_3slot(),
+                        quality_decision=_quality_3slot(True, 5), teg_decision=_teg_3slot(True))
+    _patch_h50(monkeypatch, hold=_hold(True))
+    _canned_watch(monkeypatch, [_WATCH_HOLD])
+    _prime_3slot_pending(state, Direction.UP_RED, before=now0 - timedelta(minutes=6))
+    run_once(broker=broker, market_data=svc, state=state, now=now0)
+
+    state_store.save_state(state)
+    restored = state_store.load_state()
+
+    assert restored.h50_hold_active is True
+    assert restored.h50_original_direction == state.h50_original_direction
+    assert restored.h50_hold_started_at == state.h50_hold_started_at
+    assert restored.whipsaw_watch_active is True
+    assert restored.whipsaw_watch_direction == Direction.UP_RED
+    assert restored.whipsaw_watch_last_gap == state.whipsaw_watch_last_gap
+    assert restored.whipsaw_watch_last_checked_bar_ts == state.whipsaw_watch_last_checked_bar_ts
