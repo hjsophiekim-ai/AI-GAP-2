@@ -199,4 +199,6 @@ def test_residual_cleanup_merges_into_the_main_exit_leg_2026_09_01(ui_page):
     expected_avg_price = (809 * 15_200.0 + 1 * 15_180.0) / 810
     assert float(row["체결가(수량가중평균)"].replace(",", "")) == pytest.approx(expected_avg_price, abs=0.5)
     assert row["총 순이익"] == "901,100원"
-    assert row["총 수수료"] == "1,502원"
+    # 2026-09-18: 경계일 이전 행이라 옛 추정요율 표시(LEGACY_FEE_MARK)가 붙는다 —
+    # 금액 자체는 원장에 저장된 그대로다(과거 행은 재작성하지 않는다).
+    assert row["총 수수료"] == f"1,502원{ui_page.LEGACY_FEE_MARK}"

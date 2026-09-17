@@ -505,14 +505,24 @@ def append_reconcile_backfill_buy(
     unknown and never fabricated: ``timestamp`` is the reconcile discovery
     moment (``reconciled_at``), not an estimated fill time, and every row
     this writes carries ``source="RECONCILE_BACKFILL"`` so it is always
-    distinguishable from a real _record_leg row. gross_pnl/fee/slippage/
-    net_pnl are all 0.0 -- the entry-side fee is likewise unconfirmable from
-    reconcile data alone, so it is never estimated either; this row is
-    purely a visibility/audit record of the missing BUY, contributes
-    nothing to any PnL/cost total, and cannot double-count with the SELL
-    leg's own (already complete) PnL once this position is later closed via
-    the normal execute_exit -> _record_leg path (entirely unaffected by
-    this function).
+    distinguishable from a real _record_leg row. gross_pnl/slippage/net_pnl
+    stay 0.0 -- this row is purely a visibility/audit record of the missing
+    BUY, contributes nothing to any PnL total, and cannot double-count with
+    the SELL leg's own (already complete) PnL once this position is later
+    closed via the normal execute_exit -> _record_leg path (entirely
+    unaffected by this function).
+
+    ``fee`` was 0.0 too until 2026-09-18, on the grounds that the entry-side
+    fee was unconfirmable. It isn't: quantity and avg_price here are exactly
+    what reconcile just read back from the broker, so the leg amount is
+    known and KIS charged a real fee on it. Leaving it at 0.0 made
+    ``summarize_daily_trading``'s total_cost (a plain sum of the fee column)
+    understate the account's real cost whenever a position came in through
+    this path. It now carries the same realized cost every other leg does
+    (``TradeCostEngine.realized_leg_fee`` -- KIS-reported cost first, the
+    KIS-measured realized rate otherwise), which keeps the daily fee total
+    equal to KIS's own. gross_pnl/net_pnl stay 0.0, so the no-double-count
+    property above is unchanged.
 
     Idempotent by construction: order_id is derived from symbol/quantity/
     avg_price only, never from a timestamp -- so reconciling the exact same
@@ -531,13 +541,16 @@ def append_reconcile_backfill_buy(
         )
     else:
         order_id = f"RECONCILE_BACKFILL_{symbol}_{int(quantity)}_{round(float(avg_price), 4)}"
+    from app.trading.trading_cost_engine import TradeCostEngine
+
+    fee = TradeCostEngine().realized_leg_fee(float(avg_price) * int(quantity))
     return append_execution({
         "order_id": order_id, "signal_id": signal_id, "timestamp": reconciled_at,
         "mode": mode, "symbol": symbol, "side": "BUY",
         "requested_qty": quantity, "executed_qty": quantity,
         "requested_price": avg_price, "executed_price": avg_price,
         "position_before": int(position_before), "position_after": after_qty,
-        "gross_pnl": 0.0, "fee": 0.0, "slippage": 0.0, "net_pnl": 0.0,
+        "gross_pnl": 0.0, "fee": fee, "slippage": 0.0, "net_pnl": 0.0,
         "exit_reason": "", "broker_response": "", "source": "RECONCILE_BACKFILL",
     })
 
@@ -846,9 +859,13 @@ def append_broker_direct_execution(order_result: Any, broker: Any = None) -> boo
 
     fee = ""
     if price > 0 and qty > 0 and side in ("BUY", "SELL"):
+        from app.trading.kis_realized import kis_reported_leg_cost
         from app.trading.trading_cost_engine import TradeCostEngine
 
-        fee = round(TradeCostEngine().compute_trade_cost(symbol, side, price, qty, order_type="market")["fee"], 2)
+        # 2026-09-18: 실현비용 경로이므로 전략 판정용 요율을 쓰지 않는다
+        # (매수/매도 동일 우선순위 -- KIS 실측 제비용 > realized_fee_rate).
+        fee = TradeCostEngine().realized_leg_fee(
+            price * qty, fee_override=kis_reported_leg_cost(raw))
 
     status = _upsert_broker_direct_execution({
         "order_id": order_id,
@@ -1023,9 +1040,15 @@ def append_broker_direct_fill(fill: dict[str, Any], *, mode: str) -> bool:
     )
     fee = ""
     if price > 0 and qty > 0 and side in ("BUY", "SELL"):
+        from app.trading.kis_realized import kis_reported_leg_cost
         from app.trading.trading_cost_engine import TradeCostEngine
 
-        fee = round(TradeCostEngine().compute_trade_cost(symbol, side, price, qty, order_type="market")["fee"], 2)
+        # 2026-09-18: 실현비용 경로 -- 전략 판정용 요율 금지(위와 동일).
+        # 체결금액은 KIS 가 준 tot_ccld_amt 가 있으면 그것이 우선이다
+        # (부분체결이 섞이면 단가 x 수량과 어긋난다).
+        amount = _float(fill.get("amount"), 0.0) or (price * qty)
+        fee = TradeCostEngine().realized_leg_fee(
+            amount, fee_override=kis_reported_leg_cost(fill))
     status = _upsert_broker_direct_execution({
         "order_id": order_id,
         "signal_id": "BROKER_DIRECT",

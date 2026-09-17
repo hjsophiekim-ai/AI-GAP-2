@@ -113,8 +113,15 @@ hynix_auto_trade:
 
 trading_cost:
   # 한국투자증권(KIS) 실거래 기준 수수료/거래세/슬리피지 — 하드코딩 금지, 이 설정을
-  # 통해서만 읽는다(docs/requirements.md 섹션 2). 예시값이며 실제 KIS 고시 요율로
-  # 운영 전 재확인이 필요하다.
+  # 통해서만 읽는다(docs/requirements.md 섹션 2).
+  #
+  # ── 수수료율이 두 개인 것은 의도적이다 (2026-09-17/18) ──────────────────
+  # 아래 *_fee_rate (0.015%)  : **전략 판정용**. worker._net_return_pct 를 거쳐
+  #   손절/익절 판정선과 모든 백테스트에 들어가 있다. 재백테스트 없이 바꾸면
+  #   실거래 청산 시점이 달라지므로 별도 브랜치에서만 건드린다.
+  # realized_fee_rate (0.0036396%) : **이미 체결된 거래의 기록용**. 거래원장
+  #   fee 컬럼 / 일일 집계 총비용 / 실현손익이 이것만 쓴다(KIS 가 실제 제비용을
+  #   알려주면 그 값이 우선). 2026-09-17 실계좌 실측값이다.
   domestic_buy_fee_rate: 0.00015       # 일반주식(000660) 매수수수료율
   domestic_sell_fee_rate: 0.00015      # 일반주식 매도수수료율
   etf_buy_fee_rate: 0.00015            # ETF/ETN(0197X0) 매수수수료율
@@ -126,6 +133,7 @@ trading_cost:
   slippage_rate_market_order: 0.0003   # 시장가 슬리피지(더 크게)
   slippage_rate_limit_order: 0.0001    # 지정가 슬리피지(더 작게)
   min_commission_krw: 0.0              # 최소수수료(있는 경우)
+  realized_fee_rate: 0.000036396       # 실현손익/원장 기록 전용 — KIS 실측(위 주석)
 
 volume_spike:
   enabled: true
