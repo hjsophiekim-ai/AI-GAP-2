@@ -74,8 +74,9 @@ def is_active(state) -> bool:
     않았다."""
     if not bool(getattr(config, "X2LITE_SIZING_ENABLED", True)):
         return False
+    # 2026-09-20: N1 은 W1a 사이징을 X2-lite 계열과 100% 같이 쓴다(연구사양).
     return (time_window_3slot.active_3slot_mode(state)
-            in time_window_3slot.MODES_X2LITE_FAMILY)
+            in time_window_3slot.MODES_W1A_FAMILY)
 
 
 def first_trade_stop_loss_active(state) -> bool:

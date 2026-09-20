@@ -463,6 +463,10 @@ def evaluate_time_window_entry_immediate(
     morning_entry_count: int = 0,
     afternoon_entry_count: int = 0,
     daily_entry_count: Optional[int] = None,
+    # 2026-09-20 (N1): 창별 quality 기준점수 override. 기본 None 이라 기존
+    # 호출부는 config.QUALITY_SCORE_THRESHOLD(4) 를 그대로 써서 동작이 조금도
+    # 바뀌지 않는다. N1 만 tw3.quality_score_threshold(mode)=3 을 넘긴다.
+    quality_threshold_override: Optional[float] = None,
 ) -> MajorFlagDecision:
     """evaluate_time_window_entry()의 즉시진입 버전 — flag가 확정된 bar T
     자신에서 바로 order 권한을 판단한다(T+3 재확인 대기 없음). ``bars_3m``는
@@ -568,7 +572,9 @@ def evaluate_time_window_entry_immediate(
                 metrics=base_metrics,
             )
     elif window == WINDOW_MORNING_3:
-        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        required_score = (float(config.QUALITY_SCORE_THRESHOLD)
+                          if quality_threshold_override is None
+                          else float(quality_threshold_override))
         if quality_score < required_score:
             return _reject(
                 decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
@@ -576,7 +582,9 @@ def evaluate_time_window_entry_immediate(
                 score=quality_score, required_score=required_score, metrics=base_metrics,
             )
     elif window == WINDOW_AFTERNOON_1:
-        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        required_score = (float(config.QUALITY_SCORE_THRESHOLD)
+                          if quality_threshold_override is None
+                          else float(quality_threshold_override))
         if quality_score < required_score:
             return _reject(
                 decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
@@ -584,7 +592,9 @@ def evaluate_time_window_entry_immediate(
                 score=quality_score, required_score=required_score, metrics=base_metrics,
             )
     elif window == WINDOW_NO_NEW_ENTRY:
-        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        required_score = (float(config.QUALITY_SCORE_THRESHOLD)
+                          if quality_threshold_override is None
+                          else float(quality_threshold_override))
         if quality_score < required_score:
             return _reject(
                 decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
@@ -657,6 +667,10 @@ def evaluate_time_window_entry(
     morning_entry_count: int = 0,
     afternoon_entry_count: int = 0,
     daily_entry_count: Optional[int] = None,
+    # 2026-09-20 (N1): 창별 quality 기준점수 override. 기본 None 이라 기존
+    # 호출부는 config.QUALITY_SCORE_THRESHOLD(4) 를 그대로 써서 동작이 조금도
+    # 바뀌지 않는다. N1 만 tw3.quality_score_threshold(mode)=3 을 넘긴다.
+    quality_threshold_override: Optional[float] = None,
 ) -> MajorFlagDecision:
     """Single order-authority decision for the "시간대별 최적거래 필터"
     (§1-10, §15). ``bars_3m`` must be truncated at/through the T+3
@@ -793,7 +807,9 @@ def evaluate_time_window_entry(
                 metrics=base_metrics,
             )
     elif window == WINDOW_MORNING_3:
-        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        required_score = (float(config.QUALITY_SCORE_THRESHOLD)
+                          if quality_threshold_override is None
+                          else float(quality_threshold_override))
         if quality_score < required_score:
             return _reject(
                 decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
@@ -801,7 +817,9 @@ def evaluate_time_window_entry(
                 score=quality_score, required_score=required_score, metrics=base_metrics,
             )
     elif window == WINDOW_AFTERNOON_1:
-        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        required_score = (float(config.QUALITY_SCORE_THRESHOLD)
+                          if quality_threshold_override is None
+                          else float(quality_threshold_override))
         if quality_score < required_score:
             return _reject(
                 decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,
@@ -811,7 +829,9 @@ def evaluate_time_window_entry(
     elif window == WINDOW_NO_NEW_ENTRY:
         # Only reachable when TW_ALLOW_ENTRY_1050_1300 is True (opt-in
         # relaxation, §7 spec default keeps this window closed entirely).
-        required_score = float(config.QUALITY_SCORE_THRESHOLD)
+        required_score = (float(config.QUALITY_SCORE_THRESHOLD)
+                          if quality_threshold_override is None
+                          else float(quality_threshold_override))
         if quality_score < required_score:
             return _reject(
                 decision=config.TW_REJECT_LOW_QUALITY_SCORE, block_reason=config.TW_REJECT_LOW_QUALITY_SCORE,

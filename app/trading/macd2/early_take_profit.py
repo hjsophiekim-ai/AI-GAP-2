@@ -233,7 +233,9 @@ def is_enabled(state) -> bool:
     토글을 아예 참조하지 않고 항상 활성이다. 중복 적용은 구조적으로 불가능하다 —
     worker 의 조기익절 평가 지점은 하나뿐이고, 이 함수가 True 를 한 번만
     돌려주며, 임계값은 ``thresholds()`` 가 모드에 따라 한 쌍만 고른다."""
-    if time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_X2LITE_FAMILY:
+    # 2026-09-20: N1 도 X2-lite 와 같이 조기익절을 **전략 사양의 일부**로
+    # 내장한다(임계값만 thresholds() 에서 갈린다).
+    if time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_W1A_FAMILY:
         return True
     return bool(
         getattr(state, "early_tp_filter_enabled", False)
@@ -246,7 +248,14 @@ def thresholds(state) -> tuple[float, float]:
 
     X2-lite 만 자기 값(1.5 / 1.0)을 쓰고, 나머지 전부는 기존 config.EARLY_TP_*
     (1.5 / 0.8) 그대로다 — 기존 동작 불변."""
-    if time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_X2LITE_FAMILY:
+    _mode = time_window_3slot.active_3slot_mode(state)
+    if _mode in time_window_3slot.MODES_N1_FAMILY:
+        # 2026-09-20 (N1): 연구사양이 config.EARLY_TP_* (1.5/0.8) 였다 —
+        # X2-lite 의 1.5/1.0 과 floor 가 다르다. 연구 앵커 재현을 위해 N1
+        # 전용 상수로 고정한다(N1_SPEC.md 3-1 참고).
+        return (float(config.N1_EARLY_TP_TRIGGER_PCT),
+                float(config.N1_EARLY_TP_FLOOR_PCT))
+    if _mode in time_window_3slot.MODES_X2LITE_FAMILY:
         return (float(config.X2LITE_EARLY_TP_TRIGGER_PCT),
                 float(config.X2LITE_EARLY_TP_FLOOR_PCT))
     return (float(config.EARLY_TP_TRIGGER_PCT), float(config.EARLY_TP_FLOOR_PCT))

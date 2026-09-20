@@ -89,8 +89,12 @@ def is_active(state) -> bool:
     무필터 / MU_MACD)에서는 False 이므로 동작이 조금도 바뀌지 않는다."""
     if not bool(getattr(config, "H50_ENABLED", True)):
         return False
+    # 2026-09-20: N1 은 H50 의 HOLD 로직·상수를 **그대로** 쓴다(연구사양).
+    # 두 모드는 상호배타라 동시에 살아 있을 수 없으므로 h50_* state 를 공유해도
+    # 섞이지 않는다 -- 이 함수는 "현재 active 모드" 로만 판정한다. 즉
+    # time_window_h50_filter_enabled 토글 ON/OFF 는 N1 동작을 바꾸지 않는다.
     return (time_window_3slot.active_3slot_mode(state)
-            == time_window_3slot.MODE_X2LITE_H50_3SLOT)
+            in (time_window_3slot.MODE_X2LITE_H50_3SLOT,) + time_window_3slot.MODES_N1_FAMILY)
 
 
 # ── 지표 (production 함수 재사용, 새 지표식 없음) ──────────────────────────

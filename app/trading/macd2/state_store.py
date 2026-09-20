@@ -87,8 +87,24 @@ def default_state() -> RuntimeState:
     state.h50_trend_break_count = 0
     state.h50_last_checked_bar_ts = None
     state.h50_last_hold_range_pct = None
+    # N1 (2026-09-20): 토글은 전략 선택이므로 건드리지 않고, adaptive 캐시만
+    # 되돌린다(n1_adaptive.clear 과 동일).
+    state.time_window_n1_filter_enabled = bool(getattr(config, "N1_3SLOT_FILTER_DEFAULT", False))
+    state.time_window_n1_filter_version = config.N1_3SLOT_FILTER_VERSION
+    state.n1_last_eval_bar_ts = None
+    state.n1_regime_state = None
+    state.n1_effective_tp2 = None
+    state.n1_effective_tp1 = None
+    state.n1_effective_tp1_ratio = None
     state.early_tp_filter_enabled = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
     state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
+    # C1 Peak Protection (2026-09-19) — 토글은 사용자 설정이므로 여기서
+    # 건드리지 않는다. 보유기간 상태만 되돌린다(peak_protection.clear 과 동일).
+    state.c1_armed = False
+    state.c1_armed_at = None
+    state.c1_peak_net_return = 0.0
+    state.c1_last_checked_bar_ts = None
+    state.c1_triggered_at = None
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
     state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
@@ -408,7 +424,27 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "h50_trend_break_count": int(state.h50_trend_break_count or 0),
         "h50_last_checked_bar_ts": state.h50_last_checked_bar_ts,
         "h50_last_hold_range_pct": state.h50_last_hold_range_pct,
+        "time_window_n1_filter_enabled": bool(state.time_window_n1_filter_enabled),
+        "time_window_n1_filter_enabled_at": state.time_window_n1_filter_enabled_at,
+        "time_window_n1_filter_enabled_by": state.time_window_n1_filter_enabled_by,
+        "time_window_n1_filter_version": (state.time_window_n1_filter_version
+                                          or config.N1_3SLOT_FILTER_VERSION),
+        "n1_last_eval_bar_ts": state.n1_last_eval_bar_ts,
+        "n1_regime_state": state.n1_regime_state,
+        "n1_effective_tp2": state.n1_effective_tp2,
+        "n1_effective_tp1": state.n1_effective_tp1,
+        "n1_effective_tp1_ratio": state.n1_effective_tp1_ratio,
         # 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03)
+        "c1_peak_protection_enabled": bool(state.c1_peak_protection_enabled),
+        "c1_peak_protection_enabled_at": state.c1_peak_protection_enabled_at,
+        "c1_peak_protection_enabled_by": state.c1_peak_protection_enabled_by,
+        "c1_peak_protection_version": (state.c1_peak_protection_version
+                                       or config.C1_FILTER_VERSION),
+        "c1_armed": bool(state.c1_armed),
+        "c1_armed_at": state.c1_armed_at,
+        "c1_peak_net_return": float(state.c1_peak_net_return or 0.0),
+        "c1_last_checked_bar_ts": state.c1_last_checked_bar_ts,
+        "c1_triggered_at": state.c1_triggered_at,
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
         "early_tp_filter_enabled_by": state.early_tp_filter_enabled_by,
@@ -587,6 +623,19 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     if _stored_h50_ver and _stored_h50_ver != config.H50_3SLOT_FILTER_VERSION:
         time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
         time_window_h50_filter_enabled = h50_enabled_default
+    # ── N1 (2026-09-20) ──────────────────────────────────────────────
+    # 하위호환: N1 키가 없는 과거 state 는 전부 config 기본값(OFF)으로 떨어진다.
+    # H50 식 ADOPT_ON_MIGRATION 인수인계 규칙을 **두지 않았다** — 마이그레이션
+    # 이나 재시작으로 N1 이 저절로 켜지지 않는다. 버전이 바뀌면 기존 필터들과
+    # 같은 규약으로 기본값(OFF)으로 되돌린다.
+    n1_enabled_default = bool(getattr(config, "N1_3SLOT_FILTER_DEFAULT", False))
+    _stored_n1_ver = str(raw.get("time_window_n1_filter_version") or "")
+    time_window_n1_filter_version = _stored_n1_ver or config.N1_3SLOT_FILTER_VERSION
+    time_window_n1_filter_enabled = bool(raw.get("time_window_n1_filter_enabled", n1_enabled_default))
+    if _stored_n1_ver and _stored_n1_ver != config.N1_3SLOT_FILTER_VERSION:
+        time_window_n1_filter_version = config.N1_3SLOT_FILTER_VERSION
+        time_window_n1_filter_enabled = n1_enabled_default
+
     # ── H50 일회성 채택 인수인계 (2026-09-16) ─────────────────────────
     # H50 을 기본 전략으로 올리면서, 이미 돌고 있는 인스턴스의 state.json 을
     # **한 번만** 넘겨받는다. X2-lite 식 "키가 없을 때만" 조건에 더해 "저장된
@@ -625,6 +674,14 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         or time_window_x2lite_filter_enabled
     ):
         time_window_h50_filter_enabled = False
+    # N1 도 같은 관례로 양보한다 — 사용자가 명시적으로 고른 다른 전략이
+    # 저장돼 있으면 N1 이 물러난다. 기본값이 명시적 선택을 덮어쓰면 안 된다.
+    if time_window_n1_filter_enabled and (
+        time_window_2_filter_enabled or time_window_teg_filter_enabled
+        or time_window_3slot_filter_enabled or time_window_twf_filter_enabled
+        or time_window_x2lite_filter_enabled or time_window_h50_filter_enabled
+    ):
+        time_window_n1_filter_enabled = False
 
     # ── 09:03 예약매수: 3-SLOT 계열이면 복원된 예약을 즉시 무효화 ────────
     # 2026-09-16 실거래 사고(3차 방어): 저장된 state 에 예약이 남아 있어도
@@ -633,7 +690,8 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     # time_window_3slot 을 import 하지 않고 지역 플래그로 직접 판정한다
     # (state_store -> time_window_3slot -> ... 순환 import 회피).
     _in_3slot = (time_window_3slot_filter_enabled or time_window_twf_filter_enabled
-                 or time_window_x2lite_filter_enabled or time_window_h50_filter_enabled)
+                 or time_window_x2lite_filter_enabled or time_window_h50_filter_enabled
+                 or time_window_n1_filter_enabled)
     _allow_in_3slot = bool(getattr(config, "SCHEDULED_ENTRY_ALLOW_IN_3SLOT", False))
     # (a) 모드 게이트 — 이 모드에서 예약매수를 쓰지 않기로 했으면 되살리지 않는다.
     #     MACD2_SCHEDULED_ENTRY_ALLOW_IN_3SLOT=1 이면 이 조건은 걸리지 않는다.
@@ -665,6 +723,22 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         # 2026-09-07: 의존 대상이 TW2 3-SLOT 단독에서 "3-SLOT 계열 둘 중
         # 하나"로 넓어졌다(조기익절은 두 전략 공통 서브필터).
         early_tp_filter_enabled = False
+    # ── C1 Peak Protection (2026-09-19) ────────────────────────────────
+    # 하위호환: C1 필드가 없는 과거 state 는 전부 config 기본값으로 떨어지고,
+    # C1_FILTER_DEFAULT 가 False 이므로 **마이그레이션으로 저절로 켜지지 않는다**
+    # (H50 처럼 ADOPT_ON_MIGRATION 인수인계 규칙을 일부러 두지 않았다).
+    # 버전이 바뀌면 기존 필터들과 같은 규약으로 기본값(OFF)으로 되돌린다.
+    c1_enabled_default = bool(getattr(config, "C1_FILTER_DEFAULT", False))
+    _stored_c1_ver = str(raw.get("c1_peak_protection_version") or "")
+    c1_peak_protection_version = _stored_c1_ver or config.C1_FILTER_VERSION
+    c1_peak_protection_enabled = bool(raw.get("c1_peak_protection_enabled", c1_enabled_default))
+    if _stored_c1_ver and _stored_c1_ver != config.C1_FILTER_VERSION:
+        c1_peak_protection_version = config.C1_FILTER_VERSION
+        c1_peak_protection_enabled = c1_enabled_default
+    # C1 은 **N1 전용** overlay 다 — N1 이 아니면 복원 시점에 꺼 둔다
+    # (조기익절이 3-SLOT 계열에 의존하는 것과 같은 관례).
+    if not time_window_n1_filter_enabled:
+        c1_peak_protection_enabled = False
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
     down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
@@ -1004,6 +1078,15 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         h50_trend_break_count=int(raw.get("h50_trend_break_count", 0) or 0),
         h50_last_checked_bar_ts=raw.get("h50_last_checked_bar_ts"),
         h50_last_hold_range_pct=raw.get("h50_last_hold_range_pct"),
+        time_window_n1_filter_enabled=time_window_n1_filter_enabled,
+        time_window_n1_filter_enabled_at=raw.get("time_window_n1_filter_enabled_at"),
+        time_window_n1_filter_enabled_by=raw.get("time_window_n1_filter_enabled_by"),
+        time_window_n1_filter_version=time_window_n1_filter_version,
+        n1_last_eval_bar_ts=raw.get("n1_last_eval_bar_ts"),
+        n1_regime_state=raw.get("n1_regime_state"),
+        n1_effective_tp2=raw.get("n1_effective_tp2"),
+        n1_effective_tp1=raw.get("n1_effective_tp1"),
+        n1_effective_tp1_ratio=raw.get("n1_effective_tp1_ratio"),
         time_window_x2lite_filter_enabled_at=raw.get("time_window_x2lite_filter_enabled_at"),
         time_window_x2lite_filter_enabled_by=raw.get("time_window_x2lite_filter_enabled_by"),
         time_window_x2lite_filter_version=time_window_x2lite_filter_version,
@@ -1012,6 +1095,15 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         x2lite_first_trade_stop_loss=bool(raw.get("x2lite_first_trade_stop_loss", False)),
         x2lite_last_applied_sizing=raw.get("x2lite_last_applied_sizing"),
         time_window_3slot_filter_version=time_window_3slot_filter_version,
+        c1_peak_protection_enabled=c1_peak_protection_enabled,
+        c1_peak_protection_enabled_at=raw.get("c1_peak_protection_enabled_at"),
+        c1_peak_protection_enabled_by=raw.get("c1_peak_protection_enabled_by"),
+        c1_peak_protection_version=c1_peak_protection_version,
+        c1_armed=bool(raw.get("c1_armed", False)),
+        c1_armed_at=raw.get("c1_armed_at"),
+        c1_peak_net_return=float(raw.get("c1_peak_net_return") or 0.0),
+        c1_last_checked_bar_ts=raw.get("c1_last_checked_bar_ts"),
+        c1_triggered_at=raw.get("c1_triggered_at"),
         early_tp_filter_enabled=early_tp_filter_enabled,
         early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),
         early_tp_filter_enabled_by=raw.get("early_tp_filter_enabled_by"),
