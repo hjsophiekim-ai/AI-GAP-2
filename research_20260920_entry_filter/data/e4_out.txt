@@ -1,0 +1,153 @@
+
+======================================================================================================================
+1. 진입/미진입 solo 성과 대조 (독립 반사실, 청산 = N1+C1)
+======================================================================================================================
+N1 승인 플래그                          n= 168 합   +140.6 평균 +0.84 중앙 -0.44 승률 47.6% peak평균 2.65 peak>=5  28 net>=2  57 net<=-2  23
+H50 승인 플래그                         n= 165 합   +127.8 평균 +0.77 중앙 -0.90 승률 46.7% peak평균 2.59 peak>=5  26 net>=2  55 net<=-2  23
+N1·H50 둘 다 미진입                     n= 364 합   +160.0 평균 +0.44 중앙 -0.54 승률 45.9% peak평균 1.69 peak>=5   5 net>=2  90 net<=-2  25
+  그중 정책제외(3회한도) 제외                 n= 300 합   +154.1 평균 +0.51 중앙 -0.19 승률 47.3% peak평균 1.82 peak>=5   5 net>=2  82 net<=-2  24
+  그중 3회한도로 막힌 것                    n=  64 합     +5.9 평균 +0.09 중앙 -1.21 승률 39.1% peak평균 1.12 peak>=5   0 net>=2   8 net<=-2   1
+  미진입·완화가능·flat                    n= 235 합   +110.6 평균 +0.47 중앙 -0.09 승률 48.1% peak평균 1.82 peak>=5   3 net>=2  65 net<=-2  19
+  미진입·완화가능·보유중                     n=  65 합    +43.5 평균 +0.67 중앙 -1.21 승률 44.6% peak평균 1.79 peak>=5   2 net>=2  17 net<=-2   5
+
+======================================================================================================================
+2. 거절사유별 solo 성과 (flat, 미진입만)
+======================================================================================================================
+TW2_REJECT_VWAP_VETO                       n=  71 합   +111.6 평균 +1.57 중앙 +2.03 승률 64.8% peak평균 2.47 peak>=5   1 net>=2  36 net<=-2   7
+REJECT_LOW_QUALITY_SCORE                   n=  23 합    +11.6 평균 +0.50 중앙 +0.07 승률 52.2% peak평균 2.03 peak>=5   0 net>=2   6 net<=-2   2
+REJECT_NOT_CONFIRMED                       n=  28 합     +8.4 평균 +0.30 중앙 -0.05 승률 50.0% peak평균 1.76 peak>=5   1 net>=2   6 net<=-2   2
+TW2_3SLOT_REJECT_DAILY_SLOT_CA [정책제외]      n=  55 합     +7.6 평균 +0.14 중앙 -1.21 승률 38.2% peak평균 1.09 peak>=5   0 net>=2   7 net<=-2   1
+REJECT_SHORT_FLAG_INTERVAL                 n=   9 합     +1.7 평균 +0.19 중앙 -1.33 승률 33.3% peak평균 2.05 peak>=5   1 net>=2   2 net<=-2   1
+TW2_3SLOT_REJECT_SAME_DIRECTIO             n=  12 합     -0.8 평균 -0.07 중앙 -0.16 승률 33.3% peak평균 1.12 peak>=5   0 net>=2   1 net<=-2   0
+REJECT_MACD_GAP_NOT_EXPANDING              n=  31 합    -10.4 평균 -0.34 중앙 -1.30 승률 32.3% peak평균 1.40 peak>=5   0 net>=2   5 net<=-2   4
+TW2_3SLOT_REJECT_TEG                       n=  61 합    -11.4 평균 -0.19 중앙 -1.20 승률 39.3% peak평균 1.34 peak>=5   0 net>=2   9 net<=-2   3
+
+======================================================================================================================
+3. 완화가능 미진입 풀에서 '좋았던 플래그' 의 특징 (winners vs losers)
+======================================================================================================================
+  풀 n=235 / net>=+2 65 / net<=-2 19
+
+특징                  전체중앙      승자중앙      패자중앙       차이    AUC
+tq_score           3.000     3.000     3.000   +0.000  0.456
+chop_score         2.000     2.000     2.000   +0.000  0.477
+gap_pct            0.030     0.034     0.026   +0.007  0.587
+gap_exp          309.578   457.762   187.858 +269.904  0.638
+e20_e50_pct       -0.345    -0.485    -0.276   -0.209  0.388
+slope50         -295.890  -460.417  -227.650 -232.766  0.400
+slope20          -56.233  -183.026   -25.029 -157.997  0.418
+close_e20_pct     -0.025    -0.095    -0.010   -0.085  0.412
+vwap_pct          -0.655    -1.340    -0.405   -0.935  0.343
+vol_ratio          0.794     0.811     0.777   +0.035  0.523
+flag_ord           5.000     4.000     6.000   -2.000  0.399
+
+trend_ok=True            n=  66 합     +1.9 평균 +0.03 중앙 -0.20 승률 45.5% peak평균 1.67 peak>=5   2 net>=2  10 net<=-2   4
+trend_ok=False           n= 169 합   +108.7 평균 +0.64 중앙 -0.09 승률 49.1% peak평균 1.88 peak>=5   1 net>=2  55 net<=-2  15
+tq_ok=True               n= 168 합    +60.0 평균 +0.36 중앙 -0.21 승률 46.4% peak평균 1.78 peak>=5   3 net>=2  40 net<=-2  11
+tq_ok=False              n=  67 합    +50.6 평균 +0.76 중앙 +0.24 승률 52.2% peak평균 1.93 peak>=5   0 net>=2  25 net<=-2   8
+teg_ok=True              n=   5 합     +2.4 평균 +0.48 중앙 +0.56 승률 60.0% peak평균 1.45 peak>=5   0 net>=2   1 net<=-2   0
+teg_ok=False             n= 230 합   +108.2 평균 +0.47 중앙 -0.11 승률 47.8% peak평균 1.83 peak>=5   3 net>=2  64 net<=-2  19
+entry_chop=True          n=  49 합     -2.6 평균 -0.05 중앙 -0.97 승률 42.9% peak평균 1.41 peak>=5   0 net>=2  10 net<=-2   6
+entry_chop=False         n= 186 합   +113.2 평균 +0.61 중앙 -0.06 승률 49.5% peak평균 1.93 peak>=5   3 net>=2  55 net<=-2  13
+
+======================================================================================================================
+4. 상위추세 정렬(trend_ok) x 품질점수 교차표 — 완화가능 미진입 풀
+======================================================================================================================
+                                 tq=0                       tq=1                       tq=2                       tq=3                       tq=4                       tq=5
+trend=True                                                              n  4 합   -2.9 승  25%       n  7 합   -0.7 승  57%       n 16 합   +9.3 승  56%       n 39 합   -3.7 승  41%
+trend=False       n  7 합   +4.6 승  57%       n  1 합   -1.5 승   0%       n 55 합  +50.4 승  55%       n 56 합  +34.9 승  48%       n 32 합  +17.5 승  47%       n 18 합   +2.8 승  39%
+
+======================================================================================================================
+5. 좋았던 미진입 플래그 전량 (solo_net >= +2, 완화가능)
+======================================================================================================================
+    date minute direction  flag_ord                                        reason  tq_score  trend_ok  teg_ok  entry_chop  chop_score  gap_pct  gap_exp  e20_e50_pct  slope50  vwap_pct  vol_ratio  solo_net  solo_peak  solo_mae              solo_reason
+20260528  10:30 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         4     False   False       False           2     0.07   855.35        -0.07   163.86     -1.36       0.98      8.18       8.18     -0.50     TIME_WINDOW_TP2_FULL
+20260623  10:00 DOWN_BLUE         2                          REJECT_NOT_CONFIRMED         5      True   False       False           2    -0.00  -388.77         0.58  1453.68      0.63       0.33      5.75       7.63     -0.99                  PP_EXIT
+20260804  14:24    UP_RED        11                          TW2_REJECT_VWAP_VETO         4     False   False       False           2     0.03   382.65        -0.45  -216.97     -1.87       0.86      4.98       4.98     -0.03 TIME_WINDOW_AFTERNOON_TP
+20260612  14:06 DOWN_BLUE         9                          TW2_3SLOT_REJECT_TEG         5     False   False       False           2     0.07   833.30        -0.36    47.78      0.12       1.16      4.76       4.76     -1.06 TIME_WINDOW_AFTERNOON_TP
+20260703  11:57 DOWN_BLUE         2                      REJECT_LOW_QUALITY_SCORE         3     False   False       False           2     0.07  1631.12        -1.91 -2571.47     -4.41       0.59      4.61       4.61      0.00 TIME_WINDOW_AFTERNOON_TP
+20260716  13:57    UP_RED         8                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.02   410.70        -0.67  -571.23     -1.29       0.84      4.58       4.58     -0.40 TIME_WINDOW_AFTERNOON_TP
+20260818  12:42    UP_RED         5                    REJECT_SHORT_FLAG_INTERVAL         3     False   False       False           2     0.08   835.65        -1.17  -993.51     -3.69       0.90      4.52       4.52     -0.14 TIME_WINDOW_AFTERNOON_TP
+20260624  11:06 DOWN_BLUE         3                          TW2_3SLOT_REJECT_TEG         5     False   False        True           3     0.04   885.48        -0.31    66.36      0.65       0.49      4.30       4.30     -0.52 TIME_WINDOW_AFTERNOON_TP
+20260904  12:51    UP_RED         8                    REJECT_SHORT_FLAG_INTERVAL         5      True   False       False           2     0.01    65.04         0.18   256.58      0.48       0.67      4.24       4.24     -0.09 TIME_WINDOW_AFTERNOON_TP
+20260729  11:57    UP_RED         1                      REJECT_LOW_QUALITY_SCORE         2     False   False       False           2     0.17  1640.88        -5.73 -4048.97     -9.82       0.63      4.18       4.18      0.00 TIME_WINDOW_AFTERNOON_TP
+20260827  12:15 DOWN_BLUE         9                          TW2_3SLOT_REJECT_TEG         5     False   False       False           2     0.03   391.64        -0.42  -253.32      0.01       0.98      4.18       4.18     -0.47 TIME_WINDOW_AFTERNOON_TP
+20260826  11:03    UP_RED         5                          REJECT_NOT_CONFIRMED         2     False   False        True           3    -0.01  -110.89         0.00  -205.65     -0.80       0.55      4.18       4.18     -0.34 TIME_WINDOW_AFTERNOON_TP
+20260708  13:39 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.14  2019.64        -2.66 -3567.33     -7.50       1.11      4.17       4.17      0.00 TIME_WINDOW_AFTERNOON_TP
+20260706  12:00    UP_RED         2                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.07  1171.38        -0.77  -891.97     -2.40       1.15      4.17       4.17      0.00 TIME_WINDOW_AFTERNOON_TP
+20260701  11:57    UP_RED         2                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.04   882.01        -1.22 -1767.52     -2.67       1.54      4.16       4.16      0.00 TIME_WINDOW_AFTERNOON_TP
+20260702  13:39 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.10  2187.68        -2.04 -3089.81     -5.49       0.45      4.14       4.14      0.00 TIME_WINDOW_AFTERNOON_TP
+20260626  11:57    UP_RED         2                      REJECT_LOW_QUALITY_SCORE         2     False   False       False           2     0.07  1238.29        -2.09 -3098.46     -3.89       0.81      4.14       4.14      0.00 TIME_WINDOW_AFTERNOON_TP
+20260727  13:39    UP_RED         3                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.09   893.27        -1.75 -1713.98     -4.18       0.83      4.13       4.13     -0.01 TIME_WINDOW_AFTERNOON_TP
+20260729  13:42 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.25  2442.76        -4.59 -4631.98    -11.14       0.96      4.13       4.13      0.00 TIME_WINDOW_AFTERNOON_TP
+20260602  13:45    UP_RED        12                 REJECT_MACD_GAP_NOT_EXPANDING         2     False   False        True           3     0.00   -45.70        -0.30  -460.42     -1.41       0.67      4.12       4.12     -0.09 TIME_WINDOW_AFTERNOON_TP
+20260811  13:48 DOWN_BLUE        11                 REJECT_MACD_GAP_NOT_EXPANDING         2     False   False       False           2     0.01   -94.77        -0.68  -710.07     -2.78       0.66      4.12       4.12     -0.09 TIME_WINDOW_AFTERNOON_TP
+20260821  12:09 DOWN_BLUE         6                          TW2_REJECT_VWAP_VETO         4     False   False       False           2     0.04   392.17        -0.54  -339.78     -1.08       1.05      4.12       3.96     -0.55       FORCED_LIQUIDATION
+20260714  12:00 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         4     False   False       False           2     0.10  1182.44        -0.51  -205.81     -1.67       1.18      4.12       4.12      0.00 TIME_WINDOW_AFTERNOON_TP
+20260916  11:15    UP_RED         3                          REJECT_NOT_CONFIRMED         0     False   False        True           4    -0.01  -274.05         0.13   -74.73     -0.33       1.00      4.11       4.11     -0.04 TIME_WINDOW_AFTERNOON_TP
+20260623  13:27 DOWN_BLUE         8 TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND         5      True    True       False           2     0.03   227.01         0.93  1634.86      3.46       0.45      4.10       4.10     -0.53 TIME_WINDOW_AFTERNOON_TP
+20260528  11:48 DOWN_BLUE         6                          TW2_3SLOT_REJECT_TEG         4      True   False       False           1     0.02   328.48         0.14   434.61     -0.53       0.52      4.10       4.10     -1.32 TIME_WINDOW_AFTERNOON_TP
+20260730  13:39 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.11  1291.60        -2.60 -2354.11     -7.25       1.08      4.09       4.09      0.00 TIME_WINDOW_AFTERNOON_TP
+20260915  12:09 DOWN_BLUE         7                      REJECT_LOW_QUALITY_SCORE         2     False   False       False           2     0.02   139.04        -0.35  -344.85     -0.65       0.42      4.09       4.09     -0.09 TIME_WINDOW_AFTERNOON_TP
+20260605  11:48 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.07   955.78        -0.04   -58.48     -1.71       0.78      4.09       4.09     -0.52 TIME_WINDOW_AFTERNOON_TP
+20260724  13:42 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.11  1098.25        -1.34 -1443.44     -2.73       0.95      4.09       4.09     -0.01 TIME_WINDOW_AFTERNOON_TP
+20260707  13:42 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.12  1659.95        -2.20 -3302.96     -5.48       0.72      4.09       4.09     -0.01 TIME_WINDOW_AFTERNOON_TP
+20260709  13:42 DOWN_BLUE         4                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.08  1090.77        -1.70 -2459.26     -4.04       0.55      4.08       4.08      0.00 TIME_WINDOW_AFTERNOON_TP
+20260728  13:42 DOWN_BLUE         3                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.12   938.95        -1.24 -1197.89     -2.86       1.05      4.08       4.08      0.00 TIME_WINDOW_AFTERNOON_TP
+20260630  13:42    UP_RED         3                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.09  1239.29        -1.72 -2745.84     -3.74       0.96      4.08       4.08      0.00 TIME_WINDOW_AFTERNOON_TP
+20260813  13:24 DOWN_BLUE         5                          TW2_3SLOT_REJECT_TEG         4     False   False       False           2     0.07   606.85        -0.37    39.03     -0.11       1.81      4.08       3.60     -0.98       FORCED_LIQUIDATION
+20260602  13:36    UP_RED        10                 REJECT_MACD_GAP_NOT_EXPANDING         2     False   False        True           3     0.01  -120.68        -0.30  -476.44     -1.38       0.84      4.07       4.07     -0.54 TIME_WINDOW_AFTERNOON_TP
+20260710  13:42 DOWN_BLUE         4                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.09  1019.80        -1.22 -1594.59     -2.40       1.23      4.07       4.07     -0.01 TIME_WINDOW_AFTERNOON_TP
+20260701  13:42 DOWN_BLUE         3                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.11  1456.85        -1.72 -2775.48     -3.90       1.20      4.07       4.07     -0.05 TIME_WINDOW_AFTERNOON_TP
+20260713  13:39 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.12  2502.55        -2.60 -3484.02     -6.01       0.70      4.06       4.06      0.00 TIME_WINDOW_AFTERNOON_TP
+20260625  13:39    UP_RED         3                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.06  1718.57        -1.77 -3227.46     -4.57       0.39      4.05       4.05     -0.01 TIME_WINDOW_AFTERNOON_TP
+20260706  13:42 DOWN_BLUE         3                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.11  1396.49        -1.84 -2651.17     -3.88       1.01      4.05       4.05      0.00 TIME_WINDOW_AFTERNOON_TP
+20260629  13:42 DOWN_BLUE         2                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.05   927.98        -1.28 -2364.22     -3.44       1.05      4.04       4.04     -0.05 TIME_WINDOW_AFTERNOON_TP
+20260630  11:57 DOWN_BLUE         2                      REJECT_LOW_QUALITY_SCORE         3     False   False       False           2     0.03   766.72        -0.94 -1446.83     -2.09       0.63      4.04       4.04      0.00 TIME_WINDOW_AFTERNOON_TP
+20260703  13:39    UP_RED         3                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.18  3161.99        -4.34 -5529.75     -8.90       0.85      4.04       4.04      0.00 TIME_WINDOW_AFTERNOON_TP
+20260904  12:45    UP_RED         6                          REJECT_NOT_CONFIRMED         5      True   False       False           2    -0.00   -33.04         0.17   194.66      0.36       0.68      4.04       4.04     -0.14 TIME_WINDOW_AFTERNOON_TP
+20260626  13:42 DOWN_BLUE         3                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.13  1930.11        -1.88 -3271.76     -4.16       1.26      4.03       4.03      0.00 TIME_WINDOW_AFTERNOON_TP
+20260731  12:06    UP_RED         3                          TW2_REJECT_VWAP_VETO         4      True   False       False           2     0.08   797.68         0.29   292.69     -2.10       0.91      4.02       4.02      0.00 TIME_WINDOW_AFTERNOON_TP
+20260714  13:39    UP_RED         3                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.16  2008.37        -3.72 -3746.60     -7.72       1.32      4.02       4.02      0.00 TIME_WINDOW_AFTERNOON_TP
+20260624  13:39    UP_RED         6                          TW2_REJECT_VWAP_VETO         4     False   False        True           3     0.11  1893.77        -1.23  -858.76     -3.45       0.92      4.01       4.01      0.00 TIME_WINDOW_AFTERNOON_TP
+20260724  11:57    UP_RED         1                      REJECT_LOW_QUALITY_SCORE         2     False   False       False           2     0.05   696.44        -1.81 -1804.37     -3.33       0.77      4.01       4.01      0.00 TIME_WINDOW_AFTERNOON_TP
+20260910  10:39    UP_RED         1                          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.04   698.22        -0.70  -691.51     -1.34       0.61      3.98       4.94      0.00       FORCED_LIQUIDATION
+20260803  10:48    UP_RED         3                 REJECT_MACD_GAP_NOT_EXPANDING         2     False   False        True           3     0.01  -267.76        -1.07 -1212.86     -1.18       0.69      3.98       4.09      0.00     TIME_WINDOW_TP2_FULL
+20260806  10:06    UP_RED         2                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.02    27.57        -3.15 -3701.31     -2.86       1.03      3.86       4.05     -1.16     TIME_WINDOW_TP2_FULL
+20260914  11:42 DOWN_BLUE         2                          TW2_3SLOT_REJECT_TEG         4      True   False       False           2     0.03   460.93         0.14   141.01     -0.70       0.98      3.50       3.50     -0.71       FORCED_LIQUIDATION
+20260811  13:39 DOWN_BLUE         9                          REJECT_NOT_CONFIRMED         0     False   False       False           2    -0.01  -182.85        -0.68  -788.69     -2.83       0.73      3.50       3.83     -0.37       FORCED_LIQUIDATION
+20260731  13:42 DOWN_BLUE         4                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.05   633.76        -1.70 -1774.70     -2.87       1.04      3.38       3.18     -0.05       FORCED_LIQUIDATION
+20260907  09:06    UP_RED         1                 REJECT_MACD_GAP_NOT_EXPANDING         4      True   False       False           0     0.00  -215.42         1.41  1854.66     -0.16       1.11      3.22       3.88     -0.94       FORCED_LIQUIDATION
+20260818  14:15 DOWN_BLUE         6                          TW2_3SLOT_REJECT_TEG         5      True   False       False           2     0.07   714.02         0.09   392.07      2.75       0.69      2.83       2.77      0.00       FORCED_LIQUIDATION
+20260619  14:48    UP_RED        11                          TW2_REJECT_VWAP_VETO         4     False   False       False           2     0.10  1849.24        -0.84  -350.21     -1.95       1.24      2.81       1.43      0.00       FORCED_LIQUIDATION
+20260916  11:24    UP_RED         5                          TW2_3SLOT_REJECT_TEG         4      True   False        True           3     0.01    48.05         0.12   113.24     -0.03       0.49      2.76       3.44     -0.68       FORCED_LIQUIDATION
+20260624  14:48 DOWN_BLUE         7                          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.06   966.62        -1.18 -2297.04     -1.30       0.57      2.73       3.35      0.00       FORCED_LIQUIDATION
+20260917  13:42 DOWN_BLUE         5                          REJECT_NOT_CONFIRMED         0     False   False       False           2    -0.01  -253.84        -0.26  -516.24     -0.80       3.60      2.62       2.70     -0.66       FORCED_LIQUIDATION
+20260811  13:57 DOWN_BLUE        13                          TW2_REJECT_VWAP_VETO         3     False   False        True           3     0.04   337.99        -0.65  -435.35     -2.37       0.54      2.05       2.38     -0.09       FORCED_LIQUIDATION
+20260917  14:06 DOWN_BLUE         7                          TW2_3SLOT_REJECT_TEG         4     False   False       False           2     0.03   362.20        -0.31  -206.49     -0.49       0.50      2.03       2.11     -0.74       FORCED_LIQUIDATION
+20260904  14:36 DOWN_BLUE        13                          TW2_REJECT_VWAP_VETO         2     False   False        True           3     0.03   234.41        -0.60  -581.08     -1.60       0.94      2.03       1.75     -0.30       FORCED_LIQUIDATION
+
+======================================================================================================================
+6. 나빴던 미진입 플래그 (solo_net <= -2, 완화가능) — 완화하면 같이 들어온다
+======================================================================================================================
+    date minute direction  flag_ord                        reason  tq_score  trend_ok  teg_ok  entry_chop  chop_score  gap_pct  gap_exp  e20_e50_pct  slope50  vwap_pct  vol_ratio  solo_net  solo_peak  solo_mae           solo_reason
+20260611  09:51 DOWN_BLUE         3          REJECT_NOT_CONFIRMED         0     False   False        True           3    -0.03  -707.86         0.09  -554.10     -1.40       0.45     -4.37       0.00     -4.37 TIME_WINDOW_STOP_LOSS
+20260611  10:36 DOWN_BLUE         5          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.10  1389.88        -1.35 -1646.33     -2.39       0.82     -3.38       0.12     -3.70 TIME_WINDOW_STOP_LOSS
+20260609  13:54 DOWN_BLUE         5          TW2_REJECT_VWAP_VETO         3     False   False        True           3     0.06  1352.21        -1.60 -1790.47     -4.17       0.99     -3.19       0.00     -3.19 TIME_WINDOW_STOP_LOSS
+20260612  12:45    UP_RED         4          TW2_3SLOT_REJECT_TEG         4      True   False       False           2     0.01   169.71         0.43   620.99     -0.01       0.80     -3.06       1.48     -3.06 TIME_WINDOW_STOP_LOSS
+20260908  09:09 DOWN_BLUE         1 REJECT_MACD_GAP_NOT_EXPANDING         2     False   False       False           0     0.00  -169.44        -0.39  -526.56     -0.24       0.82     -2.98       0.00     -2.98 TIME_WINDOW_STOP_LOSS
+20260602  09:12 DOWN_BLUE         1 REJECT_MACD_GAP_NOT_EXPANDING         5      True   False       False           0     0.19  -520.67         0.14   679.38      0.13       2.86     -2.87       2.79     -2.87 TIME_WINDOW_STOP_LOSS
+20260527  14:33    UP_RED         5          TW2_3SLOT_REJECT_TEG         3     False   False        True           3     0.03    66.33        -0.32  -557.49      0.29       0.77     -2.75       0.50     -2.75 TIME_WINDOW_STOP_LOSS
+20260619  14:42 DOWN_BLUE        10 REJECT_MACD_GAP_NOT_EXPANDING         5      True   False       False           2     0.02  -317.78         0.95  1630.53      3.06       1.11     -2.72       0.00     -2.72 TIME_WINDOW_STOP_LOSS
+20260911  14:06 DOWN_BLUE         9          TW2_3SLOT_REJECT_TEG         4     False   False        True           3     0.03   348.64        -0.28  -229.68     -0.59       1.37     -2.43       0.16     -2.43 TIME_WINDOW_STOP_LOSS
+20260617  14:18 DOWN_BLUE         7          TW2_REJECT_VWAP_VETO         2     False   False        True           3     0.01   102.27        -0.94 -1708.58     -2.78       0.63     -2.37       0.01     -2.37 TIME_WINDOW_STOP_LOSS
+20260720  11:36    UP_RED         9      REJECT_LOW_QUALITY_SCORE         3     False   False       False           2     0.12  1274.70        -1.39 -1039.10     -1.97       0.65     -2.16       1.35     -2.16 TIME_WINDOW_STOP_LOSS
+20260807  10:03    UP_RED         3          TW2_REJECT_VWAP_VETO         2     False   False        True           3     0.01    87.33        -0.91 -1005.49     -1.72       0.83     -2.11       0.86     -2.17 TIME_WINDOW_STOP_LOSS
+20260818  12:06    UP_RED         3      REJECT_LOW_QUALITY_SCORE         2     False   False       False           2     0.05   385.26        -0.95 -1232.64     -3.42       0.52     -2.11       0.00     -2.11 TIME_WINDOW_STOP_LOSS
+20260804  13:57    UP_RED         9          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.04   498.64        -0.52  -246.26     -1.85       1.38     -2.10       0.56     -2.10 TIME_WINDOW_STOP_LOSS
+20260617  14:33 DOWN_BLUE         9          TW2_REJECT_VWAP_VETO         2     False   False       False           2     0.01    85.36        -1.00 -1817.00     -3.10       0.87     -2.07       0.00     -2.07 TIME_WINDOW_STOP_LOSS
+20260611  13:21 DOWN_BLUE         9 REJECT_MACD_GAP_NOT_EXPANDING         2     False   False       False           2     0.02  -336.88        -0.38  -771.53     -1.62       1.01     -2.05       0.75     -2.33 TIME_WINDOW_STOP_LOSS
+20260720  11:24 DOWN_BLUE         6          REJECT_NOT_CONFIRMED         5      True   False       False           2    -0.01  -339.29         1.40  1767.14      2.73       1.02     -2.03       0.88     -2.03 TIME_WINDOW_STOP_LOSS
+20260623  10:03    UP_RED         3    REJECT_SHORT_FLAG_INTERVAL         2     False   False       False           2     0.00     6.03        -0.61 -1631.97     -0.82       0.29     -2.03       0.04     -2.03 TIME_WINDOW_STOP_LOSS
+20260820  10:27 DOWN_BLUE         2          TW2_REJECT_VWAP_VETO         3     False   False       False           2     0.05   675.51        -0.90  -864.58     -1.44       0.49     -2.02       0.00     -2.35 TIME_WINDOW_STOP_LOSS
+
+저장: relaxable_pool.csv
