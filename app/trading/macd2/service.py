@@ -29,6 +29,8 @@ from typing import Any, Optional
 
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
+from app.trading.macd2 import peak_protection
+from app.trading.macd2 import n1_adaptive
 from app.trading.macd2 import small_whipsaw_hold
 from app.trading.macd2 import time_window_3slot
 from app.trading.macd2.broker_adapter import create_macd2_broker
@@ -148,6 +150,20 @@ def _history_diag_of(market_data) -> dict[str, Any]:
     except Exception:  # pragma: no cover - 진단이 대시보드를 죽이면 안 된다
         return {}
 
+
+
+def _sync_c1_with_mode(state, changed_by: str = "ui") -> None:
+    """C1 은 N1 계열(X2-lite 계열 래더) 전용 overlay 다 — 그 계열이 아닌
+    모드로 바뀌면 토글을 자동으로 끈다(조기익절이 3-SLOT 계열에 의존해
+    자동으로 꺼지는 것과 같은 관례). 켜는 일은 절대 하지 않는다."""
+    if not bool(getattr(state, "c1_peak_protection_enabled", False)):
+        return
+    if bool(getattr(state, "time_window_n1_filter_enabled", False)):
+        return
+    state.c1_peak_protection_enabled = False
+    state.c1_peak_protection_enabled_at = datetime.now(KST).isoformat()
+    state.c1_peak_protection_enabled_by = f"AUTO_MODE_NOT_N1:{changed_by}"
+    peak_protection.clear(state)
 
 class Macd2Service:
     """Owns the MarketDataService/broker/Worker for one MACD2 run."""
@@ -863,6 +879,7 @@ class Macd2Service:
                 state.early_tp_filter_enabled = False
                 state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
                 state.early_tp_filter_enabled_by = "AUTO_TW2_3SLOT_DISABLED"
+        _sync_c1_with_mode(state, changed_by)
         if enabled_bool and state.time_window_x2lite_filter_enabled:
             # X2-lite 도 같은 tier — 상호배타 (2026-09-12).
             state.time_window_x2lite_filter_enabled = False
@@ -934,6 +951,7 @@ class Macd2Service:
                 state.early_tp_filter_enabled = False
                 state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
                 state.early_tp_filter_enabled_by = "AUTO_TWF_3SLOT_DISABLED"
+        _sync_c1_with_mode(state, changed_by)
         if enabled_bool and state.time_window_x2lite_filter_enabled:
             # X2-lite 도 같은 tier — 상호배타 (2026-09-12).
             state.time_window_x2lite_filter_enabled = False
@@ -1001,7 +1019,8 @@ class Macd2Service:
                 state, datetime.now(KST), reason="TW2_DISABLED_BY_X2LITE_ENABLE",
             )
         for _flag in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
-                      "time_window_h50_filter_enabled"):
+                      "time_window_h50_filter_enabled",
+                      "time_window_n1_filter_enabled"):
             if enabled_bool and getattr(state, _flag, False):
                 setattr(state, _flag, False)
                 setattr(state, f"{_flag}_at", datetime.now(KST).isoformat())
@@ -1080,7 +1099,8 @@ class Macd2Service:
                 state, datetime.now(KST), reason="TW2_DISABLED_BY_H50_ENABLE",
             )
         for _flag in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
-                      "time_window_x2lite_filter_enabled"):
+                      "time_window_x2lite_filter_enabled",
+                      "time_window_n1_filter_enabled"):
             if enabled_bool and getattr(state, _flag, False):
                 setattr(state, _flag, False)
                 setattr(state, f"{_flag}_at", datetime.now(KST).isoformat())
@@ -1112,6 +1132,148 @@ class Macd2Service:
             "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
             "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
             "h50_hold_active": bool(state.h50_hold_active),
+        }
+
+    def set_c1_peak_protection_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle **C1 Peak Protection** (2026-09-19 연구).
+
+        N1 계열 래더 위에 얹는 **청산 전용 overlay** 다. 새 전략 모드가 아니다 —
+        진입 로직 / off_tp2(8%↔4%) 적응 / TP1 / TP2 / 손절 / after-TP1 스탑 /
+        trailing / 강제청산 / W1a 사이징 / 슬롯 / T+3 / quality / TEG 는 한 줄도
+        바뀌지 않는다(app/trading/macd2/peak_protection.py 참고).
+
+        발동 조건: 보유 포지션의 MFE(틱 관측)가 config.C1_ARM_MFE_PCT(5.0%) 에
+        도달한 뒤, 완성 3분봉에서 MACD-Signal gap 이 보유방향 반대로 **부호
+        전환**되고 동시에 MFE 대비 config.C1_GIVEBACK_PCT(1.5%p) 이상 반납하면
+        잔량 전량청산. 기존 래더가 그 봉에서 이미 청산했으면 C1 은 평가조차
+        되지 않는다(worker 의 _advance_c1_peak_protection 은 H50/whipsaw-watch
+        와 같은 자리에서 호출된다).
+
+        검증: data/validation/macd2/c1_peak_protection_20260919/README.md — 78영업일 N1 기준
+        401.09 -> 438.63 (+37.54%p), 발동 7건 전부 개선(악화 0), TP2 8% runner
+        손상 0, MDD 동일, 진입집합 diff 0, WF 6분할 4승 0패. 등급 **PROMISING**
+        (OOS 없음 / 발동 7건 / 크기의 83%가 7월 4건). 그래서 **기본 OFF** 다
+        (config.C1_FILTER_DEFAULT). 상태만 갱신하고 주문을 내지 않는다.
+
+        C1 은 X2-lite / H50(= N1 계열 래더) 모드에서만 켤 수 있다. 그 밖의
+        모드에서 켜려 하면 거부하고 이유를 돌려준다.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.c1_peak_protection_enabled)
+        in_family = bool(state.time_window_n1_filter_enabled)
+        if enabled_bool and not in_family:
+            return {
+                "ok": False,
+                "reason": "C1_REQUIRES_N1_MODE",
+                "message": "C1 Peak Protection 은 N1 모드에서만 켤 수 있습니다.",
+                "c1_peak_protection_enabled": prev,
+                "previous": prev,
+            }
+        state.c1_peak_protection_enabled = enabled_bool
+        state.c1_peak_protection_version = config.C1_FILTER_VERSION
+        state.c1_peak_protection_enabled_at = datetime.now(KST).isoformat()
+        state.c1_peak_protection_enabled_by = str(changed_by or "ui")
+        if not enabled_bool:
+            # 끄면 보유기간 상태(arm/MFE/멱등키)만 정리한다. 포지션은 건드리지
+            # 않는다 -- 다음 tick 부터 기존 래더만으로 관리된다.
+            peak_protection.clear(state)
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "c1_peak_protection_enabled": enabled_bool,
+            "previous": prev,
+            "c1_peak_protection_enabled_at": state.c1_peak_protection_enabled_at,
+            "c1_peak_protection_enabled_by": state.c1_peak_protection_enabled_by,
+            "c1_peak_protection_version": state.c1_peak_protection_version,
+            "c1_armed": bool(state.c1_armed),
+            "c1_arm_mfe_pct": float(config.C1_ARM_MFE_PCT),
+            "c1_giveback_pct": float(config.C1_GIVEBACK_PCT),
+        }
+
+    def set_time_window_n1_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle **N1** (2026-09-20).
+
+        X2-lite / H50 과 같은 우선순위 tier 의 일곱 번째 모드다(켜면 TW2 /
+        TEGv2 / TW2 3-SLOT / TW TEG 3-SLOT / X2-lite / H50 이 전부 꺼지고,
+        그쪽 세터들도 이쪽을 끈다).
+
+        **진입은 H50 과 동일하고 quality 임계값만 4 -> 3 이다** — 그래서
+        진입집합이 H50 과 다르다(78일 H50 157거래 vs N1 158거래). 슬롯/T+3/
+        TW2 veto/TEGv2/CHOP 게이트/W1a 사이징/small whipsaw HOLD 는 전부
+        X2-lite·H50 과 같은 코드를 그대로 쓴다.
+
+        청산이 다른 점 (app/trading/macd2/n1_adaptive.py):
+        상위추세(보유방향 기준 close/EMA20/EMA50/기울기, H50 과 **같은 EMA
+        상수**) 여부로 오전 래더 3개 값이 **완성봉마다** 전환된다.
+
+            추세 ok   : TP1 3.5 / TP1 매도비중 0.0 / TP2 8.0
+            추세 아님 : TP1 3.0 / TP1 매도비중 0.2 / TP2 4.0
+
+        고정값은 손절 -1.30 / after-TP1 2.00 / trailing trigger 3.50 /
+        **trailing stop 1.50**(X2-lite 2.80) / **오후TP 4.00**(X2-lite 3.00) /
+        조기익절 **1.50 -> 0.80**(X2-lite 1.50 -> 1.00). 강제청산 15:00 불변.
+
+        검증: data/validation/macd2/n1_production_20260920/ — 78영업일
+        (0527~0918) 158거래 / 복리 401.0853%, 진입·청산 parity diff 0
+        (연구엔진이 이 브랜치의 production 정의를 읽어 재현). 기본 OFF.
+        상태만 갱신하고 주문을 내지 않는다.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(state.time_window_n1_filter_enabled)
+        state.time_window_n1_filter_enabled = enabled_bool
+        state.time_window_n1_filter_version = config.N1_3SLOT_FILTER_VERSION
+        state.time_window_n1_filter_enabled_at = datetime.now(KST).isoformat()
+        state.time_window_n1_filter_enabled_by = str(changed_by or "ui")
+        if enabled_bool and (state.time_window_2_filter_enabled or state.time_window_teg_filter_enabled):
+            state.time_window_2_filter_enabled = False
+            state.time_window_2_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_2_filter_enabled_by = str(changed_by or "ui")
+            state.time_window_teg_filter_enabled = False
+            state.time_window_teg_filter_enabled_at = datetime.now(KST).isoformat()
+            state.time_window_teg_filter_enabled_by = str(changed_by or "ui")
+            abandon_pending_time_window_candidate_if_any(
+                state, datetime.now(KST), reason="TW2_DISABLED_BY_N1_ENABLE",
+            )
+        for _flag in ("time_window_3slot_filter_enabled", "time_window_twf_filter_enabled",
+                      "time_window_x2lite_filter_enabled", "time_window_h50_filter_enabled"):
+            if enabled_bool and getattr(state, _flag, False):
+                setattr(state, _flag, False)
+                setattr(state, f"{_flag}_at", datetime.now(KST).isoformat())
+                setattr(state, f"{_flag}_by", str(changed_by or "ui"))
+        if enabled_bool and state.early_tp_filter_enabled:
+            # X2-lite/H50 와 같이 조기익절을 내장한다 — 중복처럼 보이지 않게 꺼 둔다.
+            state.early_tp_filter_enabled = False
+            state.early_tp_filter_enabled_at = datetime.now(KST).isoformat()
+            state.early_tp_filter_enabled_by = "AUTO_N1_BUILTIN_ETP"
+        if not enabled_bool:
+            abandon_pending_tw2_3slot_candidate_if_any(
+                state, datetime.now(KST), reason="N1_DISABLED_BY_USER",
+            )
+            # 모드를 끄면 adaptive 판정 캐시와 HOLD 상태를 정리한다(포지션은
+            # 건드리지 않는다 -- 다음 tick 부터 기존 규칙이 그대로 적용).
+            n1_adaptive.clear(state)
+            small_whipsaw_hold.clear(state)
+        # C1 은 N1 전용 overlay -- N1 을 끄면 자동으로 함께 꺼진다.
+        _sync_c1_with_mode(state, changed_by)
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "time_window_n1_filter_enabled": enabled_bool,
+            "previous": prev,
+            "time_window_n1_filter_enabled_at": state.time_window_n1_filter_enabled_at,
+            "time_window_n1_filter_enabled_by": state.time_window_n1_filter_enabled_by,
+            "time_window_n1_filter_version": state.time_window_n1_filter_version,
+            "time_window_2_filter_enabled": bool(state.time_window_2_filter_enabled),
+            "time_window_teg_filter_enabled": bool(state.time_window_teg_filter_enabled),
+            "time_window_3slot_filter_enabled": bool(state.time_window_3slot_filter_enabled),
+            "time_window_twf_filter_enabled": bool(state.time_window_twf_filter_enabled),
+            "time_window_x2lite_filter_enabled": bool(state.time_window_x2lite_filter_enabled),
+            "time_window_h50_filter_enabled": bool(state.time_window_h50_filter_enabled),
+            "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
+            "n1_regime_state": state.n1_regime_state,
+            "n1_effective_tp2": state.n1_effective_tp2,
         }
 
     def set_early_tp_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:

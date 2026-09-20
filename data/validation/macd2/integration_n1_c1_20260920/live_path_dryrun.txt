@@ -1,0 +1,37 @@
+========================================================================================
+실거래 경로 dry-run (통합본) — 주문 없음
+========================================================================================
+
+[0] 전략 선택      active_mode=N1_3SLOT  (기대 N1_3SLOT)  OK
+    n1_adaptive=True  C1=True  W1a=True  H50 HOLD=True  ETP=True(1.5, 0.8)
+    활성 전략 토글 수 = 1  OK
+
+[1] FLAG           macd=-88.92 signal=-88.96 hist=0.04 bar=11:00  direction=Direction.UP_RED
+    OK 확정 크로스오버 생성 (production signal_engine)
+
+[2] T+3            flag_bar=11:00  decision_at=11:06
+
+[3] TW2 base       quality_threshold_override=3 (N1 전용 3)
+    approved=True decision=TIME_WINDOW_APPROVED block=None score=3.0 required=3.0
+    window=W4_NO_NEW_ENTRY session=MORNING
+    오후 우회 적용=False  ->  tw2_cleared=True
+    extra veto=True (TW2_REJECT_VWAP_VETO)
+
+[4] 슬롯           allowed=True slot=1 session=AFTERNOON quality_gate=False teg=True
+    최종 진입승인 = False
+
+[5] sizing         entry_chop=False (score=2) chop_teg_gate=True
+    position_sizing 배수 API: ['raw_multiplier']
+      raw_multiplier -> (1.0, 'BASE')
+
+[6] 주문 직전      target_symbol=0193T0  (direction=UP_RED)
+    broker 대역 준비 완료 — 여기서 멈춘다. 주문 요청 **미실행**.
+    OK FLAG -> T+3 -> 진입승인 -> sizing -> 주문직전 경로 전 구간 도달
+
+[7] 보유 중 래더   regime=INSUFFICIENT_BARS TP1=3.0 비중=0.2 TP2=4.0
+    net +4.2% -> TIME_WINDOW_TP2_FULL (TP2_DIRECT)  [추세면 TP2 8.0 이라 HOLD, 비추세면 4.0 이라 TP2_FULL]
+    C1: armed=True gap반전=True 반납=1.90 -> C1_PEAK_PROTECTION_EXIT
+
+========================================================================================
+dry-run 완료 — 주문 0건, broker 호출 0건
+========================================================================================

@@ -150,6 +150,15 @@ EXECUTION_LEDGER_COLUMNS = [
     # pandas.read_csv()/DictReader keeps working unchanged.
     "early_tp_entry_chop_score", "early_tp_entry_chop_conditions", "early_tp_armed_at",
     "early_tp_peak_net_return_pct", "early_tp_trigger_pct", "early_tp_floor_pct",
+    # C1 Peak Protection diagnostic snapshot — appended 2026-09-19 (never
+    # rename/delete older cols). order_executor._record_leg never populates
+    # these; they are patched in afterward, ONLY for the exit_reason ==
+    # config.EXIT_C1_PEAK_PROTECTION row, by record_c1_fields() below.
+    # Empty for every other row, so the CSV schema stays identical in width
+    # for every leg and a plain pandas.read_csv()/DictReader keeps working.
+    "c1_peak_net_return_pct", "c1_current_net_return_pct", "c1_giveback_pct",
+    "c1_macd_hist", "c1_arm_threshold_pct", "c1_giveback_threshold_pct",
+    "c1_armed_at", "c1_held_direction",
 ]
 
 LOGS_DIR_PATH: Path = LOGS_DIR
@@ -729,6 +738,67 @@ def record_early_tp_fields(order_id: str, fields: dict[str, Any]) -> bool:
         if any(str(target.get(col) or "") != "" for col in EARLY_TP_LEDGER_COLUMNS):
             return True  # already recorded — idempotent no-op, file untouched
         for col in EARLY_TP_LEDGER_COLUMNS:
+            if col in fieldnames:
+                value = fields.get(col, "")
+                target[col] = "" if value is None else value
+        with open(EXECUTION_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({col: row.get(col, "") for col in fieldnames})
+        return True
+
+
+C1_LEDGER_COLUMNS = [
+    "c1_peak_net_return_pct", "c1_current_net_return_pct", "c1_giveback_pct",
+    "c1_macd_hist", "c1_arm_threshold_pct", "c1_giveback_threshold_pct",
+    "c1_armed_at", "c1_held_direction",
+]
+
+
+def record_c1_fields(order_id: str, fields: dict[str, Any]) -> bool:
+    """Patch the just-written execution-ledger row for a C1 Peak Protection
+    (config.EXIT_C1_PEAK_PROTECTION) exit with its diagnostic snapshot —
+    same pattern and same three guarantees as record_early_tp_fields() above:
+
+    1. exit_reason gated — only patches a row whose own exit_reason column
+       already reads config.EXIT_C1_PEAK_PROTECTION, so a wrong/unrelated
+       order_id can never get these columns written onto it.
+    2. Idempotent — a row that already carries the snapshot is left
+       completely untouched (no duplicate/appended/overwritten row).
+    3. Never fatal — returns False (never raises) if the ledger file or the
+       order_id doesn't exist yet; a missing diagnostic must never affect
+       the already-confirmed exit itself.
+
+    Additive columns ONLY (C1_LEDGER_COLUMNS): order_id/signal_id/timestamp/
+    symbol/side/requested_qty/executed_qty/requested_price/executed_price/
+    position_before/position_after/gross_pnl/fee/slippage/net_pnl/
+    exit_reason/broker_response/source stay byte-for-byte as
+    order_executor._record_leg wrote them (주문 수량·체결가·손익·수수료·
+    청산사유 미변경).
+    """
+    if not order_id:
+        return False
+    with _EXECUTION_LOCK:
+        if not EXECUTION_LEDGER_PATH.exists():
+            return False
+        _ensure_columns(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS)
+        with open(EXECUTION_LEDGER_PATH, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        target = None
+        for row in rows:
+            if str(row.get("order_id") or "") == str(order_id):
+                target = row
+                break
+        if target is None:
+            return False
+        if str(target.get("exit_reason") or "") != config.EXIT_C1_PEAK_PROTECTION:
+            return False
+        if any(str(target.get(col) or "") != "" for col in C1_LEDGER_COLUMNS):
+            return True  # already recorded — idempotent no-op, file untouched
+        for col in C1_LEDGER_COLUMNS:
             if col in fieldnames:
                 value = fields.get(col, "")
                 target[col] = "" if value is None else value

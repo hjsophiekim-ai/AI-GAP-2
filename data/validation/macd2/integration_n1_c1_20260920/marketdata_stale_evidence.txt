@@ -1,0 +1,16 @@
+F..F...F.......................F.............................            [100%]
+================================== FAILURES ===================================
+E   AttributeError: Can only use .dt accessor with datetimelike values
+C:\Users\Kim Hyunjoo\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\indexes\accessors.py:698: AttributeError: Can only use .dt accessor with datetimelike values
+E   AttributeError: Can only use .dt accessor with datetimelike values
+C:\Users\Kim Hyunjoo\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\indexes\accessors.py:698: AttributeError: Can only use .dt accessor with datetimelike values
+E   AttributeError: Can only use .dt accessor with datetimelike values
+C:\Users\Kim Hyunjoo\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\indexes\accessors.py:698: AttributeError: Can only use .dt accessor with datetimelike values
+E   AttributeError: Can only use .dt accessor with datetimelike values
+C:\Users\Kim Hyunjoo\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\indexes\accessors.py:698: AttributeError: Can only use .dt accessor with datetimelike values
+=========================== short test summary info ===========================
+FAILED tests/macd2/test_history_updater_watchdog.py::test_successful_fetch_records_success_time_and_clears_error
+FAILED tests/macd2/test_history_updater_watchdog.py::test_repeating_the_same_bars_is_not_a_new_success
+FAILED tests/macd2/test_history_updater_watchdog.py::test_stale_age_resets_once_new_bars_arrive_again
+FAILED tests/macd2/test_market_data.py::TestQuoteHistoryLockIndependence::test_slow_quote_fetch_does_not_block_history_merge
+4 failed, 57 passed in 8.26s

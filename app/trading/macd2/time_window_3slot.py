@@ -320,18 +320,39 @@ MODE_X2LITE_3SLOT = "X2LITE_3SLOT"
 MODE_X2LITE_H50_3SLOT = "X2LITE_H50_3SLOT"
 #: "X2-lite 파라미터를 쓰는 모드" 집합. 새 모드가 늘어도 여기만 보면 된다.
 MODES_X2LITE_FAMILY = (MODE_X2LITE_3SLOT, MODE_X2LITE_H50_3SLOT)
+#: N1 (2026-09-20) — 진입은 H50 과 동일(quality 임계값만 3), 청산은 상위추세로
+#: TP1/TP1비중/TP2 가 봉마다 전환된다. **MODES_X2LITE_FAMILY 에 넣지 않는다** —
+#: 그 집합은 exit_overrides / morning_tp2_pct_override / early_take_profit.
+#: thresholds 가 X2-lite 값을 돌려주는 기준이고, N1 은 그 셋이 전부 다르다.
+#: X2-lite/H50 의 반환값을 한 값도 바꾸지 않기 위해 별도 집합으로 둔다.
+MODE_N1_3SLOT = "N1_3SLOT"
+MODES_N1_FAMILY = (MODE_N1_3SLOT,)
+#: W1a 사이징 / CHOP->TEG 게이트 / small whipsaw HOLD 를 **공유**하는 집합.
+#: N1 은 이 셋을 X2-lite 계열과 100% 같이 쓴다(연구사양).
+MODES_W1A_FAMILY = MODES_X2LITE_FAMILY + MODES_N1_FAMILY
 #: ``state.time_window_active_mode`` 가 이 셋 중 하나면 "3-SLOT 계열"이다.
 #: 진입 경로(worker._judge_tw2_3slot_flag / _resolve_tw2_3slot_candidate),
 #: 슬롯 카운터(state.tw2_3slot_*), 원장 컬럼, signal_type 은 세 모드가 전부
 #: 공유한다 — 갈라지는 것은 ``exit_overrides`` / ``morning_tp2_pct_override``
 #: 가 돌려주는 청산 임계값뿐이다.
 MODES_3SLOT = (MODE_TW2_3SLOT, MODE_TWF_3SLOT, MODE_X2LITE_3SLOT,
-               MODE_X2LITE_H50_3SLOT)
+               MODE_X2LITE_H50_3SLOT, MODE_N1_3SLOT)
 
 #: 2026-09-08 이 모드는 "TW TEG 3-SLOT" 으로 정리됐다. 디스크에 이미 저장된
 #: 상태/원장 값과의 호환을 위해 wire value 는 "TWF_3SLOT" 그대로 두고 이름만
 #: 별칭으로 붙인다(config.TW_TEG_3SLOT_STRATEGY_NAME 주석 참고).
 MODE_TW_TEG_3SLOT = MODE_TWF_3SLOT
+
+
+def quality_score_threshold(mode: Optional[str]) -> int:
+    """이 모드의 Trend Quality 통과 기준 개수.
+
+    N1 만 3 이고(연구사양 q3), 나머지 전 모드는
+    ``config.QUALITY_SCORE_THRESHOLD``(4) 그대로다 — 기존 동작 불변.
+    """
+    if mode in MODES_N1_FAMILY:
+        return int(config.N1_QUALITY_SCORE_THRESHOLD)
+    return int(config.QUALITY_SCORE_THRESHOLD)
 
 
 def requires_chop_teg_gate(mode: Optional[str]) -> bool:
@@ -341,7 +362,7 @@ def requires_chop_teg_gate(mode: Optional[str]) -> bool:
     100% 동일해야 하므로 이 규칙도 그대로 공유한다(2026-09-12). TW2 3-SLOT /
     TW2 / TEGv2 / MU_MACD 는 전부 False 라 기존 동작은 조금도 바뀌지 않는다.
     """
-    return mode in (MODE_TW_TEG_3SLOT,) + MODES_X2LITE_FAMILY
+    return mode in (MODE_TW_TEG_3SLOT,) + MODES_W1A_FAMILY
 
 #: 토글이 동시에 켜지는 일은 service 의 상호배제가 막지만, 만에 하나
 #: 그런 상태가 들어와도 결정론적으로 TW2 3-SLOT 이 이긴다(기존 동작 보존).
@@ -351,6 +372,8 @@ _MODE_BY_FLAG = (
     ("time_window_twf_filter_enabled", MODE_TWF_3SLOT),
     ("time_window_x2lite_filter_enabled", MODE_X2LITE_3SLOT),
     ("time_window_h50_filter_enabled", MODE_X2LITE_H50_3SLOT),
+    # N1 은 가장 마지막 — 기존 네 모드의 우선순위를 한 칸도 바꾸지 않는다.
+    ("time_window_n1_filter_enabled", MODE_N1_3SLOT),
 )
 
 
@@ -409,6 +432,16 @@ def exit_overrides(mode: Optional[str]) -> dict:
             "tp1_sell_ratio_override": None,
             "trailing_stop_pct_override": None,
         }
+    if mode in MODES_N1_FAMILY:
+        # N1 (2026-09-20): X2-lite 값과 **두 개만** 다르다 — trailing stop
+        # 2.80 -> 1.50, 오후TP 3.00 -> 4.00 (N1_SPEC.md 3-1).
+        return {
+            "stop_loss_pct_override": float(config.X2LITE_MORNING_STOP_LOSS) * 100.0,
+            "after_tp1_stop_pct_override": float(config.X2LITE_MORNING_AFTER_TP1_STOP) * 100.0,
+            "afternoon_tp_pct_override": float(config.N1_AFTERNOON_TP) * 100.0,
+            "tp1_sell_ratio_override": float(config.X2LITE_MORNING_TP1_SELL_RATIO),
+            "trailing_stop_pct_override": float(config.N1_MORNING_TRAILING_STOP) * 100.0,
+        }
     if mode in MODES_X2LITE_FAMILY:
         return {
             "stop_loss_pct_override": float(config.X2LITE_MORNING_STOP_LOSS) * 100.0,
@@ -441,6 +474,11 @@ def morning_tp2_pct_override(mode: Optional[str]) -> Optional[float]:
     (2026-08-21 이후 기존 동작 그대로), X2-lite -> ``X2LITE_MORNING_TP2 * 100``
     (5.0%), 그 외(MU_MACD/무필터/입양 포지션) -> ``None`` 이라 모듈 기본
     MORNING_TP2 가 쓰인다."""
+    if mode in MODES_N1_FAMILY:
+        # N1 의 **추세구간** TP2. 비추세 4.0 은 worker 가 n1_adaptive 판정으로
+        # tp2_pct_override 를 직접 덮어쓴다(이 함수는 모드만 보므로 봉 상태를
+        # 알 수 없다). 즉 이 값은 "adaptive 판정이 없을 때의 기준값" 이다.
+        return float(config.N1_TREND_TP2) * 100.0
     if mode in MODES_X2LITE_FAMILY:
         return float(config.X2LITE_MORNING_TP2) * 100.0
     if mode in _TP2_TW2_MODES:

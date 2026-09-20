@@ -139,12 +139,21 @@ class TestTwfOverrides:
 class TestModeHelpers:
     def test_modes_tuple(self):
         # 2026-09-12: X2-lite 가 세 번째 3-SLOT 계열 모드로 추가됐다.
-        # 2026-09-15: H50 이 네 번째로 추가됐다. 기존 세 모드의 값과 **순서**는
+        # 2026-09-15: H50 이 네 번째로 추가됐다.
+        # 2026-09-20: N1 이 다섯 번째로 추가됐다. 기존 네 모드의 값과 **순서**는
         # 그대로여야 한다(우선순위 보존) — 새 모드는 항상 뒤에만 붙는다.
         assert t3.MODES_3SLOT[:2] == ("TW2_3SLOT", "TWF_3SLOT")
         assert t3.MODES_3SLOT[:3] == ("TW2_3SLOT", "TWF_3SLOT", "X2LITE_3SLOT")
+        assert t3.MODES_3SLOT[:4] == ("TW2_3SLOT", "TWF_3SLOT", "X2LITE_3SLOT",
+                                      "X2LITE_H50_3SLOT")
         assert t3.MODES_3SLOT == ("TW2_3SLOT", "TWF_3SLOT", "X2LITE_3SLOT",
-                                  "X2LITE_H50_3SLOT")
+                                  "X2LITE_H50_3SLOT", "N1_3SLOT")
+        # X2-lite 계열 집합은 **건드리지 않았다** — exit_overrides /
+        # morning_tp2_pct_override / early_take_profit.thresholds 가 X2-lite 값을
+        # 돌려주는 기준이고, N1 은 그 셋이 전부 다르다.
+        assert t3.MODES_X2LITE_FAMILY == ("X2LITE_3SLOT", "X2LITE_H50_3SLOT")
+        assert t3.MODES_N1_FAMILY == ("N1_3SLOT",)
+        assert t3.MODES_W1A_FAMILY == ("X2LITE_3SLOT", "X2LITE_H50_3SLOT", "N1_3SLOT")
 
     def test_active_mode(self):
         s = RuntimeState()

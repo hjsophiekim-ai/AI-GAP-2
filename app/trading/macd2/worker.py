@@ -51,6 +51,8 @@ from app.trading.macd2 import (
     bar_ledger,
     config,
     early_take_profit,
+    peak_protection,
+    n1_adaptive,
     ledger,
     major_flag_filter,
     order_executor,
@@ -453,6 +455,12 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # H50(2026-09-15) HOLD 상태도 session-scoped -- 토글은 그대로 두고
     # 보류 상태만 리셋한다. 날짜가 바뀌면 전날 HOLD 를 이어받지 않는다.
     small_whipsaw_hold.clear(state)
+    # C1 Peak Protection(2026-09-19)도 session-scoped -- 토글은 그대로 두고
+    # arm/MFE/멱등키만 리셋한다. 전날 arm 상태를 다음날로 넘기지 않는다.
+    peak_protection.clear(state)
+    # N1(2026-09-20) adaptive 캐시도 session-scoped -- 전략 선택 토글은
+    # 그대로 두고 판정 캐시만 리셋한다.
+    n1_adaptive.clear(state)
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -1374,6 +1382,8 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
+        peak_protection.clear(state)
+        n1_adaptive.clear(state)
         # 2026-08-28 fix: a reconcile-discovered position is a genuinely new
         # real entry this process never counted anywhere else -- the OTHER
         # contributor to daily_total_entry_count (worker._apply_switch_
@@ -2446,6 +2456,59 @@ def _judge_time_window_flag(
     return decision
 
 
+def _n1_ladder_overrides(state: RuntimeState) -> dict:
+    """N1 이 활성일 때 오전 래더에 넘길 override 3개. 그 외 모드는 빈 dict.
+
+    판정은 **완성봉에서만** 갱신되고(`_advance_n1_adaptive`), 그 봉 안의 틱은
+    같은 값을 재사용한다 — 연구엔진의 `trend_ok_at` 캐시와 같은 계약이다.
+
+    ⚠ 연구엔진과의 의도적 차이: 연구엔진은 틱 판단에도 **그 틱이 속한(아직
+    완성되지 않은) 봉**의 판정을 썼다(백테스트라 가능). production 은 마지막
+    **완성봉**의 판정을 쓴다 — 미완성 봉을 보고 주문하지 않기 위해서다.
+    판정이 아직 없으면(포지션 첫 틱 등) 비추세 래더로 떨어진다 — `snapshot()`
+    의 "봉 부족 -> ok=False" 와 같은 보수적 fallback 이다.
+    """
+    if not n1_adaptive.is_active(state):
+        return {}
+    if not getattr(state, "time_window_position_active", False):
+        return {}
+    ld = n1_adaptive.cached_ladder(state)
+    if ld is None:
+        tp1, ratio, tp2 = n1_adaptive.off_trend_ladder()
+    else:
+        tp1, ratio, tp2 = ld.tp1_pct, ld.tp1_sell_ratio, ld.tp2_pct
+    return {
+        "tp2_pct_override": float(tp2),
+        "tp1_sell_ratio_override": float(ratio),
+        "tp1_pct_override": float(tp1),
+    }
+
+
+def _advance_n1_adaptive(*, state: RuntimeState, macd_snap, bars_3m, position) -> None:
+    """N1 adaptive 판정을 완성봉마다 갱신한다 (2026-09-20).
+
+    청산/주문을 전혀 하지 않는다 — 다음 tick 부터 오전 래더가 읽을 값을
+    state 에 캐시하는 것이 전부다. `n1_last_eval_bar_ts` 로 멱등(같은 완성봉을
+    두 번 계산하지 않는다). N1 이 아니면 완전한 no-op 이다."""
+    if not n1_adaptive.is_active(state):
+        return
+    if position is None or position.quantity <= 0:
+        n1_adaptive.clear(state)
+        return
+    if not getattr(state, "time_window_position_active", False):
+        return
+    if macd_snap is None:
+        return
+    checked = _parse_iso_dt(state.n1_last_eval_bar_ts)
+    if checked is not None and macd_snap.bar_dt <= checked:
+        return
+    held = _position_direction(position)
+    if held is None:
+        return
+    decision = n1_adaptive.resolve_ladder(bars_3m, held)
+    n1_adaptive.note_eval(state, macd_snap.bar_dt, decision)
+
+
 def _advance_held_position_risk_management(
     *,
     broker,
@@ -2611,16 +2674,28 @@ def _advance_held_position_risk_management(
             state.early_tp_peak_net_return = max(
                 float(state.early_tp_peak_net_return or 0.0), tick_net_return,
             )
+        # C1 Peak Protection(2026-09-19): arm 판정에 쓰는 MFE 도 같은 이유로
+        # 틱 관측값이며 production 의 time_window_peak_net_return 과 분리한다.
+        # C1 이 active 가 아니면 필드를 단 한 번도 쓰지 않는다(OFF parity).
+        if peak_protection.is_active(state):
+            peak_protection.note_peak(state, tick_net_return)
         # 2026-09-07: TWF 3-SLOT 은 오후 TP 만 override 한다(오전 TP2 는 동일).
         # exit_overrides 는 TWF 가 아니면 전부 None 이라 기존 동작 불변.
         _tw_exit_overrides = time_window_3slot.exit_overrides(state.time_window_active_mode)
+        # N1 (2026-09-20): 상위추세 여부로 TP1/TP1비중/TP2 가 봉마다 바뀐다.
+        # N1 이 아니면 _n1_over 가 빈 dict 라 기존 인자가 그대로 쓰인다.
+        _n1_over = _n1_ladder_overrides(state)
         tp_decision = time_window_position_manager.evaluate_take_profit_immediate(
             session=state.time_window_entry_session or "MORNING",
             net_return_pct=tick_net_return,
             tp1_done=bool(state.time_window_tp1_done),
-            tp2_pct_override=time_window_3slot.morning_tp2_pct_override(state.time_window_active_mode),
+            tp2_pct_override=_n1_over.get(
+                "tp2_pct_override",
+                time_window_3slot.morning_tp2_pct_override(state.time_window_active_mode)),
             afternoon_tp_pct_override=_tw_exit_overrides["afternoon_tp_pct_override"],
-            tp1_sell_ratio_override=_tw_exit_overrides["tp1_sell_ratio_override"],
+            tp1_sell_ratio_override=_n1_over.get(
+                "tp1_sell_ratio_override", _tw_exit_overrides["tp1_sell_ratio_override"]),
+            tp1_pct_override=_n1_over.get("tp1_pct_override"),
         )
         if tp_decision.exit_reason is not None:
             # 2026-08-27 fix (real incident: a premarket-carry position's
@@ -2676,13 +2751,19 @@ def _advance_held_position_risk_management(
         completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
         if completed_bar_close is not None:
             bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
+            _pm_kw = dict(_tw_exit_overrides)
+            _pm_tp2 = time_window_3slot.morning_tp2_pct_override(state.time_window_active_mode)
+            if _n1_over:
+                _pm_tp2 = _n1_over["tp2_pct_override"]
+                _pm_kw["tp1_sell_ratio_override"] = _n1_over["tp1_sell_ratio_override"]
             pm_decision = time_window_position_manager.evaluate_position(
                 session=state.time_window_entry_session or "MORNING",
                 net_return_pct=bar_net_return,
                 tp1_done=bool(state.time_window_tp1_done),
                 peak_net_return=float(state.time_window_peak_net_return or 0.0),
-                tp2_pct_override=time_window_3slot.morning_tp2_pct_override(state.time_window_active_mode),
-                **_tw_exit_overrides,
+                tp2_pct_override=_pm_tp2,
+                tp1_pct_override=_n1_over.get("tp1_pct_override"),
+                **_pm_kw,
             )
             # 2026-08-27 fix -- same reasoning as the immediate-tick TP path
             # just above: peak_net_return still commits unconditionally
@@ -2690,6 +2771,9 @@ def _advance_held_position_risk_management(
             # order is CONFIRMED EXECUTED, never just because the DECISION
             # said a threshold was crossed.
             state.time_window_peak_net_return = pm_decision.peak_net_return
+            # C1 MFE 는 틱 + 완성봉 종가 둘 다 본다(연구 엔진과 동일).
+            if peak_protection.is_active(state):
+                peak_protection.note_peak(state, bar_net_return)
             if pm_decision.exit_reason is not None:
                 sell_fraction = max(0.0, min(1.0, pm_decision.sell_fraction))
                 full_exit = sell_fraction >= 1.0
@@ -3171,6 +3255,8 @@ def _resolve_time_window_candidate_body(
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
+        peak_protection.clear(state)
+        n1_adaptive.clear(state)
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = signal_detected_at.isoformat()
         if session == "MORNING":
@@ -3315,6 +3401,10 @@ def _resolve_tw2_3slot_candidate_body(
         bars_3m, direction, flag_bar_dt, now,
         position_direction=_position_direction(position),
         morning_entry_count=0, afternoon_entry_count=0, daily_entry_count=0,
+        # N1 (2026-09-20): 이 모드만 창별 quality 기준이 3 이다(연구사양 q3).
+        # 다른 모드는 None 이라 config.QUALITY_SCORE_THRESHOLD(4) 그대로다.
+        quality_threshold_override=time_window_3slot.quality_score_threshold(
+            time_window_3slot.active_3slot_mode(state)),
     )
     # TW2 3-SLOT never inherits TW_MORNING_ONLY's blanket afternoon block --
     # an afternoon candidate rejected SOLELY by that toggle is still
@@ -3636,6 +3726,8 @@ def _resolve_tw2_3slot_candidate_body(
         # 여기서 무엇을 계산하든 그 결과를 바꿀 수 없다.
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
+        peak_protection.clear(state)
+        n1_adaptive.clear(state)
         if early_take_profit.is_enabled(state):
             # 2026-09-12: W1a 가 주문 전에 계산해 둔 값이 있으면 그대로 쓴다 --
             # 사이징에 쓴 CHOP 과 포지션에 저장되는 CHOP 이 어긋날 수 없다.
@@ -3834,6 +3926,117 @@ def _advance_h50_hold(
         if outcome.final_state == SignalState.EXECUTED:
             result.actions.append(
                 f"{small_whipsaw_hold.EXIT_SMALL_WHIPSAW_HOLD}:{outcome.target_symbol}")
+    return outcome
+
+
+def _advance_c1_peak_protection(
+    *, broker, state: RuntimeState, now: datetime, macd_snap, position,
+    result: TickResult,
+):
+    """C1 Peak Protection 을 완성봉마다 평가한다 (2026-09-19).
+
+    자리: ``_advance_h50_hold`` 바로 뒤 = whipsaw-watch / H50 과 같은 자리다.
+    이 지점까지 왔다는 것은 이 tick 에서
+
+        FORCED_LIQUIDATION / 손절 / TP1 / TP2 / after-TP1 스탑 / trailing /
+        조기익절(ETP) / T+3 반대신호 switch·sell-only / whipsaw-watch / H50
+
+    이 **전부 아무 청산도 내지 않았다**는 뜻이다(각 경로는 발동 즉시
+    ``run_once`` 에서 return 한다). 그래서 기존 래더 우선순위가 그대로
+    유지되고, C1 은 production 이 HOLD 라고 답한 뒤에만 발언한다.
+
+    발동 조건 (둘 다 성립해야 함):
+      1) 보유 중 MFE(틱 관측) >= ``config.C1_ARM_MFE_PCT``
+      2) 이 완성봉에서 MACD-Signal gap 이 보유방향 반대로 **부호 전환**되고,
+         동시에 MFE 대비 ``config.C1_GIVEBACK_PCT`` 이상 반납
+
+    ``c1_last_checked_bar_ts`` 로 멱등 — 같은 완성봉을 두 번 평가하지 않는다
+    (같은 봉 재진입 tick 에서 C1 SELL 이 중복 발행될 수 없다).
+    청산 전용이며 신규 진입은 절대 하지 않는다. C1 이 active 가 아니면
+    완전한 no-op 이다(모듈 함수 호출조차 하지 않는다)."""
+    if not peak_protection.is_active(state):
+        return None
+    if position is None or position.quantity <= 0:
+        peak_protection.clear(state)
+        return None
+    if not state.time_window_position_active:
+        # C1 은 시간대필터가 관리 중인 포지션에만 얹힌다(입양/MU_MACD 제외).
+        return None
+    if macd_snap is None:
+        return None
+    checked = _parse_iso_dt(state.c1_last_checked_bar_ts)
+    if checked is not None and macd_snap.bar_dt <= checked:
+        return None
+    peak_protection.note_checked_bar(state, macd_snap.bar_dt)
+
+    held_dir = _position_direction(position)
+    if held_dir is None:
+        return None
+    # 완성봉 종가 기준 순수익률 — 하방 rung 과 같은 규약.
+    bar_close = state.stop_loss_bar_close
+    if bar_close is None:
+        return None
+    bar_net_return = _net_return_pct(
+        position.symbol, position.avg_price, float(bar_close), position.quantity,
+    )
+    arm_pct, give_pct = peak_protection.thresholds(state)
+    decision = peak_protection.evaluate(
+        held_direction=held_dir,
+        peak_net_return_pct=float(state.c1_peak_net_return or 0.0),
+        net_return_pct=bar_net_return,
+        macd_hist=macd_snap.hist,
+        arm_pct=arm_pct,
+        giveback_pct=give_pct,
+    )
+    if decision.armed:
+        peak_protection.note_armed(state, now)
+    if decision.exit_reason is None:
+        return None
+
+    # 원장 진단 스냅샷 — _apply_exit_outcome 이 C1 상태를 리셋하기 전에 떠 둔다
+    # (조기익절이 같은 이유로 같은 자리에서 뜨는 것과 동일).
+    c1_ledger_fields = {
+        "c1_peak_net_return_pct": round(float(state.c1_peak_net_return or 0.0), 6),
+        "c1_current_net_return_pct": round(float(bar_net_return), 6),
+        "c1_giveback_pct": round(float(decision.giveback_pct), 6),
+        "c1_macd_hist": round(float(macd_snap.hist), 6),
+        "c1_arm_threshold_pct": float(arm_pct),
+        "c1_giveback_threshold_pct": float(give_pct),
+        "c1_armed_at": state.c1_armed_at or "",
+        "c1_held_direction": held_dir.value,
+    }
+    exit_direction = (Direction.DOWN_BLUE if held_dir == Direction.UP_RED
+                      else Direction.UP_RED)
+    signal_id = f"{make_signal_id(macd_snap.bar_dt, exit_direction)}:C1_PEAK_PROTECTION"
+    fake_decision = MajorFlagDecision(
+        approved=False, score=0.0, required_score=0.0,
+        decision=peak_protection.EXIT_C1_PEAK_PROTECTION,
+        reasons=(
+            f"C1 peak protection: peak={c1_ledger_fields['c1_peak_net_return_pct']}% "
+            f"net={c1_ledger_fields['c1_current_net_return_pct']}% "
+            f"giveback={c1_ledger_fields['c1_giveback_pct']}%p "
+            f"hist={c1_ledger_fields['c1_macd_hist']}",
+        ),
+        component_scores={},
+        metrics=dict(c1_ledger_fields),
+        is_reversal=True, fast_reversal=False,
+        block_reason=peak_protection.EXIT_C1_PEAK_PROTECTION,
+    )
+    outcome = _execute_reversal_exit_only_for_filtered_entry(
+        broker=broker, state=state, macd_snap=macd_snap, direction=exit_direction,
+        position=position, decision=fake_decision, result=result,
+        gate_mode="TW2_3SLOT", signal_id_override=signal_id,
+    )
+    if outcome is not None:
+        peak_protection.note_triggered(state, now)
+        _apply_exit_outcome(state, outcome)
+        if outcome.final_state == SignalState.EXECUTED:
+            result.actions.append(
+                f"{peak_protection.EXIT_C1_PEAK_PROTECTION}:{outcome.target_symbol}")
+            if outcome.sell_result is not None:
+                ledger.record_c1_fields(
+                    str(outcome.sell_result.order_id or ""), c1_ledger_fields,
+                )
     return outcome
 
 
@@ -4788,6 +4991,8 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
+        peak_protection.clear(state)
+        n1_adaptive.clear(state)
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = now.isoformat()
         return outcome
@@ -5262,6 +5467,16 @@ def run_once(
     # priorities 3-5 (OPPOSITE_SIGNAL/PROFIT_LOCK/QUICK_PROFIT), which
     # genuinely need macd_snap, remain below.
     if pos is not None and pos.quantity > 0:
+        # N1 adaptive 판정 갱신 (2026-09-20) — 주문/청산 없음, state 캐시만.
+        # 다음 tick 의 _advance_held_position_risk_management 가 이 값을 읽는다.
+        try:
+            _advance_n1_adaptive(state=state, macd_snap=macd_snap,
+                                 bars_3m=bars_3m, position=pos)
+        except Exception:
+            # 진단 캐시 갱신 실패가 이미 열려 있는 포지션의 리스크관리를
+            # 예외로 만들면 안 된다 -- 실패하면 직전 판정(또는 비추세
+            # fallback)이 그대로 쓰인다.
+            logger.exception("[MACD2] N1 adaptive 판정 갱신 실패")
         scheduled_protected = _scheduled_entry_protection_active(state, now)
         current_price = quotes.get(pos.symbol)
         if current_price is None:
@@ -5339,6 +5554,18 @@ def run_once(
             bars_3m=bars_3m, position=pos, result=result,
         )
         if h50_outcome is not None and h50_outcome.final_state == SignalState.EXECUTED:
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
+            return result
+
+        # C1 Peak Protection (2026-09-19): H50/whipsaw-watch 와 같은 자리 --
+        # 하드스톱/TP1/TP2/트레일링/ETP/강제청산/반대신호 switch 가 이미 이
+        # tick 앞에서 평가돼 발동했으면 여기까지 오지 않으므로 기존 청산
+        # 우선순위가 그대로 유지된다. 청산 전용이며 신규 진입은 하지 않는다.
+        c1_outcome = _advance_c1_peak_protection(
+            broker=broker, state=state, now=now, macd_snap=macd_snap,
+            position=pos, result=result,
+        )
+        if c1_outcome is not None and c1_outcome.final_state == SignalState.EXECUTED:
             _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
@@ -5875,6 +6102,8 @@ def _apply_exit_outcome(state: RuntimeState, outcome,
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
+        peak_protection.clear(state)
+        n1_adaptive.clear(state)
         # Safety net (2026-09-02, real incident): a held position can close
         # for ANY reason (stop-loss/profit-lock/forced-liquidation/etc.)
         # while a whipsaw-watch is tracking it -- e.g. today's real incident,
