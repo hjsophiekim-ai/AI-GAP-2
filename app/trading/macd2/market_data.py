@@ -82,6 +82,24 @@ def _empty_1m_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=list(_1M_COLUMNS))
 
 
+def _ymd_series(df: pd.DataFrame) -> pd.Series:
+    """``df["datetime"]`` -> "YYYYMMDD" 문자열 Series. **항상** 먼저
+    ``pd.to_datetime(..., errors="coerce")`` 로 보정한다.
+
+    2026-09-20 hotfix (실거래 영향: 장중 1분봉이 전진을 멈춤).
+    dtype 이 이미 datetime64 면 이 변환은 no-op 이고, 어떤 경로로든 object 가
+    섞여 들어와도 ``.dt`` 가 ``AttributeError: Can only use .dt accessor with
+    datetimelike values`` 로 터지지 않는다 — 거래 경로 한복판에서 그 예외가
+    나면 ``merge_incremental_1m`` 이 ``self._df_1m = merged`` 에 도달하지 못해
+    **메모리 1분봉이 그 시점에 얼어붙는다**(호가는 계속 갱신되므로
+    "현재가는 살아 있는데 1분봉/3분봉만 멈춘다" 는 증상이 된다).
+
+    파싱 실패(NaT)는 빈 문자열이 되어 어떤 날짜 집합에도 속하지 않는다.
+    """
+    dt = pd.to_datetime(df["datetime"], errors="coerce")
+    return dt.dt.strftime("%Y%m%d").fillna("")
+
+
 def _parse_hour1(hour1: str) -> datetime:
     """``hour1`` cursor ("HHMMSS") -> a time-of-day anchor to back off from
     when a page fails. Empty ``hour1`` means "latest" (no cursor sent yet);
@@ -154,7 +172,13 @@ def _trim_to_recent_trading_days(df: pd.DataFrame, max_days: int = 2) -> pd.Data
     """
     if df.empty:
         return df
-    dates = df["datetime"].dt.strftime("%Y%m%d")
+    # 2026-09-20 hotfix: .dt 를 직접 쓰지 않는다(_ymd_series docstring 참고).
+    # 보정 실패행("")이 하나라도 있으면 날짜 귀속이 불확실하므로 **보수적으로
+    # 전량 보존**한다 — 보존 상한은 메모리 절약용이고, 불확실할 때 라이브
+    # 1분봉을 버리는 쪽이 훨씬 위험하다.
+    dates = _ymd_series(df)
+    if not bool((dates != "").all()):
+        return df
     keep_dates = set(sorted(dates.unique())[-max_days:])
     if len(keep_dates) >= dates.nunique():
         return df
@@ -771,7 +795,9 @@ class MarketDataService:
                 self._df_1m = df
             return BootstrapResult(False, "NO_1M_BARS", 0, 0, 0, 0, round(elapsed, 3))
 
-        dates = df["datetime"].dt.strftime("%Y%m%d")
+        # 2026-09-20 hotfix: 위와 같은 이유로 .dt 직접 접근을 쓰지 않는다
+        # (집계값만 쓰므로 동작은 불변).
+        dates = _ymd_series(df)
         prior_n = int((dates != today_ymd).sum())
         today_n = int((dates == today_ymd).sum())
         bars3 = resample_completed_3m(df, now=now)
@@ -864,11 +890,24 @@ class MarketDataService:
             base = self._df_1m
             if live_df.empty:
                 return base.copy()
+            # 2026-09-20 hotfix (근원): base 가 비어 있으면 concat 에서 **제외**
+            # 한다. `_empty_1m_frame()` 은 모든 컬럼이 object dtype 인데,
+            # pandas 2 에서는 concat 이 빈 쪽 dtype 을 무시해 datetime64 를
+            # 유지했지만 **pandas 3 에서는 결과 dtype 이 object 로 남는다.**
+            # 그러면 바로 아래 `_trim_to_recent_trading_days` 의 `.dt` 접근이
+            # 터지고, 이 함수가 `self._df_1m = merged` 에 도달하지 못해 장중
+            # 1분봉이 얼어붙는다(실측: 2026-09-18 로컬 1분봉이 14:08 에서 중단,
+            # 직전 거래일들은 19:59 까지). bootstrap 이 이미 같은 이유로 쓰는
+            # `_non_empty` 관례와 동일한 처리다. `_empty_1m_frame` 자체의 dtype
+            # 을 지정하는 방식은 쓰지 않는다 — live 프레임이
+            # datetime64[us, UTC+09:00] 이라 tz 표현이 어긋나 또 object 가 된다.
+            _frames = [f for f in (base, live_df) if not f.empty]
             merged = (
-                pd.concat([base, live_df], ignore_index=True)
+                pd.concat(_frames, ignore_index=True)
                 .drop_duplicates(subset=["datetime"], keep="last")
                 .sort_values("datetime")
                 .reset_index(drop=True)
+                if _frames else _empty_1m_frame()
             )
             merged = _trim_to_recent_trading_days(merged)
             self._df_1m = merged
