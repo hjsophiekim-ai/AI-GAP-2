@@ -1507,3 +1507,91 @@ RESIDUAL_CLEANUP_MAX_QTY = _env_int("MACD2_RESIDUAL_CLEANUP_MAX_QTY", 5)
 RESIDUAL_CLEANUP_SOURCE = "RESIDUAL_CLEANUP"
 RESIDUAL_CLEANUP_RECONCILE_RETRIES = 3
 RESIDUAL_CLEANUP_RECONCILE_DELAY_SEC = 0.5
+
+
+# ── C1 Peak Protection (2026-09-19 연구, 기본 OFF) ─────────────────────────
+# N1 계열 래더 위에 얹는 **청산 전용 overlay**. 보유 포지션의 MFE(틱 관측)가
+# C1_ARM_MFE_PCT 에 도달한 뒤, 완성 3분봉에서
+#   (a) MACD-Signal gap 이 보유방향 반대로 **부호 전환** (단순 축소 아님), 그리고
+#   (b) MFE 대비 C1_GIVEBACK_PCT 이상 반납
+# 이 동시에 성립하면 잔량을 전량청산한다. 판정/청산 전부
+# app/trading/macd2/peak_protection.py 의 순수 함수로만 이뤄지고, 진입 로직·
+# off_tp2(8%↔4%) 적응·TP1/TP2/손절/trailing/강제청산·W1a sizing·슬롯/T+3/
+# quality/TEG 는 한 줄도 바뀌지 않는다. C1 은 그 래더가 전부 HOLD 라고 답한
+# 뒤에만 발언한다(= worker 에서 _advance_h50_hold 와 같은 자리).
+#
+# ■ 왜 기존 상수를 재사용하지 않고 전용 상수를 두는가
+#   5.0 과 같은 값을 갖는 기존 상수: MORNING_TP2*100 = 5.0,
+#                                    X2LITE_MORNING_TP2*100 = 5.0
+#   1.5 와 같은 값을 갖는 기존 상수: EARLY_TP_TRIGGER_PCT = 1.5,
+#                                    X2LITE_EARLY_TP_TRIGGER_PCT = 1.5
+#   값은 같지만 **의미가 다르다** — 앞의 둘은 "TP2 로 전량익절하는 목표수익률",
+#   뒤의 둘은 "조기익절 필터가 armed 되는 MFE" 다. C1 의 5.0 은 "보호를 시작할
+#   MFE", 1.5 는 "peak 대비 허용 반납폭(%p)" 이라 성격이 전혀 다르고, 누가
+#   MORNING_TP2 나 EARLY_TP_TRIGGER_PCT 를 조정하면 C1 임계값이 **조용히 함께
+#   움직인다**. 그래서 의도적으로 전용 상수를 둔다(중복 상수 사유).
+#   출처 자체는 그 값들이 맞다: 5.0 = config.MORNING_TP2*100(2026-09-19 연구가
+#   arm 후보를 고른 근거), 1.5 = N1 trailing_stop(= EARLY_TP_TRIGGER_PCT).
+#
+# ■ 검증 요약 (2026-09-19, 78영업일 0527~0918, N1 기준)
+#   78일 401.09 -> 438.63 (+37.54%p) / 30일 65.12 -> 66.48 (+1.36%p)
+#   PF 2.587 -> 2.658, MDD -8.906 동일, -Top10 +13.39
+#   발동 7건 전부 개선(악화 0), TP2 8% runner 9건 손상 0.0000, 진입집합 diff 0
+#   WF 6분할 4승 0패 2무, bootstrap C1>N1 99.93%
+#   민감도 plateau: arm 4.5~6.5 x give 1.0~1.5 전 구간 양수
+#   등급 PROMISING (OOS 없음 / 발동 7건 / 크기의 83%가 7월 4건)
+#
+# 기본값은 반드시 False. 마이그레이션·재시작으로 저절로 켜지지 않는다
+# (state_store 가 저장된 값이 없으면 항상 이 기본값을 쓴다).
+C1_ENABLED = _env_bool("MACD2_C1_ENABLED", True)
+#: 사용자 토글의 기본값. **반드시 False** — 켜는 것은 명시적 조작뿐이다.
+C1_FILTER_DEFAULT = _env_bool("MACD2_C1_FILTER_DEFAULT", False)
+C1_FILTER_VERSION = "C1_PEAK_PROTECTION_V1_20260919"
+#: 보호를 시작할 MFE(%). 이 값 미만에서는 C1 이 절대 발동하지 않는다.
+C1_ARM_MFE_PCT = _env_float("MACD2_C1_ARM_MFE_PCT", 5.0)
+#: MFE 대비 허용 반납폭(%p). peak - net >= 이 값이면 (gap 반전 시) 청산.
+C1_GIVEBACK_PCT = _env_float("MACD2_C1_GIVEBACK_PCT", 1.5)
+
+#: C1 이 내는 유일한 청산 사유. peak_protection.EXIT_C1_PEAK_PROTECTION 과 동일.
+EXIT_C1_PEAK_PROTECTION = "C1_PEAK_PROTECTION_EXIT"
+# ── N1 (2026-09-20) — X2-lite/H50 계열의 adaptive TP 판 ────────────────────
+# 연구사양 전량과 추출근거: data/validation/macd2/n1_production_20260920/N1_SPEC.md
+#
+# 진입은 H50 과 동일하고 **quality 임계값만 4 -> 3** 이다(그래서 진입집합이
+# H50 과 다르다 — 78일 H50 157거래 vs N1 158거래). 청산은 상위추세 여부로
+# 봉마다 전환된다:
+#
+#   추세 ok   : TP1 3.5 / TP1비중 0.0 / TP2 8.0
+#   추세 아님 : TP1 3.0 / TP1비중 0.2 / TP2 4.0
+#   공통      : 손절 -1.30 / after-TP1 2.00 / trail trigger 3.50 /
+#               trail stop 1.50 / 오후TP 4.00 / ETP 1.50->0.80
+#
+# 상위추세 판정은 H50 과 **같은 EMA 상수**(H50_TREND_EMA_FAST/SLOW)를 쓰고
+# 새 지표식을 만들지 않는다(app/trading/macd2/n1_adaptive.py).
+# small whipsaw HOLD 는 H50 로직·상수를 그대로 쓴다(h50_* state 공유).
+#
+# 검증: 78영업일(0527~0918) 158거래 / 복리 401.0853% — 연구 앵커 재현.
+# 기본 OFF. 마이그레이션으로 자동 ON 되지 않는다.
+N1_ENABLED = _env_bool("MACD2_N1_ENABLED", True)
+N1_3SLOT_FILTER_DEFAULT = _env_bool("MACD2_N1_3SLOT_FILTER_DEFAULT", False)
+N1_3SLOT_FILTER_VERSION = "N1_3SLOT_V1_20260920"
+N1_3SLOT_STRATEGY_NAME = "N1"
+
+#: 추세구간 래더. 8.0 은 N1 의 TP2, 3.5 는 MORNING_TRAILING_TRIGGER 와 같은 값,
+#: 0.0 은 "TP1 에서 팔지 않고 트레일링만 arm" 을 뜻한다(연구사양).
+# MORNING_*/AFTERNOON_* 와 같은 관례로 **분수**로 저장한다(spec §17) —
+# 퍼센트 변환은 쓰는 쪽에서 한 번만 한다. TP1 매도비중만 비율 그대로다.
+N1_TREND_TP1 = _env_float("MACD2_N1_TREND_TP1", 0.035)
+N1_TREND_TP1_SELL_RATIO = _env_float("MACD2_N1_TREND_TP1_SELL_RATIO", 0.0)
+N1_TREND_TP2 = _env_float("MACD2_N1_TREND_TP2", 0.08)
+#: 비추세구간 TP2. 나머지(TP1 3.0 / 비중 0.2)는 X2-lite 기본값으로 되돌아간다.
+N1_OFF_TREND_TP2 = _env_float("MACD2_N1_OFF_TREND_TP2", 0.04)
+#: N1 고정 청산값 — X2-lite 와 다른 두 개.
+N1_MORNING_TRAILING_STOP = _env_float("MACD2_N1_MORNING_TRAILING_STOP", 0.015)
+N1_AFTERNOON_TP = _env_float("MACD2_N1_AFTERNOON_TP", 0.040)
+#: N1 의 조기익절 임계값. X2-lite(1.5/1.0)와 달리 연구사양은 config 기본값
+#: (1.5/0.8) 이었다 — 연구 앵커 재현을 위해 그 값을 N1 전용으로 고정한다.
+N1_EARLY_TP_TRIGGER_PCT = _env_float("MACD2_N1_EARLY_TP_TRIGGER_PCT", 1.5)
+N1_EARLY_TP_FLOOR_PCT = _env_float("MACD2_N1_EARLY_TP_FLOOR_PCT", 0.8)
+#: N1 전용 quality 임계값(연구 q3). 다른 모드는 QUALITY_SCORE_THRESHOLD 그대로.
+N1_QUALITY_SCORE_THRESHOLD = _env_int("MACD2_N1_QUALITY_SCORE_THRESHOLD", 3)

@@ -23,10 +23,15 @@ HIDDEN_LABELS = ("시간대별 최적거래 필터 (TW2)", "+TEGv2", "+1 DOWN_BL
 # 바뀌었다(사용자 요청). 이 파일은 "2026-09-07 숨김"을 고정하는 파일이고,
 # 남아야 하는 tier 구성만 현행에 맞춘다. 3-SLOT 숨김 자체는
 # tests/macd2/test_ui_3slot_legacy_toggles_hidden.py 가 고정한다.
+# 2026-09-20: N1 이 X2-lite/H50 과 같은 tier 의 세 번째 노출 전략으로 추가됐다.
+# 노출 순서는 X2-lite -> H50 -> N1 -> 조기익절 -> C1 이며, 기존 두 전략의
+# 상대순서는 그대로다(새 전략은 항상 뒤에만 붙는다).
 VISIBLE_LABELS = (
     f"{config.X2LITE_3SLOT_STRATEGY_NAME} + {config.X2LITE_SIZING_NAME} sizing",
     config.H50_3SLOT_STRATEGY_NAME,
+    config.N1_3SLOT_STRATEGY_NAME,
     "└ 조기익절 필터",
+    "└ C1 Peak Protection",
 )
 HIDDEN_KEYS = (
     "macd2_time_window_2_filter_toggle",
@@ -62,14 +67,16 @@ class TestHidden:
         for k in HIDDEN_KEYS:
             assert k not in keys, f"{k} 위젯이 아직 렌더된다: {keys!r}"
 
-    def test_only_the_two_strategies_plus_early_tp_remain_in_that_tier(self):
+    def test_only_the_three_strategies_plus_subfilters_remain_in_that_tier(self):
         at = _run()
         labels = [c.label for c in at.checkbox]
         for lab in VISIBLE_LABELS:
             assert lab in labels, f"{lab} 이 보여야 한다: {labels!r}"
-        _x2, _h50 = VISIBLE_LABELS[0], VISIBLE_LABELS[1]
+        _x2, _h50, _n1 = VISIBLE_LABELS[0], VISIBLE_LABELS[1], VISIBLE_LABELS[2]
         assert labels.index(_h50) == labels.index(_x2) + 1
-        assert labels.index("└ 조기익절 필터") == labels.index(_h50) + 1
+        assert labels.index(_n1) == labels.index(_h50) + 1
+        assert labels.index("└ 조기익절 필터") == labels.index(_n1) + 1
+        assert labels.index("└ C1 Peak Protection") == labels.index("└ 조기익절 필터") + 1
 
     def test_untouched_toggles_still_visible(self):
         """사용자 지시: 퀵 Profit 익절 / 무필터 09:00-11:00 은 그대로 둔다."""

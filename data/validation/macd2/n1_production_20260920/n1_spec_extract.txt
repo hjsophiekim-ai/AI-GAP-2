@@ -1,0 +1,264 @@
+================================================================================================
+1. 연구엔진이 N1 으로 run_chain 에 넘기는 인자 (axlib.SPEC['N1'])
+================================================================================================
+  d_variant cfg (H.D_VARIANTS['N1']) = {'tp1': 3.5, 'tp2': 8.0, 'tp1_ratio': 0.0, 'off_tp2': 4.0}
+  ExitParams override                = {'trail_stop_pct': 1.5, 'aft_tp_pct': 4.0}
+  q3 (QUALITY_SCORE_THRESHOLD=3)     = True
+  h50 (small whipsaw HOLD)           = True
+  그 외 run_chain 기본값 중 N1 에 영향 있는 것:
+    morning_only_bypass    = True
+    relax_mode             = None
+    teg_soft               = False
+    quality_relax          = True
+    runner                 = None
+    adaptive_default       = None
+    regime_release         = None
+    regime_scope           = 'R1'
+    watch_seed_fix         = True
+    stale_hold_bug         = False
+    day_cfg                = None
+    slot_mult              = None
+    day_loss_stop          = None
+    ax                     = None
+
+================================================================================================
+2. X2-lite ExitParams (N1 의 베이스) vs N1 ExitParams
+================================================================================================
+  필드                          X2-lite           N1   차이
+  name                        X2-lite      X2-lite
+  tp1_pct                         3.0          3.0
+  tp1_sell_ratio                  0.2          0.2
+  tp2_pct                         5.0          5.0
+  stop_loss_pct                  -1.3         -1.3
+  after_tp1_stop_pct              2.0          2.0
+  trail_trigger_pct      3.5000000000000004 3.5000000000000004
+  trail_stop_pct         2.8000000000000003          1.5  <== N1 변경
+  aft_tp_pct                      3.0          4.0  <== N1 변경
+  aft_stop_pct                   -1.2         -1.2
+  aft_be_trigger_pct              1.5          1.5
+  aft_be_stop_pct                 0.2          0.2
+  aft_lock_trigger_pct            2.0          2.0
+  aft_lock_stop_pct               1.0          1.0
+  etp_scope                      chop         chop
+  etp_trigger_pct                 1.5          1.5
+  etp_floor_pct                   0.8          0.8
+
+================================================================================================
+3. d_variant 가 래더에 실제로 주는 값 — eff_cfg/ladder_kw 재현
+================================================================================================
+  eff_cfg(trend, cfg) 규칙: off_ 접두 키는 **비추세**에만, 나머지는 추세에만 적용
+
+  ── 상위추세 ok = True ──  eff_cfg={'tp1': 3.5, 'tp2': 8.0, 'tp1_ratio': 0.0}
+     TP1              = 3.5
+     TP1 매도비중     = 0.0
+     TP2 (effective)  = 8.0    <<< adaptive 8.0 <-> 4.0
+     추가 override kw = {}  (비어 있으면 ExitParams 값 사용)
+     -> evaluate_position 에 실제 도달하는 값:
+        MORNING_TP1_PCT              = 3.5  (twpm 모듈상수를 봉마다 갈아끼움)
+        MORNING_TP1_SELL_RATIO(override)= 0.0
+        MORNING_STOP_LOSS_PCT        = -1.3
+        MORNING_AFTER_TP1_STOP_PCT   = 2.0
+        MORNING_TRAILING_TRIGGER_PCT = 3.5000000000000004
+        MORNING_TRAILING_STOP_PCT    = 1.5
+        AFTERNOON_TP_PCT             = 4.0
+        AFTERNOON_STOP_LOSS_PCT      = -1.2
+        AFTERNOON_BREAKEVEN_*        = 1.5 / 0.2
+        AFTERNOON_PROFIT_LOCK_*      = 2.0 / 1.0
+        EARLY_TP_TRIGGER_PCT         = 1.5
+        EARLY_TP_FLOOR_PCT           = 0.8
+
+  ── 상위추세 ok = False ──  eff_cfg={'tp2': 4.0}
+     TP1              = 3.0
+     TP1 매도비중     = 0.2
+     TP2 (effective)  = 4.0    <<< adaptive 8.0 <-> 4.0
+     추가 override kw = {}  (비어 있으면 ExitParams 값 사용)
+     -> evaluate_position 에 실제 도달하는 값:
+        MORNING_TP1_PCT              = 3.0  (twpm 모듈상수를 봉마다 갈아끼움)
+        MORNING_TP1_SELL_RATIO(override)= 0.2
+        MORNING_STOP_LOSS_PCT        = -1.3
+        MORNING_AFTER_TP1_STOP_PCT   = 2.0
+        MORNING_TRAILING_TRIGGER_PCT = 3.5000000000000004
+        MORNING_TRAILING_STOP_PCT    = 1.5
+        AFTERNOON_TP_PCT             = 4.0
+        AFTERNOON_STOP_LOSS_PCT      = -1.2
+        AFTERNOON_BREAKEVEN_*        = 1.5 / 0.2
+        AFTERNOON_PROFIT_LOCK_*      = 2.0 / 1.0
+        EARLY_TP_TRIGGER_PCT         = 1.5
+        EARLY_TP_FLOOR_PCT           = 0.8
+
+================================================================================================
+4. production 이 같은 자리에서 쓰는 값 (X2-lite 계열)
+================================================================================================
+  tw3.exit_overrides(X2LITE_3SLOT)      = {'stop_loss_pct_override': -1.3, 'after_tp1_stop_pct_override': 2.0, 'afternoon_tp_pct_override': 3.0, 'tp1_sell_ratio_override': 0.2, 'trailing_stop_pct_override': 2.8000000000000003}
+  tw3.exit_overrides(X2LITE_H50_3SLOT)  = {'stop_loss_pct_override': -1.3, 'after_tp1_stop_pct_override': 2.0, 'afternoon_tp_pct_override': 3.0, 'tp1_sell_ratio_override': 0.2, 'trailing_stop_pct_override': 2.8000000000000003}
+  tw3.morning_tp2_pct_override(X2LITE)  = 5.0
+  tw3.morning_tp2_pct_override(H50)     = 5.0
+  twpm 모듈 기본상수 (미패치): TP1=3.0 ratio=0.5 TP2=5.0 SL=-1.7000000000000002 afterTP1=0.3 trailTrig=3.5000000000000004 trailStop=2.0
+  config.QUALITY_SCORE_THRESHOLD        = 4   <<< 연구 N1 은 3
+  config.X2LITE_EARLY_TP_TRIGGER_PCT/FLOOR = 1.5 / 1.0
+  config.EARLY_TP_TRIGGER_PCT/FLOOR     = 1.5 / 0.8
+  etp.thresholds(X2-lite state) 는 production 에서 모드별로 갈린다 -> 아래 확인
+  etp.thresholds 소스:
+def thresholds(state) -> tuple[float, float]:
+    """현재 활성 모드에 맞는 ``(trigger_pct, floor_pct)``.
+
+    X2-lite 만 자기 값(1.5 / 1.0)을 쓰고, 나머지 전부는 기존 config.EARLY_TP_*
+    (1.5 / 0.8) 그대로다 — 기존 동작 불변."""
+    if time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_X2LITE_FAMILY:
+        return (float(config.X2LITE_EARLY_TP_TRIGGER_PCT),
+                float(config.X2LITE_EARLY_TP_FLOOR_PCT))
+    return (float(config.EARLY_TP_TRIGGER_PCT), float(config.EARLY_TP_FLOOR_PCT))
+
+  etp.is_active 소스:
+def is_active(state) -> bool:
+    """청산 판단에 참여할 수 있는지. ``is_enabled`` 에 더해 **현재 보유 포지션이
+    TW2 3-SLOT 이 관리하는 포지션**이어야 한다 — TW2/TEGv2 가 열었거나
+    브로커에서 발견돼 입양된 포지션에는 절대 적용되지 않는다."""
+    return bool(
+        is_enabled(state)
+        and getattr(state, "time_window_position_active", False)
+        and getattr(state, "time_window_active_mode", None) in time_window_3slot.MODES_3SLOT
+    )
+
+  etp.is_enabled 소스:
+def is_enabled(state) -> bool:
+    """토글 자체 + 3-SLOT 계열 전략(TW2 3-SLOT **또는** TWF 3-SLOT) 동시활성
+    여부. 둘 다 OFF면 이 필터는 자동으로 비활성이다(사용자 요청). 진입 시점의
+    CHOP 판정을 저장할지 말지를 결정하는 데도 이 함수를 쓴다 — 필터가 OFF일
+    때는 판정 자체를 계산하지 않아야 동작이 완전히 불변이기 때문이다.
+
+    2026-09-07: TWF 3-SLOT 추가로 의존 대상이 "TW2 3-SLOT 단독"에서 "3-SLOT
+    계열 둘 중 하나"로 넓어졌다. 조기익절은 전략에 하드코딩된 것이 아니라
+    두 전략이 공유하는 별도 토글이며, 각 전략에서 독립적으로 ON/OFF 된다.
+
+    2026-09-12 (X2-lite): X2-lite 는 조기익절을 **전략 사양의 일부**로 내장한다
+    (config.X2LITE_EARLY_TP_*). 그래서 이 모드에서는 ``early_tp_filter_enabled``
+    토글을 아예 참조하지 않고 항상 활성이다. 중복 적용은 구조적으로 불가능하다 —
+    worker 의 조기익절 평가 지점은 하나뿐이고, 이 함수가 True 를 한 번만
+    돌려주며, 임계값은 ``thresholds()`` 가 모드에 따라 한 쌍만 고른다."""
+    if time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_X2LITE_FAMILY:
+        return True
+    return bool(
+        getattr(state, "early_tp_filter_enabled", False)
+        and time_window_3slot.is_3slot_enabled(state)
+    )
+
+
+================================================================================================
+5. 상위추세(off_tp2 전환) 판정식 — tregime.snapshot
+================================================================================================
+def snapshot(bars_3m, held_direction) -> RegimeSnapshot:
+    """보유방향 기준 상위추세 스냅샷. 판정시점 이전 완성봉만 들어온다."""
+    work = _prepare_bars(bars_3m)
+    slow = _span_slow()
+    if work is None or len(work) < slow + 1:
+        return RegimeSnapshot(False, None, None, None, None, None, True)
+    close = float(work["close"].iloc[-1])
+    ef = _ema(work["close"], _span_fast())
+    es = _ema(work["close"], slow)
+    ema_fast = float(ef.iloc[-1])
+    ema_slow = float(es.iloc[-1])
+    slow_slope = float(es.iloc[-1] - es.iloc[-2])
+    fast_slope = float(ef.iloc[-1] - ef.iloc[-2])
+    if held_direction == Direction.UP_RED:
+        ok = (close > ema_slow) and (ema_fast > ema_slow) and (slow_slope > 0)
+    else:
+        ok = (close < ema_slow) and (ema_fast < ema_slow) and (slow_slope < 0)
+    return RegimeSnapshot(bool(ok), close, ema_fast, ema_slow, slow_slope, fast_slope, False)
+
+  EMA span: FAST=20 SLOW=50 (H50 과 **같은 config 상수**)
+  판정 프레임: bars_3m[:idx+1] (하이닉스 3분봉, 완성봉만), 방향=보유방향
+  ※ 연구엔진 trend_ok_at() 은 (idx, 방향) 캐시. 틱 루프에서도 같은 idx 값을 쓴다.
+
+================================================================================================
+6. H50 HOLD — 연구엔진이 production 함수를 직접 호출하는가
+================================================================================================
+  swh.evaluate_hold                        호출함
+  swh.evaluate_release                     호출함
+  swh.EXIT_SMALL_WHIPSAW_HOLD              호출함
+  twf.evaluate_whipsaw_watch               호출함
+  twf.evaluate_time_window_entry           호출함
+  twf.evaluate_tw2_extra_vetoes            호출함
+  tw3.resolve_slot                         호출함
+  tw3.evaluate_trend_quality               호출함
+  teg_gate.evaluate_teg                    호출함
+  etp.evaluate_entry_chop                  호출함
+  etp.evaluate                             호출함
+  twpm.evaluate_take_profit_immediate      호출함
+  twpm.evaluate_position                   호출함
+  _w1a_multiplier                          호출함
+  config.FORCE_LIQUIDATE_AT                호출함
+  config.NEW_ENTRY_CUTOFF                  호출함
+
+  swh.evaluate_release 인자: trend_break_count / started_at / now
+  config.H50_TREND_BREAK_BARS=2 H50_MAX_HOLD_MIN=60 H50_RANGE_MAX_PCT=2.35 H50_RANGE_BARS=20
+
+================================================================================================
+7. 진입 게이트 체인 — 연구엔진 순서 (run_chain 발췌)
+================================================================================================
+    base_decision = _memo(
+    base_decision = _bd3
+    bypass = False
+    if morning_only_bypass:
+    bypass = (
+    base_decision.block_reason == config.TW_REJECT_TIME_WINDOW
+    tw2_cleared = bool(base_decision.approved or bypass)
+    vetoed_x, vr = _memo(
+    tw2_cleared, base_reason = False, vr
+    final_approved = False
+    final_reason = base_reason
+    sd = tw3.resolve_slot(
+    if not sd.slot_allowed:
+    final_reason = sd.reject_reason
+    elif sd.requires_quality_gate:
+    q = _memo("tq", p_idx,
+    final_approved = q.approved
+    final_reason = (config.TW_APPROVED if q.approved
+    elif sd.requires_teg_gate:
+    t = _memo("teg", p_idx,
+    final_approved = t.approved
+    final_reason = (config.TW_APPROVED if t.approved
+    final_approved = True
+    final_reason = config.TW_APPROVED
+    final_approved = True
+    final_reason = config.TW_APPROVED
+    cd = _memo("chop", p_idx,
+    final_approved = False
+    final_reason = g
+    mult = _w1a_multiplier(entry_chop=entry_chop,
+
+================================================================================================
+8. W1a 사이징
+================================================================================================
+def _w1a_multiplier(*, entry_chop: bool, first_stop: bool, exposure: float,
+                    extra: float = 1.0) -> float:
+    raw = 1.0
+    if entry_chop:
+        raw *= float(config.X2LITE_SIZING_CHOP_MULT)
+    if first_stop:
+        raw *= float(config.X2LITE_SIZING_POST_STOP_MULT)
+    raw *= float(extra)
+    clipped = max(float(config.X2LITE_SIZING_MIN_MULT),
+                  min(float(config.X2LITE_SIZING_MAX_MULT), raw))
+    room = float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP) - exposure
+    if room <= 0:
+        return 0.0
+    return min(clipped, room)
+
+  CHOP_MULT=0.8 POST_STOP_MULT=1.2 MIN=0.25 MAX=1.5 DAILY_CAP=3.0
+
+================================================================================================
+9. 연구엔진 청산사유 목록 (실제 78일 N1 결과에서)
+================================================================================================
+  TIME_WINDOW_STOP_LOSS                  53
+  OPPOSITE_SIGNAL                        32
+  TIME_WINDOW_TP2_FULL                   27
+  SMALL_WHIPSAW_HOLD_EXIT                15
+  EARLY_TAKE_PROFIT                       6
+  FORCED_LIQUIDATION                      6
+  TIME_WINDOW_AFTERNOON_TP                6
+  TIME_WINDOW_BREAKEVEN_STOP              4
+  TIME_WINDOW_TRAILING_STOP               4
+  TIME_WINDOW_PROFIT_LOCK_STOP            2
+  WHIPSAW_WATCH_DETERIORATION_EXIT        2
+  TIME_WINDOW_AFTER_TP1_STOP              1

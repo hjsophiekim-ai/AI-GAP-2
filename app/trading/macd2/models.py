@@ -735,6 +735,28 @@ class RuntimeState:
     h50_trend_break_count: int = 0
     h50_last_checked_bar_ts: Optional[str] = None
     h50_last_hold_range_pct: Optional[float] = None
+    # ── N1 (2026-09-20) — 독립 namespace ──────────────────────────────────
+    # app/trading/macd2/n1_adaptive.py 전용. H50(h50_*) / whipsaw-watch /
+    # 조기익절(early_tp_*) / TW2 래더(time_window_*) 와 **필드를 하나도
+    # 공유하지 않는다**. 단 small whipsaw HOLD 는 N1 사양의 일부라 h50_* 를
+    # 그대로 쓴다(두 모드는 상호배타이므로 섞일 수 없다 — N1_SPEC.md 3-3).
+    #   time_window_n1_filter_enabled : 전략 선택 플래그(상호배타 tier). 기본 False.
+    #   n1_last_eval_bar_ts : adaptive 판정을 마친 완성봉(멱등키). 같은 봉에서
+    #       재계산하지 않고, 그 사이 틱 판단도 아래 캐시값을 쓴다.
+    #   n1_regime_state     : "TREND" / "OFF_TREND" / "INSUFFICIENT_BARS"
+    #   n1_effective_tp2    : 이 봉에 적용 중인 TP2(%) — 8.0 또는 4.0
+    #   n1_effective_tp1 / n1_effective_tp1_ratio : 같은 봉의 TP1 레벨·매도비중
+    # 아래 5개는 **보유 포지션 수명에 종속**된다 — 진입/청산/reconcile/일자변경
+    # 리셋 지점에서 n1_adaptive.clear() 로 함께 초기화된다.
+    time_window_n1_filter_enabled: bool = False
+    time_window_n1_filter_enabled_at: Optional[str] = None
+    time_window_n1_filter_enabled_by: Optional[str] = None
+    time_window_n1_filter_version: str = ""
+    n1_last_eval_bar_ts: Optional[str] = None
+    n1_regime_state: Optional[str] = None
+    n1_effective_tp2: Optional[float] = None
+    n1_effective_tp1: Optional[float] = None
+    n1_effective_tp1_ratio: Optional[float] = None
 
     # 조기익절 필터 (2026-09-03 사용자 요청) — TW2 3-SLOT 전용으로 따로 켜고 끄는
     # risk-management 단계 서브필터. 진입/슬롯/T+3/TW2/TEGv2 로직과는 무관하며
@@ -763,6 +785,30 @@ class RuntimeState:
     last_entry_chop_conditions: Optional[dict[str, bool]] = None
     last_early_tp_armed_at: Optional[str] = None
     last_early_tp_fired_at: Optional[str] = None
+    # ── C1 Peak Protection (2026-09-19) — 독립 namespace ────────────────────
+    # app/trading/macd2/peak_protection.py 전용 상태. H50(h50_*) / whipsaw-watch
+    # (whipsaw_watch_*) / 조기익절(early_tp_*) / TW2 래더(time_window_*) 와
+    # **필드를 하나도 공유하지 않는다** — 어느 쪽을 만져도 다른 쪽 동작이
+    # 바뀌지 않게 하기 위해서다.
+    #   c1_peak_protection_enabled : 사용자 토글(세션/재시작을 넘어 유지). 기본 False.
+    #   c1_armed                   : MFE 가 C1_ARM_MFE_PCT 에 도달했는가
+    #   c1_armed_at                : 최초 arm 시각(ISO), 진단/원장용
+    #   c1_peak_net_return         : C1 전용 MFE(틱 관측, %). early_tp_peak_net_
+    #       return 과 같은 이유로 production 의 time_window_peak_net_return 과
+    #       분리한다(그 필드는 완성봉 전용이며 건드리면 필터 OFF 동작이 바뀐다).
+    #   c1_last_checked_bar_ts     : 같은 완성봉을 두 번 평가하지 않기 위한 멱등키
+    #   c1_triggered_at            : 마지막 발동 시각(ISO), 진단용
+    # 아래 5개(토글 제외)는 **보유 포지션 수명에 종속**된다 — 진입/청산/
+    # reconcile/일자변경 리셋 지점에서 peak_protection.clear() 로 함께 초기화된다.
+    c1_peak_protection_enabled: bool = False
+    c1_peak_protection_enabled_at: Optional[str] = None
+    c1_peak_protection_enabled_by: Optional[str] = None
+    c1_peak_protection_version: str = ""
+    c1_armed: bool = False
+    c1_armed_at: Optional[str] = None
+    c1_peak_net_return: float = 0.0
+    c1_last_checked_bar_ts: Optional[str] = None
+    c1_triggered_at: Optional[str] = None
     last_tw2_3slot_quality_passed: Optional[int] = None
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None
     last_tw2_3slot_teg_approved: Optional[bool] = None
