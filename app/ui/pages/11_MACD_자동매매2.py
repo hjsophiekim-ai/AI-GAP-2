@@ -321,6 +321,7 @@ _EXIT_REASON_DISPLAY_LABELS = {
     macd2_config.EXIT_TW_BREAKEVEN_STOP: "본전 손절",
     macd2_config.EXIT_TW_PROFIT_LOCK_STOP: "프로핏락 손절",
     macd2_config.EXIT_EARLY_TAKE_PROFIT: "조기익절",
+    macd2_config.EXIT_C1_PEAK_PROTECTION: "C1 고점보호",
     "RECOVERED_TO_FLAT": "청산 확인(정합화)",
     "END_OF_DATA": "데이터 종료",
 }
@@ -1319,6 +1320,74 @@ with _early_tp_cols[1]:
             st.caption(
                 f"최근 armed={_hhmmss(getattr(state, 'last_early_tp_armed_at', None)) or '-'} · "
                 f"최근 발동={_hhmmss(getattr(state, 'last_early_tp_fired_at', None)) or '-'}"
+            )
+
+# ── C1 Peak Protection (2026-09-19) ───────────────────────────────────────
+# N1 계열(X2-lite / H50) 래더 위에 얹는 **청산 전용 overlay**. 새 전략 모드가
+# 아니다 — 진입/슬롯/T+3/quality/TEG/W1a/TP1/TP2/off_tp2/손절/trailing/강제청산은
+# 한 줄도 바뀌지 않는다. N1 계열이 아니면 비활성으로 렌더하고 이유를 표시한다.
+_c1_family_live = bool(getattr(state, "time_window_x2lite_filter_enabled", False)) or \
+                  bool(getattr(state, "time_window_h50_filter_enabled", False))
+if (not _c1_family_live) and st.session_state.get("macd2_c1_peak_protection_toggle"):
+    st.session_state["macd2_c1_peak_protection_toggle"] = False
+
+_c1_cols = st.columns([1.4, 1.6])
+with _c1_cols[0]:
+    _c1_on = st.checkbox(
+        "└ C1 Peak Protection",
+        value=bool(getattr(state, "c1_peak_protection_enabled", False)),
+        key="macd2_c1_peak_protection_toggle",
+        disabled=not _c1_family_live,
+        help=(
+            f"N1 포지션이 +{macd2_config.C1_ARM_MFE_PCT:.1f}% 이상 수익권 도달 후 "
+            f"MACD gap 반전 + peak 대비 {macd2_config.C1_GIVEBACK_PCT:.1f}%p 반납 시 전량청산. "
+            "청산측 overlay 이며 진입/슬롯/T+3/quality/TEG/W1a 사이징은 전혀 건드리지 않습니다. "
+            f"① 보유 포지션의 MFE(틱 관측 최고 순수익)가 +{macd2_config.C1_ARM_MFE_PCT:.1f}%에 "
+            "도달하면 armed 됩니다. ② 그 뒤 **완성 3분봉**에서 MACD-Signal gap 이 보유방향 "
+            "반대로 부호 전환되고(레버리지 보유: gap≤0 / 인버스 보유: gap≥0) 동시에 MFE 대비 "
+            f"{macd2_config.C1_GIVEBACK_PCT:.1f}%p 이상 반납했으면 잔량을 전량 청산합니다. "
+            "단순 gap 축소로는 발동하지 않습니다 — 부호가 넘어가야 합니다. "
+            "③ 기존 청산이 항상 우선합니다 — TP1/TP2/오후TP(틱 즉시), 손절/after-TP1-stop/"
+            "trailing(완성봉), 조기익절, 강제청산, 반대신호 switch, whipsaw-watch, H50 을 "
+            "먼저 전부 평가하고 그중 아무것도 발동하지 않았을 때만 C1 이 판단합니다. "
+            "검증(data/validation/macd2/c1_peak_protection_20260919/README.md, 78영업일 0527~0918 N1 기준): "
+            "복리 401.09%→438.63%(+37.54%p), 30일 65.12%→66.48%, PF 2.587→2.658, "
+            "MDD -8.91% 동일, -Top10 +13.39, 진입집합 diff 0. 발동 7건 전부 개선(악화 0건), "
+            "TP2 8% runner 9건 손상 0. WF 6분할 4승 0패 2무, bootstrap C1>N1 99.93%, "
+            "위약 대비 상위 0.3~0.4%. 민감도 plateau: arm 4.5~6.5 × give 1.0~1.5 전 구간 양수. "
+            "다만 등급은 PROMISING 입니다 — OOS 구간이 없고(78일 전부 인샘플), 발동이 7건뿐이며 "
+            "개선 크기의 83%가 7월 4건에서 나옵니다. 30일 창 기여(+1.36%p)는 +3분 체결지연이면 "
+            "0, +0.50%p 슬리피지면 -0.30 으로 얇습니다. 그래서 **기본 OFF** 입니다. "
+            "X2-lite / H50(N1 계열) 모드에서만 켤 수 있고, 다른 모드로 바꾸면 자동으로 꺼집니다."
+        ),
+    )
+with _c1_cols[1]:
+    if not _c1_family_live:
+        st.caption("C1 Peak Protection=OFF · X2-lite 또는 H50(N1 계열)을 켜야 사용할 수 있습니다(자동 비활성화)")
+    elif bool(_c1_on) != bool(getattr(state, "c1_peak_protection_enabled", False)):
+        res = service.set_c1_peak_protection_enabled(bool(_c1_on), changed_by="ui")
+        if res.get("ok"):
+            st.caption(f"C1 Peak Protection → {'ON' if _c1_on else 'OFF'}")
+            st.rerun()
+        else:
+            st.warning(
+                "C1 Peak Protection 을 켤 수 없습니다: "
+                + str(res.get("message") or res.get("reason") or "알 수 없는 사유")
+            )
+    else:
+        st.caption(
+            f"C1 Peak Protection={'ON' if getattr(state, 'c1_peak_protection_enabled', False) else 'OFF'} · "
+            f"arm MFE +{macd2_config.C1_ARM_MFE_PCT:.1f}% → 반납 허용 {macd2_config.C1_GIVEBACK_PCT:.1f}%p"
+            + (
+                f" · 현재 MFE {float(getattr(state, 'c1_peak_net_return', 0.0) or 0.0):+.2f}%"
+                f" · {'ARMED' if getattr(state, 'c1_armed', False) else '미무장'}"
+                if getattr(state, "time_window_position_active", False) else ""
+            )
+        )
+        if getattr(state, "c1_armed_at", None) or getattr(state, "c1_triggered_at", None):
+            st.caption(
+                f"최근 armed={_hhmmss(getattr(state, 'c1_armed_at', None)) or '-'} · "
+                f"최근 발동={_hhmmss(getattr(state, 'c1_triggered_at', None)) or '-'}"
             )
 
 # ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────

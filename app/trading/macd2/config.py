@@ -1507,3 +1507,50 @@ RESIDUAL_CLEANUP_MAX_QTY = _env_int("MACD2_RESIDUAL_CLEANUP_MAX_QTY", 5)
 RESIDUAL_CLEANUP_SOURCE = "RESIDUAL_CLEANUP"
 RESIDUAL_CLEANUP_RECONCILE_RETRIES = 3
 RESIDUAL_CLEANUP_RECONCILE_DELAY_SEC = 0.5
+
+
+# ── C1 Peak Protection (2026-09-19 연구, 기본 OFF) ─────────────────────────
+# N1 계열 래더 위에 얹는 **청산 전용 overlay**. 보유 포지션의 MFE(틱 관측)가
+# C1_ARM_MFE_PCT 에 도달한 뒤, 완성 3분봉에서
+#   (a) MACD-Signal gap 이 보유방향 반대로 **부호 전환** (단순 축소 아님), 그리고
+#   (b) MFE 대비 C1_GIVEBACK_PCT 이상 반납
+# 이 동시에 성립하면 잔량을 전량청산한다. 판정/청산 전부
+# app/trading/macd2/peak_protection.py 의 순수 함수로만 이뤄지고, 진입 로직·
+# off_tp2(8%↔4%) 적응·TP1/TP2/손절/trailing/강제청산·W1a sizing·슬롯/T+3/
+# quality/TEG 는 한 줄도 바뀌지 않는다. C1 은 그 래더가 전부 HOLD 라고 답한
+# 뒤에만 발언한다(= worker 에서 _advance_h50_hold 와 같은 자리).
+#
+# ■ 왜 기존 상수를 재사용하지 않고 전용 상수를 두는가
+#   5.0 과 같은 값을 갖는 기존 상수: MORNING_TP2*100 = 5.0,
+#                                    X2LITE_MORNING_TP2*100 = 5.0
+#   1.5 와 같은 값을 갖는 기존 상수: EARLY_TP_TRIGGER_PCT = 1.5,
+#                                    X2LITE_EARLY_TP_TRIGGER_PCT = 1.5
+#   값은 같지만 **의미가 다르다** — 앞의 둘은 "TP2 로 전량익절하는 목표수익률",
+#   뒤의 둘은 "조기익절 필터가 armed 되는 MFE" 다. C1 의 5.0 은 "보호를 시작할
+#   MFE", 1.5 는 "peak 대비 허용 반납폭(%p)" 이라 성격이 전혀 다르고, 누가
+#   MORNING_TP2 나 EARLY_TP_TRIGGER_PCT 를 조정하면 C1 임계값이 **조용히 함께
+#   움직인다**. 그래서 의도적으로 전용 상수를 둔다(중복 상수 사유).
+#   출처 자체는 그 값들이 맞다: 5.0 = config.MORNING_TP2*100(2026-09-19 연구가
+#   arm 후보를 고른 근거), 1.5 = N1 trailing_stop(= EARLY_TP_TRIGGER_PCT).
+#
+# ■ 검증 요약 (2026-09-19, 78영업일 0527~0918, N1 기준)
+#   78일 401.09 -> 438.63 (+37.54%p) / 30일 65.12 -> 66.48 (+1.36%p)
+#   PF 2.587 -> 2.658, MDD -8.906 동일, -Top10 +13.39
+#   발동 7건 전부 개선(악화 0), TP2 8% runner 9건 손상 0.0000, 진입집합 diff 0
+#   WF 6분할 4승 0패 2무, bootstrap C1>N1 99.93%
+#   민감도 plateau: arm 4.5~6.5 x give 1.0~1.5 전 구간 양수
+#   등급 PROMISING (OOS 없음 / 발동 7건 / 크기의 83%가 7월 4건)
+#
+# 기본값은 반드시 False. 마이그레이션·재시작으로 저절로 켜지지 않는다
+# (state_store 가 저장된 값이 없으면 항상 이 기본값을 쓴다).
+C1_ENABLED = _env_bool("MACD2_C1_ENABLED", True)
+#: 사용자 토글의 기본값. **반드시 False** — 켜는 것은 명시적 조작뿐이다.
+C1_FILTER_DEFAULT = _env_bool("MACD2_C1_FILTER_DEFAULT", False)
+C1_FILTER_VERSION = "C1_PEAK_PROTECTION_V1_20260919"
+#: 보호를 시작할 MFE(%). 이 값 미만에서는 C1 이 절대 발동하지 않는다.
+C1_ARM_MFE_PCT = _env_float("MACD2_C1_ARM_MFE_PCT", 5.0)
+#: MFE 대비 허용 반납폭(%p). peak - net >= 이 값이면 (gap 반전 시) 청산.
+C1_GIVEBACK_PCT = _env_float("MACD2_C1_GIVEBACK_PCT", 1.5)
+
+#: C1 이 내는 유일한 청산 사유. peak_protection.EXIT_C1_PEAK_PROTECTION 과 동일.
+EXIT_C1_PEAK_PROTECTION = "C1_PEAK_PROTECTION_EXIT"

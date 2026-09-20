@@ -89,6 +89,13 @@ def default_state() -> RuntimeState:
     state.h50_last_hold_range_pct = None
     state.early_tp_filter_enabled = bool(getattr(config, "EARLY_TP_FILTER_DEFAULT", False))
     state.early_tp_filter_version = config.EARLY_TP_FILTER_VERSION
+    # C1 Peak Protection (2026-09-19) — 토글은 사용자 설정이므로 여기서
+    # 건드리지 않는다. 보유기간 상태만 되돌린다(peak_protection.clear 과 동일).
+    state.c1_armed = False
+    state.c1_armed_at = None
+    state.c1_peak_net_return = 0.0
+    state.c1_last_checked_bar_ts = None
+    state.c1_triggered_at = None
     state.no_filter_0900_1100_enabled = bool(getattr(config, "NO_FILTER_0900_1100_FILTER_DEFAULT", False))
     state.no_filter_0900_1100_filter_version = config.NO_FILTER_0900_1100_FILTER_VERSION
     state.quick_profit_enabled = bool(getattr(config, "QUICK_PROFIT_FILTER_DEFAULT", False))
@@ -409,6 +416,16 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "h50_last_checked_bar_ts": state.h50_last_checked_bar_ts,
         "h50_last_hold_range_pct": state.h50_last_hold_range_pct,
         # 조기익절 필터 (TW2 3-SLOT 전용 서브필터, 2026-09-03)
+        "c1_peak_protection_enabled": bool(state.c1_peak_protection_enabled),
+        "c1_peak_protection_enabled_at": state.c1_peak_protection_enabled_at,
+        "c1_peak_protection_enabled_by": state.c1_peak_protection_enabled_by,
+        "c1_peak_protection_version": (state.c1_peak_protection_version
+                                       or config.C1_FILTER_VERSION),
+        "c1_armed": bool(state.c1_armed),
+        "c1_armed_at": state.c1_armed_at,
+        "c1_peak_net_return": float(state.c1_peak_net_return or 0.0),
+        "c1_last_checked_bar_ts": state.c1_last_checked_bar_ts,
+        "c1_triggered_at": state.c1_triggered_at,
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
         "early_tp_filter_enabled_by": state.early_tp_filter_enabled_by,
@@ -665,6 +682,22 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         # 2026-09-07: 의존 대상이 TW2 3-SLOT 단독에서 "3-SLOT 계열 둘 중
         # 하나"로 넓어졌다(조기익절은 두 전략 공통 서브필터).
         early_tp_filter_enabled = False
+    # ── C1 Peak Protection (2026-09-19) ────────────────────────────────
+    # 하위호환: C1 필드가 없는 과거 state 는 전부 config 기본값으로 떨어지고,
+    # C1_FILTER_DEFAULT 가 False 이므로 **마이그레이션으로 저절로 켜지지 않는다**
+    # (H50 처럼 ADOPT_ON_MIGRATION 인수인계 규칙을 일부러 두지 않았다).
+    # 버전이 바뀌면 기존 필터들과 같은 규약으로 기본값(OFF)으로 되돌린다.
+    c1_enabled_default = bool(getattr(config, "C1_FILTER_DEFAULT", False))
+    _stored_c1_ver = str(raw.get("c1_peak_protection_version") or "")
+    c1_peak_protection_version = _stored_c1_ver or config.C1_FILTER_VERSION
+    c1_peak_protection_enabled = bool(raw.get("c1_peak_protection_enabled", c1_enabled_default))
+    if _stored_c1_ver and _stored_c1_ver != config.C1_FILTER_VERSION:
+        c1_peak_protection_version = config.C1_FILTER_VERSION
+        c1_peak_protection_enabled = c1_enabled_default
+    # C1 은 N1 계열(X2-lite 계열 래더) 전용 overlay 다 — 그 모드가 아니면
+    # 복원 시점에 꺼 둔다(조기익절이 3-SLOT 계열에 의존하는 것과 같은 관례).
+    if not (time_window_x2lite_filter_enabled or time_window_h50_filter_enabled):
+        c1_peak_protection_enabled = False
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
     down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
@@ -1012,6 +1045,15 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         x2lite_first_trade_stop_loss=bool(raw.get("x2lite_first_trade_stop_loss", False)),
         x2lite_last_applied_sizing=raw.get("x2lite_last_applied_sizing"),
         time_window_3slot_filter_version=time_window_3slot_filter_version,
+        c1_peak_protection_enabled=c1_peak_protection_enabled,
+        c1_peak_protection_enabled_at=raw.get("c1_peak_protection_enabled_at"),
+        c1_peak_protection_enabled_by=raw.get("c1_peak_protection_enabled_by"),
+        c1_peak_protection_version=c1_peak_protection_version,
+        c1_armed=bool(raw.get("c1_armed", False)),
+        c1_armed_at=raw.get("c1_armed_at"),
+        c1_peak_net_return=float(raw.get("c1_peak_net_return") or 0.0),
+        c1_last_checked_bar_ts=raw.get("c1_last_checked_bar_ts"),
+        c1_triggered_at=raw.get("c1_triggered_at"),
         early_tp_filter_enabled=early_tp_filter_enabled,
         early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),
         early_tp_filter_enabled_by=raw.get("early_tp_filter_enabled_by"),
