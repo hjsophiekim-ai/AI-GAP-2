@@ -828,6 +828,14 @@ class RuntimeState:
     c1_last_checked_bar_ts: Optional[str] = None
     #   c1_owner_epoch : h50_owner_epoch 과 같은 계약 (2026-09-21).
     c1_owner_epoch: int = 0
+    # ── P2 슬롯 배분 사이징 토글 (2026-09-21) ──────────────────────────
+    # UI 에서 켜고 끄는 **사이징 전용** 토글. 진입/청산/슬롯/T+3 는 전혀
+    # 건드리지 않고 이미 승인된 진입의 주문수량 배수만 바꾼다.
+    # N1 + C1 이 **둘 다 켜져 있을 때만** 실제로 적용된다
+    # (position_sizing.p2_active 참고). 기본 OFF.
+    p2_sizing_enabled: bool = False
+    p2_sizing_enabled_at: Optional[str] = None
+    p2_sizing_enabled_by: Optional[str] = None
     c1_triggered_at: Optional[str] = None
     last_tw2_3slot_quality_passed: Optional[int] = None
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None

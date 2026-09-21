@@ -40,6 +40,7 @@ from app.config import get_config, get_kis_account_config, mask_account  # noqa:
 from app.trading.macd2 import config as macd2_config
 from app.trading.macd2 import time_window_3slot as macd2_time_window_3slot  # noqa: E402
 from app.trading.macd2 import early_take_profit  # noqa: E402
+from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
 from app.trading.macd2.service import get_service  # noqa: E402
 
@@ -1490,6 +1491,72 @@ with _c1_cols[1]:
                 f"최근 armed={_hhmmss(getattr(state, 'c1_armed_at', None)) or '-'} · "
                 f"최근 발동={_hhmmss(getattr(state, 'c1_triggered_at', None)) or '-'}"
             )
+
+# ── P2 슬롯 배분 사이징 (2026-09-21) ──────────────────────────────────────
+# **사이징 전용** 토글. 진입/슬롯/T+3/quality/TEG/청산은 한 줄도 바뀌지 않고
+# 이미 승인된 진입의 주문수량 배수만 바뀐다. N1 + C1 이 **둘 다** 켜져 있어야
+# 켤 수 있다 — 앵커가 그 조합에서만 측정됐기 때문이다.
+_p2_n1 = bool(getattr(state, "time_window_n1_filter_enabled", False))
+_p2_c1 = bool(getattr(state, "c1_peak_protection_enabled", False))
+_p2_ready = _p2_n1 and _p2_c1
+_p2_env = bool(macd2_position_sizing.forced_by_env())
+if (not _p2_ready) and st.session_state.get("macd2_p2_sizing_toggle"):
+    st.session_state["macd2_p2_sizing_toggle"] = False
+
+_p2_cols = st.columns([1.4, 1.6])
+with _p2_cols[0]:
+    _p2_on = st.checkbox(
+        "└ P2 슬롯 배분 사이징",
+        value=bool(getattr(state, "p2_sizing_enabled", False)),
+        key="macd2_p2_sizing_toggle",
+        disabled=not _p2_ready,
+        help=(
+            f"주문금액 배수만 바꿉니다 — slot1·slot2 x{macd2_config.P2_SIZING_SLOT12_MULT:.2f}, "
+            f"오전(~11:00) slot3 x{macd2_config.P2_SIZING_MORNING_SLOT3_MULT:.2f}, "
+            f"오후 slot3 x{macd2_config.P2_SIZING_AFTERNOON_SLOT3_MULT:.2f}. "
+            "진입 판정·슬롯 배분·T+3·quality·TEG·하루 3회 상한·TP1/TP2·손절·trailing·"
+            "조기익절·C1·H50 은 전혀 건드리지 않습니다. "
+            "오전/오후 기준은 기존 resolve_slot 의 판정을 그대로 쓰고(새 시간기준 없음), "
+            "하루 원금한도도 기존 노출상한 3.00 x 1,000만원 = 3,000만원 그대로입니다. "
+            "검증(research_20260921_p2_budget_cap/, 78영업일 0527~0918 N1+C1 기준): "
+            "실현손익 17,641,769 → 18,622,312원(+980,543), PF 2.658→2.785, "
+            "MDD -3.08%→-2.89%, 예산사용률 67.2%→66.9%(덜 쓰고 더 법니다), "
+            "진입집합/청산/러너 diff 0, 일예산 초과 0일. LOO 8/8 양수, "
+            "leave-two-out 음수 0/28, 부트스트랩 99.49%. "
+            "다만 등급은 **PROMISING** 이지 ADOPT 가 아닙니다 — placebo 94.56%로 "
+            "기준(95%)에 미달하고, uplift 의 74.7%는 slot3 재배분이 아니라 "
+            "front x1.05 레버리지입니다. 오전 slot3 표본이 78일에 8건뿐이라 "
+            "1~2개월 추가 관측 후 재판단을 권합니다. 그래서 **기본 OFF** 입니다. "
+            "**N1 + C1 이 모두 켜져 있어야** 켤 수 있고, 둘 중 하나라도 끄면 "
+            "자동으로 꺼집니다."
+        ),
+    )
+with _p2_cols[1]:
+    if not _p2_ready:
+        _missing = " + ".join(x for x, on in (("N1", _p2_n1), ("C1", _p2_c1)) if not on)
+        st.caption(f"P2 사이징=OFF · {_missing} 을(를) 켜야 사용할 수 있습니다(자동 비활성화)")
+    elif bool(_p2_on) != bool(getattr(state, "p2_sizing_enabled", False)):
+        _res = service.set_p2_sizing_enabled(bool(_p2_on), changed_by="ui")
+        if _res.get("ok"):
+            st.caption(f"P2 사이징 → {'ON' if _p2_on else 'OFF'}")
+            st.rerun()
+        else:
+            st.warning(
+                "P2 사이징을 켤 수 없습니다: "
+                + str(_res.get("message") or _res.get("reason") or "알 수 없는 사유")
+            )
+    else:
+        _p2_live = bool(getattr(state, "p2_sizing_enabled", False)) or _p2_env
+        st.caption(
+            f"P2 사이징={'ON' if _p2_live else 'OFF'} · "
+            f"slot1·2 x{macd2_config.P2_SIZING_SLOT12_MULT:.2f} / "
+            f"오전slot3 x{macd2_config.P2_SIZING_MORNING_SLOT3_MULT:.2f} / "
+            f"오후slot3 x{macd2_config.P2_SIZING_AFTERNOON_SLOT3_MULT:.2f} · "
+            f"하루한도 {macd2_config.DEFAULT_BUDGET * macd2_config.X2LITE_SIZING_DAILY_EXPOSURE_CAP:,.0f}원"
+        )
+        if _p2_env and not bool(getattr(state, "p2_sizing_enabled", False)):
+            st.caption("⚠ 환경변수 MACD2_SIZING_MODE=P2 로 강제 ON 상태입니다 — 토글로 끌 수 없습니다.")
+
 
 # ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
 # 사용자 노출 전략을 TW2 3-SLOT / TW TEG 3-SLOT 두 개로 정리하면서 감췄다.

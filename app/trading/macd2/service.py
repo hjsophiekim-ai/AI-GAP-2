@@ -32,6 +32,7 @@ from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
 from app.trading.macd2 import peak_protection
 from app.trading.macd2 import n1_adaptive
+from app.trading.macd2 import position_sizing
 from app.trading.macd2 import small_whipsaw_hold
 from app.trading.macd2 import time_window_3slot
 from app.trading.macd2.broker_adapter import create_macd2_broker
@@ -1193,6 +1194,65 @@ class Macd2Service:
             "c1_armed": bool(state.c1_armed),
             "c1_arm_mfe_pct": float(config.C1_ARM_MFE_PCT),
             "c1_giveback_pct": float(config.C1_GIVEBACK_PCT),
+        }
+
+    def set_p2_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle **P2 슬롯 배분 사이징** (2026-09-21 연구).
+
+        **사이징 전용** 토글이다. 진입 판정 / 슬롯 배분 / T+3 / quality / TEG /
+        하루 3회 상한 / TP1 / TP2 / 손절 / trailing / 조기익절 / C1 / H50 은 한 줄도
+        바뀌지 않는다 — 이미 승인된 진입의 **주문수량 배수**만 바꾼다
+        (app/trading/macd2/position_sizing.py 참고).
+
+            slot1 / slot2            x1.05
+            slot3 오전(~11:00)        x0.25   (= X2LITE_SIZING_MIN_MULT, 새 값 아님)
+            slot3 오후                x1.00   (현행 유지)
+
+        하루 원금한도는 기존 X2LITE_SIZING_DAILY_EXPOSURE_CAP(3.00) x
+        DEFAULT_BUDGET(10,000,000) = 30,000,000 KRW 가 그대로 담당한다. 새 cap 도,
+        새 시간기준도 만들지 않는다(오전/오후는 resolve_slot 의 session 을 그대로 쓴다).
+
+        검증: research_20260921_p2_budget_cap/ — 78영업일 N1+C1 기준
+        17,641,769 -> 18,622,312 KRW (+980,543), PF 2.658->2.785, MDD -3.08%->-2.89%,
+        예산사용률 67.2%->66.9%(**덜 쓰고 더 번다**), 진입집합/청산/러너 diff 0,
+        일예산 초과 0. 등급은 **PROMISING** 이지 ADOPT 가 아니다 — placebo 94.56%
+        (기준 95%)이고 uplift 의 74.7% 가 slot3 재배분이 아니라 front x1.05
+        레버리지다. 오전 slot3 표본이 8건뿐이라 1~2개월 추가 관측 권고. 그래서
+        **기본 OFF** 다.
+
+        **N1 과 C1 이 둘 다 켜져 있을 때만** 켤 수 있다 — 앵커가 그 조합에서만
+        측정됐기 때문이다. 상태만 갱신하고 주문을 내지 않는다.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(getattr(state, "p2_sizing_enabled", False))
+        n1_on = bool(state.time_window_n1_filter_enabled)
+        c1_on = bool(state.c1_peak_protection_enabled)
+        if enabled_bool and not (n1_on and c1_on):
+            missing = " + ".join(x for x, on in (("N1", n1_on), ("C1", c1_on)) if not on)
+            return {
+                "ok": False,
+                "reason": "P2_REQUIRES_N1_AND_C1",
+                "message": f"P2 사이징은 N1 + C1 이 모두 켜져 있어야 합니다 (현재 꺼짐: {missing}).",
+                "p2_sizing_enabled": prev,
+                "previous": prev,
+            }
+        state.p2_sizing_enabled = enabled_bool
+        state.p2_sizing_enabled_at = datetime.now(KST).isoformat()
+        state.p2_sizing_enabled_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        return {
+            "ok": True,
+            "p2_sizing_enabled": enabled_bool,
+            "previous": prev,
+            "p2_sizing_enabled_at": state.p2_sizing_enabled_at,
+            "p2_sizing_enabled_by": state.p2_sizing_enabled_by,
+            "sizing_mode": position_sizing.sizing_mode(state),
+            "forced_by_env": position_sizing.forced_by_env(),
+            "slot12_mult": float(config.P2_SIZING_SLOT12_MULT),
+            "morning_slot3_mult": float(config.P2_SIZING_MORNING_SLOT3_MULT),
+            "afternoon_slot3_mult": float(config.P2_SIZING_AFTERNOON_SLOT3_MULT),
+            "daily_capital": float(config.DEFAULT_BUDGET) * float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP),
         }
 
     def set_time_window_n1_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
