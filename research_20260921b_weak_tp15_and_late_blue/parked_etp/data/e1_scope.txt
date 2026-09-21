@@ -1,0 +1,29 @@
+========================================================================
+§0 BASE 앵커
+========================================================================
+  거래수                            158 / 158           OK
+  78d realized P/L          17641769 / 17641769      OK
+  PF                           2.658 / 2.658         OK
+  MDD%                         -3.08 / -3.08         OK
+  평균 예산사용률%                     67.2 / 67.2          OK
+  runner(peak>=8%)                 9 / 9             OK
+  ==> 일치
+
+========================================================================
+청산사유 분포 (158건)
+========================================================================
+  TIME_WINDOW_STOP_LOSS               53건  평균net  -1.813%  KRW   -9,433,877
+  OPPOSITE_SIGNAL                     28건  평균net  +0.630%  KRW   +1,807,853
+  TIME_WINDOW_TP2_FULL                25건  평균net  +5.641%  KRW  +14,408,980
+  SMALL_WHIPSAW_HOLD_EXIT             14건  평균net  +1.995%  KRW   +2,816,894
+  PP_EXIT                              7건  평균net  +4.908%  KRW   +3,631,186
+  EARLY_TAKE_PROFIT                    6건  평균net  +0.349%  KRW     +191,744
+  FORCED_LIQUIDATION                   6건  평균net  +1.049%  KRW     +704,759
+  TIME_WINDOW_AFTERNOON_TP             6건  평균net  +4.243%  KRW   +2,461,098
+  TIME_WINDOW_BREAKEVEN_STOP           4건  평균net  +0.101%  KRW      +37,749
+  TIME_WINDOW_TRAILING_STOP            4건  평균net  +1.440%  KRW     +599,678
+  TIME_WINDOW_PROFIT_LOCK_STOP         2건  평균net  +0.682%  KRW     +140,280
+  WHIPSAW_WATCH_DETERIORATION_EXIT     2건  평균net  +0.313%  KRW      +62,614
+  TIME_WINDOW_AFTER_TP1_STOP           1건  평균net  +2.130%  KRW     +212,811
+
+  ** ETP = 6건 / 158 = 3.8%  KRW 기여 +191,744 (+1.09% of BASE) **
