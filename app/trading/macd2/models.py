@@ -253,6 +253,15 @@ class RuntimeState:
     last_resolve_error_at: Optional[str] = None
     position_reconcile_diag: dict[str, Any] = field(default_factory=dict)
     last_position_reconcile_at: Optional[str] = None
+    # ── 포지션 정합성 게이트 (2026-09-21 실사고) ─────────────────────────
+    #   last_position_reconcile_result : 직전 reconcile 의 판정값 문자열.
+    #       POSITION_DATA_ERROR / POSITION_MISMATCH 처럼 "브로커 보유수량을
+    #       신뢰할 수 없는" 상태에서는 **신규 매수를 절대 내지 않는다**.
+    #       청산(매도)은 막지 않는다 — 막으면 보유 포지션이 무방비가 된다.
+    #   position_epoch : 포지션 한 번 = 1 증가하는 일련번호. position-scoped
+    #       상태(H50/C1)가 "어느 포지션의 것인지" 식별하는 유일한 키다.
+    last_position_reconcile_result: Optional[str] = None
+    position_epoch: int = 0
     strategy_name: str = "MACD2"
     strategy_version: str = ""
     signal_rule: str = ""
@@ -735,6 +744,15 @@ class RuntimeState:
     h50_trend_break_count: int = 0
     h50_last_checked_bar_ts: Optional[str] = None
     h50_last_hold_range_pct: Optional[float] = None
+    #   h50_owner_epoch : 이 HOLD 가 어느 포지션의 것인가 (position_epoch 사본).
+    #       2026-09-21 실사고: 수동매도로 포지션이 시스템 밖에서 사라졌는데
+    #       HOLD 가 남아, 126분 뒤 **새 포지션**을 진입 3초 만에 청산했다.
+    #       owner 가 현재 포지션과 다르면 그 HOLD 는 stale 이며 절대 청산
+    #       신호를 내지 못한다(clear + 경고만).
+    h50_owner_epoch: int = 0
+    #   last_h50_stale_discarded_at : stale HOLD 를 폐기한 마지막 시각(진단용).
+    #       값이 채워져 있으면 '청산되지 않고 버려진' 사건이 있었다는 뜻이다.
+    last_h50_stale_discarded_at: Optional[str] = None
     # ── N1 (2026-09-20) — 독립 namespace ──────────────────────────────────
     # app/trading/macd2/n1_adaptive.py 전용. H50(h50_*) / whipsaw-watch /
     # 조기익절(early_tp_*) / TW2 래더(time_window_*) 와 **필드를 하나도
@@ -808,6 +826,8 @@ class RuntimeState:
     c1_armed_at: Optional[str] = None
     c1_peak_net_return: float = 0.0
     c1_last_checked_bar_ts: Optional[str] = None
+    #   c1_owner_epoch : h50_owner_epoch 과 같은 계약 (2026-09-21).
+    c1_owner_epoch: int = 0
     c1_triggered_at: Optional[str] = None
     last_tw2_3slot_quality_passed: Optional[int] = None
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None

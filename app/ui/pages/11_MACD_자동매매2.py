@@ -322,6 +322,10 @@ _EXIT_REASON_DISPLAY_LABELS = {
     macd2_config.EXIT_TW_PROFIT_LOCK_STOP: "프로핏락 손절",
     macd2_config.EXIT_EARLY_TAKE_PROFIT: "조기익절",
     macd2_config.EXIT_C1_PEAK_PROTECTION: "C1 고점보호",
+    # 2026-09-21: H50/whipsaw-watch 청산을 "반대신호"와 반드시 구분한다.
+    macd2_config.EXIT_H50_TREND_BREAK: "H50 휩쏘해제(추세이탈)",
+    macd2_config.EXIT_H50_MAX_HOLD: "H50 보류만료",
+    macd2_config.WHIPSAW_WATCH_DETERIORATION_EXIT: "휩쏘감시 악화청산",
     "RECOVERED_TO_FLAT": "청산 확인(정합화)",
     "END_OF_DATA": "데이터 종료",
 }

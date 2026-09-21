@@ -22,6 +22,7 @@ had (see docs §15 / the final report).
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from datetime import datetime, timedelta
@@ -35,7 +36,7 @@ from app.trading.macd2 import small_whipsaw_hold
 from app.trading.macd2 import time_window_3slot
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
-from app.trading.macd2.models import Direction, RuntimeStatus, SignalState
+from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeStatus, SignalState
 from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
 from app.trading.macd2.worker import (
     ORDER_FILL_RECONCILE_DELAY_SEC,
@@ -164,6 +165,9 @@ def _sync_c1_with_mode(state, changed_by: str = "ui") -> None:
     state.c1_peak_protection_enabled_at = datetime.now(KST).isoformat()
     state.c1_peak_protection_enabled_by = f"AUTO_MODE_NOT_N1:{changed_by}"
     peak_protection.clear(state)
+
+log = logging.getLogger(__name__)
+
 
 class Macd2Service:
     """Owns the MarketDataService/broker/Worker for one MACD2 run."""
@@ -1564,18 +1568,52 @@ class Macd2Service:
         "MANUAL_LIQUIDATION"으로 별도 기록해 수동매수 버튼과 동일하게
         원장에서 추적 가능하게 한다.
         """
-        if self._worker is None or not self._worker.is_alive():
-            return {"ok": False, "message": "WORKER_NOT_RUNNING"}
+        # 2026-09-21 실사고: 이 버튼이 `state.position` 만 보고 있었다.
+        # 런타임 상태가 브로커와 어긋난 순간(= 정확히 비상매도가 필요한 순간)
+        # `NO_POSITION_TO_SELL` 로 조용히 실패했고, 사용자는 KIS 앱에서 직접
+        # 팔아야 했다. 그 수동매도가 시스템 밖 청산이 되어 stale H50 사고로
+        # 이어졌다. 비상 매도 경로는 **브로커를 권위로** 삼는다.
+        #
+        #   - worker 스레드 생존은 요구하지 않는다(워커가 죽어도 팔 수 있어야 한다)
+        #   - auto_trade_on 도 요구하지 않는다(보유 중이면 언제든 팔 수 있어야 한다)
+        #   - state.position 은 진입가(avg_price) 보정에만 쓴다
         if self._broker is None:
             return {"ok": False, "message": "NOT_STARTED"}
 
         state = state_store.load_state()
-        if not state.auto_trade_on:
-            return {"ok": False, "message": "AUTO_TRADE_OFF"}
-        if state.position is None or state.position.quantity <= 0:
+        broker_qty = 0
+        broker_symbol = None
+        broker_avg = 0.0
+        try:
+            for bp in self._broker.get_positions():
+                sym = str(getattr(bp, "symbol", "") or "")
+                qty = int(getattr(bp, "quantity", 0) or 0)
+                if sym in config.TRADE_SYMBOLS and qty > 0:
+                    broker_symbol, broker_qty = sym, qty
+                    broker_avg = float(getattr(bp, "avg_price", 0.0) or 0.0)
+                    break
+        except Exception as exc:
+            log.exception("[MACD2] manual_exit: broker position fetch failed")
+            # 브로커 조회 실패 시에도 로컬 상태가 포지션을 알고 있으면 그걸로 판다.
+            if state.position is None or state.position.quantity <= 0:
+                return {"ok": False, "message": f"POSITIONS_FETCH_FAILED:{exc!r}"}
+
+        if broker_symbol is not None:
+            pos = PositionSnapshot(
+                symbol=broker_symbol, quantity=broker_qty,
+                avg_price=(float(state.position.avg_price)
+                           if (state.position is not None
+                               and state.position.symbol == broker_symbol
+                               and state.position.avg_price)
+                           else broker_avg),
+                entry_at=(state.position.entry_at if state.position is not None
+                          else datetime.now(KST)),
+            )
+        elif state.position is not None and state.position.quantity > 0:
+            pos = state.position
+        else:
             return {"ok": False, "message": "NO_POSITION_TO_SELL"}
 
-        pos = state.position
         now = datetime.now(KST)
         signal_id = f"MANUAL_EXIT_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
         outcome = order_executor.execute_exit(
