@@ -14,6 +14,8 @@ E. 안전성      — 활성 전략은 항상 1개 이하, N1/C1 state 일관성
 from __future__ import annotations
 
 import inspect
+
+import app.trading.macd2.worker as wk
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -248,10 +250,42 @@ def test_late_completed_bar_replay_path_has_no_n1_orders():
 
 
 def test_reset_sites_clear_both_n1_and_c1():
-    """포지션 수명 리셋 지점마다 N1 캐시와 C1 상태가 함께 정리된다."""
-    n_etp = WORKER_SRC.count("state.early_tp_peak_net_return = 0.0")
-    assert WORKER_SRC.count("n1_adaptive.clear(state)") == n_etp + 2      # +일자변경 +포지션소실
-    assert WORKER_SRC.count("peak_protection.clear(state)") == n_etp + 2
+    """포지션 수명 리셋은 **중앙 함수 한 곳**에서만 일어난다 (2026-09-21).
+
+    원래 이 테스트는 "리셋 지점 개수가 서로 같다"로 N1/C1 동반 정리를 확인했다.
+    2026-09-21 실사고(수동매도 후 stale H50 이 새 포지션을 즉시 청산)의 원인이
+    바로 그 '지점마다 개별 나열' 구조였다 — C1/N1 은 나열됐는데 H50/whipsaw-watch
+    만 일부 경로에서 빠졌다. 그래서 등록 지점을 하나로 모았고, 이 테스트도
+    같은 의도를 **더 강한 불변식**으로 검증한다.
+    """
+    body = inspect.getsource(wk._clear_position_scoped_state)
+    # 중앙 함수가 네 가지 position-scoped 상태를 전부 정리한다
+    for call in ("n1_adaptive.clear(state)", "peak_protection.clear(state)",
+                 "small_whipsaw_hold.clear(state)", "_clear_whipsaw_watch(state)"):
+        assert call in body, call
+    # 소유권 키도 함께 끊는다
+    assert "state.h50_owner_epoch = 0" in body
+    assert "state.c1_owner_epoch = 0" in body
+
+    # 중앙 함수 밖에 남아도 되는 clear 는 '일자 rollover' 와 '각 모듈이 자기
+    # 진행 루틴 안에서 스스로 끝내는' 경우뿐이다. 포지션 lifecycle 전이에서는
+    # 어떤 모듈도 개별적으로 clear 되지 않는다.
+    assert WORKER_SRC.count("n1_adaptive.clear(state)") == 3        # 중앙 + 일자변경 + N1 자체
+    # 중앙 + 일자변경 + C1 자체진행(포지션없음) + C1 stale-owner 폐기
+    assert WORKER_SRC.count("peak_protection.clear(state)") == 4
+    # H50 은 _advance_h50_hold 안에서 자기정리 가드가 많다:
+    #   중앙 + 일자변경 + (포지션없음 / stale-epoch / stale-started_at / held_dir없음) + 해제후
+    assert WORKER_SRC.count("small_whipsaw_hold.clear(state)") == 7
+
+
+def test_every_position_lifecycle_transition_uses_the_central_clearer():
+    """진입/청산/플랫복구 전이는 전부 중앙 함수를 통과한다 (2026-09-21)."""
+    # 신규 포지션 시작 (3-SLOT / TW2 / 프리마켓 / reconcile 입양)
+    assert WORKER_SRC.count("_begin_position_epoch(state, reason=") == 4
+    # 전량청산 · 스위치 매도레그 flat · RECOVERED_TO_FLAT
+    assert WORKER_SRC.count('_clear_position_scoped_state(state, reason="FULL_EXIT")') == 1
+    assert WORKER_SRC.count('_clear_position_scoped_state(state, reason="SWITCH_SELL_LEG_FLAT")') == 1
+    assert WORKER_SRC.count("_clear_position_scoped_state(state, reason=RECOVERED_TO_FLAT)") == 1
 
 
 def test_n1_adaptive_is_pure_except_note_helpers():

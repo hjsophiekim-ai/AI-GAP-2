@@ -123,6 +123,10 @@ RESTART_CATCH_UP_REPLAY = "RESTART_CATCH_UP_REPLAY"
 #: FLAG 복원 전용 -- 이 경로는 절대 주문을 내지 않는다.
 LATE_COMPLETED_BAR_REPLAY = "LATE_COMPLETED_BAR_REPLAY"
 RECONCILE_DEFERRED_SUFFIX = ":RECONCILE_DEFERRED"
+#: 신규 매수 hard gate (2026-09-21). 브로커 보유수량을 **확실히** 아는
+#: 상태에서만 새 포지션을 연다. 청산(매도)은 이 게이트의 대상이 아니다 —
+#: 매도를 막으면 보유 포지션이 무방비로 남기 때문이다.
+ENTRY_BLOCKED_RECONCILE_UNHEALTHY = "ENTRY_BLOCKED_RECONCILE_UNHEALTHY"
 #   TICK_ALREADY_EXECUTED: 이 tick 이 이미 주문을 냈기 때문에 "주문만" 다음
 #     tick 으로 미룬 플래그. 플래그 자체는 원장/후보에 정상 기록된다.
 TICK_ALREADY_EXECUTED = "TICK_ALREADY_EXECUTED"
@@ -1357,8 +1361,12 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
                 now=now, exit_reason=RECOVERED_TO_FLAT,
             )
             state.position = None
-            state.peak_net_return = 0.0
-            state.profit_lock_active = False
+            # 2026-09-21 실사고: 여기서 position/peak/profit_lock 만 지우고
+            # H50/C1/N1/whipsaw-watch 를 남겨둔 것이 원인이었다. 브로커가 flat
+            # 이라고 **확인**한 이 시점이 곧 포지션 종료이므로, 시스템이 스스로
+            # 청산했을 때와 똑같이 position-scoped 상태를 전부 끝낸다.
+            # (수동 KIS 매도처럼 시스템 밖에서 사라져도 다음 거래로 넘어가지 않는다)
+            _clear_position_scoped_state(state, reason=RECOVERED_TO_FLAT)
             diag.update({"comparison_result": RECOVERED_TO_FLAT, "mismatch_reason": "runtime_position_broker_flat"})
             state.position_reconcile_diag = diag
             state.last_position_reconcile_at = now.isoformat()
@@ -1366,6 +1374,10 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
 
     if runtime["qty"] <= 0 and broker_owned:
         recovered = broker_owned[0]
+        # 2026-09-21: 새 포지션의 시작 — 이전 포지션의 position-scoped
+        # 상태(H50/C1/N1/whipsaw-watch)를 **전부** 끝내고 epoch 을 올린다.
+        # 반드시 아래 필드 세팅보다 먼저 와야 한다(이 함수가 초기화한다).
+        _begin_position_epoch(state, reason="RECONCILE_ADOPT")
         state.position = PositionSnapshot(
             symbol=recovered["symbol"], quantity=int(recovered["qty"]),
             avg_price=float(recovered["avg_price"] or 0.0), entry_at=now,
@@ -1382,8 +1394,6 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
-        peak_protection.clear(state)
-        n1_adaptive.clear(state)
         # 2026-08-28 fix: a reconcile-discovered position is a genuinely new
         # real entry this process never counted anywhere else -- the OTHER
         # contributor to daily_total_entry_count (worker._apply_switch_
@@ -1800,6 +1810,28 @@ def _execute_or_wait(
             macd_snap=macd_snap, detected_at=now, reason=reconcile,
         )
         result.skipped = reconcile
+        result.timing["order_execution"] = time.monotonic() - order_started
+        return None
+
+    # ── 신규 매수 hard gate (2026-09-21) ────────────────────────────────
+    # 위 분기들이 이미 POSITION_DATA_ERROR/POSITION_MISMATCH/
+    # RECOVERED_FROM_BROKER 를 막고 있지만, "막는 목록"이 아니라 **"허용
+    # 목록"** 으로 뒤집어 못 박는다 — 앞으로 reconcile 결과가 추가돼도
+    # 기본값이 '차단' 이 되게 하기 위해서다.
+    # 신규 진입(= 지금 플랫)에서 허용되는 것은 브로커 보유수량을 확실히 안
+    # 경우뿐이다: MATCH_FLAT(원래 플랫) / RECOVERED_TO_FLAT(브로커가 플랫임을
+    # 확인해 방금 정리함). 보유 중(청산/스위치)은 이 게이트를 타지 않는다.
+    if state.position is None and reconcile not in (MATCH_FLAT, RECOVERED_TO_FLAT):
+        state.order_block_reason = ENTRY_BLOCKED_RECONCILE_UNHEALTHY
+        result.signal_dispatch_trace["final_block_reason"] = ENTRY_BLOCKED_RECONCILE_UNHEALTHY
+        result.signal_dispatch_trace["entry_gate_reconcile_result"] = reconcile
+        logger.warning(
+            "[MACD2] new BUY blocked -- reconcile not in allow-list (result=%s)", reconcile)
+        _set_pending_signal(
+            state, signal_id=signal_id, direction=direction, signal_type=signal_type,
+            macd_snap=macd_snap, detected_at=now, reason=ENTRY_BLOCKED_RECONCILE_UNHEALTHY,
+        )
+        result.skipped = ENTRY_BLOCKED_RECONCILE_UNHEALTHY
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
 
@@ -3246,6 +3278,10 @@ def _resolve_time_window_candidate_body(
             # macd_signal_not_held short-circuits before window lookup.
             window = time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
         session = time_window_filter.session_for_window(window)
+        # 2026-09-21: 새 포지션의 시작 — 이전 포지션의 position-scoped
+        # 상태(H50/C1/N1/whipsaw-watch)를 **전부** 끝내고 epoch 을 올린다.
+        # 반드시 아래 필드 세팅보다 먼저 와야 한다(이 함수가 초기화한다).
+        _begin_position_epoch(state, reason="NEW_ENTRY")
         state.time_window_position_active = True
         state.time_window_active_mode = "TEGv2" if decision.decision == config.TW_TEG_COUNT_CAP_BYPASS else "TW2"
         state.time_window_entry_session = session
@@ -3255,8 +3291,6 @@ def _resolve_time_window_candidate_body(
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
-        peak_protection.clear(state)
-        n1_adaptive.clear(state)
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = signal_detected_at.isoformat()
         if session == "MORNING":
@@ -3597,6 +3631,9 @@ def _resolve_tw2_3slot_candidate_body(
                 if not small_whipsaw_hold.is_holding(state):
                     small_whipsaw_hold.note_hold_start(
                         state, held_direction=_held_dir, now=now, decision=_h50)
+                    # 2026-09-21: 이 HOLD 가 **어느 포지션의 것인지** 각인한다.
+                    # 포지션이 바뀌면 epoch 이 달라져 stale 로 판정된다.
+                    state.h50_owner_epoch = int(state.position_epoch or 0)
                 # H50 은 whipsaw-watch 를 arm 하지 않는다 (2026-09-17 사용자 결정).
                 # 2026-09-16 사고 이후 여기에 `_start_whipsaw_watch` 를 붙이는
                 # 안을 구현·검증했으나 기존 H50 보다 열위라 **코드에서 제거**했다
@@ -3706,6 +3743,10 @@ def _resolve_tw2_3slot_candidate_body(
         session = slot_metrics.get("session") or time_window_filter.session_for_window(
             time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
         )
+        # 2026-09-21: 새 포지션의 시작 — 이전 포지션의 position-scoped
+        # 상태(H50/C1/N1/whipsaw-watch)를 **전부** 끝내고 epoch 을 올린다.
+        # 반드시 아래 필드 세팅보다 먼저 와야 한다(이 함수가 초기화한다).
+        _begin_position_epoch(state, reason="NEW_ENTRY")
         state.time_window_position_active = True
         # 2026-09-07: 어느 3-SLOT 모드가 이 진입을 열었는지 기록한다 --
         # 청산 override 선택이 전적으로 이 값에 달려 있다.
@@ -3726,8 +3767,6 @@ def _resolve_tw2_3slot_candidate_body(
         # 여기서 무엇을 계산하든 그 결과를 바꿀 수 없다.
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
-        peak_protection.clear(state)
-        n1_adaptive.clear(state)
         if early_take_profit.is_enabled(state):
             # 2026-09-12: W1a 가 주문 전에 계산해 둔 값이 있으면 그대로 쓴다 --
             # 사이징에 쓴 CHOP 과 포지션에 저장되는 CHOP 이 어긋날 수 없다.
@@ -3767,6 +3806,67 @@ def _start_whipsaw_watch(
     state.whipsaw_watch_last_ema_spread = seed.current_ema_spread if not seed.insufficient_data else 0.0
     state.whipsaw_watch_last_checked_bar_ts = flag_bar_dt.isoformat()
     state.whipsaw_watch_bars_checked = 0
+
+
+def _clear_position_scoped_state(state: RuntimeState, *, reason: str = "") -> None:
+    """포지션 **한 건의 수명**과 함께 끝나야 하는 상태를 한 곳에서 전부 정리한다.
+
+    2026-09-21 실사고: 09:57 진입 -> 10:51 H50 HOLD -> 사용자가 KIS 에서 수동
+    매도(시스템 밖 청산) -> reconcile 이 flat 을 채택했지만 H50 상태는 아무도
+    지우지 않음 -> 12:57 신규 진입 3초 뒤, 126분 전에 시작된 HOLD 가
+    MAX_HOLD(60분) 만료로 깨어나 **새 포지션**을 즉시 청산했다.
+
+    그때까지 C1/N1 은 진입·청산·복구 경로마다 개별적으로 clear 되고 있었는데
+    H50 과 whipsaw-watch 만 일부 경로에서 빠져 있었다. 개별 추가로는 같은 실수가
+    반복되므로, **position-scoped 상태는 반드시 이 함수 하나를 통해서만** 정리한다.
+    새 position-scoped 상태가 생기면 여기에 한 줄 추가하는 것이 유일한 등록 방법이다.
+
+    호출해야 하는 lifecycle transition (전부 이 함수를 쓴다):
+      - 신규 포지션 생성 직전            (`_begin_position_epoch`)
+      - 전량 청산                        (`_apply_exit_outcome`)
+      - RECOVERED_TO_FLAT               (브로커가 flat 이라고 확인)
+      - 브로커 외부/수동 청산 감지        (위와 같은 경로)
+      - reconcile 로 포지션을 새로 입양   (`_begin_position_epoch`)
+
+    토글(전략 선택/필터 on-off)은 건드리지 않는다 — 포지션 수명이 아니라
+    세션 수명이기 때문이다.
+    """
+    # 시간창 필터의 포지션 관리 상태
+    state.time_window_position_active = False
+    state.time_window_active_mode = None
+    state.time_window_entry_session = None
+    state.time_window_entry_flag_seq = None
+    state.time_window_entry_session_seq = None
+    state.time_window_tp1_done = False
+    state.time_window_initial_quantity = 0
+    state.time_window_peak_net_return = 0.0
+    # 조기익절(ETP) 포지션 종속 상태
+    state.time_window_entry_chop = False
+    state.early_tp_peak_net_return = 0.0
+    # 레거시 profit-lock / peak
+    state.peak_net_return = 0.0
+    state.profit_lock_active = False
+    # 독립 모듈들 (각자 자기 필드만 지운다)
+    peak_protection.clear(state)        # C1
+    n1_adaptive.clear(state)            # N1
+    small_whipsaw_hold.clear(state)     # H50
+    _clear_whipsaw_watch(state)         # whipsaw-watch
+    # 소유권 키 — 다음 포지션이 이전 포지션의 상태를 물려받지 못하게 한다
+    state.h50_owner_epoch = 0
+    state.c1_owner_epoch = 0
+    if reason:
+        logger.info("[MACD2] position-scoped state cleared (reason=%s, epoch=%s)",
+                    reason, state.position_epoch)
+
+
+def _begin_position_epoch(state: RuntimeState, *, reason: str = "") -> int:
+    """새 포지션의 시작. 이전 포지션의 흔적을 지우고 epoch 을 1 올린다.
+
+    반드시 **진입 필드를 세팅하기 전에** 호출한다 — 이 함수가 시간창 필드를
+    초기화하므로 순서가 뒤집히면 방금 세팅한 값이 지워진다."""
+    _clear_position_scoped_state(state, reason=reason or "NEW_POSITION")
+    state.position_epoch = int(state.position_epoch or 0) + 1
+    return state.position_epoch
 
 
 def _clear_whipsaw_watch(state: RuntimeState) -> None:
@@ -3852,6 +3952,7 @@ def _advance_whipsaw_watch(
         broker=broker, state=state, macd_snap=macd_snap, direction=direction,
         position=position, decision=fake_decision, result=result,
         gate_mode=gate_mode, signal_id_override=signal_id,
+        exit_reason=config.WHIPSAW_WATCH_DETERIORATION_EXIT,
     )
     _clear_whipsaw_watch(state)
     if outcome is not None:
@@ -3879,6 +3980,37 @@ def _advance_h50_hold(
     if not small_whipsaw_hold.is_holding(state):
         return None
     if position is None or position.quantity <= 0:
+        small_whipsaw_hold.clear(state)
+        return None
+    # ── 소유권 가드 (2026-09-21 실사고) ──────────────────────────────────
+    # 09:57 진입 -> 10:51 HOLD -> 사용자가 KIS 에서 수동매도 -> reconcile flat
+    # -> 12:57 신규 진입. 그 순간 126분 전에 시작된 HOLD 가 MAX_HOLD(60분)
+    # 만료 상태로 깨어나 **새 포지션**을 3초 만에 청산했다.
+    # owner 가 지금 포지션과 다르면 그 HOLD 는 이전 포지션의 잔재다 —
+    # **clear + 경고만 하고 청산 신호는 절대 내지 않는다.**
+    # 1순위: 소유권 키가 **양쪽 다 알려져 있는데 서로 다르면** 확실한 stale.
+    #   (둘 중 하나라도 0 = '모름' 이면 여기서 판단하지 않는다 — 이 필드가
+    #    없던 시절에 만들어진 상태/포지션까지 stale 로 몰면 정상 HOLD 가
+    #    통째로 사라진다. 그 경우는 아래 started_at fallback 이 잡는다.)
+    _owner = int(state.h50_owner_epoch or 0)
+    _cur = int(state.position_epoch or 0)
+    if _owner and _cur and _owner != _cur:
+        logger.warning(
+            "[MACD2] stale H50 HOLD discarded (owner_epoch=%s, position_epoch=%s, "
+            "started_at=%s) -- no exit order was placed",
+            _owner, _cur, state.h50_hold_started_at)
+        state.last_h50_stale_discarded_at = now.isoformat()
+        small_whipsaw_hold.clear(state)
+        return None
+    # fallback 안전망: epoch 이 어떤 이유로든 0 이어도, HOLD 시작이 현재
+    # 포지션 진입보다 **앞서면** 그 HOLD 는 이 포지션의 것이 아니다.
+    _entry_at = getattr(position, "entry_at", None)
+    _started = _parse_iso_dt(state.h50_hold_started_at)
+    if _entry_at is not None and _started is not None and _started < _entry_at:
+        logger.warning(
+            "[MACD2] stale H50 HOLD discarded (started_at=%s < position entry_at=%s)"
+            " -- no exit order was placed", state.h50_hold_started_at, _entry_at)
+        state.last_h50_stale_discarded_at = now.isoformat()
         small_whipsaw_hold.clear(state)
         return None
     held_dir = small_whipsaw_hold.held_direction(state)
@@ -3919,6 +4051,8 @@ def _advance_h50_hold(
         broker=broker, state=state, macd_snap=macd_snap, direction=exit_direction,
         position=position, decision=fake_decision, result=result,
         gate_mode="TW2_3SLOT", signal_id_override=signal_id,
+        exit_reason=(config.EXIT_H50_MAX_HOLD if decision.reason == "MAX_HOLD"
+                     else config.EXIT_H50_TREND_BREAK),
     )
     small_whipsaw_hold.clear(state)
     if outcome is not None:
@@ -3962,6 +4096,17 @@ def _advance_c1_peak_protection(
     if not state.time_window_position_active:
         # C1 은 시간대필터가 관리 중인 포지션에만 얹힌다(입양/MU_MACD 제외).
         return None
+    # ── 소유권 가드 (2026-09-21, H50 과 같은 계약) ──────────────────────
+    # arm 상태가 **이전 포지션의 것**이면 이 포지션에 적용하지 않는다.
+    # (H50 에서 실제로 터진 사고의 동일 취약점 — 대칭으로 막아 둔다)
+    _c1_owner = int(state.c1_owner_epoch or 0)
+    _c1_cur = int(state.position_epoch or 0)
+    if _c1_owner and _c1_cur and _c1_owner != _c1_cur:
+        logger.warning(
+            "[MACD2] stale C1 arm discarded (owner_epoch=%s, position_epoch=%s)"
+            " -- no exit order was placed", _c1_owner, _c1_cur)
+        peak_protection.clear(state)
+        return None
     if macd_snap is None:
         return None
     checked = _parse_iso_dt(state.c1_last_checked_bar_ts)
@@ -3990,6 +4135,8 @@ def _advance_c1_peak_protection(
     )
     if decision.armed:
         peak_protection.note_armed(state, now)
+        # 이 arm 이 어느 포지션의 것인지 각인 (2026-09-21)
+        state.c1_owner_epoch = int(state.position_epoch or 0)
     if decision.exit_reason is None:
         return None
 
@@ -4026,6 +4173,7 @@ def _advance_c1_peak_protection(
         broker=broker, state=state, macd_snap=macd_snap, direction=exit_direction,
         position=position, decision=fake_decision, result=result,
         gate_mode="TW2_3SLOT", signal_id_override=signal_id,
+        exit_reason=peak_protection.EXIT_C1_PEAK_PROTECTION,
     )
     if outcome is not None:
         peak_protection.note_triggered(state, now)
@@ -4519,6 +4667,7 @@ def _execute_reversal_exit_only_for_filtered_entry(
     result: TickResult,
     gate_mode: str = "MAJOR",
     signal_id_override: Optional[str] = None,
+    exit_reason: Optional[str] = None,
 ):
     """Opposite confirmed flag with the active entry gate (MAJOR_FLAG or
     추세전환장) rejected: exit the old ETF, but do not enter the opposite ETF."""
@@ -4533,7 +4682,12 @@ def _execute_reversal_exit_only_for_filtered_entry(
         broker=broker,
         symbol=position.symbol,
         quantity=position.quantity,
-        exit_reason=config.EXIT_OPPOSITE_SIGNAL,
+        # 2026-09-21: 예전에는 호출자와 무관하게 항상 EXIT_OPPOSITE_SIGNAL 을
+        # 기록했다. 그래서 H50 해제 / whipsaw-watch / C1 청산이 거래원장에서
+        # 전부 "반대신호"로 보였고, 실제 MACD 반대 크로스오버가 없었던
+        # 2026-09-21 사고에서 "블루가 안 떴는데 반대신호"로 오인하게 만들었다.
+        # 호출자가 준 진짜 사유를 기록한다(미지정이면 기존과 완전히 동일).
+        exit_reason=(exit_reason or config.EXIT_OPPOSITE_SIGNAL),
         entry_price=position.avg_price,
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
         reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
@@ -4982,6 +5136,10 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
         # morning entry count, never the 3-SLOT counters.
         state.time_window_morning_entry_count = int(state.time_window_morning_entry_count or 0) + 1
         state.time_window_entry_session_seq = state.time_window_morning_entry_count
+        # 2026-09-21: 새 포지션의 시작 — 이전 포지션의 position-scoped
+        # 상태(H50/C1/N1/whipsaw-watch)를 **전부** 끝내고 epoch 을 올린다.
+        # 반드시 아래 필드 세팅보다 먼저 와야 한다(이 함수가 초기화한다).
+        _begin_position_epoch(state, reason="NEW_ENTRY")
         state.time_window_position_active = True
         state.time_window_active_mode = "TW2"
         state.time_window_entry_session = "MORNING"
@@ -4991,8 +5149,6 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
-        peak_protection.clear(state)
-        n1_adaptive.clear(state)
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = now.isoformat()
         return outcome
@@ -5163,6 +5319,8 @@ def run_once(
 
     t0 = time.monotonic()
     reconcile = reconcile_position_state(broker, state, now)
+    # 2026-09-21: 신규 매수 hard gate 의 유일한 입력. 여기 한 줄로만 기록한다.
+    state.last_position_reconcile_result = reconcile
     result.timing["position_reconcile"] = time.monotonic() - t0
     if reconcile in (POSITION_DATA_ERROR, POSITION_MISMATCH, RECOVERED_TO_FLAT):
         # 2026-08-07 real incident: a same-symbol qty mismatch (e.g. a
@@ -6090,37 +6248,10 @@ def _apply_exit_outcome(state: RuntimeState, outcome,
         # the time-window filter's position-management state the same way —
         # a stale time_window_position_active=True must never survive past
         # the position it described.
-        state.time_window_position_active = False
-        state.time_window_active_mode = None
-        state.time_window_entry_session = None
-        state.time_window_entry_flag_seq = None
-        state.time_window_entry_session_seq = None
-        state.time_window_tp1_done = False
-        state.time_window_initial_quantity = 0
-        state.time_window_peak_net_return = 0.0
-        # 조기익절 필터의 포지션 종속 상태도 같은 수명으로 초기화한다
-        # (early_take_profit.py / models.py의 필드 주석 참고).
-        state.time_window_entry_chop = False
-        state.early_tp_peak_net_return = 0.0
-        peak_protection.clear(state)
-        n1_adaptive.clear(state)
-        # Safety net (2026-09-02, real incident): a held position can close
-        # for ANY reason (stop-loss/profit-lock/forced-liquidation/etc.)
-        # while a whipsaw-watch is tracking it -- e.g. today's real incident,
-        # where the position exited via an unrelated breakeven-stop while a
-        # reversal candidate may have been left dangling. A stale
-        # whipsaw_watch_active=True must never survive past the position it
-        # described, same rationale as the time_window_* resets just above.
-        _clear_whipsaw_watch(state)
-        # 같은 이유로 H50 HOLD 상태도 포지션 수명과 함께 끝낸다 (2026-09-17).
-        # `_advance_h50_hold` 는 `run_once` 의 **보유 중** 블록에서만 호출되므로
-        # 포지션이 다른 사유(하드스톱/TP/트레일링/ETP/강제청산/whipsaw-watch)로
-        # 닫히면 그 안의 정리 경로에 영영 도달하지 못했다. 그러면 그날 다음
-        # H50 HOLD 가 `is_holding(state)` 를 이미 True 로 보아 `note_hold_start`
-        # 를 건너뛰고, 낡은 `h50_hold_started_at` 때문에 다음 완성봉에서 곧바로
-        # MAX_HOLD 로 해제돼 버린다(= HOLD 가 사실상 무효). 일자 rollover
-        # (`initialize_strategy_session`) 전에는 아무도 지우지 않았다.
-        small_whipsaw_hold.clear(state)
+        # 2026-09-21: position-scoped 상태는 전부 한 함수에서 정리한다.
+        # (C1/N1 은 지우면서 H50/whipsaw-watch 만 빠뜨린 경로가 이번 사고의
+        #  원인이었다 — 개별 나열을 없애고 등록 지점을 하나로 만든다.)
+        _clear_position_scoped_state(state, reason="FULL_EXIT")
         _record_major_exit(state, exited_symbol)
     state.order_block_reason = outcome.block_reason
 
@@ -6200,8 +6331,10 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now:
     elif outcome.sell_result is not None and outcome.sell_result.success and outcome.sell_qty_after == 0:
         exited_symbol = outcome.sell_result.symbol
         state.position = None
-        state.peak_net_return = 0.0
-        state.profit_lock_active = False
+        # 2026-09-21: 스위치의 매도레그만 성사돼 flat 이 된 경우도 '포지션
+        # 종료' 다. 여기서도 position-scoped 상태를 전부 끝낸다 — 그러지
+        # 않으면 뒤이어 성공하는 진입이 이전 포지션의 H50/C1/N1 을 물려받는다.
+        _clear_position_scoped_state(state, reason="SWITCH_SELL_LEG_FLAT")
         _record_major_exit(state, exited_symbol)
     if (
         _has_order_request(outcome)

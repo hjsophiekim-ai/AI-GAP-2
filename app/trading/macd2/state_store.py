@@ -87,6 +87,7 @@ def default_state() -> RuntimeState:
     state.h50_trend_break_count = 0
     state.h50_last_checked_bar_ts = None
     state.h50_last_hold_range_pct = None
+    state.h50_owner_epoch = 0
     # N1 (2026-09-20): 토글은 전략 선택이므로 건드리지 않고, adaptive 캐시만
     # 되돌린다(n1_adaptive.clear 과 동일).
     state.time_window_n1_filter_enabled = bool(getattr(config, "N1_3SLOT_FILTER_DEFAULT", False))
@@ -424,6 +425,13 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "h50_trend_break_count": int(state.h50_trend_break_count or 0),
         "h50_last_checked_bar_ts": state.h50_last_checked_bar_ts,
         "h50_last_hold_range_pct": state.h50_last_hold_range_pct,
+        # 2026-09-21: 소유권/진단 키도 함께 저장한다. 저장되지 않으면
+        # 재시작 때 epoch 이 0 이 되어 정상 HOLD 까지 stale 로 폐기된다.
+        "h50_owner_epoch": int(state.h50_owner_epoch or 0),
+        "last_h50_stale_discarded_at": state.last_h50_stale_discarded_at,
+        "c1_owner_epoch": int(state.c1_owner_epoch or 0),
+        "position_epoch": int(state.position_epoch or 0),
+        "last_position_reconcile_result": state.last_position_reconcile_result,
         "time_window_n1_filter_enabled": bool(state.time_window_n1_filter_enabled),
         "time_window_n1_filter_enabled_at": state.time_window_n1_filter_enabled_at,
         "time_window_n1_filter_enabled_by": state.time_window_n1_filter_enabled_by,
@@ -1078,6 +1086,11 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         h50_trend_break_count=int(raw.get("h50_trend_break_count", 0) or 0),
         h50_last_checked_bar_ts=raw.get("h50_last_checked_bar_ts"),
         h50_last_hold_range_pct=raw.get("h50_last_hold_range_pct"),
+        h50_owner_epoch=int(raw.get("h50_owner_epoch", 0) or 0),
+        last_h50_stale_discarded_at=raw.get("last_h50_stale_discarded_at"),
+        c1_owner_epoch=int(raw.get("c1_owner_epoch", 0) or 0),
+        position_epoch=int(raw.get("position_epoch", 0) or 0),
+        last_position_reconcile_result=raw.get("last_position_reconcile_result"),
         time_window_n1_filter_enabled=time_window_n1_filter_enabled,
         time_window_n1_filter_enabled_at=raw.get("time_window_n1_filter_enabled_at"),
         time_window_n1_filter_enabled_by=raw.get("time_window_n1_filter_enabled_by"),
