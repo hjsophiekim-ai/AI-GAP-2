@@ -1,0 +1,4 @@
+ctx 79일  전체 20260527..20260921
+앵커 창 78일 20260527..20260918
+N1 78일 거래수 = 158  (기대 158)
+metrics: {'trades': 158, 'win_rate_pct': 53.8, 'day_win_rate_pct': 72.97, 'simple_pct': 168.9326, 'compound_pct': 401.0853, 'pf': 2.5868, 'mdd_pct': -8.906, 'profit_days': 54, 'loss_days': 20, 'max_loss_streak': 3, 'top5_excl_pct': 221.1684, 'top10_excl_pct': 122.3715, 'runners_3pct': 44, 'stops': 53, 'opposite_exits': 32, 'watch_exits': 2, 'h50_exits': 15}

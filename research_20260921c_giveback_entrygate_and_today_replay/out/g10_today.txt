@@ -1,0 +1,24 @@
+ctx dates = 79  20260527 .. 20260921
+20260921 in ctx = True
+
+20260921 하이닉스 3분봉 플래그 15개
+  idx=11268  2026-09-21 08:00:00+09:00  Direction.UP_RED
+  idx=11282  2026-09-21 08:42:00+09:00  Direction.DOWN_BLUE
+  idx=11301  2026-09-21 09:51:00+09:00  Direction.UP_RED
+  idx=11316  2026-09-21 10:36:00+09:00  Direction.DOWN_BLUE
+  idx=11317  2026-09-21 10:39:00+09:00  Direction.UP_RED
+  idx=11319  2026-09-21 10:45:00+09:00  Direction.DOWN_BLUE
+  idx=11341  2026-09-21 11:51:00+09:00  Direction.UP_RED
+  idx=11355  2026-09-21 12:33:00+09:00  Direction.DOWN_BLUE
+  idx=11361  2026-09-21 12:51:00+09:00  Direction.UP_RED
+  idx=11369  2026-09-21 13:15:00+09:00  Direction.DOWN_BLUE
+  idx=11370  2026-09-21 13:18:00+09:00  Direction.UP_RED
+  idx=11374  2026-09-21 13:30:00+09:00  Direction.DOWN_BLUE
+  idx=11397  2026-09-21 14:39:00+09:00  Direction.UP_RED
+  idx=11403  2026-09-21 14:57:00+09:00  Direction.DOWN_BLUE
+  idx=11410  2026-09-21 15:42:00+09:00  Direction.UP_RED
+
+N1 거래 2건
+  fields: <class 'dict'>
+  {'date': '20260921', 'slot_number': 1, 'session': 'MORNING', 'direction': 'UP_RED', 'decision_idx': 11302, 'flag_ordinal': 1, 'entry_time': '2026-09-21T09:57:00+09:00', 'entry_symbol': '0193T0', 'entry_price': 11980.0, 'entry_bar_idx': 11303, 'exit_time': '2026-09-21T11:42:00+09:00', 'exit_price': 11975.0, 'exit_reason': 'SMALL_WHIPSAW_HOLD_EXIT', 'net_pct': -0.131803, 'peak_net_pct': 1.2032554257095158, 'entry_chop': False, 'chop_score': 2, 'tq': None, 'lock_fired': False, 'hold_bars': 34, 'w1a': 1.0, 'w1a_rules': 1.0, 'w1a_extra': 1.0, 'w1a_clipped': 1.0, 'w1a_room': 3.0, 'w1a_capped': False, 'h50_held': True, 'ignored_flags': 0, 'regime_hold': False, 'regime_eligible': True, 'hold_minutes': 105.0, 'mode': '', 'mode_reason': '', 'h50_hold_at': '2026-09-21T10:42:00+09:00', 'relax': '', 'forced': '', 'legs': [('2026-09-21T11:42:00+09:00', 11975.0, 1.0, 'SMALL_WHIPSAW_HOLD_EXIT', -0.1318)], 'runner_used': False, 'mae_net_pct': -0.42378964941569286, 'tp1_hit': False, 'trend_at_entry': True, 'e_close': 1864000.0, 'e_ema20': 1863999.6043760458, 'e_ema50': 1860630.4233706638, 'e_slope': 137.53373997285962}
+  {'date': '20260921', 'slot_number': 2, 'session': 'AFTERNOON', 'direction': 'UP_RED', 'decision_idx': 11362, 'flag_ordinal': 7, 'entry_time': '2026-09-21T12:57:00+09:00', 'entry_symbol': '0193T0', 'entry_price': 12080.0, 'entry_bar_idx': 11363, 'exit_time': '2026-09-21T14:18:00+09:00', 'exit_price': 11955.0, 'exit_reason': 'SMALL_WHIPSAW_HOLD_EXIT', 'net_pct': -1.124255, 'peak_net_pct': 0.11680463576158939, 'entry_chop': False, 'chop_score': 2, 'tq': None, 'lock_fired': False, 'hold_bars': 26, 'w1a': 1.0, 'w1a_rules': 1.0, 'w1a_extra': 1.0, 'w1a_clipped': 1.0, 'w1a_room': 2.0, 'w1a_capped': False, 'h50_held': True, 'ignored_flags': 0, 'regime_hold': False, 'regime_eligible': True, 'hold_minutes': 81.0, 'mode': '', 'mode_reason': '', 'h50_hold_at': '2026-09-21T13:21:00+09:00', 'relax': '', 'forced': '', 'legs': [('2026-09-21T14:18:00+09:00', 11955.0, 1.0, 'SMALL_WHIPSAW_HOLD_EXIT', -1.1243)], 'runner_used': False, 'mae_net_pct': -1.1242549668874173, 'tp1_hit': False, 'trend_at_entry': True, 'e_close': 1877000.0, 'e_ema20': 1873409.5563142868, 'e_ema50': 1871504.9772109753, 'e_slope': 224.28664445015602}
