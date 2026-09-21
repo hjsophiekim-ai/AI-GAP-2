@@ -21,6 +21,11 @@ def _env_bool(name: str, default: bool) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_str(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    return default if raw is None or not str(raw).strip() else str(raw).strip()
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or str(raw).strip() == "":
@@ -1253,6 +1258,38 @@ X2LITE_SIZING_POST_STOP_MULT = _env_float("MACD2_X2LITE_SIZING_POST_STOP_MULT", 
 X2LITE_SIZING_MIN_MULT = _env_float("MACD2_X2LITE_SIZING_MIN_MULT", 0.25)
 X2LITE_SIZING_MAX_MULT = _env_float("MACD2_X2LITE_SIZING_MAX_MULT", 1.50)
 X2LITE_SIZING_DAILY_EXPOSURE_CAP = _env_float("MACD2_X2LITE_SIZING_DAILY_CAP", 3.00)
+
+# ── P2 슬롯 배분 사이징 (N1 계열 전용 선택 모드, 2026-09-21) ────────────────
+# 연구: research_20260921_p2_budget_cap/ (등급 PROMISING). **기본값 BASE** 이고
+# BASE 에서는 배수가 전부 1.0 이라 기존 동작이 한 줄도 바뀌지 않는다.
+#
+# 적용 범위는 **검증된 N1+C1 구성 전용**이다 — MACD2_SIZING_MODE=="P2" 이고
+# n1_adaptive.is_active() 와 peak_protection.is_active() 가 둘 다 True 일 때만
+# 발동한다. C1 이 꺼진 N1 단독은 연구조건 밖이라 BASE 사이징을 유지한다.
+#
+# P2 는 W1a 규칙배수에 슬롯별 배수를 **곱하기만** 한다. 진입/청산/러너/하루
+# 3회 슬롯 한도/브로커 주문 경로는 이 상수들과 무관하다 — position_sizing 이
+# 돌려주는 값은 '이미 승인된 진입의 주문수량 배수' 하나뿐이기 때문이다.
+#
+#   slot1 / slot2        x1.05
+#   slot3 오전(~11:00)    x0.25   (= X2LITE_SIZING_MIN_MULT, 새 임계값 아님)
+#   slot3 오후            x1.00   (현행 유지)
+#
+# 오전/오후 기준은 TW2_3SLOT_MORNING_WINDOW_END(11:00) 를 쓰는
+# time_window_3slot.resolve_slot 의 판정을 **그대로 받아쓴다** — 새 시간기준
+# 없음. 하루 원금한도는 기존 X2LITE_SIZING_DAILY_EXPOSURE_CAP(3.00) x
+# DEFAULT_BUDGET(10,000,000) = 30,000,000 KRW 가 그대로 담당한다(새 cap 없음).
+#
+# 검증 (faithful-fill, 78영업일 20260527~20260918, 거래 158건 BASE 와 동일):
+#   BASE  78일 실현손익 17,641,769 KRW / PF 2.658 / MDD -3.08% / 예산사용률 67.2%
+#   P2    78일 실현손익 18,622,312 KRW / PF 2.785 / MDD -2.89% / 예산사용률 66.9%
+#   uplift +980,543 KRW · 진입집합/청산/러너 diff 0 · 일예산 초과 0일
+SIZING_MODE_BASE = "BASE"
+SIZING_MODE_P2 = "P2"
+MACD2_SIZING_MODE = _env_str("MACD2_SIZING_MODE", SIZING_MODE_BASE)
+P2_SIZING_SLOT12_MULT = _env_float("MACD2_P2_SLOT12_MULT", 1.05)
+P2_SIZING_MORNING_SLOT3_MULT = _env_float("MACD2_P2_MORNING_SLOT3_MULT", 0.25)
+P2_SIZING_AFTERNOON_SLOT3_MULT = _env_float("MACD2_P2_AFTERNOON_SLOT3_MULT", 1.00)
 
 # ── H50 : 작은 휩쏘 HOLD (X2-lite 전용 독립 필터, 2026-09-15) ────────────────
 # X2-lite + W1a 위에 **청산 보류 하나만** 얹은 별도 전략 모드다. 진입 로직은

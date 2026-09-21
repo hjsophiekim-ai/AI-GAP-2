@@ -3720,11 +3720,22 @@ def _resolve_tw2_3slot_candidate_body(
     _sizing = position_sizing.NEUTRAL
     if position_sizing.is_active(state):
         _presized_chop = early_take_profit.evaluate_entry_chop(bars_3m, direction, now)
-        _sizing = position_sizing.evaluate(state, entry_chop=bool(_presized_chop.is_chop))
+        # slot_number/session 은 위 resolve_slot 이 이미 내린 값을 그대로 넘긴다
+        # (새 시간기준을 만들지 않는다). BASE 모드에서는 쓰이지 않는다.
+        _sizing = position_sizing.evaluate(
+            state, entry_chop=bool(_presized_chop.is_chop),
+            slot_number=slot_metrics.get("slot_number"),
+            session=slot_metrics.get("session"),
+        )
         result.signal_dispatch_trace["x2lite_sizing"] = {
             "raw": _sizing.raw, "clipped": _sizing.clipped,
             "applied": _sizing.applied, "capped": _sizing.capped,
             "exposure_before": _sizing.exposure_before, "reason": _sizing.reason,
+            "p2": _sizing.p2, "slot_number": _sizing.slot_number,
+            "session": _sizing.session,
+            "sizing_mode": position_sizing.sizing_mode(),
+            "remaining_daily_budget": position_sizing.remaining_daily_budget(state),
+            "daily_capital": position_sizing.daily_capital(state),
         }
     outcome = _execute_or_wait(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,

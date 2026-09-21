@@ -41,6 +41,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.trading.macd2 import config
+from app.trading.macd2 import n1_adaptive
+from app.trading.macd2 import peak_protection
 from app.trading.macd2 import time_window_3slot
 
 
@@ -55,6 +57,9 @@ class SizingDecision:
     exposure_after: float
     capped: bool          # 일일 상한 때문에 깎였는가
     reason: str           # 진단용 라벨
+    p2: float = 1.0       # P2 슬롯 배분 배수 (BASE 모드면 항상 1.0)
+    slot_number: Optional[int] = None
+    session: Optional[str] = None
 
 
 NEUTRAL = SizingDecision(
@@ -87,6 +92,60 @@ def exposure_used(state) -> float:
     return float(getattr(state, "x2lite_exposure_used_today", 0.0) or 0.0)
 
 
+def sizing_mode() -> str:
+    """현재 사이징 모드. 기본값은 항상 BASE."""
+    mode = str(getattr(config, "MACD2_SIZING_MODE", config.SIZING_MODE_BASE) or "").upper()
+    return mode if mode == config.SIZING_MODE_P2 else config.SIZING_MODE_BASE
+
+
+def p2_active(state) -> bool:
+    """P2 배분이 이 진입에 적용되는가.
+
+    **검증된 N1+C1 구성 전용**이다. P2 의 성과 앵커(78일 18,622,312 KRW)는
+    N1 adaptive 청산래더 + C1 peak protection 이 **둘 다 켜진** 조합에서만
+    측정됐다. 따라서 셋을 전부 요구한다:
+
+        1. MACD2_SIZING_MODE == "P2"
+        2. n1_adaptive.is_active(state)        — N1 청산래더 활성
+        3. peak_protection.is_active(state)    — C1 overlay 활성
+
+    C1 이 꺼진 N1 단독에서는 BASE 사이징을 그대로 쓴다(연구조건 밖이므로).
+    X2-lite / H50 등 다른 모드에서는 2번에서 이미 False 라 모드 플래그를 P2 로
+    바꿔도 동작이 조금도 바뀌지 않는다."""
+    if sizing_mode() != config.SIZING_MODE_P2:
+        return False
+    return bool(n1_adaptive.is_active(state) and peak_protection.is_active(state))
+
+
+def p2_multiplier(state, slot_number, session) -> float:
+    """슬롯별 P2 배수. BASE 모드거나 슬롯을 모르면 1.0(=무변경).
+
+    오전/오후 판정은 만들지 않는다 — ``time_window_3slot.resolve_slot`` 이
+    ``TW2_3SLOT_MORNING_WINDOW_END`` 로 이미 내린 ``session`` 을 그대로 받는다.
+
+    N1+C1 이 아니면 ``p2_active`` 가 False 라 항상 1.0 을 돌려준다."""
+    if not p2_active(state) or slot_number is None:
+        return 1.0
+    if int(slot_number) != 3:
+        return float(config.P2_SIZING_SLOT12_MULT)
+    if session == time_window_3slot.SESSION_MORNING:
+        return float(config.P2_SIZING_MORNING_SLOT3_MULT)
+    if session == time_window_3slot.SESSION_AFTERNOON:
+        return float(config.P2_SIZING_AFTERNOON_SLOT3_MULT)
+    return 1.0
+
+
+def daily_capital(state) -> float:
+    """하루 신규진입 원금한도(KRW). 새 cap 이 아니라 기존 노출상한의 KRW 환산."""
+    return float(state.budget or 0.0) * float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP)
+
+
+def remaining_daily_budget(state) -> float:
+    """이 진입 직전 남은 일예산(KRW). 청산자금은 되돌아오지 않는다."""
+    room = float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP) - exposure_used(state)
+    return max(0.0, room) * float(state.budget or 0.0)
+
+
 def raw_multiplier(state, *, entry_chop: bool) -> tuple[float, str]:
     """clip/cap 전 규칙 배수와 진단 라벨."""
     w = 1.0
@@ -100,11 +159,21 @@ def raw_multiplier(state, *, entry_chop: bool) -> tuple[float, str]:
     return w, ("+".join(parts) if parts else "BASE")
 
 
-def evaluate(state, *, entry_chop: bool) -> SizingDecision:
-    """이 진입에 적용할 배수. state 를 갱신하지 않는다(순수)."""
+def evaluate(state, *, entry_chop: bool,
+             slot_number=None, session=None) -> SizingDecision:
+    """이 진입에 적용할 배수. state 를 갱신하지 않는다(순수).
+
+    ``slot_number``/``session`` 은 P2 모드에서만 쓰인다. BASE(기본값)에서는
+    ``p2_multiplier`` 가 1.0 을 돌려주므로 두 인자를 주든 말든 결과가 같다."""
     if not is_active(state):
         return NEUTRAL
     raw, label = raw_multiplier(state, entry_chop=entry_chop)
+    p2 = p2_multiplier(state, slot_number, session)
+    if p2 != 1.0:
+        # 연구(research_20260921_p2_budget_cap)와 같은 순서: 규칙배수에 곱한 뒤
+        # MIN/MAX clip -> 일일 노출상한. clip 뒤에 곱하면 앵커가 어긋난다.
+        raw = raw * p2
+        label = f"{label}+P2"
     lo = float(config.X2LITE_SIZING_MIN_MULT)
     hi = float(config.X2LITE_SIZING_MAX_MULT)
     clipped = max(lo, min(hi, raw))
@@ -120,6 +189,8 @@ def evaluate(state, *, entry_chop: bool) -> SizingDecision:
         active=True, raw=raw, clipped=clipped, applied=applied,
         exposure_before=used, exposure_after=used + applied,
         capped=capped, reason=(label + ("+CAPPED" if capped else "")),
+        p2=p2, slot_number=(None if slot_number is None else int(slot_number)),
+        session=session,
     )
 
 
@@ -160,7 +231,11 @@ def describe(state) -> str:
     """UI/로그용 한 줄 요약."""
     if not is_active(state):
         return "OFF"
-    return (f"{config.X2LITE_SIZING_NAME} "
+    _m = ("" if sizing_mode() == config.SIZING_MODE_BASE
+          else (f"P2(slot1,2 x{config.P2_SIZING_SLOT12_MULT} / 오전slot3 "
+                f"x{config.P2_SIZING_MORNING_SLOT3_MULT}) · "
+                if p2_active(state) else ""))
+    return (_m + f"{config.X2LITE_SIZING_NAME} "
             f"CHOP {config.X2LITE_SIZING_CHOP_MULT * 100:.0f}% / "
             f"first-stop 이후 {config.X2LITE_SIZING_POST_STOP_MULT * 100:.0f}% · "
             f"오늘 exposure {exposure_used(state) * 100:.0f}%/"
