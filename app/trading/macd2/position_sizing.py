@@ -92,10 +92,28 @@ def exposure_used(state) -> float:
     return float(getattr(state, "x2lite_exposure_used_today", 0.0) or 0.0)
 
 
-def sizing_mode() -> str:
-    """현재 사이징 모드. 기본값은 항상 BASE."""
+def sizing_mode(state=None) -> str:
+    """현재 사이징 모드. 기본값은 항상 BASE.
+
+    2026-09-21: UI 토글(``state.p2_sizing_enabled``)을 1순위로 본다. 환경변수
+    ``MACD2_SIZING_MODE`` 는 **비상 강제용**으로 남겨 둔다 — 둘 중 하나라도 P2
+    면 P2 다. 그래야 UI 를 못 여는 상황에서도 env 로 켤 수 있고, 반대로 env 를
+    건드릴 수 없는 상황에서도 UI 로 켤 수 있다.
+
+    끄는 쪽은 둘 다 꺼야 한다. 켜 둔 env 를 UI 로 못 끄는 것이 불편할 수 있으나,
+    'env 로 강제해 둔 것을 화면 조작이 조용히 무력화하는' 쪽이 더 위험하다 —
+    UI 는 그 경우 '환경변수로 강제 ON' 이라고 표시한다.
+    """
+    if state is not None and bool(getattr(state, "p2_sizing_enabled", False)):
+        return config.SIZING_MODE_P2
     mode = str(getattr(config, "MACD2_SIZING_MODE", config.SIZING_MODE_BASE) or "").upper()
     return mode if mode == config.SIZING_MODE_P2 else config.SIZING_MODE_BASE
+
+
+def forced_by_env() -> bool:
+    """환경변수로 P2 가 강제돼 있는가 (UI 표시용)."""
+    mode = str(getattr(config, "MACD2_SIZING_MODE", config.SIZING_MODE_BASE) or "").upper()
+    return mode == config.SIZING_MODE_P2
 
 
 def p2_active(state) -> bool:
@@ -112,7 +130,7 @@ def p2_active(state) -> bool:
     C1 이 꺼진 N1 단독에서는 BASE 사이징을 그대로 쓴다(연구조건 밖이므로).
     X2-lite / H50 등 다른 모드에서는 2번에서 이미 False 라 모드 플래그를 P2 로
     바꿔도 동작이 조금도 바뀌지 않는다."""
-    if sizing_mode() != config.SIZING_MODE_P2:
+    if sizing_mode(state) != config.SIZING_MODE_P2:
         return False
     return bool(n1_adaptive.is_active(state) and peak_protection.is_active(state))
 
@@ -231,7 +249,7 @@ def describe(state) -> str:
     """UI/로그용 한 줄 요약."""
     if not is_active(state):
         return "OFF"
-    _m = ("" if sizing_mode() == config.SIZING_MODE_BASE
+    _m = ("" if sizing_mode(state) == config.SIZING_MODE_BASE
           else (f"P2(slot1,2 x{config.P2_SIZING_SLOT12_MULT} / 오전slot3 "
                 f"x{config.P2_SIZING_MORNING_SLOT3_MULT}) · "
                 if p2_active(state) else ""))

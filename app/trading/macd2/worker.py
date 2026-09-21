@@ -3733,7 +3733,7 @@ def _resolve_tw2_3slot_candidate_body(
             "exposure_before": _sizing.exposure_before, "reason": _sizing.reason,
             "p2": _sizing.p2, "slot_number": _sizing.slot_number,
             "session": _sizing.session,
-            "sizing_mode": position_sizing.sizing_mode(),
+            "sizing_mode": position_sizing.sizing_mode(state),
             "remaining_daily_budget": position_sizing.remaining_daily_budget(state),
             "daily_capital": position_sizing.daily_capital(state),
         }
