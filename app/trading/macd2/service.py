@@ -1584,6 +1584,8 @@ class Macd2Service:
         broker_qty = 0
         broker_symbol = None
         broker_avg = 0.0
+        broker_known = True          # 조회가 성공해 '실제 보유수량' 을 아는가
+        fetch_error = None
         try:
             for bp in self._broker.get_positions():
                 sym = str(getattr(bp, "symbol", "") or "")
@@ -1594,11 +1596,11 @@ class Macd2Service:
                     break
         except Exception as exc:
             log.exception("[MACD2] manual_exit: broker position fetch failed")
-            # 브로커 조회 실패 시에도 로컬 상태가 포지션을 알고 있으면 그걸로 판다.
-            if state.position is None or state.position.quantity <= 0:
-                return {"ok": False, "message": f"POSITIONS_FETCH_FAILED:{exc!r}"}
+            broker_known = False
+            fetch_error = exc
 
         if broker_symbol is not None:
+            # 브로커가 보유분을 알려줬다 — 그 수량이 권위다.
             pos = PositionSnapshot(
                 symbol=broker_symbol, quantity=broker_qty,
                 avg_price=(float(state.position.avg_price)
@@ -1609,10 +1611,16 @@ class Macd2Service:
                 entry_at=(state.position.entry_at if state.position is not None
                           else datetime.now(KST)),
             )
+        elif broker_known:
+            # 조회는 성공했고 결과가 '보유 0' 이다. 로컬에 잔재가 남아 있어도
+            # **허수 매도를 내지 않는다** — 계좌에 없는 수량을 파는 주문은
+            # 거부될 뿐이고, 원장에 유령 행만 남긴다.
+            return {"ok": False, "message": "NO_POSITION_TO_SELL"}
         elif state.position is not None and state.position.quantity > 0:
+            # 조회 '실패' 는 '보유 0' 과 다르다 — 로컬이 알고 있으면 그걸로 판다.
             pos = state.position
         else:
-            return {"ok": False, "message": "NO_POSITION_TO_SELL"}
+            return {"ok": False, "message": f"POSITIONS_FETCH_FAILED:{fetch_error!r}"}
 
         now = datetime.now(KST)
         signal_id = f"MANUAL_EXIT_{pos.symbol}_{now.strftime('%Y%m%d%H%M%S')}"
