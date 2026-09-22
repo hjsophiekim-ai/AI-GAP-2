@@ -60,6 +60,8 @@ class SizingDecision:
     p2: float = 1.0       # P2 슬롯 배분 배수 (BASE 모드면 항상 1.0)
     slot_number: Optional[int] = None
     session: Optional[str] = None
+    toxic: bool = False   # SMART: confirmation toxic 판정 결과
+    smart: float = 1.0    # SMART 최종 배수 (toxic 이면 override, 아니면 p2)
 
 
 NEUTRAL = SizingDecision(
@@ -104,16 +106,23 @@ def sizing_mode(state=None) -> str:
     'env 로 강제해 둔 것을 화면 조작이 조용히 무력화하는' 쪽이 더 위험하다 —
     UI 는 그 경우 '환경변수로 강제 ON' 이라고 표시한다.
     """
-    if state is not None and bool(getattr(state, "p2_sizing_enabled", False)):
-        return config.SIZING_MODE_P2
+    if state is not None and bool(
+            getattr(state, "smart_sizing_enabled",
+                    getattr(state, "p2_sizing_enabled", False))):
+        return config.SIZING_MODE_SMART
     mode = str(getattr(config, "MACD2_SIZING_MODE", config.SIZING_MODE_BASE) or "").upper()
-    return mode if mode == config.SIZING_MODE_P2 else config.SIZING_MODE_BASE
+    # 2026-09-22: 구 env 값 "P2" 는 **SMART 의 legacy alias** 다. P2 는 한 번도
+    # production 에서 켜진 적이 없고(기본 BASE), 두 옵션을 따로 운영하지 않기로
+    # 했으므로 별도 모드로 살려 두면 "어느 쪽이 켜졌나"를 두 곳에서 봐야 한다.
+    if mode in (config.SIZING_MODE_SMART, config.SIZING_MODE_P2):
+        return config.SIZING_MODE_SMART
+    return config.SIZING_MODE_BASE
 
 
 def forced_by_env() -> bool:
-    """환경변수로 P2 가 강제돼 있는가 (UI 표시용)."""
+    """환경변수로 SMART 가 강제돼 있는가 (UI 표시용). "P2" 도 alias 로 친다."""
     mode = str(getattr(config, "MACD2_SIZING_MODE", config.SIZING_MODE_BASE) or "").upper()
-    return mode == config.SIZING_MODE_P2
+    return mode in (config.SIZING_MODE_SMART, config.SIZING_MODE_P2)
 
 
 def p2_active(state) -> bool:
@@ -130,9 +139,13 @@ def p2_active(state) -> bool:
     C1 이 꺼진 N1 단독에서는 BASE 사이징을 그대로 쓴다(연구조건 밖이므로).
     X2-lite / H50 등 다른 모드에서는 2번에서 이미 False 라 모드 플래그를 P2 로
     바꿔도 동작이 조금도 바뀌지 않는다."""
-    if sizing_mode(state) != config.SIZING_MODE_P2:
+    if sizing_mode(state) != config.SIZING_MODE_SMART:
         return False
     return bool(n1_adaptive.is_active(state) and peak_protection.is_active(state))
+
+
+# 2026-09-22: SMART 로 통합. 이전 이름은 alias 로 남긴다(호출부/테스트 호환).
+smart_active = p2_active
 
 
 def p2_multiplier(state, slot_number, session) -> float:
@@ -178,7 +191,7 @@ def raw_multiplier(state, *, entry_chop: bool) -> tuple[float, str]:
 
 
 def evaluate(state, *, entry_chop: bool,
-             slot_number=None, session=None) -> SizingDecision:
+             slot_number=None, session=None, toxic: bool = False) -> SizingDecision:
     """이 진입에 적용할 배수. state 를 갱신하지 않는다(순수).
 
     ``slot_number``/``session`` 은 P2 모드에서만 쓰인다. BASE(기본값)에서는
@@ -187,11 +200,15 @@ def evaluate(state, *, entry_chop: bool,
         return NEUTRAL
     raw, label = raw_multiplier(state, entry_chop=entry_chop)
     p2 = p2_multiplier(state, slot_number, session)
-    if p2 != 1.0:
+    # SMART: toxic 이면 슬롯 배수를 **곱하지 않고 덮어쓴다**(0.25 고정).
+    # 곱하면 오전 slot3 toxic 에서 0.25x0.25=0.0625 가 나온다 — 방어 불가.
+    is_toxic = bool(toxic) and smart_active(state)
+    smart = float(config.SMART_TOXIC_MULT) if is_toxic else p2
+    if smart != 1.0:
         # 연구(research_20260921_p2_budget_cap)와 같은 순서: 규칙배수에 곱한 뒤
         # MIN/MAX clip -> 일일 노출상한. clip 뒤에 곱하면 앵커가 어긋난다.
-        raw = raw * p2
-        label = f"{label}+P2"
+        raw = raw * smart
+        label = f"{label}+{'TOXIC' if is_toxic else 'P2'}"
     lo = float(config.X2LITE_SIZING_MIN_MULT)
     hi = float(config.X2LITE_SIZING_MAX_MULT)
     clipped = max(lo, min(hi, raw))
@@ -208,7 +225,7 @@ def evaluate(state, *, entry_chop: bool,
         exposure_before=used, exposure_after=used + applied,
         capped=capped, reason=(label + ("+CAPPED" if capped else "")),
         p2=p2, slot_number=(None if slot_number is None else int(slot_number)),
-        session=session,
+        session=session, toxic=is_toxic, smart=smart,
     )
 
 

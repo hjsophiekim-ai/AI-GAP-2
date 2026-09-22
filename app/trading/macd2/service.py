@@ -1196,64 +1196,80 @@ class Macd2Service:
             "c1_giveback_pct": float(config.C1_GIVEBACK_PCT),
         }
 
-    def set_p2_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
-        """UI command: toggle **P2 슬롯 배분 사이징** (2026-09-21 연구).
+    def set_smart_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle **SMART 사이징** (2026-09-22).
 
-        **사이징 전용** 토글이다. 진입 판정 / 슬롯 배분 / T+3 / quality / TEG /
-        하루 3회 상한 / TP1 / TP2 / 손절 / trailing / 조기익절 / C1 / H50 은 한 줄도
-        바뀌지 않는다 — 이미 승인된 진입의 **주문수량 배수**만 바꾼다
-        (app/trading/macd2/position_sizing.py 참고).
+        P2 슬롯 배분과 toxic confirmation 감액을 **하나의 정책**으로 합친 토글이다.
+        이전의 P2 토글을 대체한다(별도 Toxic 토글을 만들지 않는다).
 
-            slot1 / slot2            x1.05
-            slot3 오전(~11:00)        x0.25   (= X2LITE_SIZING_MIN_MULT, 새 값 아님)
-            slot3 오후                x1.00   (현행 유지)
+            if toxic:  x0.25            <- 슬롯과 무관한 override (곱하지 않음)
+            else:      slot1/2 x1.05 · 오전slot3 x0.25 · 오후slot3 x1.00
 
-        하루 원금한도는 기존 X2LITE_SIZING_DAILY_EXPOSURE_CAP(3.00) x
-        DEFAULT_BUDGET(10,000,000) = 30,000,000 KRW 가 그대로 담당한다. 새 cap 도,
-        새 시간기준도 만들지 않는다(오전/오후는 resolve_slot 의 session 을 그대로 쓴다).
+        toxic = confirmation_weak AND ema20_50_directional_pct < -0.20
+          confirmation_weak : 플래그봉 시작~진입 직전 **보유할 ETF** 수익률 <= 0%
+          ema20_50_directional : 하이닉스 EMA20-EMA50 을 보유방향 부호로 정규화한 %
 
-        검증: research_20260921_p2_budget_cap/ — 78영업일 N1+C1 기준
-        17,641,769 -> 18,622,312 KRW (+980,543), PF 2.658->2.785, MDD -3.08%->-2.89%,
-        예산사용률 67.2%->66.9%(**덜 쓰고 더 번다**), 진입집합/청산/러너 diff 0,
-        일예산 초과 0. 등급은 **PROMISING** 이지 ADOPT 가 아니다 — placebo 94.56%
-        (기준 95%)이고 uplift 의 74.7% 가 slot3 재배분이 아니라 front x1.05
-        레버리지다. 오전 slot3 표본이 8건뿐이라 1~2개월 추가 관측 권고. 그래서
-        **기본 OFF** 다.
+        **사이징 전용**이다. 진입 판정 / 슬롯 배분 / T+3 / quality / TEG / 하루 3회
+        상한 / TP1 / TP2 / 손절 / trailing / 조기익절 / C1 / H50 은 한 줄도 바뀌지
+        않는다 — 이미 승인된 진입의 **주문수량 배수**만 바꾼다.
+
+        검증: research_20260922d_confirmation_path/ (전략 E "TOXIC-OVERRIDE").
+        78영업일 N1+C1 기준 uplift +2,106,468 KRW, PF 2.658->3.228,
+        MDD -3.08%->-2.53%, 거래 158건 동일(진입집합/청산 diff 0),
+        30일 +423,935 · OOS48 +1,682,533 · 앞39/뒤39 둘 다 양수 · 5분할 5/5 · WF6 6/6,
+        runner MFE>=5%/>=8% 손상 0건, 일예산 30M 초과 0일.
+        등급은 **PROMISING** 이지 ADOPT 가 아니다 — 30일 bootstrap 84.5%(기준 95%),
+        효과의 96%가 slot1 toxic 12건에서 나온다. 그래서 **기본 OFF** 다.
 
         **N1 과 C1 이 둘 다 켜져 있을 때만** 켤 수 있다 — 앵커가 그 조합에서만
         측정됐기 때문이다. 상태만 갱신하고 주문을 내지 않는다.
         """
         state = state_store.load_state()
         enabled_bool = bool(enabled)
-        prev = bool(getattr(state, "p2_sizing_enabled", False))
+        prev = bool(getattr(state, "smart_sizing_enabled", False))
         n1_on = bool(state.time_window_n1_filter_enabled)
         c1_on = bool(state.c1_peak_protection_enabled)
         if enabled_bool and not (n1_on and c1_on):
             missing = " + ".join(x for x, on in (("N1", n1_on), ("C1", c1_on)) if not on)
             return {
                 "ok": False,
-                "reason": "P2_REQUIRES_N1_AND_C1",
-                "message": f"P2 사이징은 N1 + C1 이 모두 켜져 있어야 합니다 (현재 꺼짐: {missing}).",
-                "p2_sizing_enabled": prev,
+                "reason": "SMART_REQUIRES_N1_AND_C1",
+                "message": f"SMART 사이징은 N1 + C1 이 모두 켜져 있어야 합니다 (현재 꺼짐: {missing}).",
+                "smart_sizing_enabled": prev,
                 "previous": prev,
             }
+        state.smart_sizing_enabled = enabled_bool
+        state.smart_sizing_enabled_at = datetime.now(KST).isoformat()
+        state.smart_sizing_enabled_by = str(changed_by or "ui")
+        # legacy 미러 — 구버전 코드로 롤백해도 토글이 살아남는다.
         state.p2_sizing_enabled = enabled_bool
-        state.p2_sizing_enabled_at = datetime.now(KST).isoformat()
-        state.p2_sizing_enabled_by = str(changed_by or "ui")
+        state.p2_sizing_enabled_at = state.smart_sizing_enabled_at
+        state.p2_sizing_enabled_by = state.smart_sizing_enabled_by
         state_store.save_state(state)
         return {
             "ok": True,
-            "p2_sizing_enabled": enabled_bool,
+            "smart_sizing_enabled": enabled_bool,
             "previous": prev,
-            "p2_sizing_enabled_at": state.p2_sizing_enabled_at,
-            "p2_sizing_enabled_by": state.p2_sizing_enabled_by,
+            "smart_sizing_enabled_at": state.smart_sizing_enabled_at,
+            "smart_sizing_enabled_by": state.smart_sizing_enabled_by,
             "sizing_mode": position_sizing.sizing_mode(state),
             "forced_by_env": position_sizing.forced_by_env(),
             "slot12_mult": float(config.P2_SIZING_SLOT12_MULT),
             "morning_slot3_mult": float(config.P2_SIZING_MORNING_SLOT3_MULT),
             "afternoon_slot3_mult": float(config.P2_SIZING_AFTERNOON_SLOT3_MULT),
+            "toxic_mult": float(config.SMART_TOXIC_MULT),
+            "toxic_ema20_50_max_pct": float(config.TOXIC_EMA20_50_MAX_PCT),
+            "toxic_confirm_return_max_pct": float(config.TOXIC_CONFIRM_RETURN_MAX_PCT),
             "daily_capital": float(config.DEFAULT_BUDGET) * float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP),
         }
+
+    # 2026-09-22: 구 이름 호환 alias (UI 롤백/외부 호출 대비).
+    def set_p2_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """Deprecated — ``set_smart_sizing_enabled`` 로 위임한다."""
+        out = self.set_smart_sizing_enabled(enabled, changed_by=changed_by)
+        if "smart_sizing_enabled" in out:
+            out["p2_sizing_enabled"] = out["smart_sizing_enabled"]
+        return out
 
     def set_time_window_n1_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """UI command: toggle **N1** (2026-09-20).
