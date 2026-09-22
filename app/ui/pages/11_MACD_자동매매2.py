@@ -42,6 +42,7 @@ from app.trading.macd2 import time_window_3slot as macd2_time_window_3slot  # no
 from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
+from app.trading.macd2 import worker as macd2_worker  # noqa: E402
 from app.trading.macd2.service import get_service  # noqa: E402
 
 # Display-only threshold, not an order-blocking rule (that remains
@@ -1770,23 +1771,65 @@ s1, s2, s3 = st.columns(3)
 _flag_bar_time = "-"
 _latest_flag_direction = state.latest_primary_flag.value if state.latest_primary_flag else "-"
 _latest_flag_signal_id = state.latest_primary_signal_id
-_latest_event_rows = list(today_signal_overview) + [row for row in signal_rows if _is_display_signal(row)]
-if _latest_event_rows:
-    _latest_overview_flag = _latest_flag_event(_latest_event_rows)
-    if _latest_overview_flag is not None:
-        _latest_flag_direction = _latest_overview_flag.get("direction") or _latest_flag_direction
-        _latest_flag_signal_id = _latest_overview_flag.get("signal_id") or _latest_flag_signal_id
-        _flag_dt = _parse_flag_event_time(_latest_overview_flag)
-        _flag_bar_time = _flag_dt.strftime("%H:%M:%S") if _flag_dt is not None else "-"
+# 2026-09-22 hotfix (실사고: 12:09 DOWN_BLUE 가 화면에 떴다가 사라짐).
+# 예전에는 재계산(overview) 결과를 그대로 "마지막 플래그"로 썼다. 그런데
+# compute_today_signal_overview 는 호출될 때마다 오늘 전체를 다시 걷는 순수
+# 재계산이고, MACD EMA 가 누적이라 **1분봉 하나만 늦게 들어오거나 빠져도**
+# 과거 플래그가 다른 시각으로 옮겨간다(repaint). 그래서 authoritative source 를
+# **신호원장(워커가 실시간으로 확정·기록한 불변 이벤트)** 으로 바꾼다.
+#   LIVE_CONFIRMED  원장 대응행 있음        -> 마지막 플래그 후보
+#   LEDGER_ONLY     원장에만 있음(재계산에서 사라짐) -> **지우지 않고 유지**, 후보
+#   RECOMPUTED_ONLY 재계산에만 있음         -> 후보 아님, 화면에 별도 표기
+# 표시 전용 — 주문/진입/청산/슬롯/N1/C1/H50/사이징은 이 값을 읽지 않는다.
+_flag_events = macd2_worker.reconcile_signal_overview_with_ledger(
+    today_signal_overview, [row for row in signal_rows if _is_display_signal(row)]
+)
+_recomputed_only = [e for e in _flag_events
+                    if e.get("origin") == macd2_worker.ORIGIN_RECOMPUTED_ONLY]
+_ledger_only = [e for e in _flag_events
+                if e.get("origin") == macd2_worker.ORIGIN_LEDGER_ONLY]
+_authoritative_flag = macd2_worker.latest_ledger_backed_flag(_flag_events)
+_flag_is_recomputed_only = False
+if _authoritative_flag is not None:
+    _latest_flag_direction = _authoritative_flag.get("direction") or _latest_flag_direction
+    _latest_flag_signal_id = _authoritative_flag.get("signal_id") or _latest_flag_signal_id
+    _flag_dt = _parse_flag_event_time(_authoritative_flag)
+    _flag_bar_time = _flag_dt.strftime("%H:%M:%S") if _flag_dt is not None else "-"
+elif _flag_events:
+    # 원장 행이 하나도 없는 경우에만 재계산으로 물러나되, 그렇다고 표시한다.
+    _fallback = max(_flag_events, key=lambda e: str(e.get("bar_start_at") or ""))
+    _latest_flag_direction = _fallback.get("direction") or _latest_flag_direction
+    _latest_flag_signal_id = _fallback.get("signal_id") or _latest_flag_signal_id
+    _flag_dt = _parse_flag_event_time(_fallback)
+    _flag_bar_time = _flag_dt.strftime("%H:%M:%S") if _flag_dt is not None else "-"
+    _flag_is_recomputed_only = True
 if _flag_bar_time == "-" and _latest_flag_signal_id:
     _parts = _latest_flag_signal_id.split("_")
     if len(_parts) >= 2 and len(_parts[1]) == 6:
         _flag_bar_time = f"{_parts[1][:2]}:{_parts[1][2:4]}:{_parts[1][4:]}"
 s1.metric(
     "마지막 FLAG EVENT",
-    _latest_flag_direction,
+    _latest_flag_direction + (" (재계산 전용)" if _flag_is_recomputed_only else ""),
     delta=_flag_bar_time if _flag_bar_time != "-" else None,
 )
+if _flag_is_recomputed_only:
+    s1.caption("⚠ 신호원장에 대응 행이 없습니다 — **재계산 전용 / 실시간 미기록**")
+if _recomputed_only:
+    s1.caption(
+        "재계산 전용(실시간 미기록) "
+        + ", ".join(
+            f"{str(e.get('bar_start_at') or '')[11:16]} {str(e.get('direction') or '')}"
+            for e in _recomputed_only[-4:]
+        )
+    )
+if _ledger_only:
+    s1.caption(
+        "원장 확정(재계산에선 사라짐) "
+        + ", ".join(
+            f"{str(e.get('bar_start_at') or '')[11:16]} {str(e.get('direction') or '')}"
+            for e in _ledger_only[-4:]
+        )
+    )
 # 현재 MACD STATE(state.primary_relation)는 이벤트가 새로 발생했는지와 무관하게
 # 매 확정봉마다 갱신되는 "지금 MACD가 Signal 위/아래 어디에 있는가"이다 — 예를
 # 들어 08:45 BLUE 이벤트 이후 09:00에 새 이벤트가 없어도 이 값은 계속 BELOW로

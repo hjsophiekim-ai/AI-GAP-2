@@ -960,6 +960,99 @@ def compute_today_signal_overview(
     return overview
 
 
+# ── 재계산 플래그 vs 신호원장 대조 (2026-09-22, **표시 전용**) ──────────────
+# `compute_today_signal_overview` 는 호출될 때마다 오늘 전체를 처음부터 다시
+# 걷는 **순수 재계산**이다. MACD EMA 는 누적이고 `evaluate_macd_crossover` 는
+# `last_direction` 기반 dedup 을 하므로, 하루 중 **어느 1분봉 하나만 늦게
+# 들어오거나 빠져도** 그 뒤의 모든 플래그가 재배열된다 — 한 번 화면에 떴던
+# 과거 플래그가 다른 시각으로 옮겨가며 사라진다(2026-09-22 실사고: 12:09
+# DOWN_BLUE 가 표시됐다가 소멸. 재현: 12:05 를 빼면 12:09D -> 12:12D,
+# 12:09/12:10/12:11 중 하나를 빼면 12:09D -> 12:15D 로 이동).
+#
+# 그래서 "마지막 플래그" 를 재계산 결과로 보여주면 **repaint 된다**. 아래
+# 함수는 재계산 결과를 **신호원장(= 워커가 실시간으로 확정해 기록한 불변
+# 이벤트)** 과 대조해 표시용 origin 을 확정한다.
+#
+#   LIVE_CONFIRMED   원장 대응행이 있다 -> 워커가 실제로 평가/기록했다
+#   RECOMPUTED_ONLY  재계산에만 있다   -> 워커가 본 적 없다(주문 권한 없었음)
+#   LEDGER_ONLY      원장에만 있다     -> 재계산에서 사라졌지만 **지우지 않는다**
+#
+# **표시 전용이다.** 주문/진입/청산/슬롯/N1/C1/H50/사이징 경로는 이 함수를
+# 호출하지 않으며, 반환값이 그쪽으로 흘러갈 수 있는 경로가 존재하지 않는다.
+ORIGIN_RECOMPUTED_ONLY = "RECOMPUTED_ONLY"
+ORIGIN_LEDGER_ONLY = "LEDGER_ONLY"
+
+#: 원장 signal_id 는 T+3 확정/감사행에서 접미사가 붙는다 — 대조는 접미사를
+#: 떼어낸 **기본 signal_id**(= make_signal_id(bar_dt, direction)) 로 한다.
+def base_signal_id(signal_id: Any) -> str:
+    raw = str(signal_id or "")
+    return raw.split(":", 1)[0] if ":" in raw else raw
+
+
+def reconcile_signal_overview_with_ledger(
+    overview: list[dict[str, Any]], ledger_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """재계산 overview + 원장 행 -> 표시용 플래그 이벤트 목록 (순수 함수).
+
+    ``ledger_rows`` 는 오늘자 신호원장 행. ``signal_id`` 의 접미사를 떼고
+    맞춘다. 반환 행은 원본 필드에 ``origin`` / ``in_ledger`` /
+    ``in_recompute`` 를 얹은 것이고, bar 시작시각 오름차순으로 정렬된다.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in overview or ():
+        key = base_signal_id(row.get("signal_id"))
+        if not key:
+            continue
+        item = dict(row)
+        item["in_recompute"] = True
+        item["in_ledger"] = False
+        by_id[key] = item
+    for row in ledger_rows or ():
+        key = base_signal_id(row.get("signal_id"))
+        if not key:
+            continue
+        hit = by_id.get(key)
+        if hit is not None:
+            hit["in_ledger"] = True
+            continue
+        bar_at = (row.get("confirmed_bar_at") or row.get("bar_start_at")
+                  or row.get("flag_bar_at") or "")
+        by_id[key] = {
+            "signal_id": key,
+            "bar_start_at": bar_at,
+            "bar_end_at": row.get("bar_end_at") or "",
+            "direction": row.get("direction") or row.get("confirmed_direction") or "",
+            "in_recompute": False,
+            "in_ledger": True,
+        }
+    out: list[dict[str, Any]] = []
+    for item in by_id.values():
+        if item["in_ledger"] and item["in_recompute"]:
+            item["origin"] = ORIGIN_LIVE_CONFIRMED
+        elif item["in_ledger"]:
+            item["origin"] = ORIGIN_LEDGER_ONLY
+        else:
+            item["origin"] = ORIGIN_RECOMPUTED_ONLY
+        out.append(item)
+    out.sort(key=lambda r: str(r.get("bar_start_at") or ""))
+    return out
+
+
+def latest_ledger_backed_flag(events: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """표시용 '마지막 플래그' — **원장이 뒷받침하는 이벤트만** 고른다.
+
+    RECOMPUTED_ONLY 는 워커가 본 적 없는 신호라 authoritative 가 될 수 없다.
+    원장 행이 하나도 없으면 None 을 돌려주고, 호출부는 재계산 값을 쓰되
+    화면에 '재계산 전용' 이라고 명시한다.
+    """
+    backed = [e for e in (events or ())
+              if e.get("origin") in (ORIGIN_LIVE_CONFIRMED, ORIGIN_LEDGER_ONLY)
+              and str(e.get("bar_start_at") or "")]
+    if not backed:
+        return None
+    return max(backed, key=lambda e: str(e.get("bar_start_at")))
+
+
 def _normalize_broker_positions(raw_positions) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     broker_positions: dict[str, dict[str, Any]] = {}
     all_positions: list[dict[str, Any]] = []
