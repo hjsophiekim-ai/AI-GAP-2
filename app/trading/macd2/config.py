@@ -1291,6 +1291,37 @@ P2_SIZING_SLOT12_MULT = _env_float("MACD2_P2_SLOT12_MULT", 1.05)
 P2_SIZING_MORNING_SLOT3_MULT = _env_float("MACD2_P2_MORNING_SLOT3_MULT", 0.25)
 P2_SIZING_AFTERNOON_SLOT3_MULT = _env_float("MACD2_P2_AFTERNOON_SLOT3_MULT", 1.00)
 
+# ── SMART 사이징 = P2 슬롯배분 + toxic confirmation 감액 (2026-09-22) ───────
+# 연구: research_20260922d_confirmation_path/ (전략 E "TOXIC-OVERRIDE", PROMISING).
+# **기본값은 여전히 BASE** 이고 BASE 에서는 배수가 전부 1.0 이다.
+#
+#   if toxic:  x SMART_TOXIC_MULT (0.25)        <- 슬롯과 무관한 **override**
+#   else:      P2 슬롯 배수 그대로
+#
+# 곱하지 않는 이유: 오전 slot3 toxic 에서 0.25 x 0.25 = 0.0625 라는 방어
+# 불가능한 배수가 나온다. 78일 연구에서 오전 slot3 toxic 은 0건이었지만
+# (quality gate 4점 통과 진입이라 구조적으로 드물다) 언젠가 나온다.
+#
+# toxic = confirmation_weak AND ema20_50_directional_pct < -0.20
+#   confirmation_weak : 플래그봉 시작~진입 직전 구간의 **보유할 ETF** 수익률 <= 0%
+#   ema20_50_directional : 하이닉스 EMA20-EMA50 을 보유방향 부호로 정규화한 %
+#                          (EMA 상수는 H50_TREND_EMA_FAST/SLOW 재사용, 새 상수 없음)
+# 두 임계는 연구값 그대로이며 새 임계를 만들지 않았다.
+#
+# 검증 (사이징 전용이라 진입집합/청산/거래수 158건 BASE 와 **구조적으로 동일**):
+#   BASE   78일 17,641,769 KRW / PF 2.658 / MDD -3.08%
+#   SMART  78일 uplift +2,106,468 / PF 3.228 / MDD -2.53%
+#   30일 +423,935 · OOS48 +1,682,533 · 앞39/뒤39 둘 다 양수 · 5분할 5/5 · WF6 6/6
+#   runner MFE>=5%/>=8% 손상 0건 · 일예산 30M 초과 0일
+SIZING_MODE_SMART = "SMART"
+SMART_TOXIC_MULT = _env_float("MACD2_SMART_TOXIC_MULT", 0.25)
+TOXIC_CONFIRM_RETURN_MAX_PCT = _env_float("MACD2_TOXIC_CONFIRM_RETURN_MAX_PCT", 0.0)
+TOXIC_EMA20_50_MAX_PCT = _env_float("MACD2_TOXIC_EMA20_50_MAX_PCT", -0.20)
+# confirmation 구간 ETF 호가 표본이 이 개수 미만이면 **판정 불가 = toxic 아님**
+# (fail-open). 5초 tick 기준 6분이면 70여 개가 쌓이므로 3개는 매우 관대한 하한이다.
+TOXIC_MIN_CONFIRM_SAMPLES = _env_int("MACD2_TOXIC_MIN_CONFIRM_SAMPLES", 3)
+TOXIC_QUOTE_TRAIL_MAX = _env_int("MACD2_TOXIC_QUOTE_TRAIL_MAX", 240)
+
 # ── H50 : 작은 휩쏘 HOLD (X2-lite 전용 독립 필터, 2026-09-15) ────────────────
 # X2-lite + W1a 위에 **청산 보류 하나만** 얹은 별도 전략 모드다. 진입 로직은
 # X2-lite 와 100% 동일하고(H50 때문에 진입이 추가/삭제되지 않는다), 손절 -1.30%

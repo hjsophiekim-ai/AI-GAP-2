@@ -62,6 +62,7 @@ from app.trading.macd2 import (
     sideways_filter,
     single_entry_filter,
     small_whipsaw_hold,
+    smart_sizing,
     state_store,
     teg_gate,
     time_window_3slot,
@@ -3718,14 +3719,59 @@ def _resolve_tw2_3slot_candidate_body(
     # no-op 이고 배수는 1.0 이라 기존 동작이 조금도 바뀌지 않는다.
     _presized_chop = None
     _sizing = position_sizing.NEUTRAL
+    _tox = smart_sizing.UNKNOWN
     if position_sizing.is_active(state):
         _presized_chop = early_take_profit.evaluate_entry_chop(bars_3m, direction, now)
+        # ── SMART: toxic 판정 (사이징 전용) ────────────────────────────
+        # 미래정보 없음 — bars_3m 은 filter_complete_3m_bars 를 통과한 **완성봉**
+        # 이고, ETF trail 은 `now`(진입 시각) **미만** 샘플만 쓴다.
+        # confirmation 구간 = 플래그봉 시작(T) ~ 진입 직전. 판정 불가면
+        # toxic=False 로 fail-open 하므로 BASE/P2 동작이 그대로 유지된다.
+        if position_sizing.smart_active(state):
+            _tox = smart_sizing.assess(
+                bars_3m=bars_3m, direction=direction,
+                samples=smart_sizing.trail_for(
+                    state, order_executor.target_symbol_for_direction(direction)),
+                confirm_start_at=flag_bar_dt, entry_at=now,
+            )
         # slot_number/session 은 위 resolve_slot 이 이미 내린 값을 그대로 넘긴다
         # (새 시간기준을 만들지 않는다). BASE 모드에서는 쓰이지 않는다.
         _sizing = position_sizing.evaluate(
             state, entry_chop=bool(_presized_chop.is_chop),
             slot_number=slot_metrics.get("slot_number"),
             session=slot_metrics.get("session"),
+            toxic=_tox.toxic,
+        )
+        _smart_trace = {
+            "date": now.astimezone(KST).strftime("%Y%m%d"),
+            "symbol": order_executor.target_symbol_for_direction(direction),
+            "direction": direction.value,
+            "slot": _sizing.slot_number, "session": _sizing.session,
+            "sizing_mode": position_sizing.sizing_mode(state),
+            "base_order_budget": float(state.budget or 0.0),
+            "confirmation_etf_return_pct": _tox.confirmation_return_pct,
+            "confirmation_weak": _tox.confirmation_weak,
+            "confirmation_samples": _tox.samples_used,
+            "ema20_50_directional_pct": _tox.ema20_50_directional_pct,
+            "toxic": bool(_tox.toxic), "toxic_reason": _tox.reason,
+            "p2_multiplier": _sizing.p2, "smart_multiplier": _sizing.smart,
+            "w1a_rules": _sizing.raw, "clipped": _sizing.clipped,
+            "applied": _sizing.applied, "capped": _sizing.capped,
+            "pre_cap_budget": float(state.budget or 0.0) * float(_sizing.clipped),
+            "remaining_daily_budget": position_sizing.remaining_daily_budget(state),
+            "daily_capital": position_sizing.daily_capital(state),
+        }
+        state.last_smart_sizing_trace = _smart_trace
+        result.signal_dispatch_trace["smart_sizing"] = _smart_trace
+        logger.info(
+            "[MACD2] SMART sizing %s %s slot=%s/%s mode=%s conf_etf=%s weak=%s "
+            "ema20_50=%s toxic=%s p2=%.4f smart=%.4f applied=%.4f remaining=%.0f",
+            _smart_trace["date"], _smart_trace["symbol"], _sizing.slot_number,
+            _sizing.session, _smart_trace["sizing_mode"],
+            _tox.confirmation_return_pct, _tox.confirmation_weak,
+            _tox.ema20_50_directional_pct, bool(_tox.toxic),
+            _sizing.p2, _sizing.smart, _sizing.applied,
+            _smart_trace["remaining_daily_budget"],
         )
         result.signal_dispatch_trace["x2lite_sizing"] = {
             "raw": _sizing.raw, "clipped": _sizing.clipped,
@@ -3733,6 +3779,7 @@ def _resolve_tw2_3slot_candidate_body(
             "exposure_before": _sizing.exposure_before, "reason": _sizing.reason,
             "p2": _sizing.p2, "slot_number": _sizing.slot_number,
             "session": _sizing.session,
+            "toxic": bool(_tox.toxic), "smart": _sizing.smart,
             "sizing_mode": position_sizing.sizing_mode(state),
             "remaining_daily_budget": position_sizing.remaining_daily_budget(state),
             "daily_capital": position_sizing.daily_capital(state),
@@ -5472,6 +5519,16 @@ def run_once(
     t0 = time.monotonic()
     df_1m = market_data.get_history_df()
     result.timing["history_cache_read"] = time.monotonic() - t0
+    # 2026-09-22 SMART sizing: confirmation 구간 ETF 수익률 계산용 호가 trail.
+    # **사이징 전용 관측치**다 — 진입/청산/주문 판정은 이 값을 읽지 않는다.
+    # 실패해도 조용히 넘어간다(판정 불가 = toxic 아님, fail-open).
+    try:
+        for _etf in (config.LONG_SYMBOL, config.INVERSE_SYMBOL):
+            _q = market_data.get_quote(_etf)
+            if _q is not None and _q.price and float(_q.price) > 0:
+                smart_sizing.append_quote_sample(state, _etf, float(_q.price), _q.fetched_at)
+    except Exception:
+        pass
     t0 = time.monotonic()
     bars_3m = resample_completed_3m(df_1m, now=now)
     # docs §4: a completed 3m bar only ever counts as "confirmed" when its own

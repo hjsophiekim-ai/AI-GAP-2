@@ -836,6 +836,17 @@ class RuntimeState:
     p2_sizing_enabled: bool = False
     p2_sizing_enabled_at: Optional[str] = None
     p2_sizing_enabled_by: Optional[str] = None
+    # ── SMART 사이징 토글 (2026-09-22) ─────────────────────────────────
+    # P2 를 대체하는 **단일** 사이징 토글. P2 슬롯 배분 + toxic 감액을 하나의
+    # 정책으로 합쳤다. `p2_sizing_enabled` 는 구버전 state 를 읽기 위한
+    # legacy 키로만 남는다(state_store 가 두 키를 모두 쓰고/읽는다).
+    smart_sizing_enabled: bool = False
+    smart_sizing_enabled_at: Optional[str] = None
+    smart_sizing_enabled_by: Optional[str] = None
+    # confirmation 구간 ETF 수익률 계산용 호가 trail. {symbol: [[iso_ts, price], ...]}
+    # 워커가 매 tick 적재하고 최근 TOXIC_QUOTE_TRAIL_MAX 개만 유지한다.
+    etf_quote_trail: dict = field(default_factory=dict)
+    last_smart_sizing_trace: Optional[dict] = None
     c1_triggered_at: Optional[str] = None
     last_tw2_3slot_quality_passed: Optional[int] = None
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None

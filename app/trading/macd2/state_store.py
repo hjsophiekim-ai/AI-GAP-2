@@ -430,9 +430,14 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "h50_owner_epoch": int(state.h50_owner_epoch or 0),
         "last_h50_stale_discarded_at": state.last_h50_stale_discarded_at,
         "c1_owner_epoch": int(state.c1_owner_epoch or 0),
-        "p2_sizing_enabled": bool(state.p2_sizing_enabled),
-        "p2_sizing_enabled_at": state.p2_sizing_enabled_at,
-        "p2_sizing_enabled_by": state.p2_sizing_enabled_by,
+        # legacy 미러 — 구버전 코드로 롤백해도 토글 상태가 살아남는다.
+        "p2_sizing_enabled": bool(state.smart_sizing_enabled),
+        "p2_sizing_enabled_at": state.smart_sizing_enabled_at,
+        "p2_sizing_enabled_by": state.smart_sizing_enabled_by,
+        "smart_sizing_enabled": bool(state.smart_sizing_enabled),
+        "smart_sizing_enabled_at": state.smart_sizing_enabled_at,
+        "smart_sizing_enabled_by": state.smart_sizing_enabled_by,
+        "etf_quote_trail": dict(state.etf_quote_trail or {}),
         "position_epoch": int(state.position_epoch or 0),
         "last_position_reconcile_result": state.last_position_reconcile_result,
         "time_window_n1_filter_enabled": bool(state.time_window_n1_filter_enabled),
@@ -1095,6 +1100,14 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         p2_sizing_enabled=bool(raw.get("p2_sizing_enabled", False)),
         p2_sizing_enabled_at=raw.get("p2_sizing_enabled_at"),
         p2_sizing_enabled_by=raw.get("p2_sizing_enabled_by"),
+        # 구버전 state 에는 smart_* 키가 없다 -> legacy p2_* 를 그대로 승계한다.
+        smart_sizing_enabled=bool(
+            raw.get("smart_sizing_enabled", raw.get("p2_sizing_enabled", False))),
+        smart_sizing_enabled_at=(
+            raw.get("smart_sizing_enabled_at") or raw.get("p2_sizing_enabled_at")),
+        smart_sizing_enabled_by=(
+            raw.get("smart_sizing_enabled_by") or raw.get("p2_sizing_enabled_by")),
+        etf_quote_trail=dict(raw.get("etf_quote_trail") or {}),
         position_epoch=int(raw.get("position_epoch", 0) or 0),
         last_position_reconcile_result=raw.get("last_position_reconcile_result"),
         time_window_n1_filter_enabled=time_window_n1_filter_enabled,
