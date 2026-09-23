@@ -344,8 +344,9 @@ def evaluate_afternoon_reentry(
     통과는 "즉시 주문"이 아니라 **동일방향 거절의 해제**일 뿐이다 — 이후 기존
     진입 파이프라인(CHOP TEG / 예산 / SMART sizing / order path)을 그대로 탄다.
 
-    검증: research_20260923c_x1_80d (80영업일 20260527~20260922),
-    research_20260923d_x1_refine (FLIP EXIT 제외 재검증). 순수함수다.
+    검증: research_20260923c_x1_80d (80영업일 20260527~20260922) — BASE 162거래
+    /복리 422.9169 대비 AR1 171거래/457.9459, LOO 80/80 양수, MDD 불변.
+    2026-09-23 FLIP EXIT 제외 재검증에서도 같은 숫자를 재현했다. 순수함수다.
     """
     from app.trading.macd2 import teg_gate as _teg
 
