@@ -1749,3 +1749,10 @@ X1_AFTERNOON_BLUE_BONUS = _env_int("MACD2_X1_AFT_BLUE_BONUS", 1)
 X1_AFTERNOON_BLUE_AFTER = _env_str("MACD2_X1_AFT_BLUE_AFTER", "13:00")
 X1_MORNING_DOMINANT_START = _env_str("MACD2_X1_AFT_BLUE_MORN_START", "09:00")
 X1_MORNING_DOMINANT_END = _env_str("MACD2_X1_AFT_BLUE_MORN_END", "12:00")
+
+#: FLIP EXIT 에 H50 HOLD 를 **필요조건으로 둘지** (2026-09-23 사용자 정정).
+#: False 가 기본 — 보유 이후 방향전환 3회면 H50 HOLD 없이도 감시한다.
+#: H50 이 이미 HOLD 중이면 components["h50_priority"]=True 로 우선순위만 올린다.
+#: 이전 구현(True 동치)은 2026-09-22 09:06 RED 처럼 HOLD 이후 플래그가 0개인
+#: 사례에서 영원히 ARM 되지 않는 결함이 있었다.
+X1_FLIP_EXIT_REQUIRE_H50 = _env_bool("MACD2_X1_FLIP_EXIT_REQUIRE_H50", False)

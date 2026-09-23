@@ -253,20 +253,126 @@ def _flip_exit_frame():
     return bars3m("2026-09-22 09:00", hold + drop)
 
 
-def test_flip_exit_not_armed_without_h50_hold():
+def test_alt_flip_count_counts_first_opposite_flag_as_one():
+    """2026-09-23 사용자 정정 — **방향전환 횟수가 아니라 alternating flag 개수**.
+
+    RED 보유 중 B -> R -> B 면 alt_count == 3 (방향전환은 2회).
+    """
+    ev = flags(("09:30", "B"), ("09:45", "R"), ("10:00", "B"))
+    now = pd.Timestamp("2026-09-22 10:15", tz=KST)
+    st = X.flip_state_from_live_flags(ev, now=now, held_direction=Direction.UP_RED)
+    assert st.flip_count == 2          # 방향전환 횟수 (X1-4 용)
+    assert st.alt_count == 3           # alternating flag 개수 (X1-2 용)
+    assert st.alt_seq == "BRB"
+    assert st.alt_last_direction == Direction.DOWN_BLUE.value
+
+
+def test_alt_flip_ignores_same_direction_flags_before_first_opposite():
+    """진입 직후 같은 방향 플래그가 먼저 와도 세지 않는다."""
+    ev = flags(("09:30", "R"), ("09:45", "B"), ("10:00", "R"))
+    now = pd.Timestamp("2026-09-22 10:15", tz=KST)
+    st = X.flip_state_from_live_flags(ev, now=now, held_direction=Direction.UP_RED)
+    assert st.alt_count == 2 and st.alt_seq == "BR"
+    assert st.alt_first_at.strftime("%H:%M") == "09:45"
+
+
+def test_alt_flip_count_is_zero_without_held_direction():
+    """held_direction 을 안 주면 alt_* 는 채워지지 않는다(X1-4 경로 불변)."""
+    ev = flags(("09:30", "B"), ("09:45", "R"), ("10:00", "B"))
+    st = X.flip_state_from_live_flags(ev, now=pd.Timestamp("2026-09-22 10:15", tz=KST))
+    assert st.alt_count == 0 and st.alt_seq == "" and st.flip_count == 2
+
+
+def test_flip_exit_arms_on_three_alternating_flags():
+    """B(1) -> R(2) -> B(3) 에서 ARM. 이전 정의(방향전환 3회)면 4개가 필요했다."""
+    fr = _flip_exit_frame()
+    ev = flags(("09:30", "B"), ("09:45", "R"), ("10:00", "B"))
+    st = X.flip_state_from_live_flags(ev, now=end_of(fr), bars_3m=fr,
+                                      held_direction=Direction.UP_RED)
+    assert st.alt_count == 3
+    d = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr))
+    assert d.armed is True
+    d2 = X.evaluate_flip_exit(
+        fr, Direction.UP_RED,
+        X.flip_state_from_live_flags(flags(("09:30", "B"), ("09:45", "R")),
+                                     now=end_of(fr), bars_3m=fr,
+                                     held_direction=Direction.UP_RED),
+        now=end_of(fr))
+    assert d2.armed is False and d2.reason == "X1_FLIP_EXIT_NOT_ARMED_FLIPS_2"
+
+
+def test_flip_exit_arms_without_h50_hold():
+    """2026-09-23 사용자 정정 — H50 HOLD 는 **필요조건이 아니다**.
+
+    진입 이후 방향전환 3회 + 마지막 플래그가 보유 반대방향이면 감시한다.
+    이전 구현은 H50 을 필수로 봐서 2026-09-22 09:06 RED 처럼 HOLD 이후 플래그가
+    0개인 사례에서 영원히 ARM 되지 않았다.
+    """
     fr = _flip_exit_frame()
     st = X.flip_state_from_live_flags(
         flags(("09:30", "R"), ("09:45", "B"), ("10:00", "R"), ("10:15", "B")),
-        now=end_of(fr), bars_3m=fr)
+        now=end_of(fr), bars_3m=fr, held_direction=Direction.UP_RED)
+    assert st.alt_count == 3 and st.alt_last_direction == Direction.DOWN_BLUE.value
     d = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr), h50_hold_seen=False)
-    assert d.armed is False and d.exit_now is False
+    assert d.armed is True
+    assert d.components["h50_priority"] is False
+
+
+def test_flip_exit_h50_only_raises_priority_not_gate():
+    fr = _flip_exit_frame()
+    st = X.flip_state_from_live_flags(
+        flags(("09:30", "R"), ("09:45", "B"), ("10:00", "R"), ("10:15", "B")),
+        now=end_of(fr), bars_3m=fr, held_direction=Direction.UP_RED)
+    off = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr), h50_hold_seen=False)
+    on = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr), h50_hold_seen=True)
+    assert off.armed is on.armed is True
+    assert off.score == on.score                      # 점수에는 영향 없음
+    assert on.components["h50_priority"] is True
+
+
+def test_flip_exit_legacy_h50_gate_can_be_restored(monkeypatch):
+    """되돌릴 수 있게 남겨 둔 플래그 — 기본은 False 다."""
+    assert config.X1_FLIP_EXIT_REQUIRE_H50 is False
+    monkeypatch.setattr(config, "X1_FLIP_EXIT_REQUIRE_H50", True)
+    fr = _flip_exit_frame()
+    st = X.flip_state_from_live_flags(
+        flags(("09:30", "R"), ("09:45", "B"), ("10:00", "R"), ("10:15", "B")),
+        now=end_of(fr), bars_3m=fr, held_direction=Direction.UP_RED)
+    d = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr), h50_hold_seen=False)
+    assert d.armed is False and d.reason == "X1_FLIP_EXIT_NOT_ARMED_NO_H50_HOLD"
+
+
+def test_flip_exit_requires_last_flag_to_be_opposite():
+    """전환 3회여도 마지막 플래그가 보유방향과 같으면 ARM 하지 않는다."""
+    fr = _flip_exit_frame()
+    st = X.flip_state_from_live_flags(
+        flags(("09:30", "B"), ("09:45", "R"), ("10:00", "B"), ("10:15", "R")),
+        now=end_of(fr), bars_3m=fr, held_direction=Direction.UP_RED)
+    assert st.alt_count == 4 and st.alt_last_direction == Direction.UP_RED.value
+    d = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr))
+    assert d.armed is False
+    assert d.reason == "X1_FLIP_EXIT_LAST_FLAG_SAME_DIRECTION"
+
+
+def test_flip_count_is_measured_from_position_entry_and_resets():
+    """진입 시 0 에서 시작하고, 청산 후 새 진입은 다시 0 부터 센다."""
+    ev = flags(("09:00", "R"), ("09:27", "B"), ("11:03", "R"), ("11:12", "B"),
+               ("11:24", "R"), ("11:30", "B"))
+    now = pd.Timestamp("2026-09-22 11:45", tz=KST)
+    first_entry = pd.Timestamp("2026-09-22 09:06", tz=KST)
+    second_entry = pd.Timestamp("2026-09-22 11:15", tz=KST)
+    a = X.flip_state_from_live_flags(ev, now=now, since=first_entry)
+    b = X.flip_state_from_live_flags(ev, now=now, since=second_entry)
+    assert a.flip_count == 4          # 09:27 B 부터 11:30 B 까지
+    assert b.flip_count == 1          # 새 포지션은 11:24 R -> 11:30 B 만
 
 
 def test_flip_exit_not_armed_below_three_flips():
     fr = _flip_exit_frame()
     st = X.flip_state_from_live_flags(flags(("09:30", "R"), ("09:45", "B")),
-                                      now=end_of(fr), bars_3m=fr)
-    assert st.flip_count == 1
+                                      now=end_of(fr), bars_3m=fr,
+                                      held_direction=Direction.UP_RED)
+    assert st.alt_count == 1
     d = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr), h50_hold_seen=True)
     assert d.armed is False
 
@@ -275,8 +381,8 @@ def test_flip_exit_fires_on_three_flips_plus_breakout():
     fr = _flip_exit_frame()
     st = X.flip_state_from_live_flags(
         flags(("09:30", "R"), ("09:45", "B"), ("10:00", "R"), ("10:15", "B")),
-        now=end_of(fr), bars_3m=fr)
-    assert st.flip_count == 3
+        now=end_of(fr), bars_3m=fr, held_direction=Direction.UP_RED)
+    assert st.alt_count == 3
     d = X.evaluate_flip_exit(fr, Direction.UP_RED, st, now=end_of(fr),
                              h50_hold_seen=True, etf_move_pct=1.2)
     assert d.armed is True
@@ -531,3 +637,43 @@ def test_flip_since_narrows_flip_count_for_held_position():
     wide = X.build_context(now=now, bars_3m=fr, flag_events=ev,
                            held_direction=Direction.UP_RED, h50_hold_seen=True)
     assert wide.flip.flip_count == 5
+
+
+# ── 12. ARM = 감시 시작 (2026-09-23 사용자 정정) ──────────────────────────
+def test_arm_persists_and_is_re_evaluated_every_bar():
+    """ARM 이후에는 alt_count/마지막방향 게이트를 다시 통과시키지 않는다."""
+    fr = _flip_exit_frame()
+    empty = X.X1FlipState()                       # alt_count=0 — 게이트 통과 불가
+    fresh = X.evaluate_flip_exit(fr, Direction.UP_RED, empty, now=end_of(fr))
+    assert fresh.armed is False
+    watching = X.evaluate_flip_exit(fr, Direction.UP_RED, empty, now=end_of(fr),
+                                    already_armed=True)
+    assert watching.armed is True
+    assert watching.metrics.get("rearmed") is True
+    assert watching.reason.startswith("X1_FLIP_EXIT")
+
+
+def test_armed_watch_still_needs_score_to_exit():
+    """ARM 만으로는 청산하지 않는다 — score >= SCORE_MIN 이어야 한다."""
+    flat = bars3m("2026-09-22 09:00", [1900000] * 30)   # 무변동 = 확인조건 0점
+    d = X.evaluate_flip_exit(flat, Direction.UP_RED, X.X1FlipState(),
+                             now=end_of(flat), already_armed=True)
+    assert d.armed is True
+    assert d.score < config.X1_FLIP_EXIT_SCORE_MIN
+    assert d.exit_now is False
+
+
+def test_armed_watch_fires_when_score_reaches_threshold():
+    fr = _flip_exit_frame()                       # 뒤쪽이 급락 = 반대방향 확인조건 충족
+    d = X.evaluate_flip_exit(fr, Direction.UP_RED, X.X1FlipState(), now=end_of(fr),
+                             already_armed=True, etf_move_pct=1.2)
+    assert d.armed is True and d.score >= config.X1_FLIP_EXIT_SCORE_MIN
+    assert d.exit_now is True and d.reason == "X1_FLIP_EXIT"
+
+
+def test_build_context_passes_armed_state():
+    fr = _flip_exit_frame()
+    ctx = X.build_context(now=end_of(fr), bars_3m=fr, held_direction=Direction.UP_RED,
+                          flip_exit_armed=True, etf_move_pct=1.2)
+    assert ctx.flip_exit.armed is True
+    assert ctx.final_action == X.ACTION_EXIT

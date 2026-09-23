@@ -14,7 +14,7 @@
 4개 하위모듈
 ------------
 X1-1 MORNING CONTEXT     오전 신규진입 승인/감점/WATCH       -> evaluate_morning_context
-X1-2 FLIP EXIT           H50 HOLD 중 반복 flip 시 조기청산    -> evaluate_flip_exit
+X1-2 FLIP EXIT           진입 이후 alternating flip 3개 시 조기청산 -> evaluate_flip_exit
 X1-3 AFTERNOON RE-ENTRY  오후 동일방향 조건부 재진입(AR1)     -> evaluate_afternoon_reentry
 X1-4 FLIP BREAKOUT WATCH soft reject 를 box breakout 으로 살림 -> evaluate_late_entry
 
@@ -110,6 +110,7 @@ class X1MorningContext:
 
 @dataclass(frozen=True)
 class X1FlipState:
+    #: 창 안 플래그들의 **방향전환 횟수** (X1-4 FLIP WATCH 용).
     flip_count: int = 0
     flag_count: int = 0
     span_min: float = 0.0
@@ -121,6 +122,14 @@ class X1FlipState:
     box_low: Optional[float] = None
     watching: bool = False
     source: str = LIVE_CONFIRMED
+    # ── 보유 기준 alternating flip (X1-2 FLIP EXIT 전용, 2026-09-23 정정) ──
+    #: **진입 이후 새로 발생한 alternating flip flag 의 개수**다. 방향전환
+    #: 횟수가 아니다 — RED 보유 중 B(1) -> R(2) -> B(3) 처럼 **첫 반대 플래그가
+    #: 1** 이다. ``flip_state_from_live_flags(held_direction=...)`` 를 줘야 채워진다.
+    alt_count: int = 0
+    alt_seq: str = ""
+    alt_last_direction: Optional[str] = None
+    alt_first_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +188,8 @@ class X1Context:
             "premarket_trend": self.morning.premarket_trend,
             "session_trend": self.morning.session_trend,
             "flip_count": self.flip.flip_count,
+            "alt_flip_count": self.flip.alt_count,
+            "alt_flip_seq": self.flip.alt_seq,
             "flag_count": self.flip.flag_count,
             "flip_span_min": self.flip.span_min,
             "flip_seq": self.flip.seq,
@@ -506,6 +517,7 @@ def flip_state_from_live_flags(
     since: Optional[datetime] = None,
     window_minutes: Optional[int] = None,
     bars_3m: Optional[pd.DataFrame] = None,
+    held_direction: Union[Direction, str, None] = None,
 ) -> X1FlipState:
     """**LIVE_CONFIRMED 원장 이벤트만**으로 flip sequence 를 만든다.
 
@@ -513,8 +525,18 @@ def flip_state_from_live_flags(
     "direction": "UP_RED"|"DOWN_BLUE", "source": "LIVE_CONFIRMED"}``.
     ``source`` 가 ``RECOMPUTED_ONLY`` 인 것은 **버린다**(사양 §9).
 
-    flip_count 는 "플래그 개수"가 아니라 **방향전환 횟수**다.
+    ``flip_count`` 는 "플래그 개수"가 아니라 **방향전환 횟수**다 (X1-4 용).
     box 는 cluster 구간 3분봉의 high/low (``bars_3m`` 이 있을 때만).
+
+    ``held_direction`` 을 주면 X1-2 FLIP EXIT 용 **alternating flip count** 를
+    함께 계산한다(2026-09-23 사용자 정정):
+
+        count = 0 에서 시작
+        진입 이후 **최초 반대방향** 플래그 -> count = 1
+        이후 직전 counted 플래그와 방향이 바뀔 때마다 +1
+        같은 방향 반복은 증가 없음
+
+    즉 RED 보유 중 B, R, B 면 ``alt_count == 3`` 이다(방향전환 횟수는 2).
     """
     if not flag_events:
         return X1FlipState()
@@ -559,11 +581,35 @@ def flip_state_from_live_flags(
             if "low" in seg.columns:
                 box_lo = float(seg["low"].min())
 
+    # ── alternating flip count (보유방향 기준) ──────────────────────────
+    held = _as_direction(held_direction)
+    alt_count = 0
+    alt_seq = ""
+    alt_last: Optional[Direction] = None
+    alt_first_at: Optional[datetime] = None
+    if held is not None:
+        for ts, d in rows:
+            if alt_last is None:
+                if d != held:                      # 최초 **반대** 플래그가 1
+                    alt_count = 1
+                    alt_last = d
+                    alt_first_at = ts.to_pydatetime()
+                    alt_seq = "R" if d == Direction.UP_RED else "B"
+                # 최초 반대 플래그 전의 동일방향 플래그는 세지 않는다
+            elif d != alt_last:                    # 직전 counted 와 달라질 때만 +1
+                alt_count += 1
+                alt_last = d
+                alt_seq += "R" if d == Direction.UP_RED else "B"
+            # 같은 방향 반복은 증가 없음
+
     return X1FlipState(
         flip_count=flips, flag_count=len(rows), span_min=span, seq=seq,
         last_direction=rows[-1][1].value, last_flag_at=rows[-1][0].to_pydatetime(),
         cluster_start=rows[0][0].to_pydatetime(), box_high=box_hi, box_low=box_lo,
         source=LIVE_CONFIRMED,
+        alt_count=alt_count, alt_seq=alt_seq,
+        alt_last_direction=(alt_last.value if alt_last is not None else None),
+        alt_first_at=alt_first_at,
     )
 
 
@@ -574,12 +620,38 @@ def evaluate_flip_exit(
     flip: X1FlipState,
     *,
     now: datetime,
-    h50_hold_seen: bool,
+    h50_hold_seen: bool = False,
     etf_move_pct: Optional[float] = None,
+    already_armed: bool = False,
 ) -> X1FlipExitDecision:
-    """H50 이 whipsaw 로 HOLD 한 뒤에도 계속 뒤집히면 늦기 전에 전량청산.
+    """보유 이후 alternating flip 이 쌓이면 늦기 전에 전량청산.
 
-    ARM 조건: 보유 중 + H50 HOLD 1회 이상 + **방향전환 >= 3회**.
+    **ARM 은 "청산 판정 시점"이 아니라 "감시 시작 시점"이다** (2026-09-23 사용자
+    정정). 호출부는 ARM 이 한 번 성립하면 ``already_armed=True`` 로 **완성 3분봉
+    마다** 이 함수를 다시 부르고, ``exit_now`` 가 처음 True 가 되는 봉에서
+    전량청산한다. ARM 판정 자체는 그 뒤 플래그 방향이 어떻게 되든 유지된다.
+
+    **기존 청산(H50 / STOP / OPPOSITE_SIGNAL / 강제청산)이 먼저 나가면 호출부가
+    감시를 즉시 끝낸다** — X1 은 기존 청산을 지연시키지 않는다. 실제 청산 이후
+    시점에는 절대 평가하지 않는다(호출부 계약).
+
+    ARM 조건 (2026-09-23 사용자 정정):
+      1. 보유 중이고
+      2. **포지션 진입 이후 새로 발생한 alternating flip flag** 가
+         ``X1_FLIP_EXIT_MIN_FLIPS`` 개 이상이며 (``flip.alt_count``) —
+         **방향전환 횟수가 아니다.** RED 보유 중 B(1) -> R(2) -> B(3) 처럼
+         **첫 반대 플래그가 1** 이다. 호출부가 ``since=진입시각`` +
+         ``held_direction`` 으로 만들어 넘긴다(청산하면 다음 포지션에서 0)
+      3. **마지막 플래그가 보유방향의 반대**일 것.
+
+    **H50 HOLD 는 더 이상 필요조건이 아니다** (``X1_FLIP_EXIT_REQUIRE_H50``,
+    기본 False). H50 이 이미 HOLD 중이면 우선순위 신호로만 기록한다
+    (``components["h50_priority"]``) — 점수에는 넣지 않는다. 이전 구현은 H50
+    HOLD 를 필수로 봐서 2026-09-22 09:06 RED 처럼 HOLD 이후 플래그가 0개인
+    사례에서 영원히 ARM 되지 않았다.
+
+    3회 도달만으로 즉시청산하지 않는다 — 아래 확인조건 점수가
+    ``X1_FLIP_EXIT_SCORE_MIN`` 이상일 때만 청산한다.
     자동 reverse 는 하지 않는다 — 청산만 답한다(사양 §2).
 
     ``etf_move_pct`` 는 호출부가 보유 ETF 가격에서 계산한 **반대방향 추종률(%)**
@@ -588,13 +660,46 @@ def evaluate_flip_exit(
     held = _as_direction(held_direction)
     if held is None:
         return X1FlipExitDecision(reason="NO_DIRECTION")
-    if not h50_hold_seen:
+    # 이미 ARM 된 포지션은 게이트를 다시 통과시키지 않는다 — 감시만 계속한다.
+    if already_armed:
+        return _score_flip_exit(bars_3m, held, flip, now=now,
+                                h50_hold_seen=h50_hold_seen,
+                                etf_move_pct=etf_move_pct, rearmed=True)
+    if config.X1_FLIP_EXIT_REQUIRE_H50 and not h50_hold_seen:
         return X1FlipExitDecision(reason="X1_FLIP_EXIT_NOT_ARMED_NO_H50_HOLD")
-    if flip.flip_count < config.X1_FLIP_EXIT_MIN_FLIPS:
+    if flip.alt_count < config.X1_FLIP_EXIT_MIN_FLIPS:
         return X1FlipExitDecision(
-            reason="X1_FLIP_EXIT_NOT_ARMED_FLIPS_%d" % flip.flip_count,
-            metrics={"flip_count": flip.flip_count})
+            reason="X1_FLIP_EXIT_NOT_ARMED_FLIPS_%d" % flip.alt_count,
+            metrics={"alt_count": flip.alt_count, "alt_seq": flip.alt_seq,
+                     "flip_count": flip.flip_count,
+                     "h50_hold_seen": bool(h50_hold_seen)})
+    last_flag = _as_direction(flip.alt_last_direction or flip.last_direction)
+    if last_flag is None or last_flag == held:
+        # 마지막 플래그가 보유방향과 같으면 "추세가 내 쪽으로 돌아온" 상태다.
+        return X1FlipExitDecision(
+            reason="X1_FLIP_EXIT_LAST_FLAG_SAME_DIRECTION",
+            metrics={"alt_count": flip.alt_count, "alt_seq": flip.alt_seq,
+                     "flip_count": flip.flip_count,
+                     "last_direction": flip.alt_last_direction or flip.last_direction,
+                     "held_direction": held.value,
+                     "h50_hold_seen": bool(h50_hold_seen)})
 
+    return _score_flip_exit(bars_3m, held, flip, now=now,
+                            h50_hold_seen=h50_hold_seen,
+                            etf_move_pct=etf_move_pct, rearmed=False)
+
+
+def _score_flip_exit(
+    bars_3m: Optional[pd.DataFrame],
+    held: Direction,
+    flip: X1FlipState,
+    *,
+    now: datetime,
+    h50_hold_seen: bool,
+    etf_move_pct: Optional[float],
+    rearmed: bool,
+) -> X1FlipExitDecision:
+    """ARM 성립 이후의 확인조건 채점. ARM 판정은 호출부가 이미 끝냈다."""
     work = _complete_upto(bars_3m, now, bar_minutes=3)
     if work is None or len(work) < 3:
         return X1FlipExitDecision(armed=True, reason="INSUFFICIENT_BARS")
@@ -603,9 +708,17 @@ def evaluate_flip_exit(
     so = _sign(opp)
     close_now = float(work["close"].iloc[-1])
     comp: dict[str, bool] = {}
-    metrics: dict[str, Any] = {"close": close_now, "flip_count": flip.flip_count,
+    metrics: dict[str, Any] = {"close": close_now, "alt_count": flip.alt_count,
+                               "alt_seq": flip.alt_seq, "flip_count": flip.flip_count,
                                "flip_seq": flip.seq, "box_high": flip.box_high,
-                               "box_low": flip.box_low}
+                               "box_low": flip.box_low,
+                               "flip_since": (flip.cluster_start.isoformat()
+                                              if flip.cluster_start else None),
+                               "last_direction": flip.last_direction,
+                               "held_direction": held.value,
+                               "h50_hold_seen": bool(h50_hold_seen)}
+    # H50 이 이미 HOLD 중이면 우선순위 신호로만 남긴다 — 점수에는 넣지 않는다.
+    comp["h50_priority"] = bool(h50_hold_seen)
     score = 0
 
     # A. 완성 3분봉 종가가 flip 구간 반대방향 swing 을 돌파
@@ -665,10 +778,13 @@ def evaluate_flip_exit(
         score += config.X1_EXIT_W_EXTREME_FAIL
 
     exit_now = score >= config.X1_FLIP_EXIT_SCORE_MIN
+    metrics["rearmed"] = bool(rearmed)
     return X1FlipExitDecision(
         armed=True, exit_now=bool(exit_now), score=int(score), components=comp,
         metrics=metrics,
-        reason=("X1_FLIP_EXIT" if exit_now else "X1_FLIP_EXIT_SCORE_%d" % score),
+        reason=("X1_FLIP_EXIT" if exit_now
+                else ("X1_FLIP_EXIT_WATCHING_SCORE_%d" % score if rearmed
+                      else "X1_FLIP_EXIT_SCORE_%d" % score)),
     )
 
 
@@ -945,6 +1061,7 @@ def build_context(
     teg_decision: Any = None,
     held_direction: Union[Direction, str, None] = None,
     h50_hold_seen: bool = False,
+    flip_exit_armed: bool = False,
     flip_since: Optional[datetime] = None,
     etf_move_pct: Optional[float] = None,
     is_morning: Optional[bool] = None,
@@ -960,20 +1077,22 @@ def build_context(
     if is_morning is None:
         is_morning = pd.Timestamp(now).time() < config.TW2_3SLOT_MORNING_WINDOW_END
 
-    # 보유 중이면 FLIP EXIT 이 최우선 (H50 관리 단계).
-    # flip 은 **현재 포지션 진입 이후 / 첫 H50 HOLD 이후**부터 센다(사양 §2) —
-    # ``flip_since`` 가 그 기준점이다. 없으면 당일 전체(보수적으로 더 많이 셈)라
-    # 호출부는 보유 판정에 쓸 때 반드시 넘겨야 한다.
+    # 보유 중이면 FLIP EXIT 이 최우선.
+    # flip 은 **현재 포지션 진입 이후**부터 센다(2026-09-23 사용자 정정) —
+    # ``flip_since`` 에 **진입시각**을 넘긴다. 청산하면 다음 포지션에서 0 부터
+    # 다시 센다(호출부가 새 진입시각을 넘기므로 자동 reset). 넘기지 않으면
+    # 당일 전체를 세므로 과다 카운트가 된다 — 보유 판정에는 반드시 넘길 것.
     held = _as_direction(held_direction)
     flip_all = flip_state_from_live_flags(flag_events, now=now, bars_3m=bars_3m)
     exit_dec = X1FlipExitDecision()
     if held is not None:
         flip_pos = flip_state_from_live_flags(flag_events, now=now, since=flip_since,
-                                              bars_3m=bars_3m)
+                                              bars_3m=bars_3m, held_direction=held)
         flip_all = flip_pos
         exit_dec = evaluate_flip_exit(bars_3m, held, flip_pos, now=now,
                                       h50_hold_seen=h50_hold_seen,
-                                      etf_move_pct=etf_move_pct)
+                                      etf_move_pct=etf_move_pct,
+                                      already_armed=flip_exit_armed)
         if exit_dec.exit_now:
             reasons.append(exit_dec.reason)
             return X1Context(final_action=ACTION_EXIT, flip=flip_all,
