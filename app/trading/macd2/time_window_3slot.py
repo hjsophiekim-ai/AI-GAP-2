@@ -454,6 +454,21 @@ def is_3slot_enabled(state) -> bool:
     return active_3slot_mode(state) is not None
 
 
+def afternoon_reentry_exception_enabled(state) -> bool:
+    """AR1 을 이 상태에서 평가해도 되는가 — **N1 경로 전용**이다.
+
+    AR1 의 80영업일 검증 BASE 는 N1 + C1 (+ SMART 민감도) 하나뿐이다. 오후
+    슬롯 코드(resolve_slot / _resolve_tw2_3slot_candidate_body)는 3-SLOT 계열
+    다섯 모드가 통째로 공유하므로, 게이트가 없으면 X2-lite W1 / H50 /
+    TW2 3-SLOT / TW TEG 3-SLOT 까지 AR1 이 함께 발동한다. 그 조합은 검증된
+    적이 없다 — 여기서 N1 계열로 잘라 연구 scope 와 실엔진 scope 를 맞춘다.
+
+    별도 토글은 두지 않는다(2026-09-24 사용자 확정): N1 이 켜지면 AR1 도 N1
+    내부 규칙으로 자동으로 켜지고, N1 이 아니면 평가 자체를 하지 않는다.
+    """
+    return active_3slot_mode(state) in MODES_N1_FAMILY
+
+
 def scheduled_entry_supported(state) -> bool:
     """09:03 예약매수(2026-08-06)를 이 모드에서 쓸 수 있는가.
 

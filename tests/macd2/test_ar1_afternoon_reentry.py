@@ -146,6 +146,54 @@ def test_worker_ar1_does_not_short_circuit_the_pipeline():
         assert forbidden not in body
 
 
+# ── 4b. scope: AR1 은 N1 경로 전용이다 (2026-09-24 사용자 확정) ────────────
+def _state_with(flag: str | None):
+    s = state_store.default_state()
+    for name, _mode in tw3._MODE_BY_FLAG:
+        setattr(s, name, name == flag)
+    return s
+
+
+def test_ar1_scope_enabled_only_for_n1():
+    assert tw3.afternoon_reentry_exception_enabled(
+        _state_with("time_window_n1_filter_enabled")) is True
+
+
+@pytest.mark.parametrize("flag", ["time_window_3slot_filter_enabled",
+                                  "time_window_twf_filter_enabled",
+                                  "time_window_x2lite_filter_enabled",
+                                  "time_window_h50_filter_enabled",
+                                  None])
+def test_ar1_scope_disabled_for_every_non_n1_mode(flag):
+    """X2-lite W1 / H50 / TW2 3-SLOT / TW TEG 3-SLOT 은 같은 오후 슬롯 코드를
+    공유하지만 AR1 검증 BASE 가 아니다 — 평가 자체를 하지 않는다."""
+    assert tw3.afternoon_reentry_exception_enabled(_state_with(flag)) is False
+
+
+def test_ar1_scope_covers_every_known_3slot_mode():
+    """모드가 추가되면 이 테스트가 먼저 깨져서 scope 재확인을 강제한다."""
+    modes = {m for _f, m in tw3._MODE_BY_FLAG}
+    assert modes == set(tw3.MODES_3SLOT)
+    assert set(tw3.MODES_N1_FAMILY) == {tw3.MODE_N1_3SLOT}
+
+
+def test_worker_ar1_hook_is_gated_to_n1():
+    src = _worker_src()
+    start = src.index("# ── AR1: 오후 동일방향 재진입 예외")
+    body = src[start:start + 2200]
+    assert "time_window_3slot.afternoon_reentry_exception_enabled(state)" in body
+    hook = body.index("time_window_3slot.evaluate_afternoon_reentry")
+    gate = body.index("afternoon_reentry_exception_enabled(state)")
+    assert gate < hook, "게이트가 AR1 평가보다 먼저여야 한다"
+
+
+def test_ar1_has_no_dedicated_ui_toggle():
+    """N1 이 켜지면 함께 켜진다 — 별도 토글/상태 필드를 만들지 않는다."""
+    s = state_store.default_state()
+    assert not [f for f in s.__dataclass_fields__ if "ar1" in f.lower()]
+    assert not [n for n in dir(config) if "AR1" in n]
+
+
 # ── 5. X1 잔재가 production 에 없다 ────────────────────────────────────────
 def test_worker_has_no_x1_wiring_left():
     src = _worker_src()

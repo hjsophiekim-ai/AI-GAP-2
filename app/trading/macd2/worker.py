@@ -3575,6 +3575,10 @@ def _resolve_tw2_3slot_candidate_body(
             final_block_reason = slot_decision.reject_reason
             final_decision_label = slot_decision.reject_reason
             # ── AR1: 오후 동일방향 재진입 예외 (2026-09-24 내장, 토글 없음) ──
+            # **N1 경로 전용**이다. 이 함수는 3-SLOT 계열 다섯 모드가 공용으로
+            # 쓰지만 AR1 의 검증 BASE 는 N1 + C1 (+ SMART) 하나뿐이라,
+            # afternoon_reentry_exception_enabled 로 X2-lite W1 / H50 /
+            # TW2 3-SLOT / TW TEG 3-SLOT 을 잘라낸다(그 모드 동작 불변).
             # 적용대상은 SAME_DIRECTION_AFTERNOON 으로 거절된 후보 **뿐**이다.
             # 현행 파이프라인은 이 분기에서 TEG 를 아예 호출하지 않으므로
             # 여기서 직접 계산해 넘긴다(그러지 않으면 AR1 이 판정 불가다).
@@ -3585,7 +3589,8 @@ def _resolve_tw2_3slot_candidate_body(
             # 통과는 "즉시 주문"이 아니다 — 동일방향 거절만 해제되고, 이후
             # CHOP TEG / 예산 / SMART sizing / order path 는 그대로 탄다.
             if (slot_decision.reject_reason
-                    == time_window_3slot.REJECT_SAME_DIRECTION_AFTERNOON):
+                    == time_window_3slot.REJECT_SAME_DIRECTION_AFTERNOON
+                    and time_window_3slot.afternoon_reentry_exception_enabled(state)):
                 ar1_teg = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
                 ar1 = time_window_3slot.evaluate_afternoon_reentry(
                     ar1_teg, base_reject_reason=slot_decision.reject_reason)
