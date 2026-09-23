@@ -1,0 +1,25 @@
+date,kind,at,held,alt,seq,score,entry_time,components
+20260617,ARM,2026-06-17T11:33:00+09:00,UP_RED,3,BRB,2,,
+20260618,ARM,2026-06-18T12:18:00+09:00,UP_RED,3,BRB,2,,
+20260806,ARM,2026-08-06T14:00:00+09:00,DOWN_BLUE,3,RBR,2,,
+20260811,ARM,2026-08-11T13:09:00+09:00,UP_RED,3,BRB,2,,
+20260812,ARM,2026-08-12T10:30:00+09:00,DOWN_BLUE,3,RBR,3,,
+20260812,EXIT,2026-08-12T10:30:00+09:00,DOWN_BLUE,3,RBR,3,2026-08-12 09:48:00+09:00,"{'h50_priority': False, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260820,ARM,2026-08-20T11:12:00+09:00,UP_RED,3,BRB,2,,
+20260820,ARM,2026-08-20T13:33:00+09:00,UP_RED,3,BRB,2,,
+20260827,ARM,2026-08-27T11:30:00+09:00,UP_RED,3,BRB,3,,
+20260827,EXIT,2026-08-27T11:30:00+09:00,UP_RED,3,BRB,3,2026-08-27 10:30:00+09:00,"{'h50_priority': True, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260828,ARM,2026-08-28T11:03:00+09:00,DOWN_BLUE,3,RBR,2,,
+20260828,EXIT,2026-08-28T11:06:00+09:00,DOWN_BLUE,3,RBR,3,2026-08-28 10:15:00+09:00,"{'h50_priority': True, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260903,ARM,2026-09-03T11:30:00+09:00,DOWN_BLUE,3,RBR,2,,
+20260903,EXIT,2026-09-03T11:36:00+09:00,DOWN_BLUE,5,RBRBR,3,2026-09-03 11:00:00+09:00,"{'h50_priority': True, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260904,ARM,2026-09-04T12:36:00+09:00,UP_RED,3,BRB,3,,
+20260904,EXIT,2026-09-04T12:36:00+09:00,UP_RED,3,BRB,3,2026-09-04 11:18:00+09:00,"{'h50_priority': True, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260911,ARM,2026-09-11T11:36:00+09:00,UP_RED,3,BRB,3,,
+20260911,EXIT,2026-09-11T11:36:00+09:00,UP_RED,3,BRB,3,2026-09-11 09:18:00+09:00,"{'h50_priority': False, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260921,ARM,2026-09-21T10:48:00+09:00,UP_RED,3,BRB,1,,
+20260921,EXIT,2026-09-21T10:51:00+09:00,UP_RED,3,BRB,3,2026-09-21 09:57:00+09:00,"{'h50_priority': True, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260921,ARM,2026-09-21T13:33:00+09:00,UP_RED,3,BRB,2,,
+20260921,EXIT,2026-09-21T13:36:00+09:00,UP_RED,3,BRB,3,2026-09-21 12:57:00+09:00,"{'h50_priority': True, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
+20260922,ARM,2026-09-22T11:39:00+09:00,DOWN_BLUE,3,RBR,3,,
+20260922,EXIT,2026-09-22T11:39:00+09:00,DOWN_BLUE,3,RBR,3,2026-09-22 11:18:00+09:00,"{'h50_priority': False, 'box_break': False, 'gap_expanding_opposite': True, 'ema_slope_flipped': True, 'held_extreme_fail': True}"
