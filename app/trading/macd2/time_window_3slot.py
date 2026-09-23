@@ -308,6 +308,69 @@ def resolve_slot(
     )
 
 
+# ── AR1 — 오후 동일방향 재진입 예외 (2026-09-23 연구, 2026-09-24 내장) ───────
+#: AR1 로 재진입이 열렸을 때 slot_metrics 에 남기는 사유 문자열.
+AR1_ALLOW_REASON = "AR1_STACK_EXEMPT"
+AR1_REJECT_OUT_OF_SCOPE = "AR1_OUT_OF_SCOPE"
+AR1_REJECT_NO_CONDITIONS = "AR1_NO_TEG_CONDITIONS"
+AR1_REJECT_MULTI_FAIL = "AR1_MULTI_CONDITION_FAIL"
+AR1_REJECT_NO_MOMENTUM = "AR1_MOMENTUM_NOT_CONFIRMED"
+AR1_ALLOW_TEG_APPROVED = "AR1_TEG_ALREADY_APPROVED"
+
+
+@dataclass(frozen=True)
+class AR1Decision:
+    """``REJECT_SAME_DIRECTION_AFTERNOON`` 을 되돌릴지에 대한 답 하나뿐이다."""
+    allowed: bool = False
+    stack_exempt: bool = False
+    reason: str = ""
+    failing_conditions: tuple = ()
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
+def evaluate_afternoon_reentry(
+    teg_decision: Any,
+    *,
+    base_reject_reason: Optional[str],
+) -> AR1Decision:
+    """AR1 — **narrow exception only.** 새 numerical threshold 를 만들지 않는다.
+
+    적용대상은 ``REJECT_SAME_DIRECTION_AFTERNOON`` 으로 거절된 후보뿐이다
+    (호출부가 그 사유를 넘길 때만 동작한다 — 오후 TEG 전체를 완화할 수 없다).
+    TEG 는 그대로 요구하되, **탈락 조건이 ``price_ema_stack_aligned`` 하나뿐이고**
+    동시에 ``macd_gap_signed_net_expanding`` / ``ema_spread_signed_net_expanding``
+    / ``vwap_favorable_side`` 가 전부 참이면 stack 하나만 면제한다.
+
+    통과는 "즉시 주문"이 아니라 **동일방향 거절의 해제**일 뿐이다 — 이후 기존
+    진입 파이프라인(CHOP TEG / 예산 / SMART sizing / order path)을 그대로 탄다.
+
+    검증: research_20260923c_x1_80d (80영업일 20260527~20260922),
+    research_20260923d_x1_refine (FLIP EXIT 제외 재검증). 순수함수다.
+    """
+    from app.trading.macd2 import teg_gate as _teg
+
+    if base_reject_reason != REJECT_SAME_DIRECTION_AFTERNOON:
+        return AR1Decision(reason=AR1_REJECT_OUT_OF_SCOPE)
+    conditions = dict(getattr(teg_decision, "conditions", None) or {})
+    if not conditions:
+        return AR1Decision(reason=AR1_REJECT_NO_CONDITIONS)
+    metrics = dict(getattr(teg_decision, "metrics", None) or {})
+    if bool(getattr(teg_decision, "approved", False)):
+        return AR1Decision(allowed=True, stack_exempt=False,
+                           reason=AR1_ALLOW_TEG_APPROVED, metrics=metrics)
+    failing = tuple(c for c in _teg.ALL_CONDITIONS if not conditions.get(c, False))
+    if failing != (_teg.COND_EMA_STACK,):
+        return AR1Decision(reason=AR1_REJECT_MULTI_FAIL,
+                           failing_conditions=failing, metrics=metrics)
+    if not (conditions.get(_teg.COND_MACD_GAP_EXPANDING)
+            and conditions.get(_teg.COND_EMA_SPREAD_EXPANDING)
+            and conditions.get(_teg.COND_VWAP)):
+        return AR1Decision(reason=AR1_REJECT_NO_MOMENTUM,
+                           failing_conditions=failing, metrics=metrics)
+    return AR1Decision(allowed=True, stack_exempt=True, reason=AR1_ALLOW_REASON,
+                       failing_conditions=failing, metrics=metrics)
+
+
 # ── TWF 3-SLOT — 진입은 TW2 3-SLOT 과 동일, 청산 3개만 다름 (2026-09-07) ────
 MODE_TW2_3SLOT = "TW2_3SLOT"
 MODE_TWF_3SLOT = "TWF_3SLOT"

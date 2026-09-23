@@ -71,7 +71,6 @@ from app.trading.macd2 import (
     trend_persistence_filter,
 )
 from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
-from app.trading.macd2 import x1_context, x1_shadow
 from app.trading.macd2.models import (
     Direction,
     MajorFlagDecision,
@@ -3412,68 +3411,6 @@ def _persist_tw2_3slot_decision(state: RuntimeState, decision: MajorFlagDecision
     state.last_tw2_3slot_signal_id = signal_id
 
 
-def _x1_enabled(state: RuntimeState) -> bool:
-    """X1 이 이 tick 에서 주문에 개입할 수 있는가.
-
-    토글(state) + N1 + C1 이 **모두** 켜져 있어야 한다. x1_context.x1_active 가
-    같은 조건을 한 번 더 강제하므로 이중 방어다. 기본 False.
-    """
-    return bool(x1_context.x1_active(
-        n1_enabled=bool(state.time_window_n1_filter_enabled),
-        c1_enabled=bool(state.c1_peak_protection_enabled),
-        x1_enabled=bool(getattr(state, "x1_context_enabled", False)),
-    ))
-
-
-def _x1_shadow_enabled(state: RuntimeState) -> bool:
-    return bool(getattr(state, "x1_shadow_mode_enabled", False))
-
-
-def _x1_record_live_flag(state: RuntimeState, direction: Direction, flag_bar_dt: datetime) -> None:
-    """워커가 확정한 플래그를 **LIVE_CONFIRMED** 이력으로 적재한다.
-
-    재계산본이 섞일 수 없다 — 이 함수는 라이브 워커의 확정 경로에서만 불린다.
-    날짜가 바뀌면 비운다. X1 이 꺼져 있어도 적재는 한다(켜는 순간 이력이
-    비어 있으면 flip 을 못 세기 때문). 적재 자체는 주문/판정에 영향이 없다.
-    """
-    try:
-        day = flag_bar_dt.astimezone(KST).strftime("%Y%m%d")
-        hist = list(getattr(state, "x1_flag_history", None) or [])
-        hist = [r for r in hist
-                if isinstance(r, (list, tuple)) and len(r) >= 2
-                and str(r[0])[:10].replace("-", "") == day]
-        stamp = flag_bar_dt.isoformat()
-        if not any(str(r[0]) == stamp for r in hist):
-            hist.append([stamp, direction.value])
-        limit = int(config.X1_FLAG_HISTORY_MAX)
-        state.x1_flag_history = hist[-limit:]
-    except Exception as exc:  # pragma: no cover - 적재 실패가 거래를 막으면 안 된다
-        logger.warning("[MACD2][X1] flag history 적재 실패(무시): %s", exc)
-
-
-def _x1_flag_events(state: RuntimeState) -> list[dict]:
-    """x1_context 가 받는 모양으로 변환. 항상 LIVE_CONFIRMED 다."""
-    out: list[dict] = []
-    for row in (getattr(state, "x1_flag_history", None) or []):
-        try:
-            ts = _parse_iso_dt(row[0])
-            if ts is None:
-                continue
-            out.append({"at": ts, "direction": str(row[1]),
-                        "source": x1_context.LIVE_CONFIRMED})
-        except Exception:
-            continue
-    return out
-
-
-def _x1_reset_position_state(state: RuntimeState) -> None:
-    """포지션이 닫히면 FLIP EXIT 감시를 즉시 reset 한다(사양 §6)."""
-    state.x1_flip_exit_armed = False
-    state.x1_flip_exit_armed_at = None
-    state.x1_flip_exit_owner_epoch = 0
-    state.x1_last_checked_bar_ts = None
-
-
 def _judge_tw2_3slot_flag(
     *, state: RuntimeState, bars_3m, direction: Direction, signal_id: str,
 ) -> MajorFlagDecision:
@@ -3494,8 +3431,6 @@ def _judge_tw2_3slot_flag(
     flag_bar_dt = pd.Timestamp(bars_3m["datetime"].iloc[-1]).to_pydatetime()
     state.tw2_3slot_pending_flag_direction = direction
     state.tw2_3slot_pending_flag_bar_ts = flag_bar_dt.isoformat()
-    # X1 용 LIVE 확정 플래그 이력 (X1 OFF 여도 적재만 한다 — 판정에는 영향 없음)
-    _x1_record_live_flag(state, direction, flag_bar_dt)
     decision = MajorFlagDecision(
         approved=False, score=0.0, required_score=0.0,
         decision=config.TW_PENDING_CONFIRMATION,
@@ -3639,22 +3574,24 @@ def _resolve_tw2_3slot_candidate_body(
         if not slot_decision.slot_allowed:
             final_block_reason = slot_decision.reject_reason
             final_decision_label = slot_decision.reject_reason
-            # ── X1-3 AR1 (2026-09-23): 오후 동일방향 재진입 narrow exception ──
+            # ── AR1: 오후 동일방향 재진입 예외 (2026-09-24 내장, 토글 없음) ──
             # 적용대상은 SAME_DIRECTION_AFTERNOON 으로 거절된 후보 **뿐**이다.
             # 현행 파이프라인은 이 분기에서 TEG 를 아예 호출하지 않으므로
             # 여기서 직접 계산해 넘긴다(그러지 않으면 AR1 이 판정 불가다).
             # TEG 탈락이 price_ema_stack_aligned **하나뿐**이고 macd_gap 확대 +
             # ema_spread 확대 + vwap 우호가 전부 참일 때만 그 조건 하나를
             # 면제한다. 오후 TEG 전체를 완화하지 않는다(새 임계값 0개).
-            if (config.X1_ACT_AR1 and _x1_enabled(state)
-                    and slot_decision.reject_reason
-                    == config.TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND):
+            #
+            # 통과는 "즉시 주문"이 아니다 — 동일방향 거절만 해제되고, 이후
+            # CHOP TEG / 예산 / SMART sizing / order path 는 그대로 탄다.
+            if (slot_decision.reject_reason
+                    == time_window_3slot.REJECT_SAME_DIRECTION_AFTERNOON):
                 ar1_teg = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
-                ar1 = x1_context.evaluate_afternoon_reentry(
+                ar1 = time_window_3slot.evaluate_afternoon_reentry(
                     ar1_teg, base_reject_reason=slot_decision.reject_reason)
-                slot_metrics["x1_ar1_reason"] = ar1.reason
-                slot_metrics["x1_ar1_allowed"] = bool(ar1.allowed)
-                slot_metrics["x1_ar1_stack_exempt"] = bool(ar1.stack_exempt)
+                slot_metrics["ar1_reason"] = ar1.reason
+                slot_metrics["ar1_allowed"] = bool(ar1.allowed)
+                slot_metrics["ar1_stack_exempt"] = bool(ar1.stack_exempt)
                 if ar1.allowed:
                     final_approved = True
                     final_decision_label = config.TW_APPROVED
@@ -3662,9 +3599,7 @@ def _resolve_tw2_3slot_candidate_body(
                     slot_metrics["slot_number"] = int(
                         state.tw2_3slot_slots_used_today or 0) + 1
                     slot_metrics["session"] = time_window_3slot.SESSION_AFTERNOON
-                    state.x1_last_action = "AR1_REENTRY"
-                    state.x1_last_action_at = now.isoformat()
-                    logger.info("[MACD2][X1] AR1 재진입 허용 (%s, %s)",
+                    logger.info("[MACD2][AR1] 오후 동일방향 재진입 허용 (%s, %s)",
                                 direction.value, ar1.reason)
         elif slot_decision.requires_quality_gate:
             quality = time_window_3slot.evaluate_trend_quality(bars_3m, direction)
@@ -4094,7 +4029,6 @@ def _clear_position_scoped_state(state: RuntimeState, *, reason: str = "") -> No
     n1_adaptive.clear(state)            # N1
     small_whipsaw_hold.clear(state)     # H50
     _clear_whipsaw_watch(state)         # whipsaw-watch
-    _x1_reset_position_state(state)     # X1-2 FLIP EXIT (청산 즉시 reset, 사양 §6)
     # 소유권 키 — 다음 포지션이 이전 포지션의 상태를 물려받지 못하게 한다
     state.h50_owner_epoch = 0
     state.c1_owner_epoch = 0
@@ -4304,119 +4238,6 @@ def _advance_h50_hold(
         if outcome.final_state == SignalState.EXECUTED:
             result.actions.append(
                 f"{small_whipsaw_hold.EXIT_SMALL_WHIPSAW_HOLD}:{outcome.target_symbol}")
-    return outcome
-
-
-def _advance_x1_flip_exit(
-    *, broker, state: RuntimeState, now: datetime, macd_snap, bars_3m,
-    position: Optional[PositionSnapshot], result: TickResult,
-):
-    """X1-2 FLIP EXIT — 진입 이후 alternating flip 이 쌓인 포지션을 조기청산.
-
-    자리: **기존 청산 전부의 뒤**(C1 다음). 여기까지 왔다는 것은 이 tick 에서
-    FORCED_LIQUIDATION / 손절 / TP1 / TP2 / after-TP1 스탑 / trailing /
-    조기익절 / T+3 반대신호 / whipsaw-watch / H50 / C1 이 **아무것도 발동하지
-    않았다**는 뜻이다 — X1 은 기존 청산을 절대 지연시키지 않는다(사양 §6).
-
-    ARM 은 "청산 판정"이 아니라 "감시 시작"이다. 한 번 ARM 되면
-    ``x1_flip_exit_armed`` 로 유지되고 **완성봉마다** 확인조건을 재채점해
-    ``score >= X1_FLIP_EXIT_SCORE_MIN`` 이 처음 성립하는 봉에서 전량청산한다.
-    ARM 자체로는 아무 주문도 내지 않는다.
-
-    H50 과 같은 stale 가드를 쓴다(2026-09-21 실사고) — owner epoch 이 현재
-    포지션과 다르면 **청산 주문을 내지 않고** reset 만 한다. 신규 진입은 절대
-    하지 않는다(청산 전용). X1 이 꺼져 있으면 완전한 no-op 이다.
-    """
-    if not config.X1_ACT_FLIP_EXIT or not _x1_enabled(state):
-        return None
-    if position is None or position.quantity <= 0:
-        _x1_reset_position_state(state)
-        return None
-    held_dir = _position_direction(position)
-    if held_dir is None:
-        _x1_reset_position_state(state)
-        return None
-    cur_epoch = int(getattr(state, "position_epoch", 0) or 0)
-    own_epoch = int(getattr(state, "x1_flip_exit_owner_epoch", 0) or 0)
-    if state.x1_flip_exit_armed and own_epoch and cur_epoch and own_epoch != cur_epoch:
-        logger.warning(
-            "[MACD2][X1] stale FLIP EXIT ARM discarded (owner=%s, position=%s)"
-            " -- no exit order was placed", own_epoch, cur_epoch)
-        _x1_reset_position_state(state)
-        return None
-    entry_at = getattr(position, "entry_at", None)
-    armed_at = _parse_iso_dt(getattr(state, "x1_flip_exit_armed_at", None))
-    if (state.x1_flip_exit_armed and entry_at is not None
-            and armed_at is not None and armed_at < entry_at):
-        logger.warning(
-            "[MACD2][X1] stale FLIP EXIT ARM discarded (armed %s < entry %s)"
-            " -- no exit order was placed", armed_at, entry_at)
-        _x1_reset_position_state(state)
-        return None
-    if entry_at is None:
-        return None
-    checked = _parse_iso_dt(getattr(state, "x1_last_checked_bar_ts", None))
-    if checked is not None and macd_snap.bar_dt <= checked:
-        return None
-    state.x1_last_checked_bar_ts = macd_snap.bar_dt.isoformat()
-
-    flip = x1_context.flip_state_from_live_flags(
-        _x1_flag_events(state), now=now, since=entry_at, bars_3m=bars_3m,
-        held_direction=held_dir)
-    decision = x1_context.evaluate_flip_exit(
-        bars_3m, held_dir, flip, now=now,
-        h50_hold_seen=bool(small_whipsaw_hold.is_holding(state)),
-        already_armed=bool(state.x1_flip_exit_armed))
-    if decision.armed and not state.x1_flip_exit_armed:
-        state.x1_flip_exit_armed = True
-        state.x1_flip_exit_armed_at = now.isoformat()
-        state.x1_flip_exit_owner_epoch = cur_epoch
-        state.x1_last_action = "FLIP_EXIT_ARMED"
-        state.x1_last_action_at = now.isoformat()
-        logger.info("[MACD2][X1] FLIP EXIT ARM (alt=%d seq=%s score=%d)",
-                    flip.alt_count, flip.alt_seq, decision.score)
-    state.last_x1_trace = {
-        "x1_final_action": (x1_context.ACTION_EXIT if decision.exit_now
-                            else (x1_context.ACTION_WATCH if decision.armed
-                                  else x1_context.ACTION_PASS)),
-        "x1_context_score": int(decision.score),
-        "flip_count": flip.flip_count,
-        "alt_flip_count": flip.alt_count,
-        "alt_flip_seq": flip.alt_seq,
-        "flip_exit_armed": bool(decision.armed),
-        "flip_exit_score": int(decision.score),
-        "premarket_trend": None,
-        "x1_reasons": decision.reason,
-    }
-    if not decision.exit_now:
-        return None
-
-    exit_direction = (Direction.DOWN_BLUE if held_dir == Direction.UP_RED
-                      else Direction.UP_RED)
-    signal_id = f"{make_signal_id(macd_snap.bar_dt, exit_direction)}:X1_FLIP_EXIT"
-    fake_decision = MajorFlagDecision(
-        approved=False, score=float(decision.score),
-        required_score=float(config.X1_FLIP_EXIT_SCORE_MIN),
-        decision=config.EXIT_X1_FLIP_EXIT,
-        reasons=(f"X1 flip exit: alt={flip.alt_count} seq={flip.alt_seq}",),
-        component_scores={k: float(bool(v)) for k, v in decision.components.items()},
-        metrics=dict(decision.metrics),
-        is_reversal=True, fast_reversal=False,
-        block_reason=config.EXIT_X1_FLIP_EXIT,
-    )
-    outcome = _execute_reversal_exit_only_for_filtered_entry(
-        broker=broker, state=state, macd_snap=macd_snap, direction=exit_direction,
-        position=position, decision=fake_decision, result=result,
-        gate_mode="TW2_3SLOT", signal_id_override=signal_id,
-        exit_reason=config.EXIT_X1_FLIP_EXIT,
-    )
-    _x1_reset_position_state(state)
-    state.x1_last_action = "FLIP_EXIT"
-    state.x1_last_action_at = now.isoformat()
-    if outcome is not None:
-        _apply_exit_outcome(state, outcome)
-        if outcome.final_state == SignalState.EXECUTED:
-            result.actions.append(f"{config.EXIT_X1_FLIP_EXIT}:{outcome.target_symbol}")
     return outcome
 
 
@@ -6091,19 +5912,6 @@ def run_once(
             position=pos, result=result,
         )
         if c1_outcome is not None and c1_outcome.final_state == SignalState.EXECUTED:
-            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
-            return result
-
-        # X1-2 FLIP EXIT (2026-09-23): **기존 청산 전부의 뒤**. 여기까지 왔다는
-        # 것은 강제청산/손절/TP/트레일링/ETP/반대신호/whipsaw-watch/H50/C1 이
-        # 이 tick 에서 아무것도 발동하지 않았다는 뜻이다 -- X1 은 기존 청산을
-        # 절대 지연시키지 않는다. 청산 전용이며 신규 진입은 하지 않는다.
-        # X1 토글(+N1+C1)이 꺼져 있으면 완전한 no-op 이다.
-        x1_outcome = _advance_x1_flip_exit(
-            broker=broker, state=state, now=now, macd_snap=macd_snap,
-            bars_3m=bars_3m, position=pos, result=result,
-        )
-        if x1_outcome is not None and x1_outcome.final_state == SignalState.EXECUTED:
             _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
