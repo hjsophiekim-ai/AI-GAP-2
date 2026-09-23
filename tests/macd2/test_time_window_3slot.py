@@ -77,7 +77,14 @@ class TestServiceMutualExclusion:
         assert state.time_window_2_filter_enabled is False
         assert state.time_window_teg_filter_enabled is False
 
-    def test_enabling_tw2_forces_3slot_off(self):
+    def test_enabling_tw2_forces_3slot_off(self, monkeypatch):
+        """2026-09-07(efc39cd) 이후 legacy TW2/TEGv2 토글은 UI 에서 숨겨졌고,
+        숨김 상태에서는 state_store.deserialize 가 복원 시점에 TW2/TEG 를
+        **강제로 끈다**(사용자가 끌 수단이 없는 채로 켜져 있는 것을 막는다).
+        그래서 이 테스트가 검증하려는 "TW2 를 켜면 3-SLOT 이 꺼진다"는 상호배제는
+        복구 플래그를 켠 상태에서만 저장/복원까지 관찰할 수 있다 — 여기서
+        명시적으로 켜고 본다. 강제해제 자체는 아래 별도 테스트가 지킨다."""
+        monkeypatch.setattr(config, "SHOW_LEGACY_TW2_TOGGLES", True)
         svc = service_module.Macd2Service()
         svc.set_time_window_3slot_filter_enabled(True, changed_by="test")
 
@@ -88,6 +95,19 @@ class TestServiceMutualExclusion:
         state = state_store.load_state()
         assert state.time_window_3slot_filter_enabled is False
         assert state.time_window_2_filter_enabled is True
+
+    def test_hidden_legacy_tw2_is_forced_off_on_restore(self):
+        """숨김이 기본값일 때: 저장된 TW2=True 는 복원 시 꺼진 채로 돌아온다.
+        3-SLOT 을 같이 죽이지 않는다는 것도 함께 확인한다(state_store 주석의
+        '강제해제를 3-SLOT 방어검사보다 먼저' 규칙)."""
+        assert bool(getattr(config, "SHOW_LEGACY_TW2_TOGGLES", False)) is False
+        svc = service_module.Macd2Service()
+        res = svc.set_time_window_2_filter_enabled(True, changed_by="test")
+        assert res["time_window_2_filter_enabled"] is True
+
+        state = state_store.load_state()
+        assert state.time_window_2_filter_enabled is False
+        assert state.time_window_teg_filter_enabled is False
 
     def test_enabling_teg_forces_3slot_off(self):
         svc = service_module.Macd2Service()
