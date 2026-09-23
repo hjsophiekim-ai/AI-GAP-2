@@ -437,6 +437,11 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "smart_sizing_enabled": bool(state.smart_sizing_enabled),
         "smart_sizing_enabled_at": state.smart_sizing_enabled_at,
         "smart_sizing_enabled_by": state.smart_sizing_enabled_by,
+        # X1 CONTEXT (2026-09-23) — 기본 False. 기존 키를 하나도 바꾸지 않는다.
+        "x1_context_enabled": bool(getattr(state, "x1_context_enabled", False)),
+        "x1_context_enabled_at": getattr(state, "x1_context_enabled_at", None),
+        "x1_context_enabled_by": getattr(state, "x1_context_enabled_by", None),
+        "x1_shadow_mode_enabled": bool(getattr(state, "x1_shadow_mode_enabled", False)),
         "etf_quote_trail": dict(state.etf_quote_trail or {}),
         "position_epoch": int(state.position_epoch or 0),
         "last_position_reconcile_result": state.last_position_reconcile_result,
@@ -1107,6 +1112,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
             raw.get("smart_sizing_enabled_at") or raw.get("p2_sizing_enabled_at")),
         smart_sizing_enabled_by=(
             raw.get("smart_sizing_enabled_by") or raw.get("p2_sizing_enabled_by")),
+        x1_context_enabled=bool(raw.get("x1_context_enabled", False)),
+        x1_context_enabled_at=raw.get("x1_context_enabled_at"),
+        x1_context_enabled_by=raw.get("x1_context_enabled_by"),
+        x1_shadow_mode_enabled=bool(raw.get("x1_shadow_mode_enabled", False)),
         etf_quote_trail=dict(raw.get("etf_quote_trail") or {}),
         position_epoch=int(raw.get("position_epoch", 0) or 0),
         last_position_reconcile_result=raw.get("last_position_reconcile_result"),

@@ -847,6 +847,16 @@ class RuntimeState:
     # 워커가 매 tick 적재하고 최근 TOXIC_QUOTE_TRAIL_MAX 개만 유지한다.
     etf_quote_trail: dict = field(default_factory=dict)
     last_smart_sizing_trace: Optional[dict] = None
+    # ── X1 CONTEXT 토글 (2026-09-23) ───────────────────────────────────
+    # 프리마켓/당일추세/flip sequence/오후 재진입을 종합하는 **보조필터**다.
+    # SMART 와 같은 관례: N1 + C1 이 둘 다 켜져 있어야 켤 수 있고, 기본 False.
+    # x1_shadow_mode 는 주문을 바꾸지 않고 would_* 판정만 기록하는 관찰 모드로,
+    # X1 본토글과 **독립**이다(shadow 만 켜고 관찰할 수 있어야 한다).
+    x1_context_enabled: bool = False
+    x1_context_enabled_at: Optional[str] = None
+    x1_context_enabled_by: Optional[str] = None
+    x1_shadow_mode_enabled: bool = False
+    last_x1_trace: Optional[dict] = None
     c1_triggered_at: Optional[str] = None
     last_tw2_3slot_quality_passed: Optional[int] = None
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None
