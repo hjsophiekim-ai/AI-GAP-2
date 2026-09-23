@@ -1577,6 +1577,128 @@ with _sm_cols[1]:
                 f"EMA20-50 {_sm_trace.get('ema20_50_directional_pct')}%"
             )
 
+# ── X1 CONTEXT (2026-09-23) ───────────────────────────────────────────────
+# 새 MACD 신호를 만들지 않는 **보조필터**다. 기존 RED/BLUE 신호를 입력으로 받아
+# "지금 맥락에서 이 신호를 어떻게 다룰지"만 답한다. 주문금액은 계산하지 않는다 --
+# SMART sizing 은 X1 이 ENTRY/REENTRY/LATE_ENTRY 를 허용한 뒤에 따로 돈다.
+# SMART 와 같은 관례: N1 + C1 이 둘 다 켜져 있어야 켤 수 있다. 기본 OFF.
+_x1_n1 = bool(getattr(state, "time_window_n1_filter_enabled", False))
+_x1_c1 = bool(getattr(state, "c1_peak_protection_enabled", False))
+_x1_ready = _x1_n1 and _x1_c1
+_x1_state_on = bool(getattr(state, "x1_context_enabled", False))
+_x1_shadow_on = bool(getattr(state, "x1_shadow_mode_enabled", False))
+if (not _x1_ready) and st.session_state.get("macd2_x1_context_toggle"):
+    st.session_state["macd2_x1_context_toggle"] = False
+
+st.markdown("**X1 CONTEXT**  ·  OFF / ON")
+_x1_cols = st.columns([1.4, 1.6])
+with _x1_cols[0]:
+    _x1_on = st.checkbox(
+        "└ X1 CONTEXT",
+        value=_x1_state_on,
+        key="macd2_x1_context_toggle",
+        disabled=not _x1_ready,
+        help=(
+            "프리마켓·당일 추세·flip sequence·오후 재진입을 종합해 진입/청산을 보정합니다. "
+            "**새 MACD 신호를 만들지 않습니다** — 기존 RED/BLUE 플래그를 입력으로 받아 "
+            "그 신호를 어떻게 다룰지만 판단합니다. 하위 4개 모듈:\n\n"
+            "① MORNING CONTEXT — 08:00 프리마켓부터 현재까지의 흐름과 플래그 방향이 "
+            "맞는지 점수화해 PASS / PASS_WEAK / WATCH 로 나눕니다. 역행 whipsaw 는 "
+            "즉시 차단하지 않고 WATCH 로 보류했다가 "
+            f"{macd2_config.X1_MORNING_WATCH_MAX_MIN}분 안에 원래 방향으로 breakout 이 "
+            "나오면 재승인합니다.\n\n"
+            "② FLIP EXIT — H50 이 whipsaw 로 HOLD 한 뒤에도 방향전환이 "
+            f"{macd2_config.X1_FLIP_EXIT_MIN_FLIPS}회 이상 이어지면(플래그 개수가 아니라 "
+            "전환 횟수입니다) 반대방향 breakout 시 전량청산합니다. "
+            "**자동 reverse 는 하지 않습니다** — 청산과 신규진입은 별도 판단입니다.\n\n"
+            "③ AFTERNOON RE-ENTRY (AR1) — 오후에 같은 방향으로 이미 한 번 거래했다는 "
+            "이유만으로 버려지던 두 번째 추세를 조건부로 살립니다. TEG 탈락 조건이 "
+            "price_ema_stack_aligned **하나뿐**이고 MACD gap 확대 + EMA spread 확대 + "
+            "VWAP 우호가 전부 참일 때만 그 조건 하나를 면제합니다. 오후 TEG 전체를 "
+            "완화하지 않습니다(새 임계값 0개).\n\n"
+            "④ FLIP BREAKOUT WATCH — soft reject 된 신호를 버리지 않고 WATCH 했다가 "
+            "cluster box breakout 시 late entry 후보로 살립니다. WATCH 조건은 최근 "
+            f"{macd2_config.X1_FLIPWATCH_WINDOW_A_MIN}분 전환 "
+            f"{macd2_config.X1_FLIPWATCH_MIN_FLIPS_A}회 이상 **또는** 최근 "
+            f"{macd2_config.X1_FLIPWATCH_WINDOW_B_MIN}분 플래그 "
+            f"{macd2_config.X1_FLIPWATCH_MIN_FLAGS_B}개 이상입니다. 추격 방지를 위해 지연 "
+            f"{macd2_config.X1_LATE_ENTRY_MAX_LATENCY_MIN}분 이내만 허용합니다"
+            "(잠정 guard, 지연 버킷은 전부 기록).\n\n"
+            "**자본상한·시간창 종료·브로커/reconcile 이상·리스크 차단·포지션 충돌 같은 "
+            "hard reject 는 어떤 경우에도 되살리지 않습니다.** flip sequence 는 LIVE 확정 "
+            "원장 이벤트만 쓰고 재계산본은 쓰지 않습니다. 프리마켓 데이터가 없으면 "
+            "fail-open — 기존 N1+C1 동작을 그대로 둡니다.\n\n"
+            "**N1 + C1 이 모두 켜져 있어야** 켤 수 있고, 둘 중 하나라도 끄면 자동으로 "
+            "꺼집니다. SMART 와는 독립입니다(함께 쓰는 것이 기본 연구구조). "
+            "**기본 OFF** 이며, 먼저 아래 SHADOW 모드로 관찰하는 것을 권장합니다."
+        ),
+    )
+    _x1_shadow_new = st.checkbox(
+        "└ └ X1 SHADOW (주문 변경 없이 기록만)",
+        value=_x1_shadow_on,
+        key="macd2_x1_shadow_toggle",
+        disabled=not _x1_ready,
+        help=(
+            "실제 주문/판정을 **전혀 바꾸지 않고** X1 이 내렸을 판정만 "
+            "`x1_shadow_ledger.csv` 에 기록합니다(would_block / would_exit / "
+            "would_reentry / would_late_entry). 기존 신호·거래 원장과 완전히 분리된 "
+            "파일이라 flag-ledger / reconcile / manual_exit 경로에 영향이 없습니다. "
+            "X1 본토글과 독립이라 shadow 만 켜고 관찰할 수 있습니다."
+        ),
+    )
+with _x1_cols[1]:
+    if not _x1_ready:
+        _x1_missing = " + ".join(x for x, on in (("N1", _x1_n1), ("C1", _x1_c1)) if not on)
+        st.caption(f"X1 CONTEXT=OFF · {_x1_missing} 을(를) 켜야 X1 을 쓸 수 있습니다(자동 비활성화)")
+    elif bool(_x1_on) != _x1_state_on:
+        _xr = service.set_x1_context_enabled(bool(_x1_on), changed_by="ui")
+        if _xr.get("ok"):
+            st.caption(f"X1 CONTEXT → {'ON' if _x1_on else 'OFF'}")
+            st.rerun()
+        else:
+            st.warning(
+                "X1 CONTEXT 를 켤 수 없습니다: "
+                + str(_xr.get("message") or _xr.get("reason") or "알 수 없는 사유")
+            )
+    elif bool(_x1_shadow_new) != _x1_shadow_on:
+        _xr = service.set_x1_context_enabled(
+            bool(_x1_shadow_new), changed_by="ui", shadow_only=True)
+        if _xr.get("ok"):
+            st.caption(f"X1 SHADOW → {'ON' if _x1_shadow_new else 'OFF'}")
+            st.rerun()
+        else:
+            st.warning(
+                "X1 SHADOW 를 켤 수 없습니다: "
+                + str(_xr.get("message") or _xr.get("reason") or "알 수 없는 사유")
+            )
+    else:
+        st.caption(
+            f"X1 CONTEXT={'ON' if _x1_state_on else 'OFF'}"
+            f" · SHADOW={'ON' if _x1_shadow_on else 'OFF'}"
+            f" · {macd2_config.X1_FILTER_VERSION}"
+        )
+        st.caption(
+            f"flip exit 전환 {macd2_config.X1_FLIP_EXIT_MIN_FLIPS}회↑ · "
+            f"late entry 점수 {macd2_config.X1_LATE_ENTRY_SCORE_MIN}↑ / 지연 "
+            f"{macd2_config.X1_LATE_ENTRY_MAX_LATENCY_MIN}분 이내 · "
+            f"AR1 {'ON' if macd2_config.X1_AR1_ENABLED else 'OFF'}"
+        )
+        _x1_trace = getattr(state, "last_x1_trace", None) or {}
+        if _x1_trace:
+            st.caption(
+                f"X1: {_x1_trace.get('x1_final_action') or '-'}"
+                f" · Premarket trend: {_x1_trace.get('premarket_trend') or '-'}"
+                f" · Flip count: {_x1_trace.get('flip_count', '-')}"
+                f" · Context score: {_x1_trace.get('x1_context_score', '-')}"
+            )
+            st.caption(f"Reason: {_x1_trace.get('x1_reasons') or '-'}")
+        else:
+            st.caption(
+                "최근 X1 판정 없음 · X1: - / Premarket trend: - / Flip count: - / "
+                "Context score: - / Reason: -"
+            )
+
+
 
 # ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
 # 사용자 노출 전략을 TW2 3-SLOT / TW TEG 3-SLOT 두 개로 정리하면서 감췄다.
