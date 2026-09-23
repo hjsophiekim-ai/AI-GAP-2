@@ -857,6 +857,18 @@ class RuntimeState:
     x1_context_enabled_by: Optional[str] = None
     x1_shadow_mode_enabled: bool = False
     last_x1_trace: Optional[dict] = None
+    #: 당일 **LIVE 확정 플래그** 이력 ``[[iso_ts, "UP_RED"|"DOWN_BLUE"], ...]``.
+    #: 워커가 T 시점(_judge_tw2_3slot_flag)에 직접 적재하므로 정의상
+    #: LIVE_CONFIRMED 다 — 재계산본이 섞일 수 없다. 날짜가 바뀌면 비운다.
+    x1_flag_history: list = field(default_factory=list)
+    #: X1-2 FLIP EXIT 감시 상태. ARM 은 "청산 판정"이 아니라 "감시 시작"이다.
+    #: 포지션이 닫히거나 owner 가 달라지면 즉시 reset 한다.
+    x1_flip_exit_armed: bool = False
+    x1_flip_exit_armed_at: Optional[str] = None
+    x1_flip_exit_owner_epoch: int = 0
+    x1_last_checked_bar_ts: Optional[str] = None
+    x1_last_action: Optional[str] = None
+    x1_last_action_at: Optional[str] = None
     c1_triggered_at: Optional[str] = None
     last_tw2_3slot_quality_passed: Optional[int] = None
     last_tw2_3slot_quality_conditions: Optional[dict[str, bool]] = None

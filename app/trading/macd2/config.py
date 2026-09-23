@@ -1756,3 +1756,18 @@ X1_MORNING_DOMINANT_END = _env_str("MACD2_X1_AFT_BLUE_MORN_END", "12:00")
 #: 이전 구현(True 동치)은 2026-09-22 09:06 RED 처럼 HOLD 이후 플래그가 0개인
 #: 사례에서 영원히 ARM 되지 않는 결함이 있었다.
 X1_FLIP_EXIT_REQUIRE_H50 = _env_bool("MACD2_X1_FLIP_EXIT_REQUIRE_H50", False)
+
+# ── X1 주문경로 배선 (2026-09-23 단계 1b) ──────────────────────────────────
+# X1_ENABLED 가 켜졌을 때 **어떤 하위모듈이 실제로 주문에 개입하는지**.
+# 근거가 측정된 둘만 기본 ON 이고, 나머지 둘은 shadow 기록만 한다.
+#   FLIP_EXIT   6영업일 ARM 5건 / EXIT 4건 / uplift +1.685%p / runner 손상 0
+#   AR1         78일 LOO 78/78 양수, MDD 불변 (research_20260923b)
+#   MORNING_WATCH / LATE_ENTRY 는 새 상태기계가 필요하고 근거도 없다 -> shadow.
+X1_ACT_FLIP_EXIT = _env_bool("MACD2_X1_ACT_FLIP_EXIT", True)
+X1_ACT_AR1 = _env_bool("MACD2_X1_ACT_AR1", True)
+X1_ACT_MORNING_WATCH = _env_bool("MACD2_X1_ACT_MORNING_WATCH", False)
+X1_ACT_LATE_ENTRY = _env_bool("MACD2_X1_ACT_LATE_ENTRY", False)
+#: 당일 LIVE 확정 플래그 이력 보관 개수 상한.
+X1_FLAG_HISTORY_MAX = _env_int("MACD2_X1_FLAG_HISTORY_MAX", 64)
+#: X1 청산 사유 라벨 (원장/UI 에 그대로 남는다).
+EXIT_X1_FLIP_EXIT = "X1_FLIP_EXIT"
