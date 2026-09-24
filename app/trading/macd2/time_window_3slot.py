@@ -308,6 +308,70 @@ def resolve_slot(
     )
 
 
+# ── AR1 — 오후 동일방향 재진입 예외 (2026-09-23 연구, 2026-09-24 내장) ───────
+#: AR1 로 재진입이 열렸을 때 slot_metrics 에 남기는 사유 문자열.
+AR1_ALLOW_REASON = "AR1_STACK_EXEMPT"
+AR1_REJECT_OUT_OF_SCOPE = "AR1_OUT_OF_SCOPE"
+AR1_REJECT_NO_CONDITIONS = "AR1_NO_TEG_CONDITIONS"
+AR1_REJECT_MULTI_FAIL = "AR1_MULTI_CONDITION_FAIL"
+AR1_REJECT_NO_MOMENTUM = "AR1_MOMENTUM_NOT_CONFIRMED"
+AR1_ALLOW_TEG_APPROVED = "AR1_TEG_ALREADY_APPROVED"
+
+
+@dataclass(frozen=True)
+class AR1Decision:
+    """``REJECT_SAME_DIRECTION_AFTERNOON`` 을 되돌릴지에 대한 답 하나뿐이다."""
+    allowed: bool = False
+    stack_exempt: bool = False
+    reason: str = ""
+    failing_conditions: tuple = ()
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
+def evaluate_afternoon_reentry(
+    teg_decision: Any,
+    *,
+    base_reject_reason: Optional[str],
+) -> AR1Decision:
+    """AR1 — **narrow exception only.** 새 numerical threshold 를 만들지 않는다.
+
+    적용대상은 ``REJECT_SAME_DIRECTION_AFTERNOON`` 으로 거절된 후보뿐이다
+    (호출부가 그 사유를 넘길 때만 동작한다 — 오후 TEG 전체를 완화할 수 없다).
+    TEG 는 그대로 요구하되, **탈락 조건이 ``price_ema_stack_aligned`` 하나뿐이고**
+    동시에 ``macd_gap_signed_net_expanding`` / ``ema_spread_signed_net_expanding``
+    / ``vwap_favorable_side`` 가 전부 참이면 stack 하나만 면제한다.
+
+    통과는 "즉시 주문"이 아니라 **동일방향 거절의 해제**일 뿐이다 — 이후 기존
+    진입 파이프라인(CHOP TEG / 예산 / SMART sizing / order path)을 그대로 탄다.
+
+    검증: research_20260923c_x1_80d (80영업일 20260527~20260922) — BASE 162거래
+    /복리 422.9169 대비 AR1 171거래/457.9459, LOO 80/80 양수, MDD 불변.
+    2026-09-23 FLIP EXIT 제외 재검증에서도 같은 숫자를 재현했다. 순수함수다.
+    """
+    from app.trading.macd2 import teg_gate as _teg
+
+    if base_reject_reason != REJECT_SAME_DIRECTION_AFTERNOON:
+        return AR1Decision(reason=AR1_REJECT_OUT_OF_SCOPE)
+    conditions = dict(getattr(teg_decision, "conditions", None) or {})
+    if not conditions:
+        return AR1Decision(reason=AR1_REJECT_NO_CONDITIONS)
+    metrics = dict(getattr(teg_decision, "metrics", None) or {})
+    if bool(getattr(teg_decision, "approved", False)):
+        return AR1Decision(allowed=True, stack_exempt=False,
+                           reason=AR1_ALLOW_TEG_APPROVED, metrics=metrics)
+    failing = tuple(c for c in _teg.ALL_CONDITIONS if not conditions.get(c, False))
+    if failing != (_teg.COND_EMA_STACK,):
+        return AR1Decision(reason=AR1_REJECT_MULTI_FAIL,
+                           failing_conditions=failing, metrics=metrics)
+    if not (conditions.get(_teg.COND_MACD_GAP_EXPANDING)
+            and conditions.get(_teg.COND_EMA_SPREAD_EXPANDING)
+            and conditions.get(_teg.COND_VWAP)):
+        return AR1Decision(reason=AR1_REJECT_NO_MOMENTUM,
+                           failing_conditions=failing, metrics=metrics)
+    return AR1Decision(allowed=True, stack_exempt=True, reason=AR1_ALLOW_REASON,
+                       failing_conditions=failing, metrics=metrics)
+
+
 # ── TWF 3-SLOT — 진입은 TW2 3-SLOT 과 동일, 청산 3개만 다름 (2026-09-07) ────
 MODE_TW2_3SLOT = "TW2_3SLOT"
 MODE_TWF_3SLOT = "TWF_3SLOT"
@@ -388,6 +452,21 @@ def active_3slot_mode(state) -> Optional[str]:
 def is_3slot_enabled(state) -> bool:
     """TW2 3-SLOT 또는 TWF 3-SLOT 중 하나라도 켜져 있는가."""
     return active_3slot_mode(state) is not None
+
+
+def afternoon_reentry_exception_enabled(state) -> bool:
+    """AR1 을 이 상태에서 평가해도 되는가 — **N1 경로 전용**이다.
+
+    AR1 의 80영업일 검증 BASE 는 N1 + C1 (+ SMART 민감도) 하나뿐이다. 오후
+    슬롯 코드(resolve_slot / _resolve_tw2_3slot_candidate_body)는 3-SLOT 계열
+    다섯 모드가 통째로 공유하므로, 게이트가 없으면 X2-lite W1 / H50 /
+    TW2 3-SLOT / TW TEG 3-SLOT 까지 AR1 이 함께 발동한다. 그 조합은 검증된
+    적이 없다 — 여기서 N1 계열로 잘라 연구 scope 와 실엔진 scope 를 맞춘다.
+
+    별도 토글은 두지 않는다(2026-09-24 사용자 확정): N1 이 켜지면 AR1 도 N1
+    내부 규칙으로 자동으로 켜지고, N1 이 아니면 평가 자체를 하지 않는다.
+    """
+    return active_3slot_mode(state) in MODES_N1_FAMILY
 
 
 def scheduled_entry_supported(state) -> bool:

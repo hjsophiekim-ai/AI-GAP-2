@@ -1263,66 +1263,6 @@ class Macd2Service:
             "daily_capital": float(config.DEFAULT_BUDGET) * float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP),
         }
 
-    def set_x1_context_enabled(
-        self, enabled: bool, *, changed_by: str = "ui", shadow_only: bool = False,
-    ) -> dict[str, Any]:
-        """UI command: toggle **X1 CONTEXT** (2026-09-23).
-
-        X1 은 **새 MACD 신호를 만들지 않는다.** 기존 RED/BLUE 신호를 입력으로
-        받아 "지금 맥락에서 이 신호를 어떻게 다룰지"만 답하는 보조필터다.
-        주문금액도 계산하지 않는다 — SMART sizing 은 X1 이 ENTRY/REENTRY/
-        LATE_ENTRY 를 허용한 **뒤에** 별도로 돈다.
-
-        4개 하위모듈 (app/trading/macd2/x1_context.py):
-          X1-1 MORNING CONTEXT    프리마켓+장초 흐름으로 오전 진입 PASS/WEAK/WATCH
-          X1-2 FLIP EXIT          H50 HOLD 뒤 방향전환 3회+ 시 조기 전량청산
-          X1-3 AFTERNOON RE-ENTRY 오후 동일방향 재진입 조건부 허용(AR1)
-          X1-4 FLIP BREAKOUT WATCH soft reject 를 box breakout 으로 late entry
-
-        **SMART 와 같은 관례로 N1 + C1 이 둘 다 켜져 있어야 켤 수 있다.**
-        (x1_context.x1_active() 가 런타임에서도 같은 조건을 강제한다.)
-
-        ``shadow_only=True`` 면 **관찰 모드**만 켠다 — 실제 주문/판정은 전혀
-        바뀌지 않고 x1_shadow_ledger.csv 에 would_* 판정만 쌓인다. 단계 1 에서는
-        이 모드만 쓰는 것을 전제로 한다(주문경로 미배선).
-
-        상태만 갱신하고 주문을 내지 않는다.
-        """
-        state = state_store.load_state()
-        enabled_bool = bool(enabled)
-        prev = bool(getattr(state, "x1_context_enabled", False))
-        prev_shadow = bool(getattr(state, "x1_shadow_mode_enabled", False))
-        n1_on = bool(state.time_window_n1_filter_enabled)
-        c1_on = bool(state.c1_peak_protection_enabled)
-        if enabled_bool and not (n1_on and c1_on):
-            missing = " + ".join(x for x, on in (("N1", n1_on), ("C1", c1_on)) if not on)
-            return {
-                "ok": False,
-                "reason": "X1_REQUIRES_N1_AND_C1",
-                "message": f"X1 CONTEXT 는 N1 + C1 이 모두 켜져 있어야 합니다 (현재 꺼짐: {missing}).",
-                "x1_context_enabled": prev,
-                "previous": prev,
-            }
-        now_iso = datetime.now(KST).isoformat()
-        if shadow_only:
-            state.x1_shadow_mode_enabled = enabled_bool
-        else:
-            state.x1_context_enabled = enabled_bool
-            state.x1_context_enabled_at = now_iso
-            state.x1_context_enabled_by = str(changed_by or "ui")
-        state_store.save_state(state)
-        return {
-            "ok": True,
-            "x1_context_enabled": bool(state.x1_context_enabled),
-            "x1_shadow_mode_enabled": bool(state.x1_shadow_mode_enabled),
-            "previous": prev_shadow if shadow_only else prev,
-            "shadow_only": bool(shadow_only),
-            "x1_context_enabled_at": state.x1_context_enabled_at,
-            "x1_context_enabled_by": state.x1_context_enabled_by,
-            "version": str(config.X1_FILTER_VERSION),
-        }
-
-    # 2026-09-22: 구 이름 호환 alias (UI 롤백/외부 호출 대비).
     def set_p2_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """Deprecated — ``set_smart_sizing_enabled`` 로 위임한다."""
         out = self.set_smart_sizing_enabled(enabled, changed_by=changed_by)
