@@ -62,12 +62,20 @@ class TestHidden:
         for k in HIDDEN_KEYS:
             assert k not in keys, f"{k} 위젯이 아직 렌더된다: {keys!r}"
 
-    def test_the_two_x2lite_strategies_are_what_remains(self):
+    def test_the_two_x2lite_strategies_are_now_hidden_too(self, monkeypatch):
+        """2026-09-27: X2-lite / H50 도 [N1]/[P3] 전략 모드로 대체돼 기본
+        숨김이 됐다. 복구 플래그를 켜면 예전 순서 그대로 다시 나온다."""
         at = _run()
         labels = [c.label for c in at.checkbox]
         for lab in VISIBLE_LABELS:
-            assert lab in labels, f"{lab} 이 보여야 한다: {labels!r}"
-        assert labels.index(VISIBLE_LABELS[1]) == labels.index(VISIBLE_LABELS[0]) + 1
+            assert lab not in labels, f"{lab} 이 아직 보인다: {labels!r}"
+
+        monkeypatch.setattr(config, "SHOW_LEGACY_STRATEGY_TOGGLES", True)
+        at2 = _run()
+        labels2 = [c.label for c in at2.checkbox]
+        for lab in VISIBLE_LABELS:
+            assert lab in labels2, f"복구 플래그를 켰는데 {lab} 이 안 보인다: {labels2!r}"
+        assert labels2.index(VISIBLE_LABELS[1]) == labels2.index(VISIBLE_LABELS[0]) + 1
 
     def test_untouched_toggles_still_visible(self):
         at = _run()
@@ -135,8 +143,12 @@ class TestRestorable:
             assert lab in labels, f"복구 플래그를 켰는데 {lab} 이 안 보인다: {labels!r}"
 
     def test_flag_on_keeps_the_x2lite_pair_too(self, monkeypatch):
-        """복구는 되살리기만 한다 -- 현행 두 전략을 밀어내지 않는다."""
+        """복구는 되살리기만 한다 -- 현행 두 전략을 밀어내지 않는다.
+
+        2026-09-27: X2-lite/H50 도 전략 모드 도입으로 기본 숨김이 됐으므로
+        그 둘을 보려면 SHOW_LEGACY_STRATEGY_TOGGLES 도 함께 켜야 한다."""
         monkeypatch.setattr(config, "SHOW_LEGACY_3SLOT_TOGGLES", True)
+        monkeypatch.setattr(config, "SHOW_LEGACY_STRATEGY_TOGGLES", True)
         at = _run()
         labels = [c.label for c in at.checkbox]
         for lab in VISIBLE_LABELS:

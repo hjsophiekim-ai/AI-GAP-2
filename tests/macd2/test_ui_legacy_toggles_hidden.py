@@ -67,11 +67,30 @@ class TestHidden:
         for k in HIDDEN_KEYS:
             assert k not in keys, f"{k} 위젯이 아직 렌더된다: {keys!r}"
 
-    def test_only_the_three_strategies_plus_subfilters_remain_in_that_tier(self):
+    def test_that_tier_is_now_the_strategy_mode_radio(self):
+        """2026-09-27: 이 tier 의 전략 체크박스(X2-lite / H50 / N1)와 청산
+        overlay(C1)는 [N1]/[P3] 전략 모드로 대체돼 **기본 숨김**이다.
+        사용자가 고르는 것은 라디오 하나뿐이다."""
+        at = _run()
+        labels = [c.label for c in at.checkbox]
+        # 전략 tier(X2-lite / H50 / N1)와 청산 overlay(C1)만 숨긴다 --
+        # 조기익절은 사용자 지시에 없어 그대로 둔다.
+        for lab in (config.X2LITE_3SLOT_STRATEGY_NAME + " + "
+                    + config.X2LITE_SIZING_NAME + " sizing",
+                    config.H50_3SLOT_STRATEGY_NAME,
+                    config.N1_3SLOT_STRATEGY_NAME,
+                    "└ C1 Peak Protection"):
+            assert lab not in labels, f"{lab} 이 아직 보인다: {labels!r}"
+        assert "└ 조기익절 필터" in labels, "조기익절은 그대로 보여야 한다"
+        assert any(r.label == "전략 모드" for r in at.radio), (
+            f"전략 모드 라디오가 없다: {[r.label for r in at.radio]!r}")
+
+    def test_the_tier_toggles_come_back_with_the_restore_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "SHOW_LEGACY_STRATEGY_TOGGLES", True)
         at = _run()
         labels = [c.label for c in at.checkbox]
         for lab in VISIBLE_LABELS:
-            assert lab in labels, f"{lab} 이 보여야 한다: {labels!r}"
+            assert lab in labels, f"복구 플래그를 켰는데 {lab} 이 안 보인다: {labels!r}"
         _x2, _h50, _n1 = VISIBLE_LABELS[0], VISIBLE_LABELS[1], VISIBLE_LABELS[2]
         assert labels.index(_h50) == labels.index(_x2) + 1
         assert labels.index(_n1) == labels.index(_h50) + 1

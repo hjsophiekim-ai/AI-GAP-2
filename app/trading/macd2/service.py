@@ -30,6 +30,9 @@ from typing import Any, Optional
 
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
+from app.trading.macd2 import chop_regime
+from app.trading.macd2 import p3_stack
+from app.trading.macd2 import strategy_mode as strategy_mode_mod
 from app.trading.macd2 import peak_protection
 from app.trading.macd2 import n1_adaptive
 from app.trading.macd2 import position_sizing
@@ -1261,6 +1264,72 @@ class Macd2Service:
             "toxic_ema20_50_max_pct": float(config.TOXIC_EMA20_50_MAX_PCT),
             "toxic_confirm_return_max_pct": float(config.TOXIC_CONFIRM_RETURN_MAX_PCT),
             "daily_capital": float(config.DEFAULT_BUDGET) * float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP),
+        }
+
+    def set_strategy_mode(self, mode: str, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: 전략 모드를 고른다 — **사용자가 만지는 유일한 전략 설정**.
+
+            "N1"  기존 전략      = N1 + C1 + SMART + AR1
+            "P3"  Adaptive CHOP  = 위 BASE + SHADOW detector + B3 + Y3 + P3 rescue
+
+        두 모드의 **진입은 완전히 같다**(N1 + C1 + SMART + AR1). 차이는 청산
+        레이어 하나뿐이고, P3 모드에서도 ``entry_regime == CHOP`` 인 포지션만
+        B3/Y3/P3 를 탄다. 그래서 P3 는 N1 을 대체하는 진입전략이 아니다.
+
+        C1 / SMART / AR1 / SHADOW / B3 / Y3 / P3 rescue 개별 토글은 두지 않는다.
+        이 함수가 모드에서 전부 derive 해 state 에 찍고, 충돌하는 레거시 토글이
+        남아 있어도 같은 자리에서 정규화한다(strategy_mode.apply).
+
+        이미 열려 있는 포지션은 **건드리지 않는다** — 진입 당시의 regime
+        스냅샷으로 계속 관리되고, 새 모드는 다음 신규 진입부터 적용된다.
+
+        MOCK / REAL **양쪽에서 쓸 수 있다**(2026-09-27). 계좌 종류는 판단을
+        바꾸지 않는다 -- regime / shadow / B3·Y3·P3 는 두 계좌에서 완전히 같은
+        코드를 탄다(실계좌 전용 분기를 만들지 않는다).
+
+        실계좌에서 **자동으로 켜지는 경로는 없다**: 기본값 OFF, migration 은
+        보수적이고, 재시작 복원은 저장된 선택을 되살릴 뿐이다. REAL + P3 는
+        사용자가 직접 고른 경우에만 성립한다.
+
+        detector 가 준비되지 않았으면(WARMUP/ERROR) 모드가 P3 여도 실거래는
+        BASE 로 돈다 -- ``strategy_mode.execution_layer`` 참고.
+        """
+        state = state_store.load_state()
+        target = strategy_mode_mod.normalize(mode)
+        if str(mode or "").strip().upper() not in strategy_mode_mod.ALL_MODES:
+            return {
+                "ok": False,
+                "reason": "UNKNOWN_STRATEGY_MODE",
+                "message": f"알 수 없는 전략 모드입니다: {mode!r} "
+                           f"(가능: {', '.join(strategy_mode_mod.ALL_MODES)})",
+                "strategy_mode": strategy_mode_mod.current(state),
+            }
+        prev = strategy_mode_mod.current(state)
+        account = "REAL" if str(getattr(state, "mode", "mock")) == "real" else "MOCK"
+        if target == strategy_mode_mod.MODE_P3 and account == "REAL":
+            # 2026-09-27: 실계좌에서도 P3 를 쓸 수 있다. 다만 **자동으로 켜지는
+            # 경로는 없다** -- 기본값 OFF, migration 은 조합이 어긋나면 N1 로
+            # 떨어지고, 재시작 복원은 저장된 선택을 되살릴 뿐이다. 여기까지
+            # 왔다는 것은 사용자가 실계좌 상태에서 [P3] 를 직접 눌렀다는 뜻이다.
+            log.warning("[MACD2][MODE] REAL 계좌에서 P3 가 선택됐다 "
+                        "(changed_by=%s)", changed_by)
+        now_iso = datetime.now(KST).isoformat()
+        strategy_mode_mod.apply(state, target, changed_by=changed_by, now_iso=now_iso)
+        state_store.save_state(state)
+        regime = chop_regime.current_regime()
+        return {
+            "ok": True,
+            "strategy_mode": target,
+            "previous": prev,
+            "strategy_mode_at": now_iso,
+            "strategy_mode_by": str(changed_by or "ui"),
+            "components": strategy_mode_mod.derive(target),
+            "account": account,
+            "regime": regime.regime,
+            "execution": strategy_mode_mod.execution_layer(state),
+            "shadow": strategy_mode_mod.shadow_status(state),
+            "shadow_sample": regime.sample,
+            "detector_window": regime.window,
         }
 
     def set_p2_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:

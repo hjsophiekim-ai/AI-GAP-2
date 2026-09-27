@@ -885,3 +885,53 @@ class RuntimeState:
     no_filter_0900_1100_filter_version: str = ""
     last_no_filter_0900_1100_approved: Optional[bool] = None
     last_no_filter_0900_1100_block_reason: Optional[str] = None
+
+    # ── P3 REGIME STACK (2026-09-27) ──────────────────────────────────────
+    # SHADOW-BASE SLOW CHOP detector + B3/Y3/P3 청산 스택. 사용자 토글은
+    # `p3_enabled` **하나뿐**이고 B3/Y3/detector 는 전부 그 안쪽 구현이다.
+    #
+    #   p3_enabled          : 사용자 토글(재시작을 넘어 유지). 기본 False.
+    #   p3_shadow           : shadow_base.ShadowBook 직렬화(가상 포지션 + 슬롯
+    #                         장부). 실거래 포지션/슬롯과 완전히 분리된 사본이다.
+    #   p3_last_regime      : 마지막 detector 판정(TREND/CHOP/WARMUP) — UI/로그용.
+    #
+    # 아래 5개는 **현재 실거래 포지션**의 regime 스냅샷이다. 진입 시점에 한 번
+    # 찍고 보유 중에는 절대 소급 변경하지 않는다(보유 중 regime 이 바뀌어도
+    # 이미 열린 포지션의 관리모드는 그대로다).
+    #
+    #   p3_position_active  : 이 포지션이 P3 스택 관리대상인가(= 진입 시 CHOP)
+    #   p3_entry_regime     : 진입 시점 regime 스냅샷
+    #   p3_first_tp_at      : +1.0% 에 **최초** 도달한 시각(ISO). rescue 판정의
+    #                         경과시간 기준이며 한 번만 기록된다(중복 rescue 차단).
+    #   p3_tp_rescued       : P3 50% 부분익절이 실제로 체결됐는가
+    #   y3_promoted         : Y3 max-hold 승격이 일어났는가
+    #   p3_promoted         : 승격되어 기존 N1/C1 래더로 복귀했는가(P3/Y3 공통)
+    # ── STRATEGY MODE (2026-09-27) ────────────────────────────────────────
+    # 전략 선택의 **단일 진실원천**. "N1" 또는 "P3" 둘 중 하나이고, C1 /
+    # SMART / AR1 / SHADOW / B3 / Y3 / P3 rescue 는 전부 여기서 derive 된다
+    # (app/trading/macd2/strategy_mode.py). 아래 개별 플래그들(p3_enabled,
+    # c1_peak_protection_enabled, smart_sizing_enabled ...)은 그 결과를 담는
+    # **내부 캐시**이지 사용자 설정이 아니다 -- UI 는 이 필드 하나만 바꾼다.
+    strategy_mode: Optional[str] = None
+    strategy_mode_at: Optional[str] = None
+    strategy_mode_by: Optional[str] = None
+
+    p3_enabled: bool = False
+    p3_enabled_at: Optional[str] = None
+    p3_enabled_by: Optional[str] = None
+    p3_version: str = ""
+    p3_shadow: Optional[dict] = None
+    p3_last_regime: Optional[str] = None
+    p3_last_regime_at: Optional[str] = None
+    p3_last_h50_rate: Optional[float] = None
+    p3_last_tp1_rate: Optional[float] = None
+    p3_last_shadow_sample: int = 0
+
+    p3_position_active: bool = False
+    p3_entry_regime: Optional[str] = None
+    p3_first_tp_at: Optional[str] = None
+    p3_tp_rescued: bool = False
+    p3_tp_rescued_at: Optional[str] = None
+    y3_promoted: bool = False
+    y3_promoted_at: Optional[str] = None
+    p3_promoted: bool = False

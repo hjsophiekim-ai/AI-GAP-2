@@ -1668,3 +1668,65 @@ N1_EARLY_TP_TRIGGER_PCT = _env_float("MACD2_N1_EARLY_TP_TRIGGER_PCT", 1.5)
 N1_EARLY_TP_FLOOR_PCT = _env_float("MACD2_N1_EARLY_TP_FLOOR_PCT", 0.8)
 #: N1 전용 quality 임계값(연구 q3). 다른 모드는 QUALITY_SCORE_THRESHOLD 그대로.
 N1_QUALITY_SCORE_THRESHOLD = _env_int("MACD2_N1_QUALITY_SCORE_THRESHOLD", 3)
+
+# ── P3 REGIME STACK (2026-09-27) ──────────────────────────────────────────
+# SHADOW-BASE SLOW CHOP detector -> CHOP 진입 포지션에 B3 청산 -> +1% 시점
+# P3 runner rescue -> max-hold 시점 Y3 승격. **사용자 토글은 P3 하나뿐**이고
+# B3/Y3/detector 는 전부 그 안쪽 구현이다(별도 토글을 만들지 않는다).
+#
+# 연구근거: data/validation/macd2/p3_regime_stack_20260927/ (80영업일 0527~0922,
+# N1+C1+SMART+AR1 BASE 기준) + 같은 폴더의 SHADOW_PARITY.md.
+# **기본 OFF** 이고, 켜는 것은 UI 에서 전략 모드 [P3] 를 직접 고르는 것뿐이다.
+# MOCK / REAL 양쪽에서 쓸 수 있으며(2026-09-27), 계좌 종류는 regime/shadow/
+# B3·Y3·P3 계산을 조금도 바꾸지 않는다 -- 실계좌 전용 분기는 만들지 않는다.
+#
+# FAST detector(Directional Efficiency)는 2026-09-27 연구에서 REJECT 됐다
+# (탐지 0거래 빠름 / TREND 오탐 48.3% / 80일 513.29 -> 347.88). 구현하지 않는다.
+P3_ENABLED = _env_bool("MACD2_P3_ENABLED", True)
+#: 사용자 토글의 기본값. **반드시 False** — 켜는 것은 명시적 조작뿐이다.
+P3_FILTER_DEFAULT = _env_bool("MACD2_P3_FILTER_DEFAULT", False)
+P3_FILTER_VERSION = "P3_REGIME_STACK_V1_20260927"
+P3_STRATEGY_NAME = "P3"
+
+#: SLOW CHOP detector — 최근 완료 SHADOW-BASE 거래 N 건 기준.
+P3_DETECTOR_WINDOW = _env_int("MACD2_P3_DETECTOR_WINDOW", 10)
+#: H50 개입률 >= 이 값 **이고** TP1 도달률 <= P3_TP1_RATE_MAX 이면 CHOP.
+P3_H50_RATE_MIN = _env_float("MACD2_P3_H50_RATE_MIN", 0.40)
+P3_TP1_RATE_MAX = _env_float("MACD2_P3_TP1_RATE_MAX", 0.20)
+#: 영속 ledger 에 보관할 최근 완료 shadow 거래 수(>= detector window).
+P3_SHADOW_LEDGER_KEEP = _env_int("MACD2_P3_SHADOW_LEDGER_KEEP", 30)
+
+#: B3 — CHOP 진입 포지션 전용 청산. **틱 익절 래더만** 대체한다(연구 엔진
+#: hengine5 의 mode="replace" 와 동일). 완성봉 손절/after-TP1-stop/trailing,
+#: OPPOSITE_SIGNAL, whipsaw, H50, C1, 강제청산은 그대로 살아 있다.
+P3_B3_TP_PCT = _env_float("MACD2_P3_B3_TP_PCT", 1.0)
+P3_B3_SL_PCT = _env_float("MACD2_P3_B3_SL_PCT", 1.0)
+P3_B3_MAX_HOLD_MIN = _env_float("MACD2_P3_B3_MAX_HOLD_MIN", 20.0)
+
+#: P3 TP RUNNER RESCUE — 진입에서 **최초** +1% 도달까지 경과분이 이 값 이하면
+#: 50% 익절 + 잔량 승격. gap/ETF/spread 를 보지 않는다(경로형태 단일조건).
+P3_RESCUE_MAX_MIN = _env_float("MACD2_P3_RESCUE_MAX_MIN", 6.0)
+P3_RESCUE_SELL_RATIO = _env_float("MACD2_P3_RESCUE_SELL_RATIO", 0.5)
+
+#: Y3 MAX-HOLD PROMOTION — max-hold 시점에 net>0 ∧ MACD gap 이 보유방향으로
+#: 확대 ∧ 보유 ETF 추종이면 승격(청산 취소). 전부 **마지막 완성봉** 기준.
+P3_Y3_MACD_FAST = _env_int("MACD2_P3_Y3_MACD_FAST", 12)
+P3_Y3_MACD_SLOW = _env_int("MACD2_P3_Y3_MACD_SLOW", 26)
+P3_Y3_MACD_SIGNAL = _env_int("MACD2_P3_Y3_MACD_SIGNAL", 9)
+
+#: shadow ledger 파일명(data/state/ 아래). 실거래 원장과 절대 섞지 않는다.
+P3_SHADOW_LEDGER_FILENAME = "macd2_shadow_base_ledger.json"
+
+#: P3 청산사유 — 실거래 원장/진단에 그대로 남는다.
+EXIT_B3_TP = "B3_TP"
+EXIT_B3_SL = "B3_SL"
+EXIT_B3_MAXHOLD = "B3_MAXHOLD"
+EXIT_P3_PARTIAL = "P3_PARTIAL_EXIT"
+
+#: 전략 모드([N1]/[P3]) 도입으로 감춘 **개별 전략/overlay 토글**들.
+#: X2-lite / H50 / N1 / C1 / SMART 체크박스가 여기에 걸린다. 코드는 그대로
+#: 두고 렌더만 막는 기존 SHOW_LEGACY_* 관례와 같다 --
+#: MACD2_SHOW_LEGACY_STRATEGY_TOGGLES=1 이면 예전처럼 전부 다시 보인다.
+#: 감춘 이유: 사용자가 C1/SMART/AR1/SHADOW/B3/Y3/P3 를 직접 조합하면 검증된
+#: 적 없는 상태가 만들어진다. 전략 선택은 strategy_mode 하나로 모은다.
+SHOW_LEGACY_STRATEGY_TOGGLES = _env_bool("MACD2_SHOW_LEGACY_STRATEGY_TOGGLES", False)

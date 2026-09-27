@@ -11,6 +11,16 @@ from streamlit.testing.v1 import AppTest
 
 from app.trading.macd2 import config, state_store
 
+@pytest.fixture(autouse=True)
+def _show_legacy_strategy_toggles(monkeypatch):
+    """2026-09-27: 전략 모드 [N1]/[P3] 도입으로 개별 전략/overlay 체크박스
+    (N1 / C1 / SMART / X2-lite / H50)는 **기본 숨김**이 됐다. 이 파일은 그
+    토글 자체의 동작을 검증하므로 복구 플래그를 켜고 렌더한다 -- 코드 경로는
+    그대로 살아 있고, 기본 숨김 계약은 tests/macd2/test_ui_strategy_mode.py
+    가 따로 고정한다(기존 SHOW_LEGACY_3SLOT_TOGGLES 와 같은 관례)."""
+    monkeypatch.setattr(config, "SHOW_LEGACY_STRATEGY_TOGGLES", True)
+
+
 _APP_PATH = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
 _N1_KEY = "macd2_time_window_n1_filter_toggle"
 _N1_LABEL = config.N1_3SLOT_STRATEGY_NAME
