@@ -1,7 +1,9 @@
 # P3 REGIME STACK — 검증 요약 (2026-09-27)
 
 `app/trading/macd2/{chop_regime,shadow_base,p3_stack,strategy_mode}.py` 의 근거.
-등급 **PAPER-TRADE CANDIDATE** (PRODUCTION ADOPT 아님) → 기본 OFF, 모의계좌 전용.
+등급 **PAPER-TRADE CANDIDATE** (PRODUCTION ADOPT 아님) → **기본 OFF**.
+2026-09-27 부터 MOCK / REAL 양쪽에서 쓸 수 있다 — 계좌 종류는 regime/shadow/
+B3·Y3·P3 계산을 바꾸지 않으며, 실계좌에서 자동으로 켜지는 경로는 없다.
 
 검증창: **80영업일 2026-05-27 ~ 2026-09-22** (9월 14일). BASE = N1 + C1 + SMART + AR1.
 

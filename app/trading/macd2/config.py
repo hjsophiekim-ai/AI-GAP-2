@@ -1674,9 +1674,11 @@ N1_QUALITY_SCORE_THRESHOLD = _env_int("MACD2_N1_QUALITY_SCORE_THRESHOLD", 3)
 # P3 runner rescue -> max-hold 시점 Y3 승격. **사용자 토글은 P3 하나뿐**이고
 # B3/Y3/detector 는 전부 그 안쪽 구현이다(별도 토글을 만들지 않는다).
 #
-# 연구근거: scratchpad/research_20260927_p3_final_adoption (80영업일 0527~0922,
-# N1+C1+SMART+AR1 BASE 기준). 등급 PAPER-TRADE CANDIDATE — PRODUCTION ADOPT 가
-# 아니다. 그래서 **기본 OFF** 이며 모의계좌에서만 켜는 것을 전제로 한다.
+# 연구근거: data/validation/macd2/p3_regime_stack_20260927/ (80영업일 0527~0922,
+# N1+C1+SMART+AR1 BASE 기준) + 같은 폴더의 SHADOW_PARITY.md.
+# **기본 OFF** 이고, 켜는 것은 UI 에서 전략 모드 [P3] 를 직접 고르는 것뿐이다.
+# MOCK / REAL 양쪽에서 쓸 수 있으며(2026-09-27), 계좌 종류는 regime/shadow/
+# B3·Y3·P3 계산을 조금도 바꾸지 않는다 -- 실계좌 전용 분기는 만들지 않는다.
 #
 # FAST detector(Directional Efficiency)는 2026-09-27 연구에서 REJECT 됐다
 # (탐지 0거래 빠름 / TREND 오탐 48.3% / 80일 513.29 -> 347.88). 구현하지 않는다.

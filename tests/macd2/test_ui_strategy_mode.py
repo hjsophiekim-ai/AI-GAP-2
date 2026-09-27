@@ -218,3 +218,40 @@ def test_there_is_no_second_way_to_set_the_p3_flag():
     만들 수 있다(모드는 N1 인데 P3 스택이 도는 식).
     """
     assert not hasattr(service_module.Macd2Service, "set_p3_enabled")
+
+
+# ── MOCK / REAL 양쪽 (2026-09-27) ────────────────────────────────────────
+@pytest.mark.parametrize("account", ["mock", "real"])
+def test_status_block_shows_the_five_required_lines(account):
+    """ACCOUNT / MODE / REGIME / SHADOW / EXECUTION 다섯 줄이 최소 규격이다."""
+    s = state_store.load_state()
+    s.mode = account
+    strategy_mode.apply(s, strategy_mode.MODE_P3)
+    state_store.save_state(s)
+
+    at = _run()
+    caps = "\n".join(str(c.value) for c in at.caption)
+    for line in ("ACCOUNT", "MODE", "REGIME", "SHADOW", "EXECUTION"):
+        assert line in caps, f"{line} 줄이 없다"
+    assert account.upper() in caps
+
+
+@pytest.mark.parametrize("account", ["mock", "real"])
+def test_p3_can_be_selected_in_both_accounts(account):
+    """REAL 에서도 [P3] 를 고를 수 있다 -- 다만 자동으로 켜지지는 않는다."""
+    s = state_store.load_state()
+    s.mode = account
+    strategy_mode.apply(s, strategy_mode.MODE_N1)
+    state_store.save_state(s)
+
+    res = service_module.get_service().set_strategy_mode(
+        strategy_mode.MODE_P3, changed_by="test")
+    assert res.get("ok") is True, res
+    assert res.get("account") == account.upper()
+    assert strategy_mode.current(state_store.load_state()) == strategy_mode.MODE_P3
+
+
+def test_setter_no_longer_refuses_real_accounts():
+    """P3_PAPER_ONLY 거부 경로가 남아 있으면 REAL 에서 못 켠다."""
+    src = inspect.getsource(service_module.Macd2Service.set_strategy_mode)
+    assert "P3_PAPER_ONLY" not in src

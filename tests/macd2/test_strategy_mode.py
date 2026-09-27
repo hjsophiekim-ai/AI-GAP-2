@@ -205,7 +205,12 @@ def test_migration_is_idempotent():
 
 
 # ── §8. fail-safe 표시 ───────────────────────────────────────────────────
-def test_execution_layer_is_base_until_the_detector_says_chop():
+def test_execution_layer_is_base_until_the_shadow_is_ready():
+    """EXECUTION 은 detector 준비 여부만 본다 -- READY 면 P3, 아니면 BASE.
+
+    REGIME(TREND/CHOP)은 따로 표시한다. TREND 라도 P3 스택은 살아 있고,
+    그 안에서 CHOP 진입 포지션만 B3 를 탄다(p3_stack.governs_position).
+    """
     state = state_store.default_state()
     strategy_mode.apply(state, strategy_mode.MODE_P3)
 
@@ -214,13 +219,68 @@ def test_execution_layer_is_base_until_the_detector_says_chop():
     state.p3_last_regime = chop_regime.REGIME_WARMUP
     assert strategy_mode.execution_layer(state) == "BASE"
     state.p3_last_regime = chop_regime.REGIME_TREND
+    assert strategy_mode.execution_layer(state) == "P3"
+    state.p3_last_regime = chop_regime.REGIME_CHOP
+    assert strategy_mode.execution_layer(state) == "P3"
+
+
+# ── MOCK / REAL 양쪽 지원 (2026-09-27) ───────────────────────────────────
+@pytest.mark.parametrize("account", ["mock", "real"])
+@pytest.mark.parametrize("mode", list(strategy_mode.ALL_MODES))
+def test_all_four_account_mode_combinations_are_supported(account, mode):
+    """MOCK+BASE / MOCK+P3 / REAL+BASE / REAL+P3 네 조합 전부."""
+    state = state_store.default_state()
+    state.mode = account
+    strategy_mode.apply(state, mode)
+
+    assert strategy_mode.current(state) == mode
+    assert strategy_mode.account_kind(state) == account.upper()
+    # 계좌 종류가 하위 구성을 바꾸면 안 된다.
+    assert strategy_mode.derive(mode) == strategy_mode.derive(mode)
+    assert bool(state.p3_enabled) is (mode == strategy_mode.MODE_P3)
+
+
+@pytest.mark.parametrize("account", ["mock", "real"])
+def test_execution_layer_is_identical_in_both_accounts(account):
+    """계좌 종류는 실행계층 판단을 바꾸지 않는다."""
+    state = state_store.default_state()
+    state.mode = account
+    strategy_mode.apply(state, strategy_mode.MODE_P3)
+
+    state.p3_last_regime = chop_regime.REGIME_WARMUP
     assert strategy_mode.execution_layer(state) == "BASE"
     state.p3_last_regime = chop_regime.REGIME_CHOP
     assert strategy_mode.execution_layer(state) == "P3"
 
 
-def test_execution_layer_in_n1_mode_is_always_base():
+def test_p3_is_never_enabled_automatically_in_a_real_account():
+    """실계좌에서 자동으로 켜지는 경로가 없어야 한다."""
     state = state_store.default_state()
+    state.mode = "real"
+    # ① 기본값
+    assert bool(state.p3_enabled) is False
+    assert strategy_mode.current(state) != strategy_mode.MODE_P3
+    # ② migration -- 레거시 BASE 조합은 N1 로만 간다
+    for f in LEGACY_STRATEGY_FLAGS:
+        setattr(state, f, False)
+    state.strategy_mode = None
+    state.time_window_n1_filter_enabled = True
+    state.c1_peak_protection_enabled = True
+    state.smart_sizing_enabled = True
+    state.p3_enabled = False
+    assert strategy_mode.migrate(state) == strategy_mode.MODE_N1
+
+
+def test_account_kind_defaults_to_mock_for_an_unknown_value():
+    state = state_store.default_state()
+    state.mode = "something-else"
+    assert strategy_mode.account_kind(state) == "MOCK"
+
+
+@pytest.mark.parametrize("account", ["mock", "real"])
+def test_execution_layer_in_n1_mode_is_always_base(account):
+    state = state_store.default_state()
+    state.mode = account
     strategy_mode.apply(state, strategy_mode.MODE_N1)
     state.p3_last_regime = chop_regime.REGIME_CHOP   # 있을 수 없지만 방어적으로
     assert strategy_mode.execution_layer(state) == "BASE"

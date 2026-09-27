@@ -228,20 +228,27 @@ def restore(state) -> Optional[str]:
     return mode
 
 
+def account_kind(state) -> str:
+    """UI 의 ACCOUNT 줄 -- MOCK / REAL.
+
+    계좌 종류는 **전략 판단을 바꾸지 않는다**. regime / shadow / B3·Y3·P3 는
+    두 계좌에서 완전히 같은 코드를 탄다. 표시용이다.
+    """
+    return "REAL" if str(getattr(state, "mode", "mock")) == "real" else "MOCK"
+
+
 def execution_layer(state) -> str:
     """지금 **실제로** 무엇으로 거래하고 있는가 -- UI 의 EXECUTION 줄.
 
-    P3 모드라도 detector 가 준비되지 않았거나(WARMUP) 오류면 실거래는 BASE 다.
-    모드와 실행계층을 나눠 보여 주는 이유가 이것이다.
-    """
-    from app.trading.macd2 import chop_regime
+    P3 모드라도 detector 가 준비되지 않았으면(WARMUP / ERROR) 실거래는 BASE 다.
+    모드와 실행계층을 나눠 보여 주는 이유가 이것이다 -- 모드는 사용자의 선택,
+    실행계층은 지금 실제로 적용되는 것이다.
 
+    MOCK / REAL 에서 동일하게 계산한다.
+    """
     if current(state) != MODE_P3:
         return "BASE"
-    regime = getattr(state, "p3_last_regime", None)
-    if regime == chop_regime.REGIME_CHOP:
-        return "P3"
-    return "BASE"
+    return "P3" if shadow_status(state) == "READY" else "BASE"
 
 
 def shadow_status(state) -> str:

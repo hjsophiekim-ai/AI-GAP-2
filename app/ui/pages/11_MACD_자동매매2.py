@@ -1119,7 +1119,9 @@ with _stm_cols[0]:
         format_func=lambda m: _stm_labels.get(m, m),
         label_visibility="collapsed",
         help=("N1 : N1 + C1 + SMART + AR1" + chr(10) + chr(10)
-              + "P3 : N1 BASE + CHOP adaptive exit (SHADOW detector + B3 + Y3 + P3 rescue)"),
+              + "P3 : N1 BASE + CHOP adaptive exit (SHADOW detector + B3 + Y3 + P3 rescue)"
+              + chr(10) + chr(10)
+              + "MOCK/REAL 양쪽에서 쓸 수 있습니다. 자동으로 켜지지 않습니다."),
     )
 if _stm_pick != _stm_current:
     _stm_res = service.set_strategy_mode(_stm_pick, changed_by="ui")
@@ -1130,17 +1132,23 @@ if _stm_pick != _stm_current:
                    + str(_stm_res.get("message") or _stm_res.get("reason") or "알 수 없는 사유"))
 
 with _stm_cols[1]:
+    # ACCOUNT / MODE / REGIME / SHADOW / EXECUTION 다섯 줄이 최소 규격이다.
+    # 계좌 종류는 전략 판단을 바꾸지 않는다 -- MOCK/REAL 모두 같은 코드를 탄다.
     _stm_exec = macd2_strategy_mode.execution_layer(state)
+    st.caption(f"ACCOUNT **{macd2_strategy_mode.account_kind(state)}**")
     st.caption(f"MODE **{_stm_current}**")
     if _stm_current == macd2_strategy_mode.MODE_P3:
-        _stm_regime = getattr(state, "p3_last_regime", None) or "WARMUP"
-        st.caption(f"REGIME **{_stm_regime}** · SHADOW **{macd2_strategy_mode.shadow_status(state)}**")
+        _stm_regime = getattr(state, "p3_last_regime", None) or "-"
+        st.caption(f"REGIME **{_stm_regime}**")
+        st.caption(f"SHADOW **{macd2_strategy_mode.shadow_status(state)}**")
         # 모드와 실행계층을 나눠 보여 준다 -- P3 모드라도 detector 가 준비되지
         # 않았으면(WARMUP/ERROR) 실거래는 BASE 로 돈다(fail-safe).
         if _stm_exec != "P3":
             st.caption(f"EXECUTION **{_stm_exec}**  ·  detector 미준비 → BASE 로 거래합니다")
         else:
             st.caption(f"EXECUTION **{_stm_exec}**")
+    else:
+        st.caption(f"EXECUTION **{_stm_exec}**")
     if bool(getattr(state, "time_window_position_active", False)):
         st.caption(f"POSITION MODE **{macd2_p3_stack.position_mode(state)}**")
 
