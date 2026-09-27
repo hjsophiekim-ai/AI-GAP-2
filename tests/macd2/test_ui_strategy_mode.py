@@ -209,3 +209,12 @@ def test_switching_mode_leaves_the_open_position_snapshot_alone():
         "진입 스냅샷을 소급해서 지우면 안 된다")
     assert p3_stack.governs_position(restored) is False, (
         "P3 를 껐으면 B3 가 더 이상 주인이 아니다")
+
+
+def test_there_is_no_second_way_to_set_the_p3_flag():
+    """§13: 전략 설정을 바꾸는 입구는 set_strategy_mode 하나뿐이다.
+
+    p3_enabled 만 따로 뒤집는 setter 가 있으면 strategy_mode 와 어긋난 상태를
+    만들 수 있다(모드는 N1 인데 P3 스택이 도는 식).
+    """
+    assert not hasattr(service_module.Macd2Service, "set_p3_enabled")
