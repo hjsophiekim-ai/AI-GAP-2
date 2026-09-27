@@ -153,3 +153,59 @@ def test_n1_mode_shows_only_the_mode_line():
     caps = "\n".join(str(c.value) for c in at.caption)
     assert "MODE" in caps
     assert "REGIME" not in caps, "N1 모드에서는 regime 을 보여 주지 않는다"
+
+
+# ── §11 4/5. 라디오를 실제로 눌러 모드가 바뀐다 ──────────────────────────
+def _pick(at: AppTest, mode: str):
+    radio = _radio(at)
+    target = [o for o in radio.options if str(o).startswith(mode)]
+    assert target, f"{mode} 선택지가 없다: {radio.options!r}"
+    return radio.set_value(target[0])
+
+
+def _seed_mode(mode: str) -> None:
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, mode)
+    state_store.save_state(s)
+
+
+@pytest.mark.parametrize(
+    "start, target",
+    [(strategy_mode.MODE_N1, strategy_mode.MODE_P3),
+     (strategy_mode.MODE_P3, strategy_mode.MODE_N1)],
+)
+def test_clicking_the_other_mode_switches_and_persists(start, target):
+    _seed_mode(start)
+    at = _run()
+    _pick(at, target).run()
+
+    restored = state_store.load_state()
+    assert strategy_mode.current(restored) == target
+    # 하위 구성도 함께 정규화된다 -- 개별 토글을 누를 필요가 없다.
+    flags = strategy_mode.derive(target)
+    assert bool(restored.p3_enabled) is flags["SHADOW"]
+    assert bool(restored.c1_peak_protection_enabled) is flags["C1"]
+    assert bool(restored.smart_sizing_enabled) is flags["SMART"]
+    assert restored.time_window_n1_filter_enabled is True
+
+
+def test_switching_mode_leaves_the_open_position_snapshot_alone():
+    """§11-4: 모드를 바꿔도 이미 열린 포지션의 진입 스냅샷은 유지된다 --
+    새 모드는 **다음 신규 진입부터** 적용된다."""
+    from app.trading.macd2 import chop_regime, p3_stack
+
+    _seed_mode(strategy_mode.MODE_P3)
+    s = state_store.load_state()
+    p3_stack.note_entry_regime(s, chop_regime.REGIME_CHOP)
+    state_store.save_state(s)
+
+    at = _run()
+    _pick(at, strategy_mode.MODE_N1).run()
+
+    restored = state_store.load_state()
+    assert strategy_mode.current(restored) == strategy_mode.MODE_N1
+    assert restored.p3_entry_regime == chop_regime.REGIME_CHOP, (
+        "진입 스냅샷을 소급해서 지우면 안 된다")
+    assert p3_stack.governs_position(restored) is False, (
+        "P3 를 껐으면 B3 가 더 이상 주인이 아니다")

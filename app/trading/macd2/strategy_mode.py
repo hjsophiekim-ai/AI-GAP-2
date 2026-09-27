@@ -144,11 +144,21 @@ def apply(state, mode: Any, *, changed_by: str = "ui", now_iso: Optional[str] = 
     state.p3_enabled = bool(flags["SHADOW"])
     state.p3_version = config.P3_FILTER_VERSION
     if was_p3 and not state.p3_enabled:
-        # P3 -> N1: 섀도우 장부와 포지션 스냅샷만 정리한다. 완료거래 ledger 는
-        # 남겨 둔다(다시 켰을 때 WARMUP 을 처음부터 쌓지 않도록).
-        from app.trading.macd2 import p3_stack
-
-        p3_stack.clear(state)
+        # P3 -> N1 로 내려올 때 정리하는 것은 **섀도우 진행중 장부 하나**뿐이다.
+        #
+        # 이미 열려 있는 포지션의 진입 regime 스냅샷(p3_entry_regime 등)은
+        # 지우지 않는다 -- 사용자 요구 §11-4 "기존 보유포지션은 진입 시 mode
+        # snapshot 유지". 그 값은 포지션이 실제로 닫힐 때
+        # worker._clear_position_scoped_state 가 정리한다.
+        #
+        # 다만 **관리권은 즉시 내려놓는다**: p3_enabled 가 False 가 되는 순간
+        # p3_stack.governs_position 이 False 가 되어 B3 가 그 포지션에서
+        # 손을 떼고 기존 N1/C1 래더가 다시 맡는다. 기록은 남기되, 사용자가 끈
+        # 기능이 계속 주문을 내는 일은 없어야 하기 때문이다.
+        #
+        # 섀도우 **완료거래 ledger** 도 남겨 둔다(다시 켰을 때 WARMUP 을
+        # 처음부터 쌓지 않도록).
+        state.p3_shadow = None
 
     state.strategy_mode = m
     state.strategy_mode_at = now_iso
