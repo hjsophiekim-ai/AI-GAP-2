@@ -461,6 +461,30 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "c1_peak_net_return": float(state.c1_peak_net_return or 0.0),
         "c1_last_checked_bar_ts": state.c1_last_checked_bar_ts,
         "c1_triggered_at": state.c1_triggered_at,
+        # P3 regime stack (2026-09-27). 토글 1개 + 섀도우 장부 + 포지션 스냅샷.
+        # 섀도우 **완료거래**는 여기 저장하지 않는다 — chop_regime 이 소유하는
+        # 별도 ledger 파일에 들어간다(실거래 원장과도, 이 state 와도 분리).
+        "strategy_mode": state.strategy_mode,
+        "strategy_mode_at": state.strategy_mode_at,
+        "strategy_mode_by": state.strategy_mode_by,
+        "p3_enabled": bool(state.p3_enabled),
+        "p3_enabled_at": state.p3_enabled_at,
+        "p3_enabled_by": state.p3_enabled_by,
+        "p3_version": state.p3_version or config.P3_FILTER_VERSION,
+        "p3_shadow": state.p3_shadow,
+        "p3_last_regime": state.p3_last_regime,
+        "p3_last_regime_at": state.p3_last_regime_at,
+        "p3_last_h50_rate": state.p3_last_h50_rate,
+        "p3_last_tp1_rate": state.p3_last_tp1_rate,
+        "p3_last_shadow_sample": int(state.p3_last_shadow_sample or 0),
+        "p3_position_active": bool(state.p3_position_active),
+        "p3_entry_regime": state.p3_entry_regime,
+        "p3_first_tp_at": state.p3_first_tp_at,
+        "p3_tp_rescued": bool(state.p3_tp_rescued),
+        "p3_tp_rescued_at": state.p3_tp_rescued_at,
+        "y3_promoted": bool(state.y3_promoted),
+        "y3_promoted_at": state.y3_promoted_at,
+        "p3_promoted": bool(state.p3_promoted),
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
         "early_tp_filter_enabled_by": state.early_tp_filter_enabled_by,
@@ -755,6 +779,18 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
     # (조기익절이 3-SLOT 계열에 의존하는 것과 같은 관례).
     if not time_window_n1_filter_enabled:
         c1_peak_protection_enabled = False
+    # P3 regime stack — C1 과 **같은 규약**이다. 버전이 바뀌면 기본값(OFF)으로
+    # 되돌리고, N1 이 아니면 복원 시점에 꺼 둔다. 재시작/마이그레이션으로
+    # 저절로 켜지는 경로를 만들지 않는다.
+    p3_enabled_default = bool(getattr(config, "P3_FILTER_DEFAULT", False))
+    _stored_p3_ver = str(raw.get("p3_version") or "")
+    p3_version = _stored_p3_ver or config.P3_FILTER_VERSION
+    p3_enabled = bool(raw.get("p3_enabled", p3_enabled_default))
+    if _stored_p3_ver and _stored_p3_ver != config.P3_FILTER_VERSION:
+        p3_version = config.P3_FILTER_VERSION
+        p3_enabled = p3_enabled_default
+    if not time_window_n1_filter_enabled:
+        p3_enabled = False
     down_blue_exception_enabled_default = bool(getattr(config, "TW_DOWN_BLUE_EXCEPTION_FILTER_DEFAULT", False))
     stored_down_blue_exception_filter_version = str(raw.get("down_blue_exception_filter_version") or "")
     down_blue_exception_filter_version = stored_down_blue_exception_filter_version or config.TW_DOWN_BLUE_EXCEPTION_FILTER_VERSION
@@ -1136,6 +1172,33 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         c1_peak_net_return=float(raw.get("c1_peak_net_return") or 0.0),
         c1_last_checked_bar_ts=raw.get("c1_last_checked_bar_ts"),
         c1_triggered_at=raw.get("c1_triggered_at"),
+        strategy_mode=raw.get("strategy_mode"),
+        strategy_mode_at=raw.get("strategy_mode_at"),
+        strategy_mode_by=raw.get("strategy_mode_by"),
+        p3_enabled=p3_enabled,
+        p3_enabled_at=raw.get("p3_enabled_at"),
+        p3_enabled_by=raw.get("p3_enabled_by"),
+        p3_version=p3_version,
+        # 섀도우 장부는 dict 그대로 싣는다 — 복원 실패는 빈 장부(=WARMUP)로
+        # 수렴해야 하므로 여기서 예외를 던지지 않는다.
+        p3_shadow=(raw.get("p3_shadow") if isinstance(raw.get("p3_shadow"), dict) else None),
+        p3_last_regime=raw.get("p3_last_regime"),
+        p3_last_regime_at=raw.get("p3_last_regime_at"),
+        p3_last_h50_rate=(float(raw["p3_last_h50_rate"])
+                          if raw.get("p3_last_h50_rate") is not None else None),
+        p3_last_tp1_rate=(float(raw["p3_last_tp1_rate"])
+                          if raw.get("p3_last_tp1_rate") is not None else None),
+        p3_last_shadow_sample=int(raw.get("p3_last_shadow_sample") or 0),
+        # 포지션 regime 스냅샷 — 재시작해도 관리모드가 그대로 복원돼야 한다
+        # (P3 rescue 이후 재시작 시 잔량이 runner 로 남는 근거가 이 필드들이다).
+        p3_position_active=bool(raw.get("p3_position_active", False)),
+        p3_entry_regime=raw.get("p3_entry_regime"),
+        p3_first_tp_at=raw.get("p3_first_tp_at"),
+        p3_tp_rescued=bool(raw.get("p3_tp_rescued", False)),
+        p3_tp_rescued_at=raw.get("p3_tp_rescued_at"),
+        y3_promoted=bool(raw.get("y3_promoted", False)),
+        y3_promoted_at=raw.get("y3_promoted_at"),
+        p3_promoted=bool(raw.get("p3_promoted", False)),
         early_tp_filter_enabled=early_tp_filter_enabled,
         early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),
         early_tp_filter_enabled_by=raw.get("early_tp_filter_enabled_by"),
@@ -1191,7 +1254,21 @@ def load_state() -> RuntimeState:
             raw = json.loads(STATE_PATH.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 return default_state()
-            return deserialize(raw)
+            state = deserialize(raw)
+            # STRATEGY MODE 복원/마이그레이션 (2026-09-27). 저장된 모드가 있으면
+            # 하위 플래그를 모드 기준으로 다시 정규화한다 -- deserialize 의
+            # 레거시 규칙만으로는 P3 모드가 재시작 한 번에 N1 으로 떨어질 수
+            # 있기 때문이다. 모드가 없던 state 는 보수적으로 한 번만 옮기고,
+            # 다른 전략(H50/X2-lite 등)을 쓰던 state 는 손대지 않는다.
+            try:
+                from app.trading.macd2 import strategy_mode
+
+                strategy_mode.restore(state)
+            except Exception:
+                # 모드 복원 실패가 state 로딩 전체를 실패시키면 안 된다 --
+                # 그 경우 저장된 개별 플래그 그대로 동작한다.
+                pass
+            return state
         except Exception:
             return default_state()
 

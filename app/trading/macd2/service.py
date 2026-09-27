@@ -30,6 +30,9 @@ from typing import Any, Optional
 
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
+from app.trading.macd2 import chop_regime
+from app.trading.macd2 import p3_stack
+from app.trading.macd2 import strategy_mode as strategy_mode_mod
 from app.trading.macd2 import peak_protection
 from app.trading.macd2 import n1_adaptive
 from app.trading.macd2 import position_sizing
@@ -1261,6 +1264,140 @@ class Macd2Service:
             "toxic_ema20_50_max_pct": float(config.TOXIC_EMA20_50_MAX_PCT),
             "toxic_confirm_return_max_pct": float(config.TOXIC_CONFIRM_RETURN_MAX_PCT),
             "daily_capital": float(config.DEFAULT_BUDGET) * float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP),
+        }
+
+    def set_strategy_mode(self, mode: str, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: 전략 모드를 고른다 — **사용자가 만지는 유일한 전략 설정**.
+
+            "N1"  기존 전략      = N1 + C1 + SMART + AR1
+            "P3"  Adaptive CHOP  = 위 BASE + SHADOW detector + B3 + Y3 + P3 rescue
+
+        두 모드의 **진입은 완전히 같다**(N1 + C1 + SMART + AR1). 차이는 청산
+        레이어 하나뿐이고, P3 모드에서도 ``entry_regime == CHOP`` 인 포지션만
+        B3/Y3/P3 를 탄다. 그래서 P3 는 N1 을 대체하는 진입전략이 아니다.
+
+        C1 / SMART / AR1 / SHADOW / B3 / Y3 / P3 rescue 개별 토글은 두지 않는다.
+        이 함수가 모드에서 전부 derive 해 state 에 찍고, 충돌하는 레거시 토글이
+        남아 있어도 같은 자리에서 정규화한다(strategy_mode.apply).
+
+        이미 열려 있는 포지션은 **건드리지 않는다** — 진입 당시의 regime
+        스냅샷으로 계속 관리되고, 새 모드는 다음 신규 진입부터 적용된다.
+
+        P3 는 **모의계좌(mock) 전용**이다(연구 등급 PAPER-TRADE CANDIDATE).
+        """
+        state = state_store.load_state()
+        target = strategy_mode_mod.normalize(mode)
+        if str(mode or "").strip().upper() not in strategy_mode_mod.ALL_MODES:
+            return {
+                "ok": False,
+                "reason": "UNKNOWN_STRATEGY_MODE",
+                "message": f"알 수 없는 전략 모드입니다: {mode!r} "
+                           f"(가능: {', '.join(strategy_mode_mod.ALL_MODES)})",
+                "strategy_mode": strategy_mode_mod.current(state),
+            }
+        prev = strategy_mode_mod.current(state)
+        if (target == strategy_mode_mod.MODE_P3
+                and str(getattr(state, "mode", "mock")) != "mock"):
+            return {
+                "ok": False,
+                "reason": "P3_PAPER_ONLY",
+                "message": ("P3 모드는 모의계좌에서만 쓸 수 있습니다 "
+                            "(연구 등급 PAPER-TRADE CANDIDATE)."),
+                "strategy_mode": prev,
+                "previous": prev,
+            }
+        now_iso = datetime.now(KST).isoformat()
+        strategy_mode_mod.apply(state, target, changed_by=changed_by, now_iso=now_iso)
+        state_store.save_state(state)
+        regime = chop_regime.current_regime()
+        return {
+            "ok": True,
+            "strategy_mode": target,
+            "previous": prev,
+            "strategy_mode_at": now_iso,
+            "strategy_mode_by": str(changed_by or "ui"),
+            "components": strategy_mode_mod.derive(target),
+            "regime": regime.regime,
+            "execution": strategy_mode_mod.execution_layer(state),
+            "shadow": strategy_mode_mod.shadow_status(state),
+            "shadow_sample": regime.sample,
+            "detector_window": regime.window,
+        }
+
+    def set_p3_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: toggle **P3 regime stack** (2026-09-27).
+
+        토글은 이것 하나뿐이고, 켜면 아래 전체가 함께 켜진다 — B3 / Y3 /
+        SHADOW detector 각각의 토글은 **만들지 않는다**(사용자 확정):
+
+            SHADOW-BASE SLOW detector -> TREND / CHOP / WARMUP
+              CHOP 진입 포지션에 한해
+                B3 (+1.0% / -1.0% / 20분)
+                +1.0% 시점 P3 runner rescue (<=6분이면 50% 익절 + 잔량 승격)
+                20분 시점 Y3 promotion (net>0 ∧ gap확대 ∧ ETF추종이면 청산취소)
+
+        TREND / WARMUP 으로 진입한 포지션은 이 스택을 한 번도 통과하지 않는다 —
+        기존 N1 + C1 + SMART + AR1 동작이 그대로다. detector 가 준비되지 않았거나
+        (완료 shadow 거래 10건 미만) shadow ledger 를 읽지 못하면 **BASE** 다.
+
+        **N1 과 C1 이 둘 다 켜져 있을 때만** 켤 수 있다 — 연구 BASE 가
+        N1 + C1 (+ SMART + AR1) 조합 하나뿐이기 때문이다(SMART 와 같은 관례).
+
+        **모의계좌(mock) 전용이다.** 연구 등급이 PAPER-TRADE CANDIDATE 이지
+        PRODUCTION ADOPT 가 아니라서, 실계좌에서는 켜는 것 자체를 거부한다.
+        기존 안전장치를 우회하지 않고 한 겹 더 좁히는 방향이다.
+
+        상태만 갱신하고 주문을 내지 않는다.
+        """
+        state = state_store.load_state()
+        enabled_bool = bool(enabled)
+        prev = bool(getattr(state, "p3_enabled", False))
+        n1_on = bool(state.time_window_n1_filter_enabled)
+        c1_on = bool(state.c1_peak_protection_enabled)
+        if enabled_bool and not (n1_on and c1_on):
+            missing = " + ".join(x for x, on in (("N1", n1_on), ("C1", c1_on)) if not on)
+            return {
+                "ok": False,
+                "reason": "P3_REQUIRES_N1_AND_C1",
+                "message": f"P3 는 N1 + C1 이 모두 켜져 있어야 합니다 (현재 꺼짐: {missing}).",
+                "p3_enabled": prev,
+                "previous": prev,
+            }
+        if enabled_bool and str(getattr(state, "mode", "mock")) != "mock":
+            return {
+                "ok": False,
+                "reason": "P3_PAPER_ONLY",
+                "message": ("P3 는 모의계좌에서만 켤 수 있습니다 "
+                            "(연구 등급 PAPER-TRADE CANDIDATE)."),
+                "p3_enabled": prev,
+                "previous": prev,
+            }
+        state.p3_enabled = enabled_bool
+        state.p3_version = config.P3_FILTER_VERSION
+        state.p3_enabled_at = datetime.now(KST).isoformat()
+        state.p3_enabled_by = str(changed_by or "ui")
+        if not enabled_bool:
+            # 끄면 섀도우 장부와 포지션 스냅샷만 정리한다. 실제 포지션은 건드리지
+            # 않는다 -- 다음 tick 부터 기존 래더만으로 관리된다.
+            p3_stack.clear(state)
+        state_store.save_state(state)
+        regime = chop_regime.current_regime()
+        return {
+            "ok": True,
+            "p3_enabled": enabled_bool,
+            "previous": prev,
+            "p3_enabled_at": state.p3_enabled_at,
+            "p3_enabled_by": state.p3_enabled_by,
+            "p3_version": state.p3_version,
+            "regime": regime.regime,
+            "shadow_sample": regime.sample,
+            "detector_window": regime.window,
+            "h50_rate": regime.h50_rate,
+            "tp1_rate": regime.tp1_rate,
+            "b3_tp_pct": float(config.P3_B3_TP_PCT),
+            "b3_sl_pct": float(config.P3_B3_SL_PCT),
+            "b3_max_hold_min": float(config.P3_B3_MAX_HOLD_MIN),
+            "rescue_max_min": float(config.P3_RESCUE_MAX_MIN),
         }
 
     def set_p2_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:

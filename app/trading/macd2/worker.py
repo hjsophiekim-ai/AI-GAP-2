@@ -49,6 +49,7 @@ from app.logger import logger
 from app.trading.macd2 import (
     bar_archive,
     bar_ledger,
+    chop_regime,
     config,
     early_take_profit,
     peak_protection,
@@ -56,8 +57,10 @@ from app.trading.macd2 import (
     ledger,
     major_flag_filter,
     order_executor,
+    p3_stack,
     position_sizing,
     premarket_shadow,
+    shadow_base,
     risk_exit,
     sideways_filter,
     single_entry_filter,
@@ -466,6 +469,10 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # N1(2026-09-20) adaptive 캐시도 session-scoped -- 전략 선택 토글은
     # 그대로 두고 판정 캐시만 리셋한다.
     n1_adaptive.clear(state)
+    # P3(2026-09-27) 의 포지션 regime 스냅샷도 session-scoped -- 전략 모드
+    # 선택은 그대로 두고 B3/rescue/승격 상태만 리셋한다. 섀도우 **완료거래
+    # ledger 는 건드리지 않는다**(detector 가 날짜를 넘어 이어져야 하므로).
+    p3_stack.clear_position(state)
     # 09:03 예약 매수(2026-08-06)는 하루 1회짜리 원샷 액션이라, 다른 토글들과
     # 달리 armed 상태 자체가 매일 초기화된다 -- 매일 아침 다시 눌러야 한다.
     #
@@ -2811,7 +2818,115 @@ def _advance_held_position_risk_management(
         # N1 (2026-09-20): 상위추세 여부로 TP1/TP1비중/TP2 가 봉마다 바뀐다.
         # N1 이 아니면 _n1_over 가 빈 dict 라 기존 인자가 그대로 쓰인다.
         _n1_over = _n1_ladder_overrides(state)
-        tp_decision = time_window_position_manager.evaluate_take_profit_immediate(
+
+        # ── P3 스택: B3 TP/SL + P3 runner rescue (2026-09-27) ──────────────
+        # **CHOP 으로 진입한 포지션에만** 적용된다. TREND/WARMUP 진입은 아래
+        # 기존 래더로 그대로 내려간다(p3_position_active 가 False 이므로
+        # governs_position 이 False 다) -- OFF/TREND parity 의 근거다.
+        #
+        # 여기서는 TP/SL 만 본다. max-hold 의 Y3 조건은 완성봉/MACD 가 필요해서
+        # 아래 _advance_p3_max_hold (C1·H50 과 같은 자리) 에서 판정한다.
+        #
+        # 우선순위: 이 블록은 FORCED_LIQUIDATION **뒤**에 있다. 즉 강제청산 /
+        # 세션종료는 언제나 먼저다. 반대로 기존 틱 익절 래더보다는 앞에 있고,
+        # B3 가 관리하는 동안에는 그 래더를 아예 건너뛴다(연구엔진의
+        # exit mode="replace" 와 같은 범위).
+        _p3_governs = p3_stack.governs_position(state)
+        if _p3_governs:
+            _p3_entry_at = pos.entry_at or _parse_iso_dt(state.last_time_window_entry_at)
+            if _p3_entry_at is None:
+                # 진입시각을 모르면 경과시간을 셀 수 없다 -- 추정하지 않고
+                # 기존 래더에 맡긴다(fail-safe = BASE).
+                _p3_governs = False
+            else:
+                _p3_dec = p3_stack.evaluate(
+                    net_return_pct=tick_net_return,
+                    entry_at=_p3_entry_at, now=now,
+                    direction=_position_direction(pos),
+                    already_rescued=bool(state.p3_tp_rescued),
+                    already_promoted=bool(state.p3_promoted),
+                    allow_max_hold=False,
+                )
+                if _p3_dec.action == p3_stack.ACTION_PARTIAL_PROMOTE:
+                    # "+1% 최초 도달" 은 여기서 한 번만 각인된다. 같은 tick 이
+                    # 두 번 평가돼도 note_first_tp 가 False 를 돌려주므로
+                    # 부분매도는 한 번만 나간다(중복주문 방지).
+                    if p3_stack.note_first_tp(state, now):
+                        _p3_log("P3_RESCUE", timestamp=now.isoformat(),
+                                direction=getattr(_position_direction(pos), "value", None),
+                                regime=state.p3_entry_regime,
+                                entry_time=_p3_entry_at.isoformat(),
+                                elapsed=round(float(_p3_dec.elapsed_min or 0.0), 2),
+                                net=round(float(_p3_dec.net_pct or 0.0), 4),
+                                mode=p3_stack.MODE_B3, reason=_p3_dec.conditions)
+                        _p3_sell_qty = min(pos.quantity - 1,
+                                           max(1, round(pos.quantity * _p3_dec.sell_fraction)))
+                        if pos.quantity >= 2 and _p3_sell_qty >= 1:
+                            _p3_remaining = pos.quantity - _p3_sell_qty
+                            _p3_out = order_executor.execute_partial_exit(
+                                broker=broker, symbol=pos.symbol, sell_qty=_p3_sell_qty,
+                                remaining_qty=_p3_remaining, exit_reason=_p3_dec.exit_reason,
+                                entry_price=pos.avg_price,
+                                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
+                                reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                            )
+                            if _p3_out.final_state == SignalState.EXECUTED:
+                                # 주문이 **확정 체결**된 뒤에만 상태를 옮긴다 --
+                                # 실패하면 다음 tick 에 다시 판정된다.
+                                state.position = dataclasses.replace(
+                                    state.position, quantity=_p3_remaining)
+                                p3_stack.note_rescued(state, now)
+                                _p3_log("P3_PARTIAL_EXIT", timestamp=now.isoformat(),
+                                        net=round(float(_p3_dec.net_pct or 0.0), 4),
+                                        mode=p3_stack.MODE_P3_RUNNER,
+                                        reason=f"sold={_p3_sell_qty},left={_p3_remaining}")
+                                _p3_log("P3_RUNNER_PROMOTE", timestamp=now.isoformat(),
+                                        mode=p3_stack.MODE_P3_RUNNER,
+                                        reason="back_to_N1_C1_ladder")
+                            else:
+                                # 부분매도 실패 -- 최초도달 각인을 되돌려
+                                # 다음 tick 에 같은 조건으로 재시도한다.
+                                state.p3_first_tp_at = None
+                            result.actions.append(f"{_p3_dec.exit_reason}:{pos.symbol}")
+                            return True
+                        # 1주 이하라 50%를 쪼갤 수 없다 -- 승격만 하고 잔량은
+                        # 기존 N1/C1 래더가 맡는다(강제로 전량매도하지 않는다).
+                        p3_stack.note_rescued(state, now)
+                        _p3_log("P3_RUNNER_PROMOTE", timestamp=now.isoformat(),
+                                mode=p3_stack.MODE_P3_RUNNER,
+                                reason="qty_too_small_promote_only")
+                        _p3_governs = False
+                elif _p3_dec.action == p3_stack.ACTION_EXIT:
+                    _p3_out = order_executor.execute_exit(
+                        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                        exit_reason=_p3_dec.exit_reason, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
+                        reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    _apply_exit_outcome(state, _p3_out, exit_reason=_p3_dec.exit_reason)
+                    if _p3_out.final_state == SignalState.EXECUTED:
+                        state.time_window_position_active = False
+                    _p3_log(_p3_dec.exit_reason, timestamp=now.isoformat(),
+                            direction=getattr(_position_direction(pos), "value", None),
+                            regime=state.p3_entry_regime,
+                            elapsed=round(float(_p3_dec.elapsed_min or 0.0), 2),
+                            net=round(float(_p3_dec.net_pct or 0.0), 4),
+                            mode=p3_stack.MODE_B3, reason=_p3_dec.reason)
+                    result.actions.append(f"{_p3_dec.exit_reason}:{pos.symbol}")
+                    return True
+
+        if _p3_governs:
+            # B3 가 관리하는 동안 기존 **틱 익절 래더**(TP1/TP2/오후TP)는 돌지
+            # 않는다. 완성봉 손절/after-TP1-stop/trailing, OPPOSITE_SIGNAL,
+            # whipsaw, H50, C1, 강제청산은 아래에서 그대로 살아 있다.
+            tp_decision = time_window_position_manager.PositionManagementDecision(
+                exit_reason=None, sell_fraction=0.0,
+                tp1_done=bool(state.time_window_tp1_done),
+                peak_net_return=float(state.time_window_peak_net_return or 0.0),
+                label="B3_TICK_TP_SUPPRESSED",
+            )
+        else:
+            tp_decision = time_window_position_manager.evaluate_take_profit_immediate(
             session=state.time_window_entry_session or "MORNING",
             net_return_pct=tick_net_return,
             tp1_done=bool(state.time_window_tp1_done),
@@ -3713,6 +3828,17 @@ def _resolve_tw2_3slot_candidate_body(
     )
     _persist_tw2_3slot_decision(state, decision, signal_id)
 
+    # ── P3 SHADOW: 이 확정 플래그를 가상 BASE 스트림에도 전달한다 ─────────
+    # **주문을 내지 않는다.** 섀도우는 자기 슬롯 장부로 진입 여부를 따로
+    # 판정하고(knock-on 격리), 보유 중이면 H50 개입 / 반대신호 청산을 BASE
+    # 규칙대로 처리한다. 실거래가 이 후보를 승인했는지와 무관하게 호출한다 --
+    # 그래야 "실거래는 슬롯을 다 썼지만 BASE 라면 들어갔을" 거래를 놓치지 않는다.
+    # AR1 만 실거래 판정을 힌트로 받는다(AR1 게이트/조건을 재구현하지 않는다).
+    _p3_note_shadow_flag(
+        state=state, now=now, market_data=market_data, bars_3m=bars_3m,
+        direction=direction, slot_approved_hint=bool(final_approved),
+    )
+
     # ── H50: 작은 휩쏘 HOLD (2026-09-15, X2-lite H50 모드 전용) ──────────
     # 보유 중 반대 플래그가 **정상 확정**됐을 때, 보유방향이 구조적 상위추세와
     # 같고(EMA20/EMA50) 최근 60분 range 가 좁으면 그 반대신호 청산을 보류한다.
@@ -3938,6 +4064,23 @@ def _resolve_tw2_3slot_candidate_body(
         )
         state.time_window_entry_session = session
         state.time_window_tp1_done = False
+        # ── P3: 진입 시점 regime 스냅샷 (2026-09-27) ──────────────────────
+        # 반드시 _begin_position_epoch **뒤**에 와야 한다(그 함수가
+        # p3_stack.clear_position 으로 이전 포지션의 스냅샷을 지운다).
+        # 여기서 찍은 값은 보유 내내 소급 변경되지 않는다 -- 보유 중 detector
+        # 가 TREND<->CHOP 으로 바뀌어도 이 포지션의 관리모드는 그대로다.
+        # P3 가 꺼져 있으면 regime 은 WARMUP 이고 p3_position_active 는 False
+        # 이므로 이 포지션은 기존 래더로만 관리된다(OFF parity).
+        if p3_stack.is_active(state):
+            _p3_entry_regime = state.p3_last_regime or chop_regime.REGIME_WARMUP
+            p3_stack.note_entry_regime(state, _p3_entry_regime, now=now)
+            _p3_log("P3_ENTRY_SNAPSHOT", timestamp=now.isoformat(),
+                    direction=direction.value, regime=_p3_entry_regime,
+                    H50_rate=state.p3_last_h50_rate, TP1_rate=state.p3_last_tp1_rate,
+                    entry_time=now.isoformat(),
+                    mode=(p3_stack.MODE_B3
+                          if _p3_entry_regime == chop_regime.REGIME_CHOP
+                          else p3_stack.MODE_BASE))
         state.time_window_peak_net_return = 0.0
         state.time_window_initial_quantity = outcome.quantity
         state.last_time_window_entry_at = signal_detected_at.isoformat()
@@ -4034,6 +4177,7 @@ def _clear_position_scoped_state(state: RuntimeState, *, reason: str = "") -> No
     n1_adaptive.clear(state)            # N1
     small_whipsaw_hold.clear(state)     # H50
     _clear_whipsaw_watch(state)         # whipsaw-watch
+    p3_stack.clear_position(state)      # P3 regime 스냅샷(B3/Y3/rescue)
     # 소유권 키 — 다음 포지션이 이전 포지션의 상태를 물려받지 못하게 한다
     state.h50_owner_epoch = 0
     state.c1_owner_epoch = 0
@@ -4369,6 +4513,218 @@ def _advance_c1_peak_protection(
                     str(outcome.sell_result.order_id or ""), c1_ledger_fields,
                 )
     return outcome
+
+
+# ── P3 REGIME STACK (2026-09-27) ──────────────────────────────────────────
+def _p3_etf_price_at(state: RuntimeState, symbol: str, when: datetime):
+    """ETF 호가 trail 에서 ``when`` **이전** 마지막 표본을 찾는다.
+
+    SMART 사이징이 매 tick 적재하는 ``etf_quote_trail`` 을 읽기만 한다(쓰지
+    않는다). 표본이 없으면 ``None`` 이고, 호출부는 조건 불충족으로 처리한다
+    -- 없는 값을 추정하지 않는다.
+    """
+    stamp = when.isoformat()
+    best = None
+    for raw_at, px in smart_sizing.trail_for(state, symbol):
+        if str(raw_at) <= stamp:
+            best = px
+        else:
+            break
+    return None if best is None else float(best)
+
+
+def _advance_p3_max_hold(*, broker, state: RuntimeState, now: datetime,
+                         bars_3m, position, quotes: dict, result: TickResult):
+    """B3 max-hold(20분) + Y3 승격을 완성봉 기준으로 판정한다 (2026-09-27).
+
+    자리: ``_advance_c1_peak_protection`` 과 같은 자리 = H50/whipsaw-watch 뒤다.
+    여기까지 왔다는 것은 이 tick 에서 강제청산 / B3 TP·SL / 완성봉 손절 /
+    trailing / ETP / 반대신호 switch / whipsaw / H50 / C1 이 **전부 아무 청산도
+    내지 않았다**는 뜻이다 -- 기존 우선순위가 그대로 유지된다.
+
+    Y3 의 두 조건(gap 확대 / ETF 추종)은 **마지막 완성봉**만 본다. 형성 중인
+    봉을 쓰면 미래를 보는 것이므로 ``p3_stack.last_completed_bar_index`` 가
+    그 경계를 강제한다.
+    """
+    if not p3_stack.governs_position(state):
+        return None
+    if position is None or position.quantity <= 0:
+        return None
+    entry_at = position.entry_at or _parse_iso_dt(state.last_time_window_entry_at)
+    if entry_at is None:
+        return None
+    current_price = quotes.get(position.symbol)
+    if current_price is None:
+        return None
+    net = _net_return_pct(position.symbol, position.avg_price, current_price,
+                          position.quantity)
+    # ETF 추종은 **보유 ETF 자신의** 3분 전 가격과 비교한다(연구엔진과 동일).
+    # bars_3m 은 하이닉스 기초자산이라 여기 쓸 수 없다 -- SMART 사이징이
+    # 이미 tick 마다 쌓고 있는 ETF 호가 trail 을 그대로 읽는다.
+    etf_prev = _p3_etf_price_at(state, position.symbol, now - timedelta(minutes=3))
+    decision = p3_stack.evaluate(
+        net_return_pct=net, entry_at=entry_at, now=now,
+        direction=_position_direction(position),
+        already_rescued=bool(state.p3_tp_rescued),
+        already_promoted=bool(state.p3_promoted),
+        bars_3m=bars_3m, etf_prev_price=etf_prev, etf_current_price=current_price,
+        allow_max_hold=True,
+    )
+    if decision.action == p3_stack.ACTION_HOLD:
+        return None
+    _p3_log("Y3_CHECK", timestamp=now.isoformat(),
+            direction=getattr(_position_direction(position), "value", None),
+            regime=state.p3_entry_regime, entry_time=entry_at.isoformat(),
+            elapsed=round(float(decision.elapsed_min or 0.0), 2),
+            net=round(float(decision.net_pct or 0.0), 4),
+            mode=p3_stack.MODE_B3, reason=decision.conditions)
+    if decision.action == p3_stack.ACTION_PROMOTE:
+        p3_stack.note_y3_promoted(state, now)
+        _p3_log("Y3_PROMOTE", timestamp=now.isoformat(),
+                net=round(float(decision.net_pct or 0.0), 4),
+                mode=p3_stack.MODE_Y3_RUNNER, reason=decision.conditions)
+        return None
+    if decision.action != p3_stack.ACTION_EXIT:
+        return None
+    outcome = order_executor.execute_exit(
+        broker=broker, symbol=position.symbol, quantity=position.quantity,
+        exit_reason=decision.exit_reason, entry_price=position.avg_price,
+        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
+        reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+    )
+    _apply_exit_outcome(state, outcome, exit_reason=decision.exit_reason)
+    if outcome.final_state == SignalState.EXECUTED:
+        state.time_window_position_active = False
+    _p3_log("B3_MAXHOLD", timestamp=now.isoformat(),
+            elapsed=round(float(decision.elapsed_min or 0.0), 2),
+            net=round(float(decision.net_pct or 0.0), 4),
+            mode=p3_stack.MODE_B3, reason=decision.reason)
+    result.actions.append(f"{decision.exit_reason}:{position.symbol}")
+    return outcome
+
+
+def _p3_log(event: str, **fields) -> None:
+    """P3 스택의 구조화 로그. 한 줄 = 한 이벤트.
+
+    P3 가 꺼져 있으면 호출되지 않으므로 OFF 일 때 로그가 단 한 줄도 늘지 않는다.
+    """
+    parts = [f"{k}={v}" for k, v in fields.items() if v is not None and v != ""]
+    logger.info("[MACD2][P3] %s %s", event, " ".join(parts))
+
+
+def _p3_regime_as_of(bars_3m, now: datetime) -> Optional[str]:
+    """detector 에 넘길 판정기준 시각 = **마지막 완성봉의 완성시각**.
+
+    그 시각 이후에 끝난 섀도우 거래는 아직 관측되지 않은 것으로 본다 --
+    연구엔진이 ``bar_start + 3분`` 으로 잘라 세던 것과 같은 계약이다.
+    """
+    idx = p3_stack.last_completed_bar_index(bars_3m, now)
+    if idx is None:
+        return None
+    try:
+        ts = bars_3m["datetime"].iloc[idx]
+    except Exception:
+        return None
+    start = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+    if start is None:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=KST)
+    return (start + timedelta(minutes=3)).isoformat()
+
+
+def _advance_p3_regime(*, state: RuntimeState, now: datetime, bars_3m) -> str:
+    """detector 를 갱신하고 현재 regime 을 돌려준다. 주문/청산을 하지 않는다.
+
+    P3 가 꺼져 있거나 N1 계열이 아니면 아무 것도 하지 않고 WARMUP 을 돌려준다
+    -- 호출부는 WARMUP 을 BASE 로 취급하므로 OFF parity 가 유지된다.
+    어떤 예외도 밖으로 내보내지 않는다(fail-safe = BASE).
+    """
+    if not p3_stack.is_active(state):
+        return chop_regime.REGIME_WARMUP
+    try:
+        decision = chop_regime.current_regime(as_of=_p3_regime_as_of(bars_3m, now))
+    except Exception:
+        logger.exception("[MACD2][P3] regime 갱신 실패 -- BASE 로 처리한다")
+        return chop_regime.REGIME_WARMUP
+    prev = state.p3_last_regime
+    state.p3_last_regime = decision.regime
+    state.p3_last_regime_at = now.isoformat()
+    state.p3_last_h50_rate = decision.h50_rate
+    state.p3_last_tp1_rate = decision.tp1_rate
+    state.p3_last_shadow_sample = int(decision.sample)
+    if prev != decision.regime:
+        _p3_log("REGIME_UPDATE", timestamp=now.isoformat(), regime=decision.regime,
+                H50_rate=decision.h50_rate, TP1_rate=decision.tp1_rate,
+                sample=decision.sample, reason=decision.reason)
+        if decision.regime == chop_regime.REGIME_CHOP:
+            _p3_log("CHOP_ENTER", timestamp=now.isoformat(), regime=decision.regime,
+                    H50_rate=decision.h50_rate, TP1_rate=decision.tp1_rate)
+        elif prev == chop_regime.REGIME_CHOP:
+            _p3_log("CHOP_EXIT", timestamp=now.isoformat(), regime=decision.regime,
+                    H50_rate=decision.h50_rate, TP1_rate=decision.tp1_rate)
+        if decision.regime == chop_regime.REGIME_WARMUP:
+            _p3_log("REGIME_WARMUP", timestamp=now.isoformat(), reason=decision.reason)
+    return decision.regime
+
+
+def _advance_shadow_base(*, state: RuntimeState, now: datetime, quotes: dict,
+                         bars_3m, macd_snap) -> None:
+    """섀도우 BASE 스트림을 한 tick 전진시킨다. **주문을 절대 내지 않는다.**
+
+    실제 P3 포지션이 B3 로 일찍 끝나도 섀도우 포지션은 BASE 규칙대로 독립적으로
+    계속 진행한다 -- 그것이 detector 의 피드백 루프를 막는 유일한 근거다.
+    어떤 예외도 밖으로 내보내지 않는다(섀도우 실패가 실거래를 막지 않는다).
+    """
+    if not p3_stack.is_active(state):
+        return
+    try:
+        shadow_base.on_day_rollover(state, now, log=_p3_log)
+        idx = p3_stack.last_completed_bar_index(bars_3m, now)
+        bar_close = None
+        bar_ts_iso = None
+        if idx is not None:
+            try:
+                bar_close = float(bars_3m["close"].iloc[idx])
+                _ts = bars_3m["datetime"].iloc[idx]
+                bar_ts_iso = _ts.isoformat() if hasattr(_ts, "isoformat") else str(_ts)
+            except Exception:
+                bar_close = None
+        shadow_base.advance_exits(
+            state, now=now, quotes=quotes, bars_3m=bars_3m,
+            completed_bar_close=bar_close, completed_bar_idx=idx, log=_p3_log)
+        shadow_base.advance_h50_release(
+            state, now=now, quotes=quotes, bars_3m=bars_3m,
+            bar_ts_iso=bar_ts_iso, log=_p3_log)
+    except Exception:
+        logger.exception("[MACD2][P3] 섀도우 진행 실패 -- 실거래에는 영향 없음")
+
+
+def _p3_note_shadow_flag(*, state: RuntimeState, now: datetime,
+                         market_data: MarketDataService, bars_3m,
+                         direction: Direction, slot_approved_hint=None) -> None:
+    """확정 플래그 한 건을 섀도우에 전달한다(H50 개입 / 반대신호 / 진입 판정).
+
+    호가는 여기서 직접 모은다 -- 이 함수가 불리는 자리(후보 해석)는 run_once 의
+    ``quotes`` 가 인자로 넘어오지 않는 곳이다. 실패해도 조용히 넘어간다.
+    """
+    if not p3_stack.is_active(state):
+        return
+    try:
+        quotes = _fresh_quote_prices(
+            market_data, (config.LONG_SYMBOL, config.INVERSE_SYMBOL))
+        # 조기익절의 진입 CHOP 판정은 섀도우도 **같은 함수**로 구한다 --
+        # 필터가 꺼져 있으면 계산조차 하지 않는다(기존 관례).
+        entry_chop = False
+        if early_take_profit.is_enabled(state):
+            entry_chop = bool(
+                early_take_profit.evaluate_entry_chop(bars_3m, direction, now).chop)
+        shadow_base.on_confirmed_flag(
+            state, direction=direction, now=now, quotes=quotes, bars_3m=bars_3m,
+            slot_approved_hint=slot_approved_hint, entry_chop=entry_chop,
+            log=_p3_log)
+    except Exception:
+        logger.exception("[MACD2][P3] 섀도우 플래그 처리 실패 -- 실거래에는 영향 없음")
 
 
 def _judge_no_filter_flag(*, state: RuntimeState, now: datetime, signal_id: str) -> MajorFlagDecision:
@@ -5689,6 +6045,16 @@ def run_once(
     state.signed_b_shadow_direction = signed_b_condition(macd_snap)
     state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
 
+    # ── P3 regime + SHADOW-BASE (2026-09-27) — **기록/판정 전용** ────────
+    # 주문을 내지 않는다. detector 를 갱신하고 가상 BASE 스트림을 한 tick
+    # 전진시킬 뿐이다. P3 가 꺼져 있으면 두 함수 모두 첫 줄에서 빠지므로
+    # OFF 일 때 계산도 상태쓰기도 로그도 단 한 줄 늘지 않는다.
+    # 반드시 후보 해석(entry)보다 **앞**에 와야 한다 -- 신규 진입이 이 tick 의
+    # regime 스냅샷을 읽기 때문이다.
+    _advance_p3_regime(state=state, now=now, bars_3m=bars_3m)
+    _advance_shadow_base(state=state, now=now, quotes=quotes,
+                         bars_3m=bars_3m, macd_snap=macd_snap)
+
     # ── 프리마켓 carry SHADOW 관측 (2026-09-13) — **기록 전용** ──────────
     # 주문/슬롯/상태를 전혀 건드리지 않는다. premarket_shadow 는 order_executor
     # 를 import 조차 하지 않고 자체 JSON/CSV 에만 쓴다. 이 호출이 어떤 이유로
@@ -5917,6 +6283,19 @@ def run_once(
             position=pos, result=result,
         )
         if c1_outcome is not None and c1_outcome.final_state == SignalState.EXECUTED:
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
+            return result
+
+        # B3 max-hold(20분) + Y3 승격 (2026-09-27): C1 바로 뒤 = 같은 자리.
+        # 여기까지 왔다는 것은 강제청산/B3 TP·SL/손절/trailing/ETP/반대신호/
+        # whipsaw/H50/C1 이 전부 아무 청산도 내지 않았다는 뜻이다. CHOP 으로
+        # 진입한 포지션이 아니면 함수 첫 줄에서 바로 빠진다(TREND parity).
+        p3_maxhold_outcome = _advance_p3_max_hold(
+            broker=broker, state=state, now=now, bars_3m=bars_3m,
+            position=pos, quotes=quotes, result=result,
+        )
+        if (p3_maxhold_outcome is not None
+                and p3_maxhold_outcome.final_state == SignalState.EXECUTED):
             _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
 
