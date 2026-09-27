@@ -175,3 +175,31 @@ def test_research_thresholds_are_unchanged():
     assert int(config.P3_DETECTOR_WINDOW) == 10
     assert float(config.P3_H50_RATE_MIN) == 0.40
     assert float(config.P3_TP1_RATE_MAX) == 0.20
+
+
+# ── 저장소에 커밋된 seed fixture ─────────────────────────────────────────
+def test_committed_seed_fixture_reproduces_the_research_regime():
+    """배포용 seed 가 연구 판정을 그대로 재현하는지 -- 내일 장 시작 시점의
+    regime 이 이 파일 하나로 결정되므로 여기서 잠근다."""
+    import json
+    from pathlib import Path
+
+    from app.trading.macd2 import chop_regime
+
+    path = (Path(__file__).parent.parent.parent / "data" / "validation" / "macd2"
+            / "p3_regime_stack_20260927" / "shadow_seed.json")
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    rows = [chop_regime.ShadowTrade.from_dict(r) for r in blob["trades"]]
+    rows = [r for r in rows if r is not None]
+
+    assert len(rows) == 30
+    # 미래정보 금지 -- 2026-09-22 이후 거래가 한 건도 없어야 한다.
+    assert max(r.trading_date for r in rows) == "20260922"
+
+    decision = chop_regime.evaluate(rows)
+    assert decision.regime == chop_regime.REGIME_CHOP
+    assert decision.h50_rate == pytest.approx(0.50)
+    assert decision.tp1_rate == pytest.approx(0.00)
+    # 마지막 거래는 9/22 Y3 앵커 그 자체다.
+    assert rows[-1].exit_time.startswith("2026-09-22T13:19")
+    assert rows[-1].net_pct == pytest.approx(A0922_Y3_NET, abs=1e-3)

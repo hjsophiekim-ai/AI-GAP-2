@@ -76,10 +76,33 @@ def _to_shadow(raw: dict[str, Any]) -> chop_regime.ShadowTrade:
     )
 
 
+def _from_bundle(rows, as_of):
+    """replay 번들 행 -> ShadowTrade. **출처/날짜 검증이 여기 한 곳에 모인다.**"""
+    kept: list[chop_regime.ShadowTrade] = []
+    dropped = 0
+    for raw in rows:
+        if any(raw.get(k) is None for k in REQUIRED):
+            dropped += 1
+            continue
+        if str(raw["date"]) > str(as_of):
+            dropped += 1  # 미래 거래 -- 절대 넣지 않는다
+            continue
+        exit_date = str(raw["exit_time"])[:10].replace("-", "")
+        if exit_date and exit_date > str(as_of):
+            dropped += 1  # 종료가 기준일을 넘어간 거래도 제외
+            continue
+        kept.append(_to_shadow(raw))
+    return kept, dropped
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--bundle", required=True, type=Path,
-                    help="확정 80일 BASE replay 번들(pickle, runs/A_BASE)")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--bundle", type=Path,
+                     help="확정 80일 BASE replay 번들(pickle, runs/A_BASE)")
+    src.add_argument("--from-json", type=Path,
+                     help="이미 검증된 seed JSON (저장소 fixture). 번들 없이 "
+                          "배포 대상에서 그대로 설치할 때 쓴다.")
     ap.add_argument("--run-key", default="A_BASE")
     ap.add_argument("--as-of", default="20260922",
                     help="이 날짜까지 완료된 거래만 seed 로 쓴다(YYYYMMDD)")
@@ -92,24 +115,20 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    rows = _load_base_trades(args.bundle, args.run_key)
-    print(f"번들 {args.bundle} · {args.run_key} {len(rows)}거래")
+    if args.from_json is not None:
+        blob = json.loads(args.from_json.read_text(encoding="utf-8"))
+        rows = list(blob.get("trades") or ())
+        print(f"fixture {args.from_json} · {len(rows)}행 "
+              f"(source={blob.get('source')})")
+        # fixture 는 이미 production 스키마다 -- 필드명 매핑이 필요 없다.
+        kept = [t for t in (chop_regime.ShadowTrade.from_dict(r) for r in rows)
+                if t is not None and str(t.trading_date) <= str(args.as_of)]
+        dropped = len(rows) - len(kept)
+    else:
+        rows = _load_base_trades(args.bundle, args.run_key)
+        print(f"번들 {args.bundle} · {args.run_key} {len(rows)}거래")
+        kept, dropped = _from_bundle(rows, args.as_of)
 
-    # ── 1. 출처/날짜 검증 ────────────────────────────────────────────────
-    kept: list[chop_regime.ShadowTrade] = []
-    dropped = 0
-    for raw in rows:
-        if any(raw.get(k) is None for k in REQUIRED):
-            dropped += 1
-            continue
-        if str(raw["date"]) > str(args.as_of):
-            dropped += 1  # 미래 거래 -- 절대 넣지 않는다
-            continue
-        exit_date = str(raw["exit_time"])[:10].replace("-", "")
-        if exit_date and exit_date > str(args.as_of):
-            dropped += 1  # 종료가 기준일을 넘어간 거래도 제외
-            continue
-        kept.append(_to_shadow(raw))
     kept.sort(key=lambda t: t.exit_time)
     seed = kept[-int(args.count):]
     print(f"검증 통과 {len(kept)}거래 (제외 {dropped}) · seed {len(seed)}건")
@@ -141,7 +160,9 @@ def main() -> int:
     payload = {
         "schema_version": chop_regime.SCHEMA_VERSION,
         "updated_at": datetime.now(config.KST).isoformat(),
-        "source": f"SEED:{args.bundle.name}:{args.run_key}:asof{args.as_of}",
+        "source": (f"SEED:{args.bundle.name}:{args.run_key}:asof{args.as_of}"
+                   if args.bundle is not None
+                   else f"SEED:{args.from_json.name}:asof{args.as_of}"),
         "trades": [t.to_dict() for t in seed],
     }
     out.parent.mkdir(parents=True, exist_ok=True)
