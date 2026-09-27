@@ -83,6 +83,26 @@ def _isolate_shadow_ledger(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(chop_regime, "LEDGER_PATH", tmp_path / "shadow.json")
 
 
+def _ledger_before(now, *, h50: int, tp1: int, n: int = 10):
+    """``now`` 보다 **먼저 끝난** 완료 shadow 거래 n 건.
+
+    detector 는 판정시각(마지막 완성봉의 완성시각)보다 앞서 끝난 거래만 센다 --
+    테스트 하네스의 기준일에 맞춰 만들어야 seed 가 실제로 읽힌다.
+    """
+    rows = []
+    for i in range(n):
+        exit_at = now - timedelta(hours=2, minutes=5 * (n - i))
+        entry_at = exit_at - timedelta(minutes=30)
+        rows.append(chop_regime.ShadowTrade(
+            shadow_trade_id=chop_regime.make_shadow_trade_id(entry_at, "UP_RED", 1),
+            trading_date=entry_at.astimezone(KST).strftime("%Y%m%d"),
+            entry_time=entry_at.isoformat(), exit_time=exit_at.isoformat(),
+            direction="UP_RED", slot=1, entry_price=10_000.0, exit_price=10_100.0,
+            net_pct=1.0, h50_intervened=(i < h50), tp1_hit=(i < tp1),
+        ))
+    return rows
+
+
 # ── A. OFF parity ────────────────────────────────────────────────────────
 def test_n1_mode_never_calls_the_p3_stack(monkeypatch, tmp_path):
     """+1.2% 수익이라 B3 TP 조건을 충분히 넘긴 포지션이라도, N1 모드면
@@ -349,3 +369,47 @@ def test_detector_failure_does_not_block_trading(monkeypatch, tmp_path):
     run_once(broker=broker, state=state, market_data=svc, now=now0)
 
     assert state.position is not None, "detector 실패가 포지션 관리를 막으면 안 된다"
+
+
+# ── seed -> regime -> 진입 스냅샷 (day-1 사용 경로) ──────────────────────
+def test_seeded_ledger_is_read_as_chop_on_a_live_tick(monkeypatch, tmp_path):
+    """seed 된 shadow ledger 가 실제 tick 에서 CHOP 으로 읽혀야 한다.
+
+    내일 장 시작부터 P3 가 WARMUP 없이 동작하는 근거가 이 경로다.
+    """
+    _isolate_shadow_ledger(monkeypatch, tmp_path)
+    svc, now0 = _market(inverse_price=10_050.0)
+    # 연구 seed 와 같은 모양: H50 5/10, TP1 0/10 -> CHOP
+    chop_regime.save_ledger(_ledger_before(now0, h50=5, tp1=0), source="seed-test")
+
+    state = _p3_state(now=now0, mode=strategy_mode.MODE_P3, entry_regime=None,
+                      bar_close=10_050.0)
+    broker = _broker(10_050.0)
+    _patch_common(monkeypatch)
+
+    run_once(broker=broker, state=state, market_data=svc, now=now0)
+
+    assert state.p3_last_regime == chop_regime.REGIME_CHOP
+    assert state.p3_last_h50_rate == pytest.approx(0.5)
+    assert state.p3_last_tp1_rate == pytest.approx(0.0)
+    assert state.p3_last_shadow_sample == 10
+    assert strategy_mode.execution_layer(state) == "P3"
+    assert strategy_mode.shadow_status(state) == "READY"
+
+
+def test_warmup_ledger_keeps_execution_on_base(monkeypatch, tmp_path):
+    _isolate_shadow_ledger(monkeypatch, tmp_path)
+    svc, now0 = _market(inverse_price=10_050.0)
+    chop_regime.save_ledger(_ledger_before(now0, h50=5, tp1=0, n=9),
+                            source="seed-test")   # 9건 < 10
+
+    state = _p3_state(now=now0, mode=strategy_mode.MODE_P3, entry_regime=None,
+                      bar_close=10_050.0)
+    broker = _broker(10_050.0)
+    _patch_common(monkeypatch)
+
+    run_once(broker=broker, state=state, market_data=svc, now=now0)
+
+    assert state.p3_last_regime == chop_regime.REGIME_WARMUP
+    assert strategy_mode.execution_layer(state) == "BASE"
+    assert strategy_mode.shadow_status(state).startswith("WARMUP")
