@@ -52,7 +52,9 @@ from app.trading.macd2 import (
     order_executor,
     peak_protection,
     small_whipsaw_hold,
+    teg_gate,
     time_window_3slot,
+    time_window_filter,
     time_window_position_manager,
 )
 from app.trading.macd2.models import Direction
@@ -96,9 +98,20 @@ class ShadowPosition:
     n1_ratio: Optional[float] = None
     n1_tp2: Optional[float] = None
     n1_last_eval_bar_ts: Optional[str] = None
-    #: 마지막으로 평가한 완성봉(중복 평가 방지).
+    #: 마지막으로 평가한 완성봉(중복 평가 방지)과 그 봉의 보유 ETF 종가.
     last_bar_ts: Optional[str] = None
+    last_bar_close: Optional[float] = None
+    c1_last_bar_ts: Optional[str] = None
+    #: 진입 후 관측한 **새 완성봉** 개수. 하방 래더는 진입봉을 건너뛴다.
+    bars_since_entry: int = 0
     entry_chop: bool = False
+    #: whipsaw-watch(2026-09-02) 진행상태 -- 실거래 state 와 분리된 사본.
+    ww_active: bool = False
+    ww_direction: Optional[str] = None
+    ww_last_gap: float = 0.0
+    ww_last_spread: float = 0.0
+    ww_last_checked_bar_ts: Optional[str] = None
+    ww_bars_checked: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -316,7 +329,6 @@ def _advance_n1_cache(pos: ShadowPosition, state, bars_3m, bar_ts_iso: Optional[
 
 # ── 청산 진행 ─────────────────────────────────────────────────────────────
 def advance_exits(state, *, now: datetime, quotes: dict, bars_3m=None,
-                  completed_bar_close: Optional[float] = None,
                   completed_bar_idx: Optional[int] = None, log=None) -> None:
     """열린 가상 포지션에 BASE 청산 래더를 적용한다.
 
@@ -324,6 +336,15 @@ def advance_exits(state, *, now: datetime, quotes: dict, bars_3m=None,
     강제청산 -> 틱 익절 -> 완성봉 래더 -> 조기익절 -> C1.
     (OPPOSITE_SIGNAL / H50 / whipsaw 는 확정 플래그가 있을 때
     :func:`on_confirmed_flag` 에서 처리한다 -- worker 와 같은 분업이다.)
+
+    ⚠ 하방 래더(손절/after-TP1-stop/trailing)의 수익률은 **보유 ETF 자신의
+    가격**으로 계산한다. ``bars_3m`` 은 기초자산(하이닉스) 3분봉이라 그 종가를
+    쓰면 ETF 진입가와 기초자산 종가를 비교하게 된다(2026-09-27 parity 검증에서
+    실제로 이 버그를 잡았다 — 모든 거래가 진입 1분 뒤 TP2 로 청산됐다).
+    ``bars_3m`` 은 봉 경계 판정과 C1 의 MACD 히스토그램에만 쓴다.
+
+    완성봉 래더는 봉이 막 완성된 **첫 틱에서 한 번만** 돈다. 그 시점의 ETF
+    현재가가 연구엔진의 ``fill_at(symbol, recognition_at)`` 과 같은 값이다.
     """
     book = load_book(state)
     pos = book.position
@@ -377,11 +398,28 @@ def advance_exits(state, *, now: datetime, quotes: dict, bars_3m=None,
         return
 
     # ③ 완성봉 래더 (손절 / after-TP1 스탑 / trailing / breakeven)
-    if completed_bar_close is None or (bar_ts_iso and pos.last_bar_ts == bar_ts_iso):
+    if bar_ts_iso is None or pos.last_bar_ts == bar_ts_iso:
         store_book(state, book)
         return
     pos.last_bar_ts = bar_ts_iso
-    bar_net = _net_pct(pos.symbol, pos.entry_price, float(completed_bar_close))
+    pos.bars_since_entry = int(pos.bars_since_entry or 0) + 1
+    if pos.bars_since_entry < 3:
+        # **진입봉은 건너뛴다.** worker 의 _advance_stop_loss_bar 는 진입봉을
+        # 제외하고 그 **다음** 봉이 완성된 뒤에야 종가를 돌려준다
+        # (tests/macd2/test_worker.py::test_stop_loss_excludes_entry_bar_
+        # then_fires_on_next_completed_bar_close). 연구엔진의
+        # `idx > entry_idx` 도 같은 뜻이다.
+        #
+        # 세는 기준이 3 인 이유: 진입 틱에서 이미 완성돼 있는 봉은 **진입봉
+        # 직전** 봉이다. 거기서부터 진입봉(2), 그 다음 봉(3) 순으로 올라가므로
+        # 실제 첫 판정은 "진입봉 다음 봉"이 된다. 2 로 두면 진입봉을 그대로
+        # 평가해 하방 래더가 한 봉 일찍 발동한다(2026-09-27 parity 5건).
+        store_book(state, book)
+        return
+    # 보유 ETF 자신의 현재가로 계산한다(기초자산 봉 종가가 아니다).
+    bar_close = float(price)
+    pos.last_bar_close = bar_close   # C1 이 같은 값을 쓴다(worker 규약)
+    bar_net = _net_pct(pos.symbol, pos.entry_price, bar_close)
     pm_kw = dict(overrides)
     pm_tp2 = tp2_mode
     if n1_over:
@@ -400,7 +438,7 @@ def advance_exits(state, *, now: datetime, quotes: dict, bars_3m=None,
     if pm.exit_reason is not None:
         frac = max(0.0, min(1.0, float(pm.sell_fraction)))
         if frac >= 1.0:
-            _close(book, pos, exit_at=now, exit_price=float(completed_bar_close),
+            _close(book, pos, exit_at=now, exit_price=bar_close,
                    exit_reason=pm.exit_reason, log=log)
             store_book(state, book)
             return
@@ -412,7 +450,7 @@ def advance_exits(state, *, now: datetime, quotes: dict, bars_3m=None,
         return
 
     # ④ 조기익절 (ETP)
-    if early_take_profit.is_active(state):
+    if _etp_active_for_shadow(state):
         trig, floor = early_take_profit.thresholds(state)
         etp = early_take_profit.evaluate(
             entry_chop=bool(pos.entry_chop),
@@ -421,26 +459,50 @@ def advance_exits(state, *, now: datetime, quotes: dict, bars_3m=None,
             trigger_pct=trig, floor_pct=floor,
         )
         if etp.exit_reason is not None:
-            _close(book, pos, exit_at=now, exit_price=float(completed_bar_close),
+            _close(book, pos, exit_at=now, exit_price=bar_close,
                    exit_reason=etp.exit_reason, log=log)
             store_book(state, book)
             return
 
-    # ⑤ C1 Peak Protection
-    if peak_protection.is_active(state):
-        hist = _macd_hist_at(bars_3m, completed_bar_idx)
-        c1 = peak_protection.evaluate(
-            held_direction=_direction_of(pos),
-            peak_net_return_pct=float(pos.peak_net_pct),
-            net_return_pct=bar_net,
-            macd_hist=hist,
-        )
-        if c1.exit_reason is not None:
-            _close(book, pos, exit_at=now, exit_price=float(completed_bar_close),
-                   exit_reason=c1.exit_reason, log=log)
-            store_book(state, book)
-            return
+    store_book(state, book)
 
+
+def advance_c1(state, *, now: datetime, quotes: dict, bars_3m=None,
+               completed_bar_idx: Optional[int] = None, log=None) -> None:
+    """C1 Peak Protection -- **확정 플래그 처리 뒤**에 온다.
+
+    worker 의 자리를 그대로 따른다: run_once 는 틱익절/완성봉래더/ETP 를 먼저
+    돌리고(_advance_held_position_risk_management), 그 다음 후보 해석(H50 /
+    반대신호)을 하고, **마지막에** whipsaw-watch / H50 해제 / C1 을 본다.
+
+    이 순서가 결과를 바꾼다 -- 반대 플래그와 C1 청산이 같은 시각에 걸리면
+    누가 먼저냐에 따라 그 거래의 ``h50_intervened`` 가 달라진다
+    (2026-09-27 parity 에서 2026-07-09 건으로 확인).
+    """
+    book = load_book(state)
+    pos = book.position
+    if pos is None or not peak_protection.is_active(state):
+        return
+    # 완성봉마다 한 번만 판정한다(worker 의 c1_last_checked_bar_ts 와 같은 규약).
+    bar_ts_iso = (_bar_ts_iso(bars_3m, completed_bar_idx)
+                  if (bars_3m is not None and completed_bar_idx is not None) else None)
+    if bar_ts_iso is None or pos.c1_last_bar_ts == bar_ts_iso:
+        return
+    if pos.last_bar_close is None:
+        return          # 아직 완성봉 종가가 없다 -- 추정하지 않는다
+    pos.c1_last_bar_ts = bar_ts_iso
+    bar_net = _net_pct(pos.symbol, pos.entry_price, float(pos.last_bar_close))
+    arm_pct, give_pct = peak_protection.thresholds(state)
+    c1 = peak_protection.evaluate(
+        held_direction=_direction_of(pos),
+        peak_net_return_pct=float(pos.peak_net_pct),
+        net_return_pct=bar_net,
+        macd_hist=_macd_hist_at(bars_3m, completed_bar_idx),
+        arm_pct=arm_pct, giveback_pct=give_pct,
+    )
+    if c1.exit_reason is not None:
+        _close(book, pos, exit_at=now, exit_price=float(pos.last_bar_close),
+               exit_reason=c1.exit_reason, log=log)
     store_book(state, book)
 
 
@@ -457,9 +519,138 @@ def _macd_hist_at(bars_3m, idx: Optional[int]) -> Optional[float]:
 
 
 # ── 확정 플래그 처리 (H50 / OPPOSITE / 진입) ──────────────────────────────
+def _etp_active_for_shadow(state) -> bool:
+    """섀도우 포지션에 조기익절을 적용해도 되는가.
+
+    ``early_take_profit.is_active`` 를 그대로 쓸 수 없다 -- 그 함수는
+    ``state.time_window_position_active`` (=**실거래** 포지션이 열려 있는가)를
+    요구한다. 섀도우는 실거래와 독립적으로 포지션을 들 수 있으므로(knock-on)
+    그 조건을 그대로 쓰면 실거래가 flat 인 동안 섀도우의 ETP 가 통째로 꺼진다
+    (2026-09-27 parity 에서 ETP 청산 6건이 전부 누락된 원인).
+
+    토글/모드 조건은 production 과 같은 함수를 쓰고, 포지션 조건만 섀도우
+    자신의 것으로 바꾼다.
+    """
+    return bool(
+        early_take_profit.is_enabled(state)
+        and time_window_3slot.active_3slot_mode(state) in time_window_3slot.MODES_3SLOT
+    )
+
+
+def _base_cleared(state, book, direction, now, bars_3m, flag_bar_dt):
+    """슬롯 **이전** 단계 판정 -- worker 의 ``tw2_cleared`` 와 같은 계산.
+
+    ``position_direction`` 에 **섀도우 자신의 보유방향**을 넘기는 것이 핵심이다.
+    실거래의 판정을 받아 쓰면 둘이 서로 다른 것을 들고 있을 때(knock-on) 틀린
+    값을 쓰게 되고, whipsaw-hold 거절사유도 알 수 없어 whipsaw-watch 를 seed
+    할 수 없다.
+
+    반환 ``(cleared, block_reason)``.
+    """
+    pos = book.position
+    held = _direction_of(pos) if pos is not None else None
+    try:
+        base = time_window_filter.evaluate_time_window_entry(
+            bars_3m, direction, flag_bar_dt, now,
+            position_direction=held,
+            morning_entry_count=0, afternoon_entry_count=0, daily_entry_count=0,
+            quality_threshold_override=time_window_3slot.quality_score_threshold(
+                time_window_3slot.active_3slot_mode(state)),
+        )
+    except Exception:
+        return False, None
+    blocked_by_morning_only = (
+        base.block_reason == config.TW_REJECT_TIME_WINDOW
+        and (base.metrics or {}).get("window") in (
+            time_window_filter.WINDOW_AFTERNOON_1, time_window_filter.WINDOW_AFTERNOON_2)
+        and now.astimezone(KST).time() < config.TW_AFTERNOON_ENTRY_HARD_CUTOFF
+    )
+    cleared = bool(base.approved or blocked_by_morning_only)
+    if cleared:
+        try:
+            vetoed, veto_reason = time_window_filter.evaluate_tw2_extra_vetoes(
+                bars_3m, direction, flag_bar_dt, now)
+        except Exception:
+            vetoed, veto_reason = False, None
+        if vetoed:
+            return False, veto_reason
+    return cleared, base.block_reason
+
+
+def _seed_whipsaw_watch(pos: ShadowPosition, direction: Direction, now: datetime,
+                        bars_3m, flag_bar_dt) -> None:
+    """whipsaw-hold 로 거절된 반대 후보가 생겼을 때 watch 를 심는다.
+
+    worker._start_whipsaw_watch 와 같은 계약이다 -- 주문도 원장도 없고 상태만
+    심는다. ``direction`` 은 **감시 대상(보유 반대)** 방향이다.
+    """
+    try:
+        seed = time_window_filter.evaluate_whipsaw_watch(
+            bars_3m, direction, float("-inf"), float("-inf"))
+    except Exception:
+        return
+    pos.ww_active = True
+    pos.ww_direction = direction.value
+    pos.ww_last_gap = 0.0 if seed.insufficient_data else float(seed.current_gap)
+    pos.ww_last_spread = 0.0 if seed.insufficient_data else float(seed.current_ema_spread)
+    pos.ww_last_checked_bar_ts = (flag_bar_dt.isoformat()
+                                  if hasattr(flag_bar_dt, "isoformat") else None)
+    pos.ww_bars_checked = 0
+
+
+def advance_whipsaw_watch(state, *, now: datetime, quotes: dict, bars_3m=None,
+                          bar_ts_iso: Optional[str] = None, log=None) -> None:
+    """whipsaw-watch 를 완성봉마다 평가한다 (worker._advance_whipsaw_watch 미러).
+
+    두 신호(gap / EMA spread)가 **둘 다** 악화하면 전량청산, 회복하면 해제다.
+    """
+    book = load_book(state)
+    pos = book.position
+    if pos is None or not pos.ww_active or not pos.ww_direction:
+        return
+    if bar_ts_iso and pos.ww_last_checked_bar_ts and bar_ts_iso <= pos.ww_last_checked_bar_ts:
+        return
+    try:
+        watched = Direction(pos.ww_direction)
+    except (TypeError, ValueError):
+        pos.ww_active = False
+        store_book(state, book)
+        return
+    try:
+        d = time_window_filter.evaluate_whipsaw_watch(
+            bars_3m, watched,
+            last_gap=float(pos.ww_last_gap or 0.0),
+            last_ema_spread=float(pos.ww_last_spread or 0.0))
+    except Exception:
+        store_book(state, book)
+        return
+    if d.insufficient_data:
+        store_book(state, book)
+        return          # 완성봉 마커를 전진시키지 않는다(worker 와 동일)
+    pos.ww_last_checked_bar_ts = bar_ts_iso
+    pos.ww_bars_checked = int(pos.ww_bars_checked or 0) + 1
+    if d.should_release:
+        pos.ww_active = False
+        pos.ww_direction = None
+        store_book(state, book)
+        return
+    if not d.should_sell:
+        pos.ww_last_gap = float(d.current_gap)
+        pos.ww_last_spread = float(d.current_ema_spread)
+        store_book(state, book)
+        return
+    price = quotes.get(pos.symbol)
+    if price is None or float(price) <= 0:
+        store_book(state, book)
+        return
+    _close(book, pos, exit_at=now, exit_price=float(price),
+           exit_reason=config.WHIPSAW_WATCH_DETERIORATION_EXIT, log=log)
+    store_book(state, book)
+
+
 def on_confirmed_flag(state, *, direction: Direction, now: datetime,
                       quotes: dict, bars_3m=None, entry_price: Optional[float] = None,
-                      slot_approved_hint: Optional[bool] = None,
+                      base_cleared: bool = True, flag_bar_dt: Optional[datetime] = None,
                       entry_chop: bool = False, log=None) -> None:
     """확정 플래그 한 건에 대해 섀도우가 할 일.
 
@@ -467,7 +658,18 @@ def on_confirmed_flag(state, *, direction: Direction, now: datetime,
     2. 반대방향이면 H50 을 먼저 묻는다 -- HOLD 면 ``h50_intervened`` 를 켜고
        포지션을 유지한다(이것이 detector 가 세는 "개입"이다).
        HOLD 가 아니면 OPPOSITE_SIGNAL 로 닫는다.
-    3. flat 이면 **섀도우 자신의 슬롯 장부**로 진입 여부를 판정한다.
+    3. flat 이면 진입 게이트를 **worker 와 같은 순서로** 통과시킨다.
+
+    ``base_cleared`` 는 worker 가 이미 계산한 슬롯 **이전** 단계의 판정이다
+    (시간창 진입 + extra veto). 그 둘은 슬롯/포지션과 무관한 순수 함수라
+    실거래와 섀도우가 같은 값을 쓴다 -- 다시 계산하지 않고 받아 쓴다.
+
+    슬롯 **이후** 단계(quality / TEG / AR1)는 반드시 **섀도우 자신의 슬롯
+    판정**을 기준으로 다시 평가해야 한다. 어느 게이트가 걸리는지가 슬롯 번호와
+    세션에 달려 있어서, 실거래의 결과를 그대로 쓰면 BASE 가 quality/TEG 로
+    거절한 후보에 섀도우가 들어가 버린다(2026-09-27 parity 준비 중 발견).
+    판정식을 새로 쓰지는 않는다 -- worker 가 부르는 바로 그 함수들을 같은
+    순서로 부른다.
     """
     book = load_book(state)
     target = order_executor.target_symbol_for_direction(direction)
@@ -493,6 +695,15 @@ def on_confirmed_flag(state, *, direction: Direction, now: datetime,
                     pos.h50_trend_break_count = 0
                 store_book(state, book)
                 return
+        # worker 순서: H50 다음이 whipsaw-hold 거절이다. 그 사유로 막히면
+        # 청산하지 않고 watch 만 심는다(주문 없음).
+        cleared, block_reason = _base_cleared(
+            state, book, direction, now, bars_3m, flag_bar_dt)
+        if (not cleared and block_reason
+                and block_reason in set(config.TW_WHIPSAW_REJECT_REASONS)):
+            _seed_whipsaw_watch(pos, direction, now, bars_3m, flag_bar_dt)
+            store_book(state, book)
+            return
         price = quotes.get(pos.symbol)
         if price is None or float(price) <= 0:
             store_book(state, book)
@@ -507,6 +718,9 @@ def on_confirmed_flag(state, *, direction: Direction, now: datetime,
     day = now.astimezone(KST).strftime("%Y%m%d")
     if book.trading_date != day:
         book = ShadowBook(trading_date=day)
+    if not _base_cleared(state, book, direction, now, bars_3m, flag_bar_dt)[0]:
+        store_book(state, book)
+        return
     slot = time_window_3slot.resolve_slot(
         now=now,
         slots_used_today=int(book.slots_used_today),
@@ -516,32 +730,47 @@ def on_confirmed_flag(state, *, direction: Direction, now: datetime,
         is_flat=True,
         last_afternoon_direction=book.last_afternoon_direction,
     )
-    allowed = bool(slot.slot_allowed)
-    if (not allowed
-            and slot.reject_reason == time_window_3slot.REJECT_SAME_DIRECTION_AFTERNOON
-            and time_window_3slot.afternoon_reentry_exception_enabled(state)
-            and bool(slot_approved_hint)):
-        # AR1 -- 실거래 경로가 이미 같은 후보에 대해 AR1 을 통과시켰다면
-        # 섀도우도 같은 예외를 적용한다. AR1 의 게이트/조건은 손대지 않는다
-        # (worker 가 계산한 결과를 그대로 받는다).
-        allowed = True
-    if not allowed:
-        store_book(state, book)
-        return
+    slot_number = slot.slot_number
+    session = slot.session
+    if not slot.slot_allowed:
+        # ── AR1: 오후 동일방향 재진입 예외 (N1 전용, 토글 없음) ───────────
+        # worker 와 같은 조건/같은 함수다. 적용대상은 SAME_DIRECTION_AFTERNOON
+        # 으로 거절된 후보뿐이고, TEG 는 여기서 직접 계산해 넘긴다.
+        if not (slot.reject_reason
+                == time_window_3slot.REJECT_SAME_DIRECTION_AFTERNOON
+                and time_window_3slot.afternoon_reentry_exception_enabled(state)):
+            store_book(state, book)
+            return
+        ar1_teg = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
+        ar1 = time_window_3slot.evaluate_afternoon_reentry(
+            ar1_teg, base_reject_reason=slot.reject_reason)
+        if not ar1.allowed:
+            store_book(state, book)
+            return
+        slot_number = int(book.slots_used_today) + 1
+        session = time_window_3slot.SESSION_AFTERNOON
+    elif slot.requires_quality_gate:
+        if not time_window_3slot.evaluate_trend_quality(bars_3m, direction).approved:
+            store_book(state, book)
+            return
+    elif slot.requires_teg_gate:
+        if not teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now).approved:
+            store_book(state, book)
+            return
 
     px = entry_price if entry_price is not None else quotes.get(target)
     if px is None or float(px) <= 0:
         store_book(state, book)
         return
 
-    session = slot.session or _session_of(now)
+    session = session or _session_of(now)
     book.position = ShadowPosition(
         symbol=target,
         direction=direction.value,
         entry_at=now.isoformat(),
         entry_price=float(px),
         session=session,
-        slot=slot.slot_number,
+        slot=slot_number,
         trading_date=day,
         entry_reason="SHADOW_CONFIRM",
         entry_chop=bool(entry_chop),
@@ -558,7 +787,7 @@ def on_confirmed_flag(state, *, direction: Direction, now: datetime,
             trade_id=chop_regime.make_shadow_trade_id(
                 book.position.entry_at, book.position.direction, book.position.slot),
             direction=direction.value, entry_time=book.position.entry_at,
-            mode="SHADOW", reason=f"slot{slot.slot_number}/{session}")
+            mode="SHADOW", reason=f"slot{slot_number}/{session}")
 
 
 def advance_h50_release(state, *, now: datetime, quotes: dict, bars_3m=None,

@@ -413,3 +413,73 @@ def test_warmup_ledger_keeps_execution_on_base(monkeypatch, tmp_path):
     assert state.p3_last_regime == chop_regime.REGIME_WARMUP
     assert strategy_mode.execution_layer(state) == "BASE"
     assert strategy_mode.shadow_status(state).startswith("WARMUP")
+
+
+# ── 80일 parity 에서 잡은 계약들 (2026-09-27) ────────────────────────────
+def test_shadow_bar_ladder_skips_the_entry_bar(monkeypatch, tmp_path):
+    """하방 래더는 **진입봉 다음 봉**부터 판정한다.
+
+    worker._advance_stop_loss_bar 와 같은 계약이다. 이 가드가 없으면 손절이
+    한 봉 일찍 발동한다 -- 80일 parity 에서 5건이 그렇게 어긋났다.
+    """
+    _isolate_shadow_ledger(monkeypatch, tmp_path)
+    state = state_store.default_state()
+    strategy_mode.apply(state, strategy_mode.MODE_P3)
+    state.time_window_active_mode = "N1_3SLOT"
+    now = __import__("datetime").datetime(2026, 9, 22, 10, 0, tzinfo=KST)
+    book = shadow_base.ShadowBook(
+        trading_date="20260922",
+        position=shadow_base.ShadowPosition(
+            symbol=config.INVERSE_SYMBOL, direction=Direction.DOWN_BLUE.value,
+            entry_at=now.isoformat(), entry_price=10_000.0, session="MORNING",
+            slot=1, trading_date="20260922"))
+    shadow_base.store_book(state, book)
+
+    import pandas as pd
+    bars = pd.DataFrame({
+        "datetime": [now - timedelta(minutes=3 * (5 - i)) for i in range(6)],
+        "close": [10_000.0] * 6, "open": [10_000.0] * 6,
+        "high": [10_000.0] * 6, "low": [10_000.0] * 6, "volume": [1] * 6,
+    })
+    # 손절이 확실히 걸리는 가격(-5%)인데도 처음 두 봉은 버텨야 한다.
+    for n in range(2):
+        shadow_base.advance_exits(
+            state, now=now + timedelta(minutes=3 * n), quotes={config.INVERSE_SYMBOL: 9_500.0},
+            bars_3m=bars.iloc[: len(bars) - 2 + n], completed_bar_idx=len(bars) - 3 + n)
+        assert shadow_base.load_book(state).position is not None, (
+            f"{n + 1}번째 완성봉에서 이미 청산됐다 -- 진입봉을 건너뛰지 않는다")
+
+
+def test_shadow_etp_does_not_depend_on_the_real_position_flag():
+    """조기익절 적용 여부는 **섀도우 자신의 포지션**으로 판단한다.
+
+    early_take_profit.is_active 는 state.time_window_position_active (= 실거래
+    포지션)를 요구하는데, 섀도우는 실거래와 독립적으로 포지션을 들 수 있다.
+    그 함수를 그대로 쓰면 실거래가 flat 인 동안 섀도우 ETP 가 통째로 꺼진다
+    -- 80일 parity 에서 ETP 청산 6건이 전부 누락됐다.
+    """
+    state = state_store.default_state()
+    strategy_mode.apply(state, strategy_mode.MODE_P3)
+    state.time_window_position_active = False
+
+    from app.trading.macd2 import early_take_profit
+
+    assert early_take_profit.is_active(state) is False
+    assert shadow_base._etp_active_for_shadow(state) is True
+
+
+def test_shadow_never_reads_a_forming_bar():
+    """섀도우에 넘기는 완성봉 인덱스는 항상 ``now - 3분`` 이전 봉이다."""
+    import pandas as pd
+
+    from app.trading.macd2 import p3_stack
+
+    start = __import__("datetime").datetime(2026, 9, 22, 9, 0, tzinfo=KST)
+    bars = pd.DataFrame({
+        "datetime": [start + timedelta(minutes=3 * i) for i in range(10)],
+        "close": [100.0 + i for i in range(10)], "open": [100.0] * 10,
+        "high": [100.0] * 10, "low": [100.0] * 10, "volume": [1] * 10,
+    })
+    last_start = bars["datetime"].iloc[-1]
+    assert p3_stack.last_completed_bar_index(bars, last_start + timedelta(minutes=2)) == 8
+    assert p3_stack.last_completed_bar_index(bars, last_start + timedelta(minutes=3)) == 9

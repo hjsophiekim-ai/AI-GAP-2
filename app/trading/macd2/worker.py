@@ -3836,7 +3836,8 @@ def _resolve_tw2_3slot_candidate_body(
     # AR1 만 실거래 판정을 힌트로 받는다(AR1 게이트/조건을 재구현하지 않는다).
     _p3_note_shadow_flag(
         state=state, now=now, market_data=market_data, bars_3m=bars_3m,
-        direction=direction, slot_approved_hint=bool(final_approved),
+        direction=direction, base_cleared=bool(tw2_cleared),
+        flag_bar_dt=flag_bar_dt,
     )
 
     # ── H50: 작은 휩쏘 HOLD (2026-09-15, X2-lite H50 모드 전용) ──────────
@@ -4681,28 +4682,59 @@ def _advance_shadow_base(*, state: RuntimeState, now: datetime, quotes: dict,
     try:
         shadow_base.on_day_rollover(state, now, log=_p3_log)
         idx = p3_stack.last_completed_bar_index(bars_3m, now)
-        bar_close = None
         bar_ts_iso = None
         if idx is not None:
             try:
-                bar_close = float(bars_3m["close"].iloc[idx])
                 _ts = bars_3m["datetime"].iloc[idx]
                 bar_ts_iso = _ts.isoformat() if hasattr(_ts, "isoformat") else str(_ts)
             except Exception:
-                bar_close = None
+                bar_ts_iso = None
+        # 완성봉 **종가는 넘기지 않는다** -- bars_3m 은 기초자산이고, 하방
+        # 래더는 보유 ETF 자신의 가격으로 계산해야 한다(shadow_base 주석 참고).
         shadow_base.advance_exits(
             state, now=now, quotes=quotes, bars_3m=bars_3m,
-            completed_bar_close=bar_close, completed_bar_idx=idx, log=_p3_log)
-        shadow_base.advance_h50_release(
-            state, now=now, quotes=quotes, bars_3m=bars_3m,
-            bar_ts_iso=bar_ts_iso, log=_p3_log)
+            completed_bar_idx=idx, log=_p3_log)
     except Exception:
         logger.exception("[MACD2][P3] 섀도우 진행 실패 -- 실거래에는 영향 없음")
 
 
+def _advance_shadow_late(*, state: RuntimeState, now: datetime, quotes: dict,
+                         bars_3m) -> None:
+    """섀도우의 **늦은** 청산 단계 -- whipsaw-watch / H50 해제 / C1.
+
+    worker 의 자리를 그대로 따른다: 이 셋은 후보 해석(H50 / 반대신호) **뒤**에
+    온다. 순서가 결과를 바꾼다 -- 반대 플래그와 C1 청산이 같은 시각에 걸리면
+    누가 먼저냐에 따라 그 거래의 ``h50_intervened`` 가 달라지고, 그 값이 곧
+    detector 입력이다(2026-09-27 parity, 2026-07-09 건).
+    """
+    if not p3_stack.is_active(state):
+        return
+    try:
+        idx = p3_stack.last_completed_bar_index(bars_3m, now)
+        bar_ts_iso = None
+        if idx is not None:
+            try:
+                _ts = bars_3m["datetime"].iloc[idx]
+                bar_ts_iso = _ts.isoformat() if hasattr(_ts, "isoformat") else str(_ts)
+            except Exception:
+                bar_ts_iso = None
+        shadow_base.advance_whipsaw_watch(
+            state, now=now, quotes=quotes, bars_3m=bars_3m,
+            bar_ts_iso=bar_ts_iso, log=_p3_log)
+        shadow_base.advance_h50_release(
+            state, now=now, quotes=quotes, bars_3m=bars_3m,
+            bar_ts_iso=bar_ts_iso, log=_p3_log)
+        shadow_base.advance_c1(
+            state, now=now, quotes=quotes, bars_3m=bars_3m,
+            completed_bar_idx=idx, log=_p3_log)
+    except Exception:
+        logger.exception("[MACD2][P3] 섀도우 late 단계 실패 -- 실거래에는 영향 없음")
+
+
 def _p3_note_shadow_flag(*, state: RuntimeState, now: datetime,
                          market_data: MarketDataService, bars_3m,
-                         direction: Direction, slot_approved_hint=None) -> None:
+                         direction: Direction, base_cleared: bool = True,
+                         flag_bar_dt: Optional[datetime] = None) -> None:
     """확정 플래그 한 건을 섀도우에 전달한다(H50 개입 / 반대신호 / 진입 판정).
 
     호가는 여기서 직접 모은다 -- 이 함수가 불리는 자리(후보 해석)는 run_once 의
@@ -4721,8 +4753,8 @@ def _p3_note_shadow_flag(*, state: RuntimeState, now: datetime,
                 early_take_profit.evaluate_entry_chop(bars_3m, direction, now).chop)
         shadow_base.on_confirmed_flag(
             state, direction=direction, now=now, quotes=quotes, bars_3m=bars_3m,
-            slot_approved_hint=slot_approved_hint, entry_chop=entry_chop,
-            log=_p3_log)
+            base_cleared=base_cleared, flag_bar_dt=flag_bar_dt,
+            entry_chop=entry_chop, log=_p3_log)
     except Exception:
         logger.exception("[MACD2][P3] 섀도우 플래그 처리 실패 -- 실거래에는 영향 없음")
 
@@ -6254,6 +6286,9 @@ def run_once(
         # management's own TP/SL/trailing check earlier this tick (which
         # already returned this tick if it fired) -- so this can only ever
         # act when nothing else already has.
+        # 섀도우의 늦은 청산 단계 -- 실거래 whipsaw-watch 와 같은 자리다.
+        _advance_shadow_late(state=state, now=now, quotes=quotes, bars_3m=bars_3m)
+
         whipsaw_watch_outcome = _advance_whipsaw_watch(
             broker=broker, state=state, now=now, macd_snap=macd_snap,
             bars_3m=bars_3m, position=pos, result=result,
@@ -6692,6 +6727,10 @@ def run_once(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         bars_3m=bars_3m, df_1m=df_1m, position=None, result=result,
     )
+    # 섀도우의 늦은 청산 단계 -- 실거래가 flat 이어도 섀도우는 포지션을 들고
+    # 있을 수 있으므로(knock-on) 보유 경로와 별개로 여기서도 돌린다.
+    _advance_shadow_late(state=state, now=now, quotes=quotes, bars_3m=bars_3m)
+
     if tw2_3slot_resolve_outcome is not None and tw2_3slot_resolve_outcome.final_state == SignalState.EXECUTED:
         result.actions.append(f"TW2_3SLOT_ENTRY:{tw2_3slot_resolve_outcome.target_symbol}")
         _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
