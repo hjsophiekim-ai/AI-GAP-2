@@ -187,21 +187,34 @@ def migrate(state) -> Optional[str]:
 
 
 def restore(state) -> Optional[str]:
-    """재시작 복원 -- 저장된 모드가 있으면 하위 플래그를 **다시 정규화**한다.
+    """재시작 복원 -- 저장된 모드가 **여전히 유효한지**만 확인한다.
 
-    ``deserialize`` 의 레거시 규칙(버전 불일치 / 상호배타 / N1 아니면 OFF)은
-    모드를 모른 채 동작하므로, P3 모드로 저장된 state 가 재시작만으로 N1 로
-    떨어질 수 있다. 여기서 모드를 다시 찍어 그 경로를 막는다(사용자 요구 §9).
+    여기서 하위 플래그를 다시 쓰지 않는다. 한때 그렇게 했는데, 그러면 사용자가
+    레거시 토글로 N1/C1/SMART 를 직접 끈 순간 다음 ``load_state()`` 가 그것을
+    되돌리고, UI 는 "위젯은 OFF / state 는 ON" 을 보고 setter 를 다시 불러
+    무한 rerun 에 빠진다(2026-09-27 AppTest 40초 타임아웃으로 확인).
 
-    모드가 없으면(= 레거시 전략 사용자) 아무 것도 하지 않는다.
+    그래서 계약을 뒤집었다 -- **플래그가 운영 상태이고, 모드는 그 선택의
+    기록**이다. 저장된 플래그 조합이 모드와 어긋나면(사용자가 손으로 다른
+    조합을 만든 것이다) 모드 기록만 지우고 플래그는 그대로 둔다.
+
+    P3 모드가 재시작만으로 N1 이 되지 않는 이유는 이 함수가 아니라
+    ``deserialize`` 자체다: ``apply`` 가 N1/C1/SMART/P3 를 전부 켜고 각
+    필터 버전을 현행으로 찍어 두므로, 버전 불일치 초기화도 상호배타 양보도
+    걸리지 않는다(tests/macd2/test_p3_worker.py 가 이 경로를 잠근다).
     """
     stored = getattr(state, "strategy_mode", None)
     if not stored:
         return migrate(state)
     mode = normalize(stored)
-    apply(state, mode, changed_by=str(getattr(state, "strategy_mode_by", None)
-                                      or "restore"),
-          now_iso=getattr(state, "strategy_mode_at", None))
+    inferred, reason = infer_from_legacy(state)
+    if inferred != mode:
+        logger.info("[MACD2][MODE] 저장된 모드 %s 와 실제 토글 조합이 어긋난다 "
+                    "(reason=%s) -- 모드 기록만 지우고 토글은 그대로 둔다",
+                    mode, reason)
+        state.strategy_mode = None
+        state.strategy_mode_by = f"cleared:{reason}"
+        return None
     return mode
 
 
