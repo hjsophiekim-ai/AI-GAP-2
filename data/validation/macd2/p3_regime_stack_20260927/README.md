@@ -77,11 +77,13 @@ DE 의 판별력은 동일 커버리지에서 9월 비중 **29.4%** — 무작�
 - 9월 성과 기여가 특정 소수 거래에 집중된다.
 - 봉단위 replay 엔진이 저장소에 없어, 저장소 안의 회귀는 **판정함수 계약**을
   잠그는 수준이다(앵커 입력 → 같은 결정). 전체 replay 재현은 연구 랩에서만 가능하다.
-- 섀도우 시뮬레이터는 production 결정함수(`time_window_position_manager` /
-  `small_whipsaw_hold` / `early_take_profit` / `peak_protection` / `n1_adaptive`)를
-  그대로 호출하지만, 호출 **순서**는 worker 를 손으로 맞춘 것이다. 순서가 틀어지면
-  regime 이 조용히 틀어진다 — 80일 replay 대조로 이 부분을 검증하기 전까지는
-  실계좌에 올리지 않는다.
+- 섀도우 시뮬레이터의 호출 **순서**는 worker 를 손으로 맞춘 것이었다. 그 위험은
+  2026-09-27 80일 parity 검증으로 해소했다 — `SHADOW_PARITY.md` 참고.
+  결과: regime state 11,783봉 **100.0000% 일치**, tp1_hit 171/171,
+  h50_intervened 170/171, 거래 signature 167/171. 잔여 4건은 전부 연구엔진 ↔
+  production 의미론 차이로 규명됐고 regime 을 바꾸지 않는다.
+  그 과정에서 섀도우 결함 5건(기초자산 종가 오사용, 진입게이트 누락,
+  whipsaw-watch 미구현, ETP 가 실거래 플래그에 묶임, 진입봉 미스킵)을 잡아 고쳤다.
 
 ## 7. fail-safe
 
