@@ -71,15 +71,9 @@ def derive(mode: Any) -> dict[str, bool]:
         "B3": False,
         "Y3": False,
         "P3_RESCUE": False,
-        # H30 (2026-09-28): B3 max-hold 유예. P3 스택의 일부이며 **별도 토글이
-        # 아니다** -- P3 를 고르면 함께 켜진다(B3/Y3 와 같은 관례). 여기 있는
-        # 이유는 Advanced 패널이 "P3 가 무엇을 포함하는가" 를 읽기전용으로
-        # 보여 주기 때문이다.
-        "H30": False,
     }
     if m == MODE_P3:
-        base.update({"SHADOW": True, "B3": True, "Y3": True, "P3_RESCUE": True,
-                     "H30": True})
+        base.update({"SHADOW": True, "B3": True, "Y3": True, "P3_RESCUE": True})
     return base
 
 

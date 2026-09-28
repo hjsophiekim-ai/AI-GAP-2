@@ -441,14 +441,24 @@ def test_n1_mode_never_extends(monkeypatch, tmp_path):
 
 
 # ── UI: 토글이 아니라 읽기 전용 상태다 (사용자 요구 §11) ─────────────────
-def test_h30_is_part_of_the_p3_mode_and_not_a_separate_toggle():
+def test_h30_rides_on_the_p3_mode_and_has_no_flag_of_its_own():
+    """H30 은 B3/Y3 와 같은 스위치(p3_enabled) 하나에 함께 실린다.
+
+    strategy_mode.derive() 는 **건드리지 않았다**(사용자 요구 §8 diff 0).
+    그래서 H30 전용 키가 없어야 하고, P3 를 고르는 것만으로 동작해야 한다.
+    """
     p3 = strategy_mode.derive(strategy_mode.MODE_P3)
     n1 = strategy_mode.derive(strategy_mode.MODE_N1)
-    assert p3["H30"] is True, "P3 를 고르면 H30 이 함께 켜져야 한다"
-    assert n1["H30"] is False
-    # B3/Y3/P3_RESCUE 와 **같은 계약** -- 따로 켜고 끄는 스위치가 아니다.
-    for key in ("B3", "Y3", "P3_RESCUE", "H30"):
-        assert p3[key] is True and n1[key] is False
+    assert "H30" not in p3, "H30 은 별도 플래그를 갖지 않는다"
+    assert all(p3[k] is True and n1[k] is False for k in ("B3", "Y3", "P3_RESCUE"))
+
+    # P3 를 고른 state 에서만 P3 스택이 살아 있다 = H30 도 그때만 산다.
+    state = state_store.default_state()
+    strategy_mode.apply(state, strategy_mode.MODE_P3)
+    state.time_window_active_mode = "N1_3SLOT"
+    assert p3_stack.is_active(state) is True
+    strategy_mode.apply(state, strategy_mode.MODE_N1)
+    assert p3_stack.is_active(state) is False
 
 
 def test_no_user_facing_h30_toggle_exists_on_the_state():
