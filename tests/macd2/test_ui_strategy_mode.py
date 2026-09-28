@@ -313,3 +313,51 @@ def test_n1_mode_keeps_the_tier_banner():
     assert "EXECUTION: **BASE**" in caps
     assert f"현재 활성 전략: **{config.N1_3SLOT_STRATEGY_NAME}**" in banners
     assert "선택 전략" not in banners
+
+
+# ── N1 LADDER 줄: 지금 걸린 TP1/TP2 (2026-09-28) ─────────────────────────
+# 레거시 토글 영역과 함께 숨겨졌던 N1 adaptive 판정을 상태 블록에 되살린다.
+def _seed_n1_position(**fields):
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_N1)
+    s.time_window_position_active = True
+    s.time_window_entry_session = "MORNING"
+    for k, v in fields.items():
+        setattr(s, k, v)
+    state_store.save_state(s)
+
+
+def test_n1_ladder_line_shows_trend_values():
+    _seed_n1_position(n1_last_eval_bar_ts="2026-09-28T10:03:00+09:00",
+                      n1_regime_state="TREND", n1_effective_tp1=3.5,
+                      n1_effective_tp1_ratio=0.0, n1_effective_tp2=8.0)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: **추세 (TREND)** · TP1 **3.5%** (매도 0%) · TP2 **8.0%** 전량 · 판정봉 10:03" in caps
+
+
+def test_n1_ladder_line_shows_off_trend_values():
+    _seed_n1_position(n1_last_eval_bar_ts="2026-09-28T10:06:00+09:00",
+                      n1_regime_state="OFF_TREND", n1_effective_tp1=3.0,
+                      n1_effective_tp1_ratio=0.2, n1_effective_tp2=4.0)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: **비추세 (OFF_TREND)** · TP1 **3.0%** (매도 20%) · TP2 **4.0%** 전량" in caps
+
+
+def test_n1_ladder_line_falls_back_to_off_trend_before_first_judgement():
+    """worker(_n1_ladder_overrides) 와 같은 fallback 이어야 한다."""
+    _seed_n1_position(n1_last_eval_bar_ts=None)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: **판정 전 → 비추세 적용** · TP1 **3.0%** (매도 20%) · TP2 **4.0%**" in caps
+
+
+def test_n1_ladder_line_when_flat_lists_both_ladders():
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_N1)
+    s.time_window_position_active = False
+    state_store.save_state(s)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: 포지션 없음" in caps
+    assert "추세 TP1 3.5% (매도 0%) / TP2 8.0%" in caps
+    assert "비추세 TP1 3.0% (매도 20%) / TP2 4.0%" in caps

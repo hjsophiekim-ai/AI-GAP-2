@@ -43,6 +43,7 @@ from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
 from app.trading.macd2 import strategy_mode as macd2_strategy_mode  # noqa: E402
 from app.trading.macd2 import p3_stack as macd2_p3_stack  # noqa: E402
+from app.trading.macd2 import n1_adaptive as macd2_n1_adaptive  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
 from app.trading.macd2 import worker as macd2_worker  # noqa: E402
 from app.trading.macd2.service import get_service  # noqa: E402
@@ -1166,6 +1167,45 @@ with _stm_cols[1]:
         st.caption(f"EXECUTION: **{_stm_exec_label}**")
         if bool(getattr(state, "time_window_position_active", False)):
             st.caption(f"POSITION MODE: **{macd2_p3_stack.position_mode(state)}**")
+
+    # ── 지금 이 포지션에 걸린 익절 기준 (2026-09-28, 읽기 전용) ──────────────
+    # N1 adaptive 판정줄은 09-27 레거시 토글 영역과 함께 숨겨졌다. worker 가
+    # 실제로 쓰는 값을 **같은 함수**로 읽어 보여 준다: 판정 캐시가 없으면 worker
+    # (_n1_ladder_overrides) 와 똑같이 비추세 래더로 떨어진다. 오후 진입은 오전
+    # 래더 대신 오후TP 하나, B3 관리 중이면 틱 래더 자체가 B3 로 대체된다.
+    if macd2_n1_adaptive.is_active(state):
+        _n1_off = macd2_n1_adaptive.off_trend_ladder()
+        _n1_tr = macd2_n1_adaptive.trend_ladder()
+        if not bool(getattr(state, "time_window_position_active", False)):
+            st.caption(
+                "N1 LADDER: 포지션 없음 · "
+                f"추세 TP1 {_n1_tr[0]:.1f}% (매도 {_n1_tr[1]:.0%}) / TP2 {_n1_tr[2]:.1f}% ↔ "
+                f"비추세 TP1 {_n1_off[0]:.1f}% (매도 {_n1_off[1]:.0%}) / TP2 {_n1_off[2]:.1f}%")
+        elif macd2_p3_stack.governs_position(state):
+            st.caption(
+                f"N1 LADDER: **B3 관리 중** → TP +{float(macd2_config.P3_B3_TP_PCT):.1f}% / "
+                f"SL −{float(macd2_config.P3_B3_SL_PCT):.1f}% / "
+                f"max-hold {float(macd2_config.P3_B3_MAX_HOLD_MIN):.0f}분 (N1 틱 래더 미적용)")
+        elif (getattr(state, "time_window_entry_session", None)
+              == macd2_time_window_3slot.SESSION_AFTERNOON):
+            st.caption(
+                f"N1 LADDER: **오후 진입** → 오후TP {float(macd2_config.N1_AFTERNOON_TP) * 100:.1f}% "
+                "(오전 TP1/TP2 미적용)")
+        else:
+            _n1_ld = macd2_n1_adaptive.cached_ladder(state)
+            if _n1_ld is None:
+                _n1_state, _n1_vals, _n1_at = "판정 전 → 비추세 적용", _n1_off, "-"
+            else:
+                _n1_state = ("추세 (TREND)" if _n1_ld.regime_ok
+                             else f"비추세 ({_n1_ld.regime_reason or 'OFF_TREND'})")
+                _n1_vals = (_n1_ld.tp1_pct, _n1_ld.tp1_sell_ratio, _n1_ld.tp2_pct)
+                _n1_at = (str(getattr(state, "n1_last_eval_bar_ts", "") or "")[11:16] or "-")
+            _n1_tp1_done = bool(getattr(state, "time_window_tp1_done", False))
+            st.caption(
+                f"N1 LADDER: **{_n1_state}** · "
+                f"TP1 **{_n1_vals[0]:.1f}%** (매도 {_n1_vals[1]:.0%})"
+                + (" ✓체결" if _n1_tp1_done else "")
+                + f" · TP2 **{_n1_vals[2]:.1f}%** 전량 · 판정봉 {_n1_at}")
 
 with st.expander("Advanced / Debug — 내부 구성 (읽기 전용)", expanded=False):
     _stm_flags = macd2_strategy_mode.derive(_stm_current)
