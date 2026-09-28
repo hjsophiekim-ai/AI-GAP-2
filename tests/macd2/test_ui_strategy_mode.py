@@ -255,3 +255,61 @@ def test_setter_no_longer_refuses_real_accounts():
     """P3_PAPER_ONLY 거부 경로가 남아 있으면 REAL 에서 못 켠다."""
     src = inspect.getsource(service_module.Macd2Service.set_strategy_mode)
     assert "P3_PAPER_ONLY" not in src
+
+
+# ── 선택 모드 / 실행계층 분리 표시 (2026-09-28) ──────────────────────────
+# Render MOCK 에서 P3 를 골랐는데 배너가 "현재 활성 전략: N1" 로만 보여 오해가
+# 생겼다. P3 는 3-SLOT tier 목록에 없는 청산 계층이라 tier 배너는 항상 N1 을
+# 가리킨다 -- P3 모드에서는 선택과 실행을 나눠 써야 한다.
+def _seed_p3(regime, sample=0):
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_P3)
+    s.p3_last_regime = regime
+    s.p3_last_shadow_sample = sample
+    state_store.save_state(s)
+
+
+def _texts(at):
+    caps = "\n".join(str(c.value) for c in at.caption)
+    banners = "\n".join(str(b.value) for b in at.success)
+    return caps, banners
+
+
+def test_p3_warmup_shows_selected_mode_and_base_fallback_separately():
+    _seed_p3("WARMUP", sample=0)
+    caps, banners = _texts(_run())
+    assert "SELECTED MODE: **P3**" in caps
+    assert "REGIME: **WARMUP**" in caps
+    assert "SHADOW: **0/10**" in caps
+    assert "EXECUTION: **BASE (fallback · Shadow Warmup)**" in caps
+    assert "POSITION MODE: **-**" in caps
+    assert "선택 전략 **P3** / 현재 실행 **BASE** (Shadow Warmup)" in banners
+    assert "현재 활성 전략" not in banners, "P3 모드에서 tier 이름(N1)만 보여 주면 안 된다"
+
+
+def test_p3_warmup_progress_is_shown_as_count():
+    _seed_p3("WARMUP", sample=3)
+    caps, _ = _texts(_run())
+    assert "SHADOW: **3/10**" in caps
+
+
+def test_p3_ready_shows_p3_execution_in_both_places():
+    _seed_p3("CHOP", sample=10)
+    caps, banners = _texts(_run())
+    assert "SHADOW: **READY**" in caps
+    assert "EXECUTION: **P3**" in caps
+    assert "fallback" not in caps
+    assert "선택 전략 **P3** / 현재 실행 **P3** (regime CHOP)" in banners
+
+
+def test_n1_mode_keeps_the_tier_banner():
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_N1)
+    state_store.save_state(s)
+    caps, banners = _texts(_run())
+    assert "SELECTED MODE: **N1**" in caps
+    assert "EXECUTION: **BASE**" in caps
+    assert f"현재 활성 전략: **{config.N1_3SLOT_STRATEGY_NAME}**" in banners
+    assert "선택 전략" not in banners
