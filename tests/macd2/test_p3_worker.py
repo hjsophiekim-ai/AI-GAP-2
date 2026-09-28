@@ -171,8 +171,12 @@ def test_p3_mode_with_trend_entry_does_not_cut_at_one_percent(monkeypatch, tmp_p
 
 
 # ── B3 / P3 기능 ─────────────────────────────────────────────────────────
-def test_chop_entry_reaching_one_percent_fast_takes_half_and_promotes(monkeypatch, tmp_path):
-    """+1% 를 4분 만에 찍으면 50% 익절 + 잔량 승격(P3 rescue)."""
+def test_chop_entry_reaching_one_percent_fast_takes_a_slice_and_promotes(monkeypatch, tmp_path):
+    """+1% 를 4분 만에 찍으면 부분익절 + 잔량 승격(P3 rescue).
+
+    Q2 (2026-09-28): 익절비중이 50% -> 20% 다. 10주면 2주만 팔고 8주가 runner 로
+    넘어간다 -- 조건(6분 이내 최초 +1%)은 바뀌지 않았다.
+    """
     _isolate_shadow_ledger(monkeypatch, tmp_path)
     svc, now0 = _market(inverse_price=10_120.0)
     state = _p3_state(now=now0, mode=strategy_mode.MODE_P3,
@@ -185,7 +189,9 @@ def test_chop_entry_reaching_one_percent_fast_takes_half_and_promotes(monkeypatc
 
     assert state.p3_tp_rescued is True, "6분 이내 +1% 면 rescue 가 나야 한다"
     assert state.p3_promoted is True
-    assert state.position is not None and state.position.quantity == 5
+    _sell = max(1, round(10 * float(config.P3_RESCUE_SELL_RATIO)))
+    assert state.position is not None and state.position.quantity == 10 - _sell
+    assert state.position.quantity == 8, "Q2: 20% 만 팔고 80% 를 남긴다"
     assert p3_stack.position_mode(state) == p3_stack.MODE_P3_RUNNER
     assert p3_stack.governs_position(state) is False, "승격 후에는 기존 래더가 주인이다"
 

@@ -485,6 +485,9 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "y3_promoted": bool(state.y3_promoted),
         "y3_promoted_at": state.y3_promoted_at,
         "p3_promoted": bool(state.p3_promoted),
+        "p3_h30_active": bool(state.p3_h30_active),
+        "p3_h30_started_at": state.p3_h30_started_at,
+        "p3_h30_deadline_at": state.p3_h30_deadline_at,
         "early_tp_filter_enabled": bool(state.early_tp_filter_enabled),
         "early_tp_filter_enabled_at": state.early_tp_filter_enabled_at,
         "early_tp_filter_enabled_by": state.early_tp_filter_enabled_by,
@@ -1199,6 +1202,11 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         y3_promoted=bool(raw.get("y3_promoted", False)),
         y3_promoted_at=raw.get("y3_promoted_at"),
         p3_promoted=bool(raw.get("p3_promoted", False)),
+        # H30 (2026-09-28): 연장 중 재시작해도 그대로 복원된다. deadline 은
+        # 표시용 사본이고 실제 판정은 진입시각에서 매 tick 다시 계산한다.
+        p3_h30_active=bool(raw.get("p3_h30_active", False)),
+        p3_h30_started_at=raw.get("p3_h30_started_at"),
+        p3_h30_deadline_at=raw.get("p3_h30_deadline_at"),
         early_tp_filter_enabled=early_tp_filter_enabled,
         early_tp_filter_enabled_at=raw.get("early_tp_filter_enabled_at"),
         early_tp_filter_enabled_by=raw.get("early_tp_filter_enabled_by"),

@@ -903,9 +903,15 @@ class RuntimeState:
     #   p3_entry_regime     : 진입 시점 regime 스냅샷
     #   p3_first_tp_at      : +1.0% 에 **최초** 도달한 시각(ISO). rescue 판정의
     #                         경과시간 기준이며 한 번만 기록된다(중복 rescue 차단).
-    #   p3_tp_rescued       : P3 50% 부분익절이 실제로 체결됐는가
+    #   p3_tp_rescued       : P3 부분익절(Q2 = 20%)이 실제로 체결됐는가
     #   y3_promoted         : Y3 max-hold 승격이 일어났는가
     #   p3_promoted         : 승격되어 기존 N1/C1 래더로 복귀했는가(P3/Y3 공통)
+    #   p3_h30_active       : H30 연장 중인가(2026-09-28). max-hold 20분 시점에
+    #                         H50 HOLD 가 활성이면 켜지고, 포지션이 끝날 때까지
+    #                         유지된다(연구엔진 _bs["ext"] 와 같은 계약).
+    #   p3_h30_started_at   : 연장을 시작한 시각(ISO). 로그/UI 용.
+    #   p3_h30_deadline_at  : 진입 + 30분(ISO). **표시용 사본**이다 -- 판정은
+    #                         언제나 진입시각에서 다시 계산한다(재시작 안전).
     # ── STRATEGY MODE (2026-09-27) ────────────────────────────────────────
     # 전략 선택의 **단일 진실원천**. "N1" 또는 "P3" 둘 중 하나이고, C1 /
     # SMART / AR1 / SHADOW / B3 / Y3 / P3 rescue 는 전부 여기서 derive 된다
@@ -935,3 +941,6 @@ class RuntimeState:
     y3_promoted: bool = False
     y3_promoted_at: Optional[str] = None
     p3_promoted: bool = False
+    p3_h30_active: bool = False
+    p3_h30_started_at: Optional[str] = None
+    p3_h30_deadline_at: Optional[str] = None

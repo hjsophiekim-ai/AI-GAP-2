@@ -1182,10 +1182,22 @@ with _stm_cols[1]:
                 f"추세 TP1 {_n1_tr[0]:.1f}% (매도 {_n1_tr[1]:.0%}) / TP2 {_n1_tr[2]:.1f}% ↔ "
                 f"비추세 TP1 {_n1_off[0]:.1f}% (매도 {_n1_off[1]:.0%}) / TP2 {_n1_off[2]:.1f}%")
         elif macd2_p3_stack.governs_position(state):
-            st.caption(
-                f"N1 LADDER: **B3 관리 중** → TP +{float(macd2_config.P3_B3_TP_PCT):.1f}% / "
-                f"SL −{float(macd2_config.P3_B3_SL_PCT):.1f}% / "
-                f"max-hold {float(macd2_config.P3_B3_MAX_HOLD_MIN):.0f}분 (N1 틱 래더 미적용)")
+            # H30 연장 중이면 max-hold 가 30분으로 밀려 있다 -- 사용자가 켜고 끄는
+            # 것이 아니라 H50 HOLD 가 활성이어서 자동으로 걸린 상태다(읽기 전용).
+            if macd2_p3_stack.is_h30(state):
+                _h30_until = str(getattr(state, "p3_h30_deadline_at", "") or "")[11:16]
+                st.caption(
+                    f"N1 LADDER: **H30 연장 중** → TP +{float(macd2_config.P3_B3_TP_PCT):.1f}% / "
+                    f"SL −{float(macd2_config.P3_B3_SL_PCT):.1f}% / "
+                    f"max-hold {float(macd2_config.P3_B3_MAX_HOLD_MIN):.0f}분 → "
+                    f"{float(macd2_config.P3_H30_EXT_MAX_HOLD_MIN):.0f}분"
+                    + (f" ({_h30_until} 까지)" if _h30_until else "")
+                    + " · H50 HOLD 활성 (N1 틱 래더 미적용)")
+            else:
+                st.caption(
+                    f"N1 LADDER: **B3 관리 중** → TP +{float(macd2_config.P3_B3_TP_PCT):.1f}% / "
+                    f"SL −{float(macd2_config.P3_B3_SL_PCT):.1f}% / "
+                    f"max-hold {float(macd2_config.P3_B3_MAX_HOLD_MIN):.0f}분 (N1 틱 래더 미적용)")
         elif (getattr(state, "time_window_entry_session", None)
               == macd2_time_window_3slot.SESSION_AFTERNOON):
             st.caption(

@@ -2879,19 +2879,36 @@ def _advance_held_position_risk_management(
                     already_rescued=bool(state.p3_tp_rescued),
                     already_promoted=bool(state.p3_promoted),
                     allow_max_hold=False,
+                    # H30 연장 중이면 +1% 를 전량익절이 아니라 Q2 와 같은 비중의
+                    # 부분익절 + 승격으로 받는다. 연장이 아니면 False 라 기존과
+                    # 한 줄도 다르지 않다(연구엔진 _bs["ext"] 와 같은 자리).
+                    h30_active=p3_stack.is_h30(state),
                 )
                 if _p3_dec.action == p3_stack.ACTION_PARTIAL_PROMOTE:
                     # "+1% 최초 도달" 은 여기서 한 번만 각인된다. 같은 tick 이
                     # 두 번 평가돼도 note_first_tp 가 False 를 돌려주므로
-                    # 부분매도는 한 번만 나간다(중복주문 방지).
+                    # 부분매도는 한 번만 나간다(중복주문 방지). P3 rescue 와
+                    # H30 연장중 rescue 는 **같은 각인**을 공유하므로 한 포지션에
+                    # 부분매도가 두 번 나가는 경로가 없다.
                     if p3_stack.note_first_tp(state, now):
-                        _p3_log("P3_RESCUE", timestamp=now.isoformat(),
-                                direction=getattr(_position_direction(pos), "value", None),
-                                regime=state.p3_entry_regime,
-                                entry_time=_p3_entry_at.isoformat(),
-                                elapsed=round(float(_p3_dec.elapsed_min or 0.0), 2),
-                                net=round(float(_p3_dec.net_pct or 0.0), 4),
-                                mode=p3_stack.MODE_B3, reason=_p3_dec.conditions)
+                        if _p3_dec.reason == "P3_H30_RESCUE":
+                            _p3_log("P3_H30_RESCUE", timestamp=now.isoformat(),
+                                    trade_id=state.position_epoch,
+                                    direction=getattr(_position_direction(pos), "value", None),
+                                    regime=state.p3_entry_regime,
+                                    entry_time=_p3_entry_at.isoformat(),
+                                    elapsed=round(float(_p3_dec.elapsed_min or 0.0), 2),
+                                    net=round(float(_p3_dec.net_pct or 0.0), 4),
+                                    h50_active=small_whipsaw_hold.is_holding(state),
+                                    mode=p3_stack.MODE_H30, reason=_p3_dec.conditions)
+                        else:
+                            _p3_log("P3_RESCUE", timestamp=now.isoformat(),
+                                    direction=getattr(_position_direction(pos), "value", None),
+                                    regime=state.p3_entry_regime,
+                                    entry_time=_p3_entry_at.isoformat(),
+                                    elapsed=round(float(_p3_dec.elapsed_min or 0.0), 2),
+                                    net=round(float(_p3_dec.net_pct or 0.0), 4),
+                                    mode=p3_stack.MODE_B3, reason=_p3_dec.conditions)
                         _p3_sell_qty = min(pos.quantity - 1,
                                            max(1, round(pos.quantity * _p3_dec.sell_fraction)))
                         if pos.quantity >= 2 and _p3_sell_qty >= 1:
@@ -2909,7 +2926,7 @@ def _advance_held_position_risk_management(
                                 state.position = dataclasses.replace(
                                     state.position, quantity=_p3_remaining)
                                 p3_stack.note_rescued(state, now)
-                                _p3_log("P3_PARTIAL_EXIT", timestamp=now.isoformat(),
+                                _p3_log(_p3_dec.exit_reason, timestamp=now.isoformat(),
                                         net=round(float(_p3_dec.net_pct or 0.0), 4),
                                         mode=p3_stack.MODE_P3_RUNNER,
                                         reason=f"sold={_p3_sell_qty},left={_p3_remaining}")
@@ -4596,6 +4613,12 @@ def _advance_p3_max_hold(*, broker, state: RuntimeState, now: datetime,
     # bars_3m 은 하이닉스 기초자산이라 여기 쓸 수 없다 -- SMART 사이징이
     # 이미 tick 마다 쌓고 있는 ETF 호가 trail 을 그대로 읽는다.
     etf_prev = _p3_etf_price_at(state, position.symbol, now - timedelta(minutes=3))
+    # H30 (2026-09-28): 이 자리는 `_advance_h50_hold` **뒤**다. 즉 이 tick 에서
+    # H50 이 해제됐다면 그 해제가 이미 반영된 뒤에 아래 판정이 돈다 -- "H50 기존
+    # 규칙 우선" 이 코드 순서로 보장된다. 손절/강제청산/세션종료/trailing/ETP/
+    # 반대신호/whipsaw/C1 도 전부 이 앞에서 끝나 있다.
+    h50_active = small_whipsaw_hold.is_holding(state)
+    was_h30 = p3_stack.is_h30(state)
     decision = p3_stack.evaluate(
         net_return_pct=net, entry_at=entry_at, now=now,
         direction=_position_direction(position),
@@ -4603,20 +4626,53 @@ def _advance_p3_max_hold(*, broker, state: RuntimeState, now: datetime,
         already_promoted=bool(state.p3_promoted),
         bars_3m=bars_3m, etf_prev_price=etf_prev, etf_current_price=current_price,
         allow_max_hold=True,
+        h50_active=h50_active, h30_active=was_h30,
     )
     if decision.action == p3_stack.ACTION_HOLD:
         return None
+
+    def _h30_fields() -> dict:
+        return dict(timestamp=now.isoformat(), trade_id=state.position_epoch,
+                    entry_time=entry_at.isoformat(),
+                    elapsed=round(float(decision.elapsed_min or 0.0), 2),
+                    net=round(float(decision.net_pct or 0.0), 4),
+                    h50_active=h50_active)
+
+    # ── 연장 시작/지속 -- 주문이 나가지 않는 유일한 분기다 ──────────────────
+    if decision.action == p3_stack.ACTION_EXTEND:
+        if p3_stack.note_h30_start(state, now, entry_at=entry_at):
+            _p3_log("P3_H30_START", **_h30_fields(),
+                    direction=getattr(_position_direction(position), "value", None),
+                    regime=state.p3_entry_regime,
+                    deadline=state.p3_h30_deadline_at,
+                    mode=p3_stack.MODE_H30, reason=decision.conditions)
+        # 두 번째 tick 부터는 조용히 유예만 한다(로그 최소화).
+        return None
+
+    # 연장 중이었는데 deadline 전에 연장이 끊겼다 = H50 이 풀린 것이다.
+    # 아래 Y3 판정(기존 경로)으로 그대로 내려간다 -- 유예만 취소된다.
+    if (was_h30 and not h50_active
+            and float(decision.elapsed_min or 0.0)
+            < float(config.P3_H30_EXT_MAX_HOLD_MIN)):
+        _p3_log("P3_H30_CANCEL", **_h30_fields(),
+                mode=p3_stack.MODE_H30, reason="h50_released")
+
     _p3_log("Y3_CHECK", timestamp=now.isoformat(),
             direction=getattr(_position_direction(position), "value", None),
             regime=state.p3_entry_regime, entry_time=entry_at.isoformat(),
             elapsed=round(float(decision.elapsed_min or 0.0), 2),
             net=round(float(decision.net_pct or 0.0), 4),
-            mode=p3_stack.MODE_B3, reason=decision.conditions)
+            mode=(p3_stack.MODE_H30 if was_h30 else p3_stack.MODE_B3),
+            reason=decision.conditions)
     if decision.action == p3_stack.ACTION_PROMOTE:
         p3_stack.note_y3_promoted(state, now)
-        _p3_log("Y3_PROMOTE", timestamp=now.isoformat(),
-                net=round(float(decision.net_pct or 0.0), 4),
-                mode=p3_stack.MODE_Y3_RUNNER, reason=decision.conditions)
+        if was_h30:
+            _p3_log("P3_H30_Y3_PROMOTE", **_h30_fields(),
+                    mode=p3_stack.MODE_Y3_RUNNER, reason=decision.conditions)
+        else:
+            _p3_log("Y3_PROMOTE", timestamp=now.isoformat(),
+                    net=round(float(decision.net_pct or 0.0), 4),
+                    mode=p3_stack.MODE_Y3_RUNNER, reason=decision.conditions)
         return None
     if decision.action != p3_stack.ACTION_EXIT:
         return None
@@ -4629,10 +4685,14 @@ def _advance_p3_max_hold(*, broker, state: RuntimeState, now: datetime,
     _apply_exit_outcome(state, outcome, exit_reason=decision.exit_reason)
     if outcome.final_state == SignalState.EXECUTED:
         state.time_window_position_active = False
-    _p3_log("B3_MAXHOLD", timestamp=now.isoformat(),
-            elapsed=round(float(decision.elapsed_min or 0.0), 2),
-            net=round(float(decision.net_pct or 0.0), 4),
-            mode=p3_stack.MODE_B3, reason=decision.reason)
+    if was_h30:
+        _p3_log("P3_H30_EXIT", **_h30_fields(),
+                mode=p3_stack.MODE_H30, reason=decision.reason)
+    else:
+        _p3_log("B3_MAXHOLD", timestamp=now.isoformat(),
+                elapsed=round(float(decision.elapsed_min or 0.0), 2),
+                net=round(float(decision.net_pct or 0.0), 4),
+                mode=p3_stack.MODE_B3, reason=decision.reason)
     result.actions.append(f"{decision.exit_reason}:{position.symbol}")
     return outcome
 
