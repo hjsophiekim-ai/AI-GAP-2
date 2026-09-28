@@ -43,6 +43,7 @@ from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
 from app.trading.macd2 import strategy_mode as macd2_strategy_mode  # noqa: E402
 from app.trading.macd2 import p3_stack as macd2_p3_stack  # noqa: E402
+from app.trading.macd2 import n1_adaptive as macd2_n1_adaptive  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
 from app.trading.macd2 import worker as macd2_worker  # noqa: E402
 from app.trading.macd2.service import get_service  # noqa: E402
@@ -1131,26 +1132,80 @@ if _stm_pick != _stm_current:
         st.warning("전략 모드를 바꿀 수 없습니다: "
                    + str(_stm_res.get("message") or _stm_res.get("reason") or "알 수 없는 사유"))
 
+_stm_exec = macd2_strategy_mode.execution_layer(state)
+_stm_shadow = macd2_strategy_mode.shadow_status(state)
+# 선택한 모드(사용자의 선택)와 지금 실제로 적용 중인 실행계층을 **반드시 나눠**
+# 보여 준다 -- P3 를 골랐어도 SHADOW 가 READY 가 아니면 실행은 BASE 다(fail-safe).
+# 이 둘을 한 단어로 뭉치면 "P3 를 골랐는데 N1 이 돈다" 는 오해가 생긴다(2026-09-28).
+if _stm_current == macd2_strategy_mode.MODE_P3 and _stm_exec != "P3":
+    _stm_fallback_why = ("Shadow Warmup" if _stm_shadow.startswith("WARMUP")
+                         else "Shadow Error")
+    _stm_exec_label = f"BASE (fallback · {_stm_fallback_why})"
+else:
+    _stm_fallback_why = ""
+    _stm_exec_label = _stm_exec
+
 with _stm_cols[1]:
-    # ACCOUNT / MODE / REGIME / SHADOW / EXECUTION 다섯 줄이 최소 규격이다.
+    # ACCOUNT / SELECTED MODE / REGIME / SHADOW / EXECUTION / POSITION MODE.
     # 계좌 종류는 전략 판단을 바꾸지 않는다 -- MOCK/REAL 모두 같은 코드를 탄다.
-    _stm_exec = macd2_strategy_mode.execution_layer(state)
-    st.caption(f"ACCOUNT **{macd2_strategy_mode.account_kind(state)}**")
-    st.caption(f"MODE **{_stm_current}**")
+    st.caption(f"ACCOUNT: **{macd2_strategy_mode.account_kind(state)}**")
+    st.caption(f"SELECTED MODE: **{_stm_current}**")
     if _stm_current == macd2_strategy_mode.MODE_P3:
         _stm_regime = getattr(state, "p3_last_regime", None) or "-"
-        st.caption(f"REGIME **{_stm_regime}**")
-        st.caption(f"SHADOW **{macd2_strategy_mode.shadow_status(state)}**")
-        # 모드와 실행계층을 나눠 보여 준다 -- P3 모드라도 detector 가 준비되지
-        # 않았으면(WARMUP/ERROR) 실거래는 BASE 로 돈다(fail-safe).
-        if _stm_exec != "P3":
-            st.caption(f"EXECUTION **{_stm_exec}**  ·  detector 미준비 → BASE 로 거래합니다")
+        st.caption(f"REGIME: **{_stm_regime}**")
+        # shadow_status 는 "WARMUP 3/10" / "READY" / "ERROR" 다. WARMUP 은 진행도만
+        # 보여 준다 -- 단계 이름은 바로 위 REGIME 줄과 EXECUTION 사유에 이미 있다.
+        _stm_shadow_label = (_stm_shadow.split(" ", 1)[1]
+                             if _stm_shadow.startswith("WARMUP ") else _stm_shadow)
+        st.caption(f"SHADOW: **{_stm_shadow_label}**")
+        st.caption(f"EXECUTION: **{_stm_exec_label}**")
+        if bool(getattr(state, "time_window_position_active", False)):
+            st.caption(f"POSITION MODE: **{macd2_p3_stack.position_mode(state)}**")
         else:
-            st.caption(f"EXECUTION **{_stm_exec}**")
+            st.caption("POSITION MODE: **-** (포지션 없음)")
     else:
-        st.caption(f"EXECUTION **{_stm_exec}**")
-    if bool(getattr(state, "time_window_position_active", False)):
-        st.caption(f"POSITION MODE **{macd2_p3_stack.position_mode(state)}**")
+        st.caption(f"EXECUTION: **{_stm_exec_label}**")
+        if bool(getattr(state, "time_window_position_active", False)):
+            st.caption(f"POSITION MODE: **{macd2_p3_stack.position_mode(state)}**")
+
+    # ── 지금 이 포지션에 걸린 익절 기준 (2026-09-28, 읽기 전용) ──────────────
+    # N1 adaptive 판정줄은 09-27 레거시 토글 영역과 함께 숨겨졌다. worker 가
+    # 실제로 쓰는 값을 **같은 함수**로 읽어 보여 준다: 판정 캐시가 없으면 worker
+    # (_n1_ladder_overrides) 와 똑같이 비추세 래더로 떨어진다. 오후 진입은 오전
+    # 래더 대신 오후TP 하나, B3 관리 중이면 틱 래더 자체가 B3 로 대체된다.
+    if macd2_n1_adaptive.is_active(state):
+        _n1_off = macd2_n1_adaptive.off_trend_ladder()
+        _n1_tr = macd2_n1_adaptive.trend_ladder()
+        if not bool(getattr(state, "time_window_position_active", False)):
+            st.caption(
+                "N1 LADDER: 포지션 없음 · "
+                f"추세 TP1 {_n1_tr[0]:.1f}% (매도 {_n1_tr[1]:.0%}) / TP2 {_n1_tr[2]:.1f}% ↔ "
+                f"비추세 TP1 {_n1_off[0]:.1f}% (매도 {_n1_off[1]:.0%}) / TP2 {_n1_off[2]:.1f}%")
+        elif macd2_p3_stack.governs_position(state):
+            st.caption(
+                f"N1 LADDER: **B3 관리 중** → TP +{float(macd2_config.P3_B3_TP_PCT):.1f}% / "
+                f"SL −{float(macd2_config.P3_B3_SL_PCT):.1f}% / "
+                f"max-hold {float(macd2_config.P3_B3_MAX_HOLD_MIN):.0f}분 (N1 틱 래더 미적용)")
+        elif (getattr(state, "time_window_entry_session", None)
+              == macd2_time_window_3slot.SESSION_AFTERNOON):
+            st.caption(
+                f"N1 LADDER: **오후 진입** → 오후TP {float(macd2_config.N1_AFTERNOON_TP) * 100:.1f}% "
+                "(오전 TP1/TP2 미적용)")
+        else:
+            _n1_ld = macd2_n1_adaptive.cached_ladder(state)
+            if _n1_ld is None:
+                _n1_state, _n1_vals, _n1_at = "판정 전 → 비추세 적용", _n1_off, "-"
+            else:
+                _n1_state = ("추세 (TREND)" if _n1_ld.regime_ok
+                             else f"비추세 ({_n1_ld.regime_reason or 'OFF_TREND'})")
+                _n1_vals = (_n1_ld.tp1_pct, _n1_ld.tp1_sell_ratio, _n1_ld.tp2_pct)
+                _n1_at = (str(getattr(state, "n1_last_eval_bar_ts", "") or "")[11:16] or "-")
+            _n1_tp1_done = bool(getattr(state, "time_window_tp1_done", False))
+            st.caption(
+                f"N1 LADDER: **{_n1_state}** · "
+                f"TP1 **{_n1_vals[0]:.1f}%** (매도 {_n1_vals[1]:.0%})"
+                + (" ✓체결" if _n1_tp1_done else "")
+                + f" · TP2 **{_n1_vals[2]:.1f}%** 전량 · 판정봉 {_n1_at}")
 
 with st.expander("Advanced / Debug — 내부 구성 (읽기 전용)", expanded=False):
     _stm_flags = macd2_strategy_mode.derive(_stm_current)
@@ -1411,7 +1466,15 @@ _ACTIVE_STRATEGY_FIELDS = (
     ("time_window_2_filter_enabled", "TW2"),
 )
 _active_names = [nm for fld, nm in _ACTIVE_STRATEGY_FIELDS if bool(getattr(state, fld, False))]
-if len(_active_names) == 1:
+if len(_active_names) == 1 and _stm_current == macd2_strategy_mode.MODE_P3:
+    # P3 는 위 tier 목록에 없다 -- N1(BASE) 위에 얹히는 청산 계층이라 tier 로는
+    # 항상 "N1" 로만 보인다. 그래서 P3 모드에서는 선택/실행을 나눠 쓴다.
+    if _stm_exec == "P3":
+        st.success(f"✅ 선택 전략 **P3** / 현재 실행 **P3** "
+                   f"(regime {getattr(state, 'p3_last_regime', None) or '-'})")
+    else:
+        st.success(f"✅ 선택 전략 **P3** / 현재 실행 **BASE** ({_stm_fallback_why})")
+elif len(_active_names) == 1:
     st.success(f"✅ 현재 활성 전략: **{_active_names[0]}**")
 elif not _active_names:
     st.caption("현재 활성 전략: (없음 — 기본 MACD2 동작)")

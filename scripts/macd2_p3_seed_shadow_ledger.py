@@ -17,8 +17,16 @@
 사용법::
 
     python scripts/macd2_p3_seed_shadow_ledger.py \
-        --bundle <lab80/w1.pkl> --expect-regime CHOP \
-        --expect-h50 0.50 --expect-tp1 0.00 --out data/state/macd2_shadow_base_ledger.json
+        --from-json data/validation/macd2/p3_regime_stack_20260927/shadow_seed.json \
+        --expect-regime CHOP --expect-h50 0.50 --expect-tp1 0.00
+
+``--out`` 은 **주지 않는다.** 생략하면 worker 가 실제로 읽는 경로
+(``chop_regime.LEDGER_PATH`` = ``$AI_GAP_DATA_DIR/state/...``, Render 영구 디스크)
+에 쓴다. ``--out data/state/...`` 같은 상대경로를 주면 Render 에서는 배포마다
+지워지는 저장소 폴더에 써서, worker 는 계속 WARMUP 0/10 을 본다(2026-09-28 진단).
+
+주의: 기존 ledger 를 **덮어쓴다.** 오늘 이미 완료된 섀도우 거래가 있으면 사라지므로
+장 마감 후(또는 당일 첫 섀도우 청산 전)에 설치한다.
 
 ``--dry-run`` 이면 검증만 하고 파일을 쓰지 않는다.
 """

@@ -255,3 +255,109 @@ def test_setter_no_longer_refuses_real_accounts():
     """P3_PAPER_ONLY 거부 경로가 남아 있으면 REAL 에서 못 켠다."""
     src = inspect.getsource(service_module.Macd2Service.set_strategy_mode)
     assert "P3_PAPER_ONLY" not in src
+
+
+# ── 선택 모드 / 실행계층 분리 표시 (2026-09-28) ──────────────────────────
+# Render MOCK 에서 P3 를 골랐는데 배너가 "현재 활성 전략: N1" 로만 보여 오해가
+# 생겼다. P3 는 3-SLOT tier 목록에 없는 청산 계층이라 tier 배너는 항상 N1 을
+# 가리킨다 -- P3 모드에서는 선택과 실행을 나눠 써야 한다.
+def _seed_p3(regime, sample=0):
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_P3)
+    s.p3_last_regime = regime
+    s.p3_last_shadow_sample = sample
+    state_store.save_state(s)
+
+
+def _texts(at):
+    caps = "\n".join(str(c.value) for c in at.caption)
+    banners = "\n".join(str(b.value) for b in at.success)
+    return caps, banners
+
+
+def test_p3_warmup_shows_selected_mode_and_base_fallback_separately():
+    _seed_p3("WARMUP", sample=0)
+    caps, banners = _texts(_run())
+    assert "SELECTED MODE: **P3**" in caps
+    assert "REGIME: **WARMUP**" in caps
+    assert "SHADOW: **0/10**" in caps
+    assert "EXECUTION: **BASE (fallback · Shadow Warmup)**" in caps
+    assert "POSITION MODE: **-**" in caps
+    assert "선택 전략 **P3** / 현재 실행 **BASE** (Shadow Warmup)" in banners
+    assert "현재 활성 전략" not in banners, "P3 모드에서 tier 이름(N1)만 보여 주면 안 된다"
+
+
+def test_p3_warmup_progress_is_shown_as_count():
+    _seed_p3("WARMUP", sample=3)
+    caps, _ = _texts(_run())
+    assert "SHADOW: **3/10**" in caps
+
+
+def test_p3_ready_shows_p3_execution_in_both_places():
+    _seed_p3("CHOP", sample=10)
+    caps, banners = _texts(_run())
+    assert "SHADOW: **READY**" in caps
+    assert "EXECUTION: **P3**" in caps
+    assert "fallback" not in caps
+    assert "선택 전략 **P3** / 현재 실행 **P3** (regime CHOP)" in banners
+
+
+def test_n1_mode_keeps_the_tier_banner():
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_N1)
+    state_store.save_state(s)
+    caps, banners = _texts(_run())
+    assert "SELECTED MODE: **N1**" in caps
+    assert "EXECUTION: **BASE**" in caps
+    assert f"현재 활성 전략: **{config.N1_3SLOT_STRATEGY_NAME}**" in banners
+    assert "선택 전략" not in banners
+
+
+# ── N1 LADDER 줄: 지금 걸린 TP1/TP2 (2026-09-28) ─────────────────────────
+# 레거시 토글 영역과 함께 숨겨졌던 N1 adaptive 판정을 상태 블록에 되살린다.
+def _seed_n1_position(**fields):
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_N1)
+    s.time_window_position_active = True
+    s.time_window_entry_session = "MORNING"
+    for k, v in fields.items():
+        setattr(s, k, v)
+    state_store.save_state(s)
+
+
+def test_n1_ladder_line_shows_trend_values():
+    _seed_n1_position(n1_last_eval_bar_ts="2026-09-28T10:03:00+09:00",
+                      n1_regime_state="TREND", n1_effective_tp1=3.5,
+                      n1_effective_tp1_ratio=0.0, n1_effective_tp2=8.0)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: **추세 (TREND)** · TP1 **3.5%** (매도 0%) · TP2 **8.0%** 전량 · 판정봉 10:03" in caps
+
+
+def test_n1_ladder_line_shows_off_trend_values():
+    _seed_n1_position(n1_last_eval_bar_ts="2026-09-28T10:06:00+09:00",
+                      n1_regime_state="OFF_TREND", n1_effective_tp1=3.0,
+                      n1_effective_tp1_ratio=0.2, n1_effective_tp2=4.0)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: **비추세 (OFF_TREND)** · TP1 **3.0%** (매도 20%) · TP2 **4.0%** 전량" in caps
+
+
+def test_n1_ladder_line_falls_back_to_off_trend_before_first_judgement():
+    """worker(_n1_ladder_overrides) 와 같은 fallback 이어야 한다."""
+    _seed_n1_position(n1_last_eval_bar_ts=None)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: **판정 전 → 비추세 적용** · TP1 **3.0%** (매도 20%) · TP2 **4.0%**" in caps
+
+
+def test_n1_ladder_line_when_flat_lists_both_ladders():
+    s = state_store.load_state()
+    s.mode = "mock"
+    strategy_mode.apply(s, strategy_mode.MODE_N1)
+    s.time_window_position_active = False
+    state_store.save_state(s)
+    caps, _ = _texts(_run())
+    assert "N1 LADDER: 포지션 없음" in caps
+    assert "추세 TP1 3.5% (매도 0%) / TP2 8.0%" in caps
+    assert "비추세 TP1 3.0% (매도 20%) / TP2 4.0%" in caps
