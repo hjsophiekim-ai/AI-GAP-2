@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-09-28T11:18:00+09:00",
+  "source": "BACKFILL:SHADOW_BASE_REPLAY:20260928",
+  "trades": [
+    {
+      "shadow_trade_id": "SB:2026-09-28T09:09:00+09:00:DOWN_BLUE:1",
+      "trading_date": "20260928",
+      "entry_time": "2026-09-28T09:09:00+09:00",
+      "exit_time": "2026-09-28T10:30:00+09:00",
+      "direction": "DOWN_BLUE",
+      "slot": 1,
+      "entry_price": 5665.0,
+      "exit_price": 5855.0,
+      "net_pct": 3.262312,
+      "h50_intervened": true,
+      "tp1_hit": true,
+      "entry_reason": "",
+      "exit_reason": "",
+      "completed": true,
+      "shadow_only": true
+    },
+    {
+      "shadow_trade_id": "SB:2026-09-28T10:36:00+09:00:UP_RED:2",
+      "trading_date": "20260928",
+      "entry_time": "2026-09-28T10:36:00+09:00",
+      "exit_time": "2026-09-28T11:18:00+09:00",
+      "direction": "UP_RED",
+      "slot": 2,
+      "entry_price": 10880.0,
+      "exit_price": 10740.0,
+      "net_pct": -1.376195,
+      "h50_intervened": false,
+      "tp1_hit": false,
+      "entry_reason": "",
+      "exit_reason": "",
+      "completed": true,
+      "shadow_only": true
+    }
+  ]
+}

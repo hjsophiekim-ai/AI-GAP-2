@@ -96,25 +96,59 @@ def _report(tag: str, trades: list[chop_regime.ShadowTrade]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--seed", type=Path, default=DEFAULT_SEED,
-                    help="보완용 seed JSON (기본: 저장소 fixture)")
+    ap.add_argument("--seed", type=Path, nargs="+", default=[DEFAULT_SEED],
+                    help="보완용 입력 JSON. **여러 개를 주면 먼저 하나의 통합 "
+                         "입력으로 합친 뒤** 운영 ledger 와 한 번에 병합한다 "
+                         "(--apply 를 두 번 돌리면 중간 trim 때문에 최종 "
+                         "상태가 달라질 수 있으므로 이 방식이 안전하다).")
+    ap.add_argument("--dump-combined", type=Path, default=None,
+                    help="통합 입력을 이 경로에 JSON 으로 남긴다(검토용).")
     ap.add_argument("--apply", action="store_true",
                     help="실제로 백업 + 저장한다. 없으면 dry-run.")
     args = ap.parse_args()
 
     print(f"LEDGER_PATH : {chop_regime.LEDGER_PATH}")
-    print(f"seed        : {args.seed}")
-    if not args.seed.exists():
-        print("FAIL: seed 파일이 없습니다.")
-        return 2
 
+    # ── ① 현재 운영 ledger 를 **가장 먼저** 읽어 출력한다 ────────────────
+    # 입력 파일 경로가 틀려도 운영 상태는 반드시 보이게 한다(2026-09-28:
+    # seed 경로 오류로 운영 ledger 를 한 줄도 못 보고 죽던 문제).
     live = chop_regime.load_ledger()
     _report("현재 운영 ledger", live)
 
-    seed = _load_seed(args.seed)
-    _report("seed", seed)
+    for p in args.seed:
+        print(f"입력        : {p}")
+    missing = [p for p in args.seed if not p.exists()]
+    if missing:
+        for p in missing:
+            print(f"FAIL: 입력 파일이 없습니다 -> {p}")
+        return 2
 
-    # 운영 ledger 가 이긴다 -- seed 는 과거를 메우기만 한다.
+    # ── ② 입력들을 먼저 하나의 통합 입력으로 합친다 ──────────────────────
+    combined: dict[str, chop_regime.ShadowTrade] = {}
+    in_total = in_dup = 0
+    for p in args.seed:
+        rows_p = _load_seed(p)
+        in_total += len(rows_p)
+        for t in rows_p:
+            if _key(t) in combined:
+                in_dup += 1
+            combined[_key(t)] = t          # 뒤에 준 파일이 이긴다
+        _report(f"입력 {p.name}", rows_p)
+    seed = sorted(combined.values(), key=lambda t: t.exit_time)
+    keep = max(int(config.P3_SHADOW_LEDGER_KEEP), int(config.P3_DETECTOR_WINDOW))
+    if len(args.seed) > 1:
+        print(f"\n통합 입력: {in_total}건 -> 입력간 중복 {in_dup} 제거 -> {len(seed)}건")
+        _report("통합 입력", seed)
+    if args.dump_combined is not None:
+        args.dump_combined.write_text(json.dumps({
+            "schema_version": chop_regime.SCHEMA_VERSION,
+            "updated_at": datetime.now(config.KST).isoformat(),
+            "source": "COMBINED:" + ",".join(p.name for p in args.seed),
+            "trades": [t.to_dict() for t in seed],
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"통합 입력 저장: {args.dump_combined}")
+
+    # ── ③ 운영 ledger 와 병합 -- 운영 거래가 이긴다 ──────────────────────
     merged: dict[str, chop_regime.ShadowTrade] = {}
     for t in seed:
         merged[_key(t)] = t
@@ -124,17 +158,25 @@ def main() -> int:
         if k in merged:
             replaced += 1
         merged[k] = t
-    rows = sorted(merged.values(), key=lambda t: t.exit_time)
-    keep = max(int(config.P3_SHADOW_LEDGER_KEEP), int(config.P3_DETECTOR_WINDOW))
-    rows = rows[-keep:]
+    all_rows = sorted(merged.values(), key=lambda t: t.exit_time)
+    rows = all_rows[-keep:]
+    dropped = all_rows[:-keep] if len(all_rows) > keep else []
 
-    print(f"\n병합: seed {len(seed)} + 운영 {len(live)} "
-          f"-> 중복 {replaced} 제거 -> 보존 {len(rows)}건 (keep={keep})")
+    print(f"\n병합: 통합입력 {len(seed)} + 운영 {len(live)} "
+          f"-> 중복 {replaced} 제거 -> {len(all_rows)}건 -> 보존 {len(rows)}건 (keep={keep})")
+    if dropped:
+        print(f"밀려나는 거래 {len(dropped)}건:")
+        for t in dropped:
+            print(f"  - {t.trading_date} {t.entry_time[11:16]} {t.direction} "
+                  f"net {t.net_pct:+.3f}")
+    else:
+        print("밀려나는 거래: 없음")
     _report("병합 결과", rows)
 
     live_keys = {_key(t) for t in live}
     kept_live = sum(1 for t in rows if _key(t) in live_keys)
-    print(f"\n운영 거래 보존: {kept_live}/{len(live)}건")
+    print(f"\n운영 거래 보존: {kept_live}/{len(live)}건"
+          + ("  (100%)" if live and kept_live == len(live) else ""))
     if live and kept_live < len(live):
         print("  주의: 보존개수 제한으로 오래된 운영 거래 일부가 잘렸습니다.")
 
@@ -161,7 +203,7 @@ def main() -> int:
     payload = {
         "schema_version": chop_regime.SCHEMA_VERSION,
         "updated_at": datetime.now(config.KST).isoformat(),
-        "source": f"MERGE:{args.seed.name}",
+        "source": "MERGE:" + ",".join(p.name for p in args.seed),
         "trades": [t.to_dict() for t in rows],
     }
     chop_regime.LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
