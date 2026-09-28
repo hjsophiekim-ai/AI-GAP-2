@@ -1704,9 +1704,20 @@ P3_B3_SL_PCT = _env_float("MACD2_P3_B3_SL_PCT", 1.0)
 P3_B3_MAX_HOLD_MIN = _env_float("MACD2_P3_B3_MAX_HOLD_MIN", 20.0)
 
 #: P3 TP RUNNER RESCUE — 진입에서 **최초** +1% 도달까지 경과분이 이 값 이하면
-#: 50% 익절 + 잔량 승격. gap/ETF/spread 를 보지 않는다(경로형태 단일조건).
+#: 일부 익절 + 잔량 승격. gap/ETF/spread 를 보지 않는다(경로형태 단일조건).
 P3_RESCUE_MAX_MIN = _env_float("MACD2_P3_RESCUE_MAX_MIN", 6.0)
-P3_RESCUE_SELL_RATIO = _env_float("MACD2_P3_RESCUE_SELL_RATIO", 0.5)
+#: Q2 (2026-09-28 채택): 익절비중 50% -> 20%. runner 를 더 남기는 쪽이다.
+#: 80영업일 복리 523.05 -> R0(50%) 513.29 대비 +9.76 (research_20260928f
+#: q_stats.txt). **새 상수를 만들지 않고** 이미 authoritative 한 오전 TP1
+#: 익절비중을 그대로 재사용한다 -- 두 값은 같은 "runner 를 남기는 비중" 이다.
+P3_RESCUE_SELL_RATIO = _env_float("MACD2_P3_RESCUE_SELL_RATIO",
+                                  X2LITE_MORNING_TP1_SELL_RATIO)
+
+#: H30 (2026-09-28 채택): B3 max-hold 도달 시점에 **H50 HOLD 가 이미 활성**인
+#: CHOP 포지션만 즉시 자르지 않고 이 시각까지 유예한다(진입 + 30분이 hard
+#: deadline). H50 이 비활성이면 단 한 줄도 타지 않는다 = 기존 B3/Y3 그대로.
+#: 80영업일 복리 Q2 523.05 -> Q2+H30 524.55 (research_20260928f h_stats.txt).
+P3_H30_EXT_MAX_HOLD_MIN = _env_float("MACD2_P3_H30_EXT_MAX_HOLD_MIN", 30.0)
 
 #: Y3 MAX-HOLD PROMOTION — max-hold 시점에 net>0 ∧ MACD gap 이 보유방향으로
 #: 확대 ∧ 보유 ETF 추종이면 승격(청산 취소). 전부 **마지막 완성봉** 기준.
@@ -1722,6 +1733,10 @@ EXIT_B3_TP = "B3_TP"
 EXIT_B3_SL = "B3_SL"
 EXIT_B3_MAXHOLD = "B3_MAXHOLD"
 EXIT_P3_PARTIAL = "P3_PARTIAL_EXIT"
+#: H30 연장을 거친 포지션만 쓰는 사유. 연장이 없었으면 EXIT_B3_MAXHOLD 그대로다
+#: -- 기존 원장/집계에서 "20분에 잘린 것" 과 "30분까지 끌고 간 것" 을 구분한다.
+EXIT_P3_H30_MAXHOLD = "P3_H30_MAXHOLD_EXIT"
+EXIT_P3_H30_PARTIAL = "P3_H30_PARTIAL_EXIT"
 
 #: 전략 모드([N1]/[P3]) 도입으로 감춘 **개별 전략/overlay 토글**들.
 #: X2-lite / H50 / N1 / C1 / SMART 체크박스가 여기에 걸린다. 코드는 그대로

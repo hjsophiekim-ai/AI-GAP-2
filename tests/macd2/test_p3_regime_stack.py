@@ -171,7 +171,9 @@ def test_p3_rescue_fires_when_one_percent_reached_within_six_minutes():
         allow_max_hold=False,
     )
     assert decision.action == p3_stack.ACTION_PARTIAL_PROMOTE
-    assert decision.sell_fraction == pytest.approx(0.5)
+    # Q2 (2026-09-28): 20% 익절 + 80% runner.
+    assert decision.sell_fraction == pytest.approx(
+        float(config.X2LITE_MORNING_TP1_SELL_RATIO))
     assert decision.promote is True and decision.rescue is True
     assert decision.exit_reason == config.EXIT_P3_PARTIAL
 

@@ -250,7 +250,8 @@ def test_default_strategy_is_n1_and_p3_is_off():
 
 # ── §7. P3 부분청산 수량 계산 (계좌 무관) ────────────────────────────────
 @pytest.mark.parametrize("qty, expected_sell, expected_left", [
-    (10, 5, 5), (7, 4, 3), (3, 2, 1), (2, 1, 1),
+    # Q2 (2026-09-28): 익절비중 50% -> 20%. 잔량이 1주 이상 남는 성질은 그대로다.
+    (10, 2, 8), (7, 1, 6), (3, 1, 2), (2, 1, 1),
 ])
 def test_partial_quantity_math_is_account_independent(qty, expected_sell, expected_left):
     """worker 의 P3 부분청산 수량식과 같은 계산 -- 잔량이 1주 이상 남아야 한다."""
@@ -275,8 +276,8 @@ def test_mock_p3_rescue_places_exactly_one_partial_sell(monkeypatch, tmp_path):
 
     sells = [o for o in broker.orders if o.side == "SELL"]
     assert len(sells) == 1
-    assert sells[0].requested_qty == 5
-    assert state.position.quantity == 5
+    assert sells[0].requested_qty == 2      # Q2: 10주 x 20%
+    assert state.position.quantity == 8    # runner 80%
     assert p3_stack.position_mode(state) == p3_stack.MODE_P3_RUNNER
 
 

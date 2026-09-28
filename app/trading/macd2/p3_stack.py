@@ -11,12 +11,20 @@ TREND / WARMUP 으로 진입한 포지션은 이 모듈을 단 한 번도 통과
         OPPOSITE_SIGNAL, whipsaw, H50, C1, 강제청산은 그대로 살아 있다.
         (연구엔진 hengine5 의 exit mode="replace" 와 동일한 범위다.)
 
-    P3  진입 -> **최초** +1.0% 도달 경과시간이 6분 이하면 50% 익절 +
+    P3  진입 -> **최초** +1.0% 도달 경과시간이 6분 이하면 일부 익절 +
         잔량 승격. gap/ETF/spread 같은 현재 모멘텀을 보지 않는다 -- 경로형태
         단일조건이다(2026-09-25 연구 P3_fast6).
+        Q2(2026-09-28): 그 익절비중이 50% -> 20% 다. 조건은 그대로다.
 
     Y3  max-hold 20분 시점에 net > 0 ∧ MACD gap 이 보유방향으로 확대 ∧
         보유 ETF 추종이면 청산 취소 + 승격. 셋 중 하나라도 거짓이면 청산.
+
+    H30 (2026-09-28) max-hold 20분 시점에 **H50 HOLD 가 이미 활성**이면 즉시
+        자르지 않고 진입 + 30분까지 유예한다. 유예 중에도 손절/강제청산/
+        세션종료/H50 자신의 해제규칙은 전부 먼저다 -- H30 이 늦추는 것은
+        **B3 max-hold 하나뿐**이다. 30분에 다시 Y3 를 판정해 승격 아니면 청산
+        (``P3_H30_MAXHOLD_EXIT``). 유예 중 +1% 최초 도달이면 Q2 와 같은 비중으로
+        부분익절 + 승격한다. H50 이 비활성이면 이 규칙은 한 줄도 타지 않는다.
 
 승격(promoted)된 포지션은 그 즉시 B3 관리에서 빠지고 기존 N1/C1 래더로
 돌아간다 -- 이후 TP1/TP2/오후TP/trailing/C1 이 정상 동작한다.
@@ -38,9 +46,12 @@ ACTION_HOLD = "HOLD"
 ACTION_EXIT = "EXIT"
 ACTION_PARTIAL_PROMOTE = "PARTIAL_PROMOTE"
 ACTION_PROMOTE = "PROMOTE"
+#: H30 — max-hold 청산을 유예한다. 주문이 나가지 않는 유일한 비-HOLD 액션이다.
+ACTION_EXTEND = "EXTEND"
 
 MODE_BASE = "BASE"
 MODE_B3 = "B3"
+MODE_H30 = "H30"
 MODE_P3_RUNNER = "P3-RUNNER"
 MODE_Y3_RUNNER = "Y3-RUNNER"
 
@@ -198,6 +209,8 @@ def evaluate(
     etf_prev_price: Optional[float] = None,
     etf_current_price: Optional[float] = None,
     allow_max_hold: bool = True,
+    h50_active: bool = False,
+    h30_active: bool = False,
 ) -> B3Decision:
     """CHOP 포지션 한 건에 대한 B3/P3/Y3 판정.
 
@@ -212,6 +225,18 @@ def evaluate(
     Y3 조건은 완성봉과 MACD 히스토그램이 필요해서 늦은 체인(C1/H50 자리)에서
     돈다. 이른 자리에서 ``allow_max_hold=False`` 로 부르지 않으면 봉이 없다는
     이유만으로 Y3 가 항상 거짓이 되어 승격 기회를 통째로 잃는다.
+
+    H30 (2026-09-28)
+    ----------------
+    ``h50_active`` 는 **지금 H50 HOLD 가 켜져 있는가**, ``h30_active`` 는
+    **이 포지션이 이미 연장에 들어갔는가** 다. 둘 다 기본 False 이므로 인자를
+    넘기지 않으면 이 함수는 2026-09-27 판정과 한 줄도 다르지 않다.
+
+    연장은 max-hold 도달 시점에 H50 이 켜져 있을 때만 시작되고, 진입 + 30분이
+    hard deadline 이다. ``h30_active`` 는 연구엔진의 ``_bs["ext"]`` 와 같은
+    계약으로 **한 번 켜지면 포지션이 끝날 때까지 유지된다** -- 연장 중 H50 이
+    풀리면 그 tick 에서 곧바로 아래 Y3 판정으로 떨어져 승격/청산으로 끝나므로
+    플래그가 남아 돌 여지가 없다.
     """
     if already_promoted:
         return B3Decision(action=ACTION_HOLD, reason="already_promoted",
@@ -224,7 +249,7 @@ def evaluate(
     # ① TP +1.0% -- 여기서만 P3 rescue 를 본다.
     if net >= float(config.P3_B3_TP_PCT):
         if not already_rescued and elapsed_min <= float(config.P3_RESCUE_MAX_MIN):
-            # P3: 50% 익절 + 잔량 승격. "최초 도달" 판정은 worker 가
+            # P3: 일부(Q2 = 20%) 익절 + 잔량 승격. "최초 도달" 판정은 worker 가
             # p3_first_tp_at 을 한 번만 기록하는 것으로 보장한다.
             return B3Decision(
                 action=ACTION_PARTIAL_PROMOTE,
@@ -233,6 +258,20 @@ def evaluate(
                 promote=True, rescue=True,
                 reason="P3_RESCUE",
                 conditions=f"fast{elapsed_min:.0f}m",
+                **base,
+            )
+        if not already_rescued and h30_active:
+            # H30 연장 중 +1% 최초 도달 -- 6분 창은 이미 지났지만 전량 익절로
+            # 끝내지 않고 P3 rescue 와 **같은 비중/같은 구조**로 runner 를
+            # 남긴다(연구엔진 H50X_PARTIAL_EXIT). 연장은 여기서 끝나고
+            # 잔량은 기존 N1/C1 래더가 맡는다.
+            return B3Decision(
+                action=ACTION_PARTIAL_PROMOTE,
+                exit_reason=config.EXIT_P3_H30_PARTIAL,
+                sell_fraction=float(config.P3_RESCUE_SELL_RATIO),
+                promote=True, rescue=True,
+                reason="P3_H30_RESCUE",
+                conditions=f"ext{elapsed_min:.0f}m",
                 **base,
             )
         return B3Decision(
@@ -247,11 +286,25 @@ def evaluate(
             reason="B3_SL", **base,
         )
 
-    # ③ max-hold 20분 -- 여기서만 Y3 를 본다.
+    # ③ max-hold 20분 -- 여기서만 Y3 를(그리고 H30 연장을) 본다.
     if allow_max_hold and elapsed_min >= float(config.P3_B3_MAX_HOLD_MIN):
+        # ③-a H30: H50 HOLD 가 켜져 있고 아직 30분 전이면 **청산을 미룬다**.
+        #     H50 이 꺼져 있으면 이 줄을 그냥 지나가므로 기존 Y3 그대로다.
+        #     30분(hard deadline)에 도달하면 H50 이 아직 켜져 있어도 아래로
+        #     떨어져 재판정을 받는다 -- "30분까지 무조건 보유" 가 아니다.
+        if h50_active and elapsed_min < float(config.P3_H30_EXT_MAX_HOLD_MIN):
+            return B3Decision(
+                action=ACTION_EXTEND, reason="P3_H30_EXTEND",
+                conditions=f"h50_active,deadline{float(config.P3_H30_EXT_MAX_HOLD_MIN):.0f}m",
+                **base,
+            )
+        # ③-b 여기부터는 2026-09-27 Y3 판정 그대로다. 연장을 거친 포지션만
+        #     청산사유가 H30 으로 바뀐다(집계에서 구분하기 위함).
+        maxhold_reason = (config.EXIT_P3_H30_MAXHOLD if h30_active
+                          else config.EXIT_B3_MAXHOLD)
         if net <= 0.0:
             return B3Decision(
-                action=ACTION_EXIT, exit_reason=config.EXIT_B3_MAXHOLD,
+                action=ACTION_EXIT, exit_reason=maxhold_reason,
                 sell_fraction=1.0, reason="Y3_FAIL_NET", conditions="net<=0", **base,
             )
         gap_ok, gap_tag = macd_gap_expanding(bars_3m, now, direction)
@@ -265,7 +318,7 @@ def evaluate(
                 conditions=f"{conds}|{gap_tag}|{etf_tag}", **base,
             )
         return B3Decision(
-            action=ACTION_EXIT, exit_reason=config.EXIT_B3_MAXHOLD, sell_fraction=1.0,
+            action=ACTION_EXIT, exit_reason=maxhold_reason, sell_fraction=1.0,
             reason="Y3_FAIL_COND", conditions=f"{conds}|{gap_tag}|{etf_tag}", **base,
         )
 
@@ -280,6 +333,9 @@ def position_mode(state) -> str:
         return MODE_P3_RUNNER
     if bool(getattr(state, "y3_promoted", False)):
         return MODE_Y3_RUNNER
+    # 승격된 뒤에는 H30 이 아니라 runner 다 -- 위 두 줄이 먼저인 이유.
+    if is_h30(state):
+        return MODE_H30
     return MODE_B3
 
 
@@ -300,6 +356,44 @@ def note_entry_regime(state, regime: str, *, now: Optional[datetime] = None) -> 
     state.y3_promoted = False
     state.y3_promoted_at = None
     state.p3_promoted = False
+    state.p3_h30_active = False
+    state.p3_h30_started_at = None
+    state.p3_h30_deadline_at = None
+
+
+def h30_deadline(entry_at: datetime) -> datetime:
+    """이 포지션의 H30 hard deadline = 진입 + 30분.
+
+    **저장값을 믿지 않고 매번 진입시각에서 다시 계산한다.** 재시작 뒤에도
+    같은 값이 나오는 유일한 방법이고, 저장된 ``p3_h30_deadline_at`` 은 UI/로그
+    표시용 사본일 뿐이다(사용자 요구 §9 "deadline 재계산 오류 없어야 함").
+    """
+    return entry_at + timedelta(minutes=float(config.P3_H30_EXT_MAX_HOLD_MIN))
+
+
+def note_h30_start(state, when: datetime, *, entry_at: datetime) -> bool:
+    """연장 시작을 **한 번만** 각인한다. True 면 이번이 시작이다.
+
+    이미 연장 중이면 False 를 돌려주므로 호출부가 P3_H30_START 로그를 중복으로
+    남기지 않는다(note_first_tp 와 같은 관례).
+    """
+    if bool(getattr(state, "p3_h30_active", False)):
+        return False
+    state.p3_h30_active = True
+    state.p3_h30_started_at = when.isoformat()
+    state.p3_h30_deadline_at = h30_deadline(entry_at).isoformat()
+    return True
+
+
+def is_h30(state) -> bool:
+    """이 포지션이 H30 연장을 거쳤는가.
+
+    연구엔진 ``_bs["ext"]`` 와 같이 **한 번 켜지면 포지션이 끝날 때까지** 유지
+    된다. 연장 중 H50 이 풀리면 그 tick 의 max-hold 판정이 곧바로 승격/청산으로
+    끝내므로 이 플래그가 살아남은 채로 다음 포지션에 새는 일은 없다
+    (clear_position 이 진입/청산 양쪽에서 지운다).
+    """
+    return bool(getattr(state, "p3_h30_active", False))
 
 
 def note_first_tp(state, when: datetime) -> bool:
@@ -352,6 +446,9 @@ def clear_position(state) -> None:
     state.y3_promoted = False
     state.y3_promoted_at = None
     state.p3_promoted = False
+    state.p3_h30_active = False
+    state.p3_h30_started_at = None
+    state.p3_h30_deadline_at = None
 
 
 def clear(state) -> None:
