@@ -33,13 +33,26 @@ def _ov(hhmm: str, direction: str) -> dict:
     }
 
 
-def _led(hhmm: str, direction: str, *, suffix: str = "") -> dict:
-    return {
-        "signal_id": f"20260922_{hhmm.replace(':', '')}00_{direction}{suffix}",
-        "trading_date": "20260922",
-        "confirmed_bar_at": f"2026-09-22T{hhmm}:00+09:00",
+def _led(hhmm: str, direction: str, *, suffix: str = "", day: str = "20260922",
+         bar_hhmm: str | None = None, signal_bar_at: bool = True) -> dict:
+    """**실제 신호원장 schema**(ledger.SIGNAL_LEDGER_COLUMNS) 의 행.
+
+    2026-09-28: 예전 fixture 는 원장에 없는 ``confirmed_bar_at`` 을 썼다 — 그래서
+    production 에서 LEDGER_ONLY 행 시각이 늘 빈 값이던 버그를 테스트가 못 잡았다.
+    ``bar_hhmm`` 은 그 행 자신의 바 시각(:TW_CONFIRM 행은 확정봉 = 플래그 +3분).
+    """
+    bar = bar_hhmm or hhmm
+    iso_day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+    row = {
+        "trading_date": day,
+        "completed_bar_at": bar.replace(":", "") + "00",
+        "signal_id": f"{day}_{hhmm.replace(':', '')}00_{direction}{suffix}",
+        "signal_type": "INITIAL",
         "direction": direction,
     }
+    if signal_bar_at:
+        row["signal_bar_at"] = f"{iso_day}T{bar}:00+09:00"
+    return row
 
 
 def _by_time(events, hhmm):
@@ -201,3 +214,129 @@ def test_real_repaint_does_not_move_the_ledger_backed_last_flag():
         ledger))
     assert a is not None and b is not None
     assert a["signal_id"] == b["signal_id"] == "20260922_092700_DOWN_BLUE"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 6. 2026-09-28 실사고 — 재배포 직후 "마지막 FLAG EVENT" 가 08:00 BLUE 로 회귀
+#    (실제 마지막 = 14:09 BLUE). 원장에 없는 컬럼을 읽어 LEDGER_ONLY 시각이
+#    빈 값 -> 재계산 repaint 로 최신 플래그가 전부 LEDGER_ONLY 가 되자
+#    오래된 일치 이벤트(08:00)만 후보로 남았다.
+# ════════════════════════════════════════════════════════════════════════
+def test_fixture_rows_use_only_real_signal_ledger_columns():
+    """fixture 가 다시 가짜 컬럼에 의존하지 못하게 schema 로 잠근다."""
+    from app.trading.macd2 import ledger
+    cols = set(ledger.SIGNAL_LEDGER_COLUMNS)
+    for row in (_led("09:00", "UP_RED"), _led("09:03", "DOWN_BLUE", suffix=":TW_CONFIRM",
+                                              bar_hhmm="09:06")):
+        assert set(row) <= cols, f"원장에 없는 컬럼: {set(row) - cols}"
+
+
+def _led0928():
+    """오늘(2026-09-28) 신호원장 모양 — 플래그봉 행 + T+3 확정봉 행."""
+    d = "20260928"
+    rows = [_led("08:00", "DOWN_BLUE", day=d), _led("08:39", "UP_RED", day=d)]
+    for hhmm, conf, dirn in (("09:03", "09:06", "DOWN_BLUE"), ("09:21", "09:24", "UP_RED"),
+                             ("09:39", "09:42", "DOWN_BLUE"), ("14:09", "14:12", "DOWN_BLUE")):
+        rows.append(_led(hhmm, dirn, day=d))
+        rows.append(_led(hhmm, dirn, day=d, suffix=":TW2_3SLOT_CONFIRM", bar_hhmm=conf))
+    return rows
+
+
+def _ov0928(hhmm, direction):
+    r = _ov(hhmm, direction)
+    r["signal_id"] = r["signal_id"].replace("20260922", "20260928")
+    r["bar_start_at"] = r["bar_start_at"].replace("2026-09-22", "2026-09-28")
+    r["bar_end_at"] = r["bar_end_at"].replace("2026-09-22", "2026-09-28")
+    return r
+
+
+def test_0928_ledger_only_1409_is_the_last_flag_after_restart_repaint():
+    # 재시작 직후 재계산: 08:00 만 원장과 일치, 나머지는 repaint 로 시각이 밀림
+    overview = [_ov0928("08:00", "DOWN_BLUE"), _ov0928("09:06", "DOWN_BLUE"),
+                _ov0928("14:15", "DOWN_BLUE")]
+    ev = W.reconcile_signal_overview_with_ledger(overview, _led0928())
+    row = next(e for e in ev if e["signal_id"] == "20260928_140900_DOWN_BLUE")
+    assert row["origin"] == W.ORIGIN_LEDGER_ONLY
+    assert row["bar_start_at"] == "2026-09-28T14:09:00+09:00", "플래그봉 시각(확정봉 14:12 아님)"
+    last = W.latest_ledger_backed_flag(ev)
+    assert last["signal_id"] == "20260928_140900_DOWN_BLUE"
+    assert last["direction"] == "DOWN_BLUE"
+    assert str(last["bar_start_at"])[11:16] == "14:09"
+
+
+def test_0928_does_not_fall_back_to_the_old_matched_0800_event():
+    overview = [_ov0928("08:00", "DOWN_BLUE")]          # 유일한 일치 이벤트
+    last = W.latest_ledger_backed_flag(
+        W.reconcile_signal_overview_with_ledger(overview, _led0928()))
+    assert str(last["bar_start_at"])[11:16] != "08:00"
+    assert str(last["bar_start_at"])[11:16] == "14:09"
+
+
+def test_0928_empty_recompute_still_shows_ledger_last_flag():
+    """재시작 직후 1분봉 이력이 아직 비어 재계산이 0건이어도 원장으로 표시한다."""
+    last = W.latest_ledger_backed_flag(W.reconcile_signal_overview_with_ledger([], _led0928()))
+    assert last is not None and last["signal_id"] == "20260928_140900_DOWN_BLUE"
+
+
+def test_ledger_bar_time_falls_back_to_completed_bar_at_without_signal_bar_at():
+    row = _led("14:09", "DOWN_BLUE", day="20260928", signal_bar_at=False)
+    assert "signal_bar_at" not in row
+    assert W._ledger_row_bar_at(row) == "2026-09-28T14:09:00+09:00"
+
+
+def test_ledger_bar_time_prefers_signal_bar_at():
+    row = _led("14:09", "DOWN_BLUE", day="20260928")
+    row["completed_bar_at"] = "999999"                   # 깨진 fallback 은 무시돼야 한다
+    assert W._ledger_row_bar_at(row) == "2026-09-28T14:09:00+09:00"
+
+
+def test_ledger_bar_time_is_empty_when_no_real_column_exists():
+    """추정하지 않는다 -- 예전 가짜 컬럼만 있으면 빈 값(후보 제외)."""
+    assert W._ledger_row_bar_at({"confirmed_bar_at": "2026-09-28T14:09:00+09:00",
+                                 "bar_start_at": "x", "flag_bar_at": "y"}) == ""
+
+
+def test_matched_event_keeps_recompute_bar_time():
+    """LIVE_CONFIRMED 는 재계산 시각을 그대로 쓴다 -- 원장 시각으로 덮어쓰지 않는다."""
+    ev = W.reconcile_signal_overview_with_ledger(
+        [_ov0928("09:03", "DOWN_BLUE")],
+        [_led("09:03", "DOWN_BLUE", day="20260928", suffix=":TW_CONFIRM", bar_hhmm="09:06")])
+    assert ev[0]["origin"] == W.ORIGIN_LIVE_CONFIRMED
+    assert ev[0]["bar_start_at"] == "2026-09-28T09:03:00+09:00"
+
+
+def test_display_path_does_not_touch_order_or_exit_logic():
+    """수정 범위 잠금 -- 표시용 헬퍼는 주문/청산 함수에서 불리지 않는다."""
+    import inspect
+    for fn in (W.run_once, W._resolve_tw2_3slot_candidate, W._advance_held_position_risk_management):
+        src = inspect.getsource(fn)
+        assert "_ledger_row_bar_at" not in src
+        assert "reconcile_signal_overview_with_ledger" not in src
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 7. 화면 — 실제 페이지가 "마지막 FLAG EVENT = DOWN_BLUE 14:09" 를 그리는가
+#    (재시작 직후처럼 재계산이 비어 있고 원장만 있는 상태)
+# ════════════════════════════════════════════════════════════════════════
+def test_page_last_flag_event_metric_shows_ledger_1409_blue():
+    from streamlit.testing.v1 import AppTest
+    from app.trading.macd2 import ledger, state_store
+
+    s = state_store.load_state()
+    s.session_date = "20260928"
+    s.mode = "mock"
+    state_store.save_state(s)
+    for row in _led0928():
+        assert ledger.append_signal(row)
+
+    app = str(Path(__file__).parent.parent.parent / "app" / "ui" / "pages" / "11_MACD_자동매매2.py")
+    at = AppTest.from_file(app, default_timeout=40)
+    at.session_state["app_auth_authenticated"] = True
+    at.run()
+    for exc in at.exception:
+        if "can't be used in an `st.form()`" in str(getattr(exc, "value", "") or ""):
+            pytest.skip("기존 페이지 결함(st.button inside st.form) -- 이 변경과 무관")
+    assert not at.exception
+    m = next(x for x in at.metric if x.label == "마지막 FLAG EVENT")
+    assert m.value == "DOWN_BLUE", f"값이 {m.value!r} (재계산 전용/08:00 회귀 금지)"
+    assert m.delta == "14:09:00", f"시각이 {m.delta!r}"
