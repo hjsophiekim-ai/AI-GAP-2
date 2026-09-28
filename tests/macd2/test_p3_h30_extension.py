@@ -438,3 +438,30 @@ def test_n1_mode_never_extends(monkeypatch, tmp_path):
     run_once(broker=broker, state=state, market_data=svc, now=now0)
 
     assert state.p3_h30_active is False
+
+
+# ── UI: 토글이 아니라 읽기 전용 상태다 (사용자 요구 §11) ─────────────────
+def test_h30_is_part_of_the_p3_mode_and_not_a_separate_toggle():
+    p3 = strategy_mode.derive(strategy_mode.MODE_P3)
+    n1 = strategy_mode.derive(strategy_mode.MODE_N1)
+    assert p3["H30"] is True, "P3 를 고르면 H30 이 함께 켜져야 한다"
+    assert n1["H30"] is False
+    # B3/Y3/P3_RESCUE 와 **같은 계약** -- 따로 켜고 끄는 스위치가 아니다.
+    for key in ("B3", "Y3", "P3_RESCUE", "H30"):
+        assert p3[key] is True and n1[key] is False
+
+
+def test_no_user_facing_h30_toggle_exists_on_the_state():
+    """H30 전용 사용자 토글 필드가 생기면 안 된다 -- 상태 필드만 있어야 한다."""
+    state = state_store.default_state()
+    assert not hasattr(state, "h30_enabled")
+    assert not hasattr(state, "p3_h30_enabled")
+    # 있는 것은 '지금 연장 중인가' 하나뿐이다.
+    assert hasattr(state, "p3_h30_active")
+
+
+def test_applying_p3_mode_does_not_start_an_extension():
+    """모드를 고르는 것만으로 연장이 켜지지 않는다 -- 20분 + H50 이 조건이다."""
+    state = state_store.default_state()
+    strategy_mode.apply(state, strategy_mode.MODE_P3)
+    assert bool(getattr(state, "p3_h30_active", False)) is False
