@@ -408,20 +408,24 @@ def test_worker_partial_sells_once_during_the_extension(monkeypatch, tmp_path):
     assert state.position is not None and state.position.quantity == 8
 
 
-def test_trend_entry_never_extends_even_with_h50_active(monkeypatch, tmp_path):
-    """C: TREND 진입은 P3 스택 자체를 통과하지 않는다 -- H30 도 마찬가지다."""
+@pytest.mark.parametrize("regime", [chop_regime.REGIME_TREND,
+                                    chop_regime.REGIME_WARMUP])
+def test_non_chop_entry_never_extends_even_with_h50_active(
+        regime, monkeypatch, tmp_path):
+    """C: TREND / WARMUP 진입은 P3 스택 자체를 통과하지 않는다 -- H30 도 같다."""
     _isolate_shadow_ledger(monkeypatch, tmp_path)
     svc, now0 = _market(inverse_price=9_980.0)
     state = _p3_state(now=now0, mode=strategy_mode.MODE_P3,
-                      entry_regime=chop_regime.REGIME_TREND, bar_close=9_980.0,
+                      entry_regime=regime, bar_close=9_980.0,
                       entry_minutes_ago=MAX_HOLD, qty=10)
+    assert p3_stack.governs_position(state) is False
     _hold_h50(state, now=now0)
     broker = _broker(9_980.0)
     _patch_common(monkeypatch)
 
     run_once(broker=broker, state=state, market_data=svc, now=now0)
 
-    assert state.p3_h30_active is False, "TREND 진입에 H30 이 붙으면 안 된다"
+    assert state.p3_h30_active is False, "CHOP 이 아닌 진입에 H30 이 붙으면 안 된다"
 
 
 def test_n1_mode_never_extends(monkeypatch, tmp_path):
