@@ -997,6 +997,35 @@ def base_signal_id(signal_id: Any) -> str:
     return raw.split(":", 1)[0] if ":" in raw else raw
 
 
+def _ledger_row_bar_at(row: dict[str, Any]) -> str:
+    """원장 행의 바 시각 (ISO, KST) -- **실제 신호원장 컬럼**에서만 읽는다.
+
+    2026-09-28 fix (실사고: 재배포 직후 "마지막 FLAG EVENT" 가 08:00 BLUE 로
+    되돌아감, 실제 마지막은 14:09 BLUE). 예전 코드는 원장에 **존재하지 않는**
+    ``confirmed_bar_at`` / ``bar_start_at`` / ``flag_bar_at`` 을 읽어서
+    LEDGER_ONLY 행의 시각이 늘 빈 문자열이 됐고, 그래서 LEDGER_ONLY 는 절대
+    마지막 플래그가 될 수 없었다. 재시작 직후 재계산이 repaint 되면 원장의
+    최신 플래그들이 전부 LEDGER_ONLY 로 밀려나 오래된 일치 이벤트만 남았다.
+
+    우선순위: ``signal_bar_at`` (ISO) -> ``trading_date`` + ``completed_bar_at``
+    (YYYYMMDD + HHMMSS). 둘 다 없으면 빈 문자열(후보 제외 -- 추정하지 않는다).
+    """
+    raw = str(row.get("signal_bar_at") or "").strip()
+    if raw:
+        try:
+            return datetime.fromisoformat(raw).astimezone(KST).isoformat()
+        except ValueError:
+            pass
+    day = str(row.get("trading_date") or "").strip()
+    hms = str(row.get("completed_bar_at") or "").strip()
+    if len(day) == 8 and day.isdigit() and len(hms) == 6 and hms.isdigit():
+        try:
+            return datetime.strptime(day + hms, "%Y%m%d%H%M%S").replace(tzinfo=KST).isoformat()
+        except ValueError:
+            pass
+    return ""
+
+
 def reconcile_signal_overview_with_ledger(
     overview: list[dict[str, Any]], ledger_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1020,11 +1049,15 @@ def reconcile_signal_overview_with_ledger(
         if not key:
             continue
         hit = by_id.get(key)
+        bar_at = _ledger_row_bar_at(row)
         if hit is not None:
             hit["in_ledger"] = True
+            # 같은 플래그의 원장 행이 여러 개(플래그봉 행 + ":TW_CONFIRM" 확정봉 행)
+            # 이면 **가장 이른** 시각 = 플래그봉을 쓴다. 재계산 행의 시각은 건드리지 않는다.
+            if (not hit["in_recompute"] and bar_at
+                    and (not hit["bar_start_at"] or bar_at < hit["bar_start_at"])):
+                hit["bar_start_at"] = bar_at
             continue
-        bar_at = (row.get("confirmed_bar_at") or row.get("bar_start_at")
-                  or row.get("flag_bar_at") or "")
         by_id[key] = {
             "signal_id": key,
             "bar_start_at": bar_at,
