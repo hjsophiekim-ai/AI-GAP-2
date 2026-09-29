@@ -683,6 +683,9 @@ class RuntimeState:
     tw2_3slot_morning_count: int = 0
     tw2_3slot_afternoon_count: int = 0
     tw2_3slot_last_afternoon_direction: Optional[str] = None
+    # 2026-09-29: 3-SLOT 진입 후처리를 마지막으로 적용한 signal_id -- 최초 체결과
+    # pending 재시도 체결이 같은 후처리를 공유하므로, 같은 체결에 두 번 돌지 않게 막는다.
+    tw2_3slot_post_entry_signal_id: Optional[str] = None
     # Latest-decision diagnostics for the UI (mirrors last_time_window_*/
     # last_time_window_teg_* below).
     last_tw2_3slot_signal_id: Optional[str] = None

@@ -115,11 +115,21 @@ def test_slot_counters_only_increment_on_executed_entry():
     marker = "if outcome is not None and outcome.final_state == SignalState.EXECUTED:"
     assert marker in body
     head, tail = body.split(marker, 1)
+    # 2026-09-29: 체결 후처리는 _finalize_tw2_3slot_entry 하나로 모였다(최초 체결과
+    # POSITION_DATA_ERROR 뒤 pending 재시도 체결이 공유). 증가문은 그 함수에만 있고,
+    # 그 함수는 두 호출부 모두 EXECUTED 분기 뒤에서만 불린다.
+    finalize = inspect.getsource(worker._finalize_tw2_3slot_entry)
+    call = "_finalize_tw2_3slot_entry("
+    assert call not in head, "후처리 호출이 후보 판정 구간에 있다 (슬롯 소비 위험)"
+    assert call in tail.split("elif", 1)[0], "후처리 호출이 EXECUTED 분기에 없다"
+    retry = inspect.getsource(worker._retry_pending_signal)
+    r_head, r_tail = retry.split("if outcome.final_state == SignalState.EXECUTED:", 1)
+    assert call not in r_head and call in r_tail, "재시도 후처리도 EXECUTED 뒤에서만 돌아야 한다"
     for field in ("tw2_3slot_slots_used_today", "tw2_3slot_morning_count",
                   "tw2_3slot_afternoon_count"):
         inc = f"state.{field} = int(state.{field} or 0) + 1"
-        assert inc not in head, f"{field} 증가문이 후보 판정 구간에 있다 (슬롯 소비 위험)"
-        assert inc in tail, f"{field} 증가문이 EXECUTED 분기에 없다"
+        assert inc not in body, f"{field} 증가문이 후보 판정 함수에 직접 있다"
+        assert inc in finalize, f"{field} 증가문이 체결 후처리에 없다"
 
     # 나머지 한 곳(입양 경로)은 실제 포지션이 없을 때만 도는 분기 안에 있다.
     src = inspect.getsource(worker)
