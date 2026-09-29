@@ -4106,63 +4106,205 @@ def _resolve_tw2_3slot_candidate_body(
         session = slot_metrics.get("session") or time_window_filter.session_for_window(
             time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
         )
-        # 2026-09-21: 새 포지션의 시작 — 이전 포지션의 position-scoped
-        # 상태(H50/C1/N1/whipsaw-watch)를 **전부** 끝내고 epoch 을 올린다.
-        # 반드시 아래 필드 세팅보다 먼저 와야 한다(이 함수가 초기화한다).
-        _begin_position_epoch(state, reason="NEW_ENTRY")
-        state.time_window_position_active = True
-        # 2026-09-07: 어느 3-SLOT 모드가 이 진입을 열었는지 기록한다 --
-        # 청산 override 선택이 전적으로 이 값에 달려 있다.
-        state.time_window_active_mode = (
-            time_window_3slot.active_3slot_mode(state) or time_window_3slot.MODE_TW2_3SLOT
+        _finalize_tw2_3slot_entry(
+            state, outcome=outcome, direction=direction, now=now, session=session,
+            sizing=_sizing, presized_chop=_presized_chop, bars_3m=bars_3m,
+            signal_detected_at=signal_detected_at, signal_id=signal_id,
         )
-        state.time_window_entry_session = session
-        state.time_window_tp1_done = False
-        # ── P3: 진입 시점 regime 스냅샷 (2026-09-27) ──────────────────────
-        # 반드시 _begin_position_epoch **뒤**에 와야 한다(그 함수가
-        # p3_stack.clear_position 으로 이전 포지션의 스냅샷을 지운다).
-        # 여기서 찍은 값은 보유 내내 소급 변경되지 않는다 -- 보유 중 detector
-        # 가 TREND<->CHOP 으로 바뀌어도 이 포지션의 관리모드는 그대로다.
-        # P3 가 꺼져 있으면 regime 은 WARMUP 이고 p3_position_active 는 False
-        # 이므로 이 포지션은 기존 래더로만 관리된다(OFF parity).
-        if p3_stack.is_active(state):
-            _p3_entry_regime = state.p3_last_regime or chop_regime.REGIME_WARMUP
-            p3_stack.note_entry_regime(state, _p3_entry_regime, now=now)
-            _p3_log("P3_ENTRY_SNAPSHOT", timestamp=now.isoformat(),
-                    direction=direction.value, regime=_p3_entry_regime,
-                    H50_rate=state.p3_last_h50_rate, TP1_rate=state.p3_last_tp1_rate,
-                    entry_time=now.isoformat(),
-                    mode=(p3_stack.MODE_B3
-                          if _p3_entry_regime == chop_regime.REGIME_CHOP
-                          else p3_stack.MODE_BASE))
-        state.time_window_peak_net_return = 0.0
-        state.time_window_initial_quantity = outcome.quantity
-        state.last_time_window_entry_at = signal_detected_at.isoformat()
-        # ── 조기익절 필터: 진입 확정봉의 CHOP 판정을 이 포지션에 고정 저장 ──
-        # 필터가 켜져 있을 때만 계산한다. OFF일 때 아예 호출하지 않는 것이
-        # "OFF면 기존 TW2 3-SLOT과 동작 동일"을 보장하는 방식이다(계산 자체도,
-        # 상태 쓰기도 없음 -- tests/macd2/test_early_take_profit_worker.py의
-        # 회귀테스트가 필터 OFF에서 이 모듈 함수가 단 한 번도 호출되지 않는지
-        # 실제로 검증한다). 진입/슬롯/게이트 판단은 이 위에서 이미 전부 끝났고,
-        # 여기서 무엇을 계산하든 그 결과를 바꿀 수 없다.
-        state.time_window_entry_chop = False
-        state.early_tp_peak_net_return = 0.0
-        if early_take_profit.is_enabled(state):
-            # 2026-09-12: W1a 가 주문 전에 계산해 둔 값이 있으면 그대로 쓴다 --
-            # 사이징에 쓴 CHOP 과 포지션에 저장되는 CHOP 이 어긋날 수 없다.
-            chop = (_presized_chop if _presized_chop is not None
-                    else early_take_profit.evaluate_entry_chop(bars_3m, direction, now))
-            state.time_window_entry_chop = bool(chop.is_chop)
-            state.last_entry_chop_score = int(chop.score)
-            state.last_entry_chop_conditions = dict(chop.conditions)
-        # W1a: 체결된 뒤에만 누적 exposure/진입순번을 올린다(진입시점 누적).
-        position_sizing.note_entry(state, _sizing)
-        state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
-        if session == time_window_3slot.SESSION_MORNING:
-            state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
-        else:
-            state.tw2_3slot_afternoon_count = int(state.tw2_3slot_afternoon_count or 0) + 1
-            state.tw2_3slot_last_afternoon_direction = direction.value
+    elif (outcome is None and state.pending_signal
+          and state.pending_signal.get("signal_id") == signal_id):
+        # 2026-09-29: 주문 전 단계(POSITION_DATA_ERROR 등)에서 pending 이 됐다.
+        # run_once 의 pending retry 가 이 신호를 체결하면 위와 **똑같은** 후처리를
+        # 타도록, 이 tick 에서 이미 결정된 진입 문맥을 pending 에 싣는다.
+        state.pending_signal["tw2_3slot_ctx"] = _tw2_3slot_retry_ctx(
+            session=(slot_metrics.get("session") or time_window_filter.session_for_window(
+                time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time()))),
+            sizing=_sizing, presized_chop=_presized_chop,
+            signal_detected_at=signal_detected_at, flag_bar_dt=flag_bar_dt,
+        )
+    return outcome
+
+
+def _finalize_tw2_3slot_entry(
+    state: RuntimeState, *, outcome, direction: Direction, now: datetime, session,
+    sizing, presized_chop, bars_3m, signal_detected_at: datetime, signal_id: str,
+) -> bool:
+    """3-SLOT 계열 신규진입의 **체결 후처리 전부** (2026-09-29 분리).
+
+    최초 체결(``_resolve_tw2_3slot_candidate_body``)과 POSITION_DATA_ERROR 등으로
+    pending 이 된 같은 signal_id 의 **재시도 체결**(run_once 의 pending retry)이
+    이 함수 하나를 공유한다. 2026-09-29 실사고: 재시도 체결은 이 블록을 통째로
+    건너뛰어 P3 스냅샷(B3 ownership) / epoch / 슬롯·오전오후 카운트 / W1a 노출이
+    전부 빠졌다 -- 오늘 10:36, 12:15 두 거래가 CHOP 인데 BASE 가 된 원인.
+
+    호출 전에 ``_apply_switch_outcome`` 은 호출부가 이미 끝냈어야 한다.
+    같은 signal_id 에 두 번 불리면 두 번째는 아무 것도 하지 않는다(멱등 가드,
+    state 에 영속되므로 재시작 후에도 유지). 실행했으면 True.
+    """
+    if signal_id and str(getattr(state, "tw2_3slot_post_entry_signal_id", "") or "") == signal_id:
+        logger.warning("[MACD2] 3-SLOT post-entry already applied for %s -- skipped (idempotent)", signal_id)
+        return False
+    # 2026-09-21: 새 포지션의 시작 — 이전 포지션의 position-scoped
+    # 상태(H50/C1/N1/whipsaw-watch)를 **전부** 끝내고 epoch 을 올린다.
+    # 반드시 아래 필드 세팅보다 먼저 와야 한다(이 함수가 초기화한다).
+    _begin_position_epoch(state, reason="NEW_ENTRY")
+    state.time_window_position_active = True
+    # 2026-09-07: 어느 3-SLOT 모드가 이 진입을 열었는지 기록한다 --
+    # 청산 override 선택이 전적으로 이 값에 달려 있다.
+    state.time_window_active_mode = (
+        time_window_3slot.active_3slot_mode(state) or time_window_3slot.MODE_TW2_3SLOT
+    )
+    state.time_window_entry_session = session
+    state.time_window_tp1_done = False
+    # ── P3: 진입 시점 regime 스냅샷 (2026-09-27) ──────────────────────
+    # 반드시 _begin_position_epoch **뒤**에 와야 한다(그 함수가
+    # p3_stack.clear_position 으로 이전 포지션의 스냅샷을 지운다).
+    # 여기서 찍은 값은 보유 내내 소급 변경되지 않는다 -- 보유 중 detector
+    # 가 TREND<->CHOP 으로 바뀌어도 이 포지션의 관리모드는 그대로다.
+    # P3 가 꺼져 있으면 regime 은 WARMUP 이고 p3_position_active 는 False
+    # 이므로 이 포지션은 기존 래더로만 관리된다(OFF parity).
+    if p3_stack.is_active(state):
+        _p3_entry_regime = state.p3_last_regime or chop_regime.REGIME_WARMUP
+        p3_stack.note_entry_regime(state, _p3_entry_regime, now=now)
+        _p3_log("P3_ENTRY_SNAPSHOT", timestamp=now.isoformat(),
+                direction=direction.value, regime=_p3_entry_regime,
+                H50_rate=state.p3_last_h50_rate, TP1_rate=state.p3_last_tp1_rate,
+                entry_time=now.isoformat(),
+                mode=(p3_stack.MODE_B3
+                      if _p3_entry_regime == chop_regime.REGIME_CHOP
+                      else p3_stack.MODE_BASE))
+    state.time_window_peak_net_return = 0.0
+    state.time_window_initial_quantity = outcome.quantity
+    state.last_time_window_entry_at = signal_detected_at.isoformat()
+    # ── 조기익절 필터: 진입 확정봉의 CHOP 판정을 이 포지션에 고정 저장 ──
+    # 필터가 켜져 있을 때만 계산한다. OFF일 때 아예 호출하지 않는 것이
+    # "OFF면 기존 TW2 3-SLOT과 동작 동일"을 보장하는 방식이다(계산 자체도,
+    # 상태 쓰기도 없음 -- tests/macd2/test_early_take_profit_worker.py의
+    # 회귀테스트가 필터 OFF에서 이 모듈 함수가 단 한 번도 호출되지 않는지
+    # 실제로 검증한다). 진입/슬롯/게이트 판단은 이 위에서 이미 전부 끝났고,
+    # 여기서 무엇을 계산하든 그 결과를 바꿀 수 없다.
+    state.time_window_entry_chop = False
+    state.early_tp_peak_net_return = 0.0
+    if early_take_profit.is_enabled(state):
+        # 2026-09-12: W1a 가 주문 전에 계산해 둔 값이 있으면 그대로 쓴다 --
+        # 사이징에 쓴 CHOP 과 포지션에 저장되는 CHOP 이 어긋날 수 없다.
+        chop = (presized_chop if presized_chop is not None
+                else early_take_profit.evaluate_entry_chop(bars_3m, direction, now))
+        state.time_window_entry_chop = bool(chop.is_chop)
+        state.last_entry_chop_score = int(chop.score)
+        state.last_entry_chop_conditions = dict(chop.conditions)
+    # W1a: 체결된 뒤에만 누적 exposure/진입순번을 올린다(진입시점 누적).
+    position_sizing.note_entry(state, sizing)
+    state.tw2_3slot_slots_used_today = int(state.tw2_3slot_slots_used_today or 0) + 1
+    if session == time_window_3slot.SESSION_MORNING:
+        state.tw2_3slot_morning_count = int(state.tw2_3slot_morning_count or 0) + 1
+    else:
+        state.tw2_3slot_afternoon_count = int(state.tw2_3slot_afternoon_count or 0) + 1
+        state.tw2_3slot_last_afternoon_direction = direction.value
+    state.tw2_3slot_post_entry_signal_id = signal_id
+    return True
+
+
+def _tw2_3slot_retry_ctx(*, session, sizing, presized_chop, signal_detected_at: datetime,
+                         flag_bar_dt: datetime) -> dict[str, Any]:
+    """pending 에 싣는 3-SLOT 진입 문맥 -- state JSON 에 그대로 저장된다(재시작 유지)."""
+    chop = None
+    if presized_chop is not None:
+        chop = {
+            "is_chop": bool(presized_chop.is_chop), "score": int(presized_chop.score),
+            "required": int(getattr(presized_chop, "required", 0) or 0),
+            "conditions": dict(presized_chop.conditions or {}),
+        }
+    return {
+        "session": session,
+        "sizing": dataclasses.asdict(sizing) if sizing is not None else None,
+        "presized_chop": chop,
+        "signal_detected_at": signal_detected_at.isoformat(),
+        "flag_bar_dt": flag_bar_dt.isoformat() if flag_bar_dt is not None else None,
+    }
+
+
+def _tw2_3slot_retry_sizing(state: RuntimeState, ctx: dict[str, Any]):
+    """재시도 시점의 사이징. 최초 판정의 배수(clip 후)를 쓰되 **지금의** 일일
+    노출 잔여(room)로 다시 자른다 -- 그 사이 노출이 쓰였다면 3.0 을 넘지 않는다."""
+    raw = dict(ctx.get("sizing") or {})
+    if not raw:
+        return position_sizing.NEUTRAL
+    decision = position_sizing.SizingDecision(**raw)
+    if not decision.active:
+        return decision
+    used = position_sizing.exposure_used(state)
+    room = float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP) - used
+    applied = max(0.0, min(float(decision.clipped), room))
+    capped = applied < float(decision.clipped)
+    reason = decision.reason
+    if capped and not reason.endswith("+CAPPED"):
+        reason = reason + "+CAPPED"
+    return dataclasses.replace(
+        decision, applied=applied, capped=capped,
+        exposure_before=used, exposure_after=used + applied, reason=reason,
+    )
+
+
+def _retry_pending_signal(
+    *, broker, market_data: MarketDataService, state: RuntimeState, now: datetime, macd_snap,
+    pending_dir: Direction, position, result: TickResult, bars_3m, default_signal_type: str,
+):
+    """run_once 의 pending 재시도 (2026-09-29 통합).
+
+    3-SLOT 문맥(``tw2_3slot_ctx``)이 실린 pending 은 최초 판정과 **같은** 사이징
+    배수로 주문하고, 체결되면 ``_finalize_tw2_3slot_entry`` 로 최초 체결과 같은
+    후처리를 탄다. 최종 결과는 신호원장의 WAITING 행을 갱신한다.
+    문맥이 없는 pending(TW2 등 다른 전략)은 예전과 한 줄도 다르지 않다.
+    """
+    pending = dict(state.pending_signal or {})
+    signal_id = str(pending["signal_id"])
+    signal_type = str(pending.get("signal_type") or default_signal_type)
+    ctx = pending.get("tw2_3slot_ctx") if isinstance(pending.get("tw2_3slot_ctx"), dict) else None
+    detected_at = _pending_detected_at(state.pending_signal, now)
+    if ctx is None:
+        outcome = _execute_or_wait(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+            direction=pending_dir, signal_id=signal_id, signal_type=signal_type,
+            position=position, result=result, signal_detected_at=detected_at,
+        )
+        if outcome is not None:
+            _apply_switch_outcome(state, outcome, pending_dir, now)
+        return outcome
+    # 하루 3회 cap: 최초 판정 뒤 슬롯이 찼다면 재시도하지 않는다.
+    if int(state.tw2_3slot_slots_used_today or 0) >= int(config.TW2_3SLOT_DAILY_CAP):
+        logger.warning("[MACD2] pending 3-SLOT retry dropped -- daily cap reached (signal_id=%s)", signal_id)
+        state.pending_signal = None
+        state.order_block_reason = "TW2_3SLOT_DAILY_CAP_REACHED"
+        return None
+    sizing = _tw2_3slot_retry_sizing(state, ctx)
+    outcome = _execute_or_wait(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        direction=pending_dir, signal_id=signal_id, signal_type=signal_type,
+        position=position, result=result, signal_detected_at=detected_at,
+        budget_multiplier=sizing.applied,
+    )
+    if outcome is None:
+        # 또 pending 이 됐다면 문맥을 다시 싣는다(다음 재시도도 같은 후처리).
+        if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
+            state.pending_signal["tw2_3slot_ctx"] = ctx
+        return None
+    _record_signal_ledger(state, macd_snap, pending_dir, signal_type, signal_id,
+                          detected_at, outcome, result.signal_dispatch_trace)
+    _apply_switch_outcome(state, outcome, pending_dir, now)
+    if outcome.final_state == SignalState.EXECUTED:
+        chop = None
+        c = ctx.get("presized_chop")
+        if c:
+            chop = early_take_profit.EntryChopDecision(
+                is_chop=bool(c.get("is_chop")), score=int(c.get("score") or 0),
+                required=int(c.get("required") or 0), conditions=dict(c.get("conditions") or {}))
+        _finalize_tw2_3slot_entry(
+            state, outcome=outcome, direction=pending_dir, now=now, session=ctx.get("session"),
+            sizing=sizing, presized_chop=chop, bars_3m=bars_3m,
+            signal_detected_at=_parse_iso_dt(ctx.get("signal_detected_at")) or detected_at,
+            signal_id=signal_id,
+        )
     return outcome
 
 
@@ -4846,7 +4988,7 @@ def _p3_note_shadow_flag(*, state: RuntimeState, now: datetime,
         entry_chop = False
         if early_take_profit.is_enabled(state):
             entry_chop = bool(
-                early_take_profit.evaluate_entry_chop(bars_3m, direction, now).chop)
+                early_take_profit.evaluate_entry_chop(bars_3m, direction, now).is_chop)
         shadow_base.on_confirmed_flag(
             state, direction=direction, now=now, quotes=quotes, bars_3m=bars_3m,
             base_cleared=base_cleared, flag_bar_dt=flag_bar_dt,
@@ -6524,14 +6666,12 @@ def run_once(
             if scheduled_protected and pending_opposes_held:
                 pass  # 예약매수 보호 구간 -- 반대 방향 pending signal은 이 tick엔 무시(자연 만료/재시도에 맡김)
             elif _pending_direction_still_active(pending_dir, macd_snap):
-                outcome = _execute_or_wait(
+                outcome = _retry_pending_signal(
                     broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
-                    direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
-                    signal_type=str(state.pending_signal.get("signal_type") or "REVERSAL"), position=pos, result=result,
-                    signal_detected_at=_pending_detected_at(state.pending_signal, now),
+                    pending_dir=pending_dir, position=pos, result=result, bars_3m=bars_3m,
+                    default_signal_type="REVERSAL",
                 )
                 if outcome is not None:
-                    _apply_switch_outcome(state, outcome, pending_dir, now)
                     result.actions.append(f"OPPOSITE_SIGNAL:{pending_dir.value}")
                     state.last_evaluated_bar_ts = bar_ts_str
                     _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
@@ -6854,14 +6994,12 @@ def run_once(
     if state.pending_signal and not state.pending_signal.get("order_requested"):
         pending_dir = Direction(state.pending_signal["direction"])
         if _pending_direction_still_active(pending_dir, macd_snap):
-            outcome = _execute_or_wait(
+            outcome = _retry_pending_signal(
                 broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
-                direction=pending_dir, signal_id=str(state.pending_signal["signal_id"]),
-                signal_type=str(state.pending_signal.get("signal_type") or "INITIAL"), position=None, result=result,
-                signal_detected_at=_pending_detected_at(state.pending_signal, now),
+                pending_dir=pending_dir, position=None, result=result, bars_3m=bars_3m,
+                default_signal_type="INITIAL",
             )
             if outcome is not None:
-                _apply_switch_outcome(state, outcome, pending_dir, now)
                 result.actions.append(f"ENTRY:{pending_dir.value}")
                 state.last_evaluated_bar_ts = bar_ts_str
                 _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)

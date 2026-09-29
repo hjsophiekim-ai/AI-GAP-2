@@ -301,20 +301,65 @@ def load_execution_ledger(limit: int = 500) -> list[dict[str, Any]]:
     return _load_rows(EXECUTION_LEDGER_PATH, limit=limit)
 
 
+#: 신호 한 건의 **정체성** 컬럼 — WAITING 행을 최종 결과로 갱신할 때도 최초
+#: 기록값을 그대로 둔다(어느 봉의 어떤 플래그였는가는 재시도로 바뀌지 않는다).
+_SIGNAL_IDENTITY_COLUMNS = (
+    "trading_date", "completed_bar_at", "signal_id", "signal_type", "direction",
+    "macd", "signal", "hist_last3", "detected_at",
+    "signal_bar_at", "signal_confirmed_at", "baseline_completed_bar_at",
+    "previous_macd", "previous_signal", "previous_diff",
+    "confirmed_macd", "confirmed_signal", "confirmed_diff", "confirmed_direction",
+)
+_SIGNAL_NON_FINAL_RESULT = "WAITING"
+
+
 def append_signal(row: dict[str, Any]) -> bool:
     """Append one signal-ledger row. Returns False (no write) if signal_id was
     already recorded — signal_id dedup (docs §6: at most one lifetime record).
+
+    2026-09-29 실사고: 주문 직전 잔고조회 실패(POSITION_DATA_ERROR)로 같은
+    signal_id 가 먼저 ``WAITING`` 으로 기록된 뒤 재시도로 실제 체결됐는데,
+    위 dedup 이 체결 행을 버려 원장에 WAITING 만 남았다. 예외는 하나뿐이다:
+    기존 행이 **WAITING(비최종)** 이고 새 행이 최종 결과이면, 그 한 행을
+    제자리에서 최종 결과로 갱신한다(정체성 컬럼은 최초값 유지). 최종 행은
+    절대 덮어쓰지 않으므로 한 signal_id 는 여전히 원장에 한 행뿐이다.
     """
     signal_id = str(row.get("signal_id") or "")
     if not signal_id:
         raise ValueError("append_signal: row is missing signal_id")
     _assert_safe_to_write_ledger()
     with _SIGNAL_LOCK:
-        for existing in _load_rows(SIGNAL_LEDGER_PATH):
+        for existing in _load_rows(SIGNAL_LEDGER_PATH, limit=0):
             if existing.get("signal_id") == signal_id:
+                if (str(existing.get("order_result") or "") == _SIGNAL_NON_FINAL_RESULT
+                        and str(row.get("order_result") or "") not in ("", _SIGNAL_NON_FINAL_RESULT)):
+                    merged = dict(row)
+                    for col in _SIGNAL_IDENTITY_COLUMNS:
+                        if existing.get(col) not in (None, ""):
+                            merged[col] = existing[col]
+                    _overwrite_signal_row(signal_id, merged)
+                    return True
                 return False
         _append_row(SIGNAL_LEDGER_PATH, SIGNAL_LEDGER_COLUMNS, row)
         return True
+
+
+def _overwrite_signal_row(signal_id: str, row: dict[str, Any]) -> None:
+    """``_overwrite_execution_row`` 와 같은 방식 — 디스크 헤더 기준으로 한 행만 교체."""
+    _ensure_columns(SIGNAL_LEDGER_PATH, SIGNAL_LEDGER_COLUMNS)
+    fieldnames = _read_header(SIGNAL_LEDGER_PATH) or SIGNAL_LEDGER_COLUMNS
+    with open(SIGNAL_LEDGER_PATH, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    for item in rows:
+        if item.get("signal_id") == signal_id:
+            item.clear()
+            item.update({col: row.get(col, "") for col in fieldnames})
+            break
+    with open(SIGNAL_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in rows:
+            writer.writerow({col: item.get(col, "") for col in fieldnames})
 
 
 def append_execution(row: dict[str, Any]) -> bool:
