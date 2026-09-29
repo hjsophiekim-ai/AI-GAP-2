@@ -93,16 +93,17 @@ safety:
   real_trading_start_date: "2026-07-14"
 
   # ── 주문 한도 ──────────────────────────────────────────────────────────────
-  max_order_amount: 10000000       # 건당 최대 주문금액 (원)
-  max_daily_order_amount: 10000000 # 일일 최대 주문금액 (원)
-  max_position_amount_per_symbol: 10000000 # 종목당 최대 보유금액 (원)
+  # 2026-09-29: 원 단위 고정 주문 상한(max_order_amount / max_daily_order_amount
+  # / max_position_amount_per_symbol / max_real_order_amount / max_real_daily_budget,
+  # env REAL_MAX_*)은 제거했다 — 실계좌 주문을 막지 않는다. 주문금액은 전략
+  # 사이징(base budget x SMART/slot 배수, 일일 노출 3.0)과 KIS 매수가능금액이
+  # 정하고, 사용자가 MACD2 화면에서 명시적으로 설정한 한도만 추가로 적용된다
+  # (app/trading/real_order_limits.py).
   max_daily_loss_rate: -5.0
 
   # ── 하위 호환 (기존 키 유지) ───────────────────────────────────────────────
   require_real_confirm: true
   real_confirm_text: "LIVE"
-  max_real_order_amount: 10000000
-  max_real_daily_budget: 10000000
 
 hynix_auto_trade:
   # SK하이닉스 예측 기반 자동매매(제안+승인) 임계값 — 코드 수정 없이 조정 가능.

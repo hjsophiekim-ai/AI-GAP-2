@@ -6,7 +6,9 @@ SAFETY: 6가지 안전 조건.
   2. config.yaml kis.real.enabled == true  OR  runtime_real_mode == True
   3. config.yaml safety.enable_real_trading == true  OR  runtime_real_mode == True
   4. 확인 문구 "LIVE" 일치  (항상 필요)
-  5. 매수 전: enable_real_buy == true  OR  runtime_real_mode == True  + 주문금액 한도
+  5. 매수 전: enable_real_buy == true  OR  runtime_real_mode == True  + 사용자 주문금액 한도
+     (2026-09-29: 원 단위 고정 상한은 없다 — UI 에서 명시적으로 설정한 한도만,
+     app.trading.real_order_limits 참고)
   6. 매도 전: enable_real_sell == true  OR  runtime_real_mode == True
 
 gate 1~4: __init__에서 검사 → 브로커 자체를 못 만들게 차단
@@ -17,11 +19,21 @@ runtime_real_mode=True (UI 실전모드 버튼) 이면 gate 2~3 우회.
 매수/매도 모두 runtime_real_mode가 True일 때만 실제 주문 가능.
 """
 
+import math
+from datetime import date, datetime
+
+from app.trading import real_order_limits
 from app.trading.broker_base import BrokerBase
 from app.trading.kis_client import KISTokenError
 from app.trading.emergency_stop import real_order_lock
 from app.models import OrderResult, Position
 from app.logger import logger
+from app.utils.time_utils import KST
+
+def _kst_today() -> date:
+    """일일 주문누계의 거래일 키 (KST). 테스트가 날짜 변경을 흉내낼 수 있게 분리."""
+    return datetime.now(KST).date()
+
 
 _REAL_MODE_BLOCKED_MSG = (
     "실전모드가 활성화되어 있지 않습니다. "
@@ -103,38 +115,76 @@ class KisRealBroker(BrokerBase):
     # 주문 금액 안전장치 (gate 5, 매수 전용)
     # ------------------------------------------------------------------
 
+    # 2026-09-29: 일일 주문누계는 KST 거래일 단위다. 예전에는 브로커 생성(=
+    # worker start) 때만 0 이 돼서, 재시작 없이 여러 날 돌면 전날 누계가
+    # 다음 날로 넘어갔다. 읽을 때마다 날짜를 보고 바뀌었으면 0 으로 되돌린다.
+    @property
+    def _daily_ordered_amount(self) -> float:
+        today = _kst_today()
+        if getattr(self, "_daily_ordered_date", None) != today:
+            self._daily_ordered_date = today
+            self._daily_ordered_value = 0.0
+        return self._daily_ordered_value
+
+    @_daily_ordered_amount.setter
+    def _daily_ordered_amount(self, value: float) -> None:
+        self._daily_ordered_date = _kst_today()
+        self._daily_ordered_value = float(value or 0.0)
+
+    def release_daily_ordered_amount(self, amount: float) -> float:
+        """접수됐지만 체결되지 않고 취소된 BUY 금액을 오늘 누계에서 되돌린다.
+        누계가 음수가 되지는 않는다. 되돌린 뒤의 누계를 돌려준다."""
+        amount = max(float(amount or 0.0), 0.0)
+        self._daily_ordered_amount = max(self._daily_ordered_amount - amount, 0.0)
+        return self._daily_ordered_amount
+
     def _get_order_limits(self) -> dict:
-        """실계좌 주문 안전한도 읽기."""
+        """실계좌 주문금액 한도 — **사용자가 UI 에서 설정한 값만** 쓴다.
+
+        2026-09-29: config.yaml / env(REAL_MAX_*) / 코드 기본값의 원 단위 고정
+        상한은 더 이상 쓰지 않는다(실사고: SMART x1.05 주문이 1,000만원 고정
+        상한에 FAILED). 설정되지 않은 한도는 ``math.inf`` = 상한 없음이다.
+        종목당 한도는 사용자 설정 항목이 아니므로 항상 상한 없음.
+        auto_reduce 는 기존 규칙(yaml auto_reduce 키 / env
+        AUTO_REDUCE_QUANTITY_ON_SAFETY_LIMIT, 기본 false)을 그대로 따른다 —
+        MACD2 는 order_executor 가 KIS 호출 전에 이미 한도 안으로 cap 한다.
+        """
+        user = real_order_limits.load_user_limits()
         safety = getattr(self._cfg, "safety", {}) or {}
         raw = getattr(self._cfg, "_raw", {}) or {}
         raw_safety = raw.get("safety", {}) if isinstance(raw, dict) else {}
         merged = {**raw_safety, **safety}
-        merged["_use_env_auto_reduce"] = bool(raw_safety)
-        if any(key in merged for key in ("max_order_amount", "max_daily_order_amount", "max_position_amount_per_symbol", "max_real_order_amount", "max_real_daily_budget")):
-            return self._normalize_order_limits(merged)
-        getter = getattr(self._cfg, "get_real_order_limits", None)
-        if callable(getter):
-            try:
-                limits = getter()
-                if isinstance(limits, dict):
-                    return self._normalize_order_limits(limits)
-            except Exception:
-                pass
-        return self._normalize_order_limits(merged)
-
-    def _normalize_order_limits(self, values: dict) -> dict:
-        def _num(*keys: str, default: float) -> float:
-            for key in keys:
-                value = values.get(key)
-                if isinstance(value, (int, float)):
-                    return float(value)
-            return float(default)
-
+        # 기존 규칙 그대로: yaml 에 safety 섹션이 있을 때만 env 를 본다.
+        env_auto = (
+            __import__("os").environ.get("AUTO_REDUCE_QUANTITY_ON_SAFETY_LIMIT", "false")
+            if raw_safety else "false"
+        )
+        auto_reduce =str(merged.get("auto_reduce_order", merged.get("auto_reduce", env_auto))).lower() in ("1", "true", "yes", "y")
         return {
-            "per_symbol": _num("max_position_amount_per_symbol", "max_order_amount", default=10_000_000),
-            "per_order": _num("max_order_amount", "max_real_order_amount", default=10_000_000),
-            "daily": _num("max_daily_order_amount", "max_real_daily_budget", default=30_000_000),
-            "auto_reduce": str(values.get("auto_reduce_order", values.get("auto_reduce", __import__("os").environ.get("AUTO_REDUCE_QUANTITY_ON_SAFETY_LIMIT", "false") if values.get("_use_env_auto_reduce") else "false"))).lower() in ("1", "true", "yes", "y"),
+            "per_symbol": math.inf,
+            "per_order": float(user.get("per_order", math.inf)),
+            "daily": float(user.get("daily", math.inf)),
+            "auto_reduce": auto_reduce,
+            "source": {
+                "per_order": "ui" if "per_order" in user else "none",
+                "daily": "ui" if "daily" in user else "none",
+            },
+        }
+
+    def get_buy_safety_room(self, symbol: str, price: float) -> dict:
+        """이번 BUY 가 사용자 한도 안에서 쓸 수 있는 금액(KRW). 한도가 없으면 inf.
+
+        order_executor 가 KIS 호출 **전에** 수량을 이 안으로 줄이는 데 쓴다 —
+        그래서 아래 buy() 의 gate 5b 는 정상 경로에서는 걸리지 않는다."""
+        del symbol, price  # 현재 한도는 종목/가격 무관 (인터페이스만 열어 둔다)
+        limits = self._get_order_limits()
+        ordered = self._daily_ordered_amount
+        return {
+            "per_order": limits["per_order"],
+            "daily_remaining": max(limits["daily"] - ordered, 0.0),
+            "daily_ordered_amount": ordered,
+            "daily_ordered_date": str(self._daily_ordered_date),
+            "source": limits["source"],
         }
 
     def _check_order_limits(
@@ -163,7 +213,7 @@ class KisRealBroker(BrokerBase):
                 f"• 주문금액: {order_amt:,.0f}원\n"
                 f"• 종목당 보유한도: {limits['per_symbol']:,.0f}원\n"
                 f"• 계좌 주문가능금액: {orderable_cash:,.0f}원\n"
-                f"• 해결방법: REAL_MAX_POSITION_AMOUNT_PER_SYMBOL 또는 UI 한도를 상향하세요"
+                f"• 해결방법: MACD2 화면의 사용자 주문한도를 상향하거나 해제하세요"
             )
             return msg, "safety_symbol_limit_exceeded"
 
@@ -174,7 +224,7 @@ class KisRealBroker(BrokerBase):
                 f"• 1회 주문 안전한도: {limits['per_order']:,.0f}원\n"
                 f"• 종목별 배정예산: {allocated_budget:,.0f}원\n"
                 f"• 계좌 주문가능금액: {orderable_cash:,.0f}원\n"
-                f"• 해결방법: REAL_MAX_ORDER_AMOUNT 또는 UI의 1회 주문한도를 상향하세요"
+                f"• 해결방법: MACD2 화면의 최대 주문금액 한도를 상향하거나 해제하세요"
             )
             return msg, "safety_per_order_limit_exceeded"
 
@@ -184,7 +234,7 @@ class KisRealBroker(BrokerBase):
                 f"• 오늘 주문누계: {self._daily_ordered_amount:,.0f}원\n"
                 f"• 이번 주문금액: {order_amt:,.0f}원\n"
                 f"• 일일 주문한도: {limits['daily']:,.0f}원\n"
-                f"• 해결방법: REAL_MAX_DAILY_ORDER_AMOUNT를 상향하세요"
+                f"• 해결방법: MACD2 화면의 일일 주문금액 한도를 상향하거나 해제하세요"
             )
             return msg, "safety_daily_limit_exceeded"
 

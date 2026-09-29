@@ -219,7 +219,7 @@ class RuntimeState:
     ui_mode: RuntimeStatus = RuntimeStatus.STOPPED
     auto_trade_on: bool = False
     mode: str = "mock"
-    budget: float = 10_000_000.0
+    budget: float = 9_000_000.0  # == config.DEFAULT_BUDGET (2026-09-29 base budget)
     stopped: bool = True
     stopped_reason: Optional[str] = None
     session_date: Optional[str] = None

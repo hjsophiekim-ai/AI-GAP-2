@@ -27,6 +27,9 @@ class BrokerOrderResult:
     executed_price: float
     message: str
     raw: dict[str, Any] = field(default_factory=dict)
+    # 2026-09-29: 브로커 내부 gate 가 KIS 호출 전에 거절한 경우의 사유 코드
+    # (예: "safety_daily_limit_exceeded"). KIS 가 거절했거나 성공이면 "".
+    error_type: str = ""
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ def _to_order_result(raw_result: Any, symbol: str, side: str, requested_qty: int
         executed_price=float(getattr(raw_result, "price", 0.0) or 0.0),
         message=str(getattr(raw_result, "message", "") or ""),
         raw=raw,
+        error_type=str(getattr(raw_result, "error_type", "") or ""),
     )
 
 
@@ -93,6 +97,21 @@ class _BrokerAdapterBase:
             return float(stock_getter(symbol=symbol, price=0))
         getter = getattr(self._broker, "get_orderable_cash", None) or self._broker.get_buyable_cash
         return float(getter())
+
+    def get_buy_safety_room(self, symbol: str, price: float) -> Optional[dict[str, Any]]:
+        """사용자 주문금액 한도 안에서 남은 금액 — 브로커가 지원할 때만(REAL).
+        None 이면 cap 하지 않는다(MOCK/기타 브로커: 예전과 byte 단위 동일)."""
+        getter = getattr(self._broker, "get_buy_safety_room", None)
+        if getter is None:
+            return None
+        return dict(getter(symbol, price) or {})
+
+    def release_daily_ordered_amount(self, amount: float) -> Optional[float]:
+        """취소된 미체결 BUY 금액을 브로커 일일 누계에서 되돌린다(지원 시)."""
+        releaser = getattr(self._broker, "release_daily_ordered_amount", None)
+        if releaser is None:
+            return None
+        return releaser(amount)
 
     def get_buy_sizing_quote(self, symbol: str, *, price: float, order_type: str = "market") -> BuySizingQuote:
         ord_dvsn = "01" if order_type == "market" else ("11" if order_type == "ioc_limit" else "00")

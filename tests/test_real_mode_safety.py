@@ -8,7 +8,7 @@ Tests for runtime real-mode safety gates.
   4. 확인 문구 틀리면 차단
   5. .env 키 없으면 실전모드 활성화 실패
   6. 매도 수량 > 보유수량이면 UI 레이어에서 차단 (브로커 레이어 검증)
-  7. 주문금액 한도 초과 시 매수 차단
+  7. 주문금액 한도 초과 시 매수 차단 (2026-09-29: UI 사용자 한도만. yaml 고정한도는 무시)
 """
 import os
 import pytest
@@ -16,6 +16,17 @@ from unittest.mock import MagicMock, patch
 
 from app.trading.kis_real_broker import KisRealBroker
 from app.models import OrderResult
+
+
+@pytest.fixture(autouse=True)
+def _isolated_user_limits(monkeypatch, tmp_path):
+    from app.trading import real_order_limits
+    monkeypatch.setattr(real_order_limits, "override_path", lambda: tmp_path / "user_limits.json")
+
+
+def _set_user_limits(per_order=1_000_000, daily=3_000_000):
+    from app.trading import real_order_limits
+    assert real_order_limits.save_user_limits(per_order=per_order, daily=daily)["ok"]
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +272,8 @@ def test_broker_does_not_block_oversell_quantity():
 # ---------------------------------------------------------------------------
 
 def test_order_amount_limit_blocks_buy():
-    """주문금액 > max_order_amount → 매수 차단."""
+    """주문금액 > 사용자 1회 한도(UI) → 매수 차단 (MACD2 는 executor 가 미리 cap)."""
+    _set_user_limits()
     broker = KisRealBroker(
         _mock_kis(),
         cfg=_BuyOnlyCfg(),
@@ -275,7 +287,8 @@ def test_order_amount_limit_blocks_buy():
 
 
 def test_daily_order_amount_limit_blocks_buy():
-    """일일 누적 주문금액 초과 → 매수 차단."""
+    """일일 누적 주문금액 > 사용자 일일 한도(UI) → 매수 차단."""
+    _set_user_limits()
     broker = KisRealBroker(
         _mock_kis(),
         cfg=_BuyOnlyCfg(),
@@ -288,3 +301,15 @@ def test_daily_order_amount_limit_blocks_buy():
     # 2,900,000 + 200,000 = 3,100,000 > 3,000,000
     assert result.success is False
     assert "일일 한도" in result.message
+
+
+def test_fixed_config_amount_limits_do_not_block_buy():
+    """2026-09-29: cfg 의 max_real_order_amount(1,000,000) 는 더 이상 주문을 막지 않는다."""
+    broker = KisRealBroker(
+        _mock_kis(),
+        cfg=_BuyOnlyCfg(),
+        confirm_text="REAL_ORDER_CONFIRMED",
+        runtime_real_mode=False,
+    )
+    result = broker.buy("005930", "삼성전자", quantity=2, price=700_000)
+    assert result.success is True

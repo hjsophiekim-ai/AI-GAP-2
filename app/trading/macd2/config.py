@@ -52,7 +52,11 @@ INVERSE_SYMBOL = "0197X0"  # SOL 인버스2X — bought on DOWN_BLUE
 TRADE_SYMBOLS = (LONG_SYMBOL, INVERSE_SYMBOL)
 
 # ── Budget (UI-overridable; this is only the default) ──────────────────────
-DEFAULT_BUDGET = 10_000_000.0
+# 2026-09-29 (사용자 결정): 기본 base budget 은 9,000,000원. UI 에서 예산을
+# 입력하면 그 값이 base 다. 이것은 **주문 상한이 아니라** SMART/slot 배수를
+# 곱하기 전의 기준금액이다 (예: 900만 x1.05 = 945만, x1.5 = 1,350만).
+# 원 단위 고정 주문 상한은 없다 — app/trading/real_order_limits.py 참고.
+DEFAULT_BUDGET = 9_000_000.0
 
 # 2026-08-14: user decision to run MU_MACD only for now -- MACD2 auto-trading
 # was hard-disabled here (start()/_auto_recover_worker() both refused

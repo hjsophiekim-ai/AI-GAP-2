@@ -1263,7 +1263,8 @@ class Macd2Service:
             "toxic_mult": float(config.SMART_TOXIC_MULT),
             "toxic_ema20_50_max_pct": float(config.TOXIC_EMA20_50_MAX_PCT),
             "toxic_confirm_return_max_pct": float(config.TOXIC_CONFIRM_RETURN_MAX_PCT),
-            "daily_capital": float(config.DEFAULT_BUDGET) * float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP),
+            # 2026-09-29: 기본값이 아니라 실제 base budget(UI 예산) 기준 — 표시용.
+            "daily_capital": position_sizing.daily_capital(state),
         }
 
     def set_strategy_mode(self, mode: str, *, changed_by: str = "ui") -> dict[str, Any]:
