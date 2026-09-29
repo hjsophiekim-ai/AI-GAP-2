@@ -121,6 +121,15 @@ SIGNAL_LEDGER_COLUMNS = [
     "tw2_3slot_approved", "tw2_3slot_decision", "tw2_3slot_block_reason",
     "tw2_3slot_slot_number", "tw2_3slot_session", "tw2_3slot_quality_passed",
     "tw2_3slot_quality_conditions", "tw2_3slot_teg_approved", "tw2_3slot_teg_reject_reasons",
+    # 2026-09-29 safety 진단 (appended; never rename/delete older cols).
+    # safety_requested_* = 전략 사이징 결과(cap 전), safety_capped_* = KIS 에
+    # 실제로 보낸 값. safety_limit_type: ""(한도 안) / PER_ORDER / DAILY
+    # (사용자 한도 cap) / safety_*_exceeded (브로커 내부 거절). 브로커 내부
+    # 거절은 KIS 를 안 부르므로 broker_rt_cd/msg_cd/msg1 이 비어 있다.
+    "safety_requested_qty", "safety_requested_amount",
+    "safety_capped_qty", "safety_capped_amount",
+    "safety_limit_type", "safety_reason", "broker_error_type",
+    "daily_ordered_released",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

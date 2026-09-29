@@ -38,6 +38,7 @@ require_login()
 
 from app.config import get_config, get_kis_account_config, mask_account  # noqa: E402
 from app.trading.macd2 import config as macd2_config
+from app.trading import real_order_limits  # noqa: E402
 from app.trading.macd2 import time_window_3slot as macd2_time_window_3slot  # noqa: E402
 from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
@@ -737,6 +738,70 @@ if mode == "real":
     }
 else:
     st.info("MOCK 모드 (기본값) — KIS 모의투자 계좌")
+
+# ── 실계좌 주문금액 사용자 한도 (2026-09-29) ──────────────────────────────
+# 09:54 실사고: SMART x1.05 주문(10,442,695원)이 config.yaml 의 원 단위 고정
+# 상한(1,000만원)에 KIS 호출 전 FAILED. 이제 고정 상한은 없고, 여기서 사용자가
+# 명시적으로 켠 한도만 적용된다 — 넘으면 주문 실패가 아니라 한도 안으로 수량을
+# 줄인다(order_executor.apply_safety_cap). 저장 즉시 반영(재시작 불필요).
+with st.expander("실계좌 주문금액 한도 (선택) — 설정하지 않으면 고정 상한 없음", expanded=False):
+    _ul = real_order_limits.load_user_limits()
+    _base = float(budget)
+    _max_mult = float(macd2_config.X2LITE_SIZING_MAX_MULT)
+    _exp_cap = float(macd2_config.X2LITE_SIZING_DAILY_EXPOSURE_CAP)
+    st.caption(
+        f"주문예산 = 기준금액 {_base:,.0f}원 × SMART/슬롯 배수 (KIS 매수가능금액 이내). "
+        f"정상 범위: 1회 최대 {_base * _max_mult:,.0f}원(×{_max_mult:.2f}), "
+        f"하루 최대 {_base * _exp_cap:,.0f}원(노출 {_exp_cap:.1f}). "
+        "원 단위 고정 상한은 없습니다. 아래 한도를 켠 경우에만 그 안으로 수량을 줄이며, "
+        "초과해도 주문을 실패시키지 않습니다."
+    )
+    if _ul:
+        _po_txt = f"{_ul['per_order']:,.0f}원" if "per_order" in _ul else "없음"
+        _dl_txt = f"{_ul['daily']:,.0f}원" if "daily" in _ul else "없음"
+        st.info(f"현재 사용자 한도 — 1회 {_po_txt} / 일일 {_dl_txt} (저장 {_ul.get('updated_at') or '-'})")
+    else:
+        st.caption("현재 사용자 한도: 없음 (고정 상한 없음)")
+    _ul1, _ul2 = st.columns(2)
+    with _ul1:
+        _po_on = st.checkbox("1회 최대 주문금액 사용", value="per_order" in _ul, key="macd2_user_limit_per_order_on")
+        _po_val = st.number_input(
+            "1회 최대 주문금액 (원)", min_value=100_000, max_value=int(real_order_limits.MAX_LIMIT_KRW),
+            value=int(_ul.get("per_order") or max(_base * _max_mult, 100_000)), step=1_000_000,
+            key="macd2_user_limit_per_order", disabled=not _po_on,
+        )
+    with _ul2:
+        _dl_on = st.checkbox("일일 주문금액 사용", value="daily" in _ul, key="macd2_user_limit_daily_on")
+        _dl_val = st.number_input(
+            "일일 주문금액 (원)", min_value=100_000, max_value=int(real_order_limits.MAX_LIMIT_KRW),
+            value=int(_ul.get("daily") or max(_base * _exp_cap, 100_000)), step=1_000_000,
+            key="macd2_user_limit_daily", disabled=not _dl_on,
+        )
+    if _po_on and float(_po_val) < _base * _max_mult:
+        st.warning(f"1회 한도가 SMART 최대 주문({_base * _max_mult:,.0f}원)보다 작아 일부 주문은 수량이 줄어듭니다.")
+    if _dl_on and float(_dl_val) < _base * _exp_cap:
+        st.warning(f"일일 한도가 전략 하루 최대({_base * _exp_cap:,.0f}원)보다 작아 뒤 슬롯 주문이 줄거나 막힐 수 있습니다.")
+    _us1, _us2 = st.columns(2)
+    with _us1:
+        if st.button("사용자 한도 저장", key="macd2_user_limit_save", use_container_width=True):
+            if not _po_on and not _dl_on:
+                real_order_limits.clear_user_limits()
+                st.success("사용자 한도 없음으로 저장했습니다 (고정 상한 없음).")
+            else:
+                _res = real_order_limits.save_user_limits(
+                    per_order=float(_po_val) if _po_on else None,
+                    daily=float(_dl_val) if _dl_on else None,
+                    changed_by="ui",
+                )
+                if _res.get("ok"):
+                    st.success("사용자 한도를 저장했습니다. 다음 주문부터 바로 적용됩니다.")
+                else:
+                    st.error(_res.get("message") or "저장 실패")
+    with _us2:
+        if st.button("사용자 한도 해제", key="macd2_user_limit_clear", use_container_width=True, disabled=not _ul):
+            real_order_limits.clear_user_limits()
+            st.success("사용자 한도를 해제했습니다 (고정 상한 없음).")
+            st.rerun()
 
 b1, b2, b3, b4 = st.columns(4)
 with b1:
@@ -1726,7 +1791,7 @@ if macd2_config.SHOW_LEGACY_STRATEGY_TOGGLES:
                 f"오전slot3 ×{macd2_config.P2_SIZING_MORNING_SLOT3_MULT:.2f} / "
                 f"오후slot3 ×{macd2_config.P2_SIZING_AFTERNOON_SLOT3_MULT:.2f} / "
                 f"**toxic ×{macd2_config.SMART_TOXIC_MULT:.2f}** · "
-                f"하루한도 {macd2_config.DEFAULT_BUDGET * macd2_config.X2LITE_SIZING_DAILY_EXPOSURE_CAP:,.0f}원"
+                f"하루한도 {float(state.budget or macd2_config.DEFAULT_BUDGET) * macd2_config.X2LITE_SIZING_DAILY_EXPOSURE_CAP:,.0f}원"
             )
             if _sm_env and not _sm_state_on:
                 st.caption("⚠ 환경변수 MACD2_SIZING_MODE 로 강제 ON 상태입니다 — 토글로 끌 수 없습니다.")

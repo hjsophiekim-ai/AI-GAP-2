@@ -1,4 +1,9 @@
-"""tests/test_real_broker_safety.py — 실계좌 안전한도 테스트"""
+"""tests/test_real_broker_safety.py — 실계좌 안전한도 테스트
+
+2026-09-29: 원 단위 고정 한도(config.yaml / env REAL_MAX_*)는 더 이상 브로커
+gate 에 쓰이지 않는다. 한도는 사용자가 UI 에서 명시한 값(app.trading.
+real_order_limits)뿐이므로, 이 파일의 gate 테스트는 한도를 그 저장소로 넣는다.
+"""
 import os
 import sys
 from pathlib import Path
@@ -7,6 +12,12 @@ import pytest
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 os.chdir(_ROOT)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_user_limits(monkeypatch, tmp_path):
+    from app.trading import real_order_limits
+    monkeypatch.setattr(real_order_limits, "override_path", lambda: tmp_path / "user_limits.json")
 
 
 # ── 픽스처: 최소 KISClient 모의 객체 ───────────────────────────────────────
@@ -56,6 +67,11 @@ def _make_broker(
     cfg._raw.setdefault("kis", {}).setdefault("real", {})["enabled"] = True
 
     os.environ["AUTO_REDUCE_QUANTITY_ON_SAFETY_LIMIT"] = "true" if auto_reduce else "false"
+
+    # 사용자 한도(UI) — 브로커 gate 가 실제로 쓰는 유일한 한도. 종목당 한도는
+    # 사용자 설정 항목이 아니므로 max_symbol 은 yaml 에만 남는다(무시돼야 함).
+    from app.trading import real_order_limits
+    real_order_limits.save_user_limits(per_order=max_order, daily=max_daily)
 
     from app.trading.kis_real_broker import KisRealBroker
     broker = KisRealBroker(
@@ -119,11 +135,21 @@ class TestSafetyLimitBlock:
         assert err is not None
         assert etype == "safety_daily_limit_exceeded"
 
-    def test_symbol_limit_blocks_large_order(self):
+    def test_fixed_yaml_symbol_limit_no_longer_blocks(self):
+        """2026-09-29: yaml 의 종목당 고정 한도는 주문을 막지 않는다."""
         broker = _make_broker(max_order=5_000_000, max_symbol=2_000_000)
         err, etype = broker._check_order_limits(1, 2_901_000, symbol="000660")
-        assert err is not None
-        assert etype == "safety_symbol_limit_exceeded"
+        assert err is None
+        assert etype is None
+
+    def test_fixed_yaml_limits_without_user_limits_do_not_block(self):
+        """사용자 한도가 없으면 yaml max_order_amount 가 작아도 통과한다."""
+        from app.trading import real_order_limits
+        broker = _make_broker(max_order=1_000_000, max_daily=1_000_000)
+        real_order_limits.clear_user_limits()
+        err, etype = broker._check_order_limits(1, 2_901_000, symbol="000660")
+        assert err is None
+        assert etype is None
 
 
 class TestAutoReduceQuantity:

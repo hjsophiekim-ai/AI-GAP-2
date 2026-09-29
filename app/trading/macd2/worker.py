@@ -2104,6 +2104,9 @@ def _execute_or_wait(
     result.signal_dispatch_trace["fill_poll_result"] = outcome.fill_poll_result
     result.signal_dispatch_trace["balance_qty"] = outcome.balance_qty
     result.signal_dispatch_trace["failure_stage"] = outcome.order_failure_stage or ""
+    # 2026-09-29 safety 진단 (사용자 주문금액 한도 cap / 브로커 내부 거절 사유).
+    for _safety_key in SAFETY_LEDGER_FIELDS:
+        result.signal_dispatch_trace[_safety_key] = getattr(outcome, _safety_key, None)
     sell_only_switch_needs_buy_retry = _sell_cleared_but_buy_not_requested(outcome)
     if _has_order_request(outcome) and not sell_only_switch_needs_buy_retry:
         if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
@@ -7133,10 +7136,21 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         "failure_stage": trace.get("failure_stage") or "",
         "final_result": order_result if not block_reason else f"{order_result}:{block_reason}",
     }
+    for _safety_key in SAFETY_LEDGER_FIELDS:
+        _v = trace.get(_safety_key)
+        row[_safety_key] = "" if _v is None else _v
     row.update(major_fields)
     written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
 
+
+#: 2026-09-29 신호원장 safety 진단 컬럼 (ledger.SIGNAL_LEDGER_COLUMNS 에도 있다).
+SAFETY_LEDGER_FIELDS = (
+    "safety_requested_qty", "safety_requested_amount",
+    "safety_capped_qty", "safety_capped_amount",
+    "safety_limit_type", "safety_reason", "broker_error_type",
+    "daily_ordered_released",
+)
 
 WORKER_LEASE_FILENAME = "macd2_worker_lease.json"
 

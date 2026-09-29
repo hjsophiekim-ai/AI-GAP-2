@@ -34,6 +34,11 @@ BLOCK_ASK_QUOTE_FAILED = "ASK_QUOTE_FAILED"
 BLOCK_ASK_QUOTE_STALE = "ASK_QUOTE_STALE"
 BLOCK_NRCVB_BUY_QTY_ZERO = "INSUFFICIENT_QTY"
 BLOCK_NOT_TRADABLE_DIRECTION = "NOT_A_TRADABLE_DIRECTION"
+# 2026-09-29: 사용자 주문금액 한도(UI) 안에 1주도 못 넣을 때. FAILED 가 아니라
+# KIS 호출 전 BLOCKED 다 — 한도 초과는 거절이 아니라 cap 대상이다.
+BLOCK_SAFETY_LIMIT_NO_ROOM = "SAFETY_LIMIT_NO_ROOM"
+SAFETY_CAP_PER_ORDER = "PER_ORDER"
+SAFETY_CAP_DAILY = "DAILY"
 FAIL_SELL = "SELL_FAILED"
 FAIL_SELL_NOT_CONFIRMED = "SELL_NOT_CONFIRMED_QTY_NONZERO"
 FAIL_BUY = "BUY_FAILED"
@@ -118,6 +123,18 @@ class ExecutionOutcome:
     # partial_exit's own reconcile left a small residual that
     # _attempt_residual_cleanup then cleared in one extra market sell.
     residual_cleanup_qty: int = 0
+    # 2026-09-29 safety 진단 — 사용자 주문금액 한도 cap 전/후 수량·금액과 사유.
+    # safety_requested_* = 전략 사이징 결과(cap 전), safety_capped_* = 실제로
+    # KIS 에 보낸 값(cap 후, cap 이 없으면 requested 와 같다). REAL 이 아닌
+    # 브로커(사용자 한도 조회 미지원)는 전부 None/"" 로 남는다.
+    safety_requested_qty: Optional[int] = None
+    safety_requested_amount: Optional[float] = None
+    safety_capped_qty: Optional[int] = None
+    safety_capped_amount: Optional[float] = None
+    safety_limit_type: str = ""
+    safety_reason: str = ""
+    broker_error_type: str = ""
+    daily_ordered_released: Optional[float] = None
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -225,6 +242,58 @@ def compute_limit_buy_quantity(
 
 # Backward-compatible alias (legacy name from IOC era).
 compute_ioc_limit_buy_quantity = compute_limit_buy_quantity
+
+
+def apply_safety_cap(
+    *, requested_qty: int, order_price: float, room: Optional[dict[str, Any]],
+) -> tuple[int, float, str, str]:
+    """사용자 주문금액 한도 안으로 수량을 줄인다 (2026-09-29).
+
+    ``room`` 은 broker.get_buy_safety_room() 결과 — ``per_order``(1회 한도)와
+    ``daily_remaining``(오늘 남은 한도). 한도가 없으면 inf 다. 전략 사이징과
+    KIS 매수가능 상한은 호출 전에 이미 ``requested_qty`` 에 반영돼 있다.
+
+    반환 (qty, amount, limit_type, reason). 한도 안이면 limit_type 은 "".
+    qty*price 가 한도 이하가 되는 최대 정수 수량이라 브로커 gate(초과 시 거절)
+    를 통과한다. 0 이면 호출부가 BLOCKED 처리한다.
+    """
+    amount = round(float(order_price) * int(requested_qty), 2)
+    if not room or order_price <= 0:
+        return int(requested_qty), amount, "", ""
+    caps = []
+    for limit_type, key in ((SAFETY_CAP_PER_ORDER, "per_order"), (SAFETY_CAP_DAILY, "daily_remaining")):
+        value = room.get(key)
+        if value is not None:
+            caps.append((limit_type, float(value)))
+    if not caps:
+        return int(requested_qty), amount, "", ""
+    limit_type, cap = min(caps, key=lambda kv: kv[1])
+    if amount <= cap:
+        return int(requested_qty), amount, "", ""
+    qty = max(int(cap // float(order_price)), 0)
+    while qty > 0 and float(order_price) * qty > cap:
+        qty -= 1
+    capped_amount = round(float(order_price) * qty, 2)
+    reason = (
+        f"{limit_type} 사용자한도 {cap:,.0f}원 < 요청 {amount:,.0f}원 "
+        f"-> {int(requested_qty)}주를 {qty}주({capped_amount:,.0f}원)로 축소"
+    )
+    return qty, capped_amount, limit_type, reason
+
+
+def _release_cancelled_reservation(broker, outcome: ExecutionOutcome, unfilled_qty: int, order_price: float) -> None:
+    """취소가 확인된 미체결 BUY 수량만큼 브로커 일일 누계를 되돌린다.
+    (접수 시점에 요청금액 전액이 누계에 들어가므로, 안 되돌리면 체결 안 된
+    주문이 그날 사용자 일일한도를 계속 잡아먹는다.)"""
+    releaser = getattr(broker, "release_daily_ordered_amount", None)
+    if releaser is None or unfilled_qty <= 0 or order_price <= 0:
+        return
+    amount = round(float(order_price) * int(unfilled_qty), 2)
+    try:
+        releaser(amount)
+    except Exception:
+        return
+    outcome.daily_ordered_released = amount
 
 
 def _now_iso() -> str:
@@ -645,6 +714,39 @@ def execute_signal(
         outcome.order_failure_stage = BLOCK_INSUFFICIENT_QTY
         return outcome
 
+    # 2026-09-29: 사용자 주문금액 한도(UI 에서 명시적으로 설정한 경우만) 안으로
+    # KIS 호출 전에 수량을 줄인다. 넘는다고 FAILED 시키지 않는다(09:54 실사고).
+    # 한도 조회를 지원하지 않는 브로커(MOCK 등)는 room=None 이라 무변경.
+    room_getter = getattr(broker, "get_buy_safety_room", None)
+    room = None
+    if room_getter is not None:
+        try:
+            room = room_getter(target_symbol, order_price)
+        except Exception as exc:  # 조회 실패 시 cap 없이 진행 — 브로커 gate 가 최종 방어
+            outcome.safety_reason = f"SAFETY_ROOM_QUERY_FAILED:{exc}"
+            room = None
+    if room is not None:
+        capped_qty, capped_amount, limit_type, cap_reason = apply_safety_cap(
+            requested_qty=requested_qty, order_price=order_price, room=room,
+        )
+        outcome.safety_requested_qty = requested_qty
+        outcome.safety_requested_amount = expected_amount
+        outcome.safety_capped_qty = capped_qty
+        outcome.safety_capped_amount = capped_amount
+        outcome.safety_limit_type = limit_type
+        outcome.safety_reason = cap_reason
+        if capped_qty < 1:
+            outcome.final_state = SignalState.BLOCKED
+            outcome.block_reason = BLOCK_SAFETY_LIMIT_NO_ROOM
+            outcome.order_failure_stage = BLOCK_SAFETY_LIMIT_NO_ROOM
+            return outcome
+        if capped_qty < requested_qty:
+            requested_qty = capped_qty
+            expected_amount = capped_amount
+            outcome.quantity = requested_qty
+            outcome.final_qty = requested_qty
+            outcome.expected_amount = expected_amount
+
     if signal_leg_check is not None and signal_leg_check(signal_id, "BUY"):
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
@@ -671,6 +773,13 @@ def execute_signal(
         outcome.final_state = SignalState.FAILED
         outcome.block_reason = FAIL_BUY
         outcome.order_failure_stage = ORDER_REJECTED
+        outcome.broker_error_type = str(getattr(buy_result, "error_type", "") or "")
+        if outcome.broker_error_type.startswith("safety"):
+            # 브로커 내부 gate 가 KIS 호출 전에 거절 — 원장에 사유를 남긴다.
+            outcome.safety_limit_type = outcome.broker_error_type
+            outcome.safety_reason = " | ".join(
+                line.strip() for line in str(buy_result.message or "").splitlines() if line.strip()
+            )
         outcome.filled_qty = 0
         outcome.unfilled_qty = requested_qty
         outcome.fill_poll_result = "NOT_POLLED_ORDER_REJECTED"
@@ -736,6 +845,8 @@ def execute_signal(
                 outcome.fill_poll_result = fill_status_from_orders
                 outcome.balance_qty = filled_qty
                 outcome.unfilled_qty = max(requested_qty - filled_qty, 0)
+        if outcome.cancel_result == "OK":
+            _release_cancelled_reservation(broker, outcome, requested_qty - max(filled_qty, 0), order_price)
         if filled_qty <= 0:
             cancel_confirmed = outcome.cancel_result == "OK"
             outcome.final_state = SignalState.FAILED if cancel_confirmed else SignalState.BLOCKED
