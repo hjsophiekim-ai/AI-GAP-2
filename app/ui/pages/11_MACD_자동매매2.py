@@ -32,6 +32,7 @@ import pandas as pd
 import streamlit as st
 
 from app.ui import macd2_summary
+from app.ui import macd2_position_panel
 from app.ui.auth_gate import require_login
 
 require_login()
@@ -2099,6 +2100,19 @@ if state.position:
     )
 else:
     s3.metric("보유 종목", "flat")
+
+# ── 보유 포지션 관리 패널 (2026-09-29, 읽기 전용) ─────────────────────────────
+# 진입 당시 장세(P3 regime / 진입봉 CHOP)와 지금 실제로 걸린 청산 계층을 한눈에.
+# 값은 전부 state 필드와 worker 가 쓰는 판정 함수 결과다(app/ui/macd2_position_panel.py).
+if state.position:
+    _pp_quote = quotes.get(state.position.symbol)
+    _pp_price = getattr(_pp_quote, "price", None) if _pp_quote is not None else None
+    _pp = macd2_position_panel.build_position_panel(
+        state, current_price=_pp_price, now=datetime.now(macd2_config.KST))
+    if _pp:
+        with st.container():
+            for _pp_line in macd2_position_panel.render_lines(_pp):
+                st.markdown(_pp_line)
 
 exec_rows_all = ledger.load_execution_ledger(limit=2000)
 exec_rows = ledger.filter_execution_rows_by_trading_date(exec_rows_all, trading_date)
