@@ -103,7 +103,12 @@ def _run_error_then_retry(monkeypatch, svc, now0, state, broker, direction, *, b
     """
     monkeypatch.setattr(worker, "_pending_direction_still_active", lambda d, s: True)
     _prime_3slot_pending(state, direction, before=_PRIOR_DAY)
-    _fail_pre_order_balance_queries(monkeypatch, n=1)
+    # 2026-10-01 hotfix: 주문 직전 잔고조회는 실패 시 _execute_or_wait 안에서 최대
+    # POSITION_DATA_ERROR_RETRY_MAX 회 재조회한다. 이 테스트는 "첫 시도가 WAITING 으로
+    # 끝나고 pending 재시도가 체결" 하는 경로를 검증하므로, 첫 조회 + 내부 재조회를
+    # 전부 실패시켜 같은 경로를 만든다(검증 내용 불변).
+    monkeypatch.setattr(worker, "POSITION_DATA_ERROR_RETRY_DELAY_SEC", 0.0)
+    _fail_pre_order_balance_queries(monkeypatch, n=1 + worker.POSITION_DATA_ERROR_RETRY_MAX)
     seen = {}
     real_retry = worker._retry_pending_signal
 
@@ -185,7 +190,9 @@ def test_pending_context_and_ownership_survive_restart(monkeypatch, tmp_path):
     svc, now0, state, broker = _setup(monkeypatch, tmp_path)
     monkeypatch.setattr(worker, "_pending_direction_still_active", lambda d, s: True)
     _prime_3slot_pending(state, Direction.UP_RED, before=_PRIOR_DAY)
-    _fail_pre_order_balance_queries(monkeypatch, n=2)       # 첫 시도 + 같은 tick 재시도 모두 실패
+    # 첫 시도 + 같은 tick 재시도 모두 실패 (2026-10-01: 시도마다 내부 재조회 포함)
+    monkeypatch.setattr(worker, "POSITION_DATA_ERROR_RETRY_DELAY_SEC", 0.0)
+    _fail_pre_order_balance_queries(monkeypatch, n=2 * (1 + worker.POSITION_DATA_ERROR_RETRY_MAX))
     run_once(broker=broker, market_data=svc, state=state, now=now0)
     assert _buys(broker) == [] and state.pending_signal
     signal_id = state.pending_signal["signal_id"]

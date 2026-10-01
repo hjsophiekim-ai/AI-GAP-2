@@ -270,6 +270,18 @@ class RuntimeState:
     # 2026-10-01 hotfix 진단 전용: 신호 입력에서 제외한 08:50~08:59 padding 1분봉 수 / 마지막 제외 봉 시각
     preopen_padding_excluded_count: int = 0
     preopen_padding_last_excluded_at: Optional[str] = None
+    # 2026-10-01 hotfix (POSITION_DATA_ERROR SAFE EXIT). 잔고조회가 실패해도 보유가
+    # 확실한 기존 포지션의 청산은 막지 않기 위한 근거와 멱등성 기록.
+    #   last_good_broker_positions : 마지막 '성공한' 잔고조회의 {symbol: qty} (TRADE_SYMBOLS 만)
+    #   last_good_broker_epoch     : 그 조회 시점의 position_epoch
+    #   last_good_broker_at        : 그 조회 시각 (ISO)
+    #   safe_exit                  : SAFE EXIT 매도 1건의 기록 {signal_id, epoch, symbol, qty,
+    #                                avg_price, order_id, submitted_at, status, ...}
+    #                                status: SUBMITTED / CONFIRMED / PARTIAL / NOT_FILLED / SUBMIT_FAILED
+    last_good_broker_positions: dict = field(default_factory=dict)
+    last_good_broker_epoch: Optional[int] = None
+    last_good_broker_at: Optional[str] = None
+    safe_exit: Optional[dict] = None
     baseline_relation: Optional[str] = None
     worker_instance_id: Optional[str] = None
     # 2026-08-05 fix: initialize_strategy_session sets this when a same-day
