@@ -41,7 +41,7 @@ from app.trading.macd2 import time_window_3slot
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, PositionSnapshot, RuntimeStatus, SignalState
-from app.trading.macd2.signal_engine import calculate_macd, resample_completed_3m
+from app.trading.macd2.signal_engine import calculate_macd, exclude_preopen_padding_1m, resample_completed_3m
 from app.trading.macd2.worker import (
     ORDER_FILL_RECONCILE_DELAY_SEC,
     ORDER_FILL_RECONCILE_RETRIES,
@@ -1828,7 +1828,8 @@ class Macd2Service:
             try:
                 df_1m = self._market_data.get_history_df()
                 now = datetime.now(KST)
-                snap = calculate_macd(resample_completed_3m(df_1m, now=now))
+                # 2026-10-01 hotfix: worker 와 같은 신호 입력 (08:50~08:59 padding 제외)
+                snap = calculate_macd(resample_completed_3m(exclude_preopen_padding_1m(df_1m)[0], now=now))
                 if snap is not None:
                     primary_macd = snap.macd
                     primary_signal = snap.signal

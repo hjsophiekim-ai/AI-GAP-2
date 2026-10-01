@@ -73,6 +73,7 @@ from app.trading.macd2 import (
     time_window_position_manager,
     trend_persistence_filter,
 )
+from app.trading.macd2.broker_adapter import BrokerOrderResult
 from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
 from app.trading.macd2.models import (
     Direction,
@@ -90,6 +91,7 @@ from app.trading.macd2.signal_engine import (
     make_provisional_signal_id,
     make_signal_id,
     resample_completed_3m,
+    exclude_preopen_padding_1m,
     signed_b_condition,
 )
 from app.trading.trading_cost_engine import TradeCostEngine
@@ -145,6 +147,20 @@ TEMPORARY_BLOCK_REASONS = {
     order_executor.BLOCK_INSUFFICIENT_QTY,
     POSITION_DATA_ERROR,
 }
+
+# ── 2026-10-01 hotfix: POSITION_DATA_ERROR SAFE EXIT ─────────────────────
+# 실사고: 11:06 RED -> 11:12 T+3 승인 -> 주문 직전 잔고조회 실패(POSITION_DATA_ERROR)
+# -> 보유 인버스 청산까지 막혀 pending(30초) 만료 -> 12분 뒤 손절 -193,691원.
+# 원칙: "잔고가 불확실하면 신규 BUY 는 막되, 보유가 확실한 기존 포지션의 EXIT 는
+# 막지 않는다." 정상 조회 경로(CASE F)는 바이트 단위로 기존과 같다.
+POSITION_DATA_ERROR_RETRY_MAX = 3          # 주문 직전 잔고 재조회 횟수
+POSITION_DATA_ERROR_RETRY_DELAY_SEC = 0.5  # 재조회 간격 (KIS 초당 호출 제한 고려)
+SAFE_EXIT_CONFIRM_RETRIES = 3              # SAFE EXIT 매도 직후 잔고 확인 시도
+SAFE_EXIT_SETTLE_SEC = 60.0                # 매도 후 잔고 반영 대기 (이 동안 다른 주문 차단)
+SAFE_EXIT_SOURCE = "SAFE_EXIT_POSITION_DATA_ERROR"
+SAFE_EXIT_BUY_BLOCKED = "SAFE_EXIT_SELL_DONE_BUY_BLOCKED"
+SAFE_EXIT_SUBMITTED_UNCONFIRMED = "SAFE_EXIT_SUBMITTED_UNCONFIRMED"
+CRITICAL_POSITION_DATA_ERROR = "CRITICAL_POSITION_DATA_ERROR"
 
 
 def _git_sha() -> str:
@@ -581,7 +597,9 @@ def initialize_strategy_session(
     state.processed_signal_ids = []
 
     df_1m = market_data.get_history_df()
-    bars_3m = resample_completed_3m(df_1m, now=now)
+    # 2026-10-01 hotfix: 신호 입력에서 08:50~08:59 단일가 padding 제외 (live 와 같은 입력)
+    _sig_1m, _ = exclude_preopen_padding_1m(df_1m)
+    bars_3m = resample_completed_3m(_sig_1m, now=now)
     # 2026-09-16 수정: restart catch-up 도 live 와 **같은 완성봉 프레임**을 써야
     # 한다. 여기만 filter_complete_3m_bars 가 빠져 있어서(같은 파일의 다른 호출부
     # 는 전부 적용한다) catch-up 은 구성 1분봉이 모자란 불완전 봉까지 EMA 에
@@ -597,7 +615,7 @@ def initialize_strategy_session(
     #
     # MACD 계산식도 resample 규칙도 바꾸지 않는다 -- live 가 이미 쓰고 있는
     # 같은 입력을 catch-up 에도 똑같이 주는 것뿐이다.
-    bars_3m, _catchup_dropped = filter_complete_3m_bars(bars_3m, df_1m)
+    bars_3m, _catchup_dropped = filter_complete_3m_bars(bars_3m, _sig_1m)
     today_str = now.astimezone(KST).strftime("%Y%m%d")
     today_indices = (
         list(bars_3m.index[bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str])
@@ -920,8 +938,10 @@ def compute_today_signal_overview(
     last-known direction (e.g. still BLUE from yesterday evening) exactly
     like the live path now does — it is never treated as a fresh start.
     """
-    bars_3m = resample_completed_3m(df_1m, now=now)
-    bars_3m, _dropped = filter_complete_3m_bars(bars_3m, df_1m)
+    # 2026-10-01 hotfix: live 와 같은 신호 입력 (08:50~08:59 padding 제외)
+    _sig_1m, _ = exclude_preopen_padding_1m(df_1m)
+    bars_3m = resample_completed_3m(_sig_1m, now=now)
+    bars_3m, _dropped = filter_complete_3m_bars(bars_3m, _sig_1m)
     if bars_3m.empty:
         return []
 
@@ -1412,6 +1432,14 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         state.last_position_reconcile_at = now.isoformat()
         return POSITION_DATA_ERROR
 
+    # 2026-10-01 hotfix: 마지막 '성공한' 잔고조회 스냅샷 (SAFE EXIT 의 보유 확인 근거).
+    state.last_good_broker_positions = {sym: int(row["qty"]) for sym, row in broker_positions.items()}
+    state.last_good_broker_epoch = int(state.position_epoch or 0)
+    state.last_good_broker_at = now.isoformat()
+    _safe_exit_result = _resolve_safe_exit_after_recovery(broker, state, broker_positions, now, diag)
+    if _safe_exit_result is not None:
+        return _safe_exit_result
+
     broker_owned = [row for row in broker_positions.values() if int(row["qty"]) > 0]
     if runtime["qty"] <= 0 and not broker_owned:
         diag.update({"comparison_result": MATCH_FLAT, "mismatch_reason": ""})
@@ -1830,8 +1858,32 @@ def _expire_pending_if_needed(state: RuntimeState, macd_snap, now: datetime) -> 
     if inactive or (age is not None and age > config.PENDING_SIGNAL_RETRY_SEC):
         pending["status"] = SignalState.EXPIRED.value
         state.pending_signal = None
+        # 2026-10-01 hotfix: 잔고조회 실패로 대기하던 신호가 끝내 만료되면 원장에 WAITING 만
+        # 남지 않게 최종 상태로 갱신한다(다른 대기 사유는 기존 그대로).
+        if pending.get("reason") == POSITION_DATA_ERROR:
+            _finalize_waiting_signal_row(
+                str(pending.get("signal_id") or ""), order_result=SignalState.BLOCKED.value,
+                block_reason=f"{state.order_block_reason or POSITION_DATA_ERROR}_EXPIRED",
+            )
         return True
     return False
+
+
+def _finalize_waiting_signal_row(signal_id: str, *, order_result: str, block_reason: str) -> bool:
+    """원장의 WAITING 행 하나를 다른 컬럼은 보존한 채 최종 결과로 갱신한다."""
+    if not signal_id:
+        return False
+    try:
+        rows = [r for r in ledger._load_rows(ledger.SIGNAL_LEDGER_PATH, limit=0)
+                if r.get("signal_id") == signal_id]
+    except Exception:
+        return False
+    if not rows or str(rows[-1].get("order_result") or "") != SignalState.WAITING.value:
+        return False
+    row = dict(rows[-1])
+    row.update({"order_result": order_result, "block_reason": block_reason,
+                "final_result": f"{order_result}:{block_reason}"})
+    return bool(ledger.append_signal(row))
 
 
 def _set_pending_signal(
@@ -1881,6 +1933,340 @@ def _sell_cleared_but_buy_not_requested(outcome) -> bool:
     )
 
 
+def _position_certain_reasons(state: RuntimeState) -> list[str]:
+    """잔고조회 실패 중에도 '보유가 확실하다' 고 볼 수 없는 이유 목록 (빈 목록 = 확실)."""
+    pos = state.position
+    last = dict(state.last_good_broker_positions or {})
+    reasons: list[str] = []
+    if pos is None or not pos.symbol or int(pos.quantity or 0) <= 0:
+        return ["NO_LOCAL_POSITION"]
+    if pos.symbol not in config.TRADE_SYMBOLS:
+        reasons.append("UNKNOWN_SYMBOL")
+    if int(last.get(pos.symbol, 0)) != int(pos.quantity or 0):
+        reasons.append("LAST_BROKER_SNAPSHOT_MISMATCH")
+    if state.last_good_broker_epoch is None or int(state.last_good_broker_epoch) != int(state.position_epoch or 0):
+        reasons.append("EPOCH_MISMATCH")
+    return reasons
+
+
+class _SafeExitUnconfirmed(Exception):
+    """보호 매도는 나갔지만 잔고조회 실패로 체결을 확인할 수 없다 (가짜 청산 기록 금지)."""
+
+
+class _SafeExitGuardBroker:
+    """POSITION_DATA_ERROR tick 전용 브로커 래퍼 (2026-10-01 hotfix).
+
+    기존 청산 판정(_advance_held_position_risk_management)을 그대로 돌리되 주문만 보호한다:
+      * SELL 은 현재 보유 종목·**전량**·1회만 통과 (부분매도/두 번째 매도 차단)
+      * BUY 는 전부 차단
+      * SELL 이 나간 뒤의 잔고 확인은 _SafeExitUnconfirmed 로 끊는다 -> 체결 확인 전에는
+        포지션/원장을 바꾸지 않고 state.safe_exit(SUBMITTED) 만 남긴다. 다음 정상 잔고조회에서
+        _resolve_safe_exit_after_recovery 가 실제 잔고로 마무리한다.
+    """
+
+    def __init__(self, inner, state: RuntimeState, now: datetime) -> None:
+        self._inner = inner
+        self._state = state
+        self._now = now
+        self.sold = False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def _blocked(self, symbol, side, qty, why):
+        return BrokerOrderResult(False, "", str(symbol), side, int(qty or 0), 0, 0.0, why)
+
+    def buy_market(self, symbol, qty, client_order_id):
+        return self._blocked(symbol, "BUY", qty, "BUY_BLOCKED_POSITION_DATA_ERROR")
+
+    def buy_limit(self, symbol, qty, price, client_order_id):
+        return self._blocked(symbol, "BUY", qty, "BUY_BLOCKED_POSITION_DATA_ERROR")
+
+    def buy_ioc_limit(self, symbol, qty, price, client_order_id):
+        return self._blocked(symbol, "BUY", qty, "BUY_BLOCKED_POSITION_DATA_ERROR")
+
+    def sell_market(self, symbol, qty, client_order_id):
+        st = self._state
+        pos = st.position
+        se = st.safe_exit or {}
+        pending_same_epoch = (se.get("status") == "SUBMITTED"
+                              and int(se.get("epoch", -1)) == int(st.position_epoch or 0))
+        if (self.sold or pos is None or symbol != pos.symbol or int(qty) != int(pos.quantity or 0)
+                or pending_same_epoch):
+            return self._blocked(symbol, "SELL", qty, "SELL_BLOCKED_POSITION_DATA_ERROR")
+        res = self._inner.sell_market(symbol, qty, client_order_id)
+        if res.success:
+            self.sold = True
+            cid = str(client_order_id or "")
+            reason = cid.split(":")[1] if cid.startswith("EXIT:") and cid.count(":") >= 2 else "PROTECTIVE_EXIT"
+            epoch = int(st.position_epoch or 0)
+            st.safe_exit = {
+                "signal_id": f"PROTECTIVE_EXIT:{epoch}:{reason}", "epoch": epoch, "symbol": symbol,
+                "qty": int(qty), "avg_price": float(pos.avg_price or 0.0), "order_id": str(res.order_id or ""),
+                "executed_price": float(res.executed_price or 0.0), "raw": dict(res.raw or {}),
+                "submitted_at": self._now.isoformat(), "status": "SUBMITTED", "exit_reason": reason,
+                "kind": "PROTECTIVE",
+            }
+            try:
+                state_store.save_state(st)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("[MACD2] protective exit state save failed: %s", exc)
+        return res
+
+    def reconcile_position(self, symbol):
+        if self.sold:
+            raise _SafeExitUnconfirmed(symbol)
+        return self._inner.reconcile_position(symbol)
+
+    def get_positions(self):
+        if self.sold:
+            raise _SafeExitUnconfirmed("positions")
+        return self._inner.get_positions()
+
+
+def _protective_exit_during_position_data_error(*, broker, state: RuntimeState, market_data,
+                                                now: datetime, result) -> bool:
+    """잔고조회 실패 tick 에서도 보유가 확실한 포지션의 청산 판정(강제청산/손절/익절)을 돌린다.
+
+    판정 로직·임계값은 기존 _advance_held_position_risk_management 그대로이고 주문만
+    _SafeExitGuardBroker 로 보호한다. 보유가 불확실하거나 이미 보호 매도가 나가 체결 확인
+    대기 중이면 아무것도 하지 않는다. 반환: 보호 매도를 냈는가.
+    """
+    pos = state.position
+    if pos is None or int(pos.quantity or 0) <= 0:
+        return False
+    se = state.safe_exit or {}
+    if se.get("status") == "SUBMITTED":
+        result.actions.append("PROTECTIVE_EXIT_WAITING_CONFIRMATION")
+        return False
+    reasons = _position_certain_reasons(state)
+    if reasons:
+        state.position_reconcile_diag = dict(state.position_reconcile_diag or {},
+                                             protective_exit_skipped=",".join(reasons))
+        return False
+    quotes = _fresh_quote_prices(market_data, (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL))
+    guard = _SafeExitGuardBroker(broker, state, now)
+    try:
+        _advance_held_position_risk_management(
+            broker=guard, state=state, market_data=market_data, now=now,
+            quotes=quotes, pos=pos, result=result,
+        )
+    except _SafeExitUnconfirmed:
+        pass
+    except Exception:
+        logger.exception("[MACD2] protective exit during POSITION_DATA_ERROR failed")
+    if guard.sold:
+        result.actions.append(f"PROTECTIVE_EXIT_SUBMITTED:{(state.safe_exit or {}).get('exit_reason')}")
+    return guard.sold
+
+
+def _safe_exit_fill_price(broker, se: dict) -> float:
+    """SAFE EXIT 매도의 실제 체결가: 당일 체결조회(주문번호 일치) > 주문 응답 > 현재가 > 평단."""
+    order_id = str(se.get("order_id") or "")
+    getter = getattr(broker, "get_today_fills", None)
+    if order_id and getter is not None:
+        try:
+            fills = dict(getter(str(se.get("symbol") or "")) or {}).get("fills") or []
+        except Exception:
+            fills = []
+        for f in fills:
+            if str(f.get("order_id") or f.get("odno") or "") == order_id:
+                for k in ("price", "avg_price", "avg_prvs"):
+                    try:
+                        v = float(f.get(k) or 0.0)
+                    except (TypeError, ValueError):
+                        v = 0.0
+                    if v > 0:
+                        return v
+    if float(se.get("executed_price") or 0.0) > 0:
+        return float(se["executed_price"])
+    quote = order_executor._fallback_sell_price(broker, str(se.get("symbol") or ""))
+    return float(quote or se.get("avg_price") or 0.0)
+
+
+def _safe_exit_record_leg(broker, state: RuntimeState, se: dict, *, sold_qty: int,
+                          position_before: int, position_after: int, now: datetime) -> None:
+    """실제 주문번호로 SELL 레그를 기록한다 (추정 RECONCILE 행이 아니다)."""
+    price = _safe_exit_fill_price(broker, se)
+    order_result = BrokerOrderResult(
+        True, str(se.get("order_id") or ""), str(se.get("symbol") or ""), "SELL",
+        int(se.get("qty") or 0), int(sold_qty), float(price), "SAFE_EXIT",
+        dict(se.get("raw") or {}),
+    )
+    order_executor._record_leg(
+        broker_mode=broker.mode, signal_id=str(se.get("signal_id") or ""),
+        symbol=str(se.get("symbol") or ""), side="SELL", qty=int(sold_qty), price=float(price),
+        position_before=int(position_before), position_after=int(position_after),
+        exit_reason=str(se.get("exit_reason") or config.EXIT_OPPOSITE_SIGNAL), order_result=order_result,
+        entry_price=float(se.get("avg_price") or 0.0), confirmed_at=now.isoformat(),
+        source=SAFE_EXIT_SOURCE,
+    )
+    se["recorded_qty"] = int(se.get("recorded_qty") or 0) + int(sold_qty)
+    se["fill_price"] = float(price)
+
+
+def _resolve_safe_exit_after_recovery(broker, state: RuntimeState, broker_positions: dict,
+                                      now: datetime, diag: dict) -> Optional[str]:
+    """잔고조회가 다시 성공했을 때, 체결 확인 전인 SAFE EXIT 매도를 실제 잔고로 마무리한다.
+
+    잔고 0 -> 실제 주문번호로 SELL 기록 + 포지션 종료 (RECOVERED_TO_FLAT).
+    일부만 감소 -> 감소분 기록, 잔량만 계속 관리, 반대 BUY 금지 (RECOVERED_QTY_MISMATCH).
+    그대로 -> SAFE_EXIT_SETTLE_SEC 동안은 POSITION_DATA_ERROR 로 tick 을 막아 중복 매도를
+    막고, 그 뒤에도 그대로면 미체결로 보고 기존 관리로 돌아간다.
+    SAFE EXIT 가 없으면 None (기존 reconcile 그대로).
+    """
+    se = state.safe_exit
+    if not se or se.get("status") != "SUBMITTED":
+        return None
+    sym = str(se.get("symbol") or "")
+    orig = int(se.get("qty") or 0)
+    held = int((broker_positions.get(sym) or {}).get("qty") or 0)
+    if held <= 0:
+        _safe_exit_record_leg(broker, state, se, sold_qty=orig, position_before=orig, position_after=0, now=now)
+        se["status"] = "CONFIRMED"
+        se["confirmed_at"] = now.isoformat()
+        se["confirmed_via"] = "RECONCILE"
+        if state.position is not None and state.position.symbol == sym:
+            state.position = None
+            _clear_position_scoped_state(state, reason="SAFE_EXIT_CONFIRMED")
+            _record_major_exit(state, sym)
+        diag.update({"comparison_result": RECOVERED_TO_FLAT, "mismatch_reason": "safe_exit_confirmed_flat"})
+        state.position_reconcile_diag = diag
+        state.last_position_reconcile_at = now.isoformat()
+        return RECOVERED_TO_FLAT
+    if held < orig:
+        _safe_exit_record_leg(broker, state, se, sold_qty=orig - held, position_before=orig,
+                              position_after=held, now=now)
+        se["status"] = "PARTIAL"
+        se["remaining_qty"] = held
+        se["confirmed_at"] = now.isoformat()
+        if state.position is not None and state.position.symbol == sym:
+            state.position = dataclasses.replace(state.position, quantity=held)
+        state.pending_signal = None   # 잔량 관리 중 반대 BUY 금지
+        diag.update({"comparison_result": RECOVERED_QTY_MISMATCH,
+                     "mismatch_reason": f"safe_exit_partial_{orig}_to_{held}"})
+        state.position_reconcile_diag = diag
+        state.last_position_reconcile_at = now.isoformat()
+        return RECOVERED_QTY_MISMATCH
+    try:
+        age = (now - datetime.fromisoformat(str(se.get("submitted_at")))).total_seconds()
+    except (TypeError, ValueError):
+        age = SAFE_EXIT_SETTLE_SEC
+    if age < SAFE_EXIT_SETTLE_SEC:
+        diag.update({"comparison_result": POSITION_DATA_ERROR, "mismatch_reason": "safe_exit_settling"})
+        state.position_reconcile_diag = diag
+        state.last_position_reconcile_at = now.isoformat()
+        return POSITION_DATA_ERROR
+    se["status"] = "NOT_FILLED"
+    se["resolved_at"] = now.isoformat()
+    return None
+
+
+def _safe_exit_on_position_data_error(broker, state: RuntimeState, *, signal_id: str,
+                                      direction: Direction, now: datetime,
+                                      trace: dict) -> Optional[order_executor.ExecutionOutcome]:
+    """잔고 재조회 3회가 모두 실패했을 때, 보유가 확실한 기존 포지션만 매도한다.
+
+    조건이 하나라도 불확실하면 None (SELL 도 BUY 도 하지 않음 -> 호출부가 CRITICAL 기록).
+    같은 포지션/같은 signal 에 SELL 은 최대 1회: position_epoch + state.safe_exit +
+    디스크 dispatch claim(재시작 후에도 유지) + signal_id_has_leg 로 막는다.
+    """
+    pos = state.position
+    epoch = int(state.position_epoch or 0)
+    last = dict(state.last_good_broker_positions or {})
+    reasons: list[str] = _position_certain_reasons(state)
+    se_prev = state.safe_exit or {}
+    if se_prev and (se_prev.get("status") == "SUBMITTED"
+                    or (int(se_prev.get("epoch", -1)) == epoch and se_prev.get("status") in ("CONFIRMED", "PARTIAL"))):
+        reasons.append("SAFE_EXIT_ALREADY_ATTEMPTED")
+    if signal_id in (state.processed_signal_ids or []):
+        reasons.append("SIGNAL_ALREADY_PROCESSED")
+    if ledger.signal_id_has_leg(signal_id, "SELL"):
+        reasons.append("SELL_LEG_ALREADY_RECORDED")
+    info = {
+        "original_signal_id": signal_id, "approved_exit_reason": config.EXIT_OPPOSITE_SIGNAL,
+        "local_qty": int(pos.quantity or 0) if pos else 0, "symbol": pos.symbol if pos else None,
+        "last_known_broker_qty": int(last.get(pos.symbol, 0)) if pos else 0,
+        "last_good_broker_at": state.last_good_broker_at, "position_epoch": epoch,
+        "buy_blocked_reason": SAFE_EXIT_BUY_BLOCKED,
+    }
+    if reasons:
+        info.update({"attempted": False, "reasons": reasons})
+        trace["safe_exit"] = info
+        trace["failure_stage"] = f"{CRITICAL_POSITION_DATA_ERROR}:{','.join(reasons)}"
+        return None
+    if not ledger.try_claim_signal_dispatch(signal_id, "SELL"):
+        info.update({"attempted": False, "reasons": ["SELL_CLAIM_EXISTS"]})
+        trace["safe_exit"] = info
+        trace["failure_stage"] = f"{CRITICAL_POSITION_DATA_ERROR}:SELL_CLAIM_EXISTS"
+        return None
+    target = order_executor.target_symbol_for_direction(direction)
+    timestamps = {"evaluated_at": now.isoformat(), "sell_requested_at": datetime.now(KST).isoformat()}
+    sell = broker.sell_market(pos.symbol, int(pos.quantity), f"{signal_id}:SAFE_EXIT:{pos.symbol}")
+    state.safe_exit = {
+        "signal_id": signal_id, "epoch": epoch, "symbol": pos.symbol, "qty": int(pos.quantity),
+        "exit_reason": config.EXIT_OPPOSITE_SIGNAL, "kind": "SWITCH",
+        "avg_price": float(pos.avg_price or 0.0), "order_id": str(sell.order_id or ""),
+        "executed_price": float(sell.executed_price or 0.0), "raw": dict(sell.raw or {}),
+        "submitted_at": now.isoformat(), "status": "SUBMITTED" if sell.success else "SUBMIT_FAILED",
+    }
+    info.update({"attempted": True, "sell_order_id": str(sell.order_id or ""), "sell_success": bool(sell.success)})
+    outcome = order_executor.ExecutionOutcome(signal_id, direction, target, SignalState.FAILED,
+                                              timestamps=timestamps)
+    outcome.sell_result = sell
+    if not sell.success:
+        ledger.release_signal_dispatch_claim(signal_id, "SELL")
+        outcome.block_reason = order_executor.FAIL_SELL
+        trace["safe_exit"] = info
+        trace["failure_stage"] = f"SAFE_EXIT:SUBMIT_FAILED:order={sell.order_id}"
+        return outcome
+    try:   # 재시작해도 이 매도를 다시 내지 않도록 즉시 영속화 (claim 파일과 이중 보호)
+        state_store.save_state(state)
+    except Exception as exc:  # pragma: no cover - 저장 실패가 이미 나간 매도를 되돌리지 않는다
+        logger.warning("[MACD2] SAFE EXIT state save failed: %s", exc)
+    timestamps["sell_confirmed_at"] = datetime.now(KST).isoformat()
+    qty_after = None
+    for i in range(SAFE_EXIT_CONFIRM_RETRIES):
+        try:
+            qty_after = int(broker.reconcile_position(pos.symbol))
+        except Exception:
+            qty_after = None
+        if qty_after == 0:
+            break
+        if i < SAFE_EXIT_CONFIRM_RETRIES - 1 and POSITION_DATA_ERROR_RETRY_DELAY_SEC > 0:
+            time.sleep(POSITION_DATA_ERROR_RETRY_DELAY_SEC)
+    info["confirm_qty_after"] = qty_after
+    if qty_after == 0:
+        se = state.safe_exit
+        _safe_exit_record_leg(broker, state, se, sold_qty=int(se["qty"]), position_before=int(se["qty"]),
+                              position_after=0, now=now)
+        se["status"] = "CONFIRMED"
+        se["confirmed_at"] = now.isoformat()
+        se["confirmed_via"] = "IMMEDIATE"
+        exited = pos.symbol
+        state.position = None
+        _clear_position_scoped_state(state, reason="SAFE_EXIT_CONFIRMED")
+        _record_major_exit(state, exited)
+        outcome.sell_qty_after = 0
+        outcome.final_state = SignalState.BLOCKED      # 매도 완료, 반대 BUY 는 차단
+        outcome.block_reason = SAFE_EXIT_BUY_BLOCKED
+        outcome.balance_qty = 0
+        info.update({"sell_fill_qty": int(se["qty"]), "status": "CONFIRMED"})
+        trace["safe_exit"] = info
+        trace["balance_qty"] = 0
+        trace["failure_stage"] = (f"SAFE_EXIT:CONFIRMED:order={sell.order_id}:sold={se['qty']}:"
+                                  f"epoch={epoch}:retry={trace.get('position_data_error_retries')}")
+        return outcome
+    # 매도는 나갔지만 체결/잔고 확인을 못 했다 -> 포지션은 그대로 두고(가짜 청산 기록 금지)
+    # 다음 정상 잔고조회에서 _resolve_safe_exit_after_recovery 가 실제 잔고로 마무리한다.
+    outcome.sell_qty_after = qty_after if qty_after is not None else -1
+    outcome.block_reason = SAFE_EXIT_SUBMITTED_UNCONFIRMED
+    info.update({"status": "SUBMITTED_UNCONFIRMED"})
+    trace["safe_exit"] = info
+    trace["failure_stage"] = f"SAFE_EXIT:SUBMITTED_UNCONFIRMED:order={sell.order_id}:epoch={epoch}"
+    return outcome
+
+
 def _execute_or_wait(
     *,
     broker,
@@ -1917,7 +2303,55 @@ def _execute_or_wait(
         "final_block_reason": None,
     }
     reconcile = reconcile_position_state(broker, state, now, force=True)
-    result.signal_dispatch_trace["position_reconcile_result"] = reconcile
+    # 2026-10-01 hotfix: 잔고조회 실패면 바로 포기하지 않고 짧게 최대 3회 재조회한다.
+    # 재조회는 이 함수 안에서 동기로 끝나므로 같은 tick/주문의 중복 실행이 없고, 그 동안
+    # 어떤 주문도 나가지 않는다. 하나라도 성공하면 아래 기존 분기를 그대로 탄다.
+    _pde_retries: list[str] = []
+    if reconcile == POSITION_DATA_ERROR:
+        for _ in range(POSITION_DATA_ERROR_RETRY_MAX):
+            if POSITION_DATA_ERROR_RETRY_DELAY_SEC > 0:
+                time.sleep(POSITION_DATA_ERROR_RETRY_DELAY_SEC)
+            reconcile = reconcile_position_state(broker, state, now, force=True)
+            _pde_retries.append(reconcile)
+            if reconcile != POSITION_DATA_ERROR:
+                break
+        result.signal_dispatch_trace["position_data_error_retries"] = list(_pde_retries)
+    result.signal_dispatch_trace["position_reconcile_result"] = (
+        reconcile if not _pde_retries
+        else f"{POSITION_DATA_ERROR}|retry={','.join(_pde_retries)}"
+    )
+    if reconcile == POSITION_DATA_ERROR and state.position is not None:
+        # 3회 모두 실패 + 보유 중: 보유가 확실하면 기존 포지션 SELL 만 (반대 BUY 금지).
+        _se_outcome = _safe_exit_on_position_data_error(
+            broker, state, signal_id=signal_id, direction=direction, now=now,
+            trace=result.signal_dispatch_trace,
+        )
+        if _se_outcome is not None:
+            _record_broker_order_result(state, _se_outcome)
+            if _se_outcome.sell_result is not None:
+                result.signal_dispatch_trace["broker_called"] = True
+                result.signal_dispatch_trace["broker_order_id"] = _se_outcome.sell_result.order_id
+                result.signal_dispatch_trace["broker_raw"] = dict(_se_outcome.sell_result.raw or {})
+            result.order_requested_at = _se_outcome.timestamps.get("sell_requested_at")
+            result.signal_dispatch_trace["order_requested_at"] = result.order_requested_at or ""
+            result.signal_dispatch_trace["order_executor_called"] = True
+            state.pending_signal = None   # 같은 신호의 반대 BUY 재시도 금지
+            if signal_id and signal_id not in state.processed_signal_ids:
+                state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+            state.order_block_reason = _se_outcome.block_reason
+            result.signal_dispatch_trace["final_block_reason"] = _se_outcome.block_reason or ""
+            result.timing["order_execution"] = time.monotonic() - order_started
+            return _se_outcome
+        # 보유가 확실하지 않다 -> SELL 도 BUY 도 하지 않는다 (기존과 같은 pending 대기).
+        state.order_block_reason = CRITICAL_POSITION_DATA_ERROR
+        result.signal_dispatch_trace["final_block_reason"] = CRITICAL_POSITION_DATA_ERROR
+        _set_pending_signal(
+            state, signal_id=signal_id, direction=direction, signal_type=signal_type,
+            macd_snap=macd_snap, detected_at=now, reason=POSITION_DATA_ERROR,
+        )
+        result.skipped = POSITION_DATA_ERROR
+        result.timing["order_execution"] = time.monotonic() - order_started
+        return None
     if reconcile == RECOVERED_FROM_BROKER:
         state.order_block_reason = RECOVERED_FROM_BROKER
         result.signal_dispatch_trace["final_block_reason"] = RECOVERED_FROM_BROKER
@@ -6165,8 +6599,9 @@ def run_once(
         # and re-advances it exactly as before (a no-op once this bar's
         # bar_key has already been stamped).
         _skip_df_1m = market_data.get_history_df()
-        _skip_bars_3m = resample_completed_3m(_skip_df_1m, now=now)
-        _skip_bars_3m, _ = filter_complete_3m_bars(_skip_bars_3m, _skip_df_1m)
+        _skip_sig_1m, _ = exclude_preopen_padding_1m(_skip_df_1m)  # 2026-10-01 hotfix
+        _skip_bars_3m = resample_completed_3m(_skip_sig_1m, now=now)
+        _skip_bars_3m, _ = filter_complete_3m_bars(_skip_bars_3m, _skip_sig_1m)
         _skip_macd_snap = calculate_macd(_skip_bars_3m)
         if _skip_macd_snap is not None:
             try:    # 관측 전용
@@ -6201,6 +6636,14 @@ def run_once(
                     # tick harmless; an audit-trail failure must never turn it
                     # into a raising tick.
                     logger.exception("[MACD2] confirmed-flag propagation failed during reconcile block")
+        # 2026-10-01 hotfix: 잔고조회 실패 tick 에도 보유가 확실한 포지션의 청산 보호
+        # (강제청산/손절/익절 판정은 기존 그대로, 주문은 전량 SELL 1회만·BUY 금지).
+        if reconcile == POSITION_DATA_ERROR:
+            try:
+                _protective_exit_during_position_data_error(
+                    broker=broker, state=state, market_data=market_data, now=now, result=result)
+            except Exception:  # pragma: no cover - 보호 경로가 tick 을 깨면 안 된다
+                logger.exception("[MACD2] protective exit path raised")
         state.order_block_reason = reconcile
         result.skipped = reconcile
         result.timing["total"] = time.monotonic() - tick_started
@@ -6240,9 +6683,10 @@ def run_once(
             # 않는다. 실패해도 이미 체결된 청산 tick 을 예외로 만들지 않는다.
             try:
                 _exit_df_1m = market_data.get_history_df()
-                _exit_bars_3m = resample_completed_3m(_exit_df_1m, now=now)
+                _exit_sig_1m, _ = exclude_preopen_padding_1m(_exit_df_1m)  # 2026-10-01 hotfix
+                _exit_bars_3m = resample_completed_3m(_exit_sig_1m, now=now)
                 _exit_bars_3m, _exit_dropped = filter_complete_3m_bars(
-                    _exit_bars_3m, _exit_df_1m)
+                    _exit_bars_3m, _exit_sig_1m)
                 _exit_snap = calculate_macd(_exit_bars_3m)
                 if _exit_snap is not None:
                     try:    # 관측 전용
@@ -6281,14 +6725,21 @@ def run_once(
     except Exception:
         pass
     t0 = time.monotonic()
-    bars_3m = resample_completed_3m(df_1m, now=now)
+    # 2026-10-01 hotfix: 08:50~08:59 단일가 padding 봉을 신호 입력(MACD/플래그/
+    # last_direction/게이트 bars_3m)에서 제외한다. df_1m 원본은 아래의 다른 용도
+    # (freshness 진단, VWAP 등)에 그대로 쓴다. 진단값만 state 에 남긴다.
+    _sig_df_1m, _padding_excluded = exclude_preopen_padding_1m(df_1m)
+    if _padding_excluded:
+        state.preopen_padding_excluded_count = len(_padding_excluded)
+        state.preopen_padding_last_excluded_at = max(_padding_excluded).isoformat()
+    bars_3m = resample_completed_3m(_sig_df_1m, now=now)
     # docs §4: a completed 3m bar only ever counts as "confirmed" when its own
     # 3 constituent 1-minute bars are ALL present — an API error/dropped page
     # must never silently masquerade as a real bar. Any bin missing one or
     # more of its minutes is dropped here (never filled/interpolated), which
     # also blocks that specific bar's crossover/MAJOR-filter/order evaluation
     # (HISTORY_GAP) until the gap is backfilled by a later incremental merge.
-    bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(bars_3m, df_1m)
+    bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(bars_3m, _sig_df_1m)
     if _history_gap_bar_starts:
         state.order_block_reason = "HISTORY_GAP"
     elif state.order_block_reason == "HISTORY_GAP":
