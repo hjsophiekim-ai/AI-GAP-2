@@ -1233,6 +1233,10 @@ with _stm_cols[1]:
         st.caption(f"EXECUTION: **{_stm_exec_label}**")
         if bool(getattr(state, "time_window_position_active", False)):
             st.caption(f"POSITION MODE: **{macd2_p3_stack.position_mode(state)}**")
+    # 2026-10-01 hotfix 진단 전용: 신호 입력에서 뺀 08:50~08:59 단일가 padding 1분봉.
+    _pad_n = int(getattr(state, "preopen_padding_excluded_count", 0) or 0)
+    _pad_at = getattr(state, "preopen_padding_last_excluded_at", None)
+    st.caption(f"FILTERED_PREOPEN_PADDING_BAR: **{_pad_n}** (마지막 제외 {_pad_at or '-'})")
 
     # ── 지금 이 포지션에 걸린 익절 기준 (2026-09-28, 읽기 전용) ──────────────
     # N1 adaptive 판정줄은 09-27 레거시 토글 영역과 함께 숨겨졌다. worker 가

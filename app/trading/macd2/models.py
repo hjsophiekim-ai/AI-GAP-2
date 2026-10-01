@@ -267,6 +267,9 @@ class RuntimeState:
     signal_rule: str = ""
     session_started_at: Optional[str] = None
     session_baseline_bar_ts: Optional[str] = None
+    # 2026-10-01 hotfix 진단 전용: 신호 입력에서 제외한 08:50~08:59 padding 1분봉 수 / 마지막 제외 봉 시각
+    preopen_padding_excluded_count: int = 0
+    preopen_padding_last_excluded_at: Optional[str] = None
     baseline_relation: Optional[str] = None
     worker_instance_id: Optional[str] = None
     # 2026-08-05 fix: initialize_strategy_session sets this when a same-day

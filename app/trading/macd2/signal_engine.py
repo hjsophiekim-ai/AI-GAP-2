@@ -7,7 +7,7 @@ No network, state file, UI, or broker access. Implements docs/MACD2_LOGIC.md
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -88,6 +88,43 @@ def resample_completed_3m(one_minute_bars: Optional[pd.DataFrame], now: datetime
     cutoff = now.replace(second=0, microsecond=0)
     completed = bars[bars["datetime"] + timedelta(minutes=3) <= cutoff]
     return completed.reset_index(drop=True)
+
+
+# 2026-10-01 hotfix: 08:50~08:59 단일가 구간 padding bar 를 신호 입력에서 제외.
+# NXT 프리마켓은 08:50 에 끝나고 KRX 시가 단일가는 09:00 에 체결되므로 이 10분에는
+# 실제 체결이 없다. 그런데 당일 분봉 엔드포인트(inquire-time-itemchartprice)는 이
+# 구간을 직전가·0거래량 평탄봉으로 채워 주고, 전일 엔드포인트는 아예 주지 않는다
+# (2026-09-14 직접 대조로 확인). 평탄봉은 MACD histogram 을 0 으로 수렴시켜 08:57 에
+# 가짜 RED 를 만들었고, last_direction 이 RED 로 바뀐 탓에 09:00 시가 하락이 새 BLUE 로
+# 잡혀 실계좌 인버스 주문까지 나갔다(2026-10-01). 플래그 발행만 막으면 last_direction 이
+# 이미 오염되므로 indicator 입력 자체에서 뺀다. 결과적으로 당일 프레임도 전일 프레임과
+# 같은 모양(08:50~08:59 없음, 08:48 봉은 구성분 부족으로 filter_complete_3m_bars 에서 탈락)
+# 이 된다. 연구/백테스트 캐시는 원래 이 구간이 없으므로 live 가 연구와 같아지는 방향이다.
+PREOPEN_PADDING_START = time(8, 50)
+PREOPEN_PADDING_END = time(9, 0)
+
+
+def exclude_preopen_padding_1m(
+    one_minute_bars: Optional[pd.DataFrame],
+) -> tuple[Optional[pd.DataFrame], list[pd.Timestamp]]:
+    """Return ``(bars_without_padding, excluded_minutes)``.
+
+    Drops every 1-minute row whose KST wall-clock time is in
+    ``[PREOPEN_PADDING_START, PREOPEN_PADDING_END)`` on any date. Only the
+    signal-indicator path should use this; the raw history (archive, UI chart,
+    quotes) keeps the rows. A malformed/empty input is returned unchanged.
+    """
+    if one_minute_bars is None or one_minute_bars.empty or "datetime" not in one_minute_bars.columns:
+        return one_minute_bars, []
+    stamps = pd.to_datetime(one_minute_bars["datetime"], errors="coerce")
+    if stamps.dt.tz is None:
+        return one_minute_bars, []
+    clock = stamps.dt.tz_convert(config.KST).dt.time
+    mask = (clock >= PREOPEN_PADDING_START) & (clock < PREOPEN_PADDING_END)
+    if not bool(mask.any()):
+        return one_minute_bars, []
+    excluded = [pd.Timestamp(x) for x in stamps[mask].tolist()]
+    return one_minute_bars.loc[~mask].reset_index(drop=True), excluded
 
 
 def calculate_macd(three_minute_bars: Optional[pd.DataFrame]) -> Optional[MacdSnapshot]:

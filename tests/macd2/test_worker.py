@@ -12,6 +12,7 @@ from app.trading.macd2 import config, ledger, state_store, worker
 from app.trading.macd2.market_data import MarketDataService
 from app.trading.macd2.models import Direction, MacdSnapshot, PositionSnapshot, QuoteSnapshot, RuntimeState
 from app.trading.macd2.signal_engine import (
+    PREOPEN_PADDING_START,
     calculate_macd,
     evaluate_macd_crossover,
     forming_bar_window,
@@ -1264,11 +1265,16 @@ def test_initialize_strategy_session_records_premarket_catchup_flag_to_ledger():
     the ledger at all, so it silently never appeared in "신호 원장" even
     though an equivalent LIVE premarket flag would have. This must show up
     the same way: BLOCKED, BEFORE_SESSION_OPEN, no order."""
-    start = datetime(2026, 7, 24, 4, 0, tzinfo=KST)
+    # 2026-10-01 hotfix: 08:50~08:59 는 실제 체결이 없는 단일가 구간이라 신호 입력에서
+    # 제외된다(signal_engine.exclude_preopen_padding_1m). 원래 04:00 시작이면 bar99 가
+    # 08:57 에 놓여 그 구간에 들어가므로, 같은 시나리오를 30분 앞당겨(bar99 = 08:27)
+    # 실제 프리마켓 봉에서 검증한다. 검증 내용(원장 기록·중복 없음)은 그대로다.
+    start = datetime(2026, 7, 24, 3, 30, tzinfo=KST)
     closes = [100.0] * 99 + [92.0, 96.0, 103.0, 104.0, 103.0, 98.0, 90.0, 85.0, 84.0]
     df_1m_full = _1m_from_3m_closes(start, closes)
     bar99_dt = start + timedelta(minutes=3 * 99)
     assert bar99_dt.time() < config.SESSION_OPEN  # sanity: this bar really is premarket
+    assert bar99_dt.time() < PREOPEN_PADDING_START  # sanity: outside the excluded 08:50~08:59 window
 
     state = _fresh_state()
     # initialize_strategy_session's catch-up walk deliberately stops ONE bar

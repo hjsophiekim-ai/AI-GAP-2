@@ -90,6 +90,7 @@ from app.trading.macd2.signal_engine import (
     make_provisional_signal_id,
     make_signal_id,
     resample_completed_3m,
+    exclude_preopen_padding_1m,
     signed_b_condition,
 )
 from app.trading.trading_cost_engine import TradeCostEngine
@@ -581,7 +582,9 @@ def initialize_strategy_session(
     state.processed_signal_ids = []
 
     df_1m = market_data.get_history_df()
-    bars_3m = resample_completed_3m(df_1m, now=now)
+    # 2026-10-01 hotfix: 신호 입력에서 08:50~08:59 단일가 padding 제외 (live 와 같은 입력)
+    _sig_1m, _ = exclude_preopen_padding_1m(df_1m)
+    bars_3m = resample_completed_3m(_sig_1m, now=now)
     # 2026-09-16 수정: restart catch-up 도 live 와 **같은 완성봉 프레임**을 써야
     # 한다. 여기만 filter_complete_3m_bars 가 빠져 있어서(같은 파일의 다른 호출부
     # 는 전부 적용한다) catch-up 은 구성 1분봉이 모자란 불완전 봉까지 EMA 에
@@ -597,7 +600,7 @@ def initialize_strategy_session(
     #
     # MACD 계산식도 resample 규칙도 바꾸지 않는다 -- live 가 이미 쓰고 있는
     # 같은 입력을 catch-up 에도 똑같이 주는 것뿐이다.
-    bars_3m, _catchup_dropped = filter_complete_3m_bars(bars_3m, df_1m)
+    bars_3m, _catchup_dropped = filter_complete_3m_bars(bars_3m, _sig_1m)
     today_str = now.astimezone(KST).strftime("%Y%m%d")
     today_indices = (
         list(bars_3m.index[bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str])
@@ -920,8 +923,10 @@ def compute_today_signal_overview(
     last-known direction (e.g. still BLUE from yesterday evening) exactly
     like the live path now does — it is never treated as a fresh start.
     """
-    bars_3m = resample_completed_3m(df_1m, now=now)
-    bars_3m, _dropped = filter_complete_3m_bars(bars_3m, df_1m)
+    # 2026-10-01 hotfix: live 와 같은 신호 입력 (08:50~08:59 padding 제외)
+    _sig_1m, _ = exclude_preopen_padding_1m(df_1m)
+    bars_3m = resample_completed_3m(_sig_1m, now=now)
+    bars_3m, _dropped = filter_complete_3m_bars(bars_3m, _sig_1m)
     if bars_3m.empty:
         return []
 
@@ -6165,8 +6170,9 @@ def run_once(
         # and re-advances it exactly as before (a no-op once this bar's
         # bar_key has already been stamped).
         _skip_df_1m = market_data.get_history_df()
-        _skip_bars_3m = resample_completed_3m(_skip_df_1m, now=now)
-        _skip_bars_3m, _ = filter_complete_3m_bars(_skip_bars_3m, _skip_df_1m)
+        _skip_sig_1m, _ = exclude_preopen_padding_1m(_skip_df_1m)  # 2026-10-01 hotfix
+        _skip_bars_3m = resample_completed_3m(_skip_sig_1m, now=now)
+        _skip_bars_3m, _ = filter_complete_3m_bars(_skip_bars_3m, _skip_sig_1m)
         _skip_macd_snap = calculate_macd(_skip_bars_3m)
         if _skip_macd_snap is not None:
             try:    # 관측 전용
@@ -6240,9 +6246,10 @@ def run_once(
             # 않는다. 실패해도 이미 체결된 청산 tick 을 예외로 만들지 않는다.
             try:
                 _exit_df_1m = market_data.get_history_df()
-                _exit_bars_3m = resample_completed_3m(_exit_df_1m, now=now)
+                _exit_sig_1m, _ = exclude_preopen_padding_1m(_exit_df_1m)  # 2026-10-01 hotfix
+                _exit_bars_3m = resample_completed_3m(_exit_sig_1m, now=now)
                 _exit_bars_3m, _exit_dropped = filter_complete_3m_bars(
-                    _exit_bars_3m, _exit_df_1m)
+                    _exit_bars_3m, _exit_sig_1m)
                 _exit_snap = calculate_macd(_exit_bars_3m)
                 if _exit_snap is not None:
                     try:    # 관측 전용
@@ -6281,14 +6288,21 @@ def run_once(
     except Exception:
         pass
     t0 = time.monotonic()
-    bars_3m = resample_completed_3m(df_1m, now=now)
+    # 2026-10-01 hotfix: 08:50~08:59 단일가 padding 봉을 신호 입력(MACD/플래그/
+    # last_direction/게이트 bars_3m)에서 제외한다. df_1m 원본은 아래의 다른 용도
+    # (freshness 진단, VWAP 등)에 그대로 쓴다. 진단값만 state 에 남긴다.
+    _sig_df_1m, _padding_excluded = exclude_preopen_padding_1m(df_1m)
+    if _padding_excluded:
+        state.preopen_padding_excluded_count = len(_padding_excluded)
+        state.preopen_padding_last_excluded_at = max(_padding_excluded).isoformat()
+    bars_3m = resample_completed_3m(_sig_df_1m, now=now)
     # docs §4: a completed 3m bar only ever counts as "confirmed" when its own
     # 3 constituent 1-minute bars are ALL present — an API error/dropped page
     # must never silently masquerade as a real bar. Any bin missing one or
     # more of its minutes is dropped here (never filled/interpolated), which
     # also blocks that specific bar's crossover/MAJOR-filter/order evaluation
     # (HISTORY_GAP) until the gap is backfilled by a later incremental merge.
-    bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(bars_3m, df_1m)
+    bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(bars_3m, _sig_df_1m)
     if _history_gap_bar_starts:
         state.order_block_reason = "HISTORY_GAP"
     elif state.order_block_reason == "HISTORY_GAP":
