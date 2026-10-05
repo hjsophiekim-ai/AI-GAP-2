@@ -1789,6 +1789,9 @@ E_RS_MIN_SAMPLES = _env_int("MACD2_E_RS_MIN_SAMPLES", 30)
 #: 40일 rolling 은 별도 후보전략이며 이 구현에 포함하지 않는다.
 #: RS 원자료 계산에 필요한 최소 완성 1분봉 수(전일 포함).
 E_RS_MIN_BARS = _env_int("MACD2_E_RS_MIN_BARS", 120)
+#: 그중 **당일** 완성 1분봉 최소 수(장전 봉 포함). 연구 하네스(wk17 `_rs_hit`)의
+#: 조건 그대로 -- 장전 봉이 없는 날은 09:30 전에는 RS 가 발동하지 않는다.
+E_RS_MIN_TODAY_BARS = _env_int("MACD2_E_RS_MIN_TODAY_BARS", 30)
 #: state 에 보관할 RS 표본 상한(오래된 것부터 버린다). 0 이면 무제한.
 E_RS_SAMPLE_LIMIT = _env_int("MACD2_E_RS_SAMPLE_LIMIT", 2000)
 #: **parity 검증 전용** 사전계산 RS 표 경로. 운영 기본값은 빈 문자열(=라이브 집계).

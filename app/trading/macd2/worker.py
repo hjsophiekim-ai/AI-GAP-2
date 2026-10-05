@@ -4073,7 +4073,15 @@ def _e_rs_features(df_1m, now: datetime) -> Optional[dict]:
     try:
         if df_1m is None or not len(df_1m):
             return None
-        return e_strategy.rs_features(df_1m["close"].astype(float).to_numpy(), now)
+        today = None
+        if "datetime" in df_1m.columns:
+            dts = pd.to_datetime(df_1m["datetime"])
+            day = now.astimezone(KST).date()
+            if getattr(dts.dt, "tz", None) is not None:
+                dts = dts.dt.tz_convert(KST)
+            today = int((dts.dt.date == day).sum())
+        return e_strategy.rs_features(df_1m["close"].astype(float).to_numpy(), now,
+                                      today_bars=today)
     except Exception as exc:                                   # pragma: no cover
         logger.warning("[MACD2][E] RS 원자료 계산 실패 -- RS 미적용: %s", exc)
         return None
@@ -6640,7 +6648,10 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
     # 이 경로는 W1a 규칙배수를 쓰지 않지만 **한도는 지켜야 한다**. 규칙배수를
     # 건드리지 않고 한도만 적용하므로, 한도가 남아 있는 한(=이 진입이 그날
     # 첫 주문인 정상 경로) 주문금액은 기존과 바이트 단위로 동일하다.
-    _cap_mult, _cap_hit = position_sizing.clip_to_daily_cap(state, 1.0)
+    # **E 모드에서만** 적용한다 -- N1/P3 는 이 경로의 주문금액·노출 누계가 기존과
+    # 바이트 단위로 같아야 한다(OFF parity). N1/P3 의 같은 한도 우회는 별도 hotfix 대상.
+    _cap_mult, _cap_hit = (position_sizing.clip_to_daily_cap(state, 1.0)
+                           if e_strategy.is_active(state) else (1.0, False))
     if _cap_hit:
         logger.warning("[MACD2] PREMARKET_CARRY_TW -- 일일 누적매수한도로 주문을 깎는다 "
                        "(배수 1.0 -> %.4f, 사용 %.4f/%.2f)", _cap_mult,
@@ -6653,7 +6664,8 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=signal_id,
         quotes={target_symbol: quote_snap.price}, position=None,
-        budget=float(state.budget or 0.0) * _cap_mult,
+        budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
+                else state.budget),
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
     )
     _record_premarket_carry_signal(state, direction, signal_id, now, outcome)
@@ -6661,7 +6673,8 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
     if outcome.final_state == SignalState.EXECUTED:
         # 한도 누계에만 반영한다(진입순번/첫거래 손절 플래그는 건드리지 않는다 --
         # 그 둘은 W1a 규칙배수의 입력이라 올리면 기존 동작이 바뀐다).
-        position_sizing.note_external_exposure(state, _cap_mult)
+        if e_strategy.is_active(state):
+            position_sizing.note_external_exposure(state, _cap_mult)
         _apply_switch_outcome(state, outcome, direction, now)
         state.premarket_carry_executed_at = now.isoformat()
         state.premarket_carry_last_result = "EXECUTED"
@@ -6804,7 +6817,10 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
     # 이 경로는 W1a 규칙배수를 쓰지 않지만 **한도는 지켜야 한다**. 규칙배수를
     # 건드리지 않고 한도만 적용하므로, 한도가 남아 있는 한(=이 진입이 그날
     # 첫 주문인 정상 경로) 주문금액은 기존과 바이트 단위로 동일하다.
-    _cap_mult, _cap_hit = position_sizing.clip_to_daily_cap(state, 1.0)
+    # **E 모드에서만** 적용한다 -- N1/P3 는 이 경로의 주문금액·노출 누계가 기존과
+    # 바이트 단위로 같아야 한다(OFF parity). N1/P3 의 같은 한도 우회는 별도 hotfix 대상.
+    _cap_mult, _cap_hit = (position_sizing.clip_to_daily_cap(state, 1.0)
+                           if e_strategy.is_active(state) else (1.0, False))
     if _cap_hit:
         logger.warning("[MACD2] SCHEDULED_ENTRY_0903 -- 일일 누적매수한도로 주문을 깎는다 "
                        "(배수 1.0 -> %.4f, 사용 %.4f/%.2f)", _cap_mult,
@@ -6819,14 +6835,16 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=signal_id,
         quotes={target_symbol: quote_snap.price}, position=None,
-        budget=float(state.budget or 0.0) * _cap_mult,
+        budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
+                else state.budget),
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
     )
     _record_scheduled_entry_signal(state, direction, signal_id, now, outcome)
 
     if outcome.final_state == SignalState.EXECUTED:
         # 한도 누계에만 반영한다(진입순번/첫거래 손절 플래그는 건드리지 않는다).
-        position_sizing.note_external_exposure(state, _cap_mult)
+        if e_strategy.is_active(state):
+            position_sizing.note_external_exposure(state, _cap_mult)
         _apply_switch_outcome(state, outcome, direction, now)
         state.scheduled_entry_executed_at = now.isoformat()
         state.scheduled_entry_last_result = "EXECUTED"

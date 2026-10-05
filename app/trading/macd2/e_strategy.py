@@ -314,13 +314,18 @@ def breakout_signal_id(rec: dict) -> str:
 
 # ── ② RS125 ─────────────────────────────────────────────────────────────
 
-def rs_features(closes: np.ndarray, now: datetime) -> Optional[dict]:
+def rs_features(closes: np.ndarray, now: datetime, *,
+                today_bars: Optional[int] = None) -> Optional[dict]:
     """RS 원자료. **완성봉 종가 배열만** 쓴다(미래정보 없음).
 
     ``closes`` 는 ``now`` 이전에 완성된 1분봉 종가들(전일 포함)이어야 한다.
+    ``today_bars`` 는 그중 당일(장전 포함) 완성봉 수 -- ``E_RS_MIN_TODAY_BARS``
+    미만이면 None(=RS 미적용). None 을 주면 이 조건을 검사하지 않는다.
     """
     c = np.asarray(closes, dtype=float)
     if c.size < int(config.E_RS_MIN_BARS):
+        return None
+    if today_bars is not None and int(today_bars) < int(config.E_RS_MIN_TODAY_BARS):
         return None
     ts = pd.Timestamp(now)
     e20 = pd.Series(c).ewm(span=20, adjust=False).mean().to_numpy()
