@@ -227,7 +227,8 @@ def pending_record(state) -> Optional[dict]:
 def arm_pending(state, *, direction: Direction, trigger: float, signal_id: str,
                 flag_bar_dt: datetime, confirm_bar_dt: datetime, now: datetime,
                 session: Optional[str] = None,
-                slot_number: Optional[int] = None) -> dict:
+                slot_number: Optional[int] = None,
+                gate: Optional[dict] = None) -> dict:
     """돌파 대기를 건다 -- **슬롯/예산은 아직 소비하지 않는다.**
 
     state 에 그대로 직렬화되므로 worker 재시작 후에도 복원된다. 같은 시점에
@@ -249,6 +250,12 @@ def arm_pending(state, *, direction: Direction, trigger: float, signal_id: str,
         "trading_date": now.astimezone(config.KST).strftime("%Y%m%d"),
         "session": session,
         "slot_number": (None if slot_number is None else int(slot_number)),
+        # 승인 시점 게이트 스냅샷 — 돌파 체결은 게이트를 **다시 평가하지 않고**
+        # 이 값을 재생한다. 승인은 T+3 에 이미 끝났고, 15분 뒤 재평가하면 그
+        # 사이 바뀐 시장상태가 이미 승인된 신호를 조용히 바꿔 버리기 때문이다.
+        # 체결 직전에 다시 보는 것은 hard safety(예산/포지션/중복주문/장시간/
+        # 킬스위치)뿐이다. 구조는 pending retry(_tw2_3slot_retry_ctx)와 같다.
+        "gate": (dict(gate) if isinstance(gate, dict) else None),
         "fired": False,
     }
     state.e_pending = rec
@@ -373,11 +380,11 @@ def rs_stats_for_day(state, day: str) -> Optional[dict]:
     if tbl:
         row = tbl.get(str(day))
         return dict(row) if row else None
+    # **expanding window 고정** (2026-10-05 확정). 그 날 이전 전체 진입을 쓰고
+    # rolling window 는 쓰지 않는다 -- 벤치마크 +18,412,222 가 expanding 으로
+    # 산출된 값이라, 창을 바꾸면 임계가 달라져 parity 검증 자체가 성립하지 않는다.
+    # 40일 rolling 은 별도 후보전략이며 이 구현에는 포함하지 않는다.
     rows = [r for r in rs_samples(state) if str(r.get("day", "")) < str(day)]
-    window = int(config.E_RS_WINDOW_DAYS)
-    if window > 0:
-        keep = sorted({str(r["day"]) for r in rows})[-window:]
-        rows = [r for r in rows if str(r["day"]) in set(keep)]
     if len(rows) < int(config.E_RS_MIN_SAMPLES):
         return None
     frame = pd.DataFrame(rows)

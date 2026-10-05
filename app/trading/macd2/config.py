@@ -1783,8 +1783,10 @@ E_RS_MULT = _env_float("MACD2_E_RS_MULT", 1.25)
 E_RS_PERCENTILE = _env_float("MACD2_E_RS_PERCENTILE", 0.80)
 #: 통계를 만들기 위한 과거 진입 최소 표본수. 미만이면 RS 는 발동하지 않는다.
 E_RS_MIN_SAMPLES = _env_int("MACD2_E_RS_MIN_SAMPLES", 30)
-#: 0 이면 expanding window(연구 사양). 양수면 직전 N 영업일만 쓴다.
-E_RS_WINDOW_DAYS = _env_int("MACD2_E_RS_WINDOW_DAYS", 0)
+#: RS 통계는 **expanding window 고정**이다(2026-10-05 확정) -- 그 날 이전 전체
+#: 진입을 쓴다. rolling window 옵션은 두지 않는다: 벤치마크 +18,412,222 가
+#: expanding 으로 산출된 값이라 창을 바꾸면 parity 검증이 성립하지 않는다.
+#: 40일 rolling 은 별도 후보전략이며 이 구현에 포함하지 않는다.
 #: RS 원자료 계산에 필요한 최소 완성 1분봉 수(전일 포함).
 E_RS_MIN_BARS = _env_int("MACD2_E_RS_MIN_BARS", 120)
 #: state 에 보관할 RS 표본 상한(오래된 것부터 버린다). 0 이면 무제한.
