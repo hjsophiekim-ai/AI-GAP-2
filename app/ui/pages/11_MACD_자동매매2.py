@@ -44,6 +44,7 @@ from app.trading.macd2 import time_window_3slot as macd2_time_window_3slot  # no
 from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
 from app.trading.macd2 import strategy_mode as macd2_strategy_mode  # noqa: E402
+from app.trading.macd2 import e_strategy as macd2_e_strategy  # noqa: E402
 from app.trading.macd2 import p3_stack as macd2_p3_stack  # noqa: E402
 from app.trading.macd2 import n1_adaptive as macd2_n1_adaptive  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
@@ -1174,6 +1175,7 @@ _stm_options = list(macd2_strategy_mode.ALL_MODES)
 _stm_labels = {
     macd2_strategy_mode.MODE_N1: "N1 · 기존 전략",
     macd2_strategy_mode.MODE_P3: "P3 · Adaptive CHOP + Runner Protection",
+    macd2_strategy_mode.MODE_E: "E · P3 + EARLY-UP-FAST + RS125",
 }
 _stm_cols = st.columns([2.0, 2.0])
 with _stm_cols[0]:
@@ -1187,6 +1189,9 @@ with _stm_cols[0]:
         label_visibility="collapsed",
         help=("N1 : N1 + C1 + SMART + AR1" + chr(10) + chr(10)
               + "P3 : N1 BASE + CHOP adaptive exit (SHADOW detector + B3 + Y3 + P3 rescue)"
+              + chr(10) + chr(10)
+              + "E : P3 그대로 + EARLY-UP-FAST(돌파 임박·확정봉 동방향·gap 확대일 때만 즉시진입, "
+                "아니면 최대 15분 돌파대기 후 미도달 폐기) + RS125(RS 상위20% 진입 x1.25, 일일한도 안에서만)"
               + chr(10) + chr(10)
               + "MOCK/REAL 양쪽에서 쓸 수 있습니다. 자동으로 켜지지 않습니다."),
     )
@@ -1203,7 +1208,7 @@ _stm_shadow = macd2_strategy_mode.shadow_status(state)
 # 선택한 모드(사용자의 선택)와 지금 실제로 적용 중인 실행계층을 **반드시 나눠**
 # 보여 준다 -- P3 를 골랐어도 SHADOW 가 READY 가 아니면 실행은 BASE 다(fail-safe).
 # 이 둘을 한 단어로 뭉치면 "P3 를 골랐는데 N1 이 돈다" 는 오해가 생긴다(2026-09-28).
-if _stm_current == macd2_strategy_mode.MODE_P3 and _stm_exec != "P3":
+if macd2_strategy_mode.is_p3_based(_stm_current) and _stm_exec != _stm_current:
     _stm_fallback_why = ("Shadow Warmup" if _stm_shadow.startswith("WARMUP")
                          else "Shadow Error")
     _stm_exec_label = f"BASE (fallback · {_stm_fallback_why})"
@@ -1216,7 +1221,7 @@ with _stm_cols[1]:
     # 계좌 종류는 전략 판단을 바꾸지 않는다 -- MOCK/REAL 모두 같은 코드를 탄다.
     st.caption(f"ACCOUNT: **{macd2_strategy_mode.account_kind(state)}**")
     st.caption(f"SELECTED MODE: **{_stm_current}**")
-    if _stm_current == macd2_strategy_mode.MODE_P3:
+    if macd2_strategy_mode.is_p3_based(_stm_current):
         _stm_regime = getattr(state, "p3_last_regime", None) or "-"
         st.caption(f"REGIME: **{_stm_regime}**")
         # shadow_status 는 "WARMUP 3/10" / "READY" / "ERROR" 다. WARMUP 은 진행도만
@@ -1225,6 +1230,13 @@ with _stm_cols[1]:
                              if _stm_shadow.startswith("WARMUP ") else _stm_shadow)
         st.caption(f"SHADOW: **{_stm_shadow_label}**")
         st.caption(f"EXECUTION: **{_stm_exec_label}**")
+        if _stm_current == macd2_strategy_mode.MODE_E:
+            # E 진입 overlay 는 SHADOW 준비와 무관하게 항상 켜져 있다 -- 청산
+            # fallback(BASE) 과 섞이지 않게 별도 줄로 보여 준다(읽기 전용).
+            st.caption(f"E ENTRY: **{macd2_e_strategy.describe(state)}**")
+            _e_last = getattr(state, "e_last_pending_result", None)
+            if _e_last:
+                st.caption(f"E 마지막 대기 결과: **{_e_last}**")
         if bool(getattr(state, "time_window_position_active", False)):
             st.caption(f"POSITION MODE: **{macd2_p3_stack.position_mode(state)}**")
         else:
@@ -1297,7 +1309,7 @@ with st.expander("Advanced / Debug — 내부 구성 (읽기 전용)", expanded=
     st.caption("전략 모드에서 자동으로 결정됩니다 — 개별 변경은 불가합니다. "
                "디버깅 목적으로 개별 토글을 다시 보려면 "
                "`MACD2_SHOW_LEGACY_STRATEGY_TOGGLES=1` 로 실행하십시오.")
-    if _stm_current == macd2_strategy_mode.MODE_P3:
+    if macd2_strategy_mode.is_p3_based(_stm_current):
         _stm_h50 = getattr(state, "p3_last_h50_rate", None)
         _stm_tp1 = getattr(state, "p3_last_tp1_rate", None)
         st.caption(
@@ -1548,14 +1560,20 @@ _ACTIVE_STRATEGY_FIELDS = (
     ("time_window_2_filter_enabled", "TW2"),
 )
 _active_names = [nm for fld, nm in _ACTIVE_STRATEGY_FIELDS if bool(getattr(state, fld, False))]
-if len(_active_names) == 1 and _stm_current == macd2_strategy_mode.MODE_P3:
+if len(_active_names) == 1 and macd2_strategy_mode.is_p3_based(_stm_current):
     # P3 는 위 tier 목록에 없다 -- N1(BASE) 위에 얹히는 청산 계층이라 tier 로는
     # 항상 "N1" 로만 보인다. 그래서 P3 모드에서는 선택/실행을 나눠 쓴다.
-    if _stm_exec == "P3":
-        st.success(f"✅ 선택 전략 **P3** / 현재 실행 **P3** "
+    # E 도 P3 기반이라 같은 자리에서 보인다. E 의 진입 overlay 는 실행계층과
+    # 무관하게 항상 켜져 있으므로 fallback 문구에 함께 적는다.
+    _stm_e_note = (" · E 진입(EARLY-UP-FAST+RS125) 적용 중"
+                   if _stm_current == macd2_strategy_mode.MODE_E else "")
+    if _stm_exec == _stm_current:
+        st.success(f"✅ 선택 전략 **{_stm_current}** / 현재 실행 **{_stm_current}** "
                    f"(regime {getattr(state, 'p3_last_regime', None) or '-'})")
     else:
-        st.success(f"✅ 선택 전략 **P3** / 현재 실행 **BASE** ({_stm_fallback_why})")
+        st.success(f"✅ 선택 전략 **{_stm_current}** / 현재 실행 **BASE**"
+                   + (" 청산" if _stm_e_note else "")
+                   + f" ({_stm_fallback_why}){_stm_e_note}")
 elif len(_active_names) == 1:
     st.success(f"✅ 현재 활성 전략: **{_active_names[0]}**")
 elif not _active_names:

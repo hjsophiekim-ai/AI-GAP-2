@@ -52,6 +52,15 @@ _STRATEGY_FLAGS = (
 )
 
 
+#: P3 청산 스택(SHADOW/B3/Y3/P3 rescue)을 쓰는 모드. E 는 P3 **기반**이다.
+P3_BASED_MODES = (MODE_P3, MODE_E)
+
+
+def is_p3_based(mode: Any) -> bool:
+    """P3 청산 스택 위에서 도는 모드인가 (P3 / E)."""
+    return normalize(mode) in P3_BASED_MODES
+
+
 def normalize(mode: Any) -> str:
     """입력을 유효한 모드 문자열로. 모르는 값은 기본 모드로 떨어진다."""
     value = str(mode or "").strip().upper()
@@ -270,16 +279,20 @@ def execution_layer(state) -> str:
 
     MOCK / REAL 에서 동일하게 계산한다.
     """
-    if current(state) != MODE_P3:
+    mode = current(state)
+    if not is_p3_based(mode):
         return "BASE"
-    return "P3" if shadow_status(state) == "READY" else "BASE"
+    # E 는 P3 와 같은 청산 스택을 쓰므로 같은 fail-safe 를 따른다. 단 E 의
+    # 진입 overlay(EARLY-PASS/RS125)는 shadow 준비와 무관하게 항상 켜져 있다
+    # -- UI 는 이 둘을 나눠 보여 준다.
+    return mode if shadow_status(state) == "READY" else "BASE"
 
 
 def shadow_status(state) -> str:
     """UI 의 SHADOW 줄 -- READY / WARMUP / ERROR / OFF."""
     from app.trading.macd2 import chop_regime
 
-    if current(state) != MODE_P3:
+    if not is_p3_based(current(state)):
         return "OFF"
     regime = getattr(state, "p3_last_regime", None)
     if regime in (chop_regime.REGIME_CHOP, chop_regime.REGIME_TREND):
