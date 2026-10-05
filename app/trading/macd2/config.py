@@ -1749,3 +1749,45 @@ EXIT_P3_H30_PARTIAL = "P3_H30_PARTIAL_EXIT"
 #: 감춘 이유: 사용자가 C1/SMART/AR1/SHADOW/B3/Y3/P3 를 직접 조합하면 검증된
 #: 적 없는 상태가 만들어진다. 전략 선택은 strategy_mode 하나로 모은다.
 SHOW_LEGACY_STRATEGY_TOGGLES = _env_bool("MACD2_SHOW_LEGACY_STRATEGY_TOGGLES", False)
+
+# ── E 전략 (EARLY-UP-FAST + RS125, 2026-10-05) ──────────────────────────
+# research_20261004_chop_staged/REPORT_FINAL.md 의 85영업일 REAL replay 수치:
+#   총손익 +18,412,222 (현행 P3 +17,227,606 대비 +1,184,616, 보존율 106.9%)
+#   PF 3.55 / MDD -6.36% / 최대1일손실 -433,778 / 손실일 18 / 승률 59.2%
+# E 는 P3 를 **기반**으로 하며 진입승인·슬롯·청산 로직을 바꾸지 않는다.
+# 자세한 계약은 e_strategy.py 의 모듈 docstring 참고.
+E_STRATEGY_ENABLED = _env_bool("MACD2_E_STRATEGY_ENABLED", True)
+E_FILTER_VERSION = "E_EARLY_UPFAST_RS125_V1_20261005"
+
+#: EARLY-PASS 즉시진입 거리기준(%). **UP 만** 0.3% 로 넓힌 것이 UP-FAST 다.
+#: DOWN 0.2% 는 기존 EARLY-PASS 그대로이며 c2/c3 폐기조건은 양방향 불변이다.
+E_EARLY_PASS_DIST_UP_PCT = _env_float("MACD2_E_DIST_UP_PCT", 0.30)
+E_EARLY_PASS_DIST_DOWN_PCT = _env_float("MACD2_E_DIST_DOWN_PCT", 0.20)
+
+#: 돌파 대기 최대 시간(분). 미도달이면 폐기한다(재진입하지 않는다).
+E_WAIT_MINUTES = _env_float("MACD2_E_WAIT_MINUTES", 15.0)
+
+#: trigger = (플래그봉, 확정봉) 극값 ± (버퍼틱 x 호가단위). 연구값은 버퍼 0.
+E_TRIGGER_BUFFER_TICKS = _env_float("MACD2_E_TRIGGER_BUFFER_TICKS", 0.0)
+E_WATCH_TICK_SIZE = _env_float("MACD2_E_WATCH_TICK_SIZE", 500.0)
+
+#: c3(gap 확대) 판정용 MACD 파라미터 — 신호생성용과 같은 12/26/9.
+E_MACD_FAST = _env_int("MACD2_E_MACD_FAST", 12)
+E_MACD_SLOW = _env_int("MACD2_E_MACD_SLOW", 26)
+E_MACD_SIGNAL = _env_int("MACD2_E_MACD_SIGNAL", 9)
+
+#: RS125 — RS = z(atr60) - z(min_open) + z(xc30) 가 과거 진입분포의 상위 20%
+#: 이면 주문 budget x1.25. 통계는 **그 날 이전** 표본만 쓴다(미래정보 없음).
+E_RS_ENABLED = _env_bool("MACD2_E_RS_ENABLED", True)
+E_RS_MULT = _env_float("MACD2_E_RS_MULT", 1.25)
+E_RS_PERCENTILE = _env_float("MACD2_E_RS_PERCENTILE", 0.80)
+#: 통계를 만들기 위한 과거 진입 최소 표본수. 미만이면 RS 는 발동하지 않는다.
+E_RS_MIN_SAMPLES = _env_int("MACD2_E_RS_MIN_SAMPLES", 30)
+#: 0 이면 expanding window(연구 사양). 양수면 직전 N 영업일만 쓴다.
+E_RS_WINDOW_DAYS = _env_int("MACD2_E_RS_WINDOW_DAYS", 0)
+#: RS 원자료 계산에 필요한 최소 완성 1분봉 수(전일 포함).
+E_RS_MIN_BARS = _env_int("MACD2_E_RS_MIN_BARS", 120)
+#: state 에 보관할 RS 표본 상한(오래된 것부터 버린다). 0 이면 무제한.
+E_RS_SAMPLE_LIMIT = _env_int("MACD2_E_RS_SAMPLE_LIMIT", 2000)
+#: **parity 검증 전용** 사전계산 RS 표 경로. 운영 기본값은 빈 문자열(=라이브 집계).
+E_RS_TABLE_PATH = _env_str("MACD2_E_RS_TABLE_PATH", "")

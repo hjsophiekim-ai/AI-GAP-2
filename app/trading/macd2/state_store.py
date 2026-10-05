@@ -79,6 +79,11 @@ def default_state() -> RuntimeState:
     state.x2lite_entry_seq_today = 0
     state.x2lite_first_trade_stop_loss = False
     state.x2lite_last_applied_sizing = None
+    state.e_enabled = False
+    state.e_version = config.E_FILTER_VERSION
+    state.e_pending = None
+    state.e_rs_samples = []
+    state.e_last_pending_result = None
     state.time_window_h50_filter_enabled = bool(getattr(config, "H50_3SLOT_FILTER_DEFAULT", False))
     state.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
     state.h50_hold_active = False
@@ -421,6 +426,15 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "x2lite_entry_seq_today": int(state.x2lite_entry_seq_today or 0),
         "x2lite_first_trade_stop_loss": bool(state.x2lite_first_trade_stop_loss),
         "x2lite_last_applied_sizing": state.x2lite_last_applied_sizing,
+        # E 전략 — e_pending 은 재시작 후 그대로 복원돼야 하는 **대기주문**이다.
+        # e_rs_samples 는 과거 영업일 자료이므로 날짜가 바뀌어도 지우지 않는다.
+        "e_enabled": bool(getattr(state, "e_enabled", False)),
+        "e_version": getattr(state, "e_version", "") or config.E_FILTER_VERSION,
+        "e_pending": (dict(state.e_pending)
+                      if isinstance(getattr(state, "e_pending", None), dict) else None),
+        "e_rs_samples": [dict(r) for r in (getattr(state, "e_rs_samples", None) or [])
+                         if isinstance(r, dict)],
+        "e_last_pending_result": getattr(state, "e_last_pending_result", None),
         "time_window_h50_filter_enabled": bool(state.time_window_h50_filter_enabled),
         "time_window_h50_filter_enabled_at": state.time_window_h50_filter_enabled_at,
         "time_window_h50_filter_enabled_by": state.time_window_h50_filter_enabled_by,
@@ -1178,6 +1192,12 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         x2lite_entry_seq_today=int(raw.get("x2lite_entry_seq_today", 0) or 0),
         x2lite_first_trade_stop_loss=bool(raw.get("x2lite_first_trade_stop_loss", False)),
         x2lite_last_applied_sizing=raw.get("x2lite_last_applied_sizing"),
+        e_enabled=bool(raw.get("e_enabled", False)),
+        e_version=str(raw.get("e_version", "") or ""),
+        e_pending=(dict(raw["e_pending"])
+                   if isinstance(raw.get("e_pending"), dict) and raw.get("e_pending") else None),
+        e_rs_samples=[dict(r) for r in (raw.get("e_rs_samples") or []) if isinstance(r, dict)],
+        e_last_pending_result=raw.get("e_last_pending_result"),
         time_window_3slot_filter_version=time_window_3slot_filter_version,
         c1_peak_protection_enabled=c1_peak_protection_enabled,
         c1_peak_protection_enabled_at=raw.get("c1_peak_protection_enabled_at"),

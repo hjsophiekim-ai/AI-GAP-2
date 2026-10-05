@@ -743,6 +743,23 @@ class RuntimeState:
     x2lite_first_trade_stop_loss: bool = False
     x2lite_last_applied_sizing: Optional[float] = None
 
+    # ── E 전략 (EARLY-UP-FAST + RS125, 2026-10-05) ─────────────────────
+    # P3 **기반** 독립 전략. 진입승인/슬롯/청산은 P3 와 완전히 같고 여기에는
+    # EARLY-PASS 대기상태와 RS 표본만 둔다(e_strategy.py).
+    #   e_enabled             : 지금 E 모드인가(strategy_mode.apply 가 찍는다)
+    #   e_pending             : 돌파 대기 레코드. 재시작 후 그대로 복원된다 --
+    #                           direction/trigger/approved_at/expires_at/
+    #                           flag·confirm 봉/슬롯·세션 스냅샷을 전부 들고 있다.
+    #                           **대기 중에는 슬롯도 예산도 아직 소비하지 않는다.**
+    #   e_rs_samples          : 과거 진입들의 RS 원자료(day/atr60/min_open/xc30).
+    #                           '그 날 이전' 표본만 통계에 쓰이므로 미래정보가 없다.
+    #   e_last_pending_result : 마지막 대기의 결말(FIRED/EXPIRED/...) — 진단용
+    e_enabled: bool = False
+    e_version: str = ""
+    e_pending: Optional[dict] = None
+    e_rs_samples: list = field(default_factory=list)
+    e_last_pending_result: Optional[str] = None
+
     # ── H50 (작은 휩쏘 HOLD, 2026-09-15) ───────────────────────────────
     # X2-lite + W1a 위에 얹는 별도 모드. 진입/청산 파라미터는 X2-lite 와
     # 100% 동일하고, 반대신호 청산을 조건부로 보류하는 상태만 여기 둔다.
