@@ -1806,9 +1806,11 @@ E_CAP2_DAILY_CAP = 2
 # APBK3052 거절 -- 2026-10-01 09:18 실사고, 현재 28,983,650원). 매수 직전 KIS 매수가능
 # 조회(사이징에 이미 쓰는 같은 응답)의 순수 현금 주문가능금액(ord_psbl_cash)이 이
 # 금액 미만이면 주문을 보내지 않고 사유를 기록한다. REAL 브로커 + 레버리지 종목만.
-# ord_psbl_cash 가 KIS 의 기본예탁금 기준과 같은지는 첫 APBK3052 때 확정한다
-# (거절 시 KIS 의 '현재' 금액과 ord_psbl_cash 를 함께 기록).
-LEVERAGE_DEPOSIT_PRECHECK_ENABLED = _env_bool("MACD2_LEVERAGE_DEPOSIT_PRECHECK_ENABLED", True)
+# **기본 OFF** (사용자 결정 2026-10-06): ord_psbl_cash 가 APBK3052 의 '기본예탁금 현재액'과
+# 같은 기준인지 실계좌에서 확인되지 않았다. APBK3052 가 나면 KIS 의 '현재' 금액과 같은
+# 시점 ord_psbl_cash·현금 필드 전부를 원장에 남기므로, 1건 이상에서 기준이 같음이
+# 확인되면 그때 ON 으로 바꾼다. APBK3052 거절 기록 자체는 플래그와 무관하게 항상 동작.
+LEVERAGE_DEPOSIT_PRECHECK_ENABLED = _env_bool("MACD2_LEVERAGE_DEPOSIT_PRECHECK_ENABLED", False)
 LEVERAGE_DEPOSIT_MIN_KRW = _env_float("MACD2_LEVERAGE_DEPOSIT_MIN_KRW", 30_000_000.0)
 LEVERAGE_DEPOSIT_SYMBOLS = (LONG_SYMBOL,)
 #: KIS 거절 코드 -- "단일종목 레버리지 주문시 기본예탁금(3천만원)이 필요합니다.(현재:N원)"

@@ -11,6 +11,7 @@ success AND position reconciliation succeed (docs §17) — never before.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -157,6 +158,8 @@ class ExecutionOutcome:
     leverage_deposit_current: Optional[float] = None
     leverage_deposit_required: Optional[float] = None
     leverage_deposit_ord_psbl_cash: Optional[float] = None
+    # APBK3052 순간의 현금 필드 원값(JSON): 매수가능 조회 output + 잔고조회 output2.
+    leverage_deposit_cash_fields: str = ""
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -562,6 +565,27 @@ def _quote_ord_psbl_cash(sizing_quote) -> Optional[float]:
         return None
 
 
+def _leverage_deposit_cash_fields(broker, sizing_quote) -> str:
+    """APBK3052 순간의 현금 필드 원값 -- 매수가능 조회 응답(이미 받아 둔 것) +
+    잔고조회 현금 필드(이 거절에서만 1회 조회). 진단 기록 전용, 실패해도 예외 없음."""
+    raw = dict(getattr(sizing_quote, "raw", None) or {})
+    psbl = {k: v for k, v in dict(raw.get("output") or {}).items() if isinstance(v, (str, int, float))}
+    for key in ("ord_psbl_cash", "nrcvb_buy_amt", "nrcvb_buy_qty", "psbl_qty", "psbl_qty_calc_unpr"):
+        if raw.get(key) not in (None, ""):
+            psbl.setdefault(key, raw.get(key))
+    snap: dict[str, Any] = {"psbl_order": psbl}
+    getter = getattr(broker, "get_cash_diagnostics", None)
+    if getter is not None:
+        try:
+            snap["balance"] = dict(getter() or {})
+        except Exception as exc:
+            snap["balance"] = {"error": str(exc)}
+    try:
+        return json.dumps(snap, ensure_ascii=False, default=str)[:4000]
+    except Exception:
+        return ""
+
+
 def _parse_kis_current_amount(text: str) -> Optional[float]:
     """KIS 메시지 '(현재:28983650원)' 에서 금액을 꺼낸다."""
     m = re.search(r"현재\s*[:：]\s*([0-9,]+)", str(text or ""))
@@ -874,9 +898,12 @@ def execute_signal(
                 str(_buy_raw.get("msg1") or buy_result.message or ""))
             outcome.leverage_deposit_required = float(config.LEVERAGE_DEPOSIT_MIN_KRW)
             outcome.leverage_deposit_ord_psbl_cash = _quote_ord_psbl_cash(sizing_quote)
-            logger.warning("[MACD2] %s BUY KIS 거절 APBK3052 -- 기본예탁금 현재 %s / 우리 ord_psbl_cash %s",
+            outcome.leverage_deposit_cash_fields = _leverage_deposit_cash_fields(broker, sizing_quote)
+            logger.warning("[MACD2] %s BUY KIS 거절 APBK3052 -- 기본예탁금 현재 %s / 우리 ord_psbl_cash %s "
+                           "/ 주문가능 %s / 현금필드 %s",
                            target_symbol, outcome.leverage_deposit_current,
-                           outcome.leverage_deposit_ord_psbl_cash)
+                           outcome.leverage_deposit_ord_psbl_cash, outcome.orderable_cash_at_sizing,
+                           outcome.leverage_deposit_cash_fields)
         outcome.broker_error_type = str(getattr(buy_result, "error_type", "") or "")
         if outcome.broker_error_type.startswith("safety"):
             # 브로커 내부 gate 가 KIS 호출 전에 거절 — 원장에 사유를 남긴다.

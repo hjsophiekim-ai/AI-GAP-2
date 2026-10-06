@@ -98,6 +98,25 @@ class _BrokerAdapterBase:
         getter = getattr(self._broker, "get_orderable_cash", None) or self._broker.get_buyable_cash
         return float(getter())
 
+    def get_cash_diagnostics(self) -> dict[str, Any]:
+        """진단 전용: 계좌 현금 필드 원값 스냅샷(KIS 잔고조회 output2). 주문 판단에 쓰지 않는다.
+
+        2026-10-06: APBK3052(레버리지 기본예탁금 부족) 거절 순간에만 호출해, KIS 가 말한
+        '현재 기본예탁금'이 어느 필드와 같은지 확정하는 근거로 남긴다. 실패해도 예외 없음."""
+        kis = getattr(self._broker, "kis", None)
+        getter = getattr(kis, "get_balance", None)
+        if getter is None:
+            return {"error": "get_balance unavailable"}
+        try:
+            bal = dict(getter() or {})
+        except Exception as exc:
+            return {"error": str(exc)}
+        out: dict[str, Any] = {"balance_cash_fields": dict(bal.get("cash_fields") or {})}
+        for key in ("cash", "orderable_cash", "error", "msg_cd", "as_of"):
+            if bal.get(key) not in (None, ""):
+                out[key] = bal.get(key)
+        return out
+
     def get_buy_safety_room(self, symbol: str, price: float) -> Optional[dict[str, Any]]:
         """사용자 주문금액 한도 안에서 남은 금액 — 브로커가 지원할 때만(REAL).
         None 이면 cap 하지 않는다(MOCK/기타 브로커: 예전과 byte 단위 동일)."""

@@ -8160,6 +8160,7 @@ SAFETY_LEDGER_FIELDS = (
     # 2026-10-06 레버리지 기본예탁금 진단
     "leverage_deposit_source", "leverage_deposit_current",
     "leverage_deposit_required", "leverage_deposit_ord_psbl_cash",
+    "leverage_deposit_cash_fields",
 )
 
 WORKER_LEASE_FILENAME = "macd2_worker_lease.json"

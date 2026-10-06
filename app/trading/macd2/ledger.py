@@ -134,6 +134,9 @@ SIGNAL_LEDGER_COLUMNS = [
     # / KIS_REJECT(APBK3052). current 는 판단 금액, ord_psbl_cash 는 같은 순간 우리 값.
     "leverage_deposit_source", "leverage_deposit_current",
     "leverage_deposit_required", "leverage_deposit_ord_psbl_cash",
+    # APBK3052 순간의 현금 필드 원값(JSON: 매수가능 조회 output + 잔고조회 output2).
+    # 주문가능금액(orderable_cash)·재매수가능(nrcvb_buy_amt)은 기존 컬럼에 같이 남는다.
+    "leverage_deposit_cash_fields",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

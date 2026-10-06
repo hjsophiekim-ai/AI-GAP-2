@@ -835,6 +835,8 @@ class KISClient:
                 "response_field_names": sorted(list(data.keys())),
                 "output1_field_names": sorted(list(output1_field_names)),
                 "output2_field_names": sorted(list(o2.keys())),
+                # 2026-10-06: 계좌 현금 필드 원값(예수금/익일·D+2 정산 등) -- 진단 기록용.
+                "cash_fields": {k: v for k, v in o2.items() if isinstance(v, (str, int, float))},
                 # KST 기준 — 호출부(hynix_switch_engine._recent_valid_account_snapshot 등)가
                 # 이 값을 kst_now() 기준 age로 비교한다. 서버 로컬시각(UTC)로 찍으면 Render에서
                 # 9시간 어긋나 정상 스냅샷이 "너무 오래됨/미래"로 오판된다.
