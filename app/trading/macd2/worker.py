@@ -4224,6 +4224,7 @@ def _e_arm_pending_instead_of_entry(
     *, state: RuntimeState, now: datetime, macd_snap, direction: Direction,
     signal_id: str, flag_bar_dt: datetime, price: Optional[float], early: Any,
     slot_metrics: dict, gate: dict, result: TickResult,
+    mark_processed: bool = True,
 ) -> bool:
     """즉시진입 조건 미달 -> 돌파 대기를 건다. 걸었으면 True.
 
@@ -4234,6 +4235,13 @@ def _e_arm_pending_instead_of_entry(
 
     ``gate`` 는 승인 시점 게이트 스냅샷(session/slot/chop/사이징)이다 --
     돌파 시점에 게이트를 다시 평가하지 않기 위해 여기서 통째로 저장한다.
+
+    ``mark_processed=False`` 는 호출자가 같은 signal_id 로 **반대 포지션
+    청산**을 곧바로 낼 때 쓴다. 청산 함수
+    (``_execute_reversal_exit_only_for_filtered_entry``)는 이미 processed 인
+    id 를 중복으로 보고 아무것도 하지 않으므로, 여기서 먼저 찍으면 보유 중인
+    반대 포지션이 청산되지 않는다(2026-10-06 parity 06/15·06/25 에서 발견).
+    그 경우 processed 는 청산 함수가 찍는다.
     """
     if early.trigger is None:
         return False
@@ -4244,7 +4252,7 @@ def _e_arm_pending_instead_of_entry(
         gate=gate,
     )
     state.e_last_pending_result = None
-    if signal_id and signal_id not in state.processed_signal_ids:
+    if mark_processed and signal_id and signal_id not in state.processed_signal_ids:
         state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
     result.actions.append("E_PENDING_ARMED:" + direction.value)
     logger.info("[MACD2][E] %s 대기 등록 trigger=%.0f price=%s dist=%s%% "
@@ -4767,16 +4775,18 @@ def _resolve_tw2_3slot_candidate_body(
             _e_gate["slot_number"] = slot_metrics.get("slot_number")
             _e_gate["toxic"] = bool(getattr(_tox, "toxic", False))
             _e_gate["decision"] = str(getattr(decision, "decision", "") or "")
+            _tgt = order_executor.target_symbol_for_direction(direction)
+            _e_opposite = bool(position is not None and position.quantity > 0
+                               and position.symbol != _tgt)
             if _e_arm_pending_instead_of_entry(
                     state=state, now=now, macd_snap=macd_snap,
                     direction=direction, signal_id=signal_id, flag_bar_dt=flag_bar_dt,
                     price=_e_price, early=_e_early, slot_metrics=slot_metrics,
-                    gate=_e_gate, result=result):
+                    gate=_e_gate, result=result, mark_processed=not _e_opposite):
                 _record_signal_ledger(
                     state, macd_snap, direction, signal_type, signal_id,
                     signal_detected_at, None, result.signal_dispatch_trace)
-                _tgt = order_executor.target_symbol_for_direction(direction)
-                if position is not None and position.quantity > 0 and position.symbol != _tgt:
+                if _e_opposite:
                     _e_dec = MajorFlagDecision(
                         approved=False, score=0.0, required_score=0.0,
                         decision="E_PENDING_BREAKOUT", reasons=("e pending breakout",),
@@ -4787,6 +4797,10 @@ def _resolve_tw2_3slot_candidate_body(
                         direction=direction, position=position, decision=_e_dec,
                         result=result, gate_mode="TW2_3SLOT",
                         signal_id_override=signal_id)
+                    # 청산 함수가 processed 를 찍는다. 어떤 이유로든 찍히지 않았으면
+                    # 여기서 찍어 같은 T+3 후보가 다음 tick 에 다시 대기로 걸리지 않게 한다.
+                    if signal_id and signal_id not in state.processed_signal_ids:
+                        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
                     if _e_exit is not None:
                         _apply_exit_outcome(state, _e_exit)
                         return _e_exit

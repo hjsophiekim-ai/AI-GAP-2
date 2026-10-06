@@ -316,3 +316,56 @@ def test_rs_features_count_only_today_bars():
     df2 = pd.concat([df, pd.DataFrame({"datetime": [today[-1] + timedelta(minutes=1)],
                                        "close": [2e6]})], ignore_index=True)
     assert worker._e_rs_features(df2, now + timedelta(minutes=1)) is not None
+
+
+# ── 23. 반대 포지션 보유 중 대기 등록 -> 반대 포지션은 지금 청산된다 ─────────
+def test_arming_with_opposite_position_still_exits_it():
+    """2026-10-06 parity 06/15·06/25: 대기 등록이 signal_id 를 먼저 processed 로
+    찍으면 같은 id 로 내는 반대 포지션 청산이 '중복'으로 막혀 롱을 계속 들고 있었다.
+    반대 포지션이 있을 때는 processed 를 청산 함수가 찍어야 한다."""
+    from types import SimpleNamespace
+
+    from app.trading.macd2.models import MajorFlagDecision, PositionSnapshot, SignalState
+    from tests.macd2.fake_broker import FakeBroker
+
+    s = _e_state()
+    sid = "20260615_095100_DOWN_BLUE:TW2_3SLOT_CONFIRM"
+    early = SimpleNamespace(trigger=2_301_000.0, dist_pct=0.43, c1=False, c2=False, c3=True)
+    from app.trading.macd2.models import MacdSnapshot
+    snap = MacdSnapshot(bar_dt=T0, macd=-1.0, signal=0.0, hist=-1.0, hist_last3=(0.5, -0.5, -1.0),
+                        completed_3m_count=100, previous_diff=0.5, current_diff=-1.0,
+                        relation="BELOW")
+    assert worker._e_arm_pending_instead_of_entry(
+        state=s, now=T0, macd_snap=snap, direction=Direction.DOWN_BLUE, signal_id=sid,
+        flag_bar_dt=FLAG, price=2_311_000.0, early=early, slot_metrics={}, gate={},
+        result=_Res(), mark_processed=False)
+    assert sid not in s.processed_signal_ids and e_strategy.pending_record(s) is not None
+
+    broker = FakeBroker(cash=0.0, quotes={config.LONG_SYMBOL: 27_600.0})
+    broker._positions[config.LONG_SYMBOL] = __import__("app.models", fromlist=["Position"]).Position(
+        symbol=config.LONG_SYMBOL, name=config.LONG_SYMBOL, quantity=385, avg_price=27_035.0,
+        current_price=27_600.0)
+    pos = PositionSnapshot(symbol=config.LONG_SYMBOL, quantity=385, avg_price=27_035.0)
+    dec = MajorFlagDecision(approved=False, score=0.0, required_score=0.0,
+                            decision="E_PENDING_BREAKOUT", reasons=("e",), component_scores={},
+                            metrics={}, is_reversal=True, fast_reversal=False,
+                            block_reason="E_PENDING_BREAKOUT")
+    out = worker._execute_reversal_exit_only_for_filtered_entry(
+        broker=broker, state=s, macd_snap=snap, direction=Direction.DOWN_BLUE, position=pos,
+        decision=dec, result=_Res(), gate_mode="TW2_3SLOT", signal_id_override=sid)
+    assert out is not None and out.final_state == SignalState.EXECUTED
+    assert sid in s.processed_signal_ids
+    assert any(o.side == "SELL" and o.symbol == config.LONG_SYMBOL for o in broker.orders)
+
+
+def test_arming_without_opposite_position_marks_processed():
+    from types import SimpleNamespace
+
+    s = _e_state()
+    sid = "X:TW2_3SLOT_CONFIRM"
+    early = SimpleNamespace(trigger=1.0, dist_pct=0.5, c1=False, c2=True, c3=True)
+    assert worker._e_arm_pending_instead_of_entry(
+        state=s, now=T0, macd_snap=SimpleNamespace(bar_dt=T0), direction=Direction.UP_RED,
+        signal_id=sid, flag_bar_dt=FLAG, price=1.0, early=early, slot_metrics={}, gate={},
+        result=_Res())
+    assert sid in s.processed_signal_ids
