@@ -231,3 +231,140 @@ def test_retry_keeps_the_3slot_context_even_when_the_retry_fails_again(monkeypat
         pending_dir=Direction.UP_RED, position=state.position, result=worker.TickResult(),
         bars_3m=None, default_signal_type="REVERSAL")
     assert state.pending_signal.get("tw2_3slot_ctx") == ctx
+
+
+# ── F. 10/02 그대로: 매도 직후부터 잔고 API 전체가 실패 -> 재시도에서 매도 중복 금지 ──
+def _strict_1002_setup(monkeypatch):
+    """11:51:04 실사고 재현. 반전 매도 주문이 체결된 **직후부터** KIS 잔고 API 가
+    EGW00215 로 실패한다(체결 확인 reconcile_position 도, 잔고 대조 get_positions 도 --
+    둘 다 같은 inquire-balance 다). 매도 전 잔고 대조는 정상이었다(주문이 나갔으므로)."""
+    svc, now = _market(inverse_price=5_500.0, long_price=11_000.0)
+    state = _held_3slot_state(now=now, entry_price=5_555.0, qty=1802, early_tp_on=False,
+                              entry_chop=False, peak=0.0)
+    broker = _broker(5_500.0, entry_price=5_555.0, qty=1802)
+    broker.set_quote(config.LONG_SYMBOL, 11_000.0)
+    kis_down = {"on": False}
+    real_sell, real_get_positions, real_reconcile = (
+        broker.sell_market, broker.get_positions, broker.reconcile_position)
+
+    def sell_then_kis_rate_limited(symbol, qty, cid):
+        res = real_sell(symbol, qty, cid)
+        kis_down["on"] = True                     # 11:51:04 매도 체결 직후부터 잔고 API 실패
+        return res
+
+    def get_positions():
+        if kis_down["on"]:
+            raise RuntimeError(EGW00215_ERR)
+        return real_get_positions()
+
+    def reconcile_position(symbol):
+        if kis_down["on"]:
+            raise RuntimeError(EGW00215_ERR)
+        return real_reconcile(symbol)
+
+    monkeypatch.setattr(broker, "sell_market", sell_then_kis_rate_limited)
+    monkeypatch.setattr(broker, "get_positions", get_positions)
+    monkeypatch.setattr(broker, "reconcile_position", reconcile_position)
+    return svc, now, state, broker, kis_down
+
+
+def _orders(broker, symbol, side):
+    return [o for o in broker.orders if o.symbol == symbol and o.side == side]
+
+
+def test_1002_retry_does_not_resell_the_inverse_and_only_buys_the_leverage(monkeypatch):
+    svc, now, state, broker, kis_down = _strict_1002_setup(monkeypatch)
+    sid = "20261002_114500_UP_RED:TW2_3SLOT_CONFIRM"
+    stale_inverse = state.position                 # 1차 tick 이 시작될 때의 보유 스냅샷
+
+    # ── 1차 (11:51:04): 인버스 매도 체결 -> 확인 조회 실패 -> 레버리지 BUY 보류, 신호 pending
+    out1 = worker._execute_or_wait(
+        broker=broker, market_data=svc, state=state, now=now, macd_snap=_snap(now),
+        direction=Direction.UP_RED, signal_id=sid, signal_type="REVERSAL",
+        position=stale_inverse, result=worker.TickResult(), signal_detected_at=now)
+    assert out1.block_reason == order_executor.FAIL_SELL_RECONCILE_QUERY_ERROR
+    assert len(_orders(broker, config.INVERSE_SYMBOL, "SELL")) == 1
+    assert _orders(broker, config.LONG_SYMBOL, "BUY") == []
+    assert state.pending_signal and state.pending_signal["signal_id"] == sid
+    assert sid not in state.processed_signal_ids
+
+    # ── 2차 (다음 tick): 잔고 API 회복. 호출부가 **옛 보유 스냅샷(인버스 1802)** 을
+    #    넘기는 최악의 경우에도 인버스를 다시 팔면 안 된다.
+    kis_down["on"] = False
+    out2 = worker._retry_pending_signal(
+        broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=20),
+        macd_snap=_snap(now), pending_dir=Direction.UP_RED, position=stale_inverse,
+        result=worker.TickResult(), bars_3m=None, default_signal_type="REVERSAL")
+
+    assert out2 is not None and out2.final_state == SignalState.EXECUTED
+    inv_sells = _orders(broker, config.INVERSE_SYMBOL, "SELL")
+    assert len(inv_sells) == 1, f"인버스 매도가 중복으로 나갔다: {inv_sells!r}"
+    long_buys = _orders(broker, config.LONG_SYMBOL, "BUY")
+    assert len(long_buys) == 1 and long_buys[0].success, "누락된 레버리지 매수만 1건 나가야 한다"
+    # 계좌: 인버스 0, 레버리지만 보유
+    held = {p.symbol: p.quantity for p in broker.get_positions()}
+    assert held.get(config.INVERSE_SYMBOL, 0) == 0 and held.get(config.LONG_SYMBOL, 0) > 0
+    assert state.position is not None and state.position.symbol == config.LONG_SYMBOL
+    # 원장: 인버스 매도 1건(중복 기록 없음) + 레버리지 매수 1건
+    rows = ledger.load_execution_ledger()
+    inv_sell_rows = [r for r in rows if r["symbol"] == config.INVERSE_SYMBOL and r["side"] == "SELL"]
+    long_buy_rows = [r for r in rows if r["symbol"] == config.LONG_SYMBOL and r["side"] == "BUY"]
+    assert len(inv_sell_rows) == 1, f"인버스 매도 원장 기록 {len(inv_sell_rows)}건"
+    assert int(float(inv_sell_rows[0]["executed_qty"])) == 1802
+    assert len(long_buy_rows) == 1
+    assert sid in state.processed_signal_ids and state.pending_signal is None
+
+
+def test_1002_third_attempt_is_a_no_op_after_completion(monkeypatch):
+    """완료 뒤 같은 신호가 다시 들어와도(중복 tick) 아무 주문도 나가지 않는다."""
+    svc, now, state, broker, kis_down = _strict_1002_setup(monkeypatch)
+    sid = "20261002_114500_UP_RED:TW2_3SLOT_CONFIRM"
+    stale = state.position
+    worker._execute_or_wait(broker=broker, market_data=svc, state=state, now=now, macd_snap=_snap(now),
+                            direction=Direction.UP_RED, signal_id=sid, signal_type="REVERSAL",
+                            position=stale, result=worker.TickResult(), signal_detected_at=now)
+    kis_down["on"] = False
+    worker._retry_pending_signal(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=20),
+                                 macd_snap=_snap(now), pending_dir=Direction.UP_RED, position=stale,
+                                 result=worker.TickResult(), bars_3m=None, default_signal_type="REVERSAL")
+    n_before = len(broker.orders)
+    worker._execute_or_wait(broker=broker, market_data=svc, state=state, now=now + timedelta(seconds=40),
+                            macd_snap=_snap(now), direction=Direction.UP_RED, signal_id=sid,
+                            signal_type="REVERSAL", position=state.position, result=worker.TickResult(),
+                            signal_detected_at=now)
+    assert len(broker.orders) == n_before, "완료된 신호가 다시 주문을 냈다"
+
+
+def test_1002_if_the_sell_did_not_actually_fill_the_retry_sells_then_buys(monkeypatch):
+    """반대 경우: 매도 접수는 성공했지만 실제로는 체결되지 않았다(브로커에 인버스가 그대로).
+    재시도는 잔고를 다시 맞춰 '아직 보유'를 확인하고 매도부터 다시 낸 뒤 매수한다 --
+    양쪽을 동시에 들지 않는다."""
+    svc, now, state, broker, kis_down = _strict_1002_setup(monkeypatch)
+    sid = "20261002_114500_UP_RED:TW2_3SLOT_CONFIRM"
+    from tests.macd2.fake_broker import BrokerOrderResult
+    first = {"done": False}
+    inner_sell = FakeBroker.sell_market.__get__(broker)
+
+    def sell(symbol, qty, cid):
+        if not first["done"]:
+            first["done"] = True
+            kis_down["on"] = True
+            res = BrokerOrderResult(True, broker._next_order_id(), symbol, "SELL", qty, 0, 0.0, "ACCEPTED")
+            broker.orders.append(res)                 # 접수만 되고 체결 안 됨
+            return res
+        return inner_sell(symbol, qty, cid)
+
+    monkeypatch.setattr(broker, "sell_market", sell)
+    stale = state.position
+    worker._execute_or_wait(broker=broker, market_data=svc, state=state, now=now, macd_snap=_snap(now),
+                            direction=Direction.UP_RED, signal_id=sid, signal_type="REVERSAL",
+                            position=stale, result=worker.TickResult(), signal_detected_at=now)
+    kis_down["on"] = False
+    out2 = worker._retry_pending_signal(broker=broker, market_data=svc, state=state,
+                                        now=now + timedelta(seconds=20), macd_snap=_snap(now),
+                                        pending_dir=Direction.UP_RED, position=stale,
+                                        result=worker.TickResult(), bars_3m=None, default_signal_type="REVERSAL")
+    assert out2 is not None and out2.final_state == SignalState.EXECUTED
+    assert len(_orders(broker, config.INVERSE_SYMBOL, "SELL")) == 2    # 미체결분을 다시 판다
+    held = {p.symbol: p.quantity for p in broker.get_positions()}
+    assert held.get(config.INVERSE_SYMBOL, 0) == 0 and held.get(config.LONG_SYMBOL, 0) > 0

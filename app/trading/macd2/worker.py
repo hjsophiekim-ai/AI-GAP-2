@@ -2383,6 +2383,13 @@ def _execute_or_wait(
         # would otherwise still carry the stale quantity into
         # order_executor.execute_signal's SELL leg).
         position = state.position
+    elif reconcile == RECOVERED_TO_FLAT:
+        # 2026-10-06 (10/02 사고 재시도 검증): 브로커가 플랫임을 방금 확인했고 사라진
+        # 매도 레그도 기록했다. 호출부가 넘긴 ``position`` 은 이 reconcile **이전**
+        # 스냅샷이라, 그대로 쓰면 이미 체결된 매도(10/02 11:51 인버스)를 execute_signal
+        # 이 한 번 더 내려다 FAIL_SELL 로 끝나고 누락된 반대 BUY 도 또 빠진다.
+        # 확인된 플랫(None)으로 갈아끼워 BUY 만 낸다.
+        position = state.position
     elif reconcile in (POSITION_DATA_ERROR, POSITION_MISMATCH):
         state.order_block_reason = reconcile
         result.signal_dispatch_trace["final_block_reason"] = reconcile
