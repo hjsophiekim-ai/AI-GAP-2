@@ -1,0 +1,28 @@
+대상 87일 · 3번째 거래 26건 · 승 10 / 패 16 · 합계 +468,876 · 평균 +18,034 · 중앙 -19,436
+     day     t    up         krw   net                  reasons  wait_fill regime  trend_ok  toxic  afternoon  same_dir_as_2   pnl_before  t2_win  min_since_exit  mv_open_dir  vwap_dir  rng30  xc30
+20260602 13:21 False -118,112.00 -1.32    TIME_WINDOW_STOP_LOSS      False  TREND      True  False       True           True  -144,244.00   False          117.00         3.58      1.32   0.87     7
+20260609 14:39  True   16,749.00  0.19       FORCED_LIQUIDATION      False  TREND      True  False       True           True   436,852.00    True          121.67         7.90      5.94   2.49     5
+20260610 12:41 False  283,236.00  4.14 TIME_WINDOW_AFTERNOON_TP      False  TREND      True  False       True           True   -21,070.00    True           53.00         2.43      1.96   1.53     1
+20260616 14:12  True -103,156.00 -1.15    TIME_WINDOW_STOP_LOSS      False  TREND      True  False       True           True   811,417.00    True           87.00        -0.08      1.01   0.67     3
+20260618 11:15  True  267,721.00  3.00        H50_MAX_HOLD_EXIT      False  TREND      True  False      False          False   291,768.00    True           60.67         2.64      0.55   1.03     3
+20260619 13:48 False -186,285.00 -2.08    TIME_WINDOW_STOP_LOSS      False  TREND      True  False       True          False  -191,317.00   False           99.00         4.28      3.58   3.33     1
+20260623 13:32 False  366,626.00  4.10 TIME_WINDOW_AFTERNOON_TP      False  TREND      True  False       True           True   464,545.00    True           47.00         8.78      3.80   2.53     3
+20260720 14:09 False   59,797.00  0.94       FORCED_LIQUIDATION      False  TREND     False  False       True           True 1,066,828.00   False           45.00        -2.64      1.19   1.85     3
+20260723 14:48 False  -41,827.00 -0.53       FORCED_LIQUIDATION      False  TREND     False  False       True          False   359,650.00   False           54.00         0.47      0.20   2.05     4
+20260803 13:45 False   24,730.00  0.26       FORCED_LIQUIDATION      False  TREND      True  False       True           True  -268,706.00   False          183.00         3.53      0.87   1.52     1
+20260805 13:45  True -130,846.00 -1.46    TIME_WINDOW_STOP_LOSS      False  TREND      True  False       True           True    62,164.00   False          153.00         0.06      1.04   1.48     1
+20260806 14:39 False  -36,529.00 -0.41       FORCED_LIQUIDATION      False  TREND      True  False       True           True   604,650.00    True           66.00         6.00      1.82   1.46     5
+20260807 12:27 False  -15,933.00 -0.19        H50_MAX_HOLD_EXIT      False  TREND      True  False       True           True   417,578.00    True           90.00         6.31      2.42   1.40     1
+20260810 12:30 False  301,707.00  3.22        H50_MAX_HOLD_EXIT      False  TREND      True  False       True           True  -311,828.00   False           42.00         0.62      0.83   0.77     2
+20260819 11:09 False   86,737.00  0.97        H50_MAX_HOLD_EXIT      False  TREND      True  False      False          False   434,305.00    True           62.67         1.42     -0.00   1.31     7
+20260821 10:33 False  -28,229.00 -1.14    TIME_WINDOW_STOP_LOSS      False  TREND     False   True      False          False   159,926.00   False            0.33        -4.11     -0.86   1.94     5
+20260827 10:54  True   19,539.00  0.79        H50_MAX_HOLD_EXIT      False  TREND      True   True      False           True   345,889.00   False            9.00        -1.97     -0.34   1.03     2
+20260831 10:06 False  -41,129.00 -1.66    TIME_WINDOW_STOP_LOSS      False  TREND      True   True      False          False   130,583.00    True           24.00         0.28      0.65   2.38     5
+20260904 11:42 False  -53,876.00 -0.68          OPPOSITE_SIGNAL      False   CHOP     False  False      False          False  -199,792.00   False            4.33        -0.99      0.31   0.61     3
+20260908 12:18  True   99,516.00  1.11                    B3_TP      False   CHOP      True  False       True          False   209,544.00   False          106.00         3.72      1.56   0.75     2
+20260915 11:30  True  -90,648.00 -1.43    TIME_WINDOW_STOP_LOSS      False  TREND      True  False      False           True  -221,056.00   False           50.00         1.12      0.48   0.58     4
+20260921 12:57  True     -460.00 -0.01               B3_MAXHOLD      False   CHOP      True  False       True          False   179,891.00    True          106.00         0.27      0.44   0.43     2
+20260923 13:00 False  -89,307.00 -1.00                    B3_SL      False   CHOP      True  False       True           True    22,776.00    True          127.00         2.95      1.04   0.76     1
+20260929 12:15 False  -22,940.00 -0.26               B3_MAXHOLD      False   CHOP      True  False       True          False   -17,073.00   False           77.00        -0.06      0.46   0.68     4
+20261001 13:06  True  -14,013.00 -0.14      P3_H30_MAXHOLD_EXIT      False   CHOP      True  False       True           True   -13,727.00    True          102.33         2.37      1.67   0.85     3
+20261006 13:45 False  -84,192.00 -0.94                    B3_SL      False   CHOP      True  False       True           True    91,933.00   False           22.00         3.48      1.42   0.56     2
