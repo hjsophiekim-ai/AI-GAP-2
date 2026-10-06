@@ -39,7 +39,12 @@ _LAST_REQUEST_AT: dict[str, float] = {}
 # 한도(초당 20건)보다 넉넉히 여유를 두고 설정한다.
 _MIN_REQUEST_INTERVAL_SECONDS = {"mock": 1.1, "real": 0.08}
 _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.1
-_RATE_LIMIT_MSG_CODES = {"EGW00201"}
+# EGW00215 = "원장에서 허용 가능한 초당 거래건수를 초과" — EGW00201 과 같은 종류의
+# 일시적 초당 한도 초과다(원장계 TR: 잔고/주문 등). 2026-10-02 실사고: 실계좌 반전
+# 매도 직후 잔고조회가 이 코드로 한 번 실패했는데 재시도 대상이 아니어서 곧바로
+# 오류가 됐고, 반전 매수가 통째로 사라졌다. 한도 초과 응답은 게이트웨이에서 거절된
+# 것이라 주문(order-cash)도 처리되지 않았으므로 재시도해도 중복 주문이 생기지 않는다.
+_RATE_LIMIT_MSG_CODES = {"EGW00201", "EGW00215"}
 _RATE_LIMIT_RETRY_MAX_ATTEMPTS = 8
 _RATE_LIMIT_RETRY_DELAY_SECONDS = {"mock": 5.0, "real": 0.5}
 
