@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from app.logger import logger
 from app.trading.kis_realized import kis_reported_leg_cost
 from app.trading.macd2 import config, ledger
 from app.trading.macd2.broker_adapter import BrokerOrderResult, BuySizingQuote
@@ -41,6 +42,14 @@ SAFETY_CAP_PER_ORDER = "PER_ORDER"
 SAFETY_CAP_DAILY = "DAILY"
 FAIL_SELL = "SELL_FAILED"
 FAIL_SELL_NOT_CONFIRMED = "SELL_NOT_CONFIRMED_QTY_NONZERO"
+# 2026-10-02 실사고: 매도는 접수됐는데 체결 확인용 잔고조회가 전부 실패(KIS 초당한도
+# EGW00215 등)해 보유수량을 모른다. '안 팔렸다'가 아니라 '모른다'이므로
+# FAIL_SELL_NOT_CONFIRMED 와 구분한다 -- 반대 BUY 는 내지 않고(보유가 확인되지 않은
+# 채 사면 양쪽을 동시에 들 수 있다) worker 가 다음 tick 에 잔고를 다시 맞춘 뒤
+# 같은 신호를 재시도한다.
+FAIL_SELL_RECONCILE_QUERY_ERROR = "SELL_RECONCILE_QUERY_ERROR"
+#: 보유수량을 조회하지 못했을 때 reconcile 함수들이 돌려주는 값(정상 수량은 >= 0).
+RECONCILE_QTY_UNKNOWN = -1
 FAIL_BUY = "BUY_FAILED"
 FAIL_BUY_NOT_CONFIRMED = "BUY_NOT_CONFIRMED_QTY_ZERO"
 ORDER_REJECTED = "ORDER_REJECTED"
@@ -379,12 +388,30 @@ def _fallback_sell_price(broker, symbol: str) -> Optional[float]:
     return float(price) if price and price > 0 else None
 
 
+def _query_position_qty(broker, symbol: str) -> int:
+    """보유수량 1회 조회. 조회 자체가 실패하면 예외 대신 ``RECONCILE_QTY_UNKNOWN``.
+
+    2026-10-02 실사고: 실계좌 반전 매도 직후 이 조회가 KIS 초당한도(EGW00215)로
+    RuntimeError 를 던졌고, 그 예외가 execute_signal 밖으로 튀어 **이미 나간 매도**의
+    원장 기록과 반대 BUY 를 통째로 날렸다(T+3 후보는 RESOLVE_ERROR 로 소멸).
+    주문이 나간 뒤의 확인 단계는 절대 예외로 끝나면 안 된다 -- '모른다'를 값으로
+    돌려주고, 호출자가 재시도/보수적 처리를 고른다."""
+    try:
+        return int(broker.reconcile_position(symbol))
+    except Exception as exc:
+        logger.warning("[MACD2] 보유수량 확인 조회 실패 %s -- 재시도 대상: %s", symbol, exc)
+        return RECONCILE_QTY_UNKNOWN
+
+
 def _reconcile_to_zero(broker, symbol: str, *, retries: int, delay_sec: float) -> int:
-    qty_after = -1
+    qty_after = RECONCILE_QTY_UNKNOWN
     for attempt in range(max(1, retries)):
-        qty_after = broker.reconcile_position(symbol)
-        if qty_after == 0:
+        qty = _query_position_qty(broker, symbol)
+        if qty == 0:
             return 0
+        if qty != RECONCILE_QTY_UNKNOWN or qty_after == RECONCILE_QTY_UNKNOWN:
+            # 마지막으로 '확인된' 수량을 유지한다 -- 조회 실패가 앞선 확인값을 덮지 않게.
+            qty_after = qty
         if attempt < retries - 1:
             time.sleep(delay_sec)
     return qty_after
@@ -645,7 +672,11 @@ def execute_signal(
         timestamps["sell_reconciled_at"] = _now_iso()
         if qty_after != 0:
             outcome.final_state = SignalState.FAILED
-            outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
+            # 조회 실패로 '모른다'와 확인된 '안 팔렸다'를 구분한다(2026-10-02).
+            # 어느 쪽이든 반대 BUY 는 내지 않는다 -- 매도 체결이 확인되지 않았다.
+            outcome.block_reason = (FAIL_SELL_RECONCILE_QUERY_ERROR
+                                    if qty_after == RECONCILE_QTY_UNKNOWN
+                                    else FAIL_SELL_NOT_CONFIRMED)
             if release_claim is not None:
                 release_claim(signal_id, "SELL")
             return outcome
@@ -937,7 +968,9 @@ def execute_exit(
 
     if qty_after != 0:
         outcome.final_state = SignalState.FAILED
-        outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
+        outcome.block_reason = (FAIL_SELL_RECONCILE_QUERY_ERROR
+                                if qty_after == RECONCILE_QTY_UNKNOWN
+                                else FAIL_SELL_NOT_CONFIRMED)
         return outcome
 
     _record_leg(
@@ -963,11 +996,13 @@ def execute_exit(
 
 
 def _reconcile_to_target(broker, symbol: str, target_qty: int, *, retries: int, delay_sec: float) -> int:
-    qty_after = -1
+    qty_after = RECONCILE_QTY_UNKNOWN
     for attempt in range(max(1, retries)):
-        qty_after = broker.reconcile_position(symbol)
-        if qty_after == target_qty:
-            return qty_after
+        qty = _query_position_qty(broker, symbol)
+        if qty == target_qty:
+            return qty
+        if qty != RECONCILE_QTY_UNKNOWN or qty_after == RECONCILE_QTY_UNKNOWN:
+            qty_after = qty
         if attempt < retries - 1:
             time.sleep(delay_sec)
     return qty_after
@@ -1033,7 +1068,9 @@ def execute_partial_exit(
 
     if qty_after != remaining_qty:
         outcome.final_state = SignalState.FAILED
-        outcome.block_reason = FAIL_SELL_NOT_CONFIRMED
+        outcome.block_reason = (FAIL_SELL_RECONCILE_QUERY_ERROR
+                                if qty_after == RECONCILE_QTY_UNKNOWN
+                                else FAIL_SELL_NOT_CONFIRMED)
         return outcome
 
     _record_leg(

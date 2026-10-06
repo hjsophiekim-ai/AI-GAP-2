@@ -51,6 +51,7 @@ from app.trading.macd2 import (
     bar_ledger,
     chop_regime,
     config,
+    e_strategy,
     early_take_profit,
     peak_protection,
     n1_adaptive,
@@ -476,6 +477,9 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     # W1a 사이징(2026-09-12)의 누적 exposure / 진입순번 / 첫거래 손절
     # 플래그도 session-scoped -- 토글은 그대로 두고 값만 리셋한다.
     position_sizing.reset_daily(state)
+    # E(2026-10-05): 걸려 있던 돌파 대기는 날짜가 바뀌면 폐기한다. RS 표본은
+    # 과거 영업일 자료이므로 유지한다(토글/모드도 그대로).
+    e_strategy.reset_daily(state)
     # H50(2026-09-15) HOLD 상태도 session-scoped -- 토글은 그대로 두고
     # 보류 상태만 리셋한다. 날짜가 바뀌면 전날 HOLD 를 이어받지 않는다.
     small_whipsaw_hold.clear(state)
@@ -1933,6 +1937,15 @@ def _sell_cleared_but_buy_not_requested(outcome) -> bool:
     )
 
 
+def _sell_reconcile_query_failed(outcome) -> bool:
+    """매도는 접수됐지만 체결 확인 조회가 전부 실패해 보유수량을 모르는 결과인가."""
+    return bool(
+        outcome is not None
+        and outcome.final_state == SignalState.FAILED
+        and outcome.block_reason == order_executor.FAIL_SELL_RECONCILE_QUERY_ERROR
+    )
+
+
 def _position_certain_reasons(state: RuntimeState) -> list[str]:
     """잔고조회 실패 중에도 '보유가 확실하다' 고 볼 수 없는 이유 목록 (빈 목록 = 확실)."""
     pos = state.position
@@ -2542,7 +2555,19 @@ def _execute_or_wait(
     for _safety_key in SAFETY_LEDGER_FIELDS:
         result.signal_dispatch_trace[_safety_key] = getattr(outcome, _safety_key, None)
     sell_only_switch_needs_buy_retry = _sell_cleared_but_buy_not_requested(outcome)
-    if _has_order_request(outcome) and not sell_only_switch_needs_buy_retry:
+    # 2026-10-02 실사고: 반전 매도는 접수됐는데 체결 확인용 잔고조회가 전부 실패했다
+    # (KIS 초당한도 EGW00215). 보유수량을 모르므로 반대 BUY 는 이번에 내지 않았다 --
+    # 이 신호를 processed 로 소비하면 반전이 통째로 사라진다(10/02 11:48 RED). 대신
+    # pending 으로 남겨 다음 tick 에 잔고를 다시 맞춘 뒤(_execute_or_wait 첫 줄의
+    # reconcile -- 플랫이면 RECOVERED_TO_FLAT 로 매도 레그를 기록) 같은 신호를 재시도한다.
+    sell_unconfirmed_needs_retry = _sell_reconcile_query_failed(outcome)
+    if sell_unconfirmed_needs_retry:
+        result.signal_dispatch_trace["sell_reconcile_query_error_retry"] = True
+        logger.warning(
+            "[MACD2] 반전 매도 체결확인 조회 실패 -- 신호 %s 를 pending 으로 남겨 다음 tick 에 재시도",
+            signal_id)
+    if (_has_order_request(outcome) and not sell_only_switch_needs_buy_retry
+            and not sell_unconfirmed_needs_retry):
         if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
             state.pending_signal["status"] = SignalState.ORDER_REQUESTED.value
             state.pending_signal["order_requested"] = True
@@ -2552,6 +2577,12 @@ def _execute_or_wait(
         _set_pending_signal(
             state, signal_id=signal_id, direction=direction, signal_type=signal_type,
             macd_snap=macd_snap, detected_at=now, reason=outcome.block_reason or "BLOCKED",
+        )
+    elif sell_unconfirmed_needs_retry:
+        state.order_block_reason = outcome.block_reason
+        _set_pending_signal(
+            state, signal_id=signal_id, direction=direction, signal_type=signal_type,
+            macd_snap=macd_snap, detected_at=now, reason=outcome.block_reason,
         )
     else:
         state.pending_signal = None
@@ -4044,6 +4075,227 @@ def _judge_tw2_3slot_flag(
     return decision
 
 
+# ── E 전략 보조 (EARLY-UP-FAST + RS125, 2026-10-05) ─────────────────────
+# E 가 꺼져 있으면(=N1/P3) 아래 함수의 호출부가 전부 e_strategy.is_active 로
+# 먼저 걸러지므로, 두 기존 모드에서는 이 코드가 단 한 줄도 실행되지 않는다.
+
+def _e_watch_price(market_data: MarketDataService, df_1m) -> Optional[float]:
+    """지금 기준가(하이닉스). 실시간 호가 우선, 없으면 마지막 완성 1분봉 종가."""
+    try:
+        q = market_data.get_quote(config.WATCH_SYMBOL)
+        if q is not None and q.price and float(q.price) > 0:
+            return float(q.price)
+    except Exception:
+        pass
+    try:
+        if df_1m is not None and len(df_1m):
+            return float(df_1m["close"].astype(float).iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
+def _e_rs_features(df_1m, now: datetime) -> Optional[dict]:
+    """RS 원자료 — **완성봉 종가만** 쓴다(전일 포함, 미래정보 없음)."""
+    try:
+        if df_1m is None or not len(df_1m):
+            return None
+        today = None
+        if "datetime" in df_1m.columns:
+            dts = pd.to_datetime(df_1m["datetime"])
+            day = now.astimezone(KST).date()
+            if getattr(dts.dt, "tz", None) is not None:
+                dts = dts.dt.tz_convert(KST)
+            today = int((dts.dt.date == day).sum())
+        return e_strategy.rs_features(df_1m["close"].astype(float).to_numpy(), now,
+                                      today_bars=today)
+    except Exception as exc:                                   # pragma: no cover
+        logger.warning("[MACD2][E] RS 원자료 계산 실패 -- RS 미적용: %s", exc)
+        return None
+
+
+def _e_trading_day(now: datetime) -> str:
+    return now.astimezone(KST).strftime("%Y%m%d")
+
+
+def _e_fire_hard_safety(state: RuntimeState, now: datetime, rec: dict) -> Optional[str]:
+    """돌파 체결 **직전**에만 다시 보는 hard safety. 통과면 None.
+
+    승인(게이트) 자체는 T+3 에 이미 끝났고 여기서 재평가하지 않는다 --
+    여기서 막는 것은 '지금 주문을 내면 안 되는 구조적 이유'뿐이다:
+    킬스위치 / 장 시간 / 하루 슬롯 cap / 중복주문 / 일일 예산 소진.
+    포지션·잔고 정합성과 호가 신선도는 그 다음 ``_execute_or_wait`` 가
+    기존 경로와 **완전히 같은 코드**로 재확인한다.
+    """
+    if not state.auto_trade_on or state.stopped:
+        return "AUTO_TRADE_OFF"
+    if now.astimezone(KST).time() >= config.NEW_ENTRY_CUTOFF:
+        return "NEW_ENTRY_CUTOFF"
+    if int(state.tw2_3slot_slots_used_today or 0) >= int(config.TW2_3SLOT_DAILY_CAP):
+        return "TW2_3SLOT_DAILY_CAP_REACHED"
+    if e_strategy.breakout_signal_id(rec) in state.processed_signal_ids:
+        return "DUPLICATE_SIGNAL_ID"
+    if position_sizing.is_active(state) and position_sizing.remaining_daily_budget(state) <= 0:
+        return "DAILY_EXPOSURE_CAP_EXHAUSTED"
+    return None
+
+
+def _advance_e_pending(
+    *, broker, market_data: MarketDataService, state: RuntimeState, now: datetime,
+    macd_snap, bars_3m, df_1m, position: Optional[PositionSnapshot], result: TickResult,
+):
+    """매 tick: 걸려 있는 돌파 대기를 **폐기하거나 체결**한다.
+
+    체결은 **승인 시점 게이트 스냅샷을 재생**한다 -- 돌파 시점에 게이트를 다시
+    평가하지 않는다. 승인은 T+3 에 이미 끝났고, 15분 뒤 재평가하면 그 사이
+    바뀐 시장상태가 이미 승인된 신호를 조용히 바꿔 버리기 때문이다. 구조는
+    기존 pending retry(``_retry_pending_signal``)와 같다: 승인 때 저장한
+    session/slot/chop/사이징을 그대로 쓰고, 지금의 일일 노출 잔여로만 배수를
+    다시 자른 뒤 ``_execute_or_wait`` -> 체결되면 ``_finalize_tw2_3slot_entry``
+    로 **최초 체결과 동일한 후처리**를 탄다.
+
+    승인 시점과 **다른 signal_id**(``:E_BRK``)를 쓰므로 중복주문이 구조적으로
+    불가능하고, 슬롯/예산은 여기서 체결됐을 때 비로소 소비된다.
+
+    E 가 아니면 즉시 None 이다 -- N1/P3 에서는 아무 일도 하지 않는다.
+    """
+    if not e_strategy.is_active(state):
+        return None
+    rec = e_strategy.pending_record(state)
+    if rec is None:
+        return None
+    reason = e_strategy.pending_expiry_reason(rec, now)
+    if reason is not None:
+        e_strategy.clear_pending(state, reason)
+        result.actions.append("E_PENDING_EXPIRED:" + str(rec.get("direction")))
+        return None
+    price = _e_watch_price(market_data, df_1m)
+    if not e_strategy.breakout_hit(rec, price):
+        return None
+
+    direction = e_strategy.pending_direction(rec)
+    flag_bar_dt = _parse_iso_dt(rec.get("flag_bar_ts"))
+    ctx = rec.get("gate") if isinstance(rec.get("gate"), dict) else None
+    if direction is None or flag_bar_dt is None or ctx is None:
+        e_strategy.clear_pending(state, "E_PENDING_INVALID")
+        return None
+    block = _e_fire_hard_safety(state, now, rec)
+    if block is not None:
+        e_strategy.clear_pending(state, "E_PENDING_BLOCKED:" + block)
+        state.order_block_reason = block
+        result.actions.append("E_PENDING_BLOCKED:" + block)
+        logger.warning("[MACD2][E] 돌파했지만 체결하지 않는다 -- %s (%s)",
+                       block, rec.get("signal_id"))
+        return None
+
+    fire_signal_id = e_strategy.breakout_signal_id(rec)
+    approved_at = _parse_iso_dt(rec.get("approved_at"))
+    delay_min = (now - approved_at).total_seconds() / 60.0 if approved_at else 0.0
+    e_strategy.clear_pending(state, e_strategy.PENDING_FIRED)
+    logger.info("[MACD2][E] breakout fired %s dir=%s trigger=%.0f price=%s delay=%.1f분",
+                fire_signal_id, rec.get("direction"), float(rec.get("trigger") or 0.0),
+                price, delay_min)
+
+    # ── 승인 스냅샷 재생 ────────────────────────────────────────────────
+    # 사이징: 승인 때의 clip 후 배수를 쓰되 **지금의** 일일 노출 잔여로 다시
+    # 자른다(_tw2_3slot_retry_sizing — pending retry 와 같은 함수).
+    sizing = _tw2_3slot_retry_sizing(state, ctx)
+    rs = e_strategy.evaluate_rs(
+        state, features=_e_rs_features(df_1m, now), day=_e_trading_day(now))
+    boost = e_strategy.apply_rs_boost(state, sizing.applied, rs)
+    result.signal_dispatch_trace["e_breakout"] = {
+        "signal_id": fire_signal_id, "trigger": rec.get("trigger"), "price": price,
+        "delay_min": round(delay_min, 2), "approved_at": rec.get("approved_at"),
+        "gate_replayed": True,
+    }
+    result.signal_dispatch_trace["e_rs"] = {
+        "hit": rs.hit, "score": rs.score, "threshold": rs.threshold,
+        "samples": rs.samples, "reason": rs.reason, "base": boost.base,
+        "wanted": boost.wanted, "applied": boost.applied, "extra": boost.extra,
+        "capped": boost.capped,
+    }
+    signal_type = "REVERSAL" if (position is not None and position.quantity > 0) else "INITIAL"
+    detected_at = _parse_iso_dt(ctx.get("signal_detected_at")) or now
+    outcome = _execute_or_wait(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        direction=direction, signal_id=fire_signal_id, signal_type=signal_type,
+        position=position, result=result, signal_detected_at=detected_at,
+        budget_multiplier=boost.applied,
+    )
+    _record_signal_ledger(state, macd_snap, direction, signal_type, fire_signal_id,
+                          detected_at, outcome, result.signal_dispatch_trace)
+    # 돌파 체결이 주문 단계에서 pending 이 됐다(잔고조회 실패 / 2026-10-02 반전 매도
+    # 체결확인 조회 실패 등) -> run_once 의 pending retry 가 이어받는다. 승인 시점
+    # 게이트 스냅샷을 3-SLOT 문맥으로 실어, 재시도 체결도 _finalize_tw2_3slot_entry
+    # (P3 스냅샷/슬롯/epoch/노출)를 똑같이 타게 한다. 없으면 09/29 와 같은 BASE 사고.
+    if (state.pending_signal
+            and state.pending_signal.get("signal_id") == fire_signal_id):
+        state.pending_signal["tw2_3slot_ctx"] = dict(ctx)
+    if outcome is None:
+        state.e_last_pending_result = "E_PENDING_FIRED_NOT_EXECUTED"
+        return None
+    if outcome.final_state == SignalState.EXECUTED:
+        e_strategy.note_boost(state, boost)
+        _apply_switch_outcome(state, outcome, direction, now)
+        chop = None
+        c = ctx.get("presized_chop")
+        if c:
+            chop = early_take_profit.EntryChopDecision(
+                is_chop=bool(c.get("is_chop")), score=int(c.get("score") or 0),
+                required=int(c.get("required") or 0), conditions=dict(c.get("conditions") or {}))
+        _finalize_tw2_3slot_entry(
+            state, outcome=outcome, direction=direction, now=now,
+            session=ctx.get("session"), sizing=sizing, presized_chop=chop,
+            bars_3m=bars_3m, signal_detected_at=detected_at, signal_id=fire_signal_id,
+        )
+        state.e_last_pending_result = e_strategy.PENDING_FIRED
+    else:
+        state.e_last_pending_result = "E_PENDING_FIRED_NOT_EXECUTED"
+    return outcome
+
+
+def _e_arm_pending_instead_of_entry(
+    *, state: RuntimeState, now: datetime, macd_snap, direction: Direction,
+    signal_id: str, flag_bar_dt: datetime, price: Optional[float], early: Any,
+    slot_metrics: dict, gate: dict, result: TickResult,
+    mark_processed: bool = True,
+) -> bool:
+    """즉시진입 조건 미달 -> 돌파 대기를 건다. 걸었으면 True.
+
+    **슬롯도 예산도 여기서는 소비하지 않는다** -- 체결됐을 때
+    ``_finalize_tw2_3slot_entry`` 가 비로소 올린다. 승인 signal_id 는
+    processed 로 찍어 같은 T+3 후보가 다시 뜨지 않게 하고, 체결은 별도
+    ``:E_BRK`` id 로 나가므로 중복주문이 생길 수 없다.
+
+    ``gate`` 는 승인 시점 게이트 스냅샷(session/slot/chop/사이징)이다 --
+    돌파 시점에 게이트를 다시 평가하지 않기 위해 여기서 통째로 저장한다.
+
+    ``mark_processed=False`` 는 호출자가 같은 signal_id 로 **반대 포지션
+    청산**을 곧바로 낼 때 쓴다. 청산 함수
+    (``_execute_reversal_exit_only_for_filtered_entry``)는 이미 processed 인
+    id 를 중복으로 보고 아무것도 하지 않으므로, 여기서 먼저 찍으면 보유 중인
+    반대 포지션이 청산되지 않는다(2026-10-06 parity 06/15·06/25 에서 발견).
+    그 경우 processed 는 청산 함수가 찍는다.
+    """
+    if early.trigger is None:
+        return False
+    e_strategy.arm_pending(
+        state, direction=direction, trigger=float(early.trigger), signal_id=signal_id,
+        flag_bar_dt=flag_bar_dt, confirm_bar_dt=macd_snap.bar_dt, now=now,
+        session=slot_metrics.get("session"), slot_number=slot_metrics.get("slot_number"),
+        gate=gate,
+    )
+    state.e_last_pending_result = None
+    if mark_processed and signal_id and signal_id not in state.processed_signal_ids:
+        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+    result.actions.append("E_PENDING_ARMED:" + direction.value)
+    logger.info("[MACD2][E] %s 대기 등록 trigger=%.0f price=%s dist=%s%% "
+                "c1=%s c2=%s c3=%s (%.0f분 내 미돌파면 폐기)",
+                direction.value, float(early.trigger), price, early.dist_pct,
+                early.c1, early.c2, early.c3, float(config.E_WAIT_MINUTES))
+    return True
+
+
 def _resolve_tw2_3slot_candidate(
     *,
     broker,
@@ -4523,11 +4775,93 @@ def _resolve_tw2_3slot_candidate_body(
             "remaining_daily_budget": position_sizing.remaining_daily_budget(state),
             "daily_capital": position_sizing.daily_capital(state),
         }
+    # ── E 전략 overlay (2026-10-05) ────────────────────────────────────
+    # 진입 **승인**은 위에서 이미 끝났다. 여기서는 (1) 지금 살지 / 돌파를
+    # 기다릴지, (2) RS 상위20% 면 얼마나 더 살지 두 가지만 정한다. E 가
+    # 아니면 이 블록 전체가 no-op 이고 배수는 _sizing.applied 그대로라
+    # N1/P3 동작이 조금도 바뀌지 않는다.
+    _e_mult = float(_sizing.applied)
+    _e_boost = None
+    _e_rs = e_strategy.NEUTRAL_RS
+    if e_strategy.is_active(state):
+        _e_price = _e_watch_price(market_data, df_1m)
+        _e_feat = _e_rs_features(df_1m, now)
+        # RS 통계의 원자료는 **승인 시점**에 쌓는다 -- 대기로 가든 즉시 사든
+        # 같은 자료가 들어가야 과거분포가 경로에 따라 달라지지 않는다.
+        # 오늘 쌓은 표본은 rs_stats_for_day 가 'day < 오늘' 로 잘라내므로
+        # 오늘 판정에는 절대 쓰이지 않는다(미래정보 차단).
+        e_strategy.note_rs_sample(state, _e_trading_day(now), _e_feat)
+        # 돌파 체결(_advance_e_pending)은 이 본문을 타지 않는다 -- 승인 시점
+        # 게이트 스냅샷을 재생해 바로 주문하므로, 여기 오는 것은 항상 T+3
+        # 승인 직후의 최초 판정이다.
+        _e_early = e_strategy.evaluate_early_pass(
+            bars_3m=bars_3m, flag_bar_dt=flag_bar_dt,
+            confirm_bar_dt=macd_snap.bar_dt, direction=direction, price=_e_price)
+        result.signal_dispatch_trace["e_early_pass"] = dataclasses.asdict(_e_early)
+        if not _e_early.immediate:
+            # 즉시진입 조건 미달 -> 돌파 대기. 승인 시점 게이트 스냅샷을
+            # 통째로 저장해 두고(돌파 때 재평가하지 않는다), 보유 중인
+            # **반대** 포지션은 지금 청산한다.
+            _e_gate = _tw2_3slot_retry_ctx(
+                session=slot_metrics.get("session"), sizing=_sizing,
+                presized_chop=_presized_chop, signal_detected_at=signal_detected_at,
+                flag_bar_dt=flag_bar_dt)
+            _e_gate["slot_number"] = slot_metrics.get("slot_number")
+            _e_gate["toxic"] = bool(getattr(_tox, "toxic", False))
+            _e_gate["decision"] = str(getattr(decision, "decision", "") or "")
+            _tgt = order_executor.target_symbol_for_direction(direction)
+            _e_opposite = bool(position is not None and position.quantity > 0
+                               and position.symbol != _tgt)
+            if _e_arm_pending_instead_of_entry(
+                    state=state, now=now, macd_snap=macd_snap,
+                    direction=direction, signal_id=signal_id, flag_bar_dt=flag_bar_dt,
+                    price=_e_price, early=_e_early, slot_metrics=slot_metrics,
+                    gate=_e_gate, result=result, mark_processed=not _e_opposite):
+                _record_signal_ledger(
+                    state, macd_snap, direction, signal_type, signal_id,
+                    signal_detected_at, None, result.signal_dispatch_trace)
+                if _e_opposite:
+                    _e_dec = MajorFlagDecision(
+                        approved=False, score=0.0, required_score=0.0,
+                        decision="E_PENDING_BREAKOUT", reasons=("e pending breakout",),
+                        component_scores={}, metrics={}, is_reversal=True,
+                        fast_reversal=False, block_reason="E_PENDING_BREAKOUT")
+                    _e_exit = _execute_reversal_exit_only_for_filtered_entry(
+                        broker=broker, state=state, macd_snap=macd_snap,
+                        direction=direction, position=position, decision=_e_dec,
+                        result=result, gate_mode="TW2_3SLOT",
+                        signal_id_override=signal_id)
+                    # 청산 함수가 processed 를 찍는다. 어떤 이유로든 찍히지 않았으면
+                    # 여기서 찍어 같은 T+3 후보가 다음 tick 에 다시 대기로 걸리지 않게 한다.
+                    if signal_id and signal_id not in state.processed_signal_ids:
+                        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+                    if _e_exit is not None:
+                        _apply_exit_outcome(state, _e_exit)
+                        return _e_exit
+                return None
+        # RS125 — 일일 누적한도 안에서만 증액한다.
+        _e_rs = e_strategy.evaluate_rs(
+            state, features=_e_feat, day=_e_trading_day(now))
+        _e_boost = e_strategy.apply_rs_boost(state, _sizing.applied, _e_rs)
+        _e_mult = float(_e_boost.applied)
+        result.signal_dispatch_trace["e_rs"] = {
+            "hit": _e_rs.hit, "score": _e_rs.score, "threshold": _e_rs.threshold,
+            "samples": _e_rs.samples, "reason": _e_rs.reason,
+            "base": _e_boost.base, "wanted": _e_boost.wanted,
+            "applied": _e_boost.applied, "extra": _e_boost.extra,
+            "capped": _e_boost.capped,
+            "remaining_daily_budget": position_sizing.remaining_daily_budget(state),
+        }
+        if _e_rs.hit:
+            logger.info("[MACD2][E] RS 상위20%% 증액 %s score=%.4f thr=%.4f "
+                        "배수 %.4f -> %.4f (한도초과로 깎임=%s)",
+                        signal_id, float(_e_rs.score or 0.0), float(_e_rs.threshold or 0.0),
+                        _e_boost.base, _e_boost.applied, _e_boost.capped)
     outcome = _execute_or_wait(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
         signal_detected_at=signal_detected_at,
-        budget_multiplier=_sizing.applied,
+        budget_multiplier=_e_mult,
     )
     result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, "TW2_3SLOT")
     if outcome is None and result.skipped == config.MISSED_SIGNAL_QUOTE_STALE:
@@ -4536,6 +4870,10 @@ def _resolve_tw2_3slot_candidate_body(
     _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, signal_detected_at, outcome, result.signal_dispatch_trace)
 
     if outcome is not None and outcome.final_state == SignalState.EXECUTED:
+        # E: position_sizing.note_entry 는 '증액 전' 배수만 기록한다. 증액분을
+        # 여기서 누계에 직접 더하지 않으면 뒤 거래가 여유를 과대평가해 일일
+        # 3,000만원 한도를 넘는다(2026-10-05 연구에서 8일 초과 실측).
+        e_strategy.note_boost(state, _e_boost)
         _apply_switch_outcome(state, outcome, direction, now)
         session = slot_metrics.get("session") or time_window_filter.session_for_window(
             time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time())
@@ -4545,9 +4883,11 @@ def _resolve_tw2_3slot_candidate_body(
             sizing=_sizing, presized_chop=_presized_chop, bars_3m=bars_3m,
             signal_detected_at=signal_detected_at, signal_id=signal_id,
         )
-    elif (outcome is None and state.pending_signal
+    elif (state.pending_signal
           and state.pending_signal.get("signal_id") == signal_id):
         # 2026-09-29: 주문 전 단계(POSITION_DATA_ERROR 등)에서 pending 이 됐다.
+        # 2026-10-02: 반전 매도 후 체결확인 조회 실패(FAILED + pending)도 같다 --
+        # outcome 이 None 이 아니어도 pending 으로 남았으면 문맥을 싣는다.
         # run_once 의 pending retry 가 이 신호를 체결하면 위와 **똑같은** 후처리를
         # 타도록, 이 tick 에서 이미 결정된 진입 문맥을 pending 에 싣는다.
         state.pending_signal["tw2_3slot_ctx"] = _tw2_3slot_retry_ctx(
@@ -4718,10 +5058,11 @@ def _retry_pending_signal(
         position=position, result=result, signal_detected_at=detected_at,
         budget_multiplier=sizing.applied,
     )
+    # 또 pending 이 됐다면 문맥을 다시 싣는다(다음 재시도도 같은 후처리).
+    # 2026-10-02: FAILED + pending(반전 매도 체결확인 조회 실패)도 포함한다.
+    if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
+        state.pending_signal["tw2_3slot_ctx"] = ctx
     if outcome is None:
-        # 또 pending 이 됐다면 문맥을 다시 싣는다(다음 재시도도 같은 후처리).
-        if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
-            state.pending_signal["tw2_3slot_ctx"] = ctx
         return None
     _record_signal_ledger(state, macd_snap, pending_dir, signal_type, signal_id,
                           detected_at, outcome, result.signal_dispatch_trace)
@@ -6354,15 +6695,37 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
     if quote_snap is None or quote_snap.error or quote_snap.price <= 0:
         state.premarket_carry_last_result = "QUOTE_UNAVAILABLE"
         return None  # transient -- next tick retries within the fire window
+    # ── 일일 누적매수한도 (2026-10-05) ────────────────────────────────
+    # 이 경로는 W1a 규칙배수를 쓰지 않지만 **한도는 지켜야 한다**. 규칙배수를
+    # 건드리지 않고 한도만 적용하므로, 한도가 남아 있는 한(=이 진입이 그날
+    # 첫 주문인 정상 경로) 주문금액은 기존과 바이트 단위로 동일하다.
+    # **E 모드에서만** 적용한다 -- N1/P3 는 이 경로의 주문금액·노출 누계가 기존과
+    # 바이트 단위로 같아야 한다(OFF parity). N1/P3 의 같은 한도 우회는 별도 hotfix 대상.
+    _cap_mult, _cap_hit = (position_sizing.clip_to_daily_cap(state, 1.0)
+                           if e_strategy.is_active(state) else (1.0, False))
+    if _cap_hit:
+        logger.warning("[MACD2] PREMARKET_CARRY_TW -- 일일 누적매수한도로 주문을 깎는다 "
+                       "(배수 1.0 -> %.4f, 사용 %.4f/%.2f)", _cap_mult,
+                       position_sizing.exposure_used(state),
+                       float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP))
+    if _cap_mult <= 0:
+        state.premarket_carry_last_result = "DAILY_EXPOSURE_CAP_EXHAUSTED"
+        return None
     signal_id = f"PREMARKET_CARRY_TW_{direction.value}_{now.strftime('%Y%m%d')}"
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=signal_id,
-        quotes={target_symbol: quote_snap.price}, position=None, budget=state.budget,
+        quotes={target_symbol: quote_snap.price}, position=None,
+        budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
+                else state.budget),
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
     )
     _record_premarket_carry_signal(state, direction, signal_id, now, outcome)
 
     if outcome.final_state == SignalState.EXECUTED:
+        # 한도 누계에만 반영한다(진입순번/첫거래 손절 플래그는 건드리지 않는다 --
+        # 그 둘은 W1a 규칙배수의 입력이라 올리면 기존 동작이 바뀐다).
+        if e_strategy.is_active(state):
+            position_sizing.note_external_exposure(state, _cap_mult)
         _apply_switch_outcome(state, outcome, direction, now)
         state.premarket_carry_executed_at = now.isoformat()
         state.premarket_carry_last_result = "EXECUTED"
@@ -6501,15 +6864,38 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
         state.order_block_reason = "SCHEDULED_ENTRY_QUOTE_UNAVAILABLE"
         return None
 
+    # ── 일일 누적매수한도 (2026-10-05) ────────────────────────────────
+    # 이 경로는 W1a 규칙배수를 쓰지 않지만 **한도는 지켜야 한다**. 규칙배수를
+    # 건드리지 않고 한도만 적용하므로, 한도가 남아 있는 한(=이 진입이 그날
+    # 첫 주문인 정상 경로) 주문금액은 기존과 바이트 단위로 동일하다.
+    # **E 모드에서만** 적용한다 -- N1/P3 는 이 경로의 주문금액·노출 누계가 기존과
+    # 바이트 단위로 같아야 한다(OFF parity). N1/P3 의 같은 한도 우회는 별도 hotfix 대상.
+    _cap_mult, _cap_hit = (position_sizing.clip_to_daily_cap(state, 1.0)
+                           if e_strategy.is_active(state) else (1.0, False))
+    if _cap_hit:
+        logger.warning("[MACD2] SCHEDULED_ENTRY_0903 -- 일일 누적매수한도로 주문을 깎는다 "
+                       "(배수 1.0 -> %.4f, 사용 %.4f/%.2f)", _cap_mult,
+                       position_sizing.exposure_used(state),
+                       float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP))
+    if _cap_mult <= 0:
+        state.scheduled_entry_last_result = "DAILY_EXPOSURE_CAP_EXHAUSTED"
+        state.order_block_reason = "DAILY_EXPOSURE_CAP_EXHAUSTED"
+        return None
+
     signal_id = f"SCHEDULED_0903_{direction.value}_{now.strftime('%Y%m%d')}"
     outcome = order_executor.execute_signal(
         broker=broker, direction=direction, signal_id=signal_id,
-        quotes={target_symbol: quote_snap.price}, position=None, budget=state.budget,
+        quotes={target_symbol: quote_snap.price}, position=None,
+        budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
+                else state.budget),
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
     )
     _record_scheduled_entry_signal(state, direction, signal_id, now, outcome)
 
     if outcome.final_state == SignalState.EXECUTED:
+        # 한도 누계에만 반영한다(진입순번/첫거래 손절 플래그는 건드리지 않는다).
+        if e_strategy.is_active(state):
+            position_sizing.note_external_exposure(state, _cap_mult)
         _apply_switch_outcome(state, outcome, direction, now)
         state.scheduled_entry_executed_at = now.isoformat()
         state.scheduled_entry_last_result = "EXECUTED"
@@ -6954,6 +7340,20 @@ def run_once(
         # state.time_window_3slot_filter_enabled is True (mutually exclusive
         # with TW2/TEG, so at most one of these two calls ever does anything
         # on a given tick).
+        # E: 걸려 있는 돌파 대기를 먼저 본다 -- 폐기 또는 체결. E 가 아니면
+        # 즉시 None 이라 N1/P3 에서는 호출 자체가 no-op 이다.
+        e_pending_outcome = _advance_e_pending(
+            broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+            bars_3m=bars_3m, df_1m=df_1m, position=pos, result=result,
+        )
+        if e_pending_outcome is not None and e_pending_outcome.final_state == SignalState.EXECUTED:
+            if state.position is not None:
+                result.actions.append(f"E_BREAKOUT_SWITCH:{e_pending_outcome.target_symbol}")
+            else:
+                result.actions.append(f"E_BREAKOUT_SELL_ONLY:{e_pending_outcome.target_symbol}")
+            _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
+            return result
+
         tw2_3slot_resolve_outcome = _resolve_tw2_3slot_candidate(
             broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
             bars_3m=bars_3m, df_1m=df_1m, position=pos, result=result,
@@ -7407,6 +7807,15 @@ def run_once(
     )
     if tw_resolve_outcome is not None and tw_resolve_outcome.final_state == SignalState.EXECUTED:
         result.actions.append(f"TIME_WINDOW_ENTRY:{tw_resolve_outcome.target_symbol}")
+        _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
+        return result
+
+    e_pending_outcome = _advance_e_pending(
+        broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+        bars_3m=bars_3m, df_1m=df_1m, position=None, result=result,
+    )
+    if e_pending_outcome is not None and e_pending_outcome.final_state == SignalState.EXECUTED:
+        result.actions.append(f"E_BREAKOUT_ENTRY:{e_pending_outcome.target_symbol}")
         _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
         return result
 

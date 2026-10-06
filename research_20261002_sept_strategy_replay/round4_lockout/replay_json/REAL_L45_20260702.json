@@ -1,0 +1,187 @@
+{
+ "D": "20260702",
+ "FILL": "REAL",
+ "VAR": "L45",
+ "orders": [
+  {
+   "t": "2026-07-02T09:45:00+09:00",
+   "side": "BUY",
+   "sym": "0193T0",
+   "qty": 192,
+   "px": 12910.0,
+   "acts": [
+    "TW2_3SLOT_ENTRY:0193T0"
+   ]
+  },
+  {
+   "t": "2026-07-02T09:57:00+09:00",
+   "side": "SELL",
+   "sym": "0193T0",
+   "qty": 192,
+   "px": 12725.0,
+   "acts": [
+    "TIME_WINDOW_STOP_LOSS:0193T0"
+   ]
+  }
+ ],
+ "acts": [
+  {
+   "t": "2026-07-02T09:42:00+09:00",
+   "a": [
+    "FILTERED_OUT:UP_RED"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-02T09:45:00+09:00",
+   "a": [
+    "TW2_3SLOT_ENTRY:0193T0"
+   ],
+   "mode": "BASE",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-02T09:57:00+09:00",
+   "a": [
+    "TIME_WINDOW_STOP_LOSS:0193T0"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-02T13:36:00+09:00",
+   "a": [
+    "FILTERED_OUT:DOWN_BLUE"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-02T13:39:00+09:00",
+   "a": [
+    "FILTERED_OUT:DOWN_BLUE"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  }
+ ],
+ "sig": [
+  {
+   "completed_bar_at": "093900",
+   "signal_id": "20260702_093900_UP_RED",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-02T09:42:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "094200",
+   "signal_id": "20260702_093900_UP_RED:TW2_3SLOT_CONFIRM",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-02T09:45:00+09:00",
+   "order_result": "EXECUTED",
+   "block_reason": "",
+   "order_price": "12920.0",
+   "final_qty": "192"
+  },
+  {
+   "completed_bar_at": "133300",
+   "signal_id": "20260702_133300_DOWN_BLUE",
+   "direction": "DOWN_BLUE",
+   "detected_at": "2026-07-02T13:36:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "133600",
+   "signal_id": "20260702_133300_DOWN_BLUE:TW2_3SLOT_CONFIRM",
+   "direction": "DOWN_BLUE",
+   "detected_at": "2026-07-02T13:39:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TW2_REJECT_VWAP_VETO",
+   "order_price": "",
+   "final_qty": ""
+  }
+ ],
+ "ex": [
+  {
+   "signal_id": "20260701_091500_DOWN_BLUE:TW2_3SLOT_CONFIRM",
+   "timestamp": "2026-10-02T14:36:54.599237+09:00",
+   "symbol": "0197X0",
+   "side": "BUY",
+   "executed_qty": "840",
+   "executed_price": "12420.0",
+   "gross_pnl": "0.0",
+   "fee": "380.0",
+   "net_pnl": "0.0",
+   "exit_reason": ""
+  },
+  {
+   "signal_id": "",
+   "timestamp": "2026-10-02T14:37:07.959756+09:00",
+   "symbol": "0197X0",
+   "side": "SELL",
+   "executed_qty": "168",
+   "executed_price": "12805.0",
+   "gross_pnl": "64680.0",
+   "fee": "78.0",
+   "net_pnl": "64526.0",
+   "exit_reason": "TIME_WINDOW_TP1_PARTIAL"
+  },
+  {
+   "signal_id": "",
+   "timestamp": "2026-10-02T14:37:30.144496+09:00",
+   "symbol": "0197X0",
+   "side": "SELL",
+   "executed_qty": "672",
+   "executed_price": "13430.0",
+   "gross_pnl": "678720.0",
+   "fee": "328.0",
+   "net_pnl": "678088.0",
+   "exit_reason": "TIME_WINDOW_TP2_FULL"
+  },
+  {
+   "signal_id": "20260702_093900_UP_RED:TW2_3SLOT_CONFIRM",
+   "timestamp": "2026-10-02T14:39:41.713798+09:00",
+   "symbol": "0193T0",
+   "side": "BUY",
+   "executed_qty": "192",
+   "executed_price": "12910.0",
+   "gross_pnl": "0.0",
+   "fee": "90.0",
+   "net_pnl": "0.0",
+   "exit_reason": ""
+  },
+  {
+   "signal_id": "",
+   "timestamp": "2026-10-02T14:39:46.966896+09:00",
+   "symbol": "0193T0",
+   "side": "SELL",
+   "executed_qty": "192",
+   "executed_price": "12725.0",
+   "gross_pnl": "-35520.0",
+   "fee": "89.0",
+   "net_pnl": "-35699.0",
+   "exit_reason": "TIME_WINDOW_STOP_LOSS"
+  }
+ ],
+ "entries": [
+  {
+   "t": "2026-07-02T09:45:00+09:00",
+   "dir": "UP_RED",
+   "sid": "20260702_093900_UP_RED:TW2_3SLOT_CONFIRM",
+   "trend_ok": false,
+   "snap_reason": "OFF_TREND",
+   "regime": "TREND",
+   "bypass": false,
+   "simple": false
+  }
+ ],
+ "lock_events": [],
+ "lock_blocked": []
+}

@@ -1,0 +1,103 @@
+{
+ "D": "20260730",
+ "FILL": "REAL",
+ "VAR": "BRK15",
+ "orders": [],
+ "acts": [
+  {
+   "t": "2026-07-30T09:33:00+09:00",
+   "a": [
+    "FILTERED_OUT:UP_RED"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-30T13:36:00+09:00",
+   "a": [
+    "FILTERED_OUT:DOWN_BLUE"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-30T13:39:00+09:00",
+   "a": [
+    "FILTERED_OUT:DOWN_BLUE"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  }
+ ],
+ "sig": [
+  {
+   "completed_bar_at": "093000",
+   "signal_id": "20260730_093000_UP_RED",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-30T09:33:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "093300",
+   "signal_id": "20260730_093000_UP_RED:TW2_3SLOT_CONFIRM",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-30T09:36:00+09:00",
+   "order_result": "WAITING",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "133300",
+   "signal_id": "20260730_133300_DOWN_BLUE",
+   "direction": "DOWN_BLUE",
+   "detected_at": "2026-07-30T13:36:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "133600",
+   "signal_id": "20260730_133300_DOWN_BLUE:TW2_3SLOT_CONFIRM",
+   "direction": "DOWN_BLUE",
+   "detected_at": "2026-07-30T13:39:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TW2_REJECT_VWAP_VETO",
+   "order_price": "",
+   "final_qty": ""
+  }
+ ],
+ "ex": [],
+ "entries": [],
+ "lock_events": [],
+ "lock_blocked": [],
+ "brk": [
+  {
+   "sid": "20260730_093000_UP_RED:TW2_3SLOT_CONFIRM",
+   "dir": "UP_RED",
+   "trigger": 1350000.0,
+   "flag_bar": "2026-07-30T09:30:00+09:00",
+   "confirm_bar": "2026-07-30T09:33:00+09:00",
+   "armed_at": "2026-07-30T09:36:00+09:00",
+   "deadline": "2026-07-30T09:51:00+09:00",
+   "ev": "ARMED",
+   "held": null
+  },
+  {
+   "sid": "20260730_093000_UP_RED:TW2_3SLOT_CONFIRM",
+   "dir": "UP_RED",
+   "trigger": 1350000.0,
+   "flag_bar": "2026-07-30T09:30:00+09:00",
+   "confirm_bar": "2026-07-30T09:33:00+09:00",
+   "armed_at": "2026-07-30T09:36:00+09:00",
+   "deadline": "2026-07-30T09:51:00+09:00",
+   "ev": "EXPIRED",
+   "at": "2026-07-30T09:51:20+09:00",
+   "wick": null
+  }
+ ]
+}

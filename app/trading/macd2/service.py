@@ -1272,6 +1272,7 @@ class Macd2Service:
 
             "N1"  기존 전략      = N1 + C1 + SMART + AR1
             "P3"  Adaptive CHOP  = 위 BASE + SHADOW detector + B3 + Y3 + P3 rescue
+            "E"   P3 + EARLY-UP-FAST(조건부 지연진입) + RS125(일일한도 내 증액)
 
         두 모드의 **진입은 완전히 같다**(N1 + C1 + SMART + AR1). 차이는 청산
         레이어 하나뿐이고, P3 모드에서도 ``entry_regime == CHOP`` 인 포지션만
@@ -1307,13 +1308,13 @@ class Macd2Service:
             }
         prev = strategy_mode_mod.current(state)
         account = "REAL" if str(getattr(state, "mode", "mock")) == "real" else "MOCK"
-        if target == strategy_mode_mod.MODE_P3 and account == "REAL":
+        if strategy_mode_mod.is_p3_based(target) and account == "REAL":
             # 2026-09-27: 실계좌에서도 P3 를 쓸 수 있다. 다만 **자동으로 켜지는
             # 경로는 없다** -- 기본값 OFF, migration 은 조합이 어긋나면 N1 로
             # 떨어지고, 재시작 복원은 저장된 선택을 되살릴 뿐이다. 여기까지
             # 왔다는 것은 사용자가 실계좌 상태에서 [P3] 를 직접 눌렀다는 뜻이다.
-            log.warning("[MACD2][MODE] REAL 계좌에서 P3 가 선택됐다 "
-                        "(changed_by=%s)", changed_by)
+            log.warning("[MACD2][MODE] REAL 계좌에서 %s 가 선택됐다 "
+                        "(changed_by=%s)", target, changed_by)
         now_iso = datetime.now(KST).isoformat()
         strategy_mode_mod.apply(state, target, changed_by=changed_by, now_iso=now_iso)
         state_store.save_state(state)

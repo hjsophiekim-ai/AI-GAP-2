@@ -239,6 +239,34 @@ def note_entry(state, decision: SizingDecision) -> None:
     state.x2lite_last_applied_sizing = float(decision.applied)
 
 
+def clip_to_daily_cap(state, multiplier: float) -> tuple[float, bool]:
+    """``multiplier`` 를 일일 누적한도 안으로 깎는다. ``(적용배수, 깎였는가)``.
+
+    예약매수(09:03)/프리마켓 승계처럼 W1a 규칙배수를 쓰지 않는 경로가
+    **한도만** 지키게 하기 위한 함수다 -- 규칙배수(CHOP/POST_STOP/SMART)는
+    건드리지 않으므로 기존 경로의 주문금액은 한도가 남아 있는 한 그대로다.
+    """
+    if not is_active(state):
+        return float(multiplier), False
+    room = float(config.X2LITE_SIZING_DAILY_EXPOSURE_CAP) - exposure_used(state)
+    want = float(multiplier)
+    applied = min(want, max(room, 0.0))
+    return applied, bool(want > room + 1e-9)
+
+
+def note_external_exposure(state, multiplier: float) -> None:
+    """W1a 바깥 경로(예약매수/프리마켓 승계)가 쓴 노출을 누계에만 더한다.
+
+    ``note_entry`` 와 달리 **진입순번/첫거래 손절 플래그를 건드리지 않는다** --
+    그 두 값은 W1a 규칙배수의 입력이라, 여기서 올리면 기존 N1/P3 의 다음 주문
+    수량이 바뀐다. 한도 우회만 막는 것이 목적이므로 누계만 올린다.
+    """
+    if not is_active(state) or float(multiplier) <= 0:
+        return
+    state.x2lite_exposure_used_today = round(
+        exposure_used(state) + float(multiplier), 6)
+
+
 def note_full_exit(state, exit_reason: Optional[str]) -> None:
     """전량청산이 **확정된 뒤** 호출 — 그날 첫 거래가 STOP_LOSS 였는지 기록.
 

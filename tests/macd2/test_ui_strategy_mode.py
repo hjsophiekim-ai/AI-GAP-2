@@ -55,11 +55,12 @@ def test_default_hides_the_individual_strategy_toggles():
         assert lab not in labels, f"{lab} 이 아직 보인다: {labels!r}"
 
 
-def test_strategy_mode_radio_offers_exactly_two_options():
+def test_strategy_mode_radio_offers_exactly_the_defined_modes():
+    """N1 / P3 / E (2026-10-05 E 추가) -- 모드 목록 밖의 선택지는 없다."""
     at = _run()
     radio = _radio(at)
     # AppTest 는 format_func 를 통과한 **표시 문자열**을 돌려준다.
-    assert len(radio.options) == 2, f"선택지가 2개가 아니다: {radio.options!r}"
+    assert len(radio.options) == len(strategy_mode.ALL_MODES) == 3,         f"선택지가 모드 수와 다르다: {radio.options!r}"
     shown = " | ".join(str(o) for o in radio.options)
     for mode in strategy_mode.ALL_MODES:
         assert mode in shown, f"{mode} 선택지가 없다: {shown!r}"

@@ -30,7 +30,11 @@ logger = logging.getLogger(__name__)
 
 MODE_N1 = "N1"
 MODE_P3 = "P3"
-ALL_MODES = (MODE_N1, MODE_P3)
+#: E (2026-10-05) — P3 **기반** 독립 전략. 청산/슬롯/승인 로직은 P3 와 완전히
+#: 같고, 그 위에 EARLY-PASS(조건부 지연진입) + RS125(러너 증액) 두 겹만 얹는다.
+#: 따라서 derive 결과는 P3 와 동일하며 ``E`` 키 하나만 추가로 True 다.
+MODE_E = "E"
+ALL_MODES = (MODE_N1, MODE_P3, MODE_E)
 
 #: 애매하거나 충돌된 조합은 **항상 여기로** 떨어진다.
 DEFAULT_MODE = MODE_N1
@@ -46,6 +50,15 @@ _STRATEGY_FLAGS = (
     "time_window_h50_filter_enabled",
     "time_window_n1_filter_enabled",
 )
+
+
+#: P3 청산 스택(SHADOW/B3/Y3/P3 rescue)을 쓰는 모드. E 는 P3 **기반**이다.
+P3_BASED_MODES = (MODE_P3, MODE_E)
+
+
+def is_p3_based(mode: Any) -> bool:
+    """P3 청산 스택 위에서 도는 모드인가 (P3 / E)."""
+    return normalize(mode) in P3_BASED_MODES
 
 
 def normalize(mode: Any) -> str:
@@ -71,9 +84,13 @@ def derive(mode: Any) -> dict[str, bool]:
         "B3": False,
         "Y3": False,
         "P3_RESCUE": False,
+        # E 전용 overlay — P3 에서는 항상 False 라 P3 동작이 바뀌지 않는다.
+        "E": False,
     }
-    if m == MODE_P3:
+    if m in (MODE_P3, MODE_E):
         base.update({"SHADOW": True, "B3": True, "Y3": True, "P3_RESCUE": True})
+    if m == MODE_E:
+        base["E"] = True
     return base
 
 
@@ -106,6 +123,11 @@ def infer_from_legacy(state) -> tuple[str, str]:
     if not n1:
         return DEFAULT_MODE, "N1_OFF"
     if p3 and c1 and smart:
+        # E 는 P3 스택 **그대로** 위에 overlay 하나만 더 켠 것이다. 따라서
+        # 토글 조합이 P3 와 같고 e_enabled 만 다르다 -- 이 한 줄이 없으면
+        # restore() 가 "저장된 모드 E vs 추론 P3" 불일치로 모드를 지워 버린다.
+        if bool(getattr(state, "e_enabled", False)):
+            return MODE_E, "FULL_P3_STACK+E"
         return MODE_P3, "FULL_P3_STACK"
     if p3:
         return DEFAULT_MODE, "P3_WITHOUT_BASE"
@@ -159,6 +181,17 @@ def apply(state, mode: Any, *, changed_by: str = "ui", now_iso: Optional[str] = 
         # 섀도우 **완료거래 ledger** 도 남겨 둔다(다시 켰을 때 WARMUP 을
         # 처음부터 쌓지 않도록).
         state.p3_shadow = None
+
+    # ④ E overlay — P3 스택 위에 얹히는 EARLY-PASS + RS125.
+    #    P3/N1 을 고르면 반드시 False 가 되므로 기존 두 모드의 동작은 불변이다.
+    was_e = bool(getattr(state, "e_enabled", False))
+    state.e_enabled = bool(flags["E"])
+    state.e_version = config.E_FILTER_VERSION
+    if was_e and not state.e_enabled:
+        # E -> N1/P3 로 내려올 때 **대기 중인 돌파주문만** 정리한다. 사용자가 끈
+        # 기능이 계속 주문을 내는 일은 없어야 한다. RS 표본(과거자료)은 남긴다.
+        from app.trading.macd2 import e_strategy
+        e_strategy.clear_pending(state, "MODE_CHANGED")
 
     state.strategy_mode = m
     state.strategy_mode_at = now_iso
@@ -246,16 +279,20 @@ def execution_layer(state) -> str:
 
     MOCK / REAL 에서 동일하게 계산한다.
     """
-    if current(state) != MODE_P3:
+    mode = current(state)
+    if not is_p3_based(mode):
         return "BASE"
-    return "P3" if shadow_status(state) == "READY" else "BASE"
+    # E 는 P3 와 같은 청산 스택을 쓰므로 같은 fail-safe 를 따른다. 단 E 의
+    # 진입 overlay(EARLY-PASS/RS125)는 shadow 준비와 무관하게 항상 켜져 있다
+    # -- UI 는 이 둘을 나눠 보여 준다.
+    return mode if shadow_status(state) == "READY" else "BASE"
 
 
 def shadow_status(state) -> str:
     """UI 의 SHADOW 줄 -- READY / WARMUP / ERROR / OFF."""
     from app.trading.macd2 import chop_regime
 
-    if current(state) != MODE_P3:
+    if not is_p3_based(current(state)):
         return "OFF"
     regime = getattr(state, "p3_last_regime", None)
     if regime in (chop_regime.REGIME_CHOP, chop_regime.REGIME_TREND):

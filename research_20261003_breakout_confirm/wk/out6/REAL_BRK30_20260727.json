@@ -1,0 +1,154 @@
+{
+ "D": "20260727",
+ "FILL": "REAL",
+ "VAR": "BRK30",
+ "orders": [],
+ "acts": [
+  {
+   "t": "2026-07-27T09:03:00+09:00",
+   "a": [
+    "FILTERED_OUT:UP_RED"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-27T10:21:00+09:00",
+   "a": [
+    "FILTERED_OUT:DOWN_BLUE"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-27T13:36:00+09:00",
+   "a": [
+    "FILTERED_OUT:UP_RED"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  },
+  {
+   "t": "2026-07-27T13:39:00+09:00",
+   "a": [
+    "FILTERED_OUT:UP_RED"
+   ],
+   "mode": "-",
+   "regime": "TREND"
+  }
+ ],
+ "sig": [
+  {
+   "completed_bar_at": "090000",
+   "signal_id": "20260727_090000_UP_RED",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-27T09:03:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "090300",
+   "signal_id": "20260727_090000_UP_RED:TW2_3SLOT_CONFIRM",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-27T09:06:00+09:00",
+   "order_result": "WAITING",
+   "block_reason": "HISTORY_GAP",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "101800",
+   "signal_id": "20260727_101800_DOWN_BLUE",
+   "direction": "DOWN_BLUE",
+   "detected_at": "2026-07-27T10:21:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "102100",
+   "signal_id": "20260727_101800_DOWN_BLUE:TW2_3SLOT_CONFIRM",
+   "direction": "DOWN_BLUE",
+   "detected_at": "2026-07-27T10:24:00+09:00",
+   "order_result": "WAITING",
+   "block_reason": "HISTORY_GAP",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "133300",
+   "signal_id": "20260727_133300_UP_RED",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-27T13:36:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TIME_WINDOW_PENDING_CONFIRMATION",
+   "order_price": "",
+   "final_qty": ""
+  },
+  {
+   "completed_bar_at": "133600",
+   "signal_id": "20260727_133300_UP_RED:TW2_3SLOT_CONFIRM",
+   "direction": "UP_RED",
+   "detected_at": "2026-07-27T13:39:00+09:00",
+   "order_result": "FILTERED_OUT",
+   "block_reason": "TW2_REJECT_VWAP_VETO",
+   "order_price": "",
+   "final_qty": ""
+  }
+ ],
+ "ex": [],
+ "entries": [],
+ "lock_events": [],
+ "lock_blocked": [],
+ "brk": [
+  {
+   "sid": "20260727_090000_UP_RED:TW2_3SLOT_CONFIRM",
+   "dir": "UP_RED",
+   "trigger": 1816500.0,
+   "flag_bar": "2026-07-27T09:00:00+09:00",
+   "confirm_bar": "2026-07-27T09:03:00+09:00",
+   "armed_at": "2026-07-27T09:06:00+09:00",
+   "deadline": "2026-07-27T09:36:00+09:00",
+   "ev": "ARMED",
+   "held": null
+  },
+  {
+   "sid": "20260727_090000_UP_RED:TW2_3SLOT_CONFIRM",
+   "dir": "UP_RED",
+   "trigger": 1816500.0,
+   "flag_bar": "2026-07-27T09:00:00+09:00",
+   "confirm_bar": "2026-07-27T09:03:00+09:00",
+   "armed_at": "2026-07-27T09:06:00+09:00",
+   "deadline": "2026-07-27T09:36:00+09:00",
+   "ev": "EXPIRED",
+   "at": "2026-07-27T09:36:20+09:00",
+   "wick": "2026-07-27T09:08:00+09:00"
+  },
+  {
+   "sid": "20260727_101800_DOWN_BLUE:TW2_3SLOT_CONFIRM",
+   "dir": "DOWN_BLUE",
+   "trigger": 1814500.0,
+   "flag_bar": "2026-07-27T10:18:00+09:00",
+   "confirm_bar": "2026-07-27T10:21:00+09:00",
+   "armed_at": "2026-07-27T10:24:00+09:00",
+   "deadline": "2026-07-27T10:54:00+09:00",
+   "ev": "ARMED",
+   "held": null
+  },
+  {
+   "sid": "20260727_101800_DOWN_BLUE:TW2_3SLOT_CONFIRM",
+   "dir": "DOWN_BLUE",
+   "trigger": 1814500.0,
+   "flag_bar": "2026-07-27T10:18:00+09:00",
+   "confirm_bar": "2026-07-27T10:21:00+09:00",
+   "armed_at": "2026-07-27T10:24:00+09:00",
+   "deadline": "2026-07-27T10:54:00+09:00",
+   "ev": "EXPIRED",
+   "at": "2026-07-27T10:54:20+09:00",
+   "wick": "2026-07-27T10:45:00+09:00"
+  }
+ ]
+}
