@@ -1937,6 +1937,15 @@ def _sell_cleared_but_buy_not_requested(outcome) -> bool:
     )
 
 
+def _sell_reconcile_query_failed(outcome) -> bool:
+    """매도는 접수됐지만 체결 확인 조회가 전부 실패해 보유수량을 모르는 결과인가."""
+    return bool(
+        outcome is not None
+        and outcome.final_state == SignalState.FAILED
+        and outcome.block_reason == order_executor.FAIL_SELL_RECONCILE_QUERY_ERROR
+    )
+
+
 def _position_certain_reasons(state: RuntimeState) -> list[str]:
     """잔고조회 실패 중에도 '보유가 확실하다' 고 볼 수 없는 이유 목록 (빈 목록 = 확실)."""
     pos = state.position
@@ -2546,7 +2555,19 @@ def _execute_or_wait(
     for _safety_key in SAFETY_LEDGER_FIELDS:
         result.signal_dispatch_trace[_safety_key] = getattr(outcome, _safety_key, None)
     sell_only_switch_needs_buy_retry = _sell_cleared_but_buy_not_requested(outcome)
-    if _has_order_request(outcome) and not sell_only_switch_needs_buy_retry:
+    # 2026-10-02 실사고: 반전 매도는 접수됐는데 체결 확인용 잔고조회가 전부 실패했다
+    # (KIS 초당한도 EGW00215). 보유수량을 모르므로 반대 BUY 는 이번에 내지 않았다 --
+    # 이 신호를 processed 로 소비하면 반전이 통째로 사라진다(10/02 11:48 RED). 대신
+    # pending 으로 남겨 다음 tick 에 잔고를 다시 맞춘 뒤(_execute_or_wait 첫 줄의
+    # reconcile -- 플랫이면 RECOVERED_TO_FLAT 로 매도 레그를 기록) 같은 신호를 재시도한다.
+    sell_unconfirmed_needs_retry = _sell_reconcile_query_failed(outcome)
+    if sell_unconfirmed_needs_retry:
+        result.signal_dispatch_trace["sell_reconcile_query_error_retry"] = True
+        logger.warning(
+            "[MACD2] 반전 매도 체결확인 조회 실패 -- 신호 %s 를 pending 으로 남겨 다음 tick 에 재시도",
+            signal_id)
+    if (_has_order_request(outcome) and not sell_only_switch_needs_buy_retry
+            and not sell_unconfirmed_needs_retry):
         if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
             state.pending_signal["status"] = SignalState.ORDER_REQUESTED.value
             state.pending_signal["order_requested"] = True
@@ -2556,6 +2577,12 @@ def _execute_or_wait(
         _set_pending_signal(
             state, signal_id=signal_id, direction=direction, signal_type=signal_type,
             macd_snap=macd_snap, detected_at=now, reason=outcome.block_reason or "BLOCKED",
+        )
+    elif sell_unconfirmed_needs_retry:
+        state.order_block_reason = outcome.block_reason
+        _set_pending_signal(
+            state, signal_id=signal_id, direction=direction, signal_type=signal_type,
+            macd_snap=macd_snap, detected_at=now, reason=outcome.block_reason,
         )
     else:
         state.pending_signal = None
@@ -4849,9 +4876,11 @@ def _resolve_tw2_3slot_candidate_body(
             sizing=_sizing, presized_chop=_presized_chop, bars_3m=bars_3m,
             signal_detected_at=signal_detected_at, signal_id=signal_id,
         )
-    elif (outcome is None and state.pending_signal
+    elif (state.pending_signal
           and state.pending_signal.get("signal_id") == signal_id):
         # 2026-09-29: 주문 전 단계(POSITION_DATA_ERROR 등)에서 pending 이 됐다.
+        # 2026-10-02: 반전 매도 후 체결확인 조회 실패(FAILED + pending)도 같다 --
+        # outcome 이 None 이 아니어도 pending 으로 남았으면 문맥을 싣는다.
         # run_once 의 pending retry 가 이 신호를 체결하면 위와 **똑같은** 후처리를
         # 타도록, 이 tick 에서 이미 결정된 진입 문맥을 pending 에 싣는다.
         state.pending_signal["tw2_3slot_ctx"] = _tw2_3slot_retry_ctx(
@@ -5022,10 +5051,11 @@ def _retry_pending_signal(
         position=position, result=result, signal_detected_at=detected_at,
         budget_multiplier=sizing.applied,
     )
+    # 또 pending 이 됐다면 문맥을 다시 싣는다(다음 재시도도 같은 후처리).
+    # 2026-10-02: FAILED + pending(반전 매도 체결확인 조회 실패)도 포함한다.
+    if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
+        state.pending_signal["tw2_3slot_ctx"] = ctx
     if outcome is None:
-        # 또 pending 이 됐다면 문맥을 다시 싣는다(다음 재시도도 같은 후처리).
-        if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
-            state.pending_signal["tw2_3slot_ctx"] = ctx
         return None
     _record_signal_ledger(state, macd_snap, pending_dir, signal_type, signal_id,
                           detected_at, outcome, result.signal_dispatch_trace)
