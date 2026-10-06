@@ -1800,3 +1800,18 @@ E_RS_TABLE_PATH = _env_str("MACD2_E_RS_TABLE_PATH", "")
 #: 전략 모드가 E 일 때만 하루 신규진입 한도가 ``TW2_3SLOT_DAILY_CAP``(3) 대신 이 값이 된다.
 #: 진입/폐기/RS/청산 로직은 바꾸지 않는다 -- 3번째 신규진입만 슬롯 한도로 막힌다.
 E_CAP2_DAILY_CAP = 2
+
+# ── 단일종목 레버리지 기본예탁금 사전점검 (2026-10-06) ─────────────────────
+# KIS 실계좌는 단일종목 레버리지 ETF 매수에 기본예탁금 3천만원을 요구한다(미달 시
+# APBK3052 거절 -- 2026-10-01 09:18 실사고, 현재 28,983,650원). 매수 직전 KIS 매수가능
+# 조회(사이징에 이미 쓰는 같은 응답)의 순수 현금 주문가능금액(ord_psbl_cash)이 이
+# 금액 미만이면 주문을 보내지 않고 사유를 기록한다. REAL 브로커 + 레버리지 종목만.
+# **기본 OFF** (사용자 결정 2026-10-06): ord_psbl_cash 가 APBK3052 의 '기본예탁금 현재액'과
+# 같은 기준인지 실계좌에서 확인되지 않았다. APBK3052 가 나면 KIS 의 '현재' 금액과 같은
+# 시점 ord_psbl_cash·현금 필드 전부를 원장에 남기므로, 1건 이상에서 기준이 같음이
+# 확인되면 그때 ON 으로 바꾼다. APBK3052 거절 기록 자체는 플래그와 무관하게 항상 동작.
+LEVERAGE_DEPOSIT_PRECHECK_ENABLED = _env_bool("MACD2_LEVERAGE_DEPOSIT_PRECHECK_ENABLED", False)
+LEVERAGE_DEPOSIT_MIN_KRW = _env_float("MACD2_LEVERAGE_DEPOSIT_MIN_KRW", 30_000_000.0)
+LEVERAGE_DEPOSIT_SYMBOLS = (LONG_SYMBOL,)
+#: KIS 거절 코드 -- "단일종목 레버리지 주문시 기본예탁금(3천만원)이 필요합니다.(현재:N원)"
+KIS_MSG_LEVERAGE_DEPOSIT = "APBK3052"
