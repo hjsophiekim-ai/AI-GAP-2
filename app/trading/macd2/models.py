@@ -759,6 +759,10 @@ class RuntimeState:
     e_pending: Optional[dict] = None
     e_rs_samples: list = field(default_factory=list)
     e_last_pending_result: Optional[str] = None
+    #   e_daily_cap2_enabled  : E 하루 최대 2회 토글(사용자 설정, 재시작·날짜 넘어 유지).
+    #                           E 모드일 때만 효력이 있다(e_strategy.daily_entry_cap).
+    e_daily_cap2_enabled: bool = False
+    e_daily_cap2_changed_at: Optional[str] = None
 
     # ── H50 (작은 휩쏘 HOLD, 2026-09-15) ───────────────────────────────
     # X2-lite + W1a 위에 얹는 별도 모드. 진입/청산 파라미터는 X2-lite 와

@@ -1203,6 +1203,23 @@ if _stm_pick != _stm_current:
         st.warning("전략 모드를 바꿀 수 없습니다: "
                    + str(_stm_res.get("message") or _stm_res.get("reason") or "알 수 없는 사유"))
 
+# ── E 하루 최대 2회 토글 (2026-10-06) ──────────────────────────────────────
+# E 를 골랐을 때만 보인다. 켜면 E 의 하루 신규진입 한도가 3 -> 2 (3번째 신규진입만
+# 막힌다). 진입/폐기/RS/청산 로직은 그대로다. N1/P3 에서는 효력이 없다.
+if _stm_current == macd2_strategy_mode.MODE_E:
+    _e_cap2_now = bool(getattr(state, "e_daily_cap2_enabled", False))
+    with _stm_cols[0]:
+        _e_cap2_pick = st.checkbox(
+            "E 하루 최대 2회",
+            value=_e_cap2_now,
+            key="macd2_e_daily_cap2_toggle",
+            help=("켜면 E 의 하루 신규진입 한도가 3회 -> 2회가 됩니다(당일 3번째 신규진입만 차단). "
+                  "끄면 원래대로 3회. 진입/폐기/RS/청산 로직은 바뀌지 않습니다."),
+        )
+    if _e_cap2_pick != _e_cap2_now:
+        service.set_e_daily_cap2_enabled(_e_cap2_pick, changed_by="ui")
+        st.rerun()
+
 _stm_exec = macd2_strategy_mode.execution_layer(state)
 _stm_shadow = macd2_strategy_mode.shadow_status(state)
 # 선택한 모드(사용자의 선택)와 지금 실제로 적용 중인 실행계층을 **반드시 나눠**
@@ -1234,6 +1251,9 @@ with _stm_cols[1]:
             # E 진입 overlay 는 SHADOW 준비와 무관하게 항상 켜져 있다 -- 청산
             # fallback(BASE) 과 섞이지 않게 별도 줄로 보여 준다(읽기 전용).
             st.caption(f"E ENTRY: **{macd2_e_strategy.describe(state)}**")
+            st.caption(f"E 하루 신규진입 한도: **{macd2_e_strategy.daily_entry_cap(state)}회**"
+                       + (" (하루 최대 2회 토글 ON)"
+                          if bool(getattr(state, "e_daily_cap2_enabled", False)) else ""))
             _e_last = getattr(state, "e_last_pending_result", None)
             if _e_last:
                 st.caption(f"E 마지막 대기 결과: **{_e_last}**")

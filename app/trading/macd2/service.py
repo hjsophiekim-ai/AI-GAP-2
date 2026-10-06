@@ -33,6 +33,7 @@ from app.trading.macd2 import config, ledger, order_executor, state_store
 from app.trading.macd2 import chop_regime
 from app.trading.macd2 import p3_stack
 from app.trading.macd2 import strategy_mode as strategy_mode_mod
+from app.trading.macd2 import e_strategy as e_strategy_mod
 from app.trading.macd2 import peak_protection
 from app.trading.macd2 import n1_adaptive
 from app.trading.macd2 import position_sizing
@@ -1332,6 +1333,29 @@ class Macd2Service:
             "shadow": strategy_mode_mod.shadow_status(state),
             "shadow_sample": regime.sample,
             "detector_window": regime.window,
+        }
+
+    def set_e_daily_cap2_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: E 하루 최대 2회 토글 (2026-10-06).
+
+        켜도 **E 모드일 때만** 효력이 있다(``e_strategy.daily_entry_cap``). N1/P3 에서는
+        저장만 되고 하루 한도는 기존 그대로다. 전략 모드·다른 토글은 건드리지 않는다.
+        이미 오늘 2회를 넘게 진입한 상태에서 켜면 그날 남은 신규진입만 막힌다
+        (열린 포지션의 청산은 그대로).
+        """
+        state = state_store.load_state()
+        prev = bool(getattr(state, "e_daily_cap2_enabled", False))
+        state.e_daily_cap2_enabled = bool(enabled)
+        state.e_daily_cap2_changed_at = datetime.now(KST).isoformat()
+        state_store.save_state(state)
+        log.info("[MACD2][E] 하루 최대 2회 토글 %s -> %s (changed_by=%s, mode=%s)",
+                 prev, state.e_daily_cap2_enabled, changed_by, strategy_mode_mod.current(state))
+        return {
+            "ok": True,
+            "e_daily_cap2_enabled": state.e_daily_cap2_enabled,
+            "previous": prev,
+            "effective_daily_cap": e_strategy_mod.daily_entry_cap(state),
+            "strategy_mode": strategy_mode_mod.current(state),
         }
 
     def set_p2_sizing_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:

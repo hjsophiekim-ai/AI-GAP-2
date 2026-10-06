@@ -1796,3 +1796,7 @@ E_RS_MIN_TODAY_BARS = _env_int("MACD2_E_RS_MIN_TODAY_BARS", 30)
 E_RS_SAMPLE_LIMIT = _env_int("MACD2_E_RS_SAMPLE_LIMIT", 2000)
 #: **parity 검증 전용** 사전계산 RS 표 경로. 운영 기본값은 빈 문자열(=라이브 집계).
 E_RS_TABLE_PATH = _env_str("MACD2_E_RS_TABLE_PATH", "")
+#: E 하루 최대 2회 토글(2026-10-06, 사용자 요청 — 9월 약세 구간 대응). 토글이 켜져 있고
+#: 전략 모드가 E 일 때만 하루 신규진입 한도가 ``TW2_3SLOT_DAILY_CAP``(3) 대신 이 값이 된다.
+#: 진입/폐기/RS/청산 로직은 바꾸지 않는다 -- 3번째 신규진입만 슬롯 한도로 막힌다.
+E_CAP2_DAILY_CAP = 2

@@ -253,6 +253,7 @@ def resolve_slot(
     direction: Union[Direction, str],
     is_flat: bool,
     last_afternoon_direction: Optional[str] = None,
+    daily_cap: Optional[int] = None,
 ) -> SlotDecision:
     """Pure decision: does a candidate arriving right now get a shot at a
     slot, and if so, which extra gate (quality / TEG) must it also clear?
@@ -272,7 +273,9 @@ def resolve_slot(
 
     session = SESSION_MORNING if moment < config.TW2_3SLOT_MORNING_WINDOW_END else SESSION_AFTERNOON
 
-    if slots_used_today >= config.TW2_3SLOT_DAILY_CAP:
+    # daily_cap: 호출부가 넘기면 그 값(E 하루 2회 토글), 아니면 기존 하루 한도 그대로.
+    cap = int(config.TW2_3SLOT_DAILY_CAP if daily_cap is None else daily_cap)
+    if slots_used_today >= cap:
         return SlotDecision(
             slot_allowed=False, slot_number=None, session=session,
             requires_quality_gate=False, requires_teg_gate=False,

@@ -121,6 +121,18 @@ def is_active(state) -> bool:
     return strategy_mode.current(state) == strategy_mode.MODE_E
 
 
+def daily_entry_cap(state) -> int:
+    """오늘 3-SLOT 신규진입 한도.
+
+    E 모드 **이고** 사용자 토글(``e_daily_cap2_enabled``)이 켜져 있을 때만
+    ``config.E_CAP2_DAILY_CAP``(2). 그 밖(N1/P3, 또는 E 에서 토글 OFF)은 기존
+    ``config.TW2_3SLOT_DAILY_CAP`` 그대로라 동작이 바뀌지 않는다.
+    """
+    if is_active(state) and bool(getattr(state, "e_daily_cap2_enabled", False)):
+        return int(config.E_CAP2_DAILY_CAP)
+    return int(config.TW2_3SLOT_DAILY_CAP)
+
+
 # ── ① EARLY-PASS ────────────────────────────────────────────────────────
 
 def macd_gap_series(bars_3m) -> np.ndarray:

@@ -84,6 +84,7 @@ def default_state() -> RuntimeState:
     state.e_pending = None
     state.e_rs_samples = []
     state.e_last_pending_result = None
+    state.e_daily_cap2_enabled = False          # E 하루 최대 2회 토글 -- 기본 OFF
     state.time_window_h50_filter_enabled = bool(getattr(config, "H50_3SLOT_FILTER_DEFAULT", False))
     state.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
     state.h50_hold_active = False
@@ -435,6 +436,8 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "e_rs_samples": [dict(r) for r in (getattr(state, "e_rs_samples", None) or [])
                          if isinstance(r, dict)],
         "e_last_pending_result": getattr(state, "e_last_pending_result", None),
+        "e_daily_cap2_enabled": bool(getattr(state, "e_daily_cap2_enabled", False)),
+        "e_daily_cap2_changed_at": getattr(state, "e_daily_cap2_changed_at", None),
         "time_window_h50_filter_enabled": bool(state.time_window_h50_filter_enabled),
         "time_window_h50_filter_enabled_at": state.time_window_h50_filter_enabled_at,
         "time_window_h50_filter_enabled_by": state.time_window_h50_filter_enabled_by,
@@ -1198,6 +1201,8 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
                    if isinstance(raw.get("e_pending"), dict) and raw.get("e_pending") else None),
         e_rs_samples=[dict(r) for r in (raw.get("e_rs_samples") or []) if isinstance(r, dict)],
         e_last_pending_result=raw.get("e_last_pending_result"),
+        e_daily_cap2_enabled=bool(raw.get("e_daily_cap2_enabled", False)),
+        e_daily_cap2_changed_at=raw.get("e_daily_cap2_changed_at"),
         time_window_3slot_filter_version=time_window_3slot_filter_version,
         c1_peak_protection_enabled=c1_peak_protection_enabled,
         c1_peak_protection_enabled_at=raw.get("c1_peak_protection_enabled_at"),
