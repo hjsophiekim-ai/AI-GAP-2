@@ -11,6 +11,7 @@ success AND position reconciliation succeed (docs §17) — never before.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -35,6 +36,11 @@ BLOCK_ASK_QUOTE_FAILED = "ASK_QUOTE_FAILED"
 BLOCK_ASK_QUOTE_STALE = "ASK_QUOTE_STALE"
 BLOCK_NRCVB_BUY_QTY_ZERO = "INSUFFICIENT_QTY"
 BLOCK_NOT_TRADABLE_DIRECTION = "NOT_A_TRADABLE_DIRECTION"
+# 2026-10-06: 단일종목 레버리지 매수인데 기본예탁금(3천만원) 미달 -- 사전점검으로
+# 주문을 보내지 않았거나(BLOCKED) KIS 가 APBK3052 로 거절했다(FAILED). 같은 사유로 남긴다.
+BLOCK_LEVERAGE_DEPOSIT_INSUFFICIENT = "LEVERAGE_DEPOSIT_INSUFFICIENT"
+LEVERAGE_DEPOSIT_SRC_PRECHECK = "PRECHECK"
+LEVERAGE_DEPOSIT_SRC_KIS_REJECT = "KIS_REJECT"
 # 2026-09-29: 사용자 주문금액 한도(UI) 안에 1주도 못 넣을 때. FAILED 가 아니라
 # KIS 호출 전 BLOCKED 다 — 한도 초과는 거절이 아니라 cap 대상이다.
 BLOCK_SAFETY_LIMIT_NO_ROOM = "SAFETY_LIMIT_NO_ROOM"
@@ -144,6 +150,13 @@ class ExecutionOutcome:
     safety_reason: str = ""
     broker_error_type: str = ""
     daily_ordered_released: Optional[float] = None
+    # 2026-10-06 레버리지 기본예탁금 진단. source: PRECHECK / KIS_REJECT.
+    # current = 판단에 쓴 금액(사전점검: ord_psbl_cash / KIS 거절: 메시지의 '현재').
+    # ord_psbl_cash = 같은 순간 우리가 본 순수 현금 주문가능금액(기준 확정용 비교값).
+    leverage_deposit_source: str = ""
+    leverage_deposit_current: Optional[float] = None
+    leverage_deposit_required: Optional[float] = None
+    leverage_deposit_ord_psbl_cash: Optional[float] = None
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -528,6 +541,33 @@ def _reconcile_buy_fill_from_today_fills(broker, symbol: str, order_id: str) -> 
     return qty, avg_price, "FILLED_FROM_TODAY_FILLS"
 
 
+def _leverage_deposit_applies(broker, symbol: Optional[str]) -> bool:
+    """레버리지 기본예탁금 점검 대상인가 -- REAL 브로커의 레버리지 종목 매수만."""
+    return bool(
+        getattr(config, "LEVERAGE_DEPOSIT_PRECHECK_ENABLED", True)
+        and str(getattr(broker, "mode", "")) == "real"
+        and symbol in tuple(getattr(config, "LEVERAGE_DEPOSIT_SYMBOLS", ()) or ())
+    )
+
+
+def _quote_ord_psbl_cash(sizing_quote) -> Optional[float]:
+    """매수가능 조회 응답의 순수 현금 주문가능금액. 없거나 읽을 수 없으면 None."""
+    raw = dict(getattr(sizing_quote, "raw", None) or {})
+    value = raw.get("ord_psbl_cash")
+    if value in (None, ""):
+        value = dict(raw.get("output") or {}).get("ord_psbl_cash")
+    try:
+        return None if value in (None, "") else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_kis_current_amount(text: str) -> Optional[float]:
+    """KIS 메시지 '(현재:28983650원)' 에서 금액을 꺼낸다."""
+    m = re.search(r"현재\s*[:：]\s*([0-9,]+)", str(text or ""))
+    return float(m.group(1).replace(",", "")) if m else None
+
+
 def execute_signal(
     *,
     broker,
@@ -778,6 +818,26 @@ def execute_signal(
             outcome.final_qty = requested_qty
             outcome.expected_amount = expected_amount
 
+    # 2026-10-06: 단일종목 레버리지 기본예탁금 사전점검 (REAL + 레버리지 매수만).
+    # 이미 받아 둔 매수가능 조회 응답을 쓰므로 KIS 호출이 늘지 않는다. 값이 없으면
+    # 점검하지 않는다(모르면 막지 않는다 -- KIS 가 최종 판정, 거절 시 아래에서 기록).
+    if _leverage_deposit_applies(broker, target_symbol):
+        _lev_ord_psbl = _quote_ord_psbl_cash(sizing_quote)
+        _lev_min = float(config.LEVERAGE_DEPOSIT_MIN_KRW)
+        if _lev_ord_psbl is not None and _lev_ord_psbl < _lev_min:
+            outcome.final_state = SignalState.BLOCKED
+            outcome.block_reason = BLOCK_LEVERAGE_DEPOSIT_INSUFFICIENT
+            outcome.order_failure_stage = BLOCK_LEVERAGE_DEPOSIT_INSUFFICIENT
+            outcome.leverage_deposit_source = LEVERAGE_DEPOSIT_SRC_PRECHECK
+            outcome.leverage_deposit_current = _lev_ord_psbl
+            outcome.leverage_deposit_required = _lev_min
+            outcome.leverage_deposit_ord_psbl_cash = _lev_ord_psbl
+            outcome.sizing_msg1 = (f"레버리지 기본예탁금 부족 -- 주문하지 않음 "
+                                   f"(현재 {_lev_ord_psbl:,.0f}원 < 필요 {_lev_min:,.0f}원)")
+            logger.warning("[MACD2] %s BUY 차단 -- 레버리지 기본예탁금 부족 (ord_psbl_cash=%s < %s)",
+                           target_symbol, f"{_lev_ord_psbl:,.0f}", f"{_lev_min:,.0f}")
+            return outcome
+
     if signal_leg_check is not None and signal_leg_check(signal_id, "BUY"):
         outcome.final_state = SignalState.BLOCKED
         outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
@@ -804,6 +864,19 @@ def execute_signal(
         outcome.final_state = SignalState.FAILED
         outcome.block_reason = FAIL_BUY
         outcome.order_failure_stage = ORDER_REJECTED
+        _buy_raw = dict(buy_result.raw or {})
+        if str(_buy_raw.get("msg_cd") or "") == str(config.KIS_MSG_LEVERAGE_DEPOSIT):
+            # 2026-10-06: KIS 가 레버리지 기본예탁금 부족으로 거절 -- 같은 사유로 남기고,
+            # KIS 의 '현재' 금액과 우리가 본 ord_psbl_cash 를 나란히 기록한다(기준 확정용).
+            outcome.block_reason = BLOCK_LEVERAGE_DEPOSIT_INSUFFICIENT
+            outcome.leverage_deposit_source = LEVERAGE_DEPOSIT_SRC_KIS_REJECT
+            outcome.leverage_deposit_current = _parse_kis_current_amount(
+                str(_buy_raw.get("msg1") or buy_result.message or ""))
+            outcome.leverage_deposit_required = float(config.LEVERAGE_DEPOSIT_MIN_KRW)
+            outcome.leverage_deposit_ord_psbl_cash = _quote_ord_psbl_cash(sizing_quote)
+            logger.warning("[MACD2] %s BUY KIS 거절 APBK3052 -- 기본예탁금 현재 %s / 우리 ord_psbl_cash %s",
+                           target_symbol, outcome.leverage_deposit_current,
+                           outcome.leverage_deposit_ord_psbl_cash)
         outcome.broker_error_type = str(getattr(buy_result, "error_type", "") or "")
         if outcome.broker_error_type.startswith("safety"):
             # 브로커 내부 gate 가 KIS 호출 전에 거절 — 원장에 사유를 남긴다.
