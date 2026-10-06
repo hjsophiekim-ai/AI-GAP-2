@@ -369,3 +369,36 @@ def test_arming_without_opposite_position_marks_processed():
         signal_id=sid, flag_bar_dt=FLAG, price=1.0, early=early, slot_metrics={}, gate={},
         result=_Res())
     assert sid in s.processed_signal_ids
+
+
+# ── 25. 돌파 체결이 pending 이 되면 승인 스냅샷을 3-SLOT 문맥으로 싣는다 ────
+def test_breakout_fire_that_ends_pending_carries_the_gate_snapshot(monkeypatch):
+    """2026-10-02 EGW00215: 반전 매도 체결확인 조회가 실패하면 그 신호는 pending 으로
+    남아 다음 tick 에 재시도된다. E 돌파 체결도 같은 경로를 타므로, 재시도 체결이
+    _finalize_tw2_3slot_entry 를 타도록 승인 시점 스냅샷이 실려 있어야 한다."""
+    from app.trading.macd2 import order_executor
+    from app.trading.macd2.models import MacdSnapshot, SignalState
+
+    s = _e_state()
+    s.auto_trade_on, s.stopped = True, False
+    gate = {"session": "MORNING", "sizing": None, "presized_chop": None,
+            "signal_detected_at": T0.isoformat(), "flag_bar_dt": FLAG.isoformat()}
+    e_strategy.arm_pending(s, direction=Direction.UP_RED, trigger=2_012_000.0, signal_id="A",
+                           flag_bar_dt=FLAG, confirm_bar_dt=CONF, now=T0, gate=gate)
+    fire_id = "A" + e_strategy.BREAKOUT_SUFFIX
+    monkeypatch.setattr(worker, "_e_watch_price", lambda md, df: 2_013_000.0)
+    monkeypatch.setattr(worker, "_e_rs_features", lambda df, now: None)
+    monkeypatch.setattr(worker, "_record_signal_ledger", lambda *a, **k: None)
+
+    def fake_eow(**kw):
+        s.pending_signal = {"signal_id": fire_id, "direction": "UP_RED", "signal_type": "REVERSAL"}
+        return order_executor.ExecutionOutcome(
+            fire_id, Direction.UP_RED, config.LONG_SYMBOL, SignalState.FAILED,
+            block_reason=order_executor.FAIL_SELL_RECONCILE_QUERY_ERROR)
+
+    monkeypatch.setattr(worker, "_execute_or_wait", fake_eow)
+    snap = MacdSnapshot(bar_dt=T0, macd=1.0, signal=0.0, hist=1.0, hist_last3=(-0.5, 0.5, 1.0),
+                        completed_3m_count=100, previous_diff=-0.5, current_diff=1.0, relation="ABOVE")
+    worker._advance_e_pending(broker=None, market_data=None, state=s, now=T0 + timedelta(minutes=2),
+                              macd_snap=snap, bars_3m=None, df_1m=None, position=None, result=_Res())
+    assert s.pending_signal["tw2_3slot_ctx"] == gate

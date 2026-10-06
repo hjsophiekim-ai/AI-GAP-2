@@ -4224,6 +4224,13 @@ def _advance_e_pending(
     )
     _record_signal_ledger(state, macd_snap, direction, signal_type, fire_signal_id,
                           detected_at, outcome, result.signal_dispatch_trace)
+    # 돌파 체결이 주문 단계에서 pending 이 됐다(잔고조회 실패 / 2026-10-02 반전 매도
+    # 체결확인 조회 실패 등) -> run_once 의 pending retry 가 이어받는다. 승인 시점
+    # 게이트 스냅샷을 3-SLOT 문맥으로 실어, 재시도 체결도 _finalize_tw2_3slot_entry
+    # (P3 스냅샷/슬롯/epoch/노출)를 똑같이 타게 한다. 없으면 09/29 와 같은 BASE 사고.
+    if (state.pending_signal
+            and state.pending_signal.get("signal_id") == fire_signal_id):
+        state.pending_signal["tw2_3slot_ctx"] = dict(ctx)
     if outcome is None:
         state.e_last_pending_result = "E_PENDING_FIRED_NOT_EXECUTED"
         return None
