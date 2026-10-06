@@ -4131,7 +4131,7 @@ def _e_fire_hard_safety(state: RuntimeState, now: datetime, rec: dict) -> Option
         return "AUTO_TRADE_OFF"
     if now.astimezone(KST).time() >= config.NEW_ENTRY_CUTOFF:
         return "NEW_ENTRY_CUTOFF"
-    if int(state.tw2_3slot_slots_used_today or 0) >= int(config.TW2_3SLOT_DAILY_CAP):
+    if int(state.tw2_3slot_slots_used_today or 0) >= e_strategy.daily_entry_cap(state):
         return "TW2_3SLOT_DAILY_CAP_REACHED"
     if e_strategy.breakout_signal_id(rec) in state.processed_signal_ids:
         return "DUPLICATE_SIGNAL_ID"
@@ -4422,6 +4422,8 @@ def _resolve_tw2_3slot_candidate_body(
             direction=direction,
             is_flat=(position is None),
             last_afternoon_direction=state.tw2_3slot_last_afternoon_direction,
+            # E 하루 2회 토글(2026-10-06): E+토글 ON 일 때만 2, 그 밖은 기존 한도 그대로.
+            daily_cap=e_strategy.daily_entry_cap(state),
         )
         slot_metrics["slot_number"] = slot_decision.slot_number
         slot_metrics["session"] = slot_decision.session
@@ -5045,8 +5047,8 @@ def _retry_pending_signal(
         if outcome is not None:
             _apply_switch_outcome(state, outcome, pending_dir, now)
         return outcome
-    # 하루 3회 cap: 최초 판정 뒤 슬롯이 찼다면 재시도하지 않는다.
-    if int(state.tw2_3slot_slots_used_today or 0) >= int(config.TW2_3SLOT_DAILY_CAP):
+    # 하루 3회 cap(E 하루 2회 토글이면 2): 최초 판정 뒤 슬롯이 찼다면 재시도하지 않는다.
+    if int(state.tw2_3slot_slots_used_today or 0) >= e_strategy.daily_entry_cap(state):
         logger.warning("[MACD2] pending 3-SLOT retry dropped -- daily cap reached (signal_id=%s)", signal_id)
         state.pending_signal = None
         state.order_block_reason = "TW2_3SLOT_DAILY_CAP_REACHED"
