@@ -1,0 +1,2 @@
+date,bo_bar,bo_dir,held_dir,entry_time,entry_px,exit_time,exit_px,exit_reason,actual_net,bo_net,uplift_pct,w1a,h50_held,h50_hold_at,peak,mae,hold_min,mins_to_actual_exit,uplift_krw,h50_active
+20260903,2026-09-03 11:57:00+09:00,UP_RED,DOWN_BLUE,2026-09-03 11:00:00+09:00,7525.0,2026-09-04 09:03:00+09:00,7430.0,TIME_WINDOW_STOP_LOSS,-1.351894,-0.6877375415282392,0.6641564584717607,1.2,True,2026-09-03 11:18:00+09:00,0.1756810631229236,-1.9496345514950169,1323.0,1263.0,79698.77501661128,True

@@ -1,0 +1,39 @@
+CHOP ON 진입 25건 (train 비9월 4 / OOS 9월 21)
+!! train 표본 4건 — feature ranking 학습 불가 수준
+
+      feature  결측   비고     손실평균    이익평균        차   AUC                                  버킷net
+      quality  24 표본부족      NaN     NaN      NaN   NaN                                    NaN
+     teg_pass   0  NaN    6.154   6.417    0.263 0.436                                     {}
+   gap_s2_dir   1  NaN  974.126 856.230 -117.896 0.590   {'하': 0.259, '중': 0.041, '상': 0.455}
+      gap_dir   0  NaN 1460.280 618.083 -842.196 0.622  {'하': 0.376, '중': 0.603, '상': -0.547}
+   e20_50_dir   0  NaN   -0.005  -0.085   -0.080 0.506   {'하': 0.191, '중': 0.106, '상': 0.159}
+e50_slope_dir   0  NaN    0.021   0.008   -0.013 0.532   {'하': -0.37, '중': 1.275, '상': -0.38}
+     vwap_dir   0  NaN    0.352   0.508    0.156 0.462  {'하': -0.456, '중': 0.924, '상': 0.068}
+     etf_conf   0  NaN    0.904   0.116   -0.787 0.564  {'하': -0.338, '중': 0.441, '상': 0.418}
+    cross_cnt   0  NaN    1.692   2.167    0.474 0.385                                     {}
+ opp_flag_cnt   0  NaN    0.692   0.833    0.141 0.442                                     {}
+flag_interval   1  NaN   16.167  13.333   -2.833 0.615   {'하': 0.05, '중': 0.699, '상': -0.093}
+     cum_move   0  NaN    0.332   0.622    0.290 0.468 {'하': 0.434, '중': -0.008, '상': -0.001}
+       e10_20   0  NaN    0.141   0.064   -0.077 0.577  {'하': -0.282, '중': 1.45, '상': -0.654}
+         tmin   0  NaN  616.154 656.250   40.096 0.394  {'하': 0.637, '중': -0.731, '상': 0.493}
+         slot   0  NaN    1.615   1.583   -0.032 0.500                                     {}
+     flag_ord   0  NaN    2.231   3.667    1.436 0.401  {'하': 0.103, '중': -0.103, '상': 0.448}
+
+[train(비9월 4건) vs OOS(9월 21건) 부호 일치 확인]
+      feature train차     OOS차 부호일치
+      quality   None      NaN None
+     teg_pass   None    0.417 None
+   gap_s2_dir   None  -89.020 None
+      gap_dir   None -107.198 None
+   e20_50_dir   None    0.230 None
+e50_slope_dir   None    0.017 None
+     vwap_dir   None    0.416 None
+     etf_conf   None    0.140 None
+    cross_cnt   None    0.500 None
+ opp_flag_cnt   None    0.167 None
+flag_interval   None   -4.889 None
+     cum_move   None    0.608 None
+       e10_20   None    0.016 None
+         tmin   None   21.583 None
+         slot   None    0.028 None
+     flag_ord   None    1.222 None

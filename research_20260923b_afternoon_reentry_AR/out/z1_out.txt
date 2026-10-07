@@ -1,0 +1,35 @@
+ctx 78일 20260529~20260922
+BASE N1+C1: {'trades': 160, 'win_rate_pct': 52.5, 'day_win_rate_pct': 70.27, 'simple_pct': 162.6701, 'compound_pct': 370.0297, 'pf': 2.4996, 'mdd_pct': -8.6041, 'profit_days': 52, 'loss_days': 22, 'max_loss_streak': 4, 'top5_excl_pct': 201.2634, 'top10_excl_pct': 105.7375, 'runners_3pct': 42, 'stops': 51, 'opposite_exits': 30, 'watch_exits': 2, 'h50_exits': 17, 'monthly_pct': 51.69, 'excl_top1d': 324.01, 'excl_top3d': 259.45}
+
+차단 건수: 13 / 11일
+    date    at direction  slot  flat
+20260529 14:03 DOWN_BLUE   NaN  True
+20260623 13:27 DOWN_BLUE   NaN  True
+20260715 12:33    UP_RED   NaN  True
+20260723 14:33    UP_RED   NaN  True
+20260805 12:06    UP_RED   NaN  True
+20260805 13:45    UP_RED   NaN  True
+20260806 14:39 DOWN_BLUE   NaN  True
+20260813 14:03    UP_RED   NaN  True
+20260814 14:00 DOWN_BLUE   NaN  True
+20260916 14:45    UP_RED   NaN  True
+20260921 14:45    UP_RED   NaN  True
+20260922 12:15 DOWN_BLUE   NaN  True
+20260922 14:21 DOWN_BLUE   NaN  True
+
+전체 거절사유 분포:
+reason
+TW2_REJECT_VWAP_VETO                             82
+TW2_3SLOT_REJECT_TEG                             65
+TW2_3SLOT_REJECT_DAILY_SLOT_CAP                  65
+REJECT_MACD_GAP_NOT_EXPANDING                    46
+REJECT_NOT_CONFIRMED                             44
+REJECT_LOW_QUALITY_SCORE                         30
+REJECT_DUPLICATE_POSITION                        15
+REJECT_SHORT_FLAG_INTERVAL                       15
+TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND    13
+TW2_3SLOT_REJECT_OUTSIDE_WINDOW                   6
+REJECT_TIME_WINDOW                                5
+TW2_REJECT_RECENT_CROSSES                         2
+
+[exited with code 0]

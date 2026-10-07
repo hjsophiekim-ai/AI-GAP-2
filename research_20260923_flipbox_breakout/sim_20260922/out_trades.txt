@@ -1,0 +1,12 @@
+patched
+ctx 78일 20260529~20260922
+N1+C1 20260922 거래 2건
+
+ slot   session direction symbol flag_bar confirm_bar entry  entry_px        exit  exit_px             exit_reason  hold_min   net_pct     peak       mae  w1a   p2  toxic tox_reason  conf_ret   ema2050  smart_mult  qty   notional        pnl_krw  h50_held               h50_hold_at ax_mode
+    1   MORNING    UP_RED 0193T0    09:00       09:03 09:06   12710.0 09-22 10:33  12580.0 SMALL_WHIPSAW_HOLD_EXIT      87.0 -1.112431 0.735720 -1.151770  1.0 1.05  False     NORMAL  0.992063  0.690709        1.05  826 10498460.0 -116788.123563      True 2026-09-22T09:33:00+09:00        
+    2 AFTERNOON DOWN_BLUE 0197X0    11:12       11:15 11:18    5130.0 09-22 11:42   5105.0         OPPOSITE_SIGNAL      24.0 -0.577193 0.007407 -0.674464  1.0 1.05  False  WEAK_ONLY -0.097371 -0.146540        1.05 2046 10495980.0  -60582.061841     False                      None        
+
+당일 투입원금 20,994,440원 (일일한도 30,000,000원) · SMART 총손익 -177,370원
+참고: BASE 사이징(배수 1.0) 기준 총손익 -168,924원
+
+[exited with code 0]

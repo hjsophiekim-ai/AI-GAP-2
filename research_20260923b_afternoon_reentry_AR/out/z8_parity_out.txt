@@ -1,0 +1,6 @@
+  무패치                        n=43 복리=13.2791 PF=1.5873
+  래퍼 설치 + 게이트 OFF            n=43 복리=13.2791 PF=1.5873
+
+OFF parity: 완전 일치 (diff 0)
+
+[exited with code 0]

@@ -1,0 +1,180 @@
+--- "/c/Users/FURSYS/Desktop/AI-GAP 2/research_20260919_n1_exit/engine/hengine5.py"	2026-09-19 10:11:28.794000000 +0900
++++ hengine5.py	2026-09-28 12:41:28.799573100 +0900
+@@ -34,7 +34,7 @@
+ import numpy as np
+ import pandas as pd
+ 
+-PROJECT_ROOT = Path(r"C:\Users\KIMHYU~1\AppData\Local\Temp\claude\G----------------2--Desktop-AI-GAP-2\b00a1177-a425-4a20-a2e3-4b051c385519\scratchpad\n1w\proj")
++PROJECT_ROOT = Path(__file__).resolve().parent / "proj"
+ for _p in (PROJECT_ROOT, PROJECT_ROOT / "scripts"):
+     if str(_p) not in sys.path:
+         sys.path.insert(0, str(_p))
+@@ -418,6 +418,17 @@
+     pp_peak: Optional[float] = None
+     pp_give: Optional[float] = None
+     peak_at: Optional[str] = None
++    entry_regime: str = ""
++    b3_on: bool = False
++    b3_rescued: bool = False
++    b3_rescue_at: Optional[str] = None
++    b3_y3: bool = False
++    b3_y3_at: Optional[str] = None
++    b3_first_trig_at: Optional[str] = None
++    b3_trig_el: Optional[float] = None
++    b3_trig_diag: Optional[dict] = None
++    b3_late: bool = False
++    b3_late_at: Optional[str] = None
+ 
+ 
+ # ── W1a (production position_sizing 규칙 그대로) ───────────────────────────
+@@ -461,8 +472,12 @@
+               paths: Optional[list] = None,
+               milestones: Optional[list] = None,
+               ms_levels: tuple = (3.0, 4.0, 5.0),
+-              events: Optional[list] = None) -> list:
++              events: Optional[list] = None,
++              b3: Optional[dict] = None) -> list:
+     bars = ctx.hynix_bars_3m
++    if b3 is not None:
++        _b3_hist = b3["hist"]            # 3분봉 MACD hist (인과적 EWM, 전체 ctx)
++        _b3_start_ns = pd.DatetimeIndex(bars["datetime"]).as_unit("ns").asi8
+     flags_by_idx = ctx.flags_by_idx
+     quotes = ctx.quotes
+     complete = ctx.complete_bar_starts
+@@ -471,6 +486,7 @@
+     trades: list = []
+     position = None
+     pending = None
++    _pm1_defer = None
+     slots_used_today = morning_count = afternoon_count = 0
+     flag_ordinal_today = 0
+     last_afternoon_direction = None
+@@ -845,6 +861,10 @@
+                         if g is not None:
+                             final_approved = False
+                             final_reason = g
++                            if g == "PM1_DEFER":
++                                # 한 봉 뒤 같은 승인판정을 1회 더 — 아래 flags 블록에서
++                                # 실제 반대 플래그가 나오면 덮어써져 skip 된다.
++                                _pm1_defer = (p_direction, idx, bars["datetime"].iloc[idx])
+ 
+                     target = order_executor.target_symbol_for_direction(p_direction)
+                     if events is not None:
+@@ -1052,10 +1072,19 @@
+                                             "ax": {"mode": None, "tp2": None, "floor": None, "brk": 0,
+                                                    "brk_idx": None, "pend": None, "flip": None},
+                                             "regime_eligible": bool(_elig)}
++                                if b3 is not None:
++                                    _rg = b3["regime"](recognition_at)
++                                    rec.entry_regime = _rg
++                                    if _rg == "CHOP" and b3.get("on", True):
++                                        rec.b3_on = True
++                                        position["b3"] = {"promoted": False, "trig": False}
+                                 whipsaw_watch = None
+                                 hold = _clr(hold)
+                                 rhold = None
+ 
++            if _pm1_defer is not None:
++                pending = _pm1_defer
++                _pm1_defer = None
+             if idx in flags_by_idx:
+                 ft = bar_start.astimezone(KST).time()
+                 if config.SESSION_OPEN <= ft < config.NEW_ENTRY_CUTOFF:
+@@ -1149,6 +1178,97 @@
+                     position["rec"].peak_net_pct = max(position["rec"].peak_net_pct, net)
+                     position["rec"].mae_net_pct = min(position["rec"].mae_net_pct, net)
+                     note_ms(net, tick, idx)
++                    _bs = position.get("b3")
++                    if _bs is not None and not _bs["promoted"]:
++                        _rec = position["rec"]
++                        _el = (pd.Timestamp(tick) - pd.Timestamp(position["entry_time"])).total_seconds() / 60.0
++                        if b3.get("p3") and not _bs["trig"] and net >= float(b3["p3_trig"]):
++                            _bs["trig"] = True
++                            _rec.b3_first_trig_at = pd.Timestamp(tick).isoformat()
++                            _rec.b3_trig_el = round(_el, 3)
++                            # ── 진단: +1% 최초 도달 시점의 **마지막 완성봉** 상태 ──
++                            _tns2 = pd.Timestamp(tick - timedelta(minutes=3)).as_unit("ns").value
++                            _ci2 = int(np.searchsorted(_b3_start_ns, _tns2, side="right")) - 1
++                            _sg2 = 1.0 if position["symbol"] == config.LONG_SYMBOL else -1.0
++                            _dg = None
++                            if _ci2 >= 1:
++                                _c2 = float(bars["close"].iloc[_ci2])
++                                _e20 = float(b3["ema20"][_ci2]); _e50 = float(b3["ema50"][_ci2])
++                                _slp = float(b3["ema50"][_ci2] - b3["ema50"][_ci2 - 1])
++                                _c3 = (_c2 > _e20 > _e50) if _sg2 > 0 else (_c2 < _e20 < _e50)
++                                _slok = (_slp > 0) if _sg2 > 0 else (_slp < 0)
++                                _sameday = (pd.Timestamp(bars["datetime"].iloc[_ci2]).date()
++                                            == pd.Timestamp(bars["datetime"].iloc[_ci2 - 1]).date())
++                                _gapok = bool(_sameday and _sg2 * (_b3_hist[_ci2] - _b3_hist[_ci2 - 1]) > 0)
++                                _pp2 = quotes[position["symbol"]].at(tick - timedelta(minutes=3))
++                                _etfok = bool(_pp2 is not None and price >= _pp2)
++                                _dg = {"bar": pd.Timestamp(bars["datetime"].iloc[_ci2]).isoformat(),
++                                       "close": _c2, "ema20": _e20, "ema50": _e50, "slope": _slp,
++                                       "c3": bool(_c3), "slope_ok": bool(_slok), "gap_ok": _gapok,
++                                       "etf_ok": _etfok, "etf_prev": _pp2, "px": float(price),
++                                       "net": round(float(net), 4)}
++                            _rec.b3_trig_diag = _dg
++                            _late = b3.get("late")
++                            _late_ok = False
++                            if _late and _dg is not None and _el > float(b3["p3_min"]) + 1e-9:
++                                if _late == "R1":
++                                    _late_ok = _dg["c3"]
++                                elif _late == "R2":
++                                    _late_ok = _dg["c3"] and _dg["slope_ok"]
++                                elif _late == "R3":
++                                    _late_ok = _dg["c3"] and _dg["slope_ok"] and (_dg["gap_ok"] or _dg["etf_ok"])
++                            if _late_ok:
++                                _q = position["qty_frac"] * 0.5
++                                position["realized"] += _q * net
++                                position["legs"].append((ce._fmt(tick), price, round(_q, 6),
++                                                         "P3L_PARTIAL_EXIT", round(net, 4)))
++                                position["qty_frac"] -= _q
++                                _bs["promoted"] = True
++                                _rec.b3_late = True
++                                _rec.b3_late_at = pd.Timestamp(tick).isoformat()
++                                continue
++                            if _el <= float(b3["p3_min"]) + 1e-9:
++                                _q = position["qty_frac"] * 0.5
++                                position["realized"] += _q * net
++                                position["legs"].append((ce._fmt(tick), price, round(_q, 6),
++                                                         "P3_PARTIAL_EXIT", round(net, 4)))
++                                position["qty_frac"] -= _q
++                                _bs["promoted"] = True
++                                _rec.b3_rescued = True
++                                _rec.b3_rescue_at = pd.Timestamp(tick).isoformat()
++                                continue
++                        if net >= float(b3["tp"]):
++                            close_trade(tick, price, "GX_TP", idx)
++                            position = None; whipsaw_watch = None; hold = _clr(hold); rhold = None
++                            break
++                        if net <= -float(b3["sl"]):
++                            close_trade(tick, price, "GX_SL", idx)
++                            position = None; whipsaw_watch = None; hold = _clr(hold); rhold = None
++                            break
++                        if _el >= float(b3["hold"]) - 1e-9:
++                            _prom = False
++                            if b3.get("y3") and net > 0.0:
++                                _tns = pd.Timestamp(tick - timedelta(minutes=3)).as_unit("ns").value
++                                _ci = int(np.searchsorted(_b3_start_ns, _tns, side="right")) - 1
++                                _gap = False
++                                if _ci >= 1:
++                                    _d0 = pd.Timestamp(bars["datetime"].iloc[_ci]).date()
++                                    _d1 = pd.Timestamp(bars["datetime"].iloc[_ci - 1]).date()
++                                    if _d0 == _d1:
++                                        _sg = 1.0 if position["symbol"] == config.LONG_SYMBOL else -1.0
++                                        _gap = _sg * (_b3_hist[_ci] - _b3_hist[_ci - 1]) > 0
++                                _pp = quotes[position["symbol"]].at(tick - timedelta(minutes=3))
++                                _etf = (_pp is not None and price >= _pp)
++                                _prom = bool(_gap and _etf)
++                            if _prom:
++                                _bs["promoted"] = True
++                                _rec.b3_y3 = True
++                                _rec.b3_y3_at = pd.Timestamp(tick).isoformat()
++                                continue
++                            close_trade(tick, price, "GX_MAXHOLD", idx)
++                            position = None; whipsaw_watch = None; hold = _clr(hold); rhold = None
++                            break
++                        continue
+                     _cfg = dcfg_of(position)
+                     _tr = trend_ok_at(idx, position["symbol"], bool(_cfg))
+                     _kw, _ratio, _tp2 = ladder_kw(_tr, _cfg)
