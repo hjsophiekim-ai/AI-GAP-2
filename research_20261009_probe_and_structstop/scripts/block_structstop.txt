@@ -1,0 +1,55 @@
+
+    # ── B : CHOP 구조손절 (STRUCTSTOP) ─────────────────────────────────
+    # B3 의 -1.0% 즉시손절을 다음으로 바꾼다 (전부 사전 고정값, 탐색 없음):
+    #   · 손절 시점 하이닉스가 **포지션 반대방향으로 30분 박스를 확정이탈** -> 그대로 손절
+    #   · 박스 안이면 유예. 유예 중 net >= -0.2% 회복하면 즉시 청산,
+    #     20분(사용자 제시 5/10/15/20 의 상한) 경과 또는 B3 max-hold 도달 시 청산.
+    # 박스 정의는 연구 b/c 와 동일(30분, 마지막 3분 제외, 완성 1분봉 high/low).
+    # B3 래더는 CHOP 분기 전용이므로 TREND 거래의 -1% 손절은 자동으로 그대로다.
+    SSLOG = []
+    if STRUCT:
+        SS = {"key": None, "first": None}
+        _o_p3eval = p3_stack.evaluate
+
+        def _ss_box_out(now, up):
+            d = _win(now)
+            if len(d) < 25:
+                return True                      # 판정 불가 -> 기존 손절 그대로
+            c = d["close"].to_numpy(float)
+            hh = d["high"].to_numpy(float)
+            ll = d["low"].to_numpy(float)
+            i0 = max(0, len(c) - 30)
+            bh, bl = hh[i0:len(c) - 3].max(), ll[i0:len(c) - 3].min()
+            px = c[-1]
+            return bool(px < bl) if up else bool(px > bh)
+
+        def _p3eval_ss(**kw):
+            out = _o_p3eval(**kw)
+            if out is None or out.exit_reason != config.EXIT_B3_SL:
+                return out
+            now, ent = kw["now"], kw["entry_at"]
+            net = float(kw["net_return_pct"])
+            dv = getattr(kw["direction"], "value", str(kw["direction"]))
+            up = (dv == "UP_RED")
+            if SS["key"] != ent:
+                SS["key"], SS["first"] = ent, now
+            if _ss_box_out(now, up):
+                SSLOG.append(dict(ev="SS_STRUCTURAL", t=now.isoformat(), net=round(net, 3)))
+                return out
+            el = (now - SS["first"]).total_seconds() / 60.0
+            ehold = (now - ent).total_seconds() / 60.0
+            if net >= -0.2:
+                SSLOG.append(dict(ev="SS_RECOVER", t=now.isoformat(), net=round(net, 3),
+                                  wait=round(el, 2)))
+                return out
+            if el >= 20.0 or ehold >= float(config.P3_B3_MAX_HOLD_MIN):
+                SSLOG.append(dict(ev="SS_TIMEOUT", t=now.isoformat(), net=round(net, 3),
+                                  wait=round(el, 2), hold=round(ehold, 2)))
+                return out
+            if not SSLOG or SSLOG[-1].get("k") != str(ent):
+                SSLOG.append(dict(ev="SS_DEFER", t=now.isoformat(), net=round(net, 3), k=str(ent)))
+            return p3_stack.B3Decision(action=p3_stack.ACTION_HOLD, reason="SS_DEFER",
+                                       elapsed_min=ehold, net_pct=net,
+                                       conditions="defer%.0fm" % el)
+
+        monkeypatch.setattr(p3_stack, "evaluate", _p3eval_ss)
