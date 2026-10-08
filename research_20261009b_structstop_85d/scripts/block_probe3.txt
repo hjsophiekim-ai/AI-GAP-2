@@ -1,0 +1,25 @@
+            if PROBE and PRQ["rec"] is not None:
+                _r0 = PRQ["rec"]
+                _ps = state.position
+                if _ps is None or int(_ps.quantity or 0) <= 0 or _ps.symbol != _r0["sym"]:
+                    PRLOG.append(dict(ev="PROBE_CLOSED", t=now.isoformat(), sym=_r0["sym"]))
+                    PRQ["rec"] = None
+                elif now > _r0["deadline"]:
+                    PRLOG.append(dict(ev="PROBE_EXPIRE", t=now.isoformat(), sym=_r0["sym"]))
+                    PRQ["rec"] = None
+                else:
+                    _ok, _ti = _trend_ok(now, _r0, bars_3m)
+                    if _ti is not None and not _ti.get("c", True):
+                        PRLOG.append(dict(ev="PROBE_ABORT_BOX", t=now.isoformat(), sym=_r0["sym"], **_ti))
+                        PRQ["rec"] = None
+                    elif _ok:
+                        _qa = int(round(_r0["qty"] * (1.0 - PR_FRAC) / PR_FRAC))
+                        _res = broker.buy_market(_r0["sym"], _qa, "probe_promote") if _qa >= 1 else None
+                        _done = bool(_res is not None and getattr(_res, "success", False))
+                        if _done:
+                            state.x2lite_exposure_used_today = round(
+                                float(getattr(state, "x2lite_exposure_used_today", 0.0) or 0.0) + _r0["rest"], 6)
+                        PRLOG.append(dict(ev="PROBE_PROMOTE", t=now.isoformat(), sym=_r0["sym"],
+                                          add_qty=_qa, done=_done,
+                                          delay_min=(now - _r0["armed_at"]).total_seconds() / 60.0, **_ti))
+                        PRQ["rec"] = None
