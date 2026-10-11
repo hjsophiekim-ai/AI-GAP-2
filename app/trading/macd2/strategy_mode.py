@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from app.trading.macd2 import config
+from app.trading.macd2 import chop_defense, config
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,13 @@ MODE_P3 = "P3"
 #: 같고, 그 위에 EARLY-PASS(조건부 지연진입) + RS125(러너 증액) 두 겹만 얹는다.
 #: 따라서 derive 결과는 P3 와 동일하며 ``E`` 키 하나만 추가로 True 다.
 MODE_E = "E"
-ALL_MODES = (MODE_N1, MODE_P3, MODE_E)
+#: CHOP-STACK (2026-10-11) — P3 위에 **진입 억제 3종**(2SLOT / MC-DELAY /
+#: 구조손절)만 얹은 왕복장 전용 모드. 청산 래더·사이징·게이트는 P3 와 같다.
+#: 연구 research_20261011b_chop_stack 참조. **왕복장 한정**이며 추세장에서는
+#: P3 가 낫다(85일 ①②③ 단독 약 -390,065).
+#: E 와 CHOP 은 둘 다 P3 기반의 **별도 모드**라 동시에 켜지지 않는다.
+MODE_CHOP = "CHOP"
+ALL_MODES = (MODE_N1, MODE_P3, MODE_E, MODE_CHOP)
 
 #: 애매하거나 충돌된 조합은 **항상 여기로** 떨어진다.
 DEFAULT_MODE = MODE_N1
@@ -52,12 +58,12 @@ _STRATEGY_FLAGS = (
 )
 
 
-#: P3 청산 스택(SHADOW/B3/Y3/P3 rescue)을 쓰는 모드. E 는 P3 **기반**이다.
-P3_BASED_MODES = (MODE_P3, MODE_E)
+#: P3 청산 스택(SHADOW/B3/Y3/P3 rescue)을 쓰는 모드. E 와 CHOP 은 P3 **기반**이다.
+P3_BASED_MODES = (MODE_P3, MODE_E, MODE_CHOP)
 
 
 def is_p3_based(mode: Any) -> bool:
-    """P3 청산 스택 위에서 도는 모드인가 (P3 / E)."""
+    """P3 청산 스택 위에서 도는 모드인가 (P3 / E / CHOP)."""
     return normalize(mode) in P3_BASED_MODES
 
 
@@ -86,11 +92,15 @@ def derive(mode: Any) -> dict[str, bool]:
         "P3_RESCUE": False,
         # E 전용 overlay — P3 에서는 항상 False 라 P3 동작이 바뀌지 않는다.
         "E": False,
+        # 왕복장 방어 3종 — CHOP 모드에서만 True.
+        "CHOP_DEFENSE": False,
     }
-    if m in (MODE_P3, MODE_E):
+    if m in (MODE_P3, MODE_E, MODE_CHOP):
         base.update({"SHADOW": True, "B3": True, "Y3": True, "P3_RESCUE": True})
     if m == MODE_E:
         base["E"] = True
+    if m == MODE_CHOP:
+        base["CHOP_DEFENSE"] = True
     return base
 
 
@@ -109,6 +119,7 @@ def infer_from_legacy(state) -> tuple[str, str]:
 
       · N1 + C1 + SMART 가 전부 켜져 있고 P3 가 꺼져 있으면      -> N1
       · 위에 더해 P3 까지 켜져 있으면                              -> P3
+      · 거기에 왕복장 방어(chop_defense_enabled)까지 켜져 있으면    -> CHOP
       · 다른 전략(TW2/TWF/X2-lite/H50 등)이 켜져 있거나 조합이
         어긋나면                                                   -> N1 (안전)
     """
@@ -116,6 +127,7 @@ def infer_from_legacy(state) -> tuple[str, str]:
     c1 = bool(getattr(state, "c1_peak_protection_enabled", False))
     smart = bool(getattr(state, "smart_sizing_enabled", False))
     p3 = bool(getattr(state, "p3_enabled", False))
+    chop = bool(getattr(state, "chop_defense_enabled", False))
     others = [f for f in _STRATEGY_FLAGS
               if f != "time_window_n1_filter_enabled" and bool(getattr(state, f, False))]
     if others:
@@ -126,8 +138,15 @@ def infer_from_legacy(state) -> tuple[str, str]:
         # E 는 P3 스택 **그대로** 위에 overlay 하나만 더 켠 것이다. 따라서
         # 토글 조합이 P3 와 같고 e_enabled 만 다르다 -- 이 한 줄이 없으면
         # restore() 가 "저장된 모드 E vs 추론 P3" 불일치로 모드를 지워 버린다.
-        if bool(getattr(state, "e_enabled", False)):
+        # CHOP 도 같은 이유로 chop_defense_enabled 를 본다. 둘이 동시에 켜진
+        # state 는 apply() 로는 만들 수 없는 조합이므로 애매 -> N1.
+        e_on = bool(getattr(state, "e_enabled", False))
+        if e_on and chop:
+            return DEFAULT_MODE, "CONFLICT_E_AND_CHOP"
+        if e_on:
             return MODE_E, "FULL_P3_STACK+E"
+        if chop:
+            return MODE_CHOP, "FULL_CHOP_STACK"
         return MODE_P3, "FULL_P3_STACK"
     if p3:
         return DEFAULT_MODE, "P3_WITHOUT_BASE"
@@ -165,6 +184,14 @@ def apply(state, mode: Any, *, changed_by: str = "ui", now_iso: Optional[str] = 
     was_p3 = bool(getattr(state, "p3_enabled", False))
     state.p3_enabled = bool(flags["SHADOW"])
     state.p3_version = config.P3_FILTER_VERSION
+
+    # ③-b 왕복장 방어 3종 — CHOP 모드에서만. 모드가 내려가면 즉시 꺼지고
+    #     그 날의 MC 상태(ON/OFF, 오전 플래그 이력)도 함께 비운다.
+    was_chop = bool(getattr(state, "chop_defense_enabled", False))
+    state.chop_defense_enabled = bool(flags["CHOP_DEFENSE"])
+    state.chop_defense_version = config.CHOP_FILTER_VERSION
+    if was_chop and not state.chop_defense_enabled:
+        chop_defense.reset_daily(state)
     if was_p3 and not state.p3_enabled:
         # P3 -> N1 로 내려올 때 정리하는 것은 **섀도우 진행중 장부 하나**뿐이다.
         #

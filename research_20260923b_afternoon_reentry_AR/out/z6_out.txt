@@ -1,0 +1,12 @@
+axlib import 시 _q3base.pkl 로드됨? True len(Q3_BASE)= 580
+
+[A] 무패치 / 매번 완전 초기화
+  run1                   n=43 복리=13.2791 PF=1.5873
+  run2 (동일해야 함)          n=43 복리=13.2791 PF=1.5873
+
+[B] 초기화 없이 연속 (memo 재사용)
+  run3 (warm memo)       n=43 복리=13.2791 PF=1.5873
+
+[C] 스테일 _q3base.pkl 을 그대로 쓰면
+  len(stale Q3_BASE) = 580
+  run4 (stale q3base)    n=43 복리=13.2791 PF=1.5873

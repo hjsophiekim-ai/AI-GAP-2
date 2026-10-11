@@ -1,0 +1,10 @@
+            if _pr_on and _out is not None and _out.final_state == worker.SignalState.EXECUTED:
+                _tgt = worker.order_executor.target_symbol_for_direction(kw["direction"])
+                _ps = kw["broker"]._positions.get(_tgt) or st.position
+                if _ps is not None and int(_ps.quantity or 0) > 0:
+                    PRQ["rec"] = dict(sym=_ps.symbol, dir=getattr(kw["direction"], "value", str(kw["direction"])),
+                                      qty=int(_ps.quantity), rest=max(_bm_full - bm, 0.0),
+                                      armed_at=now, deadline=now + timedelta(minutes=PR_WIN),
+                                      box=_tr_box(now, kw["direction"]))
+                    PRLOG.append(dict(ev="PROBE_IN", t=now.isoformat(), sid=sid, sym=_ps.symbol,
+                                      qty=int(_ps.quantity), frac=PR_FRAC))

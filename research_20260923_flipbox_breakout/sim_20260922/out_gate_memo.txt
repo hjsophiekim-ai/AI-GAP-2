@@ -1,0 +1,38 @@
+flag bar -> p_idx: {'08:39': 11334, '09:00': 11337, '09:27': 11346, '11:03': 11378, '11:12': 11381, '11:24': 11385, '11:30': 11387, '11:36': 11389, '12:09': 11400}
+
+== 08:39 DOWN_BLUE (p_idx=11334) ==
+
+== 09:00 UP_RED (p_idx=11337) ==
+   chop     11337 -> EntryChopDecision(is_chop=False, score=0, required=3, conditions={}, metrics={}, insufficient_data=True)
+   veto     11337 -> (False, None)
+
+== 09:27 DOWN_BLUE (p_idx=11346) ==
+   chop     11346 -> EntryChopDecision(is_chop=True, score=4, required=3, conditions={'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': True, 'ema20_slope_not_aligned': True, 'vwap_repeat': True}, metrics={'recent_confirm
+
+== 11:03 UP_RED (p_idx=11378) ==
+   teg      11378 -> TEGDecision(approved=False, conditions={'tw2_confirmed': True, 'recent_cross_le_1': True, 'macd_gap_signed_net_expanding': True, 'ema_spread_signed_net_expanding': True, 'price_ema_stack_aligned': False, 'vwap_favorable_
+   chop     11378 -> EntryChopDecision(is_chop=False, score=2, required=3, conditions={'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': False, 'ema20_slope_not_aligned': True, 'vwap_repeat': False}, metrics={'recent_conf
+   veto     11378 -> (False, None)
+
+== 11:12 DOWN_BLUE (p_idx=11381) ==
+   teg      11381 -> TEGDecision(approved=True, conditions={'tw2_confirmed': True, 'recent_cross_le_1': True, 'macd_gap_signed_net_expanding': True, 'ema_spread_signed_net_expanding': True, 'price_ema_stack_aligned': True, 'vwap_favorable_si
+   chop     11381 -> EntryChopDecision(is_chop=False, score=2, required=3, conditions={'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': True, 'ema20_slope_not_aligned': False, 'vwap_repeat': False}, metrics={'recent_conf
+   veto     11381 -> (False, None)
+
+== 11:24 UP_RED (p_idx=11385) ==
+   chop     11385 -> EntryChopDecision(is_chop=False, score=2, required=3, conditions={'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': False, 'ema20_slope_not_aligned': True, 'vwap_repeat': False}, metrics={'recent_conf
+
+== 11:30 DOWN_BLUE (p_idx=11387) ==
+   chop     11387 -> EntryChopDecision(is_chop=False, score=1, required=3, conditions={'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': False, 'ema20_slope_not_aligned': False, 'vwap_repeat': False}, metrics={'recent_con
+
+== 11:36 UP_RED (p_idx=11389) ==
+   teg      11389 -> TEGDecision(approved=False, conditions={'tw2_confirmed': True, 'recent_cross_le_1': False, 'macd_gap_signed_net_expanding': True, 'ema_spread_signed_net_expanding': True, 'price_ema_stack_aligned': False, 'vwap_favorable
+   chop     11389 -> EntryChopDecision(is_chop=False, score=2, required=3, conditions={'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': False, 'ema20_slope_not_aligned': True, 'vwap_repeat': False}, metrics={'recent_conf
+   veto     11389 -> (False, None)
+
+== 12:09 DOWN_BLUE (p_idx=11400) ==
+   chop     11400 -> EntryChopDecision(is_chop=False, score=2, required=3, conditions={'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': False, 'ema20_slope_not_aligned': True, 'vwap_repeat': False}, metrics={'recent_conf
+   veto     11400 -> (False, None)
+
+
+[exited with code 0]

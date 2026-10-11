@@ -1,0 +1,27 @@
+R0(전면완화) 9/22 거래 3
+   at direction  approved                        reason  slot   session  flat
+09:06    UP_RED      True          TIME_WINDOW_APPROVED   1.0   MORNING  True
+09:33 DOWN_BLUE     False REJECT_MACD_GAP_NOT_EXPANDING   NaN      None False
+11:09    UP_RED     False          TW2_3SLOT_REJECT_TEG   2.0 AFTERNOON  True
+11:18 DOWN_BLUE      True          TIME_WINDOW_APPROVED   2.0 AFTERNOON  True
+11:30    UP_RED     False REJECT_MACD_GAP_NOT_EXPANDING   NaN      None False
+11:36 DOWN_BLUE     False     REJECT_DUPLICATE_POSITION   NaN      None False
+11:42    UP_RED     False          TW2_3SLOT_REJECT_TEG   3.0 AFTERNOON False
+12:15 DOWN_BLUE     False          TW2_3SLOT_REJECT_TEG   3.0 AFTERNOON  True
+14:09    UP_RED     False          TW2_REJECT_VWAP_VETO   NaN      None  True
+14:21 DOWN_BLUE      True          TIME_WINDOW_APPROVED   3.0 AFTERNOON  True
+14:48    UP_RED     False          TW2_REJECT_VWAP_VETO   NaN      None  True
+
+12:09 flag bar p_idx = 11400
+
+[teg]
+   approved       False
+   conditions     {'tw2_confirmed': True, 'recent_cross_le_1': True, 'macd_gap_signed_net_expanding': True, 'ema_spread_signed_net_expanding': True, 'price_ema_stack_aligned': False, 'vwap_favorable_side': True, 'min_9min_since_opposite_flag': True}
+   metrics        {'gap_flag': 66.6995748199916, 'gap_now': 96.14664951972088, 'recent_30min_cross_count': 0, 'macd_gap_signed_net': {'value_now': 96.14664951972088, 'value_2bar_back': -83.17083948659456, 'primary_net_2bar': 179.31748900631544, 'value_3bar_back': -208.75769433349757, 'secondary_net_3bar': 304.90434385321845}, 'ema_spread_signed_net': {'value_now': -116.8479890935123, 'value_2bar_back': -364.23666642955504, 'primary_net_2bar': 247.38867733604275, 'value_3bar_back': -495.6611537577119, 'secondary_net_3bar': 378.8131646641996}, 'close': 1917000.0, 'ema10': 1917384.0097166637, 'ema20': 1917267.1617275702, 'vwap': 1922601.7482286782, 'minutes_since_prior_opposite_flag': 33.0}
+
+[chop]
+   conditions     {'recent_confirmed_crosses': True, 'ema10_ema20_spread_not_expanding': False, 'ema20_slope_not_aligned': True, 'vwap_repeat': False}
+   metrics        {'recent_confirmed_crosses': 1, 'ema_spread_signed_change': 4.695314687909558, 'ema20_signed_change': -844.877062956104, 'vwap_flip_count': 0, 'lookback_bars_used': 10}
+   required       3
+
+[veto]

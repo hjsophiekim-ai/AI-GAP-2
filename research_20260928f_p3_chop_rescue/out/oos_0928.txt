@@ -1,0 +1,43 @@
+[일관성] BASE: 0527~0922 거래 82일런 == 80일런 → True (171 vs 171)
+[일관성] R0: 0527~0922 거래 82일런 == 80일런 → True (175 vs 175)
+[일관성] M2: 0527~0922 거래 82일런 == 80일런 → True (174 vs 174)
+[일관성] Q2: 0527~0922 거래 82일런 == 80일런 → True (175 vs 175)
+[일관성] Q3: 0527~0922 거래 82일런 == 80일런 → True (174 vs 174)
+[일관성] Q4: 0527~0922 거래 82일런 == 80일런 → True (175 vs 175)
+[일관성] Q5: 0527~0922 거래 82일런 == 80일런 → True (175 vs 175)
+
+[09/28 BASE 거래]
+  09:09 DOWN_BLUE 0197X0 @5,665 → 10:30 @5,855 SMALL_WHIPSAW_HOLD_EXIT net +3.262 MFE 5.03 (peak 10:24) MAE -0.44 h50=True | 진입 regime CHOP (0.5, 0.0)
+  10:36 UP_RED 0193T0 @10,880 → 11:18 @10,740 TIME_WINDOW_STOP_LOSS net -1.376 MFE 0.00 (peak -) MAE -1.38 h50=False | 진입 regime CHOP (0.6, 0.1)
+
+[09/28 전략별 거래]
+ R0: 3거래, 당일 가중합 -0.199
+   09:09 DOWN regime=CHOP mode=B3 +1%최초 - (None분) → 09:29 GX_MAXHOLD net -0.267 MFE 0.97 | 09:29 5,655×100% GX_MAXHOLD(-0.27)
+   09:45 DOWN regime=CHOP mode=B3 +1%최초 09:57 (12.0분) → 09:57 GX_TP net +1.168 MFE 1.17 | 09:57 5,792×100% GX_TP(+1.17)
+   10:36 UP_R regime=CHOP mode=B3 +1%최초 - (None분) → 10:46 GX_SL net -1.101 MFE 0.00 | 10:46 10,770×100% GX_SL(-1.10)
+ M2: 3거래, 당일 가중합 -0.199
+   09:09 DOWN regime=CHOP mode=B3 +1%최초 - (None분) → 09:29 GX_MAXHOLD net -0.267 MFE 0.97 | 09:29 5,655×100% GX_MAXHOLD(-0.27)
+   09:45 DOWN regime=CHOP mode=B3 +1%최초 09:57 (12.0분) → 09:57 GX_TP net +1.168 MFE 1.17 | 09:57 5,792×100% GX_TP(+1.17)
+   10:36 UP_R regime=CHOP mode=B3 +1%최초 - (None분) → 10:46 GX_SL net -1.101 MFE 0.00 | 10:46 10,770×100% GX_SL(-1.10)
+ Q2: 3거래, 당일 가중합 -0.199
+   09:09 DOWN regime=CHOP mode=B3 +1%최초 - (None분) → 09:29 GX_MAXHOLD net -0.267 MFE 0.97 | 09:29 5,655×100% GX_MAXHOLD(-0.27)
+   09:45 DOWN regime=CHOP mode=B3 +1%최초 09:57 (12.0분) → 09:57 GX_TP net +1.168 MFE 1.17 | 09:57 5,792×100% GX_TP(+1.17)
+   10:36 UP_R regime=CHOP mode=B3 +1%최초 - (None분) → 10:46 GX_SL net -1.101 MFE 0.00 | 10:46 10,770×100% GX_SL(-1.10)
+ Q3: 3거래, 당일 가중합 -0.199
+   09:09 DOWN regime=CHOP mode=B3 +1%최초 - (None분) → 09:29 GX_MAXHOLD net -0.267 MFE 0.97 | 09:29 5,655×100% GX_MAXHOLD(-0.27)
+   09:45 DOWN regime=CHOP mode=B3 +1%최초 09:57 (12.0분) → 09:57 GX_TP net +1.168 MFE 1.17 | 09:57 5,792×100% GX_TP(+1.17)
+   10:36 UP_R regime=CHOP mode=B3 +1%최초 - (None분) → 10:46 GX_SL net -1.101 MFE 0.00 | 10:46 10,770×100% GX_SL(-1.10)
+ Q4: 2거래, 당일 가중합 +2.162
+   09:09 DOWN regime=CHOP mode=B3 +1%최초 - (None분) → 10:30 SMALL_WHIPSAW_HOLD_EXIT net +3.262 MFE 5.03 | 10:30 5,855×100% SMALL_WHIPSAW_HOLD_EXIT(+3.26)
+   10:36 UP_R regime=CHOP mode=B3 +1%최초 - (None분) → 10:46 GX_SL net -1.101 MFE 0.00 | 10:46 10,770×100% GX_SL(-1.10)
+ Q5: 2거래, 당일 가중합 +2.162
+   09:09 DOWN regime=CHOP mode=B3 +1%최초 - (None분) → 10:30 SMALL_WHIPSAW_HOLD_EXIT net +3.262 MFE 5.03 | 10:30 5,855×100% SMALL_WHIPSAW_HOLD_EXIT(+3.26)
+   10:36 UP_R regime=CHOP mode=B3 +1%최초 - (None분) → 10:46 GX_SL net -1.101 MFE 0.00 | 10:46 10,770×100% GX_SL(-1.10)
+
+[판정] 09:09 인버스 첫 거래
+  R0: net -0.267 vs BASE +3.262 | runner 보존 -8%
+  M2: net -0.267 vs BASE +3.262 | runner 보존 -8%
+  Q2: net -0.267 vs BASE +3.262 | runner 보존 -8%
+  Q3: net -0.267 vs BASE +3.262 | runner 보존 -8%
+  Q4: net +3.262 vs BASE +3.262 | runner 보존 100%
+  Q5: net +3.262 vs BASE +3.262 | runner 보존 100%

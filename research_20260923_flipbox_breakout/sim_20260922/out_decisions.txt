@@ -1,0 +1,14 @@
+trades 2
+   at     kind direction approved                                        reason  slot   session  flat
+09:06 DECISION    UP_RED     True                          TIME_WINDOW_APPROVED   1.0   MORNING  True
+09:33 DECISION DOWN_BLUE    False                 REJECT_MACD_GAP_NOT_EXPANDING   NaN      None False
+09:33 H50_HOLD       NaN      NaN                                           NaN   NaN       NaN   NaN
+10:33 H50_EXIT       NaN      NaN                                      MAX_HOLD   NaN       NaN   NaN
+11:09 DECISION    UP_RED    False                          TW2_3SLOT_REJECT_TEG   2.0 AFTERNOON  True
+11:18 DECISION DOWN_BLUE     True                          TIME_WINDOW_APPROVED   2.0 AFTERNOON  True
+11:30 DECISION    UP_RED    False                 REJECT_MACD_GAP_NOT_EXPANDING   NaN      None False
+11:36 DECISION DOWN_BLUE    False                     REJECT_DUPLICATE_POSITION   NaN      None False
+11:42 DECISION    UP_RED    False                          TW2_3SLOT_REJECT_TEG   3.0 AFTERNOON False
+12:15 DECISION DOWN_BLUE    False TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND   NaN AFTERNOON  True
+
+[exited with code 0]

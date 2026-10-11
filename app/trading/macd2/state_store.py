@@ -491,6 +491,18 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "strategy_mode_at": state.strategy_mode_at,
         "strategy_mode_by": state.strategy_mode_by,
         "p3_enabled": bool(state.p3_enabled),
+        # CHOP-STACK (2026-10-11). chop_defense_enabled 는 **운영 플래그**라
+        # 반드시 살아남아야 한다 — 이게 없으면 strategy_mode.restore 가
+        # CHOP 을 P3 로 되돌린다. MC 하루상태도 함께 남겨 장중 재시작에서
+        # no-trade 구간이 풀리지 않게 한다(박스 캐시는 틱마다 다시 만든다).
+        "chop_defense_enabled": bool(state.chop_defense_enabled),
+        "chop_defense_version": state.chop_defense_version or "",
+        "chop_mc_day": state.chop_mc_day,
+        "chop_mc_flags": list(state.chop_mc_flags or []),
+        "chop_mc_on_at": state.chop_mc_on_at,
+        "chop_mc_off_at": state.chop_mc_off_at,
+        "chop_stop_key": state.chop_stop_key,
+        "chop_stop_first_at": state.chop_stop_first_at,
         "p3_enabled_at": state.p3_enabled_at,
         "p3_enabled_by": state.p3_enabled_by,
         "p3_version": state.p3_version or config.P3_FILTER_VERSION,
@@ -1217,6 +1229,14 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         strategy_mode_at=raw.get("strategy_mode_at"),
         strategy_mode_by=raw.get("strategy_mode_by"),
         p3_enabled=p3_enabled,
+        chop_defense_enabled=bool(raw.get("chop_defense_enabled", False)),
+        chop_defense_version=raw.get("chop_defense_version") or "",
+        chop_mc_day=raw.get("chop_mc_day"),
+        chop_mc_flags=list(raw.get("chop_mc_flags") or []),
+        chop_mc_on_at=raw.get("chop_mc_on_at"),
+        chop_mc_off_at=raw.get("chop_mc_off_at"),
+        chop_stop_key=raw.get("chop_stop_key"),
+        chop_stop_first_at=raw.get("chop_stop_first_at"),
         p3_enabled_at=raw.get("p3_enabled_at"),
         p3_enabled_by=raw.get("p3_enabled_by"),
         p3_version=p3_version,
