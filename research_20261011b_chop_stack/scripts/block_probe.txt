@@ -1,0 +1,15 @@
+            # ── A : PROBE -> PROMOTE ────────────────────────────────────
+            # production 이 CHOP 으로 각인하는 진입(= 시장상태가 애매한 진입)은
+            # 처음 0.33배(사용자 제시 0.25~0.4 의 중앙)만 산다. 이후 6분(3~6 의 상한)
+            # 안에 follow-through 가 확인되면 같은 거래에 나머지 0.67배를 더한다.
+            # 확인조건은 연구 c 의 _trend_ok 와 **동일**(박스 이탈 + 연속 2봉 유지 +
+            # 고저 갱신 + 박스중앙 미복귀 + MACD gap 부호유지). 청산은 전부 E 그대로.
+            _pr_on, _bm_full = False, bm
+            if PROBE and (is3 or sid.endswith(":BRK")):
+                try:
+                    _rg = chop_regime.current_regime(as_of=now.isoformat()).regime
+                except Exception:
+                    _rg = None
+                if _rg == "CHOP":
+                    _pr_on = True
+                    bm = bm * PR_FRAC
