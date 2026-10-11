@@ -195,7 +195,8 @@ def test_adaptive_update_runs_before_the_priority_chain():
 
 def test_ladder_overrides_are_passed_to_both_paths():
     assert "tp1_pct_override=_n1_over.get(\"tp1_pct_override\")" in WORKER_SRC
-    assert WORKER_SRC.count("_n1_over = _n1_ladder_overrides(state)") == 1
+    # SLOW-TP2 (2026-10-11) 로 now 인자가 붙었다 — 호출부는 여전히 한 곳이다.
+    assert WORKER_SRC.count("_n1_over = _n1_ladder_overrides(state, now=now)") == 1
     # 틱 TP 경로와 완성봉 래더 경로 두 곳 모두에서 쓰인다
     assert WORKER_SRC.count("_n1_over.get(") >= 3
     assert "_pm_tp2 = _n1_over[\"tp2_pct_override\"]" in WORKER_SRC

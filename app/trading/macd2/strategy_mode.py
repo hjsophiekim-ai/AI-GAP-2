@@ -24,13 +24,18 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from app.trading.macd2 import config
+from app.trading.macd2 import chop_defense, config
 
 logger = logging.getLogger(__name__)
 
 MODE_N1 = "N1"
 MODE_P3 = "P3"
-ALL_MODES = (MODE_N1, MODE_P3)
+#: CHOP-STACK (2026-10-11) — P3 위에 **진입 억제 3종**(2SLOT / MC-DELAY /
+#: 구조손절)만 얹은 왕복장 전용 모드. 청산 래더·사이징·게이트는 P3 와 같다.
+#: 연구 research_20261011b_chop_stack 참조. **왕복장 한정**이며 추세장에서는
+#: P3 가 낫다(85일 ①②③ 단독 약 -390,065).
+MODE_CHOP = "CHOP"
+ALL_MODES = (MODE_N1, MODE_P3, MODE_CHOP)
 
 #: 애매하거나 충돌된 조합은 **항상 여기로** 떨어진다.
 DEFAULT_MODE = MODE_N1
@@ -71,9 +76,13 @@ def derive(mode: Any) -> dict[str, bool]:
         "B3": False,
         "Y3": False,
         "P3_RESCUE": False,
+        # 왕복장 방어 3종 — CHOP 모드에서만 True.
+        "CHOP_DEFENSE": False,
     }
-    if m == MODE_P3:
+    if m in (MODE_P3, MODE_CHOP):
         base.update({"SHADOW": True, "B3": True, "Y3": True, "P3_RESCUE": True})
+    if m == MODE_CHOP:
+        base["CHOP_DEFENSE"] = True
     return base
 
 
@@ -92,6 +101,7 @@ def infer_from_legacy(state) -> tuple[str, str]:
 
       · N1 + C1 + SMART 가 전부 켜져 있고 P3 가 꺼져 있으면      -> N1
       · 위에 더해 P3 까지 켜져 있으면                              -> P3
+      · 거기에 왕복장 방어(chop_defense_enabled)까지 켜져 있으면    -> CHOP
       · 다른 전략(TW2/TWF/X2-lite/H50 등)이 켜져 있거나 조합이
         어긋나면                                                   -> N1 (안전)
     """
@@ -99,6 +109,7 @@ def infer_from_legacy(state) -> tuple[str, str]:
     c1 = bool(getattr(state, "c1_peak_protection_enabled", False))
     smart = bool(getattr(state, "smart_sizing_enabled", False))
     p3 = bool(getattr(state, "p3_enabled", False))
+    chop = bool(getattr(state, "chop_defense_enabled", False))
     others = [f for f in _STRATEGY_FLAGS
               if f != "time_window_n1_filter_enabled" and bool(getattr(state, f, False))]
     if others:
@@ -106,7 +117,7 @@ def infer_from_legacy(state) -> tuple[str, str]:
     if not n1:
         return DEFAULT_MODE, "N1_OFF"
     if p3 and c1 and smart:
-        return MODE_P3, "FULL_P3_STACK"
+        return (MODE_CHOP, "FULL_CHOP_STACK") if chop else (MODE_P3, "FULL_P3_STACK")
     if p3:
         return DEFAULT_MODE, "P3_WITHOUT_BASE"
     if c1 and smart:
@@ -143,6 +154,14 @@ def apply(state, mode: Any, *, changed_by: str = "ui", now_iso: Optional[str] = 
     was_p3 = bool(getattr(state, "p3_enabled", False))
     state.p3_enabled = bool(flags["SHADOW"])
     state.p3_version = config.P3_FILTER_VERSION
+
+    # ③-b 왕복장 방어 3종 — CHOP 모드에서만. 모드가 내려가면 즉시 꺼지고
+    #     그 날의 MC 상태(ON/OFF, 오전 플래그 이력)도 함께 비운다.
+    was_chop = bool(getattr(state, "chop_defense_enabled", False))
+    state.chop_defense_enabled = bool(flags["CHOP_DEFENSE"])
+    state.chop_defense_version = config.CHOP_FILTER_VERSION
+    if was_chop and not state.chop_defense_enabled:
+        chop_defense.reset_daily(state)
     if was_p3 and not state.p3_enabled:
         # P3 -> N1 로 내려올 때 정리하는 것은 **섀도우 진행중 장부 하나**뿐이다.
         #

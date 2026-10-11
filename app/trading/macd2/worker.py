@@ -49,6 +49,7 @@ from app.logger import logger
 from app.trading.macd2 import (
     bar_archive,
     bar_ledger,
+    chop_defense,
     chop_regime,
     config,
     early_take_profit,
@@ -3059,7 +3060,7 @@ def _judge_time_window_flag(
     return decision
 
 
-def _n1_ladder_overrides(state: RuntimeState) -> dict:
+def _n1_ladder_overrides(state: RuntimeState, *, now: Optional[datetime] = None) -> dict:
     """N1 이 활성일 때 오전 래더에 넘길 override 3개. 그 외 모드는 빈 dict.
 
     판정은 **완성봉에서만** 갱신되고(`_advance_n1_adaptive`), 그 봉 안의 틱은
@@ -3080,12 +3081,68 @@ def _n1_ladder_overrides(state: RuntimeState) -> dict:
         tp1, ratio, tp2 = n1_adaptive.off_trend_ladder()
     else:
         tp1, ratio, tp2 = ld.tp1_pct, ld.tp1_sell_ratio, ld.tp2_pct
+    tp2 = _slow_tp2_ceiling(state, tp2, now=now)
     return {
         "tp2_pct_override": float(tp2),
         "tp1_sell_ratio_override": float(ratio),
         "tp1_pct_override": float(tp1),
     }
 
+
+def _slow_tp2_ceiling(state: RuntimeState, tp2: float, *, now: Optional[datetime]) -> float:
+    """SLOW-TP2 (2026-10-11): 비추세 가지에서 **천천히 올라온** 포지션만 천장 4.0 -> 8.0.
+
+    연구 research_20261007_slowtp2 §13 의 규칙을 그대로 옮긴 것이다:
+
+        비추세 가지(TP2 == N1_OFF_TREND_TP2) ∧ tp1_done
+        ∧ (now - entry_at) >= SLOW_TP2_MIN_MINUTES
+
+    추세 가지(8.0)는 손대지 않고, 조건이 하나라도 어긋나면 받은 값을 그대로
+    돌려준다. ``now`` 가 없으면(호출부가 시각을 모르면) 경과시간을 셀 수 없으므로
+    **원래 천장을 유지**한다 — 추정하지 않는다(fail-safe = 현행).
+    """
+    if not bool(getattr(config, "SLOW_TP2_ENABLED", False)):
+        return tp2
+    off_tp2 = float(config.N1_OFF_TREND_TP2) * 100.0
+    if abs(float(tp2) - off_tp2) > 1e-9:
+        return tp2                      # 추세 가지(8.0)는 그대로
+    if not bool(getattr(state, "time_window_tp1_done", False)):
+        return tp2
+    if now is None:
+        return tp2
+    entry_at = _parse_iso_dt(getattr(state, "last_time_window_entry_at", None))
+    if entry_at is None:
+        return tp2
+    elapsed_min = (now - entry_at).total_seconds() / 60.0
+    if elapsed_min < float(config.SLOW_TP2_MIN_MINUTES):
+        return tp2
+    return float(config.N1_TREND_TP2) * 100.0
+
+
+
+def _p3_apply_chop_stop(state: RuntimeState, decision, *, now: datetime,
+                        entry_at: Optional[datetime], net_return_pct: float,
+                        direction) -> Any:
+    """CHOP-STACK ③: B3 의 -1% 손절 **한 경로만** 가로채 유예한다.
+
+    ``chop_defense.b3_stop_action`` 이 DEFER 를 돌려주면 그 tick 의 결정을
+    HOLD 로 바꾼다. 다른 모든 결정(TP/max-hold/EXTEND/승격)과 B3 바깥의
+    청산경로(TW 손절/반대신호/C1/H50/TP)는 손대지 않는다.
+
+    CHOP 모드가 아니면 ``b3_stop_action`` 이 즉시 EXECUTE 라 no-op 이다.
+    """
+    if decision is None or decision.exit_reason != config.EXIT_B3_SL:
+        return decision
+    action = chop_defense.b3_stop_action(
+        state, now=now, entry_at=entry_at,
+        net_return_pct=float(net_return_pct), direction=direction,
+    )
+    if action != chop_defense.STOP_DEFER:
+        return decision
+    return dataclasses.replace(
+        decision, action=p3_stack.ACTION_HOLD, exit_reason=None, sell_fraction=0.0,
+        reason="CHOP_STOP_DEFER",
+    )
 
 def _advance_n1_adaptive(*, state: RuntimeState, macd_snap, bars_3m, position) -> None:
     """N1 adaptive 판정을 완성봉마다 갱신한다 (2026-09-20).
@@ -3287,7 +3344,7 @@ def _advance_held_position_risk_management(
         _tw_exit_overrides = time_window_3slot.exit_overrides(state.time_window_active_mode)
         # N1 (2026-09-20): 상위추세 여부로 TP1/TP1비중/TP2 가 봉마다 바뀐다.
         # N1 이 아니면 _n1_over 가 빈 dict 라 기존 인자가 그대로 쓰인다.
-        _n1_over = _n1_ladder_overrides(state)
+        _n1_over = _n1_ladder_overrides(state, now=now)
 
         # ── P3 스택: B3 TP/SL + P3 runner rescue (2026-09-27) ──────────────
         # **CHOP 으로 진입한 포지션에만** 적용된다. TREND/WARMUP 진입은 아래
@@ -3320,6 +3377,11 @@ def _advance_held_position_risk_management(
                     # 부분익절 + 승격으로 받는다. 연장이 아니면 False 라 기존과
                     # 한 줄도 다르지 않다(연구엔진 _bs["ext"] 와 같은 자리).
                     h30_active=p3_stack.is_h30(state),
+                )
+                # CHOP-STACK ③: -1% 손절이면 유예 여부를 묻는다(그 외 결정은 통과).
+                _p3_dec = _p3_apply_chop_stop(
+                    state, _p3_dec, now=now, entry_at=_p3_entry_at,
+                    net_return_pct=tick_net_return, direction=_position_direction(pos),
                 )
                 if _p3_dec.action == p3_stack.ACTION_PARTIAL_PROMOTE:
                     # "+1% 최초 도달" 은 여기서 한 번만 각인된다. 같은 tick 이
@@ -4033,6 +4095,9 @@ def _judge_tw2_3slot_flag(
     flag_bar_dt = pd.Timestamp(bars_3m["datetime"].iloc[-1]).to_pydatetime()
     state.tw2_3slot_pending_flag_direction = direction
     state.tw2_3slot_pending_flag_bar_ts = flag_bar_dt.isoformat()
+    # CHOP-STACK ②: 오전 플래그 이력(방향전환 횟수)을 기록해 둔다. 모드와
+    # 무관하게 기록만 하므로 다른 경로의 동작은 바뀌지 않는다.
+    chop_defense.note_morning_flag(state, flag_bar_dt, direction)
     decision = MajorFlagDecision(
         approved=False, score=0.0, required_score=0.0,
         decision=config.TW_PENDING_CONFIRMATION,
@@ -4161,6 +4226,21 @@ def _resolve_tw2_3slot_candidate_body(
     final_block_reason = base_decision.block_reason
     final_decision_label = base_decision.decision
 
+    # ── CHOP-STACK ② MC-DELAY ────────────────────────────────────────────
+    # 오전 왕복장으로 판정된 구간이면 **구간 통째로** 신규진입을 막는다.
+    # 슬롯 판정 앞에 두므로 슬롯을 소비하지 않는다(연구사양). 개별 플래그를
+    # 3~15분 늦추는 방식이 아니라 구간 no-trade 다.
+    # CHOP 모드가 아니면 morning_no_trade 가 즉시 False 라 no-op.
+    if tw2_cleared and chop_defense.morning_no_trade(state, now, df_1m):
+        tw2_cleared = False
+        final_block_reason = config.CHOP_MC_BLOCK_REASON
+        final_decision_label = config.CHOP_MC_BLOCK_REASON
+        base_decision = dataclasses.replace(
+            base_decision, approved=False,
+            decision=config.CHOP_MC_BLOCK_REASON,
+            block_reason=config.CHOP_MC_BLOCK_REASON,
+        )
+
     if tw2_cleared:
         slot_decision = time_window_3slot.resolve_slot(
             now=now,
@@ -4170,6 +4250,8 @@ def _resolve_tw2_3slot_candidate_body(
             direction=direction,
             is_flat=(position is None),
             last_afternoon_direction=state.tw2_3slot_last_afternoon_direction,
+            # CHOP-STACK ①: 왕복장 방어모드면 하루 2회, 그 외는 기존 3회.
+            daily_cap=chop_defense.daily_cap(state),
         )
         slot_metrics["slot_number"] = slot_decision.slot_number
         slot_metrics["session"] = slot_decision.session
@@ -4706,7 +4788,7 @@ def _retry_pending_signal(
             _apply_switch_outcome(state, outcome, pending_dir, now)
         return outcome
     # 하루 3회 cap: 최초 판정 뒤 슬롯이 찼다면 재시도하지 않는다.
-    if int(state.tw2_3slot_slots_used_today or 0) >= int(config.TW2_3SLOT_DAILY_CAP):
+    if int(state.tw2_3slot_slots_used_today or 0) >= int(chop_defense.daily_cap(state)):
         logger.warning("[MACD2] pending 3-SLOT retry dropped -- daily cap reached (signal_id=%s)", signal_id)
         state.pending_signal = None
         state.order_block_reason = "TW2_3SLOT_DAILY_CAP_REACHED"
@@ -5206,6 +5288,11 @@ def _advance_p3_max_hold(*, broker, state: RuntimeState, now: datetime,
         bars_3m=bars_3m, etf_prev_price=etf_prev, etf_current_price=current_price,
         allow_max_hold=True,
         h50_active=h50_active, h30_active=was_h30,
+    )
+    # CHOP-STACK ③: -1% 손절이면 유예 여부를 묻는다(그 외 결정은 통과).
+    decision = _p3_apply_chop_stop(
+        state, decision, now=now, entry_at=entry_at,
+        net_return_pct=net, direction=_position_direction(position),
     )
     if decision.action == p3_stack.ACTION_HOLD:
         return None
@@ -6662,6 +6749,13 @@ def run_once(
     # for the analogous same-day MU_MACD fix this mirrors).
     _held_pos = state.position
     if _held_pos is not None and _held_pos.quantity > 0:
+        # CHOP-STACK ③: 구조손절이 쓸 1분봉 파생(박스/마지막 종가)을 **이 tick 에**
+        # 캐시한다. B3 판정은 아래에서 df_1m 이 만들어지기 **전에** 돌기 때문에
+        # 여기서 직접 받아 둔다. CHOP 모드가 아니면 no-op.
+        try:
+            chop_defense.note_bars(state, now, market_data.get_history_df())
+        except Exception:
+            pass
         if _advance_held_position_risk_management(
             broker=broker, state=state, market_data=market_data, now=now,
             quotes=quotes, pos=_held_pos, result=result,

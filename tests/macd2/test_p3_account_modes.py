@@ -127,12 +127,12 @@ def test_four_combinations_initialize(account, mode, monkeypatch, tmp_path):
     assert strategy_mode.current(state) == mode
     assert strategy_mode.account_kind(state) == account.upper()
     # 계좌가 전략 구성을 바꾸면 안 된다.
-    assert bool(state.p3_enabled) is (mode == strategy_mode.MODE_P3)
+    assert bool(state.p3_enabled) is (mode in (strategy_mode.MODE_P3, strategy_mode.MODE_CHOP))
     assert state.time_window_n1_filter_enabled is True
     assert state.c1_peak_protection_enabled is True
     assert state.smart_sizing_enabled is True
     # P3 스택 활성 여부는 모드만 본다.
-    assert p3_stack.is_active(state) is (mode == strategy_mode.MODE_P3)
+    assert p3_stack.is_active(state) is (mode in (strategy_mode.MODE_P3, strategy_mode.MODE_CHOP))
 
 
 @pytest.mark.parametrize("account", ACCOUNTS)
