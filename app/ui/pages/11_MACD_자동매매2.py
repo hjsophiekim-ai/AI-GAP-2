@@ -1168,16 +1168,19 @@ if macd2_config.SHOW_LEGACY_3SLOT_TOGGLES:
 # ── STRATEGY MODE (2026-09-27) ─────────────────────────────────────────────
 # 사용자가 만지는 **유일한 전략 설정**. C1 / SMART / AR1 / SHADOW / B3 / Y3 /
 # P3 rescue 는 여기서 derive 된다(app/trading/macd2/strategy_mode.py).
-# 두 모드의 진입은 완전히 같고(N1 + C1 + SMART + AR1), 차이는 청산 레이어뿐이다.
+# N1/P3 의 진입은 완전히 같고(N1 + C1 + SMART + AR1), 차이는 청산 레이어뿐이다.
+# CHOP 은 P3 와 청산이 같고 **진입 억제 3종**(2슬롯 / 오전 no-trade / 구조손절)만
+# 더해진 왕복장 전용 모드다 — 추세장에서는 P3 가 낫다(research_20261011b).
 st.markdown("**Strategy**")
 _stm_current = macd2_strategy_mode.current(state)
 _stm_options = list(macd2_strategy_mode.ALL_MODES)
 _stm_labels = {
     macd2_strategy_mode.MODE_N1: "N1 · 기존 전략",
     macd2_strategy_mode.MODE_P3: "P3 · Adaptive CHOP + Runner Protection",
-    macd2_strategy_mode.MODE_E: "E · P3 + EARLY-UP-FAST + RS125",
+    macd2_strategy_mode.MODE_E: "E · P3 + EARLY-UP-FAST + RS125 + SLOW-TP2 (기본)",
+    macd2_strategy_mode.MODE_CHOP: "CHOP · 왕복장 방어 (E + SLOW-TP2 + 진입억제 3종)",
 }
-_stm_cols = st.columns([2.0, 2.0])
+_stm_cols = st.columns([3.0, 1.0])
 with _stm_cols[0]:
     _stm_pick = st.radio(
         "전략 모드",
@@ -1192,6 +1195,11 @@ with _stm_cols[0]:
               + chr(10) + chr(10)
               + "E : P3 그대로 + EARLY-UP-FAST(돌파 임박·확정봉 동방향·gap 확대일 때만 즉시진입, "
                 "아니면 최대 15분 돌파대기 후 미도달 폐기) + RS125(RS 상위20% 진입 x1.25, 일일한도 안에서만)"
+                " + SLOW-TP2(TP1 후 25분 넘게 천천히 오른 포지션만 TP2 4.0->8.0)"
+              + chr(10) + chr(10)
+              + "CHOP : E 그대로 + SLOW-TP2 + 왕복장 방어 3종 — 하루 2회 진입 / 오전 왕복구간 no-trade /"
+              + " B3 -1% 손절을 박스 확정이탈까지 유예." + chr(10)
+              + "       왕복장 전용 선택모드입니다. 필요할 때만 수동으로 고르세요(추세장에서는 E 가 낫습니다)."
               + chr(10) + chr(10)
               + "MOCK/REAL 양쪽에서 쓸 수 있습니다. 자동으로 켜지지 않습니다."),
     )
@@ -1247,7 +1255,7 @@ with _stm_cols[1]:
                              if _stm_shadow.startswith("WARMUP ") else _stm_shadow)
         st.caption(f"SHADOW: **{_stm_shadow_label}**")
         st.caption(f"EXECUTION: **{_stm_exec_label}**")
-        if _stm_current == macd2_strategy_mode.MODE_E:
+        if _stm_current in macd2_strategy_mode.E_BASED_MODES:
             # E 진입 overlay 는 SHADOW 준비와 무관하게 항상 켜져 있다 -- 청산
             # fallback(BASE) 과 섞이지 않게 별도 줄로 보여 준다(읽기 전용).
             st.caption(f"E ENTRY: **{macd2_e_strategy.describe(state)}**")
@@ -1586,7 +1594,7 @@ if len(_active_names) == 1 and macd2_strategy_mode.is_p3_based(_stm_current):
     # E 도 P3 기반이라 같은 자리에서 보인다. E 의 진입 overlay 는 실행계층과
     # 무관하게 항상 켜져 있으므로 fallback 문구에 함께 적는다.
     _stm_e_note = (" · E 진입(EARLY-UP-FAST+RS125) 적용 중"
-                   if _stm_current == macd2_strategy_mode.MODE_E else "")
+                   if _stm_current in macd2_strategy_mode.E_BASED_MODES else "")
     if _stm_exec == _stm_current:
         st.success(f"✅ 선택 전략 **{_stm_current}** / 현재 실행 **{_stm_current}** "
                    f"(regime {getattr(state, 'p3_last_regime', None) or '-'})")

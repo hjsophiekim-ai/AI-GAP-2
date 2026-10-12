@@ -1673,6 +1673,100 @@ N1_EARLY_TP_FLOOR_PCT = _env_float("MACD2_N1_EARLY_TP_FLOOR_PCT", 0.8)
 #: N1 전용 quality 임계값(연구 q3). 다른 모드는 QUALITY_SCORE_THRESHOLD 그대로.
 N1_QUALITY_SCORE_THRESHOLD = _env_int("MACD2_N1_QUALITY_SCORE_THRESHOLD", 3)
 
+# ── SLOW-TP2 (2026-10-11) ────────────────────────────────────────────────
+# 연구: research_20261007_slowtp2 (하네스 REAL replay 검증) +
+#       research_20261011b_chop_stack (85일 재확인).
+#
+# N1 **비추세 가지**(TP1 3.0 / 비중 0.2 / TP2 4.0)로 관리 중인 포지션이
+# TP1 을 이미 찍었고 **진입 후 SLOW_TP2_MIN_MINUTES 이상** 지났으면
+# TP2 천장만 4.0 -> 8.0 으로 올린다. **단 한 값**만 바뀐다 —
+# TP1 레벨/매도비중/손절/after-TP1/trailing/OPPOSITE_SIGNAL/C1/H50/
+# 진입/사이징은 전부 그대로다.
+#
+# 근거: 비추세 가지 25건 중 16건이 TP2 4.0 천장에 눌렸고, 그중 4.0 도달에
+# 25분 이상 걸린 9건은 7승 2패(+1,581,764), 25분 미만 7건은 1승 6패(-919,438)
+# 로 방향이 한 번에 갈렸다. 25분은 그 경계이며 새로 탐색한 값이 아니다.
+#
+# 검증 (85영업일 REAL replay, 2026-05-27~10-01, research_20261007_slowtp2 §33):
+#   E 현행        +18,412,222 / PF 3.55 / MDD -6.36 / 손실일 18 / 152거래
+#   E + SLOW-TP2  +19,917,321 / PF 3.76 / MDD -6.36 / 손실일 18 / 152거래
+#   -> **+1,505,099**. 진입집합·거래수·승률·MDD·최대1일손실·손실일 전부 불변.
+#   (이후 research_20261008_peaklock 에서 베이스 E 앵커가 0824 집계오류 정정으로
+#    +18,435,036 이 됐다. 위 쌍은 같은 재생 안에서 측정된 값이라 그대로 둔다.)
+#   train 5~7월 +1,361,545 / test 8~10월 +143,554 (양 구간 양수)
+#   유일한 손실경로는 C1 peak protection 상호작용 2건(-232,292) 이다 —
+#   천장을 8.0 으로 올리면 5%+ 구간을 지나며 C1 이 armed 되고, peak 대비
+#   1.5%p 반납 시 착지점이 4.0 아래가 될 수 있다. 운영 관찰지표로 둘 것.
+# 2026-10-12 production replay 검증 (docs/macd2_chop_stack_verification.md §9):
+#   production E 89영업일 +18,337,133 -> E+SLOW +19,574,362 (Δ +1,237,229)
+#   MDD·최대1일손실·손실일·거래수 불변, 상위3일 제외 +152,679, train/test 양수.
+# -> **기본 ON, 단 E 계열(E / CHOP) 에만 적용**. N1·P3 에는 걸지 않는다
+#    (worker._slow_tp2_ceiling 의 모드 가드). CHOP 은 이 토글과 무관하게 항상 포함.
+SLOW_TP2_ENABLED = _env_bool("MACD2_SLOW_TP2_ENABLED", True)
+#: 4.0% 천장에 닿은 시점의 (now - entry_at) 하한(분). 연구값 25 고정.
+SLOW_TP2_MIN_MINUTES = _env_float("MACD2_SLOW_TP2_MIN_MINUTES", 25.0)
+#: 청산사유 라벨 — 기존 TP2 경로를 그대로 타되 원장에서 구분 가능하게 한다.
+SLOW_TP2_LABEL = "SLOW_TP2"
+
+# ── CHOP-STACK : 왕복장 방어모드 (2026-10-11) ─────────────────────────────
+# 연구: research_20261011b_chop_stack. P3(=E) 위에 **진입 억제 3종**만 얹은
+# 별도 전략모드다. 청산 래더·사이징·TEG/VWAP/품질 게이트는 P3 와 100% 같고,
+# SLOW-TP2 는 CHOP 정의에 포함된다(토글과 무관하게 항상).
+#
+#   ① 2SLOT        하루 최대 진입 3 -> 2
+#   ② MC-DELAY     오전 왕복장 판정 시 구간 통째 no-trade (슬롯 미소비)
+#   ③ 구조손절      B3 -1% 즉시손절 -> 박스 확정이탈이면 손절, 아니면 유예
+#
+# 검증 (REAL replay):
+#   9~10월 23영업일  E +809,462 -> +1,744,193 (Δ +934,731, PF 1.41->2.44)
+#                    상위 1/2/3일 제외해도 +602,385/+374,988/+258,336 전부 우위
+#   85영업일         E +18,435,036 -> +19,550,070 (Δ +1,115,034, PF 3.56->4.28)
+#                    train 5~7월 +905,269 / test 8~10월 +209,765 (양 구간 양수)
+#
+# ⚠ 단 85일 Δ 의 대부분은 SLOW-TP2 몫이고, ①②③ 만 떼면 85일 약 -390,065 다
+#   (6월 -438,306 / 8월 -576,768 손실, 9월 +681,233 이익). **왕복장 한정 모드**이며
+#   추세장에서는 P3 가 낫다. 자동 전환 판별은 연구에서 실패했으므로(연구 b:
+#   진입시점 AUC 9월 0.67 -> 10월 0.50) **사용자가 켜고 끈다.**
+CHOP_FILTER_VERSION = "CHOPSTACK_V1_20261011"
+CHOP_STRATEGY_NAME = "CHOP-STACK"
+
+#: ① 하루 최대 진입 수 (P3 는 TW2_3SLOT_DAILY_CAP = 3).
+CHOP_DAILY_CAP = _env_int("MACD2_CHOP_DAILY_CAP", 2)
+
+#: ② MC-DELAY — 오전 왕복장 판정.
+#:   ON  : 09:00~10:30 플래그 방향전환 >= CHOP_MC_REVERSALS
+#:         AND 최근 CHOP_MC_LOOKBACK_MIN 분 하이닉스 PE < CHOP_MC_PE_MAX
+#:         AND EMA20 교차 >= CHOP_MC_XC_MIN
+#:   OFF : CHOP_MC_RELEASE_FROM 이후 한 방향 돌파확인 성립 시
+#: PE 0.20 / 교차 3 은 research_20261004_chop_staged 의 왕복장 판정 상수를
+#: 그대로 재사용한 것이며 새로 탐색한 값이 아니다.
+CHOP_MC_ENABLED = _env_bool("MACD2_CHOP_MC_ENABLED", True)
+CHOP_MC_WINDOW_END = time(10, 30)
+CHOP_MC_RELEASE_FROM = time(10, 30)
+CHOP_MC_REVERSALS = _env_int("MACD2_CHOP_MC_REVERSALS", 2)
+CHOP_MC_LOOKBACK_MIN = _env_int("MACD2_CHOP_MC_LOOKBACK_MIN", 60)
+CHOP_MC_MIN_BARS = _env_int("MACD2_CHOP_MC_MIN_BARS", 30)
+CHOP_MC_PE_MAX = _env_float("MACD2_CHOP_MC_PE_MAX", 0.20)
+CHOP_MC_XC_MIN = _env_int("MACD2_CHOP_MC_XC_MIN", 3)
+CHOP_MC_BLOCK_REASON = "CHOP_MORNING_NO_TRADE"
+
+#: 박스 정의 — ②의 해제판정과 ③의 구조이탈 판정이 **같은 박스**를 쓴다.
+#: 최근 CHOP_BOX_MINUTES 분 중 마지막 CHOP_BOX_SKIP 분을 뺀 구간의 1분봉 high/low.
+CHOP_BOX_MINUTES = _env_int("MACD2_CHOP_BOX_MINUTES", 30)
+CHOP_BOX_SKIP = _env_int("MACD2_CHOP_BOX_SKIP", 3)
+#: 돌파확인(②의 해제) — 박스 밖 연속 유지 봉수 / 직전 N봉 극값 갱신 lookback.
+CHOP_BREAKOUT_BARS = _env_int("MACD2_CHOP_BREAKOUT_BARS", 2)
+CHOP_BREAKOUT_HHLL = _env_int("MACD2_CHOP_BREAKOUT_HHLL", 5)
+
+#: ③ 구조손절 — B3 -1% 가 떴을 때.
+#:   박스를 포지션 반대방향으로 확정이탈했으면 그대로 손절(구조적 손절),
+#:   아니면 유예. 유예 중 net >= CHOP_STOP_RECOVER_PCT 회복하면 즉시 청산,
+#:   첫 터치로부터 CHOP_STOP_DEFER_MIN 분 또는 B3 max-hold 도달 시 청산.
+#:   유예 중에도 TW 손절/반대신호/C1/H50/TP 는 전부 살아 있다.
+CHOP_STOP_DEFER_ENABLED = _env_bool("MACD2_CHOP_STOP_DEFER_ENABLED", True)
+CHOP_STOP_DEFER_MIN = _env_float("MACD2_CHOP_STOP_DEFER_MIN", 20.0)
+CHOP_STOP_RECOVER_PCT = _env_float("MACD2_CHOP_STOP_RECOVER_PCT", -0.2)
+
 # ── P3 REGIME STACK (2026-09-27) ──────────────────────────────────────────
 # SHADOW-BASE SLOW CHOP detector -> CHOP 진입 포지션에 B3 청산 -> +1% 시점
 # P3 runner rescue -> max-hold 시점 Y3 승격. **사용자 토글은 P3 하나뿐**이고
