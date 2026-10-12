@@ -54,6 +54,7 @@ from app.trading.macd2 import (
     config,
     e_strategy,
     early_take_profit,
+    entry_arming,
     peak_protection,
     n1_adaptive,
     ledger,
@@ -2282,6 +2283,73 @@ def _safe_exit_on_position_data_error(broker, state: RuntimeState, *, signal_id:
     return outcome
 
 
+def _entry_disarmed_outcome(
+    *, broker, state: RuntimeState, direction: Direction, signal_id: str,
+    position: Optional[PositionSnapshot], reason: str, result: TickResult,
+    origin_bar_dt: Optional[datetime], order_started: float,
+):
+    """신규진입 허용 게이트에 걸린 신호의 처리 (entry_arming).
+
+    - 플랫 / 같은 방향 보유: 주문 0건. BLOCKED outcome 을 돌려 호출부가 신호원장에
+      그대로 기록하게 한다.
+    - 반대 ETF 보유: 보유분만 매도(EXIT_OPPOSITE_SIGNAL) — 진입필터에 걸린 반대신호
+      청산(_execute_reversal_exit_only_for_filtered_entry)과 같은 의미다. 반대 ETF
+      매수는 하지 않는다. 호출부의 체결 후처리(_apply_switch_outcome)를 타지 않도록
+      outcome 은 BLOCKED 로 돌려주고, 매도 결과는 여기서 state 에 반영한다.
+
+    어느 경우든 이 signal_id 는 처리완료로 표시한다 — ON 이후 소급 체결 금지.
+    """
+    target = order_executor.target_symbol_for_direction(direction)
+    trace = result.signal_dispatch_trace
+    origin = entry_arming.signal_origin_at(signal_id, origin_bar_dt)
+    trace["entry_arming"] = {
+        "reason": reason,
+        "entry_enabled": entry_arming.is_enabled(state),
+        "entry_armed_at": getattr(state, "entry_armed_at", None),
+        "signal_origin_at": origin.isoformat() if origin else None,
+    }
+    trace["final_block_reason"] = reason
+    trace["order_result_override"] = reason
+    out = order_executor.ExecutionOutcome(
+        signal_id, direction, target, SignalState.BLOCKED, block_reason=reason,
+    )
+    held = position if (position is not None and position.quantity > 0) else None
+    if held is not None and held.symbol != target:
+        ex = order_executor.execute_exit(
+            broker=broker, symbol=held.symbol, quantity=held.quantity,
+            exit_reason=config.EXIT_OPPOSITE_SIGNAL, entry_price=held.avg_price,
+            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
+            reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        )
+        _apply_exit_outcome(state, ex)
+        out.sell_result = ex.sell_result
+        out.timestamps = dict(ex.timestamps or {})
+        out.order_failure_stage = ex.order_failure_stage
+        result.order_requested_at = ex.timestamps.get("sell_requested_at")
+        trace["order_executor_called"] = True
+        trace["order_requested_at"] = result.order_requested_at or ""
+        trace["broker_called"] = ex.sell_result is not None
+        trace["broker_order_id"] = ex.sell_result.order_id if ex.sell_result else ""
+        trace["broker_raw"] = dict(ex.sell_result.raw or {}) if ex.sell_result else {}
+        trace["order_result_override"] = (
+            entry_arming.SELL_EXECUTED_ENTRY_DISARMED
+            if ex.final_state == SignalState.EXECUTED else ex.final_state.value)
+        result.actions.append(f"EXIT_ONLY_{reason}:{direction.value}")
+    else:
+        result.actions.append(f"{reason}:{direction.value}")
+    if signal_id and signal_id not in state.processed_signal_ids:
+        state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+    if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
+        state.pending_signal = None
+    state.order_block_reason = reason
+    result.skipped = reason
+    result.timing["order_execution"] = time.monotonic() - order_started
+    logger.info("[MACD2][ARM] 신규진입 차단 %s (%s, origin=%s, armed_at=%s, held=%s)",
+                signal_id, reason, trace["entry_arming"]["signal_origin_at"],
+                getattr(state, "entry_armed_at", None), held.symbol if held else None)
+    return out
+
+
 def _execute_or_wait(
     *,
     broker,
@@ -2296,6 +2364,7 @@ def _execute_or_wait(
     result: TickResult,
     signal_detected_at: Optional[datetime] = None,
     budget_multiplier: float = 1.0,
+    signal_origin_bar_dt: Optional[datetime] = None,
 ):
     order_started = time.monotonic()
     result.signal_dispatch_trace = {
@@ -2402,6 +2471,19 @@ def _execute_or_wait(
         result.skipped = reconcile
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
+
+    # ── 신규진입 허용 게이트 (2026-10-13, entry_arming) ───────────────────
+    # 모든 신호 진입(일반/T+3/3-SLOT/E 돌파/pending retry)이 지나는 단 하나의
+    # 주문 직전 지점이다. 허용 OFF 이거나 ON 이전에 발생한 신호면 **매수는 0건**,
+    # 반대 ETF 를 보유 중이면 보유분 매도만 한다(청산은 계속 허용).
+    _arm_block = entry_arming.block_reason(
+        state, signal_id=signal_id, flag_bar_dt=signal_origin_bar_dt)
+    if _arm_block is not None:
+        return _entry_disarmed_outcome(
+            broker=broker, state=state, direction=direction, signal_id=signal_id,
+            position=position, reason=_arm_block, result=result,
+            origin_bar_dt=signal_origin_bar_dt, order_started=order_started,
+        )
 
     # ── 신규 매수 hard gate (2026-09-21) ────────────────────────────────
     # 위 분기들이 이미 POSITION_DATA_ERROR/POSITION_MISMATCH/
@@ -4056,7 +4138,7 @@ def _resolve_time_window_candidate_body(
     outcome = _execute_or_wait(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
-        signal_detected_at=signal_detected_at,
+        signal_detected_at=signal_detected_at, signal_origin_bar_dt=flag_bar_dt,
     )
     result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(
         state, decision, "TIME_WINDOW", down_blue_exception_applied=down_blue_exception_applied,
@@ -4299,7 +4381,7 @@ def _advance_e_pending(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=fire_signal_id, signal_type=signal_type,
         position=position, result=result, signal_detected_at=detected_at,
-        budget_multiplier=boost.applied,
+        budget_multiplier=boost.applied, signal_origin_bar_dt=flag_bar_dt,
     )
     _record_signal_ledger(state, macd_snap, direction, signal_type, fire_signal_id,
                           detected_at, outcome, result.signal_dispatch_trace)
@@ -4958,7 +5040,7 @@ def _resolve_tw2_3slot_candidate_body(
         broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
         direction=direction, signal_id=signal_id, signal_type=signal_type, position=position, result=result,
         signal_detected_at=signal_detected_at,
-        budget_multiplier=_e_mult,
+        budget_multiplier=_e_mult, signal_origin_bar_dt=flag_bar_dt,
     )
     result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, "TW2_3SLOT")
     if outcome is None and result.skipped == config.MISSED_SIGNAL_QUOTE_STALE:
@@ -6787,6 +6869,18 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
     direction = state.premarket_carry_candidate_direction
     if direction is None:
         return None
+    # 신규진입 허용 게이트 (2026-10-13): 프리마켓 플래그는 대개 허용 ON 이전에
+    # 발생한다 -- OFF 거나 ON 이전 플래그면 소급 체결하지 않고 그날 후보를 소진한다.
+    _arm_block = entry_arming.block_reason(
+        state, flag_bar_dt=_parse_iso_dt(state.premarket_carry_candidate_bar_ts))
+    if _arm_block is not None:
+        state.premarket_carry_candidate_direction = None
+        state.premarket_carry_candidate_bar_ts = None
+        state.premarket_carry_executed_at = now.isoformat()
+        state.premarket_carry_last_result = _arm_block
+        state.order_block_reason = _arm_block
+        logger.info("[MACD2][ARM] PREMARKET_CARRY_TW 차단 -- %s", _arm_block)
+        return None
     if state.position is not None and state.position.quantity > 0:
         # Defense-in-depth: this function always dispatches with
         # position=None (never state.position), which is only safe because
@@ -6948,6 +7042,24 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
     # 자매 기능인 프리마켓 승계(_execute_premarket_carry_entry)는 처음부터 바로
     # 이 검사를 하고 있었다("09:03에도 동일 MACD STATE가 유지되면"). 수동 예약만
     # 빠져 있어서 생긴 비대칭이고, 여기서 같은 헬퍼로 맞춘다.
+    # 신규진입 허용 게이트 (2026-10-13): 예약은 사용자가 직접 건 것이라 발생시각
+    # 비교는 하지 않고, 발동 시점에 허용 ON 인지만 본다. OFF 면 그날 예약을 소진한다.
+    if not entry_arming.is_enabled(state) or entry_arming.armed_at(state) is None:
+        _arm_outcome = order_executor.ExecutionOutcome(
+            signal_id=f"SCHEDULED_0903_{direction.value}_{now.strftime('%Y%m%d')}",
+            direction=direction,
+            target_symbol=order_executor.target_symbol_for_direction(direction),
+            final_state=SignalState.BLOCKED,
+            block_reason=entry_arming.ENTRY_DISARMED,
+        )
+        _record_scheduled_entry_signal(state, direction, _arm_outcome.signal_id, now, _arm_outcome)
+        state.scheduled_entry_armed_direction = None
+        state.scheduled_entry_armed_at = None
+        state.scheduled_entry_armed_by = None
+        state.scheduled_entry_executed_at = now.isoformat()   # 하루 1회 소진
+        state.scheduled_entry_last_result = entry_arming.ENTRY_DISARMED
+        state.order_block_reason = entry_arming.ENTRY_DISARMED
+        return None
     if macd_snap is None:
         # 완성봉이 아직 없어 검증 자체가 불가능하다 -- 검증 없이 쏘지 않는다.
         # 일시적 상황이므로 발동창(FIRE_WINDOW) 안에서 다음 tick 에 재시도한다.

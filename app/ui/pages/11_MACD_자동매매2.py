@@ -842,7 +842,34 @@ with b4:
             st.error(res.get("message") or "Bootstrap 재시도 실패")
         st.rerun()
 
-st.caption("수동 진입 (MACD 신호·필터 무시, 예산 내 즉시 전량매수 — 이미 보유 중이면 거부)")
+# ── 신규진입 허용 (2026-10-13, entry_arming) ────────────────────────────
+# "자동매매 시작" = 감시(시세조회·플래그 인식·전략 상태계산·신호원장)만 켠다.
+# 실제 신규 매수는 아래 [신규진입 허용 ON] 을 누른 **이후 발생한 신호**부터다.
+# OFF 여도 보유 포지션의 손절/익절/반대신호 청산은 계속 동작한다.
+_entry_on = bool(getattr(state, "entry_enabled", False))
+_entry_at = getattr(state, "entry_armed_at", None)
+st.markdown(
+    f"**신규진입 허용: {'🟢 ON' if _entry_on else '🔴 OFF (감시만 · 신규 매수 없음)'}**"
+    + (f" — {_entry_at[11:19]} 이후 발생한 신호만 주문" if _entry_on and _entry_at else "")
+)
+st.caption("OFF: 시세·플래그·전략판단·신호원장은 계속, 신규 매수만 차단(보유분 손절/익절/반대신호 청산은 계속). "
+           "ON: 누른 시각 이후 새로 발생한 신호만 주문 — OFF 중 생긴 플래그/대기신호는 소급 체결하지 않음. "
+           "재시작해도 저장값 유지, 처음 배포 시 기본 OFF.")
+e1, e2 = st.columns(2)
+with e1:
+    if st.button("신규진입 허용 ON", type="primary", use_container_width=True,
+                 key="macd2_entry_on", disabled=_entry_on):
+        _er = service.set_entry_enabled(True, changed_by="ui")
+        st.success(f"신규진입 허용 ON — {str(_er.get('entry_armed_at') or '')[11:19]} 이후 신호부터 주문")
+        st.rerun()
+with e2:
+    if st.button("신규진입 허용 OFF (감시만)", use_container_width=True,
+                 key="macd2_entry_off", disabled=not _entry_on):
+        service.set_entry_enabled(False, changed_by="ui")
+        st.warning("신규진입 허용 OFF — 감시는 계속, 신규 매수만 차단")
+        st.rerun()
+
+st.caption("수동 진입 (MACD 신호·필터 무시, 예산 내 즉시 전량매수 — 이미 보유 중이면 거부, 신규진입 허용 ON 일 때만)")
 m1, m2 = st.columns(2)
 with m1:
     if st.button("현재시점 레버리지(레드) 전량매수", use_container_width=True):

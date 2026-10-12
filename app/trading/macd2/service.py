@@ -31,6 +31,7 @@ from typing import Any, Optional
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
 from app.trading.macd2 import chop_regime
+from app.trading.macd2 import entry_arming
 from app.trading.macd2 import p3_stack
 from app.trading.macd2 import strategy_mode as strategy_mode_mod
 from app.trading.macd2 import e_strategy as e_strategy_mod
@@ -616,6 +617,30 @@ class Macd2Service:
             state.profit_lock_drawdown_pct = 0.0
         state_store.save_state(state)
         return {"ok": all_ok, "results": results}
+
+    def set_entry_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: 신규진입 허용 ON/OFF (2026-10-13, entry_arming).
+
+        감시(시세조회·플래그 인식·전략 상태계산·신호원장)는 이 토글과 무관하게
+        계속된다. OFF 는 신규 매수만 즉시 막고, 보유 포지션 관리는 계속한다.
+        ON 은 **지금 이후 발생한 신호만** 주문 가능하게 한다 -- OFF 중에 생긴
+        플래그/pending/candidate 는 소급 체결하지 않는다. 주문도 청산도 하지 않는다.
+        """
+        state = state_store.load_state()
+        now_iso = datetime.now(KST).isoformat()
+        prev = entry_arming.set_enabled(state, bool(enabled), now_iso=now_iso, changed_by=changed_by)
+        state_store.save_state(state)
+        log.warning("[MACD2][ARM] 신규진입 허용 %s -> %s (by=%s, armed_at=%s)",
+                    "ON" if prev else "OFF", "ON" if state.entry_enabled else "OFF",
+                    changed_by, state.entry_armed_at)
+        return {
+            "ok": True,
+            "entry_enabled": bool(state.entry_enabled),
+            "previous": prev,
+            "entry_armed_at": state.entry_armed_at,
+            "entry_changed_at": state.entry_changed_at,
+            "entry_changed_by": state.entry_changed_by,
+        }
 
     def set_major_filter_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """UI command: toggle optional MAJOR_FLAG order gate.
@@ -1695,6 +1720,9 @@ class Macd2Service:
             return {"ok": False, "message": "AUTO_TRADE_OFF"}
         if state.position is not None and state.position.quantity > 0:
             return {"ok": False, "message": "ALREADY_HOLDING_POSITION"}
+        # 2026-10-13: 수동 매수도 신규진입이다 -- 허용 ON 일 때만.
+        if not entry_arming.is_enabled(state) or entry_arming.armed_at(state) is None:
+            return {"ok": False, "message": entry_arming.ENTRY_DISARMED}
 
         direction_enum = Direction(direction)
         target_symbol = order_executor.target_symbol_for_direction(direction_enum)
