@@ -188,3 +188,83 @@ WK_FILL=REAL WK_VAR=A WK_PRODMODE={P3|CHOP} MACD2_SLOW_TP2_ENABLED={0|1} \
 # P3 85일 기준선(아카이브, 앵커 +17,227,606):
 #   research_20261002_sept_strategy_replay/round3_85d/replay_json/REAL_A_*.json
 ```
+
+---
+
+## 8. 2차 검증 (2026-10-12, 회사 PC) — main-MACD2 619cd51 위 통합 브랜치
+
+> **판정: READY WITH SLOW-TP2 ONLY.** CHOP 모드(방어 3종)는 85일 기준 음수라 채택 불가.
+> main-MACD2 merge/push 하지 않았다.
+
+### 8-0. 왜 다시 했나
+feature 브랜치는 567b782 기반이라 main-MACD2 의 19커밋(E 전략, EGW00215 반전 hotfix,
+10/02 재시도 중복매도 수정, E 하루2회 토글, 레버리지 예탁금 guard)이 빠져 있었다.
+1차 검증은 production 기준이 아니었으므로 `integration/macd2-slowtp2-chop-on-main`
+(619cd51 + feature merge, 1e9bf38)에서 **전부 다시** 쟀다.
+
+충돌 해결(7파일): 모드 N1/P3/E/CHOP 4개, E·CHOP 상호배타(둘 다 켜진 legacy state 는 N1),
+하루 진입한도 `_tw2_3slot_daily_cap` = min(E cap2, CHOP 2슬롯), `P3_BASED_MODES` 에 CHOP 포함
+(feature 브랜치는 CHOP 에서 UI EXECUTION/SHADOW 를 BASE/OFF 로 오표시했다).
+
+### 8-1. ① parity
+| 대상 | 결과 |
+|---|---|
+| P3 OFF 85영업일 vs round3 아카이브 | **85/85일 주문 단위 완전일치**, 앵커 **+17,227,606** 재현 |
+| P3 10/02·10/06·10/07 vs 1차 PBASE | 3/3 일치 |
+| N1 대표 10일, 통합 vs 619cd51 같은 하네스 | **10/10 주문·청산사유·손익 일치** (+2,135,190 = +2,135,190) |
+| tests/macd2 회귀 | 기준 619cd51 66 실패 / 통합 66 실패, **실패집합 동일, 신규 0** (passed 2257 -> 2287) |
+
+10/08 은 naver 1분봉(프리마켓 없음)으로 돌렸다. 1차의 10/08(−229,421)과 다른 +199,323 이
+나오는데 **feature 코드에 같은 데이터를 넣어도 +199,323** 이라 원인은 입력 데이터다.
+그래서 23일 P3 기준선이 1차 +1,207,397 -> 2차 +1,636,141 로 바뀐다(차이 = 10/08 하루).
+
+### 8-2. ② P3 + SLOW-TP2 (production replay, 하네스 overlay 없음)
+| 85영업일 | P3 | P3+SLOW-TP2 |
+|---|---|---|
+| 총손익 | +17,227,606 | **+18,571,481 (+1,343,875)** |
+| PF / MDD / 최대1일손실 | 2.68 / −8.80 / −834,516 | **2.81** / −8.80 / −834,516 |
+| 손실일 / 승률 / 거래 | 25 / 53.0 / 181 | 25 / 53.0 / 181 |
+
+발동 12포지션: 개선 6 / 무효 3 / 악화 3(05/29 −54,148 · 06/15 −144,394 · 08/19 −178,144).
+집중도 상위 1/2/3일 제외 +943,030 / +609,322 / **+276,155 (전부 우위)**.
+train 5~7월 +1,200,321 / test 8~10월 +143,554. 9~10월 23일은 발동 0.
+
+**연구(E 기준 +1,505,099) vs production(P3 기준 +1,343,875) 차이 −161,224 는 두 날로 정확히 설명된다:**
+06/15 −144,394 (P3 에서만 발동 — E 는 BRK15 지연진입으로 그 포지션이 없다) +
+07/31 −16,830 (E 의 RS125 사이징으로 포지션 크기가 다르다).
+
+### 8-3. ③ CHOP (production CHOP 모드 전일 replay, SLOW-TP2 ON)
+| | 23일 P3 | 23일 CHOP | 85일 P3+SLOW | 85일 CHOP |
+|---|---|---|---|---|
+| 총손익 | +1,636,141 | +1,693,043 | +18,571,481 | **+18,406,744** |
+| PF | 1.91 | 2.47 | 2.81 | 3.27 |
+| MDD% | −4.97 | −4.56 | −8.80 | **−9.02** |
+| 최대1일손실 | −324,408 | −257,607 | −834,516 | −747,381 |
+| 손실일 | 9 | 8 | 25 | 26 |
+| 승률 | 50.0 | 57.9 | 53.0 | 57.9 |
+| 거래 | 52 | 38 | 181 | 140 |
+
+**방어 3종의 순효과 = CHOP − (P3+SLOW)**: 23일 **+56,902** (상위1일 제외 −84,929 열위) /
+85일 **−164,737** / test 8~10월(85일 내) −245,224.
+발동(85일): 2SLOT 거절신호 139 · MC_BLOCK 28 · STRUCTSTOP 8포지션 · SLOW 12.
+부품별(85일): **2SLOT 단독 32일 −351,569** (개선19/악화13) 이 결정적이고,
+MC/STRUCT 가 함께 뜬 날은 +219,883 이지만 표본 4일이다.
+
+**09/22 −366,206 단일 원인 = ① 2SLOT.** 오전 2건(09:06 −74,557, 11:18 −71,806)으로 한도가 찬 뒤
+12:15 DOWN_BLUE(P3 에서 +366,206 TIME_WINDOW_AFTERNOON_TP)가 `TW2_3SLOT_REJECT_DAILY_SLOT_CAP`.
+MC·STRUCT 미발동.
+
+### 8-4. ④ 운영 — 신규 테스트 (전부 통과)
+`tests/macd2/test_chop_e_mode_integration.py` (E·CHOP 상호배타, N1->P3->CHOP->P3->E->CHOP->N1 매 단계
+재시작(mock/real), MC·구조손절 상태 재시작 보존, 첫 플래그 전 rollover, CHOP 외 no-op, 모드별 하루한도,
+CHOP 키 없는 619cd51 state / e_* 키 없는 feature state 호환), `tests/macd2/test_ui_chop_mode.py`
+(라디오 4모드, CHOP<->N1/P3/E 클릭 전환·저장, CHOP 상태줄).
+
+### 8-5. 남은 설계 이슈
+1. **SLOW-TP2 는 N1 래더 override 에 붙어 있어 ON 이면 N1·E 모드에도 적용된다.** 이번 검증은 P3 만.
+2. feature 브랜치가 연구 브랜치 위라 그대로 merge 하면 main 에 연구파일 2,545개가 들어간다.
+   merge 는 코드(app/tests/docs)만 담은 별도 브랜치로 할 것.
+3. 하네스(test_zz_prod_v3.py)는 기록 전용 wrapper 로 b3_stop_action / morning_no_trade /
+   _slow_tp2_ceiling 호출을 남긴다 — 원 함수 그대로 호출, 동작 불변.
+
+재현: `research_20261012_prod_verification/integration_replay/` (job.sh, jobs.txt, final_an.py, attr.py, out/)

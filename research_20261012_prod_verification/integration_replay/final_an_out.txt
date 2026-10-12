@@ -1,0 +1,179 @@
+
+======================================================================================================================
+0. 재생 보유현황
+======================================================================================================================
+P3    89/89  누락: 없음
+      모드/SLOW 설정 불일치: 없음
+SLOW  89/89  누락: 없음
+      모드/SLOW 설정 불일치: 없음
+CHOP  89/89  누락: 없음
+      모드/SLOW 설정 불일치: 없음
+
+======================================================================================================================
+① P3 OFF parity — 통합브랜치 P3(SLOW OFF) vs 기존 production P3 아카이브
+======================================================================================================================
+            일수  주문완전일치  청산사유일치        Δ합
+src                                     
+round3_85d  85      85      85       0.0
+yday_APROD   1       0       0  428744.0
+yday_PBASE   3       3       3       0.0
+
+불일치일: 
+     day        src  주문수  주문일치  청산사유일치        Δ
+20261008 yday_APROD    3 False   False 428744.0
+P3 85일 총손익(새 production replay): +17,227,606  (아카이브 앵커 +17,227,606)
+
+======================================================================================================================
+② P3 + SLOW-TP2 — 85영업일 (5/27~10/01) + 9~10월 23일
+======================================================================================================================
+
+[85영업일] 85일   (P3 의 하루3회 cap 거절 신호 64건)
+                            변형         총손익   PF   MDD   최대1일손실  손실일   승률  거래          Δ SLOT2  MC  STRUCT  SLOW
+            P3 (현행 production) +17,227,606 2.68 -8.80 -834,516   25 53.0 181         +0     -   0       0     0
+                 P3 + SLOW-TP2 +18,571,481 2.81 -8.80 -834,516   25 53.0 181 +1,343,875     -   0       0    12
+CHOP (P3+SLOW+2SLOT+MC+STRUCT) +18,406,744 3.27 -9.02 -747,381   26 57.9 140 +1,179,138   139  28       8    12
+
+[9~10월 23영업일] 23일   (P3 의 하루3회 cap 거절 신호 22건)
+                            변형        총손익   PF   MDD   최대1일손실  손실일   승률  거래       Δ SLOT2  MC  STRUCT  SLOW
+            P3 (현행 production) +1,636,141 1.91 -4.97 -324,408    9 50.0  52      +0     -   0       0     0
+                 P3 + SLOW-TP2 +1,636,141 1.91 -4.97 -324,408    9 50.0  52      +0     -   0       0     0
+CHOP (P3+SLOW+2SLOT+MC+STRUCT) +1,693,043 2.47 -4.56 -257,607    8 57.9  38 +56,902    46  16       7     0
+  ΔSLOW 합계 +1,343,875 (차이 발생 8일) | 상위1일 제외 +943,030 우위 | 상위2일 제외 +609,322 우위 | 상위3일 제외 +276,155 우위 | 상위3: 20260731 +400,845, 20260714 +333,708, 20260703 +333,167 | 하위3: 20260529 -54,148, 20260615 -144,394, 20260819 -178,144
+  train 5~7월 (46일) Δ SLOW +1,200,321
+  test 8~10월 (39일) Δ SLOW +143,554
+
+[SLOW-TP2 발동 거래별 비교]  (천장 4.0->8.0 상향된 포지션)
+     day    진입       P3                                               P3청산     SLOW                                             SLOW청산       일Δ        Δ
+20260529 09:42 +409,142       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +354,994    TIME_WINDOW_TP1_PARTIAL/C1_PEAK_PROTECTION_EXIT  -54,148  -54,148
+20260612 09:48 +209,553 TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_AFTER_TP1_STOP +209,553 TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_AFTER_TP1_STOP       +0       +0
+20260615 09:57 +415,095       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +270,701        TIME_WINDOW_TP1_PARTIAL/H50_WHIPSAW_RELEASE -144,394 -144,394
+20260701 09:21 +742,614       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +742,614       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL       +0       +0
+20260703 09:12 +409,426       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +742,593       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +333,167 +333,167
+20260706 09:21 +408,891       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +740,034       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +331,143 +331,143
+20260710 09:45 +684,683    TIME_WINDOW_TP1_PARTIAL/C1_PEAK_PROTECTION_EXIT +684,683    TIME_WINDOW_TP1_PARTIAL/C1_PEAK_PROTECTION_EXIT       +0       +0
+20260714 09:21 +407,315       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +741,023       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +333,708 +333,708
+20260721 09:21 +214,043 TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_AFTER_TP1_STOP +214,043 TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_AFTER_TP1_STOP       +0       +0
+20260731 09:48 +489,537       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +890,382       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +400,845 +400,845
+20260818 09:57 +422,500       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +744,198       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +321,698 +321,698
+20260819 09:30 +440,645       TIME_WINDOW_TP1_PARTIAL/TIME_WINDOW_TP2_FULL +262,501    TIME_WINDOW_TP1_PARTIAL/C1_PEAK_PROTECTION_EXIT -178,144 -178,144
+발동 기록 없이 손익이 달라진 날: 없음
+
+======================================================================================================================
+③ CHOP — production CHOP 모드 전일 replay
+======================================================================================================================
+
+[9~10월 23영업일 (09/03~10/08)] 23일   (P3 의 하루3회 cap 거절 신호 22건)
+                            변형        총손익   PF   MDD   최대1일손실  손실일   승률  거래       Δ SLOT2  MC  STRUCT  SLOW
+            P3 (현행 production) +1,636,141 1.91 -4.97 -324,408    9 50.0  52      +0     -   0       0     0
+                 P3 + SLOW-TP2 +1,636,141 1.91 -4.97 -324,408    9 50.0  52      +0     -   0       0     0
+CHOP (P3+SLOW+2SLOT+MC+STRUCT) +1,693,043 2.47 -4.56 -257,607    8 57.9  38 +56,902    46  16       7     0
+  ΔCHOP 합계 +56,902 (차이 발생 14일) | 상위1일 제외 -84,929 열위 | 상위2일 제외 -223,470 열위 | 상위3일 제외 -332,824 열위 | 상위3: 20261002 +141,831, 20260915 +138,541, 20260930 +109,354 | 하위3: 20261001 -27,352, 20260908 -99,516, 20260922 -366,206
+
+[85영업일 (05/27~10/01)] 85일   (P3 의 하루3회 cap 거절 신호 64건)
+                            변형         총손익   PF   MDD   최대1일손실  손실일   승률  거래          Δ SLOT2  MC  STRUCT  SLOW
+            P3 (현행 production) +17,227,606 2.68 -8.80 -834,516   25 53.0 181         +0     -   0       0     0
+                 P3 + SLOW-TP2 +18,571,481 2.81 -8.80 -834,516   25 53.0 181 +1,343,875     -   0       0    12
+CHOP (P3+SLOW+2SLOT+MC+STRUCT) +18,406,744 3.27 -9.02 -747,381   26 57.9 140 +1,179,138   139  28       8    12
+  ΔCHOP 합계 +1,179,138 (차이 발생 48일) | 상위1일 제외 +778,293 우위 | 상위2일 제외 +444,585 우위 | 상위3일 제외 +111,418 우위 | 상위3: 20260731 +400,845, 20260714 +333,708, 20260703 +333,167 | 하위3: 20260618 -302,939, 20260922 -366,206, 20260623 -368,276
+  train 5~7월               46일  P3 +13,035,185 | SLOW +14,235,506 | CHOP +14,315,993  ΔCHOP-P3 +1,280,808  ΔCHOP-SLOW +80,487  MDD -8.80/-9.02
+  test 8~10월(85일 내)        39일  P3 +4,192,421 | SLOW +4,335,975 | CHOP +4,090,751  ΔCHOP-P3 -101,670  ΔCHOP-SLOW -245,224  MDD -6.34/-6.29
+  test 8~10월(+10/02~10/08) 43일  P3 +4,455,025 | SLOW +4,598,579 | CHOP +4,512,868  ΔCHOP-P3 +57,843  ΔCHOP-SLOW -85,711  MDD -6.34/-6.29
+
+  월별 Δ(CHOP-P3) / Δ(CHOP-SLOW): 202605 +44,207/+98,355, 202606 -337,031/-192,637, 202607 +1,573,632/+174,769, 202608 +941/-142,613, 202609 -75,259/-75,259, 202610 +132,161/+132,161
+
+[일별 — 차이 나는 날, 9~10월 23일]
+     day       P3     SLOW     CHOP    Δchop
+20260903 -249,322 -249,322 -257,607   -8,285
+20260904 -253,668 -253,668 -203,832  +49,836
+20260908 +309,060 +309,060 +209,544  -99,516
+20260915 -324,408 -324,408 -185,867 +138,541
+20260918  -26,039  -26,039  -30,349   -4,310
+20260921 +149,332 +149,332 +149,982     +650
+20260922 +219,843 +219,843 -146,363 -366,206
+20260923  -66,531  -66,531   -7,673  +58,858
+20260928  +75,213  +75,213  +98,092  +22,879
+20260929 +101,472 +101,472 +124,412  +22,940
+20260930  -59,961  -59,961  +49,393 +109,354
+20261001  -42,677  -42,677  -70,029  -27,352
+20261002 -141,831 -141,831       +0 +141,831
+20261006  +69,436  +69,436  +87,118  +17,682
+
+======================================================================================================================
+10/08 별도
+======================================================================================================================
+  P3    +199,323   [('09:06', 199323, ['P3_PARTIAL_EXIT', 'H50_MAX_HOLD_EXIT'])]
+  SLOW  +199,323   [('09:06', 199323, ['P3_PARTIAL_EXIT', 'H50_MAX_HOLD_EXIT'])]
+  CHOP  +199,323   [('09:06', 199323, ['P3_PARTIAL_EXIT', 'H50_MAX_HOLD_EXIT'])]
+  CHOP 차단신호: []
+  STRUCT 유예 포지션: []
+
+======================================================================================================================
+9/22 단일 원인
+======================================================================================================================
+
+--- 20260922 ---
+  P3    +219,843   [('09:06', -74557, ['B3_MAXHOLD']), ('11:18', -71806, ['B3_MAXHOLD']), ('12:15', 366206, ['TIME_WINDOW_AFTERNOON_TP'])]
+  SLOW  +219,843   [('09:06', -74557, ['B3_MAXHOLD']), ('11:18', -71806, ['B3_MAXHOLD']), ('12:15', 366206, ['TIME_WINDOW_AFTERNOON_TP'])]
+  CHOP  -146,363   [('09:06', -74557, ['B3_MAXHOLD']), ('11:18', -71806, ['B3_MAXHOLD'])]
+  CHOP 신호: [('09:06', 'EXECUTED', ''), ('11:18', 'EXECUTED', ''), ('11:30', 'TIME_WINDOW_WHIPSAW_HOLD', 'REJECT_MACD_GAP_NOT_EXPANDING'), ('11:42', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('12:15', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:21', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP')]
+  CHOP prod: Counter()
+
+======================================================================================================================
+CHOP 거래별 원인 분해 (Δ 상위/하위 일)
+======================================================================================================================
+
+--- 20260623 ---
+  P3    +832,821   [('10:33', 458740, ['TIME_WINDOW_TP1_PARTIAL', 'OPPOSITE_SIGNAL']), ('12:30', 5805, ['TIME_WINDOW_BREAKEVEN_STOP']), ('13:27', 368276, ['TIME_WINDOW_AFTERNOON_TP'])]
+  SLOW  +832,821   [('10:33', 458740, ['TIME_WINDOW_TP1_PARTIAL', 'OPPOSITE_SIGNAL']), ('12:30', 5805, ['TIME_WINDOW_BREAKEVEN_STOP']), ('13:27', 368276, ['TIME_WINDOW_AFTERNOON_TP'])]
+  CHOP  +464,545   [('10:33', 458740, ['TIME_WINDOW_TP1_PARTIAL', 'OPPOSITE_SIGNAL']), ('12:30', 5805, ['TIME_WINDOW_BREAKEVEN_STOP'])]
+  CHOP 신호: [('08:39', 'BLOCKED', 'BEFORE_SESSION_OPEN'), ('10:33', 'EXECUTED', ''), ('11:18', 'SELL_EXECUTED_ENTRY_FILTERED', 'TW2_REJECT_VWAP_VETO'), ('12:30', 'EXECUTED', ''), ('13:27', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP')]
+  CHOP prod: Counter()
+
+--- 20260922 ---
+  P3    +219,843   [('09:06', -74557, ['B3_MAXHOLD']), ('11:18', -71806, ['B3_MAXHOLD']), ('12:15', 366206, ['TIME_WINDOW_AFTERNOON_TP'])]
+  SLOW  +219,843   [('09:06', -74557, ['B3_MAXHOLD']), ('11:18', -71806, ['B3_MAXHOLD']), ('12:15', 366206, ['TIME_WINDOW_AFTERNOON_TP'])]
+  CHOP  -146,363   [('09:06', -74557, ['B3_MAXHOLD']), ('11:18', -71806, ['B3_MAXHOLD'])]
+  CHOP 신호: [('09:06', 'EXECUTED', ''), ('11:18', 'EXECUTED', ''), ('11:30', 'TIME_WINDOW_WHIPSAW_HOLD', 'REJECT_MACD_GAP_NOT_EXPANDING'), ('11:42', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('12:15', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:21', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP')]
+  CHOP prod: Counter()
+
+--- 20260618 ---
+  P3    +675,417   [('09:06', 200233, ['OPPOSITE_SIGNAL']), ('09:51', 172245, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TRAILING_STOP']), ('11:12', 302939, ['H50_MAX_HOLD_EXIT'])]
+  SLOW  +675,417   [('09:06', 200233, ['OPPOSITE_SIGNAL']), ('09:51', 172245, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TRAILING_STOP']), ('11:12', 302939, ['H50_MAX_HOLD_EXIT'])]
+  CHOP  +372,478   [('09:06', 200233, ['OPPOSITE_SIGNAL']), ('09:51', 172245, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TRAILING_STOP'])]
+  CHOP 신호: [('09:06', 'EXECUTED', ''), ('09:51', 'EXECUTED', ''), ('11:12', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('11:33', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('11:51', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('12:33', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:27', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('15:15', 'BLOCKED', 'NEW_ENTRY_CUTOFF')]
+  CHOP prod: Counter()
+
+--- 20260810 ---
+  P3    +194,441   [('10:54', -190593, ['TIME_WINDOW_STOP_LOSS']), ('11:09', 83327, ['EARLY_TAKE_PROFIT']), ('12:30', 301707, ['H50_MAX_HOLD_EXIT'])]
+  SLOW  +194,441   [('10:54', -190593, ['TIME_WINDOW_STOP_LOSS']), ('11:09', 83327, ['EARLY_TAKE_PROFIT']), ('12:30', 301707, ['H50_MAX_HOLD_EXIT'])]
+  CHOP  -107,266   [('10:54', -190593, ['TIME_WINDOW_STOP_LOSS']), ('11:09', 83327, ['EARLY_TAKE_PROFIT'])]
+  CHOP 신호: [('10:54', 'EXECUTED', ''), ('11:09', 'EXECUTED', ''), ('11:51', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('12:30', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('12:51', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('13:15', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:42', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:57', 'BLOCKED', 'NEW_ENTRY_CUTOFF')]
+  CHOP prod: Counter()
+
+--- 20260615 ---
+  P3    +483,336   [('09:06', 216759, ['OPPOSITE_SIGNAL']), ('09:57', 415095, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('13:15', -148518, ['TIME_WINDOW_STOP_LOSS'])]
+  SLOW  +338,942   [('09:06', 216759, ['OPPOSITE_SIGNAL']), ('09:57', 270701, ['TIME_WINDOW_TP1_PARTIAL', 'H50_WHIPSAW_RELEASE']), ('13:15', -148518, ['TIME_WINDOW_STOP_LOSS'])]
+  CHOP  +487,460   [('09:06', 216759, ['OPPOSITE_SIGNAL']), ('09:57', 270701, ['TIME_WINDOW_TP1_PARTIAL', 'H50_WHIPSAW_RELEASE'])]
+  CHOP 신호: [('09:06', 'EXECUTED', ''), ('09:57', 'EXECUTED', ''), ('11:30', 'H50_SMALL_WHIPSAW_HOLD', 'H50_SMALL_WHIPSAW_HOLD'), ('11:36', 'SELL_EXECUTED_ENTRY_FILTERED', 'SMALL_WHIPSAW_HOLD_EXIT'), ('12:42', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('13:15', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('13:42', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('15:09', 'BLOCKED', 'NEW_ENTRY_CUTOFF')]
+  CHOP prod: Counter({('SLOWTP2', None): 154})
+
+--- 20260803 ---
+  P3    -252,355   [('09:45', 100291, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('10:36', -193078, ['TIME_WINDOW_STOP_LOSS']), ('13:06', -159568, ['TIME_WINDOW_STOP_LOSS'])]
+  SLOW  -252,355   [('09:45', 100291, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('10:36', -193078, ['TIME_WINDOW_STOP_LOSS']), ('13:06', -159568, ['TIME_WINDOW_STOP_LOSS'])]
+  CHOP  -92,787   [('09:45', 100291, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('10:36', -193078, ['TIME_WINDOW_STOP_LOSS'])]
+  CHOP 신호: [('09:45', 'EXECUTED', ''), ('10:36', 'EXECUTED', ''), ('11:36', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('12:12', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('13:06', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('13:45', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:30', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('15:00', 'BLOCKED', 'NEW_ENTRY_CUTOFF')]
+  CHOP prod: Counter()
+
+--- 20260624 ---
+  P3    +53,640   [('10:00', 419175, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('10:39', -179831, ['TIME_WINDOW_STOP_LOSS']), ('13:18', -185704, ['TIME_WINDOW_STOP_LOSS'])]
+  SLOW  +53,640   [('10:00', 419175, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('10:39', -179831, ['TIME_WINDOW_STOP_LOSS']), ('13:18', -185704, ['TIME_WINDOW_STOP_LOSS'])]
+  CHOP  +239,344   [('10:00', 419175, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('10:39', -179831, ['TIME_WINDOW_STOP_LOSS'])]
+  CHOP 신호: [('08:15', 'BLOCKED', 'BEFORE_SESSION_OPEN'), ('10:00', 'EXECUTED', ''), ('10:39', 'EXECUTED', ''), ('11:06', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('13:18', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP')]
+  CHOP prod: Counter()
+
+--- 20260622 ---
+  P3    +512,909   [('09:15', -305959, ['TIME_WINDOW_STOP_LOSS']), ('09:30', 1017179, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('12:21', -198311, ['TIME_WINDOW_STOP_LOSS'])]
+  SLOW  +512,909   [('09:15', -305959, ['TIME_WINDOW_STOP_LOSS']), ('09:30', 1017179, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL']), ('12:21', -198311, ['TIME_WINDOW_STOP_LOSS'])]
+  CHOP  +711,220   [('09:15', -305959, ['TIME_WINDOW_STOP_LOSS']), ('09:30', 1017179, ['TIME_WINDOW_TP1_PARTIAL', 'TIME_WINDOW_TP2_FULL'])]
+  CHOP 신호: [('09:15', 'EXECUTED', ''), ('09:30', 'EXECUTED', ''), ('12:21', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:06', 'FILTERED_OUT', 'TW2_3SLOT_REJECT_DAILY_SLOT_CAP'), ('14:57', 'BLOCKED', 'NEW_ENTRY_CUTOFF'), ('15:06', 'BLOCKED', 'NEW_ENTRY_CUTOFF')]
+  CHOP prod: Counter()
