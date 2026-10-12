@@ -388,6 +388,16 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
         state.scheduled_entry_armed_at = None
         state.scheduled_entry_armed_by = None
 
+    # ── 신규진입 허용은 **켠 날에만** 유효 (2026-10-13) ───────────────────
+    # 위 예약 arm 과 같은 불변식이라 rollover 분기와 무관하게 매 tick 확인한다.
+    # 매일 아침은 감시만 하는 상태로 시작하고, 사용자가 그날 직접 ON 해야 한다.
+    _entry_at = entry_arming.armed_at(state)
+    if bool(getattr(state, "entry_enabled", False)) and (
+            _entry_at is None or _entry_at.astimezone(KST).strftime("%Y%m%d") != today_str):
+        entry_arming.set_enabled(state, False, now_iso=now.isoformat(), changed_by="day_rollover")
+        logger.warning("[MACD2][ARM] 날짜 변경 -- 신규진입 허용 자동 OFF (armed_at=%s)",
+                       _entry_at.isoformat() if _entry_at else None)
+
     if state.session_date is None:
         # First tick ever for this state (e.g. brand-new RuntimeState) — there
         # is nothing to roll over yet, so just record today without wiping

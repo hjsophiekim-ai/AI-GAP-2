@@ -303,3 +303,56 @@ def test_mode_switch_never_touches_entry_flag():
     for m in strategy_mode.ALL_MODES:
         strategy_mode.apply(st, m)
         assert st.entry_enabled is True and st.entry_armed_at == armed
+
+
+# ── 2026-10-13 추가: 날짜 변경 / 중지 / 시작 시 자동 OFF ──────────────────
+
+def test_day_rollover_turns_entry_off_and_same_day_keeps_it():
+    st = state_store.default_state()
+    day1 = datetime(2026, 1, 5, 10, 0, tzinfo=KST)
+    _arm(st, day1)
+    worker._apply_day_rollover(st, day1 + timedelta(hours=3))      # 같은 날
+    assert st.entry_enabled is True
+    worker._apply_day_rollover(st, day1 + timedelta(days=1, hours=-1))   # 다음날 09:00
+    assert st.entry_enabled is False and st.entry_armed_at is None
+    assert st.entry_changed_by == "day_rollover"
+
+
+def test_yesterdays_on_never_buys_today_even_before_rollover():
+    st = state_store.default_state()
+    _arm(st, datetime(2026, 1, 5, 10, 0, tzinfo=KST))
+    assert entry_arming.block_reason(st, signal_id="20260106_090000_UP_RED") == entry_arming.ENTRY_DISARMED
+
+
+def _svc_with_on_state():
+    from app.trading.macd2 import service as service_module
+    svc = service_module.Macd2Service()
+    st = state_store.default_state()
+    st.auto_trade_on = True
+    _arm(st, datetime.now(KST))
+    state_store.save_state(st)
+    return svc
+
+
+def test_stop_turns_entry_off():
+    svc = _svc_with_on_state()
+    svc.stop("user_stop")
+    st = state_store.load_state()
+    assert st.entry_enabled is False and st.entry_armed_at is None and st.auto_trade_on is False
+
+
+def test_stop_and_liquidate_turns_entry_off():
+    svc = _svc_with_on_state()
+    svc._broker = _broker()
+    res = svc.stop_and_liquidate_all("test_liquidate")
+    assert res["ok"] is True
+    assert state_store.load_state().entry_enabled is False
+
+
+def test_user_start_starts_with_entry_off_but_auto_recover_keeps_it(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_TRADE_HARD_DISABLED", True)   # start 를 일찍 끝내게
+    svc = _svc_with_on_state()
+    svc.start(mode="mock", _auto_recover=True)                       # 장중 자동복구: 유지
+    assert state_store.load_state().entry_enabled is True
+    svc.start(mode="mock")                                            # 사용자 [자동매매 시작]
+    assert state_store.load_state().entry_enabled is False

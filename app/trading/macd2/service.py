@@ -327,7 +327,8 @@ class Macd2Service:
             self._teardown_stuck_since is not None
             and (now - self._teardown_stuck_since).total_seconds() > config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC
         )
-        result = self.start(mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through)
+        result = self.start(mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through,
+                            _auto_recover=True)
         if result.get("message") == "PREVIOUS_INSTANCE_STILL_STOPPING":
             if self._teardown_stuck_since is None:
                 self._teardown_stuck_since = now
@@ -353,7 +354,17 @@ class Macd2Service:
         budget: float = config.DEFAULT_BUDGET,
         real_kwargs: Optional[dict[str, Any]] = None,
         _require_confirmed_teardown: bool = False,
+        _auto_recover: bool = False,
     ) -> dict[str, Any]:
+        # 2026-10-13: 사용자가 [자동매매 시작] 을 누르면 감시만 켠다 -- 신규진입 허용은
+        # 항상 OFF 로 시작하고 사용자가 직접 ON 해야 한다. 장중 프로세스 자동복구
+        # (_auto_recover_worker) 는 같은 날 이미 켜 둔 값을 그대로 둔다(날짜가 바뀌면
+        # worker 의 day rollover 가 OFF 로 돌린다).
+        if not _auto_recover:
+            _st = state_store.load_state()
+            if entry_arming.is_enabled(_st):
+                entry_arming.set_enabled(_st, False, now_iso=datetime.now(KST).isoformat(), changed_by="start")
+                state_store.save_state(_st)
         # 2026-08-20 fix (real incident: after a Render idle-sleep/redeploy, a
         # still-alive-but-stuck Worker thread made start() refuse forever
         # with ALREADY_RUNNING and no way to force a clean restart from the
@@ -538,6 +549,8 @@ class Macd2Service:
         state.stopped = True
         state.stopped_reason = reason
         state.ui_mode = RuntimeStatus.STOPPED
+        # 2026-10-13: 중지하면 신규진입 허용도 OFF -- 다시 시작해도 사용자가 직접 ON 해야 한다.
+        entry_arming.set_enabled(state, False, now_iso=datetime.now(KST).isoformat(), changed_by=f"stop:{reason}")
         state_store.save_state(state)
         return {"ok": True}
 
@@ -600,6 +613,8 @@ class Macd2Service:
         state.stopped = True
         state.stopped_reason = reason
         state.ui_mode = RuntimeStatus.STOPPED
+        # 2026-10-13: 중지하면 신규진입 허용도 OFF -- 다시 시작해도 사용자가 직접 ON 해야 한다.
+        entry_arming.set_enabled(state, False, now_iso=datetime.now(KST).isoformat(), changed_by=f"stop:{reason}")
         if all_ok:
             state.position = None
             state.peak_net_return = 0.0

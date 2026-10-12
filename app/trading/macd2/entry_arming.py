@@ -94,6 +94,10 @@ def block_reason(state: Any, *, signal_id: Optional[str] = None,
     origin = _parse(origin_at) if origin_at is not None else signal_origin_at(signal_id, flag_bar_dt)
     if origin is None or origin < armed:
         return ENTRY_PRE_ARM_SIGNAL
+    # 허용은 켠 날에만 유효하다 -- 날짜가 바뀌면 worker 가 OFF 로 돌리지만,
+    # 그 tick 보다 먼저 판정이 오더라도 전날 ON 으로는 사지 않는다.
+    if origin.astimezone(config.KST).date() != armed.astimezone(config.KST).date():
+        return ENTRY_DISARMED
     return None
 
 

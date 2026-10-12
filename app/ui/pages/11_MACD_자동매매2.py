@@ -854,7 +854,7 @@ st.markdown(
 )
 st.caption("OFF: 시세·플래그·전략판단·신호원장은 계속, 신규 매수만 차단(보유분 손절/익절/반대신호 청산은 계속). "
            "ON: 누른 시각 이후 새로 발생한 신호만 주문 — OFF 중 생긴 플래그/대기신호는 소급 체결하지 않음. "
-           "재시작해도 저장값 유지, 처음 배포 시 기본 OFF.")
+           "날짜가 바뀌거나 [자동매매 중지]/[자동매매 시작] 을 누르면 자동 OFF — 매일 직접 ON 해야 주문.")
 e1, e2 = st.columns(2)
 with e1:
     if st.button("신규진입 허용 ON", type="primary", use_container_width=True,

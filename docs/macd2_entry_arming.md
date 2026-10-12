@@ -18,9 +18,18 @@
 - UI 수동 전량매수: OFF 면 거부(`ENTRY_DISARMED`).
 - 전략모드 전환은 이 스위치를 건드리지 않는다.
 
+## 자동 OFF (2026-10-13 2차, 사용자 요청)
+- **날짜 변경**: worker `_apply_day_rollover` 가 매 tick `entry_armed_at` 이 오늘이 아니면 OFF.
+  판정 함수도 신호 발생일 ≠ ON 한 날이면 `ENTRY_DISARMED` (rollover tick 전에 와도 전날 ON 으로 사지 않음).
+  → 매일 아침은 감시만 하는 상태로 시작한다.
+- **[자동매매 중지] / [중지 및 일괄매도]**: OFF.
+- **[자동매매 시작]**: 항상 OFF 로 시작 — 사용자가 직접 ON 해야 주문.
+- 예외: 장중 프로세스 **자동복구**(`_auto_recover_worker`)는 같은 날 이미 켜 둔 값을 유지한다.
+
 ## 상태·재시작
 `entry_enabled` / `entry_armed_at` / `entry_changed_at` / `entry_changed_by` 를 state 에 저장·복원.
 저장값이 없거나 `armed_at` 없는 ON 은 **OFF** 로 읽는다 → **배포 직후에는 UI 에서 직접 ON 해야 주문**이 나간다.
+09:03 예약매수는 운영에서 쓰지 않는다 — 발동 시 OFF 면 소진하는 단순 차단만 둔다.
 
 ## 구현
 - `app/trading/macd2/entry_arming.py` — 판정/토글 순수함수
@@ -31,6 +40,6 @@
   기존 테스트는 conftest `_entry_arming_open_by_default` 로 허용 상태에서 그대로 돈다.
 
 ## 검증
-- 신규 26건 통과, 게이트를 무력화하면 16건 실패(테스트가 실제로 게이트를 본다).
-- tests/macd2 전체: 66 failed / 2351 passed — 실패집합 = 베이스라인 66건과 동일, 신규 0.
+- 신규 31건 통과. 게이트를 무력화하면 16건, 자동 OFF 로직을 빼면 5건이 실패(테스트가 실제로 본다).
+- tests/macd2 전체: 66 failed / 2356 passed — 실패집합 = 베이스라인 66건과 동일, 신규 0.
 - ON 상태 REAL replay 주문단위 parity vs main 3e3401e: E 5 / CHOP 4 / P3 3 / N1 3 = **15/15일 일치**.
