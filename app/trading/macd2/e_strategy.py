@@ -115,10 +115,13 @@ NEUTRAL_RS = RsDecision(active=False, hit=False, score=None, threshold=None,
 # ── 활성 판정 ────────────────────────────────────────────────────────────
 
 def is_active(state) -> bool:
-    """E 모드인가. N1/P3 에서는 항상 False 이므로 호출부가 통째로 no-op 이 된다."""
+    """E 진입 overlay 가 도는 모드인가 (E, 그리고 E 를 상속하는 CHOP).
+
+    N1/P3 에서는 항상 False 이므로 호출부가 통째로 no-op 이 된다.
+    """
     if not bool(getattr(config, "E_STRATEGY_ENABLED", True)):
         return False
-    return strategy_mode.current(state) == strategy_mode.MODE_E
+    return strategy_mode.current(state) in strategy_mode.E_BASED_MODES
 
 
 def daily_entry_cap(state) -> int:

@@ -965,6 +965,35 @@ class RuntimeState:
     p3_enabled_at: Optional[str] = None
     p3_enabled_by: Optional[str] = None
     p3_version: str = ""
+
+    # ── CHOP-STACK : 왕복장 방어모드 (2026-10-11) ─────────────────────────
+    # strategy_mode.apply 가 MODE_CHOP 일 때만 True 로 찍는다. 아래 여섯 필드는
+    # 전부 **그 날 하루짜리** 상태이고 chop_defense.reset_daily 가 비운다.
+    #   chop_mc_day       : 'YYYYMMDD' — 날이 바뀌면 아래 셋을 리셋하는 기준
+    #   chop_mc_flags     : [[HHMM, 'UP_RED'|'DOWN_BLUE'], ...] 오전 플래그 이력
+    #   chop_mc_on_at     : MC-DELAY 가 ON 된 시각 HHMM (없으면 미발동)
+    #   chop_mc_off_at    : 해제된 시각 HHMM (찍히면 그 날은 다시 ON 되지 않는다)
+    #   chop_stop_key     : 구조손절 유예 클럭이 물려 있는 포지션(entry_at ISO)
+    #   chop_stop_first_at: 그 포지션이 -1% 를 **처음** 찍은 시각 ISO
+    chop_defense_enabled: bool = False
+    chop_defense_version: str = ""
+    chop_mc_day: Optional[str] = None
+    chop_mc_flags: list = field(default_factory=list)
+    chop_mc_on_at: Optional[str] = None
+    chop_mc_off_at: Optional[str] = None
+    chop_stop_key: Optional[str] = None
+    chop_stop_first_at: Optional[str] = None
+    #   chop_bars_at/box/last_close : 틱마다 chop_defense.note_bars 가 채우는
+    #   1분봉 파생 캐시(박스 상/하/중앙 + 마지막 완성봉 종가). df_1m 이 닿지
+    #   않는 B3 판정부가 이걸 읽는다.
+    # chop_mc_off_eval_at : MC 해제판정을 마친 마지막 완성봉 HHMM (재시작 시 None -> 다시 훑는다)
+    chop_mc_off_eval_at: Optional[str] = None
+    # chop_mc_on_eval     : MC ON 판정 커서 'rev_at|마지막 판정봉 HHMM' (재시작 시 None)
+    chop_mc_on_eval: Optional[str] = None
+    chop_bars_at: Optional[str] = None
+    chop_box: Optional[list] = None
+    chop_last_close: Optional[float] = None
+
     p3_shadow: Optional[dict] = None
     p3_last_regime: Optional[str] = None
     p3_last_regime_at: Optional[str] = None
