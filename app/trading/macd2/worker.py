@@ -35,6 +35,7 @@ import dataclasses
 import json
 import os
 import threading
+import re
 import time
 import traceback
 import uuid
@@ -587,6 +588,48 @@ def _record_catchup_flag(state: RuntimeState, snap, direction: Direction, now: d
     _record_signal_ledger(state, snap, direction, "INITIAL", signal_id, now, outcome)
 
 
+RESTART_T3_EXPIRED = "RESTART_T3_EXPIRED"
+
+
+def _restart_t3_candidate_expired(state: RuntimeState, bars_3m, today_indices, flag_snap) -> bool:
+    """재시작 catch-up 이 되살리려는 T+3 후보가 이미 확인시한을 지났는가 (2026-10-13).
+
+    T+3 확인은 플래그 봉 **바로 다음** 완성봉에서 한다. 지금 최신 완성봉이 그보다
+    뒤면 확인시한이 지난 것이다 -- 다시 pending 으로 올리면 첫 tick 이 한참 뒤 봉으로
+    '확인'해 원장에 엉뚱한 시각의 확인행을 남긴다(10/13 08:00 BLUE -> 08:36 행).
+    **플랫일 때만** 정리한다. 보유 중이면 기존대로 후보를 올려, 반대신호 청산/휩쏘
+    보류 판단이 그대로 돌게 둔다(포지션 관리 동작 불변).
+    """
+    if state.position is not None and int(getattr(state.position, "quantity", 0) or 0) > 0:
+        return False
+    if flag_snap is None or not today_indices:
+        return False
+    newest = pd.Timestamp(bars_3m["datetime"].iloc[today_indices[-1]])
+    return newest > pd.Timestamp(flag_snap.bar_dt) + timedelta(minutes=3)
+
+
+def _close_expired_restart_candidate(state: RuntimeState, flag_snap, direction: Direction,
+                                     now: datetime, *, suffix: str) -> None:
+    """확인시한이 지난 재시작 후보를 pending 없이 바로 정리하고 원장에 한 행 남긴다.
+
+    signal_id 는 정상 확인행과 같은 ``<flag_id>:<suffix>`` 라 이후 같은 플래그의 확인행이
+    중복으로 생기지 않는다. 행의 시각은 원래 플래그 봉이다. 주문 없음.
+    """
+    signal_id = f"{make_signal_id(flag_snap.bar_dt, direction)}:{suffix}"
+    if signal_id in state.processed_signal_ids:
+        return
+    state.processed_signal_ids = list(state.processed_signal_ids) + [signal_id]
+    outcome = order_executor.ExecutionOutcome(
+        signal_id=signal_id, direction=direction,
+        target_symbol=order_executor.target_symbol_for_direction(direction),
+        final_state=SignalState.BLOCKED, block_reason=RESTART_T3_EXPIRED,
+    )
+    trace = {"order_executor_called": False, "broker_called": False,
+             "final_block_reason": RESTART_T3_EXPIRED, "order_result_override": config.FILTERED_OUT}
+    _record_signal_ledger(state, flag_snap, direction, suffix, signal_id, now, outcome, trace)
+    logger.info("[MACD2] 재시작: 확인시한 지난 T+3 후보 정리 %s", signal_id)
+
+
 def initialize_strategy_session(
     state: RuntimeState,
     market_data: MarketDataService,
@@ -803,8 +846,13 @@ def initialize_strategy_session(
                     # replay can find, so it always wins -- only fill the slot
                     # here if it's still genuinely empty.
                     if state.time_window_pending_flag_direction is None:
-                        state.time_window_pending_flag_direction = last_direction
-                        state.time_window_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
+                        if _restart_t3_candidate_expired(state, bars_3m, today_indices, last_flag_snap):
+                            _close_expired_restart_candidate(
+                                state, last_flag_snap, last_direction, now,
+                                suffix="TW_CONFIRM")
+                        else:
+                            state.time_window_pending_flag_direction = last_direction
+                            state.time_window_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
                 elif time_window_3slot.is_3slot_enabled(state):
                     # 2026-09-11 fix (사용자 요청): the 2026-08-21 rationale in
                     # the TW2/TEG branch above applies to the 3-SLOT modes
@@ -830,8 +878,13 @@ def initialize_strategy_session(
                     # keeps a second back-to-back restart from discarding a
                     # still-pending candidate.
                     if state.tw2_3slot_pending_flag_direction is None:
-                        state.tw2_3slot_pending_flag_direction = last_direction
-                        state.tw2_3slot_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
+                        if _restart_t3_candidate_expired(state, bars_3m, today_indices, last_flag_snap):
+                            _close_expired_restart_candidate(
+                                state, last_flag_snap, last_direction, now,
+                                suffix="TW2_3SLOT_CONFIRM")
+                        else:
+                            state.tw2_3slot_pending_flag_direction = last_direction
+                            state.tw2_3slot_pending_flag_bar_ts = last_flag_snap.bar_dt.isoformat()
                 else:
                     _set_pending_signal(
                         state,
@@ -8300,6 +8353,20 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now:
     state.order_block_reason = outcome.block_reason
 
 
+_CONFIRM_ROW_RE = re.compile(r"^(\d{8})_(\d{6})_(?:UP_RED|DOWN_BLUE):(?:TW_CONFIRM|TW2_3SLOT_CONFIRM)$")
+
+
+def _confirm_row_flag_bar(signal_id: Any) -> Optional[datetime]:
+    """T+3 확인행 signal_id 에서 원래 플래그 봉 시각(KST)을 꺼낸다. 확인행이 아니면 None."""
+    m = _CONFIRM_ROW_RE.match(str(signal_id or ""))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(tzinfo=KST)
+    except ValueError:
+        return None
+
+
 def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, detected_at, outcome, dispatch_trace=None) -> None:
     order_result = outcome.final_state.value if outcome is not None else SignalState.WAITING.value
     block_reason = outcome.block_reason or "" if outcome is not None else (state.order_block_reason or "WAITING")
@@ -8387,6 +8454,17 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         _v = trace.get(_safety_key)
         row[_safety_key] = "" if _v is None else _v
     row.update(major_fields)
+    # 2026-10-13: T+3 확인행(``<flag_id>:TW_CONFIRM`` / ``:TW2_3SLOT_CONFIRM``)은
+    # **원래 플래그 봉 시각**으로 표시한다. 예전에는 확인을 처리한 tick 의 최신 봉이
+    # completed_bar_at/signal_bar_at 에 찍혀, 재시작 후 늦게 처리된 08:00 BLUE 의
+    # 확인행이 "08:36 BLUE" 로 보였다(10/13 실사례). 확인 봉은 time_window_confirm_bar_at 에 남긴다.
+    _flag_bar = _confirm_row_flag_bar(signal_id)
+    if _flag_bar is not None:
+        row["completed_bar_at"] = _flag_bar.strftime("%H%M%S")
+        row["signal_bar_at"] = _flag_bar.isoformat()
+        row["time_window_flag_bar_at"] = row.get("time_window_flag_bar_at") or _flag_bar.isoformat()
+        row["time_window_confirm_bar_at"] = (
+            row.get("time_window_confirm_bar_at") or macd_snap.bar_dt.astimezone(KST).isoformat())
     written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
 

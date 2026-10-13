@@ -43,3 +43,14 @@
 - 신규 31건 통과. 게이트를 무력화하면 16건, 자동 OFF 로직을 빼면 5건이 실패(테스트가 실제로 본다).
 - tests/macd2 전체: 66 failed / 2356 passed — 실패집합 = 베이스라인 66건과 동일, 신규 0.
 - ON 상태 REAL replay 주문단위 parity vs main 3e3401e: E 5 / CHOP 4 / P3 3 / N1 3 = **15/15일 일치**.
+
+## 함께 고친 원장 표시 버그 (2026-10-13 08:36 BLUE 사례)
+- 재시작 catch-up 이 확인시한(플래그 바로 다음 완성봉)이 지난 T+3 후보를 다시 pending 으로 올려,
+  첫 tick 이 한참 뒤 봉으로 확인해 "08:36 BLUE" 처럼 보이는 확인행을 남겼다(주문 없음).
+  → **플랫일 때** 확인시한이 지난 후보는 pending 없이 `RESTART_T3_EXPIRED` 행으로 바로 정리.
+  TW 필터 자체가 플래그 다음 봉이 아니면 `REJECT_NOT_CONFIRMED` 로만 판정하므로 주문 결과는 동일.
+  보유 중이면 기존대로(반대신호 청산/휩쏘 보류 판단 불변).
+- T+3 확인행(`:TW_CONFIRM` / `:TW2_3SLOT_CONFIRM`)은 `completed_bar_at`/`signal_bar_at` 에
+  **원래 플래그 봉 시각**을 표시하고, 확인 처리 봉은 `time_window_confirm_bar_at` 에 남긴다.
+- tests: `tests/macd2/test_restart_stale_t3_confirm.py` 3건 + 기존 4건을 새 계약으로 갱신.
+- 회귀: 66 failed / 2359 passed, 실패집합 = 베이스라인, 신규 0.

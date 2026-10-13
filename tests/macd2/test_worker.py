@@ -1290,7 +1290,9 @@ def test_initialize_strategy_session_records_premarket_catchup_flag_to_ledger():
     worker.initialize_strategy_session(state, svc, now=restart_now)
 
     rows = ledger.load_signal_ledger()
-    premarket_rows = [r for r in rows if r.get("completed_bar_at") == bar99_dt.strftime("%H%M%S")]
+    # 2026-10-13: T+3 확인행(``:..._CONFIRM``)도 원래 플래그 봉 시각으로 표시되므로 플래그 행만 센다.
+    premarket_rows = [r for r in rows if r.get("completed_bar_at") == bar99_dt.strftime("%H%M%S")
+                      and ":" not in str(r.get("signal_id") or "")]
     assert len(premarket_rows) == 1
     assert premarket_rows[0]["direction"] == "DOWN_BLUE"
     assert premarket_rows[0]["block_reason"] == "BEFORE_SESSION_OPEN"
@@ -1303,7 +1305,8 @@ def test_initialize_strategy_session_records_premarket_catchup_flag_to_ledger():
     svc2.bootstrap(now=restart_now)
     worker.initialize_strategy_session(state2, svc2, now=restart_now)
     rows_after_second_restart = ledger.load_signal_ledger()
-    assert len([r for r in rows_after_second_restart if r.get("completed_bar_at") == bar99_dt.strftime("%H%M%S")]) == 1
+    assert len([r for r in rows_after_second_restart if r.get("completed_bar_at") == bar99_dt.strftime("%H%M%S")
+                and ":" not in str(r.get("signal_id") or "")]) == 1
 
 
 def test_second_restart_does_not_discard_a_still_pending_catchup_signal():
