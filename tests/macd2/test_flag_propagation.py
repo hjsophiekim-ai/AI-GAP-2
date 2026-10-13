@@ -523,13 +523,16 @@ def test_restart_catchup_under_3slot_registers_t3_candidate_not_bare_pending(mar
 
     worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=240))
 
-    assert state.tw2_3slot_pending_flag_direction is not None, (
-        "a 3-SLOT restart catch-up flag must land on the 3-SLOT pending slot"
-    )
-    assert state.tw2_3slot_pending_flag_bar_ts is not None
     assert state.pending_signal is None, (
         "it must NOT go to the bare pending_signal queue (that path bypasses T+3/quality/TEG)"
     )
+    # 2026-10-13: 이 재시작의 마지막 플래그는 이미 T+3 확인봉이 지난 후보다. 3-SLOT 해소기는
+    # 플래그 바로 다음 봉에서만 확인하므로(time_window_filter: NOT_CONFIRMED) 어차피 주문이
+    # 불가능했다 -- pending 으로 올리지 않고 RESTART_T3_EXPIRED 로 바로 정리한다(플랫일 때).
+    assert state.tw2_3slot_pending_flag_direction is None
+    rows = [r for r in ledger.load_signal_ledger(limit=1000)
+            if r.get("block_reason") == worker.RESTART_T3_EXPIRED]
+    assert len(rows) == 1 and rows[0]["signal_id"].endswith(":TW2_3SLOT_CONFIRM")
 
 
 def test_restart_catchup_legacy_path_still_uses_pending_signal(market_data):
@@ -556,7 +559,8 @@ def test_restart_catchup_3slot_places_no_order_when_quality_teg_rejects(market_d
            teg_approved=False, patch_cross=False)
 
     worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=240))
-    assert state.tw2_3slot_pending_flag_direction is not None
+    # 2026-10-13: 확인시한이 지난 후보라 pending 없이 바로 정리된다(주문 불가는 동일).
+    assert state.tw2_3slot_pending_flag_direction is None
 
     # the next live ticks must resolve it through the REAL gate, not order
     for i in range(3):
@@ -567,8 +571,8 @@ def test_restart_catchup_3slot_places_no_order_when_quality_teg_rejects(market_d
     assert state.position is None
     assert state.tw2_3slot_slots_used_today == 0, "a rejected candidate must not consume a slot"
     reasons = [str(r.get("block_reason") or "") for r in ledger.load_signal_ledger(limit=1000)]
-    assert config.TW_REJECT_LOW_QUALITY_SCORE in reasons, (
-        f"the T+3 rejection must be recorded with its real reason: {reasons}"
+    assert worker.RESTART_T3_EXPIRED in reasons, (
+        f"the expired catch-up candidate must be recorded with its reason: {reasons}"
     )
 
 
@@ -581,14 +585,14 @@ def test_restart_twice_does_not_duplicate_3slot_candidate_or_order(market_data, 
            patch_cross=False)
 
     worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=240))
-    first_dir = state.tw2_3slot_pending_flag_direction
-    first_bar = state.tw2_3slot_pending_flag_bar_ts
-    assert first_dir is not None, "the catch-up replay must actually find a flag for this to mean anything"
+    expired = lambda: [r for r in ledger.load_signal_ledger(limit=1000)
+                       if r.get("block_reason") == worker.RESTART_T3_EXPIRED]
+    assert len(expired()) == 1, "the catch-up replay must actually find a (now expired) flag"
     # second back-to-back restart, no new market data
     worker.initialize_strategy_session(market_data=svc, state=state, now=_DAY + timedelta(minutes=241))
 
-    assert state.tw2_3slot_pending_flag_direction == first_dir, "the candidate must survive a 2nd restart"
-    assert state.tw2_3slot_pending_flag_bar_ts == first_bar, "and must not be clobbered by the replay"
+    assert state.tw2_3slot_pending_flag_direction is None
+    assert len(expired()) == 1, "a 2nd restart must not duplicate the expired-candidate row"
     assert len(broker.orders) == 0
 
 

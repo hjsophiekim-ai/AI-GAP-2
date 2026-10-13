@@ -961,6 +961,15 @@ class RuntimeState:
     strategy_mode_at: Optional[str] = None
     strategy_mode_by: Optional[str] = None
 
+    # ── 신규진입 허용 (2026-10-13, app/trading/macd2/entry_arming.py) ──────
+    # 감시(auto_trade_on)와 분리된 **신규 매수 허용** 스위치. 기본 OFF 이고
+    # 사용자가 UI 에서 직접 켜야 한다. 재시작 시 저장값을 복원한다(없으면 OFF).
+    # entry_armed_at = OFF->ON 시각. 이보다 먼저 발생한 신호는 주문하지 않는다.
+    entry_enabled: bool = False
+    entry_armed_at: Optional[str] = None
+    entry_changed_at: Optional[str] = None
+    entry_changed_by: Optional[str] = None
+
     p3_enabled: bool = False
     p3_enabled_at: Optional[str] = None
     p3_enabled_by: Optional[str] = None

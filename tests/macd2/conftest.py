@@ -41,6 +41,26 @@ def _allow_auto_trade_in_tests(monkeypatch):
     monkeypatch.setattr(config, "AUTO_TRADE_HARD_DISABLED", False)
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "entry_arming: 신규진입 허용 게이트를 실제로 태운다(기본 허용 fixture 해제)")
+
+
+@pytest.fixture(autouse=True)
+def _entry_arming_open_by_default(request, monkeypatch):
+    """신규진입 허용(entry_arming, 2026-10-13)은 production 기본값이 **OFF** 다.
+    그 이전의 tests/macd2 전부는 '진입이 허용된 상태'의 동작을 검증하므로,
+    기본으로는 게이트를 열어 둔다. 게이트 자체를 검증하는 테스트는
+    ``@pytest.mark.entry_arming`` 로 이 fixture 를 끈다."""
+    if request.node.get_closest_marker("entry_arming") is not None:
+        return
+    from app.trading.macd2 import entry_arming
+    monkeypatch.setattr(entry_arming, "block_reason", lambda *a, **k: None)
+    monkeypatch.setattr(entry_arming, "is_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(entry_arming, "armed_at",
+                        lambda *a, **k: __import__("datetime").datetime(2000, 1, 1, tzinfo=config.KST))
+
+
 @pytest.fixture(autouse=True)
 def _fresh_service_singleton(monkeypatch):
     """Never let one test's Macd2Service process-level singleton leak into

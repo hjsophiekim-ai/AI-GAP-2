@@ -490,6 +490,11 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "strategy_mode": state.strategy_mode,
         "strategy_mode_at": state.strategy_mode_at,
         "strategy_mode_by": state.strategy_mode_by,
+        # 신규진입 허용 (2026-10-13) — 재시작해도 사용자가 고른 값을 되살린다.
+        "entry_enabled": bool(state.entry_enabled),
+        "entry_armed_at": state.entry_armed_at,
+        "entry_changed_at": state.entry_changed_at,
+        "entry_changed_by": state.entry_changed_by,
         "p3_enabled": bool(state.p3_enabled),
         # CHOP-STACK (2026-10-11). chop_defense_enabled 는 **운영 플래그**라
         # 반드시 살아남아야 한다 — 이게 없으면 strategy_mode.restore 가
@@ -1228,6 +1233,11 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         strategy_mode=raw.get("strategy_mode"),
         strategy_mode_at=raw.get("strategy_mode_at"),
         strategy_mode_by=raw.get("strategy_mode_by"),
+        # 저장값이 없으면(기존 state 파일) **OFF** — 배포 직후엔 사용자가 직접 켠다.
+        entry_enabled=bool(raw.get("entry_enabled", False)) and bool(raw.get("entry_armed_at")),
+        entry_armed_at=raw.get("entry_armed_at") if raw.get("entry_enabled") else None,
+        entry_changed_at=raw.get("entry_changed_at"),
+        entry_changed_by=raw.get("entry_changed_by"),
         p3_enabled=p3_enabled,
         chop_defense_enabled=bool(raw.get("chop_defense_enabled", False)),
         chop_defense_version=raw.get("chop_defense_version") or "",
