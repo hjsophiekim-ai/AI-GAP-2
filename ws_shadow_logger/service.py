@@ -76,6 +76,7 @@ class LoggerService:
         self.mu_on = config.mu_enabled()
         self._mu_off_day = None          # MU 를 그날만 뺀 날짜
         self._mu_short = 0               # MU 등록 뒤 연속으로 짧게 끝난 연결 수
+        self.mu_sub = {}                 # tr_key -> "OK" / "FAIL(msg_cd)" (가장 최근 구독응답)
 
     def subscriptions(self, now: datetime | None = None) -> tuple:
         now = now or self.now()
@@ -141,12 +142,19 @@ class LoggerService:
         mu_last = mu.last_tick_at.isoformat(timespec="seconds") if (mu and mu.last_tick_at) else "-"
         mu_state = ("OFF" if not self.mu_on else "OFF_TODAY" if self._mu_off_day == day_str(now)
                     else "ERR_OFF" if (self.engine and self.engine.mu_disabled) else "ON")
+        ob = mu.observe() if mu else {"feeds": {}, "lag": None}
+        sub = ",".join(f"{k}:{v}" for k, v in sorted(self.mu_sub.items())) or "-"
+        feeds = ",".join(f"{f}:{d['ticks']}t/{d['bars']}b/{d['span']}m/miss={d['missing_ratio']}"
+                         for f, d in ob["feeds"].items()) or "-"
+        lag = ob["lag"]
+        lag_s = f"p50={lag['p50']}s/p95={lag['p95']}s/max={lag['max']}s" if lag else "-"
         return (f"{TAG} HEALTH LOGGER_RUNNING=1 WS_CONNECTED={int(self.ws_connected)} LAST_MESSAGE_AT={last} "
                 f"DATA_DIR={self.root} TODAY_RAW_COUNT={c.get('raw', 0)} TODAY_SNAPSHOT_COUNT={c.get('snapshot', 0)} "
                 f"RECONNECT_COUNT={c.get('reconnect', 0)} GAP_EVENTS={c.get('gap_events', 0)} "
                 f"MAX_GAP_S={c.get('max_gap_s', 0.0)} IN_SESSION={int(in_session(now))} "
                 f"MU={mu_state} MU_LAST_TICK_AT={mu_last} MU_TICKS={mu.counts['ticks'] if mu else 0} "
                 f"MU_BARS={mu.counts['bars'] if mu else 0} MU_ERRORS={c.get('mu_errors', 0)} "
+                f"MU_SUB={sub} MU_FEEDS={feeds} MU_LAG={lag_s} "
                 f"RSS_MB={'-' if rss is None else f'{rss:.1f}'} MAX_RSS_MB={self.max_rss_mb:.0f}"), rss
 
     def health_tick(self):
@@ -185,6 +193,13 @@ class LoggerService:
         self.store.log(now, "connected", subs=list(self.subscriptions(now)))
         self.store.save_counters()
 
+    def _on_mu_subscribe_reply(self, msg: dict):
+        ok = str(msg.get("rt_cd")) == "0"
+        key = msg.get("tr_key") or "?"
+        self.mu_sub[key] = "OK" if ok else f"FAIL({msg.get('msg_cd')})"
+        self.out(f"{TAG} MU_SUBSCRIBE {'OK' if ok else 'FAIL'} tr_key={key} msg_cd={msg.get('msg_cd')} "
+                 f"msg1={msg.get('msg1')}")
+
     async def collect_session(self):
         """수집시간이 끝나거나 stop 이 올 때까지. 끊기면 백오프 재접속."""
         self.engine = Engine(self.store, symbols())
@@ -214,6 +229,8 @@ class LoggerService:
                         now = self.now()
                         if raw is not None:
                             msg = self.engine.on_frame(raw if isinstance(raw, str) else raw.decode("utf-8"), now)
+                            if msg.get("type") == "system" and msg.get("tr_id") == "HDFSCNT0":
+                                self._on_mu_subscribe_reply(msg)
                             if msg.get("type") == "pingpong":
                                 await ws.pong(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
                         self.engine.advance(now)
@@ -238,8 +255,10 @@ class LoggerService:
         self.engine.flush()
         self.store.save_counters()
         if not self._stop.is_set():
-            self.store.log(self.now(), "session_end", counts=self.engine.counts)
+            self.store.log(self.now(), "session_end", counts=self.engine.counts, mu=self.engine.mu.observe())
             self.out(f"{TAG} SESSION_END counts={self.engine.counts}")
+            self.out(f"{TAG} MU_SESSION_END ticks={self.engine.mu.counts['ticks']} bars={self.engine.mu.counts['bars']} "
+                     f"errors={self.engine.mu_errors} observe={self.engine.mu.observe()}")
 
     _DISK_ERRNOS = {errno.ENOSPC, errno.EROFS, errno.EACCES, errno.EPERM, getattr(errno, "EDQUOT", -1), errno.EIO}
 
@@ -272,6 +291,12 @@ class LoggerService:
         if res.get("gzipped") or res.get("daily") or res.get("mu"):
             self.store.log(now, "maintenance", **res)
             self.out(f"{TAG} MAINTENANCE gzipped={len(res.get('gzipped', []))} daily={len(res.get('daily', []))}")
+            for day in res.get("mu", []):
+                p = self.root / "mu" / day / "summary.json"
+                try:
+                    self.out(f"{TAG} MU_DAY_SUMMARY {p.read_text(encoding='utf-8').replace(chr(10), '')}"[:1000])
+                except OSError:
+                    pass
         return res
 
     async def run(self) -> int:

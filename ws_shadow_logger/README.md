@@ -21,7 +21,8 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 |---|---|
 | `KIS_LOGGER_ENABLED` | `1` 일 때만 실행 |
 | `KIS_LOGGER_APP_KEY` / `KIS_LOGGER_APP_SECRET` | 로거 전용 실전 appkey. `KIS_APP_KEY` / `KIS_REAL_APP_KEY` / `KIS_MOCK_APP_KEY` 와 같으면 거부(appkey 지문만 비교, production secret 은 읽지 않음) |
-| `KIS_LOGGER_DATA_DIR` | 필수. 절대경로. 소스 디렉토리·임시 디렉토리는 거부. Render 에서는 영구 디스크 마운트 아래여야 한다 |
+| `KIS_LOGGER_DATA_DIR` | 필수. 절대경로. 소스 디렉토리·임시 디렉토리는 거부 — 단 소스 트리 안의 **별도 마운트**(Render 디스크 `/opt/render/project/src/data`)는 허용. Render 에서는 영구 디스크 마운트 아래여야 한다 |
+| `KIS_LOGGER_MU_ENABLED` | 선택. 기본 ON. `0` 이면 MU(HDFSCNT0) 등록을 하지 않는다 |
 | `KIS_LOGGER_MAX_RSS_MB` | 선택. 기본 = 컨테이너(cgroup) 메모리 한도의 18%, 못 읽으면 96MB |
 
 종료 코드: 0 정상/비활성 · 2 키 문제 · 3 데이터 경로 문제(쓰기 불가 포함) · 4 RSS 한도 초과. 래퍼는 이 넷은 재시작하지 않고, 그 외 비정상 종료만 백오프 재시작한다. 어떤 경우에도 UI/자동매매 프로세스는 건드리지 않는다.
@@ -45,6 +46,11 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 MU 는 국내 6건 **뒤에** 등록한다. `KIS_LOGGER_MU_ENABLED=0` 이면 등록하지 않는다(기본 ON).
 격리: MU 기록 경로의 예외(디스크 오류 포함)는 Engine 이 삼키고 `mu_error` 로 센다 — 하루 50건이면 그날 MU 기록만 끈다.
 MU 를 붙인 연결이 30초 안에 끊기기를 3번 연속하면 그날은 MU 등록을 빼고 국내 6건만 다시 붙는다.
+
+Render Logs 에서 첫날 확인할 줄:
+- `MU_SUBSCRIBE OK|FAIL tr_key=RBAQMU|DNASMU msg_cd= msg1=` — 구독 성공 여부
+- `HEALTH ... MU=ON MU_TICKS= MU_BARS= MU_SUB= MU_FEEDS=<feed>:<tick>t/<bar>b/<구간>m/miss=<누락률> MU_LAG=p50=/p95=/max= RSS_MB=` (1분마다)
+- `MU_SESSION_END` (15:30), `MU_DAY_SUMMARY {...}` (15:30 이후 maintenance, 분봉 재생성 기준 누락률)
 production `app/trading/mu_macd` 와 같은 tr_key 지만 로거 전용 appkey 의 별도 세션이다(코드 공유·import 없음).
 
 ## 저장 구조 (`$KIS_LOGGER_DATA_DIR`)

@@ -248,6 +248,33 @@ def test_temp_or_source_dir_is_refused(tmp_path, monkeypatch):
     assert runner.main(["--live"], out=lambda *_: None) == config.EXIT_DISK        # 소스 아래
 
 
+def test_separately_mounted_disk_inside_source_tree_is_allowed(tmp_path):
+    """Render: Persistent Disk 가 /opt/render/project/src/data (소스 안)에 마운트된다 -> 허용.
+    같은 소스 아래라도 별도 마운트가 아니면 계속 거부."""
+    fake_repo = tmp_path / "src"
+    disk = fake_repo / "data"
+    disk.mkdir(parents=True)
+
+    def mount_fn(p):
+        p = Path(p)
+        return disk if (p == disk or disk in p.parents) else Path(p.anchor)
+    ok = config.check_data_dir(str(disk / "ws_shadow_data"), forbidden=(fake_repo,), on_render=True,
+                               mount_fn=mount_fn)
+    assert ok.ok is False                     # forbidden 은 REPO 일 때만 마운트 예외 -> 가짜 루트로 REPO 를 바꿔 검사
+    import ws_shadow_logger.config as cfg
+    orig = cfg.REPO
+    try:
+        cfg.REPO = fake_repo
+        ok = config.check_data_dir(str(disk / "ws_shadow_data"), forbidden=(fake_repo,), on_render=True,
+                                   mount_fn=mount_fn)
+        assert ok.ok and ok.persistent is True and ok.mount_point == str(disk)
+        bad = config.check_data_dir(str(fake_repo / "logs" / "x"), forbidden=(fake_repo,), on_render=True,
+                                    mount_fn=mount_fn)
+        assert bad.ok is False and "금지" in bad.reason
+    finally:
+        cfg.REPO = orig
+
+
 def test_unwritable_dir_is_refused(tmp_path, monkeypatch):
     blocker = tmp_path / "file"; blocker.write_text("x")
     _env(monkeypatch, KIS_LOGGER_ENABLED="1", KIS_LOGGER_DATA_DIR=str(blocker / "sub"),

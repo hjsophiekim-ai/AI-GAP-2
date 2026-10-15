@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import os
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -90,6 +91,10 @@ class MuRecorder:
         self._cur: dict = {}        # feed -> 진행 중 분봉
         self.counts = {"ticks": 0, "bars": 0}
         self.last_tick_at: datetime | None = None
+        # 장중 관측용(재시작 후 0부터) — feed 별 tick/분봉 수, 첫·마지막 분, 최근 수신지연
+        self.feed_ticks: dict = {}
+        self.feed_bars: dict = {}           # feed -> [bars, first_minute, last_minute]
+        self.lags = deque(maxlen=600)
 
     # ── 파일 ───────────────────────────────────────────────────────────────
     def _open(self, day: str):
@@ -126,6 +131,8 @@ class MuRecorder:
                    "mtyp": rec.get("MTYP"), "lag_s": round((recv - kt).total_seconds(), 3)}
             self._ticks[1].writerow(row)
             self.counts["ticks"] += 1
+            self.feed_ticks[feed] = self.feed_ticks.get(feed, 0) + 1
+            self.lags.append(row["lag_s"])
             self.last_tick_at = recv
             self._on_tick(feed, kt, px, num(rec.get("EVOL"), 0.0) or 0.0, row)
 
@@ -161,6 +168,23 @@ class MuRecorder:
         self._last_min[b["feed"]] = b["minute_kst"]
         self._cur.pop(b["feed"], None)
         self.counts["bars"] += 1
+        fb = self.feed_bars.setdefault(b["feed"], [0, b["minute_kst"], b["minute_kst"]])
+        fb[0] += 1
+        fb[1] = min(fb[1], b["minute_kst"]); fb[2] = max(fb[2], b["minute_kst"])
+
+    def observe(self) -> dict:
+        """health 용 요약: feed 별 tick 수, 분봉 수/구간/누락률(이번 프로세스 기준), 최근 600건 수신지연."""
+        feeds = {}
+        for f in sorted(set(self.feed_ticks) | set(self.feed_bars)):
+            n, first, last = self.feed_bars.get(f, [0, None, None])
+            span = (int((datetime.fromisoformat(last) - datetime.fromisoformat(first)).total_seconds() // 60) + 1
+                    if first else 0)
+            feeds[f] = {"ticks": self.feed_ticks.get(f, 0), "bars": n, "span": span,
+                        "missing_ratio": round((span - n) / span, 4) if span else None}
+        lags = sorted(self.lags)
+        lag = ({"p50": lags[len(lags) // 2], "p95": lags[min(len(lags) - 1, int(len(lags) * 0.95))],
+                "max": lags[-1], "n": len(lags)} if lags else None)
+        return {"feeds": feeds, "lag": lag}
 
     def flush(self):
         for h in (self._ticks, self._bars):

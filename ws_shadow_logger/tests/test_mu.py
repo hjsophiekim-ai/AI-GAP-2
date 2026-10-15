@@ -139,6 +139,17 @@ def test_restart_mid_minute_then_finalize_rebuilds_exact_bars(tmp_path):
     assert summ["feeds"]["RBAQMU"]["bars"] == 3 and summ["feeds"]["RBAQMU"]["missing_ratio"] == 0.0
 
 
+def test_observe_reports_feed_counts_missing_and_lag(tmp_path):
+    rec = mu.MuRecorder(tmp_path)
+    for m in (0, 1, 3):                                   # 10:02 체결 없음
+        t = T0 + timedelta(minutes=m, seconds=5)
+        rec.on_records(parse_frame(stub.mu_trade("RBAQMU", t, 120.0, 2, 2))["records"], t + timedelta(seconds=0.4))
+    rec.advance(T0 + timedelta(minutes=5))
+    ob = rec.observe(); rec.close()
+    assert ob["feeds"]["RBAQMU"] == {"ticks": 3, "bars": 3, "span": 4, "missing_ratio": 0.25}
+    assert ob["lag"]["p50"] == 0.4 and ob["lag"]["n"] == 3
+
+
 def test_missing_ratio_counts_minutes_without_trades():
     bars = [{"feed": "RBAQMU", "minute_kst": f"2026-10-15T10:{m:02d}:00"} for m in (0, 1, 3, 4, 9)]
     s = mu.summarize_bars(bars)["RBAQMU"]
@@ -201,12 +212,25 @@ def test_domestic_first_then_mu_and_env_off(monkeypatch):
     assert config.all_subscriptions() == config.SUBSCRIPTIONS
 
 
+def _sub_reply(key, ok=True):
+    return json.dumps({"header": {"tr_id": "HDFSCNT0", "tr_key": key, "encrypt": "N"},
+                       "body": {"rt_cd": "0" if ok else "1", "msg_cd": "OPSP0000" if ok else "OPSP8996",
+                                "msg1": "SUBSCRIBE SUCCESS" if ok else "invalid"}})
+
+
 def test_live_session_records_mu_and_health_reports_it(tmp_path):
-    frames = sorted(stub.session(T0, seconds=20) + stub.mu_session(T0, minutes=2), key=lambda x: x[0])
+    """첫날 확인용 로그: 구독 성공/실패, tick 수, 분봉 수·누락률, 수신지연, RSS 가 stdout(Render Logs)에 찍힌다."""
+    frames = sorted(stub.session(T0, seconds=20) + stub.mu_session(T0, minutes=3)
+                    + [(T0, _sub_reply("RBAQMU")), (T0, _sub_reply("DNASMU", ok=False))], key=lambda x: x[0])
     ws = FakeWS(frames, idle=True)
     svc, lines = _svc(tmp_path, connect=lambda url: ws, now_fn=_clock(T0, speed=20.0))
-    rc = _run_until(svc, lambda: not ws.frames and any("MU_TICKS=" in x and "MU_TICKS=0" not in x for x in lines))
+    rc = _run_until(svc, lambda: not ws.frames and any("MU_BARS=" in x and "MU_BARS=0 " not in x for x in lines))
     assert rc == 0
+    assert any("MU_SUBSCRIBE OK tr_key=RBAQMU" in x for x in lines)
+    assert any("MU_SUBSCRIBE FAIL tr_key=DNASMU msg_cd=OPSP8996" in x for x in lines)
+    h = [x for x in lines if "HEALTH" in x and "MU_BARS=0 " not in x][-1]
+    for k in ("MU_SUB=DNASMU:FAIL(OPSP8996),RBAQMU:OK", "MU_FEEDS=RBAQMU:", "/miss=", "MU_LAG=p50=", "RSS_MB=50.0"):
+        assert k in h, (k, h)
     tr_keys = [json.loads(m)["body"]["input"]["tr_key"] for m in ws.sent]
     assert tr_keys[-2:] == ["RBAQMU", "DNASMU"] and len(tr_keys) == 8
     assert any("MU=ON" in x for x in lines)

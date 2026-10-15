@@ -172,6 +172,14 @@ def _mount_point(p: Path) -> Path:
     return cur
 
 
+def _deepest_existing_mount(p: Path, mount_fn) -> Path:
+    """p 가 아직 없으면 존재하는 가장 가까운 상위로 올라가 마운트 지점을 찾는다."""
+    cur = p
+    while not cur.exists() and cur.parent != cur:
+        cur = cur.parent
+    return Path(mount_fn(cur))
+
+
 @dataclass
 class DataDirCheck:
     ok: bool
@@ -182,8 +190,14 @@ class DataDirCheck:
     persistent: bool | None = None
 
 
-def check_data_dir(raw: str | None = None, *, forbidden=None, on_render: bool | None = None) -> DataDirCheck:
-    """존재 / 쓰기 / (Render 면) 영구 디스크 여부를 확인한다. ok=False 면 로거만 종료한다."""
+def check_data_dir(raw: str | None = None, *, forbidden=None, on_render: bool | None = None,
+                   mount_fn=None) -> DataDirCheck:
+    """존재 / 쓰기 / (Render 면) 영구 디스크 여부를 확인한다. ok=False 면 로거만 종료한다.
+
+    소스 디렉토리 아래는 거부하되, **소스 트리 안에 별도로 마운트된 디스크**는 허용한다 — Render 는
+    Persistent Disk 를 /opt/render/project/src/data (소스 체크아웃 안)에 붙인다(app/utils/data_paths.py).
+    임시 디렉토리 아래는 마운트 여부와 무관하게 거부한다."""
+    mount_fn = mount_fn or _mount_point
     raw = os.environ.get(ENV_DATA_DIR) if raw is None else raw
     on_render = bool(os.environ.get("RENDER")) if on_render is None else on_render
     if not raw:
@@ -194,6 +208,10 @@ def check_data_dir(raw: str | None = None, *, forbidden=None, on_render: bool | 
     rp = p.resolve()
     for root in (forbidden if forbidden is not None else _forbidden_roots()):
         if _is_under(rp, Path(root)):
+            if Path(root) == REPO.resolve():
+                mp = _deepest_existing_mount(rp, mount_fn)
+                if mp != Path(root) and _is_under(mp, Path(root)):
+                    continue            # 소스 트리 안의 별도 마운트(Render Persistent Disk) — 허용
             return DataDirCheck(False, str(rp), f"영구 저장 금지 위치({root}) 아래다", on_render=on_render)
     try:
         rp.mkdir(parents=True, exist_ok=True)
@@ -202,7 +220,7 @@ def check_data_dir(raw: str | None = None, *, forbidden=None, on_render: bool | 
         probe.unlink()
     except OSError as e:
         return DataDirCheck(False, str(rp), f"쓰기 불가: {e!r}"[:200], on_render=on_render)
-    mp = _mount_point(rp)
+    mp = mount_fn(rp)
     persistent = None
     if on_render:
         # Render Persistent Disk 는 별도 마운트로 붙는다. 마운트 지점이 루트(/)면 컨테이너 임시 파일시스템이다.
