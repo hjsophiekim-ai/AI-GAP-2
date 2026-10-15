@@ -44,6 +44,7 @@ from app.trading.macd2 import time_window_3slot as macd2_time_window_3slot  # no
 from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
 from app.trading.macd2 import strategy_mode as macd2_strategy_mode  # noqa: E402
+from app.trading.macd2 import fixed_exit as macd2_fixed_exit  # noqa: E402
 from app.trading.macd2 import e_strategy as macd2_e_strategy  # noqa: E402
 from app.trading.macd2 import p3_stack as macd2_p3_stack  # noqa: E402
 from app.trading.macd2 import n1_adaptive as macd2_n1_adaptive  # noqa: E402
@@ -1238,6 +1239,31 @@ if _stm_pick != _stm_current:
         st.warning("전략 모드를 바꿀 수 없습니다: "
                    + str(_stm_res.get("message") or _stm_res.get("reason") or "알 수 없는 사유"))
 
+# ── 고정 ±1.5% 청산 (2026-10-15, app/trading/macd2/fixed_exit.py) ────────────
+# 어느 전략모드에서든 보인다. 진입·사이징·반대 플래그 처리는 선택한 모드 그대로,
+# 청산만 +1.5% 즉시 전량익절 / 완성 3분봉 종가 -1.5% 전량손절로 바뀐다.
+# 모드를 바꿔도 값은 유지되고, 재시작 후 저장값으로 복원된다. 기본 OFF.
+_fx_now = macd2_fixed_exit.is_enabled(state)
+with _stm_cols[0]:
+    _fx_pick = st.toggle(
+        "고정 ±1.5% 청산",
+        value=_fx_now,
+        key="macd2_fixed_exit_15_toggle",
+        help=("ON: 선택한 전략(N1/P3/E/CHOP)의 진입은 그대로 두고 청산만 바꿉니다." + chr(10)
+              + "  · 순수익률 +1.5% 도달 즉시 전량익절 (FIXED_TP15)" + chr(10)
+              + "  · 완성 3분봉 종가 순수익률 -1.5% 이하 전량손절 (FIXED_SL15)" + chr(10)
+              + "  · TP1/TP2 래더·부분익절·runner·trailing·max-hold·C1·B3/Y3 는 쓰지 않습니다." + chr(10)
+              + "  · 반대 플래그 청산/스위치, 15:00 강제청산, safety 청산은 그대로입니다." + chr(10)
+              + "OFF: 전략 기본 청산 (production 그대로)."),
+    )
+    if _fx_now:
+        st.markdown("**고정 ±1.5% 청산: 🟢 ON** — +1.5% 즉시 전량익절 / 3분봉 종가 -1.5% 전량손절")
+    else:
+        st.caption("고정 ±1.5% 청산: OFF — 전략 기본 청산")
+if _fx_pick != _fx_now:
+    service.set_fixed_exit_15_enabled(_fx_pick, changed_by="ui")
+    st.rerun()
+
 # ── E 하루 최대 2회 토글 (2026-10-06) ──────────────────────────────────────
 # E 를 골랐을 때만 보인다. 켜면 E 의 하루 신규진입 한도가 3 -> 2 (3번째 신규진입만
 # 막힌다). 진입/폐기/RS/청산 로직은 그대로다. N1/P3 에서는 효력이 없다.
@@ -1273,6 +1299,7 @@ with _stm_cols[1]:
     # 계좌 종류는 전략 판단을 바꾸지 않는다 -- MOCK/REAL 모두 같은 코드를 탄다.
     st.caption(f"ACCOUNT: **{macd2_strategy_mode.account_kind(state)}**")
     st.caption(f"SELECTED MODE: **{_stm_current}**")
+    st.caption("EXIT: **FIXED ±1.5%**" if macd2_fixed_exit.is_active(state) else "EXIT: **전략 기본**")
     if macd2_strategy_mode.is_p3_based(_stm_current):
         _stm_regime = getattr(state, "p3_last_regime", None) or "-"
         st.caption(f"REGIME: **{_stm_regime}**")

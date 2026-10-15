@@ -85,6 +85,7 @@ def default_state() -> RuntimeState:
     state.e_rs_samples = []
     state.e_last_pending_result = None
     state.e_daily_cap2_enabled = False          # E 하루 최대 2회 토글 -- 기본 OFF
+    state.fixed_exit_15_enabled = False         # 고정 ±1.5% 청산 토글 -- 기본 OFF
     state.time_window_h50_filter_enabled = bool(getattr(config, "H50_3SLOT_FILTER_DEFAULT", False))
     state.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
     state.h50_hold_active = False
@@ -495,6 +496,10 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "entry_armed_at": state.entry_armed_at,
         "entry_changed_at": state.entry_changed_at,
         "entry_changed_by": state.entry_changed_by,
+        # 고정 ±1.5% 청산 (2026-10-15) — 사용자 설정, 재시작 후 복원.
+        "fixed_exit_15_enabled": bool(state.fixed_exit_15_enabled),
+        "fixed_exit_15_changed_at": state.fixed_exit_15_changed_at,
+        "fixed_exit_15_changed_by": state.fixed_exit_15_changed_by,
         "p3_enabled": bool(state.p3_enabled),
         # CHOP-STACK (2026-10-11). chop_defense_enabled 는 **운영 플래그**라
         # 반드시 살아남아야 한다 — 이게 없으면 strategy_mode.restore 가
@@ -1238,6 +1243,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         entry_armed_at=raw.get("entry_armed_at") if raw.get("entry_enabled") else None,
         entry_changed_at=raw.get("entry_changed_at"),
         entry_changed_by=raw.get("entry_changed_by"),
+        # 저장값이 없으면(기존 state 파일) OFF — production 기본값.
+        fixed_exit_15_enabled=bool(raw.get("fixed_exit_15_enabled", False)),
+        fixed_exit_15_changed_at=raw.get("fixed_exit_15_changed_at"),
+        fixed_exit_15_changed_by=raw.get("fixed_exit_15_changed_by"),
         p3_enabled=p3_enabled,
         chop_defense_enabled=bool(raw.get("chop_defense_enabled", False)),
         chop_defense_version=raw.get("chop_defense_version") or "",

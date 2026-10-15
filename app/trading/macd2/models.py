@@ -970,6 +970,12 @@ class RuntimeState:
     entry_changed_at: Optional[str] = None
     entry_changed_by: Optional[str] = None
 
+    # ── 고정 ±1.5% 청산 (2026-10-15, app/trading/macd2/fixed_exit.py) ────
+    # 사용자 설정. 기본 OFF, 재시작·날짜 변경·전략모드 전환에도 유지된다.
+    fixed_exit_15_enabled: bool = False
+    fixed_exit_15_changed_at: Optional[str] = None
+    fixed_exit_15_changed_by: Optional[str] = None
+
     p3_enabled: bool = False
     p3_enabled_at: Optional[str] = None
     p3_enabled_by: Optional[str] = None

@@ -56,6 +56,7 @@ from app.trading.macd2 import (
     e_strategy,
     early_take_profit,
     entry_arming,
+    fixed_exit,
     peak_protection,
     n1_adaptive,
     ledger,
@@ -3506,6 +3507,15 @@ def _advance_held_position_risk_management(
                 state.time_window_afternoon_entry_count = int(state.time_window_afternoon_entry_count or 0) + 1
                 state.time_window_entry_session_seq = state.time_window_afternoon_entry_count
 
+        # ── 고정 ±1.5% 청산 (2026-10-15, 기본 OFF) ───────────────────────────
+        # 토글 ON 이면 아래 기존 청산(P3 B3/rescue, 틱 TP 래더, 완성봉 래더, ETP)을
+        # 하나도 돌리지 않고 이 두 줄만 본다. 강제청산은 이미 위에서 끝났고, 반대
+        # 플래그 처리는 run_once 의 resolve 단계에서 그대로 돈다. OFF 면 이 분기는
+        # is_active 한 번만 부르고 지나간다(기존 경로 불변).
+        if fixed_exit.is_active(state):
+            return _advance_fixed_exit(broker=broker, state=state, pos=pos,
+                                       current_price=current_price, now=now, result=result)
+
         # 2026-08-21 fix (사용자 요청 — 익절판단은 3분봉 완성 시점이 아니라
         # 틱뜨자마자 즉시): TP1/TP2/AFTERNOON_TP alone are checked here on
         # EVERY tick against the live current_price, before the bar-close-
@@ -3876,6 +3886,40 @@ def _advance_held_position_risk_management(
                 return True
 
     return False
+
+
+def _advance_fixed_exit(*, broker, state: RuntimeState, pos: PositionSnapshot,
+                        current_price: float, now: datetime, result: TickResult) -> bool:
+    """고정 ±1.5% 청산 (fixed_exit.py). 발동하면 True, 아니면 False.
+
+    · TP: 이 tick 의 현재가 순수익률 >= +1.5% -> 즉시 전량 (FIXED_TP15)
+    · SL: 방금 완성된 3분봉 종가 순수익률 <= -1.5% -> 전량 (FIXED_SL15)
+
+    완성봉 추적(_advance_stop_loss_bar)은 TP 여부와 무관하게 매 tick 먼저 돌린다 —
+    봉 경계를 하나도 건너뛰지 않기 위해서다. 진입 실행봉은 기존 래더와 똑같이
+    손절 판정에서 제외된다. 부분익절은 없다.
+    """
+    completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
+    tick_net = _net_return_pct(pos.symbol, pos.avg_price, current_price, pos.quantity)
+    reason = fixed_exit.evaluate_tick(tick_net)
+    basis_net = tick_net
+    if reason is None and completed_bar_close is not None:
+        basis_net = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
+        reason = fixed_exit.evaluate_bar(basis_net)
+    if reason is None:
+        return False
+    logger.info("[MACD2][FIXED15] %s %s qty=%s avg=%s net=%.4f%%",
+                reason, pos.symbol, pos.quantity, pos.avg_price, basis_net)
+    outcome = order_executor.execute_exit(
+        broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+        exit_reason=reason, entry_price=pos.avg_price,
+        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+    )
+    _apply_exit_outcome(state, outcome, exit_reason=reason)
+    if outcome.final_state == SignalState.EXECUTED:
+        state.time_window_position_active = False
+    result.actions.append(f"{reason}:{pos.symbol}")
+    return True
 
 
 def _handle_resolve_exception(
@@ -7704,7 +7748,9 @@ def run_once(
         # 하드스톱/TP1/TP2/트레일링/ETP/강제청산/반대신호 switch 가 이미 이
         # tick 앞에서 평가돼 발동했으면 여기까지 오지 않으므로 기존 청산
         # 우선순위가 그대로 유지된다. 청산 전용이며 신규 진입은 하지 않는다.
-        c1_outcome = _advance_c1_peak_protection(
+        # 고정 ±1.5% 청산이 ON 이면 C1 / B3 max-hold·Y3 는 돌지 않는다(fixed_exit.py).
+        _fixed_exit_on = fixed_exit.is_active(state)
+        c1_outcome = None if _fixed_exit_on else _advance_c1_peak_protection(
             broker=broker, state=state, now=now, macd_snap=macd_snap,
             position=pos, result=result,
         )
@@ -7716,7 +7762,7 @@ def run_once(
         # 여기까지 왔다는 것은 강제청산/B3 TP·SL/손절/trailing/ETP/반대신호/
         # whipsaw/H50/C1 이 전부 아무 청산도 내지 않았다는 뜻이다. CHOP 으로
         # 진입한 포지션이 아니면 함수 첫 줄에서 바로 빠진다(TREND parity).
-        p3_maxhold_outcome = _advance_p3_max_hold(
+        p3_maxhold_outcome = None if _fixed_exit_on else _advance_p3_max_hold(
             broker=broker, state=state, now=now, bars_3m=bars_3m,
             position=pos, quotes=quotes, result=result,
         )
