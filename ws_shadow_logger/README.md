@@ -27,6 +27,56 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 
 종료 코드: 0 정상/비활성 · 2 키 문제 · 3 데이터 경로 문제(쓰기 불가 포함) · 4 RSS 한도 초과. 래퍼는 이 넷은 재시작하지 않고, 그 외 비정상 종료만 백오프 재시작한다. 어떤 경우에도 UI/자동매매 프로세스는 건드리지 않는다.
 
+## 일별 export + 외부 백업 (2026-10-16)
+
+사내망에서 Render에 직접 접속할 수 없어서 만들었다. 장마감 후 그날 데이터를 zip 하나로 묶고, 설정하면 S3/R2로 자동 업로드한다.
+`python -m ws_shadow_logger.backup_service`는 **로거와 별도 프로세스**다.
+- `scripts/render_start_with_logger.sh`가 `KIS_LOGGER_ENABLED=1` 또는 `LOGGER_BACKUP_ENABLED=1`일 때 따로 감독한다.
+- 이 프로세스가 죽어도 로거·UI·자동매매에는 영향이 없다.
+- 종료코드 0/3이면 재시작하지 않는다.
+
+| 시각 (KST) | 동작 |
+|---|---|
+| 15:30 | 로거 maintenance (raw gzip, MU 분봉 재생성, `daily/<날짜>.json`) |
+| 15:35~ | maintenance 표식(`daily/<날짜>.json`)이 생기면 export를 만든다. 16:00이 지나면 표식 없이도 만든다 |
+| 15:35~ | `LOGGER_BACKUP_ENABLED=1`이면 업로드한다. 실패하면 5→15→30→60분 간격으로 재시도한다. 상태는 `state/backup_<날짜>.json`에 남아 다음 날·재시작 후에도 이어진다(최근 10일) |
+
+**export**: `$KIS_LOGGER_DATA_DIR/exports/ws_shadow_export_<YYYY-MM-DD>.zip`과 같은 이름의 `.manifest.json`(zip 밖 사본)을 만든다.
+- zip에 들어가는 것: `snapshots/<날짜>/`, `mu/<날짜>/`, `logs/<날짜>.jsonl`, `daily/<날짜>.json`, `manifest.json`
+- `manifest.json` 내용: 파일 수, 파일별 행 수·sha256, snapshot 행 수와 수집창 대비 누락률, stale 비율, MU tick·분봉 수, MU 누락률
+- 원본은 지우지 않는다.
+- 같은 날짜를 다시 실행하면, 데이터 파일 구성이 같을 때 그대로 둔다(UNCHANGED). 바뀌었으면 임시 파일에 만든 뒤 원자적으로 교체한다.
+- 지문에서 `logs/`는 제외한다. 장외에도 health 줄이 붙기 때문이다.
+- 수동 실행:
+  ```
+  python -m ws_shadow_logger.export_day --date YYYY-MM-DD          # $KIS_LOGGER_DATA_DIR 기준
+  python -m ws_shadow_logger.export_day --date YYYY-MM-DD --root DIR --force
+  python -m ws_shadow_logger.backup_service --once                  # 지금 export+업로드 한 번
+  ```
+
+**업로드 (S3 호환, AWS S3·Cloudflare R2 공통)**
+- 저장 위치: `<PREFIX>YYYY/MM/DD/ws_shadow_export_YYYY-MM-DD.zip`. 성공하면 같은 폴더에 `manifest.json`을 올린다(완료 표식).
+- boto3를 쓰지 않는다. requests + SigV4 path-style로 스트리밍 업로드한다(`UNSIGNED-PAYLOAD`, HTTPS 필수).
+- 중복 업로드 방지: 객체 메타 `x-amz-meta-sha256`이 같으면 다시 올리지 않는다(ALREADY_PRESENT).
+
+| 환경변수 | 예 |
+|---|---|
+| `LOGGER_BACKUP_ENABLED` | `1` |
+| `LOGGER_BACKUP_PROVIDER` | `s3` 또는 `r2` |
+| `LOGGER_BACKUP_BUCKET` | 버킷 이름 |
+| `LOGGER_BACKUP_ENDPOINT` | `https://s3.ap-northeast-2.amazonaws.com` 또는 `https://<account_id>.r2.cloudflarestorage.com` |
+| `LOGGER_BACKUP_ACCESS_KEY` / `LOGGER_BACKUP_SECRET_KEY` | 그 버킷 PutObject/HeadObject만 허용한 키 권장 |
+| `LOGGER_BACKUP_PREFIX` | `ws_shadow/` (기본) |
+| `LOGGER_BACKUP_REGION` | 선택. r2=`auto`, s3는 endpoint에서 추출, 없으면 `us-east-1` |
+
+**Render Logs에서 확인할 줄**
+- `[ws_shadow_backup] READY backup=ON|OFF|CONFIG_ERROR`
+- `DAILY_EXPORT_OK day= zip= files= snapshot_rows= mu_ticks= bytes=`
+- `DAILY_BACKUP_OK day= result=UPLOADED|ALREADY_PRESENT key= sha256= bytes=`
+- `DAILY_BACKUP_FAIL day= stage=export|upload attempt= error= next_retry_at=`
+- `DAILY_BACKUP_SKIP reason=config` (설정 누락 시 export만 함)
+- 키 원문은 로그·상태파일에 남기지 않는다.
+
 ## 메모리
 - raw 프레임은 받는 즉시 파일에 append 하고 버린다. 1초 스냅샷도 즉시 append 한다.
 - 실시간 계산 상태는 종목별 bounded deque 하나다. 개수 상한 `MAX_TRADES=4096`, 시간 상한 60초.

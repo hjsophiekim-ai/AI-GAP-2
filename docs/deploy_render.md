@@ -53,6 +53,12 @@ Start Command 를 아래로 바꾼다. 자동매매 ON/OFF·신규진입 허용�
 
 ---
 
+### 일별 export + S3/R2 백업 (선택, 2026-10-16)
+`ws_shadow_logger/README.md`의 「일별 export + 외부 백업」 절을 참고한다.
+- `KIS_LOGGER_ENABLED=1`이면 15:35 KST 이후 `$KIS_LOGGER_DATA_DIR/exports/`에 zip을 자동으로 만든다.
+- 아래를 설정하면 업로드도 한다: `LOGGER_BACKUP_ENABLED=1`, `LOGGER_BACKUP_PROVIDER`, `LOGGER_BACKUP_BUCKET`, `LOGGER_BACKUP_ENDPOINT`, `LOGGER_BACKUP_ACCESS_KEY`, `LOGGER_BACKUP_SECRET_KEY`, `LOGGER_BACKUP_PREFIX`
+- 별도 프로세스라 실패해도 UI·자동매매·로거에는 영향이 없다.
+
 ## Environment Variables (Render 대시보드에서 설정)
 
 ### KIS 모의투자 계좌 (Mock)
