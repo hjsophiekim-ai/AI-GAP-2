@@ -3,7 +3,8 @@
   1) 끝난 날(어제 이전, 또는 15:30 이 지난 오늘)의 raw/YYYY-MM-DD/frames_HH.txt -> .txt.gz
      스트리밍 복사(64KB 청크) 후 원본 삭제. 같은 이름 .gz 가 이미 있으면 gzip 멤버로 이어 붙인다
      (gzip 은 멤버 연결을 그대로 읽는다 — 재시작으로 생긴 조각도 잃지 않는다).
-  2) daily/YYYY-MM-DD.json 일별 요약 — 스냅샷 CSV 를 한 줄씩 읽어 센다(pandas 없음).
+  2) mu/YYYY-MM-DD: ticks 로 1분봉 재생성 + ticks.csv.gz + summary.json (mu.finalize_day)
+  3) daily/YYYY-MM-DD.json 일별 요약 — 스냅샷 CSV 를 한 줄씩 읽어 센다(pandas 없음). MU 요약도 넣는다.
 
 메모리 사용은 청크 버퍼와 카운터뿐이다.
 """
@@ -17,7 +18,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from . import config
+from . import config, mu
 from .storage import day_str
 
 CHUNK = 64 * 1024
@@ -47,6 +48,17 @@ def gzip_raw(root: Path, now: datetime) -> list[str]:
             tmp.unlink()
             src.unlink()
             done.append(str(dst))
+    return done
+
+
+def finalize_mu(root: Path, now: datetime) -> list[str]:
+    done = []
+    mu_root = Path(root) / "mu"
+    if not mu_root.exists():
+        return done
+    for d in sorted(p for p in mu_root.iterdir() if p.is_dir()):
+        if _finished(d.name, now) and mu.finalize_day(root, d.name) is not None:
+            done.append(d.name)
     return done
 
 
@@ -95,6 +107,12 @@ def daily_summary(root: Path, now: datetime) -> list[str]:
                 summary["counters"] = json.loads(cp.read_text(encoding="utf-8"))
             except ValueError:
                 pass
+        mp = root / "mu" / d.name / "summary.json"
+        if mp.exists():
+            try:
+                summary["mu"] = json.loads(mp.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
         raw_dir = root / "raw" / d.name
         summary["raw_files"] = sorted(x.name for x in raw_dir.iterdir()) if raw_dir.exists() else []
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -109,4 +127,4 @@ def run(root: Path, now: datetime) -> dict:
     """수집시간이면 아무 것도 하지 않는다(장중 gzip/집계 금지)."""
     if config.SESSION_START <= now.time() < config.SESSION_END and now.weekday() < 5:
         return {"skipped": "in_session"}
-    return {"gzipped": gzip_raw(root, now), "daily": daily_summary(root, now)}
+    return {"gzipped": gzip_raw(root, now), "mu": finalize_mu(root, now), "daily": daily_summary(root, now)}

@@ -7,6 +7,9 @@
     RSS 가 한도를 넘으면 로거만 종료한다(종료코드 4, 래퍼는 재시작하지 않는다).
   · SIGTERM/SIGINT 를 받으면 연결을 닫고 파일을 flush/close 한 뒤 0 으로 끝난다.
 
+  · MU(HDFSCNT0 RBAQMU/DNASMU)는 같은 세션에 국내 6건 **뒤에** 등록한다. MU 기록 오류는 Engine 이 삼키고,
+    MU 를 붙인 뒤 연결이 연속으로 금방 끊기면 그날은 MU 등록을 빼고 국내만 다시 붙는다.
+
 자동매매 / 신규진입 허용 / 전략모드 / UI 세션 상태는 읽지 않는다 — 실행 조건은 시간뿐이다.
 주문 API, REST 접근토큰, production 모듈은 import 하지 않는다.
 """
@@ -70,6 +73,31 @@ class LoggerService:
         self.exit_code = config.EXIT_OK
         self._stop = asyncio.Event()
         self._maintained_day = None
+        self.mu_on = config.mu_enabled()
+        self._mu_off_day = None          # MU 를 그날만 뺀 날짜
+        self._mu_short = 0               # MU 등록 뒤 연속으로 짧게 끝난 연결 수
+
+    def subscriptions(self, now: datetime | None = None) -> tuple:
+        now = now or self.now()
+        return config.all_subscriptions(mu=self.mu_on and self._mu_off_day != day_str(now))
+
+    def _note_connection_end(self, started: datetime, subs: tuple):
+        """MU 를 포함한 연결이 MU_SHORT_SESSION_SEC 안에 끝나기를 연속 MU_MAX_SHORT_SESSIONS 번 -> 그날 MU 제외."""
+        if not any(tr == "HDFSCNT0" for tr, _ in subs):
+            return
+        now = self.now()
+        if (now - started).total_seconds() >= config.MU_SHORT_SESSION_SEC:
+            self._mu_short = 0
+            return
+        self._mu_short += 1
+        if self._mu_short >= config.MU_MAX_SHORT_SESSIONS:
+            self._mu_off_day = day_str(now)
+            self._mu_short = 0
+            self.out(f"{TAG} MU_DISABLED_TODAY reason=short_sessions — domestic subscriptions continue")
+            try:
+                self.store.log(now, "mu_disabled", reason="short_sessions")
+            except OSError:
+                pass
 
     # ── 제어 ───────────────────────────────────────────────────────────────
     def request_stop(self, why: str = "signal", code: int | None = None):
@@ -109,10 +137,16 @@ class LoggerService:
         c = self.store.counters
         rss = self.rss_fn()
         last = self.engine.last_message_at.isoformat(timespec="seconds") if (self.engine and self.engine.last_message_at) else "-"
+        mu = self.engine.mu if self.engine else None
+        mu_last = mu.last_tick_at.isoformat(timespec="seconds") if (mu and mu.last_tick_at) else "-"
+        mu_state = ("OFF" if not self.mu_on else "OFF_TODAY" if self._mu_off_day == day_str(now)
+                    else "ERR_OFF" if (self.engine and self.engine.mu_disabled) else "ON")
         return (f"{TAG} HEALTH LOGGER_RUNNING=1 WS_CONNECTED={int(self.ws_connected)} LAST_MESSAGE_AT={last} "
                 f"DATA_DIR={self.root} TODAY_RAW_COUNT={c.get('raw', 0)} TODAY_SNAPSHOT_COUNT={c.get('snapshot', 0)} "
                 f"RECONNECT_COUNT={c.get('reconnect', 0)} GAP_EVENTS={c.get('gap_events', 0)} "
                 f"MAX_GAP_S={c.get('max_gap_s', 0.0)} IN_SESSION={int(in_session(now))} "
+                f"MU={mu_state} MU_LAST_TICK_AT={mu_last} MU_TICKS={mu.counts['ticks'] if mu else 0} "
+                f"MU_BARS={mu.counts['bars'] if mu else 0} MU_ERRORS={c.get('mu_errors', 0)} "
                 f"RSS_MB={'-' if rss is None else f'{rss:.1f}'} MAX_RSS_MB={self.max_rss_mb:.0f}"), rss
 
     def health_tick(self):
@@ -148,7 +182,7 @@ class LoggerService:
             self.out(f"{TAG} RECONNECTED count={c['reconnect']}")
         else:
             self.out(f"{TAG} CONNECTED")
-        self.store.log(now, "connected", subs=list(config.SUBSCRIPTIONS))
+        self.store.log(now, "connected", subs=list(self.subscriptions(now)))
         self.store.save_counters()
 
     async def collect_session(self):
@@ -156,10 +190,13 @@ class LoggerService:
         self.engine = Engine(self.store, symbols())
         backoff = 1.0
         while not self._stop.is_set() and in_session(self.now()):
+            started, subs = None, ()
             try:
                 key = self.issue(self.creds, self.root, self.now())
+                subs = self.subscriptions()
+                started = self.now()
                 async with self.connect(config.WS_URL) as ws:
-                    for tr, sym in config.SUBSCRIPTIONS:
+                    for tr, sym in subs:
                         await ws.send(subscribe_message(key, tr, sym))
                         await asyncio.sleep(0.2)
                     self.ws_connected = True
@@ -181,20 +218,24 @@ class LoggerService:
                                 await ws.pong(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
                         self.engine.advance(now)
                         if (now - last_flush).total_seconds() >= 1.0:
-                            self.store.flush()
+                            self.engine.flush()
                             last_flush = now
                 self.ws_connected = False
-                self.store.flush()
+                self.engine.flush()
             except OSError as e:
                 if self._is_disk_error(e):
                     raise
+                if started is not None:
+                    self._note_connection_end(started, subs)
                 await self._on_disconnect(e, backoff)
                 backoff = min(self.backoff_max, backoff * 2)
             except Exception as e:  # noqa: BLE001 — 끊김/네트워크/접속키 오류는 기록 후 재접속
+                if started is not None:
+                    self._note_connection_end(started, subs)
                 await self._on_disconnect(e, backoff)
                 backoff = min(self.backoff_max, backoff * 2)
         self.ws_connected = False
-        self.store.flush()
+        self.engine.flush()
         self.store.save_counters()
         if not self._stop.is_set():
             self.store.log(self.now(), "session_end", counts=self.engine.counts)
@@ -228,7 +269,7 @@ class LoggerService:
             return None
         res = maintenance.run(self.root, now)
         self._maintained_day = mark
-        if res.get("gzipped") or res.get("daily"):
+        if res.get("gzipped") or res.get("daily") or res.get("mu"):
             self.store.log(now, "maintenance", **res)
             self.out(f"{TAG} MAINTENANCE gzipped={len(res.get('gzipped', []))} daily={len(res.get('daily', []))}")
         return res
@@ -237,7 +278,7 @@ class LoggerService:
         self._install_signals()
         now = self.now()
         self.store.ensure_day(now)
-        self.store.log(now, "start", fp=self.creds.fingerprint, subs=list(config.SUBSCRIPTIONS),
+        self.store.log(now, "start", fp=self.creds.fingerprint, subs=list(self.subscriptions(now)),
                        max_rss_mb=self.max_rss_mb, rss_source=self.rss_source)
         health = asyncio.create_task(self._health_loop())
         try:
@@ -245,6 +286,7 @@ class LoggerService:
                 now = self.now()
                 if in_session(now):
                     await self.collect_session()
+                    self.engine.close()     # MU 진행 중 분봉(complete=0) + 핸들
                     self.store.close()      # 세션 사이엔 파일 핸들도 놓는다
                 else:
                     self.maintain_if_due(now)
@@ -262,6 +304,8 @@ class LoggerService:
             try:
                 self.store.log(self.now(), "stop", exit_code=self.exit_code,
                                counts=(self.engine.counts if self.engine else {}))
+                if self.engine:
+                    self.engine.close()
                 self.store.close()
             except OSError:
                 pass

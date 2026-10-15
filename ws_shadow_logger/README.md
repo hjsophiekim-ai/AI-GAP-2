@@ -33,12 +33,19 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 - gzip 과 일별 집계는 15:30 이후에만, 64KB 청크 스트리밍으로 한다.
 - 실측(로컬 서버, 초당 약 5,000 프레임 40초): RSS 33→36MB 에서 평탄하다.
 
-## 구독 (첫 배포 3종목)
+## 구독 (국내 6건 + MU 2건 = 8건, 한 세션)
 
 | TR | 종목 | 내용 |
 |---|---|---|
 | H0UNCNT0 / H0UNASP0 | 000660 SK하이닉스 | 통합(KRX+NXT) 체결 / 10호가 |
 | H0STCNT0 / H0STASP0 | 0193T0 레버리지, 0197X0 인버스 | KRX 체결 / 10호가 |
+| HDFSCNT0 | RBAQMU | MU 미국 주간거래(나스닥 BAQ) 실시간 체결 |
+| HDFSCNT0 | DNASMU | MU 나스닥(정규/시간외) 체결 — 주간거래 전 아침 구간 |
+
+MU 는 국내 6건 **뒤에** 등록한다. `KIS_LOGGER_MU_ENABLED=0` 이면 등록하지 않는다(기본 ON).
+격리: MU 기록 경로의 예외(디스크 오류 포함)는 Engine 이 삼키고 `mu_error` 로 센다 — 하루 50건이면 그날 MU 기록만 끈다.
+MU 를 붙인 연결이 30초 안에 끊기기를 3번 연속하면 그날은 MU 등록을 빼고 국내 6건만 다시 붙는다.
+production `app/trading/mu_macd` 와 같은 tr_key 지만 로거 전용 appkey 의 별도 세션이다(코드 공유·import 없음).
 
 ## 저장 구조 (`$KIS_LOGGER_DATA_DIR`)
 
@@ -49,7 +56,10 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 | `logs/YYYY-MM-DD.jsonl` | start / connected / reconnect / disconnect / gap(>5초) / health / maintenance / stop |
 | `state/approval_YYYYMMDD.json` | 로거 접속키 캐시 |
 | `state/counters_YYYY-MM-DD.json` | 그 날 raw / snapshot / reconnect / gap 누계. 재시작해도 이어서 센다 |
-| `daily/YYYY-MM-DD.json` | 일별 요약. 종목별 행 수, 최대 ts 간격, stale(>5초) 비율, 누계 |
+| `mu/YYYY-MM-DD/ticks.csv` | MU 체결 1건 = 1행, 즉시 append. `recv_kst, feed(SYMB), kst_ts(KYMD/KHMS), local_ymd/hms, last, evol, tvol, pbid, pask, vbid, vask, strn, mtyp, lag_s`. 15:30 이후 `.csv.gz` |
+| `mu/YYYY-MM-DD/bars_1m.csv` | MU 1분봉 OHLCV(feed 별, KST 분, volume=EVOL 합). 장중엔 확정되는 대로 append(재시작으로 끊긴 분은 complete=0), 15:30 이후 ticks 로 다시 만든다 |
+| `mu/YYYY-MM-DD/summary.json` | feed 별 분봉 수·누락률(첫 봉~마지막 봉 사이 체결 없는 분) |
+| `daily/YYYY-MM-DD.json` | 일별 요약. 종목별 행 수, 최대 ts 간격, stale(>5초) 비율, 누계, MU 요약 |
 
 ## 실행
 ```
@@ -82,6 +92,10 @@ python -m pytest -c ws_shadow_logger/pytest.ini --rootdir ws_shadow_logger ws_sh
 | 체결 비중·속도 | buy_ratio_5s/10s, trades_per_s_5/10, vol_per_s_5/10 |
 | 최근 1/5/10초 변화 | d_imb1_{1,5,10}s, d_imb5_{1,5,10}s, d_cttr_{1,5,10}s |
 | 신선도 | book_age_s, trade_age_s, exch_book_hour, exch_trade_hour |
+
+## MU ↔ 하이닉스 join
+MU 분봉 `minute_kst` 와 하이닉스 스냅샷 `ts` 는 둘 다 KST(타임존 없는 ISO)다. `ts[:16] == minute_kst[:16]` 로 같은 분이 맞는다.
+MU 분봉의 분은 거래소 체결시각(KYMD/KHMS), 하이닉스 스냅샷은 수신시각이다 — 차이는 ticks.csv 의 `lag_s` 로 확인한다.
 
 ## MACD2 결정시점 join (장 마감 후, 연구 전용)
 `ws_shadow_logger.join.build(pd.read_csv("dec.csv"), "<KIS_LOGGER_DATA_DIR>")`. 결정시점 이하 스냅샷만 쓰고, 스냅샷 나이가 5초를 넘으면 `data_ok=False` 다. `label` 은 사후 연구 전용이다. predictive test 는 이벤트 A/B/C 각 50건 이상 쌓이기 전에는 하지 않는다.

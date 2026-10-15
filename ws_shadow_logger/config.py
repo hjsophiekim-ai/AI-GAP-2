@@ -1,6 +1,6 @@
 """WS SHADOW LOGGER 설정 — production(app/*)과 완전히 분리. app 패키지를 import 하지 않는다.
 
-실행 조건은 **두 가지뿐**이다 (2026-10-15 Render 연결):
+실행 조건은 **두 가지뿐**이다 (2026-10-15 Render 연결). MU 체결(HDFSCNT0)도 같은 조건으로 같이 모은다:
   · KIS_LOGGER_ENABLED=1
   · KST 수집시간 08:00 ~ 15:30
 자동매매 ON/OFF, 신규진입 허용, 전략모드(N1/P3/E/CHOP), UI 세션은 읽지도 않는다.
@@ -42,6 +42,22 @@ SUBSCRIPTIONS = (
     ("H0STCNT0", "0193T0"), ("H0STASP0", "0193T0"),
     ("H0STCNT0", "0197X0"), ("H0STASP0", "0197X0"),
 )
+# MU (Micron, 나스닥) 실시간 체결 — HDFSCNT0, 같은 로거 세션에 추가 등록 (2026-10-15).
+#   RBAQMU = 미국 주간거래(나스닥 BAQ, 공식: "R" + 시장구분 BAQ + 종목). 하이닉스 장중과 겹치는 MU 시세.
+#   DNASMU = 나스닥 정규/시간외(공식 예제 "DNASAAPL" 형식). 주간거래 시작 전 아침 구간을 채운다.
+# production mu_macd(app/trading/mu_macd/config.py)와 같은 tr_key 지만 키·세션이 다르다(로거 전용 appkey).
+# 국내 6건을 먼저 등록하고 MU 를 뒤에 등록한다 — MU 등록이 거부돼도 국내 구독은 이미 끝나 있다.
+ENV_MU_ENABLED = "KIS_LOGGER_MU_ENABLED"
+MU_SUBSCRIPTIONS = (("HDFSCNT0", "RBAQMU"), ("HDFSCNT0", "DNASMU"))
+MU_SYMBOL = "MU"
+#: 분봉 확정 — 다음 분 체결이 오거나, 시계가 분 끝 + 이 초를 지나면 확정해 쓴다.
+MU_BAR_GRACE_SEC = 5.0
+#: MU 경로 오류가 하루 이 횟수를 넘으면 그날 MU 기록만 끈다(국내 수집은 계속).
+MU_MAX_ERRORS = 50
+#: MU 를 붙인 뒤 연결이 이 초 안에 끊기기를 연속 이 횟수 반복하면 그날 MU 등록을 뺀다.
+MU_SHORT_SESSION_SEC = 30.0
+MU_MAX_SHORT_SESSIONS = 3
+
 SESSION_START = time(8, 0)
 SESSION_END = time(15, 30)
 SNAPSHOT_SEC = 1.0
@@ -71,6 +87,17 @@ class ConfigError(RuntimeError):
 
 def enabled() -> bool:
     return (os.environ.get(ENV_ENABLED) or "").strip() == "1"
+
+
+def mu_enabled() -> bool:
+    """기본 ON. KIS_LOGGER_MU_ENABLED=0 이면 MU 등록을 하지 않는다(국내 6건만)."""
+    return (os.environ.get(ENV_MU_ENABLED) or "1").strip() != "0"
+
+
+def all_subscriptions(mu: bool | None = None) -> tuple:
+    """실제로 등록하는 목록. 국내가 먼저, MU 가 뒤."""
+    mu = mu_enabled() if mu is None else mu
+    return SUBSCRIPTIONS + (MU_SUBSCRIPTIONS if mu else ())
 
 
 def _h(v: str) -> str:

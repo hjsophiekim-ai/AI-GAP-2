@@ -34,6 +34,7 @@ def replay(path: str, root) -> Engine:
             eng.on_frame(frame, last)
     if last:
         eng.advance(last + timedelta(seconds=1))
+    eng.close()
     store.close()
     return eng
 
@@ -52,7 +53,7 @@ def _startup_checks(out=print):
         out(f"{TAG} FAIL-SAFE: {e} — logger exits, UI/auto-trade keep running")
         return config.EXIT_CONFIG, None, None, None
     rss = config.max_rss_mb()
-    out(f"{TAG} READY key_fp={creds.fingerprint} subs={len(config.SUBSCRIPTIONS)} "
+    out(f"{TAG} READY key_fp={creds.fingerprint} subs={len(config.all_subscriptions())} mu={int(config.mu_enabled())} "
         f"session={config.SESSION_START:%H:%M}-{config.SESSION_END:%H:%M} KST max_rss_mb={rss[0]:.0f} ({rss[1]})")
     return config.EXIT_OK, Path(dc.path), creds, rss
 

@@ -113,7 +113,7 @@ def test_collects_regardless_of_trading_state(tmp_path, monkeypatch, prod):
     raw = root / "raw" / DAY / "frames_10.txt"
     assert raw.exists() and sum(1 for _ in open(raw, encoding="utf-8")) > 50
     assert (root / "snapshots" / DAY / "0193T0.csv").exists()
-    assert len(ws.sent) == len(config.SUBSCRIPTIONS) == 6
+    assert len(ws.sent) == len(config.all_subscriptions()) == 8
     assert any("HEALTH LOGGER_RUNNING=1" in x for x in lines)
 
 
@@ -299,7 +299,7 @@ def test_maintenance_gzips_only_after_session_and_writes_daily(tmp_path):
 
 
 def test_real_websockets_client_against_a_local_server(tmp_path, monkeypatch):
-    """운영 connect(_default_connect) 그대로 — 로컬 WS 서버가 구독 6건을 받고 프레임/PINGPONG 을 보낸다."""
+    """운영 connect(_default_connect) 그대로 — 로컬 WS 서버가 구독 8건(국내 6 + MU 2)을 받고 프레임/PINGPONG 을 보낸다."""
     websockets = pytest.importorskip("websockets")
     from websockets.asyncio.server import serve
     start = datetime(2026, 10, 15, 10, 0, 0)
@@ -307,7 +307,7 @@ def test_real_websockets_client_against_a_local_server(tmp_path, monkeypatch):
     got = {"subs": 0, "pongs": 0}
 
     async def handler(ws):
-        for _ in range(len(config.SUBSCRIPTIONS)):
+        for _ in range(len(config.all_subscriptions())):
             await ws.recv(); got["subs"] += 1
         for f in frames:
             await ws.send(f)
@@ -330,6 +330,6 @@ def test_real_websockets_client_against_a_local_server(tmp_path, monkeypatch):
             svc.request_stop("test")
             return await task, svc
     rc, svc = asyncio.run(go())
-    assert rc == 0 and got["subs"] == 6
+    assert rc == 0 and got["subs"] == 8
     assert svc.engine.counts["data"] + svc.engine.counts["system"] == len(frames)   # 유실 0 (recv 취소 포함)
     assert svc.engine.counts["pingpong"] == 1

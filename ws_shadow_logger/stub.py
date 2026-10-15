@@ -56,6 +56,28 @@ def session(start: datetime, seconds=30, seed=0):
     return sorted(out, key=lambda x: x[0])
 
 
+def mu_trade(feed, t_kst, px, evol, tvol, recs=1):
+    """HDFSCNT0 레코드(25필드). t_kst = 한국시각. 현지(ET) 시각은 -13시간(서머타임)."""
+    loc = t_kst - timedelta(hours=13)
+    r = {"SYMB": feed, "ZDIV": "4", "TYMD": loc.strftime("%Y%m%d"), "XYMD": loc.strftime("%Y%m%d"),
+         "XHMS": loc.strftime("%H%M%S"), "KYMD": t_kst.strftime("%Y%m%d"), "KHMS": t_kst.strftime("%H%M%S"),
+         "OPEN": px, "HIGH": px, "LOW": px, "LAST": px, "SIGN": "2", "DIFF": "1.0", "RATE": "0.10",
+         "PBID": px - 0.01, "PASK": px + 0.01, "VBID": 10, "VASK": 12, "EVOL": evol, "TVOL": tvol,
+         "TAMT": round(px * tvol), "BIVL": 0, "ASVL": 0, "STRN": "101.5", "MTYP": "1"}
+    return _frame("HDFSCNT0", [r] * recs)
+
+
+def mu_session(start: datetime, minutes=5, seed=0, feed="RBAQMU", per_min=6, lag_ms=300):
+    """(recv_ts, frame). 분마다 per_min 건, 수신은 체결시각 + lag_ms."""
+    rng = random.Random(seed); out = []; px = 120.0; tvol = 0
+    for m in range(minutes):
+        for k in range(per_min):
+            t = start + timedelta(minutes=m, seconds=int(k * 60 / per_min) + rng.randint(0, 5))
+            px = round(px + rng.choice([-0.05, 0, 0.05]), 2); v = rng.randint(1, 30); tvol += v
+            out.append((t + timedelta(milliseconds=lag_ms), mu_trade(feed, t, px, v, tvol)))
+    return sorted(out, key=lambda x: x[0])
+
+
 def write(path, frames):
     with open(path, "w", encoding="utf-8") as fh:
         for t, f in frames:

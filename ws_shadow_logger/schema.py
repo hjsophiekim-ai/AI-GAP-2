@@ -29,5 +29,13 @@ ASP_KRX = ["MKSC_SHRN_ISCD", "BSOP_HOUR", "HOUR_CLS_CODE", *_ASK, *_BID, *_ASKQ,
 ASP_TOTAL = ASP_KRX + ["KMID_PRC", "KMID_TOTAL_RSQN", "KMID_CLS_CODE",
                        "NMID_PRC", "NMID_TOTAL_RSQN", "NMID_CLS_CODE"]                    # H0UNASP0
 
-COLUMNS = {"H0STCNT0": CCNL_KRX, "H0UNCNT0": CCNL_TOTAL, "H0STASP0": ASP_KRX, "H0UNASP0": ASP_TOTAL}
-KIND = {"H0STCNT0": "trade", "H0UNCNT0": "trade", "H0STASP0": "book", "H0UNASP0": "book"}
+# HDFSCNT0 해외주식 실시간지연체결가 — 공식 examples_user/overseas_stock/overseas_stock_functions_ws.py delayed_ccnl.
+# 미국은 0분 지연(실시간 무료). KYMD/KHMS = 한국 일자/시각, XYMD/XHMS = 현지 일자/시각, EVOL = 체결량, TVOL = 누적거래량.
+OVRS_CCNL = ["SYMB", "ZDIV", "TYMD", "XYMD", "XHMS", "KYMD", "KHMS", "OPEN", "HIGH", "LOW",
+             "LAST", "SIGN", "DIFF", "RATE", "PBID", "PASK", "VBID", "VASK", "EVOL", "TVOL",
+             "TAMT", "BIVL", "ASVL", "STRN", "MTYP"]
+
+COLUMNS = {"H0STCNT0": CCNL_KRX, "H0UNCNT0": CCNL_TOTAL, "H0STASP0": ASP_KRX, "H0UNASP0": ASP_TOTAL,
+           "HDFSCNT0": OVRS_CCNL}
+KIND = {"H0STCNT0": "trade", "H0UNCNT0": "trade", "H0STASP0": "book", "H0UNASP0": "book",
+        "HDFSCNT0": "us_trade"}
