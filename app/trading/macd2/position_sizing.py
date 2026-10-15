@@ -20,7 +20,8 @@ W1a 규칙 (config.X2LITE_SIZING_* 참조)
 
 "그날 첫 거래가 STOP_LOSS" 의 정의
 ----------------------------------
-그날 **첫 번째 진입**이 ``config.EXIT_TW_STOP_LOSS`` 로 **전량청산**된 경우만
+그날 **첫 번째 진입**이 ``config.EXIT_TW_STOP_LOSS``(고정 ±1.5% 청산 ON 이면 ``EXIT_FIXED_SL15``) 로
+**전량청산**된 경우만
 참이다. 아래는 전부 거짓으로 둔다 — 연구 하네스와 같은 정의다:
   - TP1 이후 잔량 stop (``EXIT_TW_AFTER_TP1_STOP``)
   - trailing stop / breakeven / profit-lock stop
@@ -277,7 +278,8 @@ def note_full_exit(state, exit_reason: Optional[str]) -> None:
         return
     if int(getattr(state, "x2lite_entry_seq_today", 0) or 0) != 1:
         return
-    if str(exit_reason or "") == config.EXIT_TW_STOP_LOSS:
+    # 고정 ±1.5% 청산(fixed_exit) ON 이면 손절 사유가 FIXED_SL15 로 바뀐다 -- 같은 손절로 본다.
+    if str(exit_reason or "") in (config.EXIT_TW_STOP_LOSS, config.EXIT_FIXED_SL15):
         state.x2lite_first_trade_stop_loss = True
 
 

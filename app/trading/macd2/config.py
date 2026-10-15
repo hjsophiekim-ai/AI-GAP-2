@@ -1909,3 +1909,14 @@ LEVERAGE_DEPOSIT_MIN_KRW = _env_float("MACD2_LEVERAGE_DEPOSIT_MIN_KRW", 30_000_0
 LEVERAGE_DEPOSIT_SYMBOLS = (LONG_SYMBOL,)
 #: KIS 거절 코드 -- "단일종목 레버리지 주문시 기본예탁금(3천만원)이 필요합니다.(현재:N원)"
 KIS_MSG_LEVERAGE_DEPOSIT = "APBK3052"
+
+# ── 고정 ±1.5% 청산 (2026-10-15, 사용자 요청) ─────────────────────────────
+# 전략모드(N1/P3/E/CHOP)의 **진입은 그대로** 두고 청산만 아래 두 줄로 바꾸는 토글.
+# 기본 OFF -- 상태 필드 ``fixed_exit_15_enabled`` 가 켜져 있을 때만 동작한다
+# (app/trading/macd2/fixed_exit.py). env 기본값은 두지 않는다: 켜는 것은 UI 뿐이다.
+#   TP: 틱 순수익률 >= +1.5%           -> 즉시 전량익절 (FIXED_TP15)
+#   SL: 완성 3분봉 종가 순수익률 <= -1.5% -> 전량손절   (FIXED_SL15)
+FIXED_EXIT_TP_PCT = 1.5
+FIXED_EXIT_SL_PCT = -1.5
+EXIT_FIXED_TP15 = "FIXED_TP15"
+EXIT_FIXED_SL15 = "FIXED_SL15"

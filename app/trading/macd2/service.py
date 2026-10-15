@@ -35,6 +35,7 @@ from app.trading.macd2 import entry_arming
 from app.trading.macd2 import p3_stack
 from app.trading.macd2 import strategy_mode as strategy_mode_mod
 from app.trading.macd2 import e_strategy as e_strategy_mod
+from app.trading.macd2 import fixed_exit as fixed_exit_mod
 from app.trading.macd2 import peak_protection
 from app.trading.macd2 import n1_adaptive
 from app.trading.macd2 import position_sizing
@@ -1373,6 +1374,33 @@ class Macd2Service:
             "shadow": strategy_mode_mod.shadow_status(state),
             "shadow_sample": regime.sample,
             "detector_window": regime.window,
+        }
+
+    def set_fixed_exit_15_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: 고정 ±1.5% 청산 토글 (2026-10-15, fixed_exit.py).
+
+        전략모드(N1/P3/E/CHOP)의 진입·사이징·반대 플래그 처리는 그대로 두고 청산만
+        +1.5% 즉시 전량익절 / 완성 3분봉 종가 -1.5% 전량손절로 바꾼다. 주문을 내지
+        않는다 -- 보유 중이면 다음 tick 부터 새 규칙으로 판정된다. 전략모드·다른
+        토글은 건드리지 않고, 전략모드를 바꿔도 이 값은 유지된다.
+        """
+        state = state_store.load_state()
+        prev = fixed_exit_mod.is_enabled(state)
+        state.fixed_exit_15_enabled = bool(enabled)
+        state.fixed_exit_15_changed_at = datetime.now(KST).isoformat()
+        state.fixed_exit_15_changed_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        log.warning("[MACD2][FIXED15] 고정 ±1.5%% 청산 %s -> %s (by=%s, mode=%s, holding=%s)",
+                    "ON" if prev else "OFF", "ON" if state.fixed_exit_15_enabled else "OFF",
+                    changed_by, strategy_mode_mod.current(state),
+                    state.position.symbol if state.position else None)
+        return {
+            "ok": True,
+            "fixed_exit_15_enabled": bool(state.fixed_exit_15_enabled),
+            "previous": prev,
+            "active": fixed_exit_mod.is_active(state),
+            "strategy_mode": strategy_mode_mod.current(state),
+            "changed_at": state.fixed_exit_15_changed_at,
         }
 
     def set_e_daily_cap2_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
