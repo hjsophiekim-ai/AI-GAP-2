@@ -28,6 +28,31 @@ https://ai-gap-2.onrender.com
 
 ---
 
+## ws_shadow_logger 동시 실행 (선택, 2026-10-15)
+
+KIS WebSocket 미시구조 수집기(`ws_shadow_logger/`)를 같은 Web Service 에서 **별도 프로세스**로 돌릴 때만
+Start Command 를 아래로 바꾼다. 자동매매 ON/OFF·신규진입 허용·전략모드와 무관하게, 서비스가 떠 있고
+`KIS_LOGGER_ENABLED=1` 이면 평일 08:00~15:30 KST 에 수집한다. 주문/REST 토큰/production 모듈은 쓰지 않는다.
+
+| 항목 | 값 |
+|------|----|
+| Start Command | `bash scripts/render_start_with_logger.sh` |
+
+- 스크립트는 위의 기존 Start Command(`streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true`)를 그대로 foreground 로 실행한다.
+- `KIS_LOGGER_ENABLED` 가 `1` 이 아니면 로거를 띄우지 않고 기존 명령으로 `exec` 한다(기존과 동일).
+- 로거가 죽어도 UI 는 계속 돈다(로거만 백오프 재시작). 키/디스크/RSS 문제(종료코드 2/3/4)면 재시작하지 않는다.
+- UI 가 죽으면 로거를 정리하고 같은 종료코드로 끝나 Render 가 서비스를 재시작한다.
+- Render Logs 에 `[render_start]` / `[ws_shadow_logger] HEALTH ...` 줄이 1분마다 남는다.
+
+| 환경변수 | 필수 | 설명 |
+|------|----|----|
+| `KIS_LOGGER_ENABLED` | O | `1` 일 때만 실행 |
+| `KIS_LOGGER_APP_KEY` / `KIS_LOGGER_APP_SECRET` | O | 로거 전용 실전 appkey (production 키와 같으면 실행 거부) |
+| `KIS_LOGGER_DATA_DIR` | O | Persistent Disk 마운트 아래 경로 (예: `/var/data/ws_shadow_data`). 소스/임시 디렉토리는 거부 |
+| `KIS_LOGGER_MAX_RSS_MB` | - | 로거 RSS 한도. 미설정 시 컨테이너 메모리 한도의 18% (못 읽으면 96MB) |
+
+---
+
 ## Environment Variables (Render 대시보드에서 설정)
 
 ### KIS 모의투자 계좌 (Mock)
