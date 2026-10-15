@@ -8,6 +8,7 @@
        · 15:00 강제청산은 그대로
   C. 반대 플래그 처리(T+3 resolve / whipsaw-watch / H50)는 ON 에서도 그대로 호출된다.
   D. 재시작·모드전환·날짜변경 후에도 토글 유지, 서비스 setter 저장, UI 토글.
+  E. 사이징은 전략 그대로: 그날 첫 거래가 FIXED_SL15 로 끝나도 다음 진입 x1.20(POST_STOP).
 
 실거래 데이터 위 주문 단위 parity(OFF) / 연구 A안 교차검증(ON) 은 23영업일 재생으로 따로
 확인했다 — docs/macd2_fixed_exit_15.md.
@@ -271,6 +272,20 @@ def test_toggle_survives_restart_and_mode_switches(mode):
     for other in ALL:
         strategy_mode.apply(r, other)
         assert r.fixed_exit_15_enabled is True and fixed_exit.is_active(r)
+
+
+@pytest.mark.parametrize("mode", ALL)
+def test_fixed_sl15_counts_as_first_trade_stop_for_sizing(mode):
+    """사이징은 전략 그대로 -- 그날 첫 거래 손절 뒤 x1.20 규칙이 FIXED_SL15 에도 걸린다(TP 는 아님)."""
+    from app.trading.macd2 import position_sizing
+    for reason, expected in ((config.EXIT_FIXED_SL15, True), (config.EXIT_FIXED_TP15, False),
+                             (config.EXIT_TW_STOP_LOSS, True)):
+        s = state_store.default_state()
+        strategy_mode.apply(s, mode)
+        s.fixed_exit_15_enabled = True
+        s.x2lite_entry_seq_today = 1
+        position_sizing.note_full_exit(s, reason)
+        assert position_sizing.first_trade_stop_loss_active(s) is (expected and position_sizing.is_active(s))
 
 
 def test_day_rollover_and_stop_do_not_clear_the_toggle():
