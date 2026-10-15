@@ -16,3 +16,4 @@ yfinance
 pandas_market_calendars
 tzdata
 pyarrow
+websockets
