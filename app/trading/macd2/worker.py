@@ -7750,10 +7750,10 @@ def run_once(
         # 우선순위가 그대로 유지된다. 청산 전용이며 신규 진입은 하지 않는다.
         # 고정 ±1.5% 청산이 ON 이면 C1 / B3 max-hold·Y3 는 돌지 않는다(fixed_exit.py).
         _fixed_exit_on = fixed_exit.is_active(state)
-        c1_outcome = None if _fixed_exit_on else _advance_c1_peak_protection(
+        c1_outcome = _advance_c1_peak_protection(
             broker=broker, state=state, now=now, macd_snap=macd_snap,
             position=pos, result=result,
-        )
+        ) if not _fixed_exit_on else None
         if c1_outcome is not None and c1_outcome.final_state == SignalState.EXECUTED:
             _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
@@ -7762,10 +7762,10 @@ def run_once(
         # 여기까지 왔다는 것은 강제청산/B3 TP·SL/손절/trailing/ETP/반대신호/
         # whipsaw/H50/C1 이 전부 아무 청산도 내지 않았다는 뜻이다. CHOP 으로
         # 진입한 포지션이 아니면 함수 첫 줄에서 바로 빠진다(TREND parity).
-        p3_maxhold_outcome = None if _fixed_exit_on else _advance_p3_max_hold(
+        p3_maxhold_outcome = _advance_p3_max_hold(
             broker=broker, state=state, now=now, bars_3m=bars_3m,
             position=pos, quotes=quotes, result=result,
-        )
+        ) if not _fixed_exit_on else None
         if (p3_maxhold_outcome is not None
                 and p3_maxhold_outcome.final_state == SignalState.EXECUTED):
             _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
