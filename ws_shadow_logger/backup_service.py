@@ -112,21 +112,25 @@ def process_day(root: Path, day: str, now: datetime, *, backup_on: bool, client_
         return {"day": day, "action": "EXPORTED"}
     if st.get("status") == "BACKED_UP" and st.get("zip_sha256") == sha:
         return {"day": day, "action": "ALREADY_BACKED_UP"}
+    prov = "?"
     try:
         client = client_factory()
+        prov = client.t.provider
         r = backup.upload_day(client, Path(ex["zip"]), day, man)
-        st = {"status": "BACKED_UP", "zip_sha256": sha, "key": r["key"], "result": r["status"],
+        st = {"status": "BACKED_UP", "provider": prov, "zip_sha256": sha, "key": r["key"], "result": r["status"],
               "uploaded_at": now.isoformat(), "updated_at": now.isoformat(), "attempts": 0,
               "target": client.t.describe()}
         save_state(root, day, st)
-        _p(f"DAILY_BACKUP_OK day={day} result={r['status']} key={r['key']} sha256={sha[:12]} bytes={man.get('zip_bytes')}")
+        _p(f"DAILY_BACKUP_OK provider={prov} day={day} result={r['status']} key={r['key']} sha256={sha[:12]} "
+           f"bytes={man.get('zip_bytes')}")
         return {"day": day, "action": "BACKUP_" + r["status"]}
     except Exception as e:                                   # noqa: BLE001 — 격리 (키 원문은 메시지에 없다)
         att = int(st.get("attempts", 0)) + 1
-        st.update(status="BACKUP_FAIL", zip_sha256=sha, attempts=att, last_error=repr(e)[:300],
+        st.update(status="BACKUP_FAIL", provider=prov, zip_sha256=sha, attempts=att, last_error=repr(e)[:300],
                   updated_at=now.isoformat(), next_retry_at=_next_retry(now, att))
         save_state(root, day, st)
-        _p(f"DAILY_BACKUP_FAIL day={day} stage=upload attempt={att} error={repr(e)[:200]} next_retry_at={st['next_retry_at']}")
+        _p(f"DAILY_BACKUP_FAIL provider={prov} day={day} stage=upload attempt={att} error={repr(e)[:200]} "
+           f"next_retry_at={st['next_retry_at']}")
         return {"day": day, "action": "BACKUP_FAIL"}
 
 
@@ -137,7 +141,8 @@ def run_once(root: Path, now: datetime, *, env=None, client_factory=None) -> lis
         try:
             target = backup.load_target(env)
         except backup.BackupConfigError as e:
-            _p(f"DAILY_BACKUP_SKIP reason=config error={e}")    # 설정 오류: export 만 하고 업로드는 건너뛴다
+            prov = (env.get(backup.ENV["PROVIDER"]) or "s3").strip().lower()
+            _p(f"DAILY_BACKUP_SKIP reason=config provider={prov} error={e}")    # 설정 오류: export 만 하고 업로드는 건너뛴다
             backup_on = False
         else:
             client_factory = lambda: backup.S3Client(target)  # noqa: E731

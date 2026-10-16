@@ -59,6 +59,29 @@ Start Command 를 아래로 바꾼다. 자동매매 ON/OFF·신규진입 허용�
 - 아래를 설정하면 업로드도 한다: `LOGGER_BACKUP_ENABLED=1`, `LOGGER_BACKUP_PROVIDER`, `LOGGER_BACKUP_BUCKET`, `LOGGER_BACKUP_ENDPOINT`, `LOGGER_BACKUP_ACCESS_KEY`, `LOGGER_BACKUP_SECRET_KEY`, `LOGGER_BACKUP_PREFIX`
 - 별도 프로세스라 실패해도 UI·자동매매·로거에는 영향이 없다.
 
+**운영 설정 (2026-10-16 확정: Cloudflare R2)**
+```
+KIS_LOGGER_ENABLED=1
+KIS_LOGGER_DATA_DIR=/opt/render/project/src/data/ws_shadow_data
+KIS_LOGGER_MAX_RSS_MB=100
+LOGGER_BACKUP_ENABLED=1
+LOGGER_BACKUP_PROVIDER=r2
+LOGGER_BACKUP_BUCKET=macd2-shadow-data
+LOGGER_BACKUP_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+LOGGER_BACKUP_ACCESS_KEY=<R2 Access Key ID>
+LOGGER_BACKUP_SECRET_KEY=<R2 Secret Access Key>
+LOGGER_BACKUP_PREFIX=ws_shadow/
+```
+- 키는 Cloudflare 대시보드 R2 → **Manage R2 API Tokens**에서 발급한다.
+  - 권한: Object Read & Write, 대상 버킷: `macd2-shadow-data`
+  - 화면에 나오는 **S3 호환 Access Key ID / Secret Access Key**를 넣는다.
+  - 같은 화면의 `cfat_...` "Token value"는 S3 서명 키가 아니다. 넣으면 설정 오류로 업로드를 건너뛴다(`DAILY_BACKUP_SKIP reason=config`).
+- endpoint에는 버킷 경로 없이 `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`만 넣는다.
+- 업로드 위치: `macd2-shadow-data/ws_shadow/YYYY/MM/DD/ws_shadow_export_YYYY-MM-DD.zip`, 같은 폴더에 `manifest.json`
+- 확인할 로그:
+  - 성공: 15:35 이후 Render Logs `[ws_shadow_backup] DAILY_BACKUP_OK provider=r2 day=...`
+  - 실패: `DAILY_BACKUP_FAIL provider=r2 ... next_retry_at=...`이 찍히고 5/15/30/60분 간격으로 재시도한다
+
 ## Environment Variables (Render 대시보드에서 설정)
 
 ### KIS 모의투자 계좌 (Mock)
