@@ -74,6 +74,16 @@ def load_target(env=None) -> Target:
     ep = env[ENV["ENDPOINT"]].strip().rstrip("/")
     if not ep.startswith("https://"):
         raise BackupConfigError(f"{ENV['ENDPOINT']} 는 https:// 여야 한다(UNSIGNED-PAYLOAD 전제)")
+    if urlsplit(ep).path not in ("", "/"):
+        # path-style 이라 버킷은 코드가 붙인다. endpoint 에 /<bucket> 을 넣으면 /<bucket>/<bucket>/... 로 실패한다.
+        raise BackupConfigError(f"{ENV['ENDPOINT']} 에는 경로 없이 호스트만 넣는다 (예: https://<ACCOUNT_ID>.r2.cloudflarestorage.com)")
+    if prov == "r2" and not ep.endswith(".r2.cloudflarestorage.com"):
+        raise BackupConfigError(f"provider=r2 의 {ENV['ENDPOINT']} 는 https://<ACCOUNT_ID>.r2.cloudflarestorage.com 형식")
+    for k in ("ACCESS_KEY", "SECRET_KEY"):
+        if env[ENV[k]].strip().lower().startswith("cfat_"):
+            # Cloudflare API Token(cfat_...) 은 S3 서명 키가 아니다. 값 자체는 메시지에 넣지 않는다.
+            raise BackupConfigError(f"{ENV[k]} 에 Cloudflare API Token(cfat_...) 이 들어 있다 — R2 > Manage API Tokens 에서 "
+                                    "만든 S3 호환 Access Key ID / Secret Access Key 를 넣어야 한다")
     region = (env.get(ENV["REGION"]) or "").strip()
     if not region:
         m = re.search(r"s3[.-]([a-z0-9-]+)\.amazonaws\.com", ep)

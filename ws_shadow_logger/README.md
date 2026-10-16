@@ -72,9 +72,9 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 **Render Logs에서 확인할 줄**
 - `[ws_shadow_backup] READY backup=ON|OFF|CONFIG_ERROR`
 - `DAILY_EXPORT_OK day= zip= files= snapshot_rows= mu_ticks= bytes=`
-- `DAILY_BACKUP_OK day= result=UPLOADED|ALREADY_PRESENT key= sha256= bytes=`
-- `DAILY_BACKUP_FAIL day= stage=export|upload attempt= error= next_retry_at=`
-- `DAILY_BACKUP_SKIP reason=config` (설정 누락 시 export만 함)
+- `DAILY_BACKUP_OK provider=r2|s3 day= result=UPLOADED|ALREADY_PRESENT key= sha256= bytes=`
+- `DAILY_BACKUP_FAIL [provider=r2|s3] day= stage=export|upload attempt= error= next_retry_at=`
+- `DAILY_BACKUP_SKIP reason=config provider=` (설정 누락, `cfat_` API 토큰, endpoint에 경로가 들어간 경우 → export만 함)
 - 키 원문은 로그·상태파일에 남기지 않는다.
 
 ## 메모리
