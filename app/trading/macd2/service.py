@@ -32,6 +32,7 @@ from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
 from app.trading.macd2 import chop_regime
 from app.trading.macd2 import entry_arming
+from app.trading.macd2 import pending_order
 from app.trading.macd2 import p3_stack
 from app.trading.macd2 import strategy_mode as strategy_mode_mod
 from app.trading.macd2 import e_strategy as e_strategy_mod
@@ -1763,6 +1764,12 @@ class Macd2Service:
             return {"ok": False, "message": "AUTO_TRADE_OFF"}
         if state.position is not None and state.position.quantity > 0:
             return {"ok": False, "message": "ALREADY_HOLDING_POSITION"}
+        # 2026-10-16: 미확정 매수주문이 살아 있으면 수동매수 금지(10/16 수동 중복매수 실사고).
+        _po_block = pending_order.block_reason_for(state, direction)
+        if _po_block:
+            _p = pending_order.get(state) or {}
+            return {"ok": False, "message": pending_order.UI_WARNING, "block_reason": _po_block,
+                    "pending_order_id": _p.get("order_id"), "pending_symbol": _p.get("symbol")}
         # 2026-10-13: 수동 매수도 신규진입이다 -- 허용 ON 일 때만.
         if not entry_arming.is_enabled(state) or entry_arming.armed_at(state) is None:
             return {"ok": False, "message": entry_arming.ENTRY_DISARMED}
@@ -1781,6 +1788,9 @@ class Macd2Service:
             reconcile_retries=ORDER_FILL_RECONCILE_RETRIES,
             reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
         )
+        # 수동 주문 자신이 취소 미확인으로 끝나도 같은 방식으로 추적한다.
+        pending_order.register(state, outcome, direction=direction_enum, signal_id=signal_id,
+                               signal_type="MANUAL_ENTRY", now=now, source="MANUAL")
 
         if outcome.final_state == SignalState.EXECUTED:
             _apply_switch_outcome(state, outcome, direction_enum, now)
@@ -1797,6 +1807,21 @@ class Macd2Service:
             "quantity": outcome.quantity,
             "price": outcome.filled_avg_price or outcome.order_price,
         }
+
+    def release_pending_order(self, *, confirm: bool = False, changed_by: str = "ui") -> dict[str, Any]:
+        """비상용: 사용자가 KIS(앱/HTS)에서 그 주문이 체결 또는 취소된 것을 직접 확인한 뒤 미확정 상태를 푼다.
+
+        자동 추적이 확정할 수 없을 때(조회 장애 등)만 쓴다. 신호원장에 PENDING_MANUAL_RELEASED 로 남는다.
+        체결된 수량이 있었다면 reconcile 이 잔고에서 발견해 기록한다.
+        """
+        if not confirm:
+            return {"ok": False, "message": "CONFIRM_REQUIRED"}
+        state = state_store.load_state()
+        res = pending_order.manual_release(state, datetime.now(KST), who=changed_by)
+        if res is None:
+            return {"ok": False, "message": "NO_PENDING_ORDER"}
+        state_store.save_state(state)
+        return {"ok": True, **res}
 
     def manual_exit(self) -> dict[str, Any]:
         """UI 수동 진입 버튼과 짝을 이루는 "수동 전량매도" 버튼 (2026-08-04

@@ -662,6 +662,7 @@ def execute_signal(
         outcome.order_failure_stage = BLOCK_ASK_QUOTE_FAILED
         return outcome
     ask_quote: dict[str, Any] = {}
+    timestamps["ask_fetch_started_at"] = _now_iso()          # 2026-10-16 지연 계측(관측 전용)
     for retry_i in range(ASK1_FETCH_RETRIES):
         ask_quote = dict(ask_getter(target_symbol) or {})
         if ask_quote.get("stale") or ask_quote.get("is_stale"):
@@ -670,6 +671,7 @@ def execute_signal(
             break  # succeeded
         if retry_i < ASK1_FETCH_RETRIES - 1:
             time.sleep(ASK1_FETCH_RETRY_DELAY_SEC)
+    timestamps["ask_fetch_done_at"] = _now_iso()
     ask1 = float(ask_quote.get("ask1") or 0.0)
     outcome.ask1 = ask1 if ask1 > 0 else None
     outcome.ask1_age = float(ask_quote["age_sec"]) if ask_quote.get("age_sec") is not None else None
@@ -758,6 +760,7 @@ def execute_signal(
             confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
         )
 
+    timestamps["sizing_started_at"] = _now_iso()
     sizing_getter = getattr(broker, "get_buy_sizing_quote", None)
     if sizing_getter is not None:
         sizing_quote = sizing_getter(target_symbol, price=order_price, order_type="limit")
@@ -771,6 +774,7 @@ def execute_signal(
             rt_cd="", msg_cd="", msg1="", order_price=order_price,
             limit_buyable_qty=fallback_qty, raw={},
         )
+    timestamps["sizing_done_at"] = _now_iso()
     limit_buyable_qty = sizing_quote.limit_buyable_qty or sizing_quote.nrcvb_buy_qty
     usable_cash, budget_qty, requested_qty, expected_amount = compute_limit_buy_quantity(
         ui_budget=budget,
@@ -815,11 +819,13 @@ def execute_signal(
     room_getter = getattr(broker, "get_buy_safety_room", None)
     room = None
     if room_getter is not None:
+        timestamps["safety_room_started_at"] = _now_iso()
         try:
             room = room_getter(target_symbol, order_price)
         except Exception as exc:  # 조회 실패 시 cap 없이 진행 — 브로커 gate 가 최종 방어
             outcome.safety_reason = f"SAFETY_ROOM_QUERY_FAILED:{exc}"
             room = None
+        timestamps["safety_room_done_at"] = _now_iso()
     if room is not None:
         capped_qty, capped_amount, limit_type, cap_reason = apply_safety_cap(
             requested_qty=requested_qty, order_price=order_price, room=room,

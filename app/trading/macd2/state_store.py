@@ -500,6 +500,9 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "fixed_exit_15_enabled": bool(state.fixed_exit_15_enabled),
         "fixed_exit_15_changed_at": state.fixed_exit_15_changed_at,
         "fixed_exit_15_changed_by": state.fixed_exit_15_changed_by,
+        # 미확정 매수주문 추적 (2026-10-16) — 재시작 후에도 추적을 이어간다.
+        "pending_buy_order": dict(state.pending_buy_order) if state.pending_buy_order else None,
+        "last_pending_order_result": dict(state.last_pending_order_result) if state.last_pending_order_result else None,
         "p3_enabled": bool(state.p3_enabled),
         # CHOP-STACK (2026-10-11). chop_defense_enabled 는 **운영 플래그**라
         # 반드시 살아남아야 한다 — 이게 없으면 strategy_mode.restore 가
@@ -1247,6 +1250,9 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         fixed_exit_15_enabled=bool(raw.get("fixed_exit_15_enabled", False)),
         fixed_exit_15_changed_at=raw.get("fixed_exit_15_changed_at"),
         fixed_exit_15_changed_by=raw.get("fixed_exit_15_changed_by"),
+        pending_buy_order=(dict(raw["pending_buy_order"]) if isinstance(raw.get("pending_buy_order"), dict) else None),
+        last_pending_order_result=(dict(raw["last_pending_order_result"])
+                                   if isinstance(raw.get("last_pending_order_result"), dict) else None),
         p3_enabled=p3_enabled,
         chop_defense_enabled=bool(raw.get("chop_defense_enabled", False)),
         chop_defense_version=raw.get("chop_defense_version") or "",

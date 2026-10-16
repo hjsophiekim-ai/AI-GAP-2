@@ -63,6 +63,7 @@ from app.trading.macd2 import (
     major_flag_filter,
     order_executor,
     p3_stack,
+    pending_order,
     position_sizing,
     premarket_shadow,
     shadow_base,
@@ -196,6 +197,8 @@ class TickResult:
     order_requested_at: Optional[str] = None
     signal_dispatch_trace: dict[str, Any] = field(default_factory=dict)
     timing: dict[str, float] = field(default_factory=dict)
+    #: 2026-10-16 미확정 매수주문 추적 결과(이번 tick). pending 이 없으면 None.
+    pending_order_check: Optional[dict] = None
 
 
 def _net_return_pct(symbol: str, entry_price: float, current_price: float, quantity: int) -> float:
@@ -2414,6 +2417,72 @@ def _entry_disarmed_outcome(
     return out
 
 
+def _order_latency(signal_id: str, detected_at, t_dispatch, t_reconcile_done, t_quote_ready, ts: dict, *,
+                   quote_stale_retries: int = 0, reconcile_retries: int = 0) -> dict:
+    """2026-10-16 계측: 신호 승인 -> KIS 접수 응답까지 구간별 초. 로그 한 줄([MACD2][ORDER_LATENCY]) + trace.
+
+    구간: 승인->dispatch / 잔고대조(force reconcile, 재시도 포함) / 호가 stale 대기 / 매도호가 조회 /
+    매수가능 조회 / 한도 조회 / 주문 전송->KIS 접수 응답. 판정에는 쓰지 않는다(관측 전용).
+    """
+    def _p(v):
+        if v is None or v == "":
+            return None
+        try:
+            return v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
+        except ValueError:
+            return None
+
+    def _d(a, b):
+        a, b = _p(a), _p(b)
+        return round((b - a).total_seconds(), 3) if (a is not None and b is not None) else None
+
+    out = {
+        "signal_to_dispatch": _d(detected_at, t_dispatch),
+        "position_reconcile": _d(t_dispatch, t_reconcile_done),
+        "quote_wait": _d(t_reconcile_done, t_quote_ready),
+        "ask1_fetch": _d(ts.get("ask_fetch_started_at"), ts.get("ask_fetch_done_at")),
+        "sell_leg": _d(ts.get("sell_requested_at"), ts.get("sell_reconciled_at")),
+        "buy_sizing_query": _d(ts.get("sizing_started_at"), ts.get("sizing_done_at")),
+        "safety_room_query": _d(ts.get("safety_room_started_at"), ts.get("safety_room_done_at")),
+        "buy_send_to_ack": _d(ts.get("buy_requested_at"), ts.get("buy_confirmed_at")),
+        "signal_to_buy_sent": _d(detected_at, ts.get("buy_requested_at")),
+        "signal_to_ack": _d(detected_at, ts.get("buy_confirmed_at")),
+        "quote_stale_retries": int(quote_stale_retries), "reconcile_retries": int(reconcile_retries),
+    }
+    logger.info("[MACD2][ORDER_LATENCY] signal=%s %s", signal_id,
+                " ".join(f"{k}={v}" for k, v in out.items() if v is not None))
+    return out
+
+
+def _pending_apply_new_position(state: RuntimeState, qty: int, price: float) -> None:
+    """pending 주문의 늦은 첫 체결을 포지션으로 세운다 -- 정상 EXECUTED 와 같은 _apply_switch_outcome 경로."""
+    p = pending_order.get(state) or {}
+    direction = Direction(p["direction"]) if p.get("direction") else _direction_for_symbol(p.get("symbol"))
+    out = order_executor.ExecutionOutcome(
+        p.get("signal_id", ""), direction, p.get("symbol"), SignalState.EXECUTED, quantity=int(qty),
+        filled_avg_price=float(price),
+        timestamps={"evaluated_at": p.get("signal_detected_at") or "", "buy_requested_at": p.get("ordered_at") or ""},
+    )
+    _apply_switch_outcome(state, out, direction, datetime.now(KST))
+
+
+def _pending_order_ledger_extra(state: RuntimeState) -> dict:
+    return {"worker_code_sha": _git_sha(), "worker_instance_id": state.worker_instance_id or "",
+            "session_started_at": state.session_started_at or ""}
+
+
+def track_pending_order(broker, state: RuntimeState, now: datetime, *, force: bool = False) -> Optional[dict]:
+    """미확정 매수주문 1회 추적(조회 전용 + 늦은 체결 장부 반영). pending 이 없으면 즉시 None."""
+    if not pending_order.is_active(state):
+        return None
+    try:
+        return pending_order.check(broker, state, now, apply_new_position=_pending_apply_new_position,
+                                   force=force, ledger_extra=_pending_order_ledger_extra(state))
+    except Exception as exc:  # noqa: BLE001 -- 추적 실패가 tick 을 멈추지 않는다(pending 은 그대로 유지)
+        logger.exception("[MACD2][PENDING_ORDER] 추적 예외: %s", exc)
+        return {"action": "ERROR", "error": repr(exc)[:200]}
+
+
 def _execute_or_wait(
     *,
     broker,
@@ -2450,6 +2519,25 @@ def _execute_or_wait(
         "broker_raw": {},
         "final_block_reason": None,
     }
+    _t_dispatch = datetime.now(KST)
+    # 2026-10-16: 미확정 매수주문(pending_buy_order)이 살아 있으면 신규 매수를 내지 않는다
+    # (같은 방향·반대 방향 모두). pending 이 없으면 이 블록은 아무 것도 하지 않는다.
+    _po_block = pending_order.block_reason_for(state, direction.value)
+    if _po_block:
+        if _po_block == pending_order.PENDING_ORDER_UNCONFIRMED_OPPOSITE:
+            pending_order.try_cancel(broker, state, now, "OPPOSITE_SIGNAL")
+        state.order_block_reason = _po_block
+        state.pending_signal = None
+        result.signal_dispatch_trace["final_block_reason"] = _po_block
+        result.signal_dispatch_trace["pending_order"] = dict(pending_order.get(state) or {})
+        result.skipped = _po_block
+        result.timing["order_execution"] = time.monotonic() - order_started
+        logger.warning("[MACD2][PENDING_ORDER] 신규 %s 매수 차단 (%s) signal=%s pending=%s",
+                       direction.value, _po_block, signal_id, (pending_order.get(state) or {}).get("order_id"))
+        return order_executor.ExecutionOutcome(
+            signal_id, direction, order_executor.target_symbol_for_direction(direction), SignalState.BLOCKED,
+            block_reason=_po_block, timestamps={"evaluated_at": now.isoformat()},
+        )
     reconcile = reconcile_position_state(broker, state, now, force=True)
     # 2026-10-01 hotfix: 잔고조회 실패면 바로 포기하지 않고 짧게 최대 3회 재조회한다.
     # 재조회는 이 함수 안에서 동기로 끝나므로 같은 tick/주문의 중복 실행이 없고, 그 동안
@@ -2571,6 +2659,7 @@ def _execute_or_wait(
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
 
+    _t_reconcile_done = datetime.now(KST)
     required_symbols = _required_quote_symbols(direction, position)
     quote_status, quotes = _quote_status_for_order(market_data, required_symbols)
     target = order_executor.target_symbol_for_direction(direction)
@@ -2613,7 +2702,8 @@ def _execute_or_wait(
     result.signal_dispatch_trace["quote_ages"] = _quote_ages(market_data, required_symbols)
 
     result.signal_dispatch_trace["order_executor_called"] = True
-    result.signal_dispatch_trace["executor_called_at"] = datetime.now(KST).isoformat()
+    _t_quote_ready = datetime.now(KST)
+    result.signal_dispatch_trace["executor_called_at"] = _t_quote_ready.isoformat()
     # W1a 사이징(2026-09-12): **budget 에만** 배수를 곱한다. 기본값 1.0 이라
     # X2-lite 외 모든 호출부는 바이트 단위로 동일하다. 수량 산출은
     # order_executor.compute_limit_buy_quantity 가 그대로 하므로
@@ -2636,6 +2726,12 @@ def _execute_or_wait(
         )
         result.timing["order_execution"] = time.monotonic() - order_started
         return None
+    result.signal_dispatch_trace["latency"] = _order_latency(
+        signal_id, detected_at, _t_dispatch, _t_reconcile_done, _t_quote_ready, outcome.timestamps,
+        quote_stale_retries=retry_count, reconcile_retries=len(_pde_retries))
+    if pending_order.register(state, outcome, direction=direction, signal_id=signal_id, signal_type=signal_type,
+                              now=now, signal_detected_at=detected_at, source="AUTO"):
+        result.signal_dispatch_trace["pending_order"] = dict(pending_order.get(state) or {})
     result.order_requested_at = outcome.timestamps.get("sell_requested_at") or outcome.timestamps.get("buy_requested_at")
     result.signal_dispatch_trace["order_requested_at"] = result.order_requested_at or ""
     if (
@@ -7026,13 +7122,22 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
         state.premarket_carry_last_result = "DAILY_EXPOSURE_CAP_EXHAUSTED"
         return None
     signal_id = f"PREMARKET_CARRY_TW_{direction.value}_{now.strftime('%Y%m%d')}"
-    outcome = order_executor.execute_signal(
-        broker=broker, direction=direction, signal_id=signal_id,
-        quotes={target_symbol: quote_snap.price}, position=None,
-        budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
-                else state.budget),
-        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-    )
+    _po_block = pending_order.block_reason_for(state, direction.value)
+    if _po_block:
+        # 2026-10-16: 미확정 매수주문이 살아 있으면 주문하지 않고 막힌 결과로 기록한다(기존 비-EXECUTED 경로).
+        outcome = order_executor.ExecutionOutcome(signal_id, direction, target_symbol, SignalState.BLOCKED,
+                                                  block_reason=_po_block,
+                                                  timestamps={"evaluated_at": now.isoformat()})
+    else:
+        outcome = order_executor.execute_signal(
+            broker=broker, direction=direction, signal_id=signal_id,
+            quotes={target_symbol: quote_snap.price}, position=None,
+            budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
+                    else state.budget),
+            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        )
+        pending_order.register(state, outcome, direction=direction, signal_id=signal_id,
+                               signal_type="PREMARKET_CARRY_TW", now=now, source="PREMARKET")
     _record_premarket_carry_signal(state, direction, signal_id, now, outcome)
 
     if outcome.final_state == SignalState.EXECUTED:
@@ -7215,13 +7320,22 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
         return None
 
     signal_id = f"SCHEDULED_0903_{direction.value}_{now.strftime('%Y%m%d')}"
-    outcome = order_executor.execute_signal(
-        broker=broker, direction=direction, signal_id=signal_id,
-        quotes={target_symbol: quote_snap.price}, position=None,
-        budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
-                else state.budget),
-        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-    )
+    _po_block = pending_order.block_reason_for(state, direction.value)
+    if _po_block:
+        # 2026-10-16: 미확정 매수주문이 살아 있으면 주문하지 않고 막힌 결과로 기록한다(기존 비-EXECUTED 경로).
+        outcome = order_executor.ExecutionOutcome(signal_id, direction, target_symbol, SignalState.BLOCKED,
+                                                  block_reason=_po_block,
+                                                  timestamps={"evaluated_at": now.isoformat()})
+    else:
+        outcome = order_executor.execute_signal(
+            broker=broker, direction=direction, signal_id=signal_id,
+            quotes={target_symbol: quote_snap.price}, position=None,
+            budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
+                    else state.budget),
+            reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        )
+        pending_order.register(state, outcome, direction=direction, signal_id=signal_id,
+                               signal_type="SCHEDULED_0903", now=now, source="SCHEDULED")
     _record_scheduled_entry_signal(state, direction, signal_id, now, outcome)
 
     if outcome.final_state == SignalState.EXECUTED:
@@ -7278,6 +7392,10 @@ def run_once(
         state.last_evaluated_bar_ts = None
         state.last_confirmed_bar_ts = None
 
+    # 2026-10-16: 미확정 매수주문 추적 -- reconcile 보다 먼저(늦은 체결을 원래 신호로 반영해야 reconcile 이
+    # 출처 모를 보유로 흡수하지 않는다). pending 이 없으면 아무 호출도 하지 않는다.
+    if pending_order.is_active(state):
+        result.pending_order_check = track_pending_order(broker, state, now)
     t0 = time.monotonic()
     reconcile = reconcile_position_state(broker, state, now)
     # 2026-09-21: 신규 매수 hard gate 의 유일한 입력. 여기 한 줄로만 기록한다.

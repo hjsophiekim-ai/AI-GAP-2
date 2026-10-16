@@ -203,6 +203,18 @@ class _BrokerAdapterBase:
                 return pos
         return None
 
+    def get_order_status(self, order_id: str, symbol: str = "", trading_date: str = "") -> dict[str, Any]:
+        """주문번호 1건 상태(주문/체결/잔량/취소) — 조회 전용 (2026-10-16, pending_order 추적)."""
+        getter = getattr(self._broker, "get_order_status", None) or getattr(
+            getattr(self._broker, "kis", None), "get_order_status", None
+        )
+        if getter is None:
+            return {"ok": False, "found": False, "error": "get_order_status unavailable"}
+        try:
+            return dict(getter(order_id, symbol=symbol, trading_date=trading_date) or {})
+        except Exception as exc:
+            return {"ok": False, "found": False, "error": str(exc)}
+
     def get_today_fills(self, symbol: str = "") -> dict[str, Any]:
         getter = getattr(self._broker, "get_today_fills", None) or getattr(
             getattr(self._broker, "kis", None), "get_today_fills", None
