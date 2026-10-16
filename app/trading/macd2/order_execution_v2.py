@@ -45,7 +45,9 @@ def _iso(dt: datetime) -> str:
 
 
 def quote_age_ms(q: dict, requested: datetime, received: datetime) -> int:
-    """호가 나이: 브로커가 age_sec 를 주면 그것, 아니면 max(왕복시간, 받은 시각 - 거래소 호가접수시각)."""
+    """호가 **데이터** 나이(ms): 브로커가 age_sec 를 주면 그것, 아니면 받은 시각 - 거래소 호가접수시각(aspr_acpt_hour).
+    둘 다 없으면 왕복시간. 왕복시간(API 지연)은 rtt_ms 로 따로 기록한다 — 모의 API 는 1콜 3~5초라 왕복시간으로
+    막으면 모든 주문이 막힌다(2026-10-16 실측)."""
     if q.get("age_sec") is not None:
         try:
             return int(float(q["age_sec"]) * 1000)
@@ -57,7 +59,7 @@ def quote_age_ms(q: dict, requested: datetime, received: datetime) -> int:
         ex = received.replace(hour=int(hms[:2]), minute=int(hms[2:4]), second=int(hms[4:6]), microsecond=0)
         if ex > received + timedelta(seconds=5):           # 자정 근처 등 비정상 — 왕복시간만 쓴다
             return rtt
-        return max(rtt, int((received - ex).total_seconds() * 1000))
+        return max(0, int((received - ex).total_seconds() * 1000))
     return rtt
 
 
@@ -83,8 +85,14 @@ def fetch_fresh_ask(broker, symbol: str, log: dict, *, prefix: str = "", sleep: 
         log[f"{prefix}quote_requested_at"] = _iso(t0)
         log[f"{prefix}quote_received_at"] = _iso(t1)
         log[f"{prefix}quote_age_ms"] = age
+        log[f"{prefix}quote_rtt_ms"] = int((t1 - t0).total_seconds() * 1000)
         log[f"{prefix}quote_attempts"] = i + 1
-        ok = bool(q.get("ok")) and float(q.get("ask1") or 0) > 0 and not (q.get("stale") or q.get("is_stale"))
+        if q.get("stale") or q.get("is_stale"):
+            # 브로커가 명시적으로 stale 이라 한 호가 -- 기존 경로와 같은 사유로, 재조회하지 않는다.
+            log[f"{prefix}quote_ages_ms"] = ages
+            log[f"{prefix}quote_block_reason"] = "BROKER_STALE"
+            return None, "BROKER_STALE"
+        ok = bool(q.get("ok")) and float(q.get("ask1") or 0) > 0
         if ok and age <= max_age_ms:
             log[f"{prefix}quote_ages_ms"] = ages
             return q, "OK"

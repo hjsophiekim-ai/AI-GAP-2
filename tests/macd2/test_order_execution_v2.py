@@ -88,7 +88,7 @@ def test_v2_off_uses_legacy_paths_only():
     out = _run(b)
     assert out.final_state == SignalState.BLOCKED and out.block_reason == order_executor.BUY_CANCEL_NOT_CONFIRMED
     assert b.v2_cancel_calls == [] and b.cancel_calls, "OFF 면 v2 취소를 부르지 않고 기존 cancel_order 만"
-    assert b.status_calls == [], "OFF 면 주문번호 상태조회로 체결확인하지 않는다(기존 잔고 기반)"
+    assert len(b.status_calls) == 1 and out.exec_log["status_advisory"]["found"] is True,         "상태조회는 시간초과 뒤 보조정보로 1회만 -- 판정은 기존 잔고 기반"
     assert out.reprice_count == 0 and out.exec_log.get("cancel_requested_at")
 
 
@@ -307,3 +307,74 @@ def test_exec_log_has_all_requested_fields(v2on, monkeypatch):
               "cancel_requested_at", "cancel_confirmed_at"):
         assert rec[k], k
     assert rec["quote_age_ms"] is not None and rec["reprice_count"] == 0
+
+
+
+# ── 2026-10-16 안전/실행 분리 ────────────────────────────────────────────────
+def test_default_flags_safety_on_execution_off():
+    import importlib, os
+    for k in [k for k in os.environ if k.startswith("MACD2_EXEC_")]:
+        os.environ.pop(k)
+    cfg = importlib.reload(config)
+    try:
+        assert cfg.EXEC_STALE_QUOTE_CHECK_ENABLED is True and cfg.EXEC_ORDER_STATUS_ADVISORY is True
+        assert cfg.EXEC_V2_ENABLED is False and cfg.EXEC_CANCEL_ENABLED is False and cfg.EXEC_CANCEL_MOCK_VERIFY is False
+        assert cfg.EXEC_REPRICE_ENABLED is False and cfg.EXEC_REPRICE_MAX_SLIPPAGE_PCT == 0.0
+    finally:
+        importlib.reload(config)
+
+
+def test_stale_check_on_by_default_blocks_old_quote_without_v2():
+    assert config.EXEC_V2_ENABLED is False and config.EXEC_STALE_QUOTE_CHECK_ENABLED is True
+    b = _broker(asks=[(5_440.0, 2.6)])
+    out = _run(b)
+    assert out.block_reason == v2.BLOCK_QUOTE_TOO_OLD and not b.orders
+
+
+def test_quote_age_is_data_age_not_api_round_trip():
+    t0 = datetime(2026, 10, 16, 9, 51, 20, 0, tzinfo=v2.KST)
+    slow = t0 + timedelta(seconds=4)                                      # 모의 API 4초 왕복
+    assert v2.quote_age_ms({"exch_time_hms": "095123"}, t0, slow) == 1000, "왕복 4초여도 호가 자체는 1초 전"
+    log = {}
+    b = _broker(asks=[(5_450.0, 0.3)])
+    q, why = v2.fetch_fresh_ask(b, LONG, log)
+    assert why == "OK" and "quote_rtt_ms" in log
+
+
+def test_broker_stale_flag_keeps_legacy_reason():
+    b = _broker()
+    b.get_fresh_ask1 = lambda s: {"ok": True, "ask1": 5_450.0, "stale": True}
+    out = _run(b)
+    assert out.block_reason == order_executor.BLOCK_ASK_QUOTE_STALE and not b.orders
+
+
+def test_pending_uses_balance_when_status_unavailable_and_never_confirms_cancel(monkeypatch):
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_RETRIES", 1)
+    monkeypatch.setattr(worker, "ORDER_FILL_RECONCILE_DELAY_SEC", 0.0)
+    monkeypatch.setattr(order_executor, "POST_CANCEL_RECHECK_DELAY_SEC", 0.0)
+    svc, now, state, _ = _flat_world()
+    b = _broker(fill_queue=[0])
+    b.status_error = True                                                 # 모의계좌처럼 상태조회 불가
+    out, _ = _enter(svc, now, state, b)
+    p = state.pending_buy_order
+    assert out.block_reason == pending_order.PENDING_ORDER_UNCONFIRMED and p
+    r = worker.track_pending_order(b, state, now + timedelta(seconds=30), force=True)
+    assert r["state"] == "UNKNOWN" and pending_order.is_active(state), "모르면 확정하지 않는다"
+    b.fill_later(p["order_id"], 400, 5_455.0)                             # 잔고가 늘면 체결 가능성 우선
+    r = worker.track_pending_order(b, state, now + timedelta(minutes=1), force=True)
+    assert r["action"] == "FILL_RECORDED_BY_BALANCE" and r["new_qty"] == 400 and r["state"] == "PARTIAL_FILL"
+    assert state.position.quantity == 400 and pending_order.is_active(state)
+    assert _enter(svc, now + timedelta(minutes=2), state, b, sid="NEW-SAME")[0].block_reason ==         pending_order.PENDING_ORDER_UNCONFIRMED, "부분체결·미확정 중 같은 방향 재주문 금지"
+    b.fill_later(p["order_id"], p["requested_qty"] - 400, 5_455.0)
+    r = worker.track_pending_order(b, state, now + timedelta(minutes=3), force=True)
+    assert r["action"] == pending_order.LATE_FILL_CONFIRMED and state.pending_buy_order is None
+    assert sum(int(x["executed_qty"]) for x in _buys()) == p["requested_qty"]
+
+
+def test_status_unavailable_prev_day_expires_pending():
+    svc, now, state, _ = _flat_world()
+    b = _broker(fill_queue=[0])
+    b.status_error = True
+    _enter(svc, now, state, b)
+    r = worker.track_pending_order(b, state, now + timedelta(days=1), force=True)
+    assert r["action"] == pending_order.CANCEL_CONFIRMED and r["why"].startswith("PREV_DAY_EXPIRED")

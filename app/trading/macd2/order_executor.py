@@ -723,13 +723,14 @@ def execute_signal(
         return outcome
     ask_quote: dict[str, Any] = {}
     timestamps["ask_fetch_started_at"] = _now_iso()          # 2026-10-16 지연 계측(관측 전용)
-    if config.EXEC_V2_ENABLED:
-        # v2-A: 나이 상한(EXEC_QUOTE_MAX_AGE_SEC) 안의 최신 호가만 쓴다. 못 얻으면 주문하지 않는다.
+    if config.EXEC_STALE_QUOTE_CHECK_ENABLED or config.EXEC_V2_ENABLED:
+        # A: 데이터 나이 상한(EXEC_QUOTE_MAX_AGE_SEC) 안의 최신 호가만 쓴다. 못 얻으면 주문하지 않는다.
         _q, _why = exec_v2.fetch_fresh_ask(broker, target_symbol, outcome.exec_log)
         timestamps["ask_fetch_done_at"] = _now_iso()
         if _q is None:
             outcome.final_state = SignalState.BLOCKED
-            outcome.block_reason = _why if _why == exec_v2.BLOCK_QUOTE_TOO_OLD else BLOCK_ASK_QUOTE_FAILED
+            outcome.block_reason = (_why if _why == exec_v2.BLOCK_QUOTE_TOO_OLD
+                                    else BLOCK_ASK_QUOTE_STALE if _why == "BROKER_STALE" else BLOCK_ASK_QUOTE_FAILED)
             outcome.order_failure_stage = outcome.block_reason
             outcome.sizing_msg1 = (f"최신 호가 확보 실패({_why}) -- 주문하지 않음, "
                                    f"나이 {outcome.exec_log.get('quote_ages_ms')}ms, 상한 "
@@ -953,7 +954,7 @@ def execute_signal(
         outcome.order_failure_stage = BLOCK_DUPLICATE_SIGNAL
         return outcome
     reference_ask = ask1
-    if config.EXEC_V2_ENABLED:
+    if config.EXEC_STALE_QUOTE_CHECK_ENABLED or config.EXEC_V2_ENABLED:
         _recv = outcome.exec_log.get("quote_received_at")
         _age_now = (datetime.fromisoformat(_now_iso()) - datetime.fromisoformat(_recv)).total_seconds() if _recv else 1e9
         if _age_now > float(config.EXEC_QUOTE_MAX_AGE_SEC):
@@ -1068,6 +1069,15 @@ def execute_signal(
         )
     if filled_qty > 0 and not outcome.exec_log.get("first_fill_at"):
         outcome.exec_log["first_fill_at"] = _now_iso()
+    if (filled_qty < requested_qty and v2res is None and config.EXEC_ORDER_STATUS_ADVISORY
+            and getattr(broker, "get_order_status", None) is not None):
+        # 보조정보(advisory)만: 판정은 위 잔고 기반 결과 그대로. 모의계좌는 0건을 돌려줄 수 있다(2026-10-16 실측).
+        try:
+            _adv = dict(broker.get_order_status(buy_result.order_id, symbol=target_symbol) or {})
+        except Exception as _exc:  # noqa: BLE001
+            _adv = {"ok": False, "error": repr(_exc)[:120]}
+        outcome.exec_log["status_advisory"] = {k: _adv.get(k) for k in (
+            "ok", "found", "order_qty", "filled_qty", "remaining_qty", "cancelled", "error")}
     outcome.filled_qty = filled_qty
     outcome.fill_poll_result = fill_poll_result
     outcome.balance_qty = balance_qty

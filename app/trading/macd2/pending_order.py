@@ -161,22 +161,24 @@ def check(broker, state, now: datetime, *, apply_new_position: Callable[[Any, in
         except Exception as exc:  # noqa: BLE001
             st = {"ok": False, "error": repr(exc)[:200]}
     prev_day = p.get("trading_date", now.strftime("%Y%m%d")) < now.strftime("%Y%m%d")
-    if not st.get("ok"):
-        p["last_status"] = f"QUERY_ERROR:{st.get('error') or 'get_order_status unavailable'}"[:200]
-        return {"action": "QUERY_ERROR", "order_id": p["order_id"]}
-    if not st.get("found"):
-        p["last_status"] = "NOT_FOUND"
-        # 당일 주문조회에 아직 안 잡힐 수 있다 — 같은 날엔 확정하지 않는다. 전일 주문이 그 날짜 조회에도 없으면
-        # 체결 기록이 없는 소멸 주문으로 본다(혹시 잔고가 있으면 reconcile 이 발견해 기록한다).
+    if not st.get("ok") or not st.get("found"):
+        p["last_status"] = ("NOT_FOUND" if st.get("ok") else
+                            f"QUERY_ERROR:{st.get('error') or 'get_order_status unavailable'}"[:200])
         if prev_day:
-            return _resolve(state, now, CANCEL_CONFIRMED, "PREV_DAY_ORDER_NOT_FOUND", ledger_extra)
-        return {"action": "NOT_FOUND", "order_id": p["order_id"]}
+            # 국내 주문은 당일 유효 -- 장마감에 잔량이 소멸한다. 잔고에 남은 체결분은 reconcile 이 기록한다.
+            return _resolve(state, now, CANCEL_CONFIRMED, "PREV_DAY_EXPIRED_STATUS_UNAVAILABLE", ledger_extra)
+        # 2026-10-16: 주문번호 조회가 안 되면(모의계좌 실측 0건) **잔고 변화로 체결 가능성을 먼저 본다**.
+        out = _balance_fallback(broker, state, now, p, apply_new_position)
+        return out
 
     filled = int(st.get("filled_qty") or 0)
     amount = float(st.get("amount") or 0.0)
     remaining = int(st.get("remaining_qty") or 0)
     p["last_status"] = (f"ord={st.get('order_qty')} filled={filled} remaining={remaining} "
                         f"cancelled={st.get('cancelled')} rejected={st.get('rejected_qty')}")
+    p["state"] = ("FILLED" if remaining <= 0 and filled > 0 else "CANCEL_CONFIRMED" if remaining <= 0
+                  else "PARTIAL_FILL" if filled > 0 else
+                  "CANCEL_REQUESTED" if int(p.get("cancel_attempts", 0)) > 0 else "PENDING")
     out = {"action": "OPEN", "order_id": p["order_id"], "filled_qty": filled, "remaining_qty": remaining}
 
     base = max(int(p.get("recorded_qty", 0)), _held_qty(state, p["symbol"]))
@@ -225,6 +227,49 @@ def check(broker, state, now: datetime, *, apply_new_position: Callable[[Any, in
         res = _resolve(state, now, final, why, ledger_extra)
         res["fill"] = out.get("new_qty")
         return res
+    return out
+
+
+def _balance_fallback(broker, state, now: datetime, p: dict, apply_new_position) -> dict:
+    """상태조회 불가 시: 잔고가 늘었으면 그만큼을 이 주문의 체결로 기록(가격은 브로커 평균단가). 전량이면 확정.
+    잔고 변화가 없으면 아무 것도 확정하지 않는다(UNKNOWN 유지 -- 새 주문 금지 상태 그대로)."""
+    out = {"action": "UNKNOWN", "order_id": p["order_id"], "state": "UNKNOWN"}
+    getter = getattr(broker, "get_position", None)
+    try:
+        pos = getter(p["symbol"]) if getter is not None else None
+    except Exception as exc:  # noqa: BLE001
+        p["state"] = "UNKNOWN"
+        out["error"] = repr(exc)[:120]
+        return out
+    held_broker = int(getattr(pos, "quantity", 0) or 0) if pos is not None else 0
+    base = max(int(p.get("recorded_qty", 0)), _held_qty(state, p["symbol"]))
+    new_qty = held_broker - base
+    if new_qty > 0:
+        price = float(getattr(pos, "avg_price", 0.0) or p.get("order_price") or 0.0)
+        held_before = _held_qty(state, p["symbol"])
+        if held_before == 0 and getattr(state, "position", None) is None:
+            apply_new_position(state, new_qty, price)
+        elif held_before > 0:
+            cur = state.position
+            tot = cur.quantity + new_qty
+            state.position = dataclasses.replace(
+                cur, quantity=tot, avg_price=(cur.avg_price * cur.quantity + price * new_qty) / tot)
+        p["recorded_qty"] = base + new_qty
+        p["recorded_amount"] = float(p.get("recorded_amount", 0.0)) + price * new_qty
+        try:
+            _record_late_fill_leg(broker, p, new_qty, price, base, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[MACD2][PENDING_ORDER] 잔고기반 체결 원장 기록 실패(포지션은 반영됨): %s", exc)
+        logger.warning("[MACD2][PENDING_ORDER] 상태조회 불가 -- 잔고 증가 %s주를 이 주문(%s)의 체결로 기록 @%s",
+                       new_qty, p["order_id"], price)
+        out.update(action="FILL_RECORDED_BY_BALANCE", new_qty=new_qty, price=price)
+    if int(p.get("recorded_qty", 0)) >= int(p.get("requested_qty", 0)) > 0:
+        p["state"] = "FILLED"
+        res = _resolve(state, now, LATE_FILL_CONFIRMED, "BALANCE_REACHED_ORDER_QTY", None)
+        res["fill"] = out.get("new_qty")
+        return res
+    p["state"] = "PARTIAL_FILL" if int(p.get("recorded_qty", 0)) > 0 else "UNKNOWN"
+    out["state"] = p["state"]
     return out
 
 

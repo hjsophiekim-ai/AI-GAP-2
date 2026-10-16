@@ -1923,7 +1923,14 @@ EXIT_FIXED_SL15 = "FIXED_SL15"
 
 # ── 주문 실행 v2 (2026-10-16, feature/macd2-order-execution-v2) ───────────────
 # 승인된 매수 신호의 "주문 실행부"만 바꾼다(진입 판정 무관). **전부 기본 OFF** — OFF 면 기존 경로 그대로.
-#: 마스터 스위치. ON 이면 A(주문 직전 최신 호가, 나이 상한) / B(주문번호 기반 체결확인) / E(repricing 경로)를 쓴다.
+# 2026-10-16 사용자 결정: **안전 기능**과 **실행 기능**을 분리한다.
+#  안전(기본 ON, production 반영 후보): stale quote 체크(A) / 주문번호 상태조회는 보조정보로만(advisory) / EXEC_LOG
+#  실행(기본 OFF, 별도 승인 전 금지): 주문번호 기반 체결판정·자동 취소·repricing·자동 재주문(EXEC_V2_ENABLED)
+#: A. 주문 직전 최신 매도1호가 확인(데이터 나이 > EXEC_QUOTE_MAX_AGE_SEC 면 재조회, 못 얻으면 주문 안 함).
+EXEC_STALE_QUOTE_CHECK_ENABLED = _env_bool("MACD2_EXEC_STALE_QUOTE_CHECK_ENABLED", True)
+#: B'. 체결대기 시간초과 시 주문번호 상태를 한 번 조회해 로그에만 남긴다(판정에는 쓰지 않음).
+EXEC_ORDER_STATUS_ADVISORY = _env_bool("MACD2_EXEC_ORDER_STATUS_ADVISORY", True)
+#: 실행 기능 마스터 스위치(기본 OFF). ON 이면 주문번호 기반 체결판정(B) + 취소(D, MOCK 전용 플래그 별도) + repricing(E).
 EXEC_V2_ENABLED = _env_bool("MACD2_EXEC_V2_ENABLED", False)
 #: A. 주문에 쓸 매도1호가의 최대 나이(초). 넘으면 다시 조회, EXEC_QUOTE_FETCH_ATTEMPTS 번 안에 못 얻으면 주문하지 않는다.
 EXEC_QUOTE_MAX_AGE_SEC = _env_float("MACD2_EXEC_QUOTE_MAX_AGE_SEC", 2.0)
