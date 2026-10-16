@@ -927,6 +927,64 @@ class KISClient:
             logger.error(f"[KIS-{self.mode.upper()}] 당일체결 조회 예외: {e}")
             return {"ok": False, "fills": [], "totals": {}, "error": str(e)}
 
+    def get_order_status(self, order_id: str, symbol: str = "", trading_date: str = "") -> dict:
+        """주문번호 1건의 상태 — 조회 전용 (2026-10-16, MACD2 미확정 매수주문 추적).
+
+        get_today_fills 와 같은 일별 주문체결 조회(TTTC8001R/VTTC8001R)를 **체결구분 전체(00)·주문번호 지정**으로
+        부른다. 미체결·부분체결·취소 주문도 한 행으로 돌아오므로 주문수량/체결수량/잔량/취소여부를 알 수 있다.
+        trading_date(YYYYMMDD) 를 주면 그 날짜로 조회한다(전일 주문의 장마감 후 상태 확인용).
+
+        반환: {"ok", "found", "order_id", "symbol", "order_qty", "filled_qty", "remaining_qty",
+               "cancelled_qty", "rejected_qty", "cancelled"(bool), "avg_price", "amount", "order_price", "error"}
+        """
+        tr_id = TR_ORDER_HISTORY_MOCK if self.mode == "mock" else TR_ORDER_HISTORY_REAL
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        day = trading_date or kst_now().strftime("%Y%m%d")
+        params = {
+            "CANO": self.account_no, "ACNT_PRDT_CD": self.product_code,
+            "INQR_STRT_DT": day, "INQR_END_DT": day,
+            "SLL_BUY_DVSN_CD": "00", "INQR_DVSN": "00", "PDNO": symbol or "",
+            "CCLD_DVSN": "00", "ORD_GNO_BRNO": "", "ODNO": str(order_id or ""),
+            "INQR_DVSN_3": "00", "INQR_DVSN_1": "", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+        }
+        base = {"ok": False, "found": False, "order_id": str(order_id or ""), "symbol": symbol or "",
+                "order_qty": 0, "filled_qty": 0, "remaining_qty": 0, "cancelled_qty": 0, "rejected_qty": 0,
+                "cancelled": False, "avg_price": 0.0, "amount": 0.0, "order_price": 0.0, "error": None}
+        try:
+            resp = self._request_with_token_retry("GET", url, tr_id, params=params, timeout=(3, 15))
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            if not resp.ok:
+                return {**base, "error": f"HTTP {resp.status_code}: rt_cd={data.get('rt_cd', '')} msg1={data.get('msg1', '')}"}
+            if data.get("rt_cd", "") != "0":
+                return {**base, "error": f"rt_cd={data.get('rt_cd', '')}: {data.get('msg1', '')}"}
+            rows = data.get("output1") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            want = str(order_id or "").lstrip("0")
+            rows = [r for r in rows if isinstance(r, dict) and str(_first_present(r, "odno", default="")).lstrip("0") == want]
+            if not rows:
+                return {**base, "ok": True}
+            r = rows[0]
+            filled = _to_int(_first_present(r, "tot_ccld_qty", "ccld_qty"), 0)
+            cncl_qty = _to_int(_first_present(r, "cncl_cfrm_qty"), 0)
+            return {**base, "ok": True, "found": True,
+                    "symbol": _first_present(r, "pdno", default=symbol or ""),
+                    "order_qty": _to_int(_first_present(r, "ord_qty"), 0),
+                    "filled_qty": filled,
+                    "remaining_qty": _to_int(_first_present(r, "rmn_qty"), 0),
+                    "cancelled_qty": cncl_qty,
+                    "rejected_qty": _to_int(_first_present(r, "rjct_qty"), 0),
+                    "cancelled": str(_first_present(r, "cncl_yn", default="")).upper() == "Y" or cncl_qty > 0,
+                    "avg_price": _to_float(_first_present(r, "avg_prvs"), 0.0),
+                    "amount": _to_float(_first_present(r, "tot_ccld_amt"), 0.0),
+                    "order_price": _to_float(_first_present(r, "ord_unpr"), 0.0)}
+        except Exception as e:
+            logger.error(f"[KIS-{self.mode.upper()}] 주문상태 조회 예외: {e}")
+            return {**base, "error": str(e)}
+
     def get_period_trade_profit(self, start_date: str, end_date: str = "", symbol: str = "") -> dict:
         """기간별 매매손익 현황(TR TTTC8715R) — **KIS 계좌 화면이 보여주는 바로 그 숫자**.
 

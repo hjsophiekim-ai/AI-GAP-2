@@ -976,6 +976,12 @@ class RuntimeState:
     fixed_exit_15_changed_at: Optional[str] = None
     fixed_exit_15_changed_by: Optional[str] = None
 
+    # ── 미확정 매수주문 추적 (2026-10-16, app/trading/macd2/pending_order.py) ──
+    # BUY_CANCEL_NOT_CONFIRMED 주문(주문번호/종목/수량/가격/신호시각/추적상태). None 이면 기존 동작과 동일.
+    # 날짜가 바뀌어도 지우지 않는다 — 체결/취소가 확정돼야만 None 이 된다.
+    pending_buy_order: Optional[dict] = None
+    last_pending_order_result: Optional[dict] = None
+
     p3_enabled: bool = False
     p3_enabled_at: Optional[str] = None
     p3_enabled_by: Optional[str] = None

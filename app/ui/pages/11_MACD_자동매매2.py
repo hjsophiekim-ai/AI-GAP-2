@@ -47,6 +47,7 @@ from app.trading.macd2 import strategy_mode as macd2_strategy_mode  # noqa: E402
 from app.trading.macd2 import fixed_exit as macd2_fixed_exit  # noqa: E402
 from app.trading.macd2 import e_strategy as macd2_e_strategy  # noqa: E402
 from app.trading.macd2 import p3_stack as macd2_p3_stack  # noqa: E402
+from app.trading.macd2 import pending_order as macd2_pending_order  # noqa: E402
 from app.trading.macd2 import n1_adaptive as macd2_n1_adaptive  # noqa: E402
 from app.trading.macd2 import ledger  # noqa: E402
 from app.trading.macd2 import worker as macd2_worker  # noqa: E402
@@ -707,6 +708,20 @@ state = snapshot["state"]
 worker_stats = snapshot["worker"] or {}
 quotes = snapshot["quotes"] or {}
 
+# ── 2026-10-16: 미확정 매수주문 경고 (pending 이 있을 때만, 체결/취소 확정되면 자동으로 사라진다) ──
+_pending_po = macd2_pending_order.get(state)
+if _pending_po:
+    st.error(
+        f"## ⚠️ {macd2_pending_order.UI_WARNING}\n\n"
+        f"주문번호 **{_pending_po.get('order_id')}** · {_pending_po.get('symbol')} "
+        f"{_pending_po.get('requested_qty')}주 @ {_pending_po.get('order_price')} "
+        f"(신호 {str(_pending_po.get('signal_id') or '')} · 주문 {str(_pending_po.get('ordered_at') or '')[11:19]})\n\n"
+        f"자동 추적 중 — 지금까지 확인된 체결 {_pending_po.get('recorded_qty', 0)}주 · 최근 조회 "
+        f"{str(_pending_po.get('last_checked_at') or '-')[11:19]} ({_pending_po.get('last_status') or '-'}). "
+        "체결 또는 취소가 확정될 때까지 **자동·수동 신규 매수가 모두 막힙니다.** "
+        "확정되면 이 경고는 자동으로 사라집니다."
+    )
+
 col1, col2, col3 = st.columns(3)
 col1.metric("Worker 상태", _worker_status(state, worker_stats))
 col2.metric("모드", state.mode)
@@ -871,9 +886,14 @@ with e2:
         st.rerun()
 
 st.caption("수동 진입 (MACD 신호·필터 무시, 예산 내 즉시 전량매수 — 이미 보유 중이면 거부, 신규진입 허용 ON 일 때만)")
+# 2026-10-16: 미확정 매수주문이 있으면 두 버튼 모두 비활성(같은 종목 중복매수·반대 종목 동시보유 방지).
+_manual_buy_locked = macd2_pending_order.is_active(state)
+if _manual_buy_locked:
+    st.error(f"**{macd2_pending_order.UI_WARNING}** — 수동 전량매수 버튼 잠금 "
+             f"(주문번호 {(macd2_pending_order.get(state) or {}).get('order_id')})")
 m1, m2 = st.columns(2)
 with m1:
-    if st.button("현재시점 레버리지(레드) 전량매수", use_container_width=True):
+    if st.button("현재시점 레버리지(레드) 전량매수", use_container_width=True, disabled=_manual_buy_locked):
         res = service.manual_entry("UP_RED")
         if res.get("ok"):
             st.success(f"레버리지 매수 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
@@ -881,13 +901,22 @@ with m1:
             st.error(f"레버리지 매수 실패: {res.get('message') or res.get('block_reason')}")
         st.rerun()
 with m2:
-    if st.button("현재시점 인버스(블루) 전량매수", use_container_width=True):
+    if st.button("현재시점 인버스(블루) 전량매수", use_container_width=True, disabled=_manual_buy_locked):
         res = service.manual_entry("DOWN_BLUE")
         if res.get("ok"):
             st.success(f"인버스 매수 체결: {res.get('symbol')} {res.get('quantity')}주 @ {res.get('price')}")
         else:
             st.error(f"인버스 매수 실패: {res.get('message') or res.get('block_reason')}")
         st.rerun()
+if _manual_buy_locked:
+    with st.expander("비상용: 미확정 주문 수동 해제 (KIS 에서 체결/취소를 직접 확인한 경우에만)"):
+        st.caption("자동 추적이 조회 장애 등으로 확정하지 못할 때만 쓰세요. 원장에 PENDING_MANUAL_RELEASED 로 남습니다.")
+        _rel_ok = st.checkbox("KIS 앱/HTS 에서 이 주문이 전량 체결 또는 취소된 것을 확인했습니다",
+                              key="macd2_po_release_ok")
+        if st.button("미확정 주문 해제", disabled=not _rel_ok, key="macd2_po_release"):
+            _rr = service.release_pending_order(confirm=True, changed_by="ui")
+            (st.success if _rr.get("ok") else st.error)(f"미확정 주문 해제: {_rr}")
+            st.rerun()
 
 # ── 09:03 예약매수: 3-SLOT 계열에서는 노출하지 않는다 (2026-09-16 사고) ──
 # H50/X2-lite/TW2 3-SLOT/TW TEG 3-SLOT 운영 중에는 이 기능을 쓰지 않는다.

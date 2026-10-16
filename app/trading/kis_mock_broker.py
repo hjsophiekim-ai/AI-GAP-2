@@ -82,6 +82,14 @@ class KisMockBroker(BrokerBase):
                 "settlement_pending_cash": 0.0, "raw_fields": {}, "error": str(e),
             }
 
+    def get_order_status(self, order_id: str, symbol: str = "", trading_date: str = "") -> dict:
+        """주문번호 1건 상태 조회(조회 전용, 2026-10-16)."""
+        try:
+            return self.kis.get_order_status(order_id, symbol=symbol, trading_date=trading_date)
+        except Exception as e:
+            logger.error("MOCK get_order_status 예외 %s: %s", order_id, e)
+            return {"ok": False, "found": False, "error": str(e)}
+
     def get_today_fills(self, symbol: str = "") -> dict:
         """당일 체결 조회(거래원장 backfill용) — KIS 모의계좌 원본 체결 데이터."""
         try:
