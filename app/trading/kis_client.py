@@ -103,6 +103,9 @@ TR_BUY_MOCK = "VTTC0802U"
 
 TR_SELL_REAL = "TTTC0801U"
 TR_SELL_MOCK = "VTTC0801U"
+# 정정취소(2026-10-16): 모의만 사용. 실전 TR 은 기록용 상수이며 cancel_order_rvsecncl 은 real 을 거부한다.
+TR_CANCEL_REAL = "TTTC0803U"
+TR_CANCEL_MOCK = "VTTC0803U"
 
 TR_ORDER_HISTORY_REAL = "TTTC8001R"
 #: 기간별매매손익현황 — KIS 계좌 화면의 매수/매도금액·수수료·세금·실현손익이
@@ -1539,6 +1542,57 @@ class KISClient:
             "ORD_UNPR": "0" if order_type == "market" else str(price),
         }
         return self._place_order(tr_id, body, "sell", symbol, quantity, price)
+
+    def cancel_order_rvsecncl(self, order_id: str, org_no: str, symbol: str = "") -> dict:
+        """국내주식 주문 **취소**(정정취소 API, 전량) — 2026-10-16, MOCK 전용 검증 단계.
+
+        TR: 모의 VTTC0803U / 실전 TTTC0803U (매수 TTTC0802U 와 같은 세대). **실전(mode=real)은 HTTP 를
+        보내지 않고 거부한다** — 실계좌 사용은 별도 검증·승인 전까지 금지(2026-10-16 사용자 지시).
+        이 메서드 이름은 일부러 cancel_order 가 아니다: macd2 broker_adapter.cancel_order 가 `kis.cancel_order`
+        를 자동으로 찾아 쓰므로, 이름이 같으면 플래그와 무관하게 기존 동작이 바뀐다.
+
+        org_no = 원주문 응답의 KRX_FWDG_ORD_ORGNO. 성공 응답은 '취소 접수'일 뿐 취소 확정이 아니다 —
+        확정은 get_order_status(잔량 0·취소수량)로 따로 확인한다.
+        반환: {"success", "order_id"(취소주문번호), "orig_order_id", "message", "raw", "rt_cd", "msg_cd", "msg1"}
+        """
+        base = {"success": False, "order_id": "", "orig_order_id": str(order_id or ""), "raw": {},
+                "rt_cd": "", "msg_cd": "", "msg1": ""}
+        if self.mode != "mock":
+            return {**base, "message": "REAL_CANCEL_DISABLED"}
+        if not order_id or not org_no:
+            return {**base, "message": "MISSING_ORDER_ID_OR_ORG_NO"}
+        tr_id = TR_CANCEL_MOCK
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-rvsecncl"
+        body = {
+            "CANO": self.account_no, "ACNT_PRDT_CD": self.product_code,
+            "KRX_FWDG_ORD_ORGNO": str(org_no), "ORGN_ODNO": str(order_id),
+            "ORD_DVSN": ORD_DVSN_LIMIT, "RVSE_CNCL_DVSN_CD": "02",       # 02 = 취소
+            "ORD_QTY": "0", "ORD_UNPR": "0", "QTY_ALL_ORD_YN": "Y",       # 잔량 전부
+        }
+        hashkey = self.get_hashkey(body)
+        headers = self._auth_headers(tr_id)
+        if hashkey:
+            headers["hashkey"] = hashkey
+        logger.info(f"[KIS-{self.mode.upper()}] 취소 시도: orig_order_id={order_id} symbol={symbol} tr_id={tr_id}")
+        try:
+            resp = self._post(url, json=body, headers=headers, timeout=(3, 15))
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            rt_cd, msg_cd, msg1 = data.get("rt_cd", ""), data.get("msg_cd", ""), data.get("msg1", "")
+            out = data.get("output") or {}
+            ok = bool(resp.ok and rt_cd == "0")
+            if not ok:
+                logger.warning(f"[KIS-{self.mode.upper()}] 취소 실패: HTTP {resp.status_code} rt_cd={rt_cd} "
+                               f"msg_cd={msg_cd} msg1={msg1}")
+            return {**base, "success": ok, "order_id": out.get("ODNO", "") if isinstance(out, dict) else "",
+                    "message": msg1, "raw": out if ok else data, "rt_cd": rt_cd, "msg_cd": msg_cd, "msg1": msg1}
+        except KISTokenError:
+            raise
+        except Exception as e:
+            logger.error(f"[KIS-{self.mode.upper()}] 취소 예외: {e}")
+            return {**base, "message": f"CANCEL_EXCEPTION:{e}"}
 
     # ── 내부 공통 주문 처리 ────────────────────────────────────────────────
 

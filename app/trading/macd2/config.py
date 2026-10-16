@@ -1920,3 +1920,26 @@ FIXED_EXIT_TP_PCT = 1.5
 FIXED_EXIT_SL_PCT = -1.5
 EXIT_FIXED_TP15 = "FIXED_TP15"
 EXIT_FIXED_SL15 = "FIXED_SL15"
+
+# ── 주문 실행 v2 (2026-10-16, feature/macd2-order-execution-v2) ───────────────
+# 승인된 매수 신호의 "주문 실행부"만 바꾼다(진입 판정 무관). **전부 기본 OFF** — OFF 면 기존 경로 그대로.
+#: 마스터 스위치. ON 이면 A(주문 직전 최신 호가, 나이 상한) / B(주문번호 기반 체결확인) / E(repricing 경로)를 쓴다.
+EXEC_V2_ENABLED = _env_bool("MACD2_EXEC_V2_ENABLED", False)
+#: A. 주문에 쓸 매도1호가의 최대 나이(초). 넘으면 다시 조회, EXEC_QUOTE_FETCH_ATTEMPTS 번 안에 못 얻으면 주문하지 않는다.
+EXEC_QUOTE_MAX_AGE_SEC = _env_float("MACD2_EXEC_QUOTE_MAX_AGE_SEC", 2.0)
+EXEC_QUOTE_FETCH_ATTEMPTS = _env_int("MACD2_EXEC_QUOTE_FETCH_ATTEMPTS", 3)
+EXEC_QUOTE_RETRY_DELAY_SEC = _env_float("MACD2_EXEC_QUOTE_RETRY_DELAY_SEC", 0.3)
+#: B. 주문번호 상태조회 간격 / 최대 대기(초). 기본 대기 60초는 기존 고정 구조와 같은 값 — 비교용으로 분리했다.
+EXEC_FILL_CHECK_INTERVAL_SEC = _env_float("MACD2_EXEC_FILL_CHECK_INTERVAL_SEC", 3.0)
+EXEC_FILL_WAIT_MAX_SEC = _env_float("MACD2_EXEC_FILL_WAIT_MAX_SEC", 60.0)
+#: D. 국내 정정취소 API 사용. **MOCK 전용**: 아래 두 플래그가 모두 1 이고 브로커 mode=="mock" 일 때만 호출한다.
+#:    실전(mode=real)은 kis_client 에서도 HTTP 없이 거부한다(이중 차단).
+EXEC_CANCEL_ENABLED = _env_bool("MACD2_EXEC_CANCEL_ENABLED", False)
+EXEC_CANCEL_MOCK_VERIFY = _env_bool("MACD2_EXEC_CANCEL_MOCK_VERIFY", False)
+EXEC_CANCEL_CONFIRM_CHECKS = _env_int("MACD2_EXEC_CANCEL_CONFIRM_CHECKS", 5)
+EXEC_CANCEL_CONFIRM_INTERVAL_SEC = _env_float("MACD2_EXEC_CANCEL_CONFIRM_INTERVAL_SEC", 1.0)
+#: E. repricing — 이번 주문이 0주 체결이고 취소가 **확정**된 경우에만, 최신 호가로 최대 N(<=2)회 재주문.
+#:    slippage 상한(최초 주문의 매도1호가 대비 %)이 0(미설정)이면 재주문하지 않는다. 기본값은 데이터 분석 후 결정.
+EXEC_REPRICE_ENABLED = _env_bool("MACD2_EXEC_REPRICE_ENABLED", False)
+EXEC_REPRICE_MAX = max(0, min(2, _env_int("MACD2_EXEC_REPRICE_MAX", 1)))
+EXEC_REPRICE_MAX_SLIPPAGE_PCT = _env_float("MACD2_EXEC_REPRICE_MAX_SLIPPAGE_PCT", 0.0)

@@ -37,6 +37,8 @@ MANUAL_RELEASED = "PENDING_MANUAL_RELEASED"
 RESOLUTION_SIGNAL_TYPE = "PENDING_ORDER_RESOLUTION"
 SOURCE_BUY_CANCEL_NOT_CONFIRMED = "BUY_CANCEL_NOT_CONFIRMED"
 CHECK_INTERVAL_SEC = 5.0
+#: 주문실행 v2 취소가 허용된 경우(MOCK 전용)에만: 추적 중 살아 있는 주문에 취소를 다시 넣는 최소 간격.
+CANCEL_RETRY_SEC = 30.0
 UI_WARNING = "주문 상태 미확정 — 기존 주문이 살아 있을 수 있음. 수동매수 금지"
 
 
@@ -65,11 +67,15 @@ def _direction_value(direction) -> str:
 
 def register(state, outcome, *, direction, signal_id: str, signal_type: str, now: datetime,
              signal_detected_at: Optional[datetime] = None, source: str = "AUTO") -> bool:
-    """outcome 이 BUY_CANCEL_NOT_CONFIRMED 면 pending 으로 저장하고 True. 아니면 아무 것도 안 하고 False."""
-    if getattr(outcome, "block_reason", None) != SOURCE_BUY_CANCEL_NOT_CONFIRMED:
+    """outcome 이 BUY_CANCEL_NOT_CONFIRMED 면 pending 으로 저장하고 True. 아니면 아무 것도 안 하고 False.
+
+    2026-10-16 주문실행 v2: 일부 체결(EXECUTED) + 잔량 취소 미확인(outcome.open_order)도 같은 추적으로 넘긴다
+    — 이미 체결·기록된 수량은 recorded_qty 로 시작하므로 다시 세지 않는다."""
+    open_order = getattr(outcome, "open_order", None)
+    if getattr(outcome, "block_reason", None) != SOURCE_BUY_CANCEL_NOT_CONFIRMED and not open_order:
         return False
     buy = getattr(outcome, "buy_result", None)
-    order_id = str(getattr(buy, "order_id", "") or "")
+    order_id = str((open_order or {}).get("order_id") or getattr(buy, "order_id", "") or "")
     if not order_id:
         return False
     ts = dict(getattr(outcome, "timestamps", {}) or {})
@@ -86,12 +92,16 @@ def register(state, outcome, *, direction, signal_id: str, signal_type: str, now
         "ordered_at": ts.get("buy_requested_at") or now.isoformat(),
         "registered_at": now.isoformat(),
         "trading_date": now.strftime("%Y%m%d"),
-        "recorded_qty": 0, "recorded_amount": 0.0,
+        "recorded_qty": int((open_order or {}).get("filled") or 0),
+        "recorded_amount": float((open_order or {}).get("amount") or 0.0),
+        "legs_recorded": 1 if (open_order or {}).get("filled") else 0,
+        "org_no": str(((getattr(buy, "raw", None) or {}).get("KRX_FWDG_ORD_ORGNO")) or ""),
         "checks": 0, "last_checked_at": None, "last_status": "REGISTERED",
         "cancel_attempts": int(bool(getattr(outcome, "cancel_called", False))),
         "last_cancel_result": str(getattr(outcome, "cancel_result", "") or ""),
     }
-    outcome.block_reason = PENDING_ORDER_UNCONFIRMED      # 신호원장: BLOCKED:PENDING_ORDER_UNCONFIRMED
+    if not open_order:
+        outcome.block_reason = PENDING_ORDER_UNCONFIRMED  # 신호원장: BLOCKED:PENDING_ORDER_UNCONFIRMED
     logger.warning("[MACD2][PENDING_ORDER] 등록 %s %s %s주 @%s order_id=%s (취소 미확인 — 체결/취소 확정까지 추적, "
                    "신규 매수 금지)", signal_id, outcome.target_symbol, state.pending_buy_order["requested_qty"],
                    state.pending_buy_order["order_price"], order_id)
@@ -103,16 +113,18 @@ def try_cancel(broker, state, now: datetime, why: str) -> str:
     p = get(state)
     if p is None:
         return ""
-    fn = getattr(broker, "cancel_order", None)
+    v2_ok = bool(getattr(broker, "cancel_v2_allowed", None) and broker.cancel_v2_allowed())
+    fn = getattr(broker, "cancel_order_v2" if v2_ok else "cancel_order", None)
     res = "CANCEL_UNAVAILABLE"
     if fn is not None:
         try:
-            r = fn(p["order_id"], p["symbol"])
+            r = fn(p["order_id"], p["symbol"], p.get("org_no") or None) if v2_ok else fn(p["order_id"], p["symbol"])
             res = "OK" if getattr(r, "success", False) else f"FAILED:{getattr(r, 'message', '')}"
         except Exception as exc:  # noqa: BLE001 — 취소 시도는 실패해도 추적은 계속
             res = f"FAILED:{exc!r}"[:120]
     p["cancel_attempts"] = int(p.get("cancel_attempts", 0)) + 1
     p["last_cancel_result"] = f"{now.isoformat()} {why} {res}"
+    p["last_cancel_at"] = now.isoformat()
     logger.warning("[MACD2][PENDING_ORDER] 취소 시도(%s) order_id=%s -> %s", why, p["order_id"], res)
     return res
 
@@ -194,6 +206,16 @@ def check(broker, state, now: datetime, *, apply_new_position: Callable[[Any, in
         out.update(action="FILL_RECORDED", new_qty=new_qty, price=price)
         logger.warning("[MACD2][PENDING_ORDER] 늦은 체결 기록 %s %s주 @%s (누적 %s / 주문 %s) signal=%s",
                        p["symbol"], new_qty, price, p["recorded_qty"], p["requested_qty"], p["signal_id"])
+
+    if remaining > 0 and not prev_day and getattr(broker, "cancel_v2_allowed", None) and broker.cancel_v2_allowed():
+        # v2 취소가 허용된 경우(MOCK 전용)만: 살아 있는 잔량에 취소를 다시 넣는다(최소 CANCEL_RETRY_SEC 간격).
+        last_c = p.get("last_cancel_at")
+        try:
+            due = (not last_c) or (now - datetime.fromisoformat(last_c)).total_seconds() >= CANCEL_RETRY_SEC
+        except ValueError:
+            due = True
+        if due:
+            out["cancel"] = try_cancel(broker, state, now, "TRACK_RETRY")
 
     if remaining <= 0 or prev_day:
         # 잔량 0 = 전량체결/취소확인/거부. 전일 주문은 장마감에 남은 잔량이 소멸한다.

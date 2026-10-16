@@ -79,6 +79,14 @@ class _BrokerAdapterBase:
     mode: str
     _broker: BrokerBase
 
+    @property
+    def order_org_no(self) -> dict:
+        """주문번호 -> KRX_FWDG_ORD_ORGNO (정정취소용, 2026-10-16). 프로세스 메모리에만."""
+        d = self.__dict__.get("_order_org_no")
+        if d is None:
+            d = self.__dict__["_order_org_no"] = {}
+        return d
+
     def get_cash(self) -> float:
         return float(self._broker.get_balance())
 
@@ -178,7 +186,15 @@ class _BrokerAdapterBase:
     def get_fresh_ask1(self, symbol: str) -> dict[str, Any]:
         getter = getattr(getattr(self._broker, "kis", None), "get_orderbook_quote", None)
         if getter is not None:
-            return dict(getter(symbol) or {})
+            q = dict(getter(symbol) or {})
+            # 2026-10-16(주문실행 v2 계측): 호가 접수시각(거래소, HHMMSS). 새 키만 추가 -- 기존 키는 그대로.
+            raw = q.get("raw") or {}
+            out = raw.get("output1") or raw.get("output") or {}
+            if isinstance(out, list):
+                out = out[0] if out else {}
+            if isinstance(out, dict) and out.get("aspr_acpt_hour"):
+                q["exch_time_hms"] = str(out.get("aspr_acpt_hour"))
+            return q
         price = self.get_quote(symbol)
         return {
             "ok": bool(price and price > 0),
@@ -258,7 +274,39 @@ class _BrokerAdapterBase:
         result = self._call_broker_without_direct_ledger(
             "buy", symbol, symbol, int(qty), int(price), order_type="limit",
         )
-        return _to_order_result(result, symbol, "BUY", int(qty))
+        out = _to_order_result(result, symbol, "BUY", int(qty))
+        # 2026-10-16: 취소에 필요한 주문조직번호(KRX_FWDG_ORD_ORGNO)를 주문번호별로 기억한다(관측만, 동작 무관).
+        org = (out.raw or {}).get("KRX_FWDG_ORD_ORGNO")
+        if out.success and out.order_id and org:
+            self.order_org_no[str(out.order_id)] = str(org)
+        return out
+
+    # ── 주문실행 v2: 국내 정정취소 (2026-10-16, MOCK 전용) ──────────────────────
+    def cancel_v2_allowed(self) -> bool:
+        """설정 두 개(EXEC_CANCEL_ENABLED, EXEC_CANCEL_MOCK_VERIFY)가 모두 켜져 있고 mode=="mock" 일 때만 True.
+        실계좌(real)는 어떤 설정으로도 True 가 되지 않는다."""
+        from app.trading.macd2 import config as _cfg
+        return bool(getattr(_cfg, "EXEC_CANCEL_ENABLED", False) and getattr(_cfg, "EXEC_CANCEL_MOCK_VERIFY", False)
+                    and getattr(self, "mode", "") == "mock")
+
+    def cancel_order_v2(self, order_id: str, symbol: str = "", org_no: Optional[str] = None) -> BrokerOrderResult:
+        """취소 **접수** 요청. 성공해도 취소 확정이 아니다(확정은 get_order_status 로 따로 본다)."""
+        if not self.cancel_v2_allowed():
+            return BrokerOrderResult(False, str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+                                     "CANCEL_V2_DISABLED", raw={"mode": getattr(self, "mode", "")})
+        fn = getattr(getattr(self._broker, "kis", None), "cancel_order_rvsecncl", None)
+        org = org_no or self.order_org_no.get(str(order_id or ""))
+        if fn is None or not org:
+            return BrokerOrderResult(False, str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+                                     "CANCEL_V2_UNAVAILABLE" if fn is None else "CANCEL_V2_NO_ORG_NO", raw={})
+        try:
+            r = dict(fn(str(order_id), str(org), symbol) or {})
+        except Exception as exc:  # noqa: BLE001
+            return BrokerOrderResult(False, str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+                                     f"CANCEL_ERROR:{exc}", raw={"msg1": str(exc)})
+        return BrokerOrderResult(bool(r.get("success")), str(order_id or ""), symbol, "CANCEL", 0, 0, 0.0,
+                                 str(r.get("message") or ("OK" if r.get("success") else "CANCEL_FAILED")),
+                                 raw={k: r.get(k) for k in ("order_id", "rt_cd", "msg_cd", "msg1")})
 
     def cancel_order(self, order_id: str, symbol: str = "") -> BrokerOrderResult:
         """Best-effort cancel of unfilled remainder. Returns success=False if
