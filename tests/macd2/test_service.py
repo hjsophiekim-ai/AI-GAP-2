@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import time as time_module
 from datetime import datetime, timedelta
+from datetime import time as dtime
 
 import pandas as pd
 import pytest
@@ -416,6 +417,12 @@ def test_stop_and_liquidate_all_sells_held_position(monkeypatch):
     시장가 매도한 뒤 auto_trade_on/position을 모두 정리한다."""
     monkeypatch.setattr(service_module, "other_strategy_active", lambda: (False, ""))
     _patch_ok_construction(monkeypatch)
+    # 2026-10-16: 벽시계 경합 제거. 서비스가 띄운 Worker 스레드는 run_once(now=실제 시각)를 돌리는데, 15:00
+    # (config.FORCE_LIQUIDATE_AT) 이후면 그 tick 이 이 테스트가 심어 둔 보유분을 FORCED_LIQUIDATION 으로 먼저
+    # 팔아(worker.py `if now.time() >= config.FORCE_LIQUIDATE_AT`) 아래 일괄매도 결과가 [] 가 되는 경합이 있었다
+    # (main fa0771d 에서도 15:00 이후 5회 중 1회 재현). 이 테스트는 '서비스의 일괄매도'를 검증하므로 Worker 의
+    # 장마감 강제청산 시각만 하루 끝으로 미룬다. 기대값은 그대로다.
+    monkeypatch.setattr(config, "FORCE_LIQUIDATE_AT", dtime(23, 59, 59))
 
     svc = service_module.Macd2Service()
     try:

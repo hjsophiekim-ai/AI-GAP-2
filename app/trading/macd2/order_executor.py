@@ -21,6 +21,7 @@ from typing import Any, Optional
 from app.logger import logger
 from app.trading.kis_realized import kis_reported_leg_cost
 from app.trading.macd2 import config, ledger
+from app.trading.macd2 import order_execution_v2 as exec_v2
 from app.trading.macd2.broker_adapter import BrokerOrderResult, BuySizingQuote
 from app.trading.macd2.models import Direction, PositionSnapshot, SignalState
 from app.trading.trading_cost_engine import TradeCostEngine
@@ -160,6 +161,10 @@ class ExecutionOutcome:
     leverage_deposit_ord_psbl_cash: Optional[float] = None
     # APBK3052 순간의 현금 필드 원값(JSON): 매수가능 조회 output + 잔고조회 output2.
     leverage_deposit_cash_fields: str = ""
+    # 2026-10-16 주문실행 계측/v2: 단계별 시각(exec_log), 재주문 횟수, 취소 미확인으로 살아 있을 수 있는 주문.
+    exec_log: dict = field(default_factory=dict)
+    reprice_count: int = 0
+    open_order: Optional[dict] = None
 
 
 def target_symbol_for_direction(direction: Direction) -> Optional[str]:
@@ -481,6 +486,7 @@ def _attempt_residual_cleanup(
 def _cancel_unfilled(broker, outcome: ExecutionOutcome, order_id: str, symbol: str) -> None:
     cancel_fn = getattr(broker, "cancel_order", None)
     outcome.cancel_called = True
+    outcome.exec_log.setdefault("cancel_requested_at", _now_iso())
     if cancel_fn is None:
         outcome.cancel_result = CANCEL_FAILED
         return
@@ -592,6 +598,60 @@ def _parse_kis_current_amount(text: str) -> Optional[float]:
     return float(m.group(1).replace(",", "")) if m else None
 
 
+def _finish_v2_buy(outcome: ExecutionOutcome, res: dict, *, broker, signal_id: str, target_symbol: str,
+                   timestamps: dict, release_claim, ledger_module) -> ExecutionOutcome:
+    """주문실행 v2 결과를 outcome 으로 옮긴다(2026-10-16). 체결이 있으면 그 주문으로 BUY 레그 1개를 기록."""
+    buy_result = res["buy_result"]
+    outcome.buy_result = buy_result
+    requested_qty = int(res["requested_qty"])
+    outcome.order_price = float(res["order_price"])
+    outcome.final_qty = requested_qty
+    filled = int(res["filled_qty"] or 0)
+    outcome.filled_qty = filled
+    outcome.unfilled_qty = max(requested_qty - filled, 0)
+    outcome.balance_qty = filled
+    outcome.fill_poll_result = f"V2_{res['final']}"
+    outcome.cancel_called = bool(outcome.exec_log.get("cancel_requested_at") or
+                                 any(k.endswith("cancel_requested_at") for k in outcome.exec_log))
+    outcome.cancel_result = ("OK" if res["final"] in (exec_v2.NO_FILL_CANCEL_CONFIRMED, exec_v2.PARTIAL_CANCEL_CONFIRMED,
+                                                      exec_v2.REPRICE_ABORTED_SLIPPAGE, exec_v2.REPRICE_QUOTE_UNAVAILABLE,
+                                                      exec_v2.REPRICE_ORDER_REJECTED)
+                             else (CANCEL_FAILED if res["final"] == exec_v2.CANCEL_UNCONFIRMED else ""))
+    timestamps["buy_reconciled_at"] = _now_iso()
+    if filled <= 0:
+        if res["final"] == exec_v2.CANCEL_UNCONFIRMED:
+            # 절대 재주문하지 않았다. 살아 있을 수 있는 주문은 pending_order 추적으로(worker 가 등록).
+            outcome.final_state = SignalState.BLOCKED
+            outcome.block_reason = BUY_CANCEL_NOT_CONFIRMED
+            outcome.order_failure_stage = BUY_CANCEL_NOT_CONFIRMED
+            return outcome
+        outcome.final_state = SignalState.FAILED
+        outcome.block_reason = (FAIL_BUY_NOT_CONFIRMED if res["final"] == exec_v2.NO_FILL_CANCEL_CONFIRMED
+                                else res["final"])
+        outcome.order_failure_stage = res["final"]
+        for o in outcome.exec_log.get("orders", []):          # 취소 확정된 주문들의 일일 주문금액 예약 해제
+            _release_cancelled_reservation(broker, outcome, int(o["qty"]), float(o["price"]))
+        if release_claim is not None:
+            release_claim(signal_id, "BUY")
+        return outcome
+    avg = float(res["avg_price"] or outcome.order_price)
+    if res["final"] == exec_v2.CANCEL_UNCONFIRMED and res.get("open_order"):
+        outcome.open_order = dict(res["open_order"])          # 일부 체결 + 잔량 취소 미확인 -> pending 추적
+        outcome.order_failure_stage = CANCEL_FAILED
+    elif filled < requested_qty:
+        outcome.order_failure_stage = "PARTIAL_FILL_CANCEL_CONFIRMED"
+    outcome.quantity = filled
+    outcome.filled_avg_price = avg
+    _record_leg(
+        broker_mode=broker.mode, signal_id=signal_id, symbol=target_symbol, side="BUY",
+        qty=filled, price=avg, position_before=0, position_after=filled, exit_reason="", order_result=buy_result,
+        entry_price=avg, confirmed_at=timestamps["buy_confirmed_at"], requested_qty=requested_qty,
+        ledger_module=ledger_module,
+    )
+    outcome.final_state = SignalState.EXECUTED
+    return outcome
+
+
 def execute_signal(
     *,
     broker,
@@ -663,15 +723,30 @@ def execute_signal(
         return outcome
     ask_quote: dict[str, Any] = {}
     timestamps["ask_fetch_started_at"] = _now_iso()          # 2026-10-16 지연 계측(관측 전용)
-    for retry_i in range(ASK1_FETCH_RETRIES):
-        ask_quote = dict(ask_getter(target_symbol) or {})
-        if ask_quote.get("stale") or ask_quote.get("is_stale"):
-            break  # a real, distinct signal -- never retried here
-        if ask_quote.get("ok", False) and float(ask_quote.get("ask1") or 0.0) > 0:
-            break  # succeeded
-        if retry_i < ASK1_FETCH_RETRIES - 1:
-            time.sleep(ASK1_FETCH_RETRY_DELAY_SEC)
-    timestamps["ask_fetch_done_at"] = _now_iso()
+    if config.EXEC_STALE_QUOTE_CHECK_ENABLED or config.EXEC_V2_ENABLED:
+        # A: 데이터 나이 상한(EXEC_QUOTE_MAX_AGE_SEC) 안의 최신 호가만 쓴다. 못 얻으면 주문하지 않는다.
+        _q, _why = exec_v2.fetch_fresh_ask(broker, target_symbol, outcome.exec_log)
+        timestamps["ask_fetch_done_at"] = _now_iso()
+        if _q is None:
+            outcome.final_state = SignalState.BLOCKED
+            outcome.block_reason = (_why if _why == exec_v2.BLOCK_QUOTE_TOO_OLD
+                                    else BLOCK_ASK_QUOTE_STALE if _why == "BROKER_STALE" else BLOCK_ASK_QUOTE_FAILED)
+            outcome.order_failure_stage = outcome.block_reason
+            outcome.sizing_msg1 = (f"최신 호가 확보 실패({_why}) -- 주문하지 않음, "
+                                   f"나이 {outcome.exec_log.get('quote_ages_ms')}ms, 상한 "
+                                   f"{int(float(config.EXEC_QUOTE_MAX_AGE_SEC) * 1000)}ms")
+            return outcome
+        ask_quote = _q
+    else:
+        for retry_i in range(ASK1_FETCH_RETRIES):
+            ask_quote = dict(ask_getter(target_symbol) or {})
+            if ask_quote.get("stale") or ask_quote.get("is_stale"):
+                break  # a real, distinct signal -- never retried here
+            if ask_quote.get("ok", False) and float(ask_quote.get("ask1") or 0.0) > 0:
+                break  # succeeded
+            if retry_i < ASK1_FETCH_RETRIES - 1:
+                time.sleep(ASK1_FETCH_RETRY_DELAY_SEC)
+        timestamps["ask_fetch_done_at"] = _now_iso()
     ask1 = float(ask_quote.get("ask1") or 0.0)
     outcome.ask1 = ask1 if ask1 > 0 else None
     outcome.ask1_age = float(ask_quote["age_sec"]) if ask_quote.get("age_sec") is not None else None
@@ -878,6 +953,36 @@ def execute_signal(
         outcome.block_reason = BLOCK_DUPLICATE_SIGNAL
         outcome.order_failure_stage = BLOCK_DUPLICATE_SIGNAL
         return outcome
+    reference_ask = ask1
+    if config.EXEC_STALE_QUOTE_CHECK_ENABLED or config.EXEC_V2_ENABLED:
+        _recv = outcome.exec_log.get("quote_received_at")
+        _age_now = (datetime.fromisoformat(_now_iso()) - datetime.fromisoformat(_recv)).total_seconds() if _recv else 1e9
+        if _age_now > float(config.EXEC_QUOTE_MAX_AGE_SEC):
+            # 매도 레그·사이징 동안 호가가 늙었다 -- 주문 직전에 다시 받는다(가격이 올랐으면 수량만 줄인다).
+            _q2, _why2 = exec_v2.fetch_fresh_ask(broker, target_symbol, outcome.exec_log, prefix="pre_")
+            if _q2 is None:
+                outcome.final_state = SignalState.BLOCKED
+                outcome.block_reason = _why2 if _why2 == exec_v2.BLOCK_QUOTE_TOO_OLD else BLOCK_ASK_QUOTE_FAILED
+                outcome.order_failure_stage = outcome.block_reason
+                outcome.sizing_msg1 = f"주문 직전 최신 호가 확보 실패({_why2}) -- 주문하지 않음"
+                if release_claim is not None:
+                    release_claim(signal_id, "BUY")
+                return outcome
+            _new_price = float(int(float(_q2["ask1"]) + get_tick_size(float(_q2["ask1"]))))
+            if _new_price != order_price:
+                outcome.exec_log["pre_order_price_changed"] = f"{order_price}->{_new_price}"
+                order_price = _new_price
+                outcome.order_price = order_price
+                if usable_cash and order_price > 0:
+                    requested_qty = min(requested_qty, int(float(usable_cash) // order_price))
+                    outcome.quantity = outcome.final_qty = requested_qty
+                if requested_qty < 1:
+                    outcome.final_state = SignalState.BLOCKED
+                    outcome.block_reason = BLOCK_INSUFFICIENT_QTY
+                    outcome.order_failure_stage = BLOCK_INSUFFICIENT_QTY
+                    if release_claim is not None:
+                        release_claim(signal_id, "BUY")
+                    return outcome
     timestamps["buy_requested_at"] = _now_iso()
     buy_limit = getattr(broker, "buy_limit", None)
     if buy_limit is None:
@@ -935,15 +1040,44 @@ def execute_signal(
         return outcome
     timestamps["buy_confirmed_at"] = _now_iso()
 
-    # Order acceptance != fill. Poll up to 10s @ 1s; tests may pass shorter reconcile_*.
-    fill_retries = max(1, int(BUY_FILL_POLL_MAX_SEC / BUY_FILL_POLL_INTERVAL_SEC))
-    fill_delay = BUY_FILL_POLL_INTERVAL_SEC
-    if reconcile_retries < fill_retries or reconcile_delay_sec < BUY_FILL_POLL_INTERVAL_SEC:
-        fill_retries = max(1, int(reconcile_retries))
-        fill_delay = float(reconcile_delay_sec)
-    filled_qty, filled_avg_price, fill_poll_result, balance_qty = _reconcile_buy_fill(
-        broker, target_symbol, retries=fill_retries, delay_sec=fill_delay,
-    )
+    v2res = None
+    if config.EXEC_V2_ENABLED:
+        v2res = exec_v2.run_buy(
+            broker, symbol=target_symbol, qty=requested_qty, order_price=order_price, reference_ask=reference_ask,
+            usable_cash=float(outcome.usable_cash or 0.0), client_order_id=f"{signal_id}:BUY:{target_symbol}",
+            first_result=buy_result, log=outcome.exec_log, tick_fn=get_tick_size,
+        )
+        outcome.reprice_count = int(v2res.get("reprice_count") or 0)
+        if v2res["final"] not in (exec_v2.STATUS_UNAVAILABLE, exec_v2.CANCEL_UNAVAILABLE):
+            return _finish_v2_buy(outcome, v2res, broker=broker, signal_id=signal_id, target_symbol=target_symbol,
+                                  timestamps=timestamps, release_claim=release_claim, ledger_module=ledger_module)
+
+    if v2res is not None and v2res["final"] == exec_v2.CANCEL_UNAVAILABLE:
+        # 주문번호 기준으로 이미 기다렸다 -- 같은 시간을 잔고 기준으로 또 기다리지 않는다. 취소는 기존 경로.
+        filled_qty, filled_avg_price = int(v2res["filled_qty"]), float(v2res["avg_price"] or 0.0)
+        fill_poll_result = f"ORDER_STATUS_{'PARTIAL' if filled_qty else 'OPEN'}"
+        balance_qty = filled_qty
+    else:
+        # Order acceptance != fill. Poll up to 10s @ 1s; tests may pass shorter reconcile_*.
+        fill_retries = max(1, int(BUY_FILL_POLL_MAX_SEC / BUY_FILL_POLL_INTERVAL_SEC))
+        fill_delay = BUY_FILL_POLL_INTERVAL_SEC
+        if reconcile_retries < fill_retries or reconcile_delay_sec < BUY_FILL_POLL_INTERVAL_SEC:
+            fill_retries = max(1, int(reconcile_retries))
+            fill_delay = float(reconcile_delay_sec)
+        filled_qty, filled_avg_price, fill_poll_result, balance_qty = _reconcile_buy_fill(
+            broker, target_symbol, retries=fill_retries, delay_sec=fill_delay,
+        )
+    if filled_qty > 0 and not outcome.exec_log.get("first_fill_at"):
+        outcome.exec_log["first_fill_at"] = _now_iso()
+    if (filled_qty < requested_qty and v2res is None and config.EXEC_ORDER_STATUS_ADVISORY
+            and getattr(broker, "get_order_status", None) is not None):
+        # 보조정보(advisory)만: 판정은 위 잔고 기반 결과 그대로. 모의계좌는 0건을 돌려줄 수 있다(2026-10-16 실측).
+        try:
+            _adv = dict(broker.get_order_status(buy_result.order_id, symbol=target_symbol) or {})
+        except Exception as _exc:  # noqa: BLE001
+            _adv = {"ok": False, "error": repr(_exc)[:120]}
+        outcome.exec_log["status_advisory"] = {k: _adv.get(k) for k in (
+            "ok", "found", "order_qty", "filled_qty", "remaining_qty", "cancelled", "error")}
     outcome.filled_qty = filled_qty
     outcome.fill_poll_result = fill_poll_result
     outcome.balance_qty = balance_qty

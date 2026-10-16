@@ -174,7 +174,7 @@ def test_query_error_never_confirms_anything():
     _register_live_order(svc, now, state, broker)
     broker.status_error = True
     r = worker.track_pending_order(broker, state, now + timedelta(minutes=1), force=True)
-    assert r["action"] == "QUERY_ERROR" and pending_order.is_active(state)
+    assert r["action"] == "UNKNOWN" and r["state"] == "UNKNOWN" and pending_order.is_active(state)
 
 
 # ── 3) 재시작 후 복원 ─────────────────────────────────────────────────────────

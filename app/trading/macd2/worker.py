@@ -2454,6 +2454,43 @@ def _order_latency(signal_id: str, detected_at, t_dispatch, t_reconcile_done, t_
     return out
 
 
+EXEC_LOG_FIELDS = ("signal_approved_at", "balance_start", "balance_end", "buying_power_start", "buying_power_end",
+                   "quote_requested_at", "quote_received_at", "quote_age_ms", "order_sent_at", "broker_accepted_at",
+                   "first_fill_at", "cancel_requested_at", "cancel_confirmed_at", "reprice_count")
+
+
+def _exec_log(signal_id: str, detected_at, t_balance_start, t_balance_end, outcome) -> dict:
+    """2026-10-16 주문 1건의 단계별 시각(요청 필드 14개) + v2 상세. 로그 [MACD2][EXEC_LOG] 한 줄(JSON)."""
+    ts = dict(getattr(outcome, "timestamps", {}) or {})
+    ex = dict(getattr(outcome, "exec_log", {}) or {})
+
+    def _s(v):
+        return v.isoformat() if isinstance(v, datetime) else (v or None)
+
+    rec = {
+        "signal_approved_at": _s(detected_at),
+        "balance_start": _s(t_balance_start), "balance_end": _s(t_balance_end),
+        "buying_power_start": ts.get("sizing_started_at"), "buying_power_end": ts.get("sizing_done_at"),
+        "quote_requested_at": ex.get("quote_requested_at") or ts.get("ask_fetch_started_at"),
+        "quote_received_at": ex.get("quote_received_at") or ts.get("ask_fetch_done_at"),
+        "quote_age_ms": ex.get("quote_age_ms") if ex.get("quote_age_ms") is not None else (
+            int(float(outcome.ask1_age) * 1000) if getattr(outcome, "ask1_age", None) is not None else None),
+        "order_sent_at": ts.get("buy_requested_at"), "broker_accepted_at": ts.get("buy_confirmed_at"),
+        "first_fill_at": ex.get("first_fill_at") or next((v for k, v in ex.items() if k.endswith("first_fill_at")), None),
+        "cancel_requested_at": ex.get("cancel_requested_at") or next(
+            (v for k, v in ex.items() if k.endswith("cancel_requested_at")), None),
+        "cancel_confirmed_at": ex.get("cancel_confirmed_at") or next(
+            (v for k, v in ex.items() if k.endswith("cancel_confirmed_at")), None),
+        "reprice_count": int(getattr(outcome, "reprice_count", 0) or 0),
+    }
+    rec["exec_v2"] = bool(config.EXEC_V2_ENABLED)
+    rec["result"] = f"{outcome.final_state.value}:{outcome.block_reason or ''}"
+    rec["order_id"] = getattr(getattr(outcome, "buy_result", None), "order_id", "") or ""
+    rec["detail"] = {k: v for k, v in ex.items() if k not in rec}
+    logger.info("[MACD2][EXEC_LOG] signal=%s %s", signal_id, json.dumps(rec, ensure_ascii=False, default=str))
+    return rec
+
+
 def _pending_apply_new_position(state: RuntimeState, qty: int, price: float) -> None:
     """pending 주문의 늦은 첫 체결을 포지션으로 세운다 -- 정상 EXECUTED 와 같은 _apply_switch_outcome 경로."""
     p = pending_order.get(state) or {}
@@ -2729,6 +2766,7 @@ def _execute_or_wait(
     result.signal_dispatch_trace["latency"] = _order_latency(
         signal_id, detected_at, _t_dispatch, _t_reconcile_done, _t_quote_ready, outcome.timestamps,
         quote_stale_retries=retry_count, reconcile_retries=len(_pde_retries))
+    result.signal_dispatch_trace["exec_log"] = _exec_log(signal_id, detected_at, _t_dispatch, _t_reconcile_done, outcome)
     if pending_order.register(state, outcome, direction=direction, signal_id=signal_id, signal_type=signal_type,
                               now=now, signal_detected_at=detected_at, source="AUTO"):
         result.signal_dispatch_trace["pending_order"] = dict(pending_order.get(state) or {})
