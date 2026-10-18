@@ -121,7 +121,9 @@ class MuRecorder:
             px = num(rec.get("LAST"))
             if kt is None or px is None:
                 continue
-            feed = str(rec.get("SYMB") or "").strip() or "?"
+            # feed 는 RSYM(RBAQMU 주간거래 / DNASMU 나스닥). SYMB 는 둘 다 "MU" 라
+            # 그걸 쓰면 두 피드가 한 분봉으로 합쳐진다 (2026-10-18 수정).
+            feed = str(rec.get("RSYM") or rec.get("SYMB") or "").strip() or "?"
             self._open(day_str(kt))
             row = {"recv_kst": recv.isoformat(timespec="milliseconds"), "feed": feed,
                    "kst_ts": kt.isoformat(timespec="seconds"), "local_ymd": rec.get("XYMD"),
