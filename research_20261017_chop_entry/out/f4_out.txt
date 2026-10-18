@@ -1,0 +1,55 @@
+오후 확정플래그 463건 / TEG 거절 93건
+
+재구성 검증: 원장 '통과' 56건 중 재구성 approved 55건 / 원장 'TEG거절' 93건 중 재구성 approved 0건(0 이어야 정상)
+
+TEG 거절 93건의 탈락조건:
+  EMA 정렬에서 탈락          66건
+  **EMA 정렬 하나만** 탈락    27건 / 24일  <- EMAV 가 열 수 있는 전부
+  EMA + 다른조건 같이 탈락   39건
+  EMA 와 무관하게 탈락       27건
+
+  다른 조건 동반 탈락 내역:
+others
+vwap_favorable_side                                                                                                                 41
+recent_cross_le_1,min_9min_since_opposite_flag                                                                                       5
+recent_cross_le_1                                                                                                                    5
+recent_cross_le_1,vwap_favorable_side                                                                                                4
+vwap_favorable_side,min_9min_since_opposite_flag                                                                                     3
+recent_cross_le_1,vwap_favorable_side,min_9min_since_opposite_flag                                                                   3
+macd_gap_signed_net_expanding,ema_spread_signed_net_expanding,min_9min_since_opposite_flag                                           1
+min_9min_since_opposite_flag                                                                                                         1
+macd_gap_signed_net_expanding,ema_spread_signed_net_expanding                                                                        1
+recent_cross_le_1,macd_gap_signed_net_expanding,ema_spread_signed_net_expanding,vwap_favorable_side,min_9min_since_opposite_flag     1
+recent_cross_le_1,macd_gap_signed_net_expanding,ema_spread_signed_net_expanding,min_9min_since_opposite_flag                         1
+
+  EMA 단독탈락 플래그 (27건):
+     day    hm       dir
+20260601 13:21    UP_RED
+20260602 12:12 DOWN_BLUE
+20260604 13:45    UP_RED
+20260611 12:30    UP_RED
+20260612 12:24 DOWN_BLUE
+20260612 13:09 DOWN_BLUE
+20260612 14:06 DOWN_BLUE
+20260615 12:42 DOWN_BLUE
+20260624 11:06 DOWN_BLUE
+20260716 12:24 DOWN_BLUE
+20260723 13:09 DOWN_BLUE
+20260803 11:36 DOWN_BLUE
+20260804 11:21 DOWN_BLUE
+20260805 11:12 DOWN_BLUE
+20260812 14:36    UP_RED
+20260814 11:57 DOWN_BLUE
+20260814 14:00 DOWN_BLUE
+20260818 14:15 DOWN_BLUE
+20260824 14:03 DOWN_BLUE
+20260909 13:30    UP_RED
+20260911 12:45    UP_RED
+20260921 11:57    UP_RED
+20260922 12:15 DOWN_BLUE
+20260928 13:51 DOWN_BLUE
+20260929 11:12 DOWN_BLUE
+20260930 14:00 DOWN_BLUE
+20261002 11:00    UP_RED
+  -> C:/Users/KIMHYU~1/AppData/Local/Temp/claude/G----------------2--Desktop-AI-GAP-2/e202387f-ec1a-41fa-a078-e46b72ece959/scratchpad/wk/jobs_CEMAOFF.txt  (24일)
+  -> C:/Users/KIMHYU~1/AppData/Local/Temp/claude/G----------------2--Desktop-AI-GAP-2/e202387f-ec1a-41fa-a078-e46b72ece959/scratchpad/wk/jobs_CEMASOFT.txt  (24일)
