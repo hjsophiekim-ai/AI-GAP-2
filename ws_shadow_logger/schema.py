@@ -31,7 +31,10 @@ ASP_TOTAL = ASP_KRX + ["KMID_PRC", "KMID_TOTAL_RSQN", "KMID_CLS_CODE",
 
 # HDFSCNT0 해외주식 실시간지연체결가 — 공식 examples_user/overseas_stock/overseas_stock_functions_ws.py delayed_ccnl.
 # 미국은 0분 지연(실시간 무료). KYMD/KHMS = 한국 일자/시각, XYMD/XHMS = 현지 일자/시각, EVOL = 체결량, TVOL = 누적거래량.
-OVRS_CCNL = ["SYMB", "ZDIV", "TYMD", "XYMD", "XHMS", "KYMD", "KHMS", "OPEN", "HIGH", "LOW",
+# 2026-10-18 수정: 공식 HDFSCNT0 은 **RSYM(실시간종목코드) 이 1번 필드**다. 이게 빠져 있어서
+# 폭이 25 로 잡혔고, 한 프레임에 레코드가 여러 개일 때(건수>1) 레코드마다 1칸씩 밀려
+# SYMB 에 가격/체결강도가, KYMD/KHMS 에 현지 일자·시각이 들어갔다(2026-10-16 실측).
+OVRS_CCNL = ["RSYM", "SYMB", "ZDIV", "TYMD", "XYMD", "XHMS", "KYMD", "KHMS", "OPEN", "HIGH", "LOW",
              "LAST", "SIGN", "DIFF", "RATE", "PBID", "PASK", "VBID", "VASK", "EVOL", "TVOL",
              "TAMT", "BIVL", "ASVL", "STRN", "MTYP"]
 

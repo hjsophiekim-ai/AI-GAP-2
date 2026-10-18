@@ -1,6 +1,6 @@
 """MU 실시간 체결(HDFSCNT0) 기록 계약 (2026-10-15).
 
-  1. HDFSCNT0 프레임 파싱(25필드, 다건) -> mu/YYYY-MM-DD/ticks.csv, bars_1m.csv
+  1. HDFSCNT0 프레임 파싱(26필드, 다건) -> mu/YYYY-MM-DD/ticks.csv, bars_1m.csv
   2. 분봉 기준은 KST(KYMD/KHMS). 하이닉스 스냅샷 ts(KST)와 같은 분 문자열로 join 된다
   3. 분봉 확정: 다음 분 체결 또는 시계(분 끝 + grace)
   4. 재시작: 같은 날 이어쓰기, 이미 쓴 분 중복 없음, 장 마감 후 ticks 로 재생성하면 정확
@@ -57,7 +57,11 @@ def test_parse_hdfscnt0_multi_record():
     m = parse_frame(stub.mu_trade("RBAQMU", T0, 120.5, 7, 700, recs=3))
     assert m["type"] == "data" and m["tr_id"] == "HDFSCNT0" and len(m["records"]) == 3
     r = m["records"][0]
-    assert len(r) == 25 and r["SYMB"] == "RBAQMU" and r["KHMS"] == "100000" and r["LAST"] == "120.5"
+    assert len(r) == 26 and r["RSYM"] == "RBAQMU" and r["SYMB"] == "MU"
+    assert r["KHMS"] == "100000" and r["LAST"] == "120.5"
+    # 다건 프레임에서 **마지막** 레코드까지 밀리지 않는다 (2026-10-16 실측 결함의 회귀테스트)
+    last = m["records"][-1]
+    assert last["RSYM"] == "RBAQMU" and last["KHMS"] == "100000" and last["LAST"] == "120.5"
 
 
 def test_ticks_and_bars_are_written_and_domestic_snapshots_unchanged(tmp_path):

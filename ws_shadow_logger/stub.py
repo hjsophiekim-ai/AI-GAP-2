@@ -57,9 +57,12 @@ def session(start: datetime, seconds=30, seed=0):
 
 
 def mu_trade(feed, t_kst, px, evol, tvol, recs=1):
-    """HDFSCNT0 레코드(25필드). t_kst = 한국시각. 현지(ET) 시각은 -13시간(서머타임)."""
+    """HDFSCNT0 레코드(26필드, 공식 포맷). t_kst = 한국시각. 현지(ET) 시각은 -13시간(서머타임).
+
+    RSYM = 실시간종목코드(RBAQMU/DNASMU), SYMB = 종목코드("MU"). 2026-10-18 이전 stub 은
+    RSYM 을 빼고 SYMB 에 피드명을 넣어서, 파서의 같은 결함을 재현하지 못했다."""
     loc = t_kst - timedelta(hours=13)
-    r = {"SYMB": feed, "ZDIV": "4", "TYMD": loc.strftime("%Y%m%d"), "XYMD": loc.strftime("%Y%m%d"),
+    r = {"RSYM": feed, "SYMB": "MU", "ZDIV": "4", "TYMD": loc.strftime("%Y%m%d"), "XYMD": loc.strftime("%Y%m%d"),
          "XHMS": loc.strftime("%H%M%S"), "KYMD": t_kst.strftime("%Y%m%d"), "KHMS": t_kst.strftime("%H%M%S"),
          "OPEN": px, "HIGH": px, "LOW": px, "LAST": px, "SIGN": "2", "DIFF": "1.0", "RATE": "0.10",
          "PBID": px - 0.01, "PASK": px + 0.01, "VBID": 10, "VASK": 12, "EVOL": evol, "TVOL": tvol,
