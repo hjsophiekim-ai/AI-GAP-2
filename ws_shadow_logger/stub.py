@@ -5,11 +5,11 @@ import json
 import random
 from datetime import datetime, timedelta
 
-from .schema import COLUMNS
+from .schema import COLUMNS, OVRS_ASP_OFFICIAL
 
 
-def _frame(tr, recs):
-    cols = COLUMNS[tr]
+def _frame(tr, recs, cols=None):
+    cols = cols or COLUMNS[tr]
     body = "^".join("^".join(str(r.get(c, "0")) for c in cols) for r in recs)
     return f"0|{tr}|{len(recs):03d}|{body}"
 
@@ -78,6 +78,35 @@ def mu_session(start: datetime, minutes=5, seed=0, feed="RBAQMU", per_min=6, lag
             t = start + timedelta(minutes=m, seconds=int(k * 60 / per_min) + rng.randint(0, 5))
             px = round(px + rng.choice([-0.05, 0, 0.05]), 2); v = rng.randint(1, 30); tvol += v
             out.append((t + timedelta(milliseconds=lag_ms), mu_trade(feed, t, px, v, tvol)))
+    return sorted(out, key=lambda x: x[0])
+
+
+def mu_quote(feed, t_kst, pbid, pask, vbid, vask, recs=1, with_rsym=True):
+    """HDFSASP0 레코드(실제 전문 17필드). t_kst = 한국시각, 현지(ET)는 -13시간.
+
+    **미국주식은 1호가만 온다** — PBID1/PASK1/VBID1/VASK1 하나씩이다(국내 10단과 다르다).
+    with_rsym=False 면 공식 예제의 16필드 포맷(RSYM 없음)으로 만든다 — 파서가 폭을 보고
+    알아서 전환하는지 확인하는 용도다(HDFSCNT0 의 RSYM 누락 사고 재발 방지)."""
+    loc = t_kst - timedelta(hours=13)
+    r = {"RSYM": feed, "SYMB": "MU", "ZDIV": "4", "XYMD": loc.strftime("%Y%m%d"),
+         "XHMS": loc.strftime("%H%M%S"), "KYMD": t_kst.strftime("%Y%m%d"), "KHMS": t_kst.strftime("%H%M%S"),
+         "BVOL": vbid * 10, "AVOL": vask * 10, "BDVL": 0, "ADVL": 0,
+         "PBID1": pbid, "PASK1": pask, "VBID1": vbid, "VASK1": vask, "DBID1": 0, "DASK1": 0}
+    cols = None if with_rsym else OVRS_ASP_OFFICIAL
+    return _frame("HDFSASP0", [r] * recs, cols)
+
+
+def mu_quote_session(start: datetime, minutes=5, seed=0, feed="RBAQMU", per_min=4, lag_ms=250):
+    """(recv_ts, frame). 분마다 per_min 건의 1호가 갱신, 수신은 호가시각 + lag_ms."""
+    rng = random.Random(seed); out = []; mid = 120.0
+    for m in range(minutes):
+        for k in range(per_min):
+            t = start + timedelta(minutes=m, seconds=int(k * 60 / per_min) + rng.randint(0, 5))
+            mid = round(mid + rng.choice([-0.05, 0, 0.05]), 2)
+            sp = rng.choice([0.01, 0.02, 0.05])
+            out.append((t + timedelta(milliseconds=lag_ms),
+                        mu_quote(feed, t, round(mid - sp / 2, 2), round(mid + sp / 2, 2),
+                                 rng.randint(1, 40), rng.randint(1, 40))))
     return sorted(out, key=lambda x: x[0])
 
 

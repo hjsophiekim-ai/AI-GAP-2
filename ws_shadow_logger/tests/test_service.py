@@ -113,7 +113,7 @@ def test_collects_regardless_of_trading_state(tmp_path, monkeypatch, prod):
     raw = root / "raw" / DAY / "frames_10.txt"
     assert raw.exists() and sum(1 for _ in open(raw, encoding="utf-8")) > 50
     assert (root / "snapshots" / DAY / "0193T0.csv").exists()
-    assert len(ws.sent) == len(config.all_subscriptions()) == 8
+    assert len(ws.sent) == len(config.all_subscriptions()) == 10   # 국내 6 + MU 체결 2 + MU 호가 2
     assert any("HEALTH LOGGER_RUNNING=1" in x for x in lines)
 
 
@@ -357,6 +357,6 @@ def test_real_websockets_client_against_a_local_server(tmp_path, monkeypatch):
             svc.request_stop("test")
             return await task, svc
     rc, svc = asyncio.run(go())
-    assert rc == 0 and got["subs"] == 8
+    assert rc == 0 and got["subs"] == 10
     assert svc.engine.counts["data"] + svc.engine.counts["system"] == len(frames)   # 유실 0 (recv 취소 포함)
     assert svc.engine.counts["pingpong"] == 1

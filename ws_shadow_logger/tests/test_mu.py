@@ -210,10 +210,17 @@ def test_mu_subscribe_rejection_is_logged_and_domestic_continues(tmp_path):
 
 # ── 등록 ──────────────────────────────────────────────────────────────────
 def test_domestic_first_then_mu_and_env_off(monkeypatch):
+    """국내 6 -> MU 체결 2 -> MU 호가 2 순서. 호가만 따로 끌 수도 있다 (2026-10-19)."""
     subs = config.all_subscriptions()
-    assert subs[:6] == config.SUBSCRIPTIONS and subs[6:] == (("HDFSCNT0", "RBAQMU"), ("HDFSCNT0", "DNASMU"))
+    assert subs[:6] == config.SUBSCRIPTIONS
+    assert subs[6:8] == (("HDFSCNT0", "RBAQMU"), ("HDFSCNT0", "DNASMU"))
+    assert subs[8:] == (("HDFSASP0", "RBAQMU"), ("HDFSASP0", "DNASMU"))
+    monkeypatch.setenv(config.ENV_MU_QUOTE_ENABLED, "0")
+    assert config.all_subscriptions() == config.SUBSCRIPTIONS + config.MU_SUBSCRIPTIONS
     monkeypatch.setenv(config.ENV_MU_ENABLED, "0")
     assert config.all_subscriptions() == config.SUBSCRIPTIONS
+    monkeypatch.delenv(config.ENV_MU_QUOTE_ENABLED)
+    assert config.all_subscriptions() == config.SUBSCRIPTIONS      # MU 가 꺼지면 호가도 안 붙는다
 
 
 def _sub_reply(key, ok=True):
@@ -235,8 +242,10 @@ def test_live_session_records_mu_and_health_reports_it(tmp_path):
     h = [x for x in lines if "HEALTH" in x and "MU_BARS=0 " not in x][-1]
     for k in ("MU_SUB=DNASMU:FAIL(OPSP8996),RBAQMU:OK", "MU_FEEDS=RBAQMU:", "/miss=", "MU_LAG=p50=", "RSS_MB=50.0"):
         assert k in h, (k, h)
-    tr_keys = [json.loads(m)["body"]["input"]["tr_key"] for m in ws.sent]
-    assert tr_keys[-2:] == ["RBAQMU", "DNASMU"] and len(tr_keys) == 8
+    sent = [json.loads(m)["body"]["input"] for m in ws.sent]
+    assert len(sent) == 10
+    assert [(s["tr_id"], s["tr_key"]) for s in sent[6:]] == [
+        ("HDFSCNT0", "RBAQMU"), ("HDFSCNT0", "DNASMU"), ("HDFSASP0", "RBAQMU"), ("HDFSASP0", "DNASMU")]
     assert any("MU=ON" in x for x in lines)
     assert (tmp_path / "mu" / DAY / "ticks.csv").exists()
 
@@ -252,6 +261,6 @@ def test_repeated_short_connections_drop_mu_for_the_day(tmp_path):
     svc, lines = _svc(tmp_path, connect=connect, now_fn=_clock(T0, speed=1.0))
     rc = _run_until(svc, lambda: len(conns) >= 4 and not conns[3].frames)
     assert rc == 0
-    assert [len(c.sent) for c in conns[:4]] == [8, 8, 8, 6]
+    assert [len(c.sent) for c in conns[:4]] == [10, 10, 10, 6]      # 체결+호가 둘 다 빠진다
     assert any("MU_DISABLED_TODAY" in x for x in lines)
     assert any("MU=OFF_TODAY" in x for x in lines)

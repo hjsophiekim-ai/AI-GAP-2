@@ -38,7 +38,22 @@ OVRS_CCNL = ["RSYM", "SYMB", "ZDIV", "TYMD", "XYMD", "XHMS", "KYMD", "KHMS", "OP
              "LAST", "SIGN", "DIFF", "RATE", "PBID", "PASK", "VBID", "VASK", "EVOL", "TVOL",
              "TAMT", "BIVL", "ASVL", "STRN", "MTYP"]
 
+# HDFSASP0 해외주식 실시간호가 — 공식 예제(examples_user/overseas_stock/overseas_stock_functions_ws.py
+# asking_price, examples_llm/overseas_stock/asking_price/asking_price.py)의 columns 는 **16개**다:
+#   symb zdiv xymd xhms kymd khms bvol avol bdvl advl pbid1 pask1 vbid1 vask1 dbid1 dask1
+# 미국주식은 **1호가만** 준다 — 국내 H0STASP0 의 10호가(ASKP1..10)와 다르다. 10호가로 오해 금지.
+#
+# 2026-10-19: 같은 공식 예제가 HDFSCNT0 에서 RSYM(1번 필드)을 빠뜨렸고 실제 전문은 26필드였다
+# (2026-10-16 실측, OVRS_CCNL 주석 참고). HDFSASP0 도 KIS 문서상 RSYM 이 1번 필드라 실제 전문은
+# **17필드**일 가능성이 높다. 둘 중 어느 쪽이 와도 밀리지 않도록 17필드를 기본으로 두고,
+# 16필드 전문이 오면 parser 가 ALT_COLUMNS 로 자동 전환한다(폭을 건수로 나눠 판별 — 모호하지 않다).
+OVRS_ASP_OFFICIAL = ["SYMB", "ZDIV", "XYMD", "XHMS", "KYMD", "KHMS", "BVOL", "AVOL", "BDVL", "ADVL",
+                     "PBID1", "PASK1", "VBID1", "VASK1", "DBID1", "DASK1"]                   # 공식 예제 16
+OVRS_ASP = ["RSYM", *OVRS_ASP_OFFICIAL]                                                      # 실제 전문 17
+
 COLUMNS = {"H0STCNT0": CCNL_KRX, "H0UNCNT0": CCNL_TOTAL, "H0STASP0": ASP_KRX, "H0UNASP0": ASP_TOTAL,
-           "HDFSCNT0": OVRS_CCNL}
+           "HDFSCNT0": OVRS_CCNL, "HDFSASP0": OVRS_ASP}
+#: 같은 TR 인데 전문 폭이 다른 변종. parser 가 (필드 수 / 건수) 로 골라 쓴다.
+ALT_COLUMNS = {"HDFSASP0": OVRS_ASP_OFFICIAL}
 KIND = {"H0STCNT0": "trade", "H0UNCNT0": "trade", "H0STASP0": "book", "H0UNASP0": "book",
-        "HDFSCNT0": "us_trade"}
+        "HDFSCNT0": "us_trade", "HDFSASP0": "us_book"}

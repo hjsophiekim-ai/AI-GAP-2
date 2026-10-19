@@ -22,7 +22,8 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 | `KIS_LOGGER_ENABLED` | `1` 일 때만 실행 |
 | `KIS_LOGGER_APP_KEY` / `KIS_LOGGER_APP_SECRET` | 로거 전용 실전 appkey. `KIS_APP_KEY` / `KIS_REAL_APP_KEY` / `KIS_MOCK_APP_KEY` 와 같으면 거부(appkey 지문만 비교, production secret 은 읽지 않음) |
 | `KIS_LOGGER_DATA_DIR` | 필수. 절대경로. 소스 디렉토리·임시 디렉토리는 거부 — 단 소스 트리 안의 **별도 마운트**(Render 디스크 `/opt/render/project/src/data`)는 허용. Render 에서는 영구 디스크 마운트 아래여야 한다 |
-| `KIS_LOGGER_MU_ENABLED` | 선택. 기본 ON. `0` 이면 MU(HDFSCNT0) 등록을 하지 않는다 |
+| `KIS_LOGGER_MU_ENABLED` | 선택. 기본 ON. `0` 이면 MU(HDFSCNT0 + HDFSASP0) 등록을 하지 않는다 |
+| `KIS_LOGGER_MU_QUOTE_ENABLED` | 선택. 기본 ON. `0` 이면 MU **호가**(HDFSASP0)만 빼고 체결은 그대로 모은다 |
 | `KIS_LOGGER_MAX_RSS_MB` | 선택. 기본 = 컨테이너(cgroup) 메모리 한도의 18%, 못 읽으면 96MB |
 
 종료 코드: 0 정상/비활성 · 2 키 문제 · 3 데이터 경로 문제(쓰기 불가 포함) · 4 RSS 한도 초과. 래퍼는 이 넷은 재시작하지 않고, 그 외 비정상 종료만 백오프 재시작한다. 어떤 경우에도 UI/자동매매 프로세스는 건드리지 않는다.
@@ -42,8 +43,8 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 | 15:35~ | `LOGGER_BACKUP_ENABLED=1`이면 업로드한다. 실패하면 5→15→30→60분 간격으로 재시도한다. 상태는 `state/backup_<날짜>.json`에 남아 다음 날·재시작 후에도 이어진다(최근 10일) |
 
 **export**: `$KIS_LOGGER_DATA_DIR/exports/ws_shadow_export_<YYYY-MM-DD>.zip`과 같은 이름의 `.manifest.json`(zip 밖 사본)을 만든다.
-- zip에 들어가는 것: `snapshots/<날짜>/`, `mu/<날짜>/`, `logs/<날짜>.jsonl`, `daily/<날짜>.json`, `manifest.json`
-- `manifest.json` 내용: 파일 수, 파일별 행 수·sha256, snapshot 행 수와 수집창 대비 누락률, stale 비율, MU tick·분봉 수, MU 누락률
+- zip에 들어가는 것: `snapshots/<날짜>/`, `mu/<날짜>/`(체결+호가), `logs/<날짜>.jsonl`, `daily/<날짜>.json`, `manifest.json`
+- `manifest.json` 내용: 파일 수, 파일별 행 수·sha256, snapshot 행 수와 수집창 대비 누락률, stale 비율, MU tick·분봉 수, MU 누락률, MU 호가 행 수(`mu_quote_rows`)·feed 별 요약(`mu_quote_summary`)
 - 원본은 지우지 않는다.
 - 같은 날짜를 다시 실행하면, 데이터 파일 구성이 같을 때 그대로 둔다(UNCHANGED). 바뀌었으면 임시 파일에 만든 뒤 원자적으로 교체한다.
 - 지문에서 `logs/`는 제외한다. 장외에도 health 줄이 붙기 때문이다.
@@ -84,7 +85,7 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 - gzip 과 일별 집계는 15:30 이후에만, 64KB 청크 스트리밍으로 한다.
 - 실측(로컬 서버, 초당 약 5,000 프레임 40초): RSS 33→36MB 에서 평탄하다.
 
-## 구독 (국내 6건 + MU 2건 = 8건, 한 세션)
+## 구독 (국내 6건 + MU 체결 2건 + MU 호가 2건 = 10건, 한 세션)
 
 | TR | 종목 | 내용 |
 |---|---|---|
@@ -92,15 +93,27 @@ Start Command: `bash scripts/render_start_with_logger.sh` — 기존 streamlit �
 | H0STCNT0 / H0STASP0 | 0193T0 레버리지, 0197X0 인버스 | KRX 체결 / 10호가 |
 | HDFSCNT0 | RBAQMU | MU 미국 주간거래(나스닥 BAQ) 실시간 체결 |
 | HDFSCNT0 | DNASMU | MU 나스닥(정규/시간외) 체결 — 주간거래 전 아침 구간 |
+| HDFSASP0 | RBAQMU | MU 주간거래 실시간호가 — **1호가만** (2026-10-19) |
+| HDFSASP0 | DNASMU | MU 나스닥 실시간호가 — **1호가만** (2026-10-19) |
 
-MU 는 국내 6건 **뒤에** 등록한다. `KIS_LOGGER_MU_ENABLED=0` 이면 등록하지 않는다(기본 ON).
-격리: MU 기록 경로의 예외(디스크 오류 포함)는 Engine 이 삼키고 `mu_error` 로 센다 — 하루 50건이면 그날 MU 기록만 끈다.
-MU 를 붙인 연결이 30초 안에 끊기기를 3번 연속하면 그날은 MU 등록을 빼고 국내 6건만 다시 붙는다.
+> **미국주식 호가는 1호가뿐이다.** `HDFSASP0` 은 국내 `H0STASP0` 의 10단(ASKP1..10)과 다르다 —
+> 최우선 매수/매도 호가와 그 잔량 하나씩, 그리고 매수·매도 총잔량(BVOL/AVOL)만 온다.
+> 깊이 기반 지표(imb_5, imb_10)는 MU 에서 만들 수 없고, imbalance 는 1호가 잔량 기준뿐이다.
+
+등록 순서는 국내 6건 → MU 체결 2건 → MU 호가 2건이다(앞의 등록이 뒤의 거절에 영향받지 않게).
+`KIS_LOGGER_MU_ENABLED=0` 이면 MU 를 통째로, `KIS_LOGGER_MU_QUOTE_ENABLED=0` 이면 호가만 빼고 체결은 그대로 등록한다(둘 다 기본 ON).
+격리: MU 체결/호가 기록 경로의 예외(디스크 오류 포함)는 Engine 이 삼키고 **각각** `mu_error` / `mu_quote_error`
+로 센다 — 한쪽이 하루 50건을 넘으면 그 기록만 끄고 나머지와 국내 수집은 그대로 간다.
+MU 를 붙인 연결이 30초 안에 끊기기를 3번 연속하면 그날은 MU 등록(체결+호가)을 빼고 국내 6건만 다시 붙는다.
 
 Render Logs 에서 첫날 확인할 줄:
-- `MU_SUBSCRIBE OK|FAIL tr_key=RBAQMU|DNASMU msg_cd= msg1=` — 구독 성공 여부
-- `HEALTH ... MU=ON MU_TICKS= MU_BARS= MU_SUB= MU_FEEDS=<feed>:<tick>t/<bar>b/<구간>m/miss=<누락률> MU_LAG=p50=/p95=/max= RSS_MB=` (1분마다)
-- `MU_SESSION_END` (15:30), `MU_DAY_SUMMARY {...}` (15:30 이후 maintenance, 분봉 재생성 기준 누락률)
+- `MU_SUBSCRIBE OK|FAIL tr_key=RBAQMU|DNASMU msg_cd= msg1=` — 체결 구독 성공 여부
+- `MU_QUOTE_SUBSCRIBE OK|FAIL tr_key=RBAQMU|DNASMU msg_cd= msg1=` — 호가 구독 성공 여부
+- `HEALTH ... MU=ON MU_TICKS= MU_BARS= MU_SUB= MU_FEEDS=<feed>:<tick>t/<bar>b/<구간>m/miss=<누락률> MU_LAG=p50=/p95=/max= MUQ=ON MUQ_ROWS= MUQ_NO_RSYM= MUQ_ERRORS= MUQ_SUB= MUQ_FEEDS=<feed>:<행수>q MUQ_LAG= RSS_MB=` (1분마다)
+- `MU_SESSION_END` / `MU_QUOTE_SESSION_END` (15:30), `MU_DAY_SUMMARY {...}` / `MU_QUOTE_DAY_SUMMARY {...}` (15:30 이후 maintenance)
+
+`MUQ_NO_RSYM` 은 RSYM 없는 16필드 전문으로 와서 RBAQMU/DNASMU 를 구분하지 못한 행 수다. 0 이 아니면
+그 행들은 `UNKNOWN_MU` feed 로 따로 쌓인다 — 두 피드를 섞어서 저장하지는 않는다.
 production `app/trading/mu_macd` 와 같은 tr_key 지만 로거 전용 appkey 의 별도 세션이다(코드 공유·import 없음).
 
 ## 저장 구조 (`$KIS_LOGGER_DATA_DIR`)
@@ -115,6 +128,8 @@ production `app/trading/mu_macd` 와 같은 tr_key 지만 로거 전용 appkey �
 | `mu/YYYY-MM-DD/ticks.csv` | MU 체결 1건 = 1행, 즉시 append. `recv_kst, feed(SYMB), kst_ts(KYMD/KHMS), local_ymd/hms, last, evol, tvol, pbid, pask, vbid, vask, strn, mtyp, lag_s`. 15:30 이후 `.csv.gz` |
 | `mu/YYYY-MM-DD/bars_1m.csv` | MU 1분봉 OHLCV(feed 별, KST 분, volume=EVOL 합). 장중엔 확정되는 대로 append(재시작으로 끊긴 분은 complete=0), 15:30 이후 ticks 로 다시 만든다 |
 | `mu/YYYY-MM-DD/summary.json` | feed 별 분봉 수·누락률(첫 봉~마지막 봉 사이 체결 없는 분) |
+| `mu/YYYY-MM-DD/quotes.csv` | MU **1호가** 갱신 1건 = 1행, 즉시 append. `recv_kst, feed(RSYM), symbol, kst_ts, local_ymd/hms, pbid1, pask1, vbid1, vask1, spread, spread_bp, imb1, bvol, avol, lag_s`. 15:30 이후 `.csv.gz` |
+| `mu/YYYY-MM-DD/quote_summary.json` | feed 별 호가 행 수·구간·호가 갱신이 없는 분의 비율 |
 | `daily/YYYY-MM-DD.json` | 일별 요약. 종목별 행 수, 최대 ts 간격, stale(>5초) 비율, 누계, MU 요약 |
 
 ## 실행
@@ -133,7 +148,7 @@ python -m pytest -c ws_shadow_logger/pytest.ini --rootdir ws_shadow_logger ws_sh
 | 접속 URL | `ws://ops.koreainvestment.com:21000` (실전) |
 | 접속키 | `POST https://openapi.koreainvestment.com:9443/oauth2/Approval` `{"grant_type":"client_credentials","appkey","secretkey"}` → `approval_key` |
 | 등록 메시지 | `{"header":{"approval_key","custtype":"P","tr_type":"1","content-type":"utf-8"},"body":{"input":{"tr_id","tr_key"}}}` |
-| 등록 한도 | 공식 예제는 40건 초과 시 예외. 이 로거는 **6건**만 등록한다 |
+| 등록 한도 | 공식 예제는 40건 초과 시 예외. 이 로거는 **10건**만 등록한다 |
 | PINGPONG | 수신하면 `ws.pong(raw)` 로 응답한다(공식 예제와 같다) |
 
 ## 1초 스냅샷 컬럼
@@ -155,3 +170,25 @@ MU 분봉의 분은 거래소 체결시각(KYMD/KHMS), 하이닉스 스냅샷은
 
 ## MACD2 결정시점 join (장 마감 후, 연구 전용)
 `ws_shadow_logger.join.build(pd.read_csv("dec.csv"), "<KIS_LOGGER_DATA_DIR>")`. 결정시점 이하 스냅샷만 쓰고, 스냅샷 나이가 5초를 넘으면 `data_ok=False` 다. `label` 은 사후 연구 전용이다. predictive test 는 이벤트 A/B/C 각 50건 이상 쌓이기 전에는 하지 않는다.
+
+## MU 1호가 (HDFSASP0, 2026-10-19)
+
+체결(`ticks.csv`)과 **파일도 코드경로도 따로**다 — `mu_quote.py` / `mu/<날짜>/quotes.csv`.
+
+| 컬럼 | 뜻 |
+|---|---|
+| `feed` | `RSYM` 그대로 (`RBAQMU` / `DNASMU`). `SYMB` 는 두 피드 모두 `MU` 라 구분에 못 쓴다 |
+| `kst_ts` | 거래소 기준 한국시각(`KYMD`+`KHMS`). `local_ymd`/`local_hms` 는 현지(ET) |
+| `pbid1` / `pask1` | 최우선 매수/매도 호가 (**1호가뿐**) |
+| `vbid1` / `vask1` | 그 잔량 |
+| `spread` / `spread_bp` | `pask1 - pbid1`, 그리고 mid 대비 bp |
+| `imb1` | `(vbid1 - vask1) / (vbid1 + vask1)` — 국내 스냅샷의 `imb_1` 과 같은 정의 |
+| `bvol` / `avol` | 매수·매도 **총잔량** |
+| `lag_s` | 수신시각 - `kst_ts` |
+
+공식 예제(`overseas_stock_functions_ws.asking_price`)의 columns 는 **16개**(RSYM 없음)지만,
+HDFSCNT0 에서 같은 예제가 RSYM 을 빠뜨려 전문이 밀렸던 전례(2026-10-16)가 있어 **17필드를 기본**으로 두고
+16필드 전문이 오면 파서가 폭을 보고 자동 전환한다(`schema.ALT_COLUMNS`). 16필드로 오면 feed 구분이
+불가능하므로 `UNKNOWN_MU` 로 따로 쌓고 `MUQ_NO_RSYM` 에 센다 - 두 피드를 임의로 합치지 않는다.
+
+`quotes.csv` 의 `kst_ts` 도 하이닉스 스냅샷 `ts` 와 같은 KST 라 `ts[:16] == kst_ts[:16]` 으로 같은 분에 붙는다.

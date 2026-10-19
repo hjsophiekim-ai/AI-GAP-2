@@ -50,6 +50,13 @@ SUBSCRIPTIONS = (
 ENV_MU_ENABLED = "KIS_LOGGER_MU_ENABLED"
 MU_SUBSCRIPTIONS = (("HDFSCNT0", "RBAQMU"), ("HDFSCNT0", "DNASMU"))
 MU_SYMBOL = "MU"
+# MU 해외 실시간호가 — HDFSASP0, 체결(HDFSCNT0)과 **별도 TR** 로 같은 세션에 추가 등록 (2026-10-19).
+#   미국주식 호가는 **1호가만** 온다(국내 H0STASP0 의 10단과 다르다). tr_key 체계는 체결과 동일.
+#   체결 2건을 먼저 등록하고 호가 2건을 뒤에 등록한다 — 호가 등록이 거부돼도 체결 수집은 이미 끝나 있다.
+ENV_MU_QUOTE_ENABLED = "KIS_LOGGER_MU_QUOTE_ENABLED"
+MU_QUOTE_SUBSCRIPTIONS = (("HDFSASP0", "RBAQMU"), ("HDFSASP0", "DNASMU"))
+#: MU 계열(체결+호가) TR — 짧은 연결 감지/구독응답 처리에서 한 묶음으로 본다.
+MU_TR_IDS = ("HDFSCNT0", "HDFSASP0")
 #: 분봉 확정 — 다음 분 체결이 오거나, 시계가 분 끝 + 이 초를 지나면 확정해 쓴다.
 MU_BAR_GRACE_SEC = 5.0
 #: MU 경로 오류가 하루 이 횟수를 넘으면 그날 MU 기록만 끈다(국내 수집은 계속).
@@ -94,10 +101,22 @@ def mu_enabled() -> bool:
     return (os.environ.get(ENV_MU_ENABLED) or "1").strip() != "0"
 
 
-def all_subscriptions(mu: bool | None = None) -> tuple:
-    """실제로 등록하는 목록. 국내가 먼저, MU 가 뒤."""
+def mu_quote_enabled() -> bool:
+    """기본 ON. KIS_LOGGER_MU_QUOTE_ENABLED=0 이면 MU **호가**만 빼고 체결은 그대로 등록한다.
+    MU 자체가 꺼져 있으면(mu_enabled()=False) 호가도 당연히 등록하지 않는다."""
+    return (os.environ.get(ENV_MU_QUOTE_ENABLED) or "1").strip() != "0"
+
+
+def all_subscriptions(mu: bool | None = None, mu_quote: bool | None = None) -> tuple:
+    """실제로 등록하는 목록. 국내가 먼저, MU 체결, MU 호가 순. (6 + 2 + 2 = 10건)"""
     mu = mu_enabled() if mu is None else mu
-    return SUBSCRIPTIONS + (MU_SUBSCRIPTIONS if mu else ())
+    mu_quote = mu_quote_enabled() if mu_quote is None else mu_quote
+    out = SUBSCRIPTIONS
+    if mu:
+        out = out + MU_SUBSCRIPTIONS
+        if mu_quote:
+            out = out + MU_QUOTE_SUBSCRIPTIONS
+    return out
 
 
 def _h(v: str) -> str:

@@ -54,6 +54,7 @@ def _startup_checks(out=print):
         return config.EXIT_CONFIG, None, None, None
     rss = config.max_rss_mb()
     out(f"{TAG} READY key_fp={creds.fingerprint} subs={len(config.all_subscriptions())} mu={int(config.mu_enabled())} "
+        f"muq={int(config.mu_quote_enabled())} "
         f"session={config.SESSION_START:%H:%M}-{config.SESSION_END:%H:%M} KST max_rss_mb={rss[0]:.0f} ({rss[1]})")
     return config.EXIT_OK, Path(dc.path), creds, rss
 
