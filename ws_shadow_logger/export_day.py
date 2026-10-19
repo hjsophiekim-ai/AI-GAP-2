@@ -4,7 +4,7 @@
 
 포함 (원본은 읽기만 하고 지우지 않는다):
   snapshots/<날짜>/*.csv(.gz)   1초 스냅샷 (하이닉스·레버리지·인버스 10호가·체결강도·체결량)
-  mu/<날짜>/*                   MU tick / 1분봉 / summary
+  mu/<날짜>/*                   MU 체결 tick / 1분봉 / summary + MU 1호가 quotes / quote_summary
   logs/<날짜>.jsonl             접속·gap·health 이벤트
   daily/<날짜>.json             일별 요약 (15:30 maintenance 결과)
   manifest.json                 파일 수 / 행 수 / sha256 / 누락률 / MU tick 수 / snapshot 수
@@ -106,7 +106,7 @@ def _load_json(p: Path):
 
 
 def build_manifest(root: Path, day: str, srcs, created_at: datetime) -> dict:
-    files, snap, mu_ticks, mu_bars = [], {}, 0, 0
+    files, snap, mu_ticks, mu_bars, mu_quotes = [], {}, 0, 0, 0
     for p, arc in srcs:
         rows, sha = _scan(p)
         files.append({"path": arc, "bytes": p.stat().st_size, "rows": rows, "sha256": sha})
@@ -118,12 +118,15 @@ def build_manifest(root: Path, day: str, srcs, created_at: datetime) -> dict:
             mu_ticks += rows
         elif parts[0] == "mu" and parts[-1].startswith("bars_1m.csv"):
             mu_bars += rows
+        elif parts[0] == "mu" and parts[-1].startswith("quotes.csv"):
+            mu_quotes += rows
     daily = _load_json(Path(root) / "daily" / f"{day}.json") or {}
     for sym, s in (daily.get("symbols") or {}).items():
         if sym in snap:
             snap[sym]["stale_ratio"] = s.get("stale_ratio")
             snap[sym]["max_ts_gap_s"] = s.get("max_ts_gap_s")
     mu_sum = _load_json(Path(root) / "mu" / day / "summary.json")
+    mu_quote_sum = _load_json(Path(root) / "mu" / day / "quote_summary.json")
     return {
         "manifest_version": MANIFEST_VERSION, "day": day, "created_at_kst": created_at.isoformat(timespec="seconds"),
         "source_fingerprint": _fingerprint(srcs),
@@ -131,6 +134,7 @@ def build_manifest(root: Path, day: str, srcs, created_at: datetime) -> dict:
         "total_bytes": sum(f["bytes"] for f in files),
         "snapshot_rows": sum(v["rows"] for v in snap.values()), "snapshots": snap,
         "mu_tick_rows": mu_ticks, "mu_bar_rows": mu_bars, "mu_summary": mu_sum,
+        "mu_quote_rows": mu_quotes, "mu_quote_summary": mu_quote_sum,
         "has_daily_summary": bool(daily), "has_logs": any(a.startswith("logs/") for _, a in srcs),
         "collect_window": f"{config.SESSION_START:%H:%M}-{config.SESSION_END:%H:%M} KST",
         "files": files,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .schema import COLUMNS
+from .schema import ALT_COLUMNS, COLUMNS
 
 
 class FrameError(ValueError):
@@ -32,10 +32,16 @@ def parse_frame(raw: str) -> dict[str, Any]:
         n = int(cnt)
         vals = body.split("^")
         w = len(cols)
+        # 같은 TR 의 전문 폭이 둘인 경우(HDFSASP0 의 RSYM 유무)만 적용된다. 기본 폭과 안 맞고
+        # 대체 폭과 정확히 맞을 때만 바꾼다 — 고정폭 슬라이스가 한 칸씩 밀리는 사고(HDFSCNT0
+        # RSYM, 2026-10-16)를 TR 추가 때마다 반복하지 않기 위한 장치다.
+        alt = ALT_COLUMNS.get(tr_id)
+        if alt is not None and n > 0 and len(vals) != w * n and len(vals) == len(alt) * n:
+            cols, w = alt, len(alt)
         if len(vals) < w * n:
             raise FrameError(f"{tr_id}: fields {len(vals)} < {w}x{n}")
         recs = [dict(zip(cols, vals[i * w:(i + 1) * w])) for i in range(n)]
-        return {"type": "data", "tr_id": tr_id, "records": recs}
+        return {"type": "data", "tr_id": tr_id, "records": recs, "width": w}
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError as e:

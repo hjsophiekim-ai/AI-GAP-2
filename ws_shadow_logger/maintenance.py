@@ -18,7 +18,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from . import config, mu
+from . import config, mu, mu_quote
 from .storage import day_str
 
 CHUNK = 64 * 1024
@@ -57,7 +57,12 @@ def finalize_mu(root: Path, now: datetime) -> list[str]:
     if not mu_root.exists():
         return done
     for d in sorted(p for p in mu_root.iterdir() if p.is_dir()):
-        if _finished(d.name, now) and mu.finalize_day(root, d.name) is not None:
+        if not _finished(d.name, now):
+            continue
+        # 체결과 호가는 각각 독립적으로 마감한다 — 한쪽만 있어도(또는 한쪽이 이미 끝났어도) 나머지를 처리한다.
+        ticks_done = mu.finalize_day(root, d.name) is not None
+        quotes_done = mu_quote.finalize_day(root, d.name) is not None
+        if ticks_done or quotes_done:
             done.append(d.name)
     return done
 
@@ -111,6 +116,12 @@ def daily_summary(root: Path, now: datetime) -> list[str]:
         if mp.exists():
             try:
                 summary["mu"] = json.loads(mp.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+        qp = root / "mu" / d.name / "quote_summary.json"
+        if qp.exists():
+            try:
+                summary["mu_quote"] = json.loads(qp.read_text(encoding="utf-8"))
             except ValueError:
                 pass
         raw_dir = root / "raw" / d.name

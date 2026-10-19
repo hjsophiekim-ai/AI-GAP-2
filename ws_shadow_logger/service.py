@@ -7,8 +7,9 @@
     RSS 가 한도를 넘으면 로거만 종료한다(종료코드 4, 래퍼는 재시작하지 않는다).
   · SIGTERM/SIGINT 를 받으면 연결을 닫고 파일을 flush/close 한 뒤 0 으로 끝난다.
 
-  · MU(HDFSCNT0 RBAQMU/DNASMU)는 같은 세션에 국내 6건 **뒤에** 등록한다. MU 기록 오류는 Engine 이 삼키고,
-    MU 를 붙인 뒤 연결이 연속으로 금방 끊기면 그날은 MU 등록을 빼고 국내만 다시 붙는다.
+  · MU 체결(HDFSCNT0 RBAQMU/DNASMU)과 MU 1호가(HDFSASP0 RBAQMU/DNASMU)를 같은 세션에 국내 6건
+    **뒤에** 등록한다(체결 먼저, 호가 나중). 두 기록 경로의 오류는 Engine 이 **각각** 삼키고,
+    MU 를 붙인 뒤 연결이 연속으로 금방 끊기면 그날은 MU(체결+호가) 등록을 빼고 국내만 다시 붙는다.
 
 자동매매 / 신규진입 허용 / 전략모드 / UI 세션 상태는 읽지 않는다 — 실행 조건은 시간뿐이다.
 주문 API, REST 접근토큰, production 모듈은 import 하지 않는다.
@@ -74,17 +75,21 @@ class LoggerService:
         self._stop = asyncio.Event()
         self._maintained_day = None
         self.mu_on = config.mu_enabled()
+        self.mu_quote_on = config.mu_quote_enabled()
         self._mu_off_day = None          # MU 를 그날만 뺀 날짜
         self._mu_short = 0               # MU 등록 뒤 연속으로 짧게 끝난 연결 수
-        self.mu_sub = {}                 # tr_key -> "OK" / "FAIL(msg_cd)" (가장 최근 구독응답)
+        self.mu_sub = {}                 # HDFSCNT0 tr_key -> "OK" / "FAIL(msg_cd)" (가장 최근 구독응답)
+        self.mu_quote_sub = {}           # HDFSASP0 tr_key -> 같은 형식
 
     def subscriptions(self, now: datetime | None = None) -> tuple:
         now = now or self.now()
-        return config.all_subscriptions(mu=self.mu_on and self._mu_off_day != day_str(now))
+        return config.all_subscriptions(mu=self.mu_on and self._mu_off_day != day_str(now),
+                                        mu_quote=self.mu_quote_on)
 
     def _note_connection_end(self, started: datetime, subs: tuple):
-        """MU 를 포함한 연결이 MU_SHORT_SESSION_SEC 안에 끝나기를 연속 MU_MAX_SHORT_SESSIONS 번 -> 그날 MU 제외."""
-        if not any(tr == "HDFSCNT0" for tr, _ in subs):
+        """MU 를 포함한 연결이 MU_SHORT_SESSION_SEC 안에 끝나기를 연속 MU_MAX_SHORT_SESSIONS 번 -> 그날 MU 제외.
+        체결·호가는 한 묶음으로 본다 — 둘 다 빼고 국내 6건만 다시 붙는다."""
+        if not any(tr in config.MU_TR_IDS for tr, _ in subs):
             return
         now = self.now()
         if (now - started).total_seconds() >= config.MU_SHORT_SESSION_SEC:
@@ -148,13 +153,25 @@ class LoggerService:
                          for f, d in ob["feeds"].items()) or "-"
         lag = ob["lag"]
         lag_s = f"p50={lag['p50']}s/p95={lag['p95']}s/max={lag['max']}s" if lag else "-"
+        muq = self.engine.mu_quote if self.engine else None
+        muq_state = ("OFF" if not (self.mu_on and self.mu_quote_on) else "OFF_TODAY"
+                     if self._mu_off_day == day_str(now)
+                     else "ERR_OFF" if (self.engine and self.engine.mu_quote_disabled) else "ON")
+        qob = muq.observe() if muq else {"feeds": {}, "lag": None, "no_rsym": 0}
+        qsub = ",".join(f"{k}:{v}" for k, v in sorted(self.mu_quote_sub.items())) or "-"
+        qfeeds = ",".join(f"{f}:{d['rows']}q" for f, d in qob["feeds"].items()) or "-"
+        qlag = qob["lag"]
+        qlag_s = f"p50={qlag['p50']}s/p95={qlag['p95']}s/max={qlag['max']}s" if qlag else "-"
+        muq_line = (f"MUQ={muq_state} MUQ_ROWS={muq.counts['quotes'] if muq else 0} "
+                    f"MUQ_NO_RSYM={qob['no_rsym']} MUQ_ERRORS={c.get('mu_quote_errors', 0)} "
+                    f"MUQ_SUB={qsub} MUQ_FEEDS={qfeeds} MUQ_LAG={qlag_s} ")
         return (f"{TAG} HEALTH LOGGER_RUNNING=1 WS_CONNECTED={int(self.ws_connected)} LAST_MESSAGE_AT={last} "
                 f"DATA_DIR={self.root} TODAY_RAW_COUNT={c.get('raw', 0)} TODAY_SNAPSHOT_COUNT={c.get('snapshot', 0)} "
                 f"RECONNECT_COUNT={c.get('reconnect', 0)} GAP_EVENTS={c.get('gap_events', 0)} "
                 f"MAX_GAP_S={c.get('max_gap_s', 0.0)} IN_SESSION={int(in_session(now))} "
                 f"MU={mu_state} MU_LAST_TICK_AT={mu_last} MU_TICKS={mu.counts['ticks'] if mu else 0} "
                 f"MU_BARS={mu.counts['bars'] if mu else 0} MU_ERRORS={c.get('mu_errors', 0)} "
-                f"MU_SUB={sub} MU_FEEDS={feeds} MU_LAG={lag_s} "
+                f"MU_SUB={sub} MU_FEEDS={feeds} MU_LAG={lag_s} " + muq_line +
                 f"RSS_MB={'-' if rss is None else f'{rss:.1f}'} MAX_RSS_MB={self.max_rss_mb:.0f}"), rss
 
     def health_tick(self):
@@ -196,8 +213,10 @@ class LoggerService:
     def _on_mu_subscribe_reply(self, msg: dict):
         ok = str(msg.get("rt_cd")) == "0"
         key = msg.get("tr_key") or "?"
-        self.mu_sub[key] = "OK" if ok else f"FAIL({msg.get('msg_cd')})"
-        self.out(f"{TAG} MU_SUBSCRIBE {'OK' if ok else 'FAIL'} tr_key={key} msg_cd={msg.get('msg_cd')} "
+        quote = msg.get("tr_id") == "HDFSASP0"
+        (self.mu_quote_sub if quote else self.mu_sub)[key] = "OK" if ok else f"FAIL({msg.get('msg_cd')})"
+        label = "MU_QUOTE_SUBSCRIBE" if quote else "MU_SUBSCRIBE"
+        self.out(f"{TAG} {label} {'OK' if ok else 'FAIL'} tr_key={key} msg_cd={msg.get('msg_cd')} "
                  f"msg1={msg.get('msg1')}")
 
     async def collect_session(self):
@@ -229,7 +248,7 @@ class LoggerService:
                         now = self.now()
                         if raw is not None:
                             msg = self.engine.on_frame(raw if isinstance(raw, str) else raw.decode("utf-8"), now)
-                            if msg.get("type") == "system" and msg.get("tr_id") == "HDFSCNT0":
+                            if msg.get("type") == "system" and msg.get("tr_id") in config.MU_TR_IDS:
                                 self._on_mu_subscribe_reply(msg)
                             if msg.get("type") == "pingpong":
                                 await ws.pong(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
@@ -255,10 +274,14 @@ class LoggerService:
         self.engine.flush()
         self.store.save_counters()
         if not self._stop.is_set():
-            self.store.log(self.now(), "session_end", counts=self.engine.counts, mu=self.engine.mu.observe())
+            self.store.log(self.now(), "session_end", counts=self.engine.counts, mu=self.engine.mu.observe(),
+                           mu_quote=self.engine.mu_quote.observe())
             self.out(f"{TAG} SESSION_END counts={self.engine.counts}")
             self.out(f"{TAG} MU_SESSION_END ticks={self.engine.mu.counts['ticks']} bars={self.engine.mu.counts['bars']} "
                      f"errors={self.engine.mu_errors} observe={self.engine.mu.observe()}")
+            self.out(f"{TAG} MU_QUOTE_SESSION_END quotes={self.engine.mu_quote.counts['quotes']} "
+                     f"no_rsym={self.engine.mu_quote.counts['no_rsym']} errors={self.engine.mu_quote_errors} "
+                     f"observe={self.engine.mu_quote.observe()}")
 
     _DISK_ERRNOS = {errno.ENOSPC, errno.EROFS, errno.EACCES, errno.EPERM, getattr(errno, "EDQUOT", -1), errno.EIO}
 
@@ -292,11 +315,13 @@ class LoggerService:
             self.store.log(now, "maintenance", **res)
             self.out(f"{TAG} MAINTENANCE gzipped={len(res.get('gzipped', []))} daily={len(res.get('daily', []))}")
             for day in res.get("mu", []):
-                p = self.root / "mu" / day / "summary.json"
-                try:
-                    self.out(f"{TAG} MU_DAY_SUMMARY {p.read_text(encoding='utf-8').replace(chr(10), '')}"[:1000])
-                except OSError:
-                    pass
+                for name, label in (("summary.json", "MU_DAY_SUMMARY"),
+                                    ("quote_summary.json", "MU_QUOTE_DAY_SUMMARY")):
+                    p = self.root / "mu" / day / name
+                    try:
+                        self.out(f"{TAG} {label} {p.read_text(encoding='utf-8').replace(chr(10), '')}"[:1000])
+                    except OSError:
+                        pass
         return res
 
     async def run(self) -> int:
