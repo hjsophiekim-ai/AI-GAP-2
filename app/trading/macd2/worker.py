@@ -1910,6 +1910,45 @@ def _update_history_freshness_diag(
             reason = "QUOTE_HISTORY_PRICE_MISMATCH"
     state.quote_history_mismatch_reason = reason
 
+    # ── 2026-10-20 실사고 fail-safe ───────────────────────────────────────
+    # 위 reason 은 이미 진입창을 닫는다(run_once 의 entry_window_open). 그런데
+    # 그 사실이 **어디에도 드러나지 않아서**, 그날 신호 피드가 멎은 채로
+    # 포지션을 들고 있다는 것을 아무도 알 수 없었다. 여기서 하는 일은 두
+    # 가지뿐이다:
+    #   (1) 차단 사유를 order_block_reason 에 명시적으로 남긴다(관측)
+    #   (2) 보유 중이면 CRITICAL 경고를 남긴다(경고 전용)
+    # **자동청산/강제매도는 추가하지 않는다** -- 기존 청산 규칙(FIXED_SL15 /
+    # TW 래더 / 강제청산)은 호가 기반이라 신호 피드와 무관하게 계속 돌고,
+    # 신호가 안 보인다는 이유로 포지션을 임의로 터는 것은 전략 변경이다
+    # (2026-10-20 사용자 결정).
+    if reason in ("HISTORY_STALE", "HISTORY_EMPTY"):
+        # 더 구체적인 사유(예: 같은 tick 에 먼저 설정된 HISTORY_GAP -- 봉은
+        # 들어오는데 구성분이 빠진 상태)는 **덮지 않는다**. 둘 다 주문을
+        # 막으므로 차단 효과는 같고, 진단 가치는 구체적인 쪽이 더 크다.
+        if state.order_block_reason in (None, config.HISTORY_STALE_BLOCK_REASON):
+            state.order_block_reason = config.HISTORY_STALE_BLOCK_REASON
+        held = state.position is not None and state.position.quantity > 0
+        if held:
+            last_alert = _parse_iso_dt(state.history_stale_alert_at)
+            due = (last_alert is None
+                   or (now - last_alert).total_seconds() >= config.HISTORY_STALE_ALERT_INTERVAL_SEC)
+            if due:
+                state.history_stale_alert_at = now.isoformat()
+                logger.critical(
+                    "[MACD2][%s] 신호 피드가 멎은 채 포지션 보유 중 -- "
+                    "%s %s주 (사유=%s, history_newest=%s, 당일 1분봉=%s). "
+                    "신규진입은 차단됐고 청산 규칙은 호가 기반으로 계속 동작한다. "
+                    "자동청산은 하지 않는다 -- 수동 확인 필요.",
+                    config.HISTORY_STALE_HOLDING_ALERT,
+                    state.position.symbol, state.position.quantity, reason,
+                    state.history_newest_at, state.today_1m_bar_count,
+                )
+    elif state.order_block_reason == config.HISTORY_STALE_BLOCK_REASON:
+        # 피드가 돌아왔다 -- 이 사유만 걷어낸다(다른 경로가 같은 tick 에 심은
+        # 사유는 건드리지 않는다. HISTORY_GAP 해제와 같은 관례).
+        state.order_block_reason = None
+        state.history_stale_alert_at = None
+
 
 def _within_open_grace_window(now: datetime, *, grace_sec: float = 60.0) -> bool:
     """A brief grace window right at SESSION_OPEN — the history-updater
@@ -7482,6 +7521,20 @@ def run_once(
                 _set_observed_frame(_skip_bars_3m, None)
             except Exception:
                 pass
+            # 2026-10-20: 이 경로만 미평가 완성봉 따라잡기가 빠져 있었다.
+            # 정상 tick(아래)과 청산 tick 은 둘 다 replay 를 돌리는데 여기만
+            # **마지막 봉 하나만** 평가하면서 그 봉을 평가완료로 도장까지
+            # 찍었다. 그래서 reconcile 이 막힌 사이에 완성된 앞선 봉은 그
+            # 경로에서 영영 따라잡히지 못했다 -- 신호 피드가 멎었다 돌아오는
+            # 구간과 겹치면 플래그가 통째로 사라진다. 다른 두 경로와 **같은**
+            # 함수를 같은 순서로 호출해 상태 일관성을 맞춘다. 이 함수는
+            # order_executor 를 import 조차 하지 않으므로 주문은 나가지 않는다.
+            try:
+                _replay_unevaluated_completed_bars(
+                    state=state, bars_3m=_skip_bars_3m, now=now, result=result)
+            except Exception:
+                logger.exception(
+                    "[MACD2] late-bar replay failed during reconcile block")
             # reconcile 블록으로 조기 return 하는 tick 에서도 프리마켓 표본은
             # 남긴다 -- 프리마켓 플래그는 그 봉이 지나가면 다시 만들 수 없고,
             # 이 경로가 하루 중 08:45~09:00 구간을 통째로 삼키면 관측 자체가
@@ -8750,6 +8803,9 @@ class Macd2Worker:
         self._instance_id = uuid.uuid4().hex[:12]
         self._started_at: Optional[datetime] = None
         self._last_quote_updater_restart_at: Optional[datetime] = None
+        # 루프 내 히스토리 워치독 상태 (2026-10-20). 관측/쿨다운 전용.
+        self._history_recover_attempt_at: Optional[datetime] = None
+        self._history_recover_streak: int = 0
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -8780,6 +8836,60 @@ class Macd2Worker:
                 "recent_tick_sample_count": len(self._tick_intervals),
                 "stage_timing_sec": dict(self._last_stage_timing),
             }
+
+    def _advance_history_watchdog(self, now: datetime) -> Optional[str]:
+        """1분봉 수집 스레드의 생사/정체를 보고 필요하면 재기동한다.
+
+        ``Macd2Service._history_watchdog`` 와 **판정 기준이 같다**(죽었나 /
+        살아 있는데 HISTORY_STALE_MAX_SEC 이상 새 봉이 없나). 다른 점은 도는
+        위치뿐이다 -- 그쪽은 대시보드 렌더 경로라 무인 상태에서는 아예 돌지
+        않는다. 두 곳 모두 ``recover_history_updater`` 하나만 호출하므로
+        수집 스레드가 둘로 늘어날 일은 없다(그 함수가 복구 락 + stop 확인으로
+        중복을 막는다).
+
+        돌려주는 값은 관측용 판정 문자열이며 ``None`` 이면 정상이다. 주문 /
+        포지션 / 전략 state 는 일절 건드리지 않는다."""
+        md = self._market_data
+        if md is None or not hasattr(md, "recover_history_updater"):
+            return None
+        now_kst = now.astimezone(KST)
+        # 감시 구간은 service._within_history_watch_window 와 **같은 정의**를
+        # 쓴다 -- 주말/장외에는 새 봉이 안 오는 것이 정상이라 복구를 반복하면
+        # 안 되고, 장 시작 직후 첫 봉 대기 구간은 오탐이라 유예한다.
+        if now_kst.weekday() >= 5:
+            return None
+        if not (config.SESSION_OPEN <= now_kst.time() < config.FORCE_LIQUIDATE_AT):
+            return None
+        if _within_open_grace_window(now, grace_sec=config.HISTORY_WATCHDOG_OPEN_GRACE_SEC):
+            return None
+
+        alive = md.history_updater_alive()
+        stale_age = md.history_stale_age_sec(now)
+        if not alive:
+            verdict = config.HISTORY_UPDATER_DEAD
+        elif stale_age is not None and stale_age > config.HISTORY_STALE_MAX_SEC:
+            verdict = config.HISTORY_UPDATER_ALIVE_BUT_STALE
+        else:
+            self._history_recover_streak = 0
+            return None
+
+        # 복구 폭주 방지 -- 호가 updater 와 같은 교훈(2026-08-24 스레드 누적).
+        cooldown = (config.WORKER_AUTO_RECOVER_COOLDOWN_SEC
+                    if self._history_recover_streak < config.HISTORY_WATCHDOG_FAST_RETRY_LIMIT
+                    else config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC)
+        last = self._history_recover_attempt_at
+        if last is not None and (now - last).total_seconds() < cooldown:
+            return verdict
+        self._history_recover_attempt_at = now
+        self._history_recover_streak += 1
+        logger.error(
+            "[MACD2][HISTORY] %s -- 신호 피드가 멎었다 (stale_age=%s초, 복구시도 %d회차). "
+            "신규진입은 기존 HISTORY_STALE 게이트가 차단한다.",
+            verdict, (round(stale_age, 1) if stale_age is not None else "n/a"),
+            self._history_recover_streak,
+        )
+        md.recover_history_updater(now=now)
+        return verdict
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -8890,6 +9000,21 @@ class Macd2Worker:
                                 "[MACD2] quote-updater stale but old thread still alive after "
                                 "join -- skipping restart this cycle to avoid orphaning another thread"
                             )
+                # 2026-10-20 실사고: 호가 updater 는 바로 위에서 매 tick
+                # 감시받는데 **1분봉 수집 스레드는 루프 안에 감시가 전혀
+                # 없었다**. 유일한 워치독이 service.get_snapshot()/
+                # supervisor_status() 안에 있어서 "대시보드를 아무도 열지
+                # 않으면 신호 피드가 멎어도 복구 시도조차 없는" 상태였고,
+                # 그날 12:06 DOWN_BLUE / 13:36 UP_RED 이 통째로 사라졌다.
+                # 여기서는 **수집 스레드의 수명만** 관리한다 -- 주문/전략
+                # state/플래그 판정은 한 줄도 건드리지 않으며, 어떤 경우에도
+                # 예외를 위로 던지지 않는다(이 진단 때문에 tick 이 깨지면 안
+                # 된다). 신규진입 차단은 run_once 의 기존 HISTORY_STALE
+                # 게이트가 계속 담당한다.
+                try:
+                    self._advance_history_watchdog(datetime.now(KST))
+                except Exception:  # pragma: no cover - 방어적 이중 차단
+                    logger.exception("[MACD2][HISTORY] 루프 내 워치독 실패 -- tick 은 계속한다")
                 tick_result = run_once(broker=self._broker, market_data=self._market_data, state=state, now=datetime.now(KST))
                 stage_timing.update(tick_result.timing)
                 t_stage = time.monotonic()

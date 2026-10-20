@@ -396,7 +396,17 @@ def test_default_kis_client_created_once_and_reused(monkeypatch):
     endpoint proved unreliable) — so a "mock"-mode service now legitimately
     creates at most 2 clients total (one "mock" for orders/quotes/today's
     live paging, one "real" for prior-day warm-up), each created exactly
-    once and reused, never re-created per call."""
+    once and reused, never re-created per call.
+
+    2026-10-20 fix: 호가 경로와 1분봉 수집 경로가 **같은 클라이언트(= 같은
+    requests.Session)** 를 공유하고 있었다. ``kis_client`` 자신이 "requests.
+    Session is NOT thread-safe — callers must not share one session across
+    concurrent quote threads" 라고 못 박아 둔 것을 어긴 상태였고, 두 경로가
+    각자 전용 updater 스레드에서 동시에 HTTP 를 던지므로 실제로 겹칠 수
+    있었다(2026-10-20 ``RemoteDisconnected`` 실사고). 이제 "mock" 용도가 둘
+    (quote / history)이라 mock 클라이언트도 2개가 정상이다 -- 핵심 불변식은
+    개수가 아니라 **용도마다 정확히 한 번만 만들고 그 뒤로는 재사용한다**는
+    것이며, 아래 2차 호출들이 그것을 검증한다."""
     created = []
 
     class _FakeKisClient:
@@ -422,9 +432,19 @@ def test_default_kis_client_created_once_and_reused(monkeypatch):
     svc.merge_incremental_1m()
     svc.refresh_quotes()
     svc.refresh_quotes()
-
-    assert created.count("mock") == 1  # exactly one mock client, reused every call
+    # 용도별로 한 번씩: 호가(quote) + 1분봉 수집(history)
+    assert created.count("mock") == 2, created
     assert created.count("real") <= 1  # at most one dedicated read-only warm-up client, reused
+
+    # 재사용 불변식 -- 호출을 아무리 반복해도 더 만들지 않는다
+    before = len(created)
+    svc.merge_incremental_1m()
+    svc.refresh_quotes()
+    svc.merge_incremental_1m()
+    assert len(created) == before, f"클라이언트가 호출마다 새로 생성된다: {created}"
+
+    # 그리고 두 경로는 서로 다른 Session 을 쓴다(공유 금지)
+    assert svc._get_kis_client() is not svc._get_history_kis_client()
 
 
 def test_default_fetchers_request_nxt_market_div(monkeypatch):
