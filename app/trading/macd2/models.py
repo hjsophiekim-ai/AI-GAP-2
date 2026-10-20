@@ -380,6 +380,9 @@ class RuntimeState:
     today_1m_bar_count: Optional[int] = None
     history_newest_at: Optional[str] = None
     last_completed_3m_bar_at: Optional[str] = None
+    # 신호 피드 정지 중 보유 포지션 CRITICAL 경고의 마지막 발행 시각
+    # (2026-10-20 실사고). 경고 rate-limit 전용 -- 주문 판정에는 쓰이지 않는다.
+    history_stale_alert_at: Optional[str] = None
 
     # ── QUOTE_STALE recovery diagnostics (2026-07-27 fix) — most recent
     # confirmed-signal quote-stale retry attempt, kept for the UI, separate

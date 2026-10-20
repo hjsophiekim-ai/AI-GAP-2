@@ -350,6 +350,32 @@ HISTORY_WATCHDOG_OPEN_GRACE_SEC = 60.0
 #: 수 있어야 하므로). 재시도 "간격"을 정하는 값이지 stale 판정과는 무관하다.
 HISTORY_WATCHDOG_FAST_RETRY_LIMIT = 3
 
+# ── 신호 피드 정지 fail-safe (2026-10-20 실사고) ────────────────────────────
+# 2026-10-20: history-updater 가 멈춘 채 워커만 계속 돌았다. 완성된 12:06
+# DOWN_BLUE / 13:36 UP_RED 이 bars_3m 에 들어오지 못해 플래그·원장행·예외가
+# **전부** 없었고, 호가 경로는 멀쩡해 12:18 FIXED_SL15 손절만 정상 발동했다.
+# 감시가 비어 있던 지점은 세 곳이었다:
+#   (1) market_data 에 로깅이 0건  -> Render 로그에 흔적이 남지 않음
+#   (2) history 워치독이 service.get_snapshot()/supervisor_status() 안에만
+#       있음 -> **대시보드를 열어야만** 복구 시도
+#   (3) 신규진입은 기존 HISTORY_STALE 게이트(quote_history_mismatch_reason,
+#       worker.py)가 이미 막고 있었지만 그 사실이 어디에도 드러나지 않았고,
+#       **보유 포지션에 대한 경고는 아예 없었다**
+#
+# 아래 상수는 (3)의 "차단 사유를 명시적으로 남긴다"는 용도 전용이다. 판정
+# 임계값은 새로 만들지 않고 HISTORY_STALE_MAX_SEC(180초)를 그대로 쓴다 --
+# 기존 게이트와 정의가 어긋나면 안 된다.
+#
+# 중요: stale 일 때 막는 것은 **신규진입뿐**이다. 보유 포지션에 대해서는
+# CRITICAL 경고만 남기고, 자동청산/강제매도는 **추가하지 않는다**
+# (2026-10-20 사용자 결정 -- 기존 청산 규칙을 한 줄도 바꾸지 않는다).
+HISTORY_STALE_BLOCK_REASON = "HISTORY_FEED_STALE"
+#: 보유 중 신호 피드가 멎었을 때 남기는 CRITICAL 경고 사유. 경고 전용이며
+#: 어떤 주문 경로도 이 값을 읽지 않는다.
+HISTORY_STALE_HOLDING_ALERT = "HISTORY_FEED_STALE_WHILE_HOLDING"
+#: 같은 CRITICAL 경고를 매 tick(5초) 쏟지 않기 위한 최소 간격.
+HISTORY_STALE_ALERT_INTERVAL_SEC = 60.0
+
 # 전일 warm-up 조회(주식일별분봉조회) 중 KIS 서버 일시 오류(500 등)를 "해당
 # 날짜에 데이터 없음(휴장일)"으로 오인해 더 이전 날짜로 잘못 넘어가면 EMA
 # seed가 실제 KIS 차트와 달라진다 (2026-07-27 3플래그 재현 검증에서 발견 —

@@ -7,10 +7,13 @@ either (docs §8/§11/§13) — it only reads this service's cached snapshots vi
 get_history_df()/get_quote(). start_history_updater()/start_quote_updater()
 are the only two background threads that actually call KIS, each on its own
 centralized interval (never per-Worker-tick), so quote polling never
-compounds toward a rate limit. A single I/O lock serializes all KIS calls
-(the underlying KISClient is not documented thread-safe), and exactly one
-KISClient instance is created lazily (_get_kis_client()) and reused for the
-lifetime of this service instance — never re-created per call.
+compounds toward a rate limit. Each fetch path has its OWN lock and its OWN
+lazily-created KISClient — the quote path (_get_kis_client) and the 1-minute
+history path (_get_history_kis_client) never share a requests.Session, which
+kis_client itself documents as not thread-safe (2026-10-20 fix; see
+_get_history_kis_client's docstring for the RemoteDisconnected incident).
+Each client is created once per service instance and reused for its lifetime
+— never re-created per call.
 
 Reuses app.trading.kis_client.create_kis_client / KISClient.get_minute_candles
 / get_current_price directly — generic, non-MACD-v1 KIS wrappers per the
@@ -29,6 +32,7 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
+from app.logger import logger
 from app.trading.macd2 import bar_archive, config
 from app.trading.macd2.models import QuoteSnapshot
 from app.trading.macd2.signal_engine import resample_completed_3m
@@ -239,6 +243,10 @@ class MarketDataService:
         self.mode = mode
         self._kis_client: Any = None
         self._kis_client_lock = threading.RLock()
+        # 1분봉 수집 전용 클라이언트 -- 호가 경로와 requests.Session 을 절대
+        # 공유하지 않는다(2026-10-20, _get_history_kis_client 주석 참고).
+        self._history_kis_client: Any = None
+        self._history_fetch_client_lock = threading.RLock()
         self._watch_history_client: Any = None
         self._watch_history_client_lock = threading.RLock()
         self._fetch_minute_candles = fetch_minute_candles or self._default_fetch_minute_candles
@@ -404,6 +412,34 @@ class MarketDataService:
                 self._kis_client = create_kis_client(self.mode if self.mode in ("mock", "real") else "mock")
             return self._kis_client
 
+    def _get_history_kis_client(self) -> Any:
+        """오늘치 1분봉 수집 **전용** KISClient (2026-10-20 실사고 수정).
+
+        ``kis_client.KISClient.__init__`` 은 스스로 못 박아 두었다 --
+        *"requests.Session is NOT thread-safe — callers must not share one
+        session across concurrent quote threads without per-thread sessions."*
+        그런데 이 서비스는 호가 updater 스레드와 히스토리 updater 스레드가
+        **같은** ``_get_kis_client()`` 인스턴스(= 같은 Session)를 썼다.
+        2026-08-25 에 ``_io_lock`` 을 ``_quote_fetch_lock`` /
+        ``_history_fetch_lock`` 둘로 쪼개면서(한쪽의 멈춘 재시도가 다른 쪽을
+        막지 않게 하려고) 그 단일 락이 **유일하게 Session 을 직렬화하고
+        있었다**는 점이 간과됐다. 그 뒤로 두 스레드의 HTTP 호출이 실제로
+        겹칠 수 있게 됐고, 2026-10-20 로그의
+        ``RemoteDisconnected('Remote end closed connection without response')``
+        가 바로 그 공유 커넥션 풀이 깨질 때의 전형적인 증상이다.
+
+        락은 되돌리지 않는다(되돌리면 2026-08-25 실사고가 재발한다). 대신
+        **경로마다 Session 을 분리**해 동시성 자체를 안전하게 만든다. mode /
+        토큰 / 레이트 게이트(``kis_client._throttle``, mode 별 프로세스 전역)는
+        그대로이므로 요청 pacing 동작은 바뀌지 않는다."""
+        with self._history_fetch_client_lock:
+            if self._history_kis_client is None:
+                from app.trading.kis_client import create_kis_client
+
+                self._history_kis_client = create_kis_client(
+                    self.mode if self.mode in ("mock", "real") else "mock")
+            return self._history_kis_client
+
     def _get_watch_symbol_history_client(self) -> Any:
         """WATCH_SYMBOL (000660) prior-day warm-up (주식일별분봉조회) read-only
         client — never used for orders or the traded ETF symbols.
@@ -444,8 +480,8 @@ class MarketDataService:
         the ONE-SHOT prior-day warm-up fetch
         (_default_fetch_minute_candles_for_date) uses the REAL client — this
         path stays on self.mode's regular client, unchanged."""
-        del mode  # self.mode already selected the shared client via _get_kis_client()
-        client = self._get_kis_client()
+        del mode  # self.mode already selected the client via _get_history_kis_client()
+        client = self._get_history_kis_client()
         if client is None:
             return _empty_1m_frame(), {"error": "kis_client_none"}
         try:
@@ -1142,24 +1178,43 @@ class MarketDataService:
         except Exception:
             newest = None
         error = (diag or {}).get("error")
+        # 2026-10-20 실사고: 아래 진단은 전부 **메모리에만** 남아 있었고 이
+        # 모듈에는 로깅이 0건이었다. 그래서 신호 피드가 멎어도 Render 로그에
+        # 단 한 줄도 남지 않았고, 사고를 4시간 동안 볼 수 없었다. 로그는
+        # 관측 전용이며 거래 경로로는 여전히 아무것도 던지지 않는다.
+        recovered_from = 0
         with self._history_diag_lock:
             self._history_last_attempt_at = now
             if error:
                 self._history_last_error = str(error)[:300]
                 self._history_consecutive_failures += 1
+                streak = self._history_consecutive_failures
             else:
+                recovered_from = self._history_consecutive_failures
                 self._history_last_error = None
                 self._history_consecutive_failures = 0
+                streak = 0
             if newest is not None and (
                 self._history_newest_bar_at is None or newest > self._history_newest_bar_at
             ):
                 self._history_newest_bar_at = newest
                 self._history_last_success_at = now
+        if error:
+            # 연속 실패가 길어질수록 소리를 키운다 -- 첫 건은 일시적 네트워크
+            # 오류일 수 있지만, 누적되면 그것이 곧 신호 피드 정지다.
+            log = logger.error if streak >= 3 else logger.warning
+            log("[MACD2][HISTORY] 1분봉 수집 실패 streak=%d error=%s", streak, error)
+        elif recovered_from:
+            logger.warning(
+                "[MACD2][HISTORY] 1분봉 수집 복구 -- 연속실패 %d 건 뒤 정상화", recovered_from)
 
     def _note_history_exception(self, exc: BaseException) -> None:
         with self._history_diag_lock:
             self._history_last_error = f"{type(exc).__name__}: {exc}"[:300]
             self._history_consecutive_failures += 1
+            streak = self._history_consecutive_failures
+        # 예전에는 이 예외가 어디에도 드러나지 않았다(2026-10-20 실사고).
+        logger.error("[MACD2][HISTORY] 수집 스레드 예외 streak=%d: %r", streak, exc)
 
     def history_last_success_at(self) -> Optional[datetime]:
         with self._history_diag_lock:
@@ -1226,6 +1281,9 @@ class MarketDataService:
                 # 유지하므로 데이터가 낡은 채로 주문이 나갈 일은 없다.
                 with self._history_diag_lock:
                     self._history_last_recovery_result = config.HISTORY_UPDATER_RECOVERY_BLOCKED
+                logger.error(
+                    "[MACD2][HISTORY] 복구 보류 -- 기존 수집 스레드가 join 후에도 "
+                    "살아 있어 교체하지 않는다(%s)", config.HISTORY_UPDATER_RECOVERY_BLOCKED)
                 return config.HISTORY_UPDATER_RECOVERY_BLOCKED
             self.start_history_updater(interval_sec=interval_sec)
             alive = self.history_updater_alive()
@@ -1236,6 +1294,13 @@ class MarketDataService:
                 if alive:
                     self._history_recovery_count += 1
                     self._history_last_recovered_at = now
+                recovery_count = self._history_recovery_count
+            if alive:
+                logger.warning(
+                    "[MACD2][HISTORY] 수집 스레드 재기동 완료 (오늘 누적 복구 %d 회)",
+                    recovery_count)
+            else:
+                logger.error("[MACD2][HISTORY] 수집 스레드 재기동 실패 (%s)", result)
             return result
 
     def live_history_updater_count(self) -> int:
