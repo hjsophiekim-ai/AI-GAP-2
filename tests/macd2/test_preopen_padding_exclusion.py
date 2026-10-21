@@ -33,7 +33,9 @@ def _replay(df_1m: pd.DataFrame, now: datetime, *, exclude: bool, day: str):
     if exclude:
         df_1m, _ = se.exclude_preopen_padding_1m(df_1m)
     bars = se.resample_completed_3m(df_1m, now)
-    bars, _ = filter_complete_3m_bars(bars, df_1m)
+    # 2026-10-21: production 신호 경로는 padding 창 분을 필수 구성분에서 뺀다
+    # (08:48 봉 = 08:48·08:49). 수정 전 입력(exclude=False)은 그대로.
+    bars, _ = filter_complete_3m_bars(bars, df_1m, excuse_preopen_padding=exclude)
     bars = bars.reset_index(drop=True)
     last = None
     out = []
@@ -120,9 +122,11 @@ def test_0914_padding_early_red_is_removed(frame_0914):
     after, _ = _replay(live, now, exclude=True, day="20260914")
     # 수정 전 = 실제 사고 (첫 RED 09:12, KIS 차트는 09:21)
     assert [f for f in before if f[1] == "UP_RED"][0] == ("09:12", "UP_RED")
-    # 수정 후 = padding 없는 프레임과 같은 09:24, 08:48~08:59 봉 플래그 없음
-    assert [f for f in after if f[1] == "UP_RED"][0] == ("09:24", "UP_RED")
-    assert not [f for f in after if "08:48" <= f[0] < "09:00"]
+    # 수정 후 = KIS 차트와 같은 09:21 (2026-09-14 사고 기록: KIS 차트 첫 RED 09:21).
+    # 10/01 hotfix 단독일 때는 08:48 봉까지 탈락해 09:24 였다(2026-10-21 보정).
+    assert [f for f in after if f[1] == "UP_RED"][0] == ("09:21", "UP_RED")
+    # padding 만으로 된 08:51~08:57 봉의 플래그는 없다
+    assert not [f for f in after if "08:51" <= f[0] < "09:00"]
     # 08:48 이전 실제 플래그는 그대로
     assert [f for f in before if f[0] < "08:48"] == [f for f in after if f[0] < "08:48"]
     # 같은 시각 중복 플래그 없음
@@ -131,10 +135,14 @@ def test_0914_padding_early_red_is_removed(frame_0914):
     assert _overview(live, now) == after
 
 
-def test_0914_frame_without_padding_is_unchanged(frame_0914):
-    raw, _ = frame_0914
+def test_0914_signal_does_not_depend_on_whether_the_endpoint_sent_padding(frame_0914):
+    """padding 행을 준 프레임(당일 엔드포인트)과 안 준 프레임(전일 엔드포인트)이
+    신호 경로에서는 같은 플래그를 낸다 -- padding 은 신호 입력에 영향이 없어야 한다.
+    (2026-10-21 이전에는 '수정 전/후가 같다' 를 봤으나, 08:48 봉 인정으로 padding
+    없는 프레임에서도 08:48 봉이 살아나 그 비교는 의미가 바뀌었다.)"""
+    raw, live = frame_0914
     now = datetime(2026, 9, 14, 15, 30, tzinfo=KST)
-    assert _replay(raw, now, exclude=False, day="20260914") == _replay(raw, now, exclude=True, day="20260914")
+    assert _replay(raw, now, exclude=True, day="20260914") == _replay(live, now, exclude=True, day="20260914")
 
 
 # ── B. 2026-10-01 패턴 (합성: 원장 hist 패턴을 재현하도록 구성) ──────────
