@@ -156,11 +156,7 @@ class HynixPositionManager:
         경로(hynix_switch_position_manager._confirm_remaining_quantity_from_broker
         등)에서 수행하며, 그곳은 즉시성보다 정확한 체결 확인이 더 중요하다."""
         now = time.monotonic()
-        # 2026-10-21: TTL 은 "실제 KIS 를 부르는 브로커"면 mode 와 무관하게 적용한다.
-        # mock 이 로컬 DryRunBroker 일 때만 매번 조회가 공짜다 -- KIS 모의계좌
-        # 브로커(kis 속성 보유)는 1초 감시마다 잔고 TR 을 실제로 호출하고 있었다.
-        kis_backed = self.mode == "real" or hasattr(self.broker, "kis")
-        if (not force and kis_backed and self._last_synced_monotonic is not None
+        if (not force and self.mode == "real" and self._last_synced_monotonic is not None
                 and (now - self._last_synced_monotonic) < self.real_sync_ttl_seconds):
             return self.current_position
 
