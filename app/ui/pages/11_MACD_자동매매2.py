@@ -240,6 +240,11 @@ def _signal_label(row: dict) -> str:
     # 승인된 진입이 마치 근거 없이 갑자기 나타난 새 플래그처럼 보인다(실제
     # 사용자 혼동 사례: 13:09 플래그의 정상 T+3 승인·체결이 화면엔 그냥
     # "13:12 플래그 UP_RED"로 보여 "오류인가?" 오인).
+    # 2026-10-21: E 돌파 대기 뒤 체결된 행. 시각은 원래 플래그봉 -> T+3 승인으로 찍히고
+    # (worker._record_signal_ledger), 실제 체결 시각은 바로 아래 "주문" 행에 나온다.
+    # 예전에는 체결 시점의 봉(예: 09:54)이 플래그 시각으로 보여 새 플래그로 오인됐다.
+    if signal_id.endswith(":E_BRK"):
+        return "돌파 체결(E)"
     if signal_id.endswith(":TW2_3SLOT_CONFIRM") or signal_id.endswith(":TW_CONFIRM"):
         return "재확인(T+3) 승인"
     return "반대 플래그" if signal_type == "REVERSAL" else "플래그"

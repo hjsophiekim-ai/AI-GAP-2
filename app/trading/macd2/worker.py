@@ -8668,6 +8668,11 @@ def _apply_switch_outcome(state: RuntimeState, outcome, pattern: Direction, now:
 _CONFIRM_ROW_RE = re.compile(r"^(\d{8})_(\d{6})_(?:UP_RED|DOWN_BLUE):(?:TW_CONFIRM|TW2_3SLOT_CONFIRM)$")
 
 
+#: E 돌파 체결행 -- ``<플래그id>[:TW_CONFIRM|:TW2_3SLOT_CONFIRM]:E_BRK`` (e_strategy.BREAKOUT_SUFFIX).
+_E_BRK_ROW_RE = re.compile(
+    r"^(\d{8})_(\d{6})_(?:UP_RED|DOWN_BLUE)(?::(?:TW_CONFIRM|TW2_3SLOT_CONFIRM))?:E_BRK$")
+
+
 def _confirm_row_flag_bar(signal_id: Any) -> Optional[datetime]:
     """T+3 확인행 signal_id 에서 원래 플래그 봉 시각(KST)을 꺼낸다. 확인행이 아니면 None."""
     m = _CONFIRM_ROW_RE.match(str(signal_id or ""))
@@ -8777,6 +8782,22 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         row["time_window_flag_bar_at"] = row.get("time_window_flag_bar_at") or _flag_bar.isoformat()
         row["time_window_confirm_bar_at"] = (
             row.get("time_window_confirm_bar_at") or macd_snap.bar_dt.astimezone(KST).isoformat())
+    # 2026-10-21: E 돌파 체결행(``:E_BRK``)도 같은 규칙. 체결을 처리한 tick 의 최신 봉이
+    # 찍혀 10/21 09:45 BLUE 의 돌파 체결(09:58:30)이 "09:54 -> 09:57 플래그" 로, 즉 새
+    # 플래그처럼 보였다. 플래그 시각 = 원래 플래그 봉, 확정 시각 = T+3 승인(플래그봉 + 6분),
+    # 확인봉 = 플래그봉 + 3분. 실제 체결 시각은 그대로 order_requested_at 에 남는다.
+    _brk = _E_BRK_ROW_RE.match(str(signal_id or ""))
+    if _brk is not None:
+        try:
+            _flag_bar = datetime.strptime(_brk.group(1) + _brk.group(2), "%Y%m%d%H%M%S").replace(tzinfo=KST)
+        except ValueError:
+            _flag_bar = None
+        if _flag_bar is not None:
+            row["completed_bar_at"] = _flag_bar.strftime("%H%M%S")
+            row["signal_bar_at"] = _flag_bar.isoformat()
+            row["signal_confirmed_at"] = (_flag_bar + timedelta(minutes=6)).isoformat()
+            row["time_window_flag_bar_at"] = _flag_bar.isoformat()
+            row["time_window_confirm_bar_at"] = (_flag_bar + timedelta(minutes=3)).isoformat()
     written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
 
