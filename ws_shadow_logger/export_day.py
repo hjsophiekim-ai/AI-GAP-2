@@ -127,6 +127,7 @@ def build_manifest(root: Path, day: str, srcs, created_at: datetime) -> dict:
             snap[sym]["max_ts_gap_s"] = s.get("max_ts_gap_s")
     mu_sum = _load_json(Path(root) / "mu" / day / "summary.json")
     mu_quote_sum = _load_json(Path(root) / "mu" / day / "quote_summary.json")
+    wd = _load_json(Path(root) / "mu" / day / "watchdog.json") or {}
     return {
         "manifest_version": MANIFEST_VERSION, "day": day, "created_at_kst": created_at.isoformat(timespec="seconds"),
         "source_fingerprint": _fingerprint(srcs),
@@ -135,6 +136,10 @@ def build_manifest(root: Path, day: str, srcs, created_at: datetime) -> dict:
         "snapshot_rows": sum(v["rows"] for v in snap.values()), "snapshots": snap,
         "mu_tick_rows": mu_ticks, "mu_bar_rows": mu_bars, "mu_summary": mu_sum,
         "mu_quote_rows": mu_quotes, "mu_quote_summary": mu_quote_sum,
+        # MU watchdog (2026-10-21): 연구 파이프라인은 이 구간의 MU feature 를 제외한다.
+        "mu_stale_intervals": wd.get("mu_stale_intervals", []),
+        "mu_resubscribe_count": wd.get("resubscribe_count", 0),
+        "mu_recovery_success": wd.get("recovery_success"),
         "has_daily_summary": bool(daily), "has_logs": any(a.startswith("logs/") for _, a in srcs),
         "collect_window": f"{config.SESSION_START:%H:%M}-{config.SESSION_END:%H:%M} KST",
         "files": files,
