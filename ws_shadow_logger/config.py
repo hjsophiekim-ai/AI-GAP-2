@@ -64,6 +64,19 @@ MU_MAX_ERRORS = 50
 #: MU 를 붙인 뒤 연결이 이 초 안에 끊기기를 연속 이 횟수 반복하면 그날 MU 등록을 뺀다.
 MU_SHORT_SESSION_SEC = 30.0
 MU_MAX_SHORT_SESSIONS = 3
+# MU 무수신 watchdog (2026-10-21) — 국내 연결은 살아 있는데 RBAQMU 체결·호가만 멈추는 경우.
+#   **기본값으로 동작한다 — 필수 env 없음.** 아래 두 env 는 나중에 조정할 때만 쓰는 선택 항목이다.
+#   감시 09:00~15:30 KST, RBAQMU 체결+호가 둘 다 MU_STALE_SEC 무수신 -> RBAQMU 2건만 해제·재등록.
+ENV_MU_WATCHDOG = "KIS_LOGGER_MU_WATCHDOG"          # 선택: 0 이면 끈다 (기본 ON)
+ENV_MU_STALE_SEC = "KIS_LOGGER_MU_STALE_SEC"        # 선택: 기본 180
+MU_WATCHDOG_FEED = "RBAQMU"
+MU_STALE_SEC_DEFAULT = 180.0
+MU_RESUB_DELAYS = (0.0, 60.0)       # 1차 즉시, 2차 60초 후
+MU_RESUB_EVERY = 300.0              # 이후 5분 간격
+MU_RESUB_MAX = 6                    # 최대 시도 — 다 쓰면 MU_STALE 유지 + 경고
+MU_RESUB_REPLY_TIMEOUT = 30.0
+MU_WATCH_START = time(9, 0)
+MU_WATCH_END = time(15, 30)
 
 SESSION_START = time(8, 0)
 SESSION_END = time(15, 30)
@@ -105,6 +118,20 @@ def mu_quote_enabled() -> bool:
     """기본 ON. KIS_LOGGER_MU_QUOTE_ENABLED=0 이면 MU **호가**만 빼고 체결은 그대로 등록한다.
     MU 자체가 꺼져 있으면(mu_enabled()=False) 호가도 당연히 등록하지 않는다."""
     return (os.environ.get(ENV_MU_QUOTE_ENABLED) or "1").strip() != "0"
+
+
+def mu_watchdog_enabled() -> bool:
+    """기본 ON. KIS_LOGGER_MU_WATCHDOG=0 일 때만 끈다."""
+    return (os.environ.get(ENV_MU_WATCHDOG) or "1").strip() != "0"
+
+
+def mu_stale_sec() -> float:
+    """기본 180초. KIS_LOGGER_MU_STALE_SEC 가 양수로 읽힐 때만 그 값(30초 미만은 30으로 올린다)."""
+    try:
+        v = float((os.environ.get(ENV_MU_STALE_SEC) or "").strip())
+    except ValueError:
+        return MU_STALE_SEC_DEFAULT
+    return max(30.0, v) if v > 0 else MU_STALE_SEC_DEFAULT
 
 
 def all_subscriptions(mu: bool | None = None, mu_quote: bool | None = None) -> tuple:

@@ -10,6 +10,8 @@
   · MU 체결(HDFSCNT0 RBAQMU/DNASMU)과 MU 1호가(HDFSASP0 RBAQMU/DNASMU)를 같은 세션에 국내 6건
     **뒤에** 등록한다(체결 먼저, 호가 나중). 두 기록 경로의 오류는 Engine 이 **각각** 삼키고,
     MU 를 붙인 뒤 연결이 연속으로 금방 끊기면 그날은 MU(체결+호가) 등록을 빼고 국내만 다시 붙는다.
+  · MU watchdog(2026-10-21): 장중 RBAQMU 체결·호가가 둘 다 멈추면 RBAQMU 2건만 해제·재등록한다.
+    전체 재접속은 하지 않는다 — 국내 6건과 DNASMU 는 그대로다. 구간은 mu/<날짜>/watchdog.json 에 남는다.
 
 자동매매 / 신규진입 허용 / 전략모드 / UI 세션 상태는 읽지 않는다 — 실행 조건은 시간뿐이다.
 주문 API, REST 접근토큰, production 모듈은 import 하지 않는다.
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import signal
 import sys
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -25,7 +28,9 @@ from pathlib import Path
 
 from . import approval, config, maintenance
 from .engine import Engine
-from .parser import subscribe_message
+from .mu_quote import feed_of
+from .mu_watchdog import QUOTE_TR, TRADE_TR, MuWatchdog
+from .parser import subscribe_message, unsubscribe_message
 from .storage import Store, day_str
 
 KST = timezone(timedelta(hours=9))
@@ -80,6 +85,9 @@ class LoggerService:
         self._mu_short = 0               # MU 등록 뒤 연속으로 짧게 끝난 연결 수
         self.mu_sub = {}                 # HDFSCNT0 tr_key -> "OK" / "FAIL(msg_cd)" (가장 최근 구독응답)
         self.mu_quote_sub = {}           # HDFSASP0 tr_key -> 같은 형식
+        self.wd: MuWatchdog | None = None   # MU watchdog (그날 것) — MU 체결+호가가 둘 다 켜진 날만
+        self._wd_day = None
+        self._sub_registry = {}          # (tr_id, tr_key) -> "1"(등록) / "2"(해제) — 이 연결에서 마지막으로 보낸 것
 
     def subscriptions(self, now: datetime | None = None) -> tuple:
         now = now or self.now()
@@ -104,6 +112,69 @@ class LoggerService:
                 self.store.log(now, "mu_disabled", reason="short_sessions")
             except OSError:
                 pass
+
+    # ── MU watchdog ────────────────────────────────────────────────────────
+    def _watchdog(self, now: datetime) -> MuWatchdog | None:
+        """그날의 watchdog. MU 체결·호가가 둘 다 등록되는 날에만 존재한다(꺼진 날은 None = 판정 없음)."""
+        if not (config.mu_watchdog_enabled() and self.mu_on and self.mu_quote_on
+                and self._mu_off_day != day_str(now)):
+            return None
+        day = day_str(now)
+        if self._wd_day != day:
+            self.wd = MuWatchdog(feed=config.MU_WATCHDOG_FEED, stale_sec=config.mu_stale_sec(),
+                                 retry_delays=config.MU_RESUB_DELAYS, retry_every=config.MU_RESUB_EVERY,
+                                 max_attempts=config.MU_RESUB_MAX, reply_timeout=config.MU_RESUB_REPLY_TIMEOUT,
+                                 watch_start=config.MU_WATCH_START, watch_end=config.MU_WATCH_END)
+            try:                         # 같은 날 재시작 — 앞서 닫힌 구간을 이어 붙인다
+                old = json.loads(self._wd_path(day).read_text(encoding="utf-8"))
+                self.wd.intervals = [iv for iv in old.get("mu_stale_intervals", []) if iv.get("stale_end")]
+                self.wd.resubscribe_total = int(old.get("resubscribe_count") or 0)
+            except (OSError, ValueError):
+                pass
+            self._wd_day = day
+        return self.wd
+
+    def _wd_path(self, day: str) -> Path:
+        return self.root / "mu" / day / "watchdog.json"
+
+    def _wd_emit(self, events: list, now: datetime):
+        if not events:
+            return
+        for e in events:
+            kv = " ".join(f"{k}={v}" for k, v in e.items() if k != "kind")
+            self.out(f"{TAG}[MU_WATCHDOG] {e['kind']} {kv}"[:600])
+            try:
+                self.store.log(now, "mu_watchdog", **e)
+            except OSError:
+                pass
+        self._wd_save(now)
+
+    def _wd_save(self, now: datetime):
+        if self.wd is None:
+            return
+        p = self._wd_path(day_str(now))
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({**self.wd.summary(), "saved_at": now.isoformat(timespec="seconds")},
+                                      ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(p)
+        except OSError:
+            pass
+
+    async def _wd_resubscribe(self, ws, key: str, feed: str):
+        """해당 feed 의 체결·호가 2건만 해제 -> 재등록. registry 로 중복 등록을 막는다:
+        '등록' 상태면 먼저 해제를 보내고, 해제가 나간 뒤에만 다시 등록한다."""
+        for tr in (TRADE_TR, QUOTE_TR):
+            k = (tr, feed)
+            if self._sub_registry.get(k) == "1":
+                await ws.send(unsubscribe_message(key, tr, feed))
+                self._sub_registry[k] = "2"
+                await asyncio.sleep(0.2)
+            if self._sub_registry.get(k) != "1":
+                await ws.send(subscribe_message(key, tr, feed))
+                self._sub_registry[k] = "1"
+                await asyncio.sleep(0.2)
 
     # ── 제어 ───────────────────────────────────────────────────────────────
     def request_stop(self, why: str = "signal", code: int | None = None):
@@ -172,6 +243,7 @@ class LoggerService:
                 f"MU={mu_state} MU_LAST_TICK_AT={mu_last} MU_TICKS={mu.counts['ticks'] if mu else 0} "
                 f"MU_BARS={mu.counts['bars'] if mu else 0} MU_ERRORS={c.get('mu_errors', 0)} "
                 f"MU_SUB={sub} MU_FEEDS={feeds} MU_LAG={lag_s} " + muq_line +
+                f"MU_WD={(self.wd.health() if (self.wd and self._wd_day == day_str(now)) else 'OFF')} " +
                 f"RSS_MB={'-' if rss is None else f'{rss:.1f}'} MAX_RSS_MB={self.max_rss_mb:.0f}"), rss
 
     def health_tick(self):
@@ -230,11 +302,16 @@ class LoggerService:
                 subs = self.subscriptions()
                 started = self.now()
                 async with self.connect(config.WS_URL) as ws:
+                    self._sub_registry = {}
                     for tr, sym in subs:
                         await ws.send(subscribe_message(key, tr, sym))
+                        self._sub_registry[(tr, sym)] = "1"
                         await asyncio.sleep(0.2)
                     self.ws_connected = True
                     self._on_connected(self.now())
+                    wd = self._watchdog(self.now())
+                    if wd is not None:
+                        wd.on_connected(self.now())
                     backoff = 1.0
                     last_flush = self.now()
                     while not self._stop.is_set():
@@ -246,12 +323,29 @@ class LoggerService:
                         except asyncio.TimeoutError:
                             raw = None
                         now = self.now()
+                        wd = self._watchdog(now)
                         if raw is not None:
                             msg = self.engine.on_frame(raw if isinstance(raw, str) else raw.decode("utf-8"), now)
                             if msg.get("type") == "system" and msg.get("tr_id") in config.MU_TR_IDS:
                                 self._on_mu_subscribe_reply(msg)
+                                if wd is not None:
+                                    self._wd_emit(wd.note_reply(msg.get("tr_id"), msg.get("tr_key"),
+                                                                str(msg.get("rt_cd")) == "0", msg.get("msg1"), now), now)
+                            if msg.get("type") == "data" and msg.get("tr_id") in config.MU_TR_IDS and wd is not None:
+                                per = {}
+                                for rec in msg.get("records") or ():
+                                    f = feed_of(rec)
+                                    per[f] = per.get(f, 0) + 1
+                                for f, n in per.items():
+                                    self._wd_emit(wd.note_data(msg["tr_id"], f, now, n), now)
                             if msg.get("type") == "pingpong":
                                 await ws.pong(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
+                        if wd is not None:
+                            ev = wd.poll(now)
+                            self._wd_emit(ev, now)
+                            for e in ev:
+                                if e["kind"] == "RESUBSCRIBE_ATTEMPT":
+                                    await self._wd_resubscribe(ws, key, e["feed"])
                         self.engine.advance(now)
                         if (now - last_flush).total_seconds() >= 1.0:
                             self.engine.flush()
@@ -273,6 +367,9 @@ class LoggerService:
         self.ws_connected = False
         self.engine.flush()
         self.store.save_counters()
+        if self.wd is not None and self._wd_day == day_str(self.now()):
+            self._wd_emit(self.wd.close(self.now(), reason="session_end"), self.now())
+            self._wd_save(self.now())
         if not self._stop.is_set():
             self.store.log(self.now(), "session_end", counts=self.engine.counts, mu=self.engine.mu.observe(),
                            mu_quote=self.engine.mu_quote.observe())

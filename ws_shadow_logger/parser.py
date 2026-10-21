@@ -53,11 +53,16 @@ def parse_frame(raw: str) -> dict[str, Any]:
             "rt_cd": body.get("rt_cd"), "msg_cd": body.get("msg_cd"), "msg1": body.get("msg1")}
 
 
-def subscribe_message(approval_key: str, tr_id: str, tr_key: str) -> str:
-    """공식 kis_auth.data_fetch 형식, 등록(tr_type "1") 전용. 해제는 하지 않고 세션 종료로 끝낸다."""
+def subscribe_message(approval_key: str, tr_id: str, tr_key: str, tr_type: str = "1") -> str:
+    """공식 kis_auth.data_fetch 형식. tr_type "1" = 등록, "2" = 해제.
+    해제는 MU watchdog 재구독(RBAQMU 2건)에서만 쓴다 — 국내 구독은 세션 종료로만 끝난다."""
     return json.dumps({"header": {"approval_key": approval_key, "custtype": "P",
-                                  "tr_type": "1", "content-type": "utf-8"},
+                                  "tr_type": tr_type, "content-type": "utf-8"},
                        "body": {"input": {"tr_id": tr_id, "tr_key": tr_key}}})
+
+
+def unsubscribe_message(approval_key: str, tr_id: str, tr_key: str) -> str:
+    return subscribe_message(approval_key, tr_id, tr_key, tr_type="2")
 
 
 def num(v, default=None):
