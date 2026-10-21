@@ -1312,8 +1312,19 @@ class MarketDataService:
         )
 
 
+def _in_preopen_padding_window(minute: pd.Timestamp) -> bool:
+    """KST 기준 [PREOPEN_PADDING_START, PREOPEN_PADDING_END) 안의 1분인가."""
+    from app.trading.macd2.signal_engine import PREOPEN_PADDING_END, PREOPEN_PADDING_START
+
+    ts = pd.Timestamp(minute)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(KST)
+    return PREOPEN_PADDING_START <= ts.time() < PREOPEN_PADDING_END
+
+
 def filter_complete_3m_bars(
     bars_3m: pd.DataFrame, one_minute_bars: pd.DataFrame,
+    *, excuse_preopen_padding: bool = False,
 ) -> tuple[pd.DataFrame, list[Any]]:
     """Drop any completed 3-minute bar whose 3 constituent 1-minute bars are
     not ALL present with a valid close in ``one_minute_bars`` (docs §4: an
@@ -1333,6 +1344,17 @@ def filter_complete_3m_bars(
     09:15 DOWN_BLUE flags against real data — reverted, see the startup-gate
     fix in service.py/worker.py for that day's actual root cause (Worker never
     confirmed started, docs §startup-lifecycle).
+
+    2026-10-21 (``excuse_preopen_padding=True`` — MACD2 신호 경로 전용):
+    10/01 hotfix 가 신호 입력에서 08:50~08:59 단일가 padding 1분봉을 뺀 뒤로
+    08:48 3분봉(08:48·08:49·**08:50**)이 "구성분 결측" 으로 **매일** 탈락했다.
+    그 봉은 실제 체결 2분 + padding 1분이고 종가도 실제 직전가라 KIS 차트에는
+    정상 봉으로 있다. 그래서 10/21 08:48 DOWN_BLUE 가 사라졌고, 09:00 봉이
+    08:45 봉과 바로 비교돼 09:00 UP_RED 까지 교차가 없어졌다. 이 옵션은
+    padding 창 안의 분을 '필수 구성분' 에서 빼 준다 -- 단, 창 밖 실제 분이
+    **최소 1개 있고 그것들이 전부 있어야** 완성으로 본다. 08:51~08:57 처럼
+    전부 padding 인 봉은 신호 입력(padding 제외 1분봉)에서 애초에 만들어지지
+    않으므로 계속 제외된다.
     """
     if bars_3m is None or bars_3m.empty:
         return bars_3m, []
@@ -1352,7 +1374,9 @@ def filter_complete_3m_bars(
     dropped: list[Any] = []
     for bar_start in bars_3m["datetime"]:
         needed = [pd.Timestamp(bar_start) + timedelta(minutes=i) for i in range(3)]
-        complete = all(minute in have for minute in needed)
+        if excuse_preopen_padding:
+            needed = [m for m in needed if not _in_preopen_padding_window(m)]
+        complete = bool(needed) and all(minute in have for minute in needed)
         keep_mask.append(complete)
         if not complete:
             dropped.append(bar_start)

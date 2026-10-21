@@ -42,6 +42,7 @@ import uuid
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from datetime import time as dtime
 from typing import Any, Optional
 
 import pandas as pd
@@ -679,7 +680,7 @@ def initialize_strategy_session(
     #
     # MACD 계산식도 resample 규칙도 바꾸지 않는다 -- live 가 이미 쓰고 있는
     # 같은 입력을 catch-up 에도 똑같이 주는 것뿐이다.
-    bars_3m, _catchup_dropped = filter_complete_3m_bars(bars_3m, _sig_1m)
+    bars_3m, _catchup_dropped = filter_complete_3m_bars(bars_3m, _sig_1m, excuse_preopen_padding=True)
     today_str = now.astimezone(KST).strftime("%Y%m%d")
     today_indices = (
         list(bars_3m.index[bars_3m["datetime"].dt.strftime("%Y%m%d") == today_str])
@@ -1015,7 +1016,7 @@ def compute_today_signal_overview(
     # 2026-10-01 hotfix: live 와 같은 신호 입력 (08:50~08:59 padding 제외)
     _sig_1m, _ = exclude_preopen_padding_1m(df_1m)
     bars_3m = resample_completed_3m(_sig_1m, now=now)
-    bars_3m, _dropped = filter_complete_3m_bars(bars_3m, _sig_1m)
+    bars_3m, _dropped = filter_complete_3m_bars(bars_3m, _sig_1m, excuse_preopen_padding=True)
     if bars_3m.empty:
         return []
 
@@ -1948,6 +1949,39 @@ def _update_history_freshness_diag(
         # 사유는 건드리지 않는다. HISTORY_GAP 해제와 같은 관례).
         state.order_block_reason = None
         state.history_stale_alert_at = None
+
+
+#: 매일 구조적으로 1분봉이 비는 구간(KST). 08:50~08:59 = 프리오픈 단일가 padding
+#: (신호 입력에서 제외), 15:20~15:39 = 장마감 단일가 ~ NXT 애프터 시작 전.
+_STRUCTURAL_1M_GAP_WINDOWS = ((dtime(8, 50), dtime(9, 0)), (dtime(15, 20), dtime(15, 40)))
+
+
+def _actionable_history_gaps(dropped_bar_starts, now: datetime) -> list:
+    """HISTORY_GAP **표시**용으로 의미 있는 탈락 봉만 고른다 (2026-10-21).
+
+    ``filter_complete_3m_bars`` 의 탈락 목록에는 매일 반드시 생기는 구조적
+    결측(전일 15:18·15:39 봉, 당일 장마감 단일가 구간)과 이미 지난 전일 봉이
+    섞여 있어서, 10/01 hotfix 이후 ``order_block_reason`` 이 하루 종일
+    HISTORY_GAP 으로 고정돼 있었다(주문 게이트는 이 값을 읽지 않으므로 표시만
+    틀렸지만, 다른 사유 -- 예: HISTORY_FEED_STALE -- 가 가려졌다). 여기서는
+    **오늘** 봉이면서 구조적 창에 걸치지 않는 탈락만 남긴다. 탈락 목록 자체와
+    신호 계산은 바꾸지 않는다(bar_ledger 관측도 전체 목록 그대로)."""
+    today = now.astimezone(KST).date()
+    out = []
+    for raw in dropped_bar_starts or []:
+        try:
+            start = pd.Timestamp(raw)
+            start = start.tz_convert(KST) if start.tzinfo is not None else start
+        except Exception:
+            out.append(raw)
+            continue
+        if start.date() != today:
+            continue
+        minutes = [(start + timedelta(minutes=i)).time() for i in range(3)]
+        if any(lo <= m < hi for m in minutes for lo, hi in _STRUCTURAL_1M_GAP_WINDOWS):
+            continue
+        out.append(raw)
+    return out
 
 
 def _within_open_grace_window(now: datetime, *, grace_sec: float = 60.0) -> bool:
@@ -7514,7 +7548,8 @@ def run_once(
         _skip_df_1m = market_data.get_history_df()
         _skip_sig_1m, _ = exclude_preopen_padding_1m(_skip_df_1m)  # 2026-10-01 hotfix
         _skip_bars_3m = resample_completed_3m(_skip_sig_1m, now=now)
-        _skip_bars_3m, _ = filter_complete_3m_bars(_skip_bars_3m, _skip_sig_1m)
+        _skip_bars_3m, _ = filter_complete_3m_bars(
+            _skip_bars_3m, _skip_sig_1m, excuse_preopen_padding=True)
         _skip_macd_snap = calculate_macd(_skip_bars_3m)
         if _skip_macd_snap is not None:
             try:    # 관측 전용
@@ -7627,7 +7662,7 @@ def run_once(
                 _exit_sig_1m, _ = exclude_preopen_padding_1m(_exit_df_1m)  # 2026-10-01 hotfix
                 _exit_bars_3m = resample_completed_3m(_exit_sig_1m, now=now)
                 _exit_bars_3m, _exit_dropped = filter_complete_3m_bars(
-                    _exit_bars_3m, _exit_sig_1m)
+                    _exit_bars_3m, _exit_sig_1m, excuse_preopen_padding=True)
                 _exit_snap = calculate_macd(_exit_bars_3m)
                 if _exit_snap is not None:
                     try:    # 관측 전용
@@ -7680,8 +7715,9 @@ def run_once(
     # more of its minutes is dropped here (never filled/interpolated), which
     # also blocks that specific bar's crossover/MAJOR-filter/order evaluation
     # (HISTORY_GAP) until the gap is backfilled by a later incremental merge.
-    bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(bars_3m, _sig_df_1m)
-    if _history_gap_bar_starts:
+    bars_3m, _history_gap_bar_starts = filter_complete_3m_bars(
+        bars_3m, _sig_df_1m, excuse_preopen_padding=True)
+    if _actionable_history_gaps(_history_gap_bar_starts, now):
         state.order_block_reason = "HISTORY_GAP"
     elif state.order_block_reason == "HISTORY_GAP":
         # 2026-08-20 fix (real incident: dashboard showed "HISTORY_GAP" /
