@@ -281,6 +281,18 @@ class RuntimeState:
     last_good_broker_positions: dict = field(default_factory=dict)
     last_good_broker_epoch: Optional[int] = None
     last_good_broker_at: Optional[str] = None
+    # 잔고조회 건강 상태 / circuit breaker (2026-10-21, position_feed.py). 호출 빈도와
+    # 클라이언트 수명 관리 전용 -- 신규주문 차단 판정은 기존 POSITION_DATA_ERROR 그대로.
+    position_feed_status: Optional[str] = None
+    position_feed_failures: int = 0
+    position_feed_first_failure_at: Optional[str] = None
+    position_feed_last_success_at: Optional[str] = None
+    position_feed_last_error: Optional[str] = None
+    position_feed_last_error_at: Optional[str] = None
+    position_feed_retry_at: Optional[str] = None
+    position_feed_alert_at: Optional[str] = None
+    position_feed_client_refreshed_at: Optional[str] = None
+    position_feed_client_refreshes: int = 0
     safe_exit: Optional[dict] = None
     baseline_relation: Optional[str] = None
     worker_instance_id: Optional[str] = None
