@@ -116,7 +116,11 @@ class _BrokerAdapterBase:
         if getter is None:
             return {"error": "get_balance unavailable"}
         try:
-            bal = dict(getter() or {})
+            # 2026-10-21: 진단 전용이므로 공유 TTL 캐시/동시호출 합치기를 쓴다
+            # (주문 판단 경로는 여전히 직접 조회 -- app/trading/balance_cache.py).
+            from app.trading import balance_cache
+
+            bal = dict(balance_cache.get_balance_shared(kis, max_age_sec=5.0, fetch=getter) or {})
         except Exception as exc:
             return {"error": str(exc)}
         out: dict[str, Any] = {"balance_cash_fields": dict(bal.get("cash_fields") or {})}
@@ -212,6 +216,25 @@ class _BrokerAdapterBase:
 
     def get_positions(self) -> list[Position]:
         return list(self._broker.get_positions())
+
+    def refresh_kis_session(self) -> bool:
+        """내부 브로커의 KISClient 를 새 인스턴스(새 requests.Session)로 교체한다
+        (2026-10-21, position_feed 의 연결/세션 오류 복구 전용).
+
+        같은 mode 로 ``create_kis_client`` 를 다시 부르므로 계좌/인증은 같고,
+        토큰은 mode 단위 파일 캐시를 먼저 읽어 재발급하지 않는다. 교체는 참조
+        한 번 바꾸기라, 다른 스레드에서 이미 진행 중인 호출은 옛 객체로 끝난다.
+        ``kis`` 속성이 없는 브로커(테스트 더블/dry-run)면 아무것도 하지 않는다."""
+        old = getattr(self._broker, "kis", None)
+        if old is None:
+            return False
+        from app.trading.kis_client import create_kis_client
+
+        fresh = create_kis_client(getattr(old, "mode", None) or self.mode)
+        if fresh is None:
+            return False
+        self._broker.kis = fresh
+        return True
 
     def get_position(self, symbol: str) -> Optional[Position]:
         for pos in self.get_positions():

@@ -86,6 +86,17 @@ def _empty_1m_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=list(_1M_COLUMNS))
 
 
+def _frame_newest(df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+    """1분봉 프레임의 가장 최근 봉 시작 시각. 비었거나 파싱 불가면 ``None``."""
+    if df is None or df.empty or "datetime" not in df.columns:
+        return None
+    try:
+        newest = pd.to_datetime(df["datetime"], errors="coerce").max()
+    except Exception:
+        return None
+    return None if pd.isna(newest) else pd.Timestamp(newest)
+
+
 def _ymd_series(df: pd.DataFrame) -> pd.Series:
     """``df["datetime"]`` -> "YYYYMMDD" 문자열 Series. **항상** 먼저
     ``pd.to_datetime(..., errors="coerce")`` 로 보정한다.
@@ -239,7 +250,11 @@ class MarketDataService:
         fetch_minute_candles: Optional[MinuteCandleFetcher] = None,
         fetch_minute_candles_for_date: Optional[MinuteCandleForDateFetcher] = None,
         fetch_quote: Optional[QuoteFetcher] = None,
+        clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
+        # 수집 스레드가 진단에 찍는 "지금". production 은 항상 실시간 시계다 --
+        # 장애 재현 테스트가 시뮬레이션 시각으로 스레드를 돌릴 수 있게만 연다.
+        self._clock: Callable[[], datetime] = clock or (lambda: datetime.now(KST))
         self.mode = mode
         self._kis_client: Any = None
         self._kis_client_lock = threading.RLock()
@@ -312,6 +327,30 @@ class MarketDataService:
         self._history_last_recovered_at: Optional[datetime] = None
         self._history_last_recovery_result: Optional[str] = None
         self._history_recovery_lock = threading.Lock()
+        # ── 신호 피드 자동 정상화 (2026-10-21, 10/20 실사고 2차) ─────────────
+        # 10/20 은 대시보드 워치독이 5초마다 돌았는데도 3시간 동안 복구되지
+        # 않았다. 원인이 된 구조적 빈틈 네 개를 여기 상태로 막는다:
+        #   (1) 판정이 "KIS 가 새 봉을 돌려준 시각" 기준이라 수집은 되는데 프레임
+        #       반영이 실패하면 영원히 '정상'으로 보였다
+        #       -> _history_frame_advanced_at (프레임이 실제로 전진한 시각)
+        #   (2) 멈춘 스레드는 join 이 안 돼 교체 자체가 거부됐다
+        #       -> generation(세대) + lease: 새 세대만 프레임에 쓸 수 있다
+        #   (3) 재기동해도 같은 KISClient(같은 Session)를 재사용했다
+        #       -> 세대별 클라이언트
+        #   (4) 평소 수집은 최근 10분봉뿐이라 긴 공백이 영구히 남았다
+        #       -> newest 이후 공백 backfill
+        self._history_generation: int = 0
+        self._history_gen_clients: dict[int, Any] = {}
+        self._history_tls = threading.local()
+        self._history_retired_threads: list[tuple[int, threading.Thread]] = []
+        self._history_frame_advanced_at: Optional[datetime] = None
+        self._history_replaced_stuck_count: int = 0
+        self._history_backfill_count: int = 0
+        self._history_last_backfill: Optional[dict[str, Any]] = None
+        #: 끝까지 채우지 못한 공백의 시작점. 채워질 때까지 다음 사이클에서 다시
+        #: 시도한다(간격 HISTORY_BACKFILL_RETRY_SEC).
+        self._history_backfill_pending_from: Optional[pd.Timestamp] = None
+        self._history_backfill_next_try_at: Optional[datetime] = None
         self._last_bootstrap_diag: dict[str, Any] = {}
         self._quote_normalization_diag: dict[str, Any] = {}
 
@@ -431,14 +470,28 @@ class MarketDataService:
         락은 되돌리지 않는다(되돌리면 2026-08-25 실사고가 재발한다). 대신
         **경로마다 Session 을 분리**해 동시성 자체를 안전하게 만든다. mode /
         토큰 / 레이트 게이트(``kis_client._throttle``, mode 별 프로세스 전역)는
-        그대로이므로 요청 pacing 동작은 바뀌지 않는다."""
+        그대로이므로 요청 pacing 동작은 바뀌지 않는다.
+
+        2026-10-21: 클라이언트는 **updater 세대(generation)마다** 따로 둔다.
+        복구로 새 세대가 뜨면 새 KISClient(새 Session)를 쓰고, 은퇴한(멈춘)
+        세대의 스레드는 끝까지 자기 옛 클라이언트만 쓴다 -- 깨진 커넥션 풀을
+        새 세대가 물려받지 않고, 옛 스레드와 Session 을 공유하지도 않는다.
+        토큰은 mode 단위 파일 캐시를 먼저 읽으므로 새 클라이언트가 토큰을 새로
+        발급하지 않는다(test_session_split_preserves_pacing_token_and_auth)."""
+        gen = getattr(self._history_tls, "gen", None)
         with self._history_fetch_client_lock:
-            if self._history_kis_client is None:
+            if gen is None:
+                gen = self._history_generation
+            client = self._history_gen_clients.get(gen)
+            if client is None:
                 from app.trading.kis_client import create_kis_client
 
-                self._history_kis_client = create_kis_client(
+                client = create_kis_client(
                     self.mode if self.mode in ("mock", "real") else "mock")
-            return self._history_kis_client
+                self._history_gen_clients[gen] = client
+            if gen == self._history_generation:
+                self._history_kis_client = client
+            return client
 
     def _get_watch_symbol_history_client(self) -> Any:
         """WATCH_SYMBOL (000660) prior-day warm-up (주식일별분봉조회) read-only
@@ -841,6 +894,8 @@ class MarketDataService:
 
         with self._history_lock:
             self._df_1m = df
+        with self._history_diag_lock:
+            self._history_frame_advanced_at = now
         # ── 관측 전용 (2026-09-08). bootstrap 은 당일 전체를 페이지워크하므로
         # 그 이전 봉들의 first_seen_at 이 전부 이 시각으로 찍힌다 — worker 가
         # 실제로 그 시각에야 그 봉들을 처음 봤다는 사실 그대로다.
@@ -903,7 +958,9 @@ class MarketDataService:
             )
         return BootstrapResult(True, None, int(len(df)), prior_n, today_n, completed_3m_count, round(elapsed, 3))
 
-    def merge_incremental_1m(self, now: Optional[datetime] = None) -> pd.DataFrame:
+    def merge_incremental_1m(
+        self, now: Optional[datetime] = None, *, generation: Optional[int] = None,
+    ) -> pd.DataFrame:
         # Keep the live worker path bounded: one small-page fetch per cycle.
         # Bootstrap/full-history paging still owns the heavier retry policy.
         """Latest-page-only merge — never re-walks the full bootstrap history (docs §4).
@@ -918,14 +975,29 @@ class MarketDataService:
         PRIOR_DAY_FETCH_RETRY_DELAY_SEC) — an empty response with NO error
         (legitimately nothing new yet) still returns immediately, unretried.
         """
-        now = now or datetime.now(KST)
+        now = now or self._clock()
         with self._history_fetch_lock:
             live_df, _diag = self._fetch_minute_candles(self.mode, config.WATCH_SYMBOL, 10, "")
+        if not self._is_current_history_generation(generation):
+            # 은퇴한(교체된) 세대 -- 늦게 돌아온 응답으로 프레임/진단을 덮어쓰지
+            # 않는다. 같은 분봉의 옛 미완성 값이 새 세대가 받은 완성 값을
+            # 덮는 일을 막는 lease 다(2026-10-21).
+            return self.get_history_df()
         self._note_history_cycle(live_df, _diag, now)
+        # newest 이후 공백 backfill (2026-10-21). 이 호출은 최신 10분봉만
+        # 가져오므로, 그보다 긴 정지 뒤에는 사이 구간이 영영 채워지지 않았다.
+        # 실패해도 이번 사이클의 최신 페이지 반영은 막지 않는다.
+        backfill_df = None
+        if not live_df.empty:
+            try:
+                backfill_df = self._backfill_gap_before(live_df, now, generation)
+            except Exception as exc:
+                logger.error("[MACD2][HISTORY] 공백 backfill 예외: %r", exc)
         with self._history_lock:
             base = self._df_1m
-            if live_df.empty:
+            if live_df.empty or not self._is_current_history_generation(generation):
                 return base.copy()
+            prev_newest = _frame_newest(base)
             # 2026-09-20 hotfix (근원): base 가 비어 있으면 concat 에서 **제외**
             # 한다. `_empty_1m_frame()` 은 모든 컬럼이 object dtype 인데,
             # pandas 2 에서는 concat 이 빈 쪽 dtype 을 무시해 datetime64 를
@@ -937,7 +1009,7 @@ class MarketDataService:
             # `_non_empty` 관례와 동일한 처리다. `_empty_1m_frame` 자체의 dtype
             # 을 지정하는 방식은 쓰지 않는다 — live 프레임이
             # datetime64[us, UTC+09:00] 이라 tz 표현이 어긋나 또 object 가 된다.
-            _frames = [f for f in (base, live_df) if not f.empty]
+            _frames = [f for f in (base, backfill_df, live_df) if f is not None and not f.empty]
             merged = (
                 pd.concat(_frames, ignore_index=True)
                 .drop_duplicates(subset=["datetime"], keep="last")
@@ -947,6 +1019,12 @@ class MarketDataService:
             )
             merged = _trim_to_recent_trading_days(merged)
             self._df_1m = merged
+            # "KIS 가 새 봉을 줬다"가 아니라 "worker 가 보는 프레임이 실제로
+            # 전진했다"를 기록한다 -- 워치독 판정의 기준(2026-10-21).
+            new_newest = _frame_newest(merged)
+            if new_newest is not None and (prev_newest is None or new_newest > prev_newest):
+                with self._history_diag_lock:
+                    self._history_frame_advanced_at = now
             # ── 관측 전용 (2026-09-08): worker 가 실제로 보게 될 바로 이 프레임을
             # 아카이브한다. 이 프레임은 메모리에만 존재해 재시작과 함께 사라지고
             # KIS 사후조회로 복원되지 않음이 실측됐다(bar_archive 모듈 docstring).
@@ -964,6 +1042,129 @@ class MarketDataService:
     def get_history_df(self) -> pd.DataFrame:
         with self._history_lock:
             return self._df_1m.copy()
+
+    def _is_current_history_generation(self, generation: Optional[int]) -> bool:
+        """``generation`` 이 None(직접 호출 -- bootstrap/테스트/수동) 이거나 현재
+        세대면 True. 은퇴한 세대의 스레드는 프레임·진단을 쓰지 못한다."""
+        return generation is None or generation == self._history_generation
+
+    def _backfill_gap_before(
+        self, live_df: pd.DataFrame, now: datetime, generation: Optional[int],
+    ) -> Optional[pd.DataFrame]:
+        """프레임 newest 와 이번 최신 페이지 사이의 빠진 1분봉을 다시 조회한다.
+
+        2026-10-21 (10/20 실사고 2차). 평소 수집은 최신 10분봉 한 페이지뿐이라,
+        그보다 긴 정지가 끝나면 사이 구간이 영영 비어 그 3분봉들이
+        ``filter_complete_3m_bars`` 에서 탈락했다(12:06 DOWN_BLUE 같은 봉이
+        통째로 사라진다). 여기서 bootstrap 과 **같은** 역방향 페이징(같은
+        재시도·pacing·커서 규칙)으로 공백만 채운다. 채운 봉의 플래그 평가는
+        worker 의 ``_replay_unevaluated_completed_bars`` 가 시간순으로 하며,
+        그 경로는 주문을 내지 않는다.
+
+        끝까지 못 채우면(오류) 받은 만큼만 돌려주고 시작점을 기억해 뒀다가
+        ``HISTORY_BACKFILL_RETRY_SEC`` 뒤 다시 시도한다. 네트워크 호출은 공백이
+        있을 때만 일어난다 -- 평상시 사이클은 추가 호출 0 이다."""
+        try:
+            live_oldest = pd.Timestamp(pd.to_datetime(live_df["datetime"], errors="coerce").min())
+        except Exception:
+            return None
+        if pd.isna(live_oldest):
+            return None
+        with self._history_lock:
+            base_newest = _frame_newest(self._df_1m)
+        with self._history_diag_lock:
+            pending = self._history_backfill_pending_from
+            next_try = self._history_backfill_next_try_at
+        floor = pending if pending is not None else base_newest
+        if floor is None:
+            return None    # 빈 프레임 -- bootstrap 의 몫이다
+        live_day = live_oldest.tz_convert(KST).date() if live_oldest.tzinfo else live_oldest.date()
+        floor_day = floor.tz_convert(KST).date() if floor.tzinfo else floor.date()
+        cross_day = floor_day != live_day
+        gap_min = (live_oldest - floor).total_seconds() / 60.0
+        if not cross_day and gap_min <= 1.0:
+            if pending is not None:
+                with self._history_diag_lock:
+                    self._history_backfill_pending_from = None
+            return None
+        if pending is not None and next_try is not None and now < next_try:
+            return None
+
+        max_pages = KIS_MAX_PAGES if cross_day else min(
+            KIS_MAX_PAGES, int(gap_min // KIS_PAGE_MINUTES) + 2)
+        pages: list[pd.DataFrame] = []
+        hour1 = (live_oldest - timedelta(minutes=1)).strftime("%H%M%S")
+        complete = False
+        error: Optional[str] = None
+        for page_i in range(max_pages):
+            if page_i > 0:
+                time.sleep(config.KIS_PAGE_FETCH_PACING_SEC)
+            part = _empty_1m_frame()
+            _diag: dict[str, Any] = {}
+            for retry_i in range(config.PRIOR_DAY_FETCH_RETRIES):
+                with self._history_fetch_lock:
+                    part, _diag = self._fetch_minute_candles(
+                        self.mode, config.WATCH_SYMBOL, KIS_PAGE_SIZE, hour1)
+                if not part.empty or not _diag.get("error"):
+                    break
+                if retry_i < config.PRIOR_DAY_FETCH_RETRIES - 1:
+                    time.sleep(config.PRIOR_DAY_FETCH_RETRY_DELAY_SEC)
+            if not self._is_current_history_generation(generation):
+                return None
+            if part.empty:
+                if _diag.get("error"):
+                    error = str(_diag.get("error"))[:200]
+                else:
+                    complete = True     # 더 이른 당일 데이터 없음 = 끝까지 왔다
+                break
+            part = part[_ymd_series(part) == live_day.strftime("%Y%m%d")]
+            if part.empty:
+                complete = True
+                break
+            pages.append(part)
+            oldest = min(pd.Timestamp(p["datetime"].min()) for p in pages)
+            if not cross_day and oldest <= floor:
+                complete = True
+                break
+            next_hour1 = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+            if next_hour1 == hour1:
+                complete = True
+                break
+            hour1 = next_hour1
+
+        got = (
+            pd.concat(pages, ignore_index=True)
+            .drop_duplicates(subset=["datetime"], keep="last")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+            if pages else _empty_1m_frame()
+        )
+        if not got.empty and not cross_day:
+            got = got[pd.to_datetime(got["datetime"]) >= floor].reset_index(drop=True)
+        info = {
+            "at": now.isoformat(),
+            "from": floor.isoformat(),
+            "to": live_oldest.isoformat(),
+            "gap_minutes": round(gap_min, 1),
+            "rows": int(len(got)),
+            "pages": len(pages),
+            "complete": complete,
+            "error": error,
+        }
+        with self._history_diag_lock:
+            self._history_last_backfill = info
+            if complete:
+                self._history_backfill_pending_from = None
+                self._history_backfill_next_try_at = None
+                self._history_backfill_count += 1
+            else:
+                self._history_backfill_pending_from = floor
+                self._history_backfill_next_try_at = now + timedelta(
+                    seconds=config.HISTORY_BACKFILL_RETRY_SEC)
+        log = logger.warning if complete else logger.error
+        log("[MACD2][HISTORY] 공백 backfill %s~%s (%.0f분) rows=%d pages=%d complete=%s error=%s",
+            info["from"], info["to"], gap_min, info["rows"], info["pages"], complete, error)
+        return got
 
     def clear_history(self) -> None:
         with self._history_lock:
@@ -1123,15 +1324,20 @@ class MarketDataService:
         # resume forever instead of exiting once its current call returns.
         stop_event = threading.Event()
         self._history_updater_stop = stop_event
+        # 이 스레드가 속한 세대. 복구로 세대가 바뀌면 이 스레드는 프레임/진단을
+        # 더 이상 쓰지 못하고(lease), 자기 세대의 KISClient 만 쓴다(2026-10-21).
+        generation = self._history_generation
 
         def _loop() -> None:
+            self._history_tls.gen = generation
             while not stop_event.is_set():
                 try:
-                    self.merge_incremental_1m()
+                    self.merge_incremental_1m(generation=generation)
                 except Exception as exc:
                     # 거래 경로로는 여전히 아무것도 던지지 않는다. 다만 예전처럼
                     # 통째로 삼키지 않고 진단만 남긴다(2026-09-17).
-                    self._note_history_exception(exc)
+                    if self._is_current_history_generation(generation):
+                        self._note_history_exception(exc)
                 stop_event.wait(interval_sec)
 
         self._history_updater_thread = threading.Thread(target=_loop, daemon=True, name="macd2-history-updater")
@@ -1221,18 +1427,41 @@ class MarketDataService:
             return self._history_last_success_at
 
     def history_stale_age_sec(self, now: Optional[datetime] = None) -> Optional[float]:
-        """마지막으로 **새 봉이 들어온 뒤** 흐른 초. 한 번도 성공한 적이 없으면
-        복구 시각(있으면)을, 그것도 없으면 ``None`` 을 기준으로 한다 --
-        갓 시작한 updater 를 곧바로 STALE 로 몰지 않기 위해서다."""
+        """신호 피드가 멎은 지 몇 초인가 -- 아래 세 기준 중 **가장 나쁜 값**.
+
+          1. KIS 가 마지막으로 새 봉을 돌려준 뒤 흐른 시간 (2026-09-17 기존)
+          2. worker 가 보는 프레임이 마지막으로 **실제로 전진한** 뒤 흐른 시간
+          3. 프레임 최신 1분봉이 끝난 시각(시작+60초)으로부터 흐른 시간
+
+        2026-10-21 (10/20 실사고 2차): 예전에는 1번만 봤다. 그날처럼 KIS 는
+        새 봉을 주는데 프레임 반영이 실패하면 1번은 매 분 0 으로 리셋돼
+        워치독이 3시간 내내 '정상'으로 판정했다. 2·3번은 worker 의 기존
+        HISTORY_STALE 게이트(프레임 최신 봉 기준)와 같은 대상을 본다.
+
+        각 기준은 복구 시각이 더 최근이면 그 시각부터 잰다 -- 갓 교체된
+        updater 가 backfill 을 끝내기도 전에 다시 STALE 로 몰리지 않게 한다.
+        세 값이 모두 없으면 ``None``."""
         now = now or datetime.now(KST)
         with self._history_diag_lock:
-            base = self._history_last_success_at
+            fetch_base = self._history_last_success_at
+            frame_base = self._history_frame_advanced_at
             recovered = self._history_last_recovered_at
-        if recovered is not None and (base is None or recovered > base):
-            base = recovered
-        if base is None:
-            return None
-        return (now - base).total_seconds()
+        with self._history_lock:
+            newest = _frame_newest(self._df_1m)
+        bar_base: Optional[datetime] = None
+        if newest is not None:
+            try:
+                bar_base = (newest + pd.Timedelta(minutes=1)).to_pydatetime()
+                (now - bar_base).total_seconds()     # tz 표기가 맞지 않으면 여기서 걸러낸다
+            except Exception:
+                bar_base = None
+        ages: list[float] = []
+        for base in (fetch_base, frame_base, bar_base):
+            if recovered is not None and (base is None or recovered > base):
+                base = recovered
+            if base is not None:
+                ages.append((now - base).total_seconds())
+        return max(ages) if ages else None
 
     def history_diag(self, now: Optional[datetime] = None) -> dict[str, Any]:
         """UI 운영진단 / watchdog 공용 스냅샷. 순수 읽기."""
@@ -1253,9 +1482,35 @@ class MarketDataService:
                 "history_last_recovered_at": (
                     self._history_last_recovered_at.isoformat() if self._history_last_recovered_at else None),
                 "history_last_recovery_result": self._history_last_recovery_result,
+                "history_frame_advanced_at": (
+                    self._history_frame_advanced_at.isoformat()
+                    if self._history_frame_advanced_at else None),
+                "history_generation": int(self._history_generation),
+                "history_replaced_stuck_count": int(self._history_replaced_stuck_count),
+                "history_backfill_count": int(self._history_backfill_count),
+                "history_last_backfill": dict(self._history_last_backfill or {}) or None,
+                "history_backfill_pending_from": (
+                    self._history_backfill_pending_from.isoformat()
+                    if self._history_backfill_pending_from is not None else None),
             }
+        with self._history_lock:
+            newest = _frame_newest(self._df_1m)
+        payload["history_frame_newest_at"] = newest.isoformat() if newest is not None else None
+        payload["history_retired_threads_alive"] = self._live_retired_history_threads()
         payload["history_stale_age_sec"] = self.history_stale_age_sec(now)
         return payload
+
+    def _live_retired_history_threads(self) -> int:
+        """교체돼 은퇴했지만 아직 블로킹 호출에서 못 돌아온 스레드 수. 끝난
+        스레드는 목록과 세대별 클라이언트에서 정리한다."""
+        with self._history_fetch_client_lock:
+            alive = [(g, t) for g, t in self._history_retired_threads if t.is_alive()]
+            self._history_retired_threads = alive
+            keep = {g for g, _t in alive} | {self._history_generation}
+            for g in list(self._history_gen_clients):
+                if g not in keep:
+                    self._history_gen_clients.pop(g, None)
+            return len(alive)
 
     def recover_history_updater(
         self, *, interval_sec: float = config.WORKER_INTERVAL_SEC,
@@ -1264,27 +1519,47 @@ class MarketDataService:
         """기존 updater 를 안전하게 내리고 **정확히 하나만** 다시 올린다.
 
         반환값:
-          ``HISTORY_UPDATER_RECOVERED``      정상 재기동
-          ``HISTORY_UPDATER_RECOVERY_BLOCKED`` 기존 스레드 종료 미확인 --
-              새 스레드를 억지로 추가하지 않는다(중복 updater 절대 금지)
+          ``HISTORY_UPDATER_RECOVERED``      정상 재기동(멈춘 스레드 교체 포함)
+          ``HISTORY_UPDATER_RECOVERY_BLOCKED`` 은퇴 스레드가 상한
+              (``HISTORY_UPDATER_MAX_RETIRED_THREADS``)만큼 아직 살아 있다 --
+              스레드를 무한히 쌓지 않기 위해 이번에는 교체하지 않는다
           ``HISTORY_UPDATER_START_FAILED``   내리는 데는 성공했으나 기동 실패
+
+        2026-10-21 (10/20 실사고 2차): 예전에는 join 이 실패하면(=스레드가
+        KIS 호출/락에서 멈춤) 무조건 BLOCKED 였고, 그래서 대시보드 워치독이
+        3시간 동안 같은 결과만 반복했다. 파이썬 스레드는 강제로 죽일 수 없으므로
+        이제는 **은퇴**시킨다: 이름을 바꾸고 멈춤 신호를 남긴 뒤, 새 세대
+        (generation) 번호·새 KISClient·새 fetch 락으로 새 스레드를 올린다.
+        은퇴 스레드는 돌아오더라도 lease 검사에 걸려 프레임/진단을 쓰지 못하고
+        곧바로 끝난다. 그래서 프레임을 쓰는 updater 는 언제나 하나다.
+
+        복구할 때마다(정상 종료 포함) 세대를 올리므로 새 스레드는 항상 **새**
+        KISClient(새 Session)를 쓴다. 토큰은 mode 단위 파일 캐시를 먼저 읽어
+        재발급하지 않는다.
 
         주문/워커/전략 state 는 일절 건드리지 않는다. 이 함수가 하는 일은
         1분봉 수집 스레드의 수명 관리뿐이다."""
         now = now or datetime.now(KST)
         with self._history_recovery_lock:
+            replaced_stuck = False
             stopped = self.stop_history_updater(join_timeout=join_timeout)
             if not stopped:
-                # 기존 스레드가 아직 살아 있다 -- start_history_updater 는 이
-                # 경우 no-op 이지만, 그 사실에 기대지 않고 여기서 명시적으로
-                # 멈춘다. 신규진입 차단은 기존 HISTORY_STALE 게이트가 계속
-                # 유지하므로 데이터가 낡은 채로 주문이 나갈 일은 없다.
-                with self._history_diag_lock:
-                    self._history_last_recovery_result = config.HISTORY_UPDATER_RECOVERY_BLOCKED
-                logger.error(
-                    "[MACD2][HISTORY] 복구 보류 -- 기존 수집 스레드가 join 후에도 "
-                    "살아 있어 교체하지 않는다(%s)", config.HISTORY_UPDATER_RECOVERY_BLOCKED)
-                return config.HISTORY_UPDATER_RECOVERY_BLOCKED
+                if self._live_retired_history_threads() >= config.HISTORY_UPDATER_MAX_RETIRED_THREADS:
+                    with self._history_diag_lock:
+                        self._history_last_recovery_result = config.HISTORY_UPDATER_RECOVERY_BLOCKED
+                    logger.error(
+                        "[MACD2][HISTORY] 복구 보류 -- 멈춘 수집 스레드가 이미 %d 개 은퇴 대기 중이라 "
+                        "더 쌓지 않는다(%s). 신규진입은 계속 차단된다.",
+                        config.HISTORY_UPDATER_MAX_RETIRED_THREADS,
+                        config.HISTORY_UPDATER_RECOVERY_BLOCKED)
+                    return config.HISTORY_UPDATER_RECOVERY_BLOCKED
+                self._retire_stuck_history_updater()
+                replaced_stuck = True
+            # 정상 종료든 교체든 새 세대 = 새 KISClient 로 시작한다.
+            with self._history_fetch_client_lock:
+                self._history_generation += 1
+                self._history_kis_client = None
+            self._live_retired_history_threads()      # 끝난 세대 클라이언트 정리
             self.start_history_updater(interval_sec=interval_sec)
             alive = self.history_updater_alive()
             result = (config.HISTORY_UPDATER_RECOVERED if alive
@@ -1294,14 +1569,41 @@ class MarketDataService:
                 if alive:
                     self._history_recovery_count += 1
                     self._history_last_recovered_at = now
+                    if replaced_stuck:
+                        self._history_replaced_stuck_count += 1
                 recovery_count = self._history_recovery_count
             if alive:
                 logger.warning(
-                    "[MACD2][HISTORY] 수집 스레드 재기동 완료 (오늘 누적 복구 %d 회)",
+                    "[MACD2][HISTORY] 수집 스레드 재기동 완료 (세대 %d, %s, 오늘 누적 복구 %d 회)",
+                    self._history_generation,
+                    "멈춘 스레드 교체" if replaced_stuck else "정상 종료 후 재기동",
                     recovery_count)
             else:
                 logger.error("[MACD2][HISTORY] 수집 스레드 재기동 실패 (%s)", result)
             return result
+
+    def _retire_stuck_history_updater(self) -> None:
+        """join 이 안 되는(멈춘) 현재 updater 를 은퇴시킨다.
+
+        죽일 수 없으니 (1) 멈춤 신호를 확실히 남기고 (2) 이름을 바꿔 활성
+        updater 집계에서 빼고 (3) 참조를 은퇴 목록으로 옮긴다. 그 스레드가 쥐고
+        있을 수 있는 fetch 락은 새 객체로 갈아 끼워 새 세대가 기다리지 않게
+        한다. 프레임 쓰기는 세대 lease 가 막는다."""
+        thread = self._history_updater_thread
+        self._history_updater_stop.set()
+        if thread is None:
+            return
+        gen = self._history_generation
+        try:
+            thread.name = f"macd2-history-updater-retired-g{gen}"
+        except Exception:
+            pass
+        with self._history_fetch_client_lock:
+            self._history_retired_threads.append((gen, thread))
+        self._history_updater_thread = None
+        self._history_fetch_lock = threading.RLock()
+        logger.error(
+            "[MACD2][HISTORY] 멈춘 수집 스레드(세대 %d)를 은퇴시키고 새 세대로 교체한다", gen)
 
     def live_history_updater_count(self) -> int:
         """진단/테스트용 -- 실제로 살아 있는 history updater 스레드 수.

@@ -376,6 +376,19 @@ HISTORY_STALE_HOLDING_ALERT = "HISTORY_FEED_STALE_WHILE_HOLDING"
 #: 같은 CRITICAL 경고를 매 tick(5초) 쏟지 않기 위한 최소 간격.
 HISTORY_STALE_ALERT_INTERVAL_SEC = 60.0
 
+# ── 신호 피드 자동 정상화 (2026-10-21, 10/20 실사고 2차) ─────────────────────
+# 10/20 은 대시보드 워치독이 5초마다 돌았는데도 복구되지 않았다(사용자 확인).
+# 판정은 이제 worker 가 보는 프레임 기준이고, 멈춘 스레드는 은퇴시킨 뒤 새
+# 세대로 교체한다(market_data.recover_history_updater). 파이썬 스레드는 강제로
+# 죽일 수 없으므로 은퇴 스레드가 끝없이 쌓이지 않게 상한을 둔다 -- 상한에
+# 닿으면 그때만 예전처럼 HISTORY_UPDATER_RECOVERY_BLOCKED 이고, 은퇴 스레드가
+# 끝나는 대로 다시 교체를 시도한다. 그동안 신규진입은 계속 차단된다.
+HISTORY_UPDATER_MAX_RETIRED_THREADS = 2
+#: 정지 뒤 빠진 1분봉 backfill 이 끝까지 못 갔을 때 다시 시도하기까지의 간격.
+#: 이 경로는 공백이 있을 때만 KIS 를 부르며, 요청 pacing 은 kis_client 의
+#: mode 별 _throttle 과 기존 KIS_PAGE_FETCH_PACING_SEC 를 그대로 따른다.
+HISTORY_BACKFILL_RETRY_SEC = 30.0
+
 # 전일 warm-up 조회(주식일별분봉조회) 중 KIS 서버 일시 오류(500 등)를 "해당
 # 날짜에 데이터 없음(휴장일)"으로 오인해 더 이전 날짜로 잘못 넘어가면 EMA
 # seed가 실제 KIS 차트와 달라진다 (2026-07-27 3플래그 재현 검증에서 발견 —

@@ -65,6 +65,7 @@ from app.trading.macd2 import (
     order_executor,
     p3_stack,
     pending_order,
+    position_feed,
     position_sizing,
     premarket_shadow,
     shadow_base,
@@ -1484,12 +1485,30 @@ def abandon_pending_tw2_3slot_candidate_if_any(state: RuntimeState, now: datetim
 def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, force: bool = False) -> str:
     if not _should_reconcile_position(state, now, force=force):
         return str((state.position_reconcile_diag or {}).get("comparison_result") or MATCH_FLAT)
-    try:
-        broker_positions, all_positions = _normalize_broker_positions(broker.get_positions())
-        broker_error = None
-    except Exception as exc:
+    # 2026-10-21: 잔고조회 circuit breaker (position_feed.py). 연속 실패 중에는
+    # 재시도 시각 전까지 브로커를 부르지 않고 바로 POSITION_DATA_ERROR(STALE) 로
+    # 끝낸다 -- 판정과 그 뒤 처리(신규주문 차단, 보유 포지션 보호 청산, 플래그
+    # 평가 계속)는 기존과 똑같다. 바뀌는 것은 '얼마나 자주 부르느냐' 뿐이다.
+    # 주문 경로의 강제 조회(force=True: 주문 직전 확인·재조회·pending 재시도)는
+    # 막지 않는다 -- 그 경로의 기존 재시도 계약(2026-09-29/10-01)을 그대로 둔다.
+    _feed_blocked = None if force else position_feed.blocked_until(state, now)
+    if _feed_blocked is not None:
         broker_positions, all_positions = {}, []
-        broker_error = repr(exc)
+        broker_error = f"{position_feed.CIRCUIT_OPEN_ERROR}:retry_at={_feed_blocked.isoformat()}"
+        position_feed.note_skipped(state)
+    else:
+        if position_feed.is_open(state):
+            position_feed.maybe_refresh_client(broker, state, now)
+        try:
+            broker_positions, all_positions = _normalize_broker_positions(broker.get_positions())
+            broker_error = None
+            position_feed.note_success(state, now)
+        except Exception as exc:
+            broker_positions, all_positions = {}, []
+            broker_error = repr(exc)
+            position_feed.note_failure(state, now, broker_error, count=not force)
+            if position_feed.is_connection_error(broker_error):
+                position_feed.maybe_refresh_client(broker, state, now)
 
     runtime = _runtime_position_dict(state)
     diag = {
@@ -1499,12 +1518,14 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         f"{config.INVERSE_SYMBOL}_broker_qty": int((broker_positions.get(config.INVERSE_SYMBOL) or {}).get("qty") or 0),
         "reconciled_at": now.isoformat(),
         "broker_response_error": broker_error,
+        **position_feed.diag(state),
     }
 
     if broker_error:
         diag.update({"comparison_result": POSITION_DATA_ERROR, "mismatch_reason": broker_error})
         state.position_reconcile_diag = diag
         state.last_position_reconcile_at = now.isoformat()
+        position_feed.alert_if_holding(state, now)
         return POSITION_DATA_ERROR
 
     # 2026-10-01 hotfix: 마지막 '성공한' 잔고조회 스냅샷 (SAFE EXIT 의 보유 확인 근거).

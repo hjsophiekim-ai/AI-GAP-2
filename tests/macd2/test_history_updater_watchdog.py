@@ -216,16 +216,48 @@ def test_stale_age_resets_once_new_bars_arrive_again():
 
 # ── 3. 중복 금지 / 폭주 금지 ───────────────────────────────────────────────
 
-def test_unconfirmed_stop_blocks_recovery_and_never_adds_a_second_updater():
-    """종료가 확인되지 않으면 새 스레드를 억지로 올리지 않는다.
-    (monkeypatch 대신 인스턴스 속성만 바꾼다 — tests/macd2 에서 monkeypatch.undo()
-    는 conftest 의 원장 격리까지 풀어 버리므로 쓰지 않는다.)"""
+def test_unconfirmed_stop_retires_the_old_thread_and_never_adds_a_second_updater():
+    """종료가 확인되지 않으면 옛 스레드를 **은퇴**시키고 새 세대로 교체한다.
+
+    2026-10-21 계약 변경(10/20 실사고 2차): 예전에는 여기서 무조건
+    RECOVERY_BLOCKED 였고, 그래서 멈춘 스레드가 하나 있으면 대시보드 워치독이
+    몇 시간을 돌아도 복구되지 않았다. 지금도 **활성 updater 는 정확히 하나**라는
+    불변식은 그대로다 -- 은퇴 스레드는 이름이 바뀌고 세대 lease 로 프레임을 쓰지
+    못한다. (monkeypatch 대신 인스턴스 속성만 바꾼다 — tests/macd2 에서
+    monkeypatch.undo() 는 conftest 의 원장 격리까지 풀어 버리므로 쓰지 않는다.)"""
     md = _svc(fetch=_idle_fetch)
     md.start_history_updater(interval_sec=3600.0)
+    old_thread = md._history_updater_thread
     real_stop = md.stop_history_updater
     try:
         before = md.live_history_updater_count()
         md.stop_history_updater = lambda **kw: False        # 종료 미확인 시뮬레이션
+        result = md.recover_history_updater(now=_TRADING_NOW)
+        assert result == config.HISTORY_UPDATER_RECOVERED
+        assert md.live_history_updater_count() == before, "중복 updater 가 생겼다"
+        assert md._history_updater_thread is not old_thread
+        assert old_thread.name.startswith("macd2-history-updater-retired")
+        diag = md.history_diag()
+        assert diag["history_recovery_count"] == 1
+        assert diag["history_replaced_stuck_count"] == 1
+        assert diag["history_generation"] == 1
+    finally:
+        md.stop_history_updater = real_stop
+        real_stop()
+        old_thread.join(timeout=2.0)
+    assert not old_thread.is_alive(), "은퇴 스레드가 멈춤 신호를 받지 못했다"
+
+
+def test_retired_thread_cap_blocks_recovery_and_never_adds_a_second_updater():
+    """은퇴 스레드가 상한만큼 살아 있으면 그때만 예전처럼 BLOCKED 다 --
+    죽일 수 없는 스레드를 무한히 쌓지 않는다."""
+    md = _svc(fetch=_idle_fetch)
+    md.start_history_updater(interval_sec=3600.0)
+    real_stop = md.stop_history_updater
+    md._live_retired_history_threads = lambda: config.HISTORY_UPDATER_MAX_RETIRED_THREADS
+    try:
+        before = md.live_history_updater_count()
+        md.stop_history_updater = lambda **kw: False
         result = md.recover_history_updater(now=_TRADING_NOW)
         assert result == config.HISTORY_UPDATER_RECOVERY_BLOCKED
         assert md.live_history_updater_count() == before, "중복 updater 가 생겼다"
