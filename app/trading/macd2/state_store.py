@@ -86,6 +86,7 @@ def default_state() -> RuntimeState:
     state.e_last_pending_result = None
     state.e_daily_cap2_enabled = False          # E 하루 최대 2회 토글 -- 기본 OFF
     state.fixed_exit_15_enabled = False         # 고정 ±1.5% 청산 토글 -- 기본 OFF
+    state.mu_assist_enabled = bool(config.MU_ASSIST_ENABLED)   # MU ASSIST -- 기본 = env (없으면 OFF)
     state.time_window_h50_filter_enabled = bool(getattr(config, "H50_3SLOT_FILTER_DEFAULT", False))
     state.time_window_h50_filter_version = config.H50_3SLOT_FILTER_VERSION
     state.h50_hold_active = False
@@ -511,6 +512,10 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "fixed_exit_15_enabled": bool(state.fixed_exit_15_enabled),
         "fixed_exit_15_changed_at": state.fixed_exit_15_changed_at,
         "fixed_exit_15_changed_by": state.fixed_exit_15_changed_by,
+        # MU ASSIST (2026-10-23) — 사용자 설정, 재시작 후 복원.
+        "mu_assist_enabled": bool(state.mu_assist_enabled),
+        "mu_assist_changed_at": state.mu_assist_changed_at,
+        "mu_assist_changed_by": state.mu_assist_changed_by,
         # 미확정 매수주문 추적 (2026-10-16) — 재시작 후에도 추적을 이어간다.
         "pending_buy_order": dict(state.pending_buy_order) if state.pending_buy_order else None,
         "last_pending_order_result": dict(state.last_pending_order_result) if state.last_pending_order_result else None,
@@ -1272,6 +1277,10 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         fixed_exit_15_enabled=bool(raw.get("fixed_exit_15_enabled", False)),
         fixed_exit_15_changed_at=raw.get("fixed_exit_15_changed_at"),
         fixed_exit_15_changed_by=raw.get("fixed_exit_15_changed_by"),
+        # 저장값이 없으면(기존 state 파일) env MACD2_MU_ASSIST_ENABLED 기본값 — 미설정이면 OFF.
+        mu_assist_enabled=bool(raw.get("mu_assist_enabled", config.MU_ASSIST_ENABLED)),
+        mu_assist_changed_at=raw.get("mu_assist_changed_at"),
+        mu_assist_changed_by=raw.get("mu_assist_changed_by"),
         pending_buy_order=(dict(raw["pending_buy_order"]) if isinstance(raw.get("pending_buy_order"), dict) else None),
         last_pending_order_result=(dict(raw["last_pending_order_result"])
                                    if isinstance(raw.get("last_pending_order_result"), dict) else None),

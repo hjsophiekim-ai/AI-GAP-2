@@ -57,6 +57,9 @@ def _on(monkeypatch, *, pattern: str = mu_assist.PATTERN_CONFIRM, hy: str = mu_a
         status: str = mu_assist.STATUS_OK):
     """토글 ON + MU 패턴/HY 상태를 고정한다(배선 테스트). 계산 정의 자체는 아래 순수 함수 테스트가 본다."""
     monkeypatch.setattr(config, "MU_ASSIST_ENABLED", True)
+    # 2026-10-23: 실제 ON/OFF 는 저장 state(mu_assist_enabled)가 기준이다. 배선 테스트는 state 를 만든 뒤
+    # 켜므로 판정 함수를 고정한다(state 기준 동작 자체는 test_mu_assist_toggle.py 가 본다).
+    monkeypatch.setattr(worker.mu_assist, "is_enabled", lambda *a, **k: True)
     monkeypatch.setattr(worker.mu_assist, "load_mu_1m", lambda *a, **k: None)
     monkeypatch.setattr(worker.mu_assist, "evaluate_pattern", lambda *a, **k: _pattern(pattern, status))
     monkeypatch.setattr(worker, "_hy_gap_t2_bar", lambda *a, **k: 0.0)

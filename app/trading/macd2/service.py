@@ -37,6 +37,7 @@ from app.trading.macd2 import p3_stack
 from app.trading.macd2 import strategy_mode as strategy_mode_mod
 from app.trading.macd2 import e_strategy as e_strategy_mod
 from app.trading.macd2 import fixed_exit as fixed_exit_mod
+from app.trading.macd2 import mu_assist as mu_assist_mod
 from app.trading.macd2 import peak_protection
 from app.trading.macd2 import n1_adaptive
 from app.trading.macd2 import position_sizing
@@ -1376,6 +1377,25 @@ class Macd2Service:
             "shadow_sample": regime.sample,
             "detector_window": regime.window,
         }
+
+    def set_mu_assist_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: MU ASSIST 토글 (2026-10-23, mu_assist.py).
+
+        ON: T+2 MU 패턴 × 하이닉스 gap 으로 ENTRY_BAD 신규진입 차단 + MU CONFIRM 조건부 H50 조기청산.
+        주문을 내지 않는다 -- 다음 tick 부터 적용. 전략모드·다른 토글은 건드리지 않고 값은 저장된다.
+        """
+        state = state_store.load_state()
+        prev = mu_assist_mod.is_enabled(state)
+        state.mu_assist_enabled = bool(enabled)
+        state.mu_assist_changed_at = datetime.now(KST).isoformat()
+        state.mu_assist_changed_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        log.warning("[MACD2][MU_ASSIST] 토글 %s -> %s (by=%s, mode=%s, holding=%s)",
+                    "ON" if prev else "OFF", "ON" if state.mu_assist_enabled else "OFF",
+                    changed_by, strategy_mode_mod.current(state),
+                    state.position.symbol if state.position else None)
+        return {"ok": True, "mu_assist_enabled": bool(state.mu_assist_enabled), "previous": prev,
+                "changed_at": state.mu_assist_changed_at}
 
     def set_fixed_exit_15_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """UI command: 고정 ±1.5% 청산 토글 (2026-10-15, fixed_exit.py).

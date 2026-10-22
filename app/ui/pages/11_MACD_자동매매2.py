@@ -45,6 +45,7 @@ from app.trading.macd2 import early_take_profit  # noqa: E402
 from app.trading.macd2 import position_sizing as macd2_position_sizing  # noqa: E402
 from app.trading.macd2 import strategy_mode as macd2_strategy_mode  # noqa: E402
 from app.trading.macd2 import fixed_exit as macd2_fixed_exit  # noqa: E402
+from app.trading.macd2 import mu_assist as macd2_mu_assist  # noqa: E402
 from app.trading.macd2 import e_strategy as macd2_e_strategy  # noqa: E402
 from app.trading.macd2 import p3_stack as macd2_p3_stack  # noqa: E402
 from app.trading.macd2 import pending_order as macd2_pending_order  # noqa: E402
@@ -1314,6 +1315,39 @@ with _stm_cols[0]:
         st.caption("고정 ±1.5% 청산: OFF — 전략 기본 청산")
 if _fx_pick != _fx_now:
     service.set_fixed_exit_15_enabled(_fx_pick, changed_by="ui")
+    st.rerun()
+
+# ── MU ASSIST (2026-10-23, app/trading/macd2/mu_assist.py) ─────────────────
+# 어느 전략모드에서든 보인다. 저장값이 기준이고, 저장값이 없을 때만 env
+# MACD2_MU_ASSIST_ENABLED 를 기본값으로 쓴다. 재시작 후 저장값으로 복원된다.
+_mua_now = macd2_mu_assist.is_enabled(state)
+with _stm_cols[0]:
+    _mua_pick = st.toggle(
+        "MU Assist",
+        value=_mua_now,
+        key="macd2_mu_assist_toggle",
+        help=("ON: MU(마이크론) 1분봉을 보조신호로 씁니다. 전략·T+3·게이트·TP/SL 은 그대로입니다." + chr(10)
+              + "  · 진입: T+2 에 MU 가 둔화/불일치(STALL·DIVERGE)이고 하이닉스 gap 도 정체/축소면 그 신규진입만 차단" + chr(10)
+              + "  · 청산: 보유 중 반대 플래그에서 H50 이 HOLD 할 상황이라도, 하이닉스 반대 gap 확대 + MU 반대 CONFIRM 이면 조기청산" + chr(10)
+              + "  · MU 데이터가 없거나 늦으면 기존 전략 그대로" + chr(10)
+              + "OFF: 기존 전략 그대로 (production 기본)."),
+    )
+    _mua_sum = macd2_mu_assist.status_summary(state, datetime.now(macd2_config.KST))
+    if _mua_now:
+        _ent = _mua_sum.get("entry") or {}
+        st.markdown(
+            "**MU Assist: 🟢 ON** — MU 최신 분봉 " + str(_mua_sum.get("last_bar") or "없음")
+            + " · 오늘 진입판정 BAD " + str(_ent.get("ENTRY_BAD", 0)) + " / CONFIRM " + str(_ent.get("ENTRY_CONFIRM", 0))
+            + " / WAIT " + str(_ent.get("ENTRY_WAIT", 0)) + " / 판정불가 " + str(_ent.get("MU_UNAVAILABLE", 0))
+            + " · 조기청산 " + str(_mua_sum.get("exits", 0))
+        )
+        if not _mua_sum.get("data_dir_ok"):
+            st.warning("MU Assist 가 켜져 있지만 MU 데이터 폴더를 찾지 못했습니다 — 판정이 전부 '판정불가'(기존 전략 그대로)가 됩니다. "
+                       "Render 환경변수 MACD2_MU_ASSIST_DATA_DIR 또는 KIS_LOGGER_DATA_DIR 를 확인하세요.")
+    else:
+        st.caption("MU Assist: OFF — 기존 전략 그대로")
+if _mua_pick != _mua_now:
+    service.set_mu_assist_enabled(_mua_pick, changed_by="ui")
     st.rerun()
 
 # ── E 하루 최대 2회 토글 (2026-10-06) ──────────────────────────────────────

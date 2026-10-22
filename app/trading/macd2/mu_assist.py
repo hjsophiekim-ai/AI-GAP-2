@@ -99,8 +99,38 @@ _LOCK = threading.RLock()
 _SEEN: set[tuple[str, str, str]] = set()     # (원장 경로, kind, signal_id) — 이번 프로세스에서 이미 기록한 것
 
 
-def is_enabled() -> bool:
+def is_enabled(state: Any = None) -> bool:
+    """켜져 있는가 — UI 에서 저장한 state.mu_assist_enabled 가 기준이다. state 가 없거나 그 필드가
+    없으면 env MACD2_MU_ASSIST_ENABLED 기본값(미설정이면 OFF)."""
+    if state is not None and hasattr(state, "mu_assist_enabled"):
+        return bool(state.mu_assist_enabled)
     return bool(config.MU_ASSIST_ENABLED)
+
+
+def status_summary(state: Any, now: datetime) -> dict[str, Any]:
+    """UI 상태줄용: 데이터 경로, MU 최신 분봉, 오늘 진입판정/청산 집계. 실패해도 예외를 내지 않는다."""
+    out: dict[str, Any] = {"enabled": is_enabled(state), "data_dir": config.MU_ASSIST_DATA_DIR or "",
+                           "data_dir_ok": False, "last_bar": None, "entry": {}, "exits": 0, "holds": 0}
+    try:
+        root = config.MU_ASSIST_DATA_DIR
+        out["data_dir_ok"] = bool(root) and Path(root).exists()
+        s = load_mu_1m(now) if out["data_dir_ok"] else None
+        if s is not None and len(s):
+            out["last_bar"] = s.index.max().strftime("%H:%M")
+        day = _naive(now).strftime("%Y%m%d")
+        for row in _load_rows():
+            if row.get("trading_date") != day:
+                continue
+            if row.get("kind") == KIND_ENTRY:
+                k = row.get("mu_entry_assist_status") or "?"
+                out["entry"][k] = out["entry"].get(k, 0) + 1
+            elif row.get("kind") == KIND_H50_EXIT and row.get("exit_result") == "EXECUTED":
+                out["exits"] += 1
+            elif row.get("kind") == KIND_H50_KEPT:
+                out["holds"] += 1
+    except Exception:          # 상태줄 실패가 화면을 깨면 안 된다
+        pass
+    return out
 
 
 def ledger_path() -> Path:

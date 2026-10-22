@@ -4929,7 +4929,7 @@ def _resolve_tw2_3slot_candidate_body(
     # ── MU ASSIST: H50 gap 조기청산 직후의 반대 신규진입 금지 (2026-10-22) ──
     # 이 플래그로 T+2 에 이미 청산했으면 T+3 승인이어도 반대 ETF 를 사지 않는다.
     # 슬롯 판정 앞이라 슬롯을 소비하지 않는다. 토글 OFF 면 is_enabled 에서 끝난다.
-    if tw2_cleared and mu_assist.is_enabled() and mu_assist.exited_on_flag(flag_bar_dt, direction):
+    if tw2_cleared and mu_assist.is_enabled(state) and mu_assist.exited_on_flag(flag_bar_dt, direction):
         tw2_cleared = False
         final_block_reason = config.MU_ASSIST_NO_REENTRY_BLOCK_REASON
         final_decision_label = config.MU_ASSIST_NO_REENTRY_BLOCK_REASON
@@ -4943,7 +4943,7 @@ def _resolve_tw2_3slot_candidate_body(
     # 기존 게이트를 **통과한** 후보 중 T+2 에 ENTRY_BAD((STALL∨DIVERGE)∧(FLAT∨SHRINK))로
     # 기록된 것만 막는다. MU 로 진입을 허용하거나 게이트를 우회하는 경로는 없다. T+2 기록이
     # 없거나 MU 판정 불가면 막지 않는다(fail-open). 슬롯 판정 앞이라 슬롯을 소비하지 않는다.
-    if tw2_cleared and mu_assist.is_enabled():
+    if tw2_cleared and mu_assist.is_enabled(state):
         _mu_veto = mu_assist.entry_veto_reason(signal_id)
         if _mu_veto:
             tw2_cleared = False
@@ -7966,7 +7966,7 @@ def run_once(
     state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
     # MU ASSIST ① 진입 (2026-10-22, 기본 OFF): T+2 시점 MU 패턴 × 하이닉스 gap 상태를 별도
     # 원장에 기록한다. ENTRY_BAD 면 T+3 판정이 신규진입을 막는다. OFF 면 호출하지 않는다.
-    if mu_assist.is_enabled():
+    if mu_assist.is_enabled(state):
         try:
             _advance_mu_assist_entry_shadow(state=state, now=now, macd_snap=macd_snap,
                                             bars_3m=bars_3m, sig_df_1m=_sig_df_1m)
@@ -8222,7 +8222,7 @@ def run_once(
         # MU ASSIST ② H50 gap 조기청산 (2026-10-22, 기본 OFF): H50 해제와 같은 자리 --
         # 하드스톱/TP/트레일링/반대신호 switch 가 이미 이 tick 앞에서 발동했으면 여기까지
         # 오지 않는다. 청산 전용이며 반대 신규진입은 하지 않는다. OFF 면 호출하지 않는다.
-        if mu_assist.is_enabled():
+        if mu_assist.is_enabled(state):
             mu_outcome = _advance_mu_assist_h50_gap_exit(
                 broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
                 bars_3m=bars_3m, sig_df_1m=_sig_df_1m, position=pos, result=result,
