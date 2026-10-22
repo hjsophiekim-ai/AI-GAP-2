@@ -1508,12 +1508,13 @@ EXIT_H50_TREND_BREAK = "H50_WHIPSAW_RELEASE"
 EXIT_H50_MAX_HOLD = "H50_MAX_HOLD_EXIT"
 
 # ── MU ASSIST (2026-10-22, 기본 OFF) ─────────────────────────────────────
-# 토글 하나로 두 기능을 함께 켠다 (mu_assist.py 참고):
-#   ① 진입 보조 — T+2 시점 MU 지표를 macd2_mu_assist_ledger.csv 에 SHADOW 로만 기록.
-#      진입을 막지도 앞당기지도 않는다(T+3 구조 그대로, T+1 진입 없음).
-#   ② H50 gap 조기청산 — 보유 중 반대 플래그가 떴고 H50 이 그 플래그를 HOLD 할 상황인데
-#      T+2 형성봉에서 반대방향 MACD gap 이 계속 확대되면 T+3 를 기다리지 않고 청산한다.
-#      그 플래그의 T+3 반대 신규진입은 MU_ASSIST_NO_REENTRY 로 막는다. MU 는 청산 조건이 아니라 로그다.
+# 토글 하나로 두 기능을 함께 켠다 (mu_assist.py 참고, 정의 = research PREREG_mu_pattern.md):
+#   ① 진입 BAD veto — T+2 에 MU 패턴(CONFIRM/STALL/DIVERGE) × 하이닉스 T+2 gap(EXPAND/FLAT/SHRINK)을
+#      기록하고 (STALL∨DIVERGE)∧(FLAT∨SHRINK) 이면 T+3 신규진입을 MU_ASSIST_ENTRY_BAD 로 막는다.
+#      그 외/MU 판정 불가는 기존 그대로(fail-open). T+3·CHOP/TEG/VWAP/slot 게이트는 그대로, 조기진입 없음.
+#   ② H50 조기청산 — 보유 중 반대 플래그가 떴고 H50 이 그 플래그를 HOLD 할 상황에서 T+2 형성봉
+#      반대방향 gap 확대 **그리고** MU 반대방향 CONFIRM 일 때만 T+3 전에 청산한다(둘 중 하나만으로는 안 함,
+#      MU stale 이면 기존 H50 HOLD). 그 플래그의 T+3 반대 신규진입은 MU_ASSIST_NO_REENTRY 로 막는다.
 # OFF 면 worker 의 훅은 is_enabled() 한 번만 부르고 지나간다(원장 파일도 만들지 않는다).
 MU_ASSIST_ENABLED = _env_bool("MACD2_MU_ASSIST_ENABLED", False)
 #: MU 1분봉 원천 = ws_shadow_logger 의 mu/<YYYY-MM-DD>/bars_1m.csv (같은 Render 서비스).
@@ -1525,6 +1526,7 @@ MU_ASSIST_T2_GRACE_SEC = 10
 MU_ASSIST_MIN_BARS = 35
 EXIT_MU_ASSIST_H50_GAP = "MU_ASSIST_H50_GAP_EXIT"
 MU_ASSIST_NO_REENTRY_BLOCK_REASON = "MU_ASSIST_NO_REENTRY"
+MU_ASSIST_ENTRY_BAD_BLOCK_REASON = "MU_ASSIST_ENTRY_BAD"
 MU_ASSIST_ENTRY_WARNING = "ENTRY_CONFIRM_WEAK"
 MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
