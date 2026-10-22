@@ -6007,7 +6007,8 @@ def _advance_mu_assist_h50_gap_exit(
     if outcome is not None:
         _apply_exit_outcome(state, outcome)
         if outcome.final_state == SignalState.EXECUTED:
-            small_whipsaw_hold.clear(state)     # HOLD 해제 (이미 걸려 있던 HOLD 포함)
+            # H50 HOLD 해제는 _apply_exit_outcome -> _clear_position_scoped_state(중앙 정리)가
+            # 한다 -- 포지션 수명 상태를 개별 지점에서 따로 clear 하지 않는 규칙(2026-09-21).
             result.actions.append(f"{config.EXIT_MU_ASSIST_H50_GAP}:{outcome.target_symbol}")
         mu_assist.record(mu_assist.KIND_H50_EXIT, exit_sid, {
             **base_fields, "exit_result": outcome.final_state.value, "exit_signal_id": exit_sid,
