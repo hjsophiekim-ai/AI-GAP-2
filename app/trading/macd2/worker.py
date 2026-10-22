@@ -62,6 +62,7 @@ from app.trading.macd2 import (
     n1_adaptive,
     ledger,
     major_flag_filter,
+    mu_assist,
     order_executor,
     p3_stack,
     pending_order,
@@ -94,6 +95,7 @@ from app.trading.macd2.models import (
 )
 from app.trading.macd2.signal_engine import (
     calculate_macd,
+    calculate_provisional_macd,
     evaluate_macd_crossover,
     evaluate_primary_forming_crossover,
     forming_bar_window,
@@ -4924,6 +4926,33 @@ def _resolve_tw2_3slot_candidate_body(
             block_reason=config.CHOP_MC_BLOCK_REASON,
         )
 
+    # ── MU ASSIST: H50 gap 조기청산 직후의 반대 신규진입 금지 (2026-10-22) ──
+    # 이 플래그로 T+2 에 이미 청산했으면 T+3 승인이어도 반대 ETF 를 사지 않는다.
+    # 슬롯 판정 앞이라 슬롯을 소비하지 않는다. 토글 OFF 면 is_enabled 에서 끝난다.
+    if tw2_cleared and mu_assist.is_enabled() and mu_assist.exited_on_flag(flag_bar_dt, direction):
+        tw2_cleared = False
+        final_block_reason = config.MU_ASSIST_NO_REENTRY_BLOCK_REASON
+        final_decision_label = config.MU_ASSIST_NO_REENTRY_BLOCK_REASON
+        base_decision = dataclasses.replace(
+            base_decision, approved=False,
+            decision=config.MU_ASSIST_NO_REENTRY_BLOCK_REASON,
+            block_reason=config.MU_ASSIST_NO_REENTRY_BLOCK_REASON,
+        )
+
+    # ── MU ASSIST: 진입 BAD veto (2026-10-22) ────────────────────────────
+    # 기존 게이트를 **통과한** 후보 중 T+2 에 ENTRY_BAD((STALL∨DIVERGE)∧(FLAT∨SHRINK))로
+    # 기록된 것만 막는다. MU 로 진입을 허용하거나 게이트를 우회하는 경로는 없다. T+2 기록이
+    # 없거나 MU 판정 불가면 막지 않는다(fail-open). 슬롯 판정 앞이라 슬롯을 소비하지 않는다.
+    if tw2_cleared and mu_assist.is_enabled():
+        _mu_veto = mu_assist.entry_veto_reason(signal_id)
+        if _mu_veto:
+            tw2_cleared = False
+            final_block_reason = _mu_veto
+            final_decision_label = _mu_veto
+            base_decision = dataclasses.replace(
+                base_decision, approved=False, decision=_mu_veto, block_reason=_mu_veto,
+            )
+
     if tw2_cleared:
         slot_decision = time_window_3slot.resolve_slot(
             now=now,
@@ -5883,6 +5912,178 @@ def _advance_h50_hold(
         if outcome.final_state == SignalState.EXECUTED:
             result.actions.append(
                 f"{small_whipsaw_hold.EXIT_SMALL_WHIPSAW_HOLD}:{outcome.target_symbol}")
+    return outcome
+
+
+#: T+2 창 안에서 MU/하이닉스 분봉이 아직 안 들어왔으면 이 시각까지는 다시 시도한다(이후엔 판정 불가로 기록).
+_MU_ASSIST_RETRY_UNTIL = timedelta(minutes=5, seconds=50)
+
+
+def _hy_gap_t2_bar(sig_df_1m, bars_3m, flag_bar_dt: datetime) -> Optional[float]:
+    """T+2 부분 확인봉의 하이닉스 gap — 연구 정의 그대로 완성 1분봉 2개(F+3, F+4분)만으로 만든다.
+    F+4분 봉이 아직 없으면 None."""
+    if sig_df_1m is None or sig_df_1m.empty:
+        return None
+    t2 = flag_bar_dt + timedelta(minutes=5)
+    rows = sig_df_1m[pd.to_datetime(sig_df_1m["datetime"]) < t2]
+    last = rows[pd.to_datetime(rows["datetime"]) == t2 - timedelta(minutes=1)]
+    if last.empty:
+        return None
+    prov = calculate_provisional_macd(bars_3m, rows, now=t2, current_price=float(last["close"].iloc[-1]))
+    return None if prov is None else float(prov.current_diff)
+
+
+def _advance_mu_assist_entry_shadow(*, state: RuntimeState, now: datetime, macd_snap, bars_3m, sig_df_1m) -> None:
+    """MU ASSIST ① 진입 — 대기 중인 3-SLOT T+3 후보의 T+2 시점 MU 패턴 × 하이닉스 gap 상태 기록.
+
+    여기서는 기록만 한다(macd2_mu_assist_ledger.csv). 실제 차단은 T+3 판정
+    (_resolve_tw2_3slot_candidate_body)이 이 기록의 ENTRY_BAD 를 읽어서 한다. 후보 필드
+    (tw2_3slot_pending_*)는 읽기만 한다. 한 후보당 한 행."""
+    direction = state.tw2_3slot_pending_flag_direction
+    flag_bar_dt = _parse_iso_dt(state.tw2_3slot_pending_flag_bar_ts)
+    if not direction or flag_bar_dt is None or not mu_assist.in_t2_window(flag_bar_dt, now):
+        return
+    direction = Direction(getattr(direction, "value", direction))
+    signal_id = f"{make_signal_id(flag_bar_dt, direction)}:TW2_3SLOT_CONFIRM"
+    if mu_assist.already_recorded(mu_assist.KIND_ENTRY, signal_id):
+        return
+    retry = now < flag_bar_dt + _MU_ASSIST_RETRY_UNTIL
+    pattern = mu_assist.evaluate_pattern(mu_assist.load_mu_1m(now), direction, flag_bar_dt)
+    if pattern["mu_t2_status"] == mu_assist.STATUS_STALE and retry:
+        return                          # 로거 분봉이 아직 안 씀 -- 다음 tick 에 다시
+    sign = 1.0 if direction == Direction.UP_RED else -1.0
+    g_prev = g_flag = g_t2 = None
+    if (macd_snap is not None and macd_snap.bar_dt == flag_bar_dt
+            and macd_snap.previous_diff is not None and macd_snap.current_diff is not None):
+        g_prev, g_flag = sign * float(macd_snap.previous_diff), sign * float(macd_snap.current_diff)
+        raw_t2 = _hy_gap_t2_bar(sig_df_1m, bars_3m, flag_bar_dt)
+        if raw_t2 is None and retry:
+            return                      # 하이닉스 F+4분 봉이 아직 없음 -- 다음 tick 에 다시
+        g_t2 = None if raw_t2 is None else sign * raw_t2
+    hy_state = mu_assist.hy_gap_state(g_prev, g_flag, g_t2)
+    status = mu_assist.entry_assist_status(pattern["mu_pattern_state"], hy_state)
+    pos = state.position
+    mu_assist.record(mu_assist.KIND_ENTRY, signal_id, {
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "flag_bar_at": flag_bar_dt.isoformat(), "direction": direction.value,
+        "evaluated_at": now.isoformat(),
+        "position_symbol": getattr(pos, "symbol", "") if pos is not None else "",
+        **pattern,
+        "mu_post2_return_bp": pattern.get("mu_post2_bp", ""),
+        "hy_gap_prev": "" if g_prev is None else round(g_prev, 4),
+        "hy_gap_flag": "" if g_flag is None else round(g_flag, 4),
+        "hy_gap_t2_bar": "" if g_t2 is None else round(g_t2, 4),
+        "hy_gap_t2_state": hy_state,
+        "mu_entry_assist_status": status,
+        "mu_entry_warning": status if status == mu_assist.ENTRY_BAD else "",
+    })
+    mu_assist.remember_entry_status(signal_id, status)
+    logger.info("[MACD2][MU_ASSIST] ENTRY %s %s MU=%s(post2=%s acc2=%s) HY=%s",
+                signal_id, status, pattern["mu_pattern_state"], pattern.get("mu_post2_bp"),
+                pattern.get("mu_acc2"), hy_state or "-")
+
+
+def _advance_mu_assist_h50_gap_exit(
+    *, broker, market_data: MarketDataService, state: RuntimeState, now: datetime, macd_snap, bars_3m,
+    sig_df_1m, position: Optional[PositionSnapshot], result: TickResult,
+):
+    """MU ASSIST ② H50 조기청산 (2026-10-22 최종형).
+
+    발동 조건 (전부):
+      · 포지션 보유 중이고 H50 이 적용되는 모드(small_whipsaw_hold.is_active) — 아니면 no-op
+      · 대기 중인 T+3 후보가 보유 반대방향 플래그 (= 반대플래그 발생)
+      · 지금이 그 플래그의 T+2 창 (플래그봉 시작 +5분 ~ +6분)
+      · H50 이 그 플래그를 HOLD 할 상황 (evaluate_hold.should_hold) — 아니면 기존 T+3 경로가 처리
+      · T+2 형성봉의 반대방향 MACD gap 이 0 보다 크고 플래그봉 gap 보다 더 벌어짐
+      · **MU 가 그 반대방향으로 CONFIRM** (mu_assist.evaluate_pattern, 사전등록 정의)
+    gap 확대만으로도, MU 만으로도 청산하지 않는다. MU stale/결측이면 청산하지 않는다(= 기존 H50 HOLD).
+    청산은 H50 해제와 같은 매도 전용 경로(_execute_reversal_exit_only_for_filtered_entry)다 —
+    signal_id 당 한 번(processed_signal_ids), 반대 ETF 매수 없음."""
+    if position is None or position.quantity <= 0 or not small_whipsaw_hold.is_active(state):
+        return None
+    direction = state.tw2_3slot_pending_flag_direction
+    flag_bar_dt = _parse_iso_dt(state.tw2_3slot_pending_flag_bar_ts)
+    if not direction or flag_bar_dt is None or not mu_assist.in_t2_window(flag_bar_dt, now):
+        return None
+    direction = Direction(getattr(direction, "value", direction))
+    if position.symbol == order_executor.target_symbol_for_direction(direction):
+        return None                     # 보유와 같은 방향 플래그 -- 반대플래그가 아니다
+    if macd_snap is None or macd_snap.bar_dt != flag_bar_dt:
+        return None                     # 마지막 완성봉이 그 플래그봉일 때만(T+2 창이면 항상 그렇다)
+    exit_sid = mu_assist.exit_signal_id(flag_bar_dt, direction)
+    if exit_sid in state.processed_signal_ids:
+        return None
+    held_dir = _direction_for_symbol(position.symbol)
+    if held_dir is None:
+        return None
+    h50 = small_whipsaw_hold.evaluate_hold(bars_3m, held_dir, now)
+    if not h50.should_hold:
+        return None                     # H50 이 HOLD 하지 않을 플래그 -- 기존 T+3 경로 그대로
+    q = market_data.get_quote(config.WATCH_SYMBOL)
+    hy_price = float(q.price) if (q is not None and not getattr(q, "error", None) and q.price) else 0.0
+    prov = calculate_provisional_macd(bars_3m, sig_df_1m, now=now, current_price=hy_price) if hy_price > 0 else None
+    if prov is None:
+        return None                     # 형성봉 계산 불가 -- 기존 경로 그대로
+    sign = 1.0 if direction == Direction.UP_RED else -1.0
+    gap_flag = sign * float(macd_snap.current_diff)
+    gap_t2 = sign * float(prov.current_diff)
+    expanding = bool(gap_t2 > 0 and gap_t2 > gap_flag)
+    # MU 확인조건 -- 반대 플래그 방향 기준 패턴. 판정 불가면 청산하지 않는다(기존 H50 HOLD).
+    try:
+        pattern = mu_assist.evaluate_pattern(mu_assist.load_mu_1m(now), direction, flag_bar_dt)
+    except Exception:
+        logger.exception("[MACD2][MU_ASSIST] MU 패턴 계산 실패 -- 기존 H50 HOLD 유지")
+        pattern = {"mu_t2_status": mu_assist.STATUS_MISSING, "mu_pattern_state": mu_assist.PATTERN_UNAVAILABLE}
+    if (pattern.get("mu_t2_status") == mu_assist.STATUS_STALE
+            and now < flag_bar_dt + _MU_ASSIST_RETRY_UNTIL):
+        return None                     # 로거 분봉이 아직 안 씀 -- 다음 tick 에 다시
+    mu_confirm = pattern.get("mu_pattern_state") == mu_assist.PATTERN_CONFIRM
+    if not expanding:
+        decision_label = "HOLD_GAP_NOT_EXPANDING"
+    elif pattern.get("mu_pattern_state") == mu_assist.PATTERN_UNAVAILABLE:
+        decision_label = "HOLD_MU_UNAVAILABLE"
+    elif not mu_confirm:
+        decision_label = "HOLD_MU_NOT_CONFIRM"
+    else:
+        decision_label = "EXIT"
+    base_fields = {
+        "trading_date": now.astimezone(KST).strftime("%Y%m%d"),
+        "flag_bar_at": flag_bar_dt.isoformat(), "direction": direction.value,
+        "evaluated_at": now.isoformat(), "position_symbol": position.symbol,
+        "hy_gap_flag": round(gap_flag, 4), "hy_gap_t2": round(gap_t2, 4), "hy_gap_expanding": expanding,
+        "h50_would_hold": True, "h50_reason": h50.reason, **pattern,
+        "mu_post2_return_bp": pattern.get("mu_post2_bp", ""), "exit_decision": decision_label,
+    }
+    if decision_label != "EXIT":
+        mu_assist.record(mu_assist.KIND_H50_KEPT, exit_sid, base_fields)     # 플래그당 1행(첫 판정)
+        return None
+    logger.info("[MACD2][MU_ASSIST] H50 조기청산 %s %s gap %.4f -> %.4f, MU CONFIRM(post2=%s acc2=%s)",
+                position.symbol, exit_sid, gap_flag, gap_t2, pattern.get("mu_post2_bp"), pattern.get("mu_acc2"))
+    fake_decision = MajorFlagDecision(
+        approved=False, score=0.0, required_score=0.0,
+        decision=config.EXIT_MU_ASSIST_H50_GAP,
+        reasons=("MU ASSIST: H50 HOLD 대상 반대플래그의 T+2 gap 확대 + MU CONFIRM",),
+        component_scores={},
+        metrics={"hy_gap_flag": gap_flag, "hy_gap_t2": gap_t2, "h50_reason": h50.reason,
+                 "mu_post2_bp": pattern.get("mu_post2_bp"), "mu_acc2": pattern.get("mu_acc2")},
+        is_reversal=True, fast_reversal=False,
+        block_reason=config.EXIT_MU_ASSIST_H50_GAP,
+    )
+    outcome = _execute_reversal_exit_only_for_filtered_entry(
+        broker=broker, state=state, macd_snap=macd_snap, direction=direction,
+        position=position, decision=fake_decision, result=result,
+        gate_mode="TW2_3SLOT", signal_id_override=exit_sid,
+        exit_reason=config.EXIT_MU_ASSIST_H50_GAP,
+    )
+    if outcome is not None:
+        _apply_exit_outcome(state, outcome)
+        if outcome.final_state == SignalState.EXECUTED:
+            # H50 HOLD 해제는 _apply_exit_outcome -> _clear_position_scoped_state(중앙 정리)가
+            # 한다 -- 포지션 수명 상태를 개별 지점에서 따로 clear 하지 않는 규칙(2026-09-21).
+            result.actions.append(f"{config.EXIT_MU_ASSIST_H50_GAP}:{outcome.target_symbol}")
+        mu_assist.record(mu_assist.KIND_H50_EXIT, exit_sid, {
+            **base_fields, "exit_result": outcome.final_state.value, "exit_signal_id": exit_sid,
+        })
     return outcome
 
 
@@ -7763,6 +7964,14 @@ def run_once(
     state.primary_relation = macd_snap.relation or _relation_from_diff(macd_snap.current_diff)
     state.signed_b_shadow_direction = signed_b_condition(macd_snap)
     state.signed_b_shadow_hist_last3 = macd_snap.hist_last3
+    # MU ASSIST ① 진입 (2026-10-22, 기본 OFF): T+2 시점 MU 패턴 × 하이닉스 gap 상태를 별도
+    # 원장에 기록한다. ENTRY_BAD 면 T+3 판정이 신규진입을 막는다. OFF 면 호출하지 않는다.
+    if mu_assist.is_enabled():
+        try:
+            _advance_mu_assist_entry_shadow(state=state, now=now, macd_snap=macd_snap,
+                                            bars_3m=bars_3m, sig_df_1m=_sig_df_1m)
+        except Exception:
+            logger.exception("[MACD2][MU_ASSIST] 진입 보조 계측 실패 -- 기존 로직 그대로")
 
     # ── P3 regime + SHADOW-BASE (2026-09-27) — **기록/판정 전용** ────────
     # 주문을 내지 않는다. detector 를 갱신하고 가상 BASE 스트림을 한 tick
@@ -8009,6 +8218,18 @@ def run_once(
         if h50_outcome is not None and h50_outcome.final_state == SignalState.EXECUTED:
             _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
             return result
+
+        # MU ASSIST ② H50 gap 조기청산 (2026-10-22, 기본 OFF): H50 해제와 같은 자리 --
+        # 하드스톱/TP/트레일링/반대신호 switch 가 이미 이 tick 앞에서 발동했으면 여기까지
+        # 오지 않는다. 청산 전용이며 반대 신규진입은 하지 않는다. OFF 면 호출하지 않는다.
+        if mu_assist.is_enabled():
+            mu_outcome = _advance_mu_assist_h50_gap_exit(
+                broker=broker, market_data=market_data, state=state, now=now, macd_snap=macd_snap,
+                bars_3m=bars_3m, sig_df_1m=_sig_df_1m, position=pos, result=result,
+            )
+            if mu_outcome is not None and mu_outcome.final_state == SignalState.EXECUTED:
+                _preserve_confirmed_flag(TICK_ALREADY_EXECUTED)
+                return result
 
         # C1 Peak Protection (2026-09-19): H50/whipsaw-watch 와 같은 자리 --
         # 하드스톱/TP1/TP2/트레일링/ETP/강제청산/반대신호 switch 가 이미 이
