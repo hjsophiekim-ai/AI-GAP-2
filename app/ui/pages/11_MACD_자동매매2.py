@@ -1333,6 +1333,31 @@ with _stm_cols[0]:
               + "OFF: 기존 전략 그대로 (production 기본)."),
     )
     _mua_sum = macd2_mu_assist.status_summary(state, datetime.now(macd2_config.KST))
+    # MU 실시간 가격 + 수집 진단 (토글과 무관하게 항상 표시, 판정에는 쓰지 않는다)
+    _mu_live = macd2_mu_assist.live_status(datetime.now(macd2_config.KST))
+    _mu_badge = {"LIVE": "🟢 수신중", "STALE": "🟠 지연/중단", "NO_DATA": "🔴 오늘 데이터 없음",
+                 "NO_DIR": "🔴 폴더 없음", "NOT_CONFIGURED": "⚪ 경로 미설정"}.get(_mu_live.get("status"), "-")
+    _mu_age = _mu_live.get("age_sec")
+    st.markdown(
+        "**MU 실시간** " + _mu_badge + " — "
+        + (f"{_mu_live['price']:,.2f}" if _mu_live.get("price") else "가격 없음")
+        + (f" ({_mu_live.get('feed') or '-'} {_mu_live.get('tick_at') or '-'}, {int(_mu_age)}초 전)" if _mu_age is not None else "")
+        + " · 1분봉 최신 " + (_mu_live.get("last_bar") or "-")
+        + (" · MU MACD " + _mu_live["mu_macd"] if _mu_live.get("mu_macd") else "")
+    )
+    with st.expander("MU 수집 진단", expanded=_mu_live.get("status") != "LIVE"):
+        st.caption(
+            "판정 폴더: `" + (_mu_live.get("data_dir") or "(미설정)") + "` · 존재 " + str(_mu_live.get("dir_exists")) + chr(10)
+            + "오늘 폴더: `" + (_mu_live.get("day_dir") or "-") + "` · 존재 " + str(_mu_live.get("day_dir_exists")) + chr(10)
+            + "체결 파일(ticks.csv): " + (f"{_mu_live['ticks_bytes']:,} bytes" if _mu_live.get("ticks_bytes") is not None else "없음")
+            + " · 분봉 파일(bars_1m.csv): " + (f"{_mu_live['bars_bytes']:,} bytes" if _mu_live.get("bars_bytes") is not None else "없음")
+            + f" · 분봉 {_mu_live.get('bar_count', 0)}개" + chr(10)
+            + "마지막 체결: " + (_mu_live.get("tick_at") or "-") + (f" ({int(_mu_age)}초 전)" if _mu_age is not None else "")
+            + " · 마지막 분봉: " + (_mu_live.get("last_bar") or "-")
+            + ((chr(10) + "오류: " + _mu_live["error"]) if _mu_live.get("error") else "")
+        )
+        st.caption("판정 기준: 체결이 120초 넘게 없으면 STALE — 그 동안 MU Assist 는 '판정불가'(기존 전략 그대로)로 동작합니다. "
+                   "체결은 오는데 분봉만 멈추면 로거 분봉 기록 문제, 체결도 멈추면 MU 수신(구독) 문제입니다.")
     if _mua_now:
         _ent = _mua_sum.get("entry") or {}
         st.markdown(

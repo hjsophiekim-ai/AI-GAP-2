@@ -107,6 +107,87 @@ def is_enabled(state: Any = None) -> bool:
     return bool(config.MU_ASSIST_ENABLED)
 
 
+LIVE_OK = "LIVE"
+LIVE_STALE = "STALE"
+LIVE_NO_DATA = "NO_DATA"
+LIVE_NO_DIR = "NO_DIR"
+LIVE_NOT_CONFIGURED = "NOT_CONFIGURED"
+
+
+def _tail_row(path: Path, max_bytes: int = 16384) -> Optional[dict[str, str]]:
+    """append 중인 CSV 의 마지막 완전한 행(헤더 기준 dict). 파일 끝만 읽는다."""
+    with open(path, "rb") as fh:
+        header = fh.readline().decode("utf-8", "replace").strip()
+        size = fh.seek(0, 2)
+        fh.seek(max(0, size - max_bytes))
+        chunk = fh.read().decode("utf-8", "replace")
+    lines = [ln for ln in chunk.splitlines() if ln.strip()]
+    cols = next(csv.reader([header])) if header else []
+    for ln in reversed(lines[1:] if size > max_bytes else lines):   # 잘린 첫 줄은 버린다
+        vals = next(csv.reader([ln]))
+        if len(vals) == len(cols) and vals != cols:
+            return dict(zip(cols, vals))
+    return None
+
+
+def live_status(now: datetime, data_dir: Optional[str] = None) -> dict[str, Any]:
+    """MU 수집 진단 + 실시간 가격 (UI 표시용, 판정과 무관). 어떤 실패도 예외를 내지 않는다.
+
+    status: LIVE(마지막 체결 120초 이내) / STALE / NO_DATA(오늘 파일 없음) / NO_DIR(폴더 없음) /
+            NOT_CONFIGURED(MACD2_MU_ASSIST_DATA_DIR·KIS_LOGGER_DATA_DIR 둘 다 없음)"""
+    root = data_dir if data_dir is not None else config.MU_ASSIST_DATA_DIR
+    n = _naive(now)
+    day = n.strftime("%Y-%m-%d")
+    out: dict[str, Any] = {"status": LIVE_NOT_CONFIGURED, "data_dir": root or "", "dir_exists": False,
+                           "day_dir": "", "day_dir_exists": False, "ticks_file": "", "ticks_bytes": None,
+                           "bars_file": "", "bars_bytes": None, "price": None, "feed": "", "tick_at": "",
+                           "age_sec": None, "last_bar": "", "bar_count": 0, "mu_macd": "", "error": ""}
+    if not root:
+        return out
+    try:
+        base = Path(root)
+        out["dir_exists"] = base.exists()
+        if not out["dir_exists"]:
+            out["status"] = LIVE_NO_DIR
+            return out
+        d = base / "mu" / day
+        out["day_dir"], out["day_dir_exists"] = str(d), d.exists()
+        tp, bp = d / "ticks.csv", d / "bars_1m.csv"
+        out["ticks_file"], out["bars_file"] = str(tp), str(bp)
+        if tp.exists():
+            out["ticks_bytes"] = tp.stat().st_size
+            row = _tail_row(tp)
+            if row:
+                out["price"] = float(row.get("last") or 0) or None
+                out["feed"] = row.get("feed") or ""
+                out["tick_at"] = str(row.get("kst_ts") or "")[11:19]
+                try:
+                    ts = datetime.fromisoformat(str(row.get("recv_kst") or row.get("kst_ts"))[:19])
+                    out["age_sec"] = max(0.0, (n - ts).total_seconds())
+                except ValueError:
+                    pass
+        if bp.exists():
+            out["bars_bytes"] = bp.stat().st_size
+        s = load_mu_1m(now, root)
+        if s is not None and len(s):
+            out["last_bar"] = s.index.max().strftime("%H:%M")
+            out["bar_count"] = int(len(s))
+            if len(s) >= int(config.MU_ASSIST_MIN_BARS):
+                h = float(_macd_hist(s).iloc[-1])
+                out["mu_macd"] = "RED(상승)" if h > 0 else "BLUE(하락)"
+            if out["price"] is None:
+                out["price"] = float(s.iloc[-1])
+        if out["age_sec"] is not None:
+            out["status"] = LIVE_OK if out["age_sec"] <= 120 else LIVE_STALE
+        elif out["last_bar"]:
+            out["status"] = LIVE_STALE
+        else:
+            out["status"] = LIVE_NO_DATA
+    except Exception as exc:   # 진단 실패가 화면을 깨면 안 된다
+        out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return out
+
+
 def status_summary(state: Any, now: datetime) -> dict[str, Any]:
     """UI 상태줄용: 데이터 경로, MU 최신 분봉, 오늘 진입판정/청산 집계. 실패해도 예외를 내지 않는다."""
     out: dict[str, Any] = {"enabled": is_enabled(state), "data_dir": config.MU_ASSIST_DATA_DIR or "",
