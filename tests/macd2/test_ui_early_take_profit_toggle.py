@@ -28,6 +28,13 @@ _LABEL = "└ 조기익절 필터"
 _PREEXISTING_FORM_BUG = "can't be used in an `st.form()`"
 
 
+@pytest.fixture(autouse=True)
+def _show_unused_toggles(monkeypatch):
+    """2026-10-22: 조기익절 토글은 기본 숨김(config.SHOW_UNUSED_TOGGLES). 이 파일은
+    복구 플래그를 켠 상태에서 토글 자체의 계약을 계속 고정한다."""
+    monkeypatch.setattr(config, "SHOW_UNUSED_TOGGLES", True)
+
+
 def _fresh_app() -> AppTest:
     at = AppTest.from_file(_APP_PATH, default_timeout=30)
     at.session_state["app_auth_authenticated"] = True

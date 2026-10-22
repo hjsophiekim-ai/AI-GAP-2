@@ -983,27 +983,45 @@ if st.button("현재 보유 포지션 수동 전량매도", use_container_width=
         st.error(f"수동 매도 실패: {res.get('message') or res.get('block_reason')}")
     st.rerun()
 
-_qp_cols = st.columns([1.4, 1.6])
-with _qp_cols[0]:
-    _qp_on = st.checkbox(
-        "퀵 Profit 익절",
-        value=bool(getattr(state, "quick_profit_enabled", False)),
-        key="macd2_quick_profit_toggle",
-        help=(
-            f"ON이면 보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절"
-            "(진입 로직과 무관하게 동일 적용, 기존 손절·반대플래그청산·강제청산은 그대로 유지). 기본 OFF."
-        ),
-    )
-with _qp_cols[1]:
-    if bool(_qp_on) != bool(getattr(state, "quick_profit_enabled", False)):
-        res = service.set_quick_profit_enabled(bool(_qp_on), changed_by="ui")
-        if res.get("ok"):
-            st.caption(f"퀵 Profit 익절 → {'ON' if _qp_on else 'OFF'}")
-            st.rerun()
+# 2026-10-22 사용자 요청: 쓰지 않는 토글이라 렌더만 막는다(SHOW_LEGACY_* 와 같은 관례).
+# 기능/설정/저장값은 그대로 -- MACD2_SHOW_UNUSED_TOGGLES=1 이면 예전 그대로 다시 보인다.
+if macd2_config.SHOW_UNUSED_TOGGLES:
+    _qp_cols = st.columns([1.4, 1.6])
+    with _qp_cols[0]:
+        _qp_on = st.checkbox(
+            "퀵 Profit 익절",
+            value=bool(getattr(state, "quick_profit_enabled", False)),
+            key="macd2_quick_profit_toggle",
+            help=(
+                f"ON이면 보유 포지션 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절"
+                "(진입 로직과 무관하게 동일 적용, 기존 손절·반대플래그청산·강제청산은 그대로 유지). 기본 OFF."
+            ),
+        )
+    with _qp_cols[1]:
+        if bool(_qp_on) != bool(getattr(state, "quick_profit_enabled", False)):
+            res = service.set_quick_profit_enabled(bool(_qp_on), changed_by="ui")
+            if res.get("ok"):
+                st.caption(f"퀵 Profit 익절 → {'ON' if _qp_on else 'OFF'}")
+                st.rerun()
+            else:
+                st.error("퀵 Profit 익절은 Profit Lock과 동시에 켤 수 없습니다.")
         else:
-            st.error("퀵 Profit 익절은 Profit Lock과 동시에 켤 수 없습니다.")
-    else:
-        st.caption(f"퀵 Profit 익절={'ON' if state.quick_profit_enabled else 'OFF'} · 문턱=+{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%")
+            st.caption(f"퀵 Profit 익절={'ON' if state.quick_profit_enabled else 'OFF'} · 문턱=+{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%")
+else:
+    # 숨긴 토글이 저장값으로 켜져 있으면 눈에서 사라진 채 동작하므로 경고만 남긴다
+    # (3-SLOT 숨김과 같은 안전장치). 켜져 있지 않으면 아무것도 렌더하지 않는다.
+    _hidden_on = [
+        _name for _name, _attr in (
+            ("퀵 Profit 익절", "quick_profit_enabled"),
+            ("조기익절 필터", "early_tp_filter_enabled"),
+            ("무필터 09:00-11:00 즉시청산", "no_filter_0900_1100_enabled"),
+        ) if bool(getattr(state, _attr, False))
+    ]
+    if _hidden_on:
+        st.warning(
+            f"숨긴 토글이 켜져 있습니다: {', '.join(_hidden_on)} — "
+            "끄려면 MACD2_SHOW_UNUSED_TOGGLES=1 로 다시 표시하십시오."
+        )
 
 # ── 레거시 진입전략 토글 (2026-09-07 숨김) ─────────────────────────────────
 # 사용자 노출 전략을 TW2 3-SLOT / TW TEG 3-SLOT 두 개로 정리하면서 감췄다.
@@ -1712,82 +1730,85 @@ else:
 # 2026-09-12: X2-lite 는 조기익절을 **내장**한다(자동 ON, trigger 1.5 / floor 1.0).
 # 그 모드에서는 이 토글을 실행경로가 아예 읽지 않으므로, 켜고 끌 수 있는 것처럼
 # 보이지 않게 비활성으로 렌더한다 — 중복 적용은 구조적으로 불가능하다.
-_x2lite_live = bool(getattr(state, "time_window_x2lite_filter_enabled", False)) or \
-               bool(getattr(state, "time_window_h50_filter_enabled", False))
-_3slot_live = bool(
-    getattr(state, "time_window_3slot_filter_enabled", False)
-    or getattr(state, "time_window_twf_filter_enabled", False)
-)
-if (not _3slot_live or _x2lite_live) and st.session_state.get("macd2_early_tp_toggle"):
-    st.session_state["macd2_early_tp_toggle"] = False
-
-_early_tp_cols = st.columns([1.4, 1.6])
-with _early_tp_cols[0]:
-    _early_tp_on = st.checkbox(
-        "└ 조기익절 필터",
-        value=bool(getattr(state, "early_tp_filter_enabled", False)),
-        key="macd2_early_tp_toggle",
-        disabled=(not _3slot_live) or _x2lite_live,
-        help=(
-            "TW2 3-SLOT / TW TEG 3-SLOT 공통 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
-            "전혀 건드리지 않고, 이미 보유 중인 포지션에만 하방 보호선을 하나 더 얹습니다(매도만 가능). "
-            "① 진입이 체결된 확정봉을 CHOP/TREND로 분류해 그 포지션에 고정 저장합니다(최근30분 확정 "
-            "zero-cross 횟수 / EMA10-20 스프레드 확대 실패 / EMA20 기울기 진입방향 아님 / 종가-세션VWAP "
-            f"부호 교차 반복, 4개 중 {macd2_config.EARLY_TP_SCORE_MIN}개 이상이면 CHOP). 보유 중에 나중에 "
-            "흔들리기 시작한 포지션은 대상이 아닙니다(그 방식은 먼저 검증했고 +6% TP2 러너를 잘라 OOS에서 "
-            "악화되어 기각). ② 진입시 CHOP인 포지션만, MFE(진입 후 최고 순수익)가 "
-            f"+{macd2_config.EARLY_TP_TRIGGER_PCT:.1f}%에 도달하면 armed 되고, 그 뒤 완성 3분봉 종가가 "
-            f"+{macd2_config.EARLY_TP_FLOOR_PCT:.1f}% 이하로 내려오면 잔량을 전량 청산합니다. "
-            "③ 기존 청산이 항상 우선합니다 — TP1/TP2/오후TP(틱 즉시)와 손절/after-TP1-stop/trailing(완성봉)을 "
-            "먼저 전부 평가하고, 그중 아무것도 발동하지 않았을 때만 이 필터가 판단합니다. 그래서 실효 스탑이 "
-            "max(기존 활성 스탑, floor)가 되고 TP1/TP2/trailing은 그대로 살아 있습니다. "
-            "2026-06-05~08-31 60거래일 TRAIN(40)/OOS(20), 임계값은 TRAIN에서 확정하고 OOS 재조정 없음: "
-            "OOS 복리 34.18%→39.68%, PF 1.87→2.07, MDD 7.95%→6.47%(개선). 다만 60거래일 116거래 중 실제 "
-            "발동은 5건(OOS 2건)뿐입니다 — 손실→플러스 전환 2건, +3~6% 러너 훼손 0건으로 방향은 일관되고 "
-            "러너를 훼손할 수 없는 구조지만, 통계적으로 확정된 개선은 아닌 저빈도·저하방 가드로 보셔야 합니다. "
-            "참고로 30분 창이 필요해 09:15 이전 진입은 구조적으로 CHOP 판정이 불가능해 TREND(=미적용)로 "
-            "떨어집니다. TW2 3-SLOT과 TW TEG 3-SLOT이 둘 다 꺼지면 자동으로 함께 비활성화됩니다. 기본 OFF. "
-            "(MACD2의 기존 PROFIT_LOCK 기능과는 완전히 무관한 별개 필터입니다.)"
-        ),
+# 2026-10-22 사용자 요청: 쓰지 않는 토글이라 렌더만 막는다(SHOW_LEGACY_* 와 같은 관례).
+# 기능/설정/저장값은 그대로 -- MACD2_SHOW_UNUSED_TOGGLES=1 이면 예전 그대로 다시 보인다.
+if macd2_config.SHOW_UNUSED_TOGGLES:
+    _x2lite_live = bool(getattr(state, "time_window_x2lite_filter_enabled", False)) or \
+                   bool(getattr(state, "time_window_h50_filter_enabled", False))
+    _3slot_live = bool(
+        getattr(state, "time_window_3slot_filter_enabled", False)
+        or getattr(state, "time_window_twf_filter_enabled", False)
     )
-with _early_tp_cols[1]:
-    if not _3slot_live:
-        st.caption("조기익절 필터=OFF · TW2 3-SLOT 또는 TW TEG 3-SLOT을 켜야 사용할 수 있습니다(자동 비활성화)")
-    elif bool(_early_tp_on) != bool(getattr(state, "early_tp_filter_enabled", False)):
-        res = service.set_early_tp_filter_enabled(bool(_early_tp_on), changed_by="ui")
-        if res.get("ok"):
-            st.caption(f"조기익절 필터 → {'ON' if _early_tp_on else 'OFF'}")
-            st.rerun()
-        else:
-            st.warning(
-                "조기익절 필터를 켤 수 없습니다: "
-                + ("TW2 3-SLOT 또는 TW TEG 3-SLOT이 켜져 있어야 합니다."
-                   if res.get("reason") == "TW2_3SLOT_REQUIRED" else str(res.get("reason") or "알 수 없는 사유"))
-            )
-    else:
-        st.caption(
-            f"조기익절 필터={'ON' if state.early_tp_filter_enabled else 'OFF'} · "
-            f"트리거 MFE +{macd2_config.EARLY_TP_TRIGGER_PCT:.1f}% → 보호선 +{macd2_config.EARLY_TP_FLOOR_PCT:.1f}% · "
-            f"현재 포지션 진입시 판정={'CHOP(대상)' if getattr(state, 'time_window_entry_chop', False) else 'TREND(미적용)'}"
-            + (
-                f" · MFE {float(getattr(state, 'early_tp_peak_net_return', 0.0) or 0.0):+.2f}%"
-                if getattr(state, "time_window_position_active", False) else ""
-            )
+    if (not _3slot_live or _x2lite_live) and st.session_state.get("macd2_early_tp_toggle"):
+        st.session_state["macd2_early_tp_toggle"] = False
+
+    _early_tp_cols = st.columns([1.4, 1.6])
+    with _early_tp_cols[0]:
+        _early_tp_on = st.checkbox(
+            "└ 조기익절 필터",
+            value=bool(getattr(state, "early_tp_filter_enabled", False)),
+            key="macd2_early_tp_toggle",
+            disabled=(not _3slot_live) or _x2lite_live,
+            help=(
+                "TW2 3-SLOT / TW TEG 3-SLOT 공통 청산측 서브필터 — 진입/슬롯/T+3/TW2 veto/Trend Quality/TEGv2 게이트는 "
+                "전혀 건드리지 않고, 이미 보유 중인 포지션에만 하방 보호선을 하나 더 얹습니다(매도만 가능). "
+                "① 진입이 체결된 확정봉을 CHOP/TREND로 분류해 그 포지션에 고정 저장합니다(최근30분 확정 "
+                "zero-cross 횟수 / EMA10-20 스프레드 확대 실패 / EMA20 기울기 진입방향 아님 / 종가-세션VWAP "
+                f"부호 교차 반복, 4개 중 {macd2_config.EARLY_TP_SCORE_MIN}개 이상이면 CHOP). 보유 중에 나중에 "
+                "흔들리기 시작한 포지션은 대상이 아닙니다(그 방식은 먼저 검증했고 +6% TP2 러너를 잘라 OOS에서 "
+                "악화되어 기각). ② 진입시 CHOP인 포지션만, MFE(진입 후 최고 순수익)가 "
+                f"+{macd2_config.EARLY_TP_TRIGGER_PCT:.1f}%에 도달하면 armed 되고, 그 뒤 완성 3분봉 종가가 "
+                f"+{macd2_config.EARLY_TP_FLOOR_PCT:.1f}% 이하로 내려오면 잔량을 전량 청산합니다. "
+                "③ 기존 청산이 항상 우선합니다 — TP1/TP2/오후TP(틱 즉시)와 손절/after-TP1-stop/trailing(완성봉)을 "
+                "먼저 전부 평가하고, 그중 아무것도 발동하지 않았을 때만 이 필터가 판단합니다. 그래서 실효 스탑이 "
+                "max(기존 활성 스탑, floor)가 되고 TP1/TP2/trailing은 그대로 살아 있습니다. "
+                "2026-06-05~08-31 60거래일 TRAIN(40)/OOS(20), 임계값은 TRAIN에서 확정하고 OOS 재조정 없음: "
+                "OOS 복리 34.18%→39.68%, PF 1.87→2.07, MDD 7.95%→6.47%(개선). 다만 60거래일 116거래 중 실제 "
+                "발동은 5건(OOS 2건)뿐입니다 — 손실→플러스 전환 2건, +3~6% 러너 훼손 0건으로 방향은 일관되고 "
+                "러너를 훼손할 수 없는 구조지만, 통계적으로 확정된 개선은 아닌 저빈도·저하방 가드로 보셔야 합니다. "
+                "참고로 30분 창이 필요해 09:15 이전 진입은 구조적으로 CHOP 판정이 불가능해 TREND(=미적용)로 "
+                "떨어집니다. TW2 3-SLOT과 TW TEG 3-SLOT이 둘 다 꺼지면 자동으로 함께 비활성화됩니다. 기본 OFF. "
+                "(MACD2의 기존 PROFIT_LOCK 기능과는 완전히 무관한 별개 필터입니다.)"
+            ),
         )
-        if state.early_tp_filter_enabled and getattr(state, "last_entry_chop_score", None) is not None:
-            _chop_conds = getattr(state, "last_entry_chop_conditions", None) or {}
-            _hit = [k for k, v in _chop_conds.items() if v]
+    with _early_tp_cols[1]:
+        if not _3slot_live:
+            st.caption("조기익절 필터=OFF · TW2 3-SLOT 또는 TW TEG 3-SLOT을 켜야 사용할 수 있습니다(자동 비활성화)")
+        elif bool(_early_tp_on) != bool(getattr(state, "early_tp_filter_enabled", False)):
+            res = service.set_early_tp_filter_enabled(bool(_early_tp_on), changed_by="ui")
+            if res.get("ok"):
+                st.caption(f"조기익절 필터 → {'ON' if _early_tp_on else 'OFF'}")
+                st.rerun()
+            else:
+                st.warning(
+                    "조기익절 필터를 켤 수 없습니다: "
+                    + ("TW2 3-SLOT 또는 TW TEG 3-SLOT이 켜져 있어야 합니다."
+                       if res.get("reason") == "TW2_3SLOT_REQUIRED" else str(res.get("reason") or "알 수 없는 사유"))
+                )
+        else:
             st.caption(
-                "최근 진입 CHOP 판정: "
-                f"{int(state.last_entry_chop_score)}/{len(early_take_profit.ALL_CHOP_CONDITIONS)}"
-                f" (기준 {macd2_config.EARLY_TP_SCORE_MIN} 이상) · "
-                f"충족={', '.join(_hit) if _hit else '-'}"
+                f"조기익절 필터={'ON' if state.early_tp_filter_enabled else 'OFF'} · "
+                f"트리거 MFE +{macd2_config.EARLY_TP_TRIGGER_PCT:.1f}% → 보호선 +{macd2_config.EARLY_TP_FLOOR_PCT:.1f}% · "
+                f"현재 포지션 진입시 판정={'CHOP(대상)' if getattr(state, 'time_window_entry_chop', False) else 'TREND(미적용)'}"
+                + (
+                    f" · MFE {float(getattr(state, 'early_tp_peak_net_return', 0.0) or 0.0):+.2f}%"
+                    if getattr(state, "time_window_position_active", False) else ""
+                )
             )
-        if getattr(state, "last_early_tp_armed_at", None) or getattr(state, "last_early_tp_fired_at", None):
-            st.caption(
-                f"최근 armed={_hhmmss(getattr(state, 'last_early_tp_armed_at', None)) or '-'} · "
-                f"최근 발동={_hhmmss(getattr(state, 'last_early_tp_fired_at', None)) or '-'}"
-            )
+            if state.early_tp_filter_enabled and getattr(state, "last_entry_chop_score", None) is not None:
+                _chop_conds = getattr(state, "last_entry_chop_conditions", None) or {}
+                _hit = [k for k, v in _chop_conds.items() if v]
+                st.caption(
+                    "최근 진입 CHOP 판정: "
+                    f"{int(state.last_entry_chop_score)}/{len(early_take_profit.ALL_CHOP_CONDITIONS)}"
+                    f" (기준 {macd2_config.EARLY_TP_SCORE_MIN} 이상) · "
+                    f"충족={', '.join(_hit) if _hit else '-'}"
+                )
+            if getattr(state, "last_early_tp_armed_at", None) or getattr(state, "last_early_tp_fired_at", None):
+                st.caption(
+                    f"최근 armed={_hhmmss(getattr(state, 'last_early_tp_armed_at', None)) or '-'} · "
+                    f"최근 발동={_hhmmss(getattr(state, 'last_early_tp_fired_at', None)) or '-'}"
+                )
 
 # ── 전략 모드 도입으로 감춘 개별 토글 (2026-09-27) ─────────────────────────
 # 코드는 그대로 두고 렌더만 막는다 -- MACD2_SHOW_LEGACY_STRATEGY_TOGGLES=1 이면
@@ -1975,34 +1996,37 @@ if macd2_config.SHOW_LEGACY_TW2_TOGGLES:
                 f"오늘 사용={'Y' if getattr(state, 'daily_down_blue_exception_used', False) else '-'}"
             )
 
-_nf_cols = st.columns([1.4, 1.6])
-with _nf_cols[0]:
-    _nf_on = st.checkbox(
-        "무필터 09:00-11:00 즉시청산",
-        value=bool(getattr(state, "no_filter_0900_1100_enabled", False)),
-        key="macd2_no_filter_0900_1100_toggle",
-        help=(
-            "품질점수/T+3 대기 없이 09:00-11:00에 확정 플래그가 뜨면 즉시 진입하고, 반대신호가 뜨면 "
-            "항상 즉시 매도합니다(휩쏘-내성 유예 없음 — 시간대별 최적거래 필터 전용 로직). "
-            "56거래일 TRAIN/VAL/OOS corrected-clock 백테스트에서 TW필터+휩쏘내성보다 우위(56일 복리 "
-            "+104.8% vs +15.7%)로 확인되어 추가. 시간대별 최적거래 필터와 동시에 켜지면 그쪽이 우선합니다. 기본 OFF."
-        ),
-    )
-with _nf_cols[1]:
-    if bool(_nf_on) != bool(getattr(state, "no_filter_0900_1100_enabled", False)):
-        res = service.set_no_filter_0900_1100_filter_enabled(bool(_nf_on), changed_by="ui")
-        if res.get("ok"):
-            st.caption(f"무필터 09:00-11:00 즉시청산 → {'ON' if _nf_on else 'OFF'}")
-            st.rerun()
-    else:
-        st.caption(
-            f"무필터 09:00-11:00 즉시청산={'ON' if state.no_filter_0900_1100_enabled else 'OFF'}"
-            + (
-                " · TW2/TEG가 우선 적용됩니다"
-                if state.no_filter_0900_1100_enabled and (state.time_window_teg_filter_enabled or state.time_window_2_filter_enabled)
-                else ""
-            )
+# 2026-10-22 사용자 요청: 쓰지 않는 토글이라 렌더만 막는다(SHOW_LEGACY_* 와 같은 관례).
+# 기능/설정/저장값은 그대로 -- MACD2_SHOW_UNUSED_TOGGLES=1 이면 예전 그대로 다시 보인다.
+if macd2_config.SHOW_UNUSED_TOGGLES:
+    _nf_cols = st.columns([1.4, 1.6])
+    with _nf_cols[0]:
+        _nf_on = st.checkbox(
+            "무필터 09:00-11:00 즉시청산",
+            value=bool(getattr(state, "no_filter_0900_1100_enabled", False)),
+            key="macd2_no_filter_0900_1100_toggle",
+            help=(
+                "품질점수/T+3 대기 없이 09:00-11:00에 확정 플래그가 뜨면 즉시 진입하고, 반대신호가 뜨면 "
+                "항상 즉시 매도합니다(휩쏘-내성 유예 없음 — 시간대별 최적거래 필터 전용 로직). "
+                "56거래일 TRAIN/VAL/OOS corrected-clock 백테스트에서 TW필터+휩쏘내성보다 우위(56일 복리 "
+                "+104.8% vs +15.7%)로 확인되어 추가. 시간대별 최적거래 필터와 동시에 켜지면 그쪽이 우선합니다. 기본 OFF."
+            ),
         )
+    with _nf_cols[1]:
+        if bool(_nf_on) != bool(getattr(state, "no_filter_0900_1100_enabled", False)):
+            res = service.set_no_filter_0900_1100_filter_enabled(bool(_nf_on), changed_by="ui")
+            if res.get("ok"):
+                st.caption(f"무필터 09:00-11:00 즉시청산 → {'ON' if _nf_on else 'OFF'}")
+                st.rerun()
+        else:
+            st.caption(
+                f"무필터 09:00-11:00 즉시청산={'ON' if state.no_filter_0900_1100_enabled else 'OFF'}"
+                + (
+                    " · TW2/TEG가 우선 적용됩니다"
+                    if state.no_filter_0900_1100_enabled and (state.time_window_teg_filter_enabled or state.time_window_2_filter_enabled)
+                    else ""
+                )
+            )
 
 # Re-read after potential command
 snapshot = service.get_snapshot()
@@ -2503,6 +2527,11 @@ with st.expander("프리마켓 Carry SHADOW (관측 전용 · 실주문 없음)"
     except Exception as _exc:   # UI 실패가 페이지 전체를 죽이지 않게
         st.caption(f"프리마켓 SHADOW 패널을 표시할 수 없습니다: {_exc}")
 
+# 퀵 Profit 익절 설명도 토글과 함께 숨긴다(SHOW_UNUSED_TOGGLES).
+_qp_doc_line = (
+    f"- **퀵 Profit 익절(옵션, 기본 OFF)**: ON이면 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절 — 확정 플래그와 무관하게 매 tick 확인.\n"
+    if macd2_config.SHOW_UNUSED_TOGGLES else ""
+)
 with st.expander("전략 설명"):
     st.markdown(
         f"""
@@ -2510,8 +2539,7 @@ with st.expander("전략 설명"):
 - **방향→매수**: RED → {macd2_config.LONG_SYMBOL}(레버리지), BLUE → {macd2_config.INVERSE_SYMBOL}(인버스).
 - **반대 플래그**: 보유 포지션 전량매도 후 반대 ETF 매수(entry_gate 통과 시에만 재매수, 매도는 항상 실행).
 - **리스크**: {macd2_config.FORCE_LIQUIDATE_AT} 강제청산 — 매 tick마다 플래그 발생 여부와 무관하게 확인.
-- **퀵 Profit 익절(옵션, 기본 OFF)**: ON이면 순수익률이 +{macd2_config.QUICK_PROFIT_TAKE_PROFIT_NET_PCT}%에 도달하는 즉시 전량 익절 — 확정 플래그와 무관하게 매 tick 확인.
-- **시간대별 최적거래 필터 TW2(기본 ON)**: 이 필터가 진입권한 + 포지션 관리(TP1/TP2/손절 래더)를 모두 담당 — 완성봉 플래그 확정 후 다음 완성 3분봉(T+3)에서 재확인해야만 진입, VWAP 역행 veto/최근30분 교차과다 veto 추가, TP2 5%→6%.
+{_qp_doc_line}- **시간대별 최적거래 필터 TW2(기본 ON)**: 이 필터가 진입권한 + 포지션 관리(TP1/TP2/손절 래더)를 모두 담당 — 완성봉 플래그 확정 후 다음 완성 3분봉(T+3)에서 재확인해야만 진입, VWAP 역행 veto/최근30분 교차과다 veto 추가, TP2 5%→6%.
 - **+TEGv2(옵션, 기본 OFF)**: 기존 TW2 하루 3회 진입한도를 모두 소진한 뒤 REJECT_MAX_ENTRY_COUNT 때문에만 막힌 후보에 한해 하루 1회 TEGv2 검증 통과 시 추가 진입.
 - **+1 DOWN_BLUE(옵션, 기본 OFF)**: ON이면 TW2가 거절한 DOWN_BLUE 플래그 중 하루 최대 1회만 다른 조건 없이 추가로 진입.
 - **09:03 예약 매수(옵션)**: 개장 직후 데이터 부족으로 이른 플래그를 놓치는 문제 대응 — 미리 예약해두면 09:03에 지정 방향 ETF를 자동으로 전량매수(하루 1회).

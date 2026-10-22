@@ -77,7 +77,10 @@ class TestHidden:
             assert lab in labels2, f"복구 플래그를 켰는데 {lab} 이 안 보인다: {labels2!r}"
         assert labels2.index(VISIBLE_LABELS[1]) == labels2.index(VISIBLE_LABELS[0]) + 1
 
-    def test_untouched_toggles_still_visible(self):
+    def test_untouched_toggles_still_visible(self, monkeypatch):
+        # 2026-10-22: 두 토글은 SHOW_UNUSED_TOGGLES 로 별도 숨김이 됐다
+        # (test_ui_unused_toggles_hidden.py). 3-SLOT 숨김과 무관함을 복구 상태에서 확인한다.
+        monkeypatch.setattr(config, "SHOW_UNUSED_TOGGLES", True)
         at = _run()
         labels = [c.label for c in at.checkbox]
         assert "퀵 Profit 익절" in labels
