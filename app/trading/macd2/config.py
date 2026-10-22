@@ -1506,6 +1506,27 @@ NO_FILTER_REJECT_OUTSIDE_WINDOW = "REJECT_OUTSIDE_ENTRY_WINDOW"
 # block_reason 으로 그대로 남는다).
 EXIT_H50_TREND_BREAK = "H50_WHIPSAW_RELEASE"
 EXIT_H50_MAX_HOLD = "H50_MAX_HOLD_EXIT"
+
+# ── MU ASSIST (2026-10-22, 기본 OFF) ─────────────────────────────────────
+# 토글 하나로 두 기능을 함께 켠다 (mu_assist.py 참고):
+#   ① 진입 보조 — T+2 시점 MU 지표를 macd2_mu_assist_ledger.csv 에 SHADOW 로만 기록.
+#      진입을 막지도 앞당기지도 않는다(T+3 구조 그대로, T+1 진입 없음).
+#   ② H50 gap 조기청산 — 보유 중 반대 플래그가 떴고 H50 이 그 플래그를 HOLD 할 상황인데
+#      T+2 형성봉에서 반대방향 MACD gap 이 계속 확대되면 T+3 를 기다리지 않고 청산한다.
+#      그 플래그의 T+3 반대 신규진입은 MU_ASSIST_NO_REENTRY 로 막는다. MU 는 청산 조건이 아니라 로그다.
+# OFF 면 worker 의 훅은 is_enabled() 한 번만 부르고 지나간다(원장 파일도 만들지 않는다).
+MU_ASSIST_ENABLED = _env_bool("MACD2_MU_ASSIST_ENABLED", False)
+#: MU 1분봉 원천 = ws_shadow_logger 의 mu/<YYYY-MM-DD>/bars_1m.csv (같은 Render 서비스).
+#: MACD2_MU_ASSIST_DATA_DIR 가 없으면 로거와 같은 KIS_LOGGER_DATA_DIR 를 쓴다. 둘 다 없으면 MISSING.
+MU_ASSIST_DATA_DIR = os.environ.get("MACD2_MU_ASSIST_DATA_DIR") or os.environ.get("KIS_LOGGER_DATA_DIR") or ""
+#: T+2 판정 창 = 플래그봉 시작 +5분 +grace ~ +6분. 로거는 분 끝 +5초 뒤 분봉을 쓰고 1초마다 flush 한다.
+MU_ASSIST_T2_GRACE_SEC = 10
+#: MU MACD(12,26,9) 판정에 필요한 최소 1분봉 수(로거는 08:00 부터 DNASMU 를 받는다).
+MU_ASSIST_MIN_BARS = 35
+EXIT_MU_ASSIST_H50_GAP = "MU_ASSIST_H50_GAP_EXIT"
+MU_ASSIST_NO_REENTRY_BLOCK_REASON = "MU_ASSIST_NO_REENTRY"
+MU_ASSIST_ENTRY_WARNING = "ENTRY_CONFIRM_WEAK"
+MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
 EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"
 EXIT_TW_TP2_FULL = "TIME_WINDOW_TP2_FULL"
