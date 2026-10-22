@@ -73,20 +73,21 @@ class TestHidden:
         사용자가 고르는 것은 라디오 하나뿐이다."""
         at = _run()
         labels = [c.label for c in at.checkbox]
-        # 전략 tier(X2-lite / H50 / N1)와 청산 overlay(C1)만 숨긴다 --
-        # 조기익절은 사용자 지시에 없어 그대로 둔다.
+        # 전략 tier(X2-lite / H50 / N1)와 청산 overlay(C1)를 숨긴다.
+        # 2026-10-22: 조기익절도 쓰지 않는 토글로 기본 숨김이 됐다(SHOW_UNUSED_TOGGLES).
         for lab in (config.X2LITE_3SLOT_STRATEGY_NAME + " + "
                     + config.X2LITE_SIZING_NAME + " sizing",
                     config.H50_3SLOT_STRATEGY_NAME,
                     config.N1_3SLOT_STRATEGY_NAME,
                     "└ C1 Peak Protection"):
             assert lab not in labels, f"{lab} 이 아직 보인다: {labels!r}"
-        assert "└ 조기익절 필터" in labels, "조기익절은 그대로 보여야 한다"
+        assert "└ 조기익절 필터" not in labels, "조기익절은 2026-10-22 부터 기본 숨김이다"
         assert any(r.label == "전략 모드" for r in at.radio), (
             f"전략 모드 라디오가 없다: {[r.label for r in at.radio]!r}")
 
     def test_the_tier_toggles_come_back_with_the_restore_flag(self, monkeypatch):
         monkeypatch.setattr(config, "SHOW_LEGACY_STRATEGY_TOGGLES", True)
+        monkeypatch.setattr(config, "SHOW_UNUSED_TOGGLES", True)   # 조기익절 위치 계약 확인용
         at = _run()
         labels = [c.label for c in at.checkbox]
         for lab in VISIBLE_LABELS:
@@ -97,10 +98,15 @@ class TestHidden:
         assert labels.index("└ 조기익절 필터") == labels.index(_n1) + 1
         assert labels.index("└ C1 Peak Protection") == labels.index("└ 조기익절 필터") + 1
 
-    def test_untouched_toggles_still_visible(self):
-        """사용자 지시: 퀵 Profit 익절 / 무필터 09:00-11:00 은 그대로 둔다."""
-        at = _run()
-        labels = [c.label for c in at.checkbox]
+    def test_untouched_toggles_still_visible(self, monkeypatch):
+        """2026-09-27 지시: 퀵 Profit 익절 / 무필터 09:00-11:00 은 이 tier 숨김과 무관하다.
+        2026-10-22 지시로 둘 다 SHOW_UNUSED_TOGGLES 로 기본 숨김이 됐으므로(
+        test_ui_unused_toggles_hidden.py) 기본에선 안 보이고, 복구 플래그를 켜면 보인다."""
+        labels = [c.label for c in _run().checkbox]
+        assert "퀵 Profit 익절" not in labels
+        assert "무필터 09:00-11:00 즉시청산" not in labels
+        monkeypatch.setattr(config, "SHOW_UNUSED_TOGGLES", True)
+        labels = [c.label for c in _run().checkbox]
         assert "퀵 Profit 익절" in labels
         assert "무필터 09:00-11:00 즉시청산" in labels
 

@@ -1883,6 +1883,13 @@ EXIT_P3_H30_PARTIAL = "P3_H30_PARTIAL_EXIT"
 #: 적 없는 상태가 만들어진다. 전략 선택은 strategy_mode 하나로 모은다.
 SHOW_LEGACY_STRATEGY_TOGGLES = _env_bool("MACD2_SHOW_LEGACY_STRATEGY_TOGGLES", False)
 
+#: 2026-10-22 사용자 요청: 화면에 보이지만 쓰지 않는 토글 3개를 숨긴다 --
+#: 퀵 Profit 익절(2.5%) / 조기익절 필터 / 무필터 09:00-11:00 즉시청산.
+#: SHOW_LEGACY_* 와 같은 관례로 **렌더만** 막는다: service setter, worker 판정,
+#: env/config 키, 저장된 state 값은 하나도 바꾸지 않는다(숨긴 위젯은 아무 요청도
+#: 보내지 않으므로 기존 값이 reset 되지 않는다). MACD2_SHOW_UNUSED_TOGGLES=1 이면 복구.
+SHOW_UNUSED_TOGGLES = _env_bool("MACD2_SHOW_UNUSED_TOGGLES", False)
+
 # ── E 전략 (EARLY-UP-FAST + RS125, 2026-10-05) ──────────────────────────
 # research_20261004_chop_staged/REPORT_FINAL.md 의 85영업일 REAL replay 수치:
 #   총손익 +18,412,222 (현행 P3 +17,227,606 대비 +1,184,616, 보존율 106.9%)

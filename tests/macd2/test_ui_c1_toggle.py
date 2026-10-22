@@ -205,9 +205,11 @@ def test_exit_reason_label_is_localized():
     assert 'macd2_config.EXIT_C1_PEAK_PROTECTION: "C1 고점보호"' in src
 
 
-def test_off_state_does_not_change_existing_ui_behaviour():
+def test_off_state_does_not_change_existing_ui_behaviour(monkeypatch):
     """C1 OFF 면 기존 토글/캡션이 그대로다 — 조기익절 토글이 같은 자리에
-    같은 조건으로 계속 렌더되는지 확인."""
+    같은 조건으로 계속 렌더되는지 확인. 2026-10-22: 조기익절은 기본 숨김이라
+    복구 플래그(SHOW_UNUSED_TOGGLES)를 켠 상태에서 배치 계약을 본다."""
+    monkeypatch.setattr(config, "SHOW_UNUSED_TOGGLES", True)
     _set_mode(tw2_3slot=True)
     at = _run(_fresh_app())
     labels = [c.label for c in at.checkbox]
