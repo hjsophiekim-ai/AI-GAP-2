@@ -135,3 +135,63 @@ def test_ui_toggle_is_shown_in_every_mode_and_persists(mode, monkeypatch):
     assert state_store.load_state().mu_assist_enabled is True
     assert any("MU Assist: 🟢 ON" in str(m.value) for m in at.markdown)
     assert any("MU 데이터 폴더를 찾지 못했습니다" in str(w.value) for w in at.warning), "폴더 없음 경고"
+
+
+# ── MU 실시간 가격 / 수집 진단 (2026-10-23) ─────────────────────────────────
+
+def _write_logger_day(root, day, *, tick_rows, bar_minutes):
+    import csv as _csv
+    d = root / "mu" / day
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / "ticks.csv", "w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["recv_kst", "feed", "kst_ts", "local_ymd", "local_hms", "last", "evol", "tvol",
+                    "pbid", "pask", "vbid", "vask", "strn", "mtyp", "lag_s"])
+        for recv, feed, px in tick_rows:
+            w.writerow([recv, feed, recv[:19], "", "", px, 1, 1, "", "", "", "", "", 2, 0.5])
+        fh.write("2026-10-23T10:00:5")            # append 중 잘린 마지막 줄은 무시돼야 한다
+    with open(d / "bars_1m.csv", "w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["minute_kst", "feed", "open", "high", "low", "close", "volume", "ticks",
+                    "first_kst", "last_kst", "first_recv", "last_recv", "complete"])
+        for m in bar_minutes:
+            feed = "DNASMU" if m < "2026-10-23T09:00" else "RBAQMU"
+            w.writerow([m, feed, 900, 900, 900, 900, 1, 1, "", "", "", "", 1])
+
+
+def test_live_status_reports_price_age_and_files(tmp_path):
+    _write_logger_day(tmp_path, "2026-10-23",
+                      tick_rows=[("2026-10-23T10:00:30.100", "RBAQMU", "905.50"),
+                                 ("2026-10-23T10:00:40.200", "RBAQMU", "906.25")],
+                      bar_minutes=[f"2026-10-23T09:{m:02d}:00" for m in range(0, 60)])
+    now = datetime(2026, 10, 23, 10, 0, 50, tzinfo=config.KST)
+    s = mu_assist.live_status(now, str(tmp_path))
+    assert s["status"] == mu_assist.LIVE_OK
+    assert s["price"] == 906.25 and s["feed"] == "RBAQMU" and s["tick_at"] == "10:00:40"
+    assert 9 <= s["age_sec"] <= 11
+    assert s["last_bar"] == "09:59" and s["bar_count"] == 60 and s["mu_macd"]
+    assert s["ticks_bytes"] > 0 and s["bars_bytes"] > 0
+
+
+def test_live_status_flags_a_stalled_feed(tmp_path):
+    """오늘 상황: 분봉이 08:06 에 멈추고 체결도 끊김 -> STALE."""
+    _write_logger_day(tmp_path, "2026-10-23",
+                      tick_rows=[("2026-10-23T08:06:58.000", "DNASMU", "901.00")],
+                      bar_minutes=[f"2026-10-23T08:{m:02d}:00" for m in range(0, 7)])
+    s = mu_assist.live_status(datetime(2026, 10, 23, 10, 30, tzinfo=config.KST), str(tmp_path))
+    assert s["status"] == mu_assist.LIVE_STALE and s["last_bar"] == "08:06" and s["age_sec"] > 7000
+
+
+def test_live_status_missing_dir_and_unconfigured(tmp_path):
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=config.KST)
+    assert mu_assist.live_status(now, str(tmp_path / "nope"))["status"] == mu_assist.LIVE_NO_DIR
+    assert mu_assist.live_status(now, str(tmp_path))["status"] == mu_assist.LIVE_NO_DATA
+    assert mu_assist.live_status(now, "")["status"] == mu_assist.LIVE_NOT_CONFIGURED
+
+
+def test_ui_shows_mu_live_line_and_diagnostics(monkeypatch, tmp_path):
+    from tests.macd2.test_ui_strategy_mode import _run as _ui_run
+    monkeypatch.setattr(config, "MU_ASSIST_DATA_DIR", str(tmp_path / "nope"))
+    at = _ui_run()
+    assert any("MU 실시간" in str(m.value) and "폴더 없음" in str(m.value) for m in at.markdown)
+    assert any("판정 폴더" in str(c.value) for c in at.caption)
