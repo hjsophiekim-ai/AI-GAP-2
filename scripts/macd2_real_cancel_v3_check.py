@@ -38,6 +38,7 @@ def main() -> int:
     ap.add_argument("--symbol", default="069500")
     ap.add_argument("--below-pct", type=float, default=5.0)
     ap.add_argument("--allow-token-issue", action="store_true")
+    ap.add_argument("--dotenv", default=str(REPO / ".env"), help=".env 경로(worktree 에서 돌릴 때 운영 폴더의 .env)")
     a = ap.parse_args()
     if not a.ok:
         print("실계좌에 1주 주문을 냅니다. --i-understand-this-places-a-REAL-order 를 주세요.")
@@ -50,7 +51,7 @@ def main() -> int:
         print(f"허용 시간이 아님({now:%a %H:%M}) — 08:30~08:58 또는 09:00~15:15 평일")
         return 2
     from dotenv import load_dotenv
-    load_dotenv(REPO / ".env", override=False)
+    load_dotenv(a.dotenv, override=False)
     from app.trading.kis_client import create_kis_client
     from app.utils.stock_utils import get_tick_size
 
