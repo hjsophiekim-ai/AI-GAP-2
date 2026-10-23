@@ -25,9 +25,8 @@ def _no_rate_limit_sleep(monkeypatch):
     monkeypatch.setattr(kc, "_RATE_LIMIT_RETRY_DELAY_SECONDS", {"mock": 0.0, "real": 0.0})
 
 
-def _flags(monkeypatch, cancel=True, real=True):
-    monkeypatch.setattr(config, "PARTIAL_FILL_CANCEL_ENABLED", cancel)
-    monkeypatch.setattr(config, "PARTIAL_FILL_REAL_CANCEL_ENABLED", real)
+def _flags(monkeypatch, kill=False):
+    monkeypatch.setattr(config, "PARTIAL_FILL_REPRICE_KILL", kill)
 
 
 class Resp:
@@ -138,12 +137,11 @@ def _adapter(cls, kis):
     return a
 
 
-@pytest.mark.parametrize("cls,cancel,real,want", [
-    (MockBrokerAdapter, False, False, False), (MockBrokerAdapter, True, False, True),
-    (RealBrokerAdapter, True, False, False), (RealBrokerAdapter, False, True, False),
-    (RealBrokerAdapter, True, True, True)])
-def test_cancel_v3_allowed_matrix(monkeypatch, cls, cancel, real, want):
-    _flags(monkeypatch, cancel, real)
+@pytest.mark.parametrize("cls,kill,want", [
+    (MockBrokerAdapter, False, True), (MockBrokerAdapter, True, False),
+    (RealBrokerAdapter, False, True), (RealBrokerAdapter, True, False)])
+def test_cancel_v3_allowed_matrix(monkeypatch, cls, kill, want):
+    _flags(monkeypatch, kill)
     calls = []
     a = _adapter(cls, _kis(cls.mode, lambda *x, **kw: calls.append(1) or Resp(OK)))
     a.order_org_no["0000027653"] = "06010"
@@ -359,9 +357,9 @@ def test_e2e_two_reprices_each_order_cancelled_once(monkeypatch):
     assert sorted(ex.cancel_posts.values()) == [1, 1, 1]
 
 
-def test_e2e_real_flag_off_means_no_cancel_no_reprice(monkeypatch):
+def test_e2e_kill_switch_means_no_cancel_no_reprice(monkeypatch):
     c, ex, a = _world(monkeypatch, [{"fills": [(0.5, 117)]}])
-    _flags(monkeypatch, cancel=True, real=False)
+    _flags(monkeypatch, kill=True)
     first = a.buy_limit(SYM, 1900, 4950.0, "SIG")
     r = pfr.PartialFillRepricer(a, symbol=SYM, target_qty=1900, order_price=4950.0, first_result=first,
                                 client_order_id="SIG", sleep=c.sleep, clock=c.now).run()

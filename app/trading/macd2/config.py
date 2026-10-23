@@ -2020,13 +2020,9 @@ EXEC_REPRICE_ENABLED = _env_bool("MACD2_EXEC_REPRICE_ENABLED", False)
 EXEC_REPRICE_MAX = max(0, min(2, _env_int("MACD2_EXEC_REPRICE_MAX", 1)))
 EXEC_REPRICE_MAX_SLIPPAGE_PCT = _env_float("MACD2_EXEC_REPRICE_MAX_SLIPPAGE_PCT", 0.0)
 
-# ── 부분체결 재호가용 취소 v3 (2026-10-23, feature/macd2-partial-fill-reprice, 연구) ─────────────
-#: 취소 v3(kis_client.cancel_order_v3, TR 실전 TTTC0013U / 모의 VTTC0013U) 사용. 기본 OFF.
-#: 모의는 이것만 켜면 되고, 실전은 아래 REAL 플래그도 켜야 한다(이중 잠금). 기존 cancel_order/cancel_order_v2
-#: 경로와 order_executor 는 이 플래그를 읽지 않는다.
-PARTIAL_FILL_CANCEL_ENABLED = _env_bool("MACD2_PARTIAL_FILL_CANCEL_ENABLED", False)
-PARTIAL_FILL_REAL_CANCEL_ENABLED = _env_bool("MACD2_PARTIAL_FILL_REAL_CANCEL_ENABLED", False)
-#: 부분체결 재호가(partial_fill_reprice) 를 MACD2 신규 매수 실행부에 연결. 기본 OFF -- OFF 면 기존 경로와 동일.
-#: ON 이어도 취소 v3 가 허용되지 않으면(위 두 플래그) 잔량을 취소할 수 없어 추가매수 없이 CANCEL_FAILED 로 끝난다.
-#: MACD2 원장(ledger) 경로에만 적용 -- 같은 executor 를 쓰는 MU_MACD 에는 적용하지 않는다.
-PARTIAL_FILL_REPRICE_ENABLED = _env_bool("MACD2_PARTIAL_FILL_REPRICE_ENABLED", False)
+# ── 부분체결 잔량 재호가 (2026-10-23, app/trading/macd2/partial_fill_reprice.py) ─────────────────
+#: MACD2 신규 매수의 기본 주문관리 기능이다(사용자 토글 없음). 기존 잔고 확인에서 전량체결이면 아무것도 하지 않고,
+#: 잔량이 남았을 때만 주문번호 조회 -> 취소 v3(실전 TTTC0013U / 모의 VTTC0013U) -> 취소 확정 -> 잔량 재호가.
+#: 주문번호 조회가 안 되는 계좌(KIS 모의: VTTC8001R 주문별 행 0건)는 취소 요청 + shadow 기록만 하고 재주문하지 않는다.
+#: 비상차단 전용(UI 비노출): MACD2_PARTIAL_FILL_REPRICE_KILL=1 이면 취소 v3·재호가를 모두 끄고 기존 경로만 쓴다.
+PARTIAL_FILL_REPRICE_KILL = _env_bool("MACD2_PARTIAL_FILL_REPRICE_KILL", False)

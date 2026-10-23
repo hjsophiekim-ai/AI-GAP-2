@@ -1,10 +1,12 @@
-"""부분체결 잔량 재호가 (2026-10-23, feature/macd2-partial-fill-reprice) — **연구용, production 미연결**.
+"""부분체결 잔량 재호가 (2026-10-23, feature/macd2-partial-fill-reprice) — MACD2 신규 매수의 기본 주문관리.
 
 배경: 2026-10-23 12:33 레버리지 지정가 4,950 매수가 117주만 체결되고 가격이 4,990 으로 달아났다.
 기존 경로(order_executor)는 잔고 첫 조회에서 117주가 보이자 그대로 확정했고, 실계좌 취소가 막혀 있어
 잔량은 CANCEL_FAILED 로 살아 남았다. 이 모듈은 그 잔량을 **안전하게** 재호가하는 실행 루프다.
 
-이 모듈은 order_executor / worker 어디에서도 import 하지 않는다. 진입 판정·청산과 무관하다.
+order_executor 가 기존 잔고 확인 뒤 **잔량이 남았을 때만** 부른다(전량체결이면 부르지 않는다). 진입 판정·청산과 무관하다.
+주문번호 조회가 안 되면(KIS 모의) 재주문하지 않고 shadow_plan() 으로 '재호가했다면'만 기록한다.
+실계좌에서 상태조회 불가/취소 미확정이 한 번이라도 나면 그날은 trip_breaker() 로 기존 경로만 쓴다.
 
 원칙 (사용자 지시 2026-10-23):
   - 새 주문을 겹쳐 넣지 않는다. 살아 있는 주문은 언제나 최대 1개다.
@@ -108,6 +110,74 @@ class RepriceResult:
         return {"final": self.final, "state": d, "open_order": self.open_order}
 
 
+# ── 당일 자동 차단 (실계좌에서 상태조회 불가·취소 미확정이 나면 그날은 기존 경로만) ───────────────
+_BREAKER: dict = {}
+
+
+def breaker_reason(day: str) -> Optional[str]:
+    """day(YYYYMMDD) 에 차단돼 있으면 사유, 아니면 None. 프로세스 메모리 -- 재시작하면 풀린다."""
+    return _BREAKER.get("reason") if _BREAKER.get("day") == day else None
+
+
+def trip_breaker(day: str, reason: str) -> None:
+    if _BREAKER.get("day") != day:
+        _BREAKER.clear()
+        _BREAKER.update(day=day, reason=str(reason))
+
+
+def reset_breaker() -> None:
+    _BREAKER.clear()
+
+
+def shadow_plan(broker, *, symbol: str, target_qty: int, filled_qty: int, filled_amount: float, order_price: float,
+                params: RepriceParams = None, tick_fn: Optional[Callable[[float], float]] = None,
+                max_notional: Optional[float] = None) -> dict:
+    """재주문 없이 '지금 재호가했다면' 몇 주를 얼마에 냈을지 계산만 한다(주문 조회가 안 되는 계좌용).
+    PartialFillRepricer 와 같은 추격폭·TP 근접·현금 상한 규칙을 쓴다."""
+    p = params or RepriceParams()
+    if tick_fn is None:
+        from app.utils.stock_utils import get_tick_size
+        tick_fn = get_tick_size
+    remaining = max(int(target_qty) - int(filled_qty), 0)
+    out = {"would_reprice": False, "reason": "", "remaining_qty": remaining, "filled_qty": int(filled_qty),
+           "fill_ratio": round(int(filled_qty) / int(target_qty), 4) if target_qty else 0.0,
+           "ask1": None, "price": None, "qty": 0,
+           "chase_cap": _floor_to_tick(float(order_price) * (1.0 + p.max_chase_pct / 100.0), tick_fn)}
+    if remaining <= 0:
+        out["reason"] = FILLED
+        return out
+    if out["fill_ratio"] >= p.fill_threshold:
+        out["reason"] = PARTIAL_ACCEPTED
+        return out
+    try:
+        q = dict(broker.get_fresh_ask1(symbol) or {})
+    except Exception:  # noqa: BLE001
+        q = {}
+    ask = float(q.get("ask1") or 0)
+    if not q.get("ok") or ask <= 0 or q.get("stale") or (q.get("age_sec") is not None
+                                                          and float(q["age_sec"]) > p.max_quote_age_sec):
+        out["reason"] = ABANDONED_QUOTE_UNAVAILABLE
+        return out
+    price = ask + float(tick_fn(ask)) if p.price_mode == PRICE_ASK_PLUS_TICK else ask
+    out.update(ask1=ask, price=price)
+    if price > out["chase_cap"]:
+        out["reason"] = ABANDONED_CHASE_LIMIT
+        return out
+    if p.tp_pct is not None:
+        base = (float(filled_amount) / int(filled_qty)) if filled_qty else float(order_price)
+        if price >= base * (1.0 + (p.tp_pct - p.tp_near_pct) / 100.0):
+            out["reason"] = ABANDONED_TP_NEAR
+            return out
+    qty = remaining
+    if max_notional is not None:
+        qty = min(qty, int(max(0.0, float(max_notional) - float(filled_amount)) // price))
+    if qty < 1:
+        out["reason"] = ABANDONED_NO_CASH
+        return out
+    out.update(would_reprice=True, qty=qty, reason="WOULD_REPRICE")
+    return out
+
+
 class InvariantViolation(RuntimeError):
     """겹친 주문 / 목표수량 초과 시도. 발생하면 버그다 -- 주문을 내기 전에 막는다."""
 
@@ -134,7 +204,7 @@ class PartialFillRepricer:
                  client_order_id: str, params: RepriceParams = RepriceParams(),
                  signal_valid: Callable[[], bool] = lambda: True,
                  tick_fn: Optional[Callable[[float], float]] = None,
-                 max_notional: Optional[float] = None,
+                 max_notional: Optional[float] = None, initial_sleep: Optional[float] = None,
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], datetime] = _now):
         if tick_fn is None:
             from app.utils.stock_utils import get_tick_size
@@ -145,6 +215,8 @@ class PartialFillRepricer:
         self.order_price = float(order_price)
         # 총 매수금액 상한(원). 재호가는 더 비싼 가격이라 잔량 x 새 가격이 남은 현금을 넘지 않게 수량을 줄인다.
         self.max_notional = float(max_notional) if max_notional else None
+        # 첫 확인까지 기다릴 시간. None 이면 params.first_check_sec (기존 잔고 확인이 이미 시간을 썼으면 줄여서 준다)
+        self.initial_sleep = initial_sleep
         self.client_order_id = client_order_id
         self.signal_valid, self.tick_fn, self.sleep, self.clock = signal_valid, tick_fn, sleep, clock
         self.st = RepriceState(TARGET_QTY=int(target_qty), ORIGINAL_ORDER_ID=str(first_result.order_id),
@@ -293,8 +365,12 @@ class PartialFillRepricer:
 
     def run(self) -> RepriceResult:
         order = self.st.orders[0]
+        first = True
         while True:
-            self.sleep(self.p.first_check_sec)
+            wait = self.p.first_check_sec if (not first or self.initial_sleep is None) else self.initial_sleep
+            first = False
+            if wait > 0:
+                self.sleep(wait)
             if self._status(order) is None:
                 return self._finish(STATUS_UNAVAILABLE, order)
             if self.st.REMAINING_QTY <= 0:

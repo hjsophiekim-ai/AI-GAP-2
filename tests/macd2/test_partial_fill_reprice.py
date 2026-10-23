@@ -374,10 +374,10 @@ def test_chase_cap_is_floored_to_tick():
     assert rp.chase_cap == 4960.0                                      # 4964.85 -> 5원 단위 내림
 
 
-def test_wired_only_into_order_executor_behind_off_flag():
+def test_wired_only_into_order_executor_with_kill_switch_off_by_default():
     root = Path(__file__).resolve().parents[2] / "app"
     hits = sorted(p.name for p in root.rglob("*.py") if p.name != "partial_fill_reprice.py"
                   and "import partial_fill_reprice" in p.read_text(encoding="utf-8", errors="ignore"))
     assert hits == ["order_executor.py"]
     from app.trading.macd2 import config
-    assert config.PARTIAL_FILL_REPRICE_ENABLED is False
+    assert config.PARTIAL_FILL_REPRICE_KILL is False

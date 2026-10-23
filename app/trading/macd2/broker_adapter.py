@@ -331,17 +331,13 @@ class _BrokerAdapterBase:
                                  str(r.get("message") or ("OK" if r.get("success") else "CANCEL_FAILED")),
                                  raw={k: r.get(k) for k in ("order_id", "rt_cd", "msg_cd", "msg1")})
 
-    # ── 부분체결 재호가용 취소 v3 (2026-10-23, 연구 -- 기존 주문/청산 경로는 쓰지 않는다) ──────────
+    # ── 부분체결 재호가용 취소 v3 (2026-10-23 -- order_executor 의 잔량 처리만 쓴다. 청산 경로는 쓰지 않는다) ──
     def cancel_v3_allowed(self) -> bool:
-        """PARTIAL_FILL_CANCEL_ENABLED 가 켜져 있고, 모의이거나(mode=="mock") 실전 이중잠금
-        PARTIAL_FILL_REAL_CANCEL_ENABLED 까지 켜져 있을 때만 True."""
+        """모의/실전 브로커면 True. 비상차단 PARTIAL_FILL_REPRICE_KILL 이 켜져 있으면 False."""
         from app.trading.macd2 import config as _cfg
-        if not bool(getattr(_cfg, "PARTIAL_FILL_CANCEL_ENABLED", False)):
+        if bool(getattr(_cfg, "PARTIAL_FILL_REPRICE_KILL", False)):
             return False
-        mode = getattr(self, "mode", "")
-        if mode == "mock":
-            return True
-        return mode == "real" and bool(getattr(_cfg, "PARTIAL_FILL_REAL_CANCEL_ENABLED", False))
+        return getattr(self, "mode", "") in ("mock", "real")
 
     @property
     def cancel_v3_sent(self) -> dict:

@@ -657,44 +657,111 @@ def _finish_v2_buy(outcome: ExecutionOutcome, res: dict, *, broker, signal_id: s
 PARTIAL_FILL_SLEEP = time.sleep
 PARTIAL_FILL_PARAM_OVERRIDES: dict = {}
 
+PF_ROUTE_ACTIVE = "ACTIVE"                  # 주문번호 조회 + 취소 확정 + 재호가
+PF_ROUTE_SHADOW = "SHADOW_ONLY"             # 주문번호 조회 불가(모의) -- 취소 요청 + '재호가했다면' 기록만
+PF_ROUTE_SAFE_FALLBACK = "SAFE_FALLBACK"    # 실계좌 당일 자동차단 / 상태조회 불가 -- 기존 경로
+#: 재주문을 허용하는 연속매매 시간(KST). 마감 동시호가(15:20~)·장전에는 재호가하지 않는다. (adapter.is_market_open 은 항상 True)
+PF_SESSION_START, PF_SESSION_END = "09:00", "15:20"
+_pf_now = lambda: datetime.now(KST)  # noqa: E731 -- 테스트 주입점
 
-def _default_signal_valid(broker):
-    """execute_signal 호출자가 신호 유효성 판정기를 주지 않았을 때: 장중이면 유효."""
+
+def _pf_signal_valid(broker, symbol: str, held_at_handoff: int):
+    """재주문 직전 확인: 연속매매 시간이고, 넘겨받을 때 보유하던 수량이 줄지 않았어야(그 사이 매도·청산 없음) 유효."""
     def _valid() -> bool:
-        fn = getattr(broker, "is_market_open", None)
         try:
-            return bool(fn()) if fn is not None else True
+            if not (PF_SESSION_START <= _pf_now().strftime("%H:%M") < PF_SESSION_END):
+                return False
+            fn = getattr(broker, "is_market_open", None)
+            if fn is not None and not fn():
+                return False
+            pos = broker.get_position(symbol)
+            return int(getattr(pos, "quantity", 0) or 0) >= int(held_at_handoff)
         except Exception:
             return False
     return _valid
 
 
-def _run_partial_fill_reprice(outcome: ExecutionOutcome, *, broker, buy_result, signal_id: str, target_symbol: str,
-                              requested_qty: int, order_price: float, timestamps: dict, release_claim,
-                              ledger_module, signal_valid) -> Optional[ExecutionOutcome]:
-    """최초 지정가 주문 접수 뒤를 partial_fill_reprice 에 맡기고, 결과를 주문실행 v2 와 같은 방식으로
-    outcome 에 옮긴다(_finish_v2_buy 재사용: 체결 있으면 BUY 레그 1개 = 모든 주문의 합계·가중평균)."""
+def _elapsed_since(iso: Optional[str]) -> float:
+    try:
+        return max(0.0, (datetime.now(KST) - datetime.fromisoformat(str(iso))).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _handle_partial_fill(outcome: ExecutionOutcome, *, broker, buy_result, signal_id: str, target_symbol: str,
+                         requested_qty: int, order_price: float, balance_qty: int, balance_avg: float,
+                         timestamps: dict, release_claim, ledger_module) -> Optional[ExecutionOutcome]:
+    """기존 잔고 확인 뒤 잔량이 남았을 때(0 <= 체결 < 주문)만 부른다. None 이면 기존 경로를 그대로 이어 간다.
+
+    ACTIVE       : 주문번호 조회 -> 잔량 취소 v3 -> 취소 확정 -> 잔량 재호가(partial_fill_reprice). 결과로 끝낸다.
+    SHADOW_ONLY  : 주문번호 조회가 안 됨(KIS 모의) -> 잔량 취소 요청 1회 + '재호가했다면' 기록, 재주문 0. 기존 경로로.
+    SAFE_FALLBACK: 실계좌 당일 차단 중 / 실계좌 상태조회 불가 -> 기존 경로로(차단 중이면 취소 v3 도 보내지 않는다)."""
+    if bool(getattr(config, "PARTIAL_FILL_REPRICE_KILL", False)):
+        return None
+    allowed = getattr(broker, "cancel_v3_allowed", None)
+    if allowed is None or getattr(broker, "get_order_status", None) is None:
+        return None
+    try:
+        if not allowed():
+            return None
+    except Exception:
+        return None
+    mode = str(getattr(broker, "mode", "") or "")
+    day = datetime.now(KST).strftime("%Y%m%d")
+    tripped = pf_reprice.breaker_reason(day) if mode == "real" else None
+    if tripped:
+        outcome.exec_log["partial_fill_reprice"] = {"route": PF_ROUTE_SAFE_FALLBACK, "reason": tripped}
+        return None
+    params = pf_reprice.RepriceParams(**{"tp_pct": float(config.FIXED_EXIT_TP_PCT), **PARTIAL_FILL_PARAM_OVERRIDES})
+    max_notional = (float(outcome.usable_cash or 0.0) * 0.995) or None
     rp = pf_reprice.PartialFillRepricer(
         broker, symbol=target_symbol, target_qty=int(requested_qty), order_price=float(order_price),
-        first_result=buy_result, client_order_id=f"{signal_id}:BUY:{target_symbol}",
-        params=pf_reprice.RepriceParams(**{"tp_pct": float(config.FIXED_EXIT_TP_PCT), **PARTIAL_FILL_PARAM_OVERRIDES}),
-        sleep=PARTIAL_FILL_SLEEP,
-        signal_valid=signal_valid or _default_signal_valid(broker),
-        tick_fn=get_tick_size, max_notional=(float(outcome.usable_cash or 0.0) * 0.995) or None,
+        first_result=buy_result, client_order_id=f"{signal_id}:BUY:{target_symbol}", params=params,
+        sleep=PARTIAL_FILL_SLEEP, signal_valid=_pf_signal_valid(broker, target_symbol, int(balance_qty)),
+        tick_fn=get_tick_size, max_notional=max_notional,
+        initial_sleep=max(0.0, params.first_check_sec - _elapsed_since(timestamps.get("buy_requested_at"))),
     )
-    r = rp.run()
+    try:
+        r = rp.run()
+    except Exception as exc:  # noqa: BLE001 -- 불변식 위반 등: 더 사지 않고, 살아 있을 수 있는 주문은 미확정으로 넘긴다
+        logger.error("[MACD2][PARTIAL_FILL] 재호가 루프 예외 -- 추가주문 중단: %r", exc)
+        if mode == "real":
+            pf_reprice.trip_breaker(day, f"EXCEPTION:{type(exc).__name__}")
+        live = rp.st.live_orders()
+        r = pf_reprice.RepriceResult(
+            final=pf_reprice.CANCEL_FAILED, state=rp.st,
+            open_order=({k: live[-1][k] for k in ("order_id", "qty", "price", "filled", "amount")} if live else None))
     st = r.state
     if (r.final == pf_reprice.STATUS_UNAVAILABLE and len(st.orders) == 1
             and not any(e[1] == "CANCEL_REQUESTED" for e in st.events)):
-        # 첫 주문의 상태조회부터 안 됨(취소·재주문 없음) -> 기존 경로(잔고 확인)로 넘긴다. 주문실행 v2 와 같은 처리.
-        outcome.exec_log["partial_fill_reprice"] = {"final": r.final, "fallback": "LEGACY",
-                                                    "events": [list(e) for e in st.events]}
+        # 첫 주문의 상태조회부터 안 됨 -> 취소 확정을 볼 수 없으니 재주문 금지. 잔량 취소 요청만 1회 보내고 기존 경로로.
+        route = PF_ROUTE_SHADOW if mode == "mock" else PF_ROUTE_SAFE_FALLBACK
+        if mode == "real":
+            pf_reprice.trip_breaker(day, "STATUS_UNAVAILABLE")
+        try:
+            cr = broker.cancel_order_v3(str(buy_result.order_id), target_symbol)
+            cancel_req = {"accepted": bool(getattr(cr, "success", False)), "message": str(getattr(cr, "message", "")),
+                          "status": (getattr(cr, "raw", None) or {}).get("status")}
+        except Exception as exc:  # noqa: BLE001
+            cancel_req = {"accepted": False, "message": f"CANCEL_V3_ERROR:{exc}"}
+        shadow = pf_reprice.shadow_plan(
+            broker, symbol=target_symbol, target_qty=int(requested_qty), filled_qty=int(balance_qty),
+            filled_amount=float(balance_qty) * float(balance_avg or order_price), order_price=float(order_price),
+            params=params, tick_fn=get_tick_size, max_notional=max_notional)
+        outcome.exec_log["partial_fill_reprice"] = {"route": route, "final": r.final, "cancel_request": cancel_req,
+                                                    "shadow": shadow, "events": [list(e) for e in st.events]}
+        logger.warning("[MACD2][PARTIAL_FILL] %s %s 체결 %s/%s -- 주문번호 조회 불가, 재주문 없음. 취소요청 %s, "
+                       "재호가했다면 %s주 @%s (%s)", route, target_symbol, balance_qty, requested_qty,
+                       cancel_req.get("accepted"), shadow.get("qty"), shadow.get("price"), shadow.get("reason"))
         return None
+    if mode == "real" and r.final in (pf_reprice.CANCEL_FAILED, pf_reprice.STATUS_UNAVAILABLE):
+        pf_reprice.trip_breaker(day, r.final)
     outcome.reprice_count = int(st.REPRICE_COUNT)
     outcome.exec_log["partial_fill_reprice"] = {
-        "final": r.final, "target_qty": st.TARGET_QTY, "filled_qty": st.FILLED_QTY,
+        "route": PF_ROUTE_ACTIVE, "final": r.final, "target_qty": st.TARGET_QTY, "filled_qty": st.FILLED_QTY,
         "remaining_qty": st.REMAINING_QTY, "original_order_id": st.ORIGINAL_ORDER_ID,
         "cancel_confirmed": st.CANCEL_CONFIRMED, "reprice_count": st.REPRICE_COUNT,
+        "balance_qty_at_handoff": int(balance_qty),
         "orders": [dict(o) for o in st.orders], "events": [list(e) for e in st.events],
     }
     # 취소가 확정된(terminal) 주문의 미체결분만 일일 주문누계에서 되돌린다. 살아 있을 수 있는 주문은 그대로.
@@ -711,8 +778,7 @@ def _run_partial_fill_reprice(outcome: ExecutionOutcome, *, broker, buy_result, 
     res = {
         "final": final, "buy_result": buy_result, "requested_qty": int(requested_qty),
         "order_price": float(order_price), "filled_qty": int(st.FILLED_QTY), "avg_price": float(st.avg_price),
-        "amount": float(st.FILLED_AMOUNT), "reprice_count": int(st.REPRICE_COUNT),
-        "open_order": r.open_order,
+        "amount": float(st.FILLED_AMOUNT), "reprice_count": int(st.REPRICE_COUNT), "open_order": None,
     }
     if r.open_order is not None:
         # pending 추적은 이 주문 하나만 본다 -- 다른 주문으로 이미 산 수량(held_offset)을 함께 넘긴다.
@@ -723,6 +789,8 @@ def _run_partial_fill_reprice(outcome: ExecutionOutcome, *, broker, buy_result, 
         out.open_order = dict(res["open_order"])      # 0주 + 취소 미확인: 살아 있을 수 있는 주문은 재호가 주문일 수 있다
     if r.final not in (pf_reprice.FILLED, pf_reprice.CANCEL_FAILED, pf_reprice.STATUS_UNAVAILABLE):
         out.exec_log["partial_fill_reason"] = r.final
+    logger.warning("[MACD2][PARTIAL_FILL] ACTIVE %s 결과 %s 체결 %s/%s 재호가 %s회", target_symbol, r.final,
+                   st.FILLED_QTY, requested_qty, st.REPRICE_COUNT)
     return out
 
 
@@ -738,7 +806,6 @@ def execute_signal(
     reconcile_retries: int = 5,
     reconcile_delay_sec: float = 0.5,
     ledger_module: Any = None,
-    signal_valid: Any = None,
 ) -> ExecutionOutcome:
     """Idempotent signal_id execution: entry (flat) or direction switch.
 
@@ -1115,16 +1182,6 @@ def execute_signal(
         return outcome
     timestamps["buy_confirmed_at"] = _now_iso()
 
-    # 부분체결 재호가 (2026-10-23, 기본 OFF). OFF 면 이 블록은 아무것도 하지 않는다. MACD2 원장 경로 전용.
-    if config.PARTIAL_FILL_REPRICE_ENABLED and lm is ledger:
-        pf_out = _run_partial_fill_reprice(
-            outcome, broker=broker, buy_result=buy_result, signal_id=signal_id, target_symbol=target_symbol,
-            requested_qty=requested_qty, order_price=order_price, timestamps=timestamps,
-            release_claim=release_claim, ledger_module=ledger_module, signal_valid=signal_valid,
-        )
-        if pf_out is not None:
-            return pf_out
-
     v2res = None
     if config.EXEC_V2_ENABLED:
         v2res = exec_v2.run_buy(
@@ -1168,6 +1225,16 @@ def execute_signal(
     outcome.balance_qty = balance_qty
     outcome.unfilled_qty = max(requested_qty - filled_qty, 0)
     timestamps["buy_reconciled_at"] = _now_iso()
+    if filled_qty < requested_qty and v2res is None and lm is ledger:
+        # 부분체결 잔량 재호가 (2026-10-23, 기본 기능). 전량체결이면 여기 오지 않는다. MACD2 원장 경로 전용.
+        pf_out = _handle_partial_fill(
+            outcome, broker=broker, buy_result=buy_result, signal_id=signal_id, target_symbol=target_symbol,
+            requested_qty=requested_qty, order_price=order_price, balance_qty=filled_qty,
+            balance_avg=filled_avg_price, timestamps=timestamps, release_claim=release_claim,
+            ledger_module=ledger_module,
+        )
+        if pf_out is not None:
+            return pf_out
     if filled_qty < requested_qty:
         _cancel_unfilled(broker, outcome, buy_result.order_id, target_symbol)
         # 2026-08-10/11 fix (real incident: every real fill must land in
