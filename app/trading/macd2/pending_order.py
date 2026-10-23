@@ -86,7 +86,9 @@ def register(state, outcome, *, direction, signal_id: str, signal_type: str, now
         "signal_id": signal_id,
         "signal_type": signal_type,
         "source": source,
-        "requested_qty": int(getattr(outcome, "final_qty", None) or getattr(outcome, "quantity", 0) or 0),
+        # 부분체결 재호가(2026-10-23): 추적 주문이 재호가 주문이면 그 주문 수량 기준. held_offset 이 없으면 기존과 동일.
+        "requested_qty": (int(open_order["qty"]) if (open_order or {}).get("held_offset") is not None
+                          else int(getattr(outcome, "final_qty", None) or getattr(outcome, "quantity", 0) or 0)),
         "order_price": float(getattr(outcome, "order_price", None) or 0.0),
         "signal_detected_at": (signal_detected_at or now).isoformat(),
         "ordered_at": ts.get("buy_requested_at") or now.isoformat(),
@@ -95,12 +97,13 @@ def register(state, outcome, *, direction, signal_id: str, signal_type: str, now
         "recorded_qty": int((open_order or {}).get("filled") or 0),
         "recorded_amount": float((open_order or {}).get("amount") or 0.0),
         "legs_recorded": 1 if (open_order or {}).get("filled") else 0,
+        "held_offset": int((open_order or {}).get("held_offset") or 0),   # 다른 주문으로 이미 보유 중인 수량
         "org_no": str(((getattr(buy, "raw", None) or {}).get("KRX_FWDG_ORD_ORGNO")) or ""),
         "checks": 0, "last_checked_at": None, "last_status": "REGISTERED",
         "cancel_attempts": int(bool(getattr(outcome, "cancel_called", False))),
         "last_cancel_result": str(getattr(outcome, "cancel_result", "") or ""),
     }
-    if not open_order:
+    if getattr(outcome, "block_reason", None) == SOURCE_BUY_CANCEL_NOT_CONFIRMED:
         outcome.block_reason = PENDING_ORDER_UNCONFIRMED  # 신호원장: BLOCKED:PENDING_ORDER_UNCONFIRMED
     logger.warning("[MACD2][PENDING_ORDER] 등록 %s %s %s주 @%s order_id=%s (취소 미확인 — 체결/취소 확정까지 추적, "
                    "신규 매수 금지)", signal_id, outcome.target_symbol, state.pending_buy_order["requested_qty"],
@@ -181,7 +184,7 @@ def check(broker, state, now: datetime, *, apply_new_position: Callable[[Any, in
                   "CANCEL_REQUESTED" if int(p.get("cancel_attempts", 0)) > 0 else "PENDING")
     out = {"action": "OPEN", "order_id": p["order_id"], "filled_qty": filled, "remaining_qty": remaining}
 
-    base = max(int(p.get("recorded_qty", 0)), _held_qty(state, p["symbol"]))
+    base = max(int(p.get("recorded_qty", 0)), _held_qty(state, p["symbol"]) - int(p.get("held_offset", 0)))
     new_qty = filled - base
     if new_qty > 0:
         delta_amt = amount - float(p.get("recorded_amount", 0.0))
@@ -242,8 +245,9 @@ def _balance_fallback(broker, state, now: datetime, p: dict, apply_new_position)
         out["error"] = repr(exc)[:120]
         return out
     held_broker = int(getattr(pos, "quantity", 0) or 0) if pos is not None else 0
-    base = max(int(p.get("recorded_qty", 0)), _held_qty(state, p["symbol"]))
-    new_qty = held_broker - base
+    off = int(p.get("held_offset", 0))
+    base = max(int(p.get("recorded_qty", 0)), _held_qty(state, p["symbol"]) - off)
+    new_qty = (held_broker - off) - base
     if new_qty > 0:
         price = float(getattr(pos, "avg_price", 0.0) or p.get("order_price") or 0.0)
         held_before = _held_qty(state, p["symbol"])

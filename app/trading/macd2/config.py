@@ -2026,3 +2026,7 @@ EXEC_REPRICE_MAX_SLIPPAGE_PCT = _env_float("MACD2_EXEC_REPRICE_MAX_SLIPPAGE_PCT"
 #: 경로와 order_executor 는 이 플래그를 읽지 않는다.
 PARTIAL_FILL_CANCEL_ENABLED = _env_bool("MACD2_PARTIAL_FILL_CANCEL_ENABLED", False)
 PARTIAL_FILL_REAL_CANCEL_ENABLED = _env_bool("MACD2_PARTIAL_FILL_REAL_CANCEL_ENABLED", False)
+#: 부분체결 재호가(partial_fill_reprice) 를 MACD2 신규 매수 실행부에 연결. 기본 OFF -- OFF 면 기존 경로와 동일.
+#: ON 이어도 취소 v3 가 허용되지 않으면(위 두 플래그) 잔량을 취소할 수 없어 추가매수 없이 CANCEL_FAILED 로 끝난다.
+#: MACD2 원장(ledger) 경로에만 적용 -- 같은 executor 를 쓰는 MU_MACD 에는 적용하지 않는다.
+PARTIAL_FILL_REPRICE_ENABLED = _env_bool("MACD2_PARTIAL_FILL_REPRICE_ENABLED", False)

@@ -54,6 +54,7 @@ ABANDONED_MAX_REPRICE = "ABANDONED_MAX_REPRICE"     # 재호가 한도 소진 �
 ABANDONED_QUOTE_UNAVAILABLE = "ABANDONED_QUOTE_UNAVAILABLE"
 ABANDONED_ORDER_REJECTED = "ABANDONED_ORDER_REJECTED"
 ABANDONED_ORDER_UNSUPPORTED = "ABANDONED_ORDER_UNSUPPORTED"
+ABANDONED_NO_CASH = "ABANDONED_NO_CASH"             # 재호가 가격에서 현금 상한 안에 1주도 못 삼
 CANCEL_FAILED = "CANCEL_FAILED"                     # 취소 미확정 -> 추가 매수 금지, 살아 있을 수 있는 주문 보고
 STATUS_UNAVAILABLE = "STATUS_UNAVAILABLE"           # 주문번호 조회 불가 -> 체결수량을 모르므로 아무것도 하지 않음
 
@@ -133,6 +134,7 @@ class PartialFillRepricer:
                  client_order_id: str, params: RepriceParams = RepriceParams(),
                  signal_valid: Callable[[], bool] = lambda: True,
                  tick_fn: Optional[Callable[[float], float]] = None,
+                 max_notional: Optional[float] = None,
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], datetime] = _now):
         if tick_fn is None:
             from app.utils.stock_utils import get_tick_size
@@ -141,6 +143,8 @@ class PartialFillRepricer:
         params = replace(params, max_reprice=max(0, min(HARD_MAX_REPRICE, int(params.max_reprice))))
         self.broker, self.symbol, self.p = broker, symbol, params
         self.order_price = float(order_price)
+        # 총 매수금액 상한(원). 재호가는 더 비싼 가격이라 잔량 x 새 가격이 남은 현금을 넘지 않게 수량을 줄인다.
+        self.max_notional = float(max_notional) if max_notional else None
         self.client_order_id = client_order_id
         self.signal_valid, self.tick_fn, self.sleep, self.clock = signal_valid, tick_fn, sleep, clock
         self.st = RepriceState(TARGET_QTY=int(target_qty), ORIGINAL_ORDER_ID=str(first_result.order_id),
@@ -343,6 +347,11 @@ class PartialFillRepricer:
                 self._ev("REPRICE_VETO", reason=veto, ask=ask, cap=self.chase_cap)
                 return self._finish(veto)
             qty = self.st.REMAINING_QTY
+            if self.max_notional is not None:
+                qty = min(qty, int(max(0.0, self.max_notional - self.st.FILLED_AMOUNT) // price))
+                if qty < 1:
+                    self._ev("NO_CASH", price=price, filled_amount=self.st.FILLED_AMOUNT)
+                    return self._finish(ABANDONED_NO_CASH)
             res, why = self._place(qty, price)
             if res is None:
                 return self._finish(why)
