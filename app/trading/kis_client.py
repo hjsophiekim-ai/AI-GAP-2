@@ -106,6 +106,17 @@ TR_SELL_MOCK = "VTTC0801U"
 # 정정취소(2026-10-16): 모의만 사용. 실전 TR 은 기록용 상수이며 cancel_order_rvsecncl 은 real 을 거부한다.
 TR_CANCEL_REAL = "TTTC0803U"
 TR_CANCEL_MOCK = "VTTC0803U"
+# 정정취소 v3(2026-10-23, 부분체결 재호가 연구): 공식 문서 현행 TR. 실전/모의 TR 이 다르고, 실전은
+# cancel_order_v3(allow_real=True) 로 명시해야만 HTTP 를 보낸다. 기존 cancel_order_rvsecncl 은 그대로 둔다.
+TR_RVSECNCL_V3_REAL = "TTTC0013U"
+TR_RVSECNCL_V3_MOCK = "VTTC0013U"
+RVSE_CNCL_DVSN_CANCEL = "02"
+#: cancel_order_v3 결과 상태
+CANCEL_V3_ACCEPTED = "ACCEPTED"            # 취소 '접수'(확정 아님 -- 확정은 get_order_status 로)
+CANCEL_V3_REJECTED = "REJECTED"            # KIS 가 거절(rt_cd != 0). 이미 전량체결·원주문 없음 등 포함
+CANCEL_V3_UNKNOWN = "UNKNOWN"              # timeout/연결오류/응답 이상 -- 접수됐을 수도 있다. 재전송 금지, 상태조회로 판정
+CANCEL_V3_BLOCKED_REAL = "BLOCKED_REAL"    # 실전인데 allow_real 이 아님 -- HTTP 미전송
+CANCEL_V3_INVALID_INPUT = "INVALID_INPUT"  # 주문번호/조직번호 형식 오류 -- HTTP 미전송
 
 TR_ORDER_HISTORY_REAL = "TTTC8001R"
 #: 기간별매매손익현황 — KIS 계좌 화면의 매수/매도금액·수수료·세금·실현손익이
@@ -1593,6 +1604,81 @@ class KISClient:
         except Exception as e:
             logger.error(f"[KIS-{self.mode.upper()}] 취소 예외: {e}")
             return {**base, "message": f"CANCEL_EXCEPTION:{e}"}
+
+    def cancel_order_v3(self, order_id: str, org_no: str, symbol: str = "", *, allow_real: bool = False,
+                        exchange: str = "KRX") -> dict:
+        """국내주식 주문 **잔량 전부 취소** — 정정취소 v3 (2026-10-23, 부분체결 재호가 연구 전용).
+
+        기존 cancel_order_rvsecncl(구 TR 0803U, 모의 전용)과 별개 함수다. 기존 주문/매도/청산 경로는 이
+        함수를 부르지 않는다.
+
+        실전/모의 차이:
+          TR      실전 TTTC0013U / 모의 VTTC0013U (공식 문서 '주식주문(정정취소)' 현행 TR)
+          가드    실전은 allow_real=True 일 때만 HTTP 전송. 아니면 BLOCKED_REAL(전송 없음).
+          본문    두 모드 동일: ORGN_ODNO, KRX_FWDG_ORD_ORGNO, RVSE_CNCL_DVSN_CD=02(취소),
+                  QTY_ALL_ORD_YN=Y(잔량 전부), ORD_QTY=0, ORD_UNPR=0, EXCG_ID_DVSN_CD(기본 KRX)
+        안전:
+          - 재전송하지 않는다. timeout/연결오류는 UNKNOWN(취소가 접수됐을 수도 있음)으로 돌려주고 호출자가
+            get_order_status 로 판정한다. 같은 주문을 두 번 취소하지 않는 것은 호출자(adapter)의 책임.
+          - 예외: KIS 게이트웨이 초당제한(EGW00201) 응답은 처리 전 거절이므로 같은 요청을 재시도한다.
+          - ACCEPTED 는 '접수'일 뿐 취소 확정이 아니다.
+        반환: {"status", "success", "cancel_order_id", "orig_order_id", "tr_id", "http_status",
+               "rt_cd", "msg_cd", "msg1", "message", "raw"}
+        """
+        oid = str(order_id or "").strip()
+        org = str(org_no or "").strip()
+        tr_id = TR_RVSECNCL_V3_MOCK if self.mode == "mock" else TR_RVSECNCL_V3_REAL
+        base = {"status": "", "success": False, "cancel_order_id": "", "orig_order_id": oid, "tr_id": tr_id,
+                "http_status": 0, "rt_cd": "", "msg_cd": "", "msg1": "", "message": "", "raw": {}}
+        if self.mode != "mock" and not allow_real:
+            return {**base, "status": CANCEL_V3_BLOCKED_REAL, "message": "REAL_CANCEL_V3_NOT_ALLOWED"}
+        if not oid.isdigit() or not org or str(exchange) not in ("KRX", "NXT", "SOR"):
+            return {**base, "status": CANCEL_V3_INVALID_INPUT,
+                    "message": f"INVALID_INPUT order_id={oid!r} org_no={org!r} exchange={exchange!r}"}
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-rvsecncl"
+        body = {
+            "CANO": self.account_no, "ACNT_PRDT_CD": self.product_code,
+            "KRX_FWDG_ORD_ORGNO": org, "ORGN_ODNO": oid,
+            "ORD_DVSN": ORD_DVSN_LIMIT, "RVSE_CNCL_DVSN_CD": RVSE_CNCL_DVSN_CANCEL,
+            "ORD_QTY": "0", "ORD_UNPR": "0", "QTY_ALL_ORD_YN": "Y",
+            "EXCG_ID_DVSN_CD": str(exchange),
+        }
+        logger.info(f"[KIS-{self.mode.upper()}] 취소v3 시도: orig_order_id={oid} symbol={symbol} tr_id={tr_id}")
+        try:
+            hashkey = self.get_hashkey(body)
+            headers = self._auth_headers(tr_id)
+            if hashkey:
+                headers["hashkey"] = hashkey
+            for attempt in range(1, _RATE_LIMIT_RETRY_MAX_ATTEMPTS + 1):
+                resp = self._post(url, json=body, headers=headers, timeout=(3, 10))
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {}
+                if _is_rate_limited_response(data) and attempt < _RATE_LIMIT_RETRY_MAX_ATTEMPTS:
+                    time.sleep(_RATE_LIMIT_RETRY_DELAY_SECONDS.get(self.mode, _DEFAULT_MIN_REQUEST_INTERVAL_SECONDS))
+                    continue
+                break
+        except KISTokenError:
+            raise
+        except Exception as e:      # timeout / 연결 끊김 -- 접수 여부 불명
+            logger.error(f"[KIS-{self.mode.upper()}] 취소v3 예외(접수 여부 불명): {e}")
+            return {**base, "status": CANCEL_V3_UNKNOWN, "message": f"CANCEL_V3_EXCEPTION:{e}"}
+        rt_cd, msg_cd, msg1 = data.get("rt_cd", ""), data.get("msg_cd", ""), data.get("msg1", "")
+        out = data.get("output") or {}
+        info = {**base, "http_status": getattr(resp, "status_code", 0), "rt_cd": rt_cd, "msg_cd": msg_cd,
+                "msg1": msg1, "message": msg1}
+        if resp.ok and rt_cd == "0":
+            cancel_no = str(out.get("ODNO", "") if isinstance(out, dict) else "")
+            if not cancel_no:
+                return {**info, "status": CANCEL_V3_UNKNOWN, "raw": data, "message": "ACCEPTED_WITHOUT_ODNO"}
+            return {**info, "status": CANCEL_V3_ACCEPTED, "success": True, "cancel_order_id": cancel_no, "raw": out}
+        if not resp.ok and not rt_cd:
+            # 본문 없는 5xx 등 -- 서버가 처리했는지 알 수 없다
+            logger.warning(f"[KIS-{self.mode.upper()}] 취소v3 HTTP {info['http_status']} (본문 없음, 접수 불명)")
+            return {**info, "status": CANCEL_V3_UNKNOWN, "raw": data}
+        logger.warning(f"[KIS-{self.mode.upper()}] 취소v3 거절: rt_cd={rt_cd} msg_cd={msg_cd} msg1={msg1}")
+        return {**info, "status": CANCEL_V3_REJECTED, "raw": data}
 
     # ── 내부 공통 주문 처리 ────────────────────────────────────────────────
 

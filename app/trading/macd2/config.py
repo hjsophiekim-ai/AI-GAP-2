@@ -2019,3 +2019,10 @@ EXEC_CANCEL_CONFIRM_INTERVAL_SEC = _env_float("MACD2_EXEC_CANCEL_CONFIRM_INTERVA
 EXEC_REPRICE_ENABLED = _env_bool("MACD2_EXEC_REPRICE_ENABLED", False)
 EXEC_REPRICE_MAX = max(0, min(2, _env_int("MACD2_EXEC_REPRICE_MAX", 1)))
 EXEC_REPRICE_MAX_SLIPPAGE_PCT = _env_float("MACD2_EXEC_REPRICE_MAX_SLIPPAGE_PCT", 0.0)
+
+# ── 부분체결 재호가용 취소 v3 (2026-10-23, feature/macd2-partial-fill-reprice, 연구) ─────────────
+#: 취소 v3(kis_client.cancel_order_v3, TR 실전 TTTC0013U / 모의 VTTC0013U) 사용. 기본 OFF.
+#: 모의는 이것만 켜면 되고, 실전은 아래 REAL 플래그도 켜야 한다(이중 잠금). 기존 cancel_order/cancel_order_v2
+#: 경로와 order_executor 는 이 플래그를 읽지 않는다.
+PARTIAL_FILL_CANCEL_ENABLED = _env_bool("MACD2_PARTIAL_FILL_CANCEL_ENABLED", False)
+PARTIAL_FILL_REAL_CANCEL_ENABLED = _env_bool("MACD2_PARTIAL_FILL_REAL_CANCEL_ENABLED", False)

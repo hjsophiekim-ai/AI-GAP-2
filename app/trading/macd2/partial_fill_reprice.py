@@ -123,7 +123,7 @@ def _floor_to_tick(price: float, tick_fn: Callable[[float], float]) -> float:
 class PartialFillRepricer:
     """한 매수 신호의 실행 루프. broker 는 order_execution_v2 와 같은 인터페이스를 쓴다:
       get_order_status(order_id, symbol=) -> {"ok","found","filled_qty","remaining_qty","amount","cancelled"}
-      cancel_v2_allowed() / cancel_order_v2(order_id, symbol) -> BrokerOrderResult(success, ...)
+      cancel_v3_allowed() / cancel_order_v3(order_id, symbol) -> BrokerOrderResult(success, ...)  (취소 v3, 주문당 1회)
       get_fresh_ask1(symbol) -> {"ok","ask1","age_sec"}
       buy_limit(symbol, qty, price, client_order_id) -> BrokerOrderResult(success, order_id, ...)
       buy_best_limit(symbol, qty, client_order_id)   (선택, BEST_LIMIT 모드 전용)
@@ -209,13 +209,13 @@ class PartialFillRepricer:
         if order["terminal"]:
             self.st.CANCEL_CONFIRMED = True
             return True
-        allowed = getattr(self.broker, "cancel_v2_allowed", None)
+        allowed = getattr(self.broker, "cancel_v3_allowed", None)
         if not (allowed and allowed()):
             self._ev("CANCEL_UNAVAILABLE", order_id=order["order_id"])
             self.st.CANCEL_CONFIRMED = False
             return False
         try:
-            res = self.broker.cancel_order_v2(order["order_id"], self.symbol)
+            res = self.broker.cancel_order_v3(order["order_id"], self.symbol)
             accepted = bool(getattr(res, "success", False))
             msg = str(getattr(res, "message", ""))
         except Exception as exc:  # noqa: BLE001

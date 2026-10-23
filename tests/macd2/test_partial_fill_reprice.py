@@ -109,10 +109,10 @@ class FakeBroker:
         return {"ok": True, "symbol": symbol, "ask1": self._ask(), "age_sec": 0.2}
 
     # 취소 ----------------------------------------------------------------
-    def cancel_v2_allowed(self):
+    def cancel_v3_allowed(self):
         return self.cancel_allowed
 
-    def cancel_order_v2(self, order_id, symbol="", org_no=None):
+    def cancel_order_v3(self, order_id, symbol="", org_no=None):
         self.cancel_calls.append(order_id)
         o = self.orders[order_id]
         if o["cancel"] == "reject":
