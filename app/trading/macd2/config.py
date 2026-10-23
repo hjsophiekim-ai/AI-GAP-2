@@ -2019,3 +2019,10 @@ EXEC_CANCEL_CONFIRM_INTERVAL_SEC = _env_float("MACD2_EXEC_CANCEL_CONFIRM_INTERVA
 EXEC_REPRICE_ENABLED = _env_bool("MACD2_EXEC_REPRICE_ENABLED", False)
 EXEC_REPRICE_MAX = max(0, min(2, _env_int("MACD2_EXEC_REPRICE_MAX", 1)))
 EXEC_REPRICE_MAX_SLIPPAGE_PCT = _env_float("MACD2_EXEC_REPRICE_MAX_SLIPPAGE_PCT", 0.0)
+
+# ── 부분체결 잔량 재호가 (2026-10-23, app/trading/macd2/partial_fill_reprice.py) ─────────────────
+#: MACD2 신규 매수의 기본 주문관리 기능이다(사용자 토글 없음). 기존 잔고 확인에서 전량체결이면 아무것도 하지 않고,
+#: 잔량이 남았을 때만 주문번호 조회 -> 취소 v3(실전 TTTC0013U / 모의 VTTC0013U) -> 취소 확정 -> 잔량 재호가.
+#: 주문번호 조회가 안 되는 계좌(KIS 모의: VTTC8001R 주문별 행 0건)는 취소 요청 + shadow 기록만 하고 재주문하지 않는다.
+#: 비상차단 전용(UI 비노출): MACD2_PARTIAL_FILL_REPRICE_KILL=1 이면 취소 v3·재호가를 모두 끄고 기존 경로만 쓴다.
+PARTIAL_FILL_REPRICE_KILL = _env_bool("MACD2_PARTIAL_FILL_REPRICE_KILL", False)

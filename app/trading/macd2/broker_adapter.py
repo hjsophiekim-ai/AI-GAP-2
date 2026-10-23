@@ -331,6 +331,51 @@ class _BrokerAdapterBase:
                                  str(r.get("message") or ("OK" if r.get("success") else "CANCEL_FAILED")),
                                  raw={k: r.get(k) for k in ("order_id", "rt_cd", "msg_cd", "msg1")})
 
+    # ── 부분체결 재호가용 취소 v3 (2026-10-23 -- order_executor 의 잔량 처리만 쓴다. 청산 경로는 쓰지 않는다) ──
+    def cancel_v3_allowed(self) -> bool:
+        """모의/실전 브로커면 True. 비상차단 PARTIAL_FILL_REPRICE_KILL 이 켜져 있으면 False."""
+        from app.trading.macd2 import config as _cfg
+        if bool(getattr(_cfg, "PARTIAL_FILL_REPRICE_KILL", False)):
+            return False
+        return getattr(self, "mode", "") in ("mock", "real")
+
+    @property
+    def cancel_v3_sent(self) -> dict:
+        """주문번호 -> 첫 취소 요청 결과. 같은 주문에 두 번째 취소 HTTP 를 보내지 않기 위한 기록(프로세스 메모리)."""
+        d = self.__dict__.get("_cancel_v3_sent")
+        if d is None:
+            d = self.__dict__["_cancel_v3_sent"] = {}
+        return d
+
+    def cancel_order_v3(self, order_id: str, symbol: str = "", org_no: Optional[str] = None) -> BrokerOrderResult:
+        """잔량 전부 취소 **요청**(주문번호당 최대 1회). success=True 는 '접수'일 뿐 확정이 아니다 --
+        확정은 get_order_status 의 잔량 0 으로 호출자가 따로 본다. raw["status"] 에 KIS 결과 상태
+        (ACCEPTED/REJECTED/UNKNOWN/...)를 담는다. 두 번째 요청은 HTTP 없이 DUPLICATE_SUPPRESSED 로 돌려준다."""
+        oid = str(order_id or "")
+        if not self.cancel_v3_allowed():
+            return BrokerOrderResult(False, oid, symbol, "CANCEL", 0, 0, 0.0, "CANCEL_V3_DISABLED",
+                                     raw={"status": "DISABLED", "mode": getattr(self, "mode", "")})
+        prev = self.cancel_v3_sent.get(oid)
+        if prev is not None:
+            return BrokerOrderResult(False, oid, symbol, "CANCEL", 0, 0, 0.0, "DUPLICATE_SUPPRESSED",
+                                     raw={**prev, "duplicate": True})
+        fn = getattr(getattr(self._broker, "kis", None), "cancel_order_v3", None)
+        org = org_no or self.order_org_no.get(oid)
+        if fn is None or not org:
+            return BrokerOrderResult(False, oid, symbol, "CANCEL", 0, 0, 0.0,
+                                     "CANCEL_V3_UNAVAILABLE" if fn is None else "CANCEL_V3_NO_ORG_NO",
+                                     raw={"status": "UNAVAILABLE" if fn is None else "NO_ORG_NO"})
+        # 기록을 HTTP 전에 남긴다 -- 예외로 끝나도 재전송되지 않게.
+        self.cancel_v3_sent[oid] = {"status": "IN_FLIGHT"}
+        try:
+            r = dict(fn(oid, str(org), symbol, allow_real=(getattr(self, "mode", "") == "real")) or {})
+        except Exception as exc:  # noqa: BLE001
+            r = {"status": "UNKNOWN", "success": False, "message": f"CANCEL_V3_ERROR:{exc}"}
+        rec = {k: r.get(k) for k in ("status", "cancel_order_id", "rt_cd", "msg_cd", "msg1", "tr_id")}
+        self.cancel_v3_sent[oid] = rec
+        return BrokerOrderResult(bool(r.get("success")), oid, symbol, "CANCEL", 0, 0, 0.0,
+                                 str(r.get("message") or r.get("status") or ""), raw=rec)
+
     def cancel_order(self, order_id: str, symbol: str = "") -> BrokerOrderResult:
         """Best-effort cancel of unfilled remainder. Returns success=False if
         underlying broker has no cancel API (still records the attempt)."""
