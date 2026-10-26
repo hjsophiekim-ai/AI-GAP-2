@@ -1529,6 +1529,22 @@ MU_ASSIST_NO_REENTRY_BLOCK_REASON = "MU_ASSIST_NO_REENTRY"
 MU_ASSIST_ENTRY_BAD_BLOCK_REASON = "MU_ASSIST_ENTRY_BAD"
 MU_ASSIST_ENTRY_WARNING = "ENTRY_CONFIRM_WEAK"
 MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
+
+# ── MU Assist × 체결강도 (2026-10-26, feature/macd2-mu-cttr-assist, 연구용·전부 기본 OFF) ──
+# 셋 다 MU Assist 가 켜져 있을 때만 동작한다. 체결강도 = exec_strength.py (직전 60초 하이닉스 cttr 평균,
+# RED >100 / BLUE <100 이 방향일치, 기준 100 고정). 체결강도·MU 판정 불가면 기존 CHOP 그대로(fail-open).
+#   MATCH_OVERRIDE  : TEG 거절 사유가 recent_cross_le_1 / min_9min_since_opposite_flag 뿐이고
+#                     체결강도 일치 ∧ MU ENTRY_CONFIRM(=MU CONFIRM ∧ HY EXPAND) 이면 그 TEG 거절만 푼다.
+#                     EMA stack / VWAP / gap / spread 사유가 하나라도 있으면 그대로 거절. 슬롯·시간창 판정 뒤.
+#   MISMATCH_VETO   : 체결강도 불일치 ∧ MU 패턴 STALL/DIVERGE 일 때만 신규진입 차단.
+#   EXIT_REENTRY    : MU 조기청산 플래그의 T+3 반대진입 금지(MU_ASSIST_NO_REENTRY)를
+#                     체결강도 일치 ∨ MU ENTRY_CONFIRM 일 때 해제(이후 게이트는 그대로).
+MU_CTTR_MATCH_OVERRIDE = _env_bool("MACD2_MU_CTTR_MATCH_OVERRIDE", False)
+MU_CTTR_MISMATCH_VETO = _env_bool("MACD2_MU_CTTR_MISMATCH_VETO", False)
+MU_EXIT_REENTRY = _env_bool("MACD2_MU_EXIT_REENTRY", False)
+EXEC_STRENGTH_DATA_DIR = (os.environ.get("MACD2_EXEC_STRENGTH_DATA_DIR") or os.environ.get("KIS_LOGGER_DATA_DIR")
+                          or "")
+MU_CTTR_MISMATCH_VETO_BLOCK_REASON = "MU_CTTR_MISMATCH_VETO"
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
 EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"
 EXIT_TW_TP2_FULL = "TIME_WINDOW_TP2_FULL"

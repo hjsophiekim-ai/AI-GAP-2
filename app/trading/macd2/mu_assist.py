@@ -402,6 +402,15 @@ def entry_status_for(signal_id: str) -> str:
     return ""
 
 
+def entry_pattern_for(signal_id: str) -> str:
+    """T+2 에 기록한 MU 패턴(CONFIRM/STALL/DIVERGE/UNAVAILABLE). 기록이 없으면 ''. (체결강도 결합용, 2026-10-26)"""
+    with _LOCK:
+        for row in _load_rows():
+            if row.get("kind") == KIND_ENTRY and row.get("signal_id") == signal_id:
+                return row.get("mu_pattern_state") or ""
+    return ""
+
+
 def entry_veto_reason(signal_id: str) -> Optional[str]:
     """T+3 진입 판정에서 막을 사유. ENTRY_BAD 일 때만 막는다 — GOOD/WAIT/결측은 기존 CHOP 그대로."""
     return config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON if entry_status_for(signal_id) == ENTRY_BAD else None
