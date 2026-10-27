@@ -2597,7 +2597,33 @@ def _pending_apply_new_position(state: RuntimeState, qty: int, price: float) -> 
         filled_avg_price=float(price),
         timestamps={"evaluated_at": p.get("signal_detected_at") or "", "buy_requested_at": p.get("ordered_at") or ""},
     )
-    _apply_switch_outcome(state, out, direction, datetime.now(KST))
+    now = datetime.now(KST)
+    _apply_switch_outcome(state, out, direction, now)
+    # 2026-10-27: 3-SLOT 진입이면 최초 체결과 **같은** 후처리(P3 스냅샷/epoch/슬롯/노출).
+    # 문맥이 없는 pending(수동·예약매수 등)은 예전과 한 줄도 다르지 않다.
+    ctx = p.get("tw2_3slot_ctx") if isinstance(p.get("tw2_3slot_ctx"), dict) else None
+    if ctx is None:
+        return
+    raw = dict(ctx.get("sizing") or {})
+    sizing = position_sizing.SizingDecision(**raw) if raw else position_sizing.NEUTRAL
+    chop = None
+    c = ctx.get("presized_chop")
+    if c:
+        chop = early_take_profit.EntryChopDecision(
+            is_chop=bool(c.get("is_chop")), score=int(c.get("score") or 0),
+            required=int(c.get("required") or 0), conditions=dict(c.get("conditions") or {}))
+    signal_id = str(p.get("signal_id") or "")
+    applied = _finalize_tw2_3slot_entry(
+        state, outcome=out, direction=direction, now=now, session=ctx.get("session"),
+        sizing=sizing, presized_chop=chop, bars_3m=None,
+        signal_detected_at=_parse_iso_dt(ctx.get("signal_detected_at")) or now,
+        signal_id=signal_id,
+    )
+    if applied and ctx.get("e_boost"):
+        e_strategy.note_boost(state, e_strategy.BoostResult(**ctx["e_boost"]))
+    logger.warning("[MACD2][PENDING_ORDER] 늦은 체결 3-SLOT 후처리 %s signal=%s regime=%s mode=%s",
+                   "적용" if applied else "생략(이미 적용)", signal_id, state.p3_entry_regime,
+                   p3_stack.position_mode(state))
 
 
 def _pending_order_ledger_extra(state: RuntimeState) -> dict:
@@ -4730,6 +4756,8 @@ def _advance_e_pending(
     if (state.pending_signal
             and state.pending_signal.get("signal_id") == fire_signal_id):
         state.pending_signal["tw2_3slot_ctx"] = dict(ctx)
+    # 2026-10-27: 취소 미확인 -> 미확정 매수주문이 됐으면 늦은 체결도 같은 후처리를 탄다.
+    _attach_pending_order_ctx(state, fire_signal_id, ctx, sizing=sizing, boost=boost)
     if outcome is None:
         state.e_last_pending_result = "E_PENDING_FIRED_NOT_EXECUTED"
         return None
@@ -5546,6 +5574,15 @@ def _resolve_tw2_3slot_candidate_body(
             sizing=_sizing, presized_chop=_presized_chop,
             signal_detected_at=signal_detected_at, flag_bar_dt=flag_bar_dt,
         )
+    elif outcome is not None:
+        # 2026-10-27: 취소 미확인으로 미확정 매수주문(pending_buy_order)이 됐다 -- 늦은 체결이
+        # 포지션을 세울 때도 위와 같은 후처리를 타도록 진입 문맥을 그 주문에 싣는다.
+        _attach_pending_order_ctx(state, signal_id, _tw2_3slot_retry_ctx(
+            session=(slot_metrics.get("session") or time_window_filter.session_for_window(
+                time_window_filter.classify_window(macd_snap.bar_dt.astimezone(KST).time()))),
+            sizing=_sizing, presized_chop=_presized_chop,
+            signal_detected_at=signal_detected_at, flag_bar_dt=flag_bar_dt,
+        ))
     return outcome
 
 
@@ -5648,6 +5685,33 @@ def _tw2_3slot_retry_ctx(*, session, sizing, presized_chop, signal_detected_at: 
     }
 
 
+def _attach_pending_order_ctx(state: RuntimeState, signal_id: str, ctx: Optional[dict[str, Any]], *,
+                              sizing=None, boost=None) -> bool:
+    """미확정 매수주문(pending_buy_order)에 3-SLOT 진입 문맥을 싣는다 (2026-10-27).
+
+    취소 미확인(BUY_CANCEL_NOT_CONFIRMED)으로 끝난 진입은 늦은 체결이
+    ``_pending_apply_new_position`` 에서 포지션을 세운다. 그 경로가 문맥 없이
+    ``_apply_switch_outcome`` 만 타면 P3 스냅샷(B3 ownership) / epoch / 슬롯·오전오후
+    카운트 / W1a 노출이 전부 빠진다 -- 2026-09-29 재시도 체결 사고와 같은 유형이다.
+
+    ``sizing`` / ``boost`` 는 **실제 주문에 쓴** 값이다(재시도·E 돌파는 최초 문맥의
+    배수를 다시 자른다). 이미 체결분이 기록된 주문(EXECUTED + 잔량 미확인)은 최초
+    체결이 후처리를 끝냈으므로 싣지 않는다. 실었으면 True.
+    """
+    p = pending_order.get(state)
+    if not p or not ctx or str(p.get("signal_id") or "") != str(signal_id or ""):
+        return False
+    if int(p.get("recorded_qty") or 0) > 0:
+        return False
+    ctx = dict(ctx)
+    if sizing is not None:
+        ctx["sizing"] = dataclasses.asdict(sizing)
+    if boost is not None:
+        ctx["e_boost"] = dataclasses.asdict(boost)
+    p["tw2_3slot_ctx"] = ctx
+    return True
+
+
 def _tw2_3slot_retry_sizing(state: RuntimeState, ctx: dict[str, Any]):
     """재시도 시점의 사이징. 최초 판정의 배수(clip 후)를 쓰되 **지금의** 일일
     노출 잔여(room)로 다시 자른다 -- 그 사이 노출이 쓰였다면 3.0 을 넘지 않는다."""
@@ -5723,6 +5787,8 @@ def _retry_pending_signal(
     # 2026-10-02: FAILED + pending(반전 매도 체결확인 조회 실패)도 포함한다.
     if state.pending_signal and state.pending_signal.get("signal_id") == signal_id:
         state.pending_signal["tw2_3slot_ctx"] = ctx
+    # 2026-10-27: 재시도 주문이 미확정 매수주문이 됐으면 늦은 체결도 같은 후처리를 탄다.
+    _attach_pending_order_ctx(state, signal_id, ctx, sizing=sizing)
     if outcome is None:
         return None
     _record_signal_ledger(state, macd_snap, pending_dir, signal_type, signal_id,
