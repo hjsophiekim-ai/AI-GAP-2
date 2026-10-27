@@ -4882,6 +4882,39 @@ def _mu_cttr_teg_override(state: RuntimeState, signal_id: str, direction: Direct
     return True
 
 
+#: MU Assist XS 가 풀어주는 TEG 사유 -- EMA stack / VWAP / 시간성. gap·spread·tw2_confirmed 사유는 그대로 거절.
+_MU_XS_OVERRIDABLE_TEG = frozenset({teg_gate.COND_RECENT_CROSS, teg_gate.COND_MIN_INTERVAL,
+                                    teg_gate.COND_EMA_STACK, teg_gate.COND_VWAP})
+#: MU Assist XS 가 풀어주는 TW2 추가 veto.
+_MU_XS_OVERRIDABLE_TW2_VETO = frozenset({config.TW2_REJECT_VWAP_VETO, config.TW2_REJECT_RECENT_CROSSES})
+
+
+def _mu_xs_strong(state: RuntimeState, signal_id: str, direction: Direction, now: datetime) -> Optional[dict]:
+    """MU Assist XS: 이 T+3 후보가 STRONG(체결강도 방향일치 ∧ MU ENTRY_CONFIRM) 인가. 맞으면 체결강도 판정 dict,
+    아니면 None. 토글 OFF·MU Assist OFF·MU 기록 없음·체결강도 판정 불가는 전부 None(= 기존 전략 그대로)."""
+    if not mu_assist.xs_enabled(state):
+        return None
+    if mu_assist.entry_status_for(signal_id) != mu_assist.ENTRY_CONFIRM:
+        return None
+    cs = exec_strength.evaluate(direction, now)
+    return cs if cs["state"] == exec_strength.MATCH else None
+
+
+def _mu_xs_teg_override(state: RuntimeState, signal_id: str, direction: Direction, now: datetime,
+                        reject_reasons, slot_metrics: dict) -> bool:
+    """MU Assist XS: TEG 거절 사유가 전부 EMA/VWAP/시간성 계열이고 STRONG 이면 그 거절을 푼다."""
+    reasons = set(reject_reasons or ())
+    if not reasons or not reasons <= _MU_XS_OVERRIDABLE_TEG:
+        return False
+    cs = _mu_xs_strong(state, signal_id, direction, now)
+    if cs is None:
+        return False
+    slot_metrics["mu_xs_teg_override"] = sorted(reasons)
+    slot_metrics["mu_cttr"] = cs["cttr"]
+    logger.info("[MACD2][MU_XS] STRONG TEG 통과 %s 사유=%s cttr=%.2f", signal_id, sorted(reasons), cs["cttr"])
+    return True
+
+
 def _mu_cttr_mismatch_veto(signal_id: str, direction: Direction, now: datetime) -> Optional[str]:
     """MISMATCH_VETO: 체결강도 불일치 ∧ MU 패턴 STALL/DIVERGE 면 차단 사유. 그 외(판정 불가 포함)는 None."""
     if mu_assist.entry_pattern_for(signal_id) not in (mu_assist.PATTERN_STALL, mu_assist.PATTERN_DIVERGE):
@@ -4954,6 +4987,11 @@ def _resolve_tw2_3slot_candidate_body(
     tw2_cleared = bool(base_decision.approved or window_blocked_by_morning_only)
     if tw2_cleared:
         vetoed, veto_reason = time_window_filter.evaluate_tw2_extra_vetoes(bars_3m, direction, flag_bar_dt, now)
+        if vetoed and veto_reason in _MU_XS_OVERRIDABLE_TW2_VETO:
+            _xs = _mu_xs_strong(state, signal_id, direction, now)
+            if _xs is not None:
+                logger.info("[MACD2][MU_XS] STRONG TW2 veto 통과 %s 사유=%s cttr=%.2f", signal_id, veto_reason, _xs["cttr"])
+                vetoed = False
         if vetoed:
             tw2_cleared = False
             base_decision = dataclasses.replace(base_decision, approved=False, decision=veto_reason, block_reason=veto_reason)
@@ -5083,8 +5121,9 @@ def _resolve_tw2_3slot_candidate_body(
             teg_decision = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
             slot_metrics["teg_approved"] = bool(teg_decision.approved)
             slot_metrics["teg_reject_reasons"] = list(teg_decision.reject_reasons or [])
-            if teg_decision.approved or _mu_cttr_teg_override(
-                    state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics):
+            if (teg_decision.approved
+                    or _mu_cttr_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics)
+                    or _mu_xs_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics)):
                 final_approved = True
                 final_decision_label = config.TW_APPROVED
                 final_block_reason = None
@@ -5134,8 +5173,9 @@ def _resolve_tw2_3slot_candidate_body(
                 slot_metrics["tw_teg_chop_teg_reject_reasons"] = list(
                     chop_teg.reject_reasons or []
                 )
-                if not chop_teg.approved and not _mu_cttr_teg_override(
-                        state, signal_id, direction, now, chop_teg.reject_reasons, slot_metrics):
+                if (not chop_teg.approved
+                        and not _mu_cttr_teg_override(state, signal_id, direction, now, chop_teg.reject_reasons, slot_metrics)
+                        and not _mu_xs_teg_override(state, signal_id, direction, now, chop_teg.reject_reasons, slot_metrics)):
                     final_approved = False
                     final_block_reason = config.TW_TEG_3SLOT_REJECT_CHOP_TEG
                     final_decision_label = config.TW_TEG_3SLOT_REJECT_CHOP_TEG

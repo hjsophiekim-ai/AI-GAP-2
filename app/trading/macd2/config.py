@@ -1542,9 +1542,19 @@ MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
 MU_CTTR_MATCH_OVERRIDE = _env_bool("MACD2_MU_CTTR_MATCH_OVERRIDE", False)
 MU_CTTR_MISMATCH_VETO = _env_bool("MACD2_MU_CTTR_MISMATCH_VETO", False)
 MU_EXIT_REENTRY = _env_bool("MACD2_MU_EXIT_REENTRY", False)
-EXEC_STRENGTH_DATA_DIR = (os.environ.get("MACD2_EXEC_STRENGTH_DATA_DIR") or os.environ.get("KIS_LOGGER_DATA_DIR")
-                          or "")
+EXEC_STRENGTH_DATA_DIR = (os.environ.get("MACD2_EXEC_STRENGTH_DATA_DIR") or os.environ.get("MACD2_MU_ASSIST_DATA_DIR")
+                          or os.environ.get("KIS_LOGGER_DATA_DIR") or "")
 MU_CTTR_MISMATCH_VETO_BLOCK_REASON = "MU_CTTR_MISMATCH_VETO"
+
+# ── MU Assist XS (2026-10-27, STRONG 후보 우선 통과) — MU Assist 의 하위 토글, 기본 OFF ──
+# STRONG = 체결강도 방향일치(exec_strength, 기준 100 고정) ∧ MU ENTRY_CONFIRM(= MU CONFIRM ∧ 하이닉스 gap EXPAND).
+# STRONG 후보만 아래 '보수적 거절'을 통과시킨다:
+#   · TW2 추가 veto (TW2_REJECT_VWAP_VETO / TW2_REJECT_RECENT_CROSSES)
+#   · TEG 거절 중 EMA stack / VWAP / recent_cross / 9분 반대플래그 사유뿐인 경우 (오후 슬롯 TEG, CHOP TEG 둘 다)
+# 그대로 유지: 오전 왕복장 차단, 슬롯·하루 진입한도, 시간창, MU ENTRY_BAD, gap/spread TEG 조건, TP/SL.
+# 체결강도·MU 판정 불가면 STRONG 아님(= 기존 전략 그대로). MU Assist 가 OFF 면 이 토글도 효력 없음.
+# 실제 ON/OFF = state.mu_assist_xs_enabled(UI 저장값). 저장값이 없을 때만 env 기본값.
+MU_ASSIST_XS_ENABLED = _env_bool("MACD2_MU_ASSIST_XS_ENABLED", False)
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
 EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"
 EXIT_TW_TP2_FULL = "TIME_WINDOW_TP2_FULL"

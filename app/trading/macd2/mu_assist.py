@@ -107,6 +107,16 @@ def is_enabled(state: Any = None) -> bool:
     return bool(config.MU_ASSIST_ENABLED)
 
 
+def xs_enabled(state: Any = None) -> bool:
+    """MU Assist XS (STRONG 우선 통과, 2026-10-27) 가 실제로 동작하는가 -- MU Assist 자체가 켜져 있어야 한다.
+    기준은 UI 저장값 state.mu_assist_xs_enabled, state 가 없으면 env 기본값."""
+    if not is_enabled(state):
+        return False
+    if state is not None and hasattr(state, "mu_assist_xs_enabled"):
+        return bool(state.mu_assist_xs_enabled)
+    return bool(config.MU_ASSIST_XS_ENABLED)
+
+
 LIVE_OK = "LIVE"
 LIVE_STALE = "STALE"
 LIVE_NO_DATA = "NO_DATA"

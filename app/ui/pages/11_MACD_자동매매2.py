@@ -1375,6 +1375,45 @@ if _mua_pick != _mua_now:
     service.set_mu_assist_enabled(_mua_pick, changed_by="ui")
     st.rerun()
 
+# ── MU ASSIST XS (2026-10-27) — MU Assist 바로 아래 하위 토글 ─────────────────
+# STRONG(체결강도 방향일치 + MU CONFIRM + 하이닉스 gap EXPAND) 후보만 보수적 거절을 통과시킨다.
+# MU Assist 가 OFF 면 효력이 없으므로 토글도 잠근다(저장값은 유지).
+_muxs_now = bool(getattr(state, "mu_assist_xs_enabled", False))
+with _stm_cols[0]:
+    _muxs_pick = st.toggle(
+        "MU Assist XS (STRONG 우선 통과)",
+        value=_muxs_now,
+        key="macd2_mu_assist_xs_toggle",
+        disabled=not _mua_now,
+        help=("MU Assist 의 하위 기능입니다. MU Assist 가 ON 일 때만 동작합니다." + chr(10)
+              + "ON: 하이닉스 체결강도가 진입 방향과 일치(RED >100 / BLUE <100)하고 MU CONFIRM + 하이닉스 gap 확대인 'STRONG' 후보는" + chr(10)
+              + "  · TW2 VWAP veto / 최근교차 veto" + chr(10)
+              + "  · TEG 의 EMA 정렬 / VWAP / 9분 반대플래그 / 최근교차 거절" + chr(10)
+              + "  을 통과합니다. 오전 왕복장 차단 · 슬롯 · 하루 진입한도 · 시간창 · TP/SL 은 그대로입니다." + chr(10)
+              + "  체결강도나 MU 데이터가 없으면 STRONG 이 아니므로 기존 전략 그대로." + chr(10)
+              + "OFF: 기존 MU Assist 그대로 (기본)."),
+    )
+    try:
+        from app.trading.macd2 import exec_strength as _xs_mod
+        _cttr_now = _xs_mod.mean_cttr(datetime.now(macd2_config.KST))
+    except Exception:  # noqa: BLE001 -- 표시 전용
+        _cttr_now = None
+    _cttr_txt = ("하이닉스 체결강도(직전 60초) " + (f"{_cttr_now:.1f}" if _cttr_now is not None else "없음")
+                 + (" → RED 일치" if _cttr_now is not None and _cttr_now > 100 else
+                    " → BLUE 일치" if _cttr_now is not None and _cttr_now < 100 else ""))
+    if not _mua_now:
+        st.caption("MU Assist XS: MU Assist 가 OFF 라 효력 없음 · " + _cttr_txt)
+    elif _muxs_now:
+        st.markdown("**MU Assist XS: 🟢 ON** — " + _cttr_txt)
+        if _cttr_now is None:
+            st.warning("체결강도 데이터가 없습니다 — STRONG 판정이 안 되므로 XS 는 기존 전략 그대로 동작합니다. "
+                       "로거 스냅샷(snapshots/<날짜>/000660.csv) 폴더를 확인하세요.")
+    else:
+        st.caption("MU Assist XS: OFF — " + _cttr_txt)
+if _mua_now and _muxs_pick != _muxs_now:
+    service.set_mu_assist_xs_enabled(_muxs_pick, changed_by="ui")
+    st.rerun()
+
 # ── E 하루 최대 2회 토글 (2026-10-06) ──────────────────────────────────────
 # E 를 골랐을 때만 보인다. 켜면 E 의 하루 신규진입 한도가 3 -> 2 (3번째 신규진입만
 # 막힌다). 진입/폐기/RS/청산 로직은 그대로다. N1/P3 에서는 효력이 없다.
