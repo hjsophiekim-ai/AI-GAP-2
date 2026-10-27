@@ -997,6 +997,10 @@ class RuntimeState:
     mu_assist_enabled: bool = False
     mu_assist_changed_at: Optional[str] = None
     mu_assist_changed_by: Optional[str] = None
+    # MU Assist XS (2026-10-27) — MU Assist 하위 토글. STRONG 후보 우선 통과. 기본 OFF.
+    mu_assist_xs_enabled: bool = False
+    mu_assist_xs_changed_at: Optional[str] = None
+    mu_assist_xs_changed_by: Optional[str] = None
 
     # ── 미확정 매수주문 추적 (2026-10-16, app/trading/macd2/pending_order.py) ──
     # BUY_CANCEL_NOT_CONFIRMED 주문(주문번호/종목/수량/가격/신호시각/추적상태). None 이면 기존 동작과 동일.

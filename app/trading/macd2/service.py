@@ -1397,6 +1397,25 @@ class Macd2Service:
         return {"ok": True, "mu_assist_enabled": bool(state.mu_assist_enabled), "previous": prev,
                 "changed_at": state.mu_assist_changed_at}
 
+    def set_mu_assist_xs_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
+        """UI command: MU Assist XS 토글 (2026-10-27, STRONG 후보 우선 통과).
+
+        ON + MU Assist ON 일 때만 동작: 체결강도 방향일치 ∧ MU ENTRY_CONFIRM(STRONG) 후보는
+        TW2 VWAP/최근교차 veto 와 TEG 의 EMA/VWAP/시간성 거절을 통과한다. 슬롯·시간창·오전 왕복장 차단·TP/SL 은 그대로.
+        주문을 내지 않는다 -- 다음 tick 부터 적용. MU Assist 토글 값은 건드리지 않고 값은 저장된다.
+        """
+        state = state_store.load_state()
+        prev = bool(getattr(state, "mu_assist_xs_enabled", False))
+        state.mu_assist_xs_enabled = bool(enabled)
+        state.mu_assist_xs_changed_at = datetime.now(KST).isoformat()
+        state.mu_assist_xs_changed_by = str(changed_by or "ui")
+        state_store.save_state(state)
+        log.warning("[MACD2][MU_XS] 토글 %s -> %s (by=%s, mu_assist=%s, mode=%s)",
+                    "ON" if prev else "OFF", "ON" if state.mu_assist_xs_enabled else "OFF",
+                    changed_by, "ON" if mu_assist_mod.is_enabled(state) else "OFF", strategy_mode_mod.current(state))
+        return {"ok": True, "mu_assist_xs_enabled": bool(state.mu_assist_xs_enabled), "previous": prev,
+                "changed_at": state.mu_assist_xs_changed_at}
+
     def set_fixed_exit_15_enabled(self, enabled: bool, *, changed_by: str = "ui") -> dict[str, Any]:
         """UI command: 고정 ±1.5% 청산 토글 (2026-10-15, fixed_exit.py).
 

@@ -107,6 +107,16 @@ def is_enabled(state: Any = None) -> bool:
     return bool(config.MU_ASSIST_ENABLED)
 
 
+def xs_enabled(state: Any = None) -> bool:
+    """MU Assist XS (STRONG 우선 통과, 2026-10-27) 가 실제로 동작하는가 -- MU Assist 자체가 켜져 있어야 한다.
+    기준은 UI 저장값 state.mu_assist_xs_enabled, state 가 없으면 env 기본값."""
+    if not is_enabled(state):
+        return False
+    if state is not None and hasattr(state, "mu_assist_xs_enabled"):
+        return bool(state.mu_assist_xs_enabled)
+    return bool(config.MU_ASSIST_XS_ENABLED)
+
+
 LIVE_OK = "LIVE"
 LIVE_STALE = "STALE"
 LIVE_NO_DATA = "NO_DATA"
@@ -399,6 +409,15 @@ def entry_status_for(signal_id: str) -> str:
             if row.get("kind") == KIND_ENTRY and row.get("signal_id") == signal_id:
                 _ENTRY_STATUS[key] = row.get("mu_entry_assist_status") or ""
                 return _ENTRY_STATUS[key]
+    return ""
+
+
+def entry_pattern_for(signal_id: str) -> str:
+    """T+2 에 기록한 MU 패턴(CONFIRM/STALL/DIVERGE/UNAVAILABLE). 기록이 없으면 ''. (체결강도 결합용, 2026-10-26)"""
+    with _LOCK:
+        for row in _load_rows():
+            if row.get("kind") == KIND_ENTRY and row.get("signal_id") == signal_id:
+                return row.get("mu_pattern_state") or ""
     return ""
 
 

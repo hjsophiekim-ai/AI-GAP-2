@@ -57,6 +57,7 @@ from app.trading.macd2 import (
     e_strategy,
     early_take_profit,
     entry_arming,
+    exec_strength,
     fixed_exit,
     peak_protection,
     n1_adaptive,
@@ -4856,6 +4857,90 @@ def _resolve_tw2_3slot_candidate(
         return None
 
 
+# ── MU Assist × 체결강도 (2026-10-26, feature/macd2-mu-cttr-assist, 전부 기본 OFF) ──────────
+#: TEG 사유 중 '시간성/최근교차' 계열만 조건부 완화 대상이다. EMA stack / VWAP / gap / spread / tw2 는 제외.
+_MU_CTTR_OVERRIDABLE_TEG = frozenset({teg_gate.COND_RECENT_CROSS, teg_gate.COND_MIN_INTERVAL})
+
+
+def _mu_cttr_teg_override(state: RuntimeState, signal_id: str, direction: Direction, now: datetime,
+                          reject_reasons, slot_metrics: dict) -> bool:
+    """TEG 거절을 풀어도 되는가 (MATCH_OVERRIDE). 사유가 전부 시간성/최근교차 계열 ∧ 체결강도 방향일치
+    ∧ MU ENTRY_CONFIRM(= MU CONFIRM ∧ HY EXPAND) 일 때만 True. 그 외(판정 불가 포함)는 False = 기존 거절."""
+    reasons = set(reject_reasons or ())
+    if not (config.MU_CTTR_MATCH_OVERRIDE and mu_assist.is_enabled(state)) or not reasons:
+        return False
+    if not reasons <= _MU_CTTR_OVERRIDABLE_TEG:
+        return False
+    if mu_assist.entry_status_for(signal_id) != mu_assist.ENTRY_CONFIRM:
+        return False
+    cs = exec_strength.evaluate(direction, now)
+    slot_metrics["mu_cttr"] = cs["cttr"]
+    if cs["state"] != exec_strength.MATCH:
+        return False
+    slot_metrics["mu_cttr_teg_override"] = sorted(reasons)
+    logger.info("[MACD2][MU_CTTR] TEG 완화 %s 사유=%s cttr=%.2f", signal_id, sorted(reasons), cs["cttr"])
+    return True
+
+
+#: MU Assist XS 가 풀어주는 TEG 사유 -- EMA stack / VWAP / 시간성. gap·spread·tw2_confirmed 사유는 그대로 거절.
+_MU_XS_OVERRIDABLE_TEG = frozenset({teg_gate.COND_RECENT_CROSS, teg_gate.COND_MIN_INTERVAL,
+                                    teg_gate.COND_EMA_STACK, teg_gate.COND_VWAP})
+#: MU Assist XS 가 풀어주는 TW2 추가 veto.
+_MU_XS_OVERRIDABLE_TW2_VETO = frozenset({config.TW2_REJECT_VWAP_VETO, config.TW2_REJECT_RECENT_CROSSES})
+
+
+def _mu_xs_strong(state: RuntimeState, signal_id: str, direction: Direction, now: datetime) -> Optional[dict]:
+    """MU Assist XS: 이 T+3 후보가 STRONG(체결강도 방향일치 ∧ MU ENTRY_CONFIRM) 인가. 맞으면 체결강도 판정 dict,
+    아니면 None. 토글 OFF·MU Assist OFF·MU 기록 없음·체결강도 판정 불가는 전부 None(= 기존 전략 그대로)."""
+    if not mu_assist.xs_enabled(state):
+        return None
+    if mu_assist.entry_status_for(signal_id) != mu_assist.ENTRY_CONFIRM:
+        return None
+    cs = exec_strength.evaluate(direction, now)
+    return cs if cs["state"] == exec_strength.MATCH else None
+
+
+def _mu_xs_teg_override(state: RuntimeState, signal_id: str, direction: Direction, now: datetime,
+                        reject_reasons, slot_metrics: dict) -> bool:
+    """MU Assist XS: TEG 거절 사유가 전부 EMA/VWAP/시간성 계열이고 STRONG 이면 그 거절을 푼다."""
+    reasons = set(reject_reasons or ())
+    if not reasons or not reasons <= _MU_XS_OVERRIDABLE_TEG:
+        return False
+    cs = _mu_xs_strong(state, signal_id, direction, now)
+    if cs is None:
+        return False
+    slot_metrics["mu_xs_teg_override"] = sorted(reasons)
+    slot_metrics["mu_cttr"] = cs["cttr"]
+    logger.info("[MACD2][MU_XS] STRONG TEG 통과 %s 사유=%s cttr=%.2f", signal_id, sorted(reasons), cs["cttr"])
+    return True
+
+
+def _mu_cttr_mismatch_veto(signal_id: str, direction: Direction, now: datetime) -> Optional[str]:
+    """MISMATCH_VETO: 체결강도 불일치 ∧ MU 패턴 STALL/DIVERGE 면 차단 사유. 그 외(판정 불가 포함)는 None."""
+    if mu_assist.entry_pattern_for(signal_id) not in (mu_assist.PATTERN_STALL, mu_assist.PATTERN_DIVERGE):
+        return None
+    cs = exec_strength.evaluate(direction, now)
+    if cs["state"] != exec_strength.MISMATCH:
+        return None
+    logger.info("[MACD2][MU_CTTR] 불일치+MU 약함 차단 %s cttr=%.2f", signal_id, cs["cttr"])
+    return config.MU_CTTR_MISMATCH_VETO_BLOCK_REASON
+
+
+def _mu_exit_reentry_allowed(signal_id: str, direction: Direction, now: datetime) -> bool:
+    """EXIT_REENTRY: MU 조기청산 플래그의 반대 신규진입 허용 여부. 토글 OFF 면 False(= 기존 NO_REENTRY).
+    체결강도 일치 ∨ MU ENTRY_CONFIRM 이면 True -- 이후 slot/TEG/CHOP 게이트는 그대로 탄다."""
+    if not config.MU_EXIT_REENTRY:
+        return False
+    if mu_assist.entry_status_for(signal_id) == mu_assist.ENTRY_CONFIRM:
+        logger.info("[MACD2][MU_CTTR] 조기청산 후 재진입 허용(MU CONFIRM) %s", signal_id)
+        return True
+    cs = exec_strength.evaluate(direction, now)
+    if cs["state"] == exec_strength.MATCH:
+        logger.info("[MACD2][MU_CTTR] 조기청산 후 재진입 허용(체결강도 일치) %s cttr=%.2f", signal_id, cs["cttr"])
+        return True
+    return False
+
+
 def _resolve_tw2_3slot_candidate_body(
     *,
     broker,
@@ -4902,6 +4987,11 @@ def _resolve_tw2_3slot_candidate_body(
     tw2_cleared = bool(base_decision.approved or window_blocked_by_morning_only)
     if tw2_cleared:
         vetoed, veto_reason = time_window_filter.evaluate_tw2_extra_vetoes(bars_3m, direction, flag_bar_dt, now)
+        if vetoed and veto_reason in _MU_XS_OVERRIDABLE_TW2_VETO:
+            _xs = _mu_xs_strong(state, signal_id, direction, now)
+            if _xs is not None:
+                logger.info("[MACD2][MU_XS] STRONG TW2 veto 통과 %s 사유=%s cttr=%.2f", signal_id, veto_reason, _xs["cttr"])
+                vetoed = False
         if vetoed:
             tw2_cleared = False
             base_decision = dataclasses.replace(base_decision, approved=False, decision=veto_reason, block_reason=veto_reason)
@@ -4929,7 +5019,8 @@ def _resolve_tw2_3slot_candidate_body(
     # ── MU ASSIST: H50 gap 조기청산 직후의 반대 신규진입 금지 (2026-10-22) ──
     # 이 플래그로 T+2 에 이미 청산했으면 T+3 승인이어도 반대 ETF 를 사지 않는다.
     # 슬롯 판정 앞이라 슬롯을 소비하지 않는다. 토글 OFF 면 is_enabled 에서 끝난다.
-    if tw2_cleared and mu_assist.is_enabled(state) and mu_assist.exited_on_flag(flag_bar_dt, direction):
+    if (tw2_cleared and mu_assist.is_enabled(state) and mu_assist.exited_on_flag(flag_bar_dt, direction)
+            and not _mu_exit_reentry_allowed(signal_id, direction, now)):
         tw2_cleared = False
         final_block_reason = config.MU_ASSIST_NO_REENTRY_BLOCK_REASON
         final_decision_label = config.MU_ASSIST_NO_REENTRY_BLOCK_REASON
@@ -4951,6 +5042,18 @@ def _resolve_tw2_3slot_candidate_body(
             final_decision_label = _mu_veto
             base_decision = dataclasses.replace(
                 base_decision, approved=False, decision=_mu_veto, block_reason=_mu_veto,
+            )
+
+    # ── MU × 체결강도: 불일치 ∧ MU STALL/DIVERGE 일 때만 차단 (2026-10-26, 기본 OFF) ──
+    # 체결강도 불일치 하나만으로는 막지 않는다. MU 기록 없음/판정 불가·체결강도 판정 불가면 그대로 진행.
+    if tw2_cleared and config.MU_CTTR_MISMATCH_VETO and mu_assist.is_enabled(state):
+        _cv = _mu_cttr_mismatch_veto(signal_id, direction, now)
+        if _cv:
+            tw2_cleared = False
+            final_block_reason = _cv
+            final_decision_label = _cv
+            base_decision = dataclasses.replace(
+                base_decision, approved=False, decision=_cv, block_reason=_cv,
             )
 
     if tw2_cleared:
@@ -5018,7 +5121,9 @@ def _resolve_tw2_3slot_candidate_body(
             teg_decision = teg_gate.evaluate_teg(bars_3m, direction, flag_bar_dt, now)
             slot_metrics["teg_approved"] = bool(teg_decision.approved)
             slot_metrics["teg_reject_reasons"] = list(teg_decision.reject_reasons or [])
-            if teg_decision.approved:
+            if (teg_decision.approved
+                    or _mu_cttr_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics)
+                    or _mu_xs_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics)):
                 final_approved = True
                 final_decision_label = config.TW_APPROVED
                 final_block_reason = None
@@ -5068,7 +5173,9 @@ def _resolve_tw2_3slot_candidate_body(
                 slot_metrics["tw_teg_chop_teg_reject_reasons"] = list(
                     chop_teg.reject_reasons or []
                 )
-                if not chop_teg.approved:
+                if (not chop_teg.approved
+                        and not _mu_cttr_teg_override(state, signal_id, direction, now, chop_teg.reject_reasons, slot_metrics)
+                        and not _mu_xs_teg_override(state, signal_id, direction, now, chop_teg.reject_reasons, slot_metrics)):
                     final_approved = False
                     final_block_reason = config.TW_TEG_3SLOT_REJECT_CHOP_TEG
                     final_decision_label = config.TW_TEG_3SLOT_REJECT_CHOP_TEG
