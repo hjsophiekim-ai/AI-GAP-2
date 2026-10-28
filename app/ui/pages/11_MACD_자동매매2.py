@@ -1414,6 +1414,42 @@ if _mua_now and _muxs_pick != _muxs_now:
     service.set_mu_assist_xs_enabled(_muxs_pick, changed_by="ui")
     st.rerun()
 
+# ── T2 SHADOW (2026-10-28) — STRONG 후보 T+2 가상 조기진입 기록, 표시 전용 ──────────────
+# 주문/진입 판단과 무관하다(app/trading/macd2/t2_shadow.py). 판정 기준 충족 전 production ON 금지.
+if _mua_now:
+    try:
+        from app.trading.macd2 import t2_shadow as _t2s
+        _t2_rows = _t2s.rows()
+        _t2_sum = _t2s.summary(_t2_rows)
+    except Exception:  # noqa: BLE001 -- 표시 전용
+        _t2_rows, _t2_sum = [], None
+    if _t2_sum is not None:
+        with st.expander(f"T2 SHADOW (기록 전용 · 주문 무관) — PASS {_t2_sum['pass']}건 / 플래그 {_t2_sum['flags']}건 · "
+                         f"{_t2_sum['days']}영업일" + (" · 재검증 가능" if _t2_sum["ready_for_review"] else
+                                                     f" · 재검증 기준 {macd2_config.T2_SHADOW_REVIEW_MIN_DAYS}영업일 또는 "
+                                                     f"PASS {macd2_config.T2_SHADOW_REVIEW_MIN_PASS}건")):
+            st.caption("STRONG(체결강도 일치 ∧ MU CONFIRM ∧ HY gap EXPAND) 후보를 T+2 에 샀다고 가정한 가상 기록입니다. "
+                       "실제 주문은 T+3 그대로입니다. T2_vs_T3_DELTA 양수 = T+3 가 더 비싸게 샀음(T+2 유리).")
+            st.markdown(
+                f"T+3 체결 비교 {_t2_sum['t3_filled']}건: T+2 유리 {_t2_sum['t2_better']} / 불리 {_t2_sum['t2_worse']} · "
+                f"평균 Δ {_t2_sum['avg_delta_bp'] if _t2_sum['avg_delta_bp'] is not None else '-'}bp · "
+                f"휩쏘(T+3 확인 실패) {_t2_sum['whipsaw']}건(+1.5 먼저 {_t2_sum['whipsaw_tp']} / −1.0 먼저 {_t2_sum['whipsaw_sl']}, "
+                f"추가 {_t2_sum['whipsaw_added_pct']:+.1f}% / {_t2_sum['whipsaw_loss_pct']:+.1f}%) · "
+                f"게이트 차단(T+2 도 불가) {_t2_sum['pass_gate_blocked']}건 · "
+                f"가상 +1.5 {_t2_sum['hit_tp']} / −1.0 {_t2_sum['hit_sl']} / 미도달 {_t2_sum['hit_none']} · "
+                f"가상 합계 {_t2_sum['virtual_total_pct']:+.2f}% PF {_t2_sum['virtual_pf'] if _t2_sum['virtual_pf'] is not None else '-'} "
+                f"MDD {_t2_sum['virtual_mdd_pct']:+.2f}% · 상위2건 제외 "
+                f"{_t2_sum['total_ex_top2_pct'] if _t2_sum['total_ex_top2_pct'] is not None else '-'}%")
+            if _t2_rows:
+                _t2_cols = ["trading_date", "flag_bar_at", "direction", "T2_SHADOW", "mu_status", "cttr_state", "t2_at",
+                            "T2_ENTRY_PRICE", "t3_result", "t3_reason", "t3_at", "T3_ENTRY_PRICE", "T2_vs_T3_DELTA_BP",
+                            "T2_WHIPSAW", "t3_block_kind", "first_hit", "first_hit_at", "mfe_pct", "mae_pct"]
+                _t2_df = pd.DataFrame(_t2_rows)
+                _t2_df = _t2_df[[c for c in _t2_cols if c in _t2_df.columns]].iloc[::-1]
+                st.dataframe(_t2_df, use_container_width=True, hide_index=True, height=240)
+                st.download_button("T2 SHADOW CSV", _t2_df.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="macd2_t2_shadow.csv", mime="text/csv", key="macd2_t2_shadow_csv")
+
 # ── E 하루 최대 2회 토글 (2026-10-06) ──────────────────────────────────────
 # E 를 골랐을 때만 보인다. 켜면 E 의 하루 신규진입 한도가 3 -> 2 (3번째 신규진입만
 # 막힌다). 진입/폐기/RS/청산 로직은 그대로다. N1/P3 에서는 효력이 없다.

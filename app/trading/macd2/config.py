@@ -1555,6 +1555,13 @@ MU_CTTR_MISMATCH_VETO_BLOCK_REASON = "MU_CTTR_MISMATCH_VETO"
 # 체결강도·MU 판정 불가면 STRONG 아님(= 기존 전략 그대로). MU Assist 가 OFF 면 이 토글도 효력 없음.
 # 실제 ON/OFF = state.mu_assist_xs_enabled(UI 저장값). 저장값이 없을 때만 env 기본값.
 MU_ASSIST_XS_ENABLED = _env_bool("MACD2_MU_ASSIST_XS_ENABLED", False)
+# T2 SHADOW (2026-10-28, 기록 전용 — 주문/진입 판단 무영향): STRONG 후보의 T+2 가상 조기진입을
+# macd2_t2_shadow.json 에 기록한다(app/trading/macd2/t2_shadow.py). MU Assist 가 켜져 있어야 MU 판정이 생긴다.
+# production 조기진입 ON 은 REVIEW_MIN_DAYS 영업일 또는 PASS REVIEW_MIN_PASS 건 누적 후 재검증 전 금지.
+T2_SHADOW_ENABLED = _env_bool("MACD2_T2_SHADOW_ENABLED", True)
+T2_SHADOW_FILENAME = "macd2_t2_shadow.json"
+T2_SHADOW_REVIEW_MIN_DAYS = 20
+T2_SHADOW_REVIEW_MIN_PASS = 20
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
 EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"
 EXIT_TW_TP2_FULL = "TIME_WINDOW_TP2_FULL"

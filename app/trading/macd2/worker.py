@@ -78,6 +78,7 @@ from app.trading.macd2 import (
     smart_sizing,
     state_store,
     strategy_mode,
+    t2_shadow,
     teg_gate,
     time_window_3slot,
     time_window_filter,
@@ -6156,6 +6157,33 @@ def _advance_mu_assist_entry_shadow(*, state: RuntimeState, now: datetime, macd_
                 pattern.get("mu_acc2"), hy_state or "-")
 
 
+def _advance_t2_strong_shadow(*, state: RuntimeState, now: datetime, quotes: dict) -> None:
+    """T2 SHADOW (2026-10-28) — 대기 중인 3-SLOT 후보의 T+2 시점 STRONG 판정과 가상 진입가 기록.
+
+    **기록 전용.** 후보 필드(tw2_3slot_pending_*)와 MU Assist 기록은 읽기만 하고, 주문/슬롯/state 를
+    바꾸지 않는다. MU 진입 계측(_advance_mu_assist_entry_shadow)이 이 플래그를 아직 기록하지 않았거나
+    MU 판정 불가면 다음 tick 에 다시 본다(T+2 창 안에서만)."""
+    if not t2_shadow.is_enabled():
+        return
+    direction = state.tw2_3slot_pending_flag_direction
+    flag_bar_dt = _parse_iso_dt(state.tw2_3slot_pending_flag_bar_ts)
+    if not direction or flag_bar_dt is None or not mu_assist.in_t2_window(flag_bar_dt, now):
+        return
+    direction = Direction(getattr(direction, "value", direction))
+    signal_id = f"{make_signal_id(flag_bar_dt, direction)}:TW2_3SLOT_CONFIRM"
+    status = mu_assist.entry_status_for(signal_id)
+    if not status or status == mu_assist.ENTRY_MU_UNAVAILABLE:
+        return
+    cs = exec_strength.evaluate(direction, now)
+    symbol = order_executor.target_symbol_for_direction(direction)
+    row = t2_shadow.record_t2(signal_id=signal_id, direction=direction, flag_bar_dt=flag_bar_dt, now=now,
+                              mu_status=status, cttr=cs["cttr"], cttr_state=cs["state"], symbol=symbol,
+                              price=quotes.get(symbol))
+    if row is not None:
+        logger.info("[MACD2][T2_SHADOW] %s %s MU=%s cttr=%s T2_ENTRY_PRICE=%s (주문 무관)",
+                    signal_id, row["T2_SHADOW"], status, cs["state"], row["T2_ENTRY_PRICE"])
+
+
 def _advance_mu_assist_h50_gap_exit(
     *, broker, market_data: MarketDataService, state: RuntimeState, now: datetime, macd_snap, bars_3m,
     sig_df_1m, position: Optional[PositionSnapshot], result: TickResult,
@@ -8145,6 +8173,16 @@ def run_once(
                                             bars_3m=bars_3m, sig_df_1m=_sig_df_1m)
         except Exception:
             logger.exception("[MACD2][MU_ASSIST] 진입 보조 계측 실패 -- 기존 로직 그대로")
+        try:
+            _advance_t2_strong_shadow(state=state, now=now, quotes=quotes)
+        except Exception:
+            logger.exception("[MACD2][T2_SHADOW] T+2 가상진입 기록 실패 -- 주문 경로 무영향")
+    # T2 SHADOW 가상 결과 추적(+1.5/−1.0 선도달, MFE/MAE) — 기록 전용, 열린 행이 없으면 파일 읽기 1회.
+    if t2_shadow.is_enabled():
+        try:
+            t2_shadow.update(now, quotes)
+        except Exception:
+            logger.exception("[MACD2][T2_SHADOW] 가상 결과 추적 실패 -- 주문 경로 무영향")
 
     # ── P3 regime + SHADOW-BASE (2026-09-27) — **기록/판정 전용** ────────
     # 주문을 내지 않는다. detector 를 갱신하고 가상 BASE 스트림을 한 tick
@@ -9194,6 +9232,15 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
             row["time_window_confirm_bar_at"] = (_flag_bar + timedelta(minutes=3)).isoformat()
     written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
+    # T2 SHADOW (2026-10-28, 기록 전용): 이 플래그에 T+2 가상진입 기록이 있으면 T+3/E 돌파 결과를 붙인다.
+    if t2_shadow.is_enabled():
+        try:
+            _ts = outcome.timestamps if outcome is not None else {}
+            _at = _parse_iso_dt(_ts.get("buy_requested_at") or "") or detected_at
+            t2_shadow.note_signal_result(signal_id, outcome, _at, order_result=str(row.get("order_result") or ""),
+                                         block_reason=str(row.get("block_reason") or ""))
+        except Exception:
+            logger.exception("[MACD2][T2_SHADOW] T+3 결과 기록 실패 -- 주문 경로 무영향")
 
 
 #: 2026-09-29 신호원장 safety 진단 컬럼 (ledger.SIGNAL_LEDGER_COLUMNS 에도 있다).
