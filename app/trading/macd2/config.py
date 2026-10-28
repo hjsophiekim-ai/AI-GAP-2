@@ -1565,6 +1565,7 @@ T2_SHADOW_REVIEW_MIN_PASS = 20
 # MU CATCH-UP (2026-10-28, 실거래 좁은 예외 — app/trading/macd2/mu_catchup.py). MU Assist 에 내장 — 별도 토글 없이
 # MU Assist 가 켜져 있으면 동작한다(XS 토글과 무관). 임계값은 연구(10/19~10/28)에서 고정한 값이며 최적화하지 않는다.
 # 비상 kill switch: MACD2_MU_CATCHUP_KILL=1 이면 판정조차 하지 않는다(= 기존 production 그대로).
+# 체결강도는 판정조건이 아닌 보조 기록값이다(2026-10-29 — catch-up 구간은 누적 체결강도 < 100 이 자연스럽다).
 MU_CATCHUP_KILL = _env_bool("MACD2_MU_CATCHUP_KILL", False)
 MU_CATCHUP_MU_MIN_PCT = 0.5            # MU 세션(08:00~) 방향수익률 하한
 MU_CATCHUP_GAP_MIN_PCT = 1.0           # MU − 하이닉스 방향괴리 하한(%p)

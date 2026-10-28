@@ -10,8 +10,10 @@ CATCHUP PASS (전부)
   · RED(UP_RED) 플래그, 플래그봉 시작이 09:00~11:00
   · MU 세션 방향수익률 = MU(t)/MU(08:00 기준봉) − 1 ≥ +0.5%
   · MU − 하이닉스 방향괴리 ≥ +1.0%p (하이닉스도 같은 08:00 기준봉)
-  · 체결강도 RED 방향일치 (exec_strength, 판정 시각 직전 60초 평균)
-  · MU/하이닉스/체결강도 모두 fresh — 하나라도 없거나 stale 이면 UNAVAILABLE(= 기존 CHOP 그대로)
+  · MU/하이닉스 모두 fresh — 하나라도 없거나 stale 이면 UNAVAILABLE(= 기존 CHOP 그대로)
+  · 체결강도(exec_strength, 판정 시각 직전 60초 평균)는 **판정에 쓰지 않는 보조값**이다(2026-10-29).
+    catch-up 은 하이닉스 매수세가 붙기 전이라 누적 체결강도 < 100 이 자연스럽다(10/28 09:39: 85.2,
+    100 첫 돌파 09:59:38). 값과 일치여부는 cttr / cttr_match 로 계속 기록한다. XS 는 체결강도 필수 그대로.
   t = 판정 시각, 값은 t 에 **끝난** 1분봉 종가만 쓴다(미래 데이터 금지).
 
 PASS 일 때 worker 가 풀어주는 것은 셋뿐이다:
@@ -97,7 +99,10 @@ def evaluate(direction: Direction, flag_bar_dt: datetime, now: datetime, df_1m,
     mu = mu_series if mu_series is not None else mu_assist.load_mu_1m(now)
     m0, m1, mr = _session_return(mu, day, now_n, config.MU_CATCHUP_MU_MAX_AGE_MIN)
     h0, h1, hr = _session_return(_hy_series(df_1m), day, now_n, config.MU_CATCHUP_HY_MAX_AGE_MIN)
-    cs = cttr if cttr is not None else exec_strength.evaluate(d, now)
+    try:                                    # 보조값 — 조회 실패가 판정을 막지 않는다
+        cs = cttr if cttr is not None else exec_strength.evaluate(d, now)
+    except Exception:  # noqa: BLE001
+        cs = {"cttr": None, "state": exec_strength.UNAVAILABLE}
     out["cttr"] = None if cs.get("cttr") is None else round(float(cs["cttr"]), 2)
     if cs.get("state") != exec_strength.UNAVAILABLE:
         out["cttr_match"] = cs.get("state") == exec_strength.MATCH
@@ -111,8 +116,6 @@ def evaluate(direction: Direction, flag_bar_dt: datetime, now: datetime, df_1m,
         out["reason"] = f"MU_{mr}"; return out
     if hr:
         out["reason"] = f"HY_{hr}"; return out
-    if out["cttr_match"] is None:
-        out["reason"] = "CTTR_UNAVAILABLE"; return out
     fails = []
     if d != Direction.UP_RED:
         fails.append("BLUE_SHADOW_ONLY")
@@ -123,8 +126,6 @@ def evaluate(direction: Direction, flag_bar_dt: datetime, now: datetime, df_1m,
         fails.append("MU_SESSION_LT_0.5")
     if out["mu_hy_gap"] < float(config.MU_CATCHUP_GAP_MIN_PCT):
         fails.append("GAP_LT_1.0")
-    if not out["cttr_match"]:
-        fails.append("CTTR_MISMATCH")
     out["status"] = FAIL if fails else PASS
     out["reason"] = ",".join(fails)
     return out

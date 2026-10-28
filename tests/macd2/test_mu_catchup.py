@@ -1,15 +1,15 @@
 """MU CATCH-UP (2026-10-28) — MU 선행·하이닉스 지연 RED 의 좁은 실거래 예외. 고정하는 계약:
 
   판정(mu_catchup.evaluate)
-    · PASS = RED ∧ 플래그 09:00~11:00 ∧ MU 세션 ≥ +0.5% ∧ MU−HY ≥ +1.0%p ∧ 체결강도 RED 일치
-    · MU/HY stale·세션 기준봉 결측·체결강도 판정불가 = UNAVAILABLE / BLUE 는 값만 계산하고 FAIL(BLUE_SHADOW_ONLY)
+    · PASS = RED ∧ 플래그 09:00~11:00 ∧ MU 세션 ≥ +0.5% ∧ MU−HY ≥ +1.0%p (체결강도는 보조 기록값, 판정 무관)
+    · MU/HY stale·세션 기준봉 결측 = UNAVAILABLE / BLUE 는 값만 계산하고 FAIL(BLUE_SHADOW_ONLY)
     · 판정 시각 이후 분봉은 쓰지 않는다
     · MU Assist 에 내장: MU Assist OFF 또는 MACD2_MU_CATCHUP_KILL 이면 판정하지 않는다(XS 토글과 무관)
   worker (_resolve_tw2_3slot_candidate_body)
     · PASS 일 때만 T+3 확인 2종 / CHOP_MORNING_NO_TRADE / MU 단기 ENTRY_BAD 를 풀고 진입
     · VWAP veto · 슬롯 한도 · 시간창(재판정) 은 PASS 여도 그대로 막는다
     · 신호원장에 mu_catchup_pass·세션값·체결강도·푼 게이트를 남긴다
-  10/28 09:39 RED 실데이터(MU·하이닉스 1분봉) -> PASS (체결강도는 일치 가정, 장후 R2 로 확인)
+  10/28 09:39 RED 실데이터(MU·하이닉스 1분봉 + 실제 체결강도 85.2) -> PASS, cttr_match=False 로 기록
 """
 from __future__ import annotations
 
@@ -66,7 +66,6 @@ def test_pass_when_mu_leads_and_hynix_lags():
 @pytest.mark.parametrize("kw, reason", [
     (dict(mu=_mu(now_val=100.4)), "MU_SESSION_LT_0.5"),                 # MU +0.4%
     (dict(hy=_hy(now_val=1_002_000.0)), "GAP_LT_1.0"),                  # 괴리 0.8%p
-    (dict(cttr=MISMATCH), "CTTR_MISMATCH"),
     (dict(flag=datetime(2026, 10, 28, 11, 0, tzinfo=KST), now=datetime(2026, 10, 28, 11, 6, 5, tzinfo=KST),
           mu=_mu(end="11:05"), hy=_hy(end="11:05")), "OUTSIDE_0900_1100"),
 ])
@@ -87,11 +86,25 @@ def test_blue_is_shadow_only_even_when_values_qualify():
     (dict(mu=_mu(start="08:20")), "MU_SESSION_INCOMPLETE"),
     (dict(hy=_hy(end="09:30")), "HY_STALE"),
     (dict(hy=_hy(start="08:20")), "HY_SESSION_INCOMPLETE"),
-    (dict(cttr=NOCTTR), "CTTR_UNAVAILABLE"),
 ])
 def test_unavailable_falls_back(kw, reason):
     ev = _ev(**kw)
     assert ev["status"] == mu_catchup.UNAVAILABLE and ev["reason"] == reason, ev
+
+
+@pytest.mark.parametrize("cttr, match", [(MISMATCH, False), (NOCTTR, None), (MATCH, True)])
+def test_cttr_is_auxiliary_only(cttr, match):
+    """체결강도는 판정에 쓰지 않는다 — 불일치·판정불가여도 PASS, 값은 그대로 기록."""
+    ev = _ev(cttr=cttr)
+    assert ev["status"] == mu_catchup.PASS and ev["cttr_match"] is match, ev
+
+
+def test_cttr_lookup_error_never_blocks(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("snapshot broken")
+    monkeypatch.setattr(exec_strength, "evaluate", boom)
+    ev = mu_catchup.evaluate(Direction.UP_RED, F, NOW, _hy(), mu_series=_mu())
+    assert ev["status"] == mu_catchup.PASS and ev["cttr_match"] is None
 
 
 def test_no_future_bars_used():
@@ -114,14 +127,15 @@ def test_is_active_follows_mu_assist_not_xs_and_kill(monkeypatch):
 
 def test_anchor_20261028_0939_real_data_passes():
     """10/28 09:39 RED 실데이터: MU(KIS BAQ/NAS 1분봉) +1.19% / 하이닉스(NX) −0.58% → PASS.
-    체결강도는 아직 로컬에 없어 일치로 가정(장후 R2 스냅샷으로 확인할 것)."""
+    실제 체결강도(R2 스냅샷, 09:45 직전 60초) 85.2 = RED 불일치지만 보조값이라 PASS 그대로."""
     here = Path(__file__).with_name("data") / "mu_catchup_20261028.csv"
     raw = pd.read_csv(here, parse_dates=["minute"])
     mu = raw[raw.kind == "MU"].set_index("minute").close
     hy = raw[raw.kind == "HY"].rename(columns={"minute": "datetime"})[["datetime", "close"]]
     hy["datetime"] = hy["datetime"].dt.tz_localize(KST)
-    ev = mu_catchup.evaluate(Direction.UP_RED, F, NOW, hy, mu_series=mu, cttr=MATCH)
-    assert ev["status"] == mu_catchup.PASS, ev
+    real = {"cttr": 85.2, "state": exec_strength.MISMATCH}
+    ev = mu_catchup.evaluate(Direction.UP_RED, F, NOW, hy, mu_series=mu, cttr=real)
+    assert ev["status"] == mu_catchup.PASS and ev["cttr_match"] is False, ev
     assert ev["mu_session_pct"] == pytest.approx(1.19, abs=0.05)
     assert ev["hy_session_pct"] == pytest.approx(-0.58, abs=0.05)
     assert ev["mu_hy_gap"] >= 1.0
