@@ -1555,6 +1555,26 @@ MU_CTTR_MISMATCH_VETO_BLOCK_REASON = "MU_CTTR_MISMATCH_VETO"
 # 체결강도·MU 판정 불가면 STRONG 아님(= 기존 전략 그대로). MU Assist 가 OFF 면 이 토글도 효력 없음.
 # 실제 ON/OFF = state.mu_assist_xs_enabled(UI 저장값). 저장값이 없을 때만 env 기본값.
 MU_ASSIST_XS_ENABLED = _env_bool("MACD2_MU_ASSIST_XS_ENABLED", False)
+# T2 SHADOW (2026-10-28, 기록 전용 — 주문/진입 판단 무영향): STRONG 후보의 T+2 가상 조기진입을
+# macd2_t2_shadow.json 에 기록한다(app/trading/macd2/t2_shadow.py). MU Assist 가 켜져 있어야 MU 판정이 생긴다.
+# production 조기진입 ON 은 REVIEW_MIN_DAYS 영업일 또는 PASS REVIEW_MIN_PASS 건 누적 후 재검증 전 금지.
+T2_SHADOW_ENABLED = _env_bool("MACD2_T2_SHADOW_ENABLED", True)
+T2_SHADOW_FILENAME = "macd2_t2_shadow.json"
+T2_SHADOW_REVIEW_MIN_DAYS = 20
+T2_SHADOW_REVIEW_MIN_PASS = 20
+# MU CATCH-UP (2026-10-28, 실거래 좁은 예외 — app/trading/macd2/mu_catchup.py). MU Assist 에 내장 — 별도 토글 없이
+# MU Assist 가 켜져 있으면 동작한다(XS 토글과 무관). 임계값은 연구(10/19~10/28)에서 고정한 값이며 최적화하지 않는다.
+# 비상 kill switch: MACD2_MU_CATCHUP_KILL=1 이면 판정조차 하지 않는다(= 기존 production 그대로).
+# 체결강도는 판정조건이 아닌 보조 기록값이다(2026-10-29 — catch-up 구간은 누적 체결강도 < 100 이 자연스럽다).
+MU_CATCHUP_KILL = _env_bool("MACD2_MU_CATCHUP_KILL", False)
+MU_CATCHUP_MU_MIN_PCT = 0.5            # MU 세션(08:00~) 방향수익률 하한
+MU_CATCHUP_GAP_MIN_PCT = 1.0           # MU − 하이닉스 방향괴리 하한(%p)
+MU_CATCHUP_WINDOW_START = time(9, 0)   # 플래그봉 시작 시각 기준
+MU_CATCHUP_WINDOW_END = time(11, 0)
+MU_CATCHUP_SESSION_BASE = time(8, 0)   # 세션 기준봉(MU DNAS · 하이닉스 NXT 시작)
+MU_CATCHUP_BASE_MAX_DELAY_MIN = 5      # 기준봉이 08:05 이후에야 있으면 세션 데이터 불완전
+MU_CATCHUP_MU_MAX_AGE_MIN = 3          # MU 최신 완성봉이 이보다 오래되면 stale
+MU_CATCHUP_HY_MAX_AGE_MIN = 3          # 하이닉스 최신 완성봉이 이보다 오래되면 stale
 EXIT_TW_STOP_LOSS = "TIME_WINDOW_STOP_LOSS"
 EXIT_TW_TP1_PARTIAL = "TIME_WINDOW_TP1_PARTIAL"
 EXIT_TW_TP2_FULL = "TIME_WINDOW_TP2_FULL"
