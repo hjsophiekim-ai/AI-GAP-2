@@ -64,6 +64,7 @@ from app.trading.macd2 import (
     ledger,
     major_flag_filter,
     mu_assist,
+    mu_catchup,
     order_executor,
     p3_stack,
     pending_order,
@@ -4929,6 +4930,19 @@ def _mu_xs_strong(state: RuntimeState, signal_id: str, direction: Direction, now
     return cs if cs["state"] == exec_strength.MATCH else None
 
 
+def _mu_catchup_evaluate(state: RuntimeState, direction: Direction, flag_bar_dt: datetime, now: datetime,
+                         df_1m) -> Optional[dict]:
+    """MU CATCH-UP 판정 (2026-10-28). MU Assist OFF·kill switch 면 None(판정 없음 = 기존 그대로).
+    예외가 나도 None 으로 떨어진다 — CATCH-UP 이 없을 뿐 기존 게이트는 그대로 돈다."""
+    if not mu_catchup.is_active(state):
+        return None
+    try:
+        return mu_catchup.evaluate(direction, flag_bar_dt, now, df_1m)
+    except Exception:
+        logger.exception("[MACD2][MU_CATCHUP] 판정 실패 -- 기존 CHOP 로직 그대로")
+        return None
+
+
 def _mu_xs_teg_override(state: RuntimeState, signal_id: str, direction: Direction, now: datetime,
                         reject_reasons, slot_metrics: dict) -> bool:
     """MU Assist XS: TEG 거절 사유가 전부 EMA/VWAP/시간성 계열이고 STRONG 이면 그 거절을 푼다."""
@@ -4991,8 +5005,7 @@ def _resolve_tw2_3slot_candidate_body(
     computing portion is split out so its caller can wrap it in a
     try/except. Pure continuation of the parent function; never meant to be
     called from anywhere else."""
-    base_decision = time_window_filter.evaluate_time_window_entry(
-        bars_3m, direction, flag_bar_dt, now,
+    _tw_entry_kwargs = dict(
         position_direction=_position_direction(position),
         morning_entry_count=0, afternoon_entry_count=0, daily_entry_count=0,
         # N1 (2026-09-20): 이 모드만 창별 quality 기준이 3 이다(연구사양 q3).
@@ -5000,6 +5013,27 @@ def _resolve_tw2_3slot_candidate_body(
         quality_threshold_override=time_window_3slot.quality_score_threshold(
             time_window_3slot.active_3slot_mode(state)),
     )
+    base_decision = time_window_filter.evaluate_time_window_entry(
+        bars_3m, direction, flag_bar_dt, now, **_tw_entry_kwargs,
+    )
+    # ── MU CATCH-UP (2026-10-28) — MU 선행·하이닉스 지연 RED 의 좁은 예외 ─────────
+    # MU Assist 가 꺼져 있거나 kill switch 면 판정 자체를 하지 않는다(= 기존 production 그대로).
+    # PASS 일 때만 아래 세 자리(T+3 확인 2종 / MC-DELAY / MU 단기 ENTRY_BAD)를 풀고, 나머지 게이트는 그대로다.
+    _cu = _mu_catchup_evaluate(state, direction, flag_bar_dt, now, df_1m)
+    _cu_pass = bool(_cu is not None and _cu["status"] == mu_catchup.PASS)
+    _cu_overridden: list[str] = []
+    if _cu is not None:
+        # 신호원장/UI 기록용 — 리스트는 아래 예외가 붙을 때마다 같은 객체에 쌓인다.
+        result.signal_dispatch_trace["mu_catchup"] = {"ev": _cu, "overridden": _cu_overridden}
+    if (_cu_pass and not base_decision.approved
+            and base_decision.block_reason in config.TW_WHIPSAW_REJECT_REASONS):
+        _cu_retry = time_window_filter.evaluate_time_window_entry(
+            bars_3m, direction, flag_bar_dt, now, skip_confirmation_check=True, **_tw_entry_kwargs,
+        )
+        _cu_overridden.append(f"{mu_catchup.GATE_CONFIRMATION}:{base_decision.block_reason}")
+        logger.warning("[MACD2][MU_CATCHUP] %s T+3 확인 %s 예외 -> 재판정 %s", signal_id,
+                       base_decision.block_reason, _cu_retry.block_reason or "APPROVED")
+        base_decision = _cu_retry
     # TW2 3-SLOT never inherits TW_MORNING_ONLY's blanket afternoon block --
     # an afternoon candidate rejected SOLELY by that toggle is still
     # eligible for this mode's own mandatory TW2+TEGv2 dual-gate (mirrors,
@@ -5035,7 +5069,10 @@ def _resolve_tw2_3slot_candidate_body(
     # 슬롯 판정 앞에 두므로 슬롯을 소비하지 않는다(연구사양). 개별 플래그를
     # 3~15분 늦추는 방식이 아니라 구간 no-trade 다.
     # CHOP 모드가 아니면 morning_no_trade 가 즉시 False 라 no-op.
-    if tw2_cleared and chop_defense.morning_no_trade(state, now, df_1m):
+    if tw2_cleared and chop_defense.morning_no_trade(state, now, df_1m) and _cu_pass:
+        _cu_overridden.append(mu_catchup.GATE_MORNING_NO_TRADE)     # MU CATCH-UP 예외 ②
+        logger.warning("[MACD2][MU_CATCHUP] %s CHOP_MORNING_NO_TRADE 예외", signal_id)
+    elif tw2_cleared and chop_defense.morning_no_trade(state, now, df_1m):
         tw2_cleared = False
         final_block_reason = config.CHOP_MC_BLOCK_REASON
         final_decision_label = config.CHOP_MC_BLOCK_REASON
@@ -5065,6 +5102,10 @@ def _resolve_tw2_3slot_candidate_body(
     # 없거나 MU 판정 불가면 막지 않는다(fail-open). 슬롯 판정 앞이라 슬롯을 소비하지 않는다.
     if tw2_cleared and mu_assist.is_enabled(state):
         _mu_veto = mu_assist.entry_veto_reason(signal_id)
+        if _mu_veto and _cu_pass and _mu_veto == config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON:
+            _cu_overridden.append(mu_catchup.GATE_MU_ENTRY_BAD)          # MU CATCH-UP 예외 ③
+            logger.warning("[MACD2][MU_CATCHUP] %s MU 단기 ENTRY_BAD 예외", signal_id)
+            _mu_veto = None
         if _mu_veto:
             tw2_cleared = False
             final_block_reason = _mu_veto
@@ -5286,6 +5327,7 @@ def _resolve_tw2_3slot_candidate_body(
                     "order_result_override": config.H50_HOLD_BLOCK_REASON,
                     "h50_trend": _h50.trend, "h50_range_pct": _h50.range_pct,
                     "major_fields": _entry_gate_ledger_fields(state, decision, "TW2_3SLOT"),
+                    "mu_catchup": result.signal_dispatch_trace.get("mu_catchup"),
                 }
                 h50_outcome = order_executor.ExecutionOutcome(
                     signal_id=signal_id, direction=direction,
@@ -5327,6 +5369,7 @@ def _resolve_tw2_3slot_candidate_body(
                     "final_block_reason": decision.block_reason or decision.decision or "",
                     "order_result_override": "TIME_WINDOW_WHIPSAW_HOLD",
                     "major_fields": _entry_gate_ledger_fields(state, decision, "TW2_3SLOT"),
+                    "mu_catchup": result.signal_dispatch_trace.get("mu_catchup"),
                 }
                 whipsaw_outcome = order_executor.ExecutionOutcome(
                     signal_id=signal_id, direction=direction, target_symbol=target_symbol,
@@ -5363,6 +5406,7 @@ def _resolve_tw2_3slot_candidate_body(
             "final_block_reason": decision.block_reason or decision.decision or "",
             "order_result_override": config.FILTERED_OUT,
             "major_fields": _entry_gate_ledger_fields(state, decision, "TW2_3SLOT"),
+            "mu_catchup": result.signal_dispatch_trace.get("mu_catchup"),
         }
         outcome = order_executor.ExecutionOutcome(
             signal_id=signal_id, direction=direction,
@@ -5543,6 +5587,9 @@ def _resolve_tw2_3slot_candidate_body(
         budget_multiplier=_e_mult, signal_origin_bar_dt=flag_bar_dt,
     )
     result.signal_dispatch_trace["major_fields"] = _entry_gate_ledger_fields(state, decision, "TW2_3SLOT")
+    if _cu is not None:
+        # _execute_or_wait 가 trace 를 새로 만든다 — 체결/주문 결과 행에도 CATCH-UP 근거를 다시 싣는다.
+        result.signal_dispatch_trace["mu_catchup"] = {"ev": _cu, "overridden": _cu_overridden}
     if outcome is None and result.skipped == config.MISSED_SIGNAL_QUOTE_STALE:
         state.tw2_3slot_pending_flag_direction = direction
         state.tw2_3slot_pending_flag_bar_ts = flag_bar_dt.isoformat()
@@ -9230,15 +9277,25 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
             row["signal_confirmed_at"] = (_flag_bar + timedelta(minutes=6)).isoformat()
             row["time_window_flag_bar_at"] = _flag_bar.isoformat()
             row["time_window_confirm_bar_at"] = (_flag_bar + timedelta(minutes=3)).isoformat()
+    _cu_trace = trace.get("mu_catchup") if isinstance(trace.get("mu_catchup"), dict) else None
+    if _cu_trace is not None:
+        # MU CATCH-UP (2026-10-28): 왜 진입(미진입)했는지 — PASS/FAIL/UNAVAILABLE · 세션값 · 체결강도 · 푼 게이트.
+        row.update(mu_catchup.ledger_fields(_cu_trace["ev"], list(_cu_trace["overridden"])))
     written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
+    if _cu_trace is not None:
+        try:
+            mu_catchup.remember_last(signal_id, _cu_trace["ev"], list(_cu_trace["overridden"]))
+        except Exception:
+            logger.exception("[MACD2][MU_CATCHUP] UI 상태 기록 실패 -- 무해")
     # T2 SHADOW (2026-10-28, 기록 전용): 이 플래그에 T+2 가상진입 기록이 있으면 T+3/E 돌파 결과를 붙인다.
     if t2_shadow.is_enabled():
         try:
             _ts = outcome.timestamps if outcome is not None else {}
             _at = _parse_iso_dt(_ts.get("buy_requested_at") or "") or detected_at
             t2_shadow.note_signal_result(signal_id, outcome, _at, order_result=str(row.get("order_result") or ""),
-                                         block_reason=str(row.get("block_reason") or ""))
+                                         block_reason=str(row.get("block_reason") or ""),
+                                         catchup=(_cu_trace or {}).get("ev"))
         except Exception:
             logger.exception("[MACD2][T2_SHADOW] T+3 결과 기록 실패 -- 주문 경로 무영향")
 

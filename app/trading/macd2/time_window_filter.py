@@ -671,6 +671,9 @@ def evaluate_time_window_entry(
     # 호출부는 config.QUALITY_SCORE_THRESHOLD(4) 를 그대로 써서 동작이 조금도
     # 바뀌지 않는다. N1 만 tw3.quality_score_threshold(mode)=3 을 넘긴다.
     quality_threshold_override: Optional[float] = None,
+    # 2026-10-28 (MU CATCH-UP): True 면 T+3 확인 2종(gap_now<=0 = NOT_CONFIRMED / gap 미확대)만 건너뛴다.
+    # 나머지(반대플래그 간격·시간창·W2 reset·품질)는 그대로 판정한다. 기본 False = 기존과 완전히 같다.
+    skip_confirmation_check: bool = False,
 ) -> MajorFlagDecision:
     """Single order-authority decision for the "시간대별 최적거래 필터"
     (§1-10, §15). ``bars_3m`` must be truncated at/through the T+3
@@ -737,13 +740,15 @@ def evaluate_time_window_entry(
         "confirm_bar_at": series["datetime"].iloc[confirm_idx].isoformat(),
     }
 
-    if gap_now <= 0:
+    if skip_confirmation_check:
+        base_metrics["confirmation_check_skipped"] = True
+    elif gap_now <= 0:
         return _reject(
             decision=config.TW_REJECT_NOT_CONFIRMED, block_reason=config.TW_REJECT_NOT_CONFIRMED,
             reasons=["MACD/Signal relationship did not hold 3 minutes after the flag"],
             metrics=base_metrics,
         )
-    if not (gap_now > gap_flag):
+    elif not (gap_now > gap_flag):
         return _reject(
             decision=config.TW_REJECT_MACD_GAP_NOT_EXPANDING, block_reason=config.TW_REJECT_MACD_GAP_NOT_EXPANDING,
             reasons=[f"gap_now {gap_now:.4f} did not exceed gap_flag {gap_flag:.4f}"],

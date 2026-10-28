@@ -115,7 +115,7 @@ def record_t2(*, signal_id: str, direction: Direction, flag_bar_dt: datetime, no
 
 
 def note_signal_result(signal_id: str, outcome, now: datetime, *, order_result: str = "",
-                       block_reason: str = "") -> None:
+                       block_reason: str = "", catchup: Optional[dict] = None) -> None:
     """신호원장 한 행이 기록될 때마다 — 이 플래그의 T+3(또는 E 돌파) 결과를 붙인다.
     ``order_result`` / ``block_reason`` 은 신호원장에 실제로 쓴 값(FILTERED_OUT 은 outcome 이 없다)."""
     from app.trading.macd2.models import SignalState
@@ -135,6 +135,13 @@ def note_signal_result(signal_id: str, outcome, now: datetime, *, order_result: 
         row["t3_result"] = ("E_BRK:" if sid.endswith(":E_BRK") else "") + str(state)
         row["t3_reason"] = block_reason or (str(getattr(outcome, "block_reason", "") or "") if outcome is not None else "")
         row["t3_at"] = now.isoformat()
+        if catchup is not None:
+            # MU CATCH-UP (2026-10-28): T+3 판정 시각 값. PROMOTE = XS STRONG ∨ CATCH-UP PASS.
+            row["MU_CATCHUP"] = catchup.get("status")
+            row["MU_SESSION_PCT"] = catchup.get("mu_session_pct")
+            row["HY_SESSION_PCT"] = catchup.get("hy_session_pct")
+            row["MU_HY_GAP"] = catchup.get("mu_hy_gap")
+        row["PROMOTE"] = bool(row.get("T2_SHADOW") == PASS or row.get("MU_CATCHUP") == "PASS")
         if executed:
             px = float(getattr(outcome, "filled_avg_price", 0.0) or 0.0) or None
             row["T3_ENTRY_PRICE"] = px
@@ -241,6 +248,8 @@ def summary(all_rows: Optional[list[dict]] = None) -> dict[str, Any]:
         "virtual_winrate": round(len(gains) / len(rets), 3) if rets else None,
         "virtual_mdd_pct": round(mdd, 2),
         "by_day_pct": {d: round(v, 2) for d, v in sorted(by_day.items())},
+        "catchup_pass": sum(1 for r in rs if r.get("MU_CATCHUP") == "PASS"),
+        "promote": sum(1 for r in rs if r.get("PROMOTE")),
         "total_ex_top2_pct": round(sum(tops[2:]), 2) if len(tops) > 2 else None,
         "ready_for_review": len(days) >= int(config.T2_SHADOW_REVIEW_MIN_DAYS) or len(p_all) >= int(config.T2_SHADOW_REVIEW_MIN_PASS),
     }

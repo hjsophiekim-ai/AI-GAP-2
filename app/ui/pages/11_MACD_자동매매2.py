@@ -1414,6 +1414,27 @@ if _mua_now and _muxs_pick != _muxs_now:
     service.set_mu_assist_xs_enabled(_muxs_pick, changed_by="ui")
     st.rerun()
 
+# ── MU CATCH-UP (2026-10-28) — MU 선행·하이닉스 지연 RED 예외, 마지막 판정 한 줄 ───────────
+if _mua_now:
+    try:
+        from app.trading.macd2 import mu_catchup as _cu_mod
+        if macd2_config.MU_CATCHUP_KILL:
+            st.caption("CATCHUP: OFF (MACD2_MU_CATCHUP_KILL=1)")
+        else:
+            _cu_last = _cu_mod.last()
+            _cu_today = datetime.now(macd2_config.KST).strftime("%Y%m%d")
+            if not _cu_last or not str(_cu_last.get("signal_id", "")).startswith(_cu_today):
+                st.caption("CATCHUP: 오늘 판정 없음")
+            else:
+                _cu_v = lambda k: "-" if _cu_last.get(k) is None else f"{_cu_last[k]:+.2f}%"
+                st.caption(f"CATCHUP: {_cu_last.get('status')} — {str(_cu_last.get('signal_id', ''))[9:15]} "
+                           f"{_cu_last.get('direction', '')} · MU {_cu_v('mu_session_pct')} / HY {_cu_v('hy_session_pct')} "
+                           f"/ 괴리 {_cu_v('mu_hy_gap')} · 체결강도 {'일치' if _cu_last.get('cttr_match') else ('불일치' if _cu_last.get('cttr_match') is False else '판정불가')}"
+                           + (f" · 사유 {_cu_last.get('reason')}" if _cu_last.get("reason") else "")
+                           + (f" · 푼 게이트 {'|'.join(_cu_last.get('overridden') or [])}" if _cu_last.get("overridden") else ""))
+    except Exception:  # noqa: BLE001 -- 표시 전용
+        pass
+
 # ── T2 SHADOW (2026-10-28) — STRONG 후보 T+2 가상 조기진입 기록, 표시 전용 ──────────────
 # 주문/진입 판단과 무관하다(app/trading/macd2/t2_shadow.py). 판정 기준 충족 전 production ON 금지.
 if _mua_now:
