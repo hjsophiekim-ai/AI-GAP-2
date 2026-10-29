@@ -137,6 +137,8 @@ SIGNAL_LEDGER_COLUMNS = [
     # APBK3052 순간의 현금 필드 원값(JSON: 매수가능 조회 output + 잔고조회 output2).
     # 주문가능금액(orderable_cash)·재매수가능(nrcvb_buy_amt)은 기존 컬럼에 같이 남는다.
     "leverage_deposit_cash_fields",
+    # 2026-10-29: 완성봉 확정값 재평가 근거(최초평가/재평가 시각, 변경 전후 diff).
+    "bar_revision",
     # MU CATCH-UP (2026-10-28): 판정 결과·근거 값·실제로 푼 게이트(| 구분).
     "mu_catchup_pass", "mu_catchup_reason", "mu_session_pct", "hy_session_pct", "mu_hy_gap",
     "cttr_match", "catchup_overridden_gates",

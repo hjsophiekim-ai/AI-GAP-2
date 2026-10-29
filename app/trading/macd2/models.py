@@ -387,6 +387,11 @@ class RuntimeState:
     # 집합이라 구멍이 어디서 메워지든 정확히 그 봉만 골라낼 수 있다.
     # 하루치(장중 ~240개 + 프리마켓)라 크기는 유계이고, 날짜가 바뀌면 비운다.
     evaluated_bar_ts_today: list[str] = field(default_factory=list)
+    # 2026-10-29 실사고(08:09 BLUE 소실): 봉을 평가한 순간의 MACD 입력값/판정 지문.
+    # 그 봉의 마지막 1분봉이 미확정 값이었다가 KIS 확정값으로 바뀌면 재평가한다
+    # (worker._recheck_revised_bars). {bar_iso: {prev, cur, dir, prev_state, first_at, last_at, rechecks}}
+    # 오늘 봉만, 최근 몇 개만 남긴다. 날짜가 바뀌면 비운다.
+    bar_eval_fingerprints: dict = field(default_factory=dict)
 
     # ── 1m/3m history freshness display (docs 2026-07-27 §1) ───────────────
     today_1m_bar_count: Optional[int] = None

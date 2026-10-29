@@ -267,6 +267,7 @@ def serialize(state: RuntimeState) -> dict[str, Any]:
         "last_order_balance_qty": state.last_order_balance_qty,
         "last_confirmed_bar_ts": state.last_confirmed_bar_ts,
         "evaluated_bar_ts_today": list(state.evaluated_bar_ts_today or []),
+        "bar_eval_fingerprints": dict(state.bar_eval_fingerprints or {}),
         "today_1m_bar_count": state.today_1m_bar_count,
         "history_newest_at": state.history_newest_at,
         "history_stale_alert_at": state.history_stale_alert_at,
@@ -1022,6 +1023,8 @@ def deserialize(raw: dict[str, Any]) -> RuntimeState:
         last_order_balance_qty=raw.get("last_order_balance_qty"),
         last_confirmed_bar_ts=raw.get("last_confirmed_bar_ts"),
         evaluated_bar_ts_today=[str(x) for x in (raw.get("evaluated_bar_ts_today") or []) if x],
+        bar_eval_fingerprints={str(k): dict(v) for k, v in (raw.get("bar_eval_fingerprints") or {}).items()
+                               if isinstance(v, dict)},
         today_1m_bar_count=raw.get("today_1m_bar_count"),
         history_newest_at=raw.get("history_newest_at"),
         history_stale_alert_at=raw.get("history_stale_alert_at"),
