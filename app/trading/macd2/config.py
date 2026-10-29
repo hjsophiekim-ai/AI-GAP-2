@@ -224,6 +224,17 @@ PREMARKET_CARRY_WINDOW_START = time(8, 45)
 
 # ── Worker (strategy-fixed) ─────────────────────────────────────────────────
 WORKER_INTERVAL_SEC = 5.0
+# 완성봉 재평가 (2026-10-29 실사고: 08:09 BLUE 가 미확정 08:11 1분봉 값으로 평가돼 사라졌다).
+# 평가한 봉의 MACD 입력값이 이후 KIS 확정값으로 바뀌면 다시 판정한다(worker._recheck_revised_bars).
+#   · 최신 봉(다음 봉 완성 전): 새 교차면 이번 tick 의 정상 경로로 넘긴다(원장·T+3·게이트 그대로),
+#     사라지면 주문 전 후보만 무효화한다. · 지난 봉(LOOKBACK): 원장 복원/경고만, 주문·상태 변경 없음.
+# 비상 kill: MACD2_BAR_REVISION_RECHECK=0 이면 이전 동작(한 번 평가한 봉은 다시 보지 않음) 그대로.
+BAR_REVISION_RECHECK_ENABLED = _env_bool("MACD2_BAR_REVISION_RECHECK", True)
+BAR_REVISION_EPS = 1e-6              # prev/cur diff 가 이보다 더 변했을 때만 "값이 바뀌었다"
+BAR_REVISION_MAX_RECHECKS = 3        # 봉당 재평가 상한(무한 재평가 방지)
+BAR_REVISION_LOOKBACK_BARS = 2       # 최신 봉 앞 몇 개 봉까지 원장 복원 대상으로 볼지
+BAR_REVISION_KEEP = 8                # 지문 보관 개수(오늘 최신 N개)
+BAR_REVISION_LEDGER_FILENAME = "macd2_bar_revision_ledger.csv"
 WORKER_TICK_MEAN_MAX_SEC = 5.5
 WORKER_TICK_P95_MAX_SEC = 7.0
 WORKER_TICK_MAX_SEC = 10.0

@@ -43,6 +43,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from datetime import time as dtime
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -441,6 +442,7 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.last_confirmed_bar_ts = None
     # 오늘 평가한 봉 집합도 session-scoped (models.RuntimeState 주석 참고).
     state.evaluated_bar_ts_today = []
+    state.bar_eval_fingerprints = {}
     state.processed_signal_ids = []
     state.pending_signal = None
     state.peak_net_return = 0.0
@@ -3260,6 +3262,8 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) ->
         state.last_detected_direction = direction
         state.latest_primary_flag = direction
         state.latest_primary_signal_id = make_signal_id(macd_snap.bar_dt, direction)
+    # 2026-10-29: 평가 순간의 입력값/판정 지문 — 이후 확정값으로 바뀌면 재평가한다.
+    _note_bar_fingerprint(state, macd_snap, direction, _observed_prev_direction, now)
     # ── 3분 확정봉 MACD 원장 (2026-09-08, 관측 전용) ──────────────────────
     # 위에서 이미 계산이 끝난 값만 그대로 넘긴다 — 재계산 없음, MACD 호출 없음.
     # 쓰기 실패는 절대 판정/주문/청산에 영향을 주지 않는다.
@@ -3276,6 +3280,238 @@ def _advance_confirmed_primary(state: RuntimeState, macd_snap, now: datetime) ->
     except Exception:
         pass
     return direction
+
+
+BAR_REVISION_REPLAY = "BAR_REVISION_REPLAY"
+BAR_REVISION_REVOKED = "FLAG_REVOKED_BY_REVISION"
+_BAR_REVISION_NOTES: dict[str, str] = {}      # 플래그 signal_id -> 신호원장 bar_revision 컬럼 텍스트
+_BAR_REVISION_LEDGER_COLUMNS = [
+    "trading_date", "bar_at", "first_evaluated_at", "history_updated_at", "reevaluated_at",
+    "prev_diff_before", "cur_diff_before", "prev_diff_after", "cur_diff_after",
+    "direction_before", "direction_after", "action", "signal_id", "recheck_no", "worker_instance_id",
+]
+
+
+def _dir_value(d) -> str:
+    return "" if d is None or d == Direction.HOLD else str(getattr(d, "value", d))
+
+
+def _history_updated_at(market_data):
+    try:
+        return market_data.history_last_success_at()
+    except Exception:
+        return None
+
+
+def _note_bar_fingerprint(state: RuntimeState, snap, direction, prev_state, now: datetime) -> None:
+    """완성봉을 평가한 순간의 MACD 입력값(prev/cur diff)·판정·그때의 직전 방향 상태 (2026-10-29)."""
+    try:
+        fps = dict(state.bar_eval_fingerprints or {})
+        key = snap.bar_dt.isoformat()
+        fps[key] = {
+            "prev": float(snap.previous_diff) if snap.previous_diff is not None else None,
+            "cur": float(snap.current_diff) if snap.current_diff is not None else None,
+            "dir": _dir_value(direction), "prev_state": _dir_value(prev_state),
+            "first_at": now.isoformat(), "last_at": now.isoformat(), "rechecks": 0,
+        }
+        keep = sorted(fps)[-int(config.BAR_REVISION_KEEP):]
+        state.bar_eval_fingerprints = {k: fps[k] for k in keep}
+    except Exception:
+        logger.exception("[MACD2][BAR_REVISION] 지문 기록 실패 -- 판정 무영향")
+
+
+def _bar_values_changed(fp: dict, snap) -> bool:
+    eps = float(config.BAR_REVISION_EPS)
+    for k, v in (("prev", snap.previous_diff), ("cur", snap.current_diff)):
+        old = fp.get(k)
+        if (old is None) != (v is None):
+            return True
+        if old is not None and abs(float(old) - float(v)) > eps:
+            return True
+    return False
+
+
+def _log_bar_revision(state: RuntimeState, snap, fp_before: dict, new_dir, action: str, now: datetime,
+                      history_updated_at, signal_id: str = "") -> None:
+    try:
+        ledger._assert_safe_to_write_ledger()
+        path = Path(ledger.SIGNAL_LEDGER_PATH).parent / config.BAR_REVISION_LEDGER_FILENAME
+        ledger._append_row(path, _BAR_REVISION_LEDGER_COLUMNS, {
+            "trading_date": snap.bar_dt.astimezone(KST).strftime("%Y%m%d"),
+            "bar_at": snap.bar_dt.isoformat(), "first_evaluated_at": fp_before.get("first_at", ""),
+            "history_updated_at": history_updated_at.isoformat() if history_updated_at else "",
+            "reevaluated_at": now.isoformat(),
+            "prev_diff_before": fp_before.get("prev"), "cur_diff_before": fp_before.get("cur"),
+            "prev_diff_after": snap.previous_diff, "cur_diff_after": snap.current_diff,
+            "direction_before": fp_before.get("dir", ""), "direction_after": _dir_value(new_dir),
+            "action": action, "signal_id": signal_id, "recheck_no": int(fp_before.get("rechecks", 0)) + 1,
+            "worker_instance_id": state.worker_instance_id or "",
+        })
+    except Exception:
+        logger.exception("[MACD2][BAR_REVISION] 재평가 원장 기록 실패 -- 판정 무영향")
+
+
+def _order_placed_for_flag(state: RuntimeState, bar_dt: datetime, direction: Direction) -> bool:
+    """이 플래그(또는 그 T+3/E 파생 신호)로 실제 주문 경로가 돌았는가.
+
+    processed_signal_ids 는 플래그를 후보로 등록할 때도 기본 id 가 들어가므로 주문 여부의 증거가 아니다.
+    주문 직전에만 생기는 dispatch claim 파일과 체결원장 행만 본다(어느 쪽이든 있으면 '주문됨' = 되돌리지 않는다)."""
+    base = make_signal_id(bar_dt, direction)
+    ids = [base, f"{base}:TW2_3SLOT_CONFIRM", f"{base}:TW2_3SLOT_CONFIRM{e_strategy.BREAKOUT_SUFFIX}",
+           f"{base}:TW_CONFIRM"]
+    try:
+        for sid in ids:
+            for side in ("BUY", "SELL"):
+                if ledger._dispatch_claim_path(sid, side).exists():
+                    return True
+        return any(str(r.get("signal_id", "")).startswith(base) for r in ledger.load_execution_ledger(limit=200))
+    except Exception:
+        return True          # 판단 불가면 보수적으로 '주문됨' — 되돌리지 않는다
+
+
+def _revoke_flag_before_order(state: RuntimeState, bar_dt: datetime, direction: Direction) -> bool:
+    """사라진 플래그의 **아직 주문 전** 후보(T+3 대기 / TW 대기 / 재시도 pending)만 지운다."""
+    key = bar_dt.isoformat()
+    revoked = False
+    for d_attr, ts_attr in (("tw2_3slot_pending_flag_direction", "tw2_3slot_pending_flag_bar_ts"),
+                            ("time_window_pending_flag_direction", "time_window_pending_flag_bar_ts")):
+        if getattr(state, ts_attr, None) == key and _dir_value(getattr(state, d_attr, None)) == _dir_value(direction):
+            setattr(state, d_attr, None)
+            setattr(state, ts_attr, None)
+            revoked = True
+    ps = state.pending_signal or {}
+    if str(ps.get("signal_id", "")).startswith(make_signal_id(bar_dt, direction)):
+        state.pending_signal = None
+        revoked = True
+    return revoked
+
+
+def _record_revoked_flag(state: RuntimeState, snap, direction: Direction, now: datetime) -> None:
+    """주문 전에 무효화한 플래그를 신호원장에 남긴다(별도 signal_id, 주문 없음)."""
+    try:
+        sid = f"{make_signal_id(snap.bar_dt, direction)}:{BAR_REVISION_REVOKED}"
+        outcome = order_executor.ExecutionOutcome(
+            signal_id=sid, direction=direction, target_symbol=order_executor.target_symbol_for_direction(direction),
+            final_state=SignalState.BLOCKED, block_reason=BAR_REVISION_REVOKED,
+        )
+        _record_signal_ledger(state, snap, direction, "BAR_REVISION", sid, now, outcome)
+    except Exception:
+        logger.exception("[MACD2][BAR_REVISION] 무효화 원장 기록 실패")
+
+
+def _recheck_revised_bars(*, state: RuntimeState, bars_3m, macd_snap, now: datetime, result: TickResult,
+                          history_updated_at=None) -> Optional[Direction]:
+    """이미 평가한 완성봉의 MACD 입력값이 바뀌었으면 다시 판정한다 (2026-10-29 실사고).
+
+    10/29 08:12 판정 순간 08:11 1분봉이 아직 미확정(분 초반 값)이라 08:09 봉 교차가 없다고 평가됐고,
+    몇 초 뒤 KIS 확정값으로는 교차였지만 그 봉은 이미 "평가 완료"라 다시 보지 않아 플래그·신호원장 행·
+    T+3 후보가 통째로 사라졌다. 늦게 *완성*된 봉은 _replay_unevaluated_completed_bars 가 잡지만, *값이
+    바뀐* 봉은 아무도 다시 보지 않았다.
+
+    판정은 **평가 당시의 직전 방향 상태**(지문 prev_state)로 다시 한다. 같은 값이면 아무 것도 하지 않고,
+    봉당 BAR_REVISION_MAX_RECHECKS 회까지만 본다.
+
+    · 최신 봉(``macd_snap`` 이 그 봉 = 다음 봉 완성 전): 새 교차면 그 방향을 돌려준다 — 호출부가 이번 tick
+      의 confirmed_direction 으로 써서 신호원장·T+3 후보·게이트를 **기존 경로 그대로** 탄다(그 봉의 T+3 창
+      안이므로 주문 시점 소급이 아니다). 교차가 사라졌으면 주문 전 후보만 무효화하고 방향 상태를 되돌린다.
+      이미 주문 경로가 돈 뒤라면 아무 것도 되돌리지 않고 경고/원장만 남긴다.
+    · 지난 봉(최신 봉 앞 BAR_REVISION_LOOKBACK_BARS 개): 원장 복원(BLOCKED 행)·경고만. 주문·상태 변경 없음.
+    """
+    if not bool(getattr(config, "BAR_REVISION_RECHECK_ENABLED", True)):
+        return None
+    fps = dict(state.bar_eval_fingerprints or {})
+    if not fps or bars_3m is None or len(bars_3m) < 2 or macd_snap is None:
+        return None
+    max_n = int(config.BAR_REVISION_MAX_RECHECKS)
+    override: Optional[Direction] = None
+
+    def _bump(key: str, snap, fp: dict) -> None:
+        fp2 = dict(fp)
+        fp2.update(prev=float(snap.previous_diff) if snap.previous_diff is not None else None,
+                   cur=float(snap.current_diff) if snap.current_diff is not None else None,
+                   last_at=now.isoformat(), rechecks=int(fp.get("rechecks", 0)) + 1)
+        fps[key] = fp2
+
+    # ── 지난 봉: 원장 복원/경고만 (주문·방향 상태 변경 없음) ─────────────────
+    dt_index = list(bars_3m["datetime"])
+    latest_key = macd_snap.bar_dt.isoformat()
+    lo = max(0, len(dt_index) - 1 - int(config.BAR_REVISION_LOOKBACK_BARS))
+    for idx in range(lo, len(dt_index) - 1):
+        key = pd.Timestamp(dt_index[idx]).isoformat()
+        fp = fps.get(key)
+        if fp is None or key == latest_key or int(fp.get("rechecks", 0)) >= max_n:
+            continue
+        snap = calculate_macd(bars_3m.iloc[: idx + 1])
+        if snap is None or not _bar_values_changed(fp, snap):
+            continue
+        prev_state = Direction(fp["prev_state"]) if fp.get("prev_state") else None
+        new_dir = evaluate_macd_crossover(snap, prev_state)
+        old_dir = fp.get("dir") or ""
+        actions, sid = [], ""
+        if _dir_value(new_dir) != old_dir:
+            if new_dir != Direction.HOLD:
+                sid = make_signal_id(snap.bar_dt, new_dir)
+                _BAR_REVISION_NOTES[sid] = (f"{BAR_REVISION_REPLAY} first={fp.get('first_at', '')} re={now.isoformat()} "
+                                            f"cur {fp.get('cur')}->{snap.current_diff}")
+                _record_catchup_flag(state, snap, new_dir, now, reason=BAR_REVISION_REPLAY)
+                actions.append("RECORDED_LATE_NO_ORDER")
+            if old_dir:
+                logger.warning("[MACD2][BAR_REVISION] 지난 봉 %s 의 %s 플래그가 확정값에서 사라짐 -- 기록만(소급 조치 없음)",
+                               key, old_dir)
+                actions.append("PRIOR_FLAG_VANISHED_LOG_ONLY")
+        action = "|".join(actions) or "VALUES_CHANGED_SAME_VERDICT"
+        _log_bar_revision(state, snap, fp, new_dir, action, now, history_updated_at, sid)
+        _bump(key, snap, fp)
+        result.actions.append(f"BAR_REVISION:{action}")
+
+    # ── 최신 봉: 정상 경로로 넘기거나 주문 전 후보 무효화 ─────────────────────
+    fp = fps.get(latest_key)
+    if (fp is not None and state.last_confirmed_bar_ts == latest_key
+            and int(fp.get("rechecks", 0)) < max_n and _bar_values_changed(fp, macd_snap)):
+        prev_state = Direction(fp["prev_state"]) if fp.get("prev_state") else None
+        new_dir = evaluate_macd_crossover(macd_snap, prev_state)
+        old_dir = fp.get("dir") or ""
+        actions, sid = [], ""
+        kept_order = False
+        if _dir_value(new_dir) != old_dir:
+            if old_dir:
+                # 주문 경로가 이미 돌았는지를 **먼저** 본다 — 돌았으면 후보도 상태도 건드리지 않는다.
+                if not _order_placed_for_flag(state, macd_snap.bar_dt, Direction(old_dir)):
+                    _revoke_flag_before_order(state, macd_snap.bar_dt, Direction(old_dir))
+                    state.last_detected_direction = prev_state
+                    state.latest_primary_flag = prev_state
+                    _record_revoked_flag(state, macd_snap, Direction(old_dir), now)
+                    actions.append("PRIOR_FLAG_REVOKED_BEFORE_ORDER")
+                else:
+                    kept_order = True
+                    actions.append("PRIOR_FLAG_VANISHED_ORDER_KEPT_LOG_ONLY")
+                logger.warning("[MACD2][BAR_REVISION] %s %s 플래그가 확정값에서 사라짐 -> %s", latest_key, old_dir, actions[-1])
+            if new_dir != Direction.HOLD and not kept_order:
+                state.last_detected_direction = new_dir
+                state.latest_primary_flag = new_dir
+                sid = make_signal_id(macd_snap.bar_dt, new_dir)
+                state.latest_primary_signal_id = sid
+                _BAR_REVISION_NOTES[sid] = (f"{BAR_REVISION_REPLAY} first={fp.get('first_at', '')} re={now.isoformat()} "
+                                            f"prev {fp.get('prev')}->{macd_snap.previous_diff} "
+                                            f"cur {fp.get('cur')}->{macd_snap.current_diff}")
+                actions.append("NEW_FLAG_LIVE_PATH")
+                override = new_dir
+                logger.warning("[MACD2][BAR_REVISION] %s 확정값 재평가로 %s 플래그 -> 정상 경로", latest_key, new_dir.value)
+        action = "|".join(actions) or "VALUES_CHANGED_SAME_VERDICT"
+        _log_bar_revision(state, macd_snap, fp, new_dir, action, now, history_updated_at, sid)
+        _bump(latest_key, macd_snap, fp)
+        result.actions.append(f"BAR_REVISION:{action}")
+        if override is not None:
+            try:
+                bar_ledger.record_bar(
+                    macd_snap=macd_snap, direction=override, prev_direction_state=prev_state,
+                    bars_3m=bars_3m, dropped_bar_starts=None, signal_id=sid,
+                    worker_instance_id=state.worker_instance_id,
+                )
+            except Exception:
+                pass
+    state.bar_eval_fingerprints = fps
+    return override
 
 
 def _direction_for_symbol(symbol: Optional[str]) -> Optional[Direction]:
@@ -8307,9 +8543,19 @@ def run_once(
     # 2026-09-16: 늦게 완성된 미평가 봉을 시간순으로 먼저 따라잡는다.
     # FLAG 복원 전용이며 주문은 내지 않는다 -- 마지막 봉만 아래 live
     # 경로가 평가하고 주문 권한을 갖는다.
+    # 2026-10-29: 이미 평가한 봉의 값이 KIS 확정값으로 바뀌었으면 먼저 다시 판정한다.
+    try:
+        _revised_direction = _recheck_revised_bars(
+            state=state, bars_3m=bars_3m, macd_snap=macd_snap, now=now, result=result,
+            history_updated_at=_history_updated_at(market_data))
+    except Exception:
+        logger.exception("[MACD2][BAR_REVISION] 재평가 실패 -- 기존 판정 그대로")
+        _revised_direction = None
     _replay_unevaluated_completed_bars(
         state=state, bars_3m=bars_3m, now=now, result=result)
     confirmed_direction = _advance_confirmed_primary(state, macd_snap, now)
+    if confirmed_direction == Direction.HOLD and _revised_direction is not None:
+        confirmed_direction = _revised_direction
     _advance_premarket_carry_candidate(state, macd_snap, confirmed_direction)
 
     bar_ts_str = macd_snap.bar_dt.isoformat()
@@ -9281,6 +9527,9 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
     if _cu_trace is not None:
         # MU CATCH-UP (2026-10-28): 왜 진입(미진입)했는지 — PASS/FAIL/UNAVAILABLE · 세션값 · 체결강도 · 푼 게이트.
         row.update(mu_catchup.ledger_fields(_cu_trace["ev"], list(_cu_trace["overridden"])))
+    _rv_note = _BAR_REVISION_NOTES.get(str(signal_id or "").split(":")[0])
+    if _rv_note:
+        row["bar_revision"] = _rv_note        # 2026-10-29: 확정값 재평가로 생긴/복원된 플래그의 근거
     written = ledger.append_signal(row)
     state.last_duplicate_signal_id = None if written else signal_id
     if _cu_trace is not None:

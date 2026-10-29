@@ -62,10 +62,15 @@ def test_advance_confirmed_primary_decision_logic_unchanged():
             or not isinstance(getattr(n, "value", None), ast.Constant)]
 
     # 관측 코드 제거
+    # 2026-10-29: ``_note_bar_fingerprint(...)`` (평가 순간 입력값/판정 지문 기록, 내부 try, 반환값 없음)도
+    # 관측 코드다 — 판정 흐름을 바꾸지 않고, 확정값 재평가(_recheck_revised_bars)의 비교 기준만 남긴다.
     stripped = []
     for node in body:
         if isinstance(node, ast.Assign) and getattr(
                 node.targets[0], "id", "") == "_observed_prev_direction":
+            continue
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                and getattr(node.value.func, "id", "") == "_note_bar_fingerprint"):
             continue
         if isinstance(node, ast.Try):
             calls = [n for n in ast.walk(node) if isinstance(n, ast.Call)]
