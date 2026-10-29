@@ -32,7 +32,9 @@ CHOP(및 P3/E/N1)을 기본 전략으로 그대로 두고, MU 는 독립 매매�
    진입 보조 상태: CONFIRM∧EXPAND = ENTRY_CONFIRM / STALL∧비EXPAND = ENTRY_BAD / DIVERGE = ENTRY_DIVERGE /
                   그 외 = ENTRY_WAIT / MU 판정 불가 = MU_UNAVAILABLE
 
-MU 원천: ws_shadow_logger 의 ``mu/<YYYY-MM-DD>/bars_1m.csv`` (DNASMU 08:00~ + RBAQMU 09:00~).
+MU 원천: ws_shadow_logger 의 ``mu/<YYYY-MM-DD>/bars_1m.csv`` (DNASMU 08:00~ + RBAQMU 주간거래 시작~).
+   주간거래(블루오션) 시작 = 미국 전일 20:00 ET → KST: 서머타임 09:00 / 비서머타임 10:00 (:func:`daytime_open_kst`).
+   그 전은 DNASMU(나스닥 애프터마켓, 20:00 ET 까지), 이후는 RBAQMU. 2026-10-29 전에는 09:00 고정이었다.
 KIS 를 추가로 부르지 않는다. 파일이 없거나 T+2 에 필요한 분봉이 아직 없으면 MISSING/STALE 로
 기록만 하고 기존 로직 그대로다(fallback). 이 모듈의 어떤 예외도 tick 을 깨지 않게 worker 가 감싼다.
 """
@@ -46,9 +48,12 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 from app.trading.macd2 import config, ledger
 from app.trading.macd2.models import Direction
+
+_US_EASTERN = ZoneInfo("America/New_York")
 
 KIND_ENTRY = "ENTRY_SHADOW"
 KIND_H50_EXIT = "H50_GAP_EXIT"
@@ -243,9 +248,26 @@ def in_t2_window(flag_bar_dt: datetime, now: datetime) -> bool:
 
 
 # ── MU 1분봉 ──────────────────────────────────────────────────────────────
+def daytime_open_kst(day: datetime) -> datetime:
+    """KST 날짜 ``day`` 의 MU 주간거래(RBAQMU, 블루오션) 시작 시각 (naive KST).
+
+    블루오션은 미국 **전일** 20:00 ET 에 열린다 — 나스닥 애프터마켓(DNASMU)이 끝나는 바로 그 시각이다.
+    미국 서머타임(EDT) 이면 09:00 KST, 해제(EST) 면 10:00 KST. 2026-10-29: KIS REST NAS 분봉이
+    거래소 시각 19:59 ET(= 08:59 KST, EDT) 에서 끝나는 것으로 확인. 미국 휴일 여부는 보지 않는다
+    (데이터가 없으면 아래 stale 판정이 막는다)."""
+    d = (day.date() if isinstance(day, datetime) else day) - timedelta(days=1)
+    t = config.MU_DAYTIME_OPEN_ET
+    et = datetime(d.year, d.month, d.day, t.hour, t.minute, tzinfo=_US_EASTERN)
+    return et.astimezone(config.KST).replace(tzinfo=None)
+
+
 def load_mu_1m(now: datetime, data_dir: Optional[str] = None) -> Optional[pd.Series]:
-    """오늘 MU 1분봉 종가 (index = 분 시작, naive KST). 09:00 전은 DNASMU, 이후 RBAQMU.
-    파일이 없으면 None."""
+    """오늘 MU 1분봉 종가 (index = 분 시작, naive KST). 주간거래 시작(:func:`daytime_open_kst`) 전은
+    DNASMU, 이후 RBAQMU. 파일이 없으면 None.
+
+    가짜 가격 금지(2026-10-29): 1~``MU_ASSIST_MAX_FILL_MIN`` 분의 짧은 수신 공백만 직전 체결값으로 잇고,
+    그보다 긴 공백은 채우지 않는다 — 인덱스에 그 구간이 없으므로 최신 실체결 분이 그대로 드러나고
+    stale 판정(_status / mu_catchup)이 정확하다. ``attrs["last_real_minute"]`` = 마지막 실제 분봉."""
     root = data_dir if data_dir is not None else config.MU_ASSIST_DATA_DIR
     if not root:
         return None
@@ -253,7 +275,7 @@ def load_mu_1m(now: datetime, data_dir: Optional[str] = None) -> Optional[pd.Ser
     path = Path(root) / "mu" / day / "bars_1m.csv"
     if not path.exists():
         return None
-    open_at = datetime.strptime(day, "%Y-%m-%d").replace(hour=9)
+    open_at = daytime_open_kst(datetime.strptime(day, "%Y-%m-%d"))
     pre, main = {}, {}
     with open(path, newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
@@ -273,7 +295,13 @@ def load_mu_1m(now: datetime, data_dir: Optional[str] = None) -> Optional[pd.Ser
     if not merged:
         return None
     s = pd.Series(merged).sort_index()
-    return s.asfreq("1min").ffill()
+    full = s.asfreq("1min")
+    missing = full.isna()
+    run_len = missing.groupby((~missing).cumsum()).transform("sum")   # 각 결측 구간의 길이
+    filled = full.ffill().where(~missing | (run_len <= int(config.MU_ASSIST_MAX_FILL_MIN)))
+    out = filled.dropna()
+    out.attrs["last_real_minute"] = s.index.max()
+    return out
 
 
 def _macd_hist(close: pd.Series) -> pd.Series:

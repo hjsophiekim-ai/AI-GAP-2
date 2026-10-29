@@ -1540,6 +1540,11 @@ MU_ASSIST_NO_REENTRY_BLOCK_REASON = "MU_ASSIST_NO_REENTRY"
 MU_ASSIST_ENTRY_BAD_BLOCK_REASON = "MU_ASSIST_ENTRY_BAD"
 MU_ASSIST_ENTRY_WARNING = "ENTRY_CONFIRM_WEAK"
 MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
+# MU 주간거래(RBAQMU, 블루오션) 시작 = 미국 전일 20:00 ET (= 나스닥 애프터마켓 DNASMU 종료). KST 로는 서머타임 09:00 /
+# 비서머타임 10:00 — mu_assist.daytime_open_kst 가 날짜별로 환산한다(2026-10-29, 이전엔 09:00 고정).
+MU_DAYTIME_OPEN_ET = time(20, 0)
+# MU 분봉의 짧은 수신 공백만 직전값으로 잇는 최대 길이(분). 더 긴 공백은 채우지 않는다(가짜 가격 금지, stale 로 드러남).
+MU_ASSIST_MAX_FILL_MIN = 3
 
 # ── MU Assist × 체결강도 (2026-10-26, feature/macd2-mu-cttr-assist, 연구용·전부 기본 OFF) ──
 # 셋 다 MU Assist 가 켜져 있을 때만 동작한다. 체결강도 = exec_strength.py (직전 60초 하이닉스 cttr 평균,
