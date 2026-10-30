@@ -74,6 +74,7 @@ from app.trading.macd2 import (
     premarket_shadow,
     shadow_base,
     risk_exit,
+    sell_fill_telemetry,
     sideways_filter,
     single_entry_filter,
     small_whipsaw_hold,
@@ -2246,6 +2247,11 @@ def _protective_exit_during_position_data_error(*, broker, state: RuntimeState, 
 
 def _safe_exit_fill_price(broker, se: dict) -> float:
     """SAFE EXIT 매도의 실제 체결가: 당일 체결조회(주문번호 일치) > 주문 응답 > 현재가 > 평단."""
+    return _safe_exit_fill_price_with_source(broker, se)[0]
+
+
+def _safe_exit_fill_price_with_source(broker, se: dict) -> tuple[float, str]:
+    """_safe_exit_fill_price 와 같은 값 + 그 값의 출처(price_source, 2026-10-30 계측)."""
     order_id = str(se.get("order_id") or "")
     getter = getattr(broker, "get_today_fills", None)
     if order_id and getter is not None:
@@ -2261,17 +2267,19 @@ def _safe_exit_fill_price(broker, se: dict) -> float:
                     except (TypeError, ValueError):
                         v = 0.0
                     if v > 0:
-                        return v
+                        return v, sell_fill_telemetry.PRICE_SOURCE_ACTUAL_FILL
     if float(se.get("executed_price") or 0.0) > 0:
-        return float(se["executed_price"])
+        return float(se["executed_price"]), sell_fill_telemetry.PRICE_SOURCE_ORDER_RESPONSE
     quote = order_executor._fallback_sell_price(broker, str(se.get("symbol") or ""))
-    return float(quote or se.get("avg_price") or 0.0)
+    if quote:
+        return float(quote), sell_fill_telemetry.PRICE_SOURCE_FALLBACK_QUOTE
+    return float(se.get("avg_price") or 0.0), sell_fill_telemetry.PRICE_SOURCE_FALLBACK_ENTRY
 
 
 def _safe_exit_record_leg(broker, state: RuntimeState, se: dict, *, sold_qty: int,
                           position_before: int, position_after: int, now: datetime) -> None:
     """실제 주문번호로 SELL 레그를 기록한다 (추정 RECONCILE 행이 아니다)."""
-    price = _safe_exit_fill_price(broker, se)
+    price, price_source = _safe_exit_fill_price_with_source(broker, se)
     order_result = BrokerOrderResult(
         True, str(se.get("order_id") or ""), str(se.get("symbol") or ""), "SELL",
         int(se.get("qty") or 0), int(sold_qty), float(price), "SAFE_EXIT",
@@ -2284,6 +2292,11 @@ def _safe_exit_record_leg(broker, state: RuntimeState, se: dict, *, sold_qty: in
         exit_reason=str(se.get("exit_reason") or config.EXIT_OPPOSITE_SIGNAL), order_result=order_result,
         entry_price=float(se.get("avg_price") or 0.0), confirmed_at=now.isoformat(),
         source=SAFE_EXIT_SOURCE,
+        sell_telemetry={
+            "price_source": price_source,
+            "fallback_quote_price": price if price_source == sell_fill_telemetry.PRICE_SOURCE_FALLBACK_QUOTE else "",
+            "sell_requested_at": str(se.get("submitted_at") or ""), "sell_reconciled_at": now.isoformat(),
+        },
     )
     se["recorded_qty"] = int(se.get("recorded_qty") or 0) + int(sold_qty)
     se["fill_price"] = float(price)
@@ -9845,6 +9858,13 @@ class Macd2Worker:
                 t_stage = time.monotonic()
                 self._save_state(state)
                 stage_timing["state_save"] = time.monotonic() - t_stage
+                # 2026-10-30: SELL 실제 체결 계측(기록 전용) -- 매매 판단이 끝난 뒤, tick 당 최대 1건.
+                t_stage = time.monotonic()
+                try:
+                    sell_fill_telemetry.process_pending(self._broker)
+                except Exception:  # pragma: no cover - process_pending 자체가 예외를 삼킨다
+                    logger.exception("[MACD2][SELL_FILL] 계측 실패 -- tick 은 계속한다")
+                stage_timing["sell_fill_lookup"] = time.monotonic() - t_stage
                 with self._lock:
                     self._last_exception = None
             except Exception as exc:
