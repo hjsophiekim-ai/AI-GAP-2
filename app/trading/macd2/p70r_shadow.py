@@ -54,6 +54,8 @@ MIN_TICKS = 5
 SPLITS = {"7030": 0.7, "5050": 0.5}
 FEE_RATE = 36.4e-6           # 원장과 같은 편도 수수료율
 _FLUSH_SEC = 60
+#: 손절봉 완성 -> 실제 SELL 요청 지연 구간(초). 10/29 실거래는 판정 후 ~70초 뒤 매도였다.
+DELAY_BUCKETS = ((10.0, "<=10s"), (30.0, "10-30s"), (60.0, "30-60s"), (float("inf"), ">60s"))
 
 _LOCK = threading.Lock()
 _TICKS: dict[str, deque] = {}
@@ -75,6 +77,22 @@ def reset_for_tests() -> None:
         _TICKS.clear()
         _OPEN_HINT = None
         _CACHE = None
+
+
+def delay_bucket(sec: Optional[float]) -> str:
+    if sec is None:
+        return "UNKNOWN"
+    for edge, label in DELAY_BUCKETS:
+        if sec <= edge:
+            return label
+    return "UNKNOWN"
+
+
+def _sec_between(a: Optional[str], b: Optional[str]) -> Optional[float]:
+    try:
+        return round((datetime.fromisoformat(str(b)) - datetime.fromisoformat(str(a))).total_seconds(), 3)
+    except (TypeError, ValueError):
+        return None
 
 
 def _net_pct(entry: float, price: float) -> float:
@@ -166,6 +184,11 @@ def record_stop(*, now: datetime, symbol: str, qty: int, entry_price: float, sto
             "decision_at": now.isoformat(), "decision_price": decision_price,
             "sell_requested_at": ts.get("sell_requested_at", ""), "sell_confirmed_at": ts.get("sell_confirmed_at", ""),
             "sell_reconciled_at": ts.get("sell_reconciled_at", ""),
+            # 지연 계측: 손절봉 완성(= 지금 형성 중인 봉의 시작) -> 판정 tick -> 실제 SELL 요청.
+            # 판정과 요청은 같은 tick 이라 보통 수 ms 이고, 큰 지연은 봉 완성 -> 판정 구간에서 생긴다.
+            "stop_bar_end_at": forming_bar_window(now)[0].isoformat(), "stop_decision_at": now.isoformat(),
+            "decision_to_request_ms": None, "bar_end_to_decision_sec": None, "bar_end_to_request_sec": None,
+            "delay_bucket": "UNKNOWN",
             "P70R_SHADOW": gate_info.get("status", UNAVAILABLE), "gate_why": gate_info.get("why", ""),
             "low3": gate_info.get("low3"), "rebound_pct": gate_info.get("rebound_pct"),
             # 실제 SELL 가격은 finalize 때 원장에서 다시 읽는다(그 사이 ACTUAL_FILL 로 갱신될 수 있다).
@@ -178,6 +201,11 @@ def record_stop(*, now: datetime, symbol: str, qty: int, entry_price: float, sto
             "delta_7030_pct": None, "delta_5050_pct": None, "delta_7030_krw": None, "delta_5050_krw": None,
             "done": False, "last_flush": now.isoformat(),
         }
+        d2r = _sec_between(row["stop_decision_at"], row["sell_requested_at"])
+        row["decision_to_request_ms"] = None if d2r is None else round(d2r * 1000.0, 1)
+        row["bar_end_to_decision_sec"] = _sec_between(row["stop_bar_end_at"], row["stop_decision_at"])
+        row["bar_end_to_request_sec"] = _sec_between(row["stop_bar_end_at"], row["sell_requested_at"])
+        row["delay_bucket"] = delay_bucket(row["bar_end_to_request_sec"])
         rows[key] = row
         _save(rows)
         _OPEN_HINT = True
@@ -220,6 +248,7 @@ def _finalize(r: dict) -> None:
         r[f"delta_{tag}_krw"] = round(d / 100.0 * entry * int(r["qty"]), 0)
     r["done"] = True
     fields = {"p70r_shadow": r["P70R_SHADOW"], "p70r_delta_7030_pct": r["delta_7030_pct"],
+              "p70r_sell_delay_sec": r.get("bar_end_to_request_sec"),
               "p70r_delta_5050_pct": r["delta_5050_pct"]}
     try:
         ledger.record_p70r_fields(r["order_id"], fields)
@@ -339,4 +368,20 @@ def summary(all_rows: Optional[list[dict]] = None) -> dict[str, Any]:
             out[f"delta_{tag}_ex_top2_pct"] = round(sum(ds[2:]), 3) if ds else None
             out[f"delta_{tag}_real_pct"] = round(sum(float(r[f"delta_{tag}_pct"]) for r in p if r.get("fake_stop") is False), 3)
             out[f"delta_{tag}_fake_pct"] = round(sum(float(r[f"delta_{tag}_pct"]) for r in p if r.get("fake_stop")), 3)
+    # 손절봉 완성 -> SELL 요청 지연 구간별 PASS율·성과
+    by_delay: dict[str, dict] = {}
+    for _, label in (*DELAY_BUCKETS, (None, "UNKNOWN")):
+        g_all = [r for r in rs if r.get("delay_bucket", "UNKNOWN") == label]
+        if not g_all:
+            continue
+        g_done = [r for r in done if r.get("delay_bucket", "UNKNOWN") == label]
+        n_pass = sum(1 for r in g_all if r.get("P70R_SHADOW") == PASS)
+        by_delay[label] = {
+            "stops": len(g_all), "pass": n_pass, "pass_rate": round(n_pass / len(g_all), 3),
+            "fake": sum(1 for r in g_done if r.get("fake_stop")),
+            "A_total_pct": round(sum(float(r["A_pct"]) for r in g_done), 3),
+            "delta_7030_pct": round(sum(float(r["delta_7030_pct"]) for r in g_done), 3),
+            "delta_5050_pct": round(sum(float(r["delta_5050_pct"]) for r in g_done), 3),
+        }
+    out["by_delay"] = by_delay
     return out

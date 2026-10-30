@@ -192,7 +192,7 @@ EXECUTION_LEDGER_COLUMNS = [
     "fill_granularity", "fill_details", "fill_lookup_status", "fill_lookup_at",
     # P70R SHADOW 요약 — appended 2026-10-30. N1 오전 손절 SELL 행에만, 가상 기록이
     # 끝난 뒤 record_p70r_fields() 가 채운다(읽기 전용 표시용, 주문과 무관).
-    "p70r_shadow", "p70r_delta_7030_pct", "p70r_delta_5050_pct",
+    "p70r_shadow", "p70r_delta_7030_pct", "p70r_delta_5050_pct", "p70r_sell_delay_sec",
 ]
 
 #: SELL 실제 체결 계측 컬럼.

@@ -185,6 +185,8 @@ def test_worker_n1_morning_stop_records_shadow_without_changing_the_order(monkey
     assert r["exit_reason"] == config.EXIT_TW_STOP_LOSS and r["qty"] == 10 and r["stop_pct"] == pytest.approx(-1.3)
     assert r["P70R_SHADOW"] == ps.UNAVAILABLE                      # 손절 시각 직전 3분 tick 이 없다
     assert r["sell_requested_at"] and r["sell_confirmed_at"] and r["sell_reconciled_at"]
+    assert r["stop_decision_at"] == r["decision_at"] and r["stop_bar_end_at"]
+    assert r["bar_end_to_decision_sec"] is not None and r["delay_bucket"] != ""
 
 
 def test_worker_parity_shadow_on_vs_off(monkeypatch, tmp_path):
@@ -225,3 +227,34 @@ def test_worker_b3_governed_position_stop_is_not_recorded(monkeypatch, tmp_path)
     assert [o.executed_qty for o in orders if o.side == "SELL"] == [10]
     assert f"{config.EXIT_TW_STOP_LOSS}:{SYM}" in result.actions
     assert ps.rows() == []
+
+
+def test_sell_delay_is_recorded_and_bucketed():
+    """손절봉 완성(09:15:00) -> 판정 09:15:05 -> SELL 요청 09:16:12 (10/29 실거래 모양)."""
+    _ticks([9_850.0] * 18)
+    g = ps.gate(SYM, T0, 9_910.0)
+    o = _Outcome("D1")
+    o.timestamps["sell_requested_at"] = datetime(2026, 10, 29, 9, 16, 12, 500000, tzinfo=KST).isoformat()
+    ps.record_stop(now=T0, symbol=SYM, qty=100, entry_price=10_000.0, stop_pct=-1.3, bar_net_pct=-1.4,
+                   decision_price=9_910.0, gate_info=g, outcome=o, exit_reason=config.EXIT_TW_STOP_LOSS)
+    r = _row()
+    assert r["stop_bar_end_at"] == datetime(2026, 10, 29, 9, 15, tzinfo=KST).isoformat()
+    assert r["bar_end_to_decision_sec"] == 5.0
+    assert r["decision_to_request_ms"] == 67_500.0
+    assert r["bar_end_to_request_sec"] == 72.5 and r["delay_bucket"] == ">60s"
+    assert [ps.delay_bucket(x) for x in (0.2, 10.0, 25, 59, 61, None)] == \
+           ["<=10s", "<=10s", "10-30s", "30-60s", ">60s", "UNKNOWN"]
+
+
+def test_summary_by_delay_bucket():
+    base = {"done": True, "A_pct": -1.4, "B7030_pct": -1.4, "C5050_pct": -1.4, "delta_7030_krw": 0, "delta_5050_krw": 0}
+    rows = [dict(base, trading_date="20261029", P70R_SHADOW=ps.PASS, fake_stop=True, delay_bucket=">60s",
+                 delta_7030_pct=0.6, delta_5050_pct=1.0),
+            dict(base, trading_date="20261029", P70R_SHADOW=ps.FAIL, fake_stop=False, delay_bucket="<=10s",
+                 delta_7030_pct=0.0, delta_5050_pct=0.0),
+            dict(base, trading_date="20261030", P70R_SHADOW=ps.PASS, fake_stop=False, delay_bucket="<=10s",
+                 delta_7030_pct=-0.3, delta_5050_pct=-0.5)]
+    s = ps.summary(rows)["by_delay"]
+    assert s["<=10s"] == {"stops": 2, "pass": 1, "pass_rate": 0.5, "fake": 0, "A_total_pct": -2.8,
+                          "delta_7030_pct": -0.3, "delta_5050_pct": -0.5}
+    assert s[">60s"]["pass_rate"] == 1.0 and s[">60s"]["delta_5050_pct"] == 1.0

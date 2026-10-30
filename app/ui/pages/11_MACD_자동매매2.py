@@ -1487,7 +1487,12 @@ if _p70r_sum is not None:
         st.caption("N1 오전 손절이 직전 3분 저점 대비 +0.6% 이상 반등 중일 때(PASS) 일부를 runner 로 남겼다면의 가상 결과입니다. "
                    "실제 주문은 100% 전량손절 그대로입니다.")
         _p70r_df = pd.DataFrame(_p70r_rows)
-        _p70r_cols = ["trading_date", "decision_at", "symbol", "P70R_SHADOW", "rebound_pct", "sell_price", "price_source",
+        if _p70r_sum.get("by_delay"):
+            st.markdown("손절봉 완성 → SELL 요청 지연별: " + " · ".join(
+                f"{k} {v['stops']}건 PASS {v['pass']}({v['pass_rate']:.0%}) 70/30 Δ {v['delta_7030_pct']:+.2f} "
+                f"50/50 Δ {v['delta_5050_pct']:+.2f}" for k, v in _p70r_sum["by_delay"].items()))
+        _p70r_cols = ["trading_date", "decision_at", "bar_end_to_request_sec", "delay_bucket", "symbol", "P70R_SHADOW",
+                      "rebound_pct", "sell_price", "price_source",
                       "runner_exit_reason", "delta_7030_pct", "delta_5050_pct", "fake_stop"]
         st.dataframe(_p70r_df[[c for c in _p70r_cols if c in _p70r_df.columns]].iloc[::-1],
                      use_container_width=True, hide_index=True, height=200)
