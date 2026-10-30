@@ -17,6 +17,7 @@ from app.trading.macd2 import (
     config,
     ledger,
     market_data,
+    p70r_shadow,
     sell_fill_telemetry,
     service,
     state_store,
@@ -90,6 +91,7 @@ def _isolate_macd2_state(tmp_path, monkeypatch):
     bar_ledger._reset_for_tests()
     # 2026-10-30 SELL 실제 체결 조회 대기열(프로세스 전역)도 테스트마다 비운다.
     sell_fill_telemetry.clear_pending()
+    p70r_shadow.reset_for_tests()
     yield
     bar_archive._reset_for_tests()
     bar_ledger._reset_for_tests()

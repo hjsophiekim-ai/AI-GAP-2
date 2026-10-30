@@ -71,6 +71,7 @@ from app.trading.macd2 import (
     pending_order,
     position_feed,
     position_sizing,
+    p70r_shadow,
     premarket_shadow,
     shadow_base,
     risk_exit,
@@ -4275,11 +4276,33 @@ def _advance_held_position_risk_management(
                 sell_fraction = max(0.0, min(1.0, pm_decision.sell_fraction))
                 full_exit = sell_fraction >= 1.0
                 if full_exit:
+                    # P70R SHADOW (2026-10-30, 기록 전용): 오전 래더 STOP_LOSS 의 게이트를 주문 직전
+                    # 같은 tick 에 계산만 해 둔다. 주문 수량/시각/사유는 아래 그대로다. B3 관리 포지션 제외.
+                    _p70r_gate = None
+                    if (p70r_shadow.is_enabled() and pm_decision.exit_reason == config.EXIT_TW_STOP_LOSS
+                            and (state.time_window_entry_session or "MORNING") == "MORNING" and not _p3_governs):
+                        try:
+                            _p70r_gate = p70r_shadow.gate(pos.symbol, now, quotes.get(pos.symbol))
+                        except Exception:
+                            logger.exception("[MACD2][P70R_SHADOW] 게이트 계산 실패 -- 주문 경로 무영향")
                     outcome = order_executor.execute_exit(
                         broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                         exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
                         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
                     )
+                    if _p70r_gate is not None and outcome.final_state == SignalState.EXECUTED:
+                        try:
+                            _p70r_stop = _pm_kw.get("stop_loss_pct_override")
+                            p70r_shadow.record_stop(
+                                now=now, symbol=pos.symbol, qty=int(pos.quantity), entry_price=float(pos.avg_price),
+                                stop_pct=float(time_window_position_manager.MORNING_STOP_LOSS_PCT
+                                               if _p70r_stop is None else _p70r_stop),
+                                bar_net_pct=bar_net_return, decision_price=quotes.get(pos.symbol),
+                                gate_info=_p70r_gate, outcome=outcome, exit_reason=pm_decision.exit_reason,
+                                strategy_mode=str(state.time_window_active_mode or ""),
+                            )
+                        except Exception:
+                            logger.exception("[MACD2][P70R_SHADOW] 손절 기록 실패 -- 주문 경로 무영향")
                     _apply_exit_outcome(state, outcome, exit_reason=pm_decision.exit_reason)
                     if outcome.final_state == SignalState.EXECUTED:
                         state.time_window_position_active = False
@@ -8333,6 +8356,14 @@ def run_once(
     t0 = time.monotonic()
     quotes = _fresh_quote_prices(market_data, (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL))
     result.timing["quote_cache_read"] = time.monotonic() - t0
+    # P70R SHADOW (2026-10-30, 기록 전용): 직전 3분 tick 저점용 관측 + 열린 가상 runner 전진.
+    # 주문/청산 판단은 이 값을 읽지 않는다. 열린 행이 없으면 파일을 읽지 않는다.
+    if p70r_shadow.is_enabled():
+        try:
+            p70r_shadow.observe(now, quotes)
+            p70r_shadow.update(now, quotes)
+        except Exception:
+            logger.exception("[MACD2][P70R_SHADOW] 관측/추적 실패 -- 주문 경로 무영향")
 
     # 2026-08-15 fix: FORCED_LIQUIDATION/STOP_LOSS/the time-window filter's
     # own ladder for an already-held position must never depend on

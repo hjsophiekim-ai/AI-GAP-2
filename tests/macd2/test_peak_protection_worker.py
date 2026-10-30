@@ -286,9 +286,12 @@ def test_ledger_columns_are_additive_and_gated():
         "c1_macd_hist", "c1_arm_threshold_pct", "c1_giveback_threshold_pct",
         "c1_armed_at", "c1_held_direction",
     ]
-    # 기존 컬럼은 순서·이름이 그대로고, C1 컬럼은 **맨 뒤에만** 붙는다
+    # 기존 컬럼은 순서·이름이 그대로고, C1 컬럼은 **기존 컬럼 뒤에** 연속으로 붙는다
+    # (2026-10-30: 그 뒤에 SELL 실제 체결 계측·P70R SHADOW 컬럼이 다시 덧붙었다).
     base = ledger.EXECUTION_LEDGER_COLUMNS
-    assert base[-len(ledger.C1_LEDGER_COLUMNS):] == ledger.C1_LEDGER_COLUMNS
-    assert "early_tp_floor_pct" in base[:-len(ledger.C1_LEDGER_COLUMNS)]
+    i = base.index(ledger.C1_LEDGER_COLUMNS[0])
+    assert base[i:i + len(ledger.C1_LEDGER_COLUMNS)] == ledger.C1_LEDGER_COLUMNS
+    assert "early_tp_floor_pct" in base[:i]
+    assert base[i + len(ledger.C1_LEDGER_COLUMNS):] == ledger.SELL_FILL_LEDGER_COLUMNS + ledger.P70R_LEDGER_COLUMNS
     # 원장 파일이 없으면 조용히 False (예외 없음)
     assert ledger.record_c1_fields("", {}) is False
