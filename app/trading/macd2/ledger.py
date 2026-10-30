@@ -180,7 +180,26 @@ EXECUTION_LEDGER_COLUMNS = [
     "c1_peak_net_return_pct", "c1_current_net_return_pct", "c1_giveback_pct",
     "c1_macd_hist", "c1_arm_threshold_pct", "c1_giveback_threshold_pct",
     "c1_armed_at", "c1_held_direction",
+    # SELL 실제 체결 계측 — appended 2026-10-30 (never rename/delete older
+    # cols). SELL 레그에만 채워진다(BUY 는 빈칸). price_source 가
+    # ACTUAL_FILL 이면 executed_price 는 KIS 주문번호 조회(inquire-daily-ccld)
+    # 의 실제 평균체결가, FALLBACK_QUOTE 면 기존처럼 매도 확인 직후 현재가다.
+    # 기록 시점엔 fallback 으로 쓰고, record_sell_fill_fields() 가 worker 루프에서
+    # 나중에 ACTUAL_FILL 로 갱신한다(매도 흐름을 기다리게 하지 않는다).
+    "price_source", "fallback_quote_price", "fallback_net_pnl",
+    "sell_requested_at", "sell_confirmed_at", "sell_reconciled_at", "kis_ord_tmd",
+    "fill_first_at", "fill_last_at", "fill_total_qty", "fill_avg_price", "fill_amount",
+    "fill_granularity", "fill_details", "fill_lookup_status", "fill_lookup_at",
+    # P70R SHADOW 요약 — appended 2026-10-30. N1 오전 손절 SELL 행에만, 가상 기록이
+    # 끝난 뒤 record_p70r_fields() 가 채운다(읽기 전용 표시용, 주문과 무관).
+    "p70r_shadow", "p70r_delta_7030_pct", "p70r_delta_5050_pct", "p70r_sell_delay_sec",
 ]
+
+#: SELL 실제 체결 계측 컬럼.
+SELL_FILL_LEDGER_COLUMNS = EXECUTION_LEDGER_COLUMNS[
+    EXECUTION_LEDGER_COLUMNS.index("price_source"):EXECUTION_LEDGER_COLUMNS.index("p70r_shadow")]
+#: P70R SHADOW 요약 컬럼 (EXECUTION_LEDGER_COLUMNS 의 끝부분과 같다).
+P70R_LEDGER_COLUMNS = EXECUTION_LEDGER_COLUMNS[EXECUTION_LEDGER_COLUMNS.index("p70r_shadow"):]
 
 LOGS_DIR_PATH: Path = LOGS_DIR
 SIGNAL_LEDGER_PATH: Path = LOGS_DIR_PATH / config.SIGNAL_LEDGER_FILENAME
@@ -867,6 +886,79 @@ def record_c1_fields(order_id: str, fields: dict[str, Any]) -> bool:
         for col in C1_LEDGER_COLUMNS:
             if col in fieldnames:
                 value = fields.get(col, "")
+                target[col] = "" if value is None else value
+        with open(EXECUTION_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({col: row.get(col, "") for col in fieldnames})
+        return True
+
+
+#: record_sell_fill_fields 가 SELL 계측 컬럼 외에 바꿀 수 있는 기존 컬럼(ACTUAL_FILL 일 때만).
+SELL_FILL_PRICE_COLUMNS = ("executed_price", "gross_pnl", "fee", "net_pnl")
+
+
+def record_sell_fill_fields(order_id: str, fields: dict[str, Any]) -> bool:
+    """SELL 레그 행에 KIS 실제 체결 계측값을 덧쓴다 (2026-10-30).
+
+    record_c1_fields 와 같은 원칙: side == SELL 인 행만, 이미 ACTUAL_FILL 로
+    확정된 행은 건드리지 않음(멱등), 파일/행이 없으면 False(예외 없음).
+    SELL_FILL_LEDGER_COLUMNS 와, ``fields`` 에 들어 있을 때만
+    SELL_FILL_PRICE_COLUMNS(실제 평균체결가로 다시 계산한 가격·손익)를 바꾼다.
+    order_id/수량/청산사유/timestamp 등 나머지 컬럼은 그대로 둔다.
+    """
+    if not order_id:
+        return False
+    with _EXECUTION_LOCK:
+        if not EXECUTION_LEDGER_PATH.exists():
+            return False
+        _ensure_columns(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS)
+        with open(EXECUTION_LEDGER_PATH, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        target = None
+        for row in rows:
+            if str(row.get("order_id") or "") == str(order_id) and str(row.get("side") or "").upper() == "SELL":
+                target = row
+                break
+        if target is None:
+            return False
+        if str(target.get("price_source") or "") == "ACTUAL_FILL":
+            return True  # already confirmed — idempotent no-op, file untouched
+        for col in (*SELL_FILL_LEDGER_COLUMNS, *SELL_FILL_PRICE_COLUMNS):
+            if col in fieldnames and col in fields:
+                value = fields.get(col)
+                target[col] = "" if value is None else value
+        with open(EXECUTION_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({col: row.get(col, "") for col in fieldnames})
+        return True
+
+
+def record_p70r_fields(order_id: str, fields: dict[str, Any]) -> bool:
+    """SELL 행에 P70R SHADOW 요약(PASS/FAIL, 70/30·50/50 Δ)을 덧쓴다 (2026-10-30, 표시 전용).
+    P70R_LEDGER_COLUMNS 만 바꾼다. 파일/행이 없으면 False(예외 없음)."""
+    if not order_id:
+        return False
+    with _EXECUTION_LOCK:
+        if not EXECUTION_LEDGER_PATH.exists():
+            return False
+        _ensure_columns(EXECUTION_LEDGER_PATH, EXECUTION_LEDGER_COLUMNS)
+        with open(EXECUTION_LEDGER_PATH, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        target = next((r for r in rows if str(r.get("order_id") or "") == str(order_id)
+                       and str(r.get("side") or "").upper() == "SELL"), None)
+        if target is None:
+            return False
+        for col in P70R_LEDGER_COLUMNS:
+            if col in fieldnames and col in fields:
+                value = fields.get(col)
                 target[col] = "" if value is None else value
         with open(EXECUTION_LEDGER_PATH, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)

@@ -1578,6 +1578,14 @@ T2_SHADOW_ENABLED = _env_bool("MACD2_T2_SHADOW_ENABLED", True)
 T2_SHADOW_FILENAME = "macd2_t2_shadow.json"
 T2_SHADOW_REVIEW_MIN_DAYS = 20
 T2_SHADOW_REVIEW_MIN_PASS = 20
+
+# P70R SHADOW (2026-10-30) — N1 오전 손절(완성 3분봉 −1.3%)에서 70/30·50/50 분할손절을 했다면의 가상 기록.
+# **기록 전용**: 실제 손절은 100% 전량 그대로(app/trading/macd2/p70r_shadow.py). 스크리닝(14건, 발동 7)에서
+# 상위 2건 제외 시 음수 -> PASS 20건 이상 또는 20영업일 누적 전 production 적용 금지.
+P70R_SHADOW_ENABLED = _env_bool("MACD2_P70R_SHADOW_ENABLED", True)
+P70R_SHADOW_FILENAME = "macd2_p70r_shadow.json"
+P70R_SHADOW_REVIEW_MIN_DAYS = 20
+P70R_SHADOW_REVIEW_MIN_PASS = 20
 # MU CATCH-UP (2026-10-28, 실거래 좁은 예외 — app/trading/macd2/mu_catchup.py). MU Assist 에 내장 — 별도 토글 없이
 # MU Assist 가 켜져 있으면 동작한다(XS 토글과 무관). 임계값은 연구(10/19~10/28)에서 고정한 값이며 최적화하지 않는다.
 # 비상 kill switch: MACD2_MU_CATCHUP_KILL=1 이면 판정조차 하지 않는다(= 기존 production 그대로).

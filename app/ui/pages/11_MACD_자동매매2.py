@@ -1471,6 +1471,32 @@ if _mua_now:
                 st.download_button("T2 SHADOW CSV", _t2_df.to_csv(index=False).encode("utf-8-sig"),
                                    file_name="macd2_t2_shadow.csv", mime="text/csv", key="macd2_t2_shadow_csv")
 
+# ── P70R SHADOW (2026-10-30) — N1 오전 손절의 70/30·50/50 분할손절 가상 기록, 표시 전용 ──────────
+# 실제 손절은 100% 전량 그대로다(app/trading/macd2/p70r_shadow.py). 재검증 기준 충족 전 production 적용 금지.
+try:
+    from app.trading.macd2 import p70r_shadow as _p70r
+    _p70r_rows = _p70r.rows() if _p70r.is_enabled() else []
+    _p70r_sum = _p70r.summary(_p70r_rows) if _p70r_rows else None
+except Exception:  # noqa: BLE001 -- 표시 전용
+    _p70r_rows, _p70r_sum = [], None
+if _p70r_sum is not None:
+    with st.expander(f"P70R SHADOW (기록 전용 · 주문 무관) — 손절 {_p70r_sum['stops']}건 · PASS {_p70r_sum['pass']} / "
+                     f"FAIL {_p70r_sum['fail']} · 70/30 Δ {_p70r_sum['delta_7030_pct']:+.2f}%p · "
+                     f"50/50 Δ {_p70r_sum['delta_5050_pct']:+.2f}%p"
+                     + (" · 재검증 가능" if _p70r_sum["ready_for_review"] else "")):
+        st.caption("N1 오전 손절이 직전 3분 저점 대비 +0.6% 이상 반등 중일 때(PASS) 일부를 runner 로 남겼다면의 가상 결과입니다. "
+                   "실제 주문은 100% 전량손절 그대로입니다.")
+        _p70r_df = pd.DataFrame(_p70r_rows)
+        if _p70r_sum.get("by_delay"):
+            st.markdown("손절봉 완성 → SELL 요청 지연별: " + " · ".join(
+                f"{k} {v['stops']}건 PASS {v['pass']}({v['pass_rate']:.0%}) 70/30 Δ {v['delta_7030_pct']:+.2f} "
+                f"50/50 Δ {v['delta_5050_pct']:+.2f}" for k, v in _p70r_sum["by_delay"].items()))
+        _p70r_cols = ["trading_date", "decision_at", "bar_end_to_request_sec", "delay_bucket", "symbol", "P70R_SHADOW",
+                      "rebound_pct", "sell_price", "price_source",
+                      "runner_exit_reason", "delta_7030_pct", "delta_5050_pct", "fake_stop"]
+        st.dataframe(_p70r_df[[c for c in _p70r_cols if c in _p70r_df.columns]].iloc[::-1],
+                     use_container_width=True, hide_index=True, height=200)
+
 # ── E 하루 최대 2회 토글 (2026-10-06) ──────────────────────────────────────
 # E 를 골랐을 때만 보인다. 켜면 E 의 하루 신규진입 한도가 3 -> 2 (3번째 신규진입만
 # 막힌다). 진입/폐기/RS/청산 로직은 그대로다. N1/P3 에서는 효력이 없다.

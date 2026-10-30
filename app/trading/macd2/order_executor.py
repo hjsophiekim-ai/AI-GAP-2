@@ -23,6 +23,7 @@ from app.trading.kis_realized import kis_reported_leg_cost
 from app.trading.macd2 import config, ledger
 from app.trading.macd2 import order_execution_v2 as exec_v2
 from app.trading.macd2 import partial_fill_reprice as pf_reprice
+from app.trading.macd2 import sell_fill_telemetry
 from app.trading.macd2.broker_adapter import BrokerOrderResult, BuySizingQuote
 from app.trading.macd2.models import Direction, PositionSnapshot, SignalState
 from app.trading.trading_cost_engine import TradeCostEngine
@@ -336,7 +337,7 @@ def _record_leg(
     price: float, position_before: int, position_after: int, exit_reason: str,
     order_result: BrokerOrderResult, entry_price: float, confirmed_at: str,
     requested_qty: Optional[int] = None, ledger_module: Any = None,
-    source: Optional[str] = None,
+    source: Optional[str] = None, sell_telemetry: Optional[dict] = None,
 ) -> None:
     """``qty`` is the REAL (reconciled) quantity that changed hands — used for
     fee/PnL math and the ledger's own ``executed_qty`` column (never the
@@ -352,7 +353,12 @@ def _record_leg(
     byte-for-byte unaffected. A caller outside macd2 (e.g. mu_macd's worker,
     which reuses this generic executor) passes its OWN ledger module here so
     its executions land in its own execution ledger file instead of
-    silently writing into macd2's."""
+    silently writing into macd2's.
+
+    ``sell_telemetry`` (2026-10-30, SELL 실제 체결 계측 -- 기록 전용) -- SELL 레그의
+    price_source / sell_*_at / fallback_quote_price. SELL 이면 주문번호를
+    sell_fill_telemetry 대기열에 넣어 worker 루프가 나중에 실제 평균체결가로 갱신한다.
+    가격·손익 계산 자체는 이 값과 무관하게 기존과 같다."""
     lm = ledger_module if ledger_module is not None else ledger
     cost_engine = TradeCostEngine()
     # 매수/매도 모두 같은 우선순위로 실현비용을 구한다: KIS 가 그 레그의 실제
@@ -387,7 +393,51 @@ def _record_leg(
         "gross_pnl": gross_pnl, "fee": fee, "slippage": slippage, "net_pnl": net_pnl,
         "exit_reason": exit_reason, "broker_response": str(order_result.raw),
         "source": source or "",
+        **(_sell_telemetry_columns(sell_telemetry, order_result, net_pnl, lm) if side == "SELL" else {}),
     })
+    if side == "SELL" and _sell_lookup_wanted(sell_telemetry, order_result, lm):
+        sell_fill_telemetry.register(
+            order_id=order_result.order_id, symbol=symbol, qty=qty, entry_price=entry_price,
+            raw=getattr(order_result, "raw", None), mode=broker_mode,
+        )
+
+
+def _sell_telemetry_columns(sell_telemetry: Optional[dict], order_result, net_pnl: float, lm) -> dict:
+    """SELL 레그 계측 컬럼(기록 전용). 주문조회 대기열에 들어가는 행만 PENDING 이다."""
+    t = dict(sell_telemetry or {})
+    queued = _sell_lookup_wanted(sell_telemetry, order_result, lm)
+    return {
+        "price_source": t.get("price_source") or sell_fill_telemetry.PRICE_SOURCE_FALLBACK_QUOTE,
+        "fallback_quote_price": t.get("fallback_quote_price", ""),
+        "fallback_net_pnl": net_pnl,
+        "sell_requested_at": t.get("sell_requested_at", ""),
+        "sell_confirmed_at": t.get("sell_confirmed_at", ""),
+        "sell_reconciled_at": t.get("sell_reconciled_at", ""),
+        "kis_ord_tmd": sell_fill_telemetry.ord_tmd_of(getattr(order_result, "raw", None)),
+        "fill_lookup_status": t.get("fill_lookup_status") or (sell_fill_telemetry.LOOKUP_PENDING if queued else ""),
+    }
+
+
+def _sell_lookup_wanted(sell_telemetry: Optional[dict], order_result, lm) -> bool:
+    """실제 체결 조회 대기열 대상: macd2 원장 + 주문번호 있음 + 아직 실제 체결가가 아님."""
+    source = str((sell_telemetry or {}).get("price_source") or "")
+    return (lm is ledger and bool(order_result.order_id)
+            and source != sell_fill_telemetry.PRICE_SOURCE_ACTUAL_FILL)
+
+
+def _sell_price_with_source(sell_result, broker, symbol: str, last_resort: float) -> tuple[float, dict]:
+    """기존 SELL 가격 우선순위 그대로(주문응답 체결가 > 매도 직후 현재가 > last_resort)
+    + 어느 값이 쓰였는지(price_source)를 함께 돌려준다. 가격 값은 2026-10-30 이전과 동일."""
+    if sell_result.executed_price:
+        return sell_result.executed_price, {"price_source": sell_fill_telemetry.PRICE_SOURCE_ORDER_RESPONSE}
+    quote = _fallback_sell_price(broker, symbol)
+    if quote:
+        return quote, {"price_source": sell_fill_telemetry.PRICE_SOURCE_FALLBACK_QUOTE, "fallback_quote_price": quote}
+    return last_resort, {"price_source": sell_fill_telemetry.PRICE_SOURCE_FALLBACK_ENTRY}
+
+
+def _sell_timestamps(timestamps: dict) -> dict:
+    return {k: timestamps.get(k, "") for k in ("sell_requested_at", "sell_confirmed_at", "sell_reconciled_at")}
 
 
 def _fallback_sell_price(broker, symbol: str) -> Optional[float]:
@@ -465,7 +515,8 @@ def _attempt_residual_cleanup(
     exit leg it follows, exactly like a RECONCILE_BACKFILL/BROKER_DIRECT
     continuation row, so it is never shown or counted as its own separate
     round-trip trade."""
-    client_order_id = f"RESIDUAL_CLEANUP:{symbol}:{_now_iso()}"
+    requested_at = _now_iso()
+    client_order_id = f"RESIDUAL_CLEANUP:{symbol}:{requested_at}"
     sell_result = broker.sell_market(symbol, residual_qty, client_order_id)
     if not sell_result.success:
         return None
@@ -477,10 +528,11 @@ def _attempt_residual_cleanup(
     )
     if qty_after != target_qty:
         return None
-    price = sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price
+    price, telemetry = _sell_price_with_source(sell_result, broker, symbol, entry_price)
+    telemetry.update(sell_requested_at=requested_at, sell_confirmed_at=confirmed_at, sell_reconciled_at=_now_iso())
     return {
         "qty": residual_qty, "price": price, "qty_after": qty_after,
-        "sell_result": sell_result, "confirmed_at": confirmed_at,
+        "sell_result": sell_result, "confirmed_at": confirmed_at, "telemetry": telemetry,
     }
 
 
@@ -964,17 +1016,16 @@ def execute_signal(
                 release_claim(signal_id, "SELL")
             return outcome
 
+        sell_price, sell_telemetry = _sell_price_with_source(
+            sell_result, broker, held_symbol, position.avg_price if position else 0.0,
+        )
         _record_leg(
             broker_mode=broker.mode, signal_id=signal_id, symbol=held_symbol, side="SELL",
-            qty=held_qty,
-            price=(
-                sell_result.executed_price
-                or _fallback_sell_price(broker, held_symbol)
-                or (position.avg_price if position else 0.0)
-            ),
+            qty=held_qty, price=sell_price,
             position_before=held_qty, position_after=0, exit_reason=config.EXIT_OPPOSITE_SIGNAL,
             order_result=sell_result, entry_price=position.avg_price if position else 0.0,
             confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
+            sell_telemetry={**sell_telemetry, **_sell_timestamps(timestamps)},
         )
 
     timestamps["sizing_started_at"] = _now_iso()
@@ -1365,13 +1416,15 @@ def execute_exit(
                                 else FAIL_SELL_NOT_CONFIRMED)
         return outcome
 
+    sell_price, sell_telemetry = _sell_price_with_source(sell_result, broker, symbol, entry_price)
     _record_leg(
         broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=quantity,
-        price=sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price,
+        price=sell_price,
         position_before=quantity + (residual["qty"] if residual else 0),
         position_after=(residual["qty"] if residual else 0),
         exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
         confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
+        sell_telemetry={**sell_telemetry, **_sell_timestamps(timestamps)},
     )
     if residual is not None:
         _record_leg(
@@ -1379,7 +1432,7 @@ def execute_exit(
             price=residual["price"], position_before=residual["qty"], position_after=0,
             exit_reason=f"{exit_reason}_RESIDUAL_CLEANUP", order_result=residual["sell_result"],
             entry_price=entry_price, confirmed_at=residual["confirmed_at"], ledger_module=ledger_module,
-            source=config.RESIDUAL_CLEANUP_SOURCE,
+            source=config.RESIDUAL_CLEANUP_SOURCE, sell_telemetry=residual["telemetry"],
         )
         outcome.residual_cleanup_qty = residual["qty"]
     outcome.final_state = SignalState.EXECUTED
@@ -1465,13 +1518,15 @@ def execute_partial_exit(
                                 else FAIL_SELL_NOT_CONFIRMED)
         return outcome
 
+    sell_price, sell_telemetry = _sell_price_with_source(sell_result, broker, symbol, entry_price)
     _record_leg(
         broker_mode=broker.mode, signal_id="", symbol=symbol, side="SELL", qty=sell_qty,
-        price=sell_result.executed_price or _fallback_sell_price(broker, symbol) or entry_price,
+        price=sell_price,
         position_before=sell_qty + remaining_qty + (residual["qty"] if residual else 0),
         position_after=remaining_qty + (residual["qty"] if residual else 0),
         exit_reason=exit_reason, order_result=sell_result, entry_price=entry_price,
         confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
+        sell_telemetry={**sell_telemetry, **_sell_timestamps(timestamps)},
     )
     if residual is not None:
         _record_leg(
@@ -1479,7 +1534,7 @@ def execute_partial_exit(
             price=residual["price"], position_before=residual["qty"] + remaining_qty, position_after=remaining_qty,
             exit_reason=f"{exit_reason}_RESIDUAL_CLEANUP", order_result=residual["sell_result"],
             entry_price=entry_price, confirmed_at=residual["confirmed_at"], ledger_module=ledger_module,
-            source=config.RESIDUAL_CLEANUP_SOURCE,
+            source=config.RESIDUAL_CLEANUP_SOURCE, sell_telemetry=residual["telemetry"],
         )
         outcome.residual_cleanup_qty = residual["qty"]
     outcome.final_state = SignalState.EXECUTED

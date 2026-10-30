@@ -71,9 +71,11 @@ from app.trading.macd2 import (
     pending_order,
     position_feed,
     position_sizing,
+    p70r_shadow,
     premarket_shadow,
     shadow_base,
     risk_exit,
+    sell_fill_telemetry,
     sideways_filter,
     single_entry_filter,
     small_whipsaw_hold,
@@ -2246,6 +2248,11 @@ def _protective_exit_during_position_data_error(*, broker, state: RuntimeState, 
 
 def _safe_exit_fill_price(broker, se: dict) -> float:
     """SAFE EXIT 매도의 실제 체결가: 당일 체결조회(주문번호 일치) > 주문 응답 > 현재가 > 평단."""
+    return _safe_exit_fill_price_with_source(broker, se)[0]
+
+
+def _safe_exit_fill_price_with_source(broker, se: dict) -> tuple[float, str]:
+    """_safe_exit_fill_price 와 같은 값 + 그 값의 출처(price_source, 2026-10-30 계측)."""
     order_id = str(se.get("order_id") or "")
     getter = getattr(broker, "get_today_fills", None)
     if order_id and getter is not None:
@@ -2261,17 +2268,19 @@ def _safe_exit_fill_price(broker, se: dict) -> float:
                     except (TypeError, ValueError):
                         v = 0.0
                     if v > 0:
-                        return v
+                        return v, sell_fill_telemetry.PRICE_SOURCE_ACTUAL_FILL
     if float(se.get("executed_price") or 0.0) > 0:
-        return float(se["executed_price"])
+        return float(se["executed_price"]), sell_fill_telemetry.PRICE_SOURCE_ORDER_RESPONSE
     quote = order_executor._fallback_sell_price(broker, str(se.get("symbol") or ""))
-    return float(quote or se.get("avg_price") or 0.0)
+    if quote:
+        return float(quote), sell_fill_telemetry.PRICE_SOURCE_FALLBACK_QUOTE
+    return float(se.get("avg_price") or 0.0), sell_fill_telemetry.PRICE_SOURCE_FALLBACK_ENTRY
 
 
 def _safe_exit_record_leg(broker, state: RuntimeState, se: dict, *, sold_qty: int,
                           position_before: int, position_after: int, now: datetime) -> None:
     """실제 주문번호로 SELL 레그를 기록한다 (추정 RECONCILE 행이 아니다)."""
-    price = _safe_exit_fill_price(broker, se)
+    price, price_source = _safe_exit_fill_price_with_source(broker, se)
     order_result = BrokerOrderResult(
         True, str(se.get("order_id") or ""), str(se.get("symbol") or ""), "SELL",
         int(se.get("qty") or 0), int(sold_qty), float(price), "SAFE_EXIT",
@@ -2284,6 +2293,11 @@ def _safe_exit_record_leg(broker, state: RuntimeState, se: dict, *, sold_qty: in
         exit_reason=str(se.get("exit_reason") or config.EXIT_OPPOSITE_SIGNAL), order_result=order_result,
         entry_price=float(se.get("avg_price") or 0.0), confirmed_at=now.isoformat(),
         source=SAFE_EXIT_SOURCE,
+        sell_telemetry={
+            "price_source": price_source,
+            "fallback_quote_price": price if price_source == sell_fill_telemetry.PRICE_SOURCE_FALLBACK_QUOTE else "",
+            "sell_requested_at": str(se.get("submitted_at") or ""), "sell_reconciled_at": now.isoformat(),
+        },
     )
     se["recorded_qty"] = int(se.get("recorded_qty") or 0) + int(sold_qty)
     se["fill_price"] = float(price)
@@ -4262,11 +4276,33 @@ def _advance_held_position_risk_management(
                 sell_fraction = max(0.0, min(1.0, pm_decision.sell_fraction))
                 full_exit = sell_fraction >= 1.0
                 if full_exit:
+                    # P70R SHADOW (2026-10-30, 기록 전용): 오전 래더 STOP_LOSS 의 게이트를 주문 직전
+                    # 같은 tick 에 계산만 해 둔다. 주문 수량/시각/사유는 아래 그대로다. B3 관리 포지션 제외.
+                    _p70r_gate = None
+                    if (p70r_shadow.is_enabled() and pm_decision.exit_reason == config.EXIT_TW_STOP_LOSS
+                            and (state.time_window_entry_session or "MORNING") == "MORNING" and not _p3_governs):
+                        try:
+                            _p70r_gate = p70r_shadow.gate(pos.symbol, now, quotes.get(pos.symbol))
+                        except Exception:
+                            logger.exception("[MACD2][P70R_SHADOW] 게이트 계산 실패 -- 주문 경로 무영향")
                     outcome = order_executor.execute_exit(
                         broker=broker, symbol=pos.symbol, quantity=pos.quantity,
                         exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
                         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
                     )
+                    if _p70r_gate is not None and outcome.final_state == SignalState.EXECUTED:
+                        try:
+                            _p70r_stop = _pm_kw.get("stop_loss_pct_override")
+                            p70r_shadow.record_stop(
+                                now=now, symbol=pos.symbol, qty=int(pos.quantity), entry_price=float(pos.avg_price),
+                                stop_pct=float(time_window_position_manager.MORNING_STOP_LOSS_PCT
+                                               if _p70r_stop is None else _p70r_stop),
+                                bar_net_pct=bar_net_return, decision_price=quotes.get(pos.symbol),
+                                gate_info=_p70r_gate, outcome=outcome, exit_reason=pm_decision.exit_reason,
+                                strategy_mode=str(state.time_window_active_mode or ""),
+                            )
+                        except Exception:
+                            logger.exception("[MACD2][P70R_SHADOW] 손절 기록 실패 -- 주문 경로 무영향")
                     _apply_exit_outcome(state, outcome, exit_reason=pm_decision.exit_reason)
                     if outcome.final_state == SignalState.EXECUTED:
                         state.time_window_position_active = False
@@ -8320,6 +8356,14 @@ def run_once(
     t0 = time.monotonic()
     quotes = _fresh_quote_prices(market_data, (config.WATCH_SYMBOL, config.LONG_SYMBOL, config.INVERSE_SYMBOL))
     result.timing["quote_cache_read"] = time.monotonic() - t0
+    # P70R SHADOW (2026-10-30, 기록 전용): 직전 3분 tick 저점용 관측 + 열린 가상 runner 전진.
+    # 주문/청산 판단은 이 값을 읽지 않는다. 열린 행이 없으면 파일을 읽지 않는다.
+    if p70r_shadow.is_enabled():
+        try:
+            p70r_shadow.observe(now, quotes)
+            p70r_shadow.update(now, quotes)
+        except Exception:
+            logger.exception("[MACD2][P70R_SHADOW] 관측/추적 실패 -- 주문 경로 무영향")
 
     # 2026-08-15 fix: FORCED_LIQUIDATION/STOP_LOSS/the time-window filter's
     # own ladder for an already-held position must never depend on
@@ -9845,6 +9889,13 @@ class Macd2Worker:
                 t_stage = time.monotonic()
                 self._save_state(state)
                 stage_timing["state_save"] = time.monotonic() - t_stage
+                # 2026-10-30: SELL 실제 체결 계측(기록 전용) -- 매매 판단이 끝난 뒤, tick 당 최대 1건.
+                t_stage = time.monotonic()
+                try:
+                    sell_fill_telemetry.process_pending(self._broker)
+                except Exception:  # pragma: no cover - process_pending 자체가 예외를 삼킨다
+                    logger.exception("[MACD2][SELL_FILL] 계측 실패 -- tick 은 계속한다")
+                stage_timing["sell_fill_lookup"] = time.monotonic() - t_stage
                 with self._lock:
                     self._last_exception = None
             except Exception as exc:

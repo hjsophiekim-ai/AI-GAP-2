@@ -984,7 +984,17 @@ class KISClient:
             r = rows[0]
             filled = _to_int(_first_present(r, "tot_ccld_qty", "ccld_qty"), 0)
             cncl_qty = _to_int(_first_present(r, "cncl_cfrm_qty"), 0)
+            # 2026-10-30: SELL 실제 체결 계측용 원값. 이 TR 은 주문 1건을 보통 1행(누적 체결수량·평균가)으로
+            # 돌려준다 -- 분할체결 건별 시각/가격은 없다. 시각 필드(*tmd)는 KIS 가 준 그대로 남긴다.
+            fill_rows = [{
+                "qty": _to_int(_first_present(x, "tot_ccld_qty", "ccld_qty"), 0),
+                "avg_price": _to_float(_first_present(x, "avg_prvs"), 0.0),
+                "amount": _to_float(_first_present(x, "tot_ccld_amt"), 0.0),
+                "times": {k: str(v) for k, v in x.items() if str(k).lower().endswith("tmd") and str(v or "").strip()},
+            } for x in rows]
             return {**base, "ok": True, "found": True,
+                    "ord_tmd": str(_first_present(r, "ord_tmd", default="") or ""),
+                    "fill_rows": fill_rows,
                     "symbol": _first_present(r, "pdno", default=symbol or ""),
                     "order_qty": _to_int(_first_present(r, "ord_qty"), 0),
                     "filled_qty": filled,
