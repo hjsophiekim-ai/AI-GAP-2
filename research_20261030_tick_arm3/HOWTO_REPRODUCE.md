@@ -128,3 +128,55 @@ tag 대응 (`{ARM3_OUT}/{tag}_{YYYYMMDD}.json`):
 
 **주의**: 2.1 절의 N1 지표는 `N1_A`(MU Assist 없음)이고, 4.3 절의 ②는 `N1X_A`(MU Assist+XS)다.
 서로 다른 구성이므로 숫자를 섞으면 안 된다.
+
+---
+
+## ④ 추세약화 확인형 보호 (W1 / W2) — 2026-10-31 후속
+
+```bash
+python research_20261030_tick_arm3/scripts/h0_make.py          # 하네스 재생성 (W1/W2 포함)
+
+# 회귀: 새 하네스가 어제 SOFT 와 같은지 (주문 8건 동일해야 한다)
+python .../r1_run.py --harness ARM3 --var ARM3 --tag CHK_SOFT_REG \
+  --env WK_MODE=CHOP --env WK_MUA=1 --env WK_XS=1 --env WK_ARM=SOFT --env WK_TICKPX=1 20261029
+
+# 본 검정 — 보호선이 ARM 후보가 되는 날만 (나머지는 W ≡ A 가 코드상 보장)
+for v in W1 W2; do
+  python .../r1_run.py --harness ARM3 --var ARM3 --tag CHOPX_$v \
+    --env WK_MODE=CHOP --env WK_MUA=1 --env WK_XS=1 --env WK_ARM=$v --env WK_TICKPX=1 -j 3 \
+    20261021 20261023 20261026 20261028 20261029
+  python .../r1_run.py --harness ARM3 --var ARM3 --tag N1_$v \
+    --env WK_MODE=N1 --env WK_MUA=0 --env WK_XS=0 --env WK_ARM=$v --env WK_TICKPX=1 -j 3 \
+    20261019 20261021 20261023 20261029
+done
+python .../a4_fill.py --strat CHOPX --variants W1 W2
+python .../a4_fill.py --strat N1    --variants W1 W2
+python .../a2_metrics.py A=CHOPX_A B=CHOPX_B C=CHOPX_C W1=CHOPX_W1 W2=CHOPX_W2 --days ... --label CHOP
+python .../a6_weak.py --strat CHOPX --variants A B W1 W2      # 발동 전수 + 신호별 횟수
+
+# 한 거래의 신호 타임라인 (20초 격자, 오프라인 재구성)
+python .../a7_trace.py --day 20261029 --entry 09:59:20 --tag CHOPX_A
+python .../a7_trace.py --day 20261028 --entry 09:48:20 --tag CHOPX_A
+```
+
+### 약화신호 6종 — 전부 production 계산기 재사용, 미래 데이터 없음
+
+| 신호 | 구현 | 데이터 범위 |
+|---|---|---|
+| ① MACD gap 축소 | `time_window_filter._gap_series()` 보유방향 부호, 최신 완성봉 < 직전 완성봉 | `signal_engine.resample_completed_3m(now)` |
+| ② MU 약화 | `mu_assist.evaluate_pattern()` 앵커 `now−5분` 롤링. 보유 중 CONFIRM 을 본 적 있고 현재 STALL/DIVERGE | `load_mu_1m` 이 끝난 1분봉만 |
+| ③ 체결강도 약화 | `exec_strength.evaluate(보유방향, now)` == MISMATCH (기준 100 고정) | 직전 60초 1초 스냅샷 |
+| ④ 0.5%p 반납 | `peak − 현재 틱 순수익 >= 0.5` | 1초 스냅샷 (now 이하) |
+| ⑤ VWAP 우위상실 | `major_flag_filter._session_vwap()` 대비 3분봉 종가 **또는** 직전 1분봉 종가가 불리 | 완성봉만 |
+| ⑥ 반대플래그 미확정 | `_persist_tw2_3slot_decision` 추적 — `TIME_WINDOW_PENDING_CONFIRMATION` 이면 pending | 판정 시점 원장 |
+
+판정 불가(결측/stale/예외)는 전부 **False**(신호 없음). 보호선 사다리는 SOFT 와 **동일**하고
+달라진 것은 **활성화 조건 하나뿐**이다(임계값 추가 없음).
+
+### 함정 (추가)
+
+7. **`a4_fill.py` 는 A 산출을 그 tag 이름으로 복사한다.** 복사본은 `arm.filled=true` 가 찍힌다.
+   `a6_weak.py` 의 `arm3` 로그는 복사본에도 A 것이 그대로 들어가므로, **발동 전수는 실제 재생한
+   날에서만 읽어야 한다**(생략일은 애초에 ARM 후보가 아니라 로그가 비어 있다).
+8. **`a6_weak.py` 는 같은 날 여러 거래에 같은 ARM 이벤트를 붙여 보여준다**(종목 기준 매칭).
+   정확한 거래별 귀속은 `a7_trace.py` 로 확인한다.

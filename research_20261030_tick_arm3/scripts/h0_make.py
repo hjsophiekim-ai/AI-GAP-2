@@ -41,7 +41,12 @@ _CUKILL = os.environ.get("WK_CUKILL", "0") == "1"
 _ARM_LADDER = {
     "SOFT":   ((4.0, 2.5), (3.5, 2.0), (3.0, 1.5)),
     "MEDIUM": ((4.0, 3.0), (3.5, 2.5), (3.0, 2.0)),
+    # 2026-10-31 후속: 추세약화 확인형. 사다리는 SOFT 와 같고 **활성화 조건만** 다르다.
+    "W1":     ((4.0, 2.5), (3.5, 2.0), (3.0, 1.5)),
+    "W2":     ((4.0, 2.5), (3.5, 2.0), (3.0, 1.5)),
 }
+#: 보호 활성화에 필요한 추세약화 신호 개수. 0 = +3% 도달 즉시 활성(기존 SOFT/MEDIUM).
+_ARM_NEED = {"SOFT": 0, "MEDIUM": 0, "W1": 1, "W2": 2}
 
 
 def _arm_line(peak):
@@ -263,29 +268,136 @@ ARM_BLOCK = '''    STATE["s"] = state
     _wrap(worker, "_mu_xs_strong", lambda r, a, k: _glog(
         "XS_STRONG", sid=(a[1] if len(a) > 1 else None), strong=bool(r), cttr=(r or {}).get("cttr")))
     _wrap(worker, "_mu_xs_teg_override", lambda r, a, k: _glog("XS_TEG_OVERRIDE", applied=bool(r)))
-    _wrap(worker, "_persist_tw2_3slot_decision", lambda r, a, k: _glog(
-        "DECISION", sid=a[2] if len(a) > 2 else None, approved=bool(a[1].approved),
-        decision=a[1].decision, block=a[1].block_reason, metrics=dict(a[1].metrics or {})))
+    def _rec_decision(r, a, k):
+        """T+3 판정 기록 + 신호 ⑥(반대 플래그 T+3 확정 전) 상태 갱신.
 
-    # ── 2026-10-30 ARM3 ② +3% 틱 수익보호선 (B=SOFT / C=MEDIUM) ────────────
+        `TIME_WINDOW_PENDING_CONFIRMATION` 이면 그 플래그는 아직 T+3 확정 전이다.
+        같은 signal_id 로 그 밖의 판정이 오면(승인/거절) 확정된 것이므로 지운다."""
+        dec, sid = a[1], (a[2] if len(a) > 2 else "")
+        _glog("DECISION", sid=sid, approved=bool(dec.approved), decision=dec.decision,
+              block=dec.block_reason, metrics=dict(dec.metrics or {}))
+        base = str(sid or "").split(":")[0]
+        if not base:
+            return
+        if str(dec.block_reason or "") == config.TW_PENDING_CONFIRMATION:
+            OPP_PENDING[base] = "UP_RED" if base.endswith("UP_RED") else "DOWN_BLUE"
+        else:
+            OPP_PENDING.pop(base, None)
+    _wrap(worker, "_persist_tw2_3slot_decision", _rec_decision)
+
+    # ── ARM3 ② +3% 틱 수익보호선 ──────────────────────────────────────────
+    #   SOFT(B)/MEDIUM(C) : 2026-10-30. +3% 도달 **즉시** 보호 활성.
+    #   W1 / W2           : 2026-10-31 후속. +3% 도달은 **ARM 후보**일 뿐이고,
+    #                       추세약화 신호가 1개(W1) / 2개(W2) 확인될 때만 보호를 켠다.
     # 기존 청산(TP/SL/C1/B3/H50/반대신호/시간/15:00)은 한 줄도 바꾸지 않는다.
     # 같은 tick 에 기존 청산이 발동하면 그쪽이 이긴다 — 이 블록은 기존 위험관리가
     # 아무것도 하지 않은 tick 에서만 판정한다("먼저 발생한 것 적용").
-    ARM = {"epoch": None, "peak": 0.0, "line": None, "prev_t": None}
+    ARM = {"epoch": None, "peak": 0.0, "line": None, "prev_t": None,
+           "cand": False, "active": False, "mu_confirm": False, "sigs": ()}
     ARM3LOG = []
     ARM_REASON = "TICK_ARM3_STOP"
+    #: 반대방향 플래그가 T+3 확정 전인지 — 게이트 추적 wrapper 가 갱신한다(신호 ⑥).
+    OPP_PENDING = {}
 
-    if _ARM in ("SOFT", "MEDIUM"):
+    if _ARM in _ARM_LADDER:
+        from app.trading.macd2 import major_flag_filter as _mff
+        from app.trading.macd2 import mu_assist as _muw
         from app.trading.macd2 import order_executor as _oex
+        from app.trading.macd2 import signal_engine as _sew
+        from app.trading.macd2 import time_window_filter as _twfw
+        from app.trading.macd2.models import Direction as _Dir
         from app.trading.macd2.models import SignalState as _SS
+        _NEED = _ARM_NEED.get(_ARM, 0)
         _o_rm = worker._advance_held_position_risk_management
+        _WCACHE = {"min": None, "bars": None, "mu": None}
+
+        def _held_dir(sym):
+            return _Dir.UP_RED if sym == config.LONG_SYMBOL else _Dir.DOWN_BLUE
+
+        def _bars_now(now):
+            """판정시점까지 **완성된** 3분봉만 (production resample 그대로). 분 단위 캐시."""
+            m = now.replace(second=0, microsecond=0)
+            if _WCACHE["min"] != m:
+                _WCACHE["min"] = m
+                _WCACHE["mu"] = None
+                try:
+                    _WCACHE["bars"] = _mff._prepare_bars(
+                        _sew.resample_completed_3m(svc.get_history_df(), now=now))
+                except Exception:
+                    _WCACHE["bars"] = None
+            return _WCACHE["bars"]
+
+        def _mu_pattern(now, dirn):
+            """롤링 MU 패턴. 앵커를 now-5분에 두면 production evaluate_pattern 의 T+2 창이
+            정확히 '지금'이 된다 — 끝난 1분봉만 보므로 미래 데이터가 들어가지 않는다."""
+            if _WCACHE["mu"] is None:
+                try:
+                    ser = _muw.load_mu_1m(now, config.MU_ASSIST_DATA_DIR or None)
+                    anchor = now.replace(second=0, microsecond=0) - timedelta(minutes=5)
+                    _WCACHE["mu"] = str(_muw.evaluate_pattern(ser, dirn, anchor).get("mu_pattern_state"))
+                except Exception:
+                    _WCACHE["mu"] = _muw.PATTERN_UNAVAILABLE
+            return _WCACHE["mu"]
+
+        def _weak_signals(now, sym, cur_net):
+            """추세약화 신호 6종. 전부 판정시점까지 확보된 데이터만 쓴다. 판정 불가는 False."""
+            dirn = _held_dir(sym)
+            sgn = 1.0 if dirn == _Dir.UP_RED else -1.0
+            work = _bars_now(now)
+            out = {}
+            # ① HY 3분 MACD gap 이 직전 봉 대비 축소 (보유방향 부호)
+            g_now = g_prev = None
+            try:
+                ser = _twfw._gap_series(work) if work is not None else None
+                if ser is not None and len(ser) >= 2:
+                    g_now = float(ser["gap"].iloc[-1]) * sgn
+                    g_prev = float(ser["gap"].iloc[-2]) * sgn
+            except Exception:
+                pass
+            out["s1_gap_shrink"] = bool(g_now is not None and g_prev is not None and g_now < g_prev)
+            # ② MU 가 CONFIRM 을 봤다가 STALL/DIVERGE 로 약화
+            pat = _mu_pattern(now, dirn)
+            if pat == _muw.PATTERN_CONFIRM:
+                ARM["mu_confirm"] = True
+            out["s2_mu_weak"] = bool(ARM["mu_confirm"]
+                                     and pat in (_muw.PATTERN_STALL, _muw.PATTERN_DIVERGE))
+            # ③ 체결강도가 보유방향에서 약화 (production 정의 그대로, 기준 100 고정)
+            try:
+                cs = _xs.evaluate(dirn, now)
+                out["s3_cttr_weak"] = bool(cs["state"] == _xs.MISMATCH)
+            except Exception:
+                out["s3_cttr_weak"] = False
+            # ④ 최근 틱 고점 대비 0.5%p 이상 반납
+            out["s4_giveback"] = bool(cur_net is not None and (ARM["peak"] - cur_net) >= 0.5)
+            # ⑤ 1분봉 **또는** 3분봉이 VWAP 방향 우위를 잃음 (production _session_vwap 재사용)
+            lost = False
+            try:
+                if work is not None and len(work):
+                    vw = _mff._session_vwap(work)
+                    v = float(vw.iloc[-1]) if len(vw) and pd.notna(vw.iloc[-1]) else None
+                    if v and v > 0:
+                        c3 = float(work["close"].iloc[-1])
+                        lost = (c3 < v) if dirn == _Dir.UP_RED else (c3 > v)
+                        if not lost:
+                            d1 = svc.get_history_df()
+                            if d1 is not None and len(d1):
+                                c1 = float(d1["close"].iloc[-1])
+                                lost = (c1 < v) if dirn == _Dir.UP_RED else (c1 > v)
+            except Exception:
+                pass
+            out["s5_vwap_lost"] = bool(lost)
+            # ⑥ 반대방향 플래그가 떴지만 아직 T+3 확정 전
+            opp = "DOWN_BLUE" if dirn == _Dir.UP_RED else "UP_RED"
+            out["s6_opp_pending"] = any(v == opp for v in OPP_PENDING.values())
+            return out
 
         def _arm_rm(*, broker, state, market_data, now, quotes, pos, result):
             fired = _o_rm(broker=broker, state=state, market_data=market_data, now=now,
                           quotes=quotes, pos=pos, result=result)
             ep = int(getattr(state, "position_epoch", 0) or 0)
             if ARM["epoch"] != ep:
-                ARM.update(epoch=ep, peak=0.0, line=None, prev_t=None)
+                ARM.update(epoch=ep, peak=0.0, line=None, prev_t=None,
+                           cand=False, active=False, mu_confirm=False, sigs=())
             if fired or state.position is None or int(state.position.quantity or 0) <= 0:
                 return fired
             sym, avg, qty = pos.symbol, float(pos.avg_price), int(pos.quantity)
@@ -295,25 +407,50 @@ ARM_BLOCK = '''    STATE["s"] = state
             w = _tick_window(sym, t0, now)
             if w is not None:
                 hi = float(w["price"].max())
+                last = float(w["price"].iloc[-1])
                 lo_bid = float(w["best_bid"].min()) if w["best_bid"].notna().any() else None
             else:
                 cur = quotes.get(sym) or px(sym, now)
-                hi = float(cur) if cur else None
+                hi = last = (float(cur) if cur else None)
                 lo_bid = BOOKQ.get(sym, (None, None))[0]
             if hi is not None:
                 ARM["peak"] = max(ARM["peak"], worker._net_return_pct(sym, avg, hi, qty))
+            cur_net = worker._net_return_pct(sym, avg, last, qty) if last is not None else None
+            # ── 활성화 판정 ─────────────────────────────────────────────────
+            if not ARM["active"]:
+                if _arm_line(ARM["peak"]) is None:
+                    return fired                       # 아직 +3% 미도달
+                if not ARM["cand"]:
+                    ARM["cand"] = True
+                    ARM3LOG.append(dict(k="CAND", t=now.isoformat(), sym=sym,
+                                        peak=round(ARM["peak"], 4), epoch=ep))
+                if _NEED <= 0:
+                    ARM["active"], ARM["sigs"] = True, ()
+                else:
+                    sg = _weak_signals(now, sym, cur_net)
+                    hits = tuple(k for k, v in sg.items() if v)
+                    if len(hits) < _NEED:
+                        return fired                   # 추세약화 미확인 — 보호를 켜지 않는다
+                    ARM["active"], ARM["sigs"] = True, hits
+                    ARM3LOG.append(dict(k="ACTIVE", t=now.isoformat(), sym=sym,
+                                        peak=round(ARM["peak"], 4), need=_NEED,
+                                        sigs=list(hits), all=sg,
+                                        cur_net=(round(cur_net, 4) if cur_net is not None else None),
+                                        epoch=ep))
+            # ── 보호선 갱신 (한 번 올라가면 내려가지 않는다) ─────────────────
             line = _arm_line(ARM["peak"])
             if line is not None and (ARM["line"] is None or line > ARM["line"]):
-                ARM["line"] = line               # 보호선은 내려가지 않는다
+                ARM["line"] = line
                 ARM3LOG.append(dict(k="ARM", t=now.isoformat(), sym=sym, peak=round(ARM["peak"], 4),
-                                    line=ARM["line"], epoch=ep))
+                                    line=ARM["line"], sigs=list(ARM["sigs"]), epoch=ep))
             if ARM["line"] is None or lo_bid is None:
                 return fired
             bid_net = worker._net_return_pct(sym, avg, float(lo_bid), qty)
             if bid_net > ARM["line"]:
                 return fired
             ARM3LOG.append(dict(k="BREACH", t=now.isoformat(), sym=sym, peak=round(ARM["peak"], 4),
-                                line=ARM["line"], bid=float(lo_bid), bid_net=round(bid_net, 4), epoch=ep))
+                                line=ARM["line"], bid=float(lo_bid), bid_net=round(bid_net, 4),
+                                sigs=list(ARM["sigs"]), epoch=ep))
             out = _oex.execute_exit(broker=broker, symbol=sym, quantity=qty,
                                     exit_reason=ARM_REASON, entry_price=avg,
                                     reconcile_retries=worker.ORDER_FILL_RECONCILE_RETRIES,

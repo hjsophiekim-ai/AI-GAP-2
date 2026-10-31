@@ -21,9 +21,10 @@ DAYS = ["20261016", "20261019", "20261020", "20261021", "20261022", "20261023",
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--strat", default="CHOPX")
+    ap.add_argument("--variants", nargs="+", default=["B", "C"])
     a = ap.parse_args()
     n = 0
-    for v in ("B", "C"):
+    for v in a.variants:
         for d in DAYS:
             dst = OUT / f"{a.strat}_{v}_{d}.json"
             if dst.exists():
@@ -33,7 +34,8 @@ def main():
                 print(f"  !! {a.strat}_A_{d} 없음 — 채울 수 없다")
                 continue
             o = json.loads(src.read_text(encoding="utf-8"))
-            o["arm"] = dict(o.get("arm") or {}, kind={"B": "SOFT", "C": "MEDIUM"}[v], filled=True)
+            o["arm"] = dict(o.get("arm") or {},
+                            kind={"B": "SOFT", "C": "MEDIUM"}.get(v, v), filled=True)
             dst.write_text(json.dumps(o, ensure_ascii=False, indent=1), encoding="utf-8")
             n += 1
     print(f"A 사본으로 채운 날 {n}개 (보호선 미ARM -> B/C ≡ A)")
