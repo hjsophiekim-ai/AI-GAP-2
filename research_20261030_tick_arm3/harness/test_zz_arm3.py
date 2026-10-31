@@ -76,6 +76,20 @@ _ARM_LADDER = {
 #: 보호 활성화에 필요한 추세약화 신호 개수. 0 = +3% 도달 즉시 활성(기존 SOFT/MEDIUM).
 _ARM_NEED = {"SOFT": 0, "MEDIUM": 0, "W1": 1, "W2": 2}
 
+# ── 2026-10-31 ⑤ CHOP 진입 + N1 runner 승격 ───────────────────────────────
+#: 1 이면 CHOP regime 진입 중 production n1_adaptive.snapshot().ok 인 것만
+#: TREND 로 각인해 B3 스택 대신 N1 래더(runner)로 관리한다. 진입게이트는 불변.
+_TRBP = os.environ.get("WK_TREND_BYPASS", "0") == "1"
+
+# ── 2026-10-31 ④ ARM 3% ONLY — 트레일링 arm 시작점만 3.5% -> 3.0% ─────────
+#: 0 = OFF. 값이 있으면 트레일링 arm 임계값(%)을 그 값으로 바꾼다. 보호선 자체
+#: (N1_MORNING_TRAILING_STOP 1.5%)와 나머지 청산은 **한 줄도 바꾸지 않는다**.
+_TARM = float(os.environ.get("WK_TRAIL_ARM", "0") or 0)
+
+# ── 2026-10-31 ③ 오후 XS VWAP 근접 override ───────────────────────────────
+#: 0 = OFF. 값이 있으면 그 값(%)을 VWAP '불리폭' 상한으로 쓴다 (0.10 / 0.20).
+_VWOV = float(os.environ.get("WK_VWAP_OVR", "0") or 0)
+
 # ── 2026-10-31 ② 청산 유예 (ONE_BAR_HOLD / TWO_BAR_HOLD) ──────────────────
 #: NONE / ONE(B, 1봉) / TWO(C, 최대 2봉)
 _HOLD = (os.environ.get("WK_HOLD", "NONE") or "NONE").upper()
@@ -316,7 +330,7 @@ def test_wk2(monkeypatch, tmp_path):
 
         def _ner(st, regime, *, now=None):
             rec["regime"] = regime
-            if VAR == "E" and regime == _cr.REGIME_CHOP and snap.ok:
+            if (VAR == "E" or _TRBP) and regime == _cr.REGIME_CHOP and snap.ok:
                 rec["bypass"] = True
                 return _orig_ner(st, _cr.REGIME_TREND, now=now)
             r_ = _orig_ner(st, regime, now=now)
@@ -1220,6 +1234,97 @@ def test_wk2(monkeypatch, tmp_path):
             return True
         monkeypatch.setattr(worker, "_advance_held_position_risk_management", _arm_rm)
 
+    # ── 2026-10-31 ④ ARM 3% ONLY ─────────────────────────────────────────
+    # 바꾸는 것은 **arm 시작점 하나**다:
+    #   N1_TREND_TP1            0.035 -> _TARM/100   (매도비중 0.0 = arm 전용)
+    #   MORNING_TRAILING_TRIGGER 0.035 -> _TARM/100
+    # 보호선(N1_MORNING_TRAILING_STOP 1.5%)·TP2·손절·C1·B3·H50 은 그대로다.
+    # tpm 은 import 시점에 퍼센트 상수를 굳히므로 그 모듈 상수도 같이 바꾼다.
+    if _TARM > 0:
+        monkeypatch.setattr(config, "N1_TREND_TP1", _TARM / 100.0)
+        monkeypatch.setattr(config, "MORNING_TRAILING_TRIGGER", _TARM / 100.0)
+        monkeypatch.setattr(tpm, "MORNING_TRAILING_TRIGGER_PCT", _TARM)
+
+    # ── 2026-10-31 ③ 오후 XS VWAP 근접 override ───────────────────────────
+    # MU ENTRY_CONFIRM 인 **오후** 후보가 **VWAP 사유 하나로만** 거절될 때,
+    # 그 불리폭이 _VWOV% 이내면 그 거절만 푼다. 체결강도는 조건에서 제외한다.
+    # 다른 TEG 사유(EMA stack / gap / spread / 시간성)가 하나라도 있으면 그대로 거절.
+    # 슬롯·하루한도·시간창·MU ENTRY_BAD·CHOP MC·TP/SL 은 손대지 않는다.
+    VWOVLOG = []
+
+    if _VWOV > 0:
+        from app.trading.macd2 import major_flag_filter as _mffv
+        from app.trading.macd2 import mu_assist as _muv
+        from app.trading.macd2 import signal_engine as _sev
+        from app.trading.macd2 import teg_gate as _tegv
+        from app.trading.macd2 import time_window_filter as _twfv
+        from app.trading.macd2.models import Direction as _Dv
+
+        _VWAP_ONLY = {config.TW2_REJECT_VWAP_VETO, _tegv.COND_VWAP}
+
+        def _vw_dev(bars_3m, direction):
+            """후보 방향 기준 VWAP 편차(%). 음수면 불리한 쪽. production _session_vwap 재사용."""
+            try:
+                work = _mffv._prepare_bars(bars_3m)
+                if work is None or not len(work):
+                    return None
+                vw = _mffv._session_vwap(work)
+                if not len(vw) or pd.isna(vw.iloc[-1]) or float(vw.iloc[-1]) <= 0:
+                    return None
+                sgn = 1.0 if direction == _Dv.UP_RED else -1.0
+                return (float(work["close"].iloc[-1]) / float(vw.iloc[-1]) - 1.0) * 100.0 * sgn
+            except Exception:
+                return None
+
+        def _vw_mu_confirm(now, direction):
+            """롤링 MU ENTRY_CONFIRM (= MU CONFIRM ∧ HY gap EXPAND) — 끝난 1분봉만 본다."""
+            try:
+                ser = _muv.load_mu_1m(now, config.MU_ASSIST_DATA_DIR or None)
+                anchor = now.replace(second=0, microsecond=0) - timedelta(minutes=5)
+                return str(_muv.evaluate_pattern(ser, direction, anchor).get(
+                    "mu_pattern_state")) == _muv.PATTERN_CONFIRM
+            except Exception:
+                return False
+
+        def _vw_ok(bars_3m, direction, now, reasons, where):
+            """이 거절을 풀어도 되는가. 체결강도는 보지 않는다(기록만)."""
+            rs = set(reasons or ())
+            if not rs or not (rs <= _VWAP_ONLY):
+                return False
+            if now.astimezone(config.KST).time() < config.TW2_3SLOT_MORNING_WINDOW_END:
+                return False                      # 오전은 대상 아님
+            if not _vw_mu_confirm(now, direction):
+                return False
+            dev = _vw_dev(bars_3m, direction)
+            ok = bool(dev is not None and -_VWOV <= dev < 0)
+            try:
+                cs = _xs.evaluate(direction, now)
+            except Exception:
+                cs = {}
+            VWOVLOG.append(dict(t=now.isoformat(), where=where, dir=getattr(direction, "value", None),
+                                reasons=sorted(rs), dev=(round(dev, 4) if dev is not None else None),
+                                lim=_VWOV, mu_confirm=True, cttr=cs.get("cttr"),
+                                cttr_state=cs.get("state"), applied=ok))
+            return ok
+
+        _o_veto_v = _twfv.evaluate_tw2_extra_vetoes
+
+        def _veto_v(bars_3m, flag_direction, flag_bar_dt, decision_at):
+            vetoed, reason = _o_veto_v(bars_3m, flag_direction, flag_bar_dt, decision_at)
+            if vetoed and _vw_ok(bars_3m, flag_direction, decision_at, {reason}, "TW2_VETO"):
+                return False, None
+            return vetoed, reason
+        monkeypatch.setattr(_twfv, "evaluate_tw2_extra_vetoes", _veto_v)
+
+        _o_teg_v = _tegv.evaluate_teg
+
+        def _teg_v(bars_3m, direction, flag_bar_dt, now, *a, **k):
+            dec = _o_teg_v(bars_3m, direction, flag_bar_dt, now, *a, **k)
+            if (not dec.approved) and _vw_ok(bars_3m, direction, now, dec.reject_reasons, "TEG"):
+                return dataclasses.replace(dec, approved=True, reject_reasons=())
+            return dec
+        monkeypatch.setattr(_tegv, "evaluate_teg", _teg_v)
+
     # ── 2026-10-31 ② 청산 유예 ONE_BAR_HOLD / TWO_BAR_HOLD ────────────────
     # "1~2봉짜리 일시 휩쏘"만 골라 청산을 1~2개 완성 3분봉 늦춘다.
     # 무조건 늦추지 않는다 — 아래 **강한 붕괴** 중 하나라도 있으면 즉시 청산한다:
@@ -1491,6 +1596,6 @@ def test_wk2(monkeypatch, tmp_path):
     Path(os.environ["WK_OUT"]).write_text(json.dumps(dict(D=D, FILL=FILL, VAR=VAR, orders=orders, acts=acts, sig=sig, ex=ex, entries=[e for e in ENTRIES if e["t"][:10].replace("-", "") == D], lock_events=[e for e in LOCK["events"] if e["t"][:10].replace("-", "") == D], lock_blocked=[e for e in LOCK["blocked"] if e["t"][:10].replace("-", "") == D],
                                                      brk=[e for e in LOG if e["armed_at"][:10].replace("-", "") == D],
                                                      prod=[e for e in PRODLOG if (e.get("t") or "")[:10].replace("-", "") == D],
-                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
+                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
                                                      slow_cfg=bool(config.SLOW_TP2_ENABLED)),
                                                      ensure_ascii=False, indent=1), encoding="utf-8")

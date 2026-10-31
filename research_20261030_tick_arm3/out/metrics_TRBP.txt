@@ -1,0 +1,57 @@
+
+================================================================================================
+CHOP 진입 + N1 runner 승격  변형 ['A', 'TRBP']  대상 11일 20261016~20261030
+================================================================================================
+                          A             TRBP
+거래수                      18               18
+총손익              +2,896,335       +2,609,504
+PF                    6.655            3.917
+MDD                 201,931          449,439
+최악일                -201,931         -449,439
+승률%                    77.8             72.2
+상위1제외            +2,203,663       +1,776,558
+상위2제외            +1,781,638       +1,354,533
+최악일자               20261022         20261016
+
+[Δ vs A]
+  TRBP         총손익 -286,831  PF -2.738  MDD +247,508  최악일 -247,508  승률 -5.6%p  상위1제외 -427,105  상위2제외 -427,105
+
+[일별 손익]
+날짜                      A           TRBP
+20261016          +36,926       -449,439
+20261019         +335,071       +335,071
+20261020          +68,463        +68,463
+20261021         +202,000       +248,679
+20261022         -201,931       -201,931
+20261023         +544,786       +544,786
+20261026         +250,603       +250,603
+20261027          +24,097        +24,097
+20261028         +812,068       +937,323
+20261029         +561,576       +589,176
+20261030         +262,676       +262,676
+
+[거래 1:1 대조]  (진입시각 기준. A 에 없는 거래는 '-')
+진입                  종목                 A손익     A수익%        TRBP손익  TRBP수익%  사유
+09:51:40 20261016   0193T0        +103,902     1.00      -210,082    -2.01  B3_TP | TIME_WINDOW_STOP_LOSS
+11:36:00 20261016   0193T0         -66,976    -0.64      -239,357    -1.91  B3_MAXHOLD | TIME_WINDOW_STOP_LOSS
+10:12:00 20261019   0193T0        +111,438     1.08      +111,438     1.08  B3_TP | B3_TP
+11:42:00 20261019   0193T0        +223,633     2.15      +223,633     2.15  MU_ASSIST_H50_GAP_EXIT | MU_ASSIST_H50_GAP_EXIT
+12:12:00 20261020   0197X0         +68,463     0.66       +68,463     0.66  B3_MAXHOLD | B3_MAXHOLD
+09:06:00 20261021   0193T0        +283,226     2.72      +329,905     3.17  C1_PEAK_PROTECTION_EXIT,P3_PARTIAL_EXIT,TIME_WINDOW_TP1_PARTIAL | C1_PEAK_PROTECTION_EXIT,TIME_WINDOW_TP1_PARTIAL
+09:57:40 20261021   0197X0         -81,226    -0.77       -81,226    -0.77  P3_PARTIAL_EXIT,TIME_WINDOW_STOP_LOSS | P3_PARTIAL_EXIT,TIME_WINDOW_STOP_LOSS
+09:06:00 20261022   0193T0        -201,931    -1.93      -201,931    -1.93  B3_SL | B3_SL
+10:54:00 20261023   0197X0        +122,761     1.18      +122,761     1.18  B3_TP | B3_TP
+12:33:00 20261023   0193T0        +422,025     4.05      +422,025     4.05  TIME_WINDOW_AFTERNOON_TP | TIME_WINDOW_AFTERNOON_TP
+10:45:00 20261026   0197X0        -162,034    -1.55      -162,034    -1.55  TIME_WINDOW_STOP_LOSS | TIME_WINDOW_STOP_LOSS
+12:39:00 20261026   0193T0        +412,637     4.13      +412,637     4.13  TIME_WINDOW_AFTERNOON_TP | TIME_WINDOW_AFTERNOON_TP
+14:27:00 20261027   0197X0         +24,097     0.30       +24,097     0.30  P3_PARTIAL_EXIT,TIME_WINDOW_BREAKEVEN_STOP | P3_PARTIAL_EXIT,TIME_WINDOW_BREAKEVEN_STOP
+09:48:20 20261028   0193T0        +692,672     6.65      +832,946     8.00  P3_PARTIAL_EXIT,TIME_WINDOW_TP1_PARTIAL,TIME_WINDOW_TP2_FULL | TIME_WINDOW_TP1_PARTIAL,TIME_WINDOW_TP2_FULL
+12:25:00 20261028   0193T0        +119,396     1.15      +104,377     1.01  B3_TP | OPPOSITE_SIGNAL
+09:06:00 20261029   0193T0        +220,123     2.12      +247,723     2.38  C1_PEAK_PROTECTION_EXIT,P3_PARTIAL_EXIT,TIME_WINDOW_TP1_PARTIAL | C1_PEAK_PROTECTION_EXIT,TIME_WINDOW_TP1_PARTIAL
+09:59:20 20261029   0197X0        +341,453     3.28      +341,453     3.28  P3_PARTIAL_EXIT,TIME_WINDOW_TP1_PARTIAL,TIME_WINDOW_TP2_FULL | P3_PARTIAL_EXIT,TIME_WINDOW_TP1_PARTIAL,TIME_WINDOW_TP2_FULL
+14:09:40 20261030   0197X0        +262,676     2.53      +262,676     2.53  FORCED_LIQUIDATION | FORCED_LIQUIDATION
+
+[A 기준 큰 승자의 훼손액]
+  +4% 이상  3건  A +1,527,334   TRBP +1,667,608 (Δ+140,274)
+  +5% 이상  1건  A +692,672   TRBP +832,946 (Δ+140,274)
+  +7% 이상: 0건

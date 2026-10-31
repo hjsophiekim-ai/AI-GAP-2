@@ -180,3 +180,55 @@ python .../a7_trace.py --day 20261028 --entry 09:48:20 --tag CHOPX_A
    날에서만 읽어야 한다**(생략일은 애초에 ARM 후보가 아니라 로그가 비어 있다).
 8. **`a6_weak.py` 는 같은 날 여러 거래에 같은 ARM 이벤트를 붙여 보여준다**(종목 기준 매칭).
    정확한 거래별 귀속은 `a7_trace.py` 로 확인한다.
+
+---
+
+## ⑤ 2026-10-31 3연구 (전부 기각)
+
+```bash
+python research_20261030_tick_arm3/scripts/h0_make.py     # 하네스 재생성 (V/T/TRBP 포함)
+
+# ① 오후 XS VWAP 근접 override
+python .../c1_vwapcand.py --tag CHOPX_A                   # 후보 전수 (재생 불필요)
+E="--harness ARM3 --var ARM3 --env WK_MODE=CHOP --env WK_MUA=1 --env WK_XS=1 --env WK_ARM=NONE --env WK_TICKPX=1"
+python .../r1_run.py $E --tag CHK_VWOV_OFF --env WK_VWAP_OVR=0    20261030   # 회귀 (≡A)
+python .../r1_run.py $E --tag CHOPX_V20    --env WK_VWAP_OVR=0.20 -j 2 20261027 20261030
+python .../r1_run.py $E --tag CHOPX_V10    --env WK_VWAP_OVR=0.10 -j 2 20261027 20261030
+
+# ② ARM 3% ONLY — 트레일링 arm 3.5% -> 3.0% (보호선 1.5% 는 그대로)
+python .../r1_run.py $E --tag CHK_TARM_OFF --env WK_TRAIL_ARM=0   20261028   # 회귀 (≡A)
+python .../r1_run.py $E --tag CHOPX_T30    --env WK_TRAIL_ARM=3.0 -j 3 \
+    20261021 20261023 20261026 20261028 20261029
+
+# ③ CHOP 진입 + N1 runner 승격
+python .../d1_b3runner.py --tag CHOPX_A                   # B3 전수 진단 (재생 불필요)
+python .../r1_run.py $E --tag CHOPX_TRBP --env WK_TREND_BYPASS=1 -j 3 <11일 전부>
+
+# 집계 (생략일은 a4_fill 로 A 사본을 채운다)
+python .../a4_fill.py --strat CHOPX --variants T30
+python .../a2_metrics.py A=CHOPX_A T30=CHOPX_T30  --days ... --label "ARM 3% ONLY"
+python .../a2_metrics.py A=CHOPX_A TRBP=CHOPX_TRBP --days ... --label "runner 승격"
+
+# 10/30 H50 반사실 (재생 불필요 — evaluate_hold 는 순수 함수)
+python .../b2_h50_cf.py --day 20261030 --held UP_RED --at 13:06 13:09 13:12 13:15 13:18 13:21 13:30 13:45 14:00
+```
+
+### env 대응
+
+| env | 의미 | 기본 |
+|---|---|---|
+| `WK_VWAP_OVR` | 오후 XS VWAP override 의 불리폭 상한(%). 0 = OFF | 0 |
+| `WK_TRAIL_ARM` | 트레일링 arm 임계값(%). 0 = OFF (production 3.5 그대로) | 0 |
+| `WK_TREND_BYPASS` | 1 이면 CHOP 진입 중 `n1_adaptive.snapshot().ok` 를 TREND 로 각인 | 0 |
+
+### 함정 (추가)
+
+9.  **`exec_strength.mean_cttr` 는 파일 꼬리만 읽어 과거 시각을 못 본다.** 사후 분석에서 cttr 이
+    전부 nan 으로 나오면 이것이다 — `c1_vwapcand._mean_cttr_full` 이 **같은 정의로** 전체를 읽는다.
+10. **`small_whipsaw_hold` 의 dataclass 필드명은 `should_hold`/`should_release`/`trend`/
+    `elapsed_min`** 이다(`hold`/`release`/`structural_trend`/`elapsed_minutes` 아님).
+11. **진입 게이트를 완화하면 진입이 추가되지 않아도 기존 거래 손익이 바뀔 수 있다**(①의 10/27).
+    거절 단계가 바뀌면서 판정기록이 달라지고 그것이 다음 진입의 regime 각인에 영향을 준다.
+    게이트 연구에서 "진입 집합 diff 0" 만 확인하고 넘어가면 안 된다.
+12. **B3 관리 거래의 '청산 후 틱 최고'는 승격 이득의 천장이 아니라 함정이다**(③의 10/16).
+    그 두 건은 +4.93%/+4.35% 까지 갔지만 **먼저 −1.3% 손절을 맞고 나간 뒤에** 올라갔다.
