@@ -232,3 +232,63 @@ python .../b2_h50_cf.py --day 20261030 --held UP_RED --at 13:06 13:09 13:12 13:1
     게이트 연구에서 "진입 집합 diff 0" 만 확인하고 넘어가면 안 된다.
 12. **B3 관리 거래의 '청산 후 틱 최고'는 승격 이득의 천장이 아니라 함정이다**(③의 10/16).
     그 두 건은 +4.93%/+4.35% 까지 갔지만 **먼저 −1.3% 손절을 맞고 나간 뒤에** 올라갔다.
+
+---
+
+## ⑥ 85영업일 확장 검증 (2026-11-01)
+
+### 데이터 제약 (먼저 읽을 것)
+
+| 데이터 | 범위 |
+|---|---|
+| 하이닉스/ETF 1분봉 | 105일 (05/26~10/30) → 85일 구간 = **20260624~20261030** |
+| **MU 1분봉 · 체결강도** | **12일** (10/15~10/30) |
+
+MU 가 없는 날은 MU Assist·XS·CATCH-UP 이 전부 fail-open → `A ≡ D`.
+**그 동등성을 먼저 실측 검증한 뒤** B/C/D 를 11일만 돌린다(계산량 170→118회).
+
+```bash
+R=research_20261030_tick_arm3/scripts/r1_run.py
+S="--env MACD2_T2_SHADOW_ENABLED=0 --env MACD2_P70R_SHADOW_ENABLED=0"   # 기록전용 OFF (주문 동일성 확인됨)
+B="--harness ARM3 --var ARM3 --env WK_MODE=CHOP --env WK_ARM=NONE --env WK_TICKPX=0 $S"
+MU="20261016 20261019 20261020 20261021 20261022 20261023 20261026 20261027 20261028 20261029 20261030"
+
+# ① fail-open 검증 — MU 없는 날에서 A 와 D 가 같아야 한다
+python $R $B --tag FO_A --env WK_MUA=1 --env WK_XS=1 -j 2 20261013 20261008
+python $R $B --tag FO_D --env WK_MUA=0 --env WK_XS=0 -j 2 20261013 20261008
+
+# ② MU 없는 74일 — MUA=0 으로 1회만 돌려 A·D 공용
+python $R $B --tag L85_A --env WK_MUA=0 --env WK_XS=0 -j 3 <74일>
+
+# ③ MU 있는 11일 — 네 변형
+python $R $B --tag L85_A --env WK_MUA=1 --env WK_XS=1                   -j 2 $MU
+python $R $B --tag L85_D --env WK_MUA=0 --env WK_XS=0                   -j 2 $MU
+python $R $B --tag L85_B --env WK_MUA=1 --env WK_XS=1 --env WK_CUKILL=1 -j 2 $MU
+python $R $B --tag L85_C --env WK_MUA=1 --env WK_XS=0                   -j 2 $MU
+
+# ④ 집계 (--fill 로 생략일에 A 산출을 쓴다)
+python .../f2_regime.py  --tag L85_A                                     # regime 체제별 분해
+python .../f1_monthly.py A=L85_A B=L85_B C=L85_C D=L85_D --fill L85_A    # 월별·상위제외·특정일 의존
+python .../e1_entryscan.py --tag CHOPX_A                                 # 진입지표 × 결과 전수
+```
+
+### 변형 대응
+
+| tag | MU Assist | XS | CATCH-UP | 뜻 |
+|---|---|---|---|---|
+| `L85_A` | ON | ON | ON | 현행 |
+| `L85_B` | ON | ON | **OFF**(`WK_CUKILL=1`) | CATCH-UP 순효과 측정용 |
+| `L85_C` | ON | **OFF** | ON | XS 순효과 측정용 |
+| `L85_D` | **OFF** | **OFF** | **OFF** | CHOP 만 |
+
+### 함정 (추가)
+
+13. **`chop_regime` 은 shadow 원장 최근 10건의 h50율/tp1율로 CHOP/TREND 를 판정한다.**
+    CHOP 모드의 성과는 이 라벨에 좌우된다 — TREND 각인이면 B3/P3 가 아니라 **BASE(N1) 래더**가
+    관리해 TP2 8% 까지 간다. 85일 기준선을 하나의 숫자로 보면 안 되고 **체제별로 분해**해야 한다
+    (06/24~08/28 은 TREND 단일 체제라 B3 가 한 번도 발동하지 않는다).
+14. **MU Assist 를 켜면 재생이 3~5배 느려진다.** MU 없는 날은 `WK_MUA=0` 으로 돌려도 결과가
+    같으므로(fail-open) 그렇게 돌리는 게 맞다. 기록전용 SHADOW 도 끈다.
+15. **CPU 경합이 생기면 재생이 사실상 멈춘다**(2시간에 워커당 CPU 3.5분). 진전이 20분 이상
+    없으면 프로세스를 죽이고 재시작한다 — `r1_run` 이 완료분을 건너뛰므로 손실이 없다.
+    병렬도를 3→2 로 낮추는 편이 오히려 안정적이다.

@@ -48,6 +48,13 @@ _ARM_LADDER = {
 #: 보호 활성화에 필요한 추세약화 신호 개수. 0 = +3% 도달 즉시 활성(기존 SOFT/MEDIUM).
 _ARM_NEED = {"SOFT": 0, "MEDIUM": 0, "W1": 1, "W2": 2}
 
+# ── 2026-10-31 ⑥ 분산 — 슬롯 상한 × 건당 예산 (수익·안전성 동시) ────────
+#: 0 = OFF(production CHOP_DAILY_CAP=2 그대로). 값이 있으면 하루 슬롯 상한을 그 값으로.
+_SLOTCAP = int(os.environ.get("WK_SLOT_CAP", "0") or 0)
+#: 0 = OFF(하네스 기본 10,000,000). 값이 있으면 state.budget 을 그 값으로.
+#: 슬롯을 늘리면서 건당 예산을 줄이면 **총 노출은 유지하고 단일거래 집중도만 낮춘다**.
+_BUDGET = float(os.environ.get("WK_BUDGET", "0") or 0)
+
 # ── 2026-10-31 ⑤ CHOP 진입 + N1 runner 승격 ───────────────────────────────
 #: 1 이면 CHOP regime 진입 중 production n1_adaptive.snapshot().ok 인 것만
 #: TREND 로 각인해 B3 스택 대신 N1 래더(runner)로 관리한다. 진입게이트는 불변.
@@ -502,6 +509,17 @@ ARM_BLOCK = '''    STATE["s"] = state
             return True
         monkeypatch.setattr(worker, "_advance_held_position_risk_management", _arm_rm)
 
+    # ── 2026-10-31 ⑥ 분산 (슬롯 상한 × 건당 예산) ─────────────────────────
+    # 진입 게이트/청산 규칙은 한 줄도 바꾸지 않는다. 바꾸는 것은 둘뿐이다:
+    #   · 하루 슬롯 상한 (chop_defense.daily_cap)
+    #   · 건당 예산 (state.budget) — 사이징 공식 자체는 production 그대로
+    if _SLOTCAP > 0:
+        from app.trading.macd2 import chop_defense as _cdx
+        monkeypatch.setattr(config, "CHOP_DAILY_CAP", _SLOTCAP)
+        monkeypatch.setattr(config, "TW2_3SLOT_DAILY_CAP", _SLOTCAP)
+    if _BUDGET > 0:
+        state.budget = _BUDGET
+
     # ── 2026-10-31 ④ ARM 3% ONLY ─────────────────────────────────────────
     # 바꾸는 것은 **arm 시작점 하나**다:
     #   N1_TREND_TP1            0.035 -> _TARM/100   (매도비중 0.0 = arm 전용)
@@ -770,7 +788,7 @@ PATCHES = [
      '            if (VAR == "E" or _TRBP) and regime == _cr.REGIME_CHOP and snap.ok:'),
     # ⑥ 산출에 새 기록 추가
     ("p70r=P70RLOG, par=dict(",
-     "gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), "
+     "gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), slot_cap=_SLOTCAP, budget_ovr=_BUDGET, "
      "arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), "
      "p70r=P70RLOG, par=dict("),
 ]
