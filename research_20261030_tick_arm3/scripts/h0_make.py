@@ -48,6 +48,24 @@ _ARM_LADDER = {
 #: 보호 활성화에 필요한 추세약화 신호 개수. 0 = +3% 도달 즉시 활성(기존 SOFT/MEDIUM).
 _ARM_NEED = {"SOFT": 0, "MEDIUM": 0, "W1": 1, "W2": 2}
 
+# ── 2026-10-31 ② 청산 유예 (ONE_BAR_HOLD / TWO_BAR_HOLD) ──────────────────
+#: NONE / ONE(B, 1봉) / TWO(C, 최대 2봉)
+_HOLD = (os.environ.get("WK_HOLD", "NONE") or "NONE").upper()
+_HOLD_BARS = {"ONE": 1, "TWO": 2}.get(_HOLD, 0)
+#: 유예 **대상** 청산사유 — "1~2봉짜리 일시 휩쏘일 수 있는" 것만. 부분 문자열로 본다.
+_HOLD_TARGET = (
+    "OPPOSITE_SIGNAL", "TW2_3SLOT_SELL_ONLY",          # 반대 플래그 (진입 미승인분)
+    "H50_WHIPSAW_RELEASE", "H50_MAX_HOLD_EXIT", "MU_ASSIST_H50_GAP_EXIT",
+    "C1_PEAK_PROTECTION_EXIT", "TIME_WINDOW_TRAILING_STOP",
+    "TIME_WINDOW_PROFIT_LOCK_STOP", "TIME_WINDOW_AFTER_TP1_STOP",
+    "TIME_WINDOW_BREAKEVEN_STOP", "B3_MAXHOLD",
+)
+#: **절대 유예하지 않는다** — hard stop / 구조 확정이탈 / 익절 / 장마감.
+_HOLD_NEVER = (
+    "STOP_LOSS", "B3_SL", "FORCED_LIQUIDATION", "TP1", "TP2", "B3_TP",
+    "AFTERNOON_TP", "P3_PARTIAL", "TICK_ARM3_STOP", "RUNNER",
+)
+
 
 def _arm_line(peak):
     """틱 최고 순수익 peak(%) 에 대응하는 보호선(%). 사다리 밖이면 None.
@@ -279,10 +297,13 @@ ARM_BLOCK = '''    STATE["s"] = state
         base = str(sid or "").split(":")[0]
         if not base:
             return
+        d = "UP_RED" if base.endswith("UP_RED") else "DOWN_BLUE"
         if str(dec.block_reason or "") == config.TW_PENDING_CONFIRMATION:
-            OPP_PENDING[base] = "UP_RED" if base.endswith("UP_RED") else "DOWN_BLUE"
+            OPP_PENDING[base] = d
         else:
             OPP_PENDING.pop(base, None)
+        if bool(dec.approved):
+            OPP_APPROVED[base] = d
     _wrap(worker, "_persist_tw2_3slot_decision", _rec_decision)
 
     # ── ARM3 ② +3% 틱 수익보호선 ──────────────────────────────────────────
@@ -298,6 +319,8 @@ ARM_BLOCK = '''    STATE["s"] = state
     ARM_REASON = "TICK_ARM3_STOP"
     #: 반대방향 플래그가 T+3 확정 전인지 — 게이트 추적 wrapper 가 갱신한다(신호 ⑥).
     OPP_PENDING = {}
+    #: T+3 확정 + 진입게이트까지 **통과한** 플래그 (청산 유예의 강한 붕괴 ④).
+    OPP_APPROVED = {}
 
     if _ARM in _ARM_LADDER:
         from app.trading.macd2 import major_flag_filter as _mff
@@ -464,6 +487,134 @@ ARM_BLOCK = '''    STATE["s"] = state
             result.actions.append(f"{ARM_REASON}:{sym}")
             return True
         monkeypatch.setattr(worker, "_advance_held_position_risk_management", _arm_rm)
+
+    # ── 2026-10-31 ② 청산 유예 ONE_BAR_HOLD / TWO_BAR_HOLD ────────────────
+    # "1~2봉짜리 일시 휩쏘"만 골라 청산을 1~2개 완성 3분봉 늦춘다.
+    # 무조건 늦추지 않는다 — 아래 **강한 붕괴** 중 하나라도 있으면 즉시 청산한다:
+    #   ① MU 반대방향 ENTRY_CONFIRM(롤링)   ② HY 3분 MACD gap 이 반대방향으로 확대
+    #   ③ 구조/박스 확정이탈(B3_SL)·hard stop  ④ 반대 플래그가 T+3 확정 + 진입게이트 통과
+    # production 청산 규칙은 한 줄도 바꾸지 않는다. 유예 중에도 다른 청산은 그대로 돌고,
+    # 유예가 끝나거나 강한 붕괴가 뜨면 **원래 사유 그대로** 집행한다.
+    HOLDLOG = []
+    DEFER = {"epoch": None, "reason": None, "t0": None, "until": None,
+             "net0": None, "bars": 0, "sym": None}
+
+    if _HOLD_BARS:
+        from app.trading.macd2 import order_executor as _oexh
+        from app.trading.macd2 import mu_assist as _muh
+        from app.trading.macd2 import signal_engine as _seh
+        from app.trading.macd2 import major_flag_filter as _mffh
+        from app.trading.macd2 import time_window_filter as _twfh
+        from app.trading.macd2.models import Direction as _Dh
+        _o_exec_exit = _oexh.execute_exit
+        _HCACHE = {"min": None, "bars": None, "mu": None}
+
+        def _h_bars(now):
+            m = now.replace(second=0, microsecond=0)
+            if _HCACHE["min"] != m:
+                _HCACHE["min"] = m
+                _HCACHE["mu"] = None
+                try:
+                    _HCACHE["bars"] = _mffh._prepare_bars(
+                        _seh.resample_completed_3m(svc.get_history_df(), now=now))
+                except Exception:
+                    _HCACHE["bars"] = None
+            return _HCACHE["bars"]
+
+        def _h_mu_opp(now, held):
+            """반대방향 MU 롤링 패턴이 CONFIRM 인가 (강한 붕괴 ①)."""
+            if _HCACHE["mu"] is None:
+                opp = _Dh.DOWN_BLUE if held == _Dh.UP_RED else _Dh.UP_RED
+                try:
+                    ser = _muh.load_mu_1m(now, config.MU_ASSIST_DATA_DIR or None)
+                    anchor = now.replace(second=0, microsecond=0) - timedelta(minutes=5)
+                    _HCACHE["mu"] = str(_muh.evaluate_pattern(ser, opp, anchor).get("mu_pattern_state"))
+                except Exception:
+                    _HCACHE["mu"] = _muh.PATTERN_UNAVAILABLE
+            return _HCACHE["mu"] == _muh.PATTERN_CONFIRM
+
+        def _h_gap_opp_expand(now, held):
+            """HY 3분 MACD gap 이 **반대방향으로 확대**되는가 (강한 붕괴 ②)."""
+            sgn = 1.0 if held == _Dh.UP_RED else -1.0
+            try:
+                ser = _twfh._gap_series(_h_bars(now))
+                if ser is None or len(ser) < 2:
+                    return False
+                g0 = float(ser["gap"].iloc[-1]) * sgn
+                g1 = float(ser["gap"].iloc[-2]) * sgn
+                return bool(g0 < 0 and g0 < g1)       # 반대부호 ∧ 더 벌어짐
+            except Exception:
+                return False
+
+        def _h_opp_entry_approved(held):
+            """반대 플래그가 T+3 확정 + 진입게이트 통과했는가 (강한 붕괴 ④)."""
+            opp = "DOWN_BLUE" if held == _Dh.UP_RED else "UP_RED"
+            return any(v == opp for v in OPP_APPROVED.values())
+
+        def _h_breakdown(now, held, reason):
+            if any(k in reason for k in _HOLD_NEVER):
+                return "HARD"
+            if _h_opp_entry_approved(held):
+                return "OPP_ENTRY_APPROVED"
+            if _h_gap_opp_expand(now, held):
+                return "GAP_OPP_EXPAND"
+            if _h_mu_opp(now, held):
+                return "MU_OPP_CONFIRM"
+            return None
+
+        def _exec_exit_defer(*, broker, symbol, quantity, exit_reason, entry_price, **kw):
+            now = clock["now"]
+            st = STATE.get("s")
+            pos = getattr(st, "position", None) if st is not None else None
+            ep = int(getattr(st, "position_epoch", 0) or 0) if st is not None else 0
+            reason = str(exit_reason or "")
+            held = _Dh.UP_RED if symbol == config.LONG_SYMBOL else _Dh.DOWN_BLUE
+            avg = float(entry_price or (pos.avg_price if pos else 0.0))
+            bid = (BOOKQ.get(symbol) or (None, None))[0] or px(symbol, now)
+            net = worker._net_return_pct(symbol, avg, float(bid), int(quantity)) if bid else None
+
+            if DEFER["epoch"] != ep:
+                DEFER.update(epoch=ep, reason=None, t0=None, until=None, net0=None, bars=0, sym=None)
+
+            target = any(k in reason for k in _HOLD_TARGET) and not any(k in reason for k in _HOLD_NEVER)
+            if not target:
+                return _o_exec_exit(broker=broker, symbol=symbol, quantity=quantity,
+                                    exit_reason=exit_reason, entry_price=entry_price, **kw)
+
+            bd = _h_breakdown(now, held, reason)
+            if bd:
+                HOLDLOG.append(dict(k="BREAKDOWN", t=now.isoformat(), sym=symbol, reason=reason,
+                                    why=bd, net=(round(net, 4) if net is not None else None), epoch=ep))
+                return _o_exec_exit(broker=broker, symbol=symbol, quantity=quantity,
+                                    exit_reason=exit_reason, entry_price=entry_price, **kw)
+
+            if DEFER["reason"] is None:
+                b0, b1 = worker.forming_bar_window(now)
+                DEFER.update(reason=reason, t0=now.isoformat(), bars=0, sym=symbol,
+                             net0=net, until=b1 + timedelta(minutes=3 * (_HOLD_BARS - 1)))
+                HOLDLOG.append(dict(k="DEFER", t=now.isoformat(), sym=symbol, reason=reason,
+                                    until=DEFER["until"].isoformat(),
+                                    net0=(round(net, 4) if net is not None else None), epoch=ep))
+                return _oexh.ExecutionOutcome("", _Dh.HOLD, symbol, _SSh.DETECTED,
+                                              block_reason="RESEARCH_HOLD_DEFER")
+            if now < DEFER["until"]:
+                return _oexh.ExecutionOutcome("", _Dh.HOLD, symbol, _SSh.DETECTED,
+                                              block_reason="RESEARCH_HOLD_DEFER")
+            # 유예창 종료 — 원래 방향을 회복했으면 HOLD(청산 취소), 아니면 원래 사유로 청산
+            rec = bool(net is not None and DEFER["net0"] is not None and net > DEFER["net0"])
+            HOLDLOG.append(dict(k=("RECOVER" if rec else "EXIT_AFTER_DEFER"), t=now.isoformat(),
+                                sym=symbol, reason=reason,
+                                net0=(round(DEFER["net0"], 4) if DEFER["net0"] is not None else None),
+                                net=(round(net, 4) if net is not None else None), epoch=ep))
+            DEFER.update(reason=None, t0=None, until=None, net0=None, sym=None)
+            if rec:
+                return _oexh.ExecutionOutcome("", _Dh.HOLD, symbol, _SSh.DETECTED,
+                                              block_reason="RESEARCH_HOLD_RECOVERED")
+            return _o_exec_exit(broker=broker, symbol=symbol, quantity=quantity,
+                                exit_reason=exit_reason, entry_price=entry_price, **kw)
+
+        from app.trading.macd2.models import SignalState as _SSh
+        monkeypatch.setattr(_oexh, "execute_exit", _exec_exit_defer)
 '''
 
 PATCHES = [
@@ -511,7 +662,7 @@ PATCHES = [
     ('    STATE["s"] = state\n', ARM_BLOCK),
     # ⑥ 산출에 새 기록 추가
     ("p70r=P70RLOG, par=dict(",
-     "gates=GATELOG, arm3=ARM3LOG, "
+     "gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, "
      "arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), "
      "p70r=P70RLOG, par=dict("),
 ]

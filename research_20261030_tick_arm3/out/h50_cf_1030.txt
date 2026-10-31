@@ -1,0 +1,17 @@
+
+======================================================================================================================
+반사실: 2026-10-30 에 UP_RED 포지션을 보유 중이었다면 — H50 판정
+======================================================================================================================
+판정시각      HOLD?   구조추세        range%추세일치     범위OK      사유   | 해제판정(release)
+13:06     True    UP            2.20True     True      SMALL_WHIPSAW_HOLD   | 
+13:09     True    UP            2.20True     True      SMALL_WHIPSAW_HOLD   | release=False trend=UP break=0 elapsed=3분 HOLDING
+13:12     True    UP            2.19True     True      SMALL_WHIPSAW_HOLD   | release=False trend=UP break=0 elapsed=6분 HOLDING
+13:15     False   UP            2.53True     False     RANGE_TOO_WIDE   | release=False trend=UP break=0 elapsed=9분 HOLDING
+13:18     False   UP            2.74True     False     RANGE_TOO_WIDE   | release=False trend=UP break=0 elapsed=12분 HOLDING
+13:21     False   UP            2.80True     False     RANGE_TOO_WIDE   | release=False trend=UP break=0 elapsed=15분 HOLDING
+13:30     False   UP            2.57True     False     RANGE_TOO_WIDE   | release=False trend=UP break=0 elapsed=24분 HOLDING
+13:45     False   UP            2.71True     False     RANGE_TOO_WIDE   | release=False trend=UP break=0 elapsed=39분 HOLDING
+14:00     False   UP            3.00True     False     RANGE_TOO_WIDE   | release=False trend=UP break=0 elapsed=54분 HOLDING
+
+기준값: H50_RANGE_MAX_PCT=2.35 · TREND_EMA 20/50 · RANGE_BARS=20 · TREND_BREAK_BARS=2 · MAX_HOLD_MIN=60
+HOLD=True 면 그 반대 플래그로는 청산하지 않고 들고 간다(신호원장 H50_SMALL_WHIPSAW_HOLD).
