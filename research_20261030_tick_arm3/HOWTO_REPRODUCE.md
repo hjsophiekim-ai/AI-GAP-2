@@ -318,3 +318,51 @@ MU·체결강도는 10/15~ 만 있어 85일 진단에서는 제외한다.
 18. **HY gap 보유방향 유지는 승 100% / 패 98% 로 무용**하고, **EMA20/50 추세 유지는 역방향**
     (승 56.8% / 패 68.0%)이다. 이 둘을 분리 신호로 쓰려 하지 말 것.
 19. **품질점수·trend_ok 는 낮은 쪽이 더 번다**(85일 확인). cutoff 추가 금지.
+
+---
+
+## ⑧ REGIME 별 자본배분 + CHOP 내부 차등 사이징 (2026-11-01)
+
+바꾸는 것은 **`state.budget` 하나**다. `position_sizing.evaluate` 직전에 그 tick 의
+`state.p3_last_regime`(production 이 매 tick 갱신, shadow 원장 기반)으로 고른다.
+
+```bash
+S="--env MACD2_T2_SHADOW_ENABLED=0 --env MACD2_P70R_SHADOW_ENABLED=0"
+B="--harness ARM3 --var ARM3 --env WK_MODE=CHOP --env WK_ARM=NONE --env WK_TICKPX=0 $S"
+
+# 회귀 — 예산을 전부 같게 두면 기존 기준선과 주문이 동일해야 한다
+python .../r1_run.py $B --tag CHK_RA_A --env WK_BUD_TREND=10000000 --env WK_BUD_CHOP=10000000 20261029 20260720
+python .../r1_run.py $B --tag CHK_S_REG --env WK_BUD_SLOT1=10000000 --env WK_BUD_SLOT2=10000000 20261012 20261022
+
+# D — regime 별 (TREND 12.13M / CHOP 7.5M)
+python .../r1_run.py $B --tag RA_D --env WK_BUD_TREND=12130000 --env WK_BUD_CHOP=7500000 -j 2 <85일>
+
+# S축 — CHOP 내 slot1 ×1.20 / slot2 ×0.70
+python .../r1_run.py $B --tag CS_S --env WK_BUD_SLOT1=12000000 --env WK_BUD_SLOT2=7000000 -j 2 <CHOP 36일>
+
+# E축 — CHOP 내 10시 이전 ×1.25 / 이후 ×0.775
+python .../r1_run.py $B --tag CS_E --env WK_BUD_EARLY=12500000 --env WK_BUD_LATE=7750000 -j 2 <CHOP 36일>
+```
+
+### env 대응
+
+| env | 의미 |
+|---|---|
+| `WK_BUD_TREND` / `WK_BUD_CHOP` | regime 별 예산 (D축) |
+| `WK_BUD_SLOT1` / `WK_BUD_SLOT2` | **CHOP 진입에만** 적용되는 slot 별 예산 (S축) |
+| `WK_BUD_EARLY` / `WK_BUD_LATE` | **CHOP 진입에만** 적용되는 시각별 예산 (E축) |
+| `WK_EARLY_CUT_MIN` | E축 경계(분). 기본 600 = 10:00. 탐색하지 않는다 |
+
+S/E 축은 CHOP regime 진입에만 걸리고 TREND/WARMUP 은 항상 `WK_BUD_TREND`(기본 10M)다.
+
+### 함정 (추가)
+
+20. **사이징 변형은 산술추정이 거의 정확하다.** 진입가·청산가·시각이 동일하고 수량만
+    비례하므로 손익이 비례한다 — D 에서 실측 대조 결과 **오차 +0.0175%**(거래별 최대 0.09%).
+    85일 재생이 CPU 경합으로 자주 멈추므로, **추정을 먼저 내고 재생은 검증용으로 쓰는 편**이
+    빠르고 안전하다. 단 추정 전에 회귀(배수 1.0 ≡ A)를 반드시 확인할 것.
+21. **S/E 축은 CHOP 진입이 있는 날만 돌리면 된다**(85일 중 36일). 나머지 49일은 budget 이
+    TREND 기본값이라 A 와 동일한 것이 코드상 보장된다.
+22. **"좋은 구간"을 키우면 그 구간의 나쁜 날도 같이 커진다.** E축이 그래서 실패했다 —
+    최악일 10/12 의 두 거래가 모두 10시 이전이라 early 확대가 그날 손실을 −351,432 →
+    −439,290 로 키웠다. 축을 고를 때 **그 축의 최악일 구성**을 반드시 확인할 것.

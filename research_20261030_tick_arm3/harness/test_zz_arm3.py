@@ -76,6 +76,23 @@ _ARM_LADDER = {
 #: 보호 활성화에 필요한 추세약화 신호 개수. 0 = +3% 도달 즉시 활성(기존 SOFT/MEDIUM).
 _ARM_NEED = {"SOFT": 0, "MEDIUM": 0, "W1": 1, "W2": 2}
 
+# ── 2026-11-01 ⑧ CHOP 내부 차등 사이징 (S축 slot / E축 10시경계) ─────────
+#: CHOP regime 진입에만 적용한다. TREND/WARMUP 은 항상 _BUD_TREND(기본 10M).
+#: S축 — slot1 / slot2 예산. 0 이면 OFF.
+_BUD_SLOT1 = float(os.environ.get("WK_BUD_SLOT1", "0") or 0)
+_BUD_SLOT2 = float(os.environ.get("WK_BUD_SLOT2", "0") or 0)
+#: E축 — 10시 이전 / 이후 예산. 0 이면 OFF.
+_BUD_EARLY = float(os.environ.get("WK_BUD_EARLY", "0") or 0)
+_BUD_LATE = float(os.environ.get("WK_BUD_LATE", "0") or 0)
+#: E축 경계(분). 기본 600 = 10:00. 탐색하지 않는다.
+_EARLY_CUT_MIN = int(os.environ.get("WK_EARLY_CUT_MIN", "600") or 600)
+
+# ── 2026-11-01 ⑦ REGIME 별 자본배분 (REGALLOC) ───────────────────────────
+#: 0 이면 OFF. 값이 있으면 진입 사이징 직전에 그 tick 의 regime 으로 state.budget 을 고른다.
+#: regime 판정·진입게이트·청산은 전혀 바꾸지 않는다 — 바뀌는 것은 budget 하나뿐이다.
+_BUD_TREND = float(os.environ.get("WK_BUD_TREND", "0") or 0)
+_BUD_CHOP = float(os.environ.get("WK_BUD_CHOP", "0") or 0)
+
 # ── 2026-10-31 ⑥ 분산 — 슬롯 상한 × 건당 예산 (수익·안전성 동시) ────────
 #: 0 = OFF(production CHOP_DAILY_CAP=2 그대로). 값이 있으면 하루 슬롯 상한을 그 값으로.
 _SLOTCAP = int(os.environ.get("WK_SLOT_CAP", "0") or 0)
@@ -1241,6 +1258,54 @@ def test_wk2(monkeypatch, tmp_path):
             return True
         monkeypatch.setattr(worker, "_advance_held_position_risk_management", _arm_rm)
 
+    # ── 2026-11-01 ⑦ REGIME 별 자본배분 ───────────────────────────────────
+    # WARMUP 은 TREND 와 같이 처리한다(둘 다 BASE 래더로 관리되는 쪽).
+    REGALLOCLOG = []
+    if (_BUD_TREND > 0 or _BUD_CHOP > 0 or _BUD_SLOT1 > 0 or _BUD_SLOT2 > 0
+            or _BUD_EARLY > 0 or _BUD_LATE > 0):
+        from app.trading.macd2 import chop_regime as _crA
+        from app.trading.macd2 import position_sizing as _psA
+
+        _bt = _BUD_TREND or 10_000_000.0
+        _bc = _BUD_CHOP or 10_000_000.0
+
+        def _chop_budget(st_, now_):
+            """CHOP 진입에 쓸 예산. S축/E축이 켜져 있으면 그쪽이 우선한다."""
+            if _BUD_SLOT1 > 0 or _BUD_SLOT2 > 0:
+                # 이번 진입이 그날 몇 번째 슬롯인가 — resolve_slot 과 같은 출처
+                used = int(getattr(st_, "tw2_3slot_slots_used_today", 0) or 0)
+                return (_BUD_SLOT1 if used == 0 else _BUD_SLOT2) or _bc
+            if _BUD_EARLY > 0 or _BUD_LATE > 0:
+                k = now_.astimezone(config.KST)
+                mins = k.hour * 60 + k.minute
+                return (_BUD_EARLY if mins < _EARLY_CUT_MIN else _BUD_LATE) or _bc
+            return _bc
+
+        def _apply_budget(st_, where):
+            if st_ is None:
+                return
+            reg = getattr(st_, "p3_last_regime", None)
+            b = _chop_budget(st_, clock["now"]) if reg == _crA.REGIME_CHOP else _bt
+            if float(getattr(st_, "budget", 0) or 0) != b:
+                st_.budget = b
+                REGALLOCLOG.append(dict(t=clock["now"].isoformat(), where=where,
+                                        regime=str(reg), budget=b))
+
+        _o_ps_eval = _psA.evaluate
+
+        def _ps_eval(state_, **kw):
+            # 사이징 직전 — 이 tick 의 regime 이 이미 갱신돼 있다
+            _apply_budget(state_, "sizing")
+            return _o_ps_eval(state_, **kw)
+        monkeypatch.setattr(_psA, "evaluate", _ps_eval)
+
+        _o_run_once = worker.run_once
+
+        def _run_once(**kw):
+            _apply_budget(kw.get("state"), "tick")
+            return _o_run_once(**kw)
+        monkeypatch.setattr(worker, "run_once", _run_once)
+
     # ── 2026-10-31 ⑥ 분산 (슬롯 상한 × 건당 예산) ─────────────────────────
     # 진입 게이트/청산 규칙은 한 줄도 바꾸지 않는다. 바꾸는 것은 둘뿐이다:
     #   · 하루 슬롯 상한 (chop_defense.daily_cap)
@@ -1614,6 +1679,6 @@ def test_wk2(monkeypatch, tmp_path):
     Path(os.environ["WK_OUT"]).write_text(json.dumps(dict(D=D, FILL=FILL, VAR=VAR, orders=orders, acts=acts, sig=sig, ex=ex, entries=[e for e in ENTRIES if e["t"][:10].replace("-", "") == D], lock_events=[e for e in LOCK["events"] if e["t"][:10].replace("-", "") == D], lock_blocked=[e for e in LOCK["blocked"] if e["t"][:10].replace("-", "") == D],
                                                      brk=[e for e in LOG if e["armed_at"][:10].replace("-", "") == D],
                                                      prod=[e for e in PRODLOG if (e.get("t") or "")[:10].replace("-", "") == D],
-                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), slot_cap=_SLOTCAP, budget_ovr=_BUDGET, arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
+                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), slot_cap=_SLOTCAP, budget_ovr=_BUDGET, regalloc=REGALLOCLOG, bud_trend=_BUD_TREND, bud_chop=_BUD_CHOP, bud_slot1=_BUD_SLOT1, bud_slot2=_BUD_SLOT2, bud_early=_BUD_EARLY, bud_late=_BUD_LATE, arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
                                                      slow_cfg=bool(config.SLOW_TP2_ENABLED)),
                                                      ensure_ascii=False, indent=1), encoding="utf-8")
