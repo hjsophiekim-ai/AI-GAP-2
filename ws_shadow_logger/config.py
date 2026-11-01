@@ -66,7 +66,8 @@ MU_SHORT_SESSION_SEC = 30.0
 MU_MAX_SHORT_SESSIONS = 3
 # MU 무수신 watchdog (2026-10-21) — 국내 연결은 살아 있는데 RBAQMU 체결·호가만 멈추는 경우.
 #   **기본값으로 동작한다 — 필수 env 없음.** 아래 두 env 는 나중에 조정할 때만 쓰는 선택 항목이다.
-#   감시 09:00~15:30 KST, RBAQMU 체결+호가 둘 다 MU_STALE_SEC 무수신 -> RBAQMU 2건만 해제·재등록.
+#   감시 RBAQMU 주간거래 시작(미국 전일 20:00 ET: 서머타임 09:00 / 해제 10:00 KST, mu_watchdog.daytime_open_kst)
+#   ~15:30 KST, RBAQMU 체결+호가 둘 다 MU_STALE_SEC 무수신 -> RBAQMU 2건만 해제·재등록.
 ENV_MU_WATCHDOG = "KIS_LOGGER_MU_WATCHDOG"          # 선택: 0 이면 끈다 (기본 ON)
 ENV_MU_STALE_SEC = "KIS_LOGGER_MU_STALE_SEC"        # 선택: 기본 180
 MU_WATCHDOG_FEED = "RBAQMU"
@@ -75,7 +76,6 @@ MU_RESUB_DELAYS = (0.0, 60.0)       # 1차 즉시, 2차 60초 후
 MU_RESUB_EVERY = 300.0              # 이후 5분 간격
 MU_RESUB_MAX = 6                    # 최대 시도 — 다 쓰면 MU_STALE 유지 + 경고
 MU_RESUB_REPLY_TIMEOUT = 30.0
-MU_WATCH_START = time(9, 0)
 MU_WATCH_END = time(15, 30)
 
 SESSION_START = time(8, 0)

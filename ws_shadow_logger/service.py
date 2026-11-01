@@ -124,7 +124,7 @@ class LoggerService:
             self.wd = MuWatchdog(feed=config.MU_WATCHDOG_FEED, stale_sec=config.mu_stale_sec(),
                                  retry_delays=config.MU_RESUB_DELAYS, retry_every=config.MU_RESUB_EVERY,
                                  max_attempts=config.MU_RESUB_MAX, reply_timeout=config.MU_RESUB_REPLY_TIMEOUT,
-                                 watch_start=config.MU_WATCH_START, watch_end=config.MU_WATCH_END)
+                                 watch_end=config.MU_WATCH_END)   # 시작은 날짜별 서머타임 환산
             try:                         # 같은 날 재시작 — 앞서 닫힌 구간을 이어 붙인다
                 old = json.loads(self._wd_path(day).read_text(encoding="utf-8"))
                 self.wd.intervals = [iv for iv in old.get("mu_stale_intervals", []) if iv.get("stale_end")]

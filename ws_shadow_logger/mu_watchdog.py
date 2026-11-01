@@ -6,7 +6,9 @@
 그 구간을 데이터 품질 기록으로 남기는 것** 이고, 재구독이 실패해도 MU_STALE 을 유지한 채 끝난다.
 
 규칙 (기본값은 config, 선택적 env 로만 조정):
-  · 감시 시간: 한국 장중 09:00~15:30 KST. 장외에는 판정하지 않는다.
+  · 감시 시간: RBAQMU 주간거래 시작 ~ 15:30 KST. 장외에는 판정하지 않는다.
+    시작 = 미국 전일 20:00 ET 를 날짜별로 환산(:func:`daytime_open_kst`) — 서머타임 09:00 / 해제 10:00
+    (2026-11-02, 이전엔 09:00 고정이라 해제 기간 09:00~10:00 에 거짓 STALE·재구독 6회·GAVE_UP 이 났다).
   · 감시 대상: RBAQMU 하나. DNASMU 는 마지막 수신시각만 따로 기록한다(판정·재구독 없음).
   · stale: 체결과 호가가 **둘 다** stale_sec(180초) 이상 0건. 한쪽만 조용하면 정상(저유동성).
     직전 10분 평균 수신량(분당 체결+호가)을 같이 기록해 강도(STRONG/WEAK)를 붙인다.
@@ -20,7 +22,8 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 TRADE_TR = "HDFSCNT0"
 QUOTE_TR = "HDFSASP0"
@@ -29,18 +32,31 @@ OK = "OK"
 STALE = "STALE"
 GAVE_UP = "GAVE_UP"
 
+_US_EASTERN = ZoneInfo("America/New_York")
+_KST = timezone(timedelta(hours=9))
+#: 블루오션(RBAQMU) 시작 = 미국 **전일** 20:00 ET — production mu_assist.daytime_open_kst 와 같은 정의.
+DAYTIME_OPEN_ET = time(20, 0)
+
+
+def daytime_open_kst(day: date) -> time:
+    """KST 날짜 ``day`` 의 RBAQMU 주간거래 시작 시각(KST). 서머타임(EDT) 09:00 / 해제(EST) 10:00.
+    월요일은 미국 일요일 20:00 ET 개장이라 같은 규칙 그대로다."""
+    d = (day.date() if isinstance(day, datetime) else day) - timedelta(days=1)
+    et = datetime(d.year, d.month, d.day, DAYTIME_OPEN_ET.hour, DAYTIME_OPEN_ET.minute, tzinfo=_US_EASTERN)
+    return et.astimezone(_KST).time()
+
 
 class MuWatchdog:
     def __init__(self, *, feed: str = "RBAQMU", stale_sec: float = 180.0, retry_delays=(0.0, 60.0),
                  retry_every: float = 300.0, max_attempts: int = 6, reply_timeout: float = 30.0,
-                 watch_start: time = time(9, 0), watch_end: time = time(15, 30), weak_rate_per_min: float = 1.0):
+                 watch_start: time | None = None, watch_end: time = time(15, 30), weak_rate_per_min: float = 1.0):
         self.feed = feed
         self.stale_sec = float(stale_sec)
         self.retry_delays = tuple(float(x) for x in retry_delays)
         self.retry_every = float(retry_every)
         self.max_attempts = int(max_attempts)
         self.reply_timeout = float(reply_timeout)
-        self.watch_start, self.watch_end = watch_start, watch_end
+        self.watch_start, self.watch_end = watch_start, watch_end   # watch_start None = 날짜별 daytime_open_kst
         self.weak_rate_per_min = float(weak_rate_per_min)
         self.last_at: dict = {}                 # (tr, feed) -> 마지막 수신 시각 (DNASMU 포함, 기록용)
         self.counts: dict = {}                  # (tr, feed) -> 오늘 누계
@@ -55,8 +71,11 @@ class MuWatchdog:
         self._gave_up_logged = False
 
     # ── 입력 ───────────────────────────────────────────────────────────────
+    def start_for(self, now: datetime) -> time:
+        return self.watch_start if self.watch_start is not None else daytime_open_kst(now.date())
+
     def in_window(self, now: datetime) -> bool:
-        return now.weekday() < 5 and self.watch_start <= now.time() < self.watch_end
+        return now.weekday() < 5 and self.start_for(now) <= now.time() < self.watch_end
 
     def on_connected(self, now: datetime):
         """새 연결 = 전체 재등록이 이미 끝났다. 진행 중 lease 는 의미가 없어진다(그 연결과 함께 사라졌다)."""
