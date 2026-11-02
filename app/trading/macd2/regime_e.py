@@ -1,25 +1,24 @@
-"""REGIME_E — CHOP 모드의 **TREND 각인 진입만** E 돌파대기를 생략한다 (2026-11-02, 기본 OFF).
+"""REGIME_E — E 돌파대기 모드(E / CHOP)의 **TREND 각인 진입만** E 돌파대기를 생략한다.
 
-토글 하나(``MACD2_REGIME_E_ENABLED`` / ``state.regime_e_enabled``)로 켜고, 켜도 바뀌는 것은
-**E 돌파대기를 걸지 말지 하나뿐**이다. 진입 승인은 이 판정보다 **앞에서 이미 끝나 있다** --
-T+3 / TEG / VWAP veto / MU Assist(ENTRY_BAD veto · CATCH-UP) / XS / 슬롯·하루한도 / 사이징은
-한 줄도 보지 않고 바꾸지 않는다. 청산(손절/TP/C1/H50/B3)도 마찬가지다. regime 판정 로직
-(:mod:`chop_regime`)도 읽기만 한다.
+2026-11-02 도입(기본 OFF) → 2026-11-03 부터 **토글 없는 기본 동작**이다.
+바뀌는 것은 **E 돌파대기를 걸지 말지 하나뿐**이다. 진입 승인은 이 판정보다 **앞에서 이미
+끝나 있다** -- T+3 / TEG / VWAP veto / MU Assist(ENTRY_BAD veto · CATCH-UP) / XS / 슬롯·하루한도 /
+사이징은 한 줄도 보지 않고 바꾸지 않는다. 청산(손절/TP/C1/H50/B3)도 마찬가지다. regime 판정
+로직(:mod:`chop_regime`)도 읽기만 한다.
 
 발동 조건 (전부 만족해야 bypass)
-  1. 토글 ON
-  2. ``strategy_mode.current(state) == CHOP``        -- E/P3/N1 모드는 기존 그대로
-  3. 그 tick 의 ``state.p3_last_regime == "TREND"``  -- 이 값이 곧 진입에 각인될 regime이다
+  1. ``strategy_mode.current(state)`` 가 E 돌파대기 모드(E / CHOP) -- N1/P3 는 E 대기 자체가 없다
+  2. 그 tick 의 ``state.p3_last_regime == "TREND"``  -- 이 값이 곧 진입에 각인될 regime이다
      (``worker._finalize_tw2_3slot_entry`` 가 같은 필드로 ``p3_entry_regime`` 을 찍는다)
-  4. 원래 E 돌파대기 대상이었을 것 (``early.immediate`` 가 False 이고 trigger 가 있을 것)
+  3. 원래 E 돌파대기 대상이었을 것 (``early.immediate`` 가 False 이고 trigger 가 있을 것)
 
 bypass 하면 호출부는 대기를 걸지 않고 **T+3 승인 즉시진입 경로**로 그대로 내려간다 --
 ``_e_arm_pending_instead_of_entry`` 가 ``early.trigger is None`` 일 때 False 를 돌려주는 것과
 **같은 경로**다. 그래서 bypass 는 새 진입경로를 만들지 않는다.
 
-CHOP 각인 진입은 조건 3에서 떨어져 기존 E 돌파대기가 그대로 유지된다.
+CHOP/WARMUP 각인 진입은 조건 2에서 떨어져 기존 E 돌파대기가 그대로 유지된다.
 
-근거: ``research_20261102_reclaim/REPORT_REGIME_E.md`` (58일) ·
+근거: ``research_20261102_reclaim/REPORT_REGIME_E.md`` (CHOP 58일) ·
 ``REPORT_REGIME_E_MU.md`` (MU Assist 켠 11일).
 """
 from __future__ import annotations
@@ -29,12 +28,14 @@ from typing import Any, Optional
 
 from app.trading.macd2 import chop_regime, config, strategy_mode
 
-#: bypass 사유 — 원장/로그에 그대로 적힌다.
+#: bypass 사유 — 원장/로그에 그대로 적힌다. 모드별로 구분한다.
 BYPASS_REASON = "CHOP_MODE_TREND_REGIME"
+BYPASS_REASON_E = "E_MODE_TREND_REGIME"
 
 #: bypass 하지 않은 이유들 (진단용, 원장에 그대로 적힌다).
-SKIP_DISABLED = "REGIME_E_OFF"
-SKIP_NOT_CHOP_MODE = "NOT_CHOP_MODE"
+SKIP_NOT_E_WAIT_MODE = "NOT_E_WAIT_MODE"
+#: 이전 이름 호환 (2026-11-02 은 CHOP 모드 전용이었다).
+SKIP_NOT_CHOP_MODE = SKIP_NOT_E_WAIT_MODE
 SKIP_NOT_TREND_REGIME = "NOT_TREND_REGIME"
 SKIP_NOT_E_WAIT = "NOT_E_WAIT_CANDIDATE"
 
@@ -64,11 +65,13 @@ class RegimeEDecision:
 
 
 def is_enabled(state: Any = None) -> bool:
-    """켜져 있는가 — UI 가 저장한 ``state.regime_e_enabled`` 가 기준이고,
-    그 필드가 없으면 env ``MACD2_REGIME_E_ENABLED`` (기본 OFF)."""
-    if state is not None and hasattr(state, "regime_e_enabled"):
-        return bool(state.regime_e_enabled)
-    return bool(config.REGIME_E_ENABLED)
+    """항상 True — 2026-11-03 부터 토글이 없다(원장 ``regime_e_enabled`` 컬럼 호환용)."""
+    return True
+
+
+def applies_to_mode(mode: str) -> bool:
+    """E 돌파대기가 있는 모드(E / CHOP)인가."""
+    return mode in strategy_mode.E_BASED_MODES
 
 
 def current_regime(state: Any) -> str:
@@ -90,15 +93,14 @@ def evaluate(state: Any, *, early: Any, price: Optional[float]) -> RegimeEDecisi
     base = dict(regime=regime, strategy_mode=mode, wait_eligible=wait_eligible,
                 t3_price=(float(price) if price else None),
                 e_trigger=(float(trigger) if trigger is not None else None))
-    if not is_enabled(state):
-        return RegimeEDecision(bypassed=False, reason=SKIP_DISABLED, **base)
-    if mode != strategy_mode.MODE_CHOP:
-        return RegimeEDecision(bypassed=False, reason=SKIP_NOT_CHOP_MODE, **base)
+    if not applies_to_mode(mode):
+        return RegimeEDecision(bypassed=False, reason=SKIP_NOT_E_WAIT_MODE, **base)
     if regime != chop_regime.REGIME_TREND:
         return RegimeEDecision(bypassed=False, reason=SKIP_NOT_TREND_REGIME, **base)
     if not wait_eligible:
         return RegimeEDecision(bypassed=False, reason=SKIP_NOT_E_WAIT, **base)
-    return RegimeEDecision(bypassed=True, reason=BYPASS_REASON, **base)
+    reason = BYPASS_REASON if mode == strategy_mode.MODE_CHOP else BYPASS_REASON_E
+    return RegimeEDecision(bypassed=True, reason=reason, **base)
 
 
 def trace_fields(dec: Optional[RegimeEDecision]) -> dict[str, Any]:
@@ -126,7 +128,7 @@ def ledger_fields(trace: Optional[dict]) -> dict[str, Any]:
         return {}
     edge = trace.get("price_edge_pct")
     return {
-        "regime_e_enabled": bool(config.REGIME_E_ENABLED) or bool(trace.get("bypass")),
+        "regime_e_enabled": True,
         "regime_e_version": config.REGIME_E_VERSION,
         "e_bypass": bool(trace.get("bypass")),
         "e_bypass_reason": str(trace.get("reason") or ""),
@@ -141,7 +143,5 @@ def ledger_fields(trace: Optional[dict]) -> dict[str, Any]:
 
 def describe(state: Any) -> str:
     """UI 한 줄 요약."""
-    if not is_enabled(state):
-        return "REGIME_E OFF"
     return (f"REGIME_E ON · mode={strategy_mode.current(state)} · "
             f"regime={current_regime(state)}")

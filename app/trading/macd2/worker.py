@@ -5794,11 +5794,11 @@ def _resolve_tw2_3slot_candidate_body(
             bars_3m=bars_3m, flag_bar_dt=flag_bar_dt,
             confirm_bar_dt=macd_snap.bar_dt, direction=direction, price=_e_price)
         result.signal_dispatch_trace["e_early_pass"] = dataclasses.asdict(_e_early)
-        # ── REGIME_E (2026-11-02, 기본 OFF) ───────────────────────────
-        # CHOP 모드 × 이 tick 의 regime 각인이 TREND 면 돌파대기를 걸지 않고
+        # ── REGIME_E (2026-11-02, 2026-11-03 부터 토글 없는 기본 동작) ──
+        # E/CHOP 모드 × 이 tick 의 regime 각인이 TREND 면 돌파대기를 걸지 않고
         # 아래 T+3 즉시진입 경로로 그대로 내려간다. 바뀌는 것은 그 하나뿐이고
         # 승인(TEG/VWAP/MU/XS/슬롯/사이징)·청산·regime 판정은 건드리지 않는다.
-        # 토글 OFF 면 _regime_e.bypassed 가 항상 False 라 기존 동작과 동일하다.
+        # CHOP/WARMUP 각인이면 bypassed 가 False 라 기존 E 돌파대기 그대로다.
         _regime_e = regime_e.evaluate(state, early=_e_early, price=_e_price)
         result.signal_dispatch_trace["regime_e"] = regime_e.trace_fields(_regime_e)
         if _regime_e.bypassed:
