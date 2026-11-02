@@ -51,7 +51,7 @@ def _bars(closes, start=None):
 # ── A. N1 OFF parity — 기존 모드 분기 반환값 불변 ─────────────────────────
 def test_existing_modes_exit_overrides_unchanged():
     assert tw3.exit_overrides(tw3.MODE_X2LITE_3SLOT) == {
-        "stop_loss_pct_override": -1.3, "after_tp1_stop_pct_override": 2.0,
+        "stop_loss_pct_override": -1.5, "after_tp1_stop_pct_override": 2.0,   # 2026-11-02: -1.3 -> -1.5
         "afternoon_tp_pct_override": 3.0, "tp1_sell_ratio_override": 0.2,
         "trailing_stop_pct_override": pytest.approx(2.8),
     }
@@ -113,7 +113,7 @@ def test_tp1_override_defaults_to_module_constant():
 # ── B. 사양값 ─────────────────────────────────────────────────────────────
 def test_n1_fixed_ladder_matches_spec():
     ov = tw3.exit_overrides(tw3.MODE_N1_3SLOT)
-    assert ov["stop_loss_pct_override"] == pytest.approx(-1.3)
+    assert ov["stop_loss_pct_override"] == pytest.approx(-1.5)   # 2026-11-02: -1.3 -> -1.5
     assert ov["after_tp1_stop_pct_override"] == pytest.approx(2.0)
     assert ov["trailing_stop_pct_override"] == pytest.approx(1.5)   # X2-lite 2.8
     assert ov["afternoon_tp_pct_override"] == pytest.approx(4.0)    # X2-lite 3.0
