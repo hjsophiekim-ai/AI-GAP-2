@@ -2034,6 +2034,16 @@ E_RS_TABLE_PATH = _env_str("MACD2_E_RS_TABLE_PATH", "")
 #: 진입/폐기/RS/청산 로직은 바꾸지 않는다 -- 3번째 신규진입만 슬롯 한도로 막힌다.
 E_CAP2_DAILY_CAP = 2
 
+# ── REGIME_E (2026-11-02) — CHOP 모드의 TREND 각인 진입만 E 돌파대기 생략 ──
+#: **기본 OFF.** 켜도 바뀌는 것은 "E 돌파대기를 걸지 말지" 하나뿐이다 -- 진입 승인
+#: (T+3 / TEG / VWAP veto / MU Assist / XS / 슬롯·하루한도 / 사이징)과 청산(손절 / TP /
+#: C1 / H50 / B3), regime 판정 로직은 한 줄도 바뀌지 않는다. CHOP 각인 진입은 기존
+#: E 돌파대기 그대로다. 근거: research_20261102_reclaim/REPORT_REGIME_E.md (58일
+#: +785,832 / MDD +11,722) · REPORT_REGIME_E_MU.md (MU Assist 켠 11일 +90,847,
+#: MDD·최악일 불변, 단 **1거래**라 증거 등급이 낮다 -- 그래서 기본 OFF 다).
+REGIME_E_ENABLED = _env_bool("MACD2_REGIME_E_ENABLED", False)
+REGIME_E_VERSION = "REGIME_E_TREND_BYPASS_V1_20261102"
+
 # ── 단일종목 레버리지 기본예탁금 사전점검 (2026-10-06) ─────────────────────
 # KIS 실계좌는 단일종목 레버리지 ETF 매수에 기본예탁금 3천만원을 요구한다(미달 시
 # APBK3052 거절 -- 2026-10-01 09:18 실사고, 현재 28,983,650원). 매수 직전 KIS 매수가능
