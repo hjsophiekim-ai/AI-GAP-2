@@ -7,7 +7,7 @@ W1a 는 **주문수량만** 바꾼다. 진입/청산 판정은 한 줄도 건드
      budget 이 그대로 전달된다(F / TW TEG 3-SLOT / TW2 3-SLOT / 무필터).
   B. **사이징 정확성** — 100 / 80 / 120 / 96%, clip 25~150%, 일일 300% greedy cap,
      "그날 첫 거래 STOP_LOSS" 정의, 날짜 rollover, 재시작 복원.
-  C. **청산 불변** — TP1 20% / TP2 5% / trailing 2.8% / SL −1.3% / ETP 1.5→1.0 /
+  C. **청산 불변** — TP1 20% / TP2 5% / trailing 2.8% / SL −1.5%(2026-11-02 변경) / ETP 1.5→1.0 /
      반대신호 / switch / 강제청산이 사이징 크기와 무관하게 동일하게 작동한다.
 
 시나리오는 전부 **실제 worker.run_once() + FakeBroker + 격리 tmp 원장**
@@ -482,8 +482,8 @@ def test_trailing_28_boundary_unchanged(monkeypatch, net, fires):
     assert any(a.startswith(config.EXIT_TW_TRAILING_STOP) for a in r.actions) is fires
 
 
-@pytest.mark.parametrize("net,fires", [(-1.29, False), (-1.30, True)])
-def test_morning_sl_130_boundary_unchanged(monkeypatch, net, fires):
+@pytest.mark.parametrize("net,fires", [(-1.30, False), (-1.49, False), (-1.50, True)])
+def test_morning_sl_150_boundary(monkeypatch, net, fires):
     entry, qty = 10_000.0, 1000
     price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, net,
                            side=("at_least" if not fires else "at_most"))
@@ -499,7 +499,7 @@ def test_morning_sl_130_boundary_unchanged(monkeypatch, net, fires):
 
 def test_stop_loss_on_second_trade_does_not_arm_post_stop(monkeypatch):
     entry, qty = 10_000.0, 1000
-    price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, -1.30, side="at_most")
+    price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, -1.50, side="at_most")   # 2026-11-02: -1.30 -> -1.50
     svc, now0 = _market(inverse_price=price)
     s = _held(qty, entry=entry, bar_close=price, now=now0, seq=2, exposure=2.0)
     _patch_common(monkeypatch)
@@ -652,7 +652,7 @@ def test_worker_reads_x2lite_mode_and_exit_overrides_after_toggle():
     ov = tw3.exit_overrides(mode)
     assert ov["tp1_sell_ratio_override"] == pytest.approx(0.20)
     assert ov["trailing_stop_pct_override"] == pytest.approx(2.8)
-    assert ov["stop_loss_pct_override"] == pytest.approx(-1.30)
+    assert ov["stop_loss_pct_override"] == pytest.approx(-1.50)   # 2026-11-02: -1.30 -> -1.50
     assert tw3.morning_tp2_pct_override(mode) == pytest.approx(5.0)
     from app.trading.macd2 import early_take_profit as etp
     assert etp.is_enabled(s) is True

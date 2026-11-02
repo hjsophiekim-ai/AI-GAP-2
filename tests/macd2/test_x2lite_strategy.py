@@ -8,7 +8,7 @@ X2-lite 는 TW TEG 3-SLOT(=F, 배포 전략)과 **진입이 100% 동일**하고 
      않는다. worker 의 TP2 조건식을 헬퍼로 옮긴 것이 유일한 실질 위험이라
      그 반환값을 모드별로 직접 잠근다.
   B. **X2-lite 사양** — 진입 parity / TP1 20% / TP2 5% / trailing 2.8% /
-     오전 SL -1.3% / ETP 1.5→1.0 / 반대신호 / 강제청산 / 슬롯 카운터 /
+     오전 SL -1.5%(2026-11-02 변경, 구 -1.3%) / ETP 1.5→1.0 / 반대신호 / 강제청산 / 슬롯 카운터 /
      왕복거래 표시.
 
 경계값(2.79 vs 2.80 등)은 순수 래더 함수로 정확히 찍고, 시나리오는 전부
@@ -149,7 +149,7 @@ def test_x2lite_params_match_the_researched_spec():
     ov = tw3.exit_overrides(MODE)
     assert ov["tp1_sell_ratio_override"] == pytest.approx(0.20)
     assert ov["trailing_stop_pct_override"] == pytest.approx(2.8)
-    assert ov["stop_loss_pct_override"] == pytest.approx(-1.30)
+    assert ov["stop_loss_pct_override"] == pytest.approx(-1.50)   # 2026-11-02: -1.30 -> -1.50
     assert ov["after_tp1_stop_pct_override"] == pytest.approx(2.0)
     assert ov["afternoon_tp_pct_override"] == pytest.approx(3.0)
     assert tw3.morning_tp2_pct_override(MODE) == pytest.approx(5.0)
@@ -211,10 +211,14 @@ def test_x2lite_trailing_stop_boundary_279_holds_280_exits():
     assert _x2(2.0, tp1_done=True, peak=3.0).exit_reason == config.EXIT_TW_AFTER_TP1_STOP
 
 
-def test_x2lite_morning_stop_loss_boundary_129_holds_130_exits():
-    assert _x2(-1.29).exit_reason is None
-    assert _x2(-1.30).exit_reason == config.EXIT_TW_STOP_LOSS
-    assert _x2(-1.31).exit_reason == config.EXIT_TW_STOP_LOSS
+def test_x2lite_morning_stop_loss_boundary_149_holds_150_exits():
+    """2026-11-02: 오전 손절 -1.3% -> **-1.5%**. 구 경계(-1.30/-1.31)는 이제 버틴다."""
+    assert _x2(-1.49).exit_reason is None
+    assert _x2(-1.50).exit_reason == config.EXIT_TW_STOP_LOSS
+    assert _x2(-1.51).exit_reason == config.EXIT_TW_STOP_LOSS
+    # 구 임계값 구간(-1.30 ~ -1.49)은 더 이상 손절하지 않는다 — 이 변경의 전부다.
+    assert _x2(-1.30).exit_reason is None
+    assert _x2(-1.40).exit_reason is None
 
 
 def test_x2lite_afternoon_ladder_is_unchanged_except_tp():
@@ -577,9 +581,9 @@ def test_e2e_trailing_28_boundary(monkeypatch, net, should_exit):
         assert state.position is None
 
 
-# ── 오전 손절 -1.30% ───────────────────────────────────────────────────────
-@pytest.mark.parametrize("net,should_exit", [(-1.29, False), (-1.30, True)])
-def test_e2e_morning_stop_loss_130_boundary(monkeypatch, net, should_exit):
+# ── 오전 손절 -1.50% (2026-11-02 변경, 구 -1.30%) ──────────────────────────
+@pytest.mark.parametrize("net,should_exit", [(-1.30, False), (-1.49, False), (-1.50, True)])
+def test_e2e_morning_stop_loss_150_boundary(monkeypatch, net, should_exit):
     entry, qty = 10_000.0, 1000
     price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, net)
     svc, now0 = _market(inverse_price=price)
@@ -594,16 +598,20 @@ def test_e2e_morning_stop_loss_130_boundary(monkeypatch, net, should_exit):
         assert state.position is None
         rows = [r for r in _sell_rows() if r.get("exit_reason") == config.EXIT_TW_STOP_LOSS]
         assert len(rows) == 1
-        # 판정 threshold(-1.30%)와 실제 체결 net% 는 별개다 — 체결가가 더 나쁠 수 있다.
+        # 판정 threshold(-1.50%)와 실제 체결 net% 는 별개다 — 체결가가 더 나쁠 수 있다.
         assert float(rows[0]["net_pnl"]) <= 0.0
         assert int(rows[0]["position_after"]) == 0
 
 
 def test_e2e_x2lite_does_not_stop_out_where_f_would(monkeypatch):
-    """-1.35% 지점: X2-lite(-1.3) 는 이미 손절, F(-1.4) 는 아직 보유."""
+    """-1.45% 지점: F(-1.4) 는 손절, X2-lite(-1.5) 는 아직 보유.
+
+    2026-11-02 이전에는 X2-lite 가 F 보다 **좁아서** -1.35% 에서 X2-lite 만 손절했다.
+    이제 X2-lite 가 더 **넓으므로** 부등호가 뒤집힌다 — F 라면 잘렸을 자리에서 버틴다.
+    """
     entry, qty = 10_000.0, 1000
-    price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, -1.35)
-    for mode, expect_exit in ((MODE, True), (F_MODE, False)):
+    price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, -1.45)
+    for mode, expect_exit in ((MODE, False), (F_MODE, True)):
         svc, now0 = _market(inverse_price=price)
         state = _held_state(mode, now=now0, entry_price=entry, qty=qty, bar_close=price)
         broker = _broker_with(price, entry_price=entry, qty=qty)

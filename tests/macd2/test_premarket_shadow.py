@@ -299,14 +299,23 @@ def _confirmed_position(st, shadow_dir, monkeypatch, entry=10000.0, chop=False):
 
 
 def test_shadow_stop_loss_uses_x2lite_threshold_not_f(shadow_dir, st, monkeypatch):
-    """X2-lite SL = -1.30%. F(TW TEG) 의 -1.40% 가 아니어야 한다."""
+    """X2-lite SL = **-1.50%** (2026-11-02 변경, 구 -1.30%). F(TW TEG) 의 -1.40% 가 아니어야 한다.
+
+    변경 전에는 X2-lite 가 F 보다 **좁아서** -1.35% 로 구분했다. 이제는 X2-lite 가
+    F 보다 **넓으므로** 부등호가 뒤집힌다 -- -1.45% 는 F 라면 손절이지만 X2-lite 는 버틴다.
+    """
     _confirmed_position(st, shadow_dir, monkeypatch)
-    # -1.35% → X2-lite 면 손절, F 면 아직 버팀
+    # -1.45% → F(-1.40%) 면 손절이지만 X2-lite(-1.50%) 는 아직 버틴다
     PS.observe(state=st, macd_snap=_snap("09:09", direction=None), bars_3m=object(),
-               now=_dt("09:12"), quotes={mcfg.LONG_SYMBOL: 10000.0 * (1 - 0.0135)})
+               now=_dt("09:12"), quotes={mcfg.LONG_SYMBOL: 10000.0 * (1 - 0.0145)})
+    s = PS.load_shadow_state()
+    assert s.exit_reason is None          # net_pct 는 청산 때만 찍힌다
+    # -1.55% 면 X2-lite 임계값도 넘어 손절한다
+    PS.observe(state=st, macd_snap=_snap("09:12", direction=None), bars_3m=object(),
+               now=_dt("09:15"), quotes={mcfg.LONG_SYMBOL: 10000.0 * (1 - 0.0155)})
     s = PS.load_shadow_state()
     assert s.exit_reason == mcfg.EXIT_TW_STOP_LOSS
-    assert s.net_pct == pytest.approx(-1.35, abs=1e-6)
+    assert s.net_pct == pytest.approx(-1.55, abs=1e-6)
 
 
 def test_shadow_tp1_is_partial_then_position_survives(shadow_dir, st, monkeypatch):

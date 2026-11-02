@@ -1262,7 +1262,16 @@ X2LITE_3SLOT_STRATEGY_NAME = "X2-lite"
 X2LITE_3SLOT_FILTER_VERSION = "X2LITE_3SLOT_V1_20260912"
 
 # 청산 override (분수 저장, spec §17 관례 — 사용처에서 *100 해서 % 로 넘긴다).
-X2LITE_MORNING_STOP_LOSS = _env_float("MACD2_X2LITE_MORNING_STOP_LOSS", -0.013)
+#: 2026-11-02: 오전 손절 **-1.3% -> -1.5%** (사용자 결정). X2-lite / H50 / **N1 계열**이
+#: 공유하는 값이라 현행 운영모드(CHOP = N1 래더)의 오전 손절이 이 값이다.
+#: 실측 근거 — 58영업일 실데이터(2026-08-03~10-30, CHOP+MU Assist) 전량 재생에서
+#: **총손익/PF/MDD/최악일/승률/거래수가 전부 불변**(Δ 0)이다. 손절은 틱이 아니라
+#: **완성 3분봉 종가**로만 판정하므로(worker._advance_stop_loss_bar) -1.3~-1.5 의
+#: 0.2%p 띠에 봉 종가가 멈춘 사례가 그 기간에 한 건도 없었다 — TW 손절 20건 전부
+#: 같은 봉/같은 가격에서 걸린다. 더 넓히면 나빠진다: -1.8% 에서 08/03 거래가 한 봉
+#: 더 버티다 35원/주 손해(재생 확인), -2.0% 는 10/16~10/30 손절 16건에서 -1,116,485
+#: (research_20261102_shake_tolerance). 검증: tests/macd2/test_stop_loss_15.py
+X2LITE_MORNING_STOP_LOSS = _env_float("MACD2_X2LITE_MORNING_STOP_LOSS", -0.015)
 X2LITE_MORNING_AFTER_TP1_STOP = _env_float("MACD2_X2LITE_MORNING_AFTER_TP1_STOP", 0.020)
 X2LITE_AFTERNOON_TP = _env_float("MACD2_X2LITE_AFTERNOON_TP", 0.030)
 X2LITE_MORNING_TP1_SELL_RATIO = _env_float("MACD2_X2LITE_MORNING_TP1_SELL_RATIO", 0.20)

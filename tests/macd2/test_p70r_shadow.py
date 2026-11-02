@@ -169,9 +169,11 @@ def test_summary_counts_and_ex_top():
 def _n1_stop_run(monkeypatch, tmp_path, *, enabled):
     from tests.macd2.test_fixed_exit_15 import _run
     monkeypatch.setattr(config, "P70R_SHADOW_ENABLED", enabled)
-    # 직전 3분 저점 9,800 -> 손절 tick 9,860 은 +0.61% 반등(PASS)
-    _ticks([9_800.0] + [9_840.0] * 17, end=datetime(2026, 1, 1, tzinfo=KST))   # 다른 시각 -> 영향 없음 확인용 잡음
-    return _run(monkeypatch, tmp_path, mode=strategy_mode.MODE_N1, on=False, price=9_860.0, bar_close=9_860.0)
+    # 직전 3분 저점 9,790 -> 손절 tick 9,850 은 +0.61% 반등(PASS)
+    # 2026-11-02: 오전 손절이 -1.3% -> -1.5% 라 9,860(net -1.49%)은 더 이상 안 걸린다.
+    #             9,850 = net -1.59% 로 낮춰 같은 시나리오를 유지한다(반등률 0.61% 동일).
+    _ticks([9_790.0] + [9_830.0] * 17, end=datetime(2026, 1, 1, tzinfo=KST))   # 다른 시각 -> 영향 없음 확인용 잡음
+    return _run(monkeypatch, tmp_path, mode=strategy_mode.MODE_N1, on=False, price=9_850.0, bar_close=9_850.0)
 
 
 def test_worker_n1_morning_stop_records_shadow_without_changing_the_order(monkeypatch, tmp_path):
@@ -182,7 +184,8 @@ def test_worker_n1_morning_stop_records_shadow_without_changing_the_order(monkey
     rs = ps.rows()
     assert len(rs) == 1
     r = rs[0]
-    assert r["exit_reason"] == config.EXIT_TW_STOP_LOSS and r["qty"] == 10 and r["stop_pct"] == pytest.approx(-1.3)
+    assert r["exit_reason"] == config.EXIT_TW_STOP_LOSS and r["qty"] == 10
+    assert r["stop_pct"] == pytest.approx(config.X2LITE_MORNING_STOP_LOSS * 100.0)   # 2026-11-02: -1.5
     assert r["P70R_SHADOW"] == ps.UNAVAILABLE                      # 손절 시각 직전 3분 tick 이 없다
     assert r["sell_requested_at"] and r["sell_confirmed_at"] and r["sell_reconciled_at"]
     assert r["stop_decision_at"] == r["decision_at"] and r["stop_bar_end_at"]
@@ -209,21 +212,24 @@ def test_worker_parity_shadow_on_vs_off(monkeypatch, tmp_path):
 def test_worker_n1_morning_stop_pass_when_rebounding_from_3m_low(monkeypatch, tmp_path):
     from tests.macd2.test_early_take_profit_worker import _SESSION_START_NOW as now
     from tests.macd2.test_fixed_exit_15 import _run
-    for i in range(18):                                    # now-180s..now-10s, 저점 9,800
-        ps.observe(now - timedelta(seconds=180 - 10 * i), {SYM: 9_800.0 if i == 3 else 9_840.0})
+    # 2026-11-02: 오전 손절이 -1.3% -> -1.5% 라 9,860(net -1.49%)은 더 이상 안 걸린다.
+    #             저점/손절틱을 10원씩 낮춰 반등률(+0.61%)은 그대로 두고 net 만 -1.59% 로 만든다.
+    for i in range(18):                                    # now-180s..now-10s, 저점 9,790
+        ps.observe(now - timedelta(seconds=180 - 10 * i), {SYM: 9_790.0 if i == 3 else 9_830.0})
     state, orders, result = _run(monkeypatch, tmp_path, mode=strategy_mode.MODE_N1, on=False,
-                                 price=9_860.0, bar_close=9_860.0)
+                                 price=9_850.0, bar_close=9_850.0)
     assert [o.executed_qty for o in orders if o.side == "SELL"] == [10]
     r = ps.rows()[0]
-    assert r["P70R_SHADOW"] == ps.PASS and r["low3"] == 9_800.0
-    assert r["rebound_pct"] == pytest.approx((9_860.0 / 9_800.0 - 1) * 100, abs=1e-3)
+    assert r["P70R_SHADOW"] == ps.PASS and r["low3"] == 9_790.0
+    assert r["rebound_pct"] == pytest.approx((9_850.0 / 9_790.0 - 1) * 100, abs=1e-3)
 
 
 def test_worker_b3_governed_position_stop_is_not_recorded(monkeypatch, tmp_path):
-    """CHOP 진입 P3(B3 관리 중) 포지션도 완성봉 −1.3% 래더 손절을 탄다 -> 실제 손절은 나가지만 shadow 대상이 아니다."""
+    """CHOP 진입 P3(B3 관리 중) 포지션도 완성봉 -1.5% 래더 손절을 탄다 -> 실제 손절은 나가지만 shadow 대상이 아니다."""
     from tests.macd2.test_fixed_exit_15 import _run
+    # 2026-11-02: 손절선 -1.3% -> -1.5% 에 맞춰 봉 종가를 9,860 -> 9,850 으로 낮춘다.
     state, orders, result = _run(monkeypatch, tmp_path, mode=strategy_mode.MODE_P3, on=False,
-                                 price=9_950.0, bar_close=9_860.0)
+                                 price=9_950.0, bar_close=9_850.0)
     assert [o.executed_qty for o in orders if o.side == "SELL"] == [10]
     assert f"{config.EXIT_TW_STOP_LOSS}:{SYM}" in result.actions
     assert ps.rows() == []
