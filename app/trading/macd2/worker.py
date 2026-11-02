@@ -73,6 +73,7 @@ from app.trading.macd2 import (
     position_sizing,
     p70r_shadow,
     premarket_shadow,
+    regime_e,
     shadow_base,
     risk_exit,
     sell_fill_telemetry,
@@ -5793,7 +5794,21 @@ def _resolve_tw2_3slot_candidate_body(
             bars_3m=bars_3m, flag_bar_dt=flag_bar_dt,
             confirm_bar_dt=macd_snap.bar_dt, direction=direction, price=_e_price)
         result.signal_dispatch_trace["e_early_pass"] = dataclasses.asdict(_e_early)
-        if not _e_early.immediate:
+        # ── REGIME_E (2026-11-02, 기본 OFF) ───────────────────────────
+        # CHOP 모드 × 이 tick 의 regime 각인이 TREND 면 돌파대기를 걸지 않고
+        # 아래 T+3 즉시진입 경로로 그대로 내려간다. 바뀌는 것은 그 하나뿐이고
+        # 승인(TEG/VWAP/MU/XS/슬롯/사이징)·청산·regime 판정은 건드리지 않는다.
+        # 토글 OFF 면 _regime_e.bypassed 가 항상 False 라 기존 동작과 동일하다.
+        _regime_e = regime_e.evaluate(state, early=_e_early, price=_e_price)
+        result.signal_dispatch_trace["regime_e"] = regime_e.trace_fields(_regime_e)
+        if _regime_e.bypassed:
+            logger.info(
+                "[MACD2][REGIME_E] %s E 돌파대기 생략 (%s) regime=%s mode=%s "
+                "T+3가=%s 돌파트리거=%s 진입가이득=%s%%",
+                direction.value, _regime_e.reason, _regime_e.regime, _regime_e.strategy_mode,
+                _regime_e.t3_price, _regime_e.e_trigger, _regime_e.price_edge_pct)
+            result.actions.append("E_BYPASS_REGIME_E:" + direction.value)
+        if not _e_early.immediate and not _regime_e.bypassed:
             # 즉시진입 조건 미달 -> 돌파 대기. 승인 시점 게이트 스냅샷을
             # 통째로 저장해 두고(돌파 때 재평가하지 않는다), 보유 중인
             # **반대** 포지션은 지금 청산한다.
@@ -9571,6 +9586,10 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
     if _cu_trace is not None:
         # MU CATCH-UP (2026-10-28): 왜 진입(미진입)했는지 — PASS/FAIL/UNAVAILABLE · 세션값 · 체결강도 · 푼 게이트.
         row.update(mu_catchup.ledger_fields(_cu_trace["ev"], list(_cu_trace["overridden"])))
+    # REGIME_E (2026-11-02): E 돌파대기를 생략했는지 / 생략하지 않았다면 왜 아닌지.
+    # trace 가 없으면 빈 dict 라 기존 행 모양이 바뀌지 않는다(토글 OFF 포함).
+    row.update(regime_e.ledger_fields(trace.get("regime_e")
+                                      if isinstance(trace.get("regime_e"), dict) else None))
     _rv_note = _BAR_REVISION_NOTES.get(str(signal_id or "").split(":")[0])
     if _rv_note:
         row["bar_revision"] = _rv_note        # 2026-10-29: 확정값 재평가로 생긴/복원된 플래그의 근거

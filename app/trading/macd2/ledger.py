@@ -142,6 +142,16 @@ SIGNAL_LEDGER_COLUMNS = [
     # MU CATCH-UP (2026-10-28): 판정 결과·근거 값·실제로 푼 게이트(| 구분).
     "mu_catchup_pass", "mu_catchup_reason", "mu_session_pct", "hy_session_pct", "mu_hy_gap",
     "cttr_match", "catchup_overridden_gates",
+    # REGIME_E (2026-11-02): CHOP 모드 × TREND 각인 진입의 E 돌파대기 생략.
+    #   e_bypass            True 면 이 진입은 E 대기를 생략하고 T+3 즉시 들어갔다.
+    #   e_bypass_reason     CHOP_MODE_TREND_REGIME / 생략하지 않은 사유(REGIME_E_OFF 등).
+    #   e_wait_eligible     원래 E 돌파대기 대상이었는가(= early-pass 즉시진입 조건 미달).
+    #   e_bypass_t3_price   T+3 승인 시점 기준가(= 즉시진입가).
+    #   e_bypass_e_trigger  그 때 E 가 요구했을 돌파 트리거가.
+    #   e_bypass_price_edge_pct  (트리거/기준가 - 1)*100 -- E 로 갔을 때의 진입가 손해(%).
+    "regime_e_enabled", "regime_e_version", "e_bypass", "e_bypass_reason",
+    "regime_e_regime", "regime_e_strategy_mode", "e_wait_eligible",
+    "e_bypass_t3_price", "e_bypass_e_trigger", "e_bypass_price_edge_pct",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [
