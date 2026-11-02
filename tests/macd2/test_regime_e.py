@@ -1,11 +1,11 @@
-"""REGIME_E — CHOP 모드 × TREND 각인 진입의 E 돌파대기 생략 (2026-11-02, 기본 OFF).
+"""REGIME_E — E/CHOP 모드 × TREND 각인 진입의 E 돌파대기 생략 (2026-11-03 부터 토글 없음).
 
 잠그는 계약
 -----------
- 1   기본 OFF — 토글을 안 켜면 어떤 state 에서도 bypass 하지 않는다
- 2~5 네 조건이 **전부** 맞아야 bypass (모드 / regime / E 대기 대상 / 토글)
+ 1   토글 없음 — config/env/state 어디에도 끄는 스위치가 없다
+ 2~5 세 조건이 **전부** 맞아야 bypass (E·CHOP 모드 / TREND regime / E 대기 대상)
  6   CHOP 각인 진입은 기존 E 돌파대기 그대로다
- 7   state.regime_e_enabled 가 env 기본값을 덮어쓴다 (mu_assist 와 같은 관례)
+ 7   state 에 옛 regime_e_enabled=False 가 남아 있어도 무시된다
  8   진입가 비교값(price_edge_pct)은 기록 전용이고 판정에 쓰이지 않는다
  9   신호원장 필드 — bypass 건을 식별할 수 있고, trace 가 없으면 행 모양이 안 바뀐다
 10   worker 경로: bypass 면 대기를 걸지 않고, 아니면 기존대로 건다
@@ -37,11 +37,10 @@ T0 = datetime(2026, 11, 2, 11, 15, tzinfo=KST)
 FLAG = T0 - timedelta(minutes=6)
 
 
-def _state(mode=strategy_mode.MODE_CHOP, regime=chop_regime.REGIME_TREND, enabled=True):
+def _state(mode=strategy_mode.MODE_CHOP, regime=chop_regime.REGIME_TREND):
     s = state_store.default_state()
     strategy_mode.apply(s, mode)
     s.p3_last_regime = regime
-    s.regime_e_enabled = enabled
     return s
 
 
@@ -57,15 +56,15 @@ class _Res:
         self.signal_dispatch_trace = {}
 
 
-# ── 1. 기본 OFF ───────────────────────────────────────────────────────────
-def test_default_is_off(monkeypatch):
-    monkeypatch.setattr(config, "REGIME_E_ENABLED", False)
+# ── 1. 토글 없음 ──────────────────────────────────────────────────────────
+def test_no_toggle_exists():
+    assert not hasattr(config, "REGIME_E_ENABLED")
+    assert regime_e.is_enabled(None) is True
     s = state_store.default_state()
     strategy_mode.apply(s, strategy_mode.MODE_CHOP)
     s.p3_last_regime = chop_regime.REGIME_TREND
-    assert not hasattr(s, "regime_e_enabled") or s.regime_e_enabled in (None, False)
     dec = regime_e.evaluate(s, early=_early(), price=6_700.0)
-    assert dec.bypassed is False and dec.reason == regime_e.SKIP_DISABLED
+    assert dec.bypassed is True
 
 
 # ── 2~5. 네 조건 ─────────────────────────────────────────────────────────
@@ -76,12 +75,23 @@ def test_bypasses_only_on_chop_mode_trend_regime_e_wait():
     assert dec.regime == "TREND" and dec.strategy_mode == "CHOP" and dec.wait_eligible
 
 
-@pytest.mark.parametrize("mode", [strategy_mode.MODE_N1, strategy_mode.MODE_P3,
-                                  strategy_mode.MODE_E])
-def test_other_strategy_modes_are_inert(mode):
-    """E / P3 / N1 모드는 REGIME_E 를 켜도 기존 E 동작 그대로다."""
+def test_e_mode_trend_regime_also_bypasses():
+    """E 필터 모드도 TREND 각인이면 E 돌파대기를 생략한다 (2026-11-03)."""
+    dec = regime_e.evaluate(_state(mode=strategy_mode.MODE_E), early=_early(), price=6_700.0)
+    assert dec.bypassed is True and dec.reason == regime_e.BYPASS_REASON_E
+
+
+def test_e_mode_chop_regime_keeps_the_e_wait():
+    dec = regime_e.evaluate(_state(mode=strategy_mode.MODE_E, regime=chop_regime.REGIME_CHOP),
+                            early=_early(), price=6_700.0)
+    assert dec.bypassed is False and dec.reason == regime_e.SKIP_NOT_TREND_REGIME
+
+
+@pytest.mark.parametrize("mode", [strategy_mode.MODE_N1, strategy_mode.MODE_P3])
+def test_modes_without_e_wait_are_inert(mode):
+    """N1 / P3 모드는 E 돌파대기가 없으므로 아무 것도 바뀌지 않는다."""
     dec = regime_e.evaluate(_state(mode=mode), early=_early(), price=6_700.0)
-    assert dec.bypassed is False and dec.reason == regime_e.SKIP_NOT_CHOP_MODE
+    assert dec.bypassed is False and dec.reason == regime_e.SKIP_NOT_E_WAIT_MODE
 
 
 @pytest.mark.parametrize("regime", [chop_regime.REGIME_CHOP, chop_regime.REGIME_WARMUP, ""])
@@ -115,15 +125,11 @@ def test_chop_regime_entry_still_arms_the_pending(monkeypatch):
     assert e_strategy.pending_record(s) is not None
 
 
-# ── 7. state 토글이 env 를 덮어쓴다 ──────────────────────────────────────
-def test_state_toggle_overrides_env(monkeypatch):
-    monkeypatch.setattr(config, "REGIME_E_ENABLED", True)
-    assert regime_e.is_enabled(_state(enabled=False)) is False
-    monkeypatch.setattr(config, "REGIME_E_ENABLED", False)
-    assert regime_e.is_enabled(_state(enabled=True)) is True
-    # state 가 없으면 env 기본값
-    monkeypatch.setattr(config, "REGIME_E_ENABLED", True)
-    assert regime_e.is_enabled(None) is True
+# ── 7. 옛 state 필드는 무시 ──────────────────────────────────────────────
+def test_stale_state_flag_is_ignored():
+    s = _state()
+    s.regime_e_enabled = False          # 11/02 버전에서 저장됐을 수 있는 값
+    assert regime_e.evaluate(s, early=_early(), price=6_700.0).bypassed is True
 
 
 # ── 8. 진입가 비교값은 기록 전용 ─────────────────────────────────────────
