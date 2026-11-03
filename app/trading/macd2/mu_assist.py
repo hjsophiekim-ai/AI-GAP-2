@@ -8,8 +8,10 @@ CHOP(및 P3/E/N1)을 기본 전략으로 그대로 두고, MU 는 독립 매매�
    상태(EXPAND/FLAT/SHRINK)를 계산해 ``macd2_mu_assist_ledger.csv`` 에 ENTRY_SHADOW 로 기록하고,
    ENTRY_BAD(= (STALL ∨ DIVERGE) ∧ (FLAT ∨ SHRINK))이면 T+3 판정에서 신규진입을 막는다
    (worker._resolve_tw2_3slot_candidate_body, MC-DELAY 와 같은 자리 = 슬롯 미소비).
-   GOOD/그 외/판정 불가(결측·stale·T+2 기록 없음)는 기존 CHOP 그대로(fail-open). MU 로 진입을
-   허용하거나 앞당기는 일은 없다 — T+3 와 CHOP/TEG/VWAP/slot 게이트는 전부 그대로다.
+   2026-11-03 부터 일반 진입: CONFIRM 진입 / WAIT 는 체결강도 방향일치 ∧ 직전 반대 gap ≤ 400 일 때만 /
+   판정불가(결측·stale·T+2 기록 없음)는 MU_ASSIST_UNAVAILABLE_BLOCK · MU_ASSIST_STALE_BLOCK 으로 차단
+   (fail-closed). MU CATCH-UP PASS 는 BAD·WAIT·판정불가 모두 예외로 통과(기존 그대로). MU 로 진입을
+   앞당기는 일은 없다 — T+3 와 CHOP/TEG/VWAP/slot 게이트는 전부 그대로다.
 
 ② H50 조기청산 (실제 기능)
    보유 중 반대 하이닉스 플래그에 대해 아래 셋을 **모두** 만족할 때만 T+2 에 H50 HOLD 를 해제하고 청산한다.
@@ -450,8 +452,95 @@ def entry_pattern_for(signal_id: str) -> str:
 
 
 def entry_veto_reason(signal_id: str) -> Optional[str]:
-    """T+3 진입 판정에서 막을 사유. ENTRY_BAD 일 때만 막는다 — GOOD/WAIT/결측은 기존 CHOP 그대로."""
-    return config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON if entry_status_for(signal_id) == ENTRY_BAD else None
+    """T+3 일반 진입 판정에서 막을 사유 (2026-11-03 부터 CONFIRM-only).
+
+    ENTRY_CONFIRM            -> None (진입 가능)
+    ENTRY_BAD                -> MU_ASSIST_ENTRY_BAD (기존 그대로)
+    ENTRY_WAIT               -> MU_ASSIST_WAIT_BLOCK (worker 가 선택진입 조건으로 풀 수 있다)
+    판정불가(MU_UNAVAILABLE / 기록 없음 / 그 외)
+                             -> T+2 mu_t2_status 가 STALE 이면 MU_ASSIST_STALE_BLOCK,
+                                아니면 MU_ASSIST_UNAVAILABLE_BLOCK
+    MU CATCH-UP 예외는 호출부(worker)가 기존처럼 처리한다."""
+    status = entry_status_for(signal_id)
+    if status == ENTRY_CONFIRM:
+        return None
+    if status == ENTRY_BAD:
+        return config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON
+    if status == ENTRY_WAIT:
+        # 2026-11-03 WAIT 선택진입: 호출부(worker)가 체결강도 ∧ 반대 gap 을 보고 풀 수 있다.
+        return config.MU_ASSIST_WAIT_BLOCK_REASON
+    if entry_t2_status_for(signal_id) == STATUS_STALE:
+        return config.MU_ASSIST_STALE_BLOCK_REASON
+    return config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON
+
+
+def entry_t2_status_for(signal_id: str) -> str:
+    """T+2 에 기록한 MU 분봉 상태(OK/MISSING/STALE/WARMUP). 기록이 없으면 ''."""
+    with _LOCK:
+        for row in _load_rows():
+            if row.get("kind") == KIND_ENTRY and row.get("signal_id") == signal_id:
+                return row.get("mu_t2_status") or ""
+    return ""
+
+
+def entry_ledger_fields(note: Optional[dict]) -> dict[str, Any]:
+    """신호원장 additive 컬럼 (2026-11-03) — MU 진입상태와 판정불가 차단 여부. note 가 없으면 빈 dict."""
+    if not note:
+        return {}
+    veto = note.get("final_veto") or ""
+    return {
+        "mu_entry_status": str(note.get("status") or ""),
+        "mu_unavailable_block": veto == config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON,
+        "mu_stale_block": veto == config.MU_ASSIST_STALE_BLOCK_REASON,
+    }
+
+
+# ── WAIT 선택진입 (2026-11-03) ────────────────────────────────────────────
+WAIT_SELECTIVE_APPROVED = "WAIT_SELECTIVE_APPROVED"
+WAIT_BLOCK_EXEC_STRENGTH = "WAIT_BLOCK_EXEC_STRENGTH"
+WAIT_BLOCK_OPPOSITE_GAP = "WAIT_BLOCK_OPPOSITE_GAP"
+WAIT_BLOCK_BOTH = "WAIT_BLOCK_BOTH"
+
+
+def entry_gap_prev_for(signal_id: str) -> Optional[float]:
+    """T+2 에 기록한 hy_gap_prev(방향부호 × 플래그 직전 완성 3분봉 diff). 없거나 빈값이면 None."""
+    with _LOCK:
+        for row in _load_rows():
+            if row.get("kind") == KIND_ENTRY and row.get("signal_id") == signal_id:
+                raw = row.get("hy_gap_prev")
+                try:
+                    return None if raw in (None, "") else float(raw)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def wait_selective_decision(cttr_state: str, g_prev: Optional[float]) -> tuple[str, Optional[float]]:
+    """(decision, opposite_gap). ① 체결강도 MATCH ∧ ② max(0, −g_prev) ≤ 400 이면 APPROVED.
+    g_prev 가 없으면 ② 판정 불가 = 불통과. 체결강도 판정 불가(UNAVAILABLE)는 ① 불통과."""
+    from app.trading.macd2 import exec_strength      # 순환 import 회피
+    opp = None if g_prev is None else max(0.0, -float(g_prev))
+    ok_cs = cttr_state == exec_strength.MATCH
+    ok_gap = opp is not None and opp <= float(config.MU_WAIT_OPPOSITE_GAP_MAX)
+    if ok_cs and ok_gap:
+        return WAIT_SELECTIVE_APPROVED, opp
+    if not ok_cs and not ok_gap:
+        return WAIT_BLOCK_BOTH, opp
+    return (WAIT_BLOCK_OPPOSITE_GAP if ok_cs else WAIT_BLOCK_EXEC_STRENGTH), opp
+
+
+def wait_ledger_fields(trace: Optional[dict]) -> dict[str, Any]:
+    """신호원장 additive 컬럼. trace 가 없으면 빈 dict(행 모양 불변)."""
+    if not trace:
+        return {}
+    return {
+        "mu_wait_selective": bool(trace.get("decision") == WAIT_SELECTIVE_APPROVED),
+        "mu_wait_exec_strength_match": trace.get("cttr_state") == "MATCH",
+        "mu_wait_exec_strength_value": "" if trace.get("cttr") is None else round(float(trace["cttr"]), 3),
+        "mu_wait_opposite_gap": "" if trace.get("opposite_gap") is None else round(float(trace["opposite_gap"]), 4),
+        "mu_wait_gap_threshold": float(config.MU_WAIT_OPPOSITE_GAP_MAX),
+        "mu_wait_decision": str(trace.get("decision") or ""),
+    }
 
 
 def evaluate_exit_context(series: Optional[pd.Series], held_direction: Direction,

@@ -193,7 +193,8 @@ def _scenario(svc, state, broker, flag):
 
 @pytest.mark.parametrize("held", [True, False])
 def test_on_without_trigger_is_identical_to_off(monkeypatch, held):
-    """ON 이어도 BAD 가 아니고 청산 조건이 안 맞으면 주문·액션·포지션이 OFF 와 같다."""
+    """ON 이어도 ENTRY_CONFIRM 이고 청산 조건이 안 맞으면 주문·액션·포지션이 OFF 와 같다.
+    (2026-11-03 CONFIRM-only 이후 WAIT 는 차단되므로 비교 상태를 CONFIRM 으로 바꿨다.)"""
     from tests.macd2.test_h50_hold_lifecycle import _make_market_data, _reset_dispatch_history
 
     def run(on: bool):
@@ -203,7 +204,7 @@ def test_on_without_trigger_is_identical_to_off(monkeypatch, held):
             _seed_inverse(st, br, now0)
         _patch(monkeypatch, hold=True, t2_gap=-1e9)
         if on:
-            _on(monkeypatch, pattern=mu_assist.PATTERN_STALL, hy=mu_assist.HY_EXPAND)   # = WAIT
+            _on(monkeypatch, pattern=mu_assist.PATTERN_CONFIRM, hy=mu_assist.HY_EXPAND)   # = ENTRY_CONFIRM
         return _scenario(svc, st, br, now0), br, st
 
     off_actions, br_a, st_a = run(False)
@@ -262,14 +263,28 @@ def test_every_bad_combination_blocks(tw2_3slot_market_data, monkeypatch, patter
     assert len(_block_rows(config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON)) == 1
 
 
+def test_entry_confirm_enters_exactly_as_before(tw2_3slot_market_data, monkeypatch):
+    svc, now0 = tw2_3slot_market_data
+    state, broker = _mode_state(strategy_mode.MODE_N1), _broker()
+    _patch(monkeypatch)
+    _on(monkeypatch, pattern=mu_assist.PATTERN_CONFIRM, hy=mu_assist.HY_EXPAND)
+    _prime(state, now0)
+    run_once(broker=broker, market_data=svc, state=state, now=_t2(now0))
+    assert [r["mu_entry_assist_status"] for r in _mu_rows()] == [mu_assist.ENTRY_CONFIRM]
+    run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
+    run_once(broker=broker, market_data=svc, state=state, now=_t3(now0) + timedelta(seconds=20))
+    assert len(_buys(broker)) == 1, broker.orders
+
+
 @pytest.mark.parametrize("pattern,hy,status", [
-    (mu_assist.PATTERN_CONFIRM, mu_assist.HY_EXPAND, mu_assist.ENTRY_CONFIRM),
     (mu_assist.PATTERN_STALL, mu_assist.HY_EXPAND, mu_assist.ENTRY_WAIT),
     (mu_assist.PATTERN_CONFIRM, mu_assist.HY_FLAT, mu_assist.ENTRY_WAIT),
     (mu_assist.PATTERN_DIVERGE, mu_assist.HY_EXPAND, mu_assist.ENTRY_WAIT),
     (mu_assist.PATTERN_UNAVAILABLE, mu_assist.HY_FLAT, mu_assist.ENTRY_MU_UNAVAILABLE),
 ])
-def test_non_bad_states_enter_exactly_as_before(tw2_3slot_market_data, monkeypatch, pattern, hy, status):
+def test_non_confirm_states_are_blocked_without_consuming_a_slot(tw2_3slot_market_data, monkeypatch,
+                                                                  pattern, hy, status):
+    """2026-11-03 CONFIRM-only: WAIT / 판정불가는 MU_ASSIST_NOT_CONFIRMED 로 막는다 (BAD 와 다른 사유)."""
     svc, now0 = tw2_3slot_market_data
     state, broker = _mode_state(strategy_mode.MODE_N1), _broker()
     _patch(monkeypatch)
@@ -278,21 +293,30 @@ def test_non_bad_states_enter_exactly_as_before(tw2_3slot_market_data, monkeypat
     _prime(state, now0)
     run_once(broker=broker, market_data=svc, state=state, now=_t2(now0))
     assert [r["mu_entry_assist_status"] for r in _mu_rows()] == [status]
+    slots0 = int(state.tw2_3slot_slots_used_today or 0)
     run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
     run_once(broker=broker, market_data=svc, state=state, now=_t3(now0) + timedelta(seconds=20))
-    assert len(_buys(broker)) == 1, (status, broker.orders)
+    assert _buys(broker) == [], (status, broker.orders)
+    # WAIT 은 선택진입 조건(체결강도·반대 gap) 불충족 시 MU_ASSIST_WAIT_BLOCK, 판정불가는 NOT_CONFIRMED.
+    # 이 테스트 환경에는 체결강도 스냅샷이 없어 ① 불통과 -> WAIT 는 항상 차단된다.
+    reason = (config.MU_ASSIST_WAIT_BLOCK_REASON if status == mu_assist.ENTRY_WAIT
+              else config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)
+    assert len(_block_rows(reason)) == 1
+    assert _block_rows(config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON) == []
+    assert int(state.tw2_3slot_slots_used_today or 0) == slots0, "차단이 슬롯을 소비했다"
 
 
-def test_missing_t2_record_fails_open(tw2_3slot_market_data, monkeypatch):
-    """T+2 창을 놓쳐(재시작 등) 기록이 없으면 막지 않는다."""
+def test_missing_t2_record_is_blocked(tw2_3slot_market_data, monkeypatch):
+    """T+2 창을 놓쳐(재시작 등) 기록이 없으면 판정불가 -> 2026-11-03 부터 차단(fail-closed)."""
     svc, now0 = tw2_3slot_market_data
     state, broker = _mode_state(strategy_mode.MODE_N1), _broker()
     _patch(monkeypatch)
     _on(monkeypatch, pattern=mu_assist.PATTERN_STALL, hy=mu_assist.HY_FLAT)
     _prime(state, now0)
     run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
-    assert len(_buys(broker)) == 1
+    assert _buys(broker) == []
     assert _mu_rows() == []
+    assert len(_block_rows(config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)) == 1
 
 
 def test_entry_never_starts_before_t3(tw2_3slot_market_data, monkeypatch):
@@ -306,7 +330,8 @@ def test_entry_never_starts_before_t3(tw2_3slot_market_data, monkeypatch):
     assert _buys(broker) == [], "T+3 전에 진입했다"
 
 
-def test_mu_error_in_entry_falls_back_to_existing_strategy(tw2_3slot_market_data, monkeypatch):
+def test_mu_error_in_entry_is_blocked_as_not_confirmed(tw2_3slot_market_data, monkeypatch):
+    """MU 판정 예외는 tick 을 깨지 않고, T+2 기록이 없으므로 CONFIRM-only 에서 차단된다(2026-11-03)."""
     svc, now0 = tw2_3slot_market_data
     state, broker = _mode_state(strategy_mode.MODE_N1), _broker()
     _patch(monkeypatch)
@@ -319,7 +344,8 @@ def test_mu_error_in_entry_falls_back_to_existing_strategy(tw2_3slot_market_data
     _prime(state, now0)
     run_once(broker=broker, market_data=svc, state=state, now=_t2(now0))
     run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
-    assert len(_buys(broker)) == 1
+    assert _buys(broker) == []
+    assert len(_block_rows(config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)) == 1
 
 
 # ── 2/3. 청산 ────────────────────────────────────────────────────────────
