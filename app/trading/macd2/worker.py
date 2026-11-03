@@ -5369,7 +5369,9 @@ def _resolve_tw2_3slot_candidate_body(
             block_reason=config.MU_ASSIST_NO_REENTRY_BLOCK_REASON,
         )
 
-    # ── MU ASSIST: 진입 BAD veto (2026-10-22) ────────────────────────────
+    # ── MU ASSIST: 진입 veto (2026-10-22 BAD / 2026-11-03 부터 일반 진입 CONFIRM-only) ──
+    # ENTRY_BAD -> MU_ASSIST_ENTRY_BAD, CONFIRM 이 아닌 나머지(WAIT/DIVERGE/판정불가/기록없음)
+    # -> MU_ASSIST_NOT_CONFIRMED. CATCH-UP PASS 는 두 차단 모두 예외. 아래 주석은 2026-10-22 원문.
     # 기존 게이트를 **통과한** 후보 중 T+2 에 ENTRY_BAD((STALL∨DIVERGE)∧(FLAT∨SHRINK))로
     # 기록된 것만 막는다. MU 로 진입을 허용하거나 게이트를 우회하는 경로는 없다. T+2 기록이
     # 없거나 MU 판정 불가면 막지 않는다(fail-open). 슬롯 판정 앞이라 슬롯을 소비하지 않는다.
@@ -5378,6 +5380,12 @@ def _resolve_tw2_3slot_candidate_body(
         if _mu_veto and _cu_pass and _mu_veto == config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON:
             _cu_overridden.append(mu_catchup.GATE_MU_ENTRY_BAD)          # MU CATCH-UP 예외 ③
             logger.warning("[MACD2][MU_CATCHUP] %s MU 단기 ENTRY_BAD 예외", signal_id)
+            _mu_veto = None
+        # 2026-11-03 CONFIRM-only: 비CONFIRM 차단도 CATCH-UP PASS 면 기존처럼 진입한다
+        # (변경 전에는 이 경우 차단 자체가 없었다 -- CATCH-UP 진입 결과는 변경 전과 같다).
+        if _mu_veto and _cu_pass and _mu_veto == config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON:
+            _cu_overridden.append(config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON)   # MU CATCH-UP 예외 ③'
+            logger.warning("[MACD2][MU_CATCHUP] %s MU 비CONFIRM 예외", signal_id)
             _mu_veto = None
         if _mu_veto:
             tw2_cleared = False

@@ -8,8 +8,10 @@ CHOP(및 P3/E/N1)을 기본 전략으로 그대로 두고, MU 는 독립 매매�
    상태(EXPAND/FLAT/SHRINK)를 계산해 ``macd2_mu_assist_ledger.csv`` 에 ENTRY_SHADOW 로 기록하고,
    ENTRY_BAD(= (STALL ∨ DIVERGE) ∧ (FLAT ∨ SHRINK))이면 T+3 판정에서 신규진입을 막는다
    (worker._resolve_tw2_3slot_candidate_body, MC-DELAY 와 같은 자리 = 슬롯 미소비).
-   GOOD/그 외/판정 불가(결측·stale·T+2 기록 없음)는 기존 CHOP 그대로(fail-open). MU 로 진입을
-   허용하거나 앞당기는 일은 없다 — T+3 와 CHOP/TEG/VWAP/slot 게이트는 전부 그대로다.
+   2026-11-03 부터 일반 진입은 **CONFIRM-only**: ENTRY_CONFIRM 이 아니면(WAIT / DIVERGE / 판정 불가
+   (결측·stale) / T+2 기록 없음) MU_ASSIST_NOT_CONFIRMED 로 막는다(fail-closed). MU CATCH-UP PASS 는
+   BAD·비CONFIRM 모두 예외로 통과(기존 그대로). MU 로 진입을 앞당기는 일은 없다 — T+3 와
+   CHOP/TEG/VWAP/slot 게이트는 전부 그대로다.
 
 ② H50 조기청산 (실제 기능)
    보유 중 반대 하이닉스 플래그에 대해 아래 셋을 **모두** 만족할 때만 T+2 에 H50 HOLD 를 해제하고 청산한다.
@@ -450,8 +452,19 @@ def entry_pattern_for(signal_id: str) -> str:
 
 
 def entry_veto_reason(signal_id: str) -> Optional[str]:
-    """T+3 진입 판정에서 막을 사유. ENTRY_BAD 일 때만 막는다 — GOOD/WAIT/결측은 기존 CHOP 그대로."""
-    return config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON if entry_status_for(signal_id) == ENTRY_BAD else None
+    """T+3 일반 진입 판정에서 막을 사유 (2026-11-03 부터 CONFIRM-only).
+
+    ENTRY_CONFIRM            -> None (진입 가능)
+    ENTRY_BAD                -> MU_ASSIST_ENTRY_BAD (기존 그대로)
+    그 외 전부(ENTRY_WAIT / ENTRY_DIVERGE / MU_UNAVAILABLE / T+2 기록 없음)
+                             -> MU_ASSIST_NOT_CONFIRMED
+    MU CATCH-UP 예외는 호출부(worker)가 기존처럼 처리한다."""
+    status = entry_status_for(signal_id)
+    if status == ENTRY_CONFIRM:
+        return None
+    if status == ENTRY_BAD:
+        return config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON
+    return config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON
 
 
 def evaluate_exit_context(series: Optional[pd.Series], held_direction: Direction,
