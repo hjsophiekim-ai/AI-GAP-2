@@ -152,6 +152,9 @@ SIGNAL_LEDGER_COLUMNS = [
     "regime_e_enabled", "regime_e_version", "e_bypass", "e_bypass_reason",
     "regime_e_regime", "regime_e_strategy_mode", "e_wait_eligible",
     "e_bypass_t3_price", "e_bypass_e_trigger", "e_bypass_price_edge_pct",
+    # MU WAIT 선택진입 (2026-11-03): ENTRY_WAIT 후보의 ① 체결강도 ② 반대 gap 판정.
+    "mu_wait_selective", "mu_wait_exec_strength_match", "mu_wait_exec_strength_value",
+    "mu_wait_opposite_gap", "mu_wait_gap_threshold", "mu_wait_decision",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

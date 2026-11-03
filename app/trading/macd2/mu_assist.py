@@ -464,7 +464,58 @@ def entry_veto_reason(signal_id: str) -> Optional[str]:
         return None
     if status == ENTRY_BAD:
         return config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON
+    if status == ENTRY_WAIT:
+        # 2026-11-03 WAIT 선택진입: 호출부(worker)가 체결강도 ∧ 반대 gap 을 보고 풀 수 있다.
+        return config.MU_ASSIST_WAIT_BLOCK_REASON
     return config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON
+
+
+# ── WAIT 선택진입 (2026-11-03) ────────────────────────────────────────────
+WAIT_SELECTIVE_APPROVED = "WAIT_SELECTIVE_APPROVED"
+WAIT_BLOCK_EXEC_STRENGTH = "WAIT_BLOCK_EXEC_STRENGTH"
+WAIT_BLOCK_OPPOSITE_GAP = "WAIT_BLOCK_OPPOSITE_GAP"
+WAIT_BLOCK_BOTH = "WAIT_BLOCK_BOTH"
+
+
+def entry_gap_prev_for(signal_id: str) -> Optional[float]:
+    """T+2 에 기록한 hy_gap_prev(방향부호 × 플래그 직전 완성 3분봉 diff). 없거나 빈값이면 None."""
+    with _LOCK:
+        for row in _load_rows():
+            if row.get("kind") == KIND_ENTRY and row.get("signal_id") == signal_id:
+                raw = row.get("hy_gap_prev")
+                try:
+                    return None if raw in (None, "") else float(raw)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def wait_selective_decision(cttr_state: str, g_prev: Optional[float]) -> tuple[str, Optional[float]]:
+    """(decision, opposite_gap). ① 체결강도 MATCH ∧ ② max(0, −g_prev) ≤ 400 이면 APPROVED.
+    g_prev 가 없으면 ② 판정 불가 = 불통과. 체결강도 판정 불가(UNAVAILABLE)는 ① 불통과."""
+    from app.trading.macd2 import exec_strength      # 순환 import 회피
+    opp = None if g_prev is None else max(0.0, -float(g_prev))
+    ok_cs = cttr_state == exec_strength.MATCH
+    ok_gap = opp is not None and opp <= float(config.MU_WAIT_OPPOSITE_GAP_MAX)
+    if ok_cs and ok_gap:
+        return WAIT_SELECTIVE_APPROVED, opp
+    if not ok_cs and not ok_gap:
+        return WAIT_BLOCK_BOTH, opp
+    return (WAIT_BLOCK_OPPOSITE_GAP if ok_cs else WAIT_BLOCK_EXEC_STRENGTH), opp
+
+
+def wait_ledger_fields(trace: Optional[dict]) -> dict[str, Any]:
+    """신호원장 additive 컬럼. trace 가 없으면 빈 dict(행 모양 불변)."""
+    if not trace:
+        return {}
+    return {
+        "mu_wait_selective": bool(trace.get("decision") == WAIT_SELECTIVE_APPROVED),
+        "mu_wait_exec_strength_match": trace.get("cttr_state") == "MATCH",
+        "mu_wait_exec_strength_value": "" if trace.get("cttr") is None else round(float(trace["cttr"]), 3),
+        "mu_wait_opposite_gap": "" if trace.get("opposite_gap") is None else round(float(trace["opposite_gap"]), 4),
+        "mu_wait_gap_threshold": float(config.MU_WAIT_OPPOSITE_GAP_MAX),
+        "mu_wait_decision": str(trace.get("decision") or ""),
+    }
 
 
 def evaluate_exit_context(series: Optional[pd.Series], held_direction: Direction,

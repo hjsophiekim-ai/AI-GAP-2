@@ -36,9 +36,14 @@ def test_a_confirm_is_not_vetoed(monkeypatch):
     assert mu_assist.entry_veto_reason("X") is None
 
 
-@pytest.mark.parametrize("status", [mu_assist.ENTRY_WAIT, mu_assist.ENTRY_DIVERGE,
-                                    mu_assist.ENTRY_MU_UNAVAILABLE, ""])
-def test_b_c_non_confirm_is_not_confirmed(monkeypatch, status):
+def test_b_wait_is_wait_block(monkeypatch):
+    """ENTRY_WAIT 는 별도 사유 MU_ASSIST_WAIT_BLOCK -- worker 가 선택진입 조건으로 풀 수 있다."""
+    _status(monkeypatch, mu_assist.ENTRY_WAIT)
+    assert mu_assist.entry_veto_reason("X") == config.MU_ASSIST_WAIT_BLOCK_REASON == "MU_ASSIST_WAIT_BLOCK"
+
+
+@pytest.mark.parametrize("status", [mu_assist.ENTRY_DIVERGE, mu_assist.ENTRY_MU_UNAVAILABLE, ""])
+def test_c_unavailable_is_not_confirmed(monkeypatch, status):
     _status(monkeypatch, status)
     assert mu_assist.entry_veto_reason("X") == config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON == "MU_ASSIST_NOT_CONFIRMED"
 

@@ -1552,6 +1552,13 @@ MU_ASSIST_ENTRY_BAD_BLOCK_REASON = "MU_ASSIST_ENTRY_BAD"
 # 일반 신규진입을 막는다. ENTRY_BAD 는 기존 사유(MU_ASSIST_ENTRY_BAD) 그대로. MU CATCH-UP PASS
 # 후보는 두 차단 모두 기존처럼 예외 통과. XS(STRONG 은 정의상 ENTRY_CONFIRM)는 영향 없음.
 MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON = "MU_ASSIST_NOT_CONFIRMED"
+# MU Assist WAIT 선택진입 (2026-11-03, 토글 없음). ENTRY_WAIT 는 원칙적으로 MU_ASSIST_WAIT_BLOCK 으로
+# 막되, ① 하이닉스 체결강도 방향일치(exec_strength production 정의 그대로: 직전 60초 평균, 기준 100)
+# ∧ ② 플래그 직전 완성 3분봉의 반대방향 MACD gap ≤ MU_WAIT_OPPOSITE_GAP_MAX 이면 진입 허용.
+# gap 은 T+2 MU 원장의 hy_gap_prev(방향부호 × 직전봉 diff) 를 그대로 읽어 max(0, −g_prev) 로 본다.
+# 기준 400 은 2026-11-03 12일 연구에서 고정한 값 -- 탐색·조정 금지.
+MU_ASSIST_WAIT_BLOCK_REASON = "MU_ASSIST_WAIT_BLOCK"
+MU_WAIT_OPPOSITE_GAP_MAX = 400.0
 MU_ASSIST_ENTRY_WARNING = "ENTRY_CONFIRM_WEAK"
 MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
 # MU 주간거래(RBAQMU, 블루오션) 시작 = 미국 전일 20:00 ET (= 나스닥 애프터마켓 DNASMU 종료). KST 로는 서머타임 09:00 /
