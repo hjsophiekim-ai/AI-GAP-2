@@ -1547,11 +1547,14 @@ MU_ASSIST_MIN_BARS = 35
 EXIT_MU_ASSIST_H50_GAP = "MU_ASSIST_H50_GAP_EXIT"
 MU_ASSIST_NO_REENTRY_BLOCK_REASON = "MU_ASSIST_NO_REENTRY"
 MU_ASSIST_ENTRY_BAD_BLOCK_REASON = "MU_ASSIST_ENTRY_BAD"
-# MU Assist 일반 진입 CONFIRM-only (2026-11-03, 토글 없음 -- MU Assist ON 이면 항상 적용).
-# T+2 기록 상태가 ENTRY_CONFIRM 이 아니면(ENTRY_WAIT / ENTRY_DIVERGE / MU_UNAVAILABLE / 기록 없음)
-# 일반 신규진입을 막는다. ENTRY_BAD 는 기존 사유(MU_ASSIST_ENTRY_BAD) 그대로. MU CATCH-UP PASS
-# 후보는 두 차단 모두 기존처럼 예외 통과. XS(STRONG 은 정의상 ENTRY_CONFIRM)는 영향 없음.
-MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON = "MU_ASSIST_NOT_CONFIRMED"
+# MU Assist 일반 진입 (2026-11-03 최종, 토글 없음 -- MU Assist ON 이면 항상 적용).
+#   ENTRY_CONFIRM -> 진입 / ENTRY_WAIT -> 선택진입(아래) / ENTRY_BAD -> MU_ASSIST_ENTRY_BAD
+#   판정불가: T+2 mu_t2_status == STALE -> MU_ASSIST_STALE_BLOCK,
+#             그 외(MISSING / WARMUP / gap 결측 / T+2 기록 없음) -> MU_ASSIST_UNAVAILABLE_BLOCK
+# MU CATCH-UP PASS 후보는 BAD / WAIT / 판정불가 차단 모두 기존처럼 예외 통과.
+# XS(STRONG 은 정의상 ENTRY_CONFIRM)는 영향 없음.
+MU_ASSIST_UNAVAILABLE_BLOCK_REASON = "MU_ASSIST_UNAVAILABLE_BLOCK"
+MU_ASSIST_STALE_BLOCK_REASON = "MU_ASSIST_STALE_BLOCK"
 # MU Assist WAIT 선택진입 (2026-11-03, 토글 없음). ENTRY_WAIT 는 원칙적으로 MU_ASSIST_WAIT_BLOCK 으로
 # 막되, ① 하이닉스 체결강도 방향일치(exec_strength production 정의 그대로: 직전 60초 평균, 기준 100)
 # ∧ ② 플래그 직전 완성 3분봉의 반대방향 MACD gap ≤ MU_WAIT_OPPOSITE_GAP_MAX 이면 진입 허용.

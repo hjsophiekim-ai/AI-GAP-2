@@ -19,10 +19,10 @@ from tests.macd2.test_mu_assist import _block_rows, _broker, _buys, _mode_state,
 @pytest.fixture(autouse=True)
 def _reset():
     mu_assist.reset_for_tests()
-    worker._MU_WAIT_NOTES.clear()
+    worker._MU_WAIT_NOTES.clear(); worker._MU_ENTRY_NOTES.clear()
     yield
     mu_assist.reset_for_tests()
-    worker._MU_WAIT_NOTES.clear()
+    worker._MU_WAIT_NOTES.clear(); worker._MU_ENTRY_NOTES.clear()
 
 
 # ── 판정 함수 ─────────────────────────────────────────────────────────────
@@ -51,7 +51,9 @@ def test_ledger_columns_are_additive_at_the_end():
     cols = ledger.SIGNAL_LEDGER_COLUMNS
     new = ["mu_wait_selective", "mu_wait_exec_strength_match", "mu_wait_exec_strength_value",
            "mu_wait_opposite_gap", "mu_wait_gap_threshold", "mu_wait_decision"]
-    assert cols[-len(new):] == new
+    i = cols.index(new[0])
+    assert cols[i:i + len(new)] == new                                   # 연속·순서 유지
+    assert cols[-3:] == ["mu_entry_status", "mu_unavailable_block", "mu_stale_block"]
     assert mu_assist.wait_ledger_fields(None) == {}
     row = mu_assist.wait_ledger_fields({"decision": mu_assist.WAIT_SELECTIVE_APPROVED, "cttr": 113.9,
                                         "cttr_state": "MATCH", "opposite_gap": 145.8})
@@ -137,3 +139,66 @@ def test_catchup_pass_overrides_wait_block(monkeypatch, tmp_path):
     assert row["mu_catchup_pass"] == "PASS"
     assert row["catchup_overridden_gates"].endswith(config.MU_ASSIST_WAIT_BLOCK_REASON)
     assert row["mu_wait_decision"] == mu_assist.WAIT_BLOCK_BOTH          # 판정은 기록되지만 CATCH-UP 이 우선
+
+
+# ── 12일 WAIT 7건 회귀 (2026-11-03 연구 표본, 값은 production 원장 hy_gap_prev / 로거 체결강도) ──
+@pytest.mark.parametrize("case,cs,g_prev,approved", [
+    ("1021_0906_RED", exec_strength.MATCH, -107.8342, True),
+    ("1019_1142_RED", exec_strength.MATCH, -231.5855, True),
+    ("1028_1225_RED", exec_strength.MATCH, -145.8169, True),
+    ("1023_1054_BLUE", exec_strength.MISMATCH, -354.8331, False),     # 체결강도 불일치
+    ("1021_0957_BLUE", exec_strength.MISMATCH, -418.0444, False),     # gap 418 (+체결강도 불일치)
+    ("1022_0906_RED", exec_strength.MATCH, -1303.783, False),         # gap 1304
+    ("1102_1117_RED", exec_strength.MATCH, -455.4129, False),         # gap 455
+])
+def test_twelve_day_wait_sample(case, cs, g_prev, approved):
+    d, _ = mu_assist.wait_selective_decision(cs, g_prev)
+    assert (d == mu_assist.WAIT_SELECTIVE_APPROVED) is approved, (case, d)
+
+
+# ── 11/03 실제 사례 ────────────────────────────────────────────────────────
+@pytest.mark.parametrize("t2_status,reason", [
+    (mu_assist.STATUS_MISSING, config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON),     # 09:03 BLUE / 09:21 RED
+    (mu_assist.STATUS_STALE, config.MU_ASSIST_STALE_BLOCK_REASON),
+])
+def test_1103_unavailable_entries_are_blocked(tw2_3slot_market_data, monkeypatch, t2_status, reason):
+    svc, now0 = tw2_3slot_market_data
+    state, broker = _mode_state(strategy_mode.MODE_N1), _broker()
+    _patch(monkeypatch)
+    _on(monkeypatch, pattern=mu_assist.PATTERN_UNAVAILABLE, hy=mu_assist.HY_FLAT, status=t2_status)
+    _prime(state, now0)
+    slots0 = int(state.tw2_3slot_slots_used_today or 0)
+    run_once(broker=broker, market_data=svc, state=state, now=_t2(now0))
+    # STALE 은 T+2 창 끝(F+5:50) 까지 재시도한 뒤에 기록된다 -- production 처럼 창 끝 tick 을 돌린다.
+    run_once(broker=broker, market_data=svc, state=state, now=now0 + timedelta(minutes=5, seconds=55))
+    run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
+    run_once(broker=broker, market_data=svc, state=state, now=_t3(now0) + timedelta(seconds=20))
+    assert _buys(broker) == []
+    rows = _block_rows(reason)
+    assert len(rows) == 1
+    assert rows[0]["mu_entry_status"] == mu_assist.ENTRY_MU_UNAVAILABLE
+    assert rows[0]["mu_unavailable_block" if reason == config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON
+                   else "mu_stale_block"] == "True"
+    assert int(state.tw2_3slot_slots_used_today or 0) == slots0
+
+
+def test_1103_1127_blue_wait_passes_mu_but_daily_slot_cap_still_blocks(tw2_3slot_market_data, monkeypatch):
+    """11:27 BLUE — ENTRY_WAIT, 체결강도 98.39(<100 = BLUE 일치), 반대 gap 207 -> MU 단계 통과,
+    그러나 하루 슬롯 한도는 그대로라 최종 차단(기존과 같은 DAILY_SLOT_CAP)."""
+    svc, now0 = tw2_3slot_market_data
+    state, broker = _mode_state(strategy_mode.MODE_N1), _broker()
+    _patch(monkeypatch)
+    _on(monkeypatch, pattern=mu_assist.PATTERN_STALL, hy=mu_assist.HY_EXPAND)          # ENTRY_WAIT
+    monkeypatch.setattr(worker.exec_strength, "evaluate",
+                        lambda d, now, data_dir=None: {"cttr": 98.39, "state": exec_strength.MATCH})
+    monkeypatch.setattr(worker.mu_assist, "entry_gap_prev_for", lambda sid: -207.0)
+    _prime(state, now0)
+    state.tw2_3slot_slots_used_today = worker._tw2_3slot_daily_cap(state)
+    run_once(broker=broker, market_data=svc, state=state, now=_t2(now0))
+    run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
+    assert _buys(broker) == []
+    rows = _wait_rows()
+    assert rows, "WAIT 판정이 원장에 없다"
+    r = rows[-1]
+    assert r["mu_wait_decision"] == mu_assist.WAIT_SELECTIVE_APPROVED and r["mu_entry_status"] == mu_assist.ENTRY_WAIT
+    assert "CAP" in r["block_reason"], r["block_reason"]

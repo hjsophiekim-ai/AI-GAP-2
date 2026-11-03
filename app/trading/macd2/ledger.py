@@ -155,6 +155,8 @@ SIGNAL_LEDGER_COLUMNS = [
     # MU WAIT 선택진입 (2026-11-03): ENTRY_WAIT 후보의 ① 체결강도 ② 반대 gap 판정.
     "mu_wait_selective", "mu_wait_exec_strength_match", "mu_wait_exec_strength_value",
     "mu_wait_opposite_gap", "mu_wait_gap_threshold", "mu_wait_decision",
+    # MU 진입상태·판정불가 차단 (2026-11-03).
+    "mu_entry_status", "mu_unavailable_block", "mu_stale_block",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

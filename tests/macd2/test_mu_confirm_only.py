@@ -45,19 +45,19 @@ def test_b_wait_is_wait_block(monkeypatch):
 @pytest.mark.parametrize("status", [mu_assist.ENTRY_DIVERGE, mu_assist.ENTRY_MU_UNAVAILABLE, ""])
 def test_c_unavailable_is_not_confirmed(monkeypatch, status):
     _status(monkeypatch, status)
-    assert mu_assist.entry_veto_reason("X") == config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON == "MU_ASSIST_NOT_CONFIRMED"
+    assert mu_assist.entry_veto_reason("X") == config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON == "MU_ASSIST_UNAVAILABLE_BLOCK"
 
 
 def test_d_bad_keeps_its_own_reason(monkeypatch):
     _status(monkeypatch, mu_assist.ENTRY_BAD)
     assert mu_assist.entry_veto_reason("X") == config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON
-    assert config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON != config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON
+    assert config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON != config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON
 
 
 # ── E. CATCH-UP 예외 그대로 ───────────────────────────────────────────────
 def _not_confirmed(monkeypatch):
     monkeypatch.setattr(worker.mu_assist, "entry_veto_reason",
-                        lambda sid: config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON)
+                        lambda sid: config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)
 
 
 def _immediate(monkeypatch):
@@ -75,7 +75,7 @@ def test_e_catchup_pass_still_enters_when_mu_is_not_confirmed(monkeypatch, tmp_p
     assert len(_buys(broker)) == 1 and r.actions == [f"TW2_3SLOT_ENTRY:{config.LONG_SYMBOL}"], r.actions
     row = _row(state)
     assert row["order_result"] == "EXECUTED" and row["mu_catchup_pass"] == "PASS"
-    assert row["catchup_overridden_gates"].endswith(config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON)
+    assert row["catchup_overridden_gates"].endswith(config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)
 
 
 def test_e_catchup_pass_with_bad_is_unchanged(monkeypatch, tmp_path):
@@ -117,3 +117,20 @@ def test_f_xs_strong_candidates_are_never_vetoed_by_confirm_only(monkeypatch):
     """XS STRONG 은 정의상 ENTRY_CONFIRM 이므로 CONFIRM-only veto 가 걸릴 수 없다."""
     _status(monkeypatch, mu_assist.ENTRY_CONFIRM)
     assert mu_assist.entry_veto_reason("X") is None
+
+
+def test_stale_has_its_own_reason(monkeypatch):
+    """판정불가 중 T+2 분봉이 STALE 이면 MU_ASSIST_STALE_BLOCK (2026-11-03 최종 규칙)."""
+    _status(monkeypatch, mu_assist.ENTRY_MU_UNAVAILABLE)
+    monkeypatch.setattr(mu_assist, "entry_t2_status_for", lambda sid: mu_assist.STATUS_STALE)
+    assert mu_assist.entry_veto_reason("X") == config.MU_ASSIST_STALE_BLOCK_REASON == "MU_ASSIST_STALE_BLOCK"
+    monkeypatch.setattr(mu_assist, "entry_t2_status_for", lambda sid: mu_assist.STATUS_MISSING)
+    assert mu_assist.entry_veto_reason("X") == config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON
+
+
+def test_entry_ledger_fields():
+    assert mu_assist.entry_ledger_fields(None) == {}
+    r = mu_assist.entry_ledger_fields({"status": "MU_UNAVAILABLE", "final_veto": config.MU_ASSIST_STALE_BLOCK_REASON})
+    assert r == {"mu_entry_status": "MU_UNAVAILABLE", "mu_unavailable_block": False, "mu_stale_block": True}
+    r = mu_assist.entry_ledger_fields({"status": "ENTRY_WAIT", "final_veto": ""})
+    assert r["mu_unavailable_block"] is False and r["mu_stale_block"] is False

@@ -3303,6 +3303,8 @@ _BAR_REVISION_NOTES: dict[str, str] = {}      # 플래그 signal_id -> 신호원
 #: MU WAIT 선택진입 판정 (2026-11-03) — T+3 signal_id -> 판정 dict. 차단/체결 경로마다 trace 를 새로
 #: 만들기 때문에 원장 기록 시 여기서 다시 꺼낸다. 하루 수십 건이라 크기 제한만 둔다.
 _MU_WAIT_NOTES: dict[str, dict] = {}
+#: MU 진입상태·최종 MU 차단사유 (2026-11-03) — 같은 이유로 signal_id 기준 메모.
+_MU_ENTRY_NOTES: dict[str, dict] = {}
 _BAR_REVISION_LEDGER_COLUMNS = [
     "trading_date", "bar_at", "first_evaluated_at", "history_updated_at", "reevaluated_at",
     "prev_diff_before", "cur_diff_before", "prev_diff_after", "cur_diff_after",
@@ -5372,9 +5374,9 @@ def _resolve_tw2_3slot_candidate_body(
             block_reason=config.MU_ASSIST_NO_REENTRY_BLOCK_REASON,
         )
 
-    # ── MU ASSIST: 진입 veto (2026-10-22 BAD / 2026-11-03 부터 일반 진입 CONFIRM-only) ──
-    # ENTRY_BAD -> MU_ASSIST_ENTRY_BAD, CONFIRM 이 아닌 나머지(WAIT/DIVERGE/판정불가/기록없음)
-    # -> MU_ASSIST_NOT_CONFIRMED. CATCH-UP PASS 는 두 차단 모두 예외. 아래 주석은 2026-10-22 원문.
+    # ── MU ASSIST: 진입 veto (2026-10-22 BAD / 2026-11-03 최종 규칙) ──────────
+    # 우선순위: CATCH-UP PASS > ENTRY_CONFIRM > WAIT 선택진입 > ENTRY_BAD 차단 > 판정불가 차단
+    # (MU_ASSIST_UNAVAILABLE_BLOCK / MU_ASSIST_STALE_BLOCK). 아래 주석은 2026-10-22 원문.
     # 기존 게이트를 **통과한** 후보 중 T+2 에 ENTRY_BAD((STALL∨DIVERGE)∧(FLAT∨SHRINK))로
     # 기록된 것만 막는다. MU 로 진입을 허용하거나 게이트를 우회하는 경로는 없다. T+2 기록이
     # 없거나 MU 판정 불가면 막지 않는다(fail-open). 슬롯 판정 앞이라 슬롯을 소비하지 않는다.
@@ -5399,7 +5401,8 @@ def _resolve_tw2_3slot_candidate_body(
             if len(_MU_WAIT_NOTES) > 500:
                 _MU_WAIT_NOTES.clear()
             _MU_WAIT_NOTES[str(signal_id)] = _mu_wait_trace
-        if _mu_veto and _cu_pass and _mu_veto in (config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON,
+        if _mu_veto and _cu_pass and _mu_veto in (config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON,
+                                                  config.MU_ASSIST_STALE_BLOCK_REASON,
                                                   config.MU_ASSIST_WAIT_BLOCK_REASON):
             _cu_overridden.append(_mu_veto)                               # MU CATCH-UP 예외 ③'
             logger.warning("[MACD2][MU_CATCHUP] %s MU 비CONFIRM 예외 (%s)", signal_id, _mu_veto)
@@ -5409,6 +5412,10 @@ def _resolve_tw2_3slot_candidate_body(
             logger.info("[MACD2][MU_ASSIST] %s WAIT 선택진입 허용 cttr=%s 반대gap=%s", signal_id,
                         _mu_wait_trace["cttr"], _mu_wait_trace["opposite_gap"])
             _mu_veto = None
+        if len(_MU_ENTRY_NOTES) > 500:
+            _MU_ENTRY_NOTES.clear()
+        _MU_ENTRY_NOTES[str(signal_id)] = {"status": mu_assist.entry_status_for(signal_id),
+                                           "final_veto": _mu_veto or ""}
         if _mu_veto:
             tw2_cleared = False
             final_block_reason = _mu_veto
@@ -9624,6 +9631,7 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
     if _mw is None:
         _mw = _MU_WAIT_NOTES.get(str(signal_id or "").split(":E_BRK")[0])
     row.update(mu_assist.wait_ledger_fields(_mw))
+    row.update(mu_assist.entry_ledger_fields(_MU_ENTRY_NOTES.get(str(signal_id or "").split(":E_BRK")[0])))
     # REGIME_E (2026-11-02): E 돌파대기를 생략했는지 / 생략하지 않았다면 왜 아닌지.
     # trace 가 없으면 빈 dict 라 기존 행 모양이 바뀌지 않는다(토글 OFF 포함).
     row.update(regime_e.ledger_fields(trace.get("regime_e")

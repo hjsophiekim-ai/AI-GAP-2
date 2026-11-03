@@ -300,7 +300,7 @@ def test_non_confirm_states_are_blocked_without_consuming_a_slot(tw2_3slot_marke
     # WAIT 은 선택진입 조건(체결강도·반대 gap) 불충족 시 MU_ASSIST_WAIT_BLOCK, 판정불가는 NOT_CONFIRMED.
     # 이 테스트 환경에는 체결강도 스냅샷이 없어 ① 불통과 -> WAIT 는 항상 차단된다.
     reason = (config.MU_ASSIST_WAIT_BLOCK_REASON if status == mu_assist.ENTRY_WAIT
-              else config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON)
+              else config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)
     assert len(_block_rows(reason)) == 1
     assert _block_rows(config.MU_ASSIST_ENTRY_BAD_BLOCK_REASON) == []
     assert int(state.tw2_3slot_slots_used_today or 0) == slots0, "차단이 슬롯을 소비했다"
@@ -316,7 +316,7 @@ def test_missing_t2_record_is_blocked(tw2_3slot_market_data, monkeypatch):
     run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
     assert _buys(broker) == []
     assert _mu_rows() == []
-    assert len(_block_rows(config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON)) == 1
+    assert len(_block_rows(config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)) == 1
 
 
 def test_entry_never_starts_before_t3(tw2_3slot_market_data, monkeypatch):
@@ -345,7 +345,7 @@ def test_mu_error_in_entry_is_blocked_as_not_confirmed(tw2_3slot_market_data, mo
     run_once(broker=broker, market_data=svc, state=state, now=_t2(now0))
     run_once(broker=broker, market_data=svc, state=state, now=_t3(now0))
     assert _buys(broker) == []
-    assert len(_block_rows(config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON)) == 1
+    assert len(_block_rows(config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON)) == 1
 
 
 # ── 2/3. 청산 ────────────────────────────────────────────────────────────

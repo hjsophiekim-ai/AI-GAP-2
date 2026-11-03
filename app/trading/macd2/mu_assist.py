@@ -8,10 +8,10 @@ CHOP(및 P3/E/N1)을 기본 전략으로 그대로 두고, MU 는 독립 매매�
    상태(EXPAND/FLAT/SHRINK)를 계산해 ``macd2_mu_assist_ledger.csv`` 에 ENTRY_SHADOW 로 기록하고,
    ENTRY_BAD(= (STALL ∨ DIVERGE) ∧ (FLAT ∨ SHRINK))이면 T+3 판정에서 신규진입을 막는다
    (worker._resolve_tw2_3slot_candidate_body, MC-DELAY 와 같은 자리 = 슬롯 미소비).
-   2026-11-03 부터 일반 진입은 **CONFIRM-only**: ENTRY_CONFIRM 이 아니면(WAIT / DIVERGE / 판정 불가
-   (결측·stale) / T+2 기록 없음) MU_ASSIST_NOT_CONFIRMED 로 막는다(fail-closed). MU CATCH-UP PASS 는
-   BAD·비CONFIRM 모두 예외로 통과(기존 그대로). MU 로 진입을 앞당기는 일은 없다 — T+3 와
-   CHOP/TEG/VWAP/slot 게이트는 전부 그대로다.
+   2026-11-03 부터 일반 진입: CONFIRM 진입 / WAIT 는 체결강도 방향일치 ∧ 직전 반대 gap ≤ 400 일 때만 /
+   판정불가(결측·stale·T+2 기록 없음)는 MU_ASSIST_UNAVAILABLE_BLOCK · MU_ASSIST_STALE_BLOCK 으로 차단
+   (fail-closed). MU CATCH-UP PASS 는 BAD·WAIT·판정불가 모두 예외로 통과(기존 그대로). MU 로 진입을
+   앞당기는 일은 없다 — T+3 와 CHOP/TEG/VWAP/slot 게이트는 전부 그대로다.
 
 ② H50 조기청산 (실제 기능)
    보유 중 반대 하이닉스 플래그에 대해 아래 셋을 **모두** 만족할 때만 T+2 에 H50 HOLD 를 해제하고 청산한다.
@@ -456,8 +456,10 @@ def entry_veto_reason(signal_id: str) -> Optional[str]:
 
     ENTRY_CONFIRM            -> None (진입 가능)
     ENTRY_BAD                -> MU_ASSIST_ENTRY_BAD (기존 그대로)
-    그 외 전부(ENTRY_WAIT / ENTRY_DIVERGE / MU_UNAVAILABLE / T+2 기록 없음)
-                             -> MU_ASSIST_NOT_CONFIRMED
+    ENTRY_WAIT               -> MU_ASSIST_WAIT_BLOCK (worker 가 선택진입 조건으로 풀 수 있다)
+    판정불가(MU_UNAVAILABLE / 기록 없음 / 그 외)
+                             -> T+2 mu_t2_status 가 STALE 이면 MU_ASSIST_STALE_BLOCK,
+                                아니면 MU_ASSIST_UNAVAILABLE_BLOCK
     MU CATCH-UP 예외는 호출부(worker)가 기존처럼 처리한다."""
     status = entry_status_for(signal_id)
     if status == ENTRY_CONFIRM:
@@ -467,7 +469,30 @@ def entry_veto_reason(signal_id: str) -> Optional[str]:
     if status == ENTRY_WAIT:
         # 2026-11-03 WAIT 선택진입: 호출부(worker)가 체결강도 ∧ 반대 gap 을 보고 풀 수 있다.
         return config.MU_ASSIST_WAIT_BLOCK_REASON
-    return config.MU_ASSIST_NOT_CONFIRMED_BLOCK_REASON
+    if entry_t2_status_for(signal_id) == STATUS_STALE:
+        return config.MU_ASSIST_STALE_BLOCK_REASON
+    return config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON
+
+
+def entry_t2_status_for(signal_id: str) -> str:
+    """T+2 에 기록한 MU 분봉 상태(OK/MISSING/STALE/WARMUP). 기록이 없으면 ''."""
+    with _LOCK:
+        for row in _load_rows():
+            if row.get("kind") == KIND_ENTRY and row.get("signal_id") == signal_id:
+                return row.get("mu_t2_status") or ""
+    return ""
+
+
+def entry_ledger_fields(note: Optional[dict]) -> dict[str, Any]:
+    """신호원장 additive 컬럼 (2026-11-03) — MU 진입상태와 판정불가 차단 여부. note 가 없으면 빈 dict."""
+    if not note:
+        return {}
+    veto = note.get("final_veto") or ""
+    return {
+        "mu_entry_status": str(note.get("status") or ""),
+        "mu_unavailable_block": veto == config.MU_ASSIST_UNAVAILABLE_BLOCK_REASON,
+        "mu_stale_block": veto == config.MU_ASSIST_STALE_BLOCK_REASON,
+    }
 
 
 # ── WAIT 선택진입 (2026-11-03) ────────────────────────────────────────────
