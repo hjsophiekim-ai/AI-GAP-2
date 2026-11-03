@@ -157,6 +157,9 @@ SIGNAL_LEDGER_COLUMNS = [
     "mu_wait_opposite_gap", "mu_wait_gap_threshold", "mu_wait_decision",
     # MU 진입상태·판정불가 차단 (2026-11-03).
     "mu_entry_status", "mu_unavailable_block", "mu_stale_block",
+    # WAIT XS TEG override (2026-11-03): 오후 슬롯 TEG 거절 후보의 WAIT 기반 해제 판정.
+    "wait_xs_teg_override", "wait_xs_teg_reasons", "wait_xs_mu_status",
+    "wait_xs_exec_strength", "wait_xs_opposite_gap", "wait_xs_decision",
 ]
 
 EXECUTION_LEDGER_COLUMNS = [

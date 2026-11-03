@@ -3305,6 +3305,8 @@ _BAR_REVISION_NOTES: dict[str, str] = {}      # 플래그 signal_id -> 신호원
 _MU_WAIT_NOTES: dict[str, dict] = {}
 #: MU 진입상태·최종 MU 차단사유 (2026-11-03) — 같은 이유로 signal_id 기준 메모.
 _MU_ENTRY_NOTES: dict[str, dict] = {}
+#: WAIT XS TEG override 판정 (2026-11-03) — 오후 슬롯 TEG 거절 시점의 판정을 원장 기록 때 다시 꺼낸다.
+_WAIT_XS_NOTES: dict[str, dict] = {}
 _BAR_REVISION_LEDGER_COLUMNS = [
     "trading_date", "bar_at", "first_evaluated_at", "history_updated_at", "reevaluated_at",
     "prev_diff_before", "cur_diff_before", "prev_diff_after", "cur_diff_after",
@@ -5236,6 +5238,53 @@ def _mu_xs_teg_override(state: RuntimeState, signal_id: str, direction: Directio
     return True
 
 
+def _mu_wait_xs_teg_override(state: RuntimeState, signal_id: str, direction: Direction, now: datetime,
+                             reject_reasons, slot_metrics: dict) -> bool:
+    """WAIT XS TEG override (2026-11-03): 오후 슬롯 TEG 거절만, 아래 전부일 때 푼다. 기존 XS 와 별개 경로.
+
+    CHOP 모드 ∧ 재확인 시각 ≥ 11:00 ∧ MU ENTRY_WAIT ∧ WAIT 선택진입 승인(체결강도 방향일치 ∧ 반대 gap ≤ 400)
+    ∧ TEG 사유 전부 ⊆ XS 해제집합. 슬롯/하루한도/시간창/TW2 veto 는 이 함수 앞뒤에서 그대로 막힌다.
+    CHOP 모드가 아니거나 MU Assist OFF 면 판정·기록 자체를 하지 않는다(원장 행 모양 불변).
+    """
+    if not mu_assist.is_enabled(state) or strategy_mode.current(state) != strategy_mode.MODE_CHOP:
+        return False
+    reasons = sorted(set(reject_reasons or ()))
+    key = str(signal_id)
+    wait_note = _MU_WAIT_NOTES.get(key) or {}
+    mu_status = mu_assist.entry_status_for(key)
+    moment = now.astimezone(config.KST).time() if now.tzinfo else now.time()
+    ok = (moment >= config.WAIT_XS_TEG_OVERRIDE_START
+          and mu_status == mu_assist.ENTRY_WAIT
+          and wait_note.get("decision") == mu_assist.WAIT_SELECTIVE_APPROVED
+          and bool(reasons) and set(reasons) <= _MU_XS_OVERRIDABLE_TEG)
+    note = {"override": ok, "reasons": reasons, "mu_status": mu_status,
+            "cttr": wait_note.get("cttr"), "opposite_gap": wait_note.get("opposite_gap"),
+            "decision": config.WAIT_XS_TEG_OVERRIDE if ok else config.WAIT_XS_TEG_NOT_ELIGIBLE}
+    if len(_WAIT_XS_NOTES) > 500:
+        _WAIT_XS_NOTES.clear()
+    _WAIT_XS_NOTES[key] = note
+    slot_metrics["wait_xs_teg_decision"] = note["decision"]
+    if ok:
+        slot_metrics["wait_xs_teg_override"] = reasons
+        logger.info("[MACD2][MU_WAIT_XS] TEG override %s 사유=%s cttr=%s 반대gap=%s", key, reasons,
+                    note["cttr"], note["opposite_gap"])
+    return ok
+
+
+def _wait_xs_ledger_fields(note: Optional[dict]) -> dict[str, Any]:
+    """신호원장 additive 컬럼. 판정이 없었으면 빈 dict(행 모양 불변)."""
+    if not note:
+        return {}
+    return {
+        "wait_xs_teg_override": bool(note.get("override")),
+        "wait_xs_teg_reasons": "|".join(note.get("reasons") or ()),
+        "wait_xs_mu_status": str(note.get("mu_status") or ""),
+        "wait_xs_exec_strength": "" if note.get("cttr") is None else round(float(note["cttr"]), 3),
+        "wait_xs_opposite_gap": "" if note.get("opposite_gap") is None else round(float(note["opposite_gap"]), 4),
+        "wait_xs_decision": str(note.get("decision") or ""),
+    }
+
+
 def _mu_cttr_mismatch_veto(signal_id: str, direction: Direction, now: datetime) -> Optional[str]:
     """MISMATCH_VETO: 체결강도 불일치 ∧ MU 패턴 STALL/DIVERGE 면 차단 사유. 그 외(판정 불가 포함)는 None."""
     if mu_assist.entry_pattern_for(signal_id) not in (mu_assist.PATTERN_STALL, mu_assist.PATTERN_DIVERGE):
@@ -5503,7 +5552,9 @@ def _resolve_tw2_3slot_candidate_body(
             slot_metrics["teg_reject_reasons"] = list(teg_decision.reject_reasons or [])
             if (teg_decision.approved
                     or _mu_cttr_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics)
-                    or _mu_xs_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics)):
+                    or _mu_xs_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons, slot_metrics)
+                    or _mu_wait_xs_teg_override(state, signal_id, direction, now, teg_decision.reject_reasons,
+                                                slot_metrics)):
                 final_approved = True
                 final_decision_label = config.TW_APPROVED
                 final_block_reason = None
@@ -9632,6 +9683,7 @@ def _record_signal_ledger(state, macd_snap, direction, signal_type, signal_id, d
         _mw = _MU_WAIT_NOTES.get(str(signal_id or "").split(":E_BRK")[0])
     row.update(mu_assist.wait_ledger_fields(_mw))
     row.update(mu_assist.entry_ledger_fields(_MU_ENTRY_NOTES.get(str(signal_id or "").split(":E_BRK")[0])))
+    row.update(_wait_xs_ledger_fields(_WAIT_XS_NOTES.get(str(signal_id or "").split(":E_BRK")[0])))
     # REGIME_E (2026-11-02): E 돌파대기를 생략했는지 / 생략하지 않았다면 왜 아닌지.
     # trace 가 없으면 빈 dict 라 기존 행 모양이 바뀌지 않는다(토글 OFF 포함).
     row.update(regime_e.ledger_fields(trace.get("regime_e")
