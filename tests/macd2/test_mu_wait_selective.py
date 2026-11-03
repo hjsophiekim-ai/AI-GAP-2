@@ -53,7 +53,11 @@ def test_ledger_columns_are_additive_at_the_end():
            "mu_wait_opposite_gap", "mu_wait_gap_threshold", "mu_wait_decision"]
     i = cols.index(new[0])
     assert cols[i:i + len(new)] == new                                   # 연속·순서 유지
-    assert cols[-3:] == ["mu_entry_status", "mu_unavailable_block", "mu_stale_block"]
+    j = cols.index("mu_entry_status")
+    assert cols[j:j + 3] == ["mu_entry_status", "mu_unavailable_block", "mu_stale_block"]
+    # 2026-11-03 WAIT XS TEG override 컬럼이 그 뒤에 additive 로 붙는다.
+    assert cols[j + 3:] == ["wait_xs_teg_override", "wait_xs_teg_reasons", "wait_xs_mu_status",
+                            "wait_xs_exec_strength", "wait_xs_opposite_gap", "wait_xs_decision"]
     assert mu_assist.wait_ledger_fields(None) == {}
     row = mu_assist.wait_ledger_fields({"decision": mu_assist.WAIT_SELECTIVE_APPROVED, "cttr": 113.9,
                                         "cttr_state": "MATCH", "opposite_gap": 145.8})

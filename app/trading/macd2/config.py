@@ -1562,6 +1562,13 @@ MU_ASSIST_STALE_BLOCK_REASON = "MU_ASSIST_STALE_BLOCK"
 # 기준 400 은 2026-11-03 12일 연구에서 고정한 값 -- 탐색·조정 금지.
 MU_ASSIST_WAIT_BLOCK_REASON = "MU_ASSIST_WAIT_BLOCK"
 MU_WAIT_OPPOSITE_GAP_MAX = 400.0
+# WAIT XS TEG override (2026-11-03, 토글 없음). CHOP 모드 · 재확인 시각 11:00 이후 · MU ENTRY_WAIT ·
+# 위 WAIT 선택진입 승인 후보가 **오후 슬롯 TEG** 에서 XS 와 같은 사유(EMA stack/VWAP/recent_cross/9분)로만
+# 거절됐을 때 그 TEG 거절만 푼다. 슬롯·하루한도·14:50 시간창·TW2 veto·오전 CHOP TEG 재게이트는 그대로.
+# 기존 XS(ENTRY_CONFIRM ∧ 체결강도) 경로와는 별개 -- XS 조건을 바꾸지 않는다.
+WAIT_XS_TEG_OVERRIDE_START = time(11, 0)
+WAIT_XS_TEG_OVERRIDE = "WAIT_XS_TEG_OVERRIDE"
+WAIT_XS_TEG_NOT_ELIGIBLE = "WAIT_XS_TEG_NOT_ELIGIBLE"
 MU_ASSIST_ENTRY_WARNING = "ENTRY_CONFIRM_WEAK"
 MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
 # MU 주간거래(RBAQMU, 블루오션) 시작 = 미국 전일 20:00 ET (= 나스닥 애프터마켓 DNASMU 종료). KST 로는 서머타임 09:00 /
