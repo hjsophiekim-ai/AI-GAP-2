@@ -10,12 +10,25 @@ from ws_shadow_logger import approval, config
 PKG = Path(__file__).resolve().parent.parent
 
 
+#: REST 접근토큰(tokenP)은 MU REST fallback(2026-11-04) 한 모듈만 로거 전용 키로 발급한다.
+REST_TOKEN_MODULES = {"mu_rest_fallback.py"}
+
+
 def test_no_production_imports_or_order_paths():
     for p in PKG.glob("*.py"):
         src = p.read_text(encoding="utf-8")
         assert not re.search(r"^\s*(from|import)\s+app(\.|\s)", src, re.M), p.name
-        for bad in ("tokenP", "order-cash", "TTTC", "VTTC", "kis_client", "hashkey"):
+        for bad in ("order-cash", "TTTC", "VTTC", "kis_client", "hashkey", "trading/inquire", "/order"):
             assert bad not in src, (p.name, bad)
+        if p.name not in REST_TOKEN_MODULES:
+            assert "tokenP" not in src, p.name
+
+
+def test_rest_fallback_only_calls_token_and_minute_chart():
+    src = (PKG / "mu_rest_fallback.py").read_text(encoding="utf-8")
+    paths = set(re.findall(r'"(/(?:oauth2|uapi)/[^"]+)"', src))
+    assert paths == {"/oauth2/tokenP", "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"}, paths
+    assert "creds.app_key" in src and "KIS_REAL_APP" not in src and "KIS_APP_KEY" not in src
 
 
 def _clear(monkeypatch):

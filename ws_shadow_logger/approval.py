@@ -1,6 +1,6 @@
 """로거 전용 WebSocket 접속키(approval_key) — POST /oauth2/Approval (KIS 공식 kis_auth.auth_ws 와 같은 형식).
 
-REST 접근토큰 발급 경로는 이 패키지 어디에서도 호출하지 않는다.
+REST 접근토큰은 여기서 발급하지 않는다(mu_rest_fallback 만 로거 전용 키로 발급, 2026-11-04).
 캐시는 로거 data dir 의 state/ 아래에만 두고, 같은 날짜면 재사용한다(하루 1회 발급).
 """
 from __future__ import annotations

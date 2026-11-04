@@ -13,8 +13,12 @@
   · MU watchdog(2026-10-21): 장중 RBAQMU 체결·호가가 둘 다 멈추면 RBAQMU 2건만 해제·재등록한다.
     전체 재접속은 하지 않는다 — 국내 6건과 DNASMU 는 그대로다. 구간은 mu/<날짜>/watchdog.json 에 남는다.
 
+  · MU REST fallback(2026-11-04): 서머타임 해제 기간 09:00~주간거래 시작(10:00) 사이, KIS 웹소켓 DNASMU 가
+    09:00 에 끊긴 공백만 REST 해외주식분봉조회로 채워 mu/<날짜>/rest_bars_1m.csv 에 쓴다(mu_rest_fallback).
+    웹소켓 수집 경로와 별도 asyncio 작업이고, REST 호출은 스레드에서 돌아 수신 루프를 막지 않는다.
+
 자동매매 / 신규진입 허용 / 전략모드 / UI 세션 상태는 읽지 않는다 — 실행 조건은 시간뿐이다.
-주문 API, REST 접근토큰, production 모듈은 import 하지 않는다.
+주문 API, production 모듈은 import 하지 않는다. REST 접근토큰은 mu_rest_fallback 만 로거 전용 키로 발급한다.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ import sys
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
-from . import approval, config, maintenance
+from . import approval, config, maintenance, mu_rest_fallback
 from .engine import Engine
 from .mu_quote import feed_of
 from .mu_watchdog import QUOTE_TR, TRADE_TR, MuWatchdog
@@ -59,7 +63,8 @@ class LoggerService:
     def __init__(self, root: Path, creds: config.Credentials, *, max_rss_mb: float, rss_source: str = "",
                  connect=_default_connect, now_fn=now_kst, issue=approval.issue, rss_fn=config.current_rss_mb,
                  out=None, health_every: float = config.HEALTH_EVERY_SEC, recv_timeout: float = 0.5,
-                 idle_poll: float = 30.0, backoff_max: float = 60.0):
+                 idle_poll: float = 30.0, backoff_max: float = 60.0, rest_get=None, rest_post=None,
+                 rest_every: float = 5.0):
         self.root = Path(root)
         self.creds = creds
         self.max_rss_mb = float(max_rss_mb)
@@ -88,6 +93,10 @@ class LoggerService:
         self.wd: MuWatchdog | None = None   # MU watchdog (그날 것) — MU 체결+호가가 둘 다 켜진 날만
         self._wd_day = None
         self._sub_registry = {}          # (tr_id, tr_key) -> "1"(등록) / "2"(해제) — 이 연결에서 마지막으로 보낸 것
+        # MU REST fallback (2026-11-04) — MU 수집이 켜진 경우에만. 09:00~주간거래 시작 공백만 채운다.
+        self.rest = (mu_rest_fallback.MuRestFallback(self.root, creds, get=rest_get, post=rest_post)
+                     if (self.mu_on and mu_rest_fallback.enabled()) else None)
+        self.rest_every = rest_every
 
     def subscriptions(self, now: datetime | None = None) -> tuple:
         now = now or self.now()
@@ -244,6 +253,7 @@ class LoggerService:
                 f"MU_BARS={mu.counts['bars'] if mu else 0} MU_ERRORS={c.get('mu_errors', 0)} "
                 f"MU_SUB={sub} MU_FEEDS={feeds} MU_LAG={lag_s} " + muq_line +
                 f"MU_WD={(self.wd.health() if (self.wd and self._wd_day == day_str(now)) else 'OFF')} " +
+                f"MU_REST={(self.rest.health() if self.rest else 'OFF')} " +
                 f"RSS_MB={'-' if rss is None else f'{rss:.1f}'} MAX_RSS_MB={self.max_rss_mb:.0f}"), rss
 
     def health_tick(self):
@@ -266,6 +276,21 @@ class LoggerService:
             except Exception as e:  # noqa: BLE001 — health 실패로 수집을 멈추지 않는다
                 self.out(f"{TAG} HEALTH_ERROR {e!r}"[:300])
             if await self._sleep(self.health_every):
+                return
+
+    # ── MU REST fallback ───────────────────────────────────────────────────
+    async def _mu_rest_loop(self):
+        while not self._stop.is_set():
+            now = self.now()
+            try:
+                if self.rest is not None and in_session(now) and self._mu_off_day != day_str(now)                         and self.rest.due(now):
+                    res = await asyncio.to_thread(self.rest.poll, now)
+                    if not res.get("ok") or res.get("added"):
+                        self.store.log(now, "mu_rest_fallback", **res)
+                        self.out(f"{TAG} MU_REST_FALLBACK {json.dumps(res, ensure_ascii=False)}"[:400])
+            except Exception as e:  # noqa: BLE001 — 보충 실패로 수집을 멈추지 않는다
+                self.out(f"{TAG} MU_REST_ERROR {e!r}"[:300])
+            if await self._sleep(self.rest_every):
                 return
 
     # ── 수집 ───────────────────────────────────────────────────────────────
@@ -428,6 +453,7 @@ class LoggerService:
         self.store.log(now, "start", fp=self.creds.fingerprint, subs=list(self.subscriptions(now)),
                        max_rss_mb=self.max_rss_mb, rss_source=self.rss_source)
         health = asyncio.create_task(self._health_loop())
+        rest = asyncio.create_task(self._mu_rest_loop())
         try:
             while not self._stop.is_set():
                 now = self.now()
@@ -443,11 +469,12 @@ class LoggerService:
             self.exit_code = config.EXIT_DISK
         finally:
             self._stop.set()
-            health.cancel()
-            try:
-                await health
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            for t in (health, rest):
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             try:
                 self.store.log(self.now(), "stop", exit_code=self.exit_code,
                                counts=(self.engine.counts if self.engine else {}))

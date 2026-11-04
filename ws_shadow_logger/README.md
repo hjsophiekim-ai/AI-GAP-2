@@ -2,7 +2,7 @@
 
 MACD2 ADAPTIVE-EXIT 연구(회복 vs 붕괴 / 지속 vs 반납 / 진짜 반전 vs 휩쏘)에 쓸 실시간 미시구조 데이터를 모은다.
 production(`app/*`)과 코드·상태파일·키를 완전히 분리했다.
-- 주문 함수와 REST 토큰 발급 경로는 import도 하지 않는다(`tests/test_isolation.py`가 소스 전체를 검사한다).
+- 주문 함수는 import도 하지 않는다(`tests/test_isolation.py`가 소스 전체를 검사한다). REST 접근토큰은 `mu_rest_fallback.py` 한 곳만 **로거 전용 키**로 발급한다(2026-11-04, 아래 'MU REST fallback').
 - 자동매매 ON/OFF, 신규진입 허용, 전략모드(N1/P3/E/CHOP), UI 세션 상태를 읽지 않는다(`tests/test_service.py`).
 - `app/` 코드는 이 패키지를 import 하지 않는다.
 
@@ -192,3 +192,23 @@ HDFSCNT0 에서 같은 예제가 RSYM 을 빠뜨려 전문이 밀렸던 전례(2
 불가능하므로 `UNKNOWN_MU` 로 따로 쌓고 `MUQ_NO_RSYM` 에 센다 - 두 피드를 임의로 합치지 않는다.
 
 `quotes.csv` 의 `kst_ts` 도 하이닉스 스냅샷 `ts` 와 같은 KST 라 `ts[:16] == kst_ts[:16]` 으로 같은 분에 붙는다.
+
+
+## MU REST fallback (2026-11-04)
+
+미국 서머타임 해제(EST) 기간에는 RBAQMU(블루오션 주간거래)가 **10:00 KST** 에 열리는데, KIS 웹소켓 DNASMU 는
+현지 19:00:00 EST(= **09:00 KST**)에 끊긴다(2026-11-04 raw `frames_09` 실측: DNASMU 3프레임 09:00:00~09:00:01 뒤 0).
+그 사이 1시간만 REST **해외주식분봉조회 HHDFS76950200**(`EXCD=NAS`, `SYMB=MU`, `NMIN=1`)로 채운다.
+
+| 항목 | 값 |
+|---|---|
+| 파일 | `mu/<날짜>/rest_bars_1m.csv` (bars_1m.csv 와 같은 컬럼, `feed=NASMU_REST`) — finalize 가 건드리지 않고 R2 export 에 자동 포함 |
+| 구간 | KST `[09:00, 주간거래 시작)` — 서머타임 기간엔 비어 있어 **아무 호출도 하지 않는다** |
+| 주기 | 분 끝 + 10초가 지난 확정 분만, 1분에 1회 (구간 끝 뒤 3분까지) |
+| 중복 | 웹소켓 DNASMU 마지막 분 이하 / RBAQMU 첫 분 이상은 쓰지 않음. 같은 분은 최신값 1행, 파일은 분 오름차순 원자적 교체 |
+| 토큰 | 로거 전용 키로 `oauth2/tokenP`, `state/rest_token.json` 캐시(만료 10분 전까지 재사용, 발급 시도 70초에 1회) |
+| 끄기 | `KIS_LOGGER_MU_REST_FALLBACK=0` (로거) / `MACD2_MU_REST_FALLBACK_ENABLED=0` (production 로더가 무시) |
+| 로그 | `MU_REST_FALLBACK {...}` (새 분이 생기거나 실패한 경우만), HEALTH 의 `MU_REST=polls/bars/err/last` |
+
+점검(조회 전용, 파일 안 씀): `python -m ws_shadow_logger.mu_rest_fallback --probe`
+— REST 원본 08:50~10:10 분봉, 웹소켓 DNASMU 분봉과의 시각 정렬(offset 0/±1 close 일치 수), fallback 이 쓸 분 범위를 찍는다.
