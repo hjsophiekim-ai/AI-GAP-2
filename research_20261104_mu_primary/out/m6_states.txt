@@ -1,4 +1,10 @@
 
+[MUPRI_BUSER]  계획 131건 -> 주입 131건 -> 체결 20건
+   주입 MU상태: {'CONFIRM': 103, 'STALL': 28}   체결 MU상태: {'CONFIRM': 17, 'STALL': 3}
+   차단 사유:
+     TW2_3SLOT_REJECT_DAILY_SLOT_CAP                 102
+     CHOP_MORNING_NO_TRADE                             7
+
 [MUPRI_M1_S2]  계획 37건 -> 주입 37건 -> 체결 17건
    주입 MU상태: {'CONFIRM': 37}   체결 MU상태: {'CONFIRM': 17}
    차단 사유:
