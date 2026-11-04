@@ -1,0 +1,17 @@
+
+[MUPRI_M1_S2]  계획 37건 -> 주입 37건 -> 체결 17건
+   주입 MU상태: {'CONFIRM': 37}   체결 MU상태: {'CONFIRM': 17}
+   차단 사유:
+     TW2_3SLOT_REJECT_DAILY_SLOT_CAP                  14
+     CHOP_MORNING_NO_TRADE                             2
+     ALREADY_HOLDING_SAME_DIRECTION                    2
+     TW2_3SLOT_REJECT_SAME_DIRECTION_AFTERNOON_2ND     1
+
+[MUPRI_M2_S2]  계획 37건 -> 주입 37건 -> 체결 7건
+   주입 MU상태: {'CONFIRM': 37}   체결 MU상태: {'CONFIRM': 7}
+   차단 사유:
+     TW2_3SLOT_REJECT_TEG                             19
+     TW2_REJECT_VWAP_VETO                              5
+     TW_TEG_3SLOT_REJECT_CHOP_TEG                      3
+     CHOP_MORNING_NO_TRADE                             2
+     ALREADY_HOLDING_SAME_DIRECTION                    1
