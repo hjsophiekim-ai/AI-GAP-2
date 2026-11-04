@@ -8,7 +8,8 @@
 키: 로거 전용 실전 appkey 만 사용한다 — KIS_LOGGER_APP_KEY / KIS_LOGGER_APP_SECRET.
   production appkey 와 같으면 실행을 거부한다. 비교를 위해 production **appkey 이름의 값만**
   읽어 즉시 sha256 지문으로 바꾸고 원문은 보관하지 않는다. production secret 은 읽지 않는다.
-  REST 접근토큰은 발급하지 않는다. WebSocket 접속키(oauth2/Approval)만 발급한다.
+  WebSocket 접속키(oauth2/Approval)를 발급한다. REST 접근토큰은 mu_rest_fallback(2026-11-04, 09시대 MU 공백 보충)
+  한 곳만 이 로거 전용 키로 발급한다(state/rest_token.json 캐시, 해외주식분봉조회 외 호출 없음).
 
 저장: 모든 영구 데이터는 KIS_LOGGER_DATA_DIR 아래에만 둔다(필수). 소스 디렉토리 / 임시 디렉토리는 거부.
 """

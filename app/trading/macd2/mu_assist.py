@@ -293,7 +293,8 @@ def load_mu_1m(now: datetime, data_dir: Optional[str] = None) -> Optional[pd.Ser
                 main[minute] = close
             elif feed == "DNASMU" and minute < open_at:
                 pre[minute] = close
-    merged = {**pre, **main}
+    rest = _load_rest_fallback(Path(root) / "mu" / day / config.MU_REST_FILENAME, day, open_at)
+    merged = {**rest, **pre, **main}      # 같은 분이면 웹소켓(DNASMU/RBAQMU)이 이긴다
     if not merged:
         return None
     s = pd.Series(merged).sort_index()
@@ -303,6 +304,30 @@ def load_mu_1m(now: datetime, data_dir: Optional[str] = None) -> Optional[pd.Ser
     filled = full.ffill().where(~missing | (run_len <= int(config.MU_ASSIST_MAX_FILL_MIN)))
     out = filled.dropna()
     out.attrs["last_real_minute"] = s.index.max()
+    return out
+
+
+def _load_rest_fallback(path: Path, day: str, open_at: datetime) -> dict:
+    """REST fallback 분봉(로거 mu_rest_fallback) — [09:00, 주간거래 시작) 의 확정 분만. 없거나 꺼져 있으면 {}."""
+    if not config.MU_REST_FALLBACK_ENABLED or not path.exists():
+        return {}
+    start = datetime.strptime(day, "%Y-%m-%d").replace(hour=config.MU_REST_FALLBACK_START.hour,
+                                                       minute=config.MU_REST_FALLBACK_START.minute)
+    out = {}
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                if row.get("feed") != config.MU_REST_FEED or str(row.get("complete", "1")) not in ("1", "1.0", "True"):
+                    continue
+                try:
+                    minute = datetime.fromisoformat(str(row["minute_kst"])[:19])
+                    close = float(row["close"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if start <= minute < open_at and close > 0:
+                    out[minute] = close
+    except OSError:
+        return {}
     return out
 
 

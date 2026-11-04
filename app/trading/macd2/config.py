@@ -1574,6 +1574,14 @@ MU_ASSIST_LEDGER_FILENAME = "macd2_mu_assist_ledger.csv"
 # MU 주간거래(RBAQMU, 블루오션) 시작 = 미국 전일 20:00 ET (= 나스닥 애프터마켓 DNASMU 종료). KST 로는 서머타임 09:00 /
 # 비서머타임 10:00 — mu_assist.daytime_open_kst 가 날짜별로 환산한다(2026-10-29, 이전엔 09:00 고정).
 MU_DAYTIME_OPEN_ET = time(20, 0)
+# MU REST fallback (2026-11-04): 서머타임 해제(EST) 기간 KIS 웹소켓 DNASMU 는 09:00 KST(19:00 EST)에 끊기고
+# RBAQMU 는 10:00 에 열린다. 로거의 mu_rest_fallback 모듈이 그 사이만 REST 해외주식분봉조회로
+# mu/<날짜>/rest_bars_1m.csv 에 채운다. load_mu_1m 은 [MU_REST_FALLBACK_START, 주간거래 시작) 에서
+# 웹소켓 분봉이 없는 분에만 그 값을 쓴다(웹소켓 우선). 끄면 기존과 완전히 같다.
+MU_REST_FALLBACK_ENABLED = _env_bool("MACD2_MU_REST_FALLBACK_ENABLED", True)
+MU_REST_FALLBACK_START = time(9, 0)
+MU_REST_FEED = "NASMU_REST"
+MU_REST_FILENAME = "rest_bars_1m.csv"
 # MU 분봉의 짧은 수신 공백만 직전값으로 잇는 최대 길이(분). 더 긴 공백은 채우지 않는다(가짜 가격 금지, stale 로 드러남).
 MU_ASSIST_MAX_FILL_MIN = 3
 
