@@ -4254,9 +4254,26 @@ def _advance_held_position_risk_management(
         # macd_snap is ready). Take-profit was already handled immediately
         # above; only STOP_LOSS/trailing-stop outcomes are still possible
         # from here on, and those remain bar-close-gated on purpose.
+        # MU CONFIRM 손절 1봉 유예 중 hard stop (2026-11-05): 매 틱. 닿으면 MU 와 무관하게 즉시 전량 청산.
+        if (state.confirm_stop_defer_state == "PENDING"
+                and tick_net_return <= float(config.MU_CONFIRM_STOP_DEFER_HARD_PCT)):
+            logger.warning("[MACD2][CONFIRM_STOP_DEFER] HARD_STOP %s net=%.3f%% <= %.2f%% -- 즉시 청산",
+                           pos.symbol, tick_net_return, float(config.MU_CONFIRM_STOP_DEFER_HARD_PCT))
+            outcome = order_executor.execute_exit(
+                broker=broker, symbol=pos.symbol, quantity=pos.quantity,
+                exit_reason=config.EXIT_TW_STOP_LOSS, entry_price=pos.avg_price,
+                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+            )
+            _apply_exit_outcome(state, outcome, exit_reason=config.EXIT_TW_STOP_LOSS)
+            if outcome.final_state == SignalState.EXECUTED:
+                state.time_window_position_active = False
+            result.actions.append(f"CONFIRM_STOP_DEFER_HARD_STOP:{pos.symbol}")
+            return True
         completed_bar_close = _advance_stop_loss_bar(state, pos.symbol, current_price, now)
         if completed_bar_close is not None:
             bar_net_return = _net_return_pct(pos.symbol, pos.avg_price, completed_bar_close, pos.quantity)
+            # 유예 대기 중 다음 완성봉이 왔다 -> 이번 봉 판정으로 끝낸다(손절이면 아래에서 그대로 청산, 아니면 보유).
+            _defer_was_pending = state.confirm_stop_defer_state == "PENDING"
             _pm_kw = dict(_tw_exit_overrides)
             _pm_tp2 = time_window_3slot.morning_tp2_pct_override(state.time_window_active_mode)
             if _n1_over:
@@ -4277,6 +4294,21 @@ def _advance_held_position_risk_management(
             # order is CONFIRMED EXECUTED, never just because the DECISION
             # said a threshold was crossed.
             state.time_window_peak_net_return = pm_decision.peak_net_return
+            if _defer_was_pending:
+                state.confirm_stop_defer_state = "USED"
+                logger.warning("[MACD2][CONFIRM_STOP_DEFER] 유예 후 다음 봉 %s net=%.3f%% -> %s", pos.symbol,
+                               bar_net_return, pm_decision.exit_reason or "HOLD(회복)")
+            elif (pm_decision.exit_reason == config.EXIT_TW_STOP_LOSS
+                    and pm_decision.sell_fraction >= 1.0
+                    and _confirm_stop_defer_eligible(state, bar_net_return)):
+                state.confirm_stop_defer_state = "PENDING"
+                state.confirm_stop_defer_at = now.isoformat()
+                logger.warning("[MACD2][CONFIRM_STOP_DEFER] MU CONFIRM 진입 손절 1봉 유예 %s net=%.3f%% -- "
+                               "다음 완성 3분봉에서 재판정(hard %.2f%%)", pos.symbol, bar_net_return,
+                               float(config.MU_CONFIRM_STOP_DEFER_HARD_PCT))
+                result.actions.append(f"CONFIRM_STOP_DEFER:{pos.symbol}")
+                pm_decision = dataclasses.replace(pm_decision, exit_reason=None, sell_fraction=0.0,
+                                                  label="CONFIRM_STOP_DEFER")
             # C1 MFE 는 틱 + 완성봉 종가 둘 다 본다(연구 엔진과 동일).
             if peak_protection.is_active(state):
                 peak_protection.note_peak(state, bar_net_return)
@@ -6089,6 +6121,13 @@ def _finalize_tw2_3slot_entry(
         state.tw2_3slot_afternoon_count = int(state.tw2_3slot_afternoon_count or 0) + 1
         state.tw2_3slot_last_afternoon_direction = direction.value
     state.tw2_3slot_post_entry_signal_id = signal_id
+    # MU CONFIRM 진입 손절 1봉 유예 (2026-11-05): 진입 시 MU 진입상태를 포지션에 고정한다(재시작 유지).
+    try:
+        state.time_window_entry_mu_status = (
+            mu_assist.entry_status_for(str(signal_id or "").split(":E_BRK")[0]) or None)
+    except Exception:
+        logger.exception("[MACD2][CONFIRM_STOP_DEFER] 진입 MU 상태 기록 실패 -- 유예 없음(기존 손절 그대로)")
+        state.time_window_entry_mu_status = None
     return True
 
 
@@ -6258,6 +6297,15 @@ def _start_whipsaw_watch(
     state.whipsaw_watch_bars_checked = 0
 
 
+def _confirm_stop_defer_eligible(state: RuntimeState, bar_net_return: float) -> bool:
+    """MU CONFIRM 진입 손절 1봉 유예 대상인가 (2026-11-05). 토글 ON ∧ 진입 MU=ENTRY_CONFIRM ∧ 이 포지션에서
+    아직 안 씀 ∧ 판정봉이 이미 hard stop 아래가 아님. 그 외는 기존 손절 그대로."""
+    return bool(config.MU_CONFIRM_STOP_DEFER_ENABLED
+                and state.time_window_entry_mu_status == mu_assist.ENTRY_CONFIRM
+                and not state.confirm_stop_defer_state
+                and bar_net_return > float(config.MU_CONFIRM_STOP_DEFER_HARD_PCT))
+
+
 def _clear_position_scoped_state(state: RuntimeState, *, reason: str = "") -> None:
     """포지션 **한 건의 수명**과 함께 끝나야 하는 상태를 한 곳에서 전부 정리한다.
 
@@ -6292,6 +6340,10 @@ def _clear_position_scoped_state(state: RuntimeState, *, reason: str = "") -> No
     state.time_window_peak_net_return = 0.0
     # 조기익절(ETP) 포지션 종속 상태
     state.time_window_entry_chop = False
+    # MU CONFIRM 진입 손절 1봉 유예 (2026-11-05)
+    state.time_window_entry_mu_status = None
+    state.confirm_stop_defer_state = ""
+    state.confirm_stop_defer_at = None
     state.early_tp_peak_net_return = 0.0
     # 레거시 profit-lock / peak
     state.peak_net_return = 0.0

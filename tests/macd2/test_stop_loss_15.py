@@ -5,7 +5,7 @@
  1   값 자체 — config / 모듈 상수 / override 가 전부 -1.5 로 일치한다
  2   경계 — -1.49 버팀 / -1.50·-1.51 손절. 구 임계구간(-1.30~-1.49)은 더 이상 안 걸린다
  3   공유 범위 — N1 계열과 X2-lite 계열만 바뀐다. 그 외 모드는 한 값도 안 바뀐다
- 4   **안 바뀐 손절들** — 오후(-1.2%) / TW2·TEGv2(-1.7%) / TWF(-1.4%) / B3(-1.0%)
+ 4   **안 바뀐 손절들** — TW2·TEGv2(-1.7%) / TWF(-1.4%) / B3(-1.0%). 오후는 2026-11-05 에 -1.2 -> -1.5 로 별도 변경
  5   env 로 되돌릴 수 있다 (MACD2_X2LITE_MORNING_STOP_LOSS)
  6   손절 외 래더(TP1/TP2/trailing/after-TP1)는 건드리지 않았다
  7   worker 경로 — 완성 3분봉 종가가 -1.5% 를 넘겨야 손절한다(틱 아님)
@@ -71,19 +71,19 @@ def test_only_n1_and_x2lite_families_changed():
 def test_other_stop_losses_are_untouched():
     """-1.3% 가 아니었던 손절들은 이번 변경 대상이 아니다 — 값을 그대로 잠근다."""
     assert config.MORNING_STOP_LOSS == pytest.approx(-0.017)       # TW2 / TEGv2 / MU_MACD
-    assert config.AFTERNOON_STOP_LOSS == pytest.approx(-0.012)     # 오후 래더(override 없음)
+    assert config.AFTERNOON_STOP_LOSS == pytest.approx(-0.015)     # 오후 래더(override 없음) — 2026-11-05 -1.2 -> -1.5
     assert config.TWF_MORNING_STOP_LOSS == pytest.approx(-0.014)   # TW TEG 3-SLOT
     assert config.P3_B3_SL_PCT == pytest.approx(1.0)               # B3 (CHOP 각인 진입)
     assert pm.MORNING_STOP_LOSS_PCT == pytest.approx(-1.7)
-    assert pm.AFTERNOON_STOP_LOSS_PCT == pytest.approx(-1.2)
+    assert pm.AFTERNOON_STOP_LOSS_PCT == pytest.approx(-1.5)
 
 
-def test_afternoon_ladder_still_stops_at_1_2():
-    """오후는 override 자체가 없다 — 오전 변경이 새지 않았는지 확인한다."""
-    assert pm.evaluate_afternoon_position(net_return_pct=-1.19).exit_reason is None
-    assert pm.evaluate_afternoon_position(net_return_pct=-1.20).exit_reason == config.EXIT_TW_STOP_LOSS
-    # 오전이 -1.5 로 넓어져도 오후 -1.2 는 그대로 -1.2 에서 걸린다
-    assert pm.evaluate_afternoon_position(net_return_pct=-1.30).exit_reason == config.EXIT_TW_STOP_LOSS
+def test_afternoon_ladder_stops_at_1_5():
+    """2026-11-05: 오후 손절 -1.2 -> -1.5 (사용자 결정). 구 임계구간(-1.20~-1.49)은 더 이상 안 걸린다."""
+    assert pm.evaluate_afternoon_position(net_return_pct=-1.20).exit_reason is None
+    assert pm.evaluate_afternoon_position(net_return_pct=-1.49).exit_reason is None
+    assert pm.evaluate_afternoon_position(net_return_pct=-1.50).exit_reason == config.EXIT_TW_STOP_LOSS
+    assert pm.evaluate_afternoon_position(net_return_pct=-1.60).exit_reason == config.EXIT_TW_STOP_LOSS
 
 
 # ── 5. env 롤백 ─────────────────────────────────────────────────────────
