@@ -10,6 +10,7 @@
   · 실패하면 상태파일(state/backup_<날짜>.json)에 남기고 5분→15분→30분→60분 간격으로 재시도한다.
     프로세스가 재시작되거나 다음 날이 돼도 상태파일을 읽어 이어서 재시도한다(최근 LOOKBACK_DAYS 일).
   · Render Logs: DAILY_EXPORT_OK / DAILY_BACKUP_OK / DAILY_BACKUP_FAIL / DAILY_BACKUP_SKIP 한 줄씩.
+  · 15:40 이후 MACD2 원장 일별 R2 백업을 별도 프로세스(python -m ledger_backup --auto)로 1회 실행([DAILY_LEDGER_BACKUP]).
 격리: 로거·UI·자동매매 코드를 import 하지 않고, 로거의 상태파일·raw 파일을 건드리지 않는다. 원본 데이터는 삭제하지 않는다.
 어떤 예외도 이 프로세스 안에서 잡아 기록만 한다.
 """
@@ -152,7 +153,50 @@ def run_once(root: Path, now: datetime, *, env=None, client_factory=None) -> lis
             out.append(process_day(root, day, now, backup_on=backup_on, client_factory=client_factory))
         except Exception as e:                               # noqa: BLE001
             _p(f"DAILY_BACKUP_FAIL day={day} stage=internal error={repr(e)[:200]}")
+    spawn_ledger_backup(root, now, env=env)
     return out
+
+
+# ── MACD2 원장 일별 R2 백업 (2026-11-05) ─────────────────────────────────────
+# 원장 백업은 로거 패키지 밖(ledger_backup)에 있고, 여기서는 15:40 이후 그 모듈을 별도 프로세스로 실행만 한다
+# (로거는 매매 상태 파일을 읽지 않는다는 격리 규칙 유지). 상태파일로 하루 최대 3회·5분 간격만 확인하고,
+# 실패·타임아웃은 기록만 한다 — export/로거/UI/자동매매와 무관.
+LEDGER_RUN_AFTER = time(15, 40)
+LEDGER_MAX_ATTEMPTS = 3
+LEDGER_TIMEOUT_SEC = 600
+
+
+def _ledger_due(root: Path, now: datetime, env) -> bool:
+    if now.weekday() >= 5 or now.time() < LEDGER_RUN_AFTER or not backup.enabled(env):
+        return False
+    if (env.get("LEDGER_BACKUP_ENABLED", "1") or "1").strip() == "0":
+        return False
+    try:
+        st = json.loads((Path(root) / "state" / f"ledger_backup_{now:%Y-%m-%d}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if st.get("status") == "OK" or int(st.get("attempts", 0)) >= LEDGER_MAX_ATTEMPTS:
+        return False
+    last = st.get("last_attempt_at")
+    return not (last and (now - datetime.fromisoformat(last)).total_seconds() < 300)
+
+
+def spawn_ledger_backup(root: Path, now: datetime, *, env=None, runner=None):
+    """due 이면 python -m ledger_backup --auto 를 별도 프로세스로 1회 실행. 예외를 밖으로 내지 않는다."""
+    env = env if env is not None else os.environ
+    try:
+        if not _ledger_due(root, now, env):
+            return None
+        import subprocess
+        run = runner or subprocess.run
+        r = run([sys.executable, "-m", "ledger_backup", "--auto"], cwd=str(config.REPO), env=dict(env),
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=LEDGER_TIMEOUT_SEC)
+        for line in (getattr(r, "stdout", "") or "").splitlines()[-30:]:
+            print(line, flush=True)
+        return f"rc={getattr(r, 'returncode', '?')}"
+    except Exception as e:                                   # noqa: BLE001 — 타임아웃 포함, 기록만
+        _p(f"LEDGER_BACKUP_SPAWN_FAIL error={repr(e)[:200]}")
+        return "error"
 
 
 def main(argv=None) -> int:
