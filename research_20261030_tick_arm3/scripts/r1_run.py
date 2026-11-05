@@ -27,6 +27,7 @@ HARNESS = {
     "PAR": ROOT / "research_20261029_n1_morning_stop_p70r" / "harness" / "test_zz_par.py",
     "B3T": Path(r"C:/Users/KIMHYU~1/AppData/Local/Temp/claude/wt_b3t/tests/macd2/test_zz_b3t.py"),
     "ARM3": ROOT / "research_20261030_tick_arm3" / "harness" / "test_zz_arm3.py",
+    "SLH": ROOT / "research_20261105_early_stop_2bar" / "harness" / "test_zz_slh.py",
 }
 
 
