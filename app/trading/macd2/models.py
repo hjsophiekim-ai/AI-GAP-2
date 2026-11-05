@@ -856,11 +856,13 @@ class RuntimeState:
     #   발동할 때만 커밋한다), 60일 검증에서 armed 판정에 쓴 MFE는 틱 관측값이다.
     #   production 필드를 건드리면 필터 OFF 동작이 바뀌므로 절대 공유하지 않는다.
     time_window_entry_chop: bool = False
-    # MU CONFIRM 진입 손절 1봉 유예 (2026-11-05) — 포지션 종속. 진입 시 MU 진입상태를 고정 저장하고,
-    # 유예 상태는 ''(미사용) / 'PENDING'(다음 봉 대기) / 'USED'(이 포지션에서 이미 씀).
-    time_window_entry_mu_status: Optional[str] = None
-    confirm_stop_defer_state: str = ""
-    confirm_stop_defer_at: Optional[str] = None
+    # 진입 후 30분 이내 첫 일반 손절 1봉 유예 (2026-11-06, early_stop_defer) — 포지션 종속.
+    # used 는 유예를 시작하는 순간 True 가 되어 포지션이 끝날 때까지 유지 -> 포지션당 최대 1회.
+    early_stop_defer_used: bool = False
+    early_stop_defer_active: bool = False
+    early_stop_defer_started_at: Optional[str] = None
+    early_stop_defer_until_bar: Optional[str] = None
+    early_stop_defer_original_stop_pct: Optional[float] = None
     early_tp_peak_net_return: float = 0.0
     # UI/진단용 (포지션 수명과 무관하게 마지막 발생 시각만 남긴다).
     last_entry_chop_score: Optional[int] = None

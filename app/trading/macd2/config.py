@@ -820,6 +820,13 @@ AFTERNOON_TP = _env_float("MACD2_TW_AFTERNOON_TP", 0.025)
 # 2026-11-05: 오후 손절 -1.2% -> -1.5% (사용자 결정). 60영업일 재생(08/03~11/03)에서 오후 손절 발동 1건,
 # 그 1건도 한 봉에 두 선을 같이 관통해 손익 변화 0 -- research_20261105 / project_macd2_afternoon_stop_15.
 AFTERNOON_STOP_LOSS = _env_float("MACD2_TW_AFTERNOON_STOP_LOSS", -0.015)
+# 진입 후 30분 이내 첫 일반 손절 1봉 유예 (2026-11-06, app/trading/macd2/early_stop_defer.py).
+# research_20261105_early_stop_2bar 58일: Δ +781,828 · MDD -174,845 · 손실일 -2. 경계 민감도 15~30분 평탄,
+# 30분이 꼭짓점(35/45/120분은 단조 악화) -> 30분 초과로 넓히지 말 것. MU 상태와 무관(MU CONFIRM 유예 대체).
+EARLY_STOP_DEFER_ENABLED = _env_bool("MACD2_EARLY_STOP_DEFER_ENABLED", True)
+EARLY_STOP_DEFER_MINUTES = _env_float("MACD2_EARLY_STOP_DEFER_MINUTES", 30.0)
+EARLY_STOP_DEFER_HARD_STOP = _env_float("MACD2_EARLY_STOP_DEFER_HARD_STOP", -0.025)   # 분수(-2.5%)
+EXIT_EARLY_STOP_DEFER_HARD_STOP = "EARLY_STOP_DEFER_HARD_STOP"
 AFTERNOON_BREAKEVEN_TRIGGER = _env_float("MACD2_TW_AFTERNOON_BREAKEVEN_TRIGGER", 0.015)
 AFTERNOON_BREAKEVEN_STOP = _env_float("MACD2_TW_AFTERNOON_BREAKEVEN_STOP", 0.002)
 AFTERNOON_PROFIT_LOCK_TRIGGER = _env_float("MACD2_TW_AFTERNOON_PROFIT_LOCK_TRIGGER", 0.020)
@@ -1563,14 +1570,6 @@ MU_ASSIST_STALE_BLOCK_REASON = "MU_ASSIST_STALE_BLOCK"
 # gap 은 T+2 MU 원장의 hy_gap_prev(방향부호 × 직전봉 diff) 를 그대로 읽어 max(0, −g_prev) 로 본다.
 # 기준 400 은 2026-11-03 12일 연구에서 고정한 값 -- 탐색·조정 금지.
 MU_ASSIST_WAIT_BLOCK_REASON = "MU_ASSIST_WAIT_BLOCK"
-# MU CONFIRM 진입 손절 1봉 유예 (2026-11-05, 사용자 결정). 진입 시 MU 진입상태가 ENTRY_CONFIRM 이었던 포지션은
-# 첫 TIME_WINDOW_STOP_LOSS(오전/오후 래더 손절) 판정 봉에서 팔지 않고 **다음 완성 3분봉 1개**만 기다린다.
-# 다음 봉에서도 손절선 아래면 즉시 청산, 회복했으면 보유. 포지션당 1회, 연속 유예 없음.
-# 대기 중에는 매 틱 hard stop(MU_CONFIRM_STOP_DEFER_HARD_PCT, 연구에서 쓴 -2.5%)에 닿으면 즉시 청산.
-# B3 손절(CHOP -1%)·TP·trailing·after-TP1 stop 등 다른 청산은 대상이 아니다.
-# 근거: CONFIRM 진입 손절 3건(10/26 재생, 10/29·11/05 실거래) 중 2건이 다음 봉 회복 -- 표본이 작아 운영 관찰 필요.
-MU_CONFIRM_STOP_DEFER_ENABLED = _env_bool("MACD2_MU_CONFIRM_STOP_DEFER_ENABLED", True)
-MU_CONFIRM_STOP_DEFER_HARD_PCT = _env_float("MACD2_MU_CONFIRM_STOP_DEFER_HARD_PCT", -2.5)
 MU_WAIT_OPPOSITE_GAP_MAX = 400.0
 # WAIT XS TEG override (2026-11-03, 토글 없음). CHOP 모드 · 재확인 시각 11:00 이후 · MU ENTRY_WAIT ·
 # 위 WAIT 선택진입 승인 후보가 **오후 슬롯 TEG** 에서 XS 와 같은 사유(EMA stack/VWAP/recent_cross/9분)로만

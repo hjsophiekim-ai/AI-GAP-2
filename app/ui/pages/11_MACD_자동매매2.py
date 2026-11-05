@@ -329,6 +329,7 @@ _EXIT_REASON_DISPLAY_LABELS = {
     macd2_config.EXIT_PROFIT_LOCK_MACD_CONVERGENCE: "프로핏락(MACD수렴)",
     macd2_config.EXIT_QUICK_PROFIT_TAKE_PROFIT: "퀵 익절",
     macd2_config.EXIT_TW_STOP_LOSS: "손절",
+    macd2_config.EXIT_EARLY_STOP_DEFER_HARD_STOP: "손절유예 중 하드손절(-2.5%)",
     macd2_config.EXIT_TW_TP1_PARTIAL: "1차 익절(부분)",
     macd2_config.EXIT_TW_TP2_FULL: "2차 익절(전량)",
     macd2_config.EXIT_TW_AFTER_TP1_STOP: "1차익절 후 손절",
