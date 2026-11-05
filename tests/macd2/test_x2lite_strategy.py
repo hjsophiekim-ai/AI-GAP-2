@@ -225,9 +225,9 @@ def test_x2lite_afternoon_ladder_is_unchanged_except_tp():
     aft = _ladder(MODE, 3.0, session="AFTERNOON")
     assert aft.exit_reason == config.EXIT_TW_AFTERNOON_TP
     assert _ladder(MODE, 2.99, session="AFTERNOON").exit_reason != config.EXIT_TW_AFTERNOON_TP
-    # 오후 손절 -1.2% / breakeven / profit-lock 은 모듈 상수 그대로
-    assert pm.evaluate_afternoon_position(net_return_pct=-1.19).exit_reason is None
-    assert pm.evaluate_afternoon_position(net_return_pct=-1.20).exit_reason == config.EXIT_TW_STOP_LOSS
+    # 오후 손절(2026-11-05 -1.2 -> -1.5) / breakeven / profit-lock 은 모듈 상수 그대로
+    assert pm.evaluate_afternoon_position(net_return_pct=-1.49).exit_reason is None
+    assert pm.evaluate_afternoon_position(net_return_pct=-1.50).exit_reason == config.EXIT_TW_STOP_LOSS
     assert pm.AFTERNOON_STOP_LOSS_PCT == pytest.approx(config.AFTERNOON_STOP_LOSS * 100.0)
     assert pm.evaluate_afternoon_position(net_return_pct=0.2, peak_net_return=1.6).exit_reason == config.EXIT_TW_BREAKEVEN_STOP
     assert pm.evaluate_afternoon_position(net_return_pct=1.0, peak_net_return=2.1).exit_reason == config.EXIT_TW_PROFIT_LOCK_STOP
