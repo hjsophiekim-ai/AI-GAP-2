@@ -39,21 +39,19 @@ def episodes(js, day):
     return out
 
 
-def pick(tag, day):
-    for f in (OUTD / f"{tag}_{day}.json", OUTD / f"CHK_SLH_ON_{day}.json",
-              OUTD / f"L85_A_{day}.json"):
-        if f.exists():
-            return f, f.name.rsplit("_", 1)[0]
-    raise SystemExit(f"없음 {day}")
+#: 재사용 후보 — 어느 MIN 으로 돌린 재생이든, 그 날 판정이 목표 MIN 과 전부 같은 쪽이면 쓸 수 있다.
+CANDIDATES = ["SLH_M120", "SLH_M45", "SLH_M35", "CHK_SLH_ON", "SLH_M25", "SLH_M15", "SLH_M10"]
 
 
-def check_reuse(day, minutes):
-    """MIN=30 재생을 재사용해도 되는가 — 그 날 판정이 전부 같은 쪽인지."""
-    f = OUTD / f"CHK_SLH_ON_{day}.json"
-    if not f.exists():
-        return True, ""
-    js = json.loads(f.read_text(encoding="utf-8"))
-    for x in js.get("slh") or []:
+def consistent(js, day, minutes):
+    """이 재생 결과를 목표 MIN 의 산출로 써도 되는가."""
+    log = js.get("slh")
+    if log is None:
+        # 규칙이 꺼진 기준선 — 그 날 손절이 아예 없어야만 대체 가능하다.
+        return not any("TIME_WINDOW_STOP_LOSS" in a
+                       for o in js["orders"] if o["t"][:10].replace("-", "") == day
+                       for a in (o.get("acts") or [])), "기준선(손절 없음)"
+    for x in log:
         if x["t"][:10].replace("-", "") != day:
             continue                       # 워밍업일 이벤트
         h = x.get("held")
@@ -64,6 +62,27 @@ def check_reuse(day, minutes):
         if x["k"] == "PASS" and x.get("why") == "LATE" and h <= minutes:
             return False, f"{x['t'][11:16]} PASS(LATE) held={h} <= {minutes}"
     return True, ""
+
+
+def resolve(tag, day, minutes):
+    """목표 MIN 의 그 날 산출 파일. (파일, 자체재생 여부, 경고)"""
+    own = OUTD / f"{tag}_{day}.json"
+    if own.exists():
+        return own, True, ""
+    best = None
+    for c in CANDIDATES:
+        f = OUTD / f"{c}_{day}.json"
+        if not f.exists():
+            continue
+        ok, why = consistent(json.loads(f.read_text(encoding="utf-8")), day, minutes)
+        if ok:
+            return f, False, ""
+        best = best or f"{c}: {why}"
+    base = OUTD / f"L85_A_{day}.json"
+    ok, _ = consistent(json.loads(base.read_text(encoding="utf-8")), day, minutes)
+    if ok:
+        return base, False, ""
+    return base, False, (best or "대체 불가")
 
 
 def metrics(per_day, days):
@@ -95,13 +114,10 @@ warn = []
 for minutes, tag in SETTINGS:
     per, own = {}, 0
     for d in days:
-        f, src = pick(tag, d)
-        if f.name.startswith(tag + "_"):
-            own += 1
-        elif f.name.startswith("CHK_SLH_ON_"):
-            ok, why = check_reuse(d, minutes)
-            if not ok:
-                warn.append(f"MIN={minutes} {d}: {why}")
+        f, is_own, why = resolve(tag, d, minutes)
+        own += is_own
+        if why:
+            warn.append(f"MIN={minutes} {d}: 재생 필요 ({why})")
         per[d] = episodes(json.loads(f.read_text(encoding="utf-8")), d)
     s = metrics(per, days)
     mark = "  <- 현행" if minutes == BASE_MIN else ""
