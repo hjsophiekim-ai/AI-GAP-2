@@ -11,6 +11,10 @@
     프로세스가 재시작되거나 다음 날이 돼도 상태파일을 읽어 이어서 재시도한다(최근 LOOKBACK_DAYS 일).
   · Render Logs: DAILY_EXPORT_OK / DAILY_BACKUP_OK / DAILY_BACKUP_FAIL / DAILY_BACKUP_SKIP 한 줄씩.
   · 15:40 이후 MACD2 원장 일별 R2 백업을 별도 프로세스(python -m ledger_backup --auto)로 1회 실행([DAILY_LEDGER_BACKUP]).
+  · 1차본(2026-11-06): 15:00 강제청산 직후 바로 분석할 수 있도록 15:05~15:35 에 그날 export 1차본
+    (ws_shadow_export_<날짜>_early.zip — 하이닉스·레버리지·인버스 스냅샷(호가·체결강도 cttr)·MU)을,
+    15:05~15:40 에 원장 1차본(ledger_backup --auto-early, early/ 키)을 올린다. 1차본은 최종본과 파일명·키가 달라
+    서로 덮어쓰지 않고 둘 다 R2 에 남는다. 상태파일도 따로라 최종본 일정·재시도에 영향이 없다.
 격리: 로거·UI·자동매매 코드를 import 하지 않고, 로거의 상태파일·raw 파일을 건드리지 않는다. 원본 데이터는 삭제하지 않는다.
 어떤 예외도 이 프로세스 안에서 잡아 기록만 한다.
 """
@@ -29,6 +33,9 @@ from . import backup, config, export_day
 
 TAG = "[ws_shadow_backup]"
 RUN_AFTER = time(15, 35)
+EARLY_RUN_AFTER = time(15, 5)      # 1차본 export — 15:00 강제청산 직후
+EARLY_SUFFIX = "_early"
+EARLY_MAX_ATTEMPTS = 3
 FORCE_AFTER = time(16, 0)          # maintenance 표식(daily json)을 이 시각까지만 기다린다
 LOOKBACK_DAYS = 10
 RETRY_MIN = (5, 15, 30, 60)        # 실패 n 회째 다음 재시도까지 분 (마지막 값 반복)
@@ -153,8 +160,69 @@ def run_once(root: Path, now: datetime, *, env=None, client_factory=None) -> lis
             out.append(process_day(root, day, now, backup_on=backup_on, client_factory=client_factory))
         except Exception as e:                               # noqa: BLE001
             _p(f"DAILY_BACKUP_FAIL day={day} stage=internal error={repr(e)[:200]}")
+    if backup_on:
+        r = early_export(root, now, client_factory=client_factory)
+        if r:
+            out.append(r)
+    spawn_ledger_backup(root, now, env=env, early=True)
     spawn_ledger_backup(root, now, env=env)
     return out
+
+
+def early_export(root: Path, now: datetime, *, client_factory) -> dict | None:
+    """오늘 1차본 export·업로드 (15:05~15:35, 하루 OK 1회·실패 최대 3회·5분 간격). 예외를 밖으로 내지 않는다.
+    zip·sidecar·R2 키 모두 _early 접미사라 최종본(15:35 이후)과 겹치지 않는다."""
+    day = now.strftime("%Y-%m-%d")
+    if now.weekday() >= 5 or not (EARLY_RUN_AFTER <= now.time() < RUN_AFTER):
+        return None
+    sp = Path(root) / "state" / f"backup_early_{day}.json"
+    try:
+        st = json.loads(sp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        st = {}
+    if st.get("status") == "BACKED_UP" or int(st.get("attempts", 0)) >= EARLY_MAX_ATTEMPTS:
+        return None
+    if st.get("last_attempt_at") and (now - datetime.fromisoformat(st["last_attempt_at"])).total_seconds() < 300:
+        return None
+    att = int(st.get("attempts", 0)) + 1
+    try:
+        ex = export_day.export(root, day, now=now, suffix=EARLY_SUFFIX)
+        if ex["status"] == "NO_DATA":
+            return {"day": day, "action": "EARLY_NO_DATA"}
+        man, zp = ex["manifest"], Path(ex["zip"])
+        client = client_factory()
+        key = client.t.key_for(day, zp.name)
+        sha = man["zip_sha256"]
+        if client.head_sha256(key) != sha:
+            client.put_file(key, zp, sha)
+            if client.head_sha256(key) != sha:
+                raise IOError("업로드 후 HEAD sha256 불일치")
+        body = {k: v for k, v in man.items() if k != "files"}
+        body.update(uploaded_key=key, files=man.get("files", []))
+        client.put_bytes(client.t.key_for(day, "manifest_early.json"),
+                         json.dumps(body, ensure_ascii=False, indent=1).encode("utf-8"))
+        st = {"status": "BACKED_UP", "key": key, "zip_sha256": sha, "attempts": att,
+              "last_attempt_at": now.isoformat(timespec="seconds")}
+        try:                                                 # R2 에 sha 검증된 사본이 있으니 로컬 zip 사본만 지운다
+            zp.unlink()                                      # (원본 snapshots/mu/logs 는 건드리지 않음, 디스크 2배 방지)
+        except OSError:
+            pass
+        _p(f"DAILY_EARLY_BACKUP_OK day={day} key={key} snapshot_rows={man.get('snapshot_rows')} "
+           f"mu_ticks={man.get('mu_tick_rows')} bytes={man.get('zip_bytes')}")
+        action = "EARLY_BACKED_UP"
+    except Exception as e:                                   # noqa: BLE001 — 격리
+        st = {"status": "FAIL", "attempts": att, "last_error": repr(e)[:300],
+              "last_attempt_at": now.isoformat(timespec="seconds")}
+        _p(f"DAILY_EARLY_BACKUP_FAIL day={day} attempt={att} error={repr(e)[:200]}")
+        action = "EARLY_FAIL"
+    try:
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        tmp = sp.with_name(sp.name + ".tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, sp)
+    except OSError:
+        pass
+    return {"day": day, "action": action}
 
 
 # ── MACD2 원장 일별 R2 백업 (2026-11-05) ─────────────────────────────────────
@@ -166,13 +234,20 @@ LEDGER_MAX_ATTEMPTS = 3
 LEDGER_TIMEOUT_SEC = 600
 
 
-def _ledger_due(root: Path, now: datetime, env) -> bool:
-    if now.weekday() >= 5 or now.time() < LEDGER_RUN_AFTER or not backup.enabled(env):
+LEDGER_EARLY_RUN_AFTER = time(15, 5)
+
+
+def _ledger_due(root: Path, now: datetime, env, early: bool = False) -> bool:
+    if now.weekday() >= 5 or not backup.enabled(env):
+        return False
+    t = now.time()
+    if (not (LEDGER_EARLY_RUN_AFTER <= t < LEDGER_RUN_AFTER)) if early else t < LEDGER_RUN_AFTER:
         return False
     if (env.get("LEDGER_BACKUP_ENABLED", "1") or "1").strip() == "0":
         return False
+    name = f"ledger_backup_early_{now:%Y-%m-%d}.json" if early else f"ledger_backup_{now:%Y-%m-%d}.json"
     try:
-        st = json.loads((Path(root) / "state" / f"ledger_backup_{now:%Y-%m-%d}.json").read_text(encoding="utf-8"))
+        st = json.loads((Path(root) / "state" / name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
     if st.get("status") == "OK" or int(st.get("attempts", 0)) >= LEDGER_MAX_ATTEMPTS:
@@ -181,15 +256,16 @@ def _ledger_due(root: Path, now: datetime, env) -> bool:
     return not (last and (now - datetime.fromisoformat(last)).total_seconds() < 300)
 
 
-def spawn_ledger_backup(root: Path, now: datetime, *, env=None, runner=None):
-    """due 이면 python -m ledger_backup --auto 를 별도 프로세스로 1회 실행. 예외를 밖으로 내지 않는다."""
+def spawn_ledger_backup(root: Path, now: datetime, *, env=None, runner=None, early: bool = False):
+    """due 이면 python -m ledger_backup --auto(early 면 --auto-early) 를 별도 프로세스로 1회 실행. 예외를 밖으로 내지 않는다."""
     env = env if env is not None else os.environ
     try:
-        if not _ledger_due(root, now, env):
+        if not _ledger_due(root, now, env, early):
             return None
         import subprocess
         run = runner or subprocess.run
-        r = run([sys.executable, "-m", "ledger_backup", "--auto"], cwd=str(config.REPO), env=dict(env),
+        r = run([sys.executable, "-m", "ledger_backup", "--auto-early" if early else "--auto"], cwd=str(config.REPO),
+                env=dict(env),
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=LEDGER_TIMEOUT_SEC)
         for line in (getattr(r, "stdout", "") or "").splitlines()[-30:]:
             print(line, flush=True)

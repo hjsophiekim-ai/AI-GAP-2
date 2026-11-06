@@ -43,12 +43,12 @@ def now_kst() -> datetime:
     return datetime.now(KST).replace(tzinfo=None)
 
 
-def zip_path(root: Path, day: str) -> Path:
-    return Path(root) / EXPORT_DIR / f"{PREFIX}{day}.zip"
+def zip_path(root: Path, day: str, suffix: str = "") -> Path:
+    return Path(root) / EXPORT_DIR / f"{PREFIX}{day}{suffix}.zip"
 
 
-def sidecar_path(root: Path, day: str) -> Path:
-    return Path(root) / EXPORT_DIR / f"{PREFIX}{day}.manifest.json"
+def sidecar_path(root: Path, day: str, suffix: str = "") -> Path:
+    return Path(root) / EXPORT_DIR / f"{PREFIX}{day}{suffix}.manifest.json"
 
 
 def sources(root: Path, day: str) -> list[tuple[Path, str]]:
@@ -146,21 +146,24 @@ def build_manifest(root: Path, day: str, srcs, created_at: datetime) -> dict:
     }
 
 
-def export(root, day: str, *, now: datetime | None = None, force: bool = False) -> dict:
-    """결과: {"status": "CREATED"|"UNCHANGED"|"NO_DATA"|"NOT_FINISHED", "zip": 경로, "manifest": {...}}"""
+def export(root, day: str, *, now: datetime | None = None, force: bool = False, suffix: str = "") -> dict:
+    """결과: {"status": "CREATED"|"UNCHANGED"|"NO_DATA"|"NOT_FINISHED", "zip": 경로, "manifest": {...}}
+    suffix="_early" 는 장중(15:05) 1차본 — 다른 파일명으로만 쓰고 SESSION_END 대기를 건너뛴다(최종 zip 불변)."""
     root = Path(root)
     now = now or now_kst()
-    if day == now.strftime("%Y-%m-%d") and now.time() < config.SESSION_END and not force:
+    if day == now.strftime("%Y-%m-%d") and now.time() < config.SESSION_END and not (force or suffix):
         return {"status": "NOT_FINISHED", "day": day}
     srcs = sources(root, day)
     if not srcs:
         return {"status": "NO_DATA", "day": day}
-    zp, sp = zip_path(root, day), sidecar_path(root, day)
+    zp, sp = zip_path(root, day, suffix), sidecar_path(root, day, suffix)
     old = _load_json(sp)
     fp = _fingerprint(srcs)
     if zp.exists() and old and old.get("source_fingerprint") == fp and not force:
         return {"status": "UNCHANGED", "day": day, "zip": str(zp), "manifest": old}
     man = build_manifest(root, day, srcs, now)
+    if suffix:
+        man["stage"] = "EARLY"
     zp.parent.mkdir(parents=True, exist_ok=True)
     tmp = zp.with_name(zp.name + f".{os.getpid()}.tmp")
     try:

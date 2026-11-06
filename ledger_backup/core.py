@@ -4,6 +4,7 @@
   python -m ledger_backup --date 2026-11-05 --verify   # R2 의 존재/sha256/row_count 확인
   python -m ledger_backup --list-past                  # 로컬 누적 원장에 남은 날짜별 행수만 출력(업로드 안 함)
   python -m ledger_backup --auto                       # 오늘 분 자동 실행 — ws_shadow_logger.backup_service 가 15:40 이후 호출
+  python -m ledger_backup --auto-early                 # 오늘 분 1차본(15:05~15:40) — 최종본과 다른 키(early/)에만 올린다
 
 로거 패키지(ws_shadow_logger)는 매매 상태 파일을 읽지 않는다는 격리 규칙이 있어 이 모듈은 로거 밖에 두고,
 backup_service 가 별도 프로세스(타임아웃)로만 실행한다. R2 서명·업로드는 ws_shadow_logger.backup 을 재사용한다.
@@ -13,6 +14,8 @@ csv 모듈로 한 행씩 읽어 그 날짜 행만 로거 data dir 의 state/ledg
 (전체 적재 없음). 작은 상태 JSON 은 백업 시점 사본을 그대로 올린다.
 
 R2 경로: {LEDGER_BACKUP_PREFIX=ai-gap-2-ledger/}YYYY/MM/DD/<파일명>, manifest.json, daily/YYYY-MM-DD.zip.
+1차본(2026-11-06): 15:00 강제청산 직후 바로 분석할 수 있도록 15:05 에 YYYY/MM/DD/early/<파일명>, early/manifest.json 으로
+한 번 더 올린다. 1차본과 최종본은 키가 겹치지 않아 서로 덮어쓰지 않으며, 1차본은 최종본이 올라간 뒤에도 그대로 남는다.
 자격증명·버킷·엔드포인트는 기존 로거 백업(LOGGER_BACKUP_*)을 쓴다. LEDGER_BACKUP_ENABLED=0 이면 끈다.
 자동 실행은 그날 최대 MAX_ATTEMPTS 회에서 멈춘다.
 """
@@ -35,6 +38,8 @@ from ws_shadow_logger import backup, config
 
 TAG = "[DAILY_LEDGER_BACKUP]"
 RUN_AFTER = time(15, 40)
+EARLY_RUN_AFTER = time(15, 5)        # 1차본 — 15:00 FORCE_LIQUIDATE_AT 직후. RUN_AFTER 이후엔 최종본만 돈다
+EARLY = "early"                      # 1차본 R2 하위 경로·로컬 작업 폴더 이름
 MAX_ATTEMPTS = 3                     # 하루 자동 시도 상한 (무한 재시도 금지)
 PUT_RETRIES = (1.0, 3.0)             # 파일 하나당 짧은 재시도 2회
 KST = timezone(timedelta(hours=9))
@@ -170,11 +175,13 @@ def _put(client, key, path: Path, sha: str, ctype: str) -> str:
     raise IOError(f"{type(last).__name__}: {str(last)[:160]}")
 
 
-def backup_day(day: str, *, root: Path, work: Path, client, env=None, clock=now_kst) -> dict:
-    """한 날짜 백업. 예외를 밖으로 내지 않고 manifest dict 를 반환한다."""
+def backup_day(day: str, *, root: Path, work: Path, client, env=None, clock=now_kst, early: bool = False) -> dict:
+    """한 날짜 백업. 예외를 밖으로 내지 않고 manifest dict 를 반환한다.
+    early=True 면 1차본: 로컬 작업 폴더·R2 키 모두 early/ 아래만 쓰고 daily zip 은 만들지 않는다(최종본 키 불변)."""
     env = env if env is not None else os.environ
     started = clock()
-    out_dir = Path(work) / "state" / "ledger_backup" / day
+    sub = f"{EARLY}/" if early else ""
+    out_dir = Path(work) / "state" / "ledger_backup" / day / (EARLY if early else "")
     out_dir.mkdir(parents=True, exist_ok=True)
     files, ok_paths = [], []
     for rel, kind in FILES:
@@ -203,19 +210,22 @@ def backup_day(day: str, *, root: Path, work: Path, client, env=None, clock=now_
     man = {"date_kst": day, "backup_started_at": started.isoformat(timespec="seconds"),
            "worker_code_sha": _worker_sha(out_dir / "macd2_signal_ledger.csv"),
            "render_git_commit": env.get("RENDER_GIT_COMMIT", ""), "git_branch": env.get("RENDER_GIT_BRANCH", ""),
-           "flags": _flags(out_dir / "macd2_runtime.json", env), "prefix": client.t.prefix if client else ""}
+           "flags": _flags(out_dir / "macd2_runtime.json", env), "prefix": client.t.prefix if client else "",
+           "stage": "EARLY" if early else "FINAL"}
     for name, dst, ent in ok_paths:
         if client is None:
             ent["upload_status"] = "NOT_CONFIGURED"
             continue
         try:
             ctype = "text/csv" if name.endswith(".csv") else "application/json"
-            ent["upload_status"] = _put(client, client.t.key_for(day, name), dst, ent["sha256"], ctype)
+            ent["upload_status"] = _put(client, client.t.key_for(day, sub + name), dst, ent["sha256"], ctype)
         except Exception as e:  # noqa: BLE001
             ent.update(upload_status="FAILED", error=str(e)[:200])
     # daily zip — 디스크 파일에서 바로 압축(메모리 버퍼 없음). 개별 파일이 우선이라 실패해도 상태만 남긴다.
     zinfo = {"filename": f"{day}.zip", "kind": "zip"}
     try:
+        if early:
+            raise _NoZip
         zp = out_dir.parent / f"{day}.zip"
         with zipfile.ZipFile(zp, "w", compression=zipfile.ZIP_DEFLATED) as z:
             for name, dst, _ in ok_paths:
@@ -227,6 +237,8 @@ def backup_day(day: str, *, root: Path, work: Path, client, env=None, clock=now_
             zinfo["upload_status"] = _put(client, zkey, zp, zinfo["sha256"], "application/zip")
         else:
             zinfo["upload_status"] = "NOT_CONFIGURED"
+    except _NoZip:
+        zinfo = {"upload_status": "NOT_FOR_EARLY"}
     except Exception as e:  # noqa: BLE001
         zinfo.update(upload_status="FAILED", error=str(e)[:200])
     man["daily_zip"] = zinfo
@@ -238,17 +250,17 @@ def backup_day(day: str, *, root: Path, work: Path, client, env=None, clock=now_
     if client is not None:
         try:
             body = json.dumps(man, ensure_ascii=False, indent=1).encode("utf-8")
-            client.put_bytes(client.t.key_for(day, "manifest.json"), body)
+            client.put_bytes(client.t.key_for(day, sub + "manifest.json"), body)
         except Exception as e:  # noqa: BLE001
             man["status"] = "PARTIAL" if man["status"] == "OK" else man["status"]
             man["manifest_error"] = str(e)[:200]
     nbytes = sum(int(f.get("size_bytes") or 0) for f in files)
     if man["status"] == "OK":
-        _p(f"date={day} status=OK files={len(good)} bytes={nbytes} sha={man['worker_code_sha'][:12] or '-'}")
+        _p(f"date={day}{' stage=EARLY' if early else ''} status=OK files={len(good)} bytes={nbytes} sha={man['worker_code_sha'][:12] or '-'}")
     else:
         reason = ";".join(f"{f['filename']}:{f.get('upload_status')}:{f.get('error', '')}" for f in bad)[:400] \
             or ("NOT_CONFIGURED" if client is None else man.get("manifest_error", ""))
-        _p(f"date={day} status={man['status']} reason={reason}")
+        _p(f"date={day}{' stage=EARLY' if early else ''} status={man['status']} reason={reason}")
     for f in files:
         if f.get("upload_status") in ("FAILED", "READ_ERROR", "MISSING"):
             _p(f"  file={f['filename']} status={f['upload_status']} {f.get('error', '')}")
@@ -256,26 +268,39 @@ def backup_day(day: str, *, root: Path, work: Path, client, env=None, clock=now_
 
 
 # ── 자동 실행 (backup_service 루프에서 호출) ─────────────────────────────────
-def _state_path(work: Path, day: str) -> Path:
-    return Path(work) / "state" / f"ledger_backup_{day}.json"
+class _NoZip(Exception):
+    pass
 
 
-def run_due(work: Path, now: datetime, *, env=None, client_factory=None) -> dict | None:
-    """그날 15:40 이후 1회. OK 면 다시 안 함, 실패면 다음 루프에서 재시도하되 하루 MAX_ATTEMPTS 회까지.
+def _state_path(work: Path, day: str, early: bool = False) -> Path:
+    return Path(work) / "state" / (f"ledger_backup_early_{day}.json" if early else f"ledger_backup_{day}.json")
+
+
+def in_window(now: datetime, early: bool = False) -> bool:
+    """최종본: 15:40 이후. 1차본: 15:05 이상 15:40 미만(최종본 시각이 되면 1차본은 더 시도하지 않는다)."""
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return EARLY_RUN_AFTER <= t < RUN_AFTER if early else t >= RUN_AFTER
+
+
+def run_due(work: Path, now: datetime, *, env=None, client_factory=None, early: bool = False) -> dict | None:
+    """그날 15:40 이후 1회(early=True 면 15:05~15:40 에 1차본 1회). OK 면 다시 안 함, 실패면 다음 루프에서 재시도하되
+    하루 MAX_ATTEMPTS 회까지. 1차본·최종본은 상태파일이 따로라 서로의 성공/실패에 영향을 주지 않는다.
     어떤 예외도 밖으로 내지 않는다(실거래·로거·export 와 무관)."""
     try:
         env = env if env is not None else os.environ
-        if now.weekday() >= 5 or now.time() < RUN_AFTER or not enabled(env):
+        if not in_window(now, early) or not enabled(env):
             return None
         day = now.strftime("%Y-%m-%d")
-        sp = _state_path(work, day)
+        sp = _state_path(work, day, early)
         st = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
         if st.get("status") == "OK" or int(st.get("attempts", 0)) >= MAX_ATTEMPTS:
             return None
         if st.get("last_attempt_at") and (now - datetime.fromisoformat(st["last_attempt_at"])).total_seconds() < 300:
             return None
         client = (client_factory or (lambda: backup.S3Client(target(env))))()
-        man = backup_day(day, root=data_root(env), work=work, client=client, env=env, clock=lambda: now)
+        man = backup_day(day, root=data_root(env), work=work, client=client, env=env, clock=lambda: now, early=early)
         sp.parent.mkdir(parents=True, exist_ok=True)
         sp.write_text(json.dumps({"status": man["status"], "attempts": int(st.get("attempts", 0)) + 1,
                                   "last_attempt_at": now.isoformat(timespec="seconds")}), encoding="utf-8")
@@ -341,6 +366,7 @@ def main(argv=None) -> int:
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--list-past", action="store_true")
     ap.add_argument("--auto", action="store_true", help="오늘 분 자동 실행(15:40 이후, 하루 최대 3회)")
+    ap.add_argument("--auto-early", action="store_true", help="오늘 분 1차본(15:05~15:40, early/ 키, 하루 최대 3회)")
     a = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -349,12 +375,12 @@ def main(argv=None) -> int:
     if a.list_past:
         list_past(data_root())
         return 0
-    if a.auto:
+    if a.auto or a.auto_early:
         dc = config.check_data_dir()
         if not dc.ok:
             _p(f"date={now_kst():%Y-%m-%d} status=ERROR reason=logger data dir ({dc.reason})")
             return 3
-        man = run_due(Path(dc.path), now_kst())
+        man = run_due(Path(dc.path), now_kst(), early=bool(a.auto_early))
         return 0 if (man is None or man.get("status") == "OK") else 1
     if not a.date:
         ap.error("--date / --list-past / --auto 중 하나")
