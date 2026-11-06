@@ -789,3 +789,10 @@ def test_held_position_keeps_its_own_exit_mode_across_migration(_x2lite_default_
     ov = tw3.exit_overrides(s.time_window_active_mode)
     assert ov["tp1_sell_ratio_override"] is None, "TW2 3-SLOT 청산 그대로"
     assert tw3.morning_tp2_pct_override(s.time_window_active_mode) == pytest.approx(6.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_early_stop_defer(monkeypatch):
+    """이 파일은 진입 직후 손절이 즉시 나간다는 전제로 다른 기능을 검증한다.
+    진입 30분 내 첫 손절 1봉 유예(EARLY_STOP_DEFER, 2026-11-06)는 test_early_stop_defer 에서 검증."""
+    monkeypatch.setattr(config, "EARLY_STOP_DEFER_ENABLED", False)

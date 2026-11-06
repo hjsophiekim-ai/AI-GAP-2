@@ -264,3 +264,10 @@ def test_summary_by_delay_bucket():
     assert s["<=10s"] == {"stops": 2, "pass": 1, "pass_rate": 0.5, "fake": 0, "A_total_pct": -2.8,
                           "delta_7030_pct": -0.3, "delta_5050_pct": -0.5}
     assert s[">60s"]["pass_rate"] == 1.0 and s[">60s"]["delta_5050_pct"] == 1.0
+
+
+@pytest.fixture(autouse=True)
+def _no_early_stop_defer(monkeypatch):
+    """이 파일은 진입 직후 손절이 즉시 나간다는 전제로 다른 기능을 검증한다.
+    진입 30분 내 첫 손절 1봉 유예(EARLY_STOP_DEFER, 2026-11-06)는 test_early_stop_defer 에서 검증."""
+    monkeypatch.setattr(config, "EARLY_STOP_DEFER_ENABLED", False)
