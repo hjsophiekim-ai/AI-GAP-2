@@ -166,7 +166,7 @@ def test_service_schedule_retry_and_state(tmp_path, capsys):
     fake = FakeS3(fail_puts=1)
     tgt = backup.load_target(ENV)
     factory = lambda: backup.S3Client(tgt, session=fake)  # noqa: E731
-    assert backup_service.run_once(root, datetime(2026, 10, 15, 15, 31), env=ENV, client_factory=factory) == []
+    assert backup_service.run_once(root, datetime(2026, 10, 15, 15, 4), env=ENV, client_factory=factory) == []  # 1차본(15:05) 전
     r = backup_service.run_once(root, AFTER, env=ENV, client_factory=factory)
     assert r[0]["action"] == "BACKUP_FAIL"
     st = backup_service.load_state(root, DAY)
