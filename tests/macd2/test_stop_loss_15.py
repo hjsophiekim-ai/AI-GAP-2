@@ -115,6 +115,7 @@ def test_rest_of_the_ladder_is_unchanged():
 # ── 7. worker 경로 — 틱이 아니라 완성 3분봉 종가 ────────────────────────
 def test_worker_stops_on_completed_bar_close_only(monkeypatch, tmp_path):
     """-1.6% 봉 종가면 손절, -1.4% 봉 종가면 버틴다(= 구 임계값이면 걸렸을 값)."""
+    monkeypatch.setattr(config, "EARLY_STOP_DEFER_ENABLED", False)  # 임계값 검증 -- 30분 유예는 test_early_stop_defer
     from tests.macd2.test_fixed_exit_15 import ENTRY, _run, _sells
     from app.trading.macd2 import strategy_mode
     from app.trading.macd2.worker import _net_return_pct

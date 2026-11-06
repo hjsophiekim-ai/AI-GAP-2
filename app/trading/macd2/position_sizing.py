@@ -279,7 +279,9 @@ def note_full_exit(state, exit_reason: Optional[str]) -> None:
     if int(getattr(state, "x2lite_entry_seq_today", 0) or 0) != 1:
         return
     # 고정 ±1.5% 청산(fixed_exit) ON 이면 손절 사유가 FIXED_SL15 로 바뀐다 -- 같은 손절로 본다.
-    if str(exit_reason or "") in (config.EXIT_TW_STOP_LOSS, config.EXIT_FIXED_SL15):
+    # 30분 손절 유예 대기 중 hard stop(-2.5%)도 손절이다(2026-11-06) -- 유예가 POST_STOP x1.20 을 지우면 안 된다.
+    if str(exit_reason or "") in (config.EXIT_TW_STOP_LOSS, config.EXIT_FIXED_SL15,
+                                  config.EXIT_EARLY_STOP_DEFER_HARD_STOP):
         state.x2lite_first_trade_stop_loss = True
 
 

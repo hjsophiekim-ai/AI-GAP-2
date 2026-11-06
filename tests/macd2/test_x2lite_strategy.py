@@ -584,6 +584,7 @@ def test_e2e_trailing_28_boundary(monkeypatch, net, should_exit):
 # ── 오전 손절 -1.50% (2026-11-02 변경, 구 -1.30%) ──────────────────────────
 @pytest.mark.parametrize("net,should_exit", [(-1.30, False), (-1.49, False), (-1.50, True)])
 def test_e2e_morning_stop_loss_150_boundary(monkeypatch, net, should_exit):
+    monkeypatch.setattr(config, "EARLY_STOP_DEFER_ENABLED", False)  # 임계값 검증 -- 30분 유예는 test_early_stop_defer
     entry, qty = 10_000.0, 1000
     price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, net)
     svc, now0 = _market(inverse_price=price)
@@ -609,6 +610,7 @@ def test_e2e_x2lite_does_not_stop_out_where_f_would(monkeypatch):
     2026-11-02 이전에는 X2-lite 가 F 보다 **좁아서** -1.35% 에서 X2-lite 만 손절했다.
     이제 X2-lite 가 더 **넓으므로** 부등호가 뒤집힌다 — F 라면 잘렸을 자리에서 버틴다.
     """
+    monkeypatch.setattr(config, "EARLY_STOP_DEFER_ENABLED", False)  # 임계값 검증 -- 30분 유예는 test_early_stop_defer
     entry, qty = 10_000.0, 1000
     price = _price_for_net(config.INVERSE_SYMBOL, entry, qty, -1.45)
     for mode, expect_exit in ((MODE, False), (F_MODE, True)):

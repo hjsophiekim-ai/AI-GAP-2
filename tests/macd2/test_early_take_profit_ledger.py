@@ -334,3 +334,10 @@ def test_filter_off_writes_no_early_tp_row_and_no_diagnostic_values(monkeypatch)
     for row in _rows():
         for col in ledger.EARLY_TP_LEDGER_COLUMNS:
             assert row[col] == ""
+
+
+@pytest.fixture(autouse=True)
+def _no_early_stop_defer(monkeypatch):
+    """이 파일은 진입 직후 손절이 즉시 나간다는 전제로 다른 기능을 검증한다.
+    진입 30분 내 첫 손절 1봉 유예(EARLY_STOP_DEFER, 2026-11-06)는 test_early_stop_defer 에서 검증."""
+    monkeypatch.setattr(config, "EARLY_STOP_DEFER_ENABLED", False)

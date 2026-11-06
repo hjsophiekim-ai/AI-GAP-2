@@ -52,6 +52,7 @@ FILES = (
     ("logs/macd2_mu_assist_ledger.csv", "csv"),
     ("logs/macd2_bar_ledger.csv", "csv"),
     ("logs/macd2_bar_revision_ledger.csv", "csv"),
+    ("logs/macd2_early_stop_defer_ledger.csv", "csv"),     # 2026-11-06 진입 후 30분 손절 유예 이벤트
     ("logs/macd2_mu_catchup_last.json", "json"),
     ("state/macd2_runtime.json", "json"),             # 전략모드·토글 (백업 시점 값)
 )
