@@ -60,7 +60,29 @@ python mc_scan.py        # 28건 추출 + 피처/사후경로 -> out_confirm.csv
 python mc_cmp.py         # 손실 vs 승리 분포 비교
 python mc_rank.py        # 중앙값 분할, acc2 순위표
 python mc_common.py      # 손실 9건 공통조건 확인
+python mh_tertile.py     # MU-HY 괴리 3등분 (out_confirm.csv 필요)
+python mh_rule.py        # '오전 ∧ 괴리>=2.5' 규칙의 효과
+python mh_catchup.py     # MU CATCH-UP 게이트와의 겹침 (약 3분)
+
+# 연구 3 — 레짐 × 괴리  (앞 단계 산출물을 순서대로 먹는다)
+python rg_scan.py        # 전체 플래그 135건 -> out_regime.csv            (약 6분)
+python rg_fix.py         # 11/05·11/06 을 원장 기준으로 교체 -> out_regime2.csv
+python rg_cmp.py         # 레짐 라벨 4종 × 괴리 상호작용
+python rg_robust.py      # 교란 점검 · 날짜 LOO · 초기/후기 재검
+python rg_score.py       # +2 / 0 / -1 가산점 체계 + 11/06 전수
+python rg_gate.py        # 게이트 변형 V1/V2/V3 와 고원 확인
+python wt_scan.py        # ENTRY_WAIT 42건 + 반대gap/체결강도 -> out_wait.csv
+python wt_cmp.py         # WAIT 승자/패자 + 레짐×괴리
+python wt_stack.py       # 현행 WAIT 게이트에 얹기 / 대체 / 안 하기 비교
+python mu_pop.py         # CONFIRM+WAIT 70건 + 왕복 지표 6종 -> out_mu.csv  (약 3분)
+python mu_chop.py        # 왕복장 기준 6종 비교
+python mu_block.py       # 차단 규칙 견고성(LOO·치환) + 11/06 적용
+python mu_final.py       # 기존안 vs 신안 최종 비교
 ```
+
+`rg_scan.py` → `rg_fix.py` → (`wt_scan.py`, `mu_pop.py`) 순서는 **지켜야 한다**.
+`mh_*` 는 `out_confirm.csv`, `wt_*`·`mu_*` 는 `out_regime2.csv` 를 cwd 에서 읽는다
+(`data/` 에서 복사해 두고 돌리면 된다).
 
 `cx_scan.py` / `mc_scan.py` 는 cwd 에 CSV 를 쓴다. `data/` 의 사본과 byte 단위로 같아야 한다:
 

@@ -1,0 +1,37 @@
+MU ENTRY_CONFIRM 28건에 production mu_catchup.evaluate 적용
+  A = 오전(T+3<11:00) ∧ 괴리 >= 2.5
+  B = CATCH-UP PASS (RED ∧ 플래그 09:00~11:00 ∧ MU >= +0.5 ∧ 괴리 >= +1.0)
+
+=== 교차표 ===
+  A ∧ B  (둘 다)              0건
+  A only (내 조건만)            3건  승리 3/3  평균30분 +2.880%
+  B only (CATCH-UP 만)       0건
+  둘 다 아님                   25건  승리 14/25  평균30분 +0.571%
+
+=== A 3건은 CATCH-UP 의 어느 조건에서 갈리나 ===
+  날짜 T+3           방향        플래그         괴리   MUses RED  09-11  MU>=.5  gap>=1  CATCHUP     사유
+  10-20 10:24      UP_RED    10:18   +4.656  -2.227  O    O      X       O      FAIL        MU_SESSION_LT_0.5
+  10-21 09:54      DOWN_BLUE 09:48   +2.794  -1.113  X    O      X       O      FAIL        BLUE_SHADOW_ONLY,MU_SESSION_LT_0.5
+  10-29 09:57      DOWN_BLUE 09:51   +3.130  -0.351  X    O      X       O      FAIL        BLUE_SHADOW_ONLY,MU_SESSION_LT_0.5
+
+=== CATCH-UP PASS 후보 전수 ===
+  0건
+
+=== CATCH-UP FAIL 사유 분포 (28건 전체) ===
+   8건  MU_SESSION_INCOMPLETE
+   4건  BLUE_SHADOW_ONLY,MU_SESSION_LT_0.5
+   3건  BLUE_SHADOW_ONLY,OUTSIDE_0900_1100,GAP_LT_1.0
+   2건  MU_SESSION_LT_0.5
+   2건  OUTSIDE_0900_1100,MU_SESSION_LT_0.5
+   2건  OUTSIDE_0900_1100,GAP_LT_1.0
+   2건  BLUE_SHADOW_ONLY,OUTSIDE_0900_1100,MU_SESSION_LT_0.5
+   2건  BLUE_SHADOW_ONLY,OUTSIDE_0900_1100,MU_SESSION_LT_0.5,GAP_LT_1.0
+   1건  BLUE_SHADOW_ONLY,MU_SESSION_LT_0.5,GAP_LT_1.0
+   1건  OUTSIDE_0900_1100,MU_SESSION_LT_0.5,GAP_LT_1.0
+   1건  OUTSIDE_0900_1100
+
+=== 조건별 통과 건수 (28건 중) ===
+  UP_RED                 12건
+  플래그 09:00~11:00         9건
+  MU 세션 >= +0.5           6건
+  괴리 >= +1.0             12건
