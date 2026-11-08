@@ -24,6 +24,13 @@ PATCH = '''    # ── 2026-11-08 CG: 왕복장 × MU-HY 괴리 신규진입 �
     #   최근 60분 하이닉스 효율비 < WK_CG_ER  ∧  mu_hy_gap >= WK_CG_GAP
     # 이면 **신규진입만** 막는다. 둘 중 하나라도 값이 없으면 통과(fail-open).
     # 차단해도 슬롯을 쓰지 않으므로 뒤 후보가 production 규칙대로 그 슬롯을 쓴다.
+    # ── 2026-11-08 WG: WAIT 선택진입의 반대gap 상한만 바꾼다 (연구용, 기본 OFF) ──
+    # WK_WGAP 를 주면 config.MU_WAIT_OPPOSITE_GAP_MAX 를 그 값으로 덮는다. 아주 큰 값을 주면
+    # 사실상 "체결강도 MATCH 만" 으로 승인된다(g_prev 결측은 production 그대로 불통과).
+    _WGAP = os.environ.get("WK_WGAP", "")
+    if _WGAP:
+        monkeypatch.setattr(config, "MU_WAIT_OPPOSITE_GAP_MAX", float(_WGAP))
+
     _CG = os.environ.get("WK_CGATE", "0") == "1"
     _CG_ER = float(os.environ.get("WK_CG_ER", "0.1223"))
     _CG_GAP = float(os.environ.get("WK_CG_GAP", "0.0"))
@@ -85,7 +92,7 @@ def main():
             print(f"!! 앵커가 1개가 아니다({src.count(anchor)}): {anchor!r}")
             sys.exit(1)
     out = src.replace(A1, PATCH + A1, 1)
-    out = out.replace(A2, A2 + " cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP,", 1)
+    out = out.replace(A2, A2 + " cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP, wgap=_WGAP,", 1)
     DST.parent.mkdir(parents=True, exist_ok=True)
     DST.write_text(out, encoding="utf-8")
     print(f"생성: {DST}  ({len(out.splitlines())}행, 원본 {len(src.splitlines())}행)")

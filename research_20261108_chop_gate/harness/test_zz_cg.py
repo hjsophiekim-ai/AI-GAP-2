@@ -958,6 +958,13 @@ def test_wk2(monkeypatch, tmp_path):
     #   최근 60분 하이닉스 효율비 < WK_CG_ER  ∧  mu_hy_gap >= WK_CG_GAP
     # 이면 **신규진입만** 막는다. 둘 중 하나라도 값이 없으면 통과(fail-open).
     # 차단해도 슬롯을 쓰지 않으므로 뒤 후보가 production 규칙대로 그 슬롯을 쓴다.
+    # ── 2026-11-08 WG: WAIT 선택진입의 반대gap 상한만 바꾼다 (연구용, 기본 OFF) ──
+    # WK_WGAP 를 주면 config.MU_WAIT_OPPOSITE_GAP_MAX 를 그 값으로 덮는다. 아주 큰 값을 주면
+    # 사실상 "체결강도 MATCH 만" 으로 승인된다(g_prev 결측은 production 그대로 불통과).
+    _WGAP = os.environ.get("WK_WGAP", "")
+    if _WGAP:
+        monkeypatch.setattr(config, "MU_WAIT_OPPOSITE_GAP_MAX", float(_WGAP))
+
     _CG = os.environ.get("WK_CGATE", "0") == "1"
     _CG_ER = float(os.environ.get("WK_CG_ER", "0.1223"))
     _CG_GAP = float(os.environ.get("WK_CG_GAP", "0.0"))
@@ -1735,6 +1742,6 @@ def test_wk2(monkeypatch, tmp_path):
     Path(os.environ["WK_OUT"]).write_text(json.dumps(dict(D=D, FILL=FILL, VAR=VAR, orders=orders, acts=acts, sig=sig, ex=ex, entries=[e for e in ENTRIES if e["t"][:10].replace("-", "") == D], lock_events=[e for e in LOCK["events"] if e["t"][:10].replace("-", "") == D], lock_blocked=[e for e in LOCK["blocked"] if e["t"][:10].replace("-", "") == D],
                                                      brk=[e for e in LOG if e["armed_at"][:10].replace("-", "") == D],
                                                      prod=[e for e in PRODLOG if (e.get("t") or "")[:10].replace("-", "") == D],
-                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), slot_cap=_SLOTCAP, budget_ovr=_BUDGET, regalloc=REGALLOCLOG, bud_trend=_BUD_TREND, bud_chop=_BUD_CHOP, bud_slot1=_BUD_SLOT1, bud_slot2=_BUD_SLOT2, bud_early=_BUD_EARLY, bud_late=_BUD_LATE, arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP, mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
+                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), slot_cap=_SLOTCAP, budget_ovr=_BUDGET, regalloc=REGALLOCLOG, bud_trend=_BUD_TREND, bud_chop=_BUD_CHOP, bud_slot1=_BUD_SLOT1, bud_slot2=_BUD_SLOT2, bud_early=_BUD_EARLY, bud_late=_BUD_LATE, arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP, wgap=_WGAP, mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
                                                      slow_cfg=bool(config.SLOW_TP2_ENABLED)),
                                                      ensure_ascii=False, indent=1), encoding="utf-8")
