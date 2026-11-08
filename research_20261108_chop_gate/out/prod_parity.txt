@@ -1,0 +1,26 @@
+=== 2026-11-05 ===
+  [production 실체결]
+    10:33:06 BUY  0193T0  qty= 1801 px= 5212.3265 net=           0 
+    10:43:07 SELL 0193T0  qty= 1801 px=    5115.0 net=    -175,962 TIME_WINDOW_STOP_LOSS
+    11:48:04 BUY  0197X0  qty= 1036 px= 9069.5174 net=           0 
+    13:39:02 SELL 0197X0  qty= 1036 px=    9320.0 net=     258,807 H50_MAX_HOLD_EXIT
+    합계 82,845
+  [재생 A]
+    10:45:40 BUY  0193T0  qty= 1984 px=    5255.0 E_BREAKOUT_ENTRY:0193T0
+    10:51:40 SELL 0193T0  qty=  397 px=    5315.0 P3_PARTIAL_EXIT:0193T0
+    11:22:00 SELL 0193T0  qty=  317 px=    5425.0 TIME_WINDOW_TP1_PARTIAL:0193T0
+    11:30:00 SELL 0193T0  qty= 1270 px=    5325.0 TIME_WINDOW_AFTER_TP1_STOP:0193T0
+    11:48:00 BUY  0197X0  qty= 1150 px=    9070.0 TW2_3SLOT_ENTRY:0197X0
+    12:02:00 SELL 0197X0  qty= 1150 px=    9185.0 B3_TP:0197X0
+    합계 297,330
+
+=== 2026-11-06 ===
+  [production 실체결]
+    10:33:06 BUY  0193T0  qty= 2909 px=    4035.0 net=           0 
+    10:42:04 SELL 0193T0  qty= 2909 px=  3968.979 net=    -192,902 TIME_WINDOW_STOP_LOSS
+    합계 -192,902
+  [재생 A]
+    13:36:00 BUY  0193T0  qty= 2517 px=    4145.0 TW2_3SLOT_ENTRY:0193T0
+    13:45:00 SELL 0193T0  qty= 2517 px=    4070.0 TIME_WINDOW_STOP_LOSS:0193T0
+    합계 107,802
+
