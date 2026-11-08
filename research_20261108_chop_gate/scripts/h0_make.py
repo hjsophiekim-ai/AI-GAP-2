@@ -27,6 +27,32 @@ PATCH = '''    # ── 2026-11-08 CG: 왕복장 × MU-HY 괴리 신규진입 �
     # ── 2026-11-08 WG: WAIT 선택진입의 반대gap 상한만 바꾼다 (연구용, 기본 OFF) ──
     # WK_WGAP 를 주면 config.MU_WAIT_OPPOSITE_GAP_MAX 를 그 값으로 덮는다. 아주 큰 값을 주면
     # 사실상 "체결강도 MATCH 만" 으로 승인된다(g_prev 결측은 production 그대로 불통과).
+    # ── 2026-11-08 NC: T+3 재확인 거절만 제거 (연구용, 기본 OFF) ──────────────
+    # WK_NOCONF=1 이면 evaluate_time_window_entry 를 skip_confirmation_check=True 로 부른다.
+    # 판정 **시각은 그대로 T+3** 이고, REJECT_NOT_CONFIRMED / REJECT_MACD_GAP_NOT_EXPANDING
+    # 두 거절만 사라진다. 나머지 품질·창·간격·슬롯 판정은 전부 그대로다.
+    _NOCONF = os.environ.get("WK_NOCONF", "0") == "1"
+    NCLOG = []
+    if _NOCONF:
+        _o_tw = time_window_filter.evaluate_time_window_entry
+
+        def _tw_noconf(*a, **k):
+            was = k.get("skip_confirmation_check", False)
+            if not was:
+                base = _o_tw(*a, **k)
+                br = getattr(base, "block_reason", None) or getattr(base, "decision", None)
+                if br in (config.TW_REJECT_NOT_CONFIRMED, config.TW_REJECT_MACD_GAP_NOT_EXPANDING):
+                    k2 = dict(k); k2["skip_confirmation_check"] = True
+                    now2 = _o_tw(*a, **k2)
+                    NCLOG.append(dict(t=clock["now"].isoformat(), was=str(br),
+                                      now=str(getattr(now2, "block_reason", None)
+                                              or getattr(now2, "decision", None)),
+                                      approved=bool(getattr(now2, "approved", False))))
+                    return now2
+                return base
+            return _o_tw(*a, **k)
+        monkeypatch.setattr(time_window_filter, "evaluate_time_window_entry", _tw_noconf)
+
     _WGAP = os.environ.get("WK_WGAP", "")
     if _WGAP:
         monkeypatch.setattr(config, "MU_WAIT_OPPOSITE_GAP_MAX", float(_WGAP))
@@ -92,7 +118,7 @@ def main():
             print(f"!! 앵커가 1개가 아니다({src.count(anchor)}): {anchor!r}")
             sys.exit(1)
     out = src.replace(A1, PATCH + A1, 1)
-    out = out.replace(A2, A2 + " cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP, wgap=_WGAP,", 1)
+    out = out.replace(A2, A2 + " cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP, wgap=_WGAP, nc=NCLOG, noconf=bool(_NOCONF),", 1)
     DST.parent.mkdir(parents=True, exist_ok=True)
     DST.write_text(out, encoding="utf-8")
     print(f"생성: {DST}  ({len(out.splitlines())}행, 원본 {len(src.splitlines())}행)")

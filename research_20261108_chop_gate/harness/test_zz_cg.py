@@ -961,6 +961,32 @@ def test_wk2(monkeypatch, tmp_path):
     # ── 2026-11-08 WG: WAIT 선택진입의 반대gap 상한만 바꾼다 (연구용, 기본 OFF) ──
     # WK_WGAP 를 주면 config.MU_WAIT_OPPOSITE_GAP_MAX 를 그 값으로 덮는다. 아주 큰 값을 주면
     # 사실상 "체결강도 MATCH 만" 으로 승인된다(g_prev 결측은 production 그대로 불통과).
+    # ── 2026-11-08 NC: T+3 재확인 거절만 제거 (연구용, 기본 OFF) ──────────────
+    # WK_NOCONF=1 이면 evaluate_time_window_entry 를 skip_confirmation_check=True 로 부른다.
+    # 판정 **시각은 그대로 T+3** 이고, REJECT_NOT_CONFIRMED / REJECT_MACD_GAP_NOT_EXPANDING
+    # 두 거절만 사라진다. 나머지 품질·창·간격·슬롯 판정은 전부 그대로다.
+    _NOCONF = os.environ.get("WK_NOCONF", "0") == "1"
+    NCLOG = []
+    if _NOCONF:
+        _o_tw = time_window_filter.evaluate_time_window_entry
+
+        def _tw_noconf(*a, **k):
+            was = k.get("skip_confirmation_check", False)
+            if not was:
+                base = _o_tw(*a, **k)
+                br = getattr(base, "block_reason", None) or getattr(base, "decision", None)
+                if br in (config.TW_REJECT_NOT_CONFIRMED, config.TW_REJECT_MACD_GAP_NOT_EXPANDING):
+                    k2 = dict(k); k2["skip_confirmation_check"] = True
+                    now2 = _o_tw(*a, **k2)
+                    NCLOG.append(dict(t=clock["now"].isoformat(), was=str(br),
+                                      now=str(getattr(now2, "block_reason", None)
+                                              or getattr(now2, "decision", None)),
+                                      approved=bool(getattr(now2, "approved", False))))
+                    return now2
+                return base
+            return _o_tw(*a, **k)
+        monkeypatch.setattr(time_window_filter, "evaluate_time_window_entry", _tw_noconf)
+
     _WGAP = os.environ.get("WK_WGAP", "")
     if _WGAP:
         monkeypatch.setattr(config, "MU_WAIT_OPPOSITE_GAP_MAX", float(_WGAP))
@@ -1742,6 +1768,6 @@ def test_wk2(monkeypatch, tmp_path):
     Path(os.environ["WK_OUT"]).write_text(json.dumps(dict(D=D, FILL=FILL, VAR=VAR, orders=orders, acts=acts, sig=sig, ex=ex, entries=[e for e in ENTRIES if e["t"][:10].replace("-", "") == D], lock_events=[e for e in LOCK["events"] if e["t"][:10].replace("-", "") == D], lock_blocked=[e for e in LOCK["blocked"] if e["t"][:10].replace("-", "") == D],
                                                      brk=[e for e in LOG if e["armed_at"][:10].replace("-", "") == D],
                                                      prod=[e for e in PRODLOG if (e.get("t") or "")[:10].replace("-", "") == D],
-                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), slot_cap=_SLOTCAP, budget_ovr=_BUDGET, regalloc=REGALLOCLOG, bud_trend=_BUD_TREND, bud_chop=_BUD_CHOP, bud_slot1=_BUD_SLOT1, bud_slot2=_BUD_SLOT2, bud_early=_BUD_EARLY, bud_late=_BUD_LATE, arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP, wgap=_WGAP, mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
+                                                     gates=GATELOG, arm3=ARM3LOG, hold=HOLDLOG, hold_kind=_HOLD, vwov=VWOVLOG, vwov_lim=_VWOV, trail_arm=_TARM, trend_bypass=bool(_TRBP), slot_cap=_SLOTCAP, budget_ovr=_BUDGET, regalloc=REGALLOCLOG, bud_trend=_BUD_TREND, bud_chop=_BUD_CHOP, bud_slot1=_BUD_SLOT1, bud_slot2=_BUD_SLOT2, bud_early=_BUD_EARLY, bud_late=_BUD_LATE, arm=dict(kind=_ARM, mode=_MODE, mua=bool(_MUA), xs=bool(_XS), cukill=bool(_CUKILL), tickpx=bool(_TICKPX)), p70r=P70RLOG, par=dict(hist_lag=int(_HIST_LAG.total_seconds()), fill_lag=int(_FILL_LAG.total_seconds()), fine_tick=bool(_FINE_TICK), runner=os.environ.get('WK_RUNNER', 'N1'), reb=float(os.environ.get('WK_P70R_REB', '0.6'))), mode_state=strategy_mode.current(state), mc_on=state.chop_mc_on_at, mc_off=state.chop_mc_off_at, q2=Q2LOG, oppq=OPPQLOG, cg=CGLOG, cgate=bool(_CG), cg_er=_CG_ER, cg_gap=_CG_GAP, wgap=_WGAP, nc=NCLOG, noconf=bool(_NOCONF), mc_block_exit=os.environ.get('WK_MC_BLOCK_EXIT') == '1',
                                                      slow_cfg=bool(config.SLOW_TP2_ENABLED)),
                                                      ensure_ascii=False, indent=1), encoding="utf-8")
