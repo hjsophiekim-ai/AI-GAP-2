@@ -7,6 +7,10 @@
     회복이면 보유. 포지션당 유예는 **최대 1회**(used 플래그) — 두 번째 손절은 즉시 청산.
   · 대기 중 매 틱 net <= EARLY_STOP_DEFER_HARD_STOP(-2.5%) 면 즉시 청산(EARLY_STOP_DEFER_HARD_STOP).
     판정봉이 이미 hard stop 이하면 유예하지 않는다.
+  · H50 보류 예외 (2026-11-09): 손절 판정 시점에 **이미** 반대 HY 플래그가 확정돼 H50 이 청산만 보류 중
+    (state.h50_hold_active ∧ H50 이 기록한 보유 방향 = 현재 포지션 방향)이면 유예하지 않고 정상 손절한다
+    (NOT_DEFERRED / reason=H50_HOLD). 같은 틱에 H50 이 새로 설정되는 경우는 worker 실행순서상(리스크 관리가
+    T+3 판정보다 먼저) 손절 판정 때 아직 보류 상태가 아니므로 포함되지 않는다 — 순서는 바꾸지 않는다.
   · MU 상태와 무관. B3 손절·TP·trailing·after-TP1 stop·H50·C1·반대플래그·강제청산 등은 대상이 아니다.
 이 모듈은 판정·상태·기록만 한다. 주문은 worker 가 기존 execute_exit 로 낸다.
 기존 MU CONFIRM 진입 1봉 유예(2026-11-05, 2f00cf0)는 이 규칙으로 **대체**되어 제거됐다.
@@ -25,7 +29,7 @@ from app.trading.macd2 import config, ledger
 logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 
-VERSION = "EARLY_STOP_DEFER_V1_20261106"
+VERSION = "EARLY_STOP_DEFER_V2_20261109"
 LEDGER_FILENAME = "macd2_early_stop_defer_ledger.csv"
 LEDGER_COLUMNS = ["trading_date", "event", "at", "symbol", "entry_at", "elapsed_min", "stop_return_pct",
                   "original_stop_pct", "defer_started_at", "defer_until_bar", "hard_stop_pct", "deferred",
@@ -37,6 +41,7 @@ EVENT_HARD_STOP = "HARD_STOP"
 EVENT_NOT_DEFERRED = "NOT_DEFERRED"
 SKIP_DISABLED, SKIP_USED, SKIP_LATE, SKIP_ALREADY_HARD, SKIP_NO_ENTRY_TIME = (
     "DISABLED", "ALREADY_USED", "LATE", "ALREADY_BEYOND_HARD", "NO_ENTRY_TIME")
+SKIP_H50_HOLD = "H50_HOLD"
 
 
 def hard_stop_pct() -> float:
@@ -77,7 +82,30 @@ def skip_reason(state, position, now: datetime, bar_net_return: float) -> Option
         return SKIP_NO_ENTRY_TIME
     if el > float(config.EARLY_STOP_DEFER_MINUTES):
         return SKIP_LATE
+    if h50_holding_this_position(state, position):
+        return SKIP_H50_HOLD
     return None
+
+
+def h50_holding_this_position(state, position) -> bool:
+    """반대 HY 플래그가 이미 확정돼 H50 이 **이 포지션**의 청산을 보류 중인가 (2026-11-09).
+    H50 이 기록한 보유 방향이 현재 포지션 방향과 다르면(남은 상태) False — 기존 유예 그대로."""
+    from app.trading.macd2 import small_whipsaw_hold      # 지연 import: 모듈 의존 최소화
+    if not small_whipsaw_hold.is_holding(state):
+        return False
+    # 소유권: worker._advance_h50_hold 의 stale 판정과 같은 규칙(둘 다 알려져 있는데 다르면 이전 포지션의 잔재)
+    owner, cur = int(getattr(state, "h50_owner_epoch", 0) or 0), int(getattr(state, "position_epoch", 0) or 0)
+    if owner and cur and owner != cur:
+        return False
+    held = small_whipsaw_hold.held_direction(state)
+    sym = getattr(position, "symbol", None)
+    if held is None or sym is None:
+        return False
+    if sym == config.LONG_SYMBOL:
+        return held.value == "UP_RED"
+    if sym == config.INVERSE_SYMBOL:
+        return held.value == "DOWN_BLUE"
+    return False
 
 
 def start(state, *, now: datetime, until_bar: datetime, original_stop_pct: Optional[float]) -> None:
