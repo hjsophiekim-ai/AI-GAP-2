@@ -3548,6 +3548,23 @@ def _direction_for_symbol(symbol: Optional[str]) -> Optional[Direction]:
     return None
 
 
+def _arm_tp1_without_sale(state: RuntimeState, decision, pos: PositionSnapshot, result, *, path: str) -> None:
+    """TP1 매도비중 0.0 = "TP1 에서 팔지 않고 trailing 만 arm" (N1 추세 래더 사양).
+
+    2026-11-10 실사고: 수동 매수 2100주가 N1 TREND TP1(+3.5%)에 닿자
+    ``max(1, round(qty*0.0))`` 때문에 실계좌에서 1주가 매도됐다. 연구엔진·shadow 는
+    비중 0 이면 아무것도 팔지 않고 tp1_done 만 각인한다 — production 도 같게 한다.
+    주문이 없으므로 체결확인 없이 바로 각인한다(2026-08-27 "체결 후에만 tp1_done" 규칙은
+    주문이 있는 경우의 규칙이다). 주문이 없으므로 호출부는 True 로 tick 을 끊지 않고
+    같은 tick 의 나머지 래더(완성봉 손절/trailing 등)를 tp1_done 상태로 계속 평가한다
+    — shadow_base/연구엔진과 같은 흐름.
+    """
+    state.time_window_tp1_done = bool(decision.tp1_done)
+    logger.warning("[MACD2][TP1_ARM_ONLY] %s symbol=%s qty=%s exit_reason=%s sell_fraction=0 -- 매도 없음, tp1_done=%s",
+                   path, pos.symbol, pos.quantity, decision.exit_reason, state.time_window_tp1_done)
+    result.actions.append(f"TP1_ARM_ONLY:{pos.symbol}")
+
+
 def _position_direction(position: Optional[PositionSnapshot]) -> Optional[Direction]:
     if position is None or int(position.quantity or 0) <= 0:
         return None
@@ -4234,18 +4251,21 @@ def _advance_held_position_risk_management(
                     state.time_window_tp1_done = tp_decision.tp1_done
                 result.actions.append(f"{tp_decision.exit_reason}:{pos.symbol}")
                 return True
-            sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
-            remaining_qty = pos.quantity - sell_qty
-            outcome = order_executor.execute_partial_exit(
-                broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
-                exit_reason=tp_decision.exit_reason, entry_price=pos.avg_price,
-                reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-            )
-            if outcome.final_state == SignalState.EXECUTED:
-                state.position = dataclasses.replace(state.position, quantity=remaining_qty)
-                state.time_window_tp1_done = tp_decision.tp1_done
-            result.actions.append(f"{tp_decision.exit_reason}:{pos.symbol}")
-            return True
+            if sell_fraction <= 0.0:
+                _arm_tp1_without_sale(state, tp_decision, pos, result, path="TICK")
+            else:
+                sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
+                remaining_qty = pos.quantity - sell_qty
+                outcome = order_executor.execute_partial_exit(
+                    broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
+                    exit_reason=tp_decision.exit_reason, entry_price=pos.avg_price,
+                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                )
+                if outcome.final_state == SignalState.EXECUTED:
+                    state.position = dataclasses.replace(state.position, quantity=remaining_qty)
+                    state.time_window_tp1_done = tp_decision.tp1_done
+                result.actions.append(f"{tp_decision.exit_reason}:{pos.symbol}")
+                return True
 
         # This position was opened by (or just adopted into) the time-window
         # filter — its own position-management ladder (§11-14) fully
@@ -4370,18 +4390,21 @@ def _advance_held_position_risk_management(
                         state.time_window_tp1_done = pm_decision.tp1_done
                     result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
                     return True
-                sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
-                remaining_qty = pos.quantity - sell_qty
-                outcome = order_executor.execute_partial_exit(
-                    broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
-                    exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
-                    reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
-                )
-                if outcome.final_state == SignalState.EXECUTED:
-                    state.position = dataclasses.replace(state.position, quantity=remaining_qty)
-                    state.time_window_tp1_done = pm_decision.tp1_done
-                result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
-                return True
+                if sell_fraction <= 0.0:
+                    _arm_tp1_without_sale(state, pm_decision, pos, result, path="BAR")
+                else:
+                    sell_qty = min(pos.quantity - 1, max(1, round(pos.quantity * sell_fraction)))
+                    remaining_qty = pos.quantity - sell_qty
+                    outcome = order_executor.execute_partial_exit(
+                        broker=broker, symbol=pos.symbol, sell_qty=sell_qty, remaining_qty=remaining_qty,
+                        exit_reason=pm_decision.exit_reason, entry_price=pos.avg_price,
+                        reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+                    )
+                    if outcome.final_state == SignalState.EXECUTED:
+                        state.position = dataclasses.replace(state.position, quantity=remaining_qty)
+                        state.time_window_tp1_done = pm_decision.tp1_done
+                    result.actions.append(f"{pm_decision.exit_reason}:{pos.symbol}")
+                    return True
 
             # ── 조기익절 필터 (기본 OFF, TW2 3-SLOT 전용) ──────────────────
             # 여기까지 왔다는 것은 production 래더(TP1/TP2/오후TP는 위 틱
