@@ -505,6 +505,7 @@ def _apply_day_rollover(state: RuntimeState, now: datetime) -> None:
     state.tw2_3slot_morning_count = 0
     state.tw2_3slot_afternoon_count = 0
     state.tw2_3slot_last_afternoon_direction = None
+    state.bot_buy_unconfirmed_symbol = None
     # W1a 사이징(2026-09-12)의 누적 exposure / 진입순번 / 첫거래 손절
     # 플래그도 session-scoped -- 토글은 그대로 두고 값만 리셋한다.
     position_sizing.reset_daily(state)
@@ -1643,6 +1644,8 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
 
     if runtime["qty"] <= 0 and broker_owned:
         recovered = broker_owned[0]
+        # 2026-11-12: 아래 _begin_position_epoch 가 지우기 전에 봇 BUY 미확정 표식을 읽어 둔다.
+        unconfirmed_bot_symbol = state.bot_buy_unconfirmed_symbol
         # 2026-09-21: 새 포지션의 시작 — 이전 포지션의 position-scoped
         # 상태(H50/C1/N1/whipsaw-watch)를 **전부** 끝내고 epoch 을 올린다.
         # 반드시 아래 필드 세팅보다 먼저 와야 한다(이 함수가 초기화한다).
@@ -1663,6 +1666,15 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         # (early_take_profit.py / models.py의 필드 주석 참고).
         state.time_window_entry_chop = False
         state.early_tp_peak_net_return = 0.0
+        # 2026-11-12 수동거래 슬롯 분리: 봇이 이 종목 BUY 를 냈는데 성공 확정을 못 받았거나(실패/미확정 보고)
+        # 미확정 주문 추적 중이면 "봇 주문의 늦은 체결" -> 기존처럼 센다. 그 외는 수동 매수 -> 세지 않는다.
+        bot_origin = (unconfirmed_bot_symbol == recovered["symbol"]
+                      or pending_order.is_active(state))
+        manual = bool(config.MANUAL_POSITION_SLOT_EXEMPT) and not bot_origin
+        state.position_manual_origin = manual
+        if manual:
+            logger.warning("[MACD2][RECONCILE] 수동 포지션 발견 %s %s주 -- 관리만 하고 슬롯/하루 진입수는 소비하지 않음",
+                           recovered["symbol"], recovered["qty"])
         # 2026-08-28 fix: a reconcile-discovered position is a genuinely new
         # real entry this process never counted anywhere else -- the OTHER
         # contributor to daily_total_entry_count (worker._apply_switch_
@@ -1670,7 +1682,8 @@ def reconcile_position_state(broker, state: RuntimeState, now: datetime, *, forc
         # branch only ever runs for an entry THIS process itself dispatched,
         # and this branch is reached only when state.position was already
         # None (i.e. nothing else already counted it this session).
-        state.daily_total_entry_count = int(state.daily_total_entry_count or 0) + 1
+        if not manual:
+            state.daily_total_entry_count = int(state.daily_total_entry_count or 0) + 1
         diag.update({"comparison_result": RECOVERED_FROM_BROKER, "mismatch_reason": "runtime_flat_broker_position"})
         state.position_reconcile_diag = diag
         state.last_position_reconcile_at = now.isoformat()
@@ -4023,7 +4036,10 @@ def _advance_held_position_risk_management(
             # reconcile ticks for the SAME position only ever reach this
             # branch once (the first tick after discovery, before this
             # branch flips the flag to True).
-            if state.time_window_active_mode in time_window_3slot.MODES_3SLOT:
+            if state.position_manual_origin:
+                # 2026-11-12: 수동 매수 포지션은 관리만 한다 -- 봇의 슬롯/세션 진입수를 소비하지 않는다.
+                logger.info("[MACD2][TW] 수동 포지션 입양 %s -- 슬롯 미소비", pos.symbol)
+            elif state.time_window_active_mode in time_window_3slot.MODES_3SLOT:
                 # TW2 3-SLOT / TWF 3-SLOT keep their own separate slot/session counters
                 # (never TW2/TEG's time_window_morning_entry_count/
                 # afternoon_entry_count) -- same adoption-path gap this
@@ -6357,6 +6373,8 @@ def _clear_position_scoped_state(state: RuntimeState, *, reason: str = "") -> No
     토글(전략 선택/필터 on-off)은 건드리지 않는다 — 포지션 수명이 아니라
     세션 수명이기 때문이다.
     """
+    # 수동거래 표식(2026-11-12) -- 포지션 수명과 같다.
+    state.position_manual_origin = False
     # 시간창 필터의 포지션 관리 상태
     state.time_window_position_active = False
     state.time_window_active_mode = None
@@ -6394,6 +6412,9 @@ def _begin_position_epoch(state: RuntimeState, *, reason: str = "") -> int:
     반드시 **진입 필드를 세팅하기 전에** 호출한다 — 이 함수가 시간창 필드를
     초기화하므로 순서가 뒤집히면 방금 세팅한 값이 지워진다."""
     _clear_position_scoped_state(state, reason=reason or "NEW_POSITION")
+    # 2026-11-12: 새 포지션이 생기면 봇 BUY 미확정 표식은 끝난다(청산 경로에서는 지우지 않는다 --
+    # 전환 SELL 직후 반대 BUY 가 실패로 보고된 표식이 청산 정리에 지워지면 안 된다).
+    state.bot_buy_unconfirmed_symbol = None
     state.position_epoch = int(state.position_epoch or 0) + 1
     return state.position_epoch
 
@@ -9473,6 +9494,9 @@ def _record_broker_order_result(state: RuntimeState, outcome) -> None:
     state.last_broker_order_symbol = result.symbol
     state.last_broker_order_side = result.side
     state.last_broker_order_at = datetime.now(KST).isoformat()
+    # 2026-11-12 수동거래 슬롯 분리: 봇 BUY 가 성공 확정이 아니면 그 종목을 기억한다(늦은 체결 판별용).
+    if str(result.side or "").upper() == "BUY":
+        state.bot_buy_unconfirmed_symbol = None if result.success else result.symbol
 
 
 def _record_major_exit(state: RuntimeState, symbol: Optional[str]) -> None:

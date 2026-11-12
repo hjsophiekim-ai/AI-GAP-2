@@ -1596,6 +1596,9 @@ MU_ASSIST_MAX_FILL_MIN = 3
 # MU 연속성 게이트 (2026-11-12): T+2 패턴 판정창(D−30분 ~ T+2)에 3분 초과 공백이 있으면 mu_t2_status=GAP,
 # 패턴 UNAVAILABLE -> 진입은 MU_ASSIST_UNAVAILABLE_BLOCK(CATCH-UP PASS 예외는 기존 그대로), H50 gap 조기청산은 HOLD.
 MU_ASSIST_CONTINUITY_GATE_ENABLED = _env_bool("MACD2_MU_ASSIST_CONTINUITY_GATE_ENABLED", True)
+# 수동거래 슬롯 분리 (2026-11-12): 봇 BUY 주문 없이 브로커에서 발견된 포지션(수동 매수)은 입양·청산관리는 하되
+# 3-SLOT/TW 슬롯·하루 진입수(daily_total_entry_count)를 소비하지 않는다. 봇 BUY 실패/미확정 후 발견은 기존처럼 센다.
+MANUAL_POSITION_SLOT_EXEMPT = _env_bool("MACD2_MANUAL_POSITION_SLOT_EXEMPT", True)
 
 # ── MU Assist × 체결강도 (2026-10-26, feature/macd2-mu-cttr-assist, 연구용·전부 기본 OFF) ──
 # 셋 다 MU Assist 가 켜져 있을 때만 동작한다. 체결강도 = exec_strength.py (직전 60초 하이닉스 cttr 평균,
