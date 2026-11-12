@@ -1593,6 +1593,9 @@ MU_REST_FEED = "NASMU_REST"
 MU_REST_FILENAME = "rest_bars_1m.csv"
 # MU 분봉의 짧은 수신 공백만 직전값으로 잇는 최대 길이(분). 더 긴 공백은 채우지 않는다(가짜 가격 금지, stale 로 드러남).
 MU_ASSIST_MAX_FILL_MIN = 3
+# MU 연속성 게이트 (2026-11-12): T+2 패턴 판정창(D−30분 ~ T+2)에 3분 초과 공백이 있으면 mu_t2_status=GAP,
+# 패턴 UNAVAILABLE -> 진입은 MU_ASSIST_UNAVAILABLE_BLOCK(CATCH-UP PASS 예외는 기존 그대로), H50 gap 조기청산은 HOLD.
+MU_ASSIST_CONTINUITY_GATE_ENABLED = _env_bool("MACD2_MU_ASSIST_CONTINUITY_GATE_ENABLED", True)
 
 # ── MU Assist × 체결강도 (2026-10-26, feature/macd2-mu-cttr-assist, 연구용·전부 기본 OFF) ──
 # 셋 다 MU Assist 가 켜져 있을 때만 동작한다. 체결강도 = exec_strength.py (직전 60초 하이닉스 cttr 평균,
