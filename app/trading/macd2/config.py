@@ -1593,6 +1593,9 @@ MU_REST_FEED = "NASMU_REST"
 MU_REST_FILENAME = "rest_bars_1m.csv"
 # MU 분봉의 짧은 수신 공백만 직전값으로 잇는 최대 길이(분). 더 긴 공백은 채우지 않는다(가짜 가격 금지, stale 로 드러남).
 MU_ASSIST_MAX_FILL_MIN = 3
+# 수동거래 슬롯 분리 (2026-11-12): 봇 BUY 주문 없이 브로커에서 발견된 포지션(수동 매수)은 입양·청산관리는 하되
+# 3-SLOT/TW 슬롯·하루 진입수(daily_total_entry_count)를 소비하지 않는다. 봇 BUY 실패/미확정 후 발견은 기존처럼 센다.
+MANUAL_POSITION_SLOT_EXEMPT = _env_bool("MACD2_MANUAL_POSITION_SLOT_EXEMPT", True)
 
 # ── MU Assist × 체결강도 (2026-10-26, feature/macd2-mu-cttr-assist, 연구용·전부 기본 OFF) ──
 # 셋 다 MU Assist 가 켜져 있을 때만 동작한다. 체결강도 = exec_strength.py (직전 60초 하이닉스 cttr 평균,
