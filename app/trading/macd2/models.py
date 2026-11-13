@@ -262,6 +262,14 @@ class RuntimeState:
     #       상태(H50/C1)가 "어느 포지션의 것인지" 식별하는 유일한 키다.
     last_position_reconcile_result: Optional[str] = None
     position_epoch: int = 0
+    # ── 수동거래 슬롯 분리 (2026-11-12) ──────────────────────────────────
+    #   bot_buy_unconfirmed_symbol : 봇의 직전 BUY 주문이 성공으로 확정되지 않은 종목
+    #       (실패/미확정 보고). reconcile 이 그 종목 포지션을 발견하면 "봇 주문의 늦은 체결"로 보고
+    #       슬롯/하루 진입수를 센다. 봇 BUY 성공 시·일자 변경 시 None.
+    #   position_manual_origin : 현재 포지션이 봇 주문 없이 브로커에서 발견된 것(수동거래)인가.
+    #       True 면 TW/3-SLOT 입양 시 슬롯·하루 진입수를 소비하지 않는다. 청산 관리는 그대로.
+    bot_buy_unconfirmed_symbol: Optional[str] = None
+    position_manual_origin: bool = False
     strategy_name: str = "MACD2"
     strategy_version: str = ""
     signal_rule: str = ""

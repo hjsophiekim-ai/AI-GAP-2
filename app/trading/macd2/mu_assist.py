@@ -65,6 +65,8 @@ STATUS_OK = "OK"
 STATUS_MISSING = "MISSING"
 STATUS_STALE = "STALE"
 STATUS_WARMUP = "WARMUP"
+#: 판정창(D−30분 ~ T+2) 안에 3분 초과 MU 분봉 공백 (2026-11-12 MU 연속성 게이트).
+STATUS_GAP = "GAP"
 
 MOMENTUM_EXPANDING = "EXPANDING"
 MOMENTUM_DECELERATING = "DECELERATING"
@@ -357,6 +359,22 @@ def _status(series: Optional[pd.Series], need_minute: datetime) -> str:
     return STATUS_OK
 
 
+def window_continuous(series: Optional[pd.Series], d0: datetime, t2: datetime) -> bool:
+    """MU 연속성 게이트 (2026-11-12): 패턴 판정창 [D − LEAD_WINDOW_BEFORE_MIN, T+2) 의 1분봉이 빠짐없이 있는가.
+
+    ``load_mu_1m`` 은 ≤ MU_ASSIST_MAX_FILL_MIN 분 공백만 직전값으로 잇고 더 긴 공백은 비워 두므로,
+    이 창에 빠진 분이 하나라도 있으면 3분 초과 공백이다. 그 위에서 MACD/전환시각을 계산하면
+    (예: 서머타임 해제 후 09:00~09:59 DNASMU→RBAQMU 공백, 08:59 봉 다음이 10:00 봉) 전환시각이
+    공백 이전으로 잡혀 판정이 왜곡되므로 판정불가(UNAVAILABLE)로 처리한다. 토글 OFF 면 항상 True."""
+    if not config.MU_ASSIST_CONTINUITY_GATE_ENABLED:
+        return True
+    if series is None or series.empty:
+        return False
+    start = d0 - timedelta(minutes=LEAD_WINDOW_BEFORE_MIN)
+    need = pd.date_range(start, t2 - timedelta(minutes=1), freq="1min")
+    return bool(pd.Index(need).isin(series.index).all())
+
+
 def evaluate_entry(series: Optional[pd.Series], direction: Direction, flag_bar_dt: datetime) -> dict[str, Any]:
     """T+2 진입 보조 지표. 판정이 아니라 계측이다 — 결과는 기록과 경고에만 쓴다."""
     f = _naive(flag_bar_dt)
@@ -393,6 +411,8 @@ def evaluate_pattern(series: Optional[pd.Series], direction: Direction, flag_bar
     d0 = f + timedelta(minutes=3)
     t2 = d0 + timedelta(minutes=2)
     status = _status(series, t2 - timedelta(minutes=1))
+    if status == STATUS_OK and not window_continuous(series, d0, t2):
+        status = STATUS_GAP
     out: dict[str, Any] = {"mu_t2_status": status, "mu_pattern_state": PATTERN_UNAVAILABLE,
                            "mu_post2_bp": "", "mu_acc2": "", "mu_pre3_return_bp": "",
                            "mu_hold_ok": "", "mu_lead_ok": "", "mu_cross_at": ""}
