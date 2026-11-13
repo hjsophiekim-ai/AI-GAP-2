@@ -399,6 +399,9 @@ def test_reconcile_discovered_position_does_not_touch_3slot_counters_directly():
     state = _fresh_3slot_state()
     assert state.position is None
     assert state.tw2_3slot_slots_used_today == 0
+    # 2026-11-12: 봇 BUY 가 실패/미확정으로 보고된 뒤의 늦은 체결(= 봇 진입)만 센다. 수동 매수는
+    # 슬롯/하루 진입수를 소비하지 않는다 (test_manual_position_slot_exempt.py).
+    state.bot_buy_unconfirmed_symbol = config.LONG_SYMBOL
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
     broker.buy_market(config.LONG_SYMBOL, 10, "seed-order")
 
@@ -416,6 +419,7 @@ def test_reconcile_discovered_position_does_not_touch_3slot_counters_directly():
 def test_reconcile_then_adoption_increments_3slot_counter_exactly_once(tw2_3slot_market_data):
     svc, now0 = tw2_3slot_market_data
     state = _fresh_3slot_state()
+    state.bot_buy_unconfirmed_symbol = config.INVERSE_SYMBOL   # 봇 BUY 늦은 체결 (2026-11-12 사양)
     broker = FakeBroker(cash=10_000_000.0, quotes={config.LONG_SYMBOL: 15_000.0, config.INVERSE_SYMBOL: 10_000.0})
     broker.buy_market(config.INVERSE_SYMBOL, 10, "seed-order")
     broker._positions[config.INVERSE_SYMBOL].avg_price = 10_000.0
