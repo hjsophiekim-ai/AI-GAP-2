@@ -42,6 +42,7 @@ from app.trading.macd2 import peak_protection
 from app.trading.macd2 import n1_adaptive
 from app.trading.macd2 import position_sizing
 from app.trading.macd2 import small_whipsaw_hold
+from app.trading.macd2 import supervisor as supervisor_mod
 from app.trading.macd2 import time_window_3slot
 from app.trading.macd2.broker_adapter import create_macd2_broker
 from app.trading.macd2.market_data import MarketDataService
@@ -210,7 +211,11 @@ class Macd2Service:
         # permanently-hung old instance (2026-08-20 incident) doesn't stall
         # recovery forever.
         self._teardown_stuck_since: Optional[datetime] = None
-        # ── history updater watchdog (2026-09-17) ─────────────────────────
+        # 2026-11-16: 자동복구는 이제 headless 감시 스레드(supervisor.py)와 UI 스냅샷
+        # 경로 두 곳에서 불린다. 둘이 같은 순간 start() 를 겹쳐 부르지 않도록
+        # 비차단 락 하나로 직렬화한다(진 쪽은 이번 tick 을 건너뛴다).
+        self._recover_lock = threading.Lock()
+        # ── history updater watchdog (2026-09-17)─────────────────────────
         # worker 루프와 **완전히 독립**이다. 2026-09-16 사고 때 시세까지 멈춘
         # 것은 worker._run_loop 자체가 돌지 않았다는 뜻이라, 자가복구를 그 루프
         # 안에 두면 같은 실패를 또 놓친다. 그래서 UI 스냅샷 경로
@@ -295,7 +300,7 @@ class Macd2Service:
         }
         return self._history_watchdog_last
 
-    def _auto_recover_worker(self, state) -> bool:
+    def _auto_recover_worker(self, state, *, reason: str = "WORKER_THREAD_DEAD") -> bool:
         """2026-08-04 fix: a fresh process (Render free-tier idle-sleep,
         redeploy, or crash — the Worker/broker/market-data live only as
         this instance's Python attributes, docs/deploy_render.md's
@@ -304,7 +309,9 @@ class Macd2Service:
         producing 0 flags/orders until a human noticed and clicked
         "자동매매 시작" again. Retries the same ``start()`` path
         automatically — MOCK mode only (REAL mode must always go through
-        the UI's explicit confirm-text re-entry, never auto-reactivated),
+        the UI's explicit confirm-text re-entry, never auto-reactivated --
+        superseded 2026-11-16: REAL now recovers ONLY via _auto_recover_real's
+        human-start record + entry-OFF-first safety policy),
         and rate-limited by WORKER_AUTO_RECOVER_COOLDOWN_SEC so a
         persistently-failing bootstrap can't hammer KIS on every
         auto-refresh tick. Returns True if a live worker resulted.
@@ -318,26 +325,127 @@ class Macd2Service:
             state.order_block_reason = "MACD2_AUTO_TRADE_HARD_DISABLED"
             state_store.save_state(state)
             return False
-        if state.mode != "mock":
+        if state.mode not in ("mock", "real"):
             return False
-        last_attempt = _parse_iso_dt(state.last_auto_recover_attempt_at)
-        now = datetime.now(KST)
-        if last_attempt is not None and (now - last_attempt).total_seconds() < config.WORKER_AUTO_RECOVER_COOLDOWN_SEC:
+        if not self._recover_lock.acquire(blocking=False):
+            return False   # 다른 스레드(감시 스레드/UI)가 지금 복구 중
+        try:
+            last_attempt = _parse_iso_dt(state.last_auto_recover_attempt_at)
+            now = datetime.now(KST)
+            if last_attempt is not None and (now - last_attempt).total_seconds() < config.WORKER_AUTO_RECOVER_COOLDOWN_SEC:
+                return False
+            if state.mode == "real":
+                return self._auto_recover_real(state, now=now, reason=reason)
+            state.last_auto_recover_attempt_at = now.isoformat()
+            state_store.save_state(state)
+            force_through = (
+                self._teardown_stuck_since is not None
+                and (now - self._teardown_stuck_since).total_seconds() > config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC
+            )
+            supervisor_mod.record_event(supervisor_mod.EV_RECOVER_ATTEMPT, mode="mock", now=now,
+                                        detail={"reason": reason, "force_through": force_through})
+            result = self.start(mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through,
+                                _auto_recover=True)
+            if result.get("message") == "PREVIOUS_INSTANCE_STILL_STOPPING":
+                if self._teardown_stuck_since is None:
+                    self._teardown_stuck_since = now
+            else:
+                self._teardown_stuck_since = None
+            ok = bool(result.get("ok")) and bool(self._worker and self._worker.is_alive())
+            supervisor_mod.record_event(supervisor_mod.EV_RECOVER_RESULT, mode="mock",
+                                        level="INFO" if ok else "WARNING",
+                                        detail={"reason": reason, "ok": ok, "message": result.get("message")})
+            return ok
+        finally:
+            self._recover_lock.release()
+
+    def _auto_recover_real(self, state, *, now: datetime, reason: str) -> bool:
+        """REAL 자동복구 (2026-11-16). 기존 정책은 'REAL 은 절대 자동 재기동 안 함' 이었다.
+
+        안전장치:
+          1. MACD2_REAL_AUTO_RECOVER_ENABLED 이고, 사람이 UI 확인문구로 REAL 을 시작한
+             기록(supervisor.record_real_confirmation)이 있고 그 뒤 중지하지 않았어야 한다.
+             없으면 시작하지 않고 경보(REAL_RECOVER_BLOCKED) -- UI 에서 다시 시작해야 한다.
+          2. 재기동 **전에** 신규진입을 OFF 로 내린다. 그래서 재기동 직후 catch-up tick 과
+             worker 첫 tick 은 보유 포지션 관리만 할 수 있고 신규 매수는 0건이다.
+          3. 옛 worker 의 정지가 확인되지 않으면(_require_confirmed_teardown) 새 worker 를
+             절대 겹쳐 띄우지 않는다(MOCK 과 달리 강제 통과 없음).
+          4. 재기동 후 브로커 잔고·미확정 주문·직전 주문·오늘 사람이 켠 진입인지를 점검해
+             전부 통과할 때만 신규진입을 다시 켠다(armed_at=지금 -> 소급 진입 없음).
+             하나라도 걸리면 감시만 복구하고 신규진입 OFF + 경보(REAL_RECOVERED_MONITOR_ONLY).
+        """
+        if not config.REAL_AUTO_RECOVER_ENABLED:
+            supervisor_mod.record_event(supervisor_mod.EV_REAL_BLOCKED, mode="real", alert=True, now=now,
+                                        detail={"reason": "MACD2_REAL_AUTO_RECOVER_ENABLED=0", "trigger": reason})
+            state.last_auto_recover_attempt_at = now.isoformat()
+            state_store.save_state(state)
             return False
+        conf = supervisor_mod.load_real_confirmation()
+        usable, why = supervisor_mod.real_confirmation_usable(conf, now)
         state.last_auto_recover_attempt_at = now.isoformat()
+        if not usable:
+            state_store.save_state(state)
+            supervisor_mod.record_event(supervisor_mod.EV_REAL_BLOCKED, mode="real", alert=True, now=now,
+                                        detail={"reason": why, "trigger": reason,
+                                                "action": "UI 에서 REAL 확인문구로 다시 시작 필요"})
+            return False
+
+        prev_entry_enabled = entry_arming.is_enabled(state)
+        prev_entry_armed_at = getattr(state, "entry_armed_at", None)
+        if prev_entry_enabled:
+            entry_arming.set_enabled(state, False, now_iso=now.isoformat(), changed_by="supervisor:real_recover_hold")
         state_store.save_state(state)
-        force_through = (
-            self._teardown_stuck_since is not None
-            and (now - self._teardown_stuck_since).total_seconds() > config.QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC
-        )
-        result = self.start(mode=state.mode, budget=state.budget, _require_confirmed_teardown=not force_through,
-                            _auto_recover=True)
-        if result.get("message") == "PREVIOUS_INSTANCE_STILL_STOPPING":
-            if self._teardown_stuck_since is None:
-                self._teardown_stuck_since = now
+        supervisor_mod.record_event(supervisor_mod.EV_RECOVER_ATTEMPT, mode="real", now=now,
+                                    detail={"reason": reason, "prev_entry_enabled": prev_entry_enabled,
+                                            "prev_entry_armed_at": prev_entry_armed_at})
+        try:
+            from app.config import get_config
+            confirm_text = str(get_config().real_confirm_text() or "")
+        except Exception as exc:
+            supervisor_mod.record_event(supervisor_mod.EV_REAL_BLOCKED, mode="real", alert=True, now=now,
+                                        detail={"reason": f"CONFIRM_TEXT_UNAVAILABLE:{exc!r}", "trigger": reason})
+            return False
+        real_kwargs = {
+            "confirm_text": confirm_text,
+            "runtime_real_mode": bool(conf.get("runtime_real_mode")),
+            "runtime_enable_real_buy": bool(conf.get("runtime_enable_real_buy")),
+            "runtime_enable_real_sell": bool(conf.get("runtime_enable_real_sell")),
+        }
+        result = self.start(mode="real", budget=state.budget, real_kwargs=real_kwargs,
+                            _require_confirmed_teardown=True, _auto_recover=True)
+        alive = bool(result.get("ok")) and bool(self._worker and self._worker.is_alive())
+        if not alive:
+            supervisor_mod.record_event(supervisor_mod.EV_RECOVER_RESULT, mode="real", level="WARNING", now=now,
+                                        detail={"reason": reason, "ok": False, "message": result.get("message"),
+                                                "entry_enabled": False})
+            return False
+
+        broker_positions: Optional[list] = None
+        broker_error: Optional[str] = None
+        try:
+            broker_positions = [
+                (p.symbol, int(p.quantity)) for p in (self._broker.get_positions() or [])
+                if getattr(p, "symbol", None) in config.TRADE_SYMBOLS
+            ]
+        except Exception as exc:
+            broker_error = repr(exc)
+        st = state_store.load_state()
+        safe, reasons = supervisor_mod.assess_real_entry_safety(
+            st, now, broker_positions=broker_positions, broker_error=broker_error,
+            prev_entry_enabled=prev_entry_enabled, prev_entry_armed_at=prev_entry_armed_at)
+        detail = {"reason": reason, "broker_positions": broker_positions, "safety_reasons": reasons,
+                  "worker_instance_id": getattr(self._worker, "instance_id", None)}
+        if safe:
+            self.set_entry_enabled(True, changed_by="supervisor:real_recover_safe")
+            supervisor_mod.record_event(supervisor_mod.EV_REAL_ENTRY_RESTORED, level="WARNING", mode="real",
+                                        now=now, detail=detail)
         else:
-            self._teardown_stuck_since = None
-        return bool(result.get("ok")) and bool(self._worker and self._worker.is_alive())
+            # 원래 OFF 였던 경우는 잃은 게 없으므로 경보가 아니라 기록만 한다.
+            supervisor_mod.record_event(supervisor_mod.EV_REAL_MONITOR_ONLY, mode="real", now=now,
+                                        level="WARNING", alert=prev_entry_enabled,
+                                        detail={**detail, "entry_enabled": False,
+                                                "action": "감시만 복구 -- 신규진입 OFF 유지, UI 에서 확인 후 직접 ON"})
+        return True
 
     def _persist_worker_stall_if_needed(self, state):
         worker_alive = bool(self._worker and self._worker.is_alive())
@@ -345,10 +453,67 @@ class Macd2Service:
             if self._auto_recover_worker(state):
                 return state_store.load_state()
             state = state_store.load_state()
-            state.ui_mode = RuntimeStatus.WORKER_STALLED
-            state.order_block_reason = "WORKER_THREAD_DEAD"
-            state_store.save_state(state)
+            if state.auto_trade_on and not (self._worker and self._worker.is_alive()):
+                state.ui_mode = RuntimeStatus.WORKER_STALLED
+                state.order_block_reason = "WORKER_THREAD_DEAD"
+                state_store.save_state(state)
         return state
+
+    def supervisor_tick(self, now: Optional[datetime] = None) -> dict[str, Any]:
+        """headless 감시 스레드(supervisor.py)가 UI 세션과 무관하게 주기적으로 부른다.
+
+        1) 기존 supervisor_status() -- worker 죽음 자동복구 + history 워치독.
+        2) worker 스레드는 살아 있는데 tick 이 SUPERVISOR_WORKER_STALE_SEC 이상 없으면
+           정체로 보고 같은 복구 경로로 재기동한다(start() 가 옛 worker 정지를 먼저 시도).
+        반환 verdict 는 복구 시도 **전** 관측값(경보 지속시간 계산용)이고, 복구 결과는
+        recover_result 에 붙는다.
+        """
+        now = now or datetime.now(KST)
+        state = state_store.load_state()
+        alive_before = bool(self._worker and self._worker.is_alive())
+        age = self._worker_heartbeat_age(now)
+        if not state.auto_trade_on:
+            verdict = supervisor_mod.VERDICT_IDLE
+        elif not alive_before:
+            verdict = supervisor_mod.VERDICT_DEAD
+        elif age is not None and age > config.SUPERVISOR_WORKER_STALE_SEC:
+            verdict = supervisor_mod.VERDICT_STALLED
+        else:
+            verdict = supervisor_mod.VERDICT_OK
+
+        recover_result: Optional[bool] = None
+        status = self.supervisor_status()   # DEAD 면 여기서 자동복구(_persist_worker_stall_if_needed)
+        if verdict == supervisor_mod.VERDICT_DEAD:
+            recover_result = bool(status.get("worker_alive"))
+        elif verdict == supervisor_mod.VERDICT_STALLED:
+            state = state_store.load_state()
+            recover_result = self._auto_recover_worker(state, reason="WORKER_HEARTBEAT_STALE")
+        state = state_store.load_state()
+        worker = self._worker
+        return {
+            "verdict": verdict,
+            "mode": state.mode,
+            "auto_trade_on": bool(state.auto_trade_on),
+            "worker_alive": bool(worker and worker.is_alive()),
+            "worker_instance_id": getattr(worker, "instance_id", None),
+            "last_tick_age_sec": None if age is None else round(age, 1),
+            "entry_enabled": bool(getattr(state, "entry_enabled", False)),
+            "recover_result": recover_result,
+            "ui_mode": getattr(state.ui_mode, "value", state.ui_mode),
+        }
+
+    def _worker_heartbeat_age(self, now: datetime) -> Optional[float]:
+        worker = self._worker
+        if worker is None or not worker.is_alive():
+            return None
+        try:
+            stats = worker.tick_stats()
+        except Exception:
+            return None
+        last = _parse_iso_dt(stats.get("last_tick_at")) or _parse_iso_dt(stats.get("started_at"))
+        if last is None:
+            return None
+        return (now - last).total_seconds()
 
     def start(
         self,
@@ -471,7 +636,23 @@ class Macd2Service:
             pass  # per-symbol errors surface via get_quote()/QuoteSnapshot.error
         self._market_data.start_quote_updater(interval_sec=1.0)
 
-        return self._attempt_bootstrap()
+        result = self._attempt_bootstrap()
+        # 2026-11-16: 사람이 시작한 경우만 REAL 확인 기록을 남기거나(REAL) 지운다(MOCK).
+        # headless 감시의 REAL 자동복구는 이 기록이 있을 때만 한다.
+        if not _auto_recover and result.get("ok"):
+            try:
+                if mode == "real":
+                    kw = real_kwargs or {}
+                    supervisor_mod.record_real_confirmation(
+                        runtime_real_mode=bool(kw.get("runtime_real_mode")),
+                        runtime_enable_real_buy=bool(kw.get("runtime_enable_real_buy")),
+                        runtime_enable_real_sell=bool(kw.get("runtime_enable_real_sell")),
+                    )
+                else:
+                    supervisor_mod.clear_real_confirmation("human_mock_start")
+            except Exception:
+                log.exception("[MACD2][SUPERVISOR] REAL 확인 기록 갱신 실패")
+        return result
 
     def retry_bootstrap(self) -> dict[str, Any]:
         """Manual bootstrap retry (docs §21: 재시도 버튼) — reuses the
@@ -552,6 +733,11 @@ class Macd2Service:
         state.stopped = True
         state.stopped_reason = reason
         state.ui_mode = RuntimeStatus.STOPPED
+        # 2026-11-16: 사람이 중지했으면 REAL 자동복구 근거도 같이 지운다.
+        try:
+            supervisor_mod.clear_real_confirmation(f"stop:{reason}")
+        except Exception:
+            log.exception("[MACD2][SUPERVISOR] REAL 확인 기록 삭제 실패")
         # 2026-10-13: 중지하면 신규진입 허용도 OFF -- 다시 시작해도 사용자가 직접 ON 해야 한다.
         entry_arming.set_enabled(state, False, now_iso=datetime.now(KST).isoformat(), changed_by=f"stop:{reason}")
         state_store.save_state(state)
@@ -616,6 +802,11 @@ class Macd2Service:
         state.stopped = True
         state.stopped_reason = reason
         state.ui_mode = RuntimeStatus.STOPPED
+        # 2026-11-16: 사람이 중지했으면 REAL 자동복구 근거도 같이 지운다.
+        try:
+            supervisor_mod.clear_real_confirmation(f"stop:{reason}")
+        except Exception:
+            log.exception("[MACD2][SUPERVISOR] REAL 확인 기록 삭제 실패")
         # 2026-10-13: 중지하면 신규진입 허용도 OFF -- 다시 시작해도 사용자가 직접 ON 해야 한다.
         entry_arming.set_enabled(state, False, now_iso=datetime.now(KST).isoformat(), changed_by=f"stop:{reason}")
         if all_ok:
@@ -2019,6 +2210,7 @@ class Macd2Service:
             # thread alive 와 data fresh 는 서로 다른 문제라 따로 노출한다 --
             # 2026-09-16 은 정확히 "앞은 참인데 뒤가 거짓"인 경우였다.
             "history_watchdog": history_watchdog,
+            "supervisor": _safe_supervisor_snapshot(),
             # 진단 키는 있으면 붙이고 없으면 조용히 건너뛴다 -- quote_statuses/
             # quote_status 가 이미 쓰는 것과 같은 방어 규약(테스트/구버전
             # MarketData 더블이 이 메서드를 갖고 있지 않을 수 있다).
@@ -2049,6 +2241,13 @@ class Macd2Service:
             "bootstrap_last_attempt_at": self._last_bootstrap_at,
             **stats,
         }
+
+
+def _safe_supervisor_snapshot() -> dict[str, Any]:
+    try:
+        return supervisor_mod.status_snapshot()
+    except Exception as exc:  # pragma: no cover - 방어용
+        return {"error": repr(exc)}
 
 
 _service_instance: Optional[Macd2Service] = None

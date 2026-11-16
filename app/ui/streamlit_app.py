@@ -28,6 +28,15 @@ try:
 except Exception:
     pass
 
+# 2026-11-16: MACD2 headless 감시 스레드. Render 에서는 app/web_main.py 가 UI 세션
+# 없이 이미 시작해 두므로 여기서는 멱등 no-op 이다. `streamlit run` 으로 직접 띄운
+# 경우(구 Start Command)에도 첫 세션에서 시작되도록 남겨 둔다.
+try:
+    from app.trading.macd2.supervisor import ensure_running as _macd2_supervisor_ensure_running
+    _macd2_supervisor_ensure_running(boot_reason="ui_session")
+except Exception:
+    pass
+
 # 2026-08-18 사용자 요청: 시간대별 최적거래 필터 검증용 하이닉스/레버리지/인버스
 # 1분봉을 영업일 장 종료 후 16:00(KST)마다 자동 저장 -- 위와 동일한 이유로 auth
 # gate보다 먼저 부팅한다.

@@ -26,7 +26,15 @@ cd "$(dirname "$0")/.." || exit 1
 if [ "$#" -gt 0 ]; then
   WEB_CMD=("$@")
 else
-  WEB_CMD=(streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port "${PORT:-10000}" --server.headless true)
+  # 2026-11-16: `streamlit run app/ui/streamlit_app.py` 와 같은 서버를 같은 프로세스에서 띄우되,
+  # 그 전에 MACD2 headless 감시 스레드를 시작한다(app/web_main.py). UI 세션 없이도 재배포 직후
+  # worker 감시·자동복구가 돈다. 별도 warm-up 요청은 필요 없다. 문제가 생기면
+  # MACD2_WEB_LEGACY_STREAMLIT=1 로 예전 명령으로 즉시 되돌릴 수 있다.
+  if [ "${MACD2_WEB_LEGACY_STREAMLIT:-0}" = "1" ]; then
+    WEB_CMD=(streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port "${PORT:-10000}" --server.headless true)
+  else
+    WEB_CMD=(python -m app.web_main --server.address 0.0.0.0 --server.port "${PORT:-10000}" --server.headless true)
+  fi
 fi
 LOGGER_CMD="${WS_LOGGER_CMD:-python -m ws_shadow_logger.runner --live}"
 BACKUP_CMD="${WS_BACKUP_CMD:-python -m ws_shadow_logger.backup_service}"
