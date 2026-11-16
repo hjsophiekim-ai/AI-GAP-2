@@ -10,6 +10,7 @@
 
 | 버전 | 날짜 | 내용 |
 |------|------|------|
+| 2.8 | 2026-11-17 | Git 원격 작업 계정 고정: 모든 merge·push 는 GitHub 계정 `hjsophiekim-ai` 로만 수행, 다른 계정(`fg-hyunjoo-kim` 등) 사용 금지·계정 선택을 사용자에게 묻지 않음 (§G-8) |
 | 2.7 | 2026-09-17 | MACD2 신규 필터 개발·머지 거버넌스 추가: 운영 브랜치(main-MACD2)는 실거래 안정판만, 새 필터는 `feature/<name>` 브랜치, 공통부(MarketData/signal_engine/replay/state_store/ledger/order_executor) 수정 금지·불가피하면 별도 커밋, 필터 OFF parity diff 0 을 merge 조건으로 고정, 백테스트 외 live replay/restart/HISTORY_GAP/부분체결/원장복원까지 검증, merge 전 「변경 파일 목록+diff+신규 failure 0」 보고 의무 (§2026-09-17) |
 | 2.6 | 2026-07-23 | MACD 하이닉스 자동매매 청산: 고정 +3% TP 제거, C PROFIT_LOCK 채택(락 +1.5% net / giveback 0.8pp). MOCK·REAL 동일. CONTINUATION_REENTRY·OPENING_PROBE 기본 OFF 유지 |
 | 2.5 | 2026-07-22 | 하이닉스 전략 구조 단순화: A(weighted RANGE)=유일 LIVE 주문, C(MACD+Williams 3분)=episode 확인기(단독 주문 금지), D(가격행동 조기진입)=SHADOW 격리, E=C확인+A주문은 20일 walk-forward에서 A를 이길 때만 LIVE 승격. 하루 데이터 임계값 최적화 금지 |
@@ -1932,3 +1933,24 @@ production merge 를 제안할 때는 아래 3가지를 반드시 함께 보고�
 3. **신규 failure 0** — 테스트 실행 결과 요약
 
 이 3가지가 없으면 merge 하지 않는다.
+
+### G-8. merge·push 계정 고정 (2026-11-17)
+
+- 이 저장소(`hjsophiekim-ai/AI-GAP-2`)의 **모든 merge·push 는 GitHub 계정
+  `hjsophiekim-ai` 로만** 수행한다. 다른 계정(`fg-hyunjoo-kim` 등)은 쓰지 않는다.
+- 계정 선택을 사용자에게 다시 묻지 않는다.
+- 배경: 2026-11-17 Windows 자격증명 관리자가 `fg-hyunjoo-kim` 을 골라
+  `main-MACD2` push 가 403 으로 거절됐다(이 계정은 저장소 쓰기 권한 없음).
+- 적용 방법(저장소 local git config):
+  ```
+  git config --local --unset-all credential.helper
+  git config --local --add credential.helper ""
+  git config --local --add credential.helper "!gh auth git-credential"
+  git config --local credential.https://github.com.username hjsophiekim-ai
+  ```
+  확인: `printf 'protocol=https
+host=github.com
+
+' | git credential fill`
+  출력의 `username=hjsophiekim-ai`. push 가 403 이면 이 설정이 남아 있는지부터
+  확인한다(로컬 `.git` 이 동기화로 덮어써진 이력이 있음).
