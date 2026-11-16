@@ -70,7 +70,7 @@ Start Command 는 그대로 `bash scripts/render_start_with_logger.sh` 다.
   하나라도 걸리면 감시만 복구 + 신규진입 OFF + 경보. 옛 worker 정지가 확인되지 않으면 REAL 은 절대 겹쳐 띄우지 않는다.
 - 경보: worker 비정상 3분 이상 → Render Logs 에 `[MACD2][SUPERVISOR] WORKER_ABNORMAL` (ERROR),
   `data/logs/macd2_supervisor_ledger.csv`, 설정 시 웹훅. 하트비트 `data/state/macd2_supervisor_heartbeat.json`.
-  둘 다 15:40 R2 원장 백업에 포함된다.
+  (R2 원장 백업 대상에는 넣지 않았다 -- 백업 구성은 변경 없음.)
 - 되돌리기: `MACD2_WEB_LEGACY_STREAMLIT=1` 이면 예전 `streamlit run` 명령으로 뜬다(감시는 첫 UI 세션부터).
 
 | 환경변수 | 기본 | 설명 |
