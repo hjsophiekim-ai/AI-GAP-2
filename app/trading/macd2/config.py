@@ -279,6 +279,33 @@ QUOTE_UPDATER_FORCE_REPLACE_AGE_SEC = 300.0
 # hammer KIS on every UI auto-refresh tick.
 WORKER_AUTO_RECOVER_COOLDOWN_SEC = 30.0
 
+# ── Headless supervisor (2026-11-16) ────────────────────────────────────────
+# 2026-11-13 실사고: 09:19 장중 재배포 후 새 프로세스가 아무도 UI 를 열지 않아
+# 10:17 까지 worker 를 띄우지 않았다(자동복구가 get_snapshot/supervisor_status
+# = UI 렌더 경로 안에만 있었다). app/trading/macd2/supervisor.py 의 감시 스레드가
+# **웹 프로세스 부팅 직후**(app/web_main.py) UI 세션과 무관하게 이 경로를 돌린다.
+# 같은 프로세스·같은 Macd2Service 싱글턴 안에서만 돌며 별도 worker 프로세스는 없다.
+#: 감시 스레드 사용 여부. 미설정이면 Render(env RENDER 존재)에서만 켠다 -- 로컬에서
+#: 웹을 띄웠다가 실수로 KIS 토큰을 새로 발급하는 일을 막는다.
+SUPERVISOR_ENABLED_ENV = "MACD2_SUPERVISOR_ENABLED"
+SUPERVISOR_INTERVAL_SEC = _env_float("MACD2_SUPERVISOR_INTERVAL_SEC", 15.0)
+SUPERVISOR_BOOT_DELAY_SEC = _env_float("MACD2_SUPERVISOR_BOOT_DELAY_SEC", 5.0)
+#: worker 스레드는 살아 있는데 마지막 tick 이 이보다 오래됐으면 정체(STALLED)로 보고 재기동한다.
+SUPERVISOR_WORKER_STALE_SEC = _env_float("MACD2_SUPERVISOR_WORKER_STALE_SEC", 120.0)
+#: auto_trade_on=True 인데 worker 비정상(죽음/정체/미기동)이 이 시간 이상 이어지면 경보.
+SUPERVISOR_ALERT_AFTER_SEC = _env_float("MACD2_SUPERVISOR_ALERT_AFTER_SEC", 180.0)
+#: 비정상이 계속되면 이 간격으로 경보 반복.
+SUPERVISOR_ALERT_REPEAT_SEC = _env_float("MACD2_SUPERVISOR_ALERT_REPEAT_SEC", 900.0)
+#: 선택: 경보를 JSON POST 로 보낼 웹훅 URL (Slack/Teams/Discord 호환 {"text": ...}).
+SUPERVISOR_ALERT_WEBHOOK_URL = _env_str("MACD2_ALERT_WEBHOOK_URL", "")
+#: REAL 자동복구 허용. 사람이 UI 확인문구로 REAL 을 시작한 기록이 있고 중지하지 않은
+#: 경우에만 감시를 복구한다. 신규진입은 안전점검을 통과하고 '오늘' UI 로 켜 둔 경우에만 되살린다.
+REAL_AUTO_RECOVER_ENABLED = _env_bool("MACD2_REAL_AUTO_RECOVER_ENABLED", True)
+#: 사람의 REAL 시작 확인 기록 유효기간(일). 지나면 UI 에서 다시 시작해야 한다.
+REAL_RECOVER_CONFIRM_MAX_AGE_DAYS = _env_int("MACD2_REAL_RECOVER_CONFIRM_MAX_AGE_DAYS", 5)
+#: 죽기 직전 이 시간 안에 브로커 주문이 있었으면 주문 상태 불확실 -> 신규진입 OFF 유지.
+REAL_RECOVER_RECENT_ORDER_GUARD_SEC = _env_float("MACD2_REAL_RECOVER_RECENT_ORDER_GUARD_SEC", 180.0)
+
 # ── Market data validity (strategy-fixed) ──────────────────────────────────
 QUOTE_MAX_AGE_SEC = 10.0
 

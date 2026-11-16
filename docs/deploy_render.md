@@ -53,6 +53,49 @@ Start Command 를 아래로 바꾼다. 자동매매 ON/OFF·신규진입 허용�
 
 ---
 
+## MACD2 headless 감시 + 장중 배포 금지 (2026-11-16)
+
+**사고(2026-11-13):** 09:19 장중 push → Render 자동배포 → 새 프로세스가 **누군가 UI 를 열 때까지(10:17)**
+MACD2 worker 를 띄우지 않았다. 자동복구가 Streamlit 페이지 렌더 경로 안에만 있었기 때문이다.
+
+**수정:** `scripts/render_start_with_logger.sh` 의 웹 명령이 `python -m app.web_main ...` 으로 바뀌었다.
+같은 Streamlit 서버를 같은 프로세스에서 띄우되, 그 전에 MACD2 감시 스레드(`app/trading/macd2/supervisor.py`)를
+시작한다. UI 세션이 0개여도 15초마다 worker 를 감시·복구한다. 별도 worker 프로세스는 없다.
+Start Command 는 그대로 `bash scripts/render_start_with_logger.sh` 다.
+(Start Command 를 `streamlit run ...` 으로 직접 쓰고 있다면 `bash scripts/render_start_with_logger.sh` 로 바꿔야 한다.)
+
+- 복구 정책: MOCK = 기존과 동일(신규진입 허용값 유지). REAL = 사람이 UI 확인문구로 REAL 을 시작한 기록이 있고
+  중지하지 않았을 때만 감시를 복구한다. 재기동 전에 신규진입을 OFF 로 내리고, 잔고·미확정주문·직전주문·
+  '오늘 UI 로 켠 진입' 점검을 전부 통과할 때만 진입을 다시 켠다(armed_at=복구시각, 공백 중 신호 소급 없음).
+  하나라도 걸리면 감시만 복구 + 신규진입 OFF + 경보. 옛 worker 정지가 확인되지 않으면 REAL 은 절대 겹쳐 띄우지 않는다.
+- 경보: worker 비정상 3분 이상 → Render Logs 에 `[MACD2][SUPERVISOR] WORKER_ABNORMAL` (ERROR),
+  `data/logs/macd2_supervisor_ledger.csv`, 설정 시 웹훅. 하트비트 `data/state/macd2_supervisor_heartbeat.json`.
+  (R2 원장 백업 대상에는 넣지 않았다 -- 백업 구성은 변경 없음.)
+- 되돌리기: `MACD2_WEB_LEGACY_STREAMLIT=1` 이면 예전 `streamlit run` 명령으로 뜬다(감시는 첫 UI 세션부터).
+
+| 환경변수 | 기본 | 설명 |
+|------|----|----|
+| `MACD2_SUPERVISOR_ENABLED` | Render 에서 ON | `0` 이면 감시 스레드 끔. 로컬은 `1` 일 때만 켜짐(실수로 KIS 토큰 발급 방지) |
+| `MACD2_SUPERVISOR_INTERVAL_SEC` | 15 | 감시 주기 |
+| `MACD2_SUPERVISOR_WORKER_STALE_SEC` | 120 | worker 가 살아 있어도 tick 이 이만큼 없으면 정체로 보고 재기동 |
+| `MACD2_SUPERVISOR_ALERT_AFTER_SEC` / `_REPEAT_SEC` | 180 / 900 | 경보 시작 / 반복 간격 |
+| `MACD2_ALERT_WEBHOOK_URL` | (없음) | 경보 JSON POST (`{"text": ...}`; Slack/Teams/Discord 호환) |
+| `MACD2_REAL_AUTO_RECOVER_ENABLED` | 1 | `0` 이면 REAL 은 자동복구 안 함(경보만) |
+| `MACD2_REAL_RECOVER_CONFIRM_MAX_AGE_DAYS` | 5 | 사람의 REAL 시작 기록 유효기간 |
+
+### 장중(평일 08:00~15:40 KST) main-MACD2 배포 금지
+
+1. **Render Auto-Deploy 를 Off** 로 바꾼다 (Settings → Build & Deploy → Auto-Deploy: Off). Render 에는 시간대별
+   자동배포 설정이 없어서, 꺼 두고 아래 2번으로 장 마감 후에만 배포한다.
+2. Render Settings 의 **Deploy Hook URL** 을 GitHub repo Secrets `RENDER_DEPLOY_HOOK_URL` 에 넣는다.
+   `.github/workflows/render-deploy-after-close.yml` 이 평일 16:20 KST 에 main-MACD2 가 바뀌었을 때만 배포한다.
+   GitHub schedule 은 기본 브랜치(main)의 workflow 파일로만 돌기 때문에 이 파일은 main 에도 있어야 한다.
+   긴급 hotfix 는 Actions 탭에서 수동 실행한다(장중이면 `force=true` 필요).
+3. 로컬 push 차단: `git config core.hooksPath scripts/git-hooks` → 평일 08:00~15:40 KST 의 main-MACD2 push 를 거부한다.
+   긴급 시 `MACD2_ALLOW_INTRADAY_DEPLOY=1 git push ...`.
+
+---
+
 ### 일별 export + S3/R2 백업 (선택, 2026-10-16)
 `ws_shadow_logger/README.md`의 「일별 export + 외부 백업」 절을 참고한다.
 - `KIS_LOGGER_ENABLED=1`이면 15:35 KST 이후 `$KIS_LOGGER_DATA_DIR/exports/`에 zip을 자동으로 만든다.
