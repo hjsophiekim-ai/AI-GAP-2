@@ -93,6 +93,7 @@ from app.trading.macd2 import (
 )
 from app.trading.macd2.broker_adapter import BrokerOrderResult
 from app.trading.macd2.market_data import MarketDataService, filter_complete_3m_bars
+from app.trading.macd2 import data_contract
 from app.trading.macd2.models import (
     Direction,
     MajorFlagDecision,
@@ -2908,6 +2909,7 @@ def _execute_or_wait(
         position=position, budget=_sized_budget,
         processed_signal_ids=frozenset(state.processed_signal_ids),
         reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        new_entry_block_reason=state.data_contract_block_reason,  # 2026-11-20 최종 방어선
     )
     if outcome is None:
         state.order_block_reason = SIGNAL_NOT_DISPATCHED
@@ -7957,7 +7959,8 @@ def _confirmed_signal_order_gate_block_reason(state: RuntimeState, now: datetime
         return "BEFORE_SESSION_OPEN"
     if now.time() >= config.NEW_ENTRY_CUTOFF:
         return "NEW_ENTRY_CUTOFF"
-    return state.quote_history_mismatch_reason or "ENTRY_WINDOW_CLOSED"
+    return (state.quote_history_mismatch_reason or state.data_contract_block_reason
+            or "ENTRY_WINDOW_CLOSED")
 
 
 def _record_scheduled_entry_signal(state: RuntimeState, direction: Direction, signal_id: str, now: datetime, outcome) -> None:
@@ -8193,6 +8196,7 @@ def _execute_premarket_carry_entry(*, broker, market_data: MarketDataService, st
             budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
                     else state.budget),
             reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        new_entry_block_reason=state.data_contract_block_reason,  # 2026-11-20 최종 방어선
         )
         pending_order.register(state, outcome, direction=direction, signal_id=signal_id,
                                signal_type="PREMARKET_CARRY_TW", now=now, source="PREMARKET")
@@ -8391,6 +8395,7 @@ def _execute_scheduled_entry(*, broker, market_data: MarketDataService, state: R
             budget=(float(state.budget or 0.0) * _cap_mult if e_strategy.is_active(state)
                     else state.budget),
             reconcile_retries=ORDER_FILL_RECONCILE_RETRIES, reconcile_delay_sec=ORDER_FILL_RECONCILE_DELAY_SEC,
+        new_entry_block_reason=state.data_contract_block_reason,  # 2026-11-20 최종 방어선
         )
         pending_order.register(state, outcome, direction=direction, signal_id=signal_id,
                                signal_type="SCHEDULED_0903", now=now, source="SCHEDULED")
@@ -8747,6 +8752,20 @@ def run_once(
         state, now=now, df_1m=df_1m, watch_price=watch_price, market_data=market_data,
     )
     _update_history_freshness_diag(state, df_1m=df_1m, macd_snap=macd_snap, watch_price=watch_price, now=now)
+    # 2026-11-20 (11/19 무플래그 실사고): 1분봉 입력 계약 검사. 정렬 이상/계약 위반이면
+    # state.data_contract_block_reason 이 아래 entry_window_open 을 닫는다(신규진입만).
+    try:
+        _today_key = now.astimezone(KST).strftime("%Y%m%d")
+        state.today_completed_3m_count = int(
+            (bars_3m["datetime"].dt.strftime("%Y%m%d") == _today_key).sum()) if not bars_3m.empty else 0
+    except Exception:
+        state.today_completed_3m_count = None
+    data_contract.evaluate(
+        state, df_1m=df_1m, now=now, last_completed_3m_bar_at=state.last_completed_3m_bar_at,
+        actionable_3m_drops=len(_actionable_history_gaps(_history_gap_bar_starts, now)),
+        history_gap_active=state.order_block_reason == "HISTORY_GAP",
+        worker_instance_id=str(state.worker_instance_id or ""),
+    )
     if watch_quote_ready and watch_price is not None:
         primary_result = evaluate_primary_forming_crossover(
             bars_3m, df_1m, now=now, current_price=watch_price,
@@ -8847,7 +8866,9 @@ def run_once(
 
     before_open = now.time() < config.SESSION_OPEN
     entry_cutoff_passed = now.time() >= config.NEW_ENTRY_CUTOFF
-    entry_window_open = (not before_open) and (not entry_cutoff_passed) and not state.quote_history_mismatch_reason
+    entry_window_open = ((not before_open) and (not entry_cutoff_passed)
+                         and not state.quote_history_mismatch_reason
+                         and not state.data_contract_block_reason)   # 2026-11-20 입력 계약
     t0 = time.monotonic()
     # A pending (blocked-on-retry) signal is always confirmed-bar-sourced now
     # — its own direction stays "active" as long as macd_snap (the completed

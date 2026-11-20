@@ -408,6 +408,14 @@ class RuntimeState:
     # 신호 피드 정지 중 보유 포지션 CRITICAL 경고의 마지막 발행 시각
     # (2026-10-20 실사고). 경고 rate-limit 전용 -- 주문 판정에는 쓰이지 않는다.
     history_stale_alert_at: Optional[str] = None
+    # ── 1분봉 입력 계약 (2026-11-20, 11/19 무플래그 실사고) ──────────────
+    # data_contract.evaluate 가 매 tick 갱신. trading_date 가 바뀌면 스스로 초기화.
+    data_contract: dict = field(default_factory=dict)
+    # None 이 아니면 신규 자동진입 차단(청산 로직은 무관). BAR_ALIGNMENT_ANOMALY /
+    # DATA_CONTRACT_VIOLATION.
+    data_contract_block_reason: Optional[str] = None
+    # 당일 완성 3분봉 수(감시·대사용 관측값)
+    today_completed_3m_count: Optional[int] = None
 
     # ── QUOTE_STALE recovery diagnostics (2026-07-27 fix) — most recent
     # confirmed-signal quote-stale retry attempt, kept for the UI, separate

@@ -14,6 +14,7 @@ import pandas as pd
 
 from app.trading.macd2 import config
 from app.trading.macd2.models import Direction, MacdSnapshot
+from app.utils.minute_bars import RAW_TS_COL, RECEIVED_AT_COL
 
 _THREE_MIN_COLUMNS = ("datetime", "open", "high", "low", "close", "volume")
 
@@ -72,10 +73,32 @@ def resample_completed_3m(one_minute_bars: Optional[pd.DataFrame], now: datetime
     if work.empty:
         return _empty_3m_frame()
 
+    # 2026-11-20 (11/19 실사고): 구성 1분봉마다 "정말 끝났고, 끝난 뒤에 요청한 응답의
+    # 값인가" 를 판정한다. 정규화(app.utils.minute_bars)는 datetime 을 분 내림하고 KIS 원래
+    # 라벨을 raw_bar_ts 에, 그 값을 담은 요청 시각을 received_at 에 남긴다.
+    #   * 라벨이 HH:MM:30 이면 그 봉은 HH:MM+1:30 에야 끝난다 -- 내림 시각 기준
+    #     (bin_start+3분) 으로는 30초 덜 만들어진 봉을 완성으로 볼 수 있었다.
+    #   * received_at 이 라벨+60초보다 이르면 그 값은 진행 중 스냅샷이다.
+    # 두 컬럼이 없는 입력(연구 캐시·테스트 프레임)은 기존 판정과 완전히 같다.
+    settle_ok = None
+    if RAW_TS_COL in work.columns:
+        raw = pd.to_datetime(work[RAW_TS_COL], errors="coerce")
+        raw = raw.where(raw.notna(), work["datetime"])
+        ends = raw + timedelta(minutes=1)
+        ok = ends <= now
+        if RECEIVED_AT_COL in work.columns:
+            recv = pd.to_datetime(work[RECEIVED_AT_COL], errors="coerce")
+            ok = ok & (recv.isna() | (recv >= ends))
+        settle_ok = ok.astype(float)
+
     indexed = work.set_index("datetime")
+    if settle_ok is not None:
+        indexed["_settled"] = settle_ok.to_numpy()
     agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
     if "volume" in indexed.columns:
         agg["volume"] = "sum"
+    if settle_ok is not None:
+        agg["_settled"] = "min"
     bars = (
         indexed.resample("3min", label="left", closed="left")
         .agg(agg)
@@ -83,10 +106,14 @@ def resample_completed_3m(one_minute_bars: Optional[pd.DataFrame], now: datetime
         .reset_index()
     )
     if bars.empty:
-        return bars
+        return bars.drop(columns=["_settled"], errors="ignore")
 
     cutoff = now.replace(second=0, microsecond=0)
-    completed = bars[bars["datetime"] + timedelta(minutes=3) <= cutoff]
+    mask = bars["datetime"] + timedelta(minutes=3) <= cutoff
+    if settle_ok is not None:
+        mask = mask & (bars["_settled"] >= 1.0)
+        bars = bars.drop(columns=["_settled"])
+    completed = bars[mask]
     return completed.reset_index(drop=True)
 
 

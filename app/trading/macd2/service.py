@@ -31,6 +31,7 @@ from typing import Any, Optional
 from app.trading import strategy_ownership
 from app.trading.macd2 import config, ledger, order_executor, state_store
 from app.trading.macd2 import chop_regime
+from app.trading.macd2 import data_watch
 from app.trading.macd2 import entry_arming
 from app.trading.macd2 import pending_order
 from app.trading.macd2 import p3_stack
@@ -490,7 +491,20 @@ class Macd2Service:
             recover_result = self._auto_recover_worker(state, reason="WORKER_HEARTBEAT_STALE")
         state = state_store.load_state()
         worker = self._worker
+        # 2026-11-20 (11/19 무플래그): worker 생존만이 아니라 **데이터 진행**도 본다.
+        # 관측·경보 전용 -- 주문/신호 판정에 관여하지 않고, 실패해도 감시를 멈추지 않는다.
+        try:
+            data_conditions = data_watch.assess(state, now)
+        except Exception as exc:
+            data_conditions = {}
+            log.exception("[MACD2][DATA_WATCH] assess 실패: %r", exc)
+        try:
+            data_watch.run_scheduled(self, state, now, record_event=supervisor_mod.record_event,
+                                     heartbeat_age_sec=age)
+        except Exception:
+            log.exception("[MACD2][DATA_WATCH] 스케줄 작업 실패")
         return {
+            "data_watch": data_conditions,
             "verdict": verdict,
             "mode": state.mode,
             "auto_trade_on": bool(state.auto_trade_on),

@@ -51,6 +51,7 @@ import pandas as pd
 
 from app.trading.macd2 import config
 from app.utils.data_paths import DATA_ROOT
+from app.utils.minute_bars import RAW_TS_COL, RECEIVED_AT_COL, normalize_minute_frame
 
 KST = config.KST
 
@@ -192,8 +193,13 @@ def record_frame(
             idx = _INDEX.setdefault(date_ymd, {})
 
             pending: list[dict[str, Any]] = []
+            has_raw = RAW_TS_COL in work.columns
             for _i, row in work.iterrows():
-                key = _iso(row["datetime"])
+                # 2026-11-20: 아카이브는 KIS 가 준 **원래 라벨**을 키로 남긴다(정규화로 분
+                # 내림된 시각이 아니라). 11/19 의 HH:MM:30 같은 형식 변화를 사후에 볼 수
+                # 있어야 한다. 정상일(라벨 :00)에는 이전과 같은 키다.
+                raw_key = row[RAW_TS_COL] if has_raw else None
+                key = _iso(raw_key if raw_key is not None and not pd.isna(raw_key) else row["datetime"])
                 vals = _ohlcv_tuple(row)
                 prev = idx.get(key)
                 if prev is None:
@@ -273,7 +279,13 @@ def load_frame_as_of(date_ymd: str, as_of: datetime) -> pd.DataFrame:
         .sort_values("datetime")
         .reset_index(drop=True)
     )
-    return df[["datetime", *_OHLCV]].reset_index(drop=True)
+    # 2026-11-20: 원래 라벨(datetime 열)을 공용 정규화 함수로 분 내림 -- raw_bar_ts 보존,
+    # 그 revision 을 관측한 시각(last_seen_at)을 received_at 으로 넘겨 live 와 같은
+    # 완성 판정(원래 라벨+60초, 그 뒤 요청한 값)을 재현한다.
+    out = df[["datetime", *_OHLCV]].copy()
+    out[RECEIVED_AT_COL] = df["last_seen_at"].to_numpy()
+    out, _ = normalize_minute_frame(out, source="macd2.bar_archive")
+    return out.reset_index(drop=True)
 
 
 def stats(date_ymd: str) -> dict[str, Any]:

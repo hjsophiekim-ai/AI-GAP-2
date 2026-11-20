@@ -34,6 +34,9 @@ import pandas as pd
 
 from app.trading.macd2 import config
 from app.utils.data_paths import CACHE_DIR, STATE_DIR
+from app.utils.minute_bars import (
+    candles_to_minute_frame, normalize_minute_frame, page_cursor_before, strip_aux_columns,
+)
 
 KST = config.KST
 LOOKBACK_CALENDAR_DAYS = 10  # 인자 없이 실행 시, 최근 이 기간 안의 누락 거래일을 자동 보충
@@ -48,21 +51,15 @@ SYMBOLS = {
 
 
 def candles_to_df(candles: list[dict[str, Any]]) -> pd.DataFrame:
-    rows = []
-    for c in candles or []:
-        ds = str(c.get("date") or "").strip()
-        ts = str(c.get("time") or "").replace(":", "").strip()
-        if len(ds) != 8 or len(ts) < 6:
-            continue
-        dt = datetime.strptime(ds + ts[:6], "%Y%m%d%H%M%S").replace(tzinfo=KST)
-        rows.append({
-            "datetime": dt, "open": float(c.get("open") or 0), "high": float(c.get("high") or 0),
-            "low": float(c.get("low") or 0), "close": float(c.get("close") or 0),
-            "volume": int(float(c.get("volume") or 0)),
-        })
-    if not rows:
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
-    return pd.DataFrame(rows).drop_duplicates("datetime", keep="last").sort_values("datetime").reset_index(drop=True)
+    """KIS 분봉 -> 1분봉 프레임. 2026-11-20: 시각 해석·분 내림·분당 마지막값은 공용
+    정규화 함수(app.utils.minute_bars) 하나로 한다(11/19 HH:MM:30 실사고)."""
+    df, _ = candles_to_minute_frame(candles, source="minute_bar_archiver")
+    return df
+
+
+def _merge_pages(pages: list[pd.DataFrame]) -> pd.DataFrame:
+    df, _ = normalize_minute_frame(pd.concat(pages, ignore_index=True), source="minute_bar_archiver")
+    return df
 
 
 def fetch_full_day(client, symbol: str, date_ymd: str) -> pd.DataFrame:
@@ -87,18 +84,18 @@ def fetch_full_day(client, symbol: str, date_ymd: str) -> pd.DataFrame:
         if df.empty:
             break
         pages.append(df)
-        merged = pd.concat(pages, ignore_index=True).drop_duplicates("datetime", keep="last").sort_values("datetime").reset_index(drop=True)
+        merged = _merge_pages(pages)
         oldest, newest = merged["datetime"].iloc[0], merged["datetime"].iloc[-1]
         key = (oldest, newest, len(merged))
         if key in seen or oldest.strftime("%H:%M") <= "09:00":
             return merged
         seen.add(key)
         pages = [merged]
-        cursor = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+        cursor = page_cursor_before(merged)   # 원래 라벨 기준(2026-11-20)
         time_mod.sleep(float(getattr(config, "KIS_PAGE_FETCH_PACING_SEC", 0.4)))
     if not pages:
         return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
-    return pd.concat(pages, ignore_index=True).drop_duplicates("datetime", keep="last").sort_values("datetime").reset_index(drop=True)
+    return _merge_pages(pages)
 
 
 def _existing_files(date_ymd: str) -> dict[str, Any]:
@@ -144,7 +141,8 @@ def save_one_date(client, date_ymd: str) -> dict[str, Any]:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     paths = _existing_files(date_ymd)
     for tag, df in frames.items():
-        df.to_csv(paths[tag], index=False)
+        # 저장 스키마는 기존 그대로(datetime,OHLCV). 시각은 정규화(분 내림)된 값이다.
+        strip_aux_columns(df).to_csv(paths[tag], index=False)
     result["status"] = "saved"
     return result
 
