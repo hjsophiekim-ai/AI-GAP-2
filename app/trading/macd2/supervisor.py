@@ -131,6 +131,20 @@ def record_event(event: str, *, level: str = "INFO", mode: str = "", verdict: st
         _post_webhook(f"[MACD2 경보] {event} ({mode}) {detail_s}", row)
 
 
+def send_webhook_sync(text: str, row: Optional[dict] = None, *, timeout: float = 10.0) -> tuple[bool, str]:
+    """테스트 경보용 동기 전송. (성공여부, 설명). URL 은 출력하지 않는다."""
+    url = config.SUPERVISOR_ALERT_WEBHOOK_URL
+    if not url:
+        return False, "MACD2_ALERT_WEBHOOK_URL 미설정"
+    try:
+        body = json.dumps({"text": text, "event": row or {}}, ensure_ascii=False, default=str).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, f"HTTP {getattr(resp, 'status', '?')}"
+    except Exception as exc:
+        return False, repr(exc)[:300]
+
+
 def _post_webhook(text: str, row: dict) -> None:
     url = config.SUPERVISOR_ALERT_WEBHOOK_URL
     if not url:
@@ -312,6 +326,9 @@ class SupervisorThread:
         self.last_tick_at: Optional[datetime] = None
         self.last_result: dict = {}
         self.tracker = _AlertTracker()
+        # 2026-11-20: 데이터 진행 경보(완성 3분봉 정체·입력 계약·평가 0회)
+        from app.trading.macd2.data_watch import DataWatchTracker
+        self.data_tracker = DataWatchTracker(record_event)
 
     def _service(self):
         if self._service_getter is not None:
@@ -333,7 +350,13 @@ class SupervisorThread:
 
     def _run(self) -> None:
         record_event(EV_BOOT, detail={"boot_reason": self.boot_reason, "interval_sec": self.interval_sec,
-                                      "code_sha": os.getenv("RENDER_GIT_COMMIT", "")[:7]})
+                                      "code_sha": os.getenv("RENDER_GIT_COMMIT", "")[:7],
+                                      "webhook_configured": bool(config.SUPERVISOR_ALERT_WEBHOOK_URL)})
+        if not config.SUPERVISOR_ALERT_WEBHOOK_URL:
+            # 2026-11-20: 경보가 로그/원장에만 남으면 사람이 모른다(11/19). 부팅마다 크게 남긴다.
+            record_event("WEBHOOK_NOT_CONFIGURED", level="WARNING",
+                         detail={"env": "MACD2_ALERT_WEBHOOK_URL",
+                                 "effect": "경보가 logger.error + supervisor 원장에만 남는다"})
         if self._stop.wait(self.boot_delay_sec):
             return
         while not self._stop.is_set():
@@ -359,6 +382,12 @@ class SupervisorThread:
             self.tracker.observe(verdict, str(result.get("mode") or ""), now,
                                  {k: result.get(k) for k in ("worker_alive", "last_tick_age_sec",
                                                               "recover_result", "worker_instance_id")})
+        if verdict != "ERROR":
+            try:
+                self.data_tracker.observe(dict(result.get("data_watch") or {}),
+                                          str(result.get("mode") or ""), now)
+            except Exception as exc:  # 경보 실패가 감시를 멈추면 안 된다
+                logger.warning(f"[MACD2][SUPERVISOR] 데이터 경보 처리 실패: {exc!r}")
         self._write_heartbeat(now)
         return result
 
@@ -373,6 +402,7 @@ class SupervisorThread:
             "entry_enabled": r.get("entry_enabled"), "recover_result": r.get("recover_result"),
             "abnormal_since": self.tracker.abnormal_since.isoformat() if self.tracker.abnormal_since else None,
             "alert_count": self.tracker.alert_count,
+            "data_alerts_active": sorted(self.data_tracker.active),
         }
         try:
             _atomic_write_json(heartbeat_path(), payload)

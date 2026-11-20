@@ -591,7 +591,8 @@ def test_prior_day_cache_loads_most_recent_prior_trading_date(tmp_path, monkeypa
     assert diag["prior_trading_date"] == "20260106"  # the LATEST prior date, not the oldest
     assert len(df) == 200
     assert diag["received_count"] == 200
-    assert list(df.columns) == ["datetime", "open", "high", "low", "close", "volume"]
+    # 2026-11-20: 공용 정규화 함수가 KIS 원래 라벨을 raw_bar_ts 로 보존한다(완성 판정 기준).
+    assert list(df.columns) == ["datetime", "open", "high", "low", "close", "volume", "raw_bar_ts"]
     assert df["datetime"].iloc[0].tzinfo is not None  # tz-aware KST, matching the rest of macd2
 
 
@@ -879,8 +880,11 @@ def test_candles_to_df_skips_malformed_rows():
         {"date": "20260106", "time": "0902", "open": 1, "high": 1, "low": 1, "close": 102.0, "volume": 1},
     ]
     df = _candles_to_df(candles)
-    assert len(df) == 1
-    assert df.iloc[0]["close"] == 100.0
+    # 2026-11-20 사양 변경(11/19 실사고): 날짜를 해석할 수 없는 행만 버리고, 시각 형식이
+    # 다른 행(4자리 HHMM)은 버리지 않고 분 단위로 살려 경고만 남긴다.
+    assert len(df) == 2
+    assert list(df["close"]) == [100.0, 102.0]
+    assert df.iloc[1]["datetime"] == datetime(2026, 1, 6, 9, 2, tzinfo=KST)
 
 
 def test_filter_complete_3m_bars_drops_bin_missing_a_1m_bar():

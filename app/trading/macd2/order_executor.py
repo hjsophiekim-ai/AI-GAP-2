@@ -858,8 +858,15 @@ def execute_signal(
     reconcile_retries: int = 5,
     reconcile_delay_sec: float = 0.5,
     ledger_module: Any = None,
+    new_entry_block_reason: Optional[str] = None,
 ) -> ExecutionOutcome:
     """Idempotent signal_id execution: entry (flat) or direction switch.
+
+    2026-11-20: ``new_entry_block_reason`` 이 있으면(1분봉 입력 계약 위반/정렬 이상)
+    **BUY 만** 막는다 -- 반대 포지션 SELL 은 평소대로 끝까지 진행하고, BUY 사이징 직전에
+    BLOCKED 로 돌아간다(이미 있던 '매도 후 매수 불가' 경로와 같은 모양). 진입 게이트
+    (worker.entry_window_open)가 1차로 막고, 이것은 T+3 확정·E 돌파 등 다른 진입 경로의
+    최종 방어선이다.
 
     Never places a BUY before a required SELL has been confirmed AND the
     resulting holdings reconcile to 0 (docs §8). Never re-executes a
@@ -1027,6 +1034,13 @@ def execute_signal(
             confirmed_at=timestamps["sell_confirmed_at"], ledger_module=ledger_module,
             sell_telemetry={**sell_telemetry, **_sell_timestamps(timestamps)},
         )
+
+    if new_entry_block_reason:
+        outcome.final_state = SignalState.BLOCKED
+        outcome.block_reason = str(new_entry_block_reason)
+        outcome.order_failure_stage = str(new_entry_block_reason)
+        timestamps["entry_blocked_at"] = _now_iso()
+        return outcome
 
     timestamps["sizing_started_at"] = _now_iso()
     sizing_getter = getattr(broker, "get_buy_sizing_quote", None)

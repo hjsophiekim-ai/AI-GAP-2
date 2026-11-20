@@ -37,6 +37,9 @@ from app.trading.macd2 import bar_archive, config
 from app.trading.macd2.models import QuoteSnapshot
 from app.trading.macd2.signal_engine import resample_completed_3m
 from app.utils.data_paths import CACHE_DIR
+from app.utils.minute_bars import (
+    candles_to_minute_frame, normalize_minute_frame, page_cursor_before,
+)
 
 KST = config.KST
 
@@ -146,8 +149,10 @@ def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.Data
     if "datetime" not in raw.columns:
         return _empty_1m_frame(), {"path": str(path), "error": "MALFORMED_CACHE_NO_DATETIME_COLUMN", "received_count": 0}
 
-    raw["datetime"] = pd.to_datetime(raw["datetime"], errors="coerce")
+    raw["datetime"] = pd.to_datetime(raw["datetime"], errors="coerce", utc=False)
     raw = raw.dropna(subset=["datetime"])
+    if isinstance(raw["datetime"].dtype, pd.DatetimeTZDtype):
+        raw["datetime"] = raw["datetime"].dt.tz_convert(KST).dt.tz_localize(None)
     prior_only = raw[raw["datetime"].dt.strftime("%Y%m%d") < today_ymd]
     if prior_only.empty:
         return _empty_1m_frame(), {"path": str(path), "error": "CACHE_HAS_NO_PRIOR_DAY_ROWS", "received_count": 0}
@@ -157,6 +162,8 @@ def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.Data
     day_df = day_df.sort_values("datetime").reset_index(drop=True)
     day_df["datetime"] = day_df["datetime"].dt.tz_localize(KST)
     day_df = day_df[list(_1M_COLUMNS)]
+    # 2026-11-20: 분 내림·분당 마지막값·원래 라벨 보존은 공용 정규화 함수로.
+    day_df, _ = normalize_minute_frame(day_df, source="macd2.prior_day_cache")
 
     return day_df, {
         "path": str(path),
@@ -166,6 +173,15 @@ def _load_prior_day_1m_cache(watch_symbol: str, today_ymd: str) -> tuple[pd.Data
         "newest": day_df["datetime"].iloc[-1].isoformat(),
         "error": None,
     }
+
+
+def _merge_minute_frames(frames, source: str = "macd2.merge") -> pd.DataFrame:
+    """1분봉 프레임 이어붙이기 -- 2026-11-20 부터 공용 정규화 함수 하나로.
+    ``frames`` 순서 = 오래 받은 것 → 최근 받은 것. 같은 분은 마지막(최근) 값 하나만,
+    시각은 KST 분 내림, 원래 라벨(raw_bar_ts)·수신시각(received_at) 보존."""
+    merged = pd.concat(list(frames), ignore_index=True)
+    out, _ = normalize_minute_frame(merged, source=source)
+    return out
 
 
 def _trim_to_recent_trading_days(df: pd.DataFrame, max_days: int = 2) -> pd.DataFrame:
@@ -200,33 +216,13 @@ def _trim_to_recent_trading_days(df: pd.DataFrame, max_days: int = 2) -> pd.Data
     return df.loc[dates.isin(keep_dates)].reset_index(drop=True)
 
 
-def _candles_to_df(candles: list[dict]) -> pd.DataFrame:
-    rows = []
-    for c in candles or []:
-        date_raw = str(c.get("date") or "").strip()
-        time_raw = str(c.get("time") or "").strip().replace(":", "")
-        if len(date_raw) != 8 or len(time_raw) < 6:
-            continue
-        try:
-            dt = datetime.strptime(f"{date_raw}{time_raw[:6]}", "%Y%m%d%H%M%S").replace(tzinfo=KST)
-        except ValueError:
-            continue
-        rows.append({
-            "datetime": dt,
-            "open": float(c.get("open") or 0),
-            "high": float(c.get("high") or 0),
-            "low": float(c.get("low") or 0),
-            "close": float(c.get("close") or 0),
-            "volume": int(c.get("volume") or 0),
-        })
-    if not rows:
-        return _empty_1m_frame()
-    return (
-        pd.DataFrame(rows)
-        .drop_duplicates(subset=["datetime"], keep="last")
-        .sort_values("datetime")
-        .reset_index(drop=True)
-    )
+def _candles_to_df(candles: list[dict], received_at: Optional[datetime] = None,
+                   source: str = "macd2.kis_minute") -> pd.DataFrame:
+    """KIS 분봉 dict -> 1분봉 프레임. 2026-11-20: 시각 정규화는 공용 함수
+    (``app.utils.minute_bars``) 하나만 쓴다 -- 분 내림 + 원래 라벨(raw_bar_ts) 보존 +
+    분당 마지막값. ``received_at`` 은 이 응답을 요청한 시각(완성 판정에 쓴다)."""
+    df, _report = candles_to_minute_frame(candles, source=source, received_at=received_at)
+    return df
 
 
 @dataclass(frozen=True)
@@ -537,6 +533,7 @@ class MarketDataService:
         client = self._get_history_kis_client()
         if client is None:
             return _empty_1m_frame(), {"error": "kis_client_none"}
+        requested_at = datetime.now(KST)   # 이 응답에는 이 시각 이전 데이터만 있다(완성 판정용)
         try:
             candles = client.get_minute_candles(
                 symbol, period_min=1, count=count, hour1=hour1,
@@ -544,7 +541,7 @@ class MarketDataService:
             ) or []
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return _empty_1m_frame(), {"error": repr(exc)}
-        df = _candles_to_df(candles)
+        df = _candles_to_df(candles, received_at=requested_at, source="macd2.today_minute")
         if df.empty:
             # get_minute_candles() itself never raises (docs: 실패 시 [] 반환) —
             # a transient HTTP/network failure (KIS 500, timeout, ...) is
@@ -575,7 +572,7 @@ class MarketDataService:
             ) or []
         except Exception as exc:  # pragma: no cover - real network path, not exercised in tests
             return _empty_1m_frame(), {"error": repr(exc)}
-        df = _candles_to_df(candles)
+        df = _candles_to_df(candles, source="macd2.date_minute")
         if df.empty:
             # Same silent-swallow gap as _default_fetch_minute_candles above —
             # get_minute_candles_for_date() never raises either, so surface
@@ -681,17 +678,13 @@ class MarketDataService:
             consecutive_error_skips = 0
             pages.append(part)
             merged = (
-                pd.concat(pages, ignore_index=True)
-                .drop_duplicates(subset=["datetime"], keep="last")
-                .sort_values("datetime")
-                .reset_index(drop=True)
+                _merge_minute_frames(pages)
             )
             if len(merged) <= prev_count:
                 page_diags[-1]["stop_reason"] = "PAGE_NO_GROWTH"
                 break
             prev_count = len(merged)
-            oldest = merged["datetime"].iloc[0]
-            next_hour1 = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+            next_hour1 = page_cursor_before(merged)   # 원래 라벨 기준(2026-11-20)
             if next_hour1 == hour1:
                 page_diags[-1]["stop_reason"] = "CURSOR_NOT_MOVING"
                 break
@@ -708,10 +701,7 @@ class MarketDataService:
                 page_diags[-1]["stop_reason"] = "MAX_PAGES_EXHAUSTED"
 
         df = (
-            pd.concat(pages, ignore_index=True)
-            .drop_duplicates(subset=["datetime"], keep="last")
-            .sort_values("datetime")
-            .reset_index(drop=True)
+            _merge_minute_frames(pages)
             if pages else _empty_1m_frame()
         )
         page_budget_exhausted = bool(page_diags) and page_diags[-1].get("stop_reason") == "MAX_PAGES_EXHAUSTED"
@@ -825,17 +815,13 @@ class MarketDataService:
             consecutive_error_skips = 0
             pages.append(part)
             merged_today = (
-                pd.concat(pages, ignore_index=True)
-                .drop_duplicates(subset=["datetime"], keep="last")
-                .sort_values("datetime")
-                .reset_index(drop=True)
+                _merge_minute_frames(pages)
             )
             if len(merged_today) <= prev_count:
                 page_diags[-1]["stop_reason"] = "PAGE_NO_GROWTH"
                 break  # cursor stopped making progress
             prev_count = len(merged_today)
-            oldest = merged_today["datetime"].iloc[0]
-            next_hour1 = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+            next_hour1 = page_cursor_before(merged_today)   # 원래 라벨 기준(2026-11-20)
             if next_hour1 == hour1:
                 page_diags[-1]["stop_reason"] = "CURSOR_NOT_MOVING"
                 break  # never repeat an identical request (today-only data would loop forever)
@@ -855,18 +841,12 @@ class MarketDataService:
                 today_page_exhausted = True
 
         today_df = (
-            pd.concat(pages, ignore_index=True)
-            .drop_duplicates(subset=["datetime"], keep="last")
-            .sort_values("datetime")
-            .reset_index(drop=True)
+            _merge_minute_frames(pages)
             if pages else _empty_1m_frame()
         )
         _non_empty = [frame for frame in (prior_df, today_df) if not frame.empty]
         df = (
-            pd.concat(_non_empty, ignore_index=True)
-            .drop_duplicates(subset=["datetime"], keep="last")
-            .sort_values("datetime")
-            .reset_index(drop=True)
+            _merge_minute_frames(_non_empty)
             if _non_empty else _empty_1m_frame()
         )
         elapsed = (datetime.now(KST) - t0).total_seconds()
@@ -1011,10 +991,7 @@ class MarketDataService:
             # datetime64[us, UTC+09:00] 이라 tz 표현이 어긋나 또 object 가 된다.
             _frames = [f for f in (base, backfill_df, live_df) if f is not None and not f.empty]
             merged = (
-                pd.concat(_frames, ignore_index=True)
-                .drop_duplicates(subset=["datetime"], keep="last")
-                .sort_values("datetime")
-                .reset_index(drop=True)
+                _merge_minute_frames(_frames)
                 if _frames else _empty_1m_frame()
             )
             merged = _trim_to_recent_trading_days(merged)
@@ -1093,7 +1070,7 @@ class MarketDataService:
         max_pages = KIS_MAX_PAGES if cross_day else min(
             KIS_MAX_PAGES, int(gap_min // KIS_PAGE_MINUTES) + 2)
         pages: list[pd.DataFrame] = []
-        hour1 = (live_oldest - timedelta(minutes=1)).strftime("%H%M%S")
+        hour1 = page_cursor_before(live_df)   # 원래 라벨 기준(2026-11-20)
         complete = False
         error: Optional[str] = None
         for page_i in range(max_pages):
@@ -1126,17 +1103,14 @@ class MarketDataService:
             if not cross_day and oldest <= floor:
                 complete = True
                 break
-            next_hour1 = (oldest - timedelta(minutes=1)).strftime("%H%M%S")
+            next_hour1 = page_cursor_before(pd.concat(pages, ignore_index=True))   # 원래 라벨 기준
             if next_hour1 == hour1:
                 complete = True
                 break
             hour1 = next_hour1
 
         got = (
-            pd.concat(pages, ignore_index=True)
-            .drop_duplicates(subset=["datetime"], keep="last")
-            .sort_values("datetime")
-            .reset_index(drop=True)
+            _merge_minute_frames(pages)
             if pages else _empty_1m_frame()
         )
         if not got.empty and not cross_day:

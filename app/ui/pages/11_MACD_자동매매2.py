@@ -715,6 +715,15 @@ state = snapshot["state"]
 worker_stats = snapshot["worker"] or {}
 quotes = snapshot["quotes"] or {}
 
+# ── 2026-11-20: 데이터 입력/진행 이상 배너 (11/19 하루 종일 조용한 무거래 재발 방지) ──
+try:
+    from app.trading.macd2 import data_watch as _macd2_data_watch
+    _dw_msgs = _macd2_data_watch.banner_status(state=state)
+except Exception as _dw_exc:  # 배너 실패가 화면을 막으면 안 된다
+    _dw_msgs = [f"데이터 감시 배너 계산 실패: {_dw_exc!r}"]
+if _dw_msgs:
+    st.error("## 🚨 MACD2 데이터 경보\n\n" + "\n\n".join(f"- {m}" for m in _dw_msgs))
+
 # ── 2026-10-16: 미확정 매수주문 경고 (pending 이 있을 때만, 체결/취소 확정되면 자동으로 사라진다) ──
 _pending_po = macd2_pending_order.get(state)
 if _pending_po:
